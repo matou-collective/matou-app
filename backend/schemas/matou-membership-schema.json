@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "EMatouMembershipSchemaV1",
+  "title": "MATOU Membership Schema",
+  "description": "Credential proving membership in MATOU organization",
+  "type": "object",
+  "credentialType": "MatouMembership",
+  "version": "1.0",
+  "properties": {
+    "communityName": {
+      "type": "string",
+      "description": "Name of the community",
+      "const": "MATOU"
+    },
+    "role": {
+      "type": "string",
+      "description": "Member's role in the organization",
+      "enum": [
+        "Member",
+        "Verified Member",
+        "Trusted Member",
+        "Expert Member",
+        "Contributor",
+        "Moderator",
+        "Admin",
+        "Operations Steward"
+      ]
+    },
+    "verificationStatus": {
+      "type": "string",
+      "description": "Level of identity verification",
+      "enum": [
+        "unverified",
+        "community_verified",
+        "identity_verified",
+        "expert_verified"
+      ]
+    },
+    "permissions": {
+      "type": "array",
+      "description": "Permissions granted to member",
+      "items": {
+        "type": "string"
+      },
+      "examples": [["read", "write", "propose", "comment", "vote", "admin"]]
+    },
+    "joinedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when membership was granted"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when membership expires (optional)"
+    }
+  },
+  "required": ["communityName", "role", "verificationStatus", "permissions", "joinedAt"],
+  "additionalProperties": false
+}
