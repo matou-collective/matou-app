@@ -63,6 +63,27 @@ func main() {
 	fmt.Printf("   Data directory: %s\n", dataDir)
 	fmt.Println()
 
+	// Initialize space manager
+	fmt.Println("Initializing space manager...")
+	spaceManager := anysync.NewSpaceManager(anysyncClient, &anysync.SpaceManagerConfig{
+		CommunitySpaceID: cfg.GetOrgSpaceID(),
+		OrgAID:           cfg.GetOrgAID(),
+	})
+	spaceStore := anystore.NewSpaceStoreAdapter(store)
+
+	fmt.Printf("  Space manager initialized\n")
+	fmt.Printf("   Community Space ID: %s\n", cfg.GetOrgSpaceID())
+	fmt.Println()
+
+	// Verify community space (log warning if not configured)
+	if cfg.GetOrgSpaceID() == "" {
+		fmt.Println("  ⚠️  Warning: Community space ID not configured")
+		fmt.Println("     Memberships will only be stored in private spaces")
+	}
+
+	_ = spaceManager // Used in sync handlers (Week 3 Day 2)
+	_ = spaceStore   // Used in sync handlers (Week 3 Day 2)
+
 	// Initialize KERI client (config-only, no KERIA connection needed)
 	fmt.Println("Initializing KERI client...")
 	keriClient, err := keri.NewClient(&keri.Config{

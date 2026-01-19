@@ -81,6 +81,7 @@ const (
 	CollectionUserPreferences  = "user_preferences"
 	CollectionKELCache         = "kel_cache"
 	CollectionSyncIndex        = "sync_index"
+	CollectionSpaces           = "spaces"
 )
 
 // CredentialsCache returns the credentials cache collection.
@@ -270,4 +271,135 @@ func (s *LocalStore) Stats(ctx context.Context) (anystore.DBStats, error) {
 // Flush forces a database flush to disk.
 func (s *LocalStore) Flush(ctx context.Context) error {
 	return s.db.Flush(ctx, 0, anystore.FlushModeCheckpointPassive)
+}
+
+// MustParseJSON is a helper that wraps anyenc.MustParseJson for external packages
+func MustParseJSON(jsonStr string) *anyenc.Value {
+	return anyenc.MustParseJson(jsonStr)
+}
+
+// SpaceRecord represents a space registry entry.
+// This maps user AIDs to their any-sync space IDs.
+type SpaceRecord struct {
+	ID        string    `json:"id"`        // SpaceID (used as document ID)
+	UserAID   string    `json:"userAid"`   // Owner's AID
+	SpaceType string    `json:"spaceType"` // "private" or "community"
+	SpaceName string    `json:"spaceName"` // Human-readable name
+	CreatedAt time.Time `json:"createdAt"` // When space was created
+	LastSync  time.Time `json:"lastSync"`  // Last sync timestamp
+}
+
+// Spaces returns the spaces collection.
+func (s *LocalStore) Spaces(ctx context.Context) (anystore.Collection, error) {
+	return s.db.Collection(ctx, CollectionSpaces)
+}
+
+// SaveSpaceRecord saves a space record to the local store.
+func (s *LocalStore) SaveSpaceRecord(ctx context.Context, record *SpaceRecord) error {
+	coll, err := s.Spaces(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get spaces collection: %w", err)
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal space record: %w", err)
+	}
+
+	doc := anyenc.MustParseJson(string(data))
+	return coll.UpsertOne(ctx, doc)
+}
+
+// GetSpaceByID retrieves a space record by space ID.
+func (s *LocalStore) GetSpaceByID(ctx context.Context, spaceID string) (*SpaceRecord, error) {
+	coll, err := s.Spaces(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get spaces collection: %w", err)
+	}
+
+	doc, err := coll.FindId(ctx, spaceID)
+	if err != nil {
+		return nil, fmt.Errorf("space not found: %w", err)
+	}
+
+	var record SpaceRecord
+	if err := json.Unmarshal([]byte(doc.Value().String()), &record); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal space record: %w", err)
+	}
+
+	return &record, nil
+}
+
+// GetUserSpaceRecord retrieves a space record by user AID.
+func (s *LocalStore) GetUserSpaceRecord(ctx context.Context, userAID string) (*SpaceRecord, error) {
+	coll, err := s.Spaces(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get spaces collection: %w", err)
+	}
+
+	// Query for space with matching userAID and private type
+	query := anyenc.MustParseJson(fmt.Sprintf(`{"userAid": "%s", "spaceType": "private"}`, userAID))
+
+	iter, err := coll.Find(query).Iter(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query spaces: %w", err)
+	}
+	defer iter.Close()
+
+	if !iter.Next() {
+		return nil, fmt.Errorf("space not found for user: %s", userAID)
+	}
+
+	doc, err := iter.Doc()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get document: %w", err)
+	}
+
+	var record SpaceRecord
+	if err := json.Unmarshal([]byte(doc.Value().String()), &record); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal space record: %w", err)
+	}
+
+	return &record, nil
+}
+
+// ListAllSpaceRecords retrieves all space records.
+func (s *LocalStore) ListAllSpaceRecords(ctx context.Context) ([]*SpaceRecord, error) {
+	coll, err := s.Spaces(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get spaces collection: %w", err)
+	}
+
+	iter, err := coll.Find(nil).Iter(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query spaces: %w", err)
+	}
+	defer iter.Close()
+
+	var records []*SpaceRecord
+	for iter.Next() {
+		doc, err := iter.Doc()
+		if err != nil {
+			continue
+		}
+
+		var record SpaceRecord
+		if err := json.Unmarshal([]byte(doc.Value().String()), &record); err != nil {
+			continue
+		}
+		records = append(records, &record)
+	}
+
+	return records, nil
+}
+
+// UpdateSpaceLastSync updates the last sync timestamp for a space.
+func (s *LocalStore) UpdateSpaceLastSync(ctx context.Context, spaceID string) error {
+	record, err := s.GetSpaceByID(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+
+	record.LastSync = time.Now().UTC()
+	return s.SaveSpaceRecord(ctx, record)
 }

@@ -267,6 +267,194 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestSpaceRecordCRUD(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a test space record
+	record := &SpaceRecord{
+		ID:        "space-123456789",
+		UserAID:   "EUSER123456789",
+		SpaceType: "private",
+		SpaceName: "Test User's Private Space",
+		CreatedAt: time.Now().UTC(),
+		LastSync:  time.Now().UTC(),
+	}
+
+	// Save space record
+	err := store.SaveSpaceRecord(ctx, record)
+	if err != nil {
+		t.Fatalf("failed to save space record: %v", err)
+	}
+
+	// Retrieve by ID
+	retrieved, err := store.GetSpaceByID(ctx, record.ID)
+	if err != nil {
+		t.Fatalf("failed to get space by ID: %v", err)
+	}
+
+	// Verify fields
+	if retrieved.ID != record.ID {
+		t.Errorf("expected ID %s, got %s", record.ID, retrieved.ID)
+	}
+	if retrieved.UserAID != record.UserAID {
+		t.Errorf("expected UserAID %s, got %s", record.UserAID, retrieved.UserAID)
+	}
+	if retrieved.SpaceType != record.SpaceType {
+		t.Errorf("expected SpaceType %s, got %s", record.SpaceType, retrieved.SpaceType)
+	}
+	if retrieved.SpaceName != record.SpaceName {
+		t.Errorf("expected SpaceName %s, got %s", record.SpaceName, retrieved.SpaceName)
+	}
+}
+
+func TestGetUserSpaceRecord(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+	userAID := "EUSER987654321"
+
+	// Create a private space for the user
+	record := &SpaceRecord{
+		ID:        "space-user-987",
+		UserAID:   userAID,
+		SpaceType: "private",
+		SpaceName: "User's Space",
+		CreatedAt: time.Now().UTC(),
+		LastSync:  time.Now().UTC(),
+	}
+
+	err := store.SaveSpaceRecord(ctx, record)
+	if err != nil {
+		t.Fatalf("failed to save space record: %v", err)
+	}
+
+	// Retrieve by user AID
+	retrieved, err := store.GetUserSpaceRecord(ctx, userAID)
+	if err != nil {
+		t.Fatalf("failed to get user space record: %v", err)
+	}
+
+	if retrieved.UserAID != userAID {
+		t.Errorf("expected UserAID %s, got %s", userAID, retrieved.UserAID)
+	}
+
+	// Test non-existent user
+	_, err = store.GetUserSpaceRecord(ctx, "ENONEXISTENT")
+	if err == nil {
+		t.Error("expected error for non-existent user")
+	}
+}
+
+func TestListAllSpaceRecords(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create multiple space records
+	records := []*SpaceRecord{
+		{
+			ID:        "space-1",
+			UserAID:   "EUSER1",
+			SpaceType: "private",
+			SpaceName: "User 1 Space",
+			CreatedAt: time.Now().UTC(),
+			LastSync:  time.Now().UTC(),
+		},
+		{
+			ID:        "space-2",
+			UserAID:   "EUSER2",
+			SpaceType: "private",
+			SpaceName: "User 2 Space",
+			CreatedAt: time.Now().UTC(),
+			LastSync:  time.Now().UTC(),
+		},
+		{
+			ID:        "space-community",
+			UserAID:   "EORG123",
+			SpaceType: "community",
+			SpaceName: "Community Space",
+			CreatedAt: time.Now().UTC(),
+			LastSync:  time.Now().UTC(),
+		},
+	}
+
+	for _, record := range records {
+		err := store.SaveSpaceRecord(ctx, record)
+		if err != nil {
+			t.Fatalf("failed to save space record: %v", err)
+		}
+	}
+
+	// List all spaces
+	allRecords, err := store.ListAllSpaceRecords(ctx)
+	if err != nil {
+		t.Fatalf("failed to list space records: %v", err)
+	}
+
+	if len(allRecords) != 3 {
+		t.Errorf("expected 3 records, got %d", len(allRecords))
+	}
+}
+
+func TestUpdateSpaceLastSync(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a space record with old sync time
+	oldTime := time.Now().UTC().Add(-24 * time.Hour)
+	record := &SpaceRecord{
+		ID:        "space-sync-test",
+		UserAID:   "EUSER_SYNC",
+		SpaceType: "private",
+		SpaceName: "Sync Test Space",
+		CreatedAt: oldTime,
+		LastSync:  oldTime,
+	}
+
+	err := store.SaveSpaceRecord(ctx, record)
+	if err != nil {
+		t.Fatalf("failed to save space record: %v", err)
+	}
+
+	// Update last sync
+	err = store.UpdateSpaceLastSync(ctx, record.ID)
+	if err != nil {
+		t.Fatalf("failed to update last sync: %v", err)
+	}
+
+	// Verify last sync was updated
+	updated, err := store.GetSpaceByID(ctx, record.ID)
+	if err != nil {
+		t.Fatalf("failed to get updated record: %v", err)
+	}
+
+	if !updated.LastSync.After(oldTime) {
+		t.Error("LastSync should be after the old time")
+	}
+}
+
+func TestSpacesCollectionAccess(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	coll, err := store.Spaces(ctx)
+	if err != nil {
+		t.Fatalf("failed to get Spaces collection: %v", err)
+	}
+	if coll == nil {
+		t.Error("Spaces collection is nil")
+	}
+}
+
 // setupTestStore creates a temporary test store
 func setupTestStore(t *testing.T) *LocalStore {
 	t.Helper()
