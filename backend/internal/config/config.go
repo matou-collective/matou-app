@@ -144,10 +144,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("organization name is required")
 	}
 
-	// Validate admin
-	if c.Bootstrap.Admin.AID == "" {
-		return fmt.Errorf("admin AID is required")
-	}
+	// Admin AID is optional at startup (set later when admin creates identity in frontend)
 
 	// Validate KERI URLs
 	if c.KERI.AdminURL == "" {

@@ -1,6 +1,53 @@
 # MATOU DAO Backend
 
-Go backend service for the MATOU DAO MVP, providing integration with KERI (identity) and any-sync (data synchronization).
+Go backend service for the MATOU DAO MVP, providing integration with KERI (identity), any-sync (data synchronization), and anystore (local storage).
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        MATOU Backend                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
+│  │   Config    │    │   anystore  │    │   anysync   │         │
+│  │  (bootstrap)│    │(local cache)│    │  (P2P sync) │         │
+│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘         │
+│         │                  │                  │                 │
+│         └──────────────────┼──────────────────┘                 │
+│                            │                                    │
+│                     ┌──────┴──────┐                             │
+│                     │  HTTP API   │                             │
+│                     │  (port 8080)│                             │
+│                     └─────────────┘                             │
+└─────────────────────────────────────────────────────────────────┘
+         │                                           │
+         ▼                                           ▼
+┌─────────────────┐                       ┌─────────────────┐
+│     KERIA       │                       │    any-sync     │
+│  (port 3901)    │                       │  (port 1004)    │
+│                 │                       │                 │
+│  Org AID keys   │                       │  P2P network    │
+│  managed here   │                       │  10 containers  │
+└─────────────────┘                       └─────────────────┘
+```
+
+### Identity Architecture
+
+```
+Organization AID                    Admin/User AIDs
+(managed in KERIA)                  (managed on-device)
+      │                                    │
+      │  ──── issues credentials ────►     │
+      │                                    │
+      │  Steward credential grants         │
+      │  permission to issue memberships   │
+      │                                    │
+```
+
+- **Organization AID**: Created via `bootstrap-keria.py`, keys stored in KERIA
+- **Admin/User AIDs**: Created in frontend via signify-ts, keys stored on device
+- **Credentials**: Org issues steward credentials to admins, admins can then issue memberships
 
 ## Project Structure
 
@@ -8,30 +55,31 @@ Go backend service for the MATOU DAO MVP, providing integration with KERI (ident
 backend/
 ├── cmd/
 │   └── server/
-│       └── main.go              # Main server entry point
+│       └── main.go                 # Main server entry point
 ├── internal/
 │   ├── config/
-│   │   ├── config.go            # Configuration management
-│   │   └── config_test.go       # Configuration tests
+│   │   ├── config.go               # Configuration management
+│   │   └── config_test.go          # Configuration tests
 │   ├── anysync/
-│   │   ├── client.go            # any-sync client wrapper
-│   │   └── client_test.go       # any-sync client tests
+│   │   ├── client.go               # any-sync client wrapper
+│   │   └── client_test.go          # any-sync client tests
+│   ├── anystore/
+│   │   ├── client.go               # Local storage layer (anytype-heart based)
+│   │   └── client_test.go          # anystore tests
 │   ├── keri/
-│   │   └── client.go            # KERIA API client (Week 2 Day 3-4)
-│   ├── api/
-│   │   └── grpc/                # gRPC API server (Week 2+)
-│   └── storage/
-│       └── spaces.go            # Space management (Week 2+)
+│   │   └── client.go               # KERIA API client (WIP)
+│   └── api/
+│       └── grpc/                   # gRPC API server (planned)
 ├── config/
-│   ├── bootstrap.yaml           # Bootstrap configuration (from Week 1)
-│   └── .org-passcode            # Organization passcode (secured)
+│   ├── bootstrap.yaml              # Bootstrap config (gitignored)
+│   ├── .org-passcode               # Org passcode (gitignored)
+│   └── .keria-config.json          # KERIA config (gitignored)
 ├── schemas/
-│   ├── matou-membership-schema.json      # Membership ACDC schema
-│   └── operations-steward-schema.json    # Steward role schema
-├── bin/
-│   └── matou-server             # Compiled server binary
-├── go.mod                       # Go module definition
-└── go.sum                       # Go dependency checksums
+│   ├── matou-membership-schema.json    # Membership ACDC schema
+│   └── operations-steward-schema.json  # Steward role schema
+├── .env                            # Environment variables (gitignored)
+├── go.mod                          # Go module definition
+└── go.sum                          # Go dependency checksums
 ```
 
 ## Quick Start
@@ -39,255 +87,167 @@ backend/
 ### Prerequisites
 
 - Go 1.21+ installed
-- KERI infrastructure running (Week 1 Day 1-2)
-- any-sync infrastructure running (Week 1 Day 3-4)
-- Bootstrap configuration complete (Week 1 Day 5)
+- Docker and Docker Compose
+- KERI infrastructure running
+- any-sync infrastructure running
 
-### Build
+### Setup Infrastructure
+
+```bash
+# Start KERI (4 containers)
+cd infrastructure/keri && make up
+
+# Start any-sync (10 containers)
+cd infrastructure/any-sync && make start
+
+# Bootstrap Organization AID
+python3 infrastructure/scripts/bootstrap-keria.py
+```
+
+### Build & Run
 
 ```bash
 cd backend
 go build -o bin/matou-server ./cmd/server
-```
-
-### Run
-
-```bash
-cd backend
 ./bin/matou-server
 ```
 
-Expected output:
-```
-🚀 MATOU DAO Backend Server
-============================
-
-Loading configuration...
-✅ Configuration loaded
-   Organization: MATOU
-   Org AID: ENzuA7sM70NzL2cWO1wb1lHc2T4BxnFfo6hzdGYU6Nfr
-   Admin AID: ECgSobqv2kBC9XmnP6f-nS6AMDe5Et2h2vbyDgl38duN
-
-Initializing any-sync client...
-✅ any-sync client initialized
-   Network ID: N9CJPCprktBPv5SKfhw7XRft73XSCtio7aokSKqPie4dwS6j
-   Coordinator: http://127.0.0.1:1004
-
-🌐 Starting HTTP server on localhost:8080
-```
-
-### Test
+### Test Endpoints
 
 ```bash
-# Health check
 curl http://localhost:8080/health
-
-# System info
 curl http://localhost:8080/info
 ```
 
-## Configuration
+## Environment Variables
 
-### Bootstrap Configuration
+Create `.env` file (gitignored):
 
-Located at `config/bootstrap.yaml`, generated during Week 1 Day 5:
+```bash
+# Organization Identity
+MATOU_ORG_AID=<your-org-aid>
+MATOU_ORG_PASSCODE=<your-org-passcode>
 
-```yaml
-organization:
-  name: MATOU
-  aid: "ENzuA7sM70NzL2cWO1wb1lHc2T4BxnFfo6hzdGYU6Nfr"
-  alias: "matou"
-  witnesses:
-    - http://localhost:5643
-    - http://localhost:5645
-    - http://localhost:5647
-  witnessThreshold: 2
+# KERIA Configuration
+KERIA_ADMIN_URL=http://localhost:3901
+KERIA_BOOT_URL=http://localhost:3903
+KERIA_CONTAINER=matou-keria
 
-admin:
-  aid: "ECgSobqv2kBC9XmnP6f-nS6AMDe5Et2h2vbyDgl38duN"
-  alias: "admin"
-  delegatedBy: "ENzuA7sM70NzL2cWO1wb1lHc2T4BxnFfo6hzdGYU6Nfr"
-  credentials:
-    membership: "E30ef70c862997270a5fbf8e05e46f16cffb7e25a8fdd6dc8def509fd38529021"
-    steward: "Ede9739b2a521f92bdaeff365010bf6ab9a938ba18c37ea791036d8582f7829d7"
-
-orgSpace:
-  spaceId: "69f89ebfc0c3b17dba10af06f1013fef86e099d48785ececde5f9d49aff4f161"
-  accessControl:
-    type: acdc_required
-    schema: EMatouMembershipSchemaV1
-    issuer: "ENzuA7sM70NzL2cWO1wb1lHc2T4BxnFfo6hzdGYU6Nfr"
+# any-sync Configuration
+ANYSYNC_COORDINATOR_URL=http://localhost:1004
 ```
 
-### Server Configuration
+## anystore - Local Storage Layer
 
-Default values (can be overridden in `config/config.yaml`):
+The `anystore` package provides a local storage layer based on anytype-heart's storage patterns:
 
-```yaml
-server:
-  host: localhost
-  port: 8080
+```go
+import "github.com/matou-dao/backend/internal/anystore"
 
-keri:
-  adminUrl: http://localhost:3901
-  bootUrl: http://localhost:3903
-  cesrUrl: http://localhost:3902
+// Initialize store
+store, err := anystore.NewLocalStore(&anystore.Config{
+    DataDir: "./data",
+})
 
-anysync:
-  clientConfigPath: ../infrastructure/any-sync/etc/client.yml
+// Store credentials
+err = store.Credentials().Set(ctx, "cred-id", credentialData)
+
+// Build trust graph
+err = store.TrustGraph().Set(ctx, "node-id", trustNode)
+
+// User preferences
+err = store.Preferences().Set(ctx, "user-id", prefs)
 ```
+
+### Collections
+
+| Collection | Purpose |
+|------------|---------|
+| `CredentialsCache` | ACDC credentials storage |
+| `TrustGraphCache` | Trust graph nodes and edges |
+| `UserPreferences` | User settings and preferences |
+| `KELCache` | Key Event Logs cache |
+| `SyncIndex` | any-sync synchronization state |
 
 ## Testing
 
-### Run All Tests
-
 ```bash
-cd backend
+# Run all tests
 go test ./... -v
-```
 
-### Test Configuration
-
-```bash
+# Test specific packages
 go test ./internal/config/... -v
-```
-
-### Test any-sync Client
-
-```bash
+go test ./internal/anystore/... -v
 go test ./internal/anysync/... -v
+
+# With coverage
+go test ./... -cover
 ```
 
 ## API Endpoints
 
-### Current (Week 2 Day 1-2)
+### Current
 
-- `GET /health` - Health check with org/admin AIDs
-- `GET /info` - System information (organization, admin, any-sync)
+- `GET /health` - Health check with org AID
+- `GET /info` - System information
 
-### Planned (Week 2 Day 3-4+)
+### Planned
 
 - `POST /identity/create` - Create new AID via KERIA
 - `POST /credential/issue` - Issue ACDC credential
 - `POST /credential/verify` - Verify ACDC credential
-- `POST /space/create` - Create any-sync space
-- `GET /space/{id}` - Get space information
 
-## Development
+## Bootstrap Scripts
 
-### Add Dependencies
+Located in `infrastructure/scripts/`:
 
-```bash
-go get <package>
-go mod tidy
-```
+| Script | Purpose |
+|--------|---------|
+| `bootstrap-keria.py` | Create Organization AID in KERIA |
+| `issue-credentials.py` | Issue credentials to users |
+| `CREDENTIAL-ISSUANCE-GUIDE.md` | Guide for credential management |
 
-### Format Code
+### Issue Credentials
 
-```bash
-go fmt ./...
-```
-
-### Run Tests with Coverage
+After admin creates their identity in the frontend:
 
 ```bash
-go test ./... -cover
+python3 infrastructure/scripts/issue-credentials.py \
+  --recipient <ADMIN_AID> \
+  --role "Operations Steward"
 ```
-
-### Build for Production
-
-```bash
-CGO_ENABLED=0 GOOS=linux go build -o bin/matou-server ./cmd/server
-```
-
-## Integration
-
-### KERI Integration
-
-The backend integrates with KERIA for:
-- AID creation and management
-- ACDC credential issuance
-- ACDC credential verification
-- KEL storage and retrieval
-
-**KERIA Endpoints**:
-- Admin API: http://localhost:3901
-- Boot API: http://localhost:3903
-- CESR API: http://localhost:3902
-
-### any-sync Integration
-
-The backend integrates with any-sync for:
-- Space creation and management
-- KEL storage
-- ACDC storage
-- Access control enforcement
-
-**any-sync Endpoints**:
-- Coordinator: http://localhost:1004
-- Consensus: http://localhost:1006
-- Sync Nodes: http://localhost:1001-1003
-- File Node: http://localhost:1005
-
-## Week 2 Progress
-
-### Day 1-2: ✅ COMPLETE
-
-- [x] Go project initialized
-- [x] Project structure created
-- [x] Configuration management implemented
-- [x] Bootstrap config loader working
-- [x] any-sync client wrapper created
-- [x] Client connectivity tested
-- [x] Basic HTTP server running
-- [x] Tests passing
-
-### Day 3-4: ⏳ NEXT
-
-- [ ] KERIA API client
-- [ ] AID creation endpoint
-- [ ] KEL storage in any-sync
-- [ ] Integration tests
 
 ## Troubleshooting
 
-### Configuration Errors
+### KERI Not Running
 
-If bootstrap config is missing:
 ```bash
-cd infrastructure && ./scripts/bootstrap-matou.sh
+cd infrastructure/keri && make up && make health
 ```
 
-### KERI Not Accessible
+### any-sync Not Running
 
-Start KERI infrastructure:
 ```bash
-cd infrastructure/keri && make up
+cd infrastructure/any-sync && make start && ./scripts/health-check.sh
 ```
 
-### any-sync Not Accessible
+### Missing Bootstrap Config
 
-Start any-sync infrastructure:
 ```bash
-cd infrastructure/any-sync && make start
+python3 infrastructure/scripts/bootstrap-keria.py
 ```
 
-### Build Errors
+### Container Crashed
 
 ```bash
-go mod tidy  # Update dependencies
-go clean     # Clean build cache
+docker ps -a  # Check status
+cd infrastructure/keri && make restart
 ```
 
 ## References
 
-- MVP Plan: `../Keri-AnySync-Research/MVP-IMPLEMENTATION-PLAN-V2.md`
-- KERI Documentation: https://github.com/weboftrust/keri
-- any-sync Documentation: https://github.com/anyproto/any-sync
-
-## Version Info
-
-- **Go Version**: 1.21+
-- **Module**: github.com/matou-dao/backend
-- **Dependencies**: See go.mod
-- **Last Updated**: 2025-12-31
+- [MVP Implementation Plan](../Keri-AnySync-Research/MVP-IMPLEMENTATION-PLAN-V2.md)
+- [Credential Issuance Guide](../infrastructure/scripts/CREDENTIAL-ISSUANCE-GUIDE.md)
+- [KERI Documentation](https://github.com/weboftrust/keri)
+- [any-sync Documentation](https://github.com/anyproto/any-sync)
+- [anytype-heart](https://github.com/anyproto/anytype-heart)

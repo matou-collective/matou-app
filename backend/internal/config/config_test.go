@@ -11,25 +11,17 @@ func TestLoadBootstrapConfig(t *testing.T) {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Verify organization AID
+	// Verify organization AID (required)
 	if cfg.Bootstrap.Organization.AID == "" {
 		t.Error("Organization AID should not be empty")
 	}
 
-	// Verify admin AID
-	if cfg.Bootstrap.Admin.AID == "" {
-		t.Error("Admin AID should not be empty")
-	}
-
-	// Verify org space ID
-	if cfg.Bootstrap.OrgSpace.SpaceID == "" {
-		t.Error("Organization space ID should not be empty")
-	}
+	// Admin AID is optional at startup (set later when admin creates identity in frontend)
+	// OrgSpace ID is optional at startup (created later)
 
 	t.Logf("✅ Configuration loaded successfully")
 	t.Logf("   Organization AID: %s", cfg.GetOrgAID())
-	t.Logf("   Admin AID: %s", cfg.GetAdminAID())
-	t.Logf("   Org Space ID: %s", cfg.GetOrgSpaceID())
+	t.Logf("   Admin AID: %s (may be empty)", cfg.GetAdminAID())
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -39,16 +31,14 @@ func TestConfigValidation(t *testing.T) {
 		t.Error("Expected validation error for empty config")
 	}
 
-	// Test with valid config
+	// Test with valid config (admin AID optional)
 	cfg = &Config{
 		Bootstrap: BootstrapConfig{
 			Organization: OrganizationConfig{
 				Name: "MATOU",
 				AID:  "ETestAID",
 			},
-			Admin: AdminConfig{
-				AID: "ETestAdminAID",
-			},
+			// Admin AID is optional - set later when admin creates identity
 		},
 		KERI: KERIConfig{
 			AdminURL: "http://localhost:3901",
