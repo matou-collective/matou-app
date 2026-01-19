@@ -53,6 +53,15 @@ func NewClient(clientConfigPath string) (*Client, error) {
 	}, nil
 }
 
+// NewClientForTesting creates a client with test configuration (no config file required)
+func NewClientForTesting(coordinatorURL, networkID string) *Client {
+	return &Client{
+		coordinatorURL: coordinatorURL,
+		networkID:      networkID,
+		httpClient:     &http.Client{},
+	}
+}
+
 // loadClientConfig loads the any-sync client.yml file
 func loadClientConfig(path string) (*ClientConfig, error) {
 	data, err := os.ReadFile(path)

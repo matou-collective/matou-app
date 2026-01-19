@@ -81,9 +81,6 @@ func main() {
 		fmt.Println("     Memberships will only be stored in private spaces")
 	}
 
-	_ = spaceManager // Used in sync handlers (Week 3 Day 2)
-	_ = spaceStore   // Used in sync handlers (Week 3 Day 2)
-
 	// Initialize KERI client (config-only, no KERIA connection needed)
 	fmt.Println("Initializing KERI client...")
 	keriClient, err := keri.NewClient(&keri.Config{
@@ -99,8 +96,9 @@ func main() {
 	fmt.Printf("   Note: Credential issuance handled by frontend (signify-ts)\n")
 	fmt.Println()
 
-	// Create credentials handler
+	// Create API handlers
 	credHandler := api.NewCredentialsHandler(keriClient, store)
+	syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore)
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -142,22 +140,31 @@ func main() {
 		)
 	})
 
-	// Register credential endpoints
+	// Register API routes
 	credHandler.RegisterRoutes(mux)
+	syncHandler.RegisterRoutes(mux)
 
 	// Start server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	fmt.Printf("Starting HTTP server on %s\n", addr)
 	fmt.Println()
 	fmt.Println("Endpoints:")
-	fmt.Println("  GET  /health                     - Health check")
-	fmt.Println("  GET  /info                       - System information")
-	fmt.Println("  GET  /api/v1/org                 - Organization info for frontend")
-	fmt.Println("  GET  /api/v1/credentials         - List stored credentials")
-	fmt.Println("  POST /api/v1/credentials         - Store credential from frontend")
-	fmt.Println("  GET  /api/v1/credentials/{said}  - Get credential by SAID")
-	fmt.Println("  POST /api/v1/credentials/validate - Validate credential structure")
-	fmt.Println("  GET  /api/v1/credentials/roles   - List available roles")
+	fmt.Println("  GET  /health                       - Health check")
+	fmt.Println("  GET  /info                         - System information")
+	fmt.Println()
+	fmt.Println("  Credentials:")
+	fmt.Println("  GET  /api/v1/org                   - Organization info for frontend")
+	fmt.Println("  GET  /api/v1/credentials           - List stored credentials")
+	fmt.Println("  POST /api/v1/credentials           - Store credential from frontend")
+	fmt.Println("  GET  /api/v1/credentials/{said}    - Get credential by SAID")
+	fmt.Println("  POST /api/v1/credentials/validate  - Validate credential structure")
+	fmt.Println("  GET  /api/v1/credentials/roles     - List available roles")
+	fmt.Println()
+	fmt.Println("  Sync (Week 3):")
+	fmt.Println("  POST /api/v1/sync/credentials      - Sync credentials from KERIA")
+	fmt.Println("  POST /api/v1/sync/kel              - Sync KEL from KERIA")
+	fmt.Println("  GET  /api/v1/community/members     - List community members")
+	fmt.Println("  GET  /api/v1/community/credentials - List community-visible credentials")
 	fmt.Println()
 
 	if err := http.ListenAndServe(addr, mux); err != nil {

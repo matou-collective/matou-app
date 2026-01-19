@@ -2,7 +2,7 @@
 
 **Task**: Backend Sync Integration + Frontend Start
 **Date**: January 19, 2026
-**Status**: 🔄 IN PROGRESS (Day 1 Complete)
+**Status**: 🔄 IN PROGRESS (Day 2 Complete)
 
 ---
 
@@ -51,7 +51,7 @@ Without this sync layer, the backend would be isolated from identity data, unabl
 | Day | Focus | Status |
 |-----|-------|--------|
 | Day 1 | any-sync Space Management | ✅ Complete |
-| Day 2 | Sync Endpoints | ⏳ Pending |
+| Day 2 | Sync Endpoints | ✅ Complete |
 | Day 3 | Trust Graph Foundation | ⏳ Pending |
 | Day 4-5 | Integration Testing | ⏳ Pending |
 
@@ -222,18 +222,31 @@ All 55+ tests passing.
 
 ---
 
-## Day 2 Preview: Sync Endpoints
+## Day 2: Sync Endpoints
 
-### Planned Endpoints
+**Date**: January 19, 2026
+**Status**: ✅ COMPLETE
+
+### Goal
+
+Implement HTTP endpoints for syncing credentials and KELs from the frontend to the backend, with routing to appropriate any-sync spaces.
+
+### Activities Completed
+
+#### 1. SyncHandler Implementation ✅
+
+**File**: `internal/api/sync.go` (448 lines)
+
+Created `SyncHandler` struct with the following endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/sync/credentials` | POST | Sync credentials from KERIA |
-| `/api/v1/sync/kel` | POST | Sync KEL from KERIA |
-| `/api/v1/community/members` | GET | Get all community members |
+| `/api/v1/sync/kel` | POST | Sync KEL events from KERIA |
+| `/api/v1/community/members` | GET | List all community members |
+| `/api/v1/community/credentials` | GET | List community-visible credentials |
 
-### Planned Implementation
-
+**Request/Response Types**:
 ```go
 // POST /api/v1/sync/credentials
 type SyncCredentialsRequest struct {
@@ -241,17 +254,144 @@ type SyncCredentialsRequest struct {
     Credentials []keri.Credential `json:"credentials"`
 }
 
-func (h *SyncHandler) HandleSyncCredentials(w, r) {
-    // 1. Parse request
-    // 2. Validate each credential structure
-    // 3. Get or create user's private space
-    // 4. For each credential:
-    //    a. Store in anystore (cache)
-    //    b. Sync to user's private space (any-sync)
-    //    c. If membership/role → also sync to community space
-    // 5. Return sync status
+type SyncCredentialsResponse struct {
+    Success        bool     `json:"success"`
+    Synced         int      `json:"synced"`
+    Failed         int      `json:"failed"`
+    PrivateSpace   string   `json:"privateSpace,omitempty"`
+    CommunitySpace string   `json:"communitySpace,omitempty"`
+    Errors         []string `json:"errors,omitempty"`
+}
+
+// POST /api/v1/sync/kel
+type SyncKELRequest struct {
+    UserAID string     `json:"userAid"`
+    KEL     []KELEvent `json:"kel"`
+}
+
+type KELEvent struct {
+    Type      string `json:"type"`      // "icp", "rot", "ixn"
+    Sequence  int    `json:"sequence"`
+    Digest    string `json:"digest"`
+    Data      any    `json:"data"`
+    Timestamp string `json:"timestamp"`
 }
 ```
+
+**Credential Sync Flow**:
+1. Parse request with user AID and credentials
+2. Validate each credential structure
+3. Get or create user's private space
+4. For each credential:
+   - Store in anystore (local cache)
+   - Route to user's private space
+   - If membership/role → also route to community space
+5. Return sync status with space IDs
+
+#### 2. Server Route Registration ✅
+
+**File**: `cmd/server/main.go` (updated)
+
+Added sync handler initialization and route registration:
+
+```go
+// Create API handlers
+credHandler := api.NewCredentialsHandler(keriClient, store)
+syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore)
+
+// Register API routes
+credHandler.RegisterRoutes(mux)
+syncHandler.RegisterRoutes(mux)
+```
+
+Updated server startup output to show new endpoints:
+
+```
+  Sync (Week 3):
+  POST /api/v1/sync/credentials      - Sync credentials from KERIA
+  POST /api/v1/sync/kel              - Sync KEL from KERIA
+  GET  /api/v1/community/members     - List community members
+  GET  /api/v1/community/credentials - List community-visible credentials
+```
+
+#### 3. Test Client Helper ✅
+
+**File**: `internal/anysync/client.go` (updated)
+
+Added test constructor for creating clients without config file:
+
+```go
+// NewClientForTesting creates a client with test configuration
+func NewClientForTesting(coordinatorURL, networkID string) *Client {
+    return &Client{
+        coordinatorURL: coordinatorURL,
+        networkID:      networkID,
+        httpClient:     &http.Client{},
+    }
+}
+```
+
+#### 4. Comprehensive Tests ✅
+
+**File**: `internal/api/sync_test.go` (580 lines)
+
+| Test | Coverage |
+|------|----------|
+| `TestHandleSyncCredentials_ValidCredentials` | Single credential sync |
+| `TestHandleSyncCredentials_MultipleCredentials` | Multiple credential sync |
+| `TestHandleSyncCredentials_MissingUserAID` | Error handling |
+| `TestHandleSyncCredentials_EmptyCredentials` | Empty list handling |
+| `TestHandleSyncCredentials_InvalidCredential` | Validation failure |
+| `TestHandleSyncCredentials_InvalidJSON` | Parse error |
+| `TestHandleSyncCredentials_MethodNotAllowed` | HTTP method check |
+| `TestHandleSyncKEL_ValidKEL` | Single KEL event |
+| `TestHandleSyncKEL_MultipleEvents` | icp, rot, ixn events |
+| `TestHandleSyncKEL_MissingUserAID` | Error handling |
+| `TestHandleSyncKEL_EmptyKEL` | Empty events error |
+| `TestHandleSyncKEL_InvalidJSON` | Parse error |
+| `TestHandleSyncKEL_MethodNotAllowed` | HTTP method check |
+| `TestHandleGetCommunityMembers_Empty` | Empty member list |
+| `TestHandleGetCommunityMembers_WithMembers` | Members from cache |
+| `TestHandleGetCommunityMembers_MethodNotAllowed` | HTTP method check |
+| `TestHandleGetCommunityCredentials_Empty` | Empty credential list |
+| `TestHandleGetCommunityCredentials_WithCredentials` | Multiple credentials |
+| `TestHandleGetCommunityCredentials_FiltersPrivate` | Privacy filtering |
+| `TestHandleGetCommunityCredentials_MethodNotAllowed` | HTTP method check |
+| `TestSyncHandler_RegisterRoutes` | Route registration |
+
+### Test Results
+
+```
+ok  github.com/matou-dao/backend/internal/anystore   (cached)
+ok  github.com/matou-dao/backend/internal/anysync    0.018s
+ok  github.com/matou-dao/backend/internal/api        1.096s
+ok  github.com/matou-dao/backend/internal/config     (cached)
+ok  github.com/matou-dao/backend/internal/keri       (cached)
+```
+
+All 75+ tests passing.
+
+### Files Created/Modified
+
+| File | Action | Lines |
+|------|--------|-------|
+| `internal/api/sync.go` | Created | 448 |
+| `internal/api/sync_test.go` | Created | 580 |
+| `internal/anysync/client.go` | Modified | +8 |
+| `cmd/server/main.go` | Modified | +15 |
+
+---
+
+## Day 3 Preview: Trust Graph Foundation
+
+### Planned Implementation
+
+| Task | Description |
+|------|-------------|
+| Trust Graph Data Structures | Node, Edge, TrustGraph structs |
+| Trust Score Calculation | Compute scores from credential relationships |
+| Graph Builder | Build graph from cached credentials |
+| API Endpoints | GET /api/v1/trust/graph, GET /api/v1/trust/score/{aid} |
 
 ---
 
@@ -272,7 +412,7 @@ func (h *SyncHandler) HandleSyncCredentials(w, r) {
 │  │                                                          │   │
 │  │  ┌──────────────┐     ┌──────────────────────────────┐  │   │
 │  │  │ SyncHandler  │────►│      SpaceManager            │  │   │
-│  │  │ (Day 2)      │     │      (Day 1) ✅              │  │   │
+│  │  │ (Day 2) ✅   │     │      (Day 1) ✅              │  │   │
 │  │  └──────────────┘     └──────────────┬───────────────┘  │   │
 │  │                                       │                  │   │
 │  │                          ┌────────────┼────────────┐     │   │
@@ -290,5 +430,6 @@ func (h *SyncHandler) HandleSyncCredentials(w, r) {
 ---
 
 **Day 1 Implementation**: Complete
-**Tests**: All passing (55+)
-**Status**: ✅ Ready for Day 2
+**Day 2 Implementation**: Complete
+**Tests**: All passing (75+)
+**Status**: ✅ Ready for Day 3
