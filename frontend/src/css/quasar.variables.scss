@@ -1,0 +1,24 @@
+// Quasar SCSS Variables
+// Override Quasar's default color scheme
+
+$primary: #1e5f74;
+$secondary: #e8f4f8;
+$accent: #4a9d9c;
+
+$dark: #1a2b3a;
+$dark-page: #0f1a23;
+
+$positive: #4a9d9c;
+$negative: #c8463a;
+$info: #3d8a99;
+$warning: #e8a43a;
+
+// Border radius
+$generic-border-radius: 12px !default;
+
+// Typography
+$typography-font-family: 'Roboto', 'Helvetica Neue', Helvetica, Arial, sans-serif !default;
+
+// Body defaults
+$body-font-size: 16px !default;
+$body-line-height: 1.5 !default;

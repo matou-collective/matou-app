@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node", "@quasar/app-vite"],
+    "paths": {
+      "src/*": ["./src/*"],
+      "components/*": ["./src/components/*"],
+      "layouts/*": ["./src/layouts/*"],
+      "pages/*": ["./src/pages/*"],
+      "stores/*": ["./src/stores/*"],
+      "composables/*": ["./src/composables/*"]
+    },
+    "baseUrl": "."
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue", "src/**/*.d.ts", "quasar.config.ts"],
+  "exclude": ["node_modules"]
+}

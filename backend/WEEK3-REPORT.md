@@ -1,8 +1,8 @@
 # Week 3 Implementation Report
 
-**Task**: Backend Sync Integration + Frontend Start
-**Date**: January 19, 2026
-**Status**: 🔄 IN PROGRESS (Day 3 Complete)
+**Task**: Backend Sync Integration + Frontend signify-ts Integration
+**Date**: January 19-22, 2026
+**Status**: ✅ COMPLETE
 
 ---
 
@@ -645,6 +645,171 @@ All 100+ tests passing.
 | `internal/api/trust.go` | Created | 231 |
 | `internal/api/trust_test.go` | Created | 510 |
 | `cmd/server/main.go` | Modified | +15 |
+
+---
+
+## Day 3-5: Frontend signify-ts Integration
+
+**Date**: January 22, 2026
+**Status**: ✅ COMPLETE
+
+### Goal
+
+Integrate real KERI functionality into the Matou frontend using signify-ts, replacing the stubbed client. Connect frontend to KERIA for AID creation and management.
+
+### Activities Completed
+
+#### 1. signify-ts Installation & Configuration ✅
+
+**Dependencies Added**:
+- `signify-ts`: KERI client library
+- `@playwright/test`: E2E testing framework
+
+**Vite Configuration** (`quasar.config.ts`):
+- Added libsodium bundling workarounds for ESM/CommonJS compatibility
+- Configured `optimizeDeps` for signify-ts and libsodium packages
+- Added alias for `libsodium-wrappers-sumo` to force CommonJS version
+
+#### 2. Real KERI Client Implementation ✅
+
+**File**: `frontend/src/lib/keri/client.ts` (220 lines)
+
+Rewrote the stubbed client with real signify-ts integration:
+
+| Method | Description |
+|--------|-------------|
+| `initialize(bran)` | Connect to KERIA, boot agent if needed |
+| `createAID(name)` | Create real AID in KERIA |
+| `getAID(name)` | Retrieve existing AID |
+| `listAIDs()` | List all AIDs for the agent |
+| `resolveWitnessOOBIs()` | Resolve witness OOBIs for AID creation |
+| `generatePasscode()` | Generate random 21-character passcode |
+
+**Connection Flow**:
+```typescript
+await ready();  // Initialize libsodium
+this.client = new SignifyClient(keriaUrl, bran, Tier.low, keriaBootUrl);
+try {
+  await this.client.connect();  // Existing agent
+} catch {
+  await this.client.boot();     // New agent
+  await this.client.connect();
+}
+```
+
+#### 3. Identity Pinia Store ✅
+
+**File**: `frontend/src/stores/identity.ts` (95 lines)
+
+Created reactive state management for identity:
+
+| State | Description |
+|-------|-------------|
+| `currentAID` | Currently active AID info |
+| `passcode` | Session passcode |
+| `isConnected` | KERIA connection status |
+| `isConnecting` | Connection in progress |
+| `error` | Last error message |
+
+| Action | Description |
+|--------|-------------|
+| `connect(bran)` | Initialize and connect to KERIA |
+| `createIdentity(name)` | Create new AID |
+| `restore()` | Restore session from localStorage |
+| `disconnect()` | Clear session |
+
+#### 4. Backend API Client ✅
+
+**File**: `frontend/src/lib/api/client.ts` (80 lines)
+
+Created client for backend sync operations:
+
+| Function | Description |
+|----------|-------------|
+| `syncCredentials()` | POST credentials to backend |
+| `getCommunityMembers()` | GET community members |
+| `getOrgInfo()` | GET organization info |
+| `healthCheck()` | Check backend health |
+| `getTrustGraph()` | GET trust graph |
+| `getTrustScore(aid)` | GET individual trust score |
+
+#### 5. Boot File for Auto-Restore ✅
+
+**File**: `frontend/src/boot/keri.ts` (25 lines)
+
+Quasar boot file for automatic session restoration:
+- Checks localStorage for saved passcode
+- Attempts to restore KERIA session on app startup
+- Logs restoration success/failure
+
+#### 6. Updated Onboarding Components ✅
+
+**RegistrationScreen.vue** (190 lines):
+- Uses `useIdentityStore()` for state management
+- Displays KERIA connection status
+- Creates real AID on form submission
+- Shows AID prefix after creation
+
+**CredentialIssuanceScreen.vue** (150 lines):
+- Syncs credentials to backend
+- Handles offline mode gracefully
+- Shows sync status (synced/offline)
+
+#### 7. E2E Test Suite with Playwright ✅
+
+**File**: `frontend/tests/e2e/registration.spec.ts` (180 lines)
+
+| Test | Description |
+|------|-------------|
+| `services are healthy` | Verifies backend is running |
+| `complete registration flow` | Full KERI AID creation |
+| `invite code flow` | Validates invite code entry |
+| `validates required name field` | Form validation |
+
+**Test Results**:
+```
+Running 5 tests using 1 worker
+
+✓  services are healthy (754ms)
+✓  complete registration flow (11.4s)
+✓  invite code flow (4.7s)
+-  shows error when KERIA unavailable (skipped)
+✓  validates required name field (8.1s)
+
+4 passed, 1 skipped (28.6s)
+```
+
+### Technical Challenges Solved
+
+1. **libsodium Bundling**: ESM/CommonJS module resolution issues fixed via Vite aliases
+2. **CORS with KERIA**: Solved using Chrome flags for testing, documented proxy approach for production
+3. **Agent Boot Flow**: Implemented boot-on-first-use pattern for new passcodes
+4. **OOBI Resolution**: Used Docker internal hostnames for witness OOBI resolution
+5. **AID Name Encoding**: Worked around URL encoding issues with `identifiers().get()` by using `list()`
+
+### Files Created/Modified
+
+| File | Action | Lines |
+|------|--------|-------|
+| `frontend/src/lib/keri/client.ts` | Rewritten | 220 |
+| `frontend/src/stores/identity.ts` | Created | 95 |
+| `frontend/src/lib/api/client.ts` | Created | 80 |
+| `frontend/src/boot/keri.ts` | Created | 25 |
+| `frontend/src/components/onboarding/RegistrationScreen.vue` | Modified | 190 |
+| `frontend/src/components/onboarding/CredentialIssuanceScreen.vue` | Modified | 150 |
+| `frontend/quasar.config.ts` | Modified | +30 |
+| `frontend/playwright.config.ts` | Created | 35 |
+| `frontend/tests/e2e/registration.spec.ts` | Created | 180 |
+| `frontend/docs/SIGNIFY-TS-INTEGRATION.md` | Created | 200 |
+
+### Documentation
+
+- **Integration Guide**: `frontend/docs/SIGNIFY-TS-INTEGRATION.md`
+  - Architecture diagrams
+  - Connection flow documentation
+  - Configuration details
+  - Error handling guide
+  - Development vs production differences
 
 ---
 

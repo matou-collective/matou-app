@@ -1,0 +1,182 @@
+// Matou Design Tokens
+// Ported from matou-design globals.css
+
+:root {
+  --font-size: 16px;
+
+  // Ocean & River inspired palette
+  --matou-background: #fafbfc;
+  --matou-foreground: #1a2b3a;
+  --matou-card: #ffffff;
+  --matou-card-foreground: #1a2b3a;
+  --matou-popover: #ffffff;
+  --matou-popover-foreground: #1a2b3a;
+
+  // Deep ocean blue
+  --matou-primary: #1e5f74;
+  --matou-primary-foreground: #ffffff;
+
+  // River foam/mist
+  --matou-secondary: #e8f4f8;
+  --matou-secondary-foreground: #1e5f74;
+  --matou-muted: #e8f4f8;
+  --matou-muted-foreground: #5a7b8a;
+
+  // Teal accent
+  --matou-accent: #4a9d9c;
+  --matou-accent-foreground: #ffffff;
+
+  // Status colors
+  --matou-destructive: #c8463a;
+  --matou-destructive-foreground: #ffffff;
+
+  // Form elements
+  --matou-border: rgba(30, 95, 116, 0.15);
+  --matou-input: transparent;
+  --matou-input-background: #f0f7f9;
+  --matou-switch-background: #b0cbd5;
+  --matou-ring: #4a9d9c;
+
+  // Typography weights
+  --matou-font-weight-medium: 500;
+  --matou-font-weight-normal: 400;
+
+  // Radius
+  --matou-radius: 0.75rem;
+  --matou-radius-sm: calc(var(--matou-radius) - 4px);
+  --matou-radius-md: calc(var(--matou-radius) - 2px);
+  --matou-radius-lg: var(--matou-radius);
+  --matou-radius-xl: calc(var(--matou-radius) + 4px);
+  --matou-radius-2xl: 1rem;
+  --matou-radius-3xl: 1.5rem;
+
+  // Chart colors (Indigenous-inspired)
+  --matou-chart-1: #1e5f74;
+  --matou-chart-2: #4a9d9c;
+  --matou-chart-3: #7eb3b8;
+  --matou-chart-4: #3d8a99;
+  --matou-chart-5: #5a7b8a;
+
+  // Sidebar
+  --matou-sidebar: #f0f7f9;
+  --matou-sidebar-foreground: #1a2b3a;
+  --matou-sidebar-primary: #1e5f74;
+  --matou-sidebar-primary-foreground: #ffffff;
+  --matou-sidebar-accent: #e8f4f8;
+  --matou-sidebar-accent-foreground: #1a2b3a;
+  --matou-sidebar-border: rgba(30, 95, 116, 0.15);
+  --matou-sidebar-ring: #4a9d9c;
+}
+
+.dark {
+  // Deep night ocean
+  --matou-background: #0f1a23;
+  --matou-foreground: #e8f4f8;
+  --matou-card: #1a2b3a;
+  --matou-card-foreground: #e8f4f8;
+  --matou-popover: #1a2b3a;
+  --matou-popover-foreground: #e8f4f8;
+
+  // Moonlit water
+  --matou-primary: #7eb3b8;
+  --matou-primary-foreground: #0f1a23;
+
+  --matou-secondary: #1e3340;
+  --matou-secondary-foreground: #e8f4f8;
+  --matou-muted: #1e3340;
+  --matou-muted-foreground: #8faab5;
+
+  // Teal glow
+  --matou-accent: #4a9d9c;
+  --matou-accent-foreground: #ffffff;
+
+  --matou-destructive: #e86b5f;
+  --matou-destructive-foreground: #ffffff;
+
+  --matou-border: rgba(126, 179, 184, 0.2);
+  --matou-input: #1e3340;
+  --matou-ring: #4a9d9c;
+
+  --matou-chart-1: #7eb3b8;
+  --matou-chart-2: #4a9d9c;
+  --matou-chart-3: #3d8a99;
+  --matou-chart-4: #5a7b8a;
+  --matou-chart-5: #8faab5;
+
+  --matou-sidebar: #1a2b3a;
+  --matou-sidebar-foreground: #e8f4f8;
+  --matou-sidebar-primary: #7eb3b8;
+  --matou-sidebar-primary-foreground: #0f1a23;
+  --matou-sidebar-accent: #1e3340;
+  --matou-sidebar-accent-foreground: #e8f4f8;
+  --matou-sidebar-border: rgba(126, 179, 184, 0.2);
+  --matou-sidebar-ring: #4a9d9c;
+}
+
+// Helper classes for direct use
+.bg-background {
+  background-color: var(--matou-background);
+}
+
+.bg-card {
+  background-color: var(--matou-card);
+}
+
+.bg-primary {
+  background-color: var(--matou-primary);
+}
+
+.bg-secondary {
+  background-color: var(--matou-secondary);
+}
+
+.bg-accent {
+  background-color: var(--matou-accent);
+}
+
+.bg-destructive {
+  background-color: var(--matou-destructive);
+}
+
+.text-foreground {
+  color: var(--matou-foreground);
+}
+
+.text-muted-foreground {
+  color: var(--matou-muted-foreground);
+}
+
+.text-primary {
+  color: var(--matou-primary);
+}
+
+.text-accent {
+  color: var(--matou-accent);
+}
+
+.text-destructive {
+  color: var(--matou-destructive);
+}
+
+.border-border {
+  border-color: var(--matou-border);
+}
+
+// Gradient helpers
+.gradient-primary {
+  background: linear-gradient(
+    135deg,
+    var(--matou-primary) 0%,
+    rgba(30, 95, 116, 0.9) 50%,
+    var(--matou-accent) 100%
+  );
+}
+
+.gradient-secondary {
+  background: linear-gradient(
+    135deg,
+    var(--matou-secondary) 0%,
+    var(--matou-background) 50%,
+    rgba(232, 244, 248, 0.5) 100%
+  );
+}
