@@ -100,17 +100,13 @@ func main() {
 	credHandler := api.NewCredentialsHandler(keriClient, store)
 	syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore)
 	trustHandler := api.NewTrustHandler(store, cfg.GetOrgAID())
+	healthHandler := api.NewHealthHandler(store, spaceStore, cfg.GetOrgAID(), cfg.GetAdminAID())
 
 	// Create HTTP server
 	mux := http.NewServeMux()
 
-	// Health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"healthy","organization":"%s","admin":"%s"}`,
-			cfg.GetOrgAID(), cfg.GetAdminAID())
-	})
+	// Health check endpoint (with sync/trust status)
+	mux.HandleFunc("/health", healthHandler.HandleHealth)
 
 	// Info endpoint
 	mux.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {

@@ -294,10 +294,38 @@ func (h *CredentialsHandler) handleCredentialByID(w http.ResponseWriter, r *http
 
 // handleList handles GET /api/v1/credentials - List all credentials
 func (h *CredentialsHandler) handleList(w http.ResponseWriter, r *http.Request) {
-	// For MVP, return empty list (full implementation would query anystore)
+	ctx := context.Background()
+
+	// Query all credentials from anystore cache
+	cachedCreds, err := h.store.GetAllCredentials(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to query credentials: %v", err),
+		})
+		return
+	}
+
+	// Convert cached credentials to keri.Credential format
+	credentials := make([]keri.Credential, 0, len(cachedCreds))
+	for _, cached := range cachedCreds {
+		// Try to convert data to CredentialData
+		var data keri.CredentialData
+		dataBytes, _ := json.Marshal(cached.Data)
+		json.Unmarshal(dataBytes, &data)
+
+		cred := keri.Credential{
+			SAID:      cached.ID,
+			Issuer:    cached.IssuerAID,
+			Recipient: cached.SubjectAID,
+			Schema:    cached.SchemaID,
+			Data:      data,
+		}
+		credentials = append(credentials, cred)
+	}
+
 	writeJSON(w, http.StatusOK, ListResponse{
-		Credentials: []keri.Credential{},
-		Total:       0,
+		Credentials: credentials,
+		Total:       len(credentials),
 	})
 }
 

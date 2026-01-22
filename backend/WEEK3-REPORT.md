@@ -53,7 +53,7 @@ Without this sync layer, the backend would be isolated from identity data, unabl
 | Day 1 | any-sync Space Management | ✅ Complete |
 | Day 2 | Sync Endpoints | ✅ Complete |
 | Day 3 | Trust Graph Foundation | ✅ Complete |
-| Day 4-5 | Integration Testing | ⏳ Pending |
+| Day 4-5 | Integration Testing & Documentation | ✅ Complete |
 
 ---
 
@@ -856,8 +856,213 @@ Running 5 tests using 1 worker
 
 ---
 
+---
+
+## Day 4-5: Integration Testing & Documentation
+
+**Date**: January 22, 2026
+**Status**: ✅ COMPLETE
+
+### Goal
+
+Complete Week 3 backend work with end-to-end integration tests, API documentation, and health endpoint enhancements.
+
+### Activities Completed
+
+#### 1. Integration Tests ✅
+
+**File**: `internal/api/integration_test.go` (~500 lines)
+
+Created comprehensive integration tests that test the full flow of syncing credentials, trust graph updates, and space routing.
+
+| Test | Coverage |
+|------|----------|
+| `TestIntegration_CredentialSyncToAnystore` | Sync credential → verify in cache → verify via endpoint |
+| `TestIntegration_PrivateCredentialRouting` | Self-claims don't appear in community endpoints |
+| `TestIntegration_CommunityCredentialRouting` | Memberships appear in community space |
+| `TestIntegration_TrustGraphUpdatesOnSync` | Trust graph updates when credentials sync |
+| `TestIntegration_BidirectionalTrustRelations` | Mutual credential relationships detected |
+| `TestIntegration_FullSyncFlow` | KEL + credentials + trust graph verification |
+| `TestIntegration_SpaceCreationOnFirstSync` | Private space created for new users |
+| `TestIntegration_CredentialsEndpointReadsFromCache` | GET /credentials reads from anystore |
+| `TestIntegration_MixedCredentialTypesRouting` | 4 credential types routed correctly |
+| `TestIntegration_TrustScoreCalculation` | Trust score formula verification |
+| `TestIntegration_ListAllCredentials` | List all credentials endpoint |
+
+**Test Environment Helper**:
+```go
+type IntegrationTestEnv struct {
+    store        *anystore.LocalStore
+    spaceManager *anysync.SpaceManager
+    spaceStore   anysync.SpaceStore
+    keriClient   *keri.Client
+    syncHandler  *SyncHandler
+    trustHandler *TrustHandler
+    credHandler  *CredentialsHandler
+    mux          *http.ServeMux
+    cleanup      func()
+}
+```
+
+#### 2. Health Handler Enhancement ✅
+
+**File**: `internal/api/health.go` (~120 lines)
+
+Replaced inline health check with full handler including sync and trust statistics.
+
+**HealthResponse Structure**:
+```go
+type HealthResponse struct {
+    Status       string       `json:"status"`
+    Organization string       `json:"organization"`
+    Admin        string       `json:"admin"`
+    Sync         *SyncStatus  `json:"sync,omitempty"`
+    Trust        *TrustStatus `json:"trust,omitempty"`
+}
+
+type SyncStatus struct {
+    CredentialsCached int `json:"credentialsCached"`
+    SpacesCreated     int `json:"spacesCreated"`
+    KELEventsStored   int `json:"kelEventsStored"`
+}
+
+type TrustStatus struct {
+    TotalNodes   int     `json:"totalNodes"`
+    TotalEdges   int     `json:"totalEdges"`
+    AverageScore float64 `json:"averageScore"`
+}
+```
+
+**Example Response**:
+```json
+{
+  "status": "healthy",
+  "organization": "EOrg...",
+  "admin": "EAdmin...",
+  "sync": {
+    "credentialsCached": 5,
+    "spacesCreated": 2,
+    "kelEventsStored": 10
+  },
+  "trust": {
+    "totalNodes": 3,
+    "totalEdges": 4,
+    "averageScore": 4.5
+  }
+}
+```
+
+#### 3. Health Handler Tests ✅
+
+**File**: `internal/api/health_test.go` (~150 lines)
+
+| Test | Coverage |
+|------|----------|
+| `TestNewHealthHandler` | Handler initialization |
+| `TestHandleHealth_BasicResponse` | Status, org, admin fields |
+| `TestHandleHealth_IncludesSyncStatus` | Sync statistics |
+| `TestHandleHealth_IncludesTrustStatus` | Trust statistics |
+| `TestHandleHealth_WithCredentials` | Real credential data |
+| `TestHandleHealth_WithSpaces` | Space count |
+| `TestHandleHealth_MethodNotAllowed` | POST rejected |
+| `TestHandleHealth_ContentType` | JSON content type |
+| `TestSyncStatus_EmptyStore` | Zero values initially |
+| `TestTrustStatus_EmptyStore` | Org node only |
+| `TestTrustStatus_WithCredentials` | Graph with credentials |
+| `TestHealthResponse_JSONStructure` | JSON field validation |
+
+#### 4. Fixed Credentials List Endpoint ✅
+
+**File**: `internal/api/credentials.go` (+25 lines)
+
+Updated `handleList` to query all credentials from anystore cache instead of returning empty list.
+
+**Before**:
+```go
+func (h *CredentialsHandler) handleList(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, http.StatusOK, ListResponse{
+        Credentials: []keri.Credential{},
+        Total:       0,
+    })
+}
+```
+
+**After**:
+```go
+func (h *CredentialsHandler) handleList(w http.ResponseWriter, r *http.Request) {
+    ctx := context.Background()
+    cachedCreds, err := h.store.GetAllCredentials(ctx)
+    // ... convert to keri.Credential format
+    writeJSON(w, http.StatusOK, ListResponse{
+        Credentials: credentials,
+        Total:       len(credentials),
+    })
+}
+```
+
+**Added anystore methods**:
+- `GetAllCredentials()` - Retrieve all cached credentials
+- `CountCredentials()` - Count cached credentials
+- `CountKELEvents()` - Count KEL events
+- `CountSpaces()` - Count spaces
+
+#### 5. API Documentation ✅
+
+**File**: `docs/API.md` (~350 lines)
+
+Comprehensive API documentation covering:
+
+- Health & Info Endpoints
+- Sync Endpoints (POST /sync/credentials, POST /sync/kel)
+- Community Endpoints (GET /community/members, /community/credentials)
+- Trust Graph Endpoints (GET /trust/graph, /trust/score/{aid}, /trust/scores, /trust/summary)
+- Credential Endpoints (GET/POST /credentials, /credentials/{said}, /credentials/validate, /credentials/roles)
+- Space Types & Visibility table
+- Trust Score Formula explanation
+- Error response format
+- Example workflows
+
+#### 6. Server Wiring ✅
+
+**File**: `cmd/server/main.go` (+8 lines)
+
+Wired health handler to replace inline handler:
+
+```go
+healthHandler := api.NewHealthHandler(store, spaceStore, cfg.GetOrgAID(), cfg.GetAdminAID())
+mux.HandleFunc("/health", healthHandler.HandleHealth)
+```
+
+### Test Results
+
+```
+ok  github.com/matou-dao/backend/internal/anystore   0.867s
+ok  github.com/matou-dao/backend/internal/anysync    (cached)
+ok  github.com/matou-dao/backend/internal/api        3.357s
+ok  github.com/matou-dao/backend/internal/config     (cached)
+ok  github.com/matou-dao/backend/internal/keri       (cached)
+ok  github.com/matou-dao/backend/internal/trust      0.727s
+```
+
+All 120+ tests passing.
+
+### Files Created/Modified
+
+| File | Action | Lines |
+|------|--------|-------|
+| `internal/api/integration_test.go` | Created | ~500 |
+| `internal/api/health.go` | Created | ~120 |
+| `internal/api/health_test.go` | Created | ~150 |
+| `docs/API.md` | Created | ~350 |
+| `internal/api/credentials.go` | Modified | +25 |
+| `internal/anystore/client.go` | Modified | +70 |
+| `cmd/server/main.go` | Modified | +8 |
+
+---
+
 **Day 1 Implementation**: Complete
 **Day 2 Implementation**: Complete
 **Day 3 Implementation**: Complete
-**Tests**: All passing (100+)
-**Status**: ✅ Ready for Day 4-5 Integration Testing
+**Day 4-5 Implementation**: Complete
+**Tests**: All passing (120+)
+**Status**: ✅ Week 3 Complete

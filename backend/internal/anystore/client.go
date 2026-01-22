@@ -403,3 +403,78 @@ func (s *LocalStore) UpdateSpaceLastSync(ctx context.Context, spaceID string) er
 	record.LastSync = time.Now().UTC()
 	return s.SaveSpaceRecord(ctx, record)
 }
+
+// GetAllCredentials retrieves all cached credentials from the store.
+func (s *LocalStore) GetAllCredentials(ctx context.Context) ([]*CachedCredential, error) {
+	coll, err := s.CredentialsCache(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get credentials collection: %w", err)
+	}
+
+	iter, err := coll.Find(nil).Iter(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query credentials: %w", err)
+	}
+	defer iter.Close()
+
+	var credentials []*CachedCredential
+	for iter.Next() {
+		doc, err := iter.Doc()
+		if err != nil {
+			continue
+		}
+
+		var cred CachedCredential
+		if err := json.Unmarshal([]byte(doc.Value().String()), &cred); err != nil {
+			continue
+		}
+		credentials = append(credentials, &cred)
+	}
+
+	return credentials, nil
+}
+
+// CountCredentials returns the count of cached credentials.
+func (s *LocalStore) CountCredentials(ctx context.Context) (int, error) {
+	coll, err := s.CredentialsCache(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get credentials collection: %w", err)
+	}
+
+	count, err := coll.Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count credentials: %w", err)
+	}
+
+	return int(count), nil
+}
+
+// CountKELEvents returns the count of cached KEL events.
+func (s *LocalStore) CountKELEvents(ctx context.Context) (int, error) {
+	coll, err := s.KELCache(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get KEL collection: %w", err)
+	}
+
+	count, err := coll.Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count KEL events: %w", err)
+	}
+
+	return int(count), nil
+}
+
+// CountSpaces returns the count of spaces.
+func (s *LocalStore) CountSpaces(ctx context.Context) (int, error) {
+	coll, err := s.Spaces(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get spaces collection: %w", err)
+	}
+
+	count, err := coll.Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count spaces: %w", err)
+	}
+
+	return int(count), nil
+}
