@@ -28,8 +28,8 @@ export class KERIClient {
   private oobisResolved = false;
   private oobiResolutionPromise: Promise<void> | null = null;
 
-  // KERIA endpoints
-  // Note: KERIA needs to be configured with CORS or use a reverse proxy in production
+  // KERIA endpoints - direct connection
+  // CORS enabled via KERI_AGENT_CORS=1 environment variable
   private readonly keriaUrl = 'http://localhost:3901';
   private readonly keriaBootUrl = 'http://localhost:3903';
 

@@ -13,6 +13,7 @@ import { test, expect } from '@playwright/test';
  */
 
 const FRONTEND_URL = 'http://localhost:9002';
+// Direct KERIA ports (CORS enabled via KERI_AGENT_CORS=1)
 const KERIA_URL = 'http://localhost:3901';
 const KERIA_BOOT_URL = 'http://localhost:3903';
 
