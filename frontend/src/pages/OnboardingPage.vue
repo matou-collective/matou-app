@@ -10,6 +10,7 @@
         @continue="handleContinue"
         @back="handleBack"
         @complete="handleComplete"
+        @show-phrase-again="handleShowPhraseAgain"
       />
     </Transition>
   </q-page>
@@ -25,7 +26,9 @@ import SplashScreen from 'components/onboarding/SplashScreen.vue';
 import InviteCodeScreen from 'components/onboarding/InviteCodeScreen.vue';
 import InvitationWelcomeScreen from 'components/onboarding/InvitationWelcomeScreen.vue';
 import MatouInformationScreen from 'components/onboarding/MatouInformationScreen.vue';
-import RegistrationScreen from 'components/onboarding/RegistrationScreen.vue';
+import ProfileFormScreen from 'components/onboarding/ProfileFormScreen.vue';
+import ProfileConfirmationScreen from 'components/onboarding/ProfileConfirmationScreen.vue';
+import MnemonicVerificationScreen from 'components/onboarding/MnemonicVerificationScreen.vue';
 import CredentialIssuanceScreen from 'components/onboarding/CredentialIssuanceScreen.vue';
 import PendingApprovalScreen from 'components/onboarding/PendingApprovalScreen.vue';
 
@@ -40,8 +43,9 @@ const screenComponents = {
   'invite-code': InviteCodeScreen,
   'invitation-welcome': InvitationWelcomeScreen,
   'matou-info': MatouInformationScreen,
-  'create-profile-invite': RegistrationScreen,
-  'create-profile-register': RegistrationScreen,
+  'profile-form': ProfileFormScreen,
+  'profile-confirmation': ProfileConfirmationScreen,
+  'mnemonic-verification': MnemonicVerificationScreen,
   'credential-issuance': CredentialIssuanceScreen,
   'pending-approval': PendingApprovalScreen,
 };
@@ -55,6 +59,12 @@ const currentProps = computed(() => {
   switch (currentScreen.value) {
     case 'invitation-welcome':
       return { inviterName: store.inviterName };
+    case 'mnemonic-verification':
+      return {
+        mnemonic: store.mnemonic.words,
+        verificationIndices: store.mnemonic.verificationIndices,
+        attempts: store.mnemonic.attempts,
+      };
     case 'credential-issuance':
       return { userAID: store.userAID };
     case 'pending-approval':
@@ -84,20 +94,18 @@ const handleContinue = (data?: unknown) => {
     store.setInviterName(data);
   }
 
-  if (current === 'create-profile-invite' || current === 'create-profile-register') {
-    const profileData = data as { name: string; email: string; aid: string } | undefined;
-    if (profileData) {
-      store.updateProfile({ name: profileData.name, email: profileData.email });
-      store.setUserAID(profileData.aid);
-    }
-  }
+  // Note: ProfileConfirmationScreen already sets mnemonic and AID in the store before emitting
+  // So we don't need to handle the data here - just navigate to next screen
 
-  // Navigate to next screen
+  // Navigate to next screen based on path
+  // Flow: profile-form → profile-confirmation (includes mnemonic) → mnemonic-verification → credential-issuance/pending-approval
   if (path === 'invite') {
     const forwardMap: Record<string, string> = {
       'invite-code': 'invitation-welcome',
-      'invitation-welcome': 'create-profile-invite',
-      'create-profile-invite': 'credential-issuance',
+      'invitation-welcome': 'profile-form',
+      'profile-form': 'profile-confirmation',
+      'profile-confirmation': 'mnemonic-verification',
+      'mnemonic-verification': 'credential-issuance',
     };
     const next = forwardMap[current];
     if (next) {
@@ -105,8 +113,10 @@ const handleContinue = (data?: unknown) => {
     }
   } else if (path === 'register') {
     const forwardMap: Record<string, string> = {
-      'matou-info': 'create-profile-register',
-      'create-profile-register': 'pending-approval',
+      'matou-info': 'profile-form',
+      'profile-form': 'profile-confirmation',
+      'profile-confirmation': 'mnemonic-verification',
+      'mnemonic-verification': 'pending-approval',
     };
     const next = forwardMap[current];
     if (next) {
@@ -117,15 +127,25 @@ const handleContinue = (data?: unknown) => {
 
 const handleBack = () => {
   const current = currentScreen.value;
+  const path = store.onboardingPath;
 
-  const backMap: Record<string, string | null> = {
+  // Define back navigation based on current path
+  const backMapInvite: Record<string, string | null> = {
     'invite-code': 'splash',
     'invitation-welcome': 'invite-code',
-    'create-profile-invite': 'invitation-welcome',
-    'matou-info': 'splash',
-    'create-profile-register': 'matou-info',
+    'profile-form': 'invitation-welcome',
+    'profile-confirmation': 'profile-form',
+    'mnemonic-verification': 'profile-confirmation',
   };
 
+  const backMapRegister: Record<string, string | null> = {
+    'matou-info': 'splash',
+    'profile-form': 'matou-info',
+    'profile-confirmation': 'profile-form',
+    'mnemonic-verification': 'profile-confirmation',
+  };
+
+  const backMap = path === 'invite' ? backMapInvite : backMapRegister;
   const prev = backMap[current];
 
   if (prev === 'splash') {
@@ -137,6 +157,12 @@ const handleBack = () => {
 
 const handleComplete = () => {
   store.navigateTo('main');
+};
+
+const handleShowPhraseAgain = () => {
+  // Reset verification state and go back to profile confirmation (which shows mnemonic)
+  store.resetMnemonicVerification();
+  store.navigateTo('profile-confirmation');
 };
 
 // Watch for navigation to main app

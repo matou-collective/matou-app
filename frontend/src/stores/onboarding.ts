@@ -8,12 +8,56 @@ export type OnboardingScreen =
   | 'splash'
   | 'invite-code'
   | 'invitation-welcome'
-  | 'create-profile-invite'
+  | 'profile-form'
+  | 'profile-confirmation'
+  | 'mnemonic-verification'
   | 'credential-issuance'
   | 'matou-info'
-  | 'create-profile-register'
   | 'pending-approval'
   | 'main';
+
+/**
+ * Participation interest options
+ */
+export const PARTICIPATION_INTERESTS = [
+  {
+    value: 'research_knowledge',
+    label: 'Research and Knowledge',
+    description: 'Support inquiry, documentation, and knowledge sharing.',
+  },
+  {
+    value: 'coordination_operations',
+    label: 'Coordination and Operations',
+    description: 'Organize efforts, track tasks, and improve processes.',
+  },
+  {
+    value: 'art_design',
+    label: 'Art and Designs',
+    description: 'Create graphics, UI/UX, and brand assets.',
+  },
+  {
+    value: 'discussion_community_input',
+    label: 'Discussions and Community Input',
+    description: 'Participate in conversations and share feedback.',
+  },
+  {
+    value: 'follow_learn',
+    label: 'Follow and Learn',
+    description: 'Stay informed and learn at your own pace.',
+  },
+  {
+    value: 'coding_technical_dev',
+    label: 'Coding and Technical Dev',
+    description: 'Build and maintain software and infrastructure.',
+  },
+  {
+    value: 'cultural_oversight',
+    label: 'Cultural Oversight',
+    description: 'Ensure cultural alignment and respectful practices.',
+  },
+] as const;
+
+export type ParticipationInterest = typeof PARTICIPATION_INTERESTS[number]['value'];
 
 /**
  * Onboarding flow path
@@ -28,6 +72,20 @@ export interface ProfileData {
   bio: string;
   email: string;
   avatar: File | null;
+  avatarPreview: string | null; // Base64 or object URL for preview
+  participationInterests: ParticipationInterest[];
+  customInterests: string;
+  hasAgreedToTerms: boolean;
+}
+
+/**
+ * Mnemonic verification state
+ */
+export interface MnemonicState {
+  words: string[];
+  verificationIndices: number[]; // Which 3 words to verify
+  attempts: number;
+  verified: boolean;
 }
 
 /**
@@ -44,8 +102,18 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     bio: '',
     email: '',
     avatar: null,
+    avatarPreview: null,
+    participationInterests: [],
+    customInterests: '',
+    hasAgreedToTerms: false,
   });
   const userAID = ref<string | null>(null);
+  const mnemonic = ref<MnemonicState>({
+    words: [],
+    verificationIndices: [],
+    attempts: 0,
+    verified: false,
+  });
 
   // Computed
   const isOnboarding = computed(() => currentScreen.value !== 'main');
@@ -75,6 +143,34 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     userAID.value = aid;
   }
 
+  function setMnemonic(words: string[]) {
+    // Generate 3 random indices for verification
+    const indices = generateRandomIndices(words.length, 3);
+    mnemonic.value = {
+      words,
+      verificationIndices: indices,
+      attempts: 0,
+      verified: false,
+    };
+  }
+
+  function recordVerificationAttempt(success: boolean) {
+    if (success) {
+      mnemonic.value.verified = true;
+    } else {
+      mnemonic.value.attempts += 1;
+    }
+  }
+
+  function resetMnemonicVerification() {
+    // Regenerate verification indices and reset attempts
+    if (mnemonic.value.words.length > 0) {
+      mnemonic.value.verificationIndices = generateRandomIndices(mnemonic.value.words.length, 3);
+      mnemonic.value.attempts = 0;
+      mnemonic.value.verified = false;
+    }
+  }
+
   function reset() {
     currentScreen.value = 'splash';
     onboardingPath.value = null;
@@ -85,8 +181,30 @@ export const useOnboardingStore = defineStore('onboarding', () => {
       bio: '',
       email: '',
       avatar: null,
+      avatarPreview: null,
+      participationInterests: [],
+      customInterests: '',
+      hasAgreedToTerms: false,
     };
     userAID.value = null;
+    mnemonic.value = {
+      words: [],
+      verificationIndices: [],
+      attempts: 0,
+      verified: false,
+    };
+  }
+
+  // Helper: Generate random unique indices
+  function generateRandomIndices(length: number, count: number): number[] {
+    const indices: number[] = [];
+    while (indices.length < count && indices.length < length) {
+      const rand = Math.floor(Math.random() * length);
+      if (!indices.includes(rand)) {
+        indices.push(rand);
+      }
+    }
+    return indices.sort((a, b) => a - b);
   }
 
   return {
@@ -97,6 +215,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     inviterName,
     profile,
     userAID,
+    mnemonic,
 
     // Computed
     isOnboarding,
@@ -108,6 +227,9 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     setInviterName,
     updateProfile,
     setUserAID,
+    setMnemonic,
+    recordVerificationAttempt,
+    resetMnemonicVerification,
     reset,
   };
 });
