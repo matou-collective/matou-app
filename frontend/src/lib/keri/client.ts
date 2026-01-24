@@ -2,7 +2,9 @@
  * Real KERI Client using signify-ts
  * Connects to KERIA agent for AID management
  */
-import { SignifyClient, Tier, randomPasscode, ready } from 'signify-ts';
+import { SignifyClient, Tier, randomPasscode, ready, Salter } from 'signify-ts';
+import { mnemonicToSeedSync, validateMnemonic } from '@scure/bip39';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -263,6 +265,38 @@ export class KERIClient {
    */
   static generatePasscode(): string {
     return randomPasscode();
+  }
+
+  /**
+   * Derive a passcode (bran) from a BIP39 mnemonic phrase
+   * This allows users to recover their identity using their 12-word phrase
+   * @param mnemonic - 12-word BIP39 mnemonic phrase (space-separated)
+   * @returns 21-character base64 passcode derived from the mnemonic
+   */
+  static passcodeFromMnemonic(mnemonic: string): string {
+    // Validate mnemonic
+    if (!validateMnemonic(mnemonic, wordlist)) {
+      throw new Error('Invalid mnemonic phrase');
+    }
+
+    // Convert mnemonic to 64-byte seed
+    const seed = mnemonicToSeedSync(mnemonic);
+
+    // Take first 16 bytes (same size as randomPasscode uses)
+    const raw = seed.slice(0, 16);
+
+    // Create Salter and extract qb64 passcode (same as randomPasscode)
+    const salter = new Salter({ raw: raw });
+    return salter.qb64.substring(2, 23);
+  }
+
+  /**
+   * Validate a BIP39 mnemonic phrase
+   * @param mnemonic - The mnemonic to validate
+   * @returns true if valid
+   */
+  static validateMnemonic(mnemonic: string): boolean {
+    return validateMnemonic(mnemonic, wordlist);
   }
 }
 

@@ -356,12 +356,14 @@ async function handleSubmit() {
     const mnemonic = generateMnemonic(wordlist, 128); // 12 words
     const mnemonicWords = mnemonic.split(' ');
 
-    // Step 2: Connect to identity network
+    // Step 2: Derive passcode from mnemonic and connect to identity network
     loadingMessage.value = 'Connecting to identity network...';
-    loadingSubtext.value = 'Establishing secure connection';
+    loadingSubtext.value = 'Deriving keys from recovery phrase';
+
+    // Derive passcode from mnemonic - this makes the identity recoverable
+    const passcode = KERIClient.passcodeFromMnemonic(mnemonic);
 
     if (!identityStore.isConnected) {
-      const passcode = KERIClient.generatePasscode();
       const connected = await identityStore.connect(passcode);
       if (!connected) {
         throw new Error('Failed to connect to identity network');
