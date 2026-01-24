@@ -78,7 +78,8 @@ backend/
 │   └── .keria-config.json          # KERIA config (gitignored)
 ├── schemas/
 │   ├── matou-membership-schema.json    # Membership ACDC schema
-│   └── operations-steward-schema.json  # Steward role schema
+│   ├── operations-steward-schema.json  # Steward role schema
+│   └── SCHEMA-MANAGEMENT.md            # Schema update guide
 ├── .env                            # Environment variables (gitignored)
 ├── go.mod                          # Go module definition
 └── go.sum                          # Go dependency checksums
@@ -249,6 +250,28 @@ curl -X POST http://localhost:8080/api/v1/credentials/validate \
 curl http://localhost:8080/api/v1/credentials/roles
 ```
 
+## ACDC Schemas
+
+ACDC (Authentic Chained Data Containers) schemas define the structure of verifiable credentials. Schemas are located in `backend/schemas/`.
+
+**Important:** Schemas use SAIDs (Self-Addressing IDentifiers) - cryptographic hashes of the schema content. If you modify a schema, you must re-SAIDify it.
+
+See [schemas/SCHEMA-MANAGEMENT.md](schemas/SCHEMA-MANAGEMENT.md) for:
+- How to update schemas
+- SAIDification process
+- Schema server setup
+- Troubleshooting
+
+### Schema Server
+
+The schema server serves schemas at `/oobi/{SAID}` endpoints (required for credential issuance):
+
+```bash
+# Start schema server (required before issuing credentials)
+cd infrastructure/scripts
+python3 schema-server.py --port 7723
+```
+
 ## Bootstrap Scripts
 
 Located in `infrastructure/scripts/`:
@@ -256,17 +279,22 @@ Located in `infrastructure/scripts/`:
 | Script | Purpose |
 |--------|---------|
 | `bootstrap-keria.py` | Create Organization AID in KERIA |
-| `issue-credentials.py` | Issue credentials to users |
-| `CREDENTIAL-ISSUANCE-GUIDE.md` | Guide for credential management |
+| `issue-credentials.py` | Issue ACDC credentials to users |
+| `schema-server.py` | Serve schemas for OOBI resolution |
 
 ### Issue Credentials
 
 After admin creates their identity in the frontend:
 
 ```bash
+# 1. Start schema server (if not running)
+python3 infrastructure/scripts/schema-server.py &
+
+# 2. Issue credential
 python3 infrastructure/scripts/issue-credentials.py \
   --recipient <ADMIN_AID> \
-  --role "Operations Steward"
+  --role "Operations Steward" \
+  --acdc
 ```
 
 ## Troubleshooting
