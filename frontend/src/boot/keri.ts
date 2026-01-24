@@ -1,30 +1,58 @@
 /**
  * KERI Boot File
- * Attempts to restore identity session on app startup
+ * Initiates identity session restoration on app startup
+ * Note: Restore runs asynchronously so Vue can mount and show loading state
  */
 import { boot } from 'quasar/wrappers';
 import { useIdentityStore } from 'stores/identity';
+import { useOnboardingStore } from 'stores/onboarding';
 
-export default boot(async () => {
-  const identityStore = useIdentityStore();
+async function restoreIdentity(
+  identityStore: ReturnType<typeof useIdentityStore>,
+  onboardingStore: ReturnType<typeof useOnboardingStore>
+) {
+  try {
+    console.log('[KERI Boot] Attempting to restore identity session...');
+    const result = await identityStore.restore();
 
-  // Attempt to restore session from saved passcode
-  const savedPasscode = localStorage.getItem('matou_passcode');
-  if (savedPasscode) {
-    try {
-      console.log('[KERI Boot] Attempting to restore identity session...');
-      const success = await identityStore.restore();
-      if (success) {
-        console.log('[KERI Boot] Session restored successfully');
-      } else {
-        console.log('[KERI Boot] Failed to restore session, user will need to reconnect');
-      }
-    } catch (err) {
-      console.warn('[KERI Boot] Error restoring session:', err);
-      // Clear invalid passcode
+    if (result.success && result.hasAID) {
+      console.log('[KERI Boot] Session restored with AID, navigating to pending-approval');
+      onboardingStore.navigateTo('pending-approval');
+    } else if (result.success) {
+      console.log('[KERI Boot] Session restored but no AID found');
+    } else if (result.error) {
+      console.warn('[KERI Boot] Failed to restore session:', result.error);
+      onboardingStore.setInitializationError(result.error);
       localStorage.removeItem('matou_passcode');
     }
-  } else {
-    console.log('[KERI Boot] No saved session found');
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error during restore';
+    console.warn('[KERI Boot] Error restoring session:', err);
+    onboardingStore.setInitializationError(errorMessage);
+    localStorage.removeItem('matou_passcode');
+  } finally {
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
   }
+}
+
+export default boot(({ app }) => {
+  const identityStore = useIdentityStore();
+  const onboardingStore = useOnboardingStore();
+
+  const savedPasscode = localStorage.getItem('matou_passcode');
+
+  if (!savedPasscode) {
+    console.log('[KERI Boot] No saved session found');
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
+
+  // Set checking state and start restore WITHOUT awaiting
+  // This allows Vue to mount and show loading state while restore runs
+  onboardingStore.setAppState('checking');
+
+  // Start restore asynchronously - Vue will mount and observe state changes
+  restoreIdentity(identityStore, onboardingStore);
 });

@@ -90,6 +90,11 @@ export interface MnemonicState {
 }
 
 /**
+ * App initialization states
+ */
+export type AppState = 'initializing' | 'checking' | 'ready';
+
+/**
  * Onboarding store - manages the onboarding flow state
  */
 export const useOnboardingStore = defineStore('onboarding', () => {
@@ -98,6 +103,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   const onboardingPath = ref<OnboardingPath>(null);
   const inviteCode = ref('');
   const inviterName = ref('');
+  const appState = ref<AppState>('initializing');
+  const initializationError = ref<string | null>(null);
   const profile = ref<ProfileData>({
     name: '',
     bio: '',
@@ -118,8 +125,17 @@ export const useOnboardingStore = defineStore('onboarding', () => {
 
   // Computed
   const isOnboarding = computed(() => currentScreen.value !== 'main');
+  const isLoading = computed(() => appState.value !== 'ready');
 
   // Actions
+  function setAppState(state: AppState) {
+    appState.value = state;
+  }
+
+  function setInitializationError(error: string | null) {
+    initializationError.value = error;
+  }
+
   function setPath(path: OnboardingPath) {
     onboardingPath.value = path;
   }
@@ -194,6 +210,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
       attempts: 0,
       verified: false,
     };
+    initializationError.value = null;
   }
 
   // Helper: Generate random unique indices
@@ -217,11 +234,16 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     profile,
     userAID,
     mnemonic,
+    appState,
+    initializationError,
 
     // Computed
     isOnboarding,
+    isLoading,
 
     // Actions
+    setAppState,
+    setInitializationError,
     setPath,
     navigateTo,
     setInviteCode,

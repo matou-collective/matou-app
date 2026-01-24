@@ -2,6 +2,12 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { KERIClient, useKERIClient, type AIDInfo } from 'src/lib/keri/client';
 
+export interface RestoreResult {
+  success: boolean;
+  hasAID: boolean;
+  error?: string;
+}
+
 export const useIdentityStore = defineStore('identity', () => {
   // State
   const keriClient = useKERIClient();
@@ -10,10 +16,13 @@ export const useIdentityStore = defineStore('identity', () => {
   const isConnected = ref(false);
   const isConnecting = ref(false);
   const error = ref<string | null>(null);
+  const isInitializing = ref(true);  // True until boot completes
+  const initError = ref<string | null>(null);
 
   // Computed
   const hasIdentity = computed(() => currentAID.value !== null);
   const aidPrefix = computed(() => currentAID.value?.prefix ?? null);
+  const isReady = computed(() => !isInitializing.value);
 
   // Actions
   async function connect(bran: string): Promise<boolean> {
@@ -63,12 +72,30 @@ export const useIdentityStore = defineStore('identity', () => {
     }
   }
 
-  async function restore(): Promise<boolean> {
+  async function restore(): Promise<RestoreResult> {
     const savedPasscode = localStorage.getItem('matou_passcode');
-    if (savedPasscode) {
-      return await connect(savedPasscode);
+    if (!savedPasscode) {
+      return { success: false, hasAID: false };
     }
-    return false;
+
+    try {
+      const connected = await connect(savedPasscode);
+      if (connected) {
+        return { success: true, hasAID: currentAID.value !== null };
+      }
+      return { success: false, hasAID: false, error: error.value || 'Connection failed' };
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : 'Restore failed';
+      return { success: false, hasAID: false, error: errorMessage };
+    }
+  }
+
+  function setInitialized() {
+    isInitializing.value = false;
+  }
+
+  function setInitError(err: string | null) {
+    initError.value = err;
   }
 
   function disconnect() {
@@ -85,15 +112,20 @@ export const useIdentityStore = defineStore('identity', () => {
     isConnected,
     isConnecting,
     error,
+    isInitializing,
+    initError,
 
     // Computed
     hasIdentity,
     aidPrefix,
+    isReady,
 
     // Actions
     connect,
     createIdentity,
     restore,
     disconnect,
+    setInitialized,
+    setInitError,
   };
 });

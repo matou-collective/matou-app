@@ -12,6 +12,7 @@
         @back="handleBack"
         @complete="handleComplete"
         @show-phrase-again="handleShowPhraseAgain"
+        @retry="handleRetry"
       />
     </Transition>
   </q-page>
@@ -21,6 +22,7 @@
 import { computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
+import { useIdentityStore } from 'stores/identity';
 
 // Import onboarding screens
 import SplashScreen from 'components/onboarding/SplashScreen.vue';
@@ -36,6 +38,7 @@ import RecoveryScreen from 'components/onboarding/RecoveryScreen.vue';
 
 const router = useRouter();
 const store = useOnboardingStore();
+const identityStore = useIdentityStore();
 
 const currentScreen = computed(() => store.currentScreen);
 
@@ -180,6 +183,25 @@ const handleShowPhraseAgain = () => {
   // Reset verification state and go back to profile confirmation (which shows mnemonic)
   store.resetMnemonicVerification();
   store.navigateTo('profile-confirmation');
+};
+
+const handleRetry = async () => {
+  store.setInitializationError(null);
+  store.setAppState('checking');
+
+  try {
+    const result = await identityStore.restore();
+    if (result.success && result.hasAID) {
+      store.navigateTo('pending-approval');
+    } else if (result.error) {
+      store.setInitializationError(result.error);
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    store.setInitializationError(errorMessage);
+  } finally {
+    store.setAppState('ready');
+  }
 };
 
 // Watch for navigation to main app

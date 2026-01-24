@@ -531,6 +531,180 @@ The foundation built this week (identity creation, mnemonic management, KERIA in
 
 ---
 
+## Auto-Restore Identity on App Startup
+
+**Status**: ✅ COMPLETE
+
+### Overview
+
+Implemented automatic identity restoration when the app starts. Returning users are automatically recognized and navigated to the appropriate screen without needing to re-enter credentials.
+
+### What Information is Saved Locally
+
+The only piece of information saved locally is the **KERIA passcode** stored in `localStorage`:
+
+```javascript
+localStorage.setItem('matou_passcode', passcode);
+// Key: 'matou_passcode'
+// Value: 21-character base64 string (e.g., "0ABQ1234abcd5678efgh9")
+```
+
+**Important Security Notes**:
+- The passcode is derived deterministically from the user's 12-word mnemonic
+- The mnemonic itself is NEVER stored locally
+- The passcode alone cannot recover the mnemonic (one-way derivation)
+- For production, this should be encrypted (noted in Known Issues)
+
+### How the Passcode is Derived
+
+The passcode is derived from the mnemonic using a deterministic process:
+
+```
+12-word Mnemonic
+    ↓ mnemonicToSeedSync()
+64-byte BIP39 Seed
+    ↓ slice(0, 16)
+16-byte Raw Bytes
+    ↓ new Salter({ raw })
+KERI Salter Object
+    ↓ salter.qb64.substring(2, 23)
+21-character Base64 Passcode
+```
+
+This means:
+- **Same mnemonic → Same passcode → Same KERIA agent → Same AIDs**
+- Recovery works because the passcode derivation is deterministic
+- Two users with different mnemonics cannot have the same passcode
+
+### How Auto-Restore Works
+    
+  1. On App Start: Boot file checks localStorage.getItem('matou_passcode')
+  2. If Passcode Exists:                             
+    - Show loading state ("Checking your identity...")
+    - Connect to KERIA using the passcode
+    - KERIA recognizes the passcode → returns existing agent with AIDs
+    - Navigate user to pending-approval screen                        
+  3. If No Passcode: Show splash with normal buttons (fresh user)                                  
+  4. If Connection Fails: Show error with retry button, clear bad passcode
+  
+  **Why This Works**
+  
+  The passcode is the "key" to the user's KERIA agent:
+
+  Passcode → KERIA Agent → AIDs (identities)
+
+  Since the passcode is derived from the mnemonic, and the same passcode always connects to the same agent, returning users are automatically recognized without storing any actual identity  
+  data locally.
+
+  Security: The mnemonic is NEVER stored. Even if someone steals the passcode from localStorage, they cannot recover the mnemonic (one-way derivation), and they would need access to the     
+  KERIA server to use it.   
+
+**Startup Flow**:
+
+```
+App Start
+    ↓
+Boot file checks localStorage('matou_passcode')
+    │
+    ├─ No passcode found
+    │       ↓
+    │   Set appState='ready'
+    │       ↓
+    │   Show Splash (buttons visible)
+    │
+    └─ Passcode found
+            ↓
+        Set appState='checking'
+            ↓
+        Show Splash (loading state: "Checking your identity...")
+            ↓
+        Call identityStore.restore()
+            │
+            ├─ Success + hasAID
+            │       ↓
+            │   Navigate to 'pending-approval'
+            │   (User sees their pending application)
+            │
+            ├─ Success + no AID
+            │       ↓
+            │   Show Splash (buttons visible)
+            │   (Connected but no identity yet)
+            │
+            └─ Failed (KERIA unavailable, invalid passcode)
+                    ↓
+                Set initializationError
+                Clear invalid passcode from localStorage
+                    ↓
+                Show Splash (error state + retry button)
+```
+
+### Files Modified for Auto-Restore
+
+| File | Changes |
+|------|---------|
+| `frontend/src/stores/identity.ts` | Added `isInitializing`, `initError`, `isReady`, `setInitialized()`, `setInitError()`. Modified `restore()` to return `{ success, hasAID, error }` |
+| `frontend/src/stores/onboarding.ts` | Added `appState`, `initializationError`, `isLoading`, `setAppState()`, `setInitializationError()` |
+| `frontend/src/boot/keri.ts` | Non-blocking restore that allows Vue to mount and show loading state |
+| `frontend/src/components/onboarding/SplashScreen.vue` | Added loading dots animation, error banner, retry button, conditional rendering |
+| `frontend/src/pages/OnboardingPage.vue` | Added `handleRetry()` function for error recovery |
+
+### UI States
+
+**Loading State**:
+```
+┌─────────────────────────────────┐
+│           [Logo]                │
+│           Matou                 │
+│  Community · Connection · Gov   │
+│                                 │
+│         ● ● ●                   │  ← Animated dots
+│  Checking your identity...      │
+│                                 │
+└─────────────────────────────────┘
+```
+
+**Error State**:
+```
+┌─────────────────────────────────┐
+│           [Logo]                │
+│           Matou                 │
+│  Community · Connection · Gov   │
+│                                 │
+│  ⚠️ Connection Error            │
+│  Failed to fetch               │
+│                                 │
+│     [ 🔄 Try Again ]            │
+│                                 │
+└─────────────────────────────────┘
+```
+
+### E2E Test Coverage
+
+Created `tests/e2e/auto-restore.spec.ts` with 5 tests:
+
+| Test | Description | Result |
+|------|-------------|--------|
+| Fresh user without passcode | No passcode → sees splash with buttons immediately | ✅ Pass |
+| Returning user with valid identity | Valid passcode + AID → auto-navigates to pending-approval | ✅ Pass |
+| KERIA unavailable | Shows error state with retry button, clears passcode on error | ✅ Pass |
+| Invalid passcode | Handles gracefully, shows splash buttons | ✅ Pass |
+| Loading state during slow check | Loading UI visible during delayed KERIA response | ✅ Pass |
+
+### Security Considerations
+
+1. **Passcode Storage**: Currently plain localStorage. Production should use:
+   - Web Crypto API for encryption
+   - Secure storage APIs where available
+   - Consider session-only storage option
+
+2. **Passcode Clearing**: Invalid or failed passcodes are automatically cleared to prevent repeated failures
+
+3. **No Sensitive Data Exposed**: The passcode cannot be reverse-engineered to the mnemonic. Even if stolen, an attacker would need the KERIA server to be compromised to use it.
+
+4. **Local-Only**: The passcode is never transmitted to any backend other than KERIA (which the user controls)
+
+---
+
 ## References
 
 - [MVP Implementation Plan V2](../Keri-AnySync-Research/MVP-IMPLEMENTATION-PLAN-V2.md)
