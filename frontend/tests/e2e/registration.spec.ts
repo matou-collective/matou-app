@@ -235,6 +235,125 @@ test.describe('Matou Registration Flow', () => {
     });
   });
 
+  test('recover identity using mnemonic', async ({ page }) => {
+    test.setTimeout(180000); // 3 minutes
+
+    let savedMnemonic: string[] = [];
+    let savedAID = '';
+
+    // 1. First create an identity to recover
+    await test.step('Create identity first', async () => {
+      console.log('Step 1: Creating identity to recover later...');
+      await page.goto(FRONTEND_URL);
+      await expect(page.getByRole('heading', { name: 'Matou' })).toBeVisible({ timeout: 15000 });
+
+      // Navigate through registration
+      await page.getByRole('button', { name: /register/i }).click();
+      await expect(page.getByRole('heading', { name: 'Join Matou' })).toBeVisible({ timeout: 5000 });
+      await page.getByRole('button', { name: /continue/i }).click();
+      await expect(page.getByRole('heading', { name: 'Create Your Profile' })).toBeVisible({ timeout: 5000 });
+
+      // Fill form
+      await page.getByPlaceholder('Your preferred name').fill('Recovery Test User');
+      const bioField = page.locator('textarea').first();
+      await bioField.fill('Testing recovery flow');
+      const termsCheckbox = page.locator('input[type="checkbox"]').last();
+      await termsCheckbox.check();
+
+      // Submit and wait for identity creation
+      await page.getByRole('button', { name: /continue/i }).click();
+      await expect(page.getByText(/identity created successfully/i)).toBeVisible({ timeout: 60000 });
+      console.log('Identity created');
+
+      // Extract mnemonic words
+      const wordCards = page.locator('.word-card');
+      const wordCount = await wordCards.count();
+      for (let i = 0; i < wordCount; i++) {
+        const wordText = await wordCards.nth(i).locator('span.font-mono').textContent();
+        if (wordText) savedMnemonic.push(wordText.trim());
+      }
+      console.log(`Saved mnemonic: ${savedMnemonic.length} words`);
+
+      // Extract AID
+      const aidElement = page.locator('.aid-section .font-mono');
+      savedAID = (await aidElement.textContent()) || '';
+      console.log(`Saved AID: ${savedAID.substring(0, 20)}...`);
+
+      await page.screenshot({ path: 'tests/e2e/screenshots/recovery-01-created.png' });
+    });
+
+    // 2. Clear session and go back to splash
+    await test.step('Clear session and return to splash', async () => {
+      console.log('Step 2: Clearing session...');
+
+      // Clear localStorage to simulate new session
+      await page.evaluate(() => {
+        localStorage.removeItem('matou_passcode');
+      });
+
+      // Reload to get fresh state
+      await page.goto(FRONTEND_URL);
+      await expect(page.getByRole('heading', { name: 'Matou' })).toBeVisible({ timeout: 15000 });
+      await page.screenshot({ path: 'tests/e2e/screenshots/recovery-02-splash.png' });
+      console.log('Back at splash screen');
+    });
+
+    // 3. Navigate to recovery
+    await test.step('Navigate to recovery screen', async () => {
+      console.log('Step 3: Clicking recover identity...');
+      await page.getByText(/recover identity/i).click();
+
+      await expect(page.getByRole('heading', { name: 'Recover Your Identity' })).toBeVisible({ timeout: 5000 });
+      await page.screenshot({ path: 'tests/e2e/screenshots/recovery-03-recovery-screen.png' });
+      console.log('Recovery screen visible');
+    });
+
+    // 4. Enter mnemonic
+    await test.step('Enter mnemonic words', async () => {
+      console.log('Step 4: Entering mnemonic words...');
+
+      for (let i = 0; i < savedMnemonic.length; i++) {
+        const input = page.locator(`#word-${i}`);
+        await input.fill(savedMnemonic[i]);
+      }
+
+      await page.screenshot({ path: 'tests/e2e/screenshots/recovery-04-mnemonic-entered.png' });
+      console.log('Mnemonic entered');
+    });
+
+    // 5. Submit and verify recovery
+    await test.step('Recover identity', async () => {
+      console.log('Step 5: Recovering identity...');
+
+      await page.getByRole('button', { name: /recover identity/i }).click();
+
+      // Wait for recovery success
+      await expect(page.getByText(/identity recovered/i)).toBeVisible({ timeout: 60000 });
+      await page.screenshot({ path: 'tests/e2e/screenshots/recovery-05-success.png' });
+      console.log('Identity recovered successfully!');
+
+      // Verify it's the same AID
+      const recoveredAID = await page.locator('.success-box .font-mono').textContent();
+      console.log(`Recovered AID: ${recoveredAID?.substring(0, 20)}...`);
+
+      if (recoveredAID && savedAID) {
+        expect(recoveredAID.trim()).toBe(savedAID.trim());
+        console.log('AID matches - recovery verified!');
+      }
+    });
+
+    // 6. Continue to dashboard
+    await test.step('Continue to dashboard', async () => {
+      console.log('Step 6: Continuing to dashboard...');
+      await page.getByRole('button', { name: /continue to dashboard/i }).click();
+
+      // Should navigate to dashboard
+      await page.waitForURL(/\/dashboard/, { timeout: 10000 });
+      console.log('Arrived at dashboard - recovery flow complete!');
+      await page.screenshot({ path: 'tests/e2e/screenshots/recovery-06-dashboard.png' });
+    });
+  });
+
   test('debug CORS issue with KERIA', async ({ page }) => {
     // This test specifically debugs CORS issues
     console.log('Testing CORS access to KERIA from browser...');

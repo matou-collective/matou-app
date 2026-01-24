@@ -12,7 +12,7 @@
 
       <!-- Title -->
       <div v-motion="fadeSlideUp(300)" class="text-center">
-        <h1 class="text-white text-4xl md:text-5xl mb-2">Matou</h1>
+        <h1 class="text-white text-2xl md:text-5xl mb-2">Matou</h1>
         <p class="text-white/80 text-base md:text-lg">Community &middot; Connection &middot; Governance</p>
       </div>
 
@@ -43,6 +43,15 @@
         Join the Matou community to participate in governance, contribute to projects, and
         connect with others
       </p>
+
+      <!-- Recovery Link -->
+      <button
+        v-motion="fadeSlideUp(1100)"
+        class="text-white/50 text-sm hover:text-white/80 transition-colors"
+        @click="onRecover"
+      >
+        Already have an account? <span class="underline">Recover identity</span>
+      </button>
     </div>
   </div>
 </template>
@@ -57,6 +66,7 @@ const { fadeSlideUp, fadeScale, logoWobble } = useAnimationPresets();
 const emit = defineEmits<{
   (e: 'invite-code'): void;
   (e: 'register'): void;
+  (e: 'recover'): void;
 }>();
 
 const onInviteCode = () => {
@@ -65,6 +75,10 @@ const onInviteCode = () => {
 
 const onRegister = () => {
   emit('register');
+};
+
+const onRecover = () => {
+  emit('recover');
 };
 </script>
 

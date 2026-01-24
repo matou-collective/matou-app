@@ -7,6 +7,7 @@
         v-bind="currentProps"
         @invite-code="startInviteFlow"
         @register="startRegisterFlow"
+        @recover="startRecoverFlow"
         @continue="handleContinue"
         @back="handleBack"
         @complete="handleComplete"
@@ -31,6 +32,7 @@ import ProfileConfirmationScreen from 'components/onboarding/ProfileConfirmation
 import MnemonicVerificationScreen from 'components/onboarding/MnemonicVerificationScreen.vue';
 import CredentialIssuanceScreen from 'components/onboarding/CredentialIssuanceScreen.vue';
 import PendingApprovalScreen from 'components/onboarding/PendingApprovalScreen.vue';
+import RecoveryScreen from 'components/onboarding/RecoveryScreen.vue';
 
 const router = useRouter();
 const store = useOnboardingStore();
@@ -48,6 +50,7 @@ const screenComponents = {
   'mnemonic-verification': MnemonicVerificationScreen,
   'credential-issuance': CredentialIssuanceScreen,
   'pending-approval': PendingApprovalScreen,
+  'recovery': RecoveryScreen,
 };
 
 const currentComponent = computed(() => {
@@ -83,6 +86,11 @@ const startInviteFlow = () => {
 const startRegisterFlow = () => {
   store.setPath('register');
   store.navigateTo('matou-info');
+};
+
+const startRecoverFlow = () => {
+  store.setPath('recover');
+  store.navigateTo('recovery');
 };
 
 const handleContinue = (data?: unknown) => {
@@ -122,6 +130,11 @@ const handleContinue = (data?: unknown) => {
     if (next) {
       store.navigateTo(next as typeof store.currentScreen);
     }
+  } else if (path === 'recover') {
+    // Recovery flow goes directly to main/dashboard on success
+    if (current === 'recovery') {
+      store.navigateTo('main');
+    }
   }
 };
 
@@ -145,7 +158,11 @@ const handleBack = () => {
     'mnemonic-verification': 'profile-confirmation',
   };
 
-  const backMap = path === 'invite' ? backMapInvite : backMapRegister;
+  const backMapRecover: Record<string, string | null> = {
+    'recovery': 'splash',
+  };
+
+  const backMap = path === 'invite' ? backMapInvite : path === 'recover' ? backMapRecover : backMapRegister;
   const prev = backMap[current];
 
   if (prev === 'splash') {

@@ -14,6 +14,7 @@ export type OnboardingScreen =
   | 'credential-issuance'
   | 'matou-info'
   | 'pending-approval'
+  | 'recovery'
   | 'main';
 
 /**
@@ -62,7 +63,7 @@ export type ParticipationInterest = typeof PARTICIPATION_INTERESTS[number]['valu
 /**
  * Onboarding flow path
  */
-export type OnboardingPath = 'invite' | 'register' | null;
+export type OnboardingPath = 'invite' | 'register' | 'recover' | null;
 
 /**
  * User profile data
