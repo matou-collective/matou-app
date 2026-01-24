@@ -1,75 +1,123 @@
 {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "EIgJRizHTkJcQiC_ebuzq9lAOc_elK9oXE6ABENdhMrc",
-    "title": "MATOU Membership Schema",
-    "description": "Credential proving membership in MATOU organization",
+    "$id": "EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "MATOU Membership Credential",
+    "description": "A credential proving membership in the MATOU organization",
     "type": "object",
-    "credentialType": "MatouMembership",
-    "version": "1.0",
+    "credentialType": "MatouMembershipCredential",
+    "version": "1.0.0",
     "properties": {
-        "communityName": {
-            "type": "string",
-            "description": "Name of the community",
-            "const": "MATOU"
+        "v": {
+            "description": "Version string",
+            "type": "string"
         },
-        "role": {
-            "type": "string",
-            "description": "Member's role in the organization",
-            "enum": [
-                "Member",
-                "Verified Member",
-                "Trusted Member",
-                "Expert Member",
-                "Contributor",
-                "Moderator",
-                "Admin",
-                "Operations Steward"
+        "d": {
+            "description": "Credential SAID",
+            "type": "string"
+        },
+        "u": {
+            "description": "One time use nonce (optional)",
+            "type": "string"
+        },
+        "i": {
+            "description": "Issuer AID (MATOU Organization)",
+            "type": "string"
+        },
+        "ri": {
+            "description": "Credential status registry",
+            "type": "string"
+        },
+        "s": {
+            "description": "Schema SAID",
+            "type": "string"
+        },
+        "a": {
+            "oneOf": [
+                {
+                    "description": "Attributes block SAID",
+                    "type": "string"
+                },
+                {
+                    "description": "Attributes block",
+                    "type": "object",
+                    "properties": {
+                        "d": {
+                            "description": "Attributes block SAID",
+                            "type": "string"
+                        },
+                        "i": {
+                            "description": "Member AID (credential recipient)",
+                            "type": "string"
+                        },
+                        "dt": {
+                            "description": "Issuance date-time",
+                            "type": "string",
+                            "format": "date-time"
+                        },
+                        "communityName": {
+                            "description": "Name of the community",
+                            "type": "string",
+                            "const": "MATOU"
+                        },
+                        "role": {
+                            "description": "Member's role in the organization",
+                            "type": "string",
+                            "enum": [
+                                "Member",
+                                "Verified Member",
+                                "Trusted Member",
+                                "Expert Member",
+                                "Contributor",
+                                "Moderator",
+                                "Admin",
+                                "Operations Steward"
+                            ]
+                        },
+                        "verificationStatus": {
+                            "description": "Level of identity verification",
+                            "type": "string",
+                            "enum": [
+                                "unverified",
+                                "community_verified",
+                                "identity_verified",
+                                "expert_verified"
+                            ]
+                        },
+                        "permissions": {
+                            "description": "Permissions granted to member",
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "joinedAt": {
+                            "description": "ISO 8601 timestamp of when membership was granted",
+                            "type": "string",
+                            "format": "date-time"
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "d",
+                        "i",
+                        "dt",
+                        "communityName",
+                        "role",
+                        "verificationStatus",
+                        "permissions",
+                        "joinedAt"
+                    ]
+                }
             ]
-        },
-        "verificationStatus": {
-            "type": "string",
-            "description": "Level of identity verification",
-            "enum": [
-                "unverified",
-                "community_verified",
-                "identity_verified",
-                "expert_verified"
-            ]
-        },
-        "permissions": {
-            "type": "array",
-            "description": "Permissions granted to member",
-            "items": {
-                "type": "string"
-            },
-            "examples": [
-                [
-                    "read",
-                    "write",
-                    "propose",
-                    "comment",
-                    "vote",
-                    "admin"
-                ]
-            ]
-        },
-        "joinedAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "ISO 8601 timestamp of when membership was granted"
-        },
-        "expiresAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "ISO 8601 timestamp of when membership expires (optional)"
         }
     },
+    "additionalProperties": false,
     "required": [
-        "communityName",
-        "role",
-        "verificationStatus",
-        "permissions",
-        "joinedAt"
-    ],
-    "additionalProperties": false
+        "v",
+        "d",
+        "i",
+        "ri",
+        "s",
+        "a"
+    ]
 }
