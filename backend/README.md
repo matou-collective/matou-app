@@ -79,7 +79,7 @@ backend/
 ├── schemas/
 │   ├── matou-membership-schema.json    # Membership ACDC schema
 │   ├── operations-steward-schema.json  # Steward role schema
-│   └── SCHEMA-MANAGEMENT.md            # Schema update guide
+│   └── README.md                       # Schema management guide
 ├── .env                            # Environment variables (gitignored)
 ├── go.mod                          # Go module definition
 └── go.sum                          # Go dependency checksums
@@ -256,7 +256,7 @@ ACDC (Authentic Chained Data Containers) schemas define the structure of verifia
 
 **Important:** Schemas use SAIDs (Self-Addressing IDentifiers) - cryptographic hashes of the schema content. If you modify a schema, you must re-SAIDify it.
 
-See [schemas/SCHEMA-MANAGEMENT.md](schemas/SCHEMA-MANAGEMENT.md) for:
+See [schemas/README.md](schemas/README.md) for:
 - How to update schemas
 - SAIDification process
 - Schema server setup
