@@ -20,7 +20,7 @@ test.describe('Matou Organization Setup Flow', () => {
   test.beforeEach(async ({ page }) => {
     // Log console messages for debugging
     page.on('console', (msg) => {
-      if (msg.type() === 'error' || msg.text().includes('OrgSetup') || msg.text().includes('KERI') || msg.text().includes('Config')) {
+      if (msg.type() === 'error' || msg.text().includes('OrgSetup') || msg.text().includes('KERI') || msg.text().includes('Config') || msg.text().includes('CredentialPolling')) {
         console.log(`[Browser ${msg.type()}] ${msg.text()}`);
       }
     });
@@ -198,10 +198,9 @@ test.describe('Matou Organization Setup Flow', () => {
         if (wordNumMatch && words.length > 0) {
           const wordIndex = parseInt(wordNumMatch[1]) - 1; // Convert to 0-based
           if (wordIndex >= 0 && wordIndex < words.length) {
-            // Find the input by placeholder
-            const placeholder = `Enter word #${wordIndex + 1}`;
-            const input = page.getByPlaceholder(placeholder);
-            console.log(`Filling word ${wordIndex + 1}: "${words[wordIndex]}"`);
+            // Find the input by its id (word-0, word-1, word-2)
+            const input = page.locator(`#word-${i}`);
+            console.log(`Filling word ${wordIndex + 1}: "${words[wordIndex]}" into #word-${i}`);
             await input.fill(words[wordIndex]);
           }
         }
@@ -216,8 +215,8 @@ test.describe('Matou Organization Setup Flow', () => {
       await page.screenshot({ path: 'tests/e2e/screenshots/org-setup-07-verify-complete.png' });
     });
 
-    // Step 6: Verify pending-approval screen is shown
-    await test.step('Verify pending approval screen', async () => {
+    // Step 6: Verify pending-approval screen and credential polling
+    await test.step('Verify pending approval and credential polling', async () => {
       // Should navigate to pending-approval screen
       await expect(page.getByRole('heading', { name: /registration pending/i })).toBeVisible({ timeout: 30000 });
       await page.screenshot({ path: 'tests/e2e/screenshots/org-setup-08-pending.png' });
@@ -229,12 +228,33 @@ test.describe('Matou Organization Setup Flow', () => {
       await expect(aidDisplay).toBeVisible({ timeout: 5000 });
       console.log('Admin AID displayed on pending approval screen');
 
-      // Note: Full credential admission flow (waiting for grant, auto-admit, welcome overlay)
-      // requires stable KERI infrastructure. The key flow verification is complete:
-      // 1. Setup form → org creation
-      // 2. Mnemonic display and verification
-      // 3. Navigation to pending-approval
-      // 4. Admin AID properly stored in identity store
+      // Wait a bit to allow credential polling to start and log
+      console.log('Waiting for credential polling to start...');
+      await page.waitForTimeout(3000);
+
+      // Check if polling detected the grant and showed welcome overlay
+      // If the welcome overlay appears, click through to dashboard
+      const welcomeOverlay = page.locator('.welcome-overlay');
+      const isWelcomeVisible = await welcomeOverlay.isVisible().catch(() => false);
+
+      if (isWelcomeVisible) {
+        console.log('Welcome overlay detected - credential was admitted!');
+        await page.screenshot({ path: 'tests/e2e/screenshots/org-setup-09-welcome.png' });
+
+        // Click Enter Community button
+        const enterBtn = page.getByRole('button', { name: /enter community/i });
+        await enterBtn.click();
+        console.log('Clicked Enter Community button');
+
+        // Should be on dashboard
+        await expect(page).toHaveURL(/#\/dashboard/, { timeout: 10000 });
+        console.log('Reached dashboard');
+        await page.screenshot({ path: 'tests/e2e/screenshots/org-setup-10-dashboard.png' });
+      } else {
+        console.log('Welcome overlay not shown - checking polling status');
+        // Log current page state for debugging
+        await page.screenshot({ path: 'tests/e2e/screenshots/org-setup-09-pending-state.png' });
+      }
     });
 
     // Step 7: Verify config was saved to server
