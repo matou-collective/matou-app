@@ -1,11 +1,12 @@
 /**
  * KERI Boot File
- * Initiates identity session restoration on app startup
- * Note: Restore runs asynchronously so Vue can mount and show loading state
+ * Checks org config and initiates identity session restoration on app startup
  */
 import { boot } from 'quasar/wrappers';
 import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
+import { useAppStore } from 'stores/app';
+import { useKERIClient } from 'src/lib/keri/client';
 
 async function restoreIdentity(
   identityStore: ReturnType<typeof useIdentityStore>,
@@ -36,10 +37,62 @@ async function restoreIdentity(
   }
 }
 
-export default boot(({ app }) => {
+export default boot(async ({ router }) => {
   const identityStore = useIdentityStore();
   const onboardingStore = useOnboardingStore();
+  const appStore = useAppStore();
+  const keriClient = useKERIClient();
 
+  // Step 1: Fetch org config from server (with localStorage fallback)
+  console.log('[KERI Boot] Fetching organization config...');
+  await appStore.loadOrgConfig();
+
+  // Add navigation guard to handle setup redirect
+  router.beforeEach((to, _from, next) => {
+    // If org needs setup and we're not already on setup page, redirect
+    if (appStore.needsSetup && to.path !== '/setup') {
+      console.log('[KERI Boot] Redirecting to setup (org not configured)');
+      next('/setup');
+      return;
+    }
+
+    // If org is configured and we're on setup page, redirect to home
+    if (appStore.isConfigured && to.path === '/setup') {
+      console.log('[KERI Boot] Org already configured, redirecting to home');
+      next('/');
+      return;
+    }
+
+    next();
+  });
+
+  // Handle different config states
+  if (appStore.hasConfigError) {
+    // Server unreachable AND no cached config - show error
+    console.error('[KERI Boot] Cannot reach config server and no cached config');
+    onboardingStore.setInitializationError(appStore.configError || 'Cannot connect to config server');
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
+
+  if (appStore.needsSetup) {
+    // Server reachable but not configured - navigation guard will redirect
+    console.log('[KERI Boot] Org not configured, navigation guard will redirect to setup');
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
+
+  // Config is available (from server or cache)
+  console.log('[KERI Boot] Org config loaded:', appStore.orgName);
+
+  // Update KERI client with org AID from config
+  if (appStore.orgAid) {
+    keriClient.setOrgAID(appStore.orgAid);
+  }
+
+  // Step 2: Check for saved user session
   const savedPasscode = localStorage.getItem('matou_passcode');
 
   if (!savedPasscode) {

@@ -23,6 +23,17 @@ const routes: RouteRecordRaw[] = [
       },
     ],
   },
+  {
+    path: '/setup',
+    component: () => import('layouts/OnboardingLayout.vue'),
+    children: [
+      {
+        path: '',
+        name: 'setup',
+        component: () => import('pages/SetupPage.vue'),
+      },
+    ],
+  },
   // Always leave this as last one
   {
     path: '/:catchAll(.*)*',
