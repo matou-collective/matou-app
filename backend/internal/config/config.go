@@ -37,7 +37,8 @@ type AnySyncConfig struct {
 // BootstrapConfig holds bootstrap identity information
 type BootstrapConfig struct {
 	Organization OrganizationConfig `yaml:"organization"`
-	Admin        AdminConfig        `yaml:"admin"`
+	Admin        AdminConfig        `yaml:"admin"`           // Single admin (backward compatible)
+	Admins       []AdminInfo        `yaml:"admins,omitempty"` // Multiple admins array
 	OrgSpace     OrgSpaceConfig     `yaml:"orgSpace"`
 }
 
@@ -50,12 +51,19 @@ type OrganizationConfig struct {
 	WitnessThreshold int      `yaml:"witnessThreshold"`
 }
 
-// AdminConfig holds admin AID information
+// AdminConfig holds admin AID information (single admin - backward compatible)
 type AdminConfig struct {
 	AID          string            `yaml:"aid"`
 	Alias        string            `yaml:"alias"`
 	DelegatedBy  string            `yaml:"delegatedBy"`
 	Credentials  CredentialsConfig `yaml:"credentials"`
+}
+
+// AdminInfo holds info for a single admin in the admins array
+type AdminInfo struct {
+	AID  string `yaml:"aid" json:"aid"`
+	Name string `yaml:"name" json:"name"`
+	OOBI string `yaml:"oobi,omitempty" json:"oobi,omitempty"`
 }
 
 // CredentialsConfig holds credential SAIDs
@@ -167,4 +175,25 @@ func (c *Config) GetAdminAID() string {
 // GetOrgSpaceID returns the organization space ID
 func (c *Config) GetOrgSpaceID() string {
 	return c.Bootstrap.OrgSpace.SpaceID
+}
+
+// GetAdmins returns all admin AIDs, merging single admin with admins array
+// for backward compatibility
+func (c *Config) GetAdmins() []AdminInfo {
+	admins := make([]AdminInfo, 0)
+
+	// First add from admins array if present
+	if len(c.Bootstrap.Admins) > 0 {
+		admins = append(admins, c.Bootstrap.Admins...)
+	}
+
+	// If no admins array but single admin exists, convert it
+	if len(admins) == 0 && c.Bootstrap.Admin.AID != "" {
+		admins = append(admins, AdminInfo{
+			AID:  c.Bootstrap.Admin.AID,
+			Name: c.Bootstrap.Admin.Alias,
+		})
+	}
+
+	return admins
 }

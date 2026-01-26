@@ -6,13 +6,21 @@
 const CONFIG_SERVER_URL = 'http://localhost:3904';
 const LOCAL_CACHE_KEY = 'matou_org_config';
 
+export interface AdminInfo {
+  aid: string;
+  name: string;
+  oobi?: string;  // Optional OOBI for direct contact
+}
+
 export interface OrgConfig {
   organization: {
     aid: string;
     name: string;
     oobi: string;
   };
-  admin: {
+  admins: AdminInfo[];  // Array of admins (replaces single 'admin')
+  // Backward compatibility: old configs may have single 'admin' field
+  admin?: {
     aid: string;
     name: string;
   };
@@ -21,6 +29,27 @@ export interface OrgConfig {
     name: string;
   };
   generated: string;
+}
+
+/**
+ * Normalize config to always have 'admins' array
+ * Handles backward compatibility with old single 'admin' field
+ */
+export function normalizeOrgConfig(config: OrgConfig): OrgConfig {
+  if (config.admins && config.admins.length > 0) {
+    return config;
+  }
+
+  // Convert old single admin to admins array
+  if (config.admin) {
+    return {
+      ...config,
+      admins: [{ aid: config.admin.aid, name: config.admin.name }],
+    };
+  }
+
+  // No admins at all
+  return { ...config, admins: [] };
 }
 
 export type ConfigResult =
@@ -43,7 +72,9 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     });
 
     if (response.ok) {
-      const config = await response.json() as OrgConfig;
+      const rawConfig = await response.json() as OrgConfig;
+      // Normalize to ensure admins array exists
+      const config = normalizeOrgConfig(rawConfig);
       // Cache to localStorage
       localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
       console.log('[Config] Fetched and cached config for:', config.organization.name);
@@ -94,7 +125,8 @@ export function getCachedConfig(): OrgConfig | null {
   try {
     const stored = localStorage.getItem(LOCAL_CACHE_KEY);
     if (!stored) return null;
-    return JSON.parse(stored) as OrgConfig;
+    const rawConfig = JSON.parse(stored) as OrgConfig;
+    return normalizeOrgConfig(rawConfig);
   } catch {
     return null;
   }

@@ -670,6 +670,210 @@ export class KERIClient {
   static validateMnemonic(mnemonic: string): boolean {
     return validateMnemonic(mnemonic, wordlist);
   }
+
+  /**
+   * List notifications with optional filtering
+   * @param filter - Optional filter criteria
+   * @returns Array of notifications
+   */
+  async listNotifications(filter?: {
+    route?: string;
+    read?: boolean;
+  }): Promise<Array<{
+    i: string;      // Notification ID
+    a: {
+      r: string;    // Route
+      d: string;    // SAID
+      i?: string;   // Sender AID (if present)
+    };
+    r: boolean;     // Read status
+  }>> {
+    if (!this.client) throw new Error('Not initialized');
+
+    const notifications = await this.client.notifications().list();
+    let notes = notifications.notes ?? [];
+
+    if (filter) {
+      if (filter.route !== undefined) {
+        notes = notes.filter((n: { a: { r: string } }) => n.a?.r === filter.route);
+      }
+      if (filter.read !== undefined) {
+        notes = notes.filter((n: { r: boolean }) => n.r === filter.read);
+      }
+    }
+
+    return notes;
+  }
+
+  /**
+   * Get an exchange message by SAID
+   * @param said - The SAID of the exchange message
+   * @returns The exchange message details
+   */
+  async getExchange(said: string): Promise<{
+    exn: {
+      i: string;    // Sender AID
+      r: string;    // Route
+      a: Record<string, unknown>;  // Payload attributes
+      e?: Record<string, unknown>; // Embedded data
+      d: string;    // SAID
+    };
+  }> {
+    if (!this.client) throw new Error('Not initialized');
+    return await this.client.exchanges().get(said);
+  }
+
+  /**
+   * Mark a notification as read
+   * @param notificationId - The notification ID to mark
+   */
+  async markNotificationRead(notificationId: string): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.client.notifications().mark(notificationId);
+  }
+
+  /**
+   * Send a generic EXN message to a recipient
+   * @param senderName - Name of the sender's AID
+   * @param recipientAid - AID of the recipient
+   * @param route - The message route (e.g., '/matou/registration/apply')
+   * @param payload - The message payload
+   * @returns Success status and message SAID
+   */
+  async sendEXN(
+    senderName: string,
+    recipientAid: string,
+    route: string,
+    payload: Record<string, unknown>
+  ): Promise<{ success: boolean; said?: string; error?: string }> {
+    if (!this.client) {
+      return { success: false, error: 'Not initialized' };
+    }
+
+    try {
+      // Get the sender's AID state
+      let sender;
+      try {
+        sender = await this.client.identifiers().get(senderName);
+      } catch (getErr) {
+        const aids = await this.client.identifiers().list();
+        const found = aids.aids.find((a: { name: string }) => a.name === senderName);
+        if (!found) {
+          throw new Error(`AID "${senderName}" not found`);
+        }
+        sender = found;
+      }
+
+      console.log(`[KERIClient] Creating EXN message for route: ${route}`);
+
+      // Create the exchange message
+      const [exn, sigs, atc] = await this.client.exchanges().createExchangeMessage(
+        sender,
+        route,
+        payload,
+        {},  // No embeds
+        recipientAid
+      );
+
+      console.log(`[KERIClient] Sending EXN to ${recipientAid}...`);
+
+      // Send the message
+      await this.client.exchanges().sendFromEvents(
+        senderName,
+        route.split('/').pop() || 'message',  // Topic from route
+        exn,
+        sigs,
+        atc,
+        [recipientAid]
+      );
+
+      const exnSaid = (exn as { ked?: { d?: string } })?.ked?.d || 'unknown';
+      console.log('[KERIClient] EXN sent successfully, SAID:', exnSaid);
+
+      return { success: true, said: exnSaid };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error('[KERIClient] Failed to send EXN:', err);
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  /**
+   * Send registration to all organization admins
+   * @param senderName - Name of the sender's AID
+   * @param admins - Array of admin info with AIDs and optional OOBIs
+   * @param registrationData - Registration details including sender's OOBI
+   * @returns Success status with sent/failed admin lists
+   */
+  async sendRegistrationToAdmins(
+    senderName: string,
+    admins: Array<{ aid: string; oobi?: string }>,
+    registrationData: {
+      name: string;
+      bio: string;
+      interests: string[];
+      customInterests?: string;
+      senderOOBI: string;
+    }
+  ): Promise<{ success: boolean; sent: string[]; failed: string[] }> {
+    if (!this.client) {
+      throw new Error('Not initialized');
+    }
+
+    const sent: string[] = [];
+    const failed: string[] = [];
+
+    // Create the registration payload (same for all admins)
+    const payload = {
+      type: 'registration',
+      name: registrationData.name,
+      bio: registrationData.bio,
+      interests: registrationData.interests,
+      customInterests: registrationData.customInterests || '',
+      senderOOBI: registrationData.senderOOBI,
+      submittedAt: new Date().toISOString(),
+    };
+
+    // Send to each admin
+    for (const admin of admins) {
+      try {
+        // Resolve admin OOBI if provided
+        if (admin.oobi) {
+          try {
+            await this.resolveOOBI(admin.oobi, undefined, 5000);
+          } catch (oobiErr) {
+            console.warn(`[KERIClient] Failed to resolve OOBI for admin ${admin.aid}:`, oobiErr);
+            // Continue anyway - admin AID might already be known
+          }
+        }
+
+        // Send registration EXN
+        const result = await this.sendEXN(
+          senderName,
+          admin.aid,
+          '/matou/registration/apply',
+          payload
+        );
+
+        if (result.success) {
+          sent.push(admin.aid);
+          console.log(`[KERIClient] Registration sent to admin ${admin.aid}`);
+        } else {
+          failed.push(admin.aid);
+          console.warn(`[KERIClient] Failed to send registration to admin ${admin.aid}:`, result.error);
+        }
+      } catch (err) {
+        failed.push(admin.aid);
+        console.error(`[KERIClient] Error sending to admin ${admin.aid}:`, err);
+      }
+    }
+
+    return {
+      success: sent.length > 0,
+      sent,
+      failed,
+    };
+  }
 }
 
 // Singleton instance

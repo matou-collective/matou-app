@@ -86,6 +86,24 @@
         </div>
       </section>
 
+      <!-- Admin Section (conditional) -->
+      <div v-if="isAdmin" class="admin-area px-6 mb-6">
+        <AdminSection
+          ref="adminSectionRef"
+          :registrations="pendingRegistrations"
+          :is-polling="isPolling"
+          :is-refreshing="isRefreshing"
+          :is-processing="isProcessing"
+          :error="pollingError"
+          :action-error="actionError"
+          @approve="handleApprove"
+          @decline="handleDecline"
+          @message="handleMessage"
+          @refresh="handleRefresh"
+          @retry="retryPolling"
+        />
+      </div>
+
       <!-- Content Grid -->
       <div class="content-area">
         <div class="content-grid">
@@ -160,7 +178,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import {
   Home,
   Wallet,
@@ -175,14 +193,53 @@ import {
   Check,
 } from 'lucide-vue-next';
 import { useOnboardingStore } from 'stores/onboarding';
+import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
+import { useAdminActions } from 'src/composables/useAdminActions';
+import AdminSection from 'src/components/admin/AdminSection.vue';
 
 const store = useOnboardingStore();
+
+// Admin functionality
+const { isAdmin, checkAdminStatus } = useAdminAccess();
+const {
+  pendingRegistrations,
+  isPolling,
+  error: pollingError,
+  startPolling,
+  stopPolling,
+  refresh: refreshRegistrations,
+  removeRegistration,
+  retry: retryPolling,
+} = useRegistrationPolling({ pollingInterval: 10000 });
+const {
+  isProcessing,
+  error: actionError,
+  approveRegistration,
+  declineRegistration,
+  sendMessageToApplicant,
+  clearError,
+} = useAdminActions();
+
+const isRefreshing = ref(false);
+const adminSectionRef = ref<InstanceType<typeof AdminSection> | null>(null);
 
 // Dark mode state
 const isDark = ref(false);
 
-onMounted(() => {
+onMounted(async () => {
   isDark.value = document.documentElement.classList.contains('dark');
+
+  // Check if user is admin
+  const adminStatus = await checkAdminStatus();
+  if (adminStatus) {
+    console.log('[Dashboard] User is admin, starting registration polling');
+    startPolling();
+  }
+});
+
+onUnmounted(() => {
+  stopPolling();
 });
 
 const toggleDarkMode = () => {
@@ -192,24 +249,30 @@ const toggleDarkMode = () => {
 
 // User info
 const userName = computed(() => {
-  const first = store.profile.firstName || 'Alex';
-  const last = store.profile.lastName || 'Korero';
-  return `${first} ${last}`;
+  const name = store.profile.name || 'Alex Korero';
+  return name;
 });
 
 const userInitials = computed(() => {
-  const first = store.profile.firstName || 'Alex';
-  const last = store.profile.lastName || 'Korero';
-  return `${first.charAt(0)}${last.charAt(0)}`.toUpperCase();
+  const name = store.profile.name || 'Alex Korero';
+  const parts = name.split(' ');
+  if (parts.length >= 2) {
+    return `${parts[0].charAt(0)}${parts[1].charAt(0)}`.toUpperCase();
+  }
+  return name.substring(0, 2).toUpperCase();
 });
 
-// Stats data
-const notificationStats = [
-  { label: 'Pending Registrations', value: 3, icon: Users },
+// Stats data - computed to show real pending registration count for admins
+const notificationStats = computed(() => [
+  {
+    label: 'Pending Registrations',
+    value: isAdmin.value ? pendingRegistrations.value.length : 0,
+    icon: Users,
+  },
   { label: 'New Transactions', value: 7, icon: Shield },
   { label: 'Proposal Updates', value: 5, icon: Vote },
   { label: 'Contribution Actions', value: 2, icon: Target },
-];
+]);
 
 // New members data
 const newMembers = [
@@ -218,6 +281,39 @@ const newMembers = [
   { name: 'Hine Moana', joined: 'Joined 5 days ago', initials: 'HM', colorClass: 'gradient-3' },
   { name: 'Tama Rangi', joined: 'Joined 1 week ago', initials: 'TR', colorClass: 'gradient-4' },
 ];
+
+// Admin action handlers
+async function handleApprove(registration: PendingRegistration) {
+  clearError();
+  const success = await approveRegistration(registration);
+  if (success) {
+    removeRegistration(registration.notificationId);
+    adminSectionRef.value?.showSuccess(`Approved ${registration.profile.name}`);
+  }
+}
+
+async function handleDecline(registration: PendingRegistration, reason?: string) {
+  clearError();
+  const success = await declineRegistration(registration, reason);
+  if (success) {
+    removeRegistration(registration.notificationId);
+    adminSectionRef.value?.showSuccess(`Declined ${registration.profile.name}`);
+  }
+}
+
+async function handleMessage(registration: PendingRegistration, message: string) {
+  clearError();
+  const success = await sendMessageToApplicant(registration, message);
+  if (success) {
+    adminSectionRef.value?.showSuccess(`Message sent to ${registration.profile.name}`);
+  }
+}
+
+async function handleRefresh() {
+  isRefreshing.value = true;
+  await refreshRegistrations();
+  isRefreshing.value = false;
+}
 </script>
 
 <style lang="scss" scoped>
@@ -474,6 +570,11 @@ const newMembers = [
   margin-top: 0.25rem;
   line-height: 1.3;
   transition: all 0.15s ease;
+}
+
+// Admin Area
+.admin-area {
+  margin-top: 1.5rem;
 }
 
 // Content Area

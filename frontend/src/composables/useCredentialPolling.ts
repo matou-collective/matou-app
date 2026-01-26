@@ -16,8 +16,21 @@ export interface IPEXNotification {
   a: {
     r: string; // Route (e.g., '/exn/ipex/grant')
     d: string; // SAID of the grant
+    i?: string; // Sender AID (optional)
   };
   r: boolean; // Read status
+}
+
+export interface AdminMessage {
+  id: string;
+  content: string;
+  sentAt: string;
+  senderAid?: string;
+}
+
+export interface RejectionInfo {
+  reason: string;
+  declinedAt: string;
 }
 
 export function useCredentialPolling(options: CredentialPollingOptions = {}) {
@@ -33,6 +46,11 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   const credentialReceived = ref(false);
   const credential = ref<any | null>(null);
   const consecutiveErrors = ref(0);
+
+  // Rejection and message state
+  const rejectionReceived = ref(false);
+  const rejectionInfo = ref<RejectionInfo | null>(null);
+  const adminMessages = ref<AdminMessage[]>([]);
 
   // Internal state
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -80,6 +98,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       const notifications = await client.notifications().list();
       console.log('[CredentialPolling] Raw notifications response:', JSON.stringify(notifications, null, 2));
 
+      // Check for grant notifications
       const grants = notifications.notes?.filter(
         (n: IPEXNotification) => n.a?.r === '/exn/ipex/grant' && !n.r
       ) ?? [];
@@ -97,6 +116,58 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           await pollForCredential();
         } finally {
           isProcessingGrant = false;
+        }
+      }
+
+      // Check for rejection notifications
+      const rejections = notifications.notes?.filter(
+        (n: IPEXNotification) => n.a?.r === '/matou/registration/decline' && !n.r
+      ) ?? [];
+
+      if (rejections.length > 0 && !rejectionReceived.value) {
+        console.log('[CredentialPolling] Rejection detected:', rejections[0]);
+        try {
+          const rejectionExn = await client.exchanges().get(rejections[0].a.d);
+          const payload = rejectionExn.exn.a || {};
+          rejectionReceived.value = true;
+          rejectionInfo.value = {
+            reason: (payload.reason as string) || 'Your registration has been declined.',
+            declinedAt: (payload.declinedAt as string) || new Date().toISOString(),
+          };
+          // Mark as read
+          await client.notifications().mark(rejections[0].i);
+          stopPolling();
+        } catch (rejErr) {
+          console.warn('[CredentialPolling] Failed to fetch rejection details:', rejErr);
+        }
+      }
+
+      // Check for message notifications
+      const messages = notifications.notes?.filter(
+        (n: IPEXNotification) => n.a?.r === '/matou/registration/message' && !n.r
+      ) ?? [];
+
+      for (const msgNotification of messages) {
+        try {
+          const msgExn = await client.exchanges().get(msgNotification.a.d);
+          const payload = msgExn.exn.a || {};
+
+          // Check if we already have this message
+          const existingIds = adminMessages.value.map(m => m.id);
+          if (!existingIds.includes(msgNotification.a.d)) {
+            adminMessages.value.push({
+              id: msgNotification.a.d,
+              content: (payload.content as string) || '',
+              sentAt: (payload.sentAt as string) || new Date().toISOString(),
+              senderAid: msgExn.exn.i,
+            });
+            console.log('[CredentialPolling] New admin message received');
+          }
+
+          // Mark as read
+          await client.notifications().mark(msgNotification.i);
+        } catch (msgErr) {
+          console.warn('[CredentialPolling] Failed to fetch message:', msgErr);
         }
       }
 
@@ -284,6 +355,9 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     grantReceived,
     credentialReceived,
     credential,
+    rejectionReceived,
+    rejectionInfo,
+    adminMessages,
 
     // Actions
     startPolling,

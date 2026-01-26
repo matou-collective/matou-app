@@ -74,6 +74,46 @@
           </div>
         </div>
 
+        <!-- Admin Messages -->
+        <div
+          v-if="adminMessages.length > 0"
+          v-motion="fadeSlideUp(125)"
+          class="messages-card bg-card border border-border rounded-2xl p-4 shadow-sm"
+        >
+          <div class="flex items-center gap-2 mb-4">
+            <MessageCircle class="w-5 h-5 text-primary" />
+            <h3 class="font-medium">Messages from Admin</h3>
+          </div>
+          <div class="space-y-3">
+            <div
+              v-for="message in adminMessages"
+              :key="message.id"
+              class="message-bubble bg-secondary/50 rounded-xl p-3"
+            >
+              <p class="text-foreground text-sm">{{ message.content }}</p>
+              <span class="text-xs text-muted-foreground mt-1 block">
+                {{ formatMessageTime(message.sentAt) }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rejection Info (when rejected) -->
+        <div
+          v-if="currentStatus === 'rejected'"
+          v-motion="fadeSlideUp(125)"
+          class="rejection-card bg-destructive/5 border border-destructive/20 rounded-2xl p-5"
+        >
+          <h3 class="font-medium text-destructive mb-2">What you can do</h3>
+          <p class="text-sm text-muted-foreground mb-4">
+            If you believe this was a mistake or have additional information to share,
+            you can contact the community admins for clarification.
+          </p>
+          <MBtn variant="outline" class="w-full">
+            Contact Support
+          </MBtn>
+        </div>
+
         <!-- Your Identity (AID) -->
         <div
           v-motion="fadeSlideUp(150)"
@@ -95,8 +135,8 @@
           </div>
         </div>
 
-        <!-- What Happens Next -->
-        <div v-motion="fadeSlideUp(200)">
+        <!-- What Happens Next (hide when rejected) -->
+        <div v-if="currentStatus !== 'rejected'" v-motion="fadeSlideUp(200)">
           <h3 class="mb-4">What happens next?</h3>
           <div class="space-y-3">
             <div
@@ -174,7 +214,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
-import { Clock, FileText, Users, Target, BookOpen, ExternalLink, CheckCircle, Loader2, Copy, Check } from 'lucide-vue-next';
+import { Clock, FileText, Users, Target, BookOpen, ExternalLink, CheckCircle, XCircle, Loader2, Copy, Check, MessageCircle } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import WelcomeOverlay from './WelcomeOverlay.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
@@ -194,6 +234,20 @@ function copyAID() {
     copied.value = true;
     setTimeout(() => { copied.value = false; }, 2000);
   }
+}
+
+// Format message time
+function formatMessageTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} min ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 interface Props {
@@ -216,6 +270,9 @@ const {
   grantReceived,
   credentialReceived,
   credential,
+  rejectionReceived,
+  rejectionInfo,
+  adminMessages,
   startPolling,
   retry,
 } = useCredentialPolling({ pollingInterval: 5000 });
@@ -227,6 +284,9 @@ const showWelcome = ref(false);
 const currentStatus = computed(() => {
   if (credentialReceived.value) {
     return 'approved';
+  }
+  if (rejectionReceived.value) {
+    return 'rejected';
   }
   if (grantReceived.value) {
     return 'processing';
@@ -243,6 +303,14 @@ const statusConfig = computed(() => {
         description: 'Congratulations! Your credential has been issued and added to your wallet.',
         iconClass: 'text-green-600',
         bgClass: 'bg-green-100',
+      };
+    case 'rejected':
+      return {
+        icon: XCircle,
+        title: 'Registration Declined',
+        description: rejectionInfo.value?.reason || 'Your registration has been declined by the community admins.',
+        iconClass: 'text-destructive',
+        bgClass: 'bg-destructive/10',
       };
     case 'processing':
       return {
@@ -401,6 +469,18 @@ const resources = [
 
 .aid-card {
   background-color: var(--matou-card);
+}
+
+.messages-card {
+  background-color: var(--matou-card);
+}
+
+.message-bubble {
+  background-color: rgba(232, 244, 248, 0.5);
+}
+
+.rejection-card {
+  background-color: rgba(var(--matou-destructive-rgb, 220, 38, 38), 0.05);
 }
 
 .external-link {

@@ -135,6 +135,12 @@ export function useOrgSetup() {
           name: config.orgName,
           oobi: orgOobi,
         },
+        admins: [
+          {
+            aid: adminAid.prefix,
+            name: config.adminName,
+          },
+        ],
         admin: {
           aid: adminAid.prefix,
           name: config.adminName,

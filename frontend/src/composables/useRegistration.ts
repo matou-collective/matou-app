@@ -1,10 +1,11 @@
 /**
  * Composable for handling user registration with the organization
- * Sends an EXN message to establish OOBI exchange and submit registration
+ * Sends an EXN message to all admins to establish OOBI exchange and submit registration
  */
 import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
+import { fetchOrgConfig } from 'src/api/config';
 
 export interface RegistrationData {
   name: string;
@@ -25,8 +26,9 @@ export function useRegistration() {
 
   /**
    * Submit registration to the organization
-   * 1. Resolves the org's OOBI (so we can send messages to them)
-   * 2. Sends a registration EXN message with user's profile data
+   * 1. Fetches org config to get admin list
+   * 2. Gets sender's OOBI to include in registration
+   * 3. Sends registration EXN to all admins
    *
    * @param profile - User's registration data
    * @returns Success status
@@ -42,47 +44,83 @@ export function useRegistration() {
     error.value = null;
 
     try {
-      // Step 1: Try to resolve the organization's OOBI (optional for local dev)
-      console.log('[Registration] Resolving organization OOBI...');
-      const orgOOBI = keriClient.getOrgOOBI();
+      // Step 1: Fetch org config to get admin list
+      console.log('[Registration] Fetching org config...');
+      const configResult = await fetchOrgConfig();
 
-      try {
-        const oobiResolved = await keriClient.resolveOOBI(orgOOBI, 'matou-org');
-        if (oobiResolved) {
-          console.log('[Registration] Organization OOBI resolved');
-        } else {
-          console.warn('[Registration] OOBI resolution returned false, continuing anyway...');
-        }
-      } catch (oobiError) {
-        // In local dev, org may not have witnesses so OOBI may not be available
-        // Continue anyway - the EXN will still reference the org AID
-        console.warn('[Registration] OOBI resolution failed (may not have witnesses), continuing:', oobiError);
+      if (configResult.status === 'not_configured') {
+        throw new Error('Organization is not configured yet');
       }
 
-      // Step 2: Send registration EXN message
-      console.log('[Registration] Sending registration message...');
-      const result = await keriClient.sendRegistration(currentAID.name, {
-        name: profile.name,
-        bio: profile.bio,
-        interests: profile.interests,
-        customInterests: profile.customInterests,
-      });
+      const config = configResult.status === 'configured'
+        ? configResult.config
+        : configResult.cached;
+
+      if (!config) {
+        throw new Error('Could not fetch organization configuration');
+      }
+
+      const admins = config.admins;
+      if (!admins || admins.length === 0) {
+        throw new Error('No admins configured for this organization');
+      }
+
+      console.log(`[Registration] Found ${admins.length} admin(s) to notify`);
+
+      // Step 2: Get sender's OOBI to include in registration
+      let senderOOBI = '';
+      try {
+        senderOOBI = await keriClient.getOOBI(currentAID.name);
+        console.log('[Registration] Got sender OOBI:', senderOOBI);
+      } catch (oobiErr) {
+        console.warn('[Registration] Could not get sender OOBI:', oobiErr);
+        // Continue without OOBI - admin may not be able to contact back
+      }
+
+      // Step 3: Try to resolve org OOBI (for general contact)
+      try {
+        const orgOOBI = config.organization.oobi;
+        if (orgOOBI) {
+          await keriClient.resolveOOBI(orgOOBI, 'matou-org', 5000);
+          console.log('[Registration] Organization OOBI resolved');
+        }
+      } catch (oobiError) {
+        console.warn('[Registration] Org OOBI resolution failed, continuing:', oobiError);
+      }
+
+      // Step 4: Send registration to all admins
+      console.log('[Registration] Sending registration to admins...');
+      const result = await keriClient.sendRegistrationToAdmins(
+        currentAID.name,
+        admins.map(a => ({ aid: a.aid, oobi: a.oobi })),
+        {
+          name: profile.name,
+          bio: profile.bio,
+          interests: profile.interests,
+          customInterests: profile.customInterests,
+          senderOOBI,
+        }
+      );
 
       if (!result.success) {
-        // Check if this is an "unknown AID" error (org OOBI not resolved)
-        if (result.error?.includes('unknown AID')) {
-          console.warn('[Registration] Could not send EXN (org AID unknown). Proceeding anyway.');
-          console.warn('[Registration] The org may not have witnesses configured for OOBI discovery.');
-          // Still mark as "sent" so the UI can proceed - admin will need to manually poll
+        // All admins failed
+        if (result.failed.length === admins.length) {
+          // Check if this might be an OOBI issue
+          console.warn('[Registration] Could not send to any admin. Proceeding anyway.');
+          // Still mark as "sent" so UI can proceed
           registrationSent.value = true;
           return true;
         }
-        throw new Error(result.error || 'Failed to send registration');
+        throw new Error('Failed to send registration to any admin');
       }
 
-      registrationSaid.value = result.said || null;
+      console.log(`[Registration] Sent to ${result.sent.length}/${admins.length} admins`);
+      if (result.failed.length > 0) {
+        console.warn(`[Registration] Failed to send to: ${result.failed.join(', ')}`);
+      }
+
       registrationSent.value = true;
-      console.log('[Registration] Registration submitted successfully:', result.said);
+      console.log('[Registration] Registration submitted successfully');
 
       return true;
     } catch (err) {
