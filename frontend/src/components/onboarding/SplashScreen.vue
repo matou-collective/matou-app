@@ -2,17 +2,21 @@
   <div class="splash-screen h-full flex flex-col items-center justify-center p-8 md:p-12">
     <div v-motion="fadeScale()" class="flex flex-col items-center gap-8 max-w-md w-full">
       <!-- Logo -->
-      <div v-motion="logoWobble" class="logo-container bg-white/20 backdrop-blur-sm p-8 md:p-10 rounded-3xl">
+      <div v-motion="logoWobble" class="logo-container backdrop-blur-sm rounded-3xl">
         <img
           src="../../assets/images/matou-logo.svg"
           alt="Matou Logo"
-          class="w-24 h-24 md:w-32 md:h-32"
+          class="w-[250px] h-[140px]"
         />
       </div>
 
       <!-- Title -->
       <div v-motion="fadeSlideUp(300)" class="text-center">
-        <h1 class="text-white text-2xl md:text-5xl mb-2">Matou</h1>
+        <img
+          src="../../assets/images/matou-text-logo-white.svg"
+          alt="Matou"
+          class="matou-text-logo-white mb-2 mt-0 w-[300px] h-[100px] mx-auto"
+        />
         <p class="text-white/80 text-base md:text-lg">Community &middot; Connection &middot; Governance</p>
       </div>
 
@@ -141,6 +145,7 @@ const onRetry = () => {
 .logo-container {
   img {
     object-fit: contain;
+    line-height: 0;
   }
 }
 

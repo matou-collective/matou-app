@@ -64,7 +64,7 @@ export function useOrgSetup() {
 
       // Step 3: Create admin AID (personal identity)
       progress.value = 'Creating admin identity...';
-      const adminAidName = `${config.adminName.toLowerCase().replace(/\s+/g, '-')}-admin`;
+      const adminAidName = `${config.adminName.toLowerCase().replace(/\s+/g, '-')}`;
       const adminAid = await keriClient.createAID(adminAidName);
       console.log('[OrgSetup] Created admin AID:', adminAid.prefix);
 

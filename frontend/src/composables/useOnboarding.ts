@@ -63,9 +63,10 @@ export function useOnboarding() {
     const backMap: Partial<Record<OnboardingScreen, OnboardingScreen>> = {
       'invite-code': 'splash',
       'invitation-welcome': 'invite-code',
-      'create-profile-invite': 'invitation-welcome',
+      'profile-form': path === 'invite' ? 'invitation-welcome' : 'matou-info',
+      'profile-confirmation': 'profile-form',
+      'mnemonic-verification': 'profile-confirmation',
       'matou-info': 'splash',
-      'create-profile-register': 'matou-info',
     };
 
     const previousScreen = backMap[currentScreenValue];
@@ -87,8 +88,10 @@ export function useOnboarding() {
     if (path === 'invite') {
       const forwardMap: Partial<Record<OnboardingScreen, OnboardingScreen>> = {
         'invite-code': 'invitation-welcome',
-        'invitation-welcome': 'create-profile-invite',
-        'create-profile-invite': 'credential-issuance',
+        'invitation-welcome': 'profile-form',
+        'profile-form': 'profile-confirmation',
+        'profile-confirmation': 'mnemonic-verification',
+        'mnemonic-verification': 'credential-issuance',
         'credential-issuance': 'main',
       };
       const nextScreen = forwardMap[currentScreenValue];
@@ -97,8 +100,10 @@ export function useOnboarding() {
       }
     } else if (path === 'register') {
       const forwardMap: Partial<Record<OnboardingScreen, OnboardingScreen>> = {
-        'matou-info': 'create-profile-register',
-        'create-profile-register': 'pending-approval',
+        'matou-info': 'profile-form',
+        'profile-form': 'profile-confirmation',
+        'profile-confirmation': 'mnemonic-verification',
+        'mnemonic-verification': 'pending-approval',
       };
       const nextScreen = forwardMap[currentScreenValue];
       if (nextScreen) {

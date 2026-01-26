@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "https://json-schema.org/draft/2025-01/schema",
   "$id": "EOperationsStewardSchemaV1",
   "title": "Operations Steward Role Schema",
   "description": "Credential granting administrative permissions",

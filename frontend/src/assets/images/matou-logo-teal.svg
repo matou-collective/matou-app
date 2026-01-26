@@ -1,8 +1,10 @@
 <svg version="1.2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 266.2594249201278 146.71437699680513" width="267" height="147">
 	<style>
-		.s0 { fill: none;stroke: #ffffff;stroke-miterlimit:10 } 
+		.s0 { fill: #1e5f74;stroke: #1e5f74;stroke-miterlimit:10 } 
 		.s1 { fill: #ffffff } 
+		.s2 { fill: #1e5f74 } 
 	</style>
+	<path id="Layer copy 2" class="s0" d="m118.44 75.93l13.69-20.73 13.68 20.73z"/>
 	<g id="Layer 1">
 		<g>
 			<g>
@@ -298,20 +300,12 @@
 						</g>
 						<g>
 							<g>
-								<path class="s0" d="m0.38 146.23l96.61-144.91 96.6 144.91z"/>
+								<path class="s1" d="m0.38 146.23l96.61-144.91 96.6 144.91z"/>
 							</g>
 						</g>
 						<g>
 							<g>
-								<path class="s0" d="m69.02 146.23l96.61-144.91 96.6 144.91z"/>
-							</g>
-						</g>
-						<g>
-							<g>
-							</g>
-						</g>
-						<g>
-							<g>
+								<path class="s1" d="m69.02 146.23l96.61-144.91 96.6 144.91z"/>
 							</g>
 						</g>
 						<g>
@@ -340,16 +334,21 @@
 						</g>
 						<g>
 							<g>
-								<path id="Layer copy 7" class="s1" d="m115 76.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 9" class="s1" d="m100 99.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 10" class="s1" d="m131 99.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 11" class="s1" d="m85 122.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 12" class="s1" d="m116 122.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 13" class="s1" d="m147 122.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 14" class="s1" d="m163 146.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 15" class="s1" d="m132 146.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 16" class="s1" d="m100 146.24l15.85-23.24 15.84 23.24z"/>
-								<path id="Layer copy 17" class="s1" d="m69 146.24l15.85-23.24 15.84 23.24z"/>
+							</g>
+						</g>
+						<g>
+							<g>
+							</g>
+						</g>
+						<g>
+							<g>
+								<path id="Layer copy" class="s0" d="m70.09 145.67l30.14-45.28 30.12 45.28z"/>
+								<path id="Layer copy 3" class="s1" d="m115.92 123.06l-15.85 23.25-15.85-23.25z"/>
+								<path id="Layer copy 4" class="s0" d="m132.09 145.67l30.14-45.28 30.12 45.28z"/>
+								<path id="Layer copy 5" class="s1" d="m177.92 123.06l-15.85 23.25-15.85-23.25z"/>
+								<path id="Layer copy 8" class="s2" d="m115.31 123.24l15.84-23.24 15.85 23.24z"/>
+								<path id="Layer copy 6" class="s0" d="m101.09 98.67l30.14-45.28 30.12 45.28z"/>
+								<path id="Layer copy 7" class="s1" d="m146.92 76.06l-15.85 23.25-15.85-23.25z"/>
 							</g>
 						</g>
 						<g>

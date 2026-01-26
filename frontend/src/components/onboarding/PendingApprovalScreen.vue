@@ -29,18 +29,31 @@
           class="status-card bg-card border border-border rounded-2xl p-6 shadow-sm"
         >
           <div class="flex items-start gap-4">
-            <div class="icon-box bg-primary/10 p-3 rounded-xl shrink-0">
-              <div v-motion="rotate">
-                <Clock class="w-6 h-6 text-primary" />
+            <div class="icon-box p-3 rounded-xl shrink-0" :class="statusConfig.bgClass">
+              <div v-motion="currentStatus === 'reviewing' ? rotate : undefined">
+                <component
+                  :is="statusConfig.icon"
+                  class="w-6 h-6"
+                  :class="[statusConfig.iconClass, { 'animate-spin': statusConfig.animate }]"
+                />
               </div>
             </div>
             <div class="flex-1">
-              <h2 class="mb-2">Your application is under review</h2>
+              <h2 class="mb-2">{{ statusConfig.title }}</h2>
               <p class="text-muted-foreground mb-4">
-                Thank you for your interest in joining Matou! Our admins have been notified of
-                your registration and will review your application soon.
+                {{ statusConfig.description }}
               </p>
-              <div class="progress-box bg-secondary/50 rounded-xl p-4">
+
+              <!-- Error Message -->
+              <div v-if="pollingError" class="error-box bg-destructive/10 border border-destructive/20 rounded-xl p-4 mb-4">
+                <p class="text-sm text-destructive mb-2">{{ pollingError }}</p>
+                <MBtn variant="outline" size="sm" @click="retry">
+                  Try Again
+                </MBtn>
+              </div>
+
+              <!-- Progress Box (only show when reviewing) -->
+              <div v-if="currentStatus === 'reviewing'" class="progress-box bg-secondary/50 rounded-xl p-4">
                 <div class="flex items-center justify-between mb-2">
                   <span class="text-sm text-muted-foreground">Typical review time</span>
                   <span class="text-sm font-medium">1-3 days</span>
@@ -49,7 +62,36 @@
                   <div v-motion="progressBar" class="progress-fill h-full bg-primary" />
                 </div>
               </div>
+
+              <!-- Processing indicator -->
+              <div v-if="currentStatus === 'processing'" class="processing-box bg-primary/5 rounded-xl p-4">
+                <div class="flex items-center gap-3">
+                  <div class="w-2 h-2 bg-primary rounded-full animate-pulse" />
+                  <span class="text-sm text-muted-foreground">Credential being issued...</span>
+                </div>
+              </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Your Identity (AID) -->
+        <div
+          v-motion="fadeSlideUp(150)"
+          class="aid-card bg-card border border-border rounded-xl p-4 shadow-sm"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex-1 min-w-0">
+              <span class="text-xs text-muted-foreground">Your Identity (AID)</span>
+              <p class="text-sm font-mono truncate">{{ userAID }}</p>
+            </div>
+            <button
+              @click="copyAID"
+              class="p-2 rounded-lg hover:bg-secondary transition-colors shrink-0"
+              :title="copied ? 'Copied!' : 'Copy AID'"
+            >
+              <Check v-if="copied" class="w-4 h-4 text-green-600" />
+              <Copy v-else class="w-4 h-4 text-muted-foreground" />
+            </button>
           </div>
         </div>
 
@@ -119,23 +161,126 @@
         </div>
       </div>
     </div>
+
+    <!-- Welcome Overlay -->
+    <WelcomeOverlay
+      :show="showWelcome"
+      :user-name="props.userName"
+      :credential="credential"
+      @continue="handleContinue"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { Clock, FileText, Users, Target, BookOpen, ExternalLink } from 'lucide-vue-next';
+import { ref, computed, watch, onMounted } from 'vue';
+import { Clock, FileText, Users, Target, BookOpen, ExternalLink, CheckCircle, Loader2, Copy, Check } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
+import WelcomeOverlay from './WelcomeOverlay.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
+import { useCredentialPolling } from 'composables/useCredentialPolling';
+import { useIdentityStore } from 'stores/identity';
 
 const { fadeSlideUp, slideInLeft, rotate, backgroundPulse, progressBar } = useAnimationPresets();
+const identityStore = useIdentityStore();
+
+// User's AID for display
+const userAID = computed(() => identityStore.currentAID?.prefix ?? 'Loading...');
+const copied = ref(false);
+
+function copyAID() {
+  if (identityStore.currentAID?.prefix) {
+    navigator.clipboard.writeText(identityStore.currentAID.prefix);
+    copied.value = true;
+    setTimeout(() => { copied.value = false; }, 2000);
+  }
+}
 
 interface Props {
   userName: string;
 }
 
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
   userName: 'Member',
 });
+
+const emit = defineEmits<{
+  (e: 'approved', credential: any): void;
+  (e: 'continue-to-dashboard'): void;
+}>();
+
+// Credential polling
+const {
+  isPolling,
+  error: pollingError,
+  grantReceived,
+  credentialReceived,
+  credential,
+  startPolling,
+  retry,
+} = useCredentialPolling({ pollingInterval: 5000 });
+
+// UI State
+const showWelcome = ref(false);
+
+// Computed status for display
+const currentStatus = computed(() => {
+  if (credentialReceived.value) {
+    return 'approved';
+  }
+  if (grantReceived.value) {
+    return 'processing';
+  }
+  return 'reviewing';
+});
+
+const statusConfig = computed(() => {
+  switch (currentStatus.value) {
+    case 'approved':
+      return {
+        icon: CheckCircle,
+        title: 'Your membership has been approved!',
+        description: 'Congratulations! Your credential has been issued and added to your wallet.',
+        iconClass: 'text-green-600',
+        bgClass: 'bg-green-100',
+      };
+    case 'processing':
+      return {
+        icon: Loader2,
+        title: 'Processing your credential...',
+        description: 'Your application has been approved! We\'re now issuing your membership credential.',
+        iconClass: 'text-primary',
+        bgClass: 'bg-primary/10',
+        animate: true,
+      };
+    default:
+      return {
+        icon: Clock,
+        title: 'Your application is under review',
+        description: 'Thank you for your interest in joining Matou! Our admins have been notified of your registration and will review your application soon.',
+        iconClass: 'text-primary',
+        bgClass: 'bg-primary/10',
+      };
+  }
+});
+
+// Start polling on mount
+onMounted(() => {
+  startPolling();
+});
+
+// Watch for credential received
+watch(credentialReceived, (received) => {
+  if (received) {
+    showWelcome.value = true;
+    emit('approved', credential.value);
+  }
+});
+
+// Handle continue from welcome overlay
+function handleContinue() {
+  emit('continue-to-dashboard');
+}
 
 const steps = [
   {
@@ -244,6 +389,18 @@ const resources = [
 
 .help-box {
   background-color: rgba(232, 244, 248, 0.5);
+}
+
+.error-box {
+  background-color: rgba(var(--matou-destructive-rgb, 220, 38, 38), 0.1);
+}
+
+.processing-box {
+  background-color: rgba(30, 95, 116, 0.05);
+}
+
+.aid-card {
+  background-color: var(--matou-card);
 }
 
 .external-link {
