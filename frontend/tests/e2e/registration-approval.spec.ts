@@ -36,11 +36,12 @@ function setupPageLogging(page: Page, prefix: string) {
 // Helper to complete user registration up to pending approval
 async function completeUserRegistration(page: Page, userName: string): Promise<{ aid: string; mnemonic: string[] }> {
   await page.goto(FRONTEND_URL);
-  await expect(page.getByRole('heading', { name: 'Matou' })).toBeVisible({ timeout: 15000 });
+  // Wait for splash screen to load - look for Register button instead of heading (title is an SVG)
+  await expect(page.getByRole('button', { name: /register/i })).toBeVisible({ timeout: 15000 });
 
   // Navigate through registration
   await page.getByRole('button', { name: /register/i }).click();
-  await expect(page.getByRole('heading', { name: 'Join Matou' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByRole('heading', { name: /join matou/i })).toBeVisible({ timeout: 5000 });
   await page.getByRole('button', { name: /continue/i }).click();
 
   // Fill profile
@@ -103,7 +104,8 @@ async function completeUserRegistration(page: Page, userName: string): Promise<{
 // Helper to log in as admin (recover existing admin identity)
 async function loginAsAdmin(page: Page, adminMnemonic: string[]): Promise<void> {
   await page.goto(FRONTEND_URL);
-  await expect(page.getByRole('heading', { name: 'Matou' })).toBeVisible({ timeout: 15000 });
+  // Wait for splash screen to load - look for Register button instead of heading (title is an SVG)
+  await expect(page.getByRole('button', { name: /register/i })).toBeVisible({ timeout: 15000 });
 
   // Click recover identity
   await page.getByText(/recover identity/i).click();
@@ -303,14 +305,15 @@ test.describe('Registration Approval Flow', () => {
     // when the user has admin credentials
 
     await page.goto(FRONTEND_URL);
-    await expect(page.getByRole('heading', { name: 'Matou' })).toBeVisible({ timeout: 15000 });
+    // Wait for splash screen to load - look for Register button instead of heading (title is an SVG)
+    await expect(page.getByRole('button', { name: /register/i })).toBeVisible({ timeout: 15000 });
 
     // Note: This test would need an admin to be logged in
     // For now, we just verify the component structure exists
 
     // Create a simple registration to test the UI
     await page.getByRole('button', { name: /register/i }).click();
-    await expect(page.getByRole('heading', { name: 'Join Matou' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: /join matou/i })).toBeVisible({ timeout: 5000 });
 
     console.log('Basic UI navigation works');
     await page.screenshot({ path: 'tests/e2e/screenshots/admin-ui-01-join.png' });
