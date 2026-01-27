@@ -27,8 +27,6 @@ export interface CredentialInfo {
 export class KERIClient {
   private client: SignifyClient | null = null;
   private connected = false;
-  private oobisResolved = false;
-  private oobiResolutionPromise: Promise<void> | null = null;
 
   // KERIA endpoints - direct connection
   // CORS enabled via KERI_AGENT_CORS=1 environment variable
@@ -74,75 +72,91 @@ export class KERIClient {
     this.connected = true;
     console.log('[KERIClient] Connection established');
 
-    // Start resolving witness OOBIs in the background
-    // Store the promise so createAID can wait for it
-    this.oobiResolutionPromise = this.resolveWitnessOOBIs()
-      .then(() => {
-        this.oobisResolved = true;
-      })
-      .catch((err) => {
-        console.warn('[KERIClient] Background OOBI resolution failed:', err);
-        // Still mark as resolved so createAID can try (might fail with witness errors)
-        this.oobisResolved = true;
-      });
-  }
+    // Get KERIA config and resolve witness iurls if present
+    try {
+      const config = await this.client.config().get();
+      console.log('[KERIClient] KERIA config:', JSON.stringify(config));
 
-  /**
-   * Resolve OOBIs for the configured witnesses
-   * This is needed before creating AIDs with witness backing
-   */
-  private async resolveWitnessOOBIs(): Promise<void> {
-    if (!this.client) return;
-
-    // Use Docker internal hostnames as KERIA can resolve these
-    // These match the KERIA_IURLS environment variable
-    const witnessOOBIs = [
-      'http://witness1:5643/oobi',
-      'http://witness2:5645/oobi',
-      'http://witness3:5647/oobi',
-    ];
-
-    console.log('[KERIClient] Resolving witness OOBIs...');
-
-    for (const oobi of witnessOOBIs) {
-      try {
-        // oobis().resolve() returns an operation that we need to wait for
-        const op = await this.client.oobis().resolve(oobi);
-        // Wait for the operation to complete
-        await this.client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
-        console.log(`[KERIClient] Resolved OOBI: ${oobi}`);
-      } catch (err) {
-        console.warn(`[KERIClient] Failed to resolve OOBI ${oobi}:`, err);
+      // Resolve witness OOBIs from iurls (needed for witness-backed AIDs)
+      // IMPORTANT: Remove /controller suffix to get full OOBI with endpoint data
+      // The /controller suffix only returns key state, not the endpoint URLs that KERIA needs
+      if (config.iurls && Array.isArray(config.iurls) && config.iurls.length > 0) {
+        console.log(`[KERIClient] Resolving ${config.iurls.length} witness OOBIs from config...`);
+        for (let i = 0; i < config.iurls.length; i++) {
+          let iurl = config.iurls[i];
+          try {
+            // Remove /controller suffix if present - we need the full OOBI with endpoints
+            // signify-ts tests use /oobi/{AID} without /controller to get endpoint data
+            if (iurl.endsWith('/controller')) {
+              iurl = iurl.replace('/controller', '');
+              console.log(`[KERIClient] Stripped /controller suffix for endpoint resolution`);
+            }
+            // Extract witness AID from iurl for alias (e.g., "wit0", "wit1", etc.)
+            const alias = `wit${i}`;
+            console.log(`[KERIClient] Resolving witness OOBI: ${iurl} with alias: ${alias}`);
+            const op = await this.client.oobis().resolve(iurl, alias);
+            await this.client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+            console.log(`[KERIClient] Resolved: ${iurl}`);
+          } catch (resolveErr) {
+            console.warn(`[KERIClient] Failed to resolve witness OOBI ${iurl}:`, resolveErr);
+          }
+        }
+        console.log('[KERIClient] Witness OOBI resolution complete');
       }
+    } catch (configErr) {
+      console.warn('[KERIClient] Could not fetch KERIA config:', configErr);
     }
-
-    console.log('[KERIClient] Witness OOBIs resolved');
   }
 
   /**
    * Create a new AID (Autonomic Identifier)
    * @param name - Human-readable name for the AID
+   * @param options - Optional configuration
+   * @param options.useWitnesses - If true, create AID with witness backing (slower but enables message routing)
    * @returns The created AID info
    */
-  async createAID(name: string): Promise<AIDInfo> {
+  async createAID(name: string, options?: { useWitnesses?: boolean }): Promise<AIDInfo> {
     if (!this.client) throw new Error('Not initialized');
 
-    // Note: For witness-backed AIDs, we would need to wait for OOBI resolution
-    // and use the witness AIDs. For dev/testing, we create AIDs without witnesses.
-    // Witness AIDs (for reference):
-    // - BLskRTInXnMxWaGqcpSyMgo0nYbalW99cGZESrz3zapM (witness1:5643)
-    // - BM35JN8XeJSEfpxopjn5jr7tAHCE5749f0OobhMLCorE (witness2:5645)
-    // - BF2rZTW79z4IXocYRQnjjsOuvFUQv-ptCf8Yltd7PfsM (witness3:5647)
+    // Witness AIDs (from witness-demo image):
+    // - BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha (wan, port 5642)
+    // Using only 1 witness with toad=1 to match signify-ts test pattern
+    const WITNESS_AID = 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha';
 
-    // Try creating AID without witnesses first (faster for development)
-    // In production, use witness-backed AIDs
-    console.log('[KERIClient] Creating AID (without witnesses for faster dev)...');
-    const result = await this.client.identifiers().create(name);
+    let result;
+    if (options?.useWitnesses) {
+      // Create AID with witness backing
+      // Using 1 witness with toad=1 (matching signify-ts test pattern)
+      console.log('[KERIClient] Creating AID with witness backing (1 witness, toad=1)...');
+      result = await this.client.identifiers().create(name, {
+        wits: [WITNESS_AID],
+        toad: 1, // Threshold: need 1 witness to acknowledge
+      });
+    } else {
+      // Create without witnesses (faster for development)
+      console.log('[KERIClient] Creating AID (without witnesses for faster dev)...');
+      result = await this.client.identifiers().create(name);
+    }
 
     console.log('[KERIClient] Waiting for AID operation to complete...');
     const op = await result.op();
-    await this.client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
-    console.log('[KERIClient] AID operation completed');
+    console.log('[KERIClient] Operation:', JSON.stringify(op));
+    // Witness-backed AIDs need longer timeout (3 minutes) for witness acknowledgments
+    const timeout = options?.useWitnesses ? 180000 : 60000;
+    try {
+      await this.client.operations().wait(op, { signal: AbortSignal.timeout(timeout) });
+      console.log('[KERIClient] AID operation completed');
+    } catch (waitErr) {
+      console.error('[KERIClient] AID operation wait failed:', waitErr);
+      // Try to get operation status
+      try {
+        const opStatus = await this.client.operations().get(op.name);
+        console.log('[KERIClient] Operation status:', JSON.stringify(opStatus));
+      } catch (statusErr) {
+        console.error('[KERIClient] Could not get operation status:', statusErr);
+      }
+      throw waitErr;
+    }
 
     // Get the created AID - try listing first if get fails
     let aid;
@@ -160,6 +174,26 @@ export class KERIClient {
       aid = found;
     }
     console.log(`[KERIClient] Created AID: ${aid.prefix} for name: ${name}`);
+
+    // Add end role to authorize the agent as endpoint provider for this AID
+    // This is required for receiving messages from other agents
+    console.log(`[KERIClient] Adding agent end role for AID...`);
+    try {
+      // Get the agent's identifier (eid) - this is the agent AID that serves as endpoint provider
+      const agentId = this.client.agent?.pre;
+      if (!agentId) {
+        throw new Error('Agent identifier not available');
+      }
+      console.log(`[KERIClient] Agent EID: ${agentId}`);
+
+      const endRoleResult = await this.client.identifiers().addEndRole(name, 'agent', agentId);
+      const endRoleOp = await endRoleResult.op();
+      await this.client.operations().wait(endRoleOp, { signal: AbortSignal.timeout(30000) });
+      console.log(`[KERIClient] Agent end role added successfully`);
+    } catch (endRoleErr) {
+      console.warn('[KERIClient] Failed to add agent end role:', endRoleErr);
+      // Continue - the AID is created, but may not receive messages
+    }
 
     return {
       prefix: aid.prefix,
@@ -776,9 +810,15 @@ export class KERIClient {
       );
 
       console.log(`[KERIClient] Sending EXN to ${recipientAid}...`);
+      console.log(`[KERIClient] EXN details:`, JSON.stringify({
+        sender: senderName,
+        recipient: recipientAid,
+        route,
+        exnKed: (exn as any)?.ked,
+      }, null, 2));
 
       // Send the message
-      await this.client.exchanges().sendFromEvents(
+      const sendResult = await this.client.exchanges().sendFromEvents(
         senderName,
         route.split('/').pop() || 'message',  // Topic from route
         exn,
@@ -786,6 +826,7 @@ export class KERIClient {
         atc,
         [recipientAid]
       );
+      console.log('[KERIClient] sendFromEvents result:', sendResult);
 
       const exnSaid = (exn as { ked?: { d?: string } })?.ked?.d || 'unknown';
       console.log('[KERIClient] EXN sent successfully, SAID:', exnSaid);
@@ -799,10 +840,12 @@ export class KERIClient {
   }
 
   /**
-   * Send registration to all organization admins
+   * Send registration to all organization admins using IPEX apply
+   * This uses the IPEX protocol which KERIA knows how to route and notify
    * @param senderName - Name of the sender's AID
    * @param admins - Array of admin info with AIDs and optional OOBIs
    * @param registrationData - Registration details including sender's OOBI
+   * @param schemaSaid - The membership schema SAID
    * @returns Success status with sent/failed admin lists
    */
   async sendRegistrationToAdmins(
@@ -814,7 +857,8 @@ export class KERIClient {
       interests: string[];
       customInterests?: string;
       senderOOBI: string;
-    }
+    },
+    schemaSaid: string = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT'
   ): Promise<{ success: boolean; sent: string[]; failed: string[] }> {
     if (!this.client) {
       throw new Error('Not initialized');
@@ -823,45 +867,78 @@ export class KERIClient {
     const sent: string[] = [];
     const failed: string[] = [];
 
-    // Create the registration payload (same for all admins)
-    const payload = {
-      type: 'registration',
-      name: registrationData.name,
-      bio: registrationData.bio,
-      interests: registrationData.interests,
-      customInterests: registrationData.customInterests || '',
-      senderOOBI: registrationData.senderOOBI,
-      submittedAt: new Date().toISOString(),
-    };
-
-    // Send to each admin
+    // Send to each admin using IPEX apply
     for (const admin of admins) {
       try {
-        // Resolve admin OOBI if provided
+        // Resolve admin OOBI and create contact
         if (admin.oobi) {
+          console.log(`[KERIClient] Resolving admin OOBI and creating contact: ${admin.oobi}`);
           try {
-            await this.resolveOOBI(admin.oobi, undefined, 5000);
+            // Resolve OOBI with alias to create a contact
+            const alias = `admin-${admin.aid.substring(0, 8)}`;
+            const op = await this.client.oobis().resolve(admin.oobi, alias);
+            await this.client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+            console.log(`[KERIClient] Admin contact created with alias: ${alias}`);
           } catch (oobiErr) {
             console.warn(`[KERIClient] Failed to resolve OOBI for admin ${admin.aid}:`, oobiErr);
             // Continue anyway - admin AID might already be known
           }
-        }
-
-        // Send registration EXN
-        const result = await this.sendEXN(
-          senderName,
-          admin.aid,
-          '/matou/registration/apply',
-          payload
-        );
-
-        if (result.success) {
-          sent.push(admin.aid);
-          console.log(`[KERIClient] Registration sent to admin ${admin.aid}`);
         } else {
-          failed.push(admin.aid);
-          console.warn(`[KERIClient] Failed to send registration to admin ${admin.aid}:`, result.error);
+          console.warn(`[KERIClient] No OOBI provided for admin ${admin.aid}`);
         }
+
+        // Method 1: Send IPEX apply message
+        console.log(`[KERIClient] Creating IPEX apply for admin ${admin.aid}...`);
+        try {
+          const [apply, sigs, end] = await this.client.ipex().apply({
+            senderName: senderName,
+            recipient: admin.aid,
+            schemaSaid: schemaSaid,
+            message: JSON.stringify({
+              type: 'registration',
+              bio: registrationData.bio,
+              customInterests: registrationData.customInterests || '',
+              senderOOBI: registrationData.senderOOBI,
+              submittedAt: new Date().toISOString(),
+            }),
+            attributes: {
+              name: registrationData.name,
+              interests: registrationData.interests,
+            },
+          });
+
+          console.log(`[KERIClient] Submitting IPEX apply to ${admin.aid}...`);
+          await this.client.ipex().submitApply(senderName, apply, sigs, [admin.aid]);
+          console.log(`[KERIClient] IPEX apply sent successfully`);
+        } catch (ipexErr) {
+          console.warn(`[KERIClient] IPEX apply failed:`, ipexErr);
+        }
+
+        // Method 2: Send custom route EXN message
+        console.log(`[KERIClient] Sending custom route EXN to ${admin.aid}...`);
+        try {
+          const payload = {
+            type: 'registration',
+            name: registrationData.name,
+            bio: registrationData.bio,
+            interests: registrationData.interests,
+            customInterests: registrationData.customInterests || '',
+            senderOOBI: registrationData.senderOOBI,
+            submittedAt: new Date().toISOString(),
+          };
+          const exnResult = await this.sendEXN(
+            senderName,
+            admin.aid,
+            '/matou/registration/apply',
+            payload
+          );
+          console.log(`[KERIClient] Custom EXN result:`, exnResult);
+        } catch (exnErr) {
+          console.warn(`[KERIClient] Custom EXN failed:`, exnErr);
+        }
+
+        sent.push(admin.aid);
+        console.log(`[KERIClient] Registration sent to admin ${admin.aid} via both methods`);
       } catch (err) {
         failed.push(admin.aid);
         console.error(`[KERIClient] Error sending to admin ${admin.aid}:`, err);
