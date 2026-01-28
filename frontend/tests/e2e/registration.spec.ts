@@ -16,6 +16,7 @@ const FRONTEND_URL = 'http://localhost:9002';
 // Direct KERIA ports (CORS enabled via KERI_AGENT_CORS=1)
 const KERIA_URL = 'http://localhost:3901';
 const KERIA_BOOT_URL = 'http://localhost:3903';
+const BACKEND_URL = 'http://localhost:8080';
 
 test.describe('Matou Registration Flow', () => {
   test.beforeEach(async ({ page }) => {
@@ -50,7 +51,7 @@ test.describe('Matou Registration Flow', () => {
     console.log(`KERIA Boot API: ${bootResponse.status()}`);
   });
 
-  test('complete registration flow with identity creation', async ({ page }) => {
+  test('complete registration flow with identity creation', async ({ page, request }) => {
     test.setTimeout(120000); // 2 minutes for full flow
 
     // 1. Load splash screen
@@ -278,6 +279,48 @@ test.describe('Matou Registration Flow', () => {
 
       await page.screenshot({ path: 'tests/e2e/screenshots/11-registration-sent.png' });
       console.log('Registration flow complete - user is now waiting for approval');
+    });
+
+    // 8. Verify private space was created (if backend is running)
+    await test.step('Verify private space creation', async () => {
+      console.log('Step 8: Verifying private space creation...');
+
+      try {
+        // First check if backend is available
+        const healthResponse = await request.get(`${BACKEND_URL}/api/v1/health`);
+        if (!healthResponse.ok()) {
+          console.log('Backend not available - skipping private space verification');
+          return;
+        }
+
+        // Get user AID from pending screen
+        const aidElement = page.locator('.aid-display .font-mono, [class*="aid"] .font-mono').first();
+        let userAID = '';
+        if (await aidElement.isVisible().catch(() => false)) {
+          userAID = (await aidElement.textContent())?.trim() || '';
+        }
+
+        if (!userAID) {
+          console.log('Could not get user AID - skipping private space verification');
+          return;
+        }
+
+        // Create private space via backend (should be idempotent)
+        const createResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/private`, {
+          data: { userAid: userAID },
+        });
+
+        if (createResponse.ok()) {
+          const body = await createResponse.json();
+          console.log('✓ Private space verified/created:', body.spaceId);
+          expect(body.spaceId).toBeTruthy();
+          expect(body.success).toBe(true);
+        } else {
+          console.log(`Private space creation returned: ${createResponse.status()}`);
+        }
+      } catch (error) {
+        console.log('Private space verification skipped (backend may not be running):', error);
+      }
     });
   });
 

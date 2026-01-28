@@ -4,17 +4,66 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/keri"
 	"github.com/matou-dao/backend/internal/trust"
 )
+
+// mockAnySyncClientForIntegration implements anysync.AnySyncClient for integration testing
+type mockAnySyncClientForIntegration struct {
+	spaces map[string]*anysync.SpaceCreateResult
+}
+
+func newMockAnySyncClientForIntegration() *mockAnySyncClientForIntegration {
+	return &mockAnySyncClientForIntegration{
+		spaces: make(map[string]*anysync.SpaceCreateResult),
+	}
+}
+
+func (m *mockAnySyncClientForIntegration) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+	spaceID := fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8])
+	if existing, ok := m.spaces[spaceID]; ok {
+		return existing, nil
+	}
+	result := &anysync.SpaceCreateResult{
+		SpaceID:   spaceID,
+		CreatedAt: time.Now().UTC(),
+		OwnerAID:  ownerAID,
+		SpaceType: spaceType,
+	}
+	m.spaces[spaceID] = result
+	return result, nil
+}
+
+func (m *mockAnySyncClientForIntegration) DeriveSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+	return m.CreateSpace(ctx, ownerAID, spaceType, signingKey)
+}
+
+func (m *mockAnySyncClientForIntegration) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error) {
+	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
+}
+
+func (m *mockAnySyncClientForIntegration) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
+	return nil
+}
+
+func (m *mockAnySyncClientForIntegration) SyncDocument(ctx context.Context, spaceID string, docID string, data []byte) error {
+	return nil
+}
+
+func (m *mockAnySyncClientForIntegration) GetNetworkID() string      { return "test-network" }
+func (m *mockAnySyncClientForIntegration) GetCoordinatorURL() string { return "http://localhost:1004" }
+func (m *mockAnySyncClientForIntegration) GetPeerID() string         { return "test-peer-123" }
+func (m *mockAnySyncClientForIntegration) Close() error              { return nil }
 
 // IntegrationTestEnv provides a complete test environment for integration testing
 type IntegrationTestEnv struct {
@@ -55,8 +104,8 @@ func setupIntegrationEnv(t *testing.T) *IntegrationTestEnv {
 		t.Fatalf("failed to create anystore: %v", err)
 	}
 
-	// Create any-sync client for testing
-	anysyncClient := anysync.NewClientForTesting("http://localhost:1004", "test-network")
+	// Create any-sync mock client for testing (with space creation support)
+	anysyncClient := newMockAnySyncClientForIntegration()
 
 	// Create space manager
 	spaceManager := anysync.NewSpaceManager(anysyncClient, &anysync.SpaceManagerConfig{

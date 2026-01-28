@@ -4,15 +4,69 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/keri"
 )
+
+// mockSyncAnySyncClient implements anysync.AnySyncClient for sync testing
+type mockSyncAnySyncClient struct {
+	spaces map[string]*anysync.SpaceCreateResult
+}
+
+func newMockSyncAnySyncClient() *mockSyncAnySyncClient {
+	return &mockSyncAnySyncClient{
+		spaces: make(map[string]*anysync.SpaceCreateResult),
+	}
+}
+
+func (m *mockSyncAnySyncClient) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+	aidPrefix := ownerAID
+	if len(aidPrefix) > 8 {
+		aidPrefix = aidPrefix[:8]
+	}
+	spaceID := fmt.Sprintf("space_%s_%s", spaceType, aidPrefix)
+	if existing, ok := m.spaces[spaceID]; ok {
+		return existing, nil
+	}
+	result := &anysync.SpaceCreateResult{
+		SpaceID:   spaceID,
+		CreatedAt: time.Now().UTC(),
+		OwnerAID:  ownerAID,
+		SpaceType: spaceType,
+	}
+	m.spaces[spaceID] = result
+	return result, nil
+}
+
+func (m *mockSyncAnySyncClient) DeriveSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+	return m.CreateSpace(ctx, ownerAID, spaceType, signingKey)
+}
+
+func (m *mockSyncAnySyncClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error) {
+	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
+}
+
+func (m *mockSyncAnySyncClient) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
+	return nil
+}
+
+func (m *mockSyncAnySyncClient) SyncDocument(ctx context.Context, spaceID string, docID string, data []byte) error {
+	return nil
+}
+
+func (m *mockSyncAnySyncClient) GetNetworkID() string      { return "test-network" }
+func (m *mockSyncAnySyncClient) GetCoordinatorURL() string { return "http://localhost:1004" }
+func (m *mockSyncAnySyncClient) GetPeerID() string         { return "test-peer-123" }
+func (m *mockSyncAnySyncClient) Close() error              { return nil }
 
 func setupSyncTestHandler(t *testing.T) (*SyncHandler, *anystore.LocalStore, func()) {
 	// Create temp directory for test database
@@ -39,8 +93,8 @@ func setupSyncTestHandler(t *testing.T) (*SyncHandler, *anystore.LocalStore, fun
 		t.Fatalf("failed to create anystore: %v", err)
 	}
 
-	// Create any-sync client for testing
-	anysyncClient := anysync.NewClientForTesting("http://localhost:1004", "test-network")
+	// Create any-sync mock client for testing
+	anysyncClient := newMockSyncAnySyncClient()
 
 	// Create space manager
 	spaceManager := anysync.NewSpaceManager(anysyncClient, &anysync.SpaceManagerConfig{

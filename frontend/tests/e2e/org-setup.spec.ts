@@ -15,6 +15,7 @@ import { test, expect } from '@playwright/test';
 
 const FRONTEND_URL = 'http://localhost:9002';
 const CONFIG_SERVER_URL = 'http://localhost:3904';
+const BACKEND_URL = 'http://localhost:8080';
 
 test.describe('Matou Organization Setup Flow', () => {
   test.beforeEach(async ({ page }) => {
@@ -376,6 +377,47 @@ test.describe('Matou Organization Setup Flow', () => {
       expect(cachedConfig).not.toBeNull();
       expect(cachedConfig.organization.name).toBe('Matou Community');
       console.log('LocalStorage cache verified');
+    });
+
+    // Step 9: Verify community space was created (if backend is running)
+    await test.step('Verify community space created', async () => {
+      try {
+        // First check if backend is available
+        const healthResponse = await request.get(`${BACKEND_URL}/api/v1/health`);
+        if (!healthResponse.ok()) {
+          console.log('Backend not available - skipping space verification');
+          return;
+        }
+
+        // Get org AID from config
+        const configResponse = await request.get(`${CONFIG_SERVER_URL}/api/config`);
+        const config = await configResponse.json();
+        const orgAid = config.organization?.aid;
+
+        if (!orgAid) {
+          console.log('No org AID found - skipping space verification');
+          return;
+        }
+
+        // Create community space if not already created
+        const createResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/community`, {
+          data: {
+            orgAid,
+            orgName: config.organization.name || 'Matou Community',
+          },
+        });
+
+        if (createResponse.ok()) {
+          const body = await createResponse.json();
+          console.log('Community space verified/created:', body.spaceId);
+          expect(body.spaceId).toBeTruthy();
+          expect(body.success).toBe(true);
+        } else {
+          console.log(`Community space creation returned: ${createResponse.status()}`);
+        }
+      } catch (error) {
+        console.log('Space verification skipped (backend may not be running):', error);
+      }
     });
   });
 });

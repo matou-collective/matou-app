@@ -2,10 +2,73 @@ package anysync
 
 import (
 	"context"
-	"net/http"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/anyproto/any-sync/util/crypto"
 )
+
+// mockAnySyncClient implements AnySyncClient for testing
+type mockAnySyncClient struct {
+	spaces         map[string]*SpaceCreateResult
+	createSpaceErr error
+	addToACLErr    error
+	syncDocErr     error
+	networkID      string
+	coordinatorURL string
+	peerID         string
+}
+
+func newMockAnySyncClient() *mockAnySyncClient {
+	return &mockAnySyncClient{
+		spaces:         make(map[string]*SpaceCreateResult),
+		networkID:      "test-network",
+		coordinatorURL: "localhost:1004",
+		peerID:         "test-peer-123",
+	}
+}
+
+func (m *mockAnySyncClient) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*SpaceCreateResult, error) {
+	if m.createSpaceErr != nil {
+		return nil, m.createSpaceErr
+	}
+
+	spaceID := fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8])
+	if existing, ok := m.spaces[spaceID]; ok {
+		return existing, nil
+	}
+
+	result := &SpaceCreateResult{
+		SpaceID:   spaceID,
+		CreatedAt: time.Now().UTC(),
+		OwnerAID:  ownerAID,
+		SpaceType: spaceType,
+	}
+	m.spaces[spaceID] = result
+	return result, nil
+}
+
+func (m *mockAnySyncClient) DeriveSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*SpaceCreateResult, error) {
+	return m.CreateSpace(ctx, ownerAID, spaceType, signingKey)
+}
+
+func (m *mockAnySyncClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error) {
+	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
+}
+
+func (m *mockAnySyncClient) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
+	return m.addToACLErr
+}
+
+func (m *mockAnySyncClient) SyncDocument(ctx context.Context, spaceID string, docID string, data []byte) error {
+	return m.syncDocErr
+}
+
+func (m *mockAnySyncClient) GetNetworkID() string      { return m.networkID }
+func (m *mockAnySyncClient) GetCoordinatorURL() string { return m.coordinatorURL }
+func (m *mockAnySyncClient) GetPeerID() string         { return m.peerID }
+func (m *mockAnySyncClient) Close() error              { return nil }
 
 // mockSpaceStore implements SpaceStore for testing
 type mockSpaceStore struct {
@@ -38,12 +101,6 @@ func (m *mockSpaceStore) ListAllSpaces(ctx context.Context) ([]*Space, error) {
 		spaces = append(spaces, space)
 	}
 	return spaces, nil
-}
-
-// mockClient implements a minimal Client for testing
-type mockClient struct {
-	coordinatorURL string
-	networkID      string
 }
 
 func TestGeneratePrivateSpaceID(t *testing.T) {
@@ -120,15 +177,8 @@ func TestIsCommunityVisible(t *testing.T) {
 }
 
 func TestSpaceManager_CreatePrivateSpace(t *testing.T) {
-	// Create a real client with httpClient initialized
-	// Note: In production tests, we'd use a mock HTTP server
-	client := &Client{
-		coordinatorURL: "http://localhost:1004",
-		networkID:      "test-network",
-		httpClient:     &http.Client{}, // Initialize httpClient to avoid nil pointer
-	}
-
-	manager := NewSpaceManager(client, &SpaceManagerConfig{
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
 		CommunitySpaceID: "community-space-123",
 		OrgAID:           "EORG123",
 	})
@@ -136,8 +186,6 @@ func TestSpaceManager_CreatePrivateSpace(t *testing.T) {
 	ctx := context.Background()
 	userAID := "EUSER123456789"
 
-	// CreatePrivateSpace will try HTTP call but continue on error
-	// We're testing the space creation logic, not the HTTP call
 	space, err := manager.CreatePrivateSpace(ctx, userAID)
 	if err != nil {
 		t.Fatalf("CreatePrivateSpace failed: %v", err)
@@ -161,13 +209,8 @@ func TestSpaceManager_CreatePrivateSpace(t *testing.T) {
 }
 
 func TestSpaceManager_CreatePrivateSpace_EmptyAID(t *testing.T) {
-	client := &Client{
-		coordinatorURL: "http://localhost:1004",
-		networkID:      "test-network",
-		httpClient:     &http.Client{},
-	}
-
-	manager := NewSpaceManager(client, &SpaceManagerConfig{
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
 		CommunitySpaceID: "community-space-123",
 		OrgAID:           "EORG123",
 	})
@@ -180,14 +223,34 @@ func TestSpaceManager_CreatePrivateSpace_EmptyAID(t *testing.T) {
 	}
 }
 
-func TestSpaceManager_GetCommunitySpace(t *testing.T) {
-	client := &Client{
-		coordinatorURL: "http://localhost:1004",
-		networkID:      "test-network",
-		httpClient:     &http.Client{},
+func TestSpaceManager_CreatePrivateSpace_Idempotent(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
+		CommunitySpaceID: "community-space-123",
+		OrgAID:           "EORG123",
+	})
+
+	ctx := context.Background()
+	userAID := "EUSER123456789"
+
+	space1, err := manager.CreatePrivateSpace(ctx, userAID)
+	if err != nil {
+		t.Fatalf("first CreatePrivateSpace failed: %v", err)
 	}
 
-	manager := NewSpaceManager(client, &SpaceManagerConfig{
+	space2, err := manager.CreatePrivateSpace(ctx, userAID)
+	if err != nil {
+		t.Fatalf("second CreatePrivateSpace failed: %v", err)
+	}
+
+	if space1.SpaceID != space2.SpaceID {
+		t.Errorf("space IDs should match: %s != %s", space1.SpaceID, space2.SpaceID)
+	}
+}
+
+func TestSpaceManager_GetCommunitySpace(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
 		CommunitySpaceID: "community-space-123",
 		OrgAID:           "EORG123",
 	})
@@ -213,13 +276,8 @@ func TestSpaceManager_GetCommunitySpace(t *testing.T) {
 }
 
 func TestSpaceManager_GetCommunitySpace_NotConfigured(t *testing.T) {
-	client := &Client{
-		coordinatorURL: "http://localhost:1004",
-		networkID:      "test-network",
-		httpClient:     &http.Client{},
-	}
-
-	manager := NewSpaceManager(client, &SpaceManagerConfig{
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
 		CommunitySpaceID: "",
 		OrgAID:           "EORG123",
 	})
@@ -233,13 +291,8 @@ func TestSpaceManager_GetCommunitySpace_NotConfigured(t *testing.T) {
 }
 
 func TestSpaceManager_GetOrCreatePrivateSpace(t *testing.T) {
-	client := &Client{
-		coordinatorURL: "http://localhost:1004",
-		networkID:      "test-network",
-		httpClient:     &http.Client{},
-	}
-
-	manager := NewSpaceManager(client, &SpaceManagerConfig{
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
 		CommunitySpaceID: "community-space-123",
 		OrgAID:           "EORG123",
 	})
@@ -254,7 +307,7 @@ func TestSpaceManager_GetOrCreatePrivateSpace(t *testing.T) {
 		t.Fatalf("GetOrCreatePrivateSpace failed: %v", err)
 	}
 
-	// Second call should return the same space
+	// Second call should return the same space (from store)
 	space2, err := manager.GetOrCreatePrivateSpace(ctx, userAID, spaceStore)
 	if err != nil {
 		t.Fatalf("GetOrCreatePrivateSpace failed on second call: %v", err)
@@ -265,14 +318,25 @@ func TestSpaceManager_GetOrCreatePrivateSpace(t *testing.T) {
 	}
 }
 
-func TestSpaceManager_AddToCommunitySpace(t *testing.T) {
-	client := &Client{
-		coordinatorURL: "http://localhost:1004",
-		networkID:      "test-network",
-		httpClient:     &http.Client{},
-	}
+func TestSpaceManager_GetOrCreatePrivateSpace_EmptyAID(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
+		CommunitySpaceID: "community-space-123",
+		OrgAID:           "EORG123",
+	})
 
-	manager := NewSpaceManager(client, &SpaceManagerConfig{
+	spaceStore := newMockSpaceStore()
+	ctx := context.Background()
+
+	_, err := manager.GetOrCreatePrivateSpace(ctx, "", spaceStore)
+	if err == nil {
+		t.Error("GetOrCreatePrivateSpace should fail with empty AID")
+	}
+}
+
+func TestSpaceManager_AddToCommunitySpace(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
 		CommunitySpaceID: "community-space-123",
 		OrgAID:           "EORG123",
 	})
@@ -302,14 +366,29 @@ func TestSpaceManager_AddToCommunitySpace(t *testing.T) {
 	}
 }
 
-func TestSpaceManager_RouteCredential(t *testing.T) {
-	client := &Client{
-		coordinatorURL: "http://localhost:1004",
-		networkID:      "test-network",
-		httpClient:     &http.Client{},
+func TestSpaceManager_AddToCommunitySpace_NoCommunityConfigured(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
+		CommunitySpaceID: "",
+		OrgAID:           "EORG123",
+	})
+
+	ctx := context.Background()
+
+	membershipCred := &Credential{
+		SAID:   "ESAID123",
+		Schema: "EMatouMembershipSchemaV1",
 	}
 
-	manager := NewSpaceManager(client, &SpaceManagerConfig{
+	err := manager.AddToCommunitySpace(ctx, membershipCred)
+	if err == nil {
+		t.Error("AddToCommunitySpace should fail when community space not configured")
+	}
+}
+
+func TestSpaceManager_RouteCredential(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
 		CommunitySpaceID: "community-space-123",
 		OrgAID:           "EORG123",
 	})
@@ -352,6 +431,101 @@ func TestSpaceManager_RouteCredential(t *testing.T) {
 	}
 }
 
+func TestSpaceManager_RouteCredential_NoRecipient(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
+		CommunitySpaceID: "community-space-123",
+		OrgAID:           "EORG123",
+	})
+
+	spaceStore := newMockSpaceStore()
+	ctx := context.Background()
+
+	// Credential without recipient (e.g., self-claim)
+	cred := &Credential{
+		SAID:      "ESAID123",
+		Issuer:    "EUSER123",
+		Recipient: "",
+		Schema:    "ESelfClaimSchemaV1",
+	}
+
+	spaces, err := manager.RouteCredential(ctx, cred, spaceStore)
+	if err != nil {
+		t.Fatalf("RouteCredential failed: %v", err)
+	}
+
+	if len(spaces) != 0 {
+		t.Errorf("credential without recipient should be routed to 0 spaces, got %d", len(spaces))
+	}
+}
+
+func TestSpaceManager_SyncToPrivateSpace(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
+		CommunitySpaceID: "community-space-123",
+		OrgAID:           "EORG123",
+	})
+
+	spaceStore := newMockSpaceStore()
+	ctx := context.Background()
+	userAID := "EUSER123456789"
+
+	cred := &Credential{
+		SAID:      "ESAID123",
+		Issuer:    "EORG123",
+		Recipient: userAID,
+		Schema:    "EMatouMembershipSchemaV1",
+	}
+
+	err := manager.SyncToPrivateSpace(ctx, userAID, cred, spaceStore)
+	if err != nil {
+		t.Fatalf("SyncToPrivateSpace failed: %v", err)
+	}
+
+	// Verify space was created
+	space, err := spaceStore.GetUserSpace(ctx, userAID)
+	if err != nil || space == nil {
+		t.Error("expected space to be created")
+	}
+}
+
+func TestSpaceManager_SetCommunitySpaceID(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
+		CommunitySpaceID: "",
+		OrgAID:           "EORG123",
+	})
+
+	// Initially not configured
+	if manager.GetCommunitySpaceID() != "" {
+		t.Error("community space ID should initially be empty")
+	}
+
+	// Set community space ID
+	manager.SetCommunitySpaceID("new-community-space")
+
+	if manager.GetCommunitySpaceID() != "new-community-space" {
+		t.Errorf("expected new-community-space, got %s", manager.GetCommunitySpaceID())
+	}
+}
+
+func TestSpaceManager_GetClient(t *testing.T) {
+	mockClient := newMockAnySyncClient()
+	manager := NewSpaceManager(mockClient, &SpaceManagerConfig{
+		CommunitySpaceID: "community-space-123",
+		OrgAID:           "EORG123",
+	})
+
+	client := manager.GetClient()
+	if client == nil {
+		t.Error("expected non-nil client")
+	}
+
+	if client.GetNetworkID() != "test-network" {
+		t.Errorf("expected test-network, got %s", client.GetNetworkID())
+	}
+}
+
 func TestSpace_Fields(t *testing.T) {
 	now := time.Now().UTC()
 	space := &Space{
@@ -374,5 +548,42 @@ func TestSpace_Fields(t *testing.T) {
 	}
 	if space.SpaceName != "Test Space" {
 		t.Errorf("SpaceName mismatch")
+	}
+}
+
+func TestCredential_Fields(t *testing.T) {
+	cred := &Credential{
+		SAID:      "ESAID123",
+		Issuer:    "EISSUER",
+		Recipient: "ERECIPIENT",
+		Schema:    "EMatouMembershipSchemaV1",
+		Data:      map[string]interface{}{"key": "value"},
+	}
+
+	if cred.SAID != "ESAID123" {
+		t.Errorf("SAID mismatch")
+	}
+	if cred.Issuer != "EISSUER" {
+		t.Errorf("Issuer mismatch")
+	}
+	if cred.Recipient != "ERECIPIENT" {
+		t.Errorf("Recipient mismatch")
+	}
+	if cred.Schema != "EMatouMembershipSchemaV1" {
+		t.Errorf("Schema mismatch")
+	}
+}
+
+func TestSpaceManagerConfig(t *testing.T) {
+	cfg := &SpaceManagerConfig{
+		CommunitySpaceID: "community-123",
+		OrgAID:           "EORG456",
+	}
+
+	if cfg.CommunitySpaceID != "community-123" {
+		t.Errorf("CommunitySpaceID mismatch")
+	}
+	if cfg.OrgAID != "EORG456" {
+		t.Errorf("OrgAID mismatch")
 	}
 }
