@@ -66,6 +66,7 @@ export function useRegistration() {
       }
 
       console.log(`[Registration] Found ${admins.length} admin(s) to notify`);
+      console.log('[Registration] Admin details:', JSON.stringify(admins, null, 2));
 
       // Step 2: Get sender's OOBI to include in registration
       let senderOOBI = '';
@@ -89,6 +90,7 @@ export function useRegistration() {
       }
 
       // Step 4: Send registration to all admins
+      // Uses both custom EXN (for our patch) and IPEX apply (native KERIA support)
       console.log('[Registration] Sending registration to admins...');
       const result = await keriClient.sendRegistrationToAdmins(
         currentAID.name,
@@ -134,6 +136,57 @@ export function useRegistration() {
   }
 
   /**
+   * Send a reply message to an admin
+   * Used when applicant wants to respond to admin messages
+   *
+   * @param message - The message content
+   * @param adminAid - The AID of the admin to reply to
+   * @param replyingTo - The previous message being replied to (for threading)
+   * @returns Success status
+   */
+  async function sendMessageToAdmin(
+    message: string,
+    adminAid: string,
+    replyingTo?: { id: string; content: string; sentAt: string }
+  ): Promise<boolean> {
+    const currentAID = identityStore.currentAID;
+    if (!currentAID) {
+      error.value = 'No AID found';
+      return false;
+    }
+
+    isSubmitting.value = true;
+    error.value = null;
+
+    try {
+      // Admin OOBI was already resolved during registration submission
+      const result = await keriClient.sendEXN(
+        currentAID.name,
+        adminAid,
+        '/matou/registration/message_reply',
+        {
+          type: 'message_reply',
+          content: message,
+          sentAt: new Date().toISOString(),
+          // Include previous message for threading
+          replyingTo: replyingTo ? {
+            messageId: replyingTo.id,
+            content: replyingTo.content,
+            sentAt: replyingTo.sentAt,
+          } : undefined,
+        }
+      );
+
+      return result.success;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to send message';
+      return false;
+    } finally {
+      isSubmitting.value = false;
+    }
+  }
+
+  /**
    * Reset registration state
    */
   function reset() {
@@ -152,6 +205,7 @@ export function useRegistration() {
 
     // Actions
     submitRegistration,
+    sendMessageToAdmin,
     reset,
   };
 }

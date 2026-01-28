@@ -9,7 +9,7 @@ import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
 
 // Membership credential schema
-const MEMBERSHIP_SCHEMA_SAID = 'EMembershipSchemaV1';
+const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
 
 export function useAdminActions() {
   const keriClient = useKERIClient();
@@ -21,13 +21,74 @@ export function useAdminActions() {
   const lastAction = ref<{ type: string; success: boolean; registrationId: string } | null>(null);
 
   /**
+   * Mark all notifications for a given applicant as read
+   * This handles the case where both IPEX and custom EXN notifications exist
+   */
+  async function markAllApplicantNotificationsRead(applicantAid: string): Promise<void> {
+    try {
+      // List all unread notifications
+      const allNotes = await keriClient.listNotifications({ read: false });
+
+      // Find notifications from this applicant
+      for (const note of allNotes) {
+        const attrs = note.a || {};
+        const route = attrs.r || '';
+
+        // Check sender AID in notification attributes
+        // For pending: attrs.i is the sender
+        // For verified: need to check attrs.a.i (embedded) or fetch exchange
+        const senderAid = attrs.i || '';
+        const embeddedSender = attrs.a?.i || '';
+
+        if (senderAid === applicantAid || embeddedSender === applicantAid) {
+          try {
+            await keriClient.markNotificationRead(note.i);
+            console.log(`[AdminActions] Marked notification ${note.i} as read (applicant: ${applicantAid.slice(0, 12)}...)`);
+          } catch (markErr) {
+            console.warn(`[AdminActions] Failed to mark notification ${note.i} as read:`, markErr);
+          }
+          continue;
+        }
+
+        // For verified notifications, may need to fetch exchange to get sender
+        if (attrs.d && route.includes('/matou/registration/')) {
+          try {
+            const exchange = await keriClient.getExchange(attrs.d);
+            if (exchange?.exn?.i === applicantAid) {
+              await keriClient.markNotificationRead(note.i);
+              console.log(`[AdminActions] Marked verified notification ${note.i} as read (applicant: ${applicantAid.slice(0, 12)}...)`);
+            }
+          } catch {
+            // Ignore errors fetching exchange
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[AdminActions] Failed to mark all applicant notifications as read:', err);
+    }
+  }
+
+  /**
    * Get the org AID name for issuing credentials
    * This should match the AID that owns the registry
    */
   async function getOrgAidName(): Promise<string> {
-    // The org AID name used for credential issuance
-    // This is typically set up during org setup
-    const aids = await keriClient.getSignifyClient()?.identifiers().list();
+    const client = keriClient.getSignifyClient();
+    if (!client) throw new Error('Not connected to KERIA');
+
+    // First check localStorage (set during org setup)
+    const storedOrgAid = localStorage.getItem('matou_org_aid');
+    if (storedOrgAid) {
+      const aids = await client.identifiers().list();
+      const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === storedOrgAid);
+      if (orgAid) {
+        console.log('[AdminActions] Using stored org AID:', orgAid.name);
+        return orgAid.name;
+      }
+    }
+
+    // Fallback: look for an org-type AID by name pattern
+    const aids = await client.identifiers().list();
     if (!aids?.aids?.length) {
       throw new Error('No AIDs found in wallet');
     }
@@ -95,13 +156,14 @@ export function useAdminActions() {
       console.log(`[AdminActions] Issuing credential from AID: ${issuerAidName}`);
 
       // 4. Issue membership credential
+      // Note: Schema requires communityName to be 'MATOU' literal value
+      // verificationStatus must be one of: unverified, community_verified, identity_verified, expert_verified
       const credentialData = {
-        communityName: config.organization.name,
-        memberName: registration.profile.name,
+        communityName: 'MATOU',
         role: 'Member',
+        verificationStatus: 'community_verified',
         permissions: ['participate', 'vote', 'propose'],
         joinedAt: new Date().toISOString(),
-        interests: registration.profile.interests,
       };
 
       console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
@@ -115,8 +177,9 @@ export function useAdminActions() {
 
       console.log('[AdminActions] Credential issued:', credResult.said);
 
-      // 5. Mark notification as read
-      await keriClient.markNotificationRead(registration.notificationId);
+      // 5. Mark ALL notifications for this applicant as read
+      // (handles both IPEX and custom EXN notifications)
+      await markAllApplicantNotificationsRead(registration.applicantAid);
 
       lastAction.value = {
         type: 'approve',
@@ -197,8 +260,9 @@ export function useAdminActions() {
         // Continue anyway - still mark as processed
       }
 
-      // 3. Mark notification as read
-      await keriClient.markNotificationRead(registration.notificationId);
+      // 3. Mark ALL notifications for this applicant as read
+      // (handles both IPEX and custom EXN notifications)
+      await markAllApplicantNotificationsRead(registration.applicantAid);
 
       lastAction.value = {
         type: 'decline',

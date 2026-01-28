@@ -374,7 +374,7 @@ async function handleSubmit() {
     loadingMessage.value = 'Creating your identity...';
     loadingSubtext.value = 'Generating cryptographic keys';
 
-    const aid = await identityStore.createIdentity(formData.value.name.trim());
+    const aid = await identityStore.createIdentity(formData.value.name.trim(), { useWitnesses: true });
 
     if (!aid) {
       throw new Error(identityStore.error || 'Failed to create identity');

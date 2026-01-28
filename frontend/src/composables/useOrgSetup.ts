@@ -65,7 +65,7 @@ export function useOrgSetup() {
       // Step 3: Create admin AID (personal identity)
       progress.value = 'Creating admin identity...';
       const adminAidName = `${config.adminName.toLowerCase().replace(/\s+/g, '-')}`;
-      const adminAid = await keriClient.createAID(adminAidName);
+      const adminAid = await keriClient.createAID(adminAidName, { useWitnesses: true });
       console.log('[OrgSetup] Created admin AID:', adminAid.prefix);
 
       // Store admin AID in identity store for credential polling
@@ -127,6 +127,17 @@ export function useOrgSetup() {
         console.log('[OrgSetup] Using fallback OOBI URL:', orgOobi);
       }
 
+      // Step 8b: Get admin OOBI (so users can contact admin for registration)
+      let adminOobi: string | undefined;
+      try {
+        adminOobi = await keriClient.getOOBI(adminAidName);
+        console.log('[OrgSetup] Admin OOBI:', adminOobi);
+      } catch {
+        // Fallback to constructing OOBI URL manually
+        adminOobi = `http://localhost:3902/oobi/${adminAid.prefix}`;
+        console.log('[OrgSetup] Using fallback admin OOBI URL:', adminOobi);
+      }
+
       // Step 9: Save config to server (and localStorage cache)
       progress.value = 'Saving configuration...';
       const orgConfig: OrgConfig = {
@@ -139,6 +150,7 @@ export function useOrgSetup() {
           {
             aid: adminAid.prefix,
             name: config.adminName,
+            oobi: adminOobi,
           },
         ],
         admin: {

@@ -96,6 +96,30 @@
               </span>
             </div>
           </div>
+
+          <!-- Reply Input -->
+          <div class="reply-section mt-4 pt-4 border-t border-border">
+            <div class="flex gap-2">
+              <textarea
+                v-model="replyMessage"
+                placeholder="Type your reply..."
+                class="flex-1 p-3 text-sm border border-border rounded-xl resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 bg-background"
+                rows="2"
+                :disabled="isSendingReply"
+              />
+              <MBtn
+                variant="primary"
+                size="sm"
+                class="self-end"
+                :disabled="!replyMessage.trim() || isSendingReply"
+                @click="sendReply"
+              >
+                <span v-if="isSendingReply">Sending...</span>
+                <span v-else>Send</span>
+              </MBtn>
+            </div>
+            <p v-if="replyError" class="text-xs text-destructive mt-2">{{ replyError }}</p>
+          </div>
         </div>
 
         <!-- Rejection Info (when rejected) -->
@@ -219,10 +243,12 @@ import MBtn from '../base/MBtn.vue';
 import WelcomeOverlay from './WelcomeOverlay.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useCredentialPolling } from 'composables/useCredentialPolling';
+import { useRegistration } from 'composables/useRegistration';
 import { useIdentityStore } from 'stores/identity';
 
 const { fadeSlideUp, slideInLeft, rotate, backgroundPulse, progressBar } = useAnimationPresets();
 const identityStore = useIdentityStore();
+const { sendMessageToAdmin } = useRegistration();
 
 // User's AID for display
 const userAID = computed(() => identityStore.currentAID?.prefix ?? 'Loading...');
@@ -279,6 +305,45 @@ const {
 
 // UI State
 const showWelcome = ref(false);
+
+// Reply state
+const replyMessage = ref('');
+const isSendingReply = ref(false);
+const replyError = ref<string | null>(null);
+
+// Send reply to admin
+async function sendReply() {
+  if (!replyMessage.value.trim()) return;
+
+  // Get the admin AID from the most recent message
+  const lastMessage = adminMessages.value[adminMessages.value.length - 1];
+  if (!lastMessage?.senderAid) {
+    replyError.value = 'Cannot determine admin to reply to';
+    return;
+  }
+
+  isSendingReply.value = true;
+  replyError.value = null;
+
+  // Include the message being replied to for threading
+  const success = await sendMessageToAdmin(
+    replyMessage.value.trim(),
+    lastMessage.senderAid,
+    {
+      id: lastMessage.id,
+      content: lastMessage.content,
+      sentAt: lastMessage.sentAt,
+    }
+  );
+
+  if (success) {
+    replyMessage.value = '';
+  } else {
+    replyError.value = 'Failed to send reply. Please try again.';
+  }
+
+  isSendingReply.value = false;
+}
 
 // Computed status for display
 const currentStatus = computed(() => {
@@ -477,6 +542,12 @@ const resources = [
 
 .message-bubble {
   background-color: rgba(232, 244, 248, 0.5);
+}
+
+.reply-section {
+  textarea {
+    background-color: var(--matou-background);
+  }
 }
 
 .rejection-card {

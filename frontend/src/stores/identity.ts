@@ -67,14 +67,15 @@ export const useIdentityStore = defineStore('identity', () => {
     }
   }
 
-  async function createIdentity(name: string): Promise<AIDInfo | null> {
+  async function createIdentity(name: string, options?: { useWitnesses?: boolean }): Promise<AIDInfo | null> {
     if (!isConnected.value) {
       error.value = 'Not connected to KERIA';
       return null;
     }
 
     try {
-      const aid = await keriClient.createAID(name);
+      // Create AID (witnesses can be enabled later for production)
+      const aid = await keriClient.createAID(name, { useWitnesses: options?.useWitnesses ?? false });
       currentAID.value = aid;
       return aid;
     } catch (e) {
