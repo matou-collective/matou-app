@@ -7,6 +7,7 @@ import { ref } from 'vue';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { KERIClient, useKERIClient } from 'src/lib/keri/client';
+import { fetchOrgConfig } from 'src/api/config';
 
 export interface InviteConfig {
   inviteeName: string;
@@ -123,9 +124,15 @@ export function usePreCreatedInvite() {
       // Step 6: Issue membership credential from admin's agent
       progress.value = 'Issuing membership credential...';
 
-      // Find the org AID name and registry from localStorage (saved during setup)
-      const orgAidPrefix = localStorage.getItem('matou_org_aid');
-      const adminAidPrefix = localStorage.getItem('matou_admin_aid');
+      // Get org AID from config (more reliable than localStorage which is context-specific)
+      const configResult = await fetchOrgConfig();
+      const orgConfig = configResult.status === 'configured'
+        ? configResult.config
+        : configResult.status === 'server_unreachable'
+          ? configResult.cached
+          : null;
+      const orgAidPrefix = orgConfig?.organization?.aid;
+      const adminAidPrefix = orgConfig?.admins?.[0]?.aid || orgConfig?.admin?.aid;
       if (!orgAidPrefix) throw new Error('Organization not set up — no org AID found');
 
       // Find the org AID name from the admin's identifiers
