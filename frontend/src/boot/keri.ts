@@ -49,6 +49,12 @@ export default boot(async ({ router }) => {
 
   // Add navigation guard to handle setup redirect
   router.beforeEach((to, _from, next) => {
+    // Claim routes bypass all guards — invitees don't need org setup check
+    if (to.matched.some(r => r.name === 'claim') || to.path.startsWith('/claim/')) {
+      next();
+      return;
+    }
+
     // If org needs setup and we're not already on setup page, redirect
     if (appStore.needsSetup && to.path !== '/setup') {
       console.log('[KERI Boot] Redirecting to setup (org not configured)');
@@ -90,6 +96,24 @@ export default boot(async ({ router }) => {
   // Update KERI client with org AID from config
   if (appStore.orgAid) {
     keriClient.setOrgAID(appStore.orgAid);
+  }
+
+  // Check if this is a claim route — bypass normal session restore
+  const currentRoute = router.currentRoute.value;
+  if (currentRoute.path.startsWith('/claim/')) {
+    const passcode = currentRoute.params.passcode as string;
+    if (passcode) {
+      console.log('[KERI Boot] Claim route detected, initializing claim flow');
+      if (localStorage.getItem('matou_passcode')) {
+        console.warn('[KERI Boot] Existing session found — claim will overwrite it');
+      }
+      onboardingStore.setPath('claim');
+      onboardingStore.setClaimPasscode(passcode);
+      onboardingStore.navigateTo('claim-welcome');
+      onboardingStore.setAppState('ready');
+      identityStore.setInitialized();
+      return;
+    }
   }
 
   // Step 2: Check for saved user session

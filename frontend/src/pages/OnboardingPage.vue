@@ -37,6 +37,8 @@ import MnemonicVerificationScreen from 'components/onboarding/MnemonicVerificati
 import CredentialIssuanceScreen from 'components/onboarding/CredentialIssuanceScreen.vue';
 import PendingApprovalScreen from 'components/onboarding/PendingApprovalScreen.vue';
 import RecoveryScreen from 'components/onboarding/RecoveryScreen.vue';
+import ClaimWelcomeScreen from 'components/onboarding/ClaimWelcomeScreen.vue';
+import ClaimProcessingScreen from 'components/onboarding/ClaimProcessingScreen.vue';
 
 const router = useRouter();
 const store = useOnboardingStore();
@@ -56,6 +58,8 @@ const screenComponents = {
   'credential-issuance': CredentialIssuanceScreen,
   'pending-approval': PendingApprovalScreen,
   'recovery': RecoveryScreen,
+  'claim-welcome': ClaimWelcomeScreen,
+  'claim-processing': ClaimProcessingScreen,
 };
 
 const currentComponent = computed(() => {
@@ -81,6 +85,8 @@ const currentProps = computed(() => {
         onApproved: handleApproved,
         onContinueToDashboard: handleContinueToDashboard,
       };
+    case 'claim-welcome':
+      return { passcode: store.claimPasscode || '' };
     default:
       return {};
   }
@@ -163,6 +169,18 @@ const handleContinue = (data?: unknown) => {
     if (next) {
       store.navigateTo(next as typeof store.currentScreen);
     }
+  } else if (path === 'claim') {
+    // Claim flow: claim-welcome → claim-processing → profile-confirmation → mnemonic-verification → main
+    const forwardMap: Record<string, string> = {
+      'claim-welcome': 'claim-processing',
+      'claim-processing': 'profile-confirmation',
+      'profile-confirmation': 'mnemonic-verification',
+      'mnemonic-verification': 'main',
+    };
+    const next = forwardMap[current];
+    if (next) {
+      store.navigateTo(next as typeof store.currentScreen);
+    }
   }
 };
 
@@ -195,13 +213,21 @@ const handleBack = () => {
     // No back from profile-confirmation in setup flow (can't go back to setup form)
   };
 
+  const backMapClaim: Record<string, string | null> = {
+    'claim-processing': 'claim-welcome',
+    'profile-confirmation': 'claim-processing',
+    'mnemonic-verification': 'profile-confirmation',
+  };
+
   const backMap = path === 'invite'
     ? backMapInvite
     : path === 'recover'
       ? backMapRecover
       : path === 'setup'
         ? backMapSetup
-        : backMapRegister;
+        : path === 'claim'
+          ? backMapClaim
+          : backMapRegister;
   const prev = backMap[current];
 
   if (prev === 'splash') {

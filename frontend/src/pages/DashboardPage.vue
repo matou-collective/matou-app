@@ -118,6 +118,15 @@
 
       <!-- Admin Section (conditional) -->
       <div v-if="isAdmin" class="admin-area px-6 mb-6">
+        <div class="admin-actions mb-4">
+          <button
+            class="invite-btn"
+            @click="showInviteModal = true"
+          >
+            <UserPlus class="w-4 h-4" />
+            Invite Member
+          </button>
+        </div>
         <AdminSection
           ref="adminSectionRef"
           :registrations="pendingRegistrations"
@@ -204,6 +213,9 @@
         </div>
       </div>
     </main>
+
+    <!-- Invite Member Modal -->
+    <InviteMemberModal v-model="showInviteModal" />
   </div>
 </template>
 
@@ -222,12 +234,14 @@ import {
   TrendingUp,
   Check,
   CoinsIcon,
+  UserPlus,
 } from 'lucide-vue-next';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import AdminSection from 'src/components/admin/AdminSection.vue';
+import InviteMemberModal from 'src/components/dashboard/InviteMemberModal.vue';
 
 const store = useOnboardingStore();
 
@@ -254,6 +268,7 @@ const {
 
 const isRefreshing = ref(false);
 const adminSectionRef = ref<InstanceType<typeof AdminSection> | null>(null);
+const showInviteModal = ref(false);
 
 // Dark mode state
 const isDark = ref(false);
@@ -744,6 +759,30 @@ async function handleRefresh() {
 // Admin Area
 .admin-area {
   margin-top: 1.5rem;
+}
+
+.admin-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.invite-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background-color: var(--matou-primary);
+  color: white;
+  border: none;
+  border-radius: var(--matou-radius);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+
+  &:hover {
+    opacity: 0.9;
+  }
 }
 
 // Content Area

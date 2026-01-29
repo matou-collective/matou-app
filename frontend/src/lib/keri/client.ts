@@ -35,6 +35,61 @@ export class KERIClient {
   private readonly keriaBootUrl = import.meta.env.VITE_KERIA_BOOT_URL || 'http://localhost:3903';
 
   /**
+   * Create a standalone SignifyClient for a separate KERIA agent.
+   * Does NOT touch the singleton useKERIClient() instance.
+   * Used by admin to operate on an invitee's agent while staying connected to their own.
+   * @param bran - The passcode (21-character base64 string) for the new agent
+   * @returns A connected SignifyClient instance
+   */
+  static async createEphemeralClient(bran: string): Promise<SignifyClient> {
+    const keriaUrl = import.meta.env.VITE_KERIA_ADMIN_URL || 'http://localhost:3901';
+    const bootUrl = import.meta.env.VITE_KERIA_BOOT_URL || 'http://localhost:3903';
+
+    await ready();
+    const client = new SignifyClient(keriaUrl, bran, Tier.low, bootUrl);
+
+    try {
+      await client.connect();
+      console.log('[KERIClient] Ephemeral client connected to existing agent');
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('agent does not exist')) {
+        console.log('[KERIClient] Ephemeral agent not found, booting...');
+        await client.boot();
+        await client.connect();
+        console.log('[KERIClient] Ephemeral agent booted and connected');
+      } else {
+        throw err;
+      }
+    }
+
+    // Resolve witness OOBIs from KERIA config
+    try {
+      const config = await client.config().get();
+      if (config.iurls && Array.isArray(config.iurls) && config.iurls.length > 0) {
+        console.log(`[KERIClient] Resolving ${config.iurls.length} witness OOBIs for ephemeral client...`);
+        for (let i = 0; i < config.iurls.length; i++) {
+          let iurl = config.iurls[i];
+          try {
+            if (iurl.endsWith('/controller')) {
+              iurl = iurl.replace('/controller', '');
+            }
+            const alias = `wit${i}`;
+            const op = await client.oobis().resolve(iurl, alias);
+            await client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+          } catch (resolveErr) {
+            console.warn(`[KERIClient] Failed to resolve witness OOBI ${iurl}:`, resolveErr);
+          }
+        }
+      }
+    } catch (configErr) {
+      console.warn('[KERIClient] Could not fetch KERIA config for ephemeral client:', configErr);
+    }
+
+    return client;
+  }
+
+  /**
    * Initialize and connect to KERIA agent
    * For new users, this will boot (create) the agent first
    * For returning users, it will connect to the existing agent
@@ -230,6 +285,51 @@ export class KERIClient {
       name: a.name,
       state: a.state,
     }));
+  }
+
+  /**
+   * Rotate the keys of an AID
+   * Performs a key rotation event, which generates new signing keys and
+   * promotes the pre-rotation keys. Witnesses must acknowledge the rotation.
+   * @param name - The AID name to rotate
+   * @returns Updated AID info with new key state
+   */
+  async rotateKeys(name: string): Promise<AIDInfo> {
+    if (!this.client) throw new Error('Not initialized');
+
+    console.log(`[KERIClient] Rotating keys for AID "${name}"...`);
+    const result = await this.client.identifiers().rotate(name);
+    const op = await result.op();
+    await this.client.operations().wait(op, { signal: AbortSignal.timeout(180000) });
+    console.log(`[KERIClient] Key rotation completed for "${name}"`);
+
+    const aid = await this.client.identifiers().get(name);
+    return {
+      prefix: aid.prefix,
+      name: aid.name,
+      state: aid.state,
+    };
+  }
+
+  /**
+   * Rotate the agent passcode (bran) and reconnect.
+   * After rotation the old SignifyClient connection is stale, so we
+   * re-create and reconnect with the new passcode.
+   * @param newBran - The new passcode (21-character base64 string)
+   * @param aidPrefixes - Array of AID prefixes managed by this agent
+   */
+  async rotateAgentPasscode(newBran: string, aidPrefixes: string[]): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+
+    console.log('[KERIClient] Rotating agent passcode...');
+    await this.client.rotate(newBran, aidPrefixes);
+    console.log('[KERIClient] Passcode rotated, reconnecting with new passcode...');
+
+    // Old connection is stale — re-create and reconnect
+    this.client = new SignifyClient(this.keriaUrl, newBran, Tier.low, this.keriaBootUrl);
+    await this.client.connect();
+    this.connected = true;
+    console.log('[KERIClient] Reconnected with new passcode');
   }
 
   /**
@@ -655,7 +755,7 @@ export class KERIClient {
     }
 
     // Normalize KERIA Docker hostname to localhost for browser access
-    oobi = oobi.replace(/http:\/\/keria:(\d+)/, (_, port) => {
+    oobi = oobi.replace(/http:\/\/keria:(\d+)/, (_match: string, port: string) => {
       const cesrUrl = import.meta.env.VITE_KERIA_CESR_URL || `http://localhost:${port}`;
       return cesrUrl;
     });
