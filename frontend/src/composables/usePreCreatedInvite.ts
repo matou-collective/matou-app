@@ -140,11 +140,21 @@ export function usePreCreatedInvite() {
       if (registries.length === 0) throw new Error('No credential registry found for org');
       const registryId = registries[0].regk;
 
+      const role = config.role || 'Member';
+      const permissionsByRole: Record<string, string[]> = {
+        'Member': [],
+        'Contributor': [],
+        'Steward': [
+          'manage_members',
+          'approve_registrations',
+          'issue_credentials',
+        ],
+      };
       const credentialData = {
         communityName: 'MATOU',
-        role: config.role || 'Member',
+        role,
         verificationStatus: 'identity_verified',
-        invitedBy: adminAidPrefix || 'unknown',
+        permissions: permissionsByRole[role] || [],
         joinedAt: new Date().toISOString(),
       };
 
