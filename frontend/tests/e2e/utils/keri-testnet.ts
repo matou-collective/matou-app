@@ -39,6 +39,17 @@ export const keriEndpoints = {
   ],
 } as const;
 
+/** AnySync test network endpoint URLs (test network, +1000 port offset) */
+export const anysyncEndpoints = {
+  /** Coordinator metrics (Prometheus) */
+  coordinatorMetrics: 'http://127.0.0.1:9104',
+  /** Sync node 1 API */
+  node1API: 'http://127.0.0.1:9181',
+} as const;
+
+/** Backend test server */
+export const backendEndpoint = 'http://localhost:9080' as const;
+
 /** Witness AIDs from the witness-demo image */
 export const witnessAIDs = {
   wan: 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha',
@@ -122,7 +133,8 @@ export async function checkServiceHealth(): Promise<Record<string, boolean>> {
     boot: { url: `${keriEndpoints.bootURL}/`, expectStatus: [200, 404, 405] },
     schema: { url: `${keriEndpoints.schemaURL}/`, expectStatus: [200] },
     config: { url: `${keriEndpoints.configURL}/api/health`, expectStatus: [200] },
-    backend: { url: 'http://localhost:9080/health', expectStatus: [200] },
+    anysync: { url: `${anysyncEndpoints.coordinatorMetrics}/`, expectStatus: [200, 404] },
+    backend: { url: `${backendEndpoint}/health`, expectStatus: [200] },
   };
 
   const results: Record<string, boolean> = {};
@@ -137,6 +149,61 @@ export async function checkServiceHealth(): Promise<Record<string, boolean>> {
   }
 
   return results;
+}
+
+/** Service group definitions for startup instructions */
+const serviceGroups: Record<string, { services: string[]; label: string; startCmd: string }> = {
+  keri: {
+    services: ['keria', 'boot', 'schema', 'config'],
+    label: 'KERI test network (KERIA, witnesses, schema, config)',
+    startCmd: 'cd infrastructure/keri && make start-and-wait-test',
+  },
+  anysync: {
+    services: ['anysync'],
+    label: 'AnySync test network (coordinator, sync nodes, mongo, redis)',
+    startCmd: 'cd infrastructure/any-sync && make start-and-wait-test',
+  },
+  backend: {
+    services: ['backend'],
+    label: 'Backend server in test mode',
+    startCmd: 'cd backend && MATOU_ENV=test go run ./cmd/server',
+  },
+};
+
+/**
+ * Check that all required test services are reachable.
+ * Throws a descriptive error listing which services are down and how to start them.
+ *
+ * Call at the start of test.beforeAll() to fail fast with actionable instructions.
+ */
+export async function requireAllTestServices(): Promise<void> {
+  const health = await checkServiceHealth();
+  const downServices = Object.entries(health).filter(([, ok]) => !ok).map(([name]) => name);
+
+  if (downServices.length === 0) return;
+
+  // Build error message grouping services by their startup command
+  const lines: string[] = [
+    'Required test services are not reachable:',
+    '',
+  ];
+
+  for (const [, group] of Object.entries(serviceGroups)) {
+    const downInGroup = group.services.filter(s => downServices.includes(s));
+    if (downInGroup.length > 0) {
+      lines.push(`  [DOWN] ${group.label}`);
+      lines.push(`         Start: ${group.startCmd}`);
+      lines.push('');
+    }
+  }
+
+  lines.push('Start all services before running E2E tests:');
+  lines.push('  1. cd infrastructure/keri && make start-and-wait-test');
+  lines.push('  2. cd infrastructure/any-sync && make start-and-wait-test');
+  lines.push('  3. cd backend && MATOU_ENV=test go run ./cmd/server &');
+  lines.push('  4. cd frontend && npm run test:serve');
+
+  throw new Error(lines.join('\n'));
 }
 
 /** State tracking for setup/teardown */

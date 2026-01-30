@@ -5,7 +5,9 @@
 import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
+import { useOnboardingStore } from 'stores/onboarding';
 import { fetchOrgConfig } from 'src/api/config';
+import { BACKEND_URL } from 'src/lib/api/client';
 
 export interface RegistrationData {
   name: string;
@@ -17,6 +19,7 @@ export interface RegistrationData {
 export function useRegistration() {
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
+  const onboardingStore = useOnboardingStore();
 
   // State
   const isSubmitting = ref(false);
@@ -78,11 +81,11 @@ export function useRegistration() {
         // Continue without OOBI - admin may not be able to contact back
       }
 
-      // Step 3: Try to resolve org OOBI (for general contact)
+      // Step 3: Resolve org OOBI (required for credential delivery)
       try {
         const orgOOBI = config.organization.oobi;
         if (orgOOBI) {
-          await keriClient.resolveOOBI(orgOOBI, 'matou-org', 5000);
+          await keriClient.resolveOOBI(orgOOBI, 'matou-org', 30000);
           console.log('[Registration] Organization OOBI resolved');
         }
       } catch (oobiError) {
@@ -105,13 +108,8 @@ export function useRegistration() {
       );
 
       if (!result.success) {
-        // All admins failed
         if (result.failed.length === admins.length) {
-          // Check if this might be an OOBI issue
-          console.warn('[Registration] Could not send to any admin. Proceeding anyway.');
-          // Still mark as "sent" so UI can proceed
-          registrationSent.value = true;
-          return true;
+          throw new Error('Could not deliver registration to any admin. Please try again.');
         }
         throw new Error('Failed to send registration to any admin');
       }
@@ -126,12 +124,18 @@ export function useRegistration() {
 
       // Step 5: Create private space (non-blocking)
       try {
-        const spaceResponse = await fetch('http://localhost:8080/api/v1/spaces/private', {
+        const mnemonicWords = onboardingStore.mnemonic.words;
+        const spaceBody: Record<string, string> = {
+          userAid: currentAID.prefix,
+        };
+        if (mnemonicWords.length > 0) {
+          spaceBody.mnemonic = mnemonicWords.join(' ');
+        }
+
+        const spaceResponse = await fetch(`${BACKEND_URL}/api/v1/spaces/private`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userAid: currentAID.prefix,
-          }),
+          body: JSON.stringify(spaceBody),
           signal: AbortSignal.timeout(10000),
         });
 

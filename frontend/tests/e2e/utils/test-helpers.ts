@@ -9,10 +9,11 @@
  * - Admin login via mnemonic recovery
  * - Test account persistence
  */
-import { expect, Page, BrowserContext } from '@playwright/test';
+import { expect, Page, BrowserContext, APIRequestContext } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { keriEndpoints } from './keri-testnet';
+import { clearTestConfig } from './mock-config';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -269,4 +270,146 @@ export async function loginWithMnemonic(
 
   await page.getByRole('button', { name: /continue to dashboard/i }).click();
   await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+}
+
+// ---------------------------------------------------------------------------
+// Org setup flow (reusable from registration tests)
+// ---------------------------------------------------------------------------
+
+/**
+ * Perform the full org setup flow through the UI, then create spaces via API.
+ *
+ * Assumes `page` is already on `/#/setup` (e.g. after splash redirect).
+ * After completion the admin is on the dashboard with a live KERIA session,
+ * community + admin private spaces exist, and test-accounts.json is saved.
+ *
+ * @returns The saved TestAccounts object
+ */
+export async function performOrgSetup(
+  page: Page,
+  request: APIRequestContext,
+): Promise<TestAccounts> {
+  // --- Clear any stale test config ---
+  await clearTestConfig(request);
+
+  // Clear localStorage so we start fresh
+  await page.evaluate(() => localStorage.clear());
+
+  // Ensure we're on the setup page
+  await page.waitForLoadState('networkidle');
+  await expect(
+    page.getByRole('heading', { name: /community setup/i }),
+  ).toBeVisible({ timeout: TIMEOUT.short });
+
+  // --- Fill org setup form ---
+  await page.locator('input').first().fill('Matou Community');
+  await page.locator('input').nth(1).fill('Admin User');
+
+  // --- Submit and wait for KERI operations ---
+  await page.getByRole('button', { name: /create organization/i }).click();
+  console.log('[OrgSetup] Creating admin identity...');
+
+  await expect(page).toHaveURL(/#\/$/, { timeout: TIMEOUT.orgSetup });
+  console.log('[OrgSetup] Admin identity created, redirected');
+
+  // --- Mnemonic capture ---
+  await expect(
+    page.getByRole('heading', { name: /identity created/i }),
+  ).toBeVisible({ timeout: TIMEOUT.short });
+  const adminMnemonic = await captureMnemonicWords(page);
+  console.log(`[OrgSetup] Captured admin mnemonic (${adminMnemonic.length} words)`);
+  expect(adminMnemonic).toHaveLength(12);
+
+  // Get admin AID from localStorage
+  const adminAid = await page.evaluate(() => {
+    const stored = localStorage.getItem('matou_current_aid');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      return parsed.prefix || parsed.aid || '';
+    }
+    return '';
+  });
+
+  // --- Complete mnemonic verification ---
+  await page.getByRole('checkbox').click();
+  await page.getByRole('button', { name: /continue/i }).click();
+  await completeMnemonicVerification(page, adminMnemonic);
+
+  // Wait for dashboard, pending screen, or welcome overlay with "enter community"
+  const outcome = await Promise.race([
+    page.getByRole('button', { name: /enter community/i })
+      .waitFor({ state: 'visible', timeout: TIMEOUT.long })
+      .then(() => 'welcome' as const),
+    expect(page.getByRole('heading', { name: /registration pending/i }))
+      .toBeVisible({ timeout: TIMEOUT.long })
+      .then(() => 'pending' as const),
+    expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long })
+      .then(() => 'dashboard' as const),
+  ]);
+  console.log(`[OrgSetup] Post-mnemonic outcome: ${outcome}`);
+
+  // If welcome overlay appeared, click "enter community" to reach dashboard
+  if (outcome === 'welcome' || outcome === 'pending') {
+    const enterBtn = page.getByRole('button', { name: /enter community/i });
+    try {
+      await enterBtn.waitFor({ state: 'visible', timeout: TIMEOUT.short });
+      await enterBtn.click();
+      console.log('[OrgSetup] Clicked "enter community"');
+      await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+    } catch {
+      // Button not present — may already be on dashboard or pending screen
+      console.log('[OrgSetup] No "enter community" button found, continuing');
+    }
+  }
+
+  console.log('[OrgSetup] Admin on dashboard');
+
+  // --- Verify config saved to server ---
+  const configResponse = await request.get(`${CONFIG_SERVER_URL}/api/config`, {
+    headers: { 'X-Test-Config': 'true' },
+  });
+  expect(configResponse.ok()).toBe(true);
+
+  const config = await configResponse.json();
+  expect(config.organization).toBeDefined();
+  expect(config.organization.aid).toBeTruthy();
+  console.log('[OrgSetup] Config verified on server');
+
+  // --- Create community + admin private spaces via API ---
+  const communityResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/community`, {
+    data: {
+      orgAid: config.organization.aid,
+      orgName: config.organization.name || 'Matou Community',
+    },
+  });
+  expect(communityResponse.ok(),
+    `Community space creation failed: ${communityResponse.status()}`).toBe(true);
+  const communityBody = await communityResponse.json();
+  console.log('[OrgSetup] Community space created:', communityBody.spaceId);
+
+  const adminAidFromConfig = config.admin?.aid || config.admins?.[0]?.aid;
+  expect(adminAidFromConfig, 'Admin AID must exist in config').toBeTruthy();
+
+  const privateResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/private`, {
+    data: { userAid: adminAidFromConfig },
+  });
+  expect(privateResponse.ok(),
+    `Admin private space creation failed: ${privateResponse.status()}`).toBe(true);
+  const privateBody = await privateResponse.json();
+  console.log('[OrgSetup] Admin private space created:', privateBody.spaceId);
+
+  // --- Save admin account for reuse ---
+  const accounts: TestAccounts = {
+    note: 'Auto-generated by performOrgSetup. Only admin/org is persisted.',
+    admin: {
+      mnemonic: adminMnemonic,
+      aid: adminAid,
+      name: 'Admin User',
+    },
+    createdAt: new Date().toISOString(),
+  };
+  saveAccounts(accounts);
+  console.log(`[OrgSetup] Admin AID: ${adminAid}`);
+
+  return accounts;
 }

@@ -50,7 +50,8 @@ type GetCommunityResponse struct {
 
 // CreatePrivateRequest represents a request to create a private space
 type CreatePrivateRequest struct {
-	UserAID string `json:"userAid"`
+	UserAID  string `json:"userAid"`
+	Mnemonic string `json:"mnemonic,omitempty"`
 }
 
 // CreatePrivateResponse represents the response for private space creation
@@ -231,7 +232,65 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Create new private space
+	// Create new private space — use mnemonic-derived keys if provided
+	if req.Mnemonic != "" {
+		if err := anysync.ValidateMnemonic(req.Mnemonic); err != nil {
+			writeJSON(w, http.StatusBadRequest, CreatePrivateResponse{
+				Success: false,
+				Error:   fmt.Sprintf("invalid mnemonic: %v", err),
+			})
+			return
+		}
+
+		keys, err := anysync.DeriveSpaceKeySet(req.Mnemonic, 0)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, CreatePrivateResponse{
+				Success: false,
+				Error:   fmt.Sprintf("failed to derive space keys: %v", err),
+			})
+			return
+		}
+
+		client := h.spaceManager.GetClient()
+		if client == nil {
+			writeJSON(w, http.StatusServiceUnavailable, CreatePrivateResponse{
+				Success: false,
+				Error:   "any-sync client not available",
+			})
+			return
+		}
+
+		result, err := client.CreateSpaceWithKeys(ctx, req.UserAID, anysync.SpaceTypePrivate, keys)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, CreatePrivateResponse{
+				Success: false,
+				Error:   fmt.Sprintf("failed to create private space: %v", err),
+			})
+			return
+		}
+
+		space := &anysync.Space{
+			SpaceID:   result.SpaceID,
+			OwnerAID:  req.UserAID,
+			SpaceType: anysync.SpaceTypePrivate,
+			SpaceName: fmt.Sprintf("Private Space - %s", truncateAID(req.UserAID)),
+			CreatedAt: result.CreatedAt,
+			LastSync:  result.CreatedAt,
+		}
+
+		if err := h.spaceStore.SaveSpace(ctx, space); err != nil {
+			fmt.Printf("Warning: failed to save private space record: %v\n", err)
+		}
+
+		writeJSON(w, http.StatusOK, CreatePrivateResponse{
+			Success: true,
+			SpaceID: space.SpaceID,
+			Created: true,
+		})
+		return
+	}
+
+	// Fallback: create with random keys via SpaceManager
 	space, err := h.spaceManager.CreatePrivateSpace(ctx, req.UserAID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, CreatePrivateResponse{
@@ -366,4 +425,12 @@ func (h *SpacesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/spaces/community", h.handleCommunitySpace)
 	mux.HandleFunc("/api/v1/spaces/community/invite", h.HandleInvite)
 	mux.HandleFunc("/api/v1/spaces/private", h.HandleCreatePrivate)
+}
+
+// truncateAID returns the first 12 characters of an AID for display purposes
+func truncateAID(aid string) string {
+	if len(aid) > 12 {
+		return aid[:12]
+	}
+	return aid
 }

@@ -1,5 +1,6 @@
 import { test, expect, Page, BrowserContext } from '@playwright/test';
-import { setupTestConfig, hasTestConfig } from './utils/mock-config';
+import { setupTestConfig } from './utils/mock-config';
+import { requireAllTestServices } from './utils/keri-testnet';
 import {
   FRONTEND_URL,
   TIMEOUT,
@@ -8,6 +9,7 @@ import {
   loginWithMnemonic,
   uniqueSuffix,
   loadAccounts,
+  performOrgSetup,
   TestAccounts,
 } from './utils/test-helpers';
 
@@ -15,7 +17,7 @@ import {
  * E2E: Registration Approval Flow
  *
  * Tests admin approval, decline, and messaging workflows.
- * Depends on e2e-org-setup having created the admin account + org config.
+ * Self-sufficient: if org-setup hasn't been run yet, performs it automatically.
  *
  * Run: npx playwright test --project=registration
  */
@@ -26,24 +28,8 @@ test.describe.serial('Registration Approval Flow', () => {
   let adminPage: Page;
 
   test.beforeAll(async ({ browser, request }) => {
-    // Load admin credentials saved by org-setup
-    accounts = loadAccounts();
-    if (!accounts.admin) {
-      throw new Error(
-        'Admin account not found. Run org-setup first:\n' +
-        'npx playwright test --project=org-setup',
-      );
-    }
-    console.log(`[Test] Using admin account created at: ${accounts.createdAt}`);
-
-    // Verify test config exists
-    const configExists = await hasTestConfig(request);
-    if (!configExists) {
-      throw new Error(
-        'Test config not found. Run org-setup first:\n' +
-        'npx playwright test --project=org-setup',
-      );
-    }
+    // Fail fast if required services are not running
+    await requireAllTestServices();
 
     // Create persistent admin context with test config isolation
     adminContext = await browser.newContext();
@@ -51,10 +37,38 @@ test.describe.serial('Registration Approval Flow', () => {
     adminPage = await adminContext.newPage();
     setupPageLogging(adminPage, 'Admin');
 
-    // Login admin once via mnemonic recovery
-    console.log('[Test] Admin logging in...');
-    await loginWithMnemonic(adminPage, accounts.admin.mnemonic);
-    console.log('[Test] Admin logged in and on dashboard');
+    // Navigate to splash and let the app decide
+    await adminPage.goto(FRONTEND_URL);
+
+    // Race: either redirected to /setup (no org config) or splash shows ready state
+    const needsSetup = await Promise.race([
+      adminPage.waitForURL(/.*#\/setup/, { timeout: TIMEOUT.medium })
+        .then(() => true),
+      adminPage.locator('button', { hasText: /register/i })
+        .waitFor({ state: 'visible', timeout: TIMEOUT.medium })
+        .then(() => false),
+    ]);
+
+    if (needsSetup) {
+      // Path A: No org config — run full org setup through the UI
+      console.log('[Test] No org config detected — running org setup...');
+      accounts = await performOrgSetup(adminPage, request);
+      console.log('[Test] Org setup complete, admin is on dashboard');
+      // Admin is now on dashboard with active KERIA session
+    } else {
+      // Path B: Org config exists — recover admin identity from saved mnemonic
+      console.log('[Test] Org config exists — recovering admin identity...');
+      accounts = loadAccounts();
+      if (!accounts.admin?.mnemonic) {
+        throw new Error(
+          'Org configured but no admin mnemonic found in test-accounts.json.\n' +
+          'Either run org-setup first or clean test state and re-run.',
+        );
+      }
+      console.log(`[Test] Using admin account created at: ${accounts.createdAt}`);
+      await loginWithMnemonic(adminPage, accounts.admin.mnemonic);
+      console.log('[Test] Admin logged in and on dashboard');
+    }
   });
 
   test.afterAll(async () => {
@@ -73,10 +87,29 @@ test.describe.serial('Registration Approval Flow', () => {
     const userName = `Approve_${uniqueSuffix()}`;
 
     try {
-      // User registers
+      // A. Set up space API listener before registration triggers the call
+      const privateSpaceResponse = userPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/spaces/private') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.long },
+      );
+
+      // 1. User registers
       await registerUser(userPage, userName);
 
-      // Wait for admin to see registration card
+      // 2. Verify private space was created during registration
+      const psResp = await privateSpaceResponse;
+      expect(psResp.status()).toBe(200);
+      const psBody = await psResp.json();
+      expect(psBody.spaceId).toBeTruthy();
+      console.log('[Test] Private space created:', psBody.spaceId, psBody.created ? '(new)' : '(existing)');
+
+      // 2b. Verify mnemonic was included in the request for deterministic key derivation
+      const psReqBody = psResp.request().postDataJSON();
+      expect(psReqBody.mnemonic).toBeTruthy();
+      expect(psReqBody.mnemonic.split(' ')).toHaveLength(12);
+      console.log('[Test] Private space request included 12-word mnemonic');
+
+      // 3. Wait for admin to see registration card
       console.log('[Test] Waiting for registration to appear on admin dashboard...');
       const adminSection = adminPage.locator('.admin-section');
       await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
@@ -85,19 +118,45 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.long });
       console.log('[Test] Registration card visible');
 
-      // Admin approves
+      // B. Set up invite + sync listeners before approval
+      const inviteResponse = adminPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/spaces/community/invite') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.long },
+      );
+      const syncResponse = userPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/sync/credentials') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.long },
+      );
+
+      // 4. Admin approves
       console.log('[Test] Admin clicking approve...');
       await registrationCard.getByRole('button', { name: /approve/i }).click();
 
-      // User receives credential (welcome overlay)
+      // 5. Verify community space invite during approval
+      const invResp = await inviteResponse;
+      expect(invResp.status()).toBe(200);
+      const invBody = await invResp.json();
+      expect(invBody.success).toBe(true);
+      console.log('[Test] User invited to community space:', invBody);
+
+      // 6. User receives credential (welcome overlay)
       console.log('[Test] Waiting for user to receive credential...');
       await expect(userPage.locator('.welcome-overlay')).toBeVisible({ timeout: TIMEOUT.long });
       console.log('[Test] User received credential!');
 
-      // User enters community and lands on dashboard
+      // 7. User enters community and lands on dashboard
       await userPage.getByRole('button', { name: /enter community/i }).click();
       await expect(userPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
-      console.log('[Test] PASS - User approved and on dashboard');
+
+      // 8. Verify credential synced to spaces (including community space)
+      const syncResp = await syncResponse;
+      expect(syncResp.status()).toBe(200);
+      const syncBody = await syncResp.json();
+      expect(syncBody.synced).toBeGreaterThan(0);
+      expect(syncBody.spaces).toBeTruthy();
+      console.log('[Test] Credential synced to spaces:', syncBody.spaces);
+
+      console.log('[Test] PASS - User approved, spaces created and synced');
     } finally {
       await userContext.close();
     }
