@@ -532,6 +532,15 @@ func (c *SDKClient) GetPeerID() string {
 	return ""
 }
 
+// GetSigningKey returns the client's signing key (used as the ACL identity).
+// This is the peer's Ed25519 private key, which signs ObjectTree changes.
+func (c *SDKClient) GetSigningKey() crypto.PrivKey {
+	if c.peerKeyManager != nil {
+		return c.peerKeyManager.GetPrivKey()
+	}
+	return nil
+}
+
 // Close shuts down the SDK client
 func (c *SDKClient) Close() error {
 	c.mu.Lock()

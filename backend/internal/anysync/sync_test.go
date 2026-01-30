@@ -166,6 +166,8 @@ func TestIntegration_P2PSync_ACLInvite(t *testing.T) {
 //  6. Client A creates a credential tree and adds an encrypted credential
 //  7. Wait for credential tree to propagate to Client B
 //  8. Client B reads credentials (decrypts with ReadKey obtained via invite)
+//  9. Client B adds a credential to the shared space (bidirectional sync)
+//  10. Client A reads credentials and verifies it sees both A's and B's
 func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 	testNetwork.RequireNetwork()
 
@@ -308,6 +310,172 @@ func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 	if !found {
 		t.Fatal("Client B did not receive Client A's credential within timeout")
 	}
+
+	// 10. Client B adds a credential to the shared space (bidirectional sync).
+	//     Client B has Writer permissions from the invite/join, so this should succeed.
+	credB := &CredentialPayload{
+		SAID:      "ESAID_propagation_test_002",
+		Issuer:    "ETestIssuer_B",
+		Recipient: "ETestRecipient",
+		Schema:    "EMatouMembershipSchemaV1",
+		Data:      json.RawMessage(`{"role":"admin","source":"clientB"}`),
+		Timestamp: time.Now().Unix(),
+	}
+
+	changeIDB, err := treeMgrB.AddCredential(ctx, spaceID, credB, clientB.GetSigningKey())
+	if err != nil {
+		t.Fatalf("Client B adding credential: %v", err)
+	}
+	t.Logf("Client B added encrypted credential, change ID: %s", changeIDB)
+
+	// 11. Poll with timeout: Client A reads credentials and finds both A's and B's.
+	//     Use a fresh CredentialTreeManager so it re-discovers the tree from storage
+	//     (HeadSync updates the storage, but the cached ObjectTree may not reflect
+	//     changes from other peers until rebuilt).
+	var foundBoth bool
+	pollDeadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(pollDeadline) {
+		freshMgrA := NewCredentialTreeManager(clientA, nil)
+		creds, err := freshMgrA.ReadCredentials(ctx, spaceID)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		var foundA, foundB bool
+		for _, c := range creds {
+			if c.SAID == "ESAID_propagation_test_001" {
+				foundA = true
+			}
+			if c.SAID == "ESAID_propagation_test_002" {
+				foundB = true
+				if c.Issuer != "ETestIssuer_B" {
+					t.Errorf("Client B credential issuer mismatch: got %s, want ETestIssuer_B", c.Issuer)
+				}
+				t.Logf("Client A found Client B's credential: SAID=%s Issuer=%s", c.SAID, c.Issuer)
+			}
+		}
+
+		if foundA && foundB {
+			foundBoth = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// 12. Assert Client A sees both credentials (bidirectional sync complete)
+	if !foundBoth {
+		t.Fatal("Client A did not see both credentials within timeout")
+	}
+}
+
+// TestIntegration_P2PSync_PrivateSpaceIsolation verifies that a non-member
+// client cannot read encrypted credentials or write to a private space.
+//
+// Flow:
+//  1. Client A creates a private space (does NOT call MakeSpaceShareable)
+//  2. Client A creates a credential tree and adds an encrypted credential
+//  3. Wait for space + credential tree to propagate to tree nodes
+//  4. Client B opens the space (space header is public)
+//  5. Client B tries to read credentials → gets 0 credentials or error (no ReadKey)
+//  6. Client B tries to add a credential → fails (no ACL membership / no ReadKey)
+func TestIntegration_P2PSync_PrivateSpaceIsolation(t *testing.T) {
+	testNetwork.RequireNetwork()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	clientA := newTestSDKClientWithDir(t, t.TempDir())
+	clientB := newTestSDKClientWithDir(t, t.TempDir())
+
+	t.Logf("Client A peer: %s", clientA.GetPeerID())
+	t.Logf("Client B peer: %s", clientB.GetPeerID())
+
+	// 1. Client A creates a private space (no MakeSpaceShareable, no invite)
+	result, err := clientA.CreateSpace(ctx, "ETestPrivate_Owner", "anytype.space", nil)
+	if err != nil {
+		t.Fatalf("Client A creating space: %v", err)
+	}
+	spaceID := result.SpaceID
+	signingKey := result.Keys.SigningKey
+	t.Logf("Client A created private space: %s", spaceID)
+
+	// 2. Client A creates a credential tree and adds an encrypted credential
+	treeMgrA := NewCredentialTreeManager(clientA, nil)
+	cred := &CredentialPayload{
+		SAID:      "ESAID_private_test_001",
+		Issuer:    "ETestIssuer_Private",
+		Recipient: "ETestRecipient",
+		Schema:    "EMatouMembershipSchemaV1",
+		Data:      json.RawMessage(`{"role":"owner","source":"private"}`),
+		Timestamp: time.Now().Unix(),
+	}
+
+	changeID, err := treeMgrA.AddCredential(ctx, spaceID, cred, signingKey)
+	if err != nil {
+		t.Fatalf("Client A adding credential: %v", err)
+	}
+	t.Logf("Client A added encrypted credential, change ID: %s", changeID)
+
+	// 3. Wait for space to propagate to tree nodes so Client B can open it.
+	t.Log("Waiting for space to propagate to tree nodes...")
+	pushDeadline := time.Now().Add(30 * time.Second)
+	var spaceReady bool
+	for time.Now().Before(pushDeadline) {
+		_, err := clientB.GetSpace(ctx, spaceID)
+		if err == nil {
+			spaceReady = true
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	if !spaceReady {
+		t.Fatalf("Space did not propagate to tree nodes within timeout")
+	}
+	t.Log("Client B can access space from tree nodes (space header is public)")
+
+	// 4. Wait a bit for the credential tree to propagate as well
+	time.Sleep(5 * time.Second)
+
+	// 5. Client B tries to read credentials — should get 0 or error.
+	//    Client B does not have the ReadKey (never invited/joined), so encrypted
+	//    credential changes cannot be decrypted. The SDK returns empty bytes for
+	//    changes it can't decrypt, so ReadCredentials returns 0 credentials.
+	treeMgrB := NewCredentialTreeManager(clientB, nil)
+	creds, readErr := treeMgrB.ReadCredentials(ctx, spaceID)
+	if readErr != nil {
+		t.Logf("Client B ReadCredentials returned error (expected): %v", readErr)
+	} else {
+		t.Logf("Client B ReadCredentials returned %d credentials", len(creds))
+	}
+
+	// Assert Client B did NOT get Client A's credential
+	for _, c := range creds {
+		if c.SAID == "ESAID_private_test_001" {
+			t.Fatal("Client B should NOT be able to read Client A's encrypted credential without the ReadKey")
+		}
+	}
+	t.Log("Confirmed: Client B cannot read encrypted credentials (no ReadKey)")
+
+	// 6. Client B tries to add a credential — should fail.
+	//    Client B is not in the space's ACL and does not have the ReadKey,
+	//    so creating an encrypted tree or adding encrypted content fails.
+	credB := &CredentialPayload{
+		SAID:      "ESAID_private_unauthorized_001",
+		Issuer:    "ETestIssuer_Unauthorized",
+		Recipient: "ETestRecipient",
+		Schema:    "EMatouMembershipSchemaV1",
+		Data:      json.RawMessage(`{"role":"intruder"}`),
+		Timestamp: time.Now().Unix(),
+	}
+
+	_, writeErr := treeMgrB.AddCredential(ctx, spaceID, credB, clientB.GetSigningKey())
+	if writeErr != nil {
+		t.Logf("Client B AddCredential returned error (expected): %v", writeErr)
+	} else {
+		t.Fatal("Client B should NOT be able to add credentials to Client A's private space")
+	}
+	t.Log("Confirmed: Client B cannot write credentials to private space")
 }
 
 // newTestSDKClientWithDir creates an SDKClient using a specific data directory.
