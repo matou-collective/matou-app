@@ -16,6 +16,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/anyproto/any-sync/util/crypto"
 )
 
 func TestIntegration_P2PSync_CredentialTree(t *testing.T) {
@@ -149,8 +151,21 @@ func TestIntegration_P2PSync_ACLInvite(t *testing.T) {
 	})
 }
 
-// TestIntegration_P2PSync_TwoClientPropagation verifies that credential changes
-// propagate between two clients connected to the same space via HeadUpdate/FullSync.
+// TestIntegration_P2PSync_TwoClientPropagation verifies that encrypted credential
+// changes propagate between two clients via tree nodes using HeadUpdate/FullSync.
+//
+// Credentials are encrypted — Client B must join the space via ACL invite to
+// receive the ReadKey needed to decrypt them.
+//
+// Flow:
+//  1. Client A creates a space
+//  2. Wait for space to propagate to tree nodes
+//  3. Client A marks space as shareable on coordinator
+//  4. Client A creates an open invite (ACL record with encrypted ReadKey)
+//  5. Client B joins with the invite key → decrypts ReadKey
+//  6. Client A creates a credential tree and adds an encrypted credential
+//  7. Wait for credential tree to propagate to Client B
+//  8. Client B reads credentials (decrypts with ReadKey obtained via invite)
 func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 	testNetwork.RequireNetwork()
 
@@ -164,36 +179,81 @@ func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 	t.Logf("Client A peer: %s", clientA.GetPeerID())
 	t.Logf("Client B peer: %s", clientB.GetPeerID())
 
-	// 2. Client A creates a community space with keys
-	keys, err := GenerateSpaceKeySet()
-	if err != nil {
-		t.Fatalf("generating keys: %v", err)
-	}
-
-	result, err := clientA.CreateSpaceWithKeys(ctx, "ETestPropagation_Owner", SpaceTypeCommunity, keys)
+	// 2. Client A creates a space
+	result, err := clientA.CreateSpace(ctx, "ETestPropagation_Owner", "anytype.space", nil)
 	if err != nil {
 		t.Fatalf("Client A creating space: %v", err)
 	}
 	spaceID := result.SpaceID
+	signingKey := result.Keys.SigningKey
 	t.Logf("Client A created space: %s", spaceID)
 
-	// 3. Client A creates an open invite
-	aclMgrA := NewMatouACLManager(clientA, nil)
-	inviteKey, err := aclMgrA.CreateOpenInvite(ctx, spaceID, PermissionWrite.ToSDKPermissions())
-	if err != nil {
-		t.Fatalf("Client A creating invite: %v", err)
+	// 3. Wait for space to propagate to tree nodes via HeadSync.
+	//    The consensus node learns about the space (ACL root) via tree nodes.
+	//    We must wait for this before creating an invite, otherwise the
+	//    consensus node returns "space not exists" when adding the ACL record.
+	t.Log("Waiting for space to propagate to tree nodes via HeadSync...")
+	pushDeadline := time.Now().Add(30 * time.Second)
+	var spaceReady bool
+	for time.Now().Before(pushDeadline) {
+		_, err := clientB.GetSpace(ctx, spaceID)
+		if err == nil {
+			spaceReady = true
+			break
+		}
+		time.Sleep(1 * time.Second)
 	}
-	t.Logf("Client A created open invite")
+	if !spaceReady {
+		t.Fatalf("Space did not propagate to tree nodes within timeout")
+	}
+	t.Log("Client B can access space from tree nodes")
 
-	// 4. Client B joins using the invite key
+	// 4. Mark the space as shareable on the coordinator so ACL invites are accepted.
+	if err := clientA.MakeSpaceShareable(ctx, spaceID); err != nil {
+		t.Fatalf("Client A making space shareable: %v", err)
+	}
+	t.Log("Space marked as shareable on coordinator")
+
+	// 5. Client A creates an open invite so Client B can join and get the ReadKey.
+	//    Retry because the consensus node may still be processing the ACL root.
+	t.Log("Client A creating open invite...")
+	aclMgr := NewMatouACLManager(clientA, nil)
+	var inviteKey crypto.PrivKey
+	inviteDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(inviteDeadline) {
+		inviteKey, err = aclMgr.CreateOpenInvite(ctx, spaceID, PermissionWrite.ToSDKPermissions())
+		if err == nil {
+			break
+		}
+		t.Logf("Invite creation attempt failed (consensus may not have ACL root yet): %v", err)
+		time.Sleep(2 * time.Second)
+	}
+	if inviteKey == nil {
+		t.Fatalf("Client A could not create invite within timeout: %v", err)
+	}
+	t.Log("Client A created open invite")
+
+	// 6. Client B joins the space using the invite key.
+	//    The invite record may not have propagated yet, so poll with retries.
+	t.Log("Client B joining space with invite key...")
 	aclMgrB := NewMatouACLManager(clientB, nil)
-	err = aclMgrB.JoinWithInvite(ctx, spaceID, inviteKey, []byte("ClientB"))
-	if err != nil {
-		t.Fatalf("Client B joining space: %v", err)
+	joinDeadline := time.Now().Add(30 * time.Second)
+	var joined bool
+	for time.Now().Before(joinDeadline) {
+		err := aclMgrB.JoinWithInvite(ctx, spaceID, inviteKey, []byte(`{"aid":"ETestPropagation_Joiner"}`))
+		if err == nil {
+			joined = true
+			break
+		}
+		t.Logf("Client B join attempt failed (invite may not have propagated yet): %v", err)
+		time.Sleep(2 * time.Second)
 	}
-	t.Logf("Client B joined space")
+	if !joined {
+		t.Fatalf("Client B could not join space within timeout")
+	}
+	t.Log("Client B joined space with invite key (has ReadKey)")
 
-	// 5. Client A adds a credential to the space's tree
+	// 7. Client A creates a credential tree and adds an encrypted credential
 	treeMgrA := NewCredentialTreeManager(clientA, nil)
 	cred := &CredentialPayload{
 		SAID:      "ESAID_propagation_test_001",
@@ -204,13 +264,14 @@ func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 		Timestamp: time.Now().Unix(),
 	}
 
-	changeID, err := treeMgrA.AddCredential(ctx, spaceID, cred, keys.SigningKey)
+	changeID, err := treeMgrA.AddCredential(ctx, spaceID, cred, signingKey)
 	if err != nil {
 		t.Fatalf("Client A adding credential: %v", err)
 	}
-	t.Logf("Client A added credential, change ID: %s", changeID)
+	t.Logf("Client A added encrypted credential, change ID: %s", changeID)
 
-	// 6. Poll with timeout: Client B reads credentials via CredentialTreeManager
+	// 8. Poll with timeout: Client B reads credentials via CredentialTreeManager.
+	//    Client B can decrypt because it has the ReadKey from the invite/join flow.
 	treeMgrB := NewCredentialTreeManager(clientB, nil)
 
 	var found bool
@@ -243,7 +304,7 @@ func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// 7. Assert Client B sees Client A's credential
+	// 9. Assert Client B sees Client A's credential (decrypted via ReadKey)
 	if !found {
 		t.Fatal("Client B did not receive Client A's credential within timeout")
 	}

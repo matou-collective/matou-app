@@ -41,17 +41,18 @@ func (m *MatouACLManager) CreateOpenInvite(ctx context.Context, spaceID string, 
 		return nil, fmt.Errorf("getting space %s: %w", spaceID, err)
 	}
 
+	// Build the invite record while holding the ACL lock.
 	acl := space.Acl()
 	acl.Lock()
-	defer acl.Unlock()
-
 	builder := acl.RecordBuilder()
 	result, err := builder.BuildInviteAnyone(permissions)
+	acl.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("building invite: %w", err)
 	}
 
-	// Submit the invite record to the network
+	// Submit the invite record to the network (without the ACL lock —
+	// AddRecord internally re-acquires it after the network round-trip).
 	aclClient := space.AclClient()
 	if err := aclClient.AddRecord(ctx, result.InviteRec); err != nil {
 		return nil, fmt.Errorf("adding invite record: %w", err)
@@ -69,19 +70,20 @@ func (m *MatouACLManager) JoinWithInvite(ctx context.Context, spaceID string, in
 		return fmt.Errorf("getting space %s: %w", spaceID, err)
 	}
 
+	// Build the join record while holding the ACL lock.
 	acl := space.Acl()
 	acl.Lock()
-	defer acl.Unlock()
-
 	builder := acl.RecordBuilder()
 	joinRec, err := builder.BuildInviteJoinWithoutApprove(list.InviteJoinPayload{
 		InviteKey: inviteKey,
 		Metadata:  metadata,
 	})
+	acl.Unlock()
 	if err != nil {
 		return fmt.Errorf("building join record: %w", err)
 	}
 
+	// Submit to the network without the ACL lock.
 	aclClient := space.AclClient()
 	return aclClient.AddRecord(ctx, joinRec)
 }

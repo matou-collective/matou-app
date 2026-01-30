@@ -402,6 +402,12 @@ func (c *Client) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType s
 	return generateSpaceID(ownerAID, spaceType, signingKey), nil
 }
 
+// MakeSpaceShareable is a no-op for the local client. The local client does
+// not interact with a coordinator, so sharing is always implicitly allowed.
+func (c *Client) MakeSpaceShareable(ctx context.Context, spaceID string) error {
+	return nil
+}
+
 // AddToACL adds a peer to a space's access control list
 func (c *Client) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
 	c.mu.Lock()

@@ -19,13 +19,17 @@ import (
 	"github.com/anyproto/any-sync/commonspace/credentialprovider"
 	"github.com/anyproto/any-sync/commonspace/object/accountdata"
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
+	"github.com/anyproto/any-sync/commonspace/object/tree/synctree"
 	"github.com/anyproto/any-sync/commonspace/object/tree/treestorage"
+	"github.com/anyproto/any-sync/commonspace/object/treemanager"
+	"github.com/anyproto/any-sync/commonspace/object/treesyncer"
 	"github.com/anyproto/any-sync/commonspace/objecttreebuilder"
 	"github.com/anyproto/any-sync/commonspace/peermanager"
 	"github.com/anyproto/any-sync/commonspace/spacepayloads"
 	"github.com/anyproto/any-sync/commonspace/spacestorage"
 	"github.com/anyproto/any-sync/commonspace/spacesyncproto"
 	"github.com/anyproto/any-sync/commonspace/sync/objectsync/objectmessages"
+	"github.com/anyproto/any-sync/commonspace/syncstatus"
 	"github.com/anyproto/any-sync/consensus/consensusproto"
 	"github.com/anyproto/any-sync/coordinator/coordinatorclient"
 	"github.com/anyproto/any-sync/net/peer"
@@ -37,8 +41,10 @@ import (
 	"github.com/anyproto/any-sync/net/streampool"
 	"github.com/anyproto/any-sync/net/transport/quic"
 	"github.com/anyproto/any-sync/net/transport/yamux"
+	"github.com/anyproto/any-sync/node/nodeclient"
 	"github.com/anyproto/any-sync/nodeconf"
 	"github.com/anyproto/any-sync/util/crypto"
+	"github.com/anyproto/any-sync/util/syncqueues"
 	"github.com/anyproto/go-chash"
 	anystore "github.com/anyproto/any-store"
 	"storj.io/drpc"
@@ -57,7 +63,6 @@ type SDKClient struct {
 	networkID       string
 	coordinatorURL  string
 	initialized     bool
-	spaceCache      sync.Map // spaceID → commonspace.Space
 }
 
 // NewSDKClient creates a new any-sync client with full network connectivity
@@ -150,6 +155,9 @@ func (c *SDKClient) initFullSDK() error {
 	c.storageProvider = newSDKStorageProvider(storageDir)
 
 	// Register components in dependency order:
+	// Layer 0: Shared space resolver (lazy init, no deps)
+	c.app.Register(newSDKSpaceResolver())
+
 	// Layer 1: Core services (no deps)
 	c.app.Register(accountSvc)
 	c.app.Register(cfg)
@@ -163,23 +171,29 @@ func (c *SDKClient) initFullSDK() error {
 	c.app.Register(yamux.New())
 	c.app.Register(quic.New())
 
-	// Layer 4: Networking
+	// Layer 4: Networking and sync utilities
 	c.app.Register(pool.New())
 	c.app.Register(peerservice.New())
 	c.app.Register(streampool.New())
+	c.app.Register(syncqueues.New())
 
-	// Layer 5: Coordination
+	// Layer 5: Coordination and node client
 	c.app.Register(coordinatorclient.New())
+	c.app.Register(nodeclient.New())
 
 	// Layer 6: Space services (peer manager, tree manager, then space service)
 	c.app.Register(c.storageProvider)
-	c.app.Register(credentialprovider.NewNoOp())
+	c.app.Register(newSDKCredentialProvider())
 	c.app.Register(newSDKPeerManagerProvider())
 	c.app.Register(newSDKTreeManager())
 	c.app.Register(commonspace.New())
 
-	// Layer 7: Stream handler (depends on commonspace for message routing)
+	// Layer 7: Stream handler and SpaceSync RPC server
+	// Stream handler: opens/reads ObjectSyncStream for outgoing sync
+	// SpaceSync RPC: handles incoming RPCs from tree nodes (ObjectSyncRequestStream,
+	// HeadSync) so tree nodes can pull trees they learn about via HeadUpdate.
 	c.app.Register(newSDKStreamHandler())
+	c.app.Register(newSDKSpaceSyncRPC())
 
 	// Start the app
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -270,6 +284,13 @@ func (c *SDKClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, sp
 		return nil, fmt.Errorf("creating space: %w", err)
 	}
 
+	// Open and initialize the space via shared resolver so all components
+	// use the same Space instance
+	resolver := c.app.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
+	if _, err := resolver.GetSpace(ctx, spaceID); err != nil {
+		return nil, fmt.Errorf("opening newly created space: %w", err)
+	}
+
 	// Persist keys
 	if err := PersistSpaceKeySet(c.dataDir, spaceID, keys); err != nil {
 		return nil, fmt.Errorf("persisting space keys: %w", err)
@@ -287,14 +308,11 @@ func (c *SDKClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, sp
 }
 
 // GetSpace returns an opened Space by ID. If not cached, it attempts to open
-// the space via the space service.
+// the space via the space service. Uses the shared space resolver to ensure
+// all components share the same Space instances.
 func (c *SDKClient) GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error) {
-	// Check cache first
-	if cached, ok := c.spaceCache.Load(spaceID); ok {
-		return cached.(commonspace.Space), nil
-	}
-
-	return nil, fmt.Errorf("space %s not found in cache; create it first via CreateSpaceWithKeys", spaceID)
+	resolver := c.app.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
+	return resolver.GetSpace(ctx, spaceID)
 }
 
 // GetDataDir returns the data directory path
@@ -413,6 +431,25 @@ func (c *SDKClient) AddToACL(ctx context.Context, spaceID string, peerID string,
 	}
 
 	fmt.Printf("[any-sync SDK] AddToACL: space=%s peer=%s permissions=%v\n", spaceID, peerID, permissions)
+	return nil
+}
+
+// MakeSpaceShareable marks a space as shareable on the coordinator,
+// enabling ACL invite operations (CreateOpenInvite / JoinWithInvite).
+// Must be called after space creation and propagation to tree nodes.
+func (c *SDKClient) MakeSpaceShareable(ctx context.Context, spaceID string) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if !c.initialized {
+		return fmt.Errorf("client not initialized")
+	}
+
+	if err := c.coordinator.SpaceMakeShareable(ctx, spaceID); err != nil {
+		return fmt.Errorf("making space shareable: %w", err)
+	}
+
+	fmt.Printf("[any-sync SDK] MakeSpaceShareable: %s\n", spaceID)
 	return nil
 }
 
@@ -588,6 +625,49 @@ func (c *sdkConfig) GetSecureService() secureservice.Config {
 	return secureservice.Config{
 		RequireClientAuth: false,
 	}
+}
+
+// sdkSpaceResolver provides a shared space cache across all SDK components.
+// Without this, each component (SDKClient, sdkTreeManager, sdkStreamHandler,
+// sdkSpaceSyncRPC) creates its own Space instances for the same spaceId,
+// leading to multiple HeadSync diffs and inconsistent StoredIds() results.
+const spaceResolverCName = "matou.space.resolver"
+
+type sdkSpaceResolver struct {
+	a     *app.App
+	cache sync.Map // spaceId → commonspace.Space
+}
+
+func newSDKSpaceResolver() *sdkSpaceResolver { return &sdkSpaceResolver{} }
+
+func (r *sdkSpaceResolver) Init(a *app.App) error {
+	r.a = a
+	return nil
+}
+
+func (r *sdkSpaceResolver) Name() string { return spaceResolverCName }
+
+func (r *sdkSpaceResolver) spaceService() commonspace.SpaceService {
+	return r.a.MustComponent(commonspace.CName).(commonspace.SpaceService)
+}
+
+func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceId string) (commonspace.Space, error) {
+	if val, ok := r.cache.Load(spaceId); ok {
+		return val.(commonspace.Space), nil
+	}
+	sp, err := r.spaceService().NewSpace(ctx, spaceId, newSpaceDeps(spaceId))
+	if err != nil {
+		return nil, err
+	}
+	if err := sp.Init(ctx); err != nil {
+		return nil, err
+	}
+	r.cache.Store(spaceId, sp)
+	return sp, nil
+}
+
+func (r *sdkSpaceResolver) StoreSpace(spaceId string, space commonspace.Space) {
+	r.cache.Store(spaceId, space)
 }
 
 // sdkNodeConf implements nodeconf.Service with full configuration
@@ -825,8 +905,9 @@ func (m *sdkPeerManager) SendMessage(ctx context.Context, peerId string, msg drp
 func (m *sdkPeerManager) KeepAlive(ctx context.Context) {}
 
 // sdkTreeManager implements treemanager.TreeManager using the space service's
-// ObjectTreeBuilder for real tree operations. Trees are cached in an ocache
-// for efficient reuse across sync requests.
+// ObjectTreeBuilder for real tree operations. Trees are cached in a sync.Map
+// for efficient reuse across sync requests. Uses sdkSpaceResolver to share
+// Space instances with other components.
 type sdkTreeManager struct {
 	a     *app.App
 	cache sync.Map // treeId → objecttree.ObjectTree
@@ -835,7 +916,7 @@ type sdkTreeManager struct {
 func newSDKTreeManager() *sdkTreeManager { return &sdkTreeManager{} }
 
 func (t *sdkTreeManager) Init(a *app.App) error {
-	// Store the app reference for lazy resolution of SpaceService.
+	// Store the app reference for lazy resolution of SpaceService/SpaceResolver.
 	// SpaceService depends on TreeManager, so we cannot resolve it during Init.
 	t.a = a
 	return nil
@@ -845,8 +926,9 @@ func (t *sdkTreeManager) Name() string                    { return "common.objec
 func (t *sdkTreeManager) Run(ctx context.Context) error   { return nil }
 func (t *sdkTreeManager) Close(ctx context.Context) error { return nil }
 
-func (t *sdkTreeManager) spaceService() commonspace.SpaceService {
-	return t.a.MustComponent(commonspace.CName).(commonspace.SpaceService)
+func (t *sdkTreeManager) getSpace(ctx context.Context, spaceId string) (commonspace.Space, error) {
+	resolver := t.a.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
+	return resolver.GetSpace(ctx, spaceId)
 }
 
 func (t *sdkTreeManager) GetTree(ctx context.Context, spaceId, treeId string) (objecttree.ObjectTree, error) {
@@ -856,9 +938,9 @@ func (t *sdkTreeManager) GetTree(ctx context.Context, spaceId, treeId string) (o
 	}
 
 	// Build tree from storage via the space's TreeBuilder
-	sp, err := t.spaceService().NewSpace(ctx, spaceId, commonspace.Deps{})
+	sp, err := t.getSpace(ctx, spaceId)
 	if err != nil {
-		return nil, fmt.Errorf("getting space %s: %w", spaceId, err)
+		return nil, err
 	}
 
 	tree, err := sp.TreeBuilder().BuildTree(ctx, treeId, objecttreebuilder.BuildTreeOpts{})
@@ -871,9 +953,9 @@ func (t *sdkTreeManager) GetTree(ctx context.Context, spaceId, treeId string) (o
 }
 
 func (t *sdkTreeManager) ValidateAndPutTree(ctx context.Context, spaceId string, payload treestorage.TreeStorageCreatePayload) error {
-	sp, err := t.spaceService().NewSpace(ctx, spaceId, commonspace.Deps{})
+	sp, err := t.getSpace(ctx, spaceId)
 	if err != nil {
-		return fmt.Errorf("getting space %s: %w", spaceId, err)
+		return err
 	}
 
 	tree, err := sp.TreeBuilder().PutTree(ctx, payload, nil)
@@ -907,16 +989,17 @@ func (t *sdkTreeManager) DeleteTree(ctx context.Context, spaceId, treeId string)
 
 // sdkStreamHandler implements streamhandler.StreamHandler for P2P sync.
 // It opens ObjectSyncStream DRPC streams and routes incoming HeadUpdate
-// messages to the correct space's sync service.
+// messages to the correct space's sync service. Uses sdkSpaceResolver to
+// share Space instances with other components.
 type sdkStreamHandler struct {
-	spaceService commonspace.SpaceService
-	streamPool   streampool.StreamPool
+	resolver   *sdkSpaceResolver
+	streamPool streampool.StreamPool
 }
 
 func newSDKStreamHandler() *sdkStreamHandler { return &sdkStreamHandler{} }
 
 func (s *sdkStreamHandler) Init(a *app.App) error {
-	s.spaceService = a.MustComponent(commonspace.CName).(commonspace.SpaceService)
+	s.resolver = a.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
 	s.streamPool = a.MustComponent(streampool.CName).(streampool.StreamPool)
 	return nil
 }
@@ -956,15 +1039,165 @@ func (s *sdkStreamHandler) HandleMessage(ctx context.Context, peerId string, msg
 		return s.streamPool.RemoveTagsCtx(ctx, sub.SpaceIds...)
 	}
 
-	// Route to the space's sync handler
-	space, err := s.spaceService.NewSpace(ctx, spaceId, commonspace.Deps{})
+	// Route to the space's sync handler via shared resolver
+	space, err := s.resolver.GetSpace(ctx, spaceId)
 	if err != nil {
 		return fmt.Errorf("getting space %s: %w", spaceId, err)
 	}
-
 	return space.HandleMessage(ctx, headUpdate)
 }
 
 func (s *sdkStreamHandler) NewReadMessage() drpc.Message {
 	return &objectmessages.HeadUpdate{}
+}
+
+// sdkSpaceSyncRPC implements DRPCSpaceSyncServer to handle incoming RPC calls
+// from tree nodes. When a tree node receives a HeadUpdate for an unknown tree,
+// it calls ObjectSyncRequestStream back to the originating client to fetch the
+// tree. Without this handler, trees broadcast via HeadUpdate are never fetched
+// by tree nodes (they can't pull the data).
+type sdkSpaceSyncRPC struct {
+	spacesyncproto.DRPCSpaceSyncUnimplementedServer
+	resolver   *sdkSpaceResolver
+	streamPool streampool.StreamPool
+}
+
+func newSDKSpaceSyncRPC() *sdkSpaceSyncRPC { return &sdkSpaceSyncRPC{} }
+
+func (r *sdkSpaceSyncRPC) Init(a *app.App) error {
+	r.resolver = a.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
+	r.streamPool = a.MustComponent(streampool.CName).(streampool.StreamPool)
+	drpcServer := a.MustComponent(server.CName).(server.DRPCServer)
+	return spacesyncproto.DRPCRegisterSpaceSync(drpcServer, r)
+}
+
+func (r *sdkSpaceSyncRPC) Name() string { return "matou.spacesync.rpc" }
+
+func (r *sdkSpaceSyncRPC) HeadSync(ctx context.Context, req *spacesyncproto.HeadSyncRequest) (*spacesyncproto.HeadSyncResponse, error) {
+	sp, err := r.resolver.GetSpace(ctx, req.SpaceId)
+	if err != nil {
+		return nil, err
+	}
+	return sp.HandleRangeRequest(ctx, req)
+}
+
+func (r *sdkSpaceSyncRPC) ObjectSyncStream(stream spacesyncproto.DRPCSpaceSync_ObjectSyncStreamStream) error {
+	return r.streamPool.ReadStream(stream, 100)
+}
+
+func (r *sdkSpaceSyncRPC) ObjectSyncRequestStream(msg *spacesyncproto.ObjectSyncMessage, stream spacesyncproto.DRPCSpaceSync_ObjectSyncRequestStreamStream) error {
+	sp, err := r.resolver.GetSpace(stream.Context(), msg.SpaceId)
+	if err != nil {
+		return err
+	}
+	return sp.HandleStreamSyncRequest(stream.Context(), msg, stream)
+}
+
+// sdkCredentialProvider implements credentialprovider.CredentialProvider by
+// calling the coordinator's SpaceSign RPC to obtain a valid space receipt.
+// Tree nodes validate this receipt before accepting a space push.
+type sdkCredentialProvider struct {
+	coordinator coordinatorclient.CoordinatorClient
+	account     accountservice.Service
+}
+
+func newSDKCredentialProvider() *sdkCredentialProvider { return &sdkCredentialProvider{} }
+
+func (p *sdkCredentialProvider) Init(a *app.App) error {
+	p.coordinator = a.MustComponent(coordinatorclient.CName).(coordinatorclient.CoordinatorClient)
+	p.account = a.MustComponent(accountservice.CName).(accountservice.Service)
+	return nil
+}
+
+func (p *sdkCredentialProvider) Name() string {
+	return credentialprovider.CName
+}
+
+func (p *sdkCredentialProvider) GetCredential(ctx context.Context, spaceHeader *spacesyncproto.RawSpaceHeaderWithId) ([]byte, error) {
+	keys := p.account.Account()
+	receipt, err := p.coordinator.SpaceSign(ctx, coordinatorclient.SpaceSignPayload{
+		SpaceId:     spaceHeader.Id,
+		SpaceHeader: spaceHeader.RawHeader,
+		OldAccount:  keys.SignKey,
+		Identity:    keys.SignKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("signing space receipt: %w", err)
+	}
+	return receipt.MarshalVT()
+}
+
+// newSpaceDeps creates the Deps required by SpaceService.NewSpace.
+// Uses matouTreeSyncer for real P2P tree sync and no-op sync status.
+func newSpaceDeps(spaceID string) commonspace.Deps {
+	return commonspace.Deps{
+		SyncStatus: &noOpSyncStatus{},
+		TreeSyncer: newMatouTreeSyncer(spaceID),
+	}
+}
+
+// noOpSyncStatus implements syncstatus.StatusUpdater as a no-op.
+type noOpSyncStatus struct{}
+
+func (n *noOpSyncStatus) Init(a *app.App) error                                   { return nil }
+func (n *noOpSyncStatus) Name() string                                             { return syncstatus.CName }
+func (n *noOpSyncStatus) HeadsChange(treeId string, heads []string)                {}
+func (n *noOpSyncStatus) HeadsReceive(senderId, treeId string, heads []string)     {}
+func (n *noOpSyncStatus) ObjectReceive(senderId, treeId string, heads []string)    {}
+func (n *noOpSyncStatus) HeadsApply(senderId, treeId string, heads []string, allAdded bool) {}
+
+// matouTreeSyncer implements treesyncer.TreeSyncer using the space's tree
+// manager to fetch and sync trees with peers. HeadSync discovers missing/changed
+// trees via diff, then matouTreeSyncer syncs them using the ObjectSync protocol.
+// For missing trees, BuildSyncTreeOrGetRemote fetches the full tree from the peer.
+type matouTreeSyncer struct {
+	spaceId     string
+	treeManager treemanager.TreeManager
+}
+
+func newMatouTreeSyncer(spaceId string) *matouTreeSyncer {
+	return &matouTreeSyncer{spaceId: spaceId}
+}
+
+func (t *matouTreeSyncer) Init(a *app.App) error {
+	// Resolves to the objectManager in the child space app, which wraps
+	// the parent app's sdkTreeManager. GetTree calls BuildSyncTreeOrGetRemote
+	// which handles fetching missing trees from remote peers.
+	t.treeManager = a.MustComponent(treemanager.CName).(treemanager.TreeManager)
+	return nil
+}
+
+func (t *matouTreeSyncer) Name() string                    { return treesyncer.CName }
+func (t *matouTreeSyncer) Run(ctx context.Context) error   { return nil }
+func (t *matouTreeSyncer) Close(ctx context.Context) error { return nil }
+func (t *matouTreeSyncer) StartSync()                      {}
+func (t *matouTreeSyncer) StopSync()                       {}
+func (t *matouTreeSyncer) ShouldSync(peerId string) bool   { return true }
+
+func (t *matouTreeSyncer) SyncAll(ctx context.Context, p peer.Peer, existing, missing []string) error {
+	// For missing trees, set the peer ID in context so BuildSyncTreeOrGetRemote
+	// knows which peer to fetch the tree from via ObjectSyncRequestStream.
+	// Without this, treeRemoteGetter.getPeers returns ErrPeerIdNotFoundInContext
+	// and the remote fetch silently fails with "tree does not exist".
+	peerCtx := peer.CtxWithPeerId(ctx, p.Id())
+
+	for _, id := range missing {
+		tr, err := t.treeManager.GetTree(peerCtx, t.spaceId, id)
+		if err != nil {
+			continue
+		}
+		if st, ok := tr.(synctree.SyncTree); ok {
+			_ = st.SyncWithPeer(ctx, p)
+		}
+	}
+	for _, id := range existing {
+		tr, err := t.treeManager.GetTree(ctx, t.spaceId, id)
+		if err != nil {
+			continue
+		}
+		if st, ok := tr.(synctree.SyncTree); ok {
+			_ = st.SyncWithPeer(ctx, p)
+		}
+	}
+	return nil
 }

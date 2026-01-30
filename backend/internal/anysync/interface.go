@@ -49,6 +49,10 @@ type AnySyncClient interface {
 	// GetDataDir returns the data directory path
 	GetDataDir() string
 
+	// MakeSpaceShareable marks a space as shareable on the coordinator,
+	// enabling ACL invite operations. Must be called before CreateOpenInvite.
+	MakeSpaceShareable(ctx context.Context, spaceID string) error
+
 	// Ping tests connectivity to the any-sync network
 	Ping() error
 

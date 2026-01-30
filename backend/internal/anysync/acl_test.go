@@ -437,6 +437,7 @@ func (c *testACLClient) AddToACL(_ context.Context, _ string, _ string, _ []stri
 func (c *testACLClient) SyncDocument(_ context.Context, _ string, _ string, _ []byte) error {
 	return fmt.Errorf("not implemented")
 }
+func (c *testACLClient) MakeSpaceShareable(_ context.Context, _ string) error { return nil }
 func (c *testACLClient) GetNetworkID() string     { return "" }
 func (c *testACLClient) GetCoordinatorURL() string { return "" }
 func (c *testACLClient) GetPeerID() string         { return "" }

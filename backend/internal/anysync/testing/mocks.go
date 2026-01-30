@@ -258,6 +258,11 @@ func (m *MockAnySyncClient) GetPeerID() string {
 	return m.PeerID
 }
 
+// MakeSpaceShareable implements AnySyncClient.MakeSpaceShareable
+func (m *MockAnySyncClient) MakeSpaceShareable(ctx context.Context, spaceID string) error {
+	return nil
+}
+
 // Ping implements AnySyncClient.Ping
 func (m *MockAnySyncClient) Ping() error {
 	if !m.Initialized {

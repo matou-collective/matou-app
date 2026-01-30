@@ -75,6 +75,7 @@ func (m *mockAnySyncClient) SyncDocument(ctx context.Context, spaceID string, do
 	return m.syncDocErr
 }
 
+func (m *mockAnySyncClient) MakeSpaceShareable(_ context.Context, _ string) error { return nil }
 func (m *mockAnySyncClient) GetNetworkID() string      { return m.networkID }
 func (m *mockAnySyncClient) GetCoordinatorURL() string { return m.coordinatorURL }
 func (m *mockAnySyncClient) GetPeerID() string         { return m.peerID }
