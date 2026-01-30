@@ -150,24 +150,116 @@ func TestIntegration_P2PSync_ACLInvite(t *testing.T) {
 }
 
 // TestIntegration_P2PSync_TwoClientPropagation verifies that credential changes
-// propagate between two clients connected to the same space.
-//
-// TODO: This test requires fixing the SDK component stubs (sdkPeerManagerProvider,
-// sdkTreeManager, sdkStreamHandler) to enable real P2P sync. Currently, the stubs
-// return errors for all sync operations, preventing inter-peer propagation.
-// The test is included as a placeholder for when the stubs are replaced with
-// real SDK components.
+// propagate between two clients connected to the same space via HeadUpdate/FullSync.
 func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 	testNetwork.RequireNetwork()
-	t.Skip("Requires real SDK sync components (sdkPeerManagerProvider, sdkTreeManager, sdkStreamHandler) — currently stubbed out")
 
-	// When enabled, this test should:
-	// 1. Create two SDKClients (Client A and Client B) with separate data dirs
-	// 2. Client A creates a space with keys
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// 1. Create two SDKClients with separate data directories
+	clientA := newTestSDKClientWithDir(t, t.TempDir())
+	clientB := newTestSDKClientWithDir(t, t.TempDir())
+
+	t.Logf("Client A peer: %s", clientA.GetPeerID())
+	t.Logf("Client B peer: %s", clientB.GetPeerID())
+
+	// 2. Client A creates a community space with keys
+	keys, err := GenerateSpaceKeySet()
+	if err != nil {
+		t.Fatalf("generating keys: %v", err)
+	}
+
+	result, err := clientA.CreateSpaceWithKeys(ctx, "ETestPropagation_Owner", SpaceTypeCommunity, keys)
+	if err != nil {
+		t.Fatalf("Client A creating space: %v", err)
+	}
+	spaceID := result.SpaceID
+	t.Logf("Client A created space: %s", spaceID)
+
 	// 3. Client A creates an open invite
+	aclMgrA := NewMatouACLManager(clientA, nil)
+	inviteKey, err := aclMgrA.CreateOpenInvite(ctx, spaceID, PermissionWrite.ToSDKPermissions())
+	if err != nil {
+		t.Fatalf("Client A creating invite: %v", err)
+	}
+	t.Logf("Client A created open invite")
+
 	// 4. Client B joins using the invite key
+	aclMgrB := NewMatouACLManager(clientB, nil)
+	err = aclMgrB.JoinWithInvite(ctx, spaceID, inviteKey, []byte("ClientB"))
+	if err != nil {
+		t.Fatalf("Client B joining space: %v", err)
+	}
+	t.Logf("Client B joined space")
+
 	// 5. Client A adds a credential to the space's tree
-	// 6. Wait for HeadUpdate/FullSync propagation
-	// 7. Client B reads credentials from the tree
-	// 8. Verify Client B sees Client A's credential
+	treeMgrA := NewCredentialTreeManager(clientA, nil)
+	cred := &CredentialPayload{
+		SAID:      "ESAID_propagation_test_001",
+		Issuer:    "ETestIssuer_A",
+		Recipient: "ETestRecipient",
+		Schema:    "EMatouMembershipSchemaV1",
+		Data:      json.RawMessage(`{"role":"member","source":"clientA"}`),
+		Timestamp: time.Now().Unix(),
+	}
+
+	changeID, err := treeMgrA.AddCredential(ctx, spaceID, cred, keys.SigningKey)
+	if err != nil {
+		t.Fatalf("Client A adding credential: %v", err)
+	}
+	t.Logf("Client A added credential, change ID: %s", changeID)
+
+	// 6. Poll with timeout: Client B reads credentials via CredentialTreeManager
+	treeMgrB := NewCredentialTreeManager(clientB, nil)
+
+	var found bool
+	pollDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(pollDeadline) {
+		creds, err := treeMgrB.ReadCredentials(ctx, spaceID)
+		if err != nil {
+			// Tree may not be available yet on Client B — wait and retry
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		for _, c := range creds {
+			if c.SAID == "ESAID_propagation_test_001" {
+				found = true
+				if c.Issuer != "ETestIssuer_A" {
+					t.Errorf("issuer mismatch: got %s, want ETestIssuer_A", c.Issuer)
+				}
+				if c.Schema != "EMatouMembershipSchemaV1" {
+					t.Errorf("schema mismatch: got %s, want EMatouMembershipSchemaV1", c.Schema)
+				}
+				t.Logf("Client B found credential: SAID=%s Issuer=%s Schema=%s", c.SAID, c.Issuer, c.Schema)
+				break
+			}
+		}
+
+		if found {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// 7. Assert Client B sees Client A's credential
+	if !found {
+		t.Fatal("Client B did not receive Client A's credential within timeout")
+	}
+}
+
+// newTestSDKClientWithDir creates an SDKClient using a specific data directory.
+// This allows creating multiple clients with distinct storage for propagation tests.
+func newTestSDKClientWithDir(t *testing.T, dataDir string) *SDKClient {
+	t.Helper()
+	configPath := testNetwork.GetHostConfigPath()
+	client, err := NewSDKClient(configPath, &ClientOptions{
+		DataDir: dataDir,
+	})
+	if err != nil {
+		t.Fatalf("failed to create SDK client with dir %s: %v", dataDir, err)
+	}
+	t.Cleanup(func() { client.Close() })
+	return client
 }

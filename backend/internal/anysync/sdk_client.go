@@ -20,9 +20,12 @@ import (
 	"github.com/anyproto/any-sync/commonspace/object/accountdata"
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 	"github.com/anyproto/any-sync/commonspace/object/tree/treestorage"
+	"github.com/anyproto/any-sync/commonspace/objecttreebuilder"
 	"github.com/anyproto/any-sync/commonspace/peermanager"
 	"github.com/anyproto/any-sync/commonspace/spacepayloads"
 	"github.com/anyproto/any-sync/commonspace/spacestorage"
+	"github.com/anyproto/any-sync/commonspace/spacesyncproto"
+	"github.com/anyproto/any-sync/commonspace/sync/objectsync/objectmessages"
 	"github.com/anyproto/any-sync/consensus/consensusproto"
 	"github.com/anyproto/any-sync/coordinator/coordinatorclient"
 	"github.com/anyproto/any-sync/net/peer"
@@ -164,17 +167,19 @@ func (c *SDKClient) initFullSDK() error {
 	c.app.Register(pool.New())
 	c.app.Register(peerservice.New())
 	c.app.Register(streampool.New())
-	c.app.Register(newSDKStreamHandler())
 
 	// Layer 5: Coordination
 	c.app.Register(coordinatorclient.New())
 
-	// Layer 6: Space services
+	// Layer 6: Space services (peer manager, tree manager, then space service)
 	c.app.Register(c.storageProvider)
 	c.app.Register(credentialprovider.NewNoOp())
 	c.app.Register(newSDKPeerManagerProvider())
 	c.app.Register(newSDKTreeManager())
 	c.app.Register(commonspace.New())
+
+	// Layer 7: Stream handler (depends on commonspace for message routing)
+	c.app.Register(newSDKStreamHandler())
 
 	// Start the app
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -411,7 +416,11 @@ func (c *SDKClient) AddToACL(ctx context.Context, spaceID string, peerID string,
 	return nil
 }
 
-// SyncDocument syncs a document to a space
+// SyncDocument syncs a document to a space.
+//
+// Deprecated: Use CredentialTreeManager.AddCredential instead. This method
+// exists for backward compatibility and logs a deprecation warning. All data
+// should go through ObjectTree-based operations for P2P sync support.
 func (c *SDKClient) SyncDocument(ctx context.Context, spaceID string, docID string, data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -420,33 +429,28 @@ func (c *SDKClient) SyncDocument(ctx context.Context, spaceID string, docID stri
 		return fmt.Errorf("client not initialized")
 	}
 
-	// TODO: Use space service tree operations when full SDK infrastructure is available.
-	// For now, persist to local filesystem — data will be synced to the tree
-	// when tree sync infrastructure is operational.
-	if err := c.storeDocumentLocally(spaceID, docID, data); err != nil {
-		return fmt.Errorf("storing document locally: %w", err)
+	fmt.Printf("[any-sync SDK] DEPRECATED: SyncDocument called for space=%s doc=%s — use CredentialTreeManager.AddCredential instead\n", spaceID, docID)
+
+	// Delegate to tree-based credential storage via the space's ObjectTree.
+	// Callers should migrate to CredentialTreeManager.AddCredential directly.
+	treeMgr := NewCredentialTreeManager(c, nil)
+	keys, err := LoadSpaceKeySet(c.dataDir, spaceID)
+	if err != nil {
+		return fmt.Errorf("loading space keys for tree sync: %w", err)
 	}
 
-	fmt.Printf("[any-sync SDK] SyncDocument: space=%s doc=%s size=%d\n", spaceID, docID, len(data))
+	payload := &CredentialPayload{
+		SAID:      docID,
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+	}
+
+	_, err = treeMgr.AddCredential(ctx, spaceID, payload, keys.SigningKey)
+	if err != nil {
+		return fmt.Errorf("adding credential via tree manager: %w", err)
+	}
+
 	return nil
-}
-
-// storeDocumentLocally persists a document to the local filesystem
-func (c *SDKClient) storeDocumentLocally(spaceID, docID string, data []byte) error {
-	docsDir := filepath.Join(c.dataDir, "spaces", spaceID, "documents")
-	if err := os.MkdirAll(docsDir, 0755); err != nil {
-		return fmt.Errorf("creating documents directory: %w", err)
-	}
-
-	doc := localDocument{
-		DocID:    docID,
-		SpaceID:  spaceID,
-		Data:     json.RawMessage(data),
-		SyncedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	docPath := filepath.Join(docsDir, docID+".json")
-	return writeJSONFile(docPath, doc)
 }
 
 // Ping tests connectivity to the any-sync coordinator
@@ -746,73 +750,221 @@ func (p *sdkStorageProvider) SpaceExists(id string) bool {
 	return ok
 }
 
-// sdkPeerManagerProvider implements peermanager.PeerManagerProvider.
-// TODO(Stage 6): Replace with the SDK's built-in peer manager from
-// commonspace.New() internal components. Current stub returns empty peers,
-// preventing real HeadUpdate broadcasts and P2P sync.
-type sdkPeerManagerProvider struct{}
+// sdkPeerManagerProvider implements peermanager.PeerManagerProvider using real
+// network components for peer discovery and HeadUpdate broadcasting.
+type sdkPeerManagerProvider struct {
+	nodeConf   nodeconf.Service
+	pool       pool.Pool
+	streamPool streampool.StreamPool
+}
 
 func newSDKPeerManagerProvider() *sdkPeerManagerProvider { return &sdkPeerManagerProvider{} }
 
-func (p *sdkPeerManagerProvider) Init(a *app.App) error { return nil }
-func (p *sdkPeerManagerProvider) Name() string          { return peermanager.CName }
-func (p *sdkPeerManagerProvider) NewPeerManager(ctx context.Context, spaceId string) (peermanager.PeerManager, error) {
-	return &sdkPeerManager{}, nil
-}
-
-// sdkPeerManager implements peermanager.PeerManager
-type sdkPeerManager struct{}
-
-func (m *sdkPeerManager) Init(a *app.App) error                                       { return nil }
-func (m *sdkPeerManager) Name() string                                                { return peermanager.CName }
-func (m *sdkPeerManager) GetResponsiblePeers(ctx context.Context) ([]peer.Peer, error) { return nil, nil }
-func (m *sdkPeerManager) GetNodePeers(ctx context.Context) ([]peer.Peer, error)       { return nil, nil }
-func (m *sdkPeerManager) BroadcastMessage(ctx context.Context, msg drpc.Message) error { return nil }
-func (m *sdkPeerManager) SendMessage(ctx context.Context, peerId string, msg drpc.Message) error {
+func (p *sdkPeerManagerProvider) Init(a *app.App) error {
+	p.nodeConf = a.MustComponent(nodeconf.CName).(nodeconf.Service)
+	p.pool = a.MustComponent(pool.CName).(pool.Pool)
+	p.streamPool = a.MustComponent(streampool.CName).(streampool.StreamPool)
 	return nil
 }
+
+func (p *sdkPeerManagerProvider) Name() string { return peermanager.CName }
+
+func (p *sdkPeerManagerProvider) NewPeerManager(ctx context.Context, spaceId string) (peermanager.PeerManager, error) {
+	return &sdkPeerManager{
+		spaceId:    spaceId,
+		nodeConf:   p.nodeConf,
+		pool:       p.pool,
+		streamPool: p.streamPool,
+	}, nil
+}
+
+// sdkPeerManager implements peermanager.PeerManager for a specific space.
+// It uses the node configuration's consistent hash ring to find responsible
+// tree-node peers and the stream pool for broadcasting HeadUpdate messages.
+type sdkPeerManager struct {
+	spaceId    string
+	nodeConf   nodeconf.Service
+	pool       pool.Pool
+	streamPool streampool.StreamPool
+}
+
+func (m *sdkPeerManager) Init(a *app.App) error { return nil }
+func (m *sdkPeerManager) Name() string          { return peermanager.CName }
+
+func (m *sdkPeerManager) GetResponsiblePeers(ctx context.Context) ([]peer.Peer, error) {
+	nodeIds := m.nodeConf.NodeIds(m.spaceId)
+	var peers []peer.Peer
+	for _, id := range nodeIds {
+		p, err := m.pool.Get(ctx, id)
+		if err != nil {
+			continue // skip unreachable peers
+		}
+		peers = append(peers, p)
+	}
+	return peers, nil
+}
+
+func (m *sdkPeerManager) GetNodePeers(ctx context.Context) ([]peer.Peer, error) {
+	return m.GetResponsiblePeers(ctx)
+}
+
+func (m *sdkPeerManager) BroadcastMessage(ctx context.Context, msg drpc.Message) error {
+	return m.streamPool.Send(ctx, msg, m.GetResponsiblePeers)
+}
+
+func (m *sdkPeerManager) SendMessage(ctx context.Context, peerId string, msg drpc.Message) error {
+	return m.streamPool.Send(ctx, msg, func(ctx context.Context) ([]peer.Peer, error) {
+		p, err := m.pool.Get(ctx, peerId)
+		if err != nil {
+			return nil, err
+		}
+		return []peer.Peer{p}, nil
+	})
+}
+
 func (m *sdkPeerManager) KeepAlive(ctx context.Context) {}
 
-// sdkTreeManager implements treemanager.TreeManager.
-// TODO(Stage 6): Replace with objecttreebuilder.New() as the tree manager component.
-// Current stub returns "not found" for all operations, preventing tree sync.
-type sdkTreeManager struct{}
+// sdkTreeManager implements treemanager.TreeManager using the space service's
+// ObjectTreeBuilder for real tree operations. Trees are cached in an ocache
+// for efficient reuse across sync requests.
+type sdkTreeManager struct {
+	a     *app.App
+	cache sync.Map // treeId → objecttree.ObjectTree
+}
 
 func newSDKTreeManager() *sdkTreeManager { return &sdkTreeManager{} }
 
-func (t *sdkTreeManager) Init(a *app.App) error           { return nil }
+func (t *sdkTreeManager) Init(a *app.App) error {
+	// Store the app reference for lazy resolution of SpaceService.
+	// SpaceService depends on TreeManager, so we cannot resolve it during Init.
+	t.a = a
+	return nil
+}
+
 func (t *sdkTreeManager) Name() string                    { return "common.object.treemanager" }
 func (t *sdkTreeManager) Run(ctx context.Context) error   { return nil }
 func (t *sdkTreeManager) Close(ctx context.Context) error { return nil }
+
+func (t *sdkTreeManager) spaceService() commonspace.SpaceService {
+	return t.a.MustComponent(commonspace.CName).(commonspace.SpaceService)
+}
+
 func (t *sdkTreeManager) GetTree(ctx context.Context, spaceId, treeId string) (objecttree.ObjectTree, error) {
-	return nil, fmt.Errorf("tree %s not found in space %s", treeId, spaceId)
+	// Check cache first
+	if val, ok := t.cache.Load(treeId); ok {
+		return val.(objecttree.ObjectTree), nil
+	}
+
+	// Build tree from storage via the space's TreeBuilder
+	sp, err := t.spaceService().NewSpace(ctx, spaceId, commonspace.Deps{})
+	if err != nil {
+		return nil, fmt.Errorf("getting space %s: %w", spaceId, err)
+	}
+
+	tree, err := sp.TreeBuilder().BuildTree(ctx, treeId, objecttreebuilder.BuildTreeOpts{})
+	if err != nil {
+		return nil, fmt.Errorf("building tree %s: %w", treeId, err)
+	}
+
+	t.cache.Store(treeId, tree)
+	return tree, nil
 }
+
 func (t *sdkTreeManager) ValidateAndPutTree(ctx context.Context, spaceId string, payload treestorage.TreeStorageCreatePayload) error {
-	return nil
-}
-func (t *sdkTreeManager) MarkTreeDeleted(ctx context.Context, spaceId, treeId string) error {
-	return nil
-}
-func (t *sdkTreeManager) DeleteTree(ctx context.Context, spaceId, treeId string) error {
+	sp, err := t.spaceService().NewSpace(ctx, spaceId, commonspace.Deps{})
+	if err != nil {
+		return fmt.Errorf("getting space %s: %w", spaceId, err)
+	}
+
+	tree, err := sp.TreeBuilder().PutTree(ctx, payload, nil)
+	if err != nil {
+		return fmt.Errorf("putting tree in space %s: %w", spaceId, err)
+	}
+
+	t.cache.Store(tree.Id(), tree)
 	return nil
 }
 
-// sdkStreamHandler implements streamhandler.StreamHandler.
-// TODO(Stage 6): Replace with the SDK's default stream handler or register
-// proper message handlers for TreeSyncContentValue messages. Current stub
-// returns errors for all stream operations, preventing P2P communication.
-type sdkStreamHandler struct{}
+func (t *sdkTreeManager) MarkTreeDeleted(ctx context.Context, spaceId, treeId string) error {
+	tree, err := t.GetTree(ctx, spaceId, treeId)
+	if err != nil {
+		return err
+	}
+	return tree.Delete()
+}
+
+func (t *sdkTreeManager) DeleteTree(ctx context.Context, spaceId, treeId string) error {
+	tree, err := t.GetTree(ctx, spaceId, treeId)
+	if err != nil {
+		return err
+	}
+	if err := tree.Delete(); err != nil {
+		return err
+	}
+	t.cache.Delete(treeId)
+	return nil
+}
+
+// sdkStreamHandler implements streamhandler.StreamHandler for P2P sync.
+// It opens ObjectSyncStream DRPC streams and routes incoming HeadUpdate
+// messages to the correct space's sync service.
+type sdkStreamHandler struct {
+	spaceService commonspace.SpaceService
+	streamPool   streampool.StreamPool
+}
 
 func newSDKStreamHandler() *sdkStreamHandler { return &sdkStreamHandler{} }
 
-func (s *sdkStreamHandler) Init(a *app.App) error { return nil }
-func (s *sdkStreamHandler) Name() string          { return "common.streampool.streamhandler" }
+func (s *sdkStreamHandler) Init(a *app.App) error {
+	s.spaceService = a.MustComponent(commonspace.CName).(commonspace.SpaceService)
+	s.streamPool = a.MustComponent(streampool.CName).(streampool.StreamPool)
+	return nil
+}
+
+func (s *sdkStreamHandler) Name() string { return "common.streampool.streamhandler" }
+
 func (s *sdkStreamHandler) OpenStream(ctx context.Context, p peer.Peer) (drpc.Stream, []string, int, error) {
-	return nil, nil, 0, fmt.Errorf("streams not supported in minimal client")
+	conn, err := p.AcquireDrpcConn(ctx)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	stream, err := spacesyncproto.NewDRPCSpaceSyncClient(conn).ObjectSyncStream(ctx)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	return stream, nil, 200, nil
 }
+
 func (s *sdkStreamHandler) HandleMessage(ctx context.Context, peerId string, msg drpc.Message) error {
-	return nil
+	headUpdate, ok := msg.(*objectmessages.HeadUpdate)
+	if !ok {
+		return fmt.Errorf("unexpected message type %T", msg)
+	}
+
+	spaceId := headUpdate.SpaceId()
+	if spaceId == "" {
+		// Subscription message — handle tag add/remove
+		var sub spacesyncproto.SpaceSubscription
+		if err := sub.UnmarshalVT(headUpdate.Bytes); err != nil {
+			return fmt.Errorf("unmarshaling subscription: %w", err)
+		}
+		if sub.Action == spacesyncproto.SpaceSubscriptionAction_Subscribe {
+			return s.streamPool.AddTagsCtx(ctx, sub.SpaceIds...)
+		}
+		return s.streamPool.RemoveTagsCtx(ctx, sub.SpaceIds...)
+	}
+
+	// Route to the space's sync handler
+	space, err := s.spaceService.NewSpace(ctx, spaceId, commonspace.Deps{})
+	if err != nil {
+		return fmt.Errorf("getting space %s: %w", spaceId, err)
+	}
+
+	return space.HandleMessage(ctx, headUpdate)
 }
+
 func (s *sdkStreamHandler) NewReadMessage() drpc.Message {
-	return nil
+	return &objectmessages.HeadUpdate{}
 }
