@@ -64,15 +64,28 @@ export function useClaimIdentity() {
       if (aids.length === 0) {
         throw new Error('No identity found in agent — invalid claim link');
       }
-      const aid = aids[0];
+      let aid = aids[0];
       console.log('[ClaimIdentity] Connected, found AID:', aid.prefix);
+
+      const client = keriClient.getSignifyClient();
+      if (!client) throw new Error('SignifyClient not available');
+
+      // Rename AID to user's chosen display name (slugified for KERIA compatibility)
+      const onboardingStore = useOnboardingStore();
+      const profileName = onboardingStore.profile.name?.trim();
+      if (profileName) {
+        const aidName = profileName.toLowerCase().replace(/\s+/g, '-');
+        if (aidName !== aid.name) {
+          progress.value = 'Updating identity name...';
+          const updated = await client.identifiers().update(aid.name, { name: aidName });
+          console.log(`[ClaimIdentity] Renamed AID from "${aid.name}" to "${updated.name}"`);
+          aid = updated;
+        }
+      }
 
       // Step 2: Auto-admit pending IPEX grants
       step.value = 'admitting';
       progress.value = 'Accepting credential grants...';
-
-      const client = keriClient.getSignifyClient();
-      if (!client) throw new Error('SignifyClient not available');
 
       const notifications = await client.notifications().list();
       const grants = (notifications.notes || []).filter(
@@ -117,7 +130,6 @@ export function useClaimIdentity() {
       localStorage.setItem('matou_passcode', passcode);
 
       // Populate identity info for the dashboard
-      const onboardingStore = useOnboardingStore();
       onboardingStore.setUserAID(aid.prefix);
       if (!onboardingStore.profile.name) {
         onboardingStore.updateProfile({ name: aid.name });
