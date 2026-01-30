@@ -10,6 +10,7 @@ import (
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/api"
 	"github.com/matou-dao/backend/internal/config"
+	"github.com/matou-dao/backend/internal/email"
 	"github.com/matou-dao/backend/internal/keri"
 )
 
@@ -163,6 +164,8 @@ func main() {
 	trustHandler := api.NewTrustHandler(store, cfg.GetOrgAID())
 	healthHandler := api.NewHealthHandler(store, spaceStore, cfg.GetOrgAID(), cfg.GetAdminAID())
 	spacesHandler := api.NewSpacesHandler(spaceManager, store)
+	emailSender := email.NewSender(cfg.SMTP)
+	invitesHandler := api.NewInvitesHandler(emailSender)
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -204,6 +207,7 @@ func main() {
 	syncHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)
 	spacesHandler.RegisterRoutes(mux)
+	invitesHandler.RegisterRoutes(mux)
 
 	// Start server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
@@ -238,6 +242,9 @@ func main() {
 	fmt.Println("  GET  /api/v1/spaces/community         - Get community space info")
 	fmt.Println("  POST /api/v1/spaces/private           - Create private space")
 	fmt.Println("  POST /api/v1/spaces/community/invite  - Invite user to community")
+	fmt.Println()
+	fmt.Println("  Invites:")
+	fmt.Println("  POST /api/v1/invites/send-email       - Email invite code to user")
 	fmt.Println()
 
 	// Wrap with CORS middleware

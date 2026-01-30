@@ -42,6 +42,18 @@
             </select>
           </div>
 
+          <div>
+            <label class="block text-sm font-medium mb-1.5">Email <span class="text-muted-foreground font-normal">(optional)</span></label>
+            <input
+              v-model="inviteeEmail"
+              type="email"
+              class="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              placeholder="e.g. aroha@example.com"
+              :disabled="isSubmitting"
+            />
+            <p class="text-xs text-muted-foreground mt-1">If provided, the invite code will be emailed after creation</p>
+          </div>
+
           <!-- Progress -->
           <div v-if="isSubmitting" class="progress-box bg-primary/5 border border-primary/20 rounded-lg p-3">
             <div class="flex items-center gap-2">
@@ -89,6 +101,37 @@
             <p class="text-xs text-muted-foreground mt-1.5">
               Share this code with {{ inviteeName }}. It can only be used once.
             </p>
+          </div>
+
+          <!-- Email invite -->
+          <div v-if="inviteeEmail.trim()" class="email-send-box border border-border rounded-lg p-3">
+            <div v-if="emailSent" class="flex items-center gap-2">
+              <Mail class="w-4 h-4 text-accent shrink-0" />
+              <span class="text-sm text-accent">Invite emailed to {{ inviteeEmail }}</span>
+            </div>
+            <div v-else-if="emailError" class="space-y-2">
+              <div class="flex items-start gap-2">
+                <XCircle class="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+                <span class="text-sm text-destructive">{{ emailError }}</span>
+              </div>
+              <button
+                class="w-full px-3 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors"
+                @click="handleSendEmail"
+              >
+                Retry
+              </button>
+            </div>
+            <div v-else>
+              <button
+                class="w-full px-3 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                :disabled="emailSending"
+                @click="handleSendEmail"
+              >
+                <Loader2 v-if="emailSending" class="w-3.5 h-3.5 animate-spin" />
+                <Mail v-else class="w-3.5 h-3.5" />
+                <span>{{ emailSending ? 'Sending...' : `Email invite to ${inviteeEmail}` }}</span>
+              </button>
+            </div>
           </div>
 
           <div class="aid-info bg-secondary/50 border border-border rounded-lg p-3">
@@ -147,8 +190,10 @@ import {
   Loader2,
   XCircle,
   CheckCircle2,
+  Mail,
 } from 'lucide-vue-next';
 import { usePreCreatedInvite } from 'src/composables/usePreCreatedInvite';
+import { sendInviteEmail } from 'src/lib/api/client';
 
 defineProps<{
   modelValue: boolean;
@@ -162,7 +207,11 @@ const { isSubmitting, error: inviteError, progress, result, createInvite, reset 
 
 const inviteeName = ref('');
 const role = ref('Member');
+const inviteeEmail = ref('');
 const copied = ref(false);
+const emailSending = ref(false);
+const emailSent = ref(false);
+const emailError = ref('');
 
 async function handleCreate() {
   if (!inviteeName.value.trim()) return;
@@ -172,11 +221,41 @@ async function handleCreate() {
   });
 }
 
+async function handleSendEmail() {
+  if (!result.value || !inviteeEmail.value.trim()) return;
+
+  emailSending.value = true;
+  emailError.value = '';
+
+  try {
+    const response = await sendInviteEmail({
+      email: inviteeEmail.value.trim(),
+      inviteCode: result.value.inviteCode,
+      inviterName: 'Organisation Admin',
+      inviteeName: inviteeName.value.trim(),
+    });
+
+    if (response.success) {
+      emailSent.value = true;
+    } else {
+      emailError.value = response.error ?? 'Failed to send email';
+    }
+  } catch (err) {
+    emailError.value = err instanceof Error ? err.message : 'Failed to send email';
+  } finally {
+    emailSending.value = false;
+  }
+}
+
 function handleCreateAnother() {
   reset();
   inviteeName.value = '';
   role.value = 'Member';
+  inviteeEmail.value = '';
   copied.value = false;
+  emailSending.value = false;
+  emailSent.value = false;
+  emailError.value = '';
 }
 
 function copyLink() {
