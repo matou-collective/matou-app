@@ -1,7 +1,9 @@
 package email
 
 import (
+	"crypto/tls"
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
 
@@ -48,12 +50,59 @@ func (s *Sender) SendInvite(req SendInviteRequest) error {
 	msg := s.buildMIMEMessage(req.To, "Your MATOU invite code", body)
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-	// nil auth for local relay (Postfix container)
-	if err := smtp.SendMail(addr, nil, s.from, []string{req.To}, []byte(msg)); err != nil {
+	if err := s.sendMail(addr, req.To, []byte(msg)); err != nil {
 		return fmt.Errorf("sending email: %w", err)
 	}
 
 	return nil
+}
+
+// sendMail connects to the SMTP server and sends the message.
+// Uses STARTTLS with InsecureSkipVerify for local relay containers
+// that present self-signed certificates.
+func (s *Sender) sendMail(addr, to string, msg []byte) error {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("connecting to SMTP server: %w", err)
+	}
+
+	c, err := smtp.NewClient(conn, s.host)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("creating SMTP client: %w", err)
+	}
+	defer c.Close()
+
+	// STARTTLS with skip-verify for local relay's self-signed cert
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		tlsConfig := &tls.Config{
+			ServerName:         s.host,
+			InsecureSkipVerify: true,
+		}
+		if err := c.StartTLS(tlsConfig); err != nil {
+			return fmt.Errorf("STARTTLS: %w", err)
+		}
+	}
+
+	if err := c.Mail(s.from); err != nil {
+		return fmt.Errorf("MAIL FROM: %w", err)
+	}
+	if err := c.Rcpt(to); err != nil {
+		return fmt.Errorf("RCPT TO: %w", err)
+	}
+
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("DATA: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("writing message: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("closing message: %w", err)
+	}
+
+	return c.Quit()
 }
 
 // buildMIMEMessage constructs a MIME email message with HTML content
