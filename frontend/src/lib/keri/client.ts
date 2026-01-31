@@ -3,7 +3,7 @@
  * Connects to KERIA agent for AID management
  */
 import { SignifyClient, Tier, randomPasscode, ready, Salter } from 'signify-ts';
-import { mnemonicToSeedSync, validateMnemonic } from '@scure/bip39';
+import { mnemonicToSeedSync, mnemonicToEntropy, entropyToMnemonic, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 
 export interface AIDInfo {
@@ -37,6 +37,61 @@ export class KERIClient {
   // Browser-facing vs Docker-internal CESR URLs for OOBI conversion
   private readonly cesrUrl = import.meta.env.VITE_KERIA_CESR_URL || 'http://localhost:3902';
   private readonly dockerCesrUrl = import.meta.env.VITE_KERIA_DOCKER_CESR_URL || '';
+
+  /**
+   * Create a standalone SignifyClient for a separate KERIA agent.
+   * Does NOT touch the singleton useKERIClient() instance.
+   * Used by admin to operate on an invitee's agent while staying connected to their own.
+   * @param bran - The passcode (21-character base64 string) for the new agent
+   * @returns A connected SignifyClient instance
+   */
+  static async createEphemeralClient(bran: string): Promise<SignifyClient> {
+    const keriaUrl = import.meta.env.VITE_KERIA_ADMIN_URL || 'http://localhost:3901';
+    const bootUrl = import.meta.env.VITE_KERIA_BOOT_URL || 'http://localhost:3903';
+
+    await ready();
+    const client = new SignifyClient(keriaUrl, bran, Tier.low, bootUrl);
+
+    try {
+      await client.connect();
+      console.log('[KERIClient] Ephemeral client connected to existing agent');
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('agent does not exist')) {
+        console.log('[KERIClient] Ephemeral agent not found, booting...');
+        await client.boot();
+        await client.connect();
+        console.log('[KERIClient] Ephemeral agent booted and connected');
+      } else {
+        throw err;
+      }
+    }
+
+    // Resolve witness OOBIs from KERIA config
+    try {
+      const config = await client.config().get();
+      if (config.iurls && Array.isArray(config.iurls) && config.iurls.length > 0) {
+        console.log(`[KERIClient] Resolving ${config.iurls.length} witness OOBIs for ephemeral client...`);
+        for (let i = 0; i < config.iurls.length; i++) {
+          let iurl = config.iurls[i];
+          try {
+            if (iurl.endsWith('/controller')) {
+              iurl = iurl.replace('/controller', '');
+            }
+            const alias = `wit${i}`;
+            const op = await client.oobis().resolve(iurl, alias);
+            await client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+          } catch (resolveErr) {
+            console.warn(`[KERIClient] Failed to resolve witness OOBI ${iurl}:`, resolveErr);
+          }
+        }
+      }
+    } catch (configErr) {
+      console.warn('[KERIClient] Could not fetch KERIA config for ephemeral client:', configErr);
+    }
+
+    return client;
+  }
 
   /**
    * Initialize and connect to KERIA agent
@@ -234,6 +289,63 @@ export class KERIClient {
       name: a.name,
       state: a.state,
     }));
+  }
+
+  /**
+   * Rotate the keys of an AID
+   * Performs a key rotation event, which generates new signing keys and
+   * promotes the pre-rotation keys. Witnesses must acknowledge the rotation.
+   * @param name - The AID name to rotate
+   * @returns Updated AID info with new key state
+   */
+  async rotateKeys(name: string): Promise<AIDInfo> {
+    if (!this.client) throw new Error('Not initialized');
+
+    console.log(`[KERIClient] Rotating keys for AID "${name}"...`);
+    const result = await this.client.identifiers().rotate(name);
+    const op = await result.op();
+    await this.client.operations().wait(op, { signal: AbortSignal.timeout(180000) });
+    console.log(`[KERIClient] Key rotation completed for "${name}"`);
+
+    const aid = await this.client.identifiers().get(name);
+    return {
+      prefix: aid.prefix,
+      name: aid.name,
+      state: aid.state,
+    };
+  }
+
+  /**
+   * Rotate the agent passcode (bran) and reconnect.
+   * After rotation the old SignifyClient connection is stale, so we
+   * re-create and reconnect with the new passcode.
+   *
+   * Fetches all AID objects internally because signify-ts requires
+   * full AID records (with salty/randy key management info) for re-encryption.
+   *
+   * @param newBran - The new passcode (21-character base64 string)
+   */
+  async rotateAgentPasscode(newBran: string): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+
+    console.log('[KERIClient] Rotating agent passcode...');
+    // Fetch full AID objects via get() — list() returns simplified records
+    // that may lack `state` and `salty`/`randy` fields required by controller.rotate()
+    const listResult = await this.client.identifiers().list();
+    const aids = await Promise.all(
+      listResult.aids.map((a: { name: string }) => this.client!.identifiers().get(a.name))
+    );
+    const res = await this.client.rotate(newBran, aids);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Agent passcode rotation failed (${res.status}): ${body}`);
+    }
+    // After client.rotate(), the controller state is updated in-place:
+    // - controller.signer/nsigner use the new bran's keys
+    // - authn is recreated with the new signer (via our signify-ts patch)
+    // Do NOT create a new SignifyClient — a new bran would derive a different
+    // controller prefix, which KERIA wouldn't recognize.
+    console.log('[KERIClient] Agent passcode rotated successfully');
   }
 
   /**
@@ -672,7 +784,7 @@ export class KERIClient {
     }
 
     // Normalize KERIA Docker hostname to localhost for browser access
-    oobi = oobi.replace(/http:\/\/keria:(\d+)/, (_, port) => {
+    oobi = oobi.replace(/http:\/\/keria:(\d+)/, (_match: string, port: string) => {
       const cesrUrl = import.meta.env.VITE_KERIA_CESR_URL || `http://localhost:${port}`;
       return cesrUrl;
     });
@@ -727,6 +839,32 @@ export class KERIClient {
    */
   static validateMnemonic(mnemonic: string): boolean {
     return validateMnemonic(mnemonic, wordlist);
+  }
+
+  /**
+   * Encode a BIP39 mnemonic as a compact invite code (base64url of entropy).
+   * The invite code encodes the mnemonic's 128-bit entropy as a 22-character
+   * URL-safe string. The mnemonic can be recovered via mnemonicFromInviteCode().
+   * @param mnemonic - 12-word BIP39 mnemonic phrase
+   * @returns 22-character base64url invite code
+   */
+  static inviteCodeFromMnemonic(mnemonic: string): string {
+    const entropy = mnemonicToEntropy(mnemonic, wordlist); // Uint8Array(16)
+    const binString = String.fromCharCode(...entropy);
+    return btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  }
+
+  /**
+   * Decode an invite code back to a BIP39 mnemonic.
+   * Reverse of inviteCodeFromMnemonic().
+   * @param inviteCode - 22-character base64url invite code
+   * @returns 12-word BIP39 mnemonic phrase
+   */
+  static mnemonicFromInviteCode(inviteCode: string): string {
+    const padded = inviteCode.replace(/-/g, '+').replace(/_/g, '/');
+    const binString = atob(padded);
+    const entropy = new Uint8Array([...binString].map(c => c.charCodeAt(0)));
+    return entropyToMnemonic(entropy, wordlist);
   }
 
   /**

@@ -43,7 +43,7 @@
       >
         <ArrowLeft class="w-5 h-5" />
       </button>
-      <h1 class="mb-2">Create Your Profile</h1>
+      <h1 class="mb-2">{{ isClaim ? 'Claim Your Profile' : 'Create Your Profile' }}</h1>
       <p class="text-muted-foreground">Tell us about yourself and how you'd like to participate</p>
     </div>
 
@@ -226,6 +226,12 @@ import { KERIClient } from 'src/lib/keri/client';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 
+const props = withDefaults(defineProps<{
+  isClaim?: boolean;
+}>(), {
+  isClaim: false,
+});
+
 const store = useOnboardingStore();
 const identityStore = useIdentityStore();
 
@@ -343,6 +349,12 @@ async function handleSubmit() {
     customInterests: formData.value.customInterests.trim(),
     hasAgreedToTerms: formData.value.hasAgreedToTerms,
   });
+
+  // In claim mode, skip identity creation — just save profile and continue
+  if (props.isClaim) {
+    emit('continue');
+    return;
+  }
 
   // Start identity creation
   isCreating.value = true;

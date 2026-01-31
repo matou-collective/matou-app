@@ -7,6 +7,9 @@
 import { Page, BrowserContext, APIRequestContext } from '@playwright/test';
 import { keriEndpoints } from './keri-testnet';
 
+// The app reads VITE_CONFIG_SERVER_URL from env (.env.test sets it to port 4904).
+// We intercept browser requests to add X-Test-Config header so the config server
+// uses a separate test config file (/data/test-org-config.json).
 const CONFIG_SERVER_URL = keriEndpoints.configURL;
 
 /**
@@ -19,14 +22,13 @@ const CONFIG_SERVER_URL = keriEndpoints.configURL;
  * @param target - Page or BrowserContext to setup
  */
 export async function setupTestConfig(target: Page | BrowserContext) {
-  // Intercept all config server requests and add the test header
+  // Intercept config server requests and add X-Test-Config header
+  // so the server uses the test config file instead of the dev one.
   await target.route(`${CONFIG_SERVER_URL}/**`, async (route, request) => {
     const headers = {
       ...request.headers(),
       'X-Test-Config': 'true',
     };
-
-    // Continue the request with the added header
     await route.continue({ headers });
   });
 }

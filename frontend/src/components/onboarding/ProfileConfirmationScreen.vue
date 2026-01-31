@@ -6,9 +6,14 @@
         <div class="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center">
           <CheckCircle2 class="w-5 h-5 text-accent" />
         </div>
-        <h1>Identity Created Successfully</h1>
+        <h1>{{ isClaim ? 'Save Your Recovery Phrase' : 'Identity Created Successfully' }}</h1>
       </div>
-      <p class="text-muted-foreground">Save your recovery phrase - it's the only way to restore your identity</p>
+      <p class="text-muted-foreground">
+        {{ isClaim
+          ? 'This phrase lets you recover your identity — write it down and keep it safe'
+          : 'Save your recovery phrase - it\'s the only way to restore your identity'
+        }}
+      </p>
     </div>
 
     <!-- Content -->
@@ -165,6 +170,7 @@ const emit = defineEmits<{
 }>();
 
 // Get data from store
+const isClaim = computed(() => store.onboardingPath === 'claim');
 const profile = computed(() => store.profile);
 const mnemonic = computed(() => store.mnemonic);
 const userAID = computed(() => store.userAID || 'Loading...');

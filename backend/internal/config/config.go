@@ -3,9 +3,20 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
+
+// SMTPConfig holds SMTP relay configuration for sending emails
+type SMTPConfig struct {
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	From        string `yaml:"from"`
+	FromName    string `yaml:"fromName"`
+	LogoURL     string `yaml:"logoUrl"`
+	TextLogoURL string `yaml:"textLogoUrl"`
+}
 
 // Config represents the complete application configuration
 type Config struct {
@@ -13,6 +24,7 @@ type Config struct {
 	KERI      KERIConfig      `yaml:"keri"`
 	AnySync   AnySyncConfig   `yaml:"anysync"`
 	Bootstrap BootstrapConfig `yaml:"bootstrap"`
+	SMTP      SMTPConfig      `yaml:"smtp"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -101,6 +113,14 @@ func Load(configPath, bootstrapPath string) (*Config, error) {
 		AnySync: AnySyncConfig{
 			ClientConfigPath: "../infrastructure/any-sync/etc/client.yml",
 		},
+		SMTP: SMTPConfig{
+			Host:        "localhost",
+			Port:        2525,
+			From:        "invites@matou.nz",
+			FromName:    "MATOU",
+			LogoURL:     "https://i.imgur.com/zi01gTx.png",
+			TextLogoURL: "https://i.imgur.com/1D3iLWa.png",
+		},
 	}
 
 	// Load main config if exists
@@ -118,6 +138,16 @@ func Load(configPath, bootstrapPath string) (*Config, error) {
 
 	if err := loadYAML(bootstrapPath, &cfg.Bootstrap); err != nil {
 		return nil, fmt.Errorf("loading bootstrap config: %w", err)
+	}
+
+	// Apply SMTP env var overrides
+	if host := os.Getenv("MATOU_SMTP_HOST"); host != "" {
+		cfg.SMTP.Host = host
+	}
+	if portStr := os.Getenv("MATOU_SMTP_PORT"); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil {
+			cfg.SMTP.Port = port
+		}
 	}
 
 	// Validate required fields

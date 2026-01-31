@@ -15,6 +15,8 @@ export type OnboardingScreen =
   | 'matou-info'
   | 'pending-approval'
   | 'recovery'
+  | 'claim-welcome'
+  | 'claim-processing'
   | 'main';
 
 /**
@@ -63,7 +65,7 @@ export type ParticipationInterest = typeof PARTICIPATION_INTERESTS[number]['valu
 /**
  * Onboarding flow path
  */
-export type OnboardingPath = 'invite' | 'register' | 'recover' | 'setup' | null;
+export type OnboardingPath = 'register' | 'recover' | 'setup' | 'claim' | null;
 
 /**
  * User profile data
@@ -116,6 +118,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     hasAgreedToTerms: false,
   });
   const userAID = ref<string | null>(null);
+  const claimPasscode = ref<string | null>(null);
+  const claimAidInfo = ref<{ name: string; prefix: string } | null>(null);
   const mnemonic = ref<MnemonicState>({
     words: [],
     verificationIndices: [],
@@ -158,6 +162,14 @@ export const useOnboardingStore = defineStore('onboarding', () => {
 
   function setUserAID(aid: string) {
     userAID.value = aid;
+  }
+
+  function setClaimPasscode(passcode: string) {
+    claimPasscode.value = passcode;
+  }
+
+  function setClaimAidInfo(info: { name: string; prefix: string } | null) {
+    claimAidInfo.value = info;
   }
 
   function setMnemonic(words: string[]) {
@@ -204,6 +216,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
       hasAgreedToTerms: false,
     };
     userAID.value = null;
+    claimPasscode.value = null;
+    claimAidInfo.value = null;
     mnemonic.value = {
       words: [],
       verificationIndices: [],
@@ -233,6 +247,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     inviterName,
     profile,
     userAID,
+    claimPasscode,
+    claimAidInfo,
     mnemonic,
     appState,
     initializationError,
@@ -250,6 +266,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     setInviterName,
     updateProfile,
     setUserAID,
+    setClaimPasscode,
+    setClaimAidInfo,
     setMnemonic,
     recordVerificationAttempt,
     resetMnemonicVerification,

@@ -130,3 +130,35 @@ export async function getUserSpaces(aid: string): Promise<UserSpacesResponse> {
   if (!response.ok) return {};
   return response.json();
 }
+
+export interface SendInviteEmailRequest {
+  email: string;
+  inviteCode: string;
+  inviterName: string;
+  inviteeName: string;
+}
+
+export interface SendInviteEmailResponse {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Send an invite code via email
+ */
+export async function sendInviteEmail(
+  request: SendInviteEmailRequest,
+): Promise<SendInviteEmailResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/invites/send-email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    return { success: false, error: data?.error ?? response.statusText };
+  }
+
+  return response.json();
+}

@@ -4,7 +4,17 @@
  */
 
 const CONFIG_SERVER_URL = import.meta.env.VITE_CONFIG_SERVER_URL || 'http://localhost:3904';
+const IS_TEST_CONFIG = import.meta.env.VITE_TEST_CONFIG === 'true';
 const LOCAL_CACHE_KEY = 'matou_org_config';
+
+/** Build headers for config server requests, adding test isolation header when needed */
+function configHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  if (IS_TEST_CONFIG) {
+    headers['X-Test-Config'] = 'true';
+  }
+  return headers;
+}
 
 export interface AdminInfo {
   aid: string;
@@ -73,6 +83,7 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
   try {
     const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
       signal: AbortSignal.timeout(5000),
+      headers: configHeaders(),
     });
 
     if (response.ok) {
@@ -108,7 +119,7 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
 export async function saveOrgConfig(config: OrgConfig): Promise<void> {
   const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: configHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(config),
   });
 
@@ -150,6 +161,7 @@ export async function isConfigServerReachable(): Promise<boolean> {
   try {
     const response = await fetch(`${CONFIG_SERVER_URL}/api/health`, {
       signal: AbortSignal.timeout(3000),
+      headers: configHeaders(),
     });
     return response.ok;
   } catch {

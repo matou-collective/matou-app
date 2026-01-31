@@ -273,7 +273,7 @@ export async function loginWithMnemonic(
 }
 
 // ---------------------------------------------------------------------------
-// Org setup flow (reusable from registration tests)
+// Org setup flow (reusable from registration/invitation tests)
 // ---------------------------------------------------------------------------
 
 /**
@@ -335,31 +335,18 @@ export async function performOrgSetup(
   await page.getByRole('button', { name: /continue/i }).click();
   await completeMnemonicVerification(page, adminMnemonic);
 
-  // Wait for dashboard, pending screen, or welcome overlay with "enter community"
-  const outcome = await Promise.race([
-    page.getByRole('button', { name: /enter community/i })
-      .waitFor({ state: 'visible', timeout: TIMEOUT.long })
-      .then(() => 'welcome' as const),
+  // Wait for dashboard or pending
+  await Promise.race([
     expect(page.getByRole('heading', { name: /registration pending/i }))
-      .toBeVisible({ timeout: TIMEOUT.long })
-      .then(() => 'pending' as const),
-    expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long })
-      .then(() => 'dashboard' as const),
+      .toBeVisible({ timeout: TIMEOUT.long }),
+    expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
   ]);
-  console.log(`[OrgSetup] Post-mnemonic outcome: ${outcome}`);
 
-  // If welcome overlay appeared, click "enter community" to reach dashboard
-  if (outcome === 'welcome' || outcome === 'pending') {
-    const enterBtn = page.getByRole('button', { name: /enter community/i });
-    try {
-      await enterBtn.waitFor({ state: 'visible', timeout: TIMEOUT.short });
-      await enterBtn.click();
-      console.log('[OrgSetup] Clicked "enter community"');
-      await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
-    } catch {
-      // Button not present — may already be on dashboard or pending screen
-      console.log('[OrgSetup] No "enter community" button found, continuing');
-    }
+  // Handle welcome overlay if present
+  const welcomeOverlay = page.locator('.welcome-overlay');
+  if (await welcomeOverlay.isVisible().catch(() => false)) {
+    await page.getByRole('button', { name: /enter community/i }).click();
+    await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
   }
 
   console.log('[OrgSetup] Admin on dashboard');

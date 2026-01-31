@@ -9,9 +9,6 @@
         >
           <ArrowLeft class="w-5 h-5" />
         </button>
-        <MBtn variant="ghost" size="sm" class="text-xs" @click="handleQuickDemo">
-          Quick Demo
-        </MBtn>
       </div>
       <h1 class="mb-2">Welcome to Matou</h1>
       <p class="text-muted-foreground">Enter your invite code to join the community</p>
@@ -25,7 +22,7 @@
           <MInput
             id="inviteCode"
             v-model="inviteCode"
-            placeholder="XXXX-XXXX-XXXX"
+            placeholder="Paste your invite code"
             :error="!!error"
             :error-message="error"
             @update:model-value="error = ''"
@@ -41,13 +38,10 @@
         <div class="info-box bg-secondary/50 border border-border rounded-xl p-4 md:p-5 flex gap-3">
           <Info class="w-5 h-5 text-primary shrink-0 mt-0.5" />
           <div class="text-sm">
-            <p class="mb-2">
-              Invite codes are distributed by existing Matou members to ensure trusted
-              community growth.
+            <p>
+              Invite codes are provided by Matou administrators when they create an
+              invitation for you. Paste the full code you received.
             </p>
-            <a href="#" class="text-primary hover:underline" @click.prevent="showLearnMore">
-              Learn how to get an invite code &rarr;
-            </a>
           </div>
         </div>
 
@@ -62,20 +56,20 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { ArrowLeft, AlertCircle, Info } from 'lucide-vue-next';
-import { useQuasar } from 'quasar';
 import MBtn from '../base/MBtn.vue';
 import MInput from '../base/MInput.vue';
-import { useKERIClient } from 'src/lib/keri/client';
+import { useClaimIdentity } from 'composables/useClaimIdentity';
+import { useOnboardingStore } from 'stores/onboarding';
 
-const $q = useQuasar();
-const keriClient = useKERIClient();
+const store = useOnboardingStore();
+const { validate } = useClaimIdentity();
 
 const inviteCode = ref('');
 const error = ref('');
 const isValidating = ref(false);
 
 const emit = defineEmits<{
-  (e: 'continue', inviterName: string): void;
+  (e: 'continue'): void;
   (e: 'back'): void;
 }>();
 
@@ -86,60 +80,29 @@ const onBack = () => {
 const handleSubmit = async () => {
   error.value = '';
 
-  if (!inviteCode.value.trim()) {
+  const code = inviteCode.value.trim();
+  if (!code) {
     error.value = 'Please enter an invite code';
     return;
   }
 
-  if (inviteCode.value.length < 8) {
-    error.value = 'Invite code must be at least 8 characters';
-    return;
-  }
-
   isValidating.value = true;
 
   try {
-    const result = await keriClient.verifyInviteCode(inviteCode.value);
-    if (result.valid) {
-      $q.notify({
-        type: 'positive',
-        message: 'Invite code verified!',
-        position: 'top',
-      });
-      emit('continue', result.inviterName);
+    const result = await validate(code);
+    if (result) {
+      store.setClaimPasscode(result.passcode);
+      store.setMnemonic(result.mnemonic);
+      store.setClaimAidInfo(result);
+      emit('continue');
+    } else {
+      error.value = 'Invalid or already used invite code. Please check and try again.';
     }
   } catch (err) {
-    error.value = 'Invalid invite code. Please check and try again.';
+    error.value = 'Invalid or already used invite code. Please check and try again.';
   } finally {
     isValidating.value = false;
   }
-};
-
-const handleQuickDemo = async () => {
-  inviteCode.value = 'DEMO-CODE-2024';
-  isValidating.value = true;
-
-  try {
-    const result = await keriClient.verifyInviteCode(inviteCode.value);
-    $q.notify({
-      type: 'positive',
-      message: 'Demo code applied!',
-      position: 'top',
-    });
-    emit('continue', result.inviterName);
-  } catch (err) {
-    error.value = 'Demo failed';
-  } finally {
-    isValidating.value = false;
-  }
-};
-
-const showLearnMore = () => {
-  $q.notify({
-    type: 'info',
-    message: 'Visit matou.dao/invite to learn more',
-    position: 'top',
-  });
 };
 </script>
 
@@ -150,9 +113,5 @@ const showLearnMore = () => {
 
 .info-box {
   background-color: rgba(232, 244, 248, 0.5);
-}
-
-:deep(.m-input) input {
-  text-transform: uppercase;
 }
 </style>

@@ -46,6 +46,12 @@ export default defineConfig({
       testMatch: /e2e-registration\.spec\.ts/,
       use: browserConfig,
     },
+    // Invitation tests depend on org existing
+    {
+      name: 'invitation',
+      testMatch: /e2e-invitation\.spec\.ts/,
+      use: browserConfig,
+    },
     // Recovery & error handling - independent
     {
       name: 'recovery-errors',
