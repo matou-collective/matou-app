@@ -33,7 +33,7 @@ export const TIMEOUT = {
   short: 10_000,       // 10s - quick UI operations
   medium: 20_000,      // 20s - simple KERI operations, polling
   long: 30_000,        // 30s - credential delivery
-  aidCreation: 60_000,  // 1 min - witness-backed AID creation
+  aidCreation: 90_000,  // 1.5 min - connect + OOBI resolution + witness-backed AID creation + end role
   orgSetup: 120_000,   // 2 min - full org setup
 } as const;
 

@@ -77,6 +77,76 @@ type InviteResponse struct {
 	Error            string `json:"error,omitempty"`
 }
 
+// GetUserSpacesResponse represents the response for getting a user's spaces
+type GetUserSpacesResponse struct {
+	PrivateSpace   *SpaceInfo `json:"privateSpace,omitempty"`
+	CommunitySpace *SpaceInfo `json:"communitySpace,omitempty"`
+}
+
+// SpaceInfo represents summary info for a single space
+type SpaceInfo struct {
+	SpaceID       string    `json:"spaceId"`
+	SpaceName     string    `json:"spaceName"`
+	CreatedAt     time.Time `json:"createdAt"`
+	KeysAvailable bool      `json:"keysAvailable"`
+}
+
+// HandleGetUserSpaces handles GET /api/v1/spaces/user?aid=<prefix>
+func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": "method not allowed",
+		})
+		return
+	}
+
+	aid := r.URL.Query().Get("aid")
+	if aid == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "aid query parameter is required",
+		})
+		return
+	}
+
+	ctx := r.Context()
+	resp := GetUserSpacesResponse{}
+
+	// Look up the user's private space
+	if privateSpace, err := h.spaceStore.GetUserSpace(ctx, aid); err == nil && privateSpace != nil {
+		info := &SpaceInfo{
+			SpaceID:   privateSpace.SpaceID,
+			SpaceName: privateSpace.SpaceName,
+			CreatedAt: privateSpace.CreatedAt,
+		}
+		// Check if keys are available on disk
+		client := h.spaceManager.GetClient()
+		if client != nil {
+			if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), privateSpace.SpaceID); keyErr == nil {
+				info.KeysAvailable = true
+			}
+		}
+		resp.PrivateSpace = info
+	}
+
+	// Look up the community space (shared by all users)
+	if communitySpace, err := h.spaceManager.GetCommunitySpace(ctx); err == nil && communitySpace != nil {
+		info := &SpaceInfo{
+			SpaceID:   communitySpace.SpaceID,
+			SpaceName: communitySpace.SpaceName,
+			CreatedAt: communitySpace.CreatedAt,
+		}
+		client := h.spaceManager.GetClient()
+		if client != nil {
+			if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpace.SpaceID); keyErr == nil {
+				info.KeysAvailable = true
+			}
+		}
+		resp.CommunitySpace = info
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // HandleCreateCommunity handles POST /api/v1/spaces/community
 func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -425,6 +495,7 @@ func (h *SpacesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/spaces/community", h.handleCommunitySpace)
 	mux.HandleFunc("/api/v1/spaces/community/invite", h.HandleInvite)
 	mux.HandleFunc("/api/v1/spaces/private", h.HandleCreatePrivate)
+	mux.HandleFunc("/api/v1/spaces/user", h.HandleGetUserSpaces)
 }
 
 // truncateAID returns the first 12 characters of an AID for display purposes

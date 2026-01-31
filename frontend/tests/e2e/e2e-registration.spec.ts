@@ -90,7 +90,7 @@ test.describe.serial('Registration Approval Flow', () => {
       // A. Set up space API listener before registration triggers the call
       const privateSpaceResponse = userPage.waitForResponse(
         resp => resp.url().includes('/api/v1/spaces/private') && resp.request().method() === 'POST',
-        { timeout: TIMEOUT.long },
+        { timeout: TIMEOUT.aidCreation },
       );
 
       // 1. User registers
@@ -108,6 +108,22 @@ test.describe.serial('Registration Approval Flow', () => {
       expect(psReqBody.mnemonic).toBeTruthy();
       expect(psReqBody.mnemonic.split(' ')).toHaveLength(12);
       console.log('[Test] Private space request included 12-word mnemonic');
+
+      // 2c. Test session restart: reload without clearing localStorage
+      console.log('[Test] Testing session restart...');
+      await userPage.goto(FRONTEND_URL);
+
+      // Should auto-restore to pending-approval (not splash)
+      await expect(
+        userPage.getByText(/application.*review|pending|under review/i).first(),
+      ).toBeVisible({ timeout: TIMEOUT.long });
+      console.log('[Test] Session restart: auto-restored to pending-approval');
+
+      // Splash buttons should NOT be visible
+      await expect(
+        userPage.getByRole('button', { name: /register/i }),
+      ).not.toBeVisible();
+      console.log('[Test] Session restart: splash buttons correctly hidden');
 
       // 3. Wait for admin to see registration card
       console.log('[Test] Waiting for registration to appear on admin dashboard...');

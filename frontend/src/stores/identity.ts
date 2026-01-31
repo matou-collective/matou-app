@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { KERIClient, useKERIClient, type AIDInfo } from 'src/lib/keri/client';
+import { getUserSpaces } from 'src/lib/api/client';
 
 export interface RestoreResult {
   success: boolean;
@@ -18,6 +19,11 @@ export const useIdentityStore = defineStore('identity', () => {
   const error = ref<string | null>(null);
   const isInitializing = ref(true);  // True until boot completes
   const initError = ref<string | null>(null);
+  const privateSpaceId = ref<string | null>(null);
+  const communitySpaceId = ref<string | null>(null);
+  const privateKeysAvailable = ref(false);
+  const communityKeysAvailable = ref(false);
+  const spacesLoaded = ref(false);
 
   // Computed
   const hasIdentity = computed(() => currentAID.value !== null);
@@ -117,6 +123,26 @@ export const useIdentityStore = defineStore('identity', () => {
     localStorage.removeItem('matou_passcode');
   }
 
+  async function fetchUserSpaces(): Promise<void> {
+    if (!currentAID.value?.prefix) return;
+    try {
+      const spaces = await getUserSpaces(currentAID.value.prefix);
+      privateSpaceId.value = spaces.privateSpace?.spaceId ?? null;
+      communitySpaceId.value = spaces.communitySpace?.spaceId ?? null;
+      privateKeysAvailable.value = spaces.privateSpace?.keysAvailable ?? false;
+      communityKeysAvailable.value = spaces.communitySpace?.keysAvailable ?? false;
+      spacesLoaded.value = true;
+      console.log('[IdentityStore] Spaces loaded:', {
+        private: privateSpaceId.value,
+        community: communitySpaceId.value,
+        privateKeys: privateKeysAvailable.value,
+        communityKeys: communityKeysAvailable.value,
+      });
+    } catch (err) {
+      console.warn('[IdentityStore] Failed to fetch user spaces:', err);
+    }
+  }
+
   /**
    * Set the current AID directly (used by org setup)
    */
@@ -133,6 +159,11 @@ export const useIdentityStore = defineStore('identity', () => {
     error,
     isInitializing,
     initError,
+    privateSpaceId,
+    communitySpaceId,
+    privateKeysAvailable,
+    communityKeysAvailable,
+    spacesLoaded,
 
     // Computed
     hasIdentity,
@@ -147,5 +178,6 @@ export const useIdentityStore = defineStore('identity', () => {
     setInitialized,
     setInitError,
     setCurrentAID,
+    fetchUserSpaces,
   };
 });

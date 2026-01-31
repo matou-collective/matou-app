@@ -3,7 +3,7 @@
  * Communicates with the Go backend for sync and community operations
  */
 
-const BACKEND_URL = 'http://localhost:8080';
+export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
 
 export interface SyncCredentialsRequest {
   userAid: string;
@@ -107,5 +107,26 @@ export async function getTrustGraph(): Promise<unknown> {
 export async function getTrustScore(aid: string): Promise<{ score: number; depth: number }> {
   const response = await fetch(`${BACKEND_URL}/api/v1/trust/score/${encodeURIComponent(aid)}`);
   if (!response.ok) throw new Error('Failed to fetch trust score');
+  return response.json();
+}
+
+export interface SpaceInfo {
+  spaceId: string;
+  spaceName: string;
+  createdAt: string;
+  keysAvailable: boolean;
+}
+
+export interface UserSpacesResponse {
+  privateSpace?: SpaceInfo;
+  communitySpace?: SpaceInfo;
+}
+
+/**
+ * Get user's spaces (private + community) and key availability
+ */
+export async function getUserSpaces(aid: string): Promise<UserSpacesResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/spaces/user?aid=${encodeURIComponent(aid)}`);
+  if (!response.ok) return {};
   return response.json();
 }

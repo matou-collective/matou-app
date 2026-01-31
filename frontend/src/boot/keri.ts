@@ -19,6 +19,8 @@ async function restoreIdentity(
     if (result.success && result.hasAID) {
       console.log('[KERI Boot] Session restored with AID, navigating to pending-approval');
       onboardingStore.navigateTo('pending-approval');
+      // Fetch user spaces in background (don't block navigation)
+      identityStore.fetchUserSpaces();
     } else if (result.success) {
       console.log('[KERI Boot] Session restored but no AID found');
     } else if (result.error) {
