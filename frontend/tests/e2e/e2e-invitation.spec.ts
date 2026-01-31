@@ -108,6 +108,9 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
     await modal.locator('input[type="text"]').fill('Test Invitee');
     // Leave role as default "Member"
 
+    // Fill in optional email field
+    await modal.locator('input[type="email"]').fill('ben@matou.nz');
+
     // Submit and wait for invitation creation
     console.log('[Test] Creating invitation (this involves KERI operations)...');
     await modal.getByRole('button', { name: /create invitation/i }).click();
@@ -132,10 +135,22 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
     expect(aidText).toBeTruthy();
     console.log(`[Test] Invitee AID: ${aidText}`);
 
+    // Send invite email to ben@matou.nz
+    console.log('[Test] Sending invite email to ben@matou.nz...');
+    const emailBtn = modal.getByRole('button', { name: /email invite/i });
+    await expect(emailBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await emailBtn.click();
+
+    // Wait for email sent confirmation
+    await expect(
+      modal.getByText(/invite emailed to ben@matou\.nz/i),
+    ).toBeVisible({ timeout: TIMEOUT.long });
+    console.log('[Test] Invite email sent successfully');
+
     // Close modal
     await modal.getByRole('button', { name: /done/i }).click();
     await expect(modal).not.toBeVisible({ timeout: TIMEOUT.short });
-    console.log('[Test] PASS - Invitation created successfully');
+    console.log('[Test] PASS - Invitation created and emailed successfully');
   });
 
   // ------------------------------------------------------------------

@@ -12,7 +12,7 @@
     "test:ui": "playwright test --ui",
     "test:debug": "playwright test --debug",
     "test:headed": "playwright test --headed",
-    "test:serve": "VITE_KERIA_ADMIN_URL=http://localhost:4901 VITE_KERIA_BOOT_URL=http://localhost:4903 VITE_KERIA_CESR_URL=http://localhost:4902 VITE_CONFIG_SERVER_URL=http://localhost:4904 VITE_SCHEMA_SERVER_URL=http://schema-server:7723 quasar dev -p 9003",
+    "test:serve": "VITE_KERIA_ADMIN_URL=http://localhost:4901 VITE_KERIA_BOOT_URL=http://localhost:4903 VITE_KERIA_CESR_URL=http://localhost:4902 VITE_CONFIG_SERVER_URL=http://localhost:4904 VITE_TEST_CONFIG=true VITE_BACKEND_URL=http://localhost:9080 VITE_SCHEMA_SERVER_URL=http://schema-server:7723 quasar dev -p 9003",
     "test:script": "vitest run --config vitest.config.ts",
     "dev": "quasar dev",
     "build": "quasar build",

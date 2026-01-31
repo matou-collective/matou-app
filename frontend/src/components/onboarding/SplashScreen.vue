@@ -17,7 +17,7 @@
           alt="Matou"
           class="matou-text-logo-white mb-2 mt-0 w-[300px] h-[100px] mx-auto"
         />
-        <p class="text-white/80 text-base md:text-lg">Community &middot; Connection &middot; Governance</p>
+        <p class="text-white/80 text-base md:text-lg">Connection &middot; Collaboration &middot; Innovation</p>
       </div>
 
       <!-- Loading State -->

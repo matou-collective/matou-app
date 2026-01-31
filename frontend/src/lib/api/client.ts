@@ -3,7 +3,7 @@
  * Communicates with the Go backend for sync and community operations
  */
 
-const BACKEND_URL = 'http://localhost:8080';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
 
 export interface SyncCredentialsRequest {
   userAid: string;
