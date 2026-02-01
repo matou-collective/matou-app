@@ -296,6 +296,8 @@ const {
   grantReceived,
   credentialReceived,
   credential,
+  spaceInviteReceived,
+  spaceInviteKey,
   rejectionReceived,
   rejectionInfo,
   adminMessages,
@@ -402,13 +404,47 @@ onMounted(() => {
   startPolling();
 });
 
-// Watch for credential received
-watch(credentialReceived, (received) => {
-  if (received) {
-    showWelcome.value = true;
-    emit('approved', credential.value);
+// Watch for both credential and space invite to be ready
+watch(
+  [credentialReceived, spaceInviteReceived],
+  async ([hasCred, hasInvite]) => {
+    if (hasCred && hasInvite && spaceInviteKey.value) {
+      // Both received — execute community join
+      // Backend has the user's peer key stored from registration
+      let joined = await identityStore.joinCommunitySpace(spaceInviteKey.value);
+
+      if (!joined) {
+        // Retry a few times
+        for (let i = 0; i < 5; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          joined = await identityStore.joinCommunitySpace(spaceInviteKey.value!);
+          if (joined) break;
+        }
+      }
+
+      showWelcome.value = true;
+      emit('approved', credential.value);
+    } else if (hasCred && !hasInvite) {
+      // Credential received but no space invite — check if we already have
+      // community access (admin/space-owner case where no invite is needed).
+      const hasAccess = await identityStore.verifyCommunityAccess();
+      if (hasAccess) {
+        console.log('[PendingApproval] Already have community access (space owner)');
+        showWelcome.value = true;
+        emit('approved', credential.value);
+        return;
+      }
+      // Fallback: wait for space invite to arrive, then show welcome anyway
+      setTimeout(() => {
+        if (!spaceInviteReceived.value) {
+          console.log('[PendingApproval] Credential received without space invite, showing welcome');
+          showWelcome.value = true;
+          emit('approved', credential.value);
+        }
+      }, 10000);
+    }
   }
-});
+);
 
 // Handle continue from welcome overlay
 function handleContinue() {

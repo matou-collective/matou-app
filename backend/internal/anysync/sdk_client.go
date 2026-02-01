@@ -393,7 +393,8 @@ func (c *SDKClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceTyp
 	return spaceID, nil
 }
 
-// AddToACL adds a peer to a space's access control list
+// Deprecated: AddToACL builds raw JSON as a proto record which is rejected by the
+// consensus node. Use MatouACLManager.CreateOpenInvite/JoinWithInvite instead.
 func (c *SDKClient) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -539,6 +540,71 @@ func (c *SDKClient) GetSigningKey() crypto.PrivKey {
 		return c.peerKeyManager.GetPrivKey()
 	}
 	return nil
+}
+
+// Reinitialize shuts down all any-sync components, overwrites the peer key
+// with a mnemonic-derived key, and restarts the SDK with the new identity.
+// This is called by POST /api/v1/identity/set when the user's identity is
+// established (org setup, registration, or claim flow).
+func (c *SDKClient) Reinitialize(mnemonic string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	fmt.Println("[any-sync SDK] Reinitializing with mnemonic-derived peer key...")
+
+	// 1. Shut down the current app
+	if c.app != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.app.Close(ctx); err != nil {
+			fmt.Printf("[any-sync SDK] Warning: error closing app during reinit: %v\n", err)
+		}
+		c.app = nil
+		c.initialized = false
+	}
+
+	// 2. Derive new peer key from mnemonic
+	privKey, err := DeriveKeyFromMnemonic(mnemonic, 0)
+	if err != nil {
+		return fmt.Errorf("deriving key from mnemonic: %w", err)
+	}
+
+	// 3. Overwrite {dataDir}/peer.key with the derived key
+	keyPath := filepath.Join(c.dataDir, "peer.key")
+	keyData, err := privKey.Marshall()
+	if err != nil {
+		return fmt.Errorf("marshaling derived key: %w", err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		return fmt.Errorf("writing peer.key: %w", err)
+	}
+
+	// 4. Create new PeerKeyManager with the derived key
+	peerMgr, err := NewPeerKeyManager(&PeerKeyConfig{
+		KeyPath:  keyPath,
+		Mnemonic: mnemonic,
+		KeyIndex: 0,
+	})
+	if err != nil {
+		return fmt.Errorf("creating peer key manager: %w", err)
+	}
+	c.peerKeyManager = peerMgr
+
+	// 5. Restart the SDK
+	if err := c.initFullSDK(); err != nil {
+		return fmt.Errorf("reinitializing SDK: %w", err)
+	}
+
+	c.initialized = true
+	fmt.Printf("[any-sync SDK] Reinitialized with new peer ID: %s\n", c.peerKeyManager.GetPeerID())
+	return nil
+}
+
+// GetPeerKeyManager returns the peer key manager (used by identity handler).
+func (c *SDKClient) GetPeerKeyManager() *PeerKeyManager {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.peerKeyManager
 }
 
 // Close shuts down the SDK client
@@ -799,7 +865,26 @@ func (p *sdkStorageProvider) WaitSpaceStorage(ctx context.Context, id string) (s
 	if s, ok := p.spaces.Load(id); ok {
 		return s.(spacestorage.SpaceStorage), nil
 	}
-	return nil, spacestorage.ErrSpaceStorageMissing
+
+	// Try to reopen an existing space database from disk.
+	dbPath := filepath.Join(p.rootPath, id, "data.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, spacestorage.ErrSpaceStorageMissing
+	}
+
+	store, err := anystore.Open(ctx, dbPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("reopening space database %s: %w", id, err)
+	}
+
+	storage, err := spacestorage.New(ctx, id, store)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("loading space storage %s: %w", id, err)
+	}
+
+	p.spaces.Store(id, storage)
+	return storage, nil
 }
 
 func (p *sdkStorageProvider) SpaceStorage(id string) (spacestorage.SpaceStorage, error) {
@@ -835,8 +920,12 @@ func (p *sdkStorageProvider) CreateSpaceStorage(ctx context.Context, payload spa
 }
 
 func (p *sdkStorageProvider) SpaceExists(id string) bool {
-	_, ok := p.spaces.Load(id)
-	return ok
+	if _, ok := p.spaces.Load(id); ok {
+		return true
+	}
+	dbPath := filepath.Join(p.rootPath, id, "data.db")
+	_, err := os.Stat(dbPath)
+	return err == nil
 }
 
 // sdkPeerManagerProvider implements peermanager.PeerManagerProvider using real

@@ -11,6 +11,7 @@ import {
   completeMnemonicVerification,
   saveAccounts,
   loadAccounts,
+  loginWithMnemonic,
   TestAccounts,
 } from './utils/test-helpers';
 
@@ -197,57 +198,82 @@ test.describe.serial('Organization Setup', () => {
   });
 
   // ------------------------------------------------------------------
-  // Test 4: Community space created
+  // Test 4: Admin backend state is correct after org setup
   // ------------------------------------------------------------------
-  test('community space created', async ({ request }) => {
+  test('admin has identity, community space, and access', async ({ request }) => {
     test.setTimeout(TIMEOUT.long);
 
-    // Verify org config exists (use test config header)
-    const configResponse = await request.get(`${CONFIG_SERVER_URL}/api/config`, {
-      headers: { 'X-Test-Config': 'true' },
-    });
-    expect(configResponse.ok(), 'Org config must exist (admin creates organization must pass first)').toBe(true);
+    // 1. Verify backend identity is configured
+    const identityResponse = await request.get(`${BACKEND_URL}/api/v1/identity`);
+    expect(identityResponse.ok(), 'Identity endpoint must be reachable').toBe(true);
 
-    const config = await configResponse.json();
-    expect(config.organization).toBeDefined();
-    expect(config.organization.aid).toBeTruthy();
+    const identity = await identityResponse.json();
+    expect(identity.configured, 'Backend identity must be configured after org setup').toBe(true);
+    expect(identity.aid).toBeTruthy();
+    console.log('[Test] Backend identity configured, AID:', identity.aid);
 
-    // Backend must be reachable (already verified in health check, but confirm)
-    const healthResponse = await request.get(`${BACKEND_URL}/health`);
-    expect(healthResponse.ok(), 'Backend must be reachable for space creation').toBe(true);
+    // 2. Verify community space exists
+    const communityResponse = await request.get(`${BACKEND_URL}/api/v1/spaces/community`);
+    expect(communityResponse.ok(), 'Community space endpoint must be reachable').toBe(true);
 
-    // Create community space — must succeed
-    const communityResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/community`, {
-      data: {
-        orgAid: config.organization.aid,
-        orgName: config.organization.name || 'Matou Community',
-      },
-    });
-    expect(communityResponse.ok(), `Community space creation failed: ${communityResponse.status()}`).toBe(true);
+    const community = await communityResponse.json();
+    expect(community.spaceId, 'Community space must have a spaceId').toBeTruthy();
+    console.log('[Test] Community space exists:', community.spaceId);
 
-    const communityBody = await communityResponse.json();
-    expect(communityBody.spaceId).toBeTruthy();
-    expect(communityBody.success).toBe(true);
-    console.log('Community space created:', communityBody.spaceId);
+    // 3. Verify admin has community access via verify-access
+    const verifyResponse = await request.get(
+      `${BACKEND_URL}/api/v1/spaces/community/verify-access?aid=${identity.aid}`,
+    );
+    expect(verifyResponse.ok(), 'Verify-access endpoint must be reachable').toBe(true);
 
-    // Create admin private space — must succeed
-    const adminAid = config.admin?.aid || config.admins?.[0]?.aid;
-    expect(adminAid, 'Admin AID must exist in config').toBeTruthy();
+    const access = await verifyResponse.json();
+    expect(access.hasAccess, 'Admin must have community access').toBe(true);
+    expect(access.canRead, 'Admin must have read access').toBe(true);
+    expect(access.canWrite, 'Admin must have write access').toBe(true);
+    console.log('[Test] Admin has community access:', access);
+  });
+
+  // ------------------------------------------------------------------
+  // Test 5: Admin can restore session and load dashboard
+  // ------------------------------------------------------------------
+  test('admin loads dashboard after session restore', async ({ browser }) => {
+    test.setTimeout(TIMEOUT.aidCreation);
 
     const accounts = loadAccounts();
-    const adminMnemonicStr = accounts.admin?.mnemonic?.join(' ') || '';
+    expect(accounts.admin?.mnemonic, 'Admin mnemonic must be saved from test 3').toBeTruthy();
 
-    const privateResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/private`, {
-      data: {
-        userAid: adminAid,
-        mnemonic: adminMnemonicStr,
-      },
-    });
-    expect(privateResponse.ok(), `Admin private space creation failed: ${privateResponse.status()}`).toBe(true);
+    // Fresh browser context — simulates reopening the app
+    const context = await browser.newContext();
+    await setupTestConfig(context);
+    const page = await context.newPage();
+    setupPageLogging(page, 'Dashboard');
 
-    const privateBody = await privateResponse.json();
-    expect(privateBody.spaceId).toBeTruthy();
-    expect(privateBody.success).toBe(true);
-    console.log('Admin private space created:', privateBody.spaceId);
+    try {
+      // Restore admin session via mnemonic recovery
+      await loginWithMnemonic(page, accounts.admin!.mnemonic);
+      console.log('[Test] Session restored, on dashboard');
+
+      // Verify dashboard URL
+      await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+
+      // Verify main welcome heading rendered
+      await expect(page.locator('h1')).toContainText('Welcome back', { timeout: TIMEOUT.short });
+      console.log('[Test] Dashboard heading visible');
+
+      // Verify sidebar branding
+      await expect(page.getByText('Matou Member')).toBeVisible({ timeout: TIMEOUT.short });
+
+      // Verify stats cards rendered
+      await expect(page.getByText('Pending Registrations')).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText('Community Activity')).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText('New Members')).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Dashboard sections rendered');
+
+      // Verify admin-specific section (Invite Member button)
+      await expect(page.getByRole('button', { name: /invite member/i })).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Admin section visible');
+    } finally {
+      await context.close();
+    }
   });
 });

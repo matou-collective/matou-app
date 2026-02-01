@@ -1,13 +1,18 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"time"
 
+	"github.com/anyproto/any-sync/commonspace/object/acl/list"
+	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/identity"
 )
 
 // SpacesHandler handles space-related HTTP requests
@@ -15,14 +20,16 @@ type SpacesHandler struct {
 	spaceManager *anysync.SpaceManager
 	store        *anystore.LocalStore
 	spaceStore   anysync.SpaceStore
+	userIdentity *identity.UserIdentity
 }
 
 // NewSpacesHandler creates a new spaces handler
-func NewSpacesHandler(spaceManager *anysync.SpaceManager, store *anystore.LocalStore) *SpacesHandler {
+func NewSpacesHandler(spaceManager *anysync.SpaceManager, store *anystore.LocalStore, userIdentity *identity.UserIdentity) *SpacesHandler {
 	return &SpacesHandler{
 		spaceManager: spaceManager,
 		store:        store,
 		spaceStore:   anystore.NewSpaceStoreAdapter(store),
+		userIdentity: userIdentity,
 	}
 }
 
@@ -72,8 +79,8 @@ type InviteRequest struct {
 // InviteResponse represents the response for space invitation
 type InviteResponse struct {
 	Success          bool   `json:"success"`
-	PrivateSpaceID   string `json:"privateSpaceId,omitempty"`
 	CommunitySpaceID string `json:"communitySpaceId,omitempty"`
+	InviteKey        string `json:"inviteKey,omitempty"` // base64-encoded invite private key
 	Error            string `json:"error,omitempty"`
 }
 
@@ -92,6 +99,7 @@ type SpaceInfo struct {
 }
 
 // HandleGetUserSpaces handles GET /api/v1/spaces/user?aid=<prefix>
+// In per-user mode, the ?aid= query param is optional; falls back to local identity.
 func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
@@ -101,9 +109,12 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 	}
 
 	aid := r.URL.Query().Get("aid")
+	if aid == "" && h.userIdentity != nil {
+		aid = h.userIdentity.GetAID()
+	}
 	if aid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "aid query parameter is required",
+			"error": "identity not configured",
 		})
 		return
 	}
@@ -184,7 +195,10 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Create new community space via any-sync client using full key set
+	// Create new community space via any-sync client using mnemonic-derived keys.
+	// The admin's identity must be set first (POST /api/v1/identity/set) so we
+	// can derive deterministic keys from the stored mnemonic. This makes the admin
+	// the recoverable owner of the community space.
 	ctx := r.Context()
 	client := h.spaceManager.GetClient()
 	if client == nil {
@@ -195,11 +209,24 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	keys, err := anysync.GenerateSpaceKeySet()
+	// Derive community space keys from stored mnemonic (index 1; index 0 = private space)
+	mnemonic := ""
+	if h.userIdentity != nil {
+		mnemonic = h.userIdentity.GetMnemonic()
+	}
+	if mnemonic == "" {
+		writeJSON(w, http.StatusConflict, CreateCommunityResponse{
+			Success: false,
+			Error:   "identity must be configured before creating community space (call POST /api/v1/identity/set first)",
+		})
+		return
+	}
+
+	keys, err := anysync.DeriveSpaceKeySet(mnemonic, 1)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, CreateCommunityResponse{
 			Success: false,
-			Error:   fmt.Sprintf("failed to generate space keys: %v", err),
+			Error:   fmt.Sprintf("failed to derive community space keys: %v", err),
 		})
 		return
 	}
@@ -211,6 +238,11 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 			Error:   fmt.Sprintf("failed to create community space: %v", err),
 		})
 		return
+	}
+
+	// Make space shareable on coordinator (required before CreateOpenInvite)
+	if err := client.MakeSpaceShareable(ctx, result.SpaceID); err != nil {
+		fmt.Printf("Warning: failed to make space shareable: %v\n", err)
 	}
 
 	// Save space record to local store
@@ -281,10 +313,14 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// In per-user mode, use local identity as fallback
+	if req.UserAID == "" && h.userIdentity != nil {
+		req.UserAID = h.userIdentity.GetAID()
+	}
 	if req.UserAID == "" {
 		writeJSON(w, http.StatusBadRequest, CreatePrivateResponse{
 			Success: false,
-			Error:   "userAid is required",
+			Error:   "userAid is required (or set identity first)",
 		})
 		return
 	}
@@ -294,6 +330,15 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 	// Check if space already exists
 	existingSpace, err := h.spaceStore.GetUserSpace(ctx, req.UserAID)
 	if err == nil && existingSpace != nil {
+		// Even if space exists, persist peer key if mnemonic is provided
+		// (handles upgrades where peer key wasn't stored on initial creation)
+		if req.Mnemonic != "" {
+			if client := h.spaceManager.GetClient(); client != nil {
+				if peerKey, peerErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0); peerErr == nil {
+					anysync.PersistUserPeerKey(client.GetDataDir(), req.UserAID, peerKey)
+				}
+			}
+		}
 		writeJSON(w, http.StatusOK, CreatePrivateResponse{
 			Success: true,
 			SpaceID: existingSpace.SpaceID,
@@ -328,6 +373,16 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 				Error:   "any-sync client not available",
 			})
 			return
+		}
+
+		// Derive and persist user's peer key for future operations (e.g. JoinWithInvite)
+		peerKey, peerErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0)
+		if peerErr != nil {
+			fmt.Printf("Warning: failed to derive peer key: %v\n", peerErr)
+		} else {
+			if persistErr := anysync.PersistUserPeerKey(client.GetDataDir(), req.UserAID, peerKey); persistErr != nil {
+				fmt.Printf("Warning: failed to persist peer key: %v\n", persistErr)
+			}
 		}
 
 		result, err := client.CreateSpaceWithKeys(ctx, req.UserAID, anysync.SpaceTypePrivate, keys)
@@ -438,42 +493,250 @@ func (h *SpacesHandler) HandleInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get or create the user's private space
-	privateSpace, err := h.spaceManager.GetOrCreatePrivateSpace(ctx, req.RecipientAID, h.spaceStore)
+	// Generate a fresh invite key via the ACL manager
+	aclMgr := h.spaceManager.ACLManager()
+	inviteKey, err := aclMgr.CreateOpenInvite(ctx, communitySpace.SpaceID, list.AclPermissionsWriter)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, InviteResponse{
 			Success: false,
-			Error:   fmt.Sprintf("failed to get/create private space: %v", err),
+			Error:   fmt.Sprintf("failed to create invite: %v", err),
 		})
 		return
 	}
 
-	// Add user to community space ACL
-	// Note: This requires the user's peer ID, which would be derived from their AID
-	client := h.spaceManager.GetClient()
-	if client != nil {
-		peerID := anysync.GeneratePeerIDFromAID(req.RecipientAID)
-		if err := client.AddToACL(ctx, communitySpace.SpaceID, peerID, []string{"read", "write"}); err != nil {
-			fmt.Printf("Warning: failed to add user to community ACL: %v\n", err)
-		}
-	}
-
-	// Route the credential to both spaces
-	cred := &anysync.Credential{
-		SAID:      req.CredentialSAID,
-		Recipient: req.RecipientAID,
-		Schema:    req.Schema,
-	}
-
-	if _, err := h.spaceManager.RouteCredential(ctx, cred, h.spaceStore); err != nil {
-		fmt.Printf("Warning: failed to route credential: %v\n", err)
+	// Marshal invite private key to bytes and base64-encode
+	inviteKeyBytes, err := inviteKey.Marshall()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, InviteResponse{
+			Success: false,
+			Error:   fmt.Sprintf("failed to marshal invite key: %v", err),
+		})
+		return
 	}
 
 	writeJSON(w, http.StatusOK, InviteResponse{
 		Success:          true,
-		PrivateSpaceID:   privateSpace.SpaceID,
 		CommunitySpaceID: communitySpace.SpaceID,
+		InviteKey:        base64.StdEncoding.EncodeToString(inviteKeyBytes),
 	})
+}
+
+// JoinCommunityRequest represents a request to join the community space
+type JoinCommunityRequest struct {
+	UserAID   string `json:"userAid"`
+	InviteKey string `json:"inviteKey"` // base64-encoded invite private key
+}
+
+// JoinCommunityResponse represents the response for community join
+type JoinCommunityResponse struct {
+	Success bool   `json:"success"`
+	SpaceID string `json:"spaceId,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// HandleJoinCommunity handles POST /api/v1/spaces/community/join
+func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, JoinCommunityResponse{
+			Success: false,
+			Error:   "method not allowed",
+		})
+		return
+	}
+
+	var req JoinCommunityRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, JoinCommunityResponse{
+			Success: false,
+			Error:   fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+
+	if req.UserAID == "" || req.InviteKey == "" {
+		writeJSON(w, http.StatusBadRequest, JoinCommunityResponse{
+			Success: false,
+			Error:   "userAid and inviteKey are required",
+		})
+		return
+	}
+
+	ctx := r.Context()
+
+	// Get community space ID
+	communitySpace, err := h.spaceManager.GetCommunitySpace(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, JoinCommunityResponse{
+			Success: false,
+			Error:   "community space not configured",
+		})
+		return
+	}
+
+	// Decode invite key from base64
+	inviteKeyBytes, err := base64.StdEncoding.DecodeString(req.InviteKey)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, JoinCommunityResponse{
+			Success: false,
+			Error:   "invalid invite key encoding",
+		})
+		return
+	}
+
+	invitePrivKey, err := crypto.UnmarshalEd25519PrivateKeyProto(inviteKeyBytes)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, JoinCommunityResponse{
+			Success: false,
+			Error:   fmt.Sprintf("invalid invite key: %v", err),
+		})
+		return
+	}
+
+	// Load the user's stored peer key (persisted during private space creation)
+	client := h.spaceManager.GetClient()
+	if client == nil {
+		writeJSON(w, http.StatusServiceUnavailable, JoinCommunityResponse{
+			Success: false,
+			Error:   "any-sync client not available",
+		})
+		return
+	}
+
+	dataDir := client.GetDataDir()
+	_, err = anysync.LoadUserPeerKey(dataDir, req.UserAID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, JoinCommunityResponse{
+			Success: false,
+			Error:   "user peer key not found, private space must be created first",
+		})
+		return
+	}
+
+	// Create a temporary SDKClient with the user's stored peer key
+	// so JoinWithInvite signs the join record with the USER's identity
+	configPath := filepath.Join(dataDir, "..", "config", "client-host.yml")
+	// Try common config locations
+	for _, candidate := range []string{
+		filepath.Join(dataDir, "..", "config", "client-host.yml"),
+		"config/client-host.yml",
+		"../infrastructure/any-sync/client-host-test.yml",
+	} {
+		if _, statErr := filepath.Abs(candidate); statErr == nil {
+			configPath = candidate
+			break
+		}
+	}
+
+	tempClient, err := anysync.NewSDKClient(configPath, &anysync.ClientOptions{
+		DataDir:     filepath.Join(dataDir, "users", req.UserAID, "join"),
+		PeerKeyPath: filepath.Join(dataDir, "users", req.UserAID, "peer.key"),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, JoinCommunityResponse{
+			Success: false,
+			Error:   fmt.Sprintf("failed to create temp client: %v", err),
+		})
+		return
+	}
+	defer tempClient.Close()
+
+	// Wait for space to be available and join
+	aclMgr := anysync.NewMatouACLManager(tempClient, nil)
+	metadata := []byte(fmt.Sprintf(`{"aid":"%s","joinedAt":"%s"}`, req.UserAID, time.Now().UTC().Format(time.RFC3339)))
+
+	if err := aclMgr.JoinWithInvite(ctx, communitySpace.SpaceID, invitePrivKey, metadata); err != nil {
+		writeJSON(w, http.StatusInternalServerError, JoinCommunityResponse{
+			Success: false,
+			Error:   fmt.Sprintf("failed to join community: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, JoinCommunityResponse{
+		Success: true,
+		SpaceID: communitySpace.SpaceID,
+	})
+}
+
+// VerifyAccessResponse represents the response for access verification
+type VerifyAccessResponse struct {
+	HasAccess bool   `json:"hasAccess"`
+	SpaceID   string `json:"spaceId,omitempty"`
+	CanRead   bool   `json:"canRead"`
+	CanWrite  bool   `json:"canWrite"`
+}
+
+// HandleVerifyAccess handles GET /api/v1/spaces/community/verify-access?aid=<prefix>
+func (h *SpacesHandler) HandleVerifyAccess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	aid := r.URL.Query().Get("aid")
+	if aid == "" {
+		writeJSON(w, http.StatusBadRequest, VerifyAccessResponse{HasAccess: false})
+		return
+	}
+
+	ctx := r.Context()
+
+	// Get community space
+	communitySpace, err := h.spaceManager.GetCommunitySpace(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, VerifyAccessResponse{HasAccess: false})
+		return
+	}
+
+	client := h.spaceManager.GetClient()
+	if client == nil {
+		writeJSON(w, http.StatusOK, VerifyAccessResponse{HasAccess: false})
+		return
+	}
+	dataDir := client.GetDataDir()
+	aclMgr := h.spaceManager.ACLManager()
+
+	// Step 1: Check via space signing key (space creator/owner).
+	// The signing key is the identity recorded in the ACL root when the space
+	// was created, so a non-zero permission proves ownership.
+	if spaceKeys, loadErr := anysync.LoadSpaceKeySet(dataDir, communitySpace.SpaceID); loadErr == nil {
+		perms, permErr := aclMgr.GetPermissions(ctx, communitySpace.SpaceID, spaceKeys.SigningKey.GetPublic())
+		if permErr == nil && !perms.NoPermissions() {
+			writeJSON(w, http.StatusOK, VerifyAccessResponse{
+				HasAccess: true,
+				SpaceID:   communitySpace.SpaceID,
+				CanRead:   true,
+				CanWrite:  perms.CanWrite(),
+			})
+			return
+		}
+	}
+
+	// Step 2: Check via user peer key against ACL (joined member).
+	userPeerKey, err := anysync.LoadUserPeerKey(dataDir, aid)
+	if err != nil {
+		writeJSON(w, http.StatusOK, VerifyAccessResponse{HasAccess: false})
+		return
+	}
+
+	perms, err := aclMgr.GetPermissions(ctx, communitySpace.SpaceID, userPeerKey.GetPublic())
+	if err != nil {
+		writeJSON(w, http.StatusOK, VerifyAccessResponse{HasAccess: false})
+		return
+	}
+
+	hasAccess := !perms.NoPermissions()
+	writeJSON(w, http.StatusOK, VerifyAccessResponse{
+		HasAccess: hasAccess,
+		SpaceID:   communitySpace.SpaceID,
+		CanRead:   hasAccess,
+		CanWrite:  perms.CanWrite(),
+	})
+}
+
+// handleVerifyAccessOrJoin routes /api/v1/spaces/community/verify-access
+func (h *SpacesHandler) handleVerifyAccess(w http.ResponseWriter, r *http.Request) {
+	h.HandleVerifyAccess(w, r)
 }
 
 // handleCommunitySpace routes community space requests
@@ -494,6 +757,8 @@ func (h *SpacesHandler) handleCommunitySpace(w http.ResponseWriter, r *http.Requ
 func (h *SpacesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/spaces/community", h.handleCommunitySpace)
 	mux.HandleFunc("/api/v1/spaces/community/invite", h.HandleInvite)
+	mux.HandleFunc("/api/v1/spaces/community/join", h.HandleJoinCommunity)
+	mux.HandleFunc("/api/v1/spaces/community/verify-access", h.handleVerifyAccess)
 	mux.HandleFunc("/api/v1/spaces/private", h.HandleCreatePrivate)
 	mux.HandleFunc("/api/v1/spaces/user", h.HandleGetUserSpaces)
 }

@@ -156,6 +156,16 @@ func (m *SpaceManager) GetClient() AnySyncClient {
 	return m.client
 }
 
+// IsOrgAdmin returns true if the given AID is the configured org admin.
+func (m *SpaceManager) IsOrgAdmin(aid string) bool {
+	return m.orgAID != "" && m.orgAID == aid
+}
+
+// SetOrgAID sets the org AID at runtime (e.g. after HandleSetIdentity).
+func (m *SpaceManager) SetOrgAID(orgAID string) {
+	m.orgAID = orgAID
+}
+
 // SetCommunitySpaceID sets the community space ID
 func (m *SpaceManager) SetCommunitySpaceID(spaceID string) {
 	m.communitySpaceID = spaceID
