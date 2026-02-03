@@ -111,7 +111,7 @@ func Load(configPath, bootstrapPath string) (*Config, error) {
 			CESRURL:  "http://localhost:3902",
 		},
 		AnySync: AnySyncConfig{
-			ClientConfigPath: "../infrastructure/any-sync/etc/client.yml",
+			ClientConfigPath: "config/client.yml",
 		},
 		SMTP: SMTPConfig{
 			Host:        "localhost",

@@ -25,7 +25,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -61,23 +60,14 @@ func DefaultConfig() *Config {
 
 // getInfrastructurePath returns the path to the test network infrastructure
 func getInfrastructurePath() (string, error) {
-	// Get the directory of this source file
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		return "", fmt.Errorf("failed to get caller info")
+	p := os.Getenv("MATOU_ANYSYNC_INFRA_DIR")
+	if p == "" {
+		return "", fmt.Errorf("MATOU_ANYSYNC_INFRA_DIR not set (path to any-sync infrastructure)")
 	}
-
-	// Navigate from backend/internal/anysync/testnet to infrastructure/any-sync
-	// backend/internal/anysync/testnet -> backend/internal/anysync -> backend/internal -> backend -> project root
-	projectRoot := filepath.Join(filepath.Dir(filename), "..", "..", "..", "..")
-	infraPath := filepath.Join(projectRoot, "infrastructure", "any-sync")
-
-	// Verify it exists
-	if _, err := os.Stat(infraPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("test network infrastructure not found at %s", infraPath)
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return "", fmt.Errorf("any-sync infrastructure not found at %s", p)
 	}
-
-	return filepath.Abs(infraPath)
+	return filepath.Abs(p)
 }
 
 // Setup starts the test network and returns a Network handle.

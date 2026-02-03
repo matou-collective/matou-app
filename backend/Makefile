@@ -63,25 +63,27 @@ test-all: test test-integration
 # Test Network Management
 # =============================================================================
 
+ANYSYNC_INFRA_DIR ?= ../../matou-infrastructure/any-sync
+
 # Start the test network manually
 testnet-up:
-	cd ../infrastructure/any-sync && make up-test
+	cd $(ANYSYNC_INFRA_DIR) && make up-test
 
 # Stop the test network
 testnet-down:
-	cd ../infrastructure/any-sync && make down-test
+	cd $(ANYSYNC_INFRA_DIR) && make down-test
 
 # Clean test network (remove all data)
 testnet-clean:
-	cd ../infrastructure/any-sync && make clean-test
+	cd $(ANYSYNC_INFRA_DIR) && make clean-test
 
 # Check test network status
 testnet-status:
-	cd ../infrastructure/any-sync && make status-test
+	cd $(ANYSYNC_INFRA_DIR) && make status-test
 
 # Check test network health
 testnet-health:
-	cd ../infrastructure/any-sync && make health-test
+	cd $(ANYSYNC_INFRA_DIR) && make health-test
 
 # =============================================================================
 # Code Quality

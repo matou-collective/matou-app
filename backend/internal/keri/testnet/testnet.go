@@ -27,7 +27,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -66,23 +65,14 @@ func DefaultConfig() *Config {
 
 // getInfrastructurePath returns the path to the KERI infrastructure directory
 func getInfrastructurePath() (string, error) {
-	// Get the directory of this source file
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		return "", fmt.Errorf("failed to get caller info")
+	p := os.Getenv("MATOU_KERI_INFRA_DIR")
+	if p == "" {
+		return "", fmt.Errorf("MATOU_KERI_INFRA_DIR not set (path to KERI infrastructure)")
 	}
-
-	// Navigate from backend/internal/keri/testnet to infrastructure/keri
-	// backend/internal/keri/testnet -> backend/internal/keri -> backend/internal -> backend -> project root
-	projectRoot := filepath.Join(filepath.Dir(filename), "..", "..", "..", "..")
-	infraPath := filepath.Join(projectRoot, "infrastructure", "keri")
-
-	// Verify it exists
-	if _, err := os.Stat(infraPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("KERI infrastructure not found at %s", infraPath)
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return "", fmt.Errorf("KERI infrastructure not found at %s", p)
 	}
-
-	return filepath.Abs(infraPath)
+	return filepath.Abs(p)
 }
 
 // Setup starts the KERI infrastructure and returns a Network handle.

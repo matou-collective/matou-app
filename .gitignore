@@ -1,0 +1,110 @@
+# Backend configuration with secrets
+backend/.env
+backend/config/bootstrap.yaml
+backend/config/.env
+backend/config/.org-passcode
+backend/config/.keria-config.json
+backend/config/secrets.yaml
+
+# ============================================================================
+# Development
+# ============================================================================
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# ============================================================================
+# Backend (Go)
+# ============================================================================
+
+# Binaries
+backend/bin/
+backend/build/
+backend/dist/
+backend/server
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Runtime data
+backend/data/
+backend/data-test/
+backend/data-test-*/
+backend/**/data/
+
+# Test coverage
+*.out
+coverage.html
+
+# Go vendor (if not using modules)
+vendor/
+
+# ============================================================================
+# Frontend (Quasar/Vue)
+# ============================================================================
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production builds
+frontend/dist/
+frontend/dist-electron/
+frontend/dist-ssr/
+frontend/build/
+
+# Cache
+.cache/
+.quasar/
+.eslintcache
+
+# Environment
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+**/.env.local
+**/.env.override
+**/.env.secrets
+
+# ============================================================================
+# Testing
+# ============================================================================
+
+coverage/
+*.cover
+.nyc_output/
+
+# Playwright
+frontend/test-results/
+frontend/playwright-report/
+frontend/tests/e2e/results/
+
+# E2E test artifacts (auto-generated, contains test secrets)
+frontend/tests/e2e/test-accounts.json
+
+# ============================================================================
+# Temporary Files
+# ============================================================================
+
+tmp/
+temp/
+*.tmp
+
+# Working notes
+plan.md
+todos/
