@@ -39,12 +39,12 @@ export const keriEndpoints = {
   ],
 } as const;
 
-/** AnySync test network endpoint URLs (test network, +1000 port offset) */
+/** AnySync test network endpoint URLs */
 export const anysyncEndpoints = {
   /** Coordinator metrics (Prometheus) */
-  coordinatorMetrics: 'http://127.0.0.1:9104',
+  coordinatorMetrics: 'http://127.0.0.1:9004',
   /** Sync node 1 API */
-  node1API: 'http://127.0.0.1:9181',
+  node1API: 'http://127.0.0.1:9081',
 } as const;
 
 /** Backend test server */
@@ -58,19 +58,28 @@ export const witnessAIDs = {
 } as const;
 
 /**
- * Resolve the absolute path to the infrastructure/keri/ directory.
- * Works regardless of the working directory by resolving relative to this file.
+ * Resolve the absolute path to the KERI infrastructure directory.
+ * Uses MATOU_KERI_INFRA_DIR env var, falling back to sibling repo at ../matou-infrastructure/keri.
  */
 function getInfraPath(): string {
-  // This file: frontend/tests/e2e/utils/keri-testnet.ts
-  // Target:    infrastructure/keri/
-  const infraPath = path.resolve(__dirname, '..', '..', '..', '..', 'infrastructure', 'keri');
-
-  if (!fs.existsSync(infraPath)) {
-    throw new Error(`KERI infrastructure not found at ${infraPath}`);
+  const envPath = process.env.MATOU_KERI_INFRA_DIR;
+  if (envPath) {
+    if (!fs.existsSync(envPath)) {
+      throw new Error(`KERI infrastructure not found at ${envPath} (from MATOU_KERI_INFRA_DIR)`);
+    }
+    return path.resolve(envPath);
   }
 
-  return infraPath;
+  // Default: assume matou-infrastructure is a sibling directory to matou-app
+  const siblingPath = path.resolve(__dirname, '..', '..', '..', '..', '..', 'matou-infrastructure', 'keri');
+  if (fs.existsSync(siblingPath)) {
+    return siblingPath;
+  }
+
+  throw new Error(
+    'KERI infrastructure not found. Set MATOU_KERI_INFRA_DIR env var ' +
+      'or clone matou-infrastructure as a sibling directory.'
+  );
 }
 
 /**

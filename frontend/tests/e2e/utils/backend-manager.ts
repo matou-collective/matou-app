@@ -32,7 +32,7 @@ export class BackendManager {
   private backendDir: string;
   private nextPort: number;
 
-  constructor(startPort = 9081) {
+  constructor(startPort = 9180) {
     this.backendDir = path.resolve(__dirname, '..', '..', '..', '..', 'backend');
     this.nextPort = startPort;
   }
@@ -77,6 +77,7 @@ export class BackendManager {
         MATOU_ENV: 'test',
         MATOU_SERVER_PORT: String(assignedPort),
         MATOU_DATA_DIR: dataDir,
+        MATOU_ANYSYNC_CONFIG: path.join(this.backendDir, 'config', 'client.yml'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
