@@ -126,6 +126,18 @@ curl -s http://localhost:9000 > /dev/null && echo "Running" || echo "Not running
 | Variable | Description |
 |----------|-------------|
 | `MATOU_ENV=test` | Enable test mode (port 9080, isolated data) |
-| `MATOU_ANYSYNC_CONFIG` | Path to any-sync client config |
+| `MATOU_ANYSYNC_CONFIG` | Path to any-sync client config (optional) |
 | `MATOU_ANYSYNC_INFRA_DIR` | Path to any-sync infrastructure |
 | `MATOU_KERI_INFRA_DIR` | Path to KERI infrastructure |
+
+## any-sync Configuration
+
+Backend uses `config/client-dev.yml` (dev) or `config/client-test.yml` (test) for any-sync network config. After regenerating infrastructure, update these:
+
+```bash
+# After: cd ../matou-infrastructure/any-sync && make clean && make up
+cp ../matou-infrastructure/any-sync/etc/client.yml backend/config/client-dev.yml
+
+# After: cd ../matou-infrastructure/any-sync && make clean-test && make up-test
+cp ../matou-infrastructure/any-sync/etc-test/client.yml backend/config/client-test.yml
+```

@@ -93,9 +93,10 @@ func main() {
 	if anysyncConfigPath == "" {
 		if isTest {
 			// Test network uses ports 2001-2006
-			anysyncConfigPath = "../infrastructure/any-sync/client-host-test.yml"
+			anysyncConfigPath = "config/client-test.yml"
 		} else {
-			anysyncConfigPath = "config/client-host.yml"
+			// Dev network uses ports 1001-1006
+			anysyncConfigPath = "config/client-dev.yml"
 		}
 	}
 
