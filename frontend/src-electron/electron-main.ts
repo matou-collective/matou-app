@@ -61,8 +61,12 @@ async function startBackend(): Promise<void> {
   const backendPath = getBackendPath();
   const dataDir = path.join(app.getPath('userData'), 'matou-data');
 
+  // Detect production mode: packaged app or explicit env var
+  const isProduction = app.isPackaged || process.env.MATOU_ENV === 'production';
+
   console.log(`[Electron] Starting backend: ${backendPath}`);
   console.log(`[Electron] Port: ${backendPort}, Data dir: ${dataDir}`);
+  console.log(`[Electron] Production mode: ${isProduction}`);
 
   backendProcess = spawn(backendPath, [], {
     env: {
@@ -70,6 +74,7 @@ async function startBackend(): Promise<void> {
       MATOU_SERVER_PORT: String(backendPort),
       MATOU_DATA_DIR: dataDir,
       MATOU_CORS_MODE: 'bundled',
+      ...(isProduction && { MATOU_ENV: 'production' }),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

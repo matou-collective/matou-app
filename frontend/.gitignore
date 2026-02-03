@@ -38,6 +38,9 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# Production env (contains actual production URLs)
+.env.production
+
 # typescript
 *.tsbuildinfo
 

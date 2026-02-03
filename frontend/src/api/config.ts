@@ -1,15 +1,20 @@
 /**
  * Org Config API
- * Fetches org configuration from the config server and caches in secure storage.
+ * Fetches org configuration from the backend and caches in secure storage.
+ *
+ * Note: This replaces the separate config server. Config is now served by the
+ * backend at /api/v1/org/config. The backend stores config in {dataDir}/org-config.yaml.
  */
 
 import { secureStorage } from 'src/lib/secureStorage';
+import { getBackendUrl } from 'src/lib/platform';
 
+// Fallback to config server URL for backward compatibility during migration
 const CONFIG_SERVER_URL = import.meta.env.VITE_CONFIG_SERVER_URL || 'http://localhost:3904';
 const IS_TEST_CONFIG = import.meta.env.VITE_TEST_CONFIG === 'true';
 const LOCAL_CACHE_KEY = 'matou_org_config';
 
-/** Build headers for config server requests, adding test isolation header when needed */
+/** Build headers for config requests, adding test isolation header when needed */
 function configHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...extra };
   if (IS_TEST_CONFIG) {
@@ -76,7 +81,7 @@ export type ConfigResult =
   | { status: 'server_unreachable'; cached: OrgConfig | null };
 
 /**
- * Fetch org config from server, with localStorage fallback
+ * Fetch org config from backend, with config server fallback and localStorage cache
  *
  * Returns:
  * - { status: 'configured', config } - Server returned config
@@ -84,6 +89,31 @@ export type ConfigResult =
  * - { status: 'server_unreachable', cached } - Can't reach server, returns cached config if available
  */
 export async function fetchOrgConfig(): Promise<ConfigResult> {
+  // Try backend first (new unified endpoint)
+  try {
+    const backendUrl = await getBackendUrl();
+    const response = await fetch(`${backendUrl}/api/v1/org/config`, {
+      signal: AbortSignal.timeout(5000),
+      headers: configHeaders(),
+    });
+
+    if (response.ok) {
+      const rawConfig = await response.json() as OrgConfig;
+      const config = normalizeOrgConfig(rawConfig);
+      await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
+      console.log('[Config] Fetched config from backend for:', config.organization.name);
+      return { status: 'configured', config };
+    }
+
+    if (response.status === 404) {
+      console.log('[Config] Backend reachable but not configured yet');
+      return { status: 'not_configured' };
+    }
+  } catch (err) {
+    console.warn('[Config] Backend unreachable, trying config server:', err);
+  }
+
+  // Fallback to legacy config server
   try {
     const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
       signal: AbortSignal.timeout(5000),
@@ -92,49 +122,79 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
 
     if (response.ok) {
       const rawConfig = await response.json() as OrgConfig;
-      // Normalize to ensure admins array exists
       const config = normalizeOrgConfig(rawConfig);
-      // Cache to secure storage
       await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
-      console.log('[Config] Fetched and cached config for:', config.organization.name);
+      console.log('[Config] Fetched config from config server for:', config.organization.name);
       return { status: 'configured', config };
     }
 
     if (response.status === 404) {
-      // Server is reachable but no config exists yet
-      console.log('[Config] Server reachable but not configured yet');
+      console.log('[Config] Config server reachable but not configured yet');
       return { status: 'not_configured' };
     }
 
-    // Other error - treat as unreachable
-    throw new Error(`Server returned ${response.status}`);
+    throw new Error(`Config server returned ${response.status}`);
   } catch (err) {
-    // Server unreachable - check secure storage cache
-    console.warn('[Config] Server unreachable:', err);
+    // All servers unreachable - check secure storage cache
+    console.warn('[Config] All servers unreachable:', err);
     const cached = await getCachedConfig();
     return { status: 'server_unreachable', cached };
   }
 }
 
 /**
- * Save org config to the server
+ * Save org config to both backend and config server
  * Called after org setup completes
  */
 export async function saveOrgConfig(config: OrgConfig): Promise<void> {
-  const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
-    method: 'POST',
-    headers: configHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(config),
-  });
+  const errors: string[] = [];
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: 'Unknown error' }));
-    throw new Error(error.message || `Failed to save config: ${response.status}`);
+  // Save to backend (primary)
+  try {
+    const backendUrl = await getBackendUrl();
+    const backendResponse = await fetch(`${backendUrl}/api/v1/org/config`, {
+      method: 'POST',
+      headers: configHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(config),
+    });
+
+    if (!backendResponse.ok) {
+      const error = await backendResponse.json().catch(() => ({ message: 'Unknown error' }));
+      errors.push(`Backend: ${error.message || backendResponse.status}`);
+    } else {
+      console.log('[Config] Saved config to backend');
+    }
+  } catch (err) {
+    errors.push(`Backend: ${err instanceof Error ? err.message : 'unreachable'}`);
   }
 
-  // Also cache locally
+  // Also save to legacy config server for backward compatibility
+  try {
+    const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
+      method: 'POST',
+      headers: configHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(config),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+      errors.push(`Config server: ${error.message || response.status}`);
+    } else {
+      console.log('[Config] Saved config to config server');
+    }
+  } catch (err) {
+    // Config server failure is not critical if backend succeeded
+    console.warn('[Config] Config server save failed:', err);
+  }
+
+  // Cache locally regardless
   await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
-  console.log('[Config] Saved config to server and secure storage');
+  console.log('[Config] Cached config in secure storage');
+
+  // If both failed, throw error
+  if (errors.length === 2) {
+    throw new Error(`Failed to save config: ${errors.join('; ')}`);
+  }
 }
 
 /**
@@ -159,9 +219,22 @@ export async function clearCachedConfig(): Promise<void> {
 }
 
 /**
- * Check if config server is reachable
+ * Check if config service is reachable (backend or config server)
  */
 export async function isConfigServerReachable(): Promise<boolean> {
+  // Try backend first
+  try {
+    const backendUrl = await getBackendUrl();
+    const response = await fetch(`${backendUrl}/api/v1/org/health`, {
+      signal: AbortSignal.timeout(3000),
+      headers: configHeaders(),
+    });
+    if (response.ok) return true;
+  } catch {
+    // Backend not reachable, try config server
+  }
+
+  // Fallback to legacy config server
   try {
     const response = await fetch(`${CONFIG_SERVER_URL}/api/health`, {
       signal: AbortSignal.timeout(3000),

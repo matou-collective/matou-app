@@ -126,13 +126,22 @@ curl -s http://localhost:9000 > /dev/null && echo "Running" || echo "Not running
 | Variable | Description |
 |----------|-------------|
 | `MATOU_ENV=test` | Enable test mode (port 9080, isolated data) |
+| `MATOU_ENV=production` | Enable production mode (uses client-production.yml) |
 | `MATOU_ANYSYNC_CONFIG` | Path to any-sync client config (optional) |
 | `MATOU_ANYSYNC_INFRA_DIR` | Path to any-sync infrastructure |
 | `MATOU_KERI_INFRA_DIR` | Path to KERI infrastructure |
 
+## Environment Matrix
+
+| Environment | Backend Port | any-sync Config | KERIA Ports | Bootstrap File |
+|-------------|--------------|-----------------|-------------|----------------|
+| dev | 8080 | client-dev.yml (1001-1006) | 3901-3904 | bootstrap.yaml |
+| test | 9080 | client-test.yml (2001-2006) | 4901-4904 | bootstrap-test.yaml |
+| production | dynamic | client-production.yml (remote) | remote | bootstrap.yaml |
+
 ## any-sync Configuration
 
-Backend uses `config/client-dev.yml` (dev) or `config/client-test.yml` (test) for any-sync network config. After regenerating infrastructure, update these:
+Backend uses `config/client-dev.yml` (dev), `config/client-test.yml` (test), or `config/client-production.yml` (production) for any-sync network config. After regenerating infrastructure, update these:
 
 ```bash
 # After: cd ../matou-infrastructure/any-sync && make clean && make up
@@ -141,3 +150,16 @@ cp ../matou-infrastructure/any-sync/etc/client.yml backend/config/client-dev.yml
 # After: cd ../matou-infrastructure/any-sync && make clean-test && make up-test
 cp ../matou-infrastructure/any-sync/etc-test/client.yml backend/config/client-test.yml
 ```
+
+## Example Config Files
+
+Example config files are provided with `.example` suffix:
+
+```
+frontend/.env.example                        # Dev environment variables
+frontend/.env.production.example             # Production environment variables
+backend/config/bootstrap.yaml.example        # Bootstrap config template
+backend/config/client-production.yml.example # Production any-sync config template
+```
+
+Copy and customize these for your deployment.

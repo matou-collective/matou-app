@@ -20,12 +20,17 @@ import (
 
 func main() {
 	// Detect environment: "test" uses isolated data, configs, and ports
+	// "production" uses production configs (for Electron builds)
 	env := os.Getenv("MATOU_ENV")
 	isTest := env == "test"
+	isProd := env == "production"
 
-	if isTest {
+	switch {
+	case isTest:
 		fmt.Println("MATOU DAO Backend Server (TEST)")
-	} else {
+	case isProd:
+		fmt.Println("MATOU DAO Backend Server (PRODUCTION)")
+	default:
 		fmt.Println("MATOU DAO Backend Server")
 	}
 	fmt.Println("============================")
@@ -91,10 +96,14 @@ func main() {
 	// Select config file based on environment
 	anysyncConfigPath := os.Getenv("MATOU_ANYSYNC_CONFIG")
 	if anysyncConfigPath == "" {
-		if isTest {
+		switch {
+		case isTest:
 			// Test network uses ports 2001-2006
 			anysyncConfigPath = "config/client-test.yml"
-		} else {
+		case isProd:
+			// Production network uses remote any-sync nodes
+			anysyncConfigPath = "config/client-production.yml"
+		default:
 			// Dev network uses ports 1001-1006
 			anysyncConfigPath = "config/client-dev.yml"
 		}
@@ -121,6 +130,28 @@ func main() {
 	fmt.Printf("   Network ID: %s\n", anysyncClient.GetNetworkID())
 	fmt.Printf("   Coordinator: %s\n", anysyncClient.GetCoordinatorURL())
 	fmt.Printf("   Peer ID: %s\n", anysyncClient.GetPeerID())
+
+	// Validate any-sync network connectivity
+	fmt.Print("  Validating network connectivity...")
+	if err := sdkClient.Ping(); err != nil {
+		fmt.Println(" FAILED")
+		configFile := "client-dev.yml"
+		infraSuffix := ""
+		if isTest {
+			configFile = "client-test.yml"
+			infraSuffix = "-test"
+		} else if isProd {
+			configFile = "client-production.yml"
+		}
+		log.Fatalf("\nCannot connect to any-sync network: %v\n\n"+
+			"Troubleshooting:\n"+
+			"  1. Check that any-sync infrastructure is running:\n"+
+			"     cd ../matou-infrastructure/any-sync && make health%s\n"+
+			"  2. Ensure config/%-22s matches the running network.\n"+
+			"     To update: cp ../matou-infrastructure/any-sync/etc%s/client.yml config/%s\n",
+			err, infraSuffix, configFile, infraSuffix, configFile)
+	}
+	fmt.Println(" OK")
 	fmt.Println()
 
 	// Initialize local storage
@@ -213,6 +244,7 @@ func main() {
 	eventsHandler := api.NewEventsHandler(eventBroker)
 	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry)
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
+	orgConfigHandler := api.NewOrgConfigHandler(dataDir)
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -259,6 +291,7 @@ func main() {
 	eventsHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
+	orgConfigHandler.RegisterRoutes(mux)
 
 	// Start server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
@@ -320,6 +353,11 @@ func main() {
 	fmt.Println()
 	fmt.Println("  Events:")
 	fmt.Println("  GET  /api/v1/events                   - SSE event stream")
+	fmt.Println()
+	fmt.Println("  Org Config:")
+	fmt.Println("  GET  /api/v1/org/config               - Get org configuration")
+	fmt.Println("  POST /api/v1/org/config               - Save org configuration")
+	fmt.Println("  GET  /api/v1/org/health               - Config service health")
 	fmt.Println()
 
 	// Start background sync worker

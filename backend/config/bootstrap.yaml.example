@@ -1,0 +1,29 @@
+# MATOU Bootstrap Configuration
+# Copy to bootstrap.yaml after organization setup
+#
+# Values are populated by the frontend during organization setup.
+# The frontend calls POST /api/v1/org/config to save this data.
+
+organization:
+  name: "Your Org Name"
+  aid: ""           # Set after org setup (e.g., ENUPpxCnBbrAz...)
+  alias: "your-org"
+  witnesses: []
+  witnessThreshold: 0
+
+admin:
+  aid: ""           # Set after org setup
+  alias: "your-admin"
+  delegatedBy: ""
+  credentials:
+    membership: ""
+    steward: ""
+
+admins: []          # Populated during org setup
+
+orgSpace:
+  spaceId: ""       # Set when community space is created
+  accessControl:
+    type: "membership"
+    schema: "EMatouMembershipSchemaV1"
+    issuer: ""

@@ -93,6 +93,7 @@ backend/
 │   │   ├── files.go                # File upload/download
 │   │   ├── events.go               # SSE event stream
 │   │   ├── invites.go              # Email invitations
+│   │   ├── org.go                  # Org config endpoints (replaces config server)
 │   │   ├── middleware.go           # CORS, logging middleware
 │   │   └── *_test.go              # Tests for each handler
 │   ├── email/
@@ -114,9 +115,11 @@ backend/
 │       └── validate.go             # Validation
 ├── config/
 │   ├── bootstrap.yaml              # Bootstrap config (gitignored, created during setup)
+│   ├── bootstrap.yaml.example      # Bootstrap config template
 │   ├── bootstrap-test.yaml         # Test mode bootstrap config
 │   ├── client-dev.yml              # any-sync client config for dev network (ports 1001-1006)
 │   ├── client-test.yml             # any-sync client config for test network (ports 2001-2006)
+│   ├── client-production.yml.example # Production any-sync config template
 │   ├── .org-passcode               # Org passcode (gitignored)
 │   └── .keria-config.json          # KERIA config (gitignored)
 ├── docs/
@@ -134,24 +137,37 @@ backend/
 
 ### Prerequisites
 
-- Go 1.25+ installed
+- Go 1.21+ installed
 - Docker and Docker Compose
-- KERI infrastructure running
-- any-sync infrastructure running
+- KERI infrastructure running (matou-infrastructure repo)
+- any-sync infrastructure running (matou-infrastructure repo)
 
-### Setup Infrastructure
+### 1. Initial Configuration Setup
+
+Copy the example config files:
+
+```bash
+cd backend
+
+# Bootstrap config (required - will be populated during org setup)
+cp config/bootstrap.yaml.example config/bootstrap.yaml
+
+# any-sync client configs are already committed for dev/test
+# For production, copy and customize:
+cp config/client-production.yml.example config/client-production.yml
+```
+
+### 2. Start Infrastructure
 
 ```bash
 # Start KERI infrastructure
-cd infrastructure/keri && make up
+cd ../matou-infrastructure/keri && make up && make health
 
-# Start any-sync
-cd infrastructure/any-sync && make start-and-wait
+# Start any-sync (dev network)
+cd ../matou-infrastructure/any-sync && make up && make health
 ```
 
-Organization setup is performed via the frontend. See "Organization Setup" section below.
-
-### Build & Run
+### 3. Build & Run
 
 ```bash
 cd backend
@@ -159,12 +175,89 @@ go build -o bin/server ./cmd/server
 ./bin/server
 ```
 
-### Test Endpoints
+### 4. Verify
 
 ```bash
 curl http://localhost:8080/health
 curl http://localhost:8080/info
 ```
+
+## Running Different Environments
+
+The backend supports three environments: **dev**, **test**, and **production**.
+
+### Development (default)
+
+```bash
+# Start dev infrastructure
+cd ../matou-infrastructure/keri && make up
+cd ../matou-infrastructure/any-sync && make up
+
+# Run backend
+cd backend
+go run ./cmd/server
+
+# Or with make
+make run
+```
+
+| Setting | Value |
+|---------|-------|
+| Port | 8080 |
+| Data directory | `./data` |
+| any-sync config | `config/client-dev.yml` |
+| any-sync ports | 1001-1006 |
+| KERIA ports | 3901-3904 |
+| Bootstrap | `config/bootstrap.yaml` |
+
+### Test Mode
+
+Isolated environment for automated testing. Uses separate ports and data directories.
+
+```bash
+# Start test infrastructure
+cd ../matou-infrastructure/keri && make up-test
+cd ../matou-infrastructure/any-sync && make up-test
+
+# Run backend in test mode
+cd backend
+MATOU_ENV=test go run ./cmd/server
+
+# Or with make
+make run-test
+```
+
+| Setting | Value |
+|---------|-------|
+| Port | 9080 |
+| Data directory | `./data-test` |
+| any-sync config | `config/client-test.yml` |
+| any-sync ports | 2001-2006 |
+| KERIA ports | 4901-4904 |
+| Bootstrap | `config/bootstrap-test.yaml` |
+
+### Production Mode
+
+For packaged Electron apps or production deployments.
+
+```bash
+# Configure production any-sync (copy from your production infrastructure)
+cp /path/to/production/client.yml config/client-production.yml
+
+# Run in production mode
+MATOU_ENV=production go run ./cmd/server
+```
+
+| Setting | Value |
+|---------|-------|
+| Port | Dynamic (set via `MATOU_SERVER_PORT`) |
+| Data directory | Set via `MATOU_DATA_DIR` |
+| any-sync config | `config/client-production.yml` |
+| any-sync ports | Remote (configured in yml) |
+| KERIA ports | Remote |
+| Bootstrap | `config/bootstrap.yaml` |
+
+**Note:** In Electron, production mode is automatically enabled when the app is packaged (`app.isPackaged`). The backend receives `MATOU_ENV=production` from the Electron main process.
 
 ## Environment Variables
 
@@ -172,7 +265,7 @@ The backend reads configuration primarily from the YAML bootstrap file. The foll
 
 ```bash
 # Runtime Environment
-MATOU_ENV=test                    # Set to "test" for test mode (port 9080, isolated data)
+MATOU_ENV=test                    # "test" for test mode, "production" for production
 MATOU_SERVER_PORT=8080            # Override server port
 MATOU_DATA_DIR=./data             # Override data directory
 
@@ -197,6 +290,14 @@ The backend connects to the any-sync P2P network using client config files that 
 |------|---------|-------|-----------|
 | `config/client-dev.yml` | Dev | 1001-1006 | `go run ./cmd/server` |
 | `config/client-test.yml` | Test | 2001-2006 | `MATOU_ENV=test go run ./cmd/server` |
+| `config/client-production.yml` | Production | Remote | `MATOU_ENV=production go run ./cmd/server` |
+
+**Example files** (`.example` suffix) are provided as templates:
+
+| Example File | Copy To | Purpose |
+|--------------|---------|---------|
+| `bootstrap.yaml.example` | `bootstrap.yaml` | Org identity config (populated during setup) |
+| `client-production.yml.example` | `client-production.yml` | Production any-sync network config |
 
 ### Updating After Infrastructure Changes
 
@@ -313,6 +414,9 @@ See [docs/API.md](docs/API.md) for the complete API reference.
 ### Organization
 
 - `GET /api/v1/org` - Get organization info (AID, roles, schema) for frontend
+- `GET /api/v1/org/config` - Get org configuration (replaces config server)
+- `POST /api/v1/org/config` - Save org configuration
+- `GET /api/v1/org/health` - Config service health check
 
 ### Identity
 
@@ -413,13 +517,42 @@ Located in `infrastructure/keri/scripts/`:
 
 ### Organization Setup
 
-Organization setup is done via the frontend:
+Organization setup is done via the frontend. This process populates `config/bootstrap.yaml` and the org config stored by the backend.
 
-1. Start KERI infrastructure: `cd infrastructure/keri && make up`
-2. Start frontend: `cd frontend && npm run dev`
-3. Navigate to the app - you'll be redirected to `/setup` if no org exists
-4. Fill in org name and admin name
-5. The frontend creates: org AID, admin AID, registry, and first admin credential
+**Prerequisites:**
+- Backend running (dev or test mode)
+- KERI infrastructure running
+- any-sync infrastructure running
+- Frontend running
+
+**Steps:**
+
+1. Ensure infrastructure is running:
+   ```bash
+   cd ../matou-infrastructure/keri && make up && make health
+   cd ../matou-infrastructure/any-sync && make up && make health
+   ```
+
+2. Start backend:
+   ```bash
+   cd backend && make run
+   ```
+
+3. Start frontend:
+   ```bash
+   cd frontend && npm run dev
+   ```
+
+4. Open http://localhost:9000 - you'll be redirected to `/setup` if no org exists
+
+5. Complete the setup wizard:
+   - Enter organization name
+   - Enter admin name
+   - The frontend creates: org AID, admin AID, registry, credentials, and community spaces
+
+6. The frontend saves org config to:
+   - Backend: `{dataDir}/org-config.yaml` (via `POST /api/v1/org/config`)
+   - Config server: For backward compatibility (if running)
 
 ## Troubleshooting
 
