@@ -8,6 +8,7 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
 import { useKERIClient } from 'src/lib/keri/client';
 import { getBackendIdentity, setBackendIdentity } from 'src/lib/api/client';
+import { secureStorage } from 'src/lib/secureStorage';
 
 /**
  * Ensure the backend has identity configured. If the backend was restarted,
@@ -26,9 +27,9 @@ async function ensureBackendIdentity(
   }
 
   // Backend identity is missing or stale — re-set it
-  const savedMnemonic = localStorage.getItem('matou_mnemonic');
+  const savedMnemonic = await secureStorage.getItem('matou_mnemonic');
   if (!savedMnemonic) {
-    console.warn('[KERI Boot] No mnemonic in localStorage, cannot re-set backend identity');
+    console.warn('[KERI Boot] No mnemonic in storage, cannot re-set backend identity');
     return;
   }
 
@@ -74,13 +75,13 @@ async function restoreIdentity(
     } else if (result.error) {
       console.warn('[KERI Boot] Failed to restore session:', result.error);
       onboardingStore.setInitializationError(result.error);
-      localStorage.removeItem('matou_passcode');
+      await secureStorage.removeItem('matou_passcode');
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error during restore';
     console.warn('[KERI Boot] Error restoring session:', err);
     onboardingStore.setInitializationError(errorMessage);
-    localStorage.removeItem('matou_passcode');
+    await secureStorage.removeItem('matou_passcode');
   } finally {
     onboardingStore.setAppState('ready');
     identityStore.setInitialized();
@@ -172,7 +173,7 @@ export default boot(async ({ router }) => {
   }
 
   // Step 2: Check for saved user session
-  const savedPasscode = localStorage.getItem('matou_passcode');
+  const savedPasscode = await secureStorage.getItem('matou_passcode');
 
   if (!savedPasscode) {
     console.log('[KERI Boot] No saved session found');

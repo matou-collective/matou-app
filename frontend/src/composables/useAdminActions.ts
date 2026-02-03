@@ -8,6 +8,7 @@ import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
 import { BACKEND_URL, initMemberProfiles } from 'src/lib/api/client';
+import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
 const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
@@ -77,8 +78,8 @@ export function useAdminActions() {
     const client = keriClient.getSignifyClient();
     if (!client) throw new Error('Not connected to KERIA');
 
-    // First check localStorage (set during org setup)
-    const storedOrgAid = localStorage.getItem('matou_org_aid');
+    // First check secure storage (set during org setup)
+    const storedOrgAid = await secureStorage.getItem('matou_org_aid');
     if (storedOrgAid) {
       const aids = await client.identifiers().list();
       const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === storedOrgAid);

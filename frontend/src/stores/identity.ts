@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { KERIClient, useKERIClient, type AIDInfo } from 'src/lib/keri/client';
 import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinCommunity as apiJoinCommunity } from 'src/lib/api/client';
+import { secureStorage } from 'src/lib/secureStorage';
 
 export interface RestoreResult {
   success: boolean;
@@ -66,7 +67,7 @@ export const useIdentityStore = defineStore('identity', () => {
       }
 
       // Persist passcode (encrypted in production)
-      localStorage.setItem('matou_passcode', bran);
+      await secureStorage.setItem('matou_passcode', bran);
 
       return true;
     } catch (e) {
@@ -95,7 +96,7 @@ export const useIdentityStore = defineStore('identity', () => {
   }
 
   async function restore(): Promise<RestoreResult> {
-    const savedPasscode = localStorage.getItem('matou_passcode');
+    const savedPasscode = await secureStorage.getItem('matou_passcode');
     if (!savedPasscode) {
       return { success: false, hasAID: false };
     }
@@ -120,12 +121,12 @@ export const useIdentityStore = defineStore('identity', () => {
     initError.value = err;
   }
 
-  function disconnect() {
+  async function disconnect() {
     currentAID.value = null;
     passcode.value = null;
     isConnected.value = false;
-    localStorage.removeItem('matou_passcode');
-    localStorage.removeItem('matou_mnemonic');
+    await secureStorage.removeItem('matou_passcode');
+    await secureStorage.removeItem('matou_mnemonic');
   }
 
   async function fetchUserSpaces(): Promise<void> {

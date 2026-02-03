@@ -1,7 +1,9 @@
 /**
  * Org Config API
- * Fetches org configuration from the config server and caches in localStorage.
+ * Fetches org configuration from the config server and caches in secure storage.
  */
+
+import { secureStorage } from 'src/lib/secureStorage';
 
 const CONFIG_SERVER_URL = import.meta.env.VITE_CONFIG_SERVER_URL || 'http://localhost:3904';
 const IS_TEST_CONFIG = import.meta.env.VITE_TEST_CONFIG === 'true';
@@ -92,8 +94,8 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
       const rawConfig = await response.json() as OrgConfig;
       // Normalize to ensure admins array exists
       const config = normalizeOrgConfig(rawConfig);
-      // Cache to localStorage
-      localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
+      // Cache to secure storage
+      await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
       console.log('[Config] Fetched and cached config for:', config.organization.name);
       return { status: 'configured', config };
     }
@@ -107,9 +109,9 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     // Other error - treat as unreachable
     throw new Error(`Server returned ${response.status}`);
   } catch (err) {
-    // Server unreachable - check localStorage cache
+    // Server unreachable - check secure storage cache
     console.warn('[Config] Server unreachable:', err);
-    const cached = getCachedConfig();
+    const cached = await getCachedConfig();
     return { status: 'server_unreachable', cached };
   }
 }
@@ -131,16 +133,16 @@ export async function saveOrgConfig(config: OrgConfig): Promise<void> {
   }
 
   // Also cache locally
-  localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
-  console.log('[Config] Saved config to server and localStorage');
+  await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
+  console.log('[Config] Saved config to server and secure storage');
 }
 
 /**
- * Get cached config from localStorage (synchronous)
+ * Get cached config from secure storage
  */
-export function getCachedConfig(): OrgConfig | null {
+export async function getCachedConfig(): Promise<OrgConfig | null> {
   try {
-    const stored = localStorage.getItem(LOCAL_CACHE_KEY);
+    const stored = await secureStorage.getItem(LOCAL_CACHE_KEY);
     if (!stored) return null;
     const rawConfig = JSON.parse(stored) as OrgConfig;
     return normalizeOrgConfig(rawConfig);
@@ -150,10 +152,10 @@ export function getCachedConfig(): OrgConfig | null {
 }
 
 /**
- * Clear cached config from localStorage
+ * Clear cached config from secure storage
  */
-export function clearCachedConfig(): void {
-  localStorage.removeItem(LOCAL_CACHE_KEY);
+export async function clearCachedConfig(): Promise<void> {
+  await secureStorage.removeItem(LOCAL_CACHE_KEY);
 }
 
 /**

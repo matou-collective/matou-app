@@ -82,6 +82,7 @@ import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { useKERIClient } from 'src/lib/keri/client';
 import { setBackendIdentity } from 'src/lib/api/client';
+import { secureStorage } from 'src/lib/secureStorage';
 
 const emit = defineEmits<{
   (e: 'continue'): void;
@@ -148,7 +149,7 @@ async function runRecoveryChecks() {
   backendCheck.status = 'checking';
   try {
     const aid = identityStore.currentAID!.prefix;
-    const mnemonic = localStorage.getItem('matou_mnemonic');
+    const mnemonic = await secureStorage.getItem('matou_mnemonic');
     if (!mnemonic) {
       backendCheck.status = 'failed';
       backendCheck.error = 'No mnemonic found — cannot configure backend';

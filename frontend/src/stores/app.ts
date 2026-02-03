@@ -86,10 +86,10 @@ export const useAppStore = defineStore('app', () => {
   }
 
   /**
-   * Get cached config synchronously (for immediate checks)
+   * Get cached config (for immediate checks)
    */
-  function loadCachedConfig(): boolean {
-    const cached = getCachedConfig();
+  async function loadCachedConfig(): Promise<boolean> {
+    const cached = await getCachedConfig();
     if (cached) {
       orgConfig.value = cached;
       return true;

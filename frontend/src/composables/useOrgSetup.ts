@@ -10,6 +10,7 @@ import { saveOrgConfig, type OrgConfig } from 'src/api/config';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import { BACKEND_URL, setBackendIdentity } from 'src/lib/api/client';
+import { secureStorage } from 'src/lib/secureStorage';
 
 export interface OrgSetupConfig {
   orgName: string;
@@ -270,12 +271,12 @@ export function useOrgSetup() {
       // No additional frontend profile creation needed.
       console.log('[OrgSetup] Admin profiles seeded by backend during space creation');
 
-      // Step 13: Store admin passcode and mnemonic in localStorage
-      localStorage.setItem('matou_passcode', adminPasscode);
-      localStorage.setItem('matou_mnemonic', mnemonic);
-      localStorage.setItem('matou_admin_aid', adminAid.prefix);
-      localStorage.setItem('matou_org_aid', orgAid.prefix);
-      console.log('[OrgSetup] Credentials stored in localStorage');
+      // Step 13: Store admin passcode and mnemonic in secure storage
+      await secureStorage.setItem('matou_passcode', adminPasscode);
+      await secureStorage.setItem('matou_mnemonic', mnemonic);
+      await secureStorage.setItem('matou_admin_aid', adminAid.prefix);
+      await secureStorage.setItem('matou_org_aid', orgAid.prefix);
+      console.log('[OrgSetup] Credentials stored in secure storage');
 
       // Update the KERI client with the new org AID
       keriClient.setOrgAID(orgAid.prefix);

@@ -3,10 +3,11 @@
  * Spawns the Go backend as a child process, waits for it to become healthy,
  * then creates the BrowserWindow pointing at the Quasar frontend.
  */
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
 import { ChildProcess, spawn } from 'child_process';
 import path from 'path';
 import net from 'net';
+import fs from 'fs';
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
@@ -157,6 +158,64 @@ function createWindow() {
 // IPC handlers for preload API
 ipcMain.handle('get-backend-port', () => backendPort);
 ipcMain.handle('get-data-dir', () => path.join(app.getPath('userData'), 'matou-data'));
+
+// --- Secure storage IPC handlers (OS-level encryption via safeStorage) ---
+const secureStorePath = path.join(app.getPath('userData'), 'matou-data', 'secure-store.json');
+
+function readSecureStore(): Record<string, string> {
+  try {
+    if (fs.existsSync(secureStorePath)) {
+      return JSON.parse(fs.readFileSync(secureStorePath, 'utf-8'));
+    }
+  } catch (err) {
+    console.warn('[SecureStorage] Failed to read store:', err);
+  }
+  return {};
+}
+
+function writeSecureStore(store: Record<string, string>): void {
+  const dir = path.dirname(secureStorePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(secureStorePath, JSON.stringify(store, null, 2), 'utf-8');
+}
+
+ipcMain.handle('secure-storage-get', (_event, key: string): string | null => {
+  const store = readSecureStore();
+  const value = store[key];
+  if (value === undefined) return null;
+
+  if (safeStorage.isEncryptionAvailable()) {
+    try {
+      return safeStorage.decryptString(Buffer.from(value, 'base64'));
+    } catch (err) {
+      console.warn('[SecureStorage] Decrypt failed for key:', key, err);
+      return null;
+    }
+  }
+  // Fallback: value stored as plaintext
+  return value;
+});
+
+ipcMain.handle('secure-storage-set', (_event, key: string, value: string): void => {
+  const store = readSecureStore();
+
+  if (safeStorage.isEncryptionAvailable()) {
+    store[key] = safeStorage.encryptString(value).toString('base64');
+  } else {
+    // Fallback: store plaintext (some Linux systems lack keyring)
+    store[key] = value;
+  }
+
+  writeSecureStore(store);
+});
+
+ipcMain.handle('secure-storage-remove', (_event, key: string): void => {
+  const store = readSecureStore();
+  delete store[key];
+  writeSecureStore(store);
+});
 
 app.whenReady().then(async () => {
   try {

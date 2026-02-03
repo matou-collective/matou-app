@@ -10,6 +10,7 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
 import { setBackendIdentity, createOrUpdateProfile } from 'src/lib/api/client';
 import { useIdentityStore } from 'stores/identity';
+import { secureStorage } from 'src/lib/secureStorage';
 
 // KERIA CESR URL as seen from inside Docker (used for OOBI resolution).
 // OOBI resolution is server-side — KERIA resolves via its Docker network.
@@ -256,7 +257,7 @@ export function useClaimIdentity() {
       console.log('[ClaimIdentity] AID keys rotated');
 
       // Persist session (same passcode — no agent rotation)
-      localStorage.setItem('matou_passcode', passcode);
+      await secureStorage.setItem('matou_passcode', passcode);
 
       // Step 4: Set backend identity (derives peer key, restarts SDK, creates private space)
       step.value = 'securing';
@@ -266,7 +267,7 @@ export function useClaimIdentity() {
         const onboardingMnemonic = useOnboardingStore().mnemonic.words;
         if (onboardingMnemonic.length > 0) {
           const mnemonicStr = onboardingMnemonic.join(' ');
-          localStorage.setItem('matou_mnemonic', mnemonicStr);
+          await secureStorage.setItem('matou_mnemonic', mnemonicStr);
 
           const appStore = useAppStore();
           const identityResult = await setBackendIdentity({
