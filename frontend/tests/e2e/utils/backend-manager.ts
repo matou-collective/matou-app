@@ -82,6 +82,7 @@ export class BackendManager {
         MATOU_SERVER_PORT: String(assignedPort),
         MATOU_DATA_DIR: dataDir,
         MATOU_ANYSYNC_CONFIG: path.join(this.backendDir, 'config', 'client-test.yml'),
+        MATOU_SMTP_PORT: '3525', // Test postfix container
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

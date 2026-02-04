@@ -28,8 +28,9 @@ run: build
 	./bin/server
 
 # Run server in test mode (isolated data, test any-sync network)
+# SMTP port 3525 matches the test postfix container
 run-test:
-	MATOU_ENV=test go run ./cmd/server
+	MATOU_ENV=test MATOU_SMTP_PORT=3525 go run ./cmd/server
 
 # =============================================================================
 # Testing
