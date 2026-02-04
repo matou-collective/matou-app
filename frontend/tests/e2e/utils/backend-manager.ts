@@ -32,7 +32,11 @@ export class BackendManager {
   private backendDir: string;
   private nextPort: number;
 
-  constructor(startPort = 9180) {
+  // Start at 9280 to avoid conflicts with:
+  // - 9080: Admin backend
+  // - 9101-9106: any-sync metrics ports
+  // - 9181-9183: any-sync node API ports
+  constructor(startPort = 9280) {
     this.backendDir = path.resolve(__dirname, '..', '..', '..', '..', 'backend');
     this.nextPort = startPort;
   }
@@ -77,7 +81,7 @@ export class BackendManager {
         MATOU_ENV: 'test',
         MATOU_SERVER_PORT: String(assignedPort),
         MATOU_DATA_DIR: dataDir,
-        MATOU_ANYSYNC_CONFIG: path.join(this.backendDir, 'config', 'client.yml'),
+        MATOU_ANYSYNC_CONFIG: path.join(this.backendDir, 'config', 'client-test.yml'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

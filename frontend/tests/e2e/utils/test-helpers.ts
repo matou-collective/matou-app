@@ -136,7 +136,16 @@ export async function setupBackendRouting(
   const sourceBase = 'http://localhost:9080';
   const targetBase = `http://localhost:${targetPort}`;
 
+  // Routes that should NOT be redirected (shared org data from admin backend)
+  const sharedRoutes = ['/api/v1/org/config', '/api/v1/org/health', '/api/v1/org'];
+
   await target.route(`${sourceBase}/**`, async (route, request) => {
+    const url = new URL(request.url());
+    // Keep org config routes on admin backend (shared organization data)
+    if (sharedRoutes.some(r => url.pathname === r || url.pathname.startsWith(r + '/'))) {
+      await route.continue();
+      return;
+    }
     const newUrl = request.url().replace(sourceBase, targetBase);
     await route.continue({ url: newUrl });
   });

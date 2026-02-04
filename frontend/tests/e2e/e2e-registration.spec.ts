@@ -214,15 +214,39 @@ test.describe.serial('Registration Approval Flow', () => {
   // Test 2: Admin declines user registration
   // ------------------------------------------------------------------
   test('admin declines user registration', async ({ browser }) => {
-    const userBackend = await backends.start('user-decline');
+    console.log('[Test] Starting decline test...');
 
-    const userContext = await browser.newContext();
-    await setupTestConfig(userContext);
-    await setupBackendRouting(userContext, userBackend.port);
-    const userPage = await userContext.newPage();
+    // Wrap browser setup in a 15s timeout to fail fast if something hangs
+    const setupTimeout = 15_000;
+    const startTime = Date.now();
+
+    const setupWithTimeout = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      const elapsed = Date.now() - startTime;
+      const remaining = setupTimeout - elapsed;
+      if (remaining <= 0) {
+        throw new Error(`[Test] Setup timeout: ${name} - took longer than ${setupTimeout}ms total`);
+      }
+      console.log(`[Test] ${name}...`);
+      const result = await Promise.race([
+        fn(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`[Test] ${name} timed out after ${remaining}ms`)), remaining)
+        ),
+      ]);
+      console.log(`[Test] ${name} done (${Date.now() - startTime}ms elapsed)`);
+      return result;
+    };
+
+    const userBackend = await setupWithTimeout('Starting backend', () => backends.start('user-decline'));
+    const userContext = await setupWithTimeout('Creating browser context', () => browser.newContext());
+    await setupWithTimeout('Setting up test config', () => setupTestConfig(userContext));
+    await setupWithTimeout('Setting up backend routing', () => setupBackendRouting(userContext, userBackend.port));
+    const userPage = await setupWithTimeout('Creating new page', () => userContext.newPage());
+
     setupPageLogging(userPage, 'User-Decline');
 
     const userName = `Decline_${uniqueSuffix()}`;
+    console.log(`[Test] Starting registration for ${userName}...`);
 
     try {
       // User registers (on their own backend)

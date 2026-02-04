@@ -41,10 +41,10 @@ export const keriEndpoints = {
 
 /** AnySync test network endpoint URLs */
 export const anysyncEndpoints = {
-  /** Coordinator metrics (Prometheus) */
-  coordinatorMetrics: 'http://127.0.0.1:9004',
+  /** Coordinator metrics (Prometheus) - port 9104 maps to container's 8000 */
+  coordinatorMetrics: 'http://127.0.0.1:9104',
   /** Sync node 1 API */
-  node1API: 'http://127.0.0.1:9081',
+  node1API: 'http://127.0.0.1:9181',
 } as const;
 
 /** Backend test server */
