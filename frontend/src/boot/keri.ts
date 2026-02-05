@@ -6,7 +6,7 @@ import { boot } from 'quasar/wrappers';
 import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
-import { useKERIClient } from 'src/lib/keri/client';
+import { useKERIClient, initKeriConfig } from 'src/lib/keri/client';
 import { getBackendIdentity, setBackendIdentity } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -58,8 +58,8 @@ async function restoreIdentity(
     const result = await identityStore.restore();
 
     if (result.success && result.hasAID) {
-      console.log('[KERI Boot] Session restored with AID, navigating to pending-approval');
-      onboardingStore.navigateTo('pending-approval');
+      console.log('[KERI Boot] Session restored with AID, staying on splash for routing decision');
+      // Stay on splash - SplashScreen will check credential and route appropriately
 
       // Re-sync backend identity if backend was restarted (non-blocking)
       ensureBackendIdentity(identityStore).catch((err) => {
@@ -93,6 +93,16 @@ export default boot(async ({ router }) => {
   const onboardingStore = useOnboardingStore();
   const appStore = useAppStore();
   const keriClient = useKERIClient();
+
+  // Step 0: Initialize client config from config server
+  // This fetches KERIA URLs, witness OOBIs, and anysync config
+  console.log('[KERI Boot] Initializing client config...');
+  try {
+    const clientCfg = await initKeriConfig();
+    console.log(`[KERI Boot] Client config loaded (mode: ${clientCfg.mode})`);
+  } catch (err) {
+    console.warn('[KERI Boot] Failed to fetch client config, using defaults:', err);
+  }
 
   // Step 1: Fetch org config from server (with localStorage fallback)
   console.log('[KERI Boot] Fetching organization config...');

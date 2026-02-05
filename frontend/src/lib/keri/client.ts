@@ -5,6 +5,7 @@
 import { SignifyClient, Tier, randomPasscode, ready, Salter } from 'signify-ts';
 import { mnemonicToSeedSync, mnemonicToEntropy, entropyToMnemonic, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
+import { fetchClientConfig, type ClientConfig } from '../clientConfig';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -20,6 +21,31 @@ export interface CredentialInfo {
   status: string;
 }
 
+// Cached client config (fetched once at startup)
+let clientConfig: ClientConfig | null = null;
+
+/**
+ * Initialize client configuration from config server
+ * Should be called early in app startup (e.g., in boot/keri.ts)
+ */
+export async function initKeriConfig(): Promise<ClientConfig> {
+  if (!clientConfig) {
+    clientConfig = await fetchClientConfig();
+  }
+  return clientConfig;
+}
+
+/**
+ * Get KERIA URLs from cached config or defaults
+ */
+function getKeriaUrls() {
+  return {
+    adminUrl: clientConfig?.keri.admin_url || 'http://localhost:3901',
+    bootUrl: clientConfig?.keri.boot_url || 'http://localhost:3903',
+    cesrUrl: clientConfig?.keri.cesr_url || 'http://localhost:3902',
+  };
+}
+
 /**
  * KERI client wrapper using signify-ts
  * Keys never leave device - this is a core security principle
@@ -28,15 +54,18 @@ export class KERIClient {
   private client: SignifyClient | null = null;
   private connected = false;
 
-  // KERIA endpoints - direct connection
-  // CORS enabled via KERI_AGENT_CORS=1 environment variable
-  // Configurable via Vite env vars (VITE_KERIA_ADMIN_URL, VITE_KERIA_BOOT_URL)
-  private readonly keriaUrl = import.meta.env.VITE_KERIA_ADMIN_URL || 'http://localhost:3901';
-  private readonly keriaBootUrl = import.meta.env.VITE_KERIA_BOOT_URL || 'http://localhost:3903';
-
-  // Browser-facing vs Docker-internal CESR URLs for OOBI conversion
-  private readonly cesrUrl = import.meta.env.VITE_KERIA_CESR_URL || 'http://localhost:3902';
-  private readonly dockerCesrUrl = import.meta.env.VITE_KERIA_DOCKER_CESR_URL || '';
+  // KERIA endpoints - fetched from config server
+  private get keriaUrl(): string {
+    return getKeriaUrls().adminUrl;
+  }
+  private get keriaBootUrl(): string {
+    return getKeriaUrls().bootUrl;
+  }
+  private get cesrUrl(): string {
+    return getKeriaUrls().cesrUrl;
+  }
+  // Docker internal URL no longer needed - KERIA resolves internally
+  private readonly dockerCesrUrl = '';
 
   /**
    * Create a standalone SignifyClient for a separate KERIA agent.
@@ -46,8 +75,9 @@ export class KERIClient {
    * @returns A connected SignifyClient instance
    */
   static async createEphemeralClient(bran: string): Promise<SignifyClient> {
-    const keriaUrl = import.meta.env.VITE_KERIA_ADMIN_URL || 'http://localhost:3901';
-    const bootUrl = import.meta.env.VITE_KERIA_BOOT_URL || 'http://localhost:3903';
+    const urls = getKeriaUrls();
+    const keriaUrl = urls.adminUrl;
+    const bootUrl = urls.bootUrl;
 
     await ready();
     const client = new SignifyClient(keriaUrl, bran, Tier.low, bootUrl);
@@ -370,8 +400,7 @@ export class KERIClient {
    * This is a well-known endpoint that users can resolve to contact the org
    */
   getOrgOOBI(): string {
-    const cesrUrl = import.meta.env.VITE_KERIA_CESR_URL || 'http://localhost:3902';
-    return `${cesrUrl}/oobi/${this.ORG_AID}`;
+    return `${this.cesrUrl}/oobi/${this.ORG_AID}`;
   }
 
   /**
@@ -801,9 +830,8 @@ export class KERIClient {
     }
 
     // Normalize KERIA Docker hostname to localhost for browser access
-    oobi = oobi.replace(/http:\/\/keria:(\d+)/, (_match: string, port: string) => {
-      const cesrUrl = import.meta.env.VITE_KERIA_CESR_URL || `http://localhost:${port}`;
-      return cesrUrl;
+    oobi = oobi.replace(/http:\/\/keria:(\d+)/, () => {
+      return getKeriaUrls().cesrUrl;
     });
 
     console.log(`[KERIClient] OOBI: ${oobi}`);
@@ -1037,6 +1065,8 @@ export class KERIClient {
       interests: string[];
       customInterests?: string;
       avatarFileRef?: string;
+      avatarData?: string;
+      avatarMimeType?: string;
       senderOOBI: string;
     },
     schemaSaid: string = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT'
@@ -1093,6 +1123,8 @@ export class KERIClient {
           interests: registrationData.interests,
           customInterests: registrationData.customInterests || '',
           avatarFileRef: registrationData.avatarFileRef || '',
+          avatarData: registrationData.avatarData || '',
+          avatarMimeType: registrationData.avatarMimeType || '',
           senderOOBI: registrationData.senderOOBI,
           submittedAt: new Date().toISOString(),
         };
@@ -1112,7 +1144,18 @@ export class KERIClient {
             senderName: senderName,
             recipient: admin.aid,
             schema: schemaSaid,
-            attributes: {},
+            attributes: {
+              name: registrationData.name,
+              email: registrationData.email || '',
+              bio: registrationData.bio,
+              interests: registrationData.interests,
+              customInterests: registrationData.customInterests || '',
+              avatarFileRef: registrationData.avatarFileRef || '',
+              avatarData: registrationData.avatarData || '',
+              avatarMimeType: registrationData.avatarMimeType || '',
+              senderOOBI: registrationData.senderOOBI,
+              submittedAt: new Date().toISOString(),
+            },
             datetime: new Date().toISOString(),
           });
           await this.client.ipex().submitApply(senderName, apply, applySigs, applyEnd, [admin.aid]);

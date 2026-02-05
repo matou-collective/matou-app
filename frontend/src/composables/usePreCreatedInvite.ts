@@ -22,7 +22,8 @@ export interface InviteResult {
 
 // Membership credential schema SAID (from schema server)
 const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
-const SCHEMA_SERVER_URL = import.meta.env.VITE_SCHEMA_SERVER_URL || 'http://schema-server:7723';
+// Schema server URL is internal to Docker network (KERIA resolves it)
+const SCHEMA_SERVER_URL = 'http://schema-server:7723';
 const SCHEMA_OOBI_URL = `${SCHEMA_SERVER_URL}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
 
 const WITNESS_AID = 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha';
@@ -30,7 +31,8 @@ const WITNESS_AID = 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha';
 // KERIA CESR URL as seen from inside Docker (used for bare OOBI resolution).
 // Bare OOBIs (/oobi/{prefix}) serve the full KEL via hab.replay() and don't
 // require an agent end role, unlike /oobi/{prefix}/agent/{agentId} OOBIs.
-const KERIA_DOCKER_URL = import.meta.env.VITE_KERIA_DOCKER_CESR_URL || 'http://keria:3902';
+// This is a fixed internal Docker hostname, not configurable per environment.
+const KERIA_DOCKER_URL = 'http://keria:3902';
 
 export function usePreCreatedInvite() {
   const adminClient = useKERIClient();

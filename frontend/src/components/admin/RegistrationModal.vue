@@ -15,8 +15,15 @@
           <div class="modal-body p-4 overflow-y-auto max-h-[60vh]">
             <!-- Applicant Info -->
             <div class="flex items-start gap-4 mb-6">
-              <div class="avatar w-16 h-16 rounded-full flex items-center justify-center shrink-0" :class="avatarClass">
-                <span class="text-white text-xl font-semibold">{{ initials }}</span>
+              <div class="avatar w-16 h-16 rounded-full flex items-center justify-center shrink-0 overflow-hidden" :class="!hasAvatar && avatarClass">
+                <img
+                  v-if="hasAvatar"
+                  :src="avatarUrl"
+                  alt="Profile"
+                  class="w-full h-full object-cover"
+                  @error="avatarError = true"
+                />
+                <span v-else class="text-white text-xl font-semibold">{{ initials }}</span>
               </div>
               <div class="flex-1 min-w-0">
                 <h4 class="text-lg font-medium text-foreground">{{ registration?.profile.name }}</h4>
@@ -52,9 +59,9 @@
                 <span
                   v-for="interest in registration.profile.interests"
                   :key="interest"
-                  class="px-3 py-1 text-sm rounded-full bg-primary/10 text-primary"
+                  class="interest-chip"
                 >
-                  {{ interest }}
+                  {{ getInterestLabel(interest) }}
                 </span>
               </div>
             </div>
@@ -173,6 +180,17 @@
 import { ref, computed, watch } from 'vue';
 import { X, Check, Copy, MessageSquare, Send, Loader2 } from 'lucide-vue-next';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
+import { getFileUrl } from 'src/lib/api/client';
+import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
+
+// Map interest value to human-readable label
+const interestLabelMap = new Map(
+  PARTICIPATION_INTERESTS.map(i => [i.value, i.label])
+);
+
+function getInterestLabel(value: string): string {
+  return interestLabelMap.get(value) || value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
 
 interface Props {
   show: boolean;
@@ -212,7 +230,32 @@ watch(() => props.show, (isOpen) => {
   }
 });
 
-// Avatar initials
+// Avatar image handling
+const avatarError = ref(false);
+const hasAvatar = computed(() => {
+  // Check for either base64 data (preferred) or file ref
+  const hasBase64 = !!props.registration?.profile.avatarData && !!props.registration?.profile.avatarMimeType;
+  const hasRef = !!props.registration?.profile.avatarFileRef && !avatarError.value;
+  return hasBase64 || hasRef;
+});
+const avatarUrl = computed(() => {
+  // Prefer base64 data URL (works cross-backend)
+  if (props.registration?.profile.avatarData && props.registration?.profile.avatarMimeType) {
+    return `data:${props.registration.profile.avatarMimeType};base64,${props.registration.profile.avatarData}`;
+  }
+  // Fallback to file ref URL
+  if (props.registration?.profile.avatarFileRef) {
+    return getFileUrl(props.registration.profile.avatarFileRef);
+  }
+  return '';
+});
+
+// Reset avatar error when registration changes
+watch(() => props.registration, () => {
+  avatarError.value = false;
+});
+
+// Avatar initials (fallback)
 const initials = computed(() => {
   const name = props.registration?.profile.name || '';
   const parts = name.split(' ');
@@ -222,7 +265,7 @@ const initials = computed(() => {
   return name.substring(0, 2).toUpperCase();
 });
 
-// Avatar color
+// Avatar color (fallback)
 const avatarClass = computed(() => {
   const colors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
   const name = props.registration?.profile.name || '';
@@ -298,6 +341,20 @@ function handleSendMessage() {
   &.gradient-4 {
     background: linear-gradient(135deg, rgba(30, 95, 116, 0.8), rgba(74, 157, 156, 0.8));
   }
+}
+
+.interest-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  border-radius: 9999px;
+  background-color: var(--matou-primary);
+  color: white;
+  opacity: 0.9;
 }
 
 // Modal transition

@@ -18,6 +18,10 @@ export interface RegistrationData {
   interests: string[];
   customInterests?: string;
   avatarFileRef?: string;
+  /** Base64-encoded avatar image data (for inclusion in registration message) */
+  avatarData?: string;
+  /** MIME type of the avatar image */
+  avatarMimeType?: string;
 }
 
 export function useRegistration() {
@@ -109,6 +113,8 @@ export function useRegistration() {
           interests: profile.interests,
           customInterests: profile.customInterests,
           avatarFileRef: profile.avatarFileRef,
+          avatarData: profile.avatarData,
+          avatarMimeType: profile.avatarMimeType,
           senderOOBI,
         }
       );

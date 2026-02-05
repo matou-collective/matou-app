@@ -1,9 +1,20 @@
 <template>
-  <div class="registration-card bg-card border border-border rounded-xl p-4 hover:shadow-md transition-shadow">
+  <div
+    class="registration-card bg-card border border-border rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer"
+    @click="$emit('view', registration)"
+  >
     <!-- Header with avatar and name -->
     <div class="flex items-start gap-3 mb-3">
-      <div class="avatar w-12 h-12 rounded-full flex items-center justify-center shrink-0" :class="avatarClass">
-        <span class="text-white font-semibold">{{ initials }}</span>
+      <!-- Avatar with image or initials fallback -->
+      <div class="avatar w-12 h-12 rounded-full flex items-center justify-center shrink-0 overflow-hidden" :class="!hasAvatar && avatarClass">
+        <img
+          v-if="hasAvatar"
+          :src="avatarUrl"
+          alt="Profile"
+          class="w-full h-full object-cover"
+          @error="avatarError = true"
+        />
+        <span v-else class="text-white font-semibold">{{ initials }}</span>
       </div>
       <div class="flex-1 min-w-0">
         <h4 class="font-medium text-foreground truncate">{{ registration.profile.name }}</h4>
@@ -21,25 +32,25 @@
       {{ registration.profile.bio }}
     </p>
 
-    <!-- Interests -->
-    <div v-if="registration.profile.interests.length > 0" class="flex flex-wrap gap-1.5 mb-4">
+    <!-- Interests as pills -->
+    <div v-if="registration.profile.interests.length > 0" class="flex flex-wrap gap-2 mb-4">
       <span
         v-for="interest in displayedInterests"
         :key="interest"
-        class="interest-tag px-2 py-0.5 text-xs rounded-full bg-primary/10 text-primary"
+        class="interest-chip"
       >
-        {{ interest }}
+        {{ getInterestLabel(interest) }}
       </span>
       <span
         v-if="remainingInterestsCount > 0"
-        class="interest-tag px-2 py-0.5 text-xs rounded-full bg-secondary text-muted-foreground"
+        class="interest-chip interest-chip--more"
       >
         +{{ remainingInterestsCount }} more
       </span>
     </div>
 
     <!-- Actions -->
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2" @click.stop>
       <button
         @click="$emit('message', registration)"
         class="action-btn flex-1 px-3 py-2 text-sm rounded-lg border border-border hover:bg-secondary transition-colors"
@@ -68,9 +79,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { MessageSquare, Check, X } from 'lucide-vue-next';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
+import { getFileUrl } from 'src/lib/api/client';
+import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
+
+// Map interest value to human-readable label
+const interestLabelMap = new Map(
+  PARTICIPATION_INTERESTS.map(i => [i.value, i.label])
+);
+
+function getInterestLabel(value: string): string {
+  return interestLabelMap.get(value) || value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
 
 interface Props {
   registration: PendingRegistration;
@@ -85,9 +107,30 @@ defineEmits<{
   (e: 'approve', registration: PendingRegistration): void;
   (e: 'decline', registration: PendingRegistration): void;
   (e: 'message', registration: PendingRegistration): void;
+  (e: 'view', registration: PendingRegistration): void;
 }>();
 
-// Avatar initials from name
+// Avatar image handling
+const avatarError = ref(false);
+const hasAvatar = computed(() => {
+  // Check for either base64 data (preferred) or file ref
+  const hasBase64 = !!props.registration.profile.avatarData && !!props.registration.profile.avatarMimeType;
+  const hasRef = !!props.registration.profile.avatarFileRef && !avatarError.value;
+  return hasBase64 || hasRef;
+});
+const avatarUrl = computed(() => {
+  // Prefer base64 data URL (works cross-backend)
+  if (props.registration.profile.avatarData && props.registration.profile.avatarMimeType) {
+    return `data:${props.registration.profile.avatarMimeType};base64,${props.registration.profile.avatarData}`;
+  }
+  // Fallback to file ref URL
+  if (props.registration.profile.avatarFileRef) {
+    return getFileUrl(props.registration.profile.avatarFileRef);
+  }
+  return '';
+});
+
+// Avatar initials from name (fallback)
 const initials = computed(() => {
   const parts = props.registration.profile.name.split(' ');
   if (parts.length >= 2) {
@@ -96,7 +139,7 @@ const initials = computed(() => {
   return props.registration.profile.name.substring(0, 2).toUpperCase();
 });
 
-// Avatar color based on name hash
+// Avatar color based on name hash (fallback)
 const avatarClass = computed(() => {
   const colors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
   const hash = props.registration.profile.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
@@ -156,8 +199,27 @@ const remainingInterestsCount = computed(() =>
   }
 }
 
-.interest-tag {
+.interest-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
   white-space: nowrap;
+  border-radius: 9999px;
+  background-color: var(--matou-primary);
+  color: white;
+  opacity: 0.9;
+
+  &:hover {
+    opacity: 1;
+  }
+
+  &--more {
+    background-color: var(--matou-secondary);
+    color: var(--matou-muted-foreground);
+  }
 }
 
 .action-btn {

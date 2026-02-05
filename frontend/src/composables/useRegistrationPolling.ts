@@ -26,6 +26,10 @@ export interface PendingRegistration {
     interests: string[];
     customInterests?: string;
     avatarFileRef?: string;
+    /** Base64-encoded avatar image data */
+    avatarData?: string;
+    /** MIME type of avatar image */
+    avatarMimeType?: string;
     submittedAt: string;
   };
   /** True if from escrowed message (OOBI not resolved), false if verified */
@@ -143,6 +147,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               interests: (embeddedData.interests as string[]) || [],
               customInterests: (embeddedData.customInterests as string) || undefined,
               avatarFileRef: (embeddedData.avatarFileRef as string) || undefined,
+              avatarData: (embeddedData.avatarData as string) || undefined,
+              avatarMimeType: (embeddedData.avatarMimeType as string) || undefined,
               submittedAt: (attrs?.dt as string) || new Date().toISOString(),
             },
             isPending: true,
@@ -183,6 +189,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               interests: (embeddedData.interests as string[]) || [],
               customInterests: (embeddedData.customInterests as string) || undefined,
               avatarFileRef: (embeddedData.avatarFileRef as string) || undefined,
+              avatarData: (embeddedData.avatarData as string) || undefined,
+              avatarMimeType: (embeddedData.avatarMimeType as string) || undefined,
               submittedAt: (attrs?.dt as string) || new Date().toISOString(),
             },
             isPending: true,
@@ -228,6 +236,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               interests: (attributes.interests as string[]) || [],
               customInterests: (attributes.customInterests as string) || undefined,
               avatarFileRef: (attributes.avatarFileRef as string) || undefined,
+              avatarData: (attributes.avatarData as string) || undefined,
+              avatarMimeType: (attributes.avatarMimeType as string) || undefined,
               submittedAt: (attributes.submittedAt as string) || new Date().toISOString(),
             },
             isPending: false,
@@ -271,6 +281,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               interests: (attributes.interests as string[]) || [],
               customInterests: (attributes.customInterests as string) || undefined,
               avatarFileRef: (attributes.avatarFileRef as string) || undefined,
+              avatarData: (attributes.avatarData as string) || undefined,
+              avatarMimeType: (attributes.avatarMimeType as string) || undefined,
               submittedAt: (attributes.submittedAt as string) || new Date().toISOString(),
             },
             isPending: false,

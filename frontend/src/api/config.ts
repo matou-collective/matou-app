@@ -8,10 +8,11 @@
 
 import { secureStorage } from 'src/lib/secureStorage';
 import { getBackendUrl } from 'src/lib/platform';
+import { getConfigUrl, getEnv } from 'src/lib/clientConfig';
 
-// Fallback to config server URL for backward compatibility during migration
-const CONFIG_SERVER_URL = import.meta.env.VITE_CONFIG_SERVER_URL || 'http://localhost:3904';
-const IS_TEST_CONFIG = import.meta.env.VITE_TEST_CONFIG === 'true';
+// Config server URL from clientConfig (respects VITE_ENV)
+const CONFIG_SERVER_URL = getConfigUrl();
+const IS_TEST_CONFIG = getEnv() === 'test';
 const LOCAL_CACHE_KEY = 'matou_org_config';
 
 /** Build headers for config requests, adding test isolation header when needed */
@@ -106,14 +107,14 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     }
 
     if (response.status === 404) {
-      console.log('[Config] Backend reachable but not configured yet');
-      return { status: 'not_configured' };
+      console.log('[Config] Backend not configured, trying config server...');
+      // Don't return yet - fall through to try config server
     }
   } catch (err) {
     console.warn('[Config] Backend unreachable, trying config server:', err);
   }
 
-  // Fallback to legacy config server
+  // Try config server (primary source for org config in multi-session dev)
   try {
     const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
       signal: AbortSignal.timeout(5000),

@@ -14,7 +14,8 @@ import { secureStorage } from 'src/lib/secureStorage';
 
 // KERIA CESR URL as seen from inside Docker (used for OOBI resolution).
 // OOBI resolution is server-side — KERIA resolves via its Docker network.
-const KERIA_DOCKER_URL = import.meta.env.VITE_KERIA_DOCKER_CESR_URL || 'http://keria:3902';
+// This is a fixed internal Docker hostname, not configurable per environment.
+const KERIA_DOCKER_URL = 'http://keria:3902';
 
 export type ClaimStep = 'connecting' | 'admitting' | 'rotating' | 'securing' | 'done' | 'error';
 
