@@ -132,7 +132,7 @@
             id="bio"
             v-model="formData.bio"
             rows="3"
-            class="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none"
+            class="m-textarea w-full px-3 py-2 border border-border rounded-lg text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none"
             placeholder="Share a bit about your background, experience, and interests..."
           />
           <p class="text-xs text-muted-foreground text-right">
@@ -175,7 +175,7 @@
             id="joinReason"
             v-model="formData.joinReason"
             rows="3"
-            class="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none"
+            class="m-textarea w-full px-3 py-2 border border-border rounded-lg text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none"
             placeholder="Share what brings you to Matou and what you hope to contribute..."
           />
           <p class="text-xs text-muted-foreground text-right">
@@ -220,7 +220,7 @@
             id="customInterests"
             v-model="formData.customInterests"
             rows="3"
-            class="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none"
+            class="m-textarea w-full px-3 py-2 border border-border rounded-lg text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none"
             placeholder="Share any specific interests, skills, or ways you'd like to contribute..."
           />
           <p class="text-xs text-muted-foreground text-right">
@@ -609,6 +609,10 @@ textarea {
   &:focus {
     outline: none;
   }
+}
+
+.m-textarea {
+  background-color: var(--matou-input-background);
 }
 
 input[type="checkbox"] {

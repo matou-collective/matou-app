@@ -23,6 +23,13 @@ export interface PendingRegistration {
     name: string;
     email?: string;
     bio: string;
+    location?: string;
+    joinReason?: string;
+    indigenousCommunity?: string;
+    facebookUrl?: string;
+    linkedinUrl?: string;
+    twitterUrl?: string;
+    instagramUrl?: string;
     interests: string[];
     customInterests?: string;
     avatarFileRef?: string;
@@ -144,6 +151,13 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               name,
               email: (embeddedData.email as string) || undefined,
               bio: (embeddedData.bio as string) || '',
+              location: (embeddedData.location as string) || undefined,
+              joinReason: (embeddedData.joinReason as string) || undefined,
+              indigenousCommunity: (embeddedData.indigenousCommunity as string) || undefined,
+              facebookUrl: (embeddedData.facebookUrl as string) || undefined,
+              linkedinUrl: (embeddedData.linkedinUrl as string) || undefined,
+              twitterUrl: (embeddedData.twitterUrl as string) || undefined,
+              instagramUrl: (embeddedData.instagramUrl as string) || undefined,
               interests: (embeddedData.interests as string[]) || [],
               customInterests: (embeddedData.customInterests as string) || undefined,
               avatarFileRef: (embeddedData.avatarFileRef as string) || undefined,
@@ -186,6 +200,13 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               name,
               email: (embeddedData.email as string) || undefined,
               bio: (embeddedData.bio as string) || '',
+              location: (embeddedData.location as string) || undefined,
+              joinReason: (embeddedData.joinReason as string) || undefined,
+              indigenousCommunity: (embeddedData.indigenousCommunity as string) || undefined,
+              facebookUrl: (embeddedData.facebookUrl as string) || undefined,
+              linkedinUrl: (embeddedData.linkedinUrl as string) || undefined,
+              twitterUrl: (embeddedData.twitterUrl as string) || undefined,
+              instagramUrl: (embeddedData.instagramUrl as string) || undefined,
               interests: (embeddedData.interests as string[]) || [],
               customInterests: (embeddedData.customInterests as string) || undefined,
               avatarFileRef: (embeddedData.avatarFileRef as string) || undefined,
@@ -233,6 +254,13 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               name: (attributes.name as string) || 'Unknown',
               email: (attributes.email as string) || undefined,
               bio: (attributes.bio as string) || '',
+              location: (attributes.location as string) || undefined,
+              joinReason: (attributes.joinReason as string) || undefined,
+              indigenousCommunity: (attributes.indigenousCommunity as string) || undefined,
+              facebookUrl: (attributes.facebookUrl as string) || undefined,
+              linkedinUrl: (attributes.linkedinUrl as string) || undefined,
+              twitterUrl: (attributes.twitterUrl as string) || undefined,
+              instagramUrl: (attributes.instagramUrl as string) || undefined,
               interests: (attributes.interests as string[]) || [],
               customInterests: (attributes.customInterests as string) || undefined,
               avatarFileRef: (attributes.avatarFileRef as string) || undefined,
@@ -278,6 +306,13 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               name: (attributes.name as string) || 'Unknown',
               email: (attributes.email as string) || undefined,
               bio: (attributes.bio as string) || '',
+              location: (attributes.location as string) || undefined,
+              joinReason: (attributes.joinReason as string) || undefined,
+              indigenousCommunity: (attributes.indigenousCommunity as string) || undefined,
+              facebookUrl: (attributes.facebookUrl as string) || undefined,
+              linkedinUrl: (attributes.linkedinUrl as string) || undefined,
+              twitterUrl: (attributes.twitterUrl as string) || undefined,
+              instagramUrl: (attributes.instagramUrl as string) || undefined,
               interests: (attributes.interests as string[]) || [],
               customInterests: (attributes.customInterests as string) || undefined,
               avatarFileRef: (attributes.avatarFileRef as string) || undefined,

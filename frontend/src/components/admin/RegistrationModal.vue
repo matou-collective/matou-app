@@ -46,30 +46,94 @@
               </div>
             </div>
 
-            <!-- Bio -->
-            <div v-if="registration?.profile.bio" class="mb-6">
-              <h5 class="text-sm font-medium text-muted-foreground mb-2">Bio</h5>
-              <p class="text-foreground">{{ registration.profile.bio }}</p>
-            </div>
-
-            <!-- Interests -->
-            <div v-if="registration?.profile.interests.length" class="mb-6">
-              <h5 class="text-sm font-medium text-muted-foreground mb-2">Interests</h5>
-              <div class="flex flex-wrap gap-2">
-                <span
-                  v-for="interest in registration.profile.interests"
-                  :key="interest"
-                  class="interest-chip"
-                >
-                  {{ getInterestLabel(interest) }}
-                </span>
+            <!-- Profile Fields -->
+            <div class="space-y-4 mb-6">
+              <!-- About -->
+              <div v-if="registration?.profile.bio" class="profile-field">
+                <h5 class="field-label">About</h5>
+                <p class="field-value">{{ registration.profile.bio }}</p>
               </div>
-            </div>
 
-            <!-- Custom Interests -->
-            <div v-if="registration?.profile.customInterests" class="mb-6">
-              <h5 class="text-sm font-medium text-muted-foreground mb-2">Additional Interests</h5>
-              <p class="text-foreground">{{ registration.profile.customInterests }}</p>
+              <!-- Location -->
+              <div v-if="registration?.profile.location" class="profile-field">
+                <h5 class="field-label">Location</h5>
+                <p class="field-value">{{ registration.profile.location }}</p>
+              </div>
+
+              <!-- Indigenous Community -->
+              <div v-if="registration?.profile.indigenousCommunity" class="profile-field">
+                <h5 class="field-label">Indigenous Community</h5>
+                <p class="field-value">{{ registration.profile.indigenousCommunity }}</p>
+              </div>
+
+              <!-- Join Reason -->
+              <div v-if="registration?.profile.joinReason" class="profile-field">
+                <h5 class="field-label">Why they want to join</h5>
+                <p class="field-value">{{ registration.profile.joinReason }}</p>
+              </div>
+
+              <!-- Participation Interests -->
+              <div v-if="registration?.profile.interests.length" class="profile-field">
+                <h5 class="field-label">Participation Interests</h5>
+                <div class="flex flex-wrap gap-2">
+                  <span
+                    v-for="interest in registration.profile.interests"
+                    :key="interest"
+                    class="interest-chip"
+                  >
+                    {{ getInterestLabel(interest) }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Custom Interests -->
+              <div v-if="registration?.profile.customInterests" class="profile-field">
+                <h5 class="field-label">Additional Interests</h5>
+                <p class="field-value">{{ registration.profile.customInterests }}</p>
+              </div>
+
+              <!-- Social Links -->
+              <div v-if="hasSocialLinks" class="profile-field">
+                <h5 class="field-label">Social Links</h5>
+                <div class="flex flex-wrap gap-3">
+                  <a
+                    v-if="registration?.profile.facebookUrl"
+                    :href="registration.profile.facebookUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="social-link"
+                  >
+                    Facebook
+                  </a>
+                  <a
+                    v-if="registration?.profile.linkedinUrl"
+                    :href="registration.profile.linkedinUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="social-link"
+                  >
+                    LinkedIn
+                  </a>
+                  <a
+                    v-if="registration?.profile.twitterUrl"
+                    :href="registration.profile.twitterUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="social-link"
+                  >
+                    X (Twitter)
+                  </a>
+                  <a
+                    v-if="registration?.profile.instagramUrl"
+                    :href="registration.profile.instagramUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="social-link"
+                  >
+                    Instagram
+                  </a>
+                </div>
+              </div>
             </div>
 
             <!-- Message Section -->
@@ -286,6 +350,13 @@ const formattedDate = computed(() => {
   });
 });
 
+// Check if any social links exist
+const hasSocialLinks = computed(() => {
+  if (!props.registration) return false;
+  const { facebookUrl, linkedinUrl, twitterUrl, instagramUrl } = props.registration.profile;
+  return !!(facebookUrl || linkedinUrl || twitterUrl || instagramUrl);
+});
+
 // Copy AID to clipboard
 function copyAid() {
   if (props.registration?.applicantAid) {
@@ -343,6 +414,29 @@ function handleSendMessage() {
   }
 }
 
+.profile-field {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--matou-border);
+
+  &:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+}
+
+.field-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--matou-muted-foreground);
+  margin-bottom: 0.25rem;
+}
+
+.field-value {
+  font-size: 0.875rem;
+  color: var(--matou-foreground);
+  white-space: pre-wrap;
+}
+
 .interest-chip {
   display: inline-flex;
   align-items: center;
@@ -355,6 +449,24 @@ function handleSendMessage() {
   background-color: var(--matou-primary);
   color: white;
   opacity: 0.9;
+}
+
+.social-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: 0.5rem;
+  background-color: var(--matou-secondary);
+  color: var(--matou-primary);
+  text-decoration: none;
+  transition: background-color 0.2s;
+
+  &:hover {
+    background-color: var(--matou-primary);
+    color: white;
+  }
 }
 
 // Modal transition

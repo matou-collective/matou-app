@@ -1062,6 +1062,13 @@ export class KERIClient {
       name: string;
       email?: string;
       bio: string;
+      location?: string;
+      joinReason?: string;
+      indigenousCommunity?: string;
+      facebookUrl?: string;
+      linkedinUrl?: string;
+      twitterUrl?: string;
+      instagramUrl?: string;
       interests: string[];
       customInterests?: string;
       avatarFileRef?: string;
@@ -1120,6 +1127,13 @@ export class KERIClient {
           name: registrationData.name,
           email: registrationData.email || '',
           bio: registrationData.bio,
+          location: registrationData.location || '',
+          joinReason: registrationData.joinReason || '',
+          indigenousCommunity: registrationData.indigenousCommunity || '',
+          facebookUrl: registrationData.facebookUrl || '',
+          linkedinUrl: registrationData.linkedinUrl || '',
+          twitterUrl: registrationData.twitterUrl || '',
+          instagramUrl: registrationData.instagramUrl || '',
           interests: registrationData.interests,
           customInterests: registrationData.customInterests || '',
           avatarFileRef: registrationData.avatarFileRef || '',
@@ -1148,6 +1162,13 @@ export class KERIClient {
               name: registrationData.name,
               email: registrationData.email || '',
               bio: registrationData.bio,
+              location: registrationData.location || '',
+              joinReason: registrationData.joinReason || '',
+              indigenousCommunity: registrationData.indigenousCommunity || '',
+              facebookUrl: registrationData.facebookUrl || '',
+              linkedinUrl: registrationData.linkedinUrl || '',
+              twitterUrl: registrationData.twitterUrl || '',
+              instagramUrl: registrationData.instagramUrl || '',
               interests: registrationData.interests,
               customInterests: registrationData.customInterests || '',
               avatarFileRef: registrationData.avatarFileRef || '',
