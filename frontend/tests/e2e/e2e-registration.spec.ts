@@ -18,7 +18,7 @@ import {
 /**
  * E2E: Registration Approval Flow
  *
- * Tests admin approval, decline, and messaging workflows.
+ * Tests admin approval, decline, and Whakawhānaunga session booking workflows.
  * Self-sufficient: if org-setup hasn't been run yet, performs it automatically.
  *
  * Multi-backend: In per-user mode, admin and each user run their own Go backend
@@ -279,7 +279,30 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(
         userPage.getByText(/declined|rejected/i).first(),
       ).toBeVisible({ timeout: TIMEOUT.long });
-      console.log('[Test] PASS - User sees rejection');
+      console.log('[Test] User sees rejection');
+
+      // Test session restart: reload without clearing localStorage
+      // This verifies the rejection state persists across sessions
+      console.log('[Test] Testing session restart with persisted rejection...');
+      await userPage.goto(FRONTEND_URL);
+
+      // Should auto-restore to rejected state (not splash or pending)
+      await expect(
+        userPage.getByText(/declined|rejected/i).first(),
+      ).toBeVisible({ timeout: TIMEOUT.long });
+      console.log('[Test] Session restart: rejection state persisted');
+
+      // Splash buttons should NOT be visible
+      await expect(
+        userPage.getByRole('button', { name: /register/i }),
+      ).not.toBeVisible();
+      console.log('[Test] Session restart: splash buttons correctly hidden');
+
+      // Should show the "What you can do" support section
+      await expect(
+        userPage.getByText(/what you can do/i),
+      ).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] PASS - Rejection persisted across session restart');
     } finally {
       await userContext.close();
       await backends.stop('user-decline');
@@ -287,83 +310,92 @@ test.describe.serial('Registration Approval Flow', () => {
   });
 
   // ------------------------------------------------------------------
-  // Test 3: Admin sends message to pending applicant
+  // Test 3: User books a Whakawhānaunga session while pending
   // ------------------------------------------------------------------
-  test('admin sends message to pending applicant', async ({ browser }) => {
-    const userBackend = await backends.start('user-message');
+  test('user books a Whakawhānaunga session', async ({ browser }) => {
+    const userBackend = await backends.start('user-booking');
 
     const userContext = await browser.newContext();
     await setupTestConfig(userContext);
     await setupBackendRouting(userContext, userBackend.port);
     const userPage = await userContext.newPage();
-    setupPageLogging(userPage, 'User-Message');
+    setupPageLogging(userPage, 'User-Booking');
 
-    const userName = `Message_${uniqueSuffix()}`;
+    const userName = `Booking_${uniqueSuffix()}`;
+    const testEmail = `test_${uniqueSuffix()}@example.com`;
 
     try {
       // 1. User registers (stays pending, on their own backend)
       await registerUser(userPage, userName);
 
-      // 2. Wait for admin to see the registration card
-      const adminSection = adminPage.locator('.admin-section');
-      await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
-
-      const registrationCard = adminPage.locator('.registration-card').filter({ hasText: userName });
-      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.long });
-
-      // 3. Click message on card → opens RegistrationModal (detail dialog)
-      console.log('[Test] Admin clicking message on card...');
-      const cardMessageBtn = registrationCard.getByRole('button', { name: /message/i });
-      await expect(cardMessageBtn).toBeVisible({ timeout: TIMEOUT.short });
-      await cardMessageBtn.click();
-
-      // 4. RegistrationModal opens — click "Message" in modal footer to reveal textarea
-      const modal = adminPage.locator('.modal-content');
-      await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
-      console.log('[Test] Registration detail modal opened');
-
-      const modalMessageBtn = modal.getByRole('button', { name: /^message$/i });
-      await expect(modalMessageBtn).toBeVisible({ timeout: TIMEOUT.short });
-      await modalMessageBtn.click();
-
-      // 5. Fill textarea and click "Send Message"
-      await expect(modal.locator('textarea')).toBeVisible({ timeout: TIMEOUT.short });
-      await modal.locator('textarea').fill('Please provide more details about your background.');
-      await modal.getByRole('button', { name: /send message/i }).click();
-      console.log('[Test] Admin sent message');
-
-      // 6. User receives admin message
-      console.log('[Test] Waiting for user to receive message...');
+      // 2. Verify user is on pending approval screen
       await expect(
-        userPage.getByText(/please provide more details/i),
+        userPage.getByText(/application.*review|pending|under review/i).first(),
       ).toBeVisible({ timeout: TIMEOUT.long });
-      console.log('[Test] User received admin message');
+      console.log('[Test] User on pending approval screen');
 
-      // 7. User types a reply
-      console.log('[Test] User sending reply...');
-      const replyTextarea = userPage.locator('textarea[placeholder="Type your reply..."]');
-      await expect(replyTextarea).toBeVisible({ timeout: TIMEOUT.short });
-      await replyTextarea.fill('I have 5 years of experience in community organizing.');
+      // 3. Wait for time slots grid to be visible
+      console.log('[Test] Looking for booking time slots...');
+      const timeSlotsGrid = userPage.locator('.time-slots-grid');
+      await expect(timeSlotsGrid).toBeVisible({ timeout: TIMEOUT.medium });
 
-      const sendReplyBtn = userPage.locator('button', { hasText: /^send$/i });
-      await expect(sendReplyBtn).toBeEnabled({ timeout: TIMEOUT.short });
-      await sendReplyBtn.click();
+      // 4. Click the first available time slot
+      const timeSlotBtn = timeSlotsGrid.locator('.time-slot-btn').first();
+      await expect(timeSlotBtn).toBeVisible({ timeout: TIMEOUT.short });
+      await timeSlotBtn.click();
+      console.log('[Test] Selected time slot');
 
-      // 8. Verify reply was sent (textarea clears on success)
-      await expect(replyTextarea).toHaveValue('', { timeout: TIMEOUT.medium });
-      console.log('[Test] User reply sent');
+      // 5. Email confirmation step should appear
+      const emailInput = userPage.locator('#booking-email');
+      await expect(emailInput).toBeVisible({ timeout: TIMEOUT.short });
+      await emailInput.fill(testEmail);
+      console.log('[Test] Filled email:', testEmail);
 
-      // 9. Admin receives the reply (poll picks up message_reply notification)
-      console.log('[Test] Waiting for admin to receive reply...');
-      const replyReceived = adminPage.waitForEvent('console', {
-        predicate: msg => msg.text().includes('New applicant message received'),
-        timeout: TIMEOUT.long,
-      });
-      await replyReceived;
-      console.log('[Test] PASS - Admin received user reply');
+      // 6. Set up listener for booking API call
+      const bookingResponse = userPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/booking/send-email') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.medium },
+      );
+
+      // 7. Click confirm button
+      const confirmBtn = userPage.getByRole('button', { name: /confirm/i });
+      await expect(confirmBtn).toBeEnabled({ timeout: TIMEOUT.short });
+      await confirmBtn.click();
+      console.log('[Test] Clicked confirm');
+
+      // 8. Verify booking API was called successfully
+      const bookingResp = await bookingResponse;
+      expect(bookingResp.status()).toBe(200);
+      const bookingBody = await bookingResp.json();
+      expect(bookingBody.success).toBe(true);
+      console.log('[Test] Booking API response:', bookingBody);
+
+      // 9. Verify confirmation message appears
+      await expect(
+        userPage.getByText(/session requested/i),
+      ).toBeVisible({ timeout: TIMEOUT.medium });
+      console.log('[Test] Booking confirmation displayed');
+
+      // 10. Verify email is shown in confirmation
+      await expect(
+        userPage.getByText(testEmail),
+      ).toBeVisible({ timeout: TIMEOUT.short });
+
+      // 11. Test session restart: booking should persist
+      console.log('[Test] Testing session restart with persisted booking...');
+      await userPage.goto(FRONTEND_URL);
+
+      // Should auto-restore to pending-approval with booking still shown
+      await expect(
+        userPage.getByText(/session requested/i),
+      ).toBeVisible({ timeout: TIMEOUT.long });
+      await expect(
+        userPage.getByText(testEmail),
+      ).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] PASS - Booking persisted across session restart');
     } finally {
       await userContext.close();
-      await backends.stop('user-message');
+      await backends.stop('user-booking');
     }
   });
 });
