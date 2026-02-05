@@ -1,11 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
@@ -17,6 +22,55 @@ import (
 	bgSync "github.com/matou-dao/backend/internal/sync"
 	matouTypes "github.com/matou-dao/backend/internal/types"
 )
+
+// fetchAndSaveAnySyncConfig fetches the any-sync client config from the config
+// server and writes it to disk as YAML.
+func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) error {
+	resp, err := http.Get(configServerURL + "/api/client-config")
+	if err != nil {
+		return fmt.Errorf("failed to reach config server at %s: %w", configServerURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("config server returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return fmt.Errorf("failed to parse JSON response: %w", err)
+	}
+
+	anysyncRaw, ok := envelope["anysync"]
+	if !ok {
+		return fmt.Errorf("config server response missing \"anysync\" key")
+	}
+
+	var clientConfig interface{}
+	if err := json.Unmarshal(anysyncRaw, &clientConfig); err != nil {
+		return fmt.Errorf("failed to parse anysync config: %w", err)
+	}
+
+	yamlData, err := yaml.Marshal(clientConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config to YAML: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	if err := os.WriteFile(targetPath, yamlData, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
+}
 
 func main() {
 	// Detect environment: "test" uses isolated data, configs, and ports
@@ -128,6 +182,27 @@ func main() {
 			// Dev network uses ports 1001-1006
 			anysyncConfigPath = "config/client-dev.yml"
 		}
+	}
+
+	// If the config file doesn't exist, try fetching it from the config server
+	if _, err := os.Stat(anysyncConfigPath); os.IsNotExist(err) {
+		configServerURL := os.Getenv("MATOU_CONFIG_SERVER_URL")
+		if configServerURL == "" {
+			switch {
+			case isTest:
+				configServerURL = "http://localhost:4904"
+			case isProd:
+				log.Fatalf("any-sync config file not found at %s and MATOU_CONFIG_SERVER_URL is not set for production", anysyncConfigPath)
+			default:
+				configServerURL = "http://localhost:3904"
+			}
+		}
+		fmt.Printf("  Config file %s not found, fetching from config server %s...\n", anysyncConfigPath, configServerURL)
+		if err := fetchAndSaveAnySyncConfig(configServerURL, anysyncConfigPath); err != nil {
+			log.Fatalf("Failed to fetch any-sync config from config server: %v\n\n"+
+				"Ensure the config server is running at %s\n", err, configServerURL)
+		}
+		fmt.Printf("  Config saved to %s\n", anysyncConfigPath)
 	}
 
 	// If identity is persisted with mnemonic, derive peer key for SDK initialization
