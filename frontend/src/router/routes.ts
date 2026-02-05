@@ -56,6 +56,17 @@ const routes: RouteRecordRaw[] = [
       },
     ],
   },
+  {
+    path: '/chat',
+    component: () => import('layouts/OnboardingLayout.vue'),
+    children: [
+      {
+        path: '',
+        name: 'chat',
+        component: () => import('pages/ChatPage.vue'),
+      },
+    ],
+  },
   // Always leave this as last one
   {
     path: '/:catchAll(.*)*',

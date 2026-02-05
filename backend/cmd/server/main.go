@@ -268,6 +268,7 @@ func main() {
 	eventsHandler := api.NewEventsHandler(eventBroker)
 	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry)
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
+	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker)
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -312,6 +313,7 @@ func main() {
 	eventsHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
+	chatHandler.RegisterRoutes(mux)
 	orgConfigHandler.RegisterRoutes(mux)
 
 	// Start server
@@ -374,6 +376,20 @@ func main() {
 	fmt.Println()
 	fmt.Println("  Events:")
 	fmt.Println("  GET  /api/v1/events                   - SSE event stream")
+	fmt.Println()
+	fmt.Println("  Chat:")
+	fmt.Println("  GET  /api/v1/chat/channels            - List chat channels")
+	fmt.Println("  POST /api/v1/chat/channels            - Create channel (admin)")
+	fmt.Println("  GET  /api/v1/chat/channels/{id}       - Get channel details")
+	fmt.Println("  PUT  /api/v1/chat/channels/{id}       - Update channel (admin)")
+	fmt.Println("  DELETE /api/v1/chat/channels/{id}     - Archive channel (admin)")
+	fmt.Println("  GET  /api/v1/chat/channels/{id}/messages - List messages")
+	fmt.Println("  POST /api/v1/chat/channels/{id}/messages - Send message")
+	fmt.Println("  PUT  /api/v1/chat/messages/{id}       - Edit message (owner)")
+	fmt.Println("  DELETE /api/v1/chat/messages/{id}     - Delete message (owner)")
+	fmt.Println("  GET  /api/v1/chat/messages/{id}/thread - Get thread replies")
+	fmt.Println("  POST /api/v1/chat/messages/{id}/reactions - Add reaction")
+	fmt.Println("  DELETE /api/v1/chat/messages/{id}/reactions/{emoji} - Remove reaction")
 	fmt.Println()
 	fmt.Println("  Org Config:")
 	fmt.Println("  GET  /api/v1/org/config               - Get org configuration")

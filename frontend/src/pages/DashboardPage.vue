@@ -31,7 +31,7 @@
           <Vote class="nav-icon" />
           <span>Proposals</span>
         </button>
-        <button class="nav-item disabled" disabled>
+        <button class="nav-item" @click="$router.push('/chat')">
           <MessageSquare class="nav-icon" />
           <span>Chat</span>
         </button>
