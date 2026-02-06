@@ -1,7 +1,7 @@
 <template>
-  <main class="main-content">
+  <div class="dashboard-page">
     <!-- Welcome Header -->
-    <section class="welcome-header">
+    <section class="welcome-header rounded-b-3xl">
       <span class="greeting">Kia ora</span>
       <button class="theme-toggle" @click="toggleDarkMode" :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
         <Sun v-if="isDark" class="toggle-icon" />
@@ -146,7 +146,7 @@
         @close="selectedMember = null"
       />
     </Teleport>
-  </main>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -357,8 +357,8 @@ async function handleRefresh() {
 </script>
 
 <style lang="scss" scoped>
-// Main Content
-.main-content {
+// Dashboard Page
+.dashboard-page {
   flex: 1;
   display: flex;
   flex-direction: column;

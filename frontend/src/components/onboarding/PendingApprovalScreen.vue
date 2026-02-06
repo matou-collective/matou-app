@@ -2,8 +2,8 @@
   <div class="pending-approval-screen h-full flex flex-col bg-background">
     <!-- Header -->
     <OnboardingHeader
-      title="Registration Pending"
-      :subtitle="`Kia ora, ${userName}`"
+      :title="statusConfig.title"
+      :subtitle="`Kia ora, ${displayUserName}`"
       :show-back-button="false"
     />
 
@@ -95,12 +95,12 @@
 
         <!-- Your Identity (AID) -->
         <div
-          v-motion="fadeSlideUp(150)"
+          v-if="currentStatus !== 'rejected'"
           class="aid-card bg-card border border-border rounded-xl p-4 shadow-sm"
         >
           <div class="flex items-center justify-between gap-3">
             <div class="flex-1 min-w-0">
-              <span class="text-xs text-muted-foreground">Your Identity (AID)</span>
+              <span class="text-xs text-muted-foreground">Your Identity Autonomic Identifier (AID)</span>
               <p class="text-sm font-mono truncate">{{ userAID }}</p>
             </div>
             <button
@@ -115,7 +115,7 @@
         </div>
 
         <!-- What Happens Next -->
-        <div v-motion="fadeSlideUp(200)">
+        <div v-if="currentStatus !== 'rejected'">
           <h3 class="mb-4">What happens next?</h3>
           <div class="space-y-3">
             <!-- Step 1: Book a session -->
@@ -265,7 +265,7 @@
         </div>
 
         <!-- Resources -->
-        <div v-motion="fadeSlideUp(700)">
+        <div v-if="currentStatus !== 'rejected'" v-motion="fadeSlideUp(700)">
           <h3 class="mb-4">Explore while you wait</h3>
           <p class="text-muted-foreground mb-4">
             Learn more about Matou by browsing our documentation and resources
@@ -300,7 +300,7 @@
 
         <!-- Help Section -->
         <div
-          v-motion="fadeSlideUp(1200)"
+          v-if="currentStatus !== 'rejected'"
           class="help-box bg-secondary/50 border border-border rounded-xl p-5"
         >
           <h4 class="mb-2">Need help?</h4>
@@ -318,7 +318,7 @@
     <!-- Welcome Overlay -->
     <WelcomeOverlay
       :show="showWelcome"
-      :user-name="props.userName"
+      :user-name="displayUserName"
       :credential="credential"
       @continue="handleContinue"
     />
@@ -342,13 +342,33 @@ const { fadeSlideUp, slideInLeft, rotate } = useAnimationPresets();
 const identityStore = useIdentityStore();
 const onboardingStore = useOnboardingStore();
 
-// User's AID for display
-const userAID = computed(() => identityStore.currentAID?.prefix ?? 'Loading...');
+// User's AID for display - check both identity store and onboarding store
+const userAID = computed(() => {
+  return identityStore.currentAID?.prefix 
+    ?? onboardingStore.userAID 
+    ?? 'Loading...';
+});
+
+// Display username with fallback to AID name
+const displayUserName = computed(() => {
+  // Use prop userName if it's set and not the default 'Member'
+  if (props.userName && props.userName !== 'Member') {
+    return props.userName;
+  }
+  // Fallback to AID name
+  if (identityStore.currentAID?.name) {
+    return identityStore.currentAID.name;
+  }
+  // Final fallback
+  return 'Member';
+});
+
 const copied = ref(false);
 
 function copyAID() {
-  if (identityStore.currentAID?.prefix) {
-    navigator.clipboard.writeText(identityStore.currentAID.prefix);
+  const aid = identityStore.currentAID?.prefix ?? onboardingStore.userAID;
+  if (aid) {
+    navigator.clipboard.writeText(aid);
     copied.value = true;
     setTimeout(() => { copied.value = false; }, 2000);
   }

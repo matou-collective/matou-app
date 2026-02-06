@@ -1,5 +1,21 @@
 import { configure } from 'quasar/wrappers';
 import path from 'path';
+import fs from 'fs';
+
+// Load .env.production vars for electron main process injection
+function loadEnvFile(filename: string): Record<string, string> {
+  const envPath = path.join(__dirname, filename);
+  if (!fs.existsSync(envPath)) return {};
+  const vars: Record<string, string> = {};
+  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq > 0) vars[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+  }
+  return vars;
+}
+const prodEnv = loadEnvFile('.env.production');
 
 export default configure(() => {
   return {
@@ -84,17 +100,33 @@ export default configure(() => {
       preloadScripts: ['electron-preload'],
       inspectPort: 5858,
       bundler: 'builder',
+      extendElectronMainConf(esbuildConf) {
+        esbuildConf.define = {
+          ...esbuildConf.define,
+          'process.env.PROD_CONFIG_SERVER_URL': JSON.stringify(prodEnv.VITE_PROD_CONFIG_URL || ''),
+          'process.env.PROD_SMTP_HOST': JSON.stringify(prodEnv.VITE_SMTP_HOST || ''),
+          'process.env.PROD_SMTP_PORT': JSON.stringify(prodEnv.VITE_SMTP_PORT || ''),
+          'process.env.QUASAR_ELECTRON_PRELOAD': JSON.stringify('preload/electron-preload.cjs'),
+        };
+      },
       builder: {
-        appId: 'org.matou.identity',
-        productName: 'Matou Identity',
+        appId: 'org.matou.app',
+        productName: 'Matou',
+        artifactName: 'matou-${version}.${ext}',
+        afterPack: './build/afterPack.cjs',
         extraResources: [
           { from: '../backend/bin/', to: 'backend/' },
+          { from: 'src-electron/icons/', to: 'icons/' },
         ],
         mac: {
           target: 'dmg',
         },
         linux: {
           target: 'AppImage',
+          icon: 'src-electron/icons',
+          category: 'Network',
+          executableName: 'matou',
+          executableArgs: ['--no-sandbox'],
         },
         win: {
           target: 'nsis',

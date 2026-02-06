@@ -56,15 +56,14 @@
         class="action-btn flex-1 px-3 py-2 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
         :disabled="disabled"
       >
-        <Check class="w-4 h-4 inline mr-1.5" />
         Approve
       </button>
       <button
         @click="$emit('decline', registration)"
-        class="action-btn px-3 py-2 text-sm rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors"
+        class="action-btn flex-1 px-3 py-2 text-sm rounded-lg bg-orange-500 text-white hover:bg-orange-600 transition-colors"
         :disabled="disabled"
       >
-        <X class="w-4 h-4" />
+        Decline
       </button>
     </div>
   </div>

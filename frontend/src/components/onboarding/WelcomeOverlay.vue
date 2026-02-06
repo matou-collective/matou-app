@@ -24,7 +24,7 @@
         </div>
 
         <!-- Welcome Text - Rotating Indigenous Languages -->
-        <p v-motion="fadeSlideUp(2400)" class="text-white/80 text-base md:text-lg -mt-4">
+        <p v-motion="fadeSlideUp(1800)" class="text-white/80 text-base md:text-lg -mt-4">
           <span class="welcome-word" :class="{ 'fade-out': wordFading }">{{ currentWelcome.word }}</span>, {{ displayName }}!
         </p>
 
@@ -116,7 +116,9 @@ const emit = defineEmits<{
 
 // Welcome words in indigenous languages
 const welcomeWords = [
+  { word: 'Welcome', language: 'English' },
   { word: 'Nau mai', language: 'Māori' },
+  { word: 'Oro mau', language: 'Cook Islands Maori' },
   { word: 'E komo mai', language: 'Hawaiian' },
   { word: "Yá'át'ééh", language: 'Navajo' },
   { word: 'Osiyo', language: 'Cherokee' },

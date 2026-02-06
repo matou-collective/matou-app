@@ -3,7 +3,21 @@
  * Communicates with the Go backend for sync and community operations
  */
 
-export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
+import { getBackendUrl, getBackendUrlSync } from '../platform';
+
+/**
+ * Resolved backend URL. Call initBackendUrl() once at boot to populate.
+ * After init, this holds the correct URL (dynamic Electron port or env var).
+ */
+export let BACKEND_URL = getBackendUrlSync();
+
+/**
+ * Initialize the backend URL (must be called once at app startup).
+ * Resolves the Electron dynamic port via IPC; no-op in browser mode.
+ */
+export async function initBackendUrl(): Promise<void> {
+  BACKEND_URL = await getBackendUrl();
+}
 
 export interface SyncCredentialsRequest {
   userAid: string;
