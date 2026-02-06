@@ -97,10 +97,12 @@ function findFreePort(): Promise<number> {
 function getBackendPath(): string {
   if (app.isPackaged) {
     // Packaged app: binary is in resources/backend/
+    const archMap: Record<string, string> = { arm64: 'arm64', x64: 'amd64' };
+    const arch = archMap[process.arch] ?? 'amd64';
     const platformMap: Record<string, string> = {
-      darwin: 'darwin-arm64',
-      linux: 'linux-amd64',
-      win32: 'windows-amd64',
+      darwin: `darwin-${arch}`,
+      linux: `linux-${arch}`,
+      win32: `windows-${arch}`,
     };
     const platformDir = platformMap[process.platform] ?? 'linux-amd64';
     const binaryName = process.platform === 'win32' ? 'matou-backend.exe' : 'matou-backend';

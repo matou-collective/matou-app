@@ -119,7 +119,9 @@ export default configure(() => {
           { from: 'src-electron/icons/', to: 'icons/' },
         ],
         mac: {
-          target: 'dmg',
+          target: 'zip',
+          identity: null, // Skip code signing (unsigned build)
+          icon: 'src-electron/icons/icon.png',
         },
         linux: {
           target: 'AppImage',
@@ -130,6 +132,7 @@ export default configure(() => {
         },
         win: {
           target: 'nsis',
+          icon: 'src-electron/icons/icon.png',
         },
       },
     },
