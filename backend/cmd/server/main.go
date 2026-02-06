@@ -340,6 +340,7 @@ func main() {
 	emailSender := email.NewSender(cfg.SMTP)
 	invitesHandler := api.NewInvitesHandler(emailSender)
 	bookingHandler := api.NewBookingHandler(emailSender)
+	notificationsHandler := api.NewNotificationsHandler(emailSender)
 	identityHandler := api.NewIdentityHandler(userIdentity, sdkClient, spaceManager, spaceStore)
 	eventsHandler := api.NewEventsHandler(eventBroker)
 	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry)
@@ -389,6 +390,7 @@ func main() {
 	eventsHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
+	notificationsHandler.RegisterRoutes(mux)
 	orgConfigHandler.RegisterRoutes(mux)
 
 	// Start server
@@ -435,6 +437,10 @@ func main() {
 	fmt.Println()
 	fmt.Println("  Invites:")
 	fmt.Println("  POST /api/v1/invites/send-email       - Email invite code to user")
+	fmt.Println()
+	fmt.Println("  Notifications:")
+	fmt.Println("  POST /api/v1/notifications/registration-submitted - Notify onboarding of new registration")
+	fmt.Println("  POST /api/v1/notifications/registration-approved  - Notify applicant of approval")
 	fmt.Println()
 	fmt.Println("  Profiles & Types:")
 	fmt.Println("  GET  /api/v1/types                    - List all type definitions")

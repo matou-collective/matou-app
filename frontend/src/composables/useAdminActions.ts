@@ -7,7 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
-import { BACKEND_URL, initMemberProfiles } from 'src/lib/api/client';
+import { BACKEND_URL, initMemberProfiles, sendRegistrationApprovedNotification } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -241,6 +241,18 @@ export function useAdminActions() {
         }
       } catch (initErr) {
         console.warn('[AdminActions] Failed to init member profiles:', initErr);
+      }
+
+      // 5c. Email approval notification (non-blocking)
+      if (registration.profile?.email) {
+        try {
+          await sendRegistrationApprovedNotification({
+            applicantEmail: registration.profile.email,
+            applicantName: registration.profile.name || 'Member',
+          });
+        } catch (notifyErr) {
+          console.warn('[AdminActions] Approval notification deferred:', notifyErr);
+        }
       }
 
       // 6. Mark ALL notifications for this applicant as read

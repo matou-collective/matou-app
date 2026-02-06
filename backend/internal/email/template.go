@@ -174,7 +174,7 @@ const bookingEmailHTML = `<!DOCTYPE html>
               </p>
               <!-- Next Steps -->
               <p style="margin:20px 0 0; color:#374151; font-size:14px; line-height:1.6;">
-                If you need to reschedule, please contact us at <a href="mailto:onboarding@matou.nz" style="color:#1e5f74;">onboarding@matou.nz</a>.
+                If you need to reschedule, please contact us at <a href="mailto:contact@matou.nz" style="color:#1e5f74;">contact@matou.nz</a>.
               </p>
             </td>
           </tr>

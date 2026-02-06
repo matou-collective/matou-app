@@ -83,7 +83,7 @@ func (s *Sender) SendBookingConfirmation(to, name string, startTime time.Time, d
 		return fmt.Errorf("rendering booking email template: %w", err)
 	}
 
-	recipients := []string{to, "onboarding@matou.nz"}
+	recipients := []string{to, "contact@matou.nz"}
 	toHeader := strings.Join(recipients, ", ")
 	msg := s.buildMIMEMessageWithCalendarFrom(toHeader, "MATOU - Whakawhānaunga Session", body, icsContent, "invites@matou.nz")
 
@@ -128,6 +128,76 @@ func (s *Sender) generateICSWithFrom(startTime, endTime time.Time, attendeeName,
 	b.WriteString("END:VCALENDAR\r\n")
 
 	return b.String()
+}
+
+// SendRegistrationNotificationRequest contains the data needed to notify onboarding of a new registration
+type SendRegistrationNotificationRequest struct {
+	ApplicantName    string
+	ApplicantEmail   string
+	ApplicantAid     string
+	Bio              string
+	Location         string
+	JoinReason       string
+	Interests        []string
+	CustomInterests  string
+	SubmittedAt      string
+}
+
+// SendRegistrationNotification sends a notification email to contact@matou.nz about a new registration
+func (s *Sender) SendRegistrationNotification(req SendRegistrationNotificationRequest) error {
+	body, err := renderRegistrationNotificationTemplate(registrationNotificationTemplateData{
+		ApplicantName:   req.ApplicantName,
+		ApplicantEmail:  req.ApplicantEmail,
+		ApplicantAid:    req.ApplicantAid,
+		Bio:             req.Bio,
+		Location:        req.Location,
+		JoinReason:      req.JoinReason,
+		Interests:       formatInterests(req.Interests),
+		CustomInterests: req.CustomInterests,
+		SubmittedAt:     req.SubmittedAt,
+		LogoURL:         s.logoURL,
+		TextURL:         s.textURL,
+	})
+	if err != nil {
+		return fmt.Errorf("rendering email template: %w", err)
+	}
+
+	subject := fmt.Sprintf("New Registration - %s", req.ApplicantName)
+	msg := s.buildMIMEMessage("contact@matou.nz", subject, body)
+
+	addr := fmt.Sprintf("%s:%d", s.host, s.port)
+	if err := s.sendMail(addr, "contact@matou.nz", []byte(msg)); err != nil {
+		return fmt.Errorf("sending email: %w", err)
+	}
+
+	return nil
+}
+
+// SendApprovalNotificationRequest contains the data needed to notify an applicant of approval
+type SendApprovalNotificationRequest struct {
+	To            string
+	ApplicantName string
+}
+
+// SendApprovalNotification sends an approval notification email to the applicant
+func (s *Sender) SendApprovalNotification(req SendApprovalNotificationRequest) error {
+	body, err := renderApprovalNotificationTemplate(approvalNotificationTemplateData{
+		ApplicantName: req.ApplicantName,
+		LogoURL:       s.logoURL,
+		TextURL:       s.textURL,
+	})
+	if err != nil {
+		return fmt.Errorf("rendering email template: %w", err)
+	}
+
+	msg := s.buildMIMEMessage(req.To, "Welcome to MATOU!", body)
+
+	addr := fmt.Sprintf("%s:%d", s.host, s.port)
+	if err := s.sendMail(addr, req.To, []byte(msg)); err != nil {
+		return fmt.Errorf("sending email: %w", err)
+	}
+
+	return nil
 }
 
 // sendMailFromMulti connects to the SMTP server and sends a single message to multiple recipients

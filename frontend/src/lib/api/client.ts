@@ -517,3 +517,61 @@ export async function sendBookingEmail(
 
   return response.json();
 }
+
+// --- Notifications ---
+
+export interface NotificationResponse {
+  success: boolean;
+  skipped?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+/**
+ * Notify onboarding team about a new registration submission
+ */
+export async function sendRegistrationSubmittedNotification(request: {
+  applicantName: string;
+  applicantEmail?: string;
+  applicantAid: string;
+  bio?: string;
+  location?: string;
+  joinReason?: string;
+  interests?: string[];
+  customInterests?: string;
+  submittedAt?: string;
+}): Promise<NotificationResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/notifications/registration-submitted`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    return { success: false, error: data?.error ?? response.statusText };
+  }
+
+  return response.json();
+}
+
+/**
+ * Notify applicant that their registration has been approved
+ */
+export async function sendRegistrationApprovedNotification(request: {
+  applicantEmail: string;
+  applicantName: string;
+}): Promise<NotificationResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/notifications/registration-approved`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    return { success: false, error: data?.error ?? response.statusText };
+  }
+
+  return response.json();
+}
