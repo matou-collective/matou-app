@@ -1,208 +1,141 @@
 <template>
-  <div class="dashboard-layout">
-    <!-- Sidebar -->
-    <aside class="sidebar">
-      <!-- Logo Header -->
-      <div class="sidebar-header">
-        <div class="logo-container">
-          <img src="../assets/images/matou-logo-teal.svg" alt="Matou" class="logo-icon" />
-          <div class="logo-text">
-            <span class="logo-title">Matou</span>
-            <span class="logo-subtitle">Community</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Navigation -->
-      <nav class="sidebar-nav">
-        <button class="nav-item active">
-          <Home class="nav-icon" />
-          <span>Home</span>
-        </button>
-        <button class="nav-item disabled" disabled>
-          <Wallet class="nav-icon" />
-          <span>Wallet</span>
-        </button>
-        <button class="nav-item disabled" disabled>
-          <Target class="nav-icon" />
-          <span>Contribute</span>
-        </button>
-        <button class="nav-item disabled" disabled>
-          <Vote class="nav-icon" />
-          <span>Proposals</span>
-        </button>
-        <button class="nav-item" @click="$router.push('/chat')">
-          <MessageSquare class="nav-icon" />
-          <span>Chat</span>
-        </button>
-      </nav>
-
-      <!-- User Profile -->
-      <div class="sidebar-footer">
-        <div class="user-profile" @click="showProfileView = true" style="cursor: pointer;">
-          <div class="user-avatar">
-            <img v-if="userAvatarUrl" :src="userAvatarUrl" class="w-full h-full rounded-full object-cover" alt="Avatar" />
-            <span v-else>{{ userInitials }}</span>
-          </div>
-          <div class="user-info">
-            <span class="user-name">{{ userName }}</span>
-            <span class="user-action">View Profile</span>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Main Content -->
-    <main class="main-content">
-      <!-- Top Bar -->
-      <!-- <header class="top-bar">
-
-      </header> -->
-
-      <!-- Welcome Header -->
-      <section class="welcome-header">
-        <span class="greeting">Kia ora</span>
-        <button class="theme-toggle" @click="toggleDarkMode" :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
-          <Sun v-if="isDark" class="toggle-icon" />
-          <Moon v-else class="toggle-icon" />
-        </button>
-        <div class="welcome-content">
-          <div class="welcome-text">
-            <h1 class="welcome-title">Welcome back</h1>
-            <div class="moon-phase-display" v-if="moonData">
-              <div class="moon-phase-header">
-                <span class="moon-date">{{ formatDate(moonData.date) }}</span>
-                <span class="moon-circle">{{ moonData.moon_circle }}</span>
-                <span class="moon-name">{{ moonData.name }}</span>
-              </div>
-              <div class="moon-phase-details">
-                <div class="moon-energy">
-                  <span class="energy-label">Energy:</span>
-                  <div class="energy-bars">
-                    <div 
-                      class="energy-bar" 
-                      :class="{ active: moonData.energy === 'low' || moonData.energy === 'medium' || moonData.energy === 'high' }"
-                    ></div>
-                    <div 
-                      class="energy-bar" 
-                      :class="{ active: moonData.energy === 'medium' || moonData.energy === 'high' }"
-                    ></div>
-                    <div 
-                      class="energy-bar" 
-                      :class="{ active: moonData.energy === 'high' }"
-                    ></div>
-                  </div>
-                  <span class="energy-text">{{ moonData.energy }}</span>
+  <div class="dashboard-page">
+    <!-- Welcome Header -->
+    <section class="welcome-header rounded-b-3xl">
+      <span class="greeting">Kia ora</span>
+      <button class="theme-toggle" @click="toggleDarkMode" :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
+        <Sun v-if="isDark" class="toggle-icon" />
+        <Moon v-else class="toggle-icon" />
+      </button>
+      <div class="welcome-content">
+        <div class="welcome-text">
+          <h1 class="welcome-title">Welcome back</h1>
+          <div class="moon-phase-display" v-if="moonData">
+            <div class="moon-phase-header">
+              <span class="moon-date">{{ formatDate(moonData.date) }}</span>
+              <span class="moon-circle">{{ moonData.moon_circle }}</span>
+              <span class="moon-name">{{ moonData.name }}</span>
+            </div>
+            <div class="moon-phase-details">
+              <div class="moon-energy">
+                <span class="energy-label">Energy:</span>
+                <div class="energy-bars">
+                  <div
+                    class="energy-bar"
+                    :class="{ active: moonData.energy === 'low' || moonData.energy === 'medium' || moonData.energy === 'high' }"
+                  ></div>
+                  <div
+                    class="energy-bar"
+                    :class="{ active: moonData.energy === 'medium' || moonData.energy === 'high' }"
+                  ></div>
+                  <div
+                    class="energy-bar"
+                    :class="{ active: moonData.energy === 'high' }"
+                  ></div>
                 </div>
-                <p class="moon-description">{{ moonData.description }}</p>
+                <span class="energy-text">{{ moonData.energy }}</span>
               </div>
-            </div>
-            <div class="moon-phase-loading" v-else>
-              Loading moon phase...
+              <p class="moon-description">{{ moonData.description }}</p>
             </div>
           </div>
-          <div class="stats-row">
-            <button
-              v-for="(stat, index) in notificationStats.filter(s => s.visible)"
-              :key="index"
-              class="stat-item"
-            >
-              <div class="stat-value">
-                <component :is="stat.icon" class="stat-icon" />
-                <span>{{ stat.value }}</span>
-              </div>
-              <span class="stat-label">{{ stat.label }}</span>
-            </button>
+          <div class="moon-phase-loading" v-else>
+            Loading moon phase...
           </div>
         </div>
-      </section>
-
-      <!-- Admin Section (conditional) - Only for Operations Steward or Community Steward -->
-      <div v-if="isSteward" class="admin-area px-6 mb-6">
-        <div class="admin-actions mb-4">
+        <div class="stats-row">
           <button
-            class="invite-btn"
-            @click="showInviteModal = true"
+            v-for="(stat, index) in notificationStats.filter(s => s.visible)"
+            :key="index"
+            class="stat-item"
           >
-            <UserPlus class="w-4 h-4" />
-            Invite Member
+            <div class="stat-value">
+              <component :is="stat.icon" class="stat-icon" />
+              <span>{{ stat.value }}</span>
+            </div>
+            <span class="stat-label">{{ stat.label }}</span>
           </button>
         </div>
-        <AdminSection
-          ref="adminSectionRef"
-          :registrations="pendingRegistrations"
-          :is-polling="isPolling"
-          :is-refreshing="isRefreshing"
-          :is-processing="isProcessing"
-          :error="pollingError"
-          :action-error="actionError"
-          @approve="handleApprove"
-          @decline="handleDecline"
-          @refresh="handleRefresh"
-          @retry="retryPolling"
-        />
       </div>
+    </section>
 
-      <!-- Content Grid -->
-      <div class="content-area">
-        <div class="content-grid">
-          <!-- Left Column -->
-          <div class="left-column">
-            <!-- Community Activity -->
-            <div class="card community-card">
-              <h3 class="card-title">Community Activity</h3>
-              <div class="activity-list">
-                <div class="activity-item">
-                  <div class="activity-icon bg-primary-light">
-                    <TrendingUp class="icon text-primary" />
-                  </div>
-                  <div class="activity-info">
-                    <h4>Growing Together</h4>
-                    <p>{{ newMembersThisWeek }} new {{ newMembersThisWeek === 1 ? 'member' : 'members' }} this week</p>
-                  </div>
+    <!-- Admin Section (conditional) - Only for Operations Steward or Community Steward -->
+    <div v-if="isSteward" class="admin-area px-6 mb-6">
+      <div class="admin-actions mb-4">
+        <button
+          class="invite-btn"
+          @click="showInviteModal = true"
+        >
+          <UserPlus class="w-4 h-4" />
+          Invite Member
+        </button>
+      </div>
+      <AdminSection
+        ref="adminSectionRef"
+        :registrations="pendingRegistrations"
+        :is-polling="isPolling"
+        :is-refreshing="isRefreshing"
+        :is-processing="isProcessing"
+        :error="pollingError"
+        :action-error="actionError"
+        @approve="handleApprove"
+        @decline="handleDecline"
+        @refresh="handleRefresh"
+        @retry="retryPolling"
+      />
+    </div>
+
+    <!-- Content Grid -->
+    <div class="content-area">
+      <div class="content-grid">
+        <!-- Left Column -->
+        <div class="left-column">
+          <!-- Community Activity -->
+          <div class="card community-card">
+            <h3 class="card-title">Community Activity</h3>
+            <div class="activity-list">
+              <div class="activity-item">
+                <div class="activity-icon bg-primary-light">
+                  <TrendingUp class="icon text-primary" />
                 </div>
-                <div class="activity-item">
-                  <div class="activity-icon bg-accent-light">
-                    <Users class="icon text-accent" />
-                  </div>
-                  <div class="activity-info">
-                    <h4>Monthly Growth</h4>
-                    <p>{{ newMembersThisMonth }} new {{ newMembersThisMonth === 1 ? 'member' : 'members' }} this month</p>
-                  </div>
+                <div class="activity-info">
+                  <h4>Growing Together</h4>
+                  <p>{{ newMembersThisWeek }} new {{ newMembersThisWeek === 1 ? 'member' : 'members' }} this week</p>
                 </div>
               </div>
-            </div>
-          </div>
-
-          <!-- Right Column -->
-          <div class="right-column">
-            <!-- New Members -->
-            <div class="card members-card">
-              <h3 class="card-title">New Members</h3>
-              <div class="members-list">
-                <ProfileCard
-                  v-for="(member, index) in liveMembers"
-                  :key="index"
-                  :profile="member.profile"
-                  :communityProfile="member.communityProfile"
-                  @click="handleMemberClick(member)"
-                />
+              <div class="activity-item">
+                <div class="activity-icon bg-accent-light">
+                  <Users class="icon text-accent" />
+                </div>
+                <div class="activity-info">
+                  <h4>Monthly Growth</h4>
+                  <p>{{ newMembersThisMonth }} new {{ newMembersThisMonth === 1 ? 'member' : 'members' }} this month</p>
+                </div>
               </div>
             </div>
           </div>
         </div>
+
+        <!-- Right Column -->
+        <div class="right-column">
+          <!-- New Members -->
+          <div class="card members-card">
+            <h3 class="card-title">New Members</h3>
+            <div class="members-list">
+              <ProfileCard
+                v-for="(member, index) in liveMembers"
+                :key="index"
+                :profile="member.profile"
+                :communityProfile="member.communityProfile"
+                @click="handleMemberClick(member)"
+              />
+            </div>
+          </div>
+        </div>
       </div>
-    </main>
+    </div>
 
     <!-- Invite Member Modal -->
     <InviteMemberModal v-model="showInviteModal" />
-
-    <!-- My Profile View -->
-    <Teleport to="body">
-      <div v-if="showProfileView" class="profile-overlay" @click.self="showProfileView = false">
-        <MyProfileView @close="showProfileView = false" />
-      </div>
-    </Teleport>
 
     <!-- Member Profile Dialog -->
     <Teleport to="body">
@@ -219,36 +152,26 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import {
-  Home,
-  Wallet,
-  Target,
-  Vote,
-  MessageSquare,
   Moon,
   Sun,
   Users,
-  Shield,
   TrendingUp,
   CoinsIcon,
+  Vote,
+  Target,
   UserPlus,
 } from 'lucide-vue-next';
-import { useOnboardingStore } from 'stores/onboarding';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useProfilesStore } from 'stores/profiles';
-import { useTypesStore } from 'stores/types';
-import { getFileUrl } from 'src/lib/api/client';
 import AdminSection from 'src/components/admin/AdminSection.vue';
 import InviteMemberModal from 'src/components/dashboard/InviteMemberModal.vue';
-import MyProfileView from 'src/components/profiles/MyProfileView.vue';
 import ProfileCard from 'src/components/profiles/ProfileCard.vue';
 import MemberProfileDialog from 'src/components/profiles/MemberProfileDialog.vue';
 
-const store = useOnboardingStore();
-
 // Admin functionality
-const { isAdmin, isSteward, checkAdminStatus } = useAdminAccess();
+const { isSteward, checkAdminStatus } = useAdminAccess();
 const {
   pendingRegistrations,
   isPolling,
@@ -268,12 +191,10 @@ const {
 } = useAdminActions();
 
 const profilesStore = useProfilesStore();
-const typesStore = useTypesStore();
 
 const isRefreshing = ref(false);
 const adminSectionRef = ref<InstanceType<typeof AdminSection> | null>(null);
 const showInviteModal = ref(false);
-const showProfileView = ref(false);
 const selectedMember = ref<{ shared?: Record<string, unknown>; community?: Record<string, unknown> } | null>(null);
 
 // Dark mode state
@@ -309,21 +230,15 @@ async function fetchMoonPhase() {
 // Format date for display
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
-  return date.toLocaleDateString('en-NZ', { 
-    day: 'numeric', 
-    month: 'long', 
-    year: 'numeric' 
+  return date.toLocaleDateString('en-NZ', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
   });
 }
 
 onMounted(async () => {
   isDark.value = document.documentElement.classList.contains('dark');
-
-  // Load type definitions and profiles (including user's own)
-  typesStore.loadDefinitions();
-  profilesStore.loadMyProfiles();
-  profilesStore.loadCommunityProfiles();
-  profilesStore.loadCommunityReadOnlyProfiles();
 
   // Fetch moon phase data
   await fetchMoonPhase();
@@ -344,32 +259,6 @@ const toggleDarkMode = () => {
   isDark.value = !isDark.value;
   document.documentElement.classList.toggle('dark', isDark.value);
 };
-
-// User info — prefer SharedProfile from community space, fallback to onboarding store
-const mySharedProfile = computed(() => {
-  const sp = profilesStore.getMyProfile('SharedProfile');
-  return sp ? (sp.data as Record<string, unknown>) : null;
-});
-
-const userName = computed(() => {
-  return (mySharedProfile.value?.displayName as string)
-    || store.profile.name
-    || 'Member';
-});
-
-const userInitials = computed(() => {
-  const name = userName.value;
-  const parts = name.split(' ');
-  if (parts.length >= 2) {
-    return `${parts[0].charAt(0)}${parts[1].charAt(0)}`.toUpperCase();
-  }
-  return name.substring(0, 2).toUpperCase();
-});
-
-const userAvatarUrl = computed(() => {
-  const avatar = mySharedProfile.value?.avatar as string;
-  return avatar ? getFileUrl(avatar) : null;
-});
 
 // Stats data - computed to show real pending registration count for stewards only
 const notificationStats = computed(() => [
@@ -468,140 +357,8 @@ async function handleRefresh() {
 </script>
 
 <style lang="scss" scoped>
-.dashboard-layout {
-  display: flex;
-  min-height: 100vh;
-  background-color: var(--matou-background);
-}
-
-// Sidebar
-.sidebar {
-  width: 240px;
-  background-color: var(--matou-sidebar);
-  border-right: 1px solid var(--matou-sidebar-border);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-}
-
-.sidebar-header {
-  padding: 1.25rem 1rem;
-  border-bottom: 1px solid var(--matou-sidebar-border);
-}
-
-.logo-container {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.logo-icon {
-  width: 60px;
-  height: 60px;
-}
-
-.logo-text {
-  display: flex;
-  flex-direction: column;
-}
-
-.logo-title {
-  font-weight: 600;
-  font-size: 0.95rem;
-  color: var(--matou-sidebar-foreground);
-}
-
-.logo-subtitle {
-  font-size: 0.7rem;
-  color: var(--matou-muted-foreground);
-}
-
-.sidebar-nav {
-  flex: 1;
-  padding: 1rem 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 0.75rem;
-  border-radius: var(--matou-radius);
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--matou-sidebar-foreground);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  width: 100%;
-  text-align: left;
-  transition: all 0.15s ease;
-
-  &:hover:not(.disabled) {
-    background-color: var(--matou-sidebar-accent);
-  }
-
-  &.active {
-    background-color: var(--matou-sidebar-accent);
-    color: var(--matou-sidebar-primary);
-  }
-
-  &.disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-}
-
-.nav-icon {
-  width: 18px;
-  height: 18px;
-}
-
-.sidebar-footer {
-  padding: 1rem;
-  border-top: 1px solid var(--matou-sidebar-border);
-}
-
-.user-profile {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.user-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.user-info {
-  display: flex;
-  flex-direction: column;
-}
-
-.user-name {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--matou-sidebar-foreground);
-}
-
-.user-action {
-  font-size: 0.75rem;
-  color: var(--matou-muted-foreground);
-}
-
-// Main Content
-.main-content {
+// Dashboard Page
+.dashboard-page {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -1031,34 +788,6 @@ async function handleRefresh() {
     font-size: 0.8rem;
     color: var(--matou-muted-foreground);
     margin: 0.125rem 0 0;
-  }
-}
-
-// Responsive: Hide sidebar on small screens
-@media (max-width: 767px) {
-  .sidebar {
-    display: none;
-  }
-}
-
-.profile-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-
-  :deep(.my-profile-view) {
-    background: var(--matou-surface, #fff);
-    border-radius: 0.75rem;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
-    width: 90%;
-    max-width: 600px;
   }
 }
 </style>

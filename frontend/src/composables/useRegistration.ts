@@ -7,7 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
 import { fetchOrgConfig } from 'src/api/config';
-import { setBackendIdentity, createOrUpdateProfile } from 'src/lib/api/client';
+import { setBackendIdentity, createOrUpdateProfile, sendRegistrationSubmittedNotification } from 'src/lib/api/client';
 import { useAppStore } from 'stores/app';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -173,6 +173,23 @@ export function useRegistration() {
       } catch (err) {
         // Non-fatal - identity can be set later
         console.warn('[Registration] Backend identity configuration deferred:', err);
+      }
+
+      // Step 6: Notify onboarding team (non-blocking)
+      try {
+        await sendRegistrationSubmittedNotification({
+          applicantName: profile.name,
+          applicantEmail: profile.email || undefined,
+          applicantAid: currentAID.prefix,
+          bio: profile.bio,
+          location: profile.location || undefined,
+          joinReason: profile.joinReason || undefined,
+          interests: profile.interests,
+          customInterests: profile.customInterests || undefined,
+          submittedAt: new Date().toISOString(),
+        });
+      } catch (notifyErr) {
+        console.warn('[Registration] Onboarding notification deferred:', notifyErr);
       }
 
       return true;

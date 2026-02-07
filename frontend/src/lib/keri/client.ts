@@ -64,8 +64,10 @@ export class KERIClient {
   private get cesrUrl(): string {
     return getKeriaUrls().cesrUrl;
   }
-  // Docker internal URL no longer needed - KERIA resolves internally
-  private readonly dockerCesrUrl = '';
+  // Docker internal CESR URL — KERIA resolves OOBIs from inside Docker,
+  // so localhost URLs must be converted to the container hostname.
+  // Only applies when cesrUrl targets localhost (local Docker setup).
+  private readonly dockerCesrUrl = 'http://keria:3902';
 
   /**
    * Create a standalone SignifyClient for a separate KERIA agent.
@@ -409,7 +411,7 @@ export class KERIClient {
    * getOOBI() normalizes keria:3902 → localhost:4902 for browsers; this reverses it.
    */
   private toInternalOobiUrl(oobi: string): string {
-    if (this.dockerCesrUrl && this.cesrUrl) {
+    if (this.dockerCesrUrl && this.cesrUrl && this.cesrUrl.includes('localhost')) {
       return oobi.replace(this.cesrUrl, this.dockerCesrUrl);
     }
     return oobi;

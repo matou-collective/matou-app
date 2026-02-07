@@ -38,6 +38,7 @@ export const TIMEOUT = {
   short: 10_000,       // 10s - quick UI operations
   medium: 20_000,      // 20s - simple KERI operations, polling
   long: 30_000,        // 30s - credential delivery
+  registrationSubmit: 60_000, // 60s - OOBI resolution + EXN + IPEX apply to admins
   aidCreation: 90_000,  // 1.5 min - connect + OOBI resolution + witness-backed AID creation + end role
   orgSetup: 120_000,   // 2 min - full org setup
 } as const;
@@ -284,10 +285,10 @@ export async function registerUser(
   // Complete verification
   await completeMnemonicVerification(page, mnemonic, /verify and continue/i);
 
-  // Wait for pending screen
+  // Wait for pending screen (submission includes OOBI resolution + EXN + IPEX)
   await expect(
     page.getByText(/application.*review|pending|under review/i).first(),
-  ).toBeVisible({ timeout: TIMEOUT.medium });
+  ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
   console.log(`[${userName}] Registration submitted, on pending screen`);
 
   return { mnemonic };
@@ -310,7 +311,7 @@ export async function loginWithMnemonic(
 
   await page.getByText(/recover identity/i).click();
   await expect(
-    page.getByRole('heading', { name: /recover your identity/i }),
+    page.getByText(/enter your 12-word recovery phrase/i),
   ).toBeVisible({ timeout: TIMEOUT.short });
 
   for (let i = 0; i < mnemonic.length; i++) {
@@ -322,20 +323,15 @@ export async function loginWithMnemonic(
     page.getByText(/identity recovered/i),
   ).toBeVisible({ timeout: TIMEOUT.long });
 
-  // Click continue — now goes to welcome overlay instead of dashboard
-  await page.getByRole('button', { name: /continue to dashboard/i }).click();
+  // Click continue to proceed to welcome screen
+  await page.getByRole('button', { name: /continue/i }).click();
 
-  // Wait for welcome overlay to appear
-  await expect(
-    page.getByRole('heading', { name: /welcome to matou/i }),
-  ).toBeVisible({ timeout: TIMEOUT.long });
+  // Wait for welcome screen with Enter Community button
+  const enterBtn = page.getByRole('button', { name: /enter community/i });
+  await expect(enterBtn).toBeVisible({ timeout: TIMEOUT.long });
+  await expect(enterBtn).toBeEnabled({ timeout: TIMEOUT.aidCreation });
 
-  // Wait for all membership checks to pass (checkmarks appear)
-  // The overlay runs sequential checks with retries; allow up to 60s for all to complete
-  const continueBtn = page.getByRole('button', { name: /continue to dashboard/i });
-  await expect(continueBtn).toBeEnabled({ timeout: TIMEOUT.aidCreation });
-
-  await continueBtn.click();
+  await enterBtn.click();
   await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
 }
 

@@ -12,4 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   secureStorageGet: (key: string) => ipcRenderer.invoke('secure-storage-get', key),
   secureStorageSet: (key: string, value: string) => ipcRenderer.invoke('secure-storage-set', key, value),
   secureStorageRemove: (key: string) => ipcRenderer.invoke('secure-storage-remove', key),
+  windowMinimize: () => ipcRenderer.invoke('window-minimize'),
+  windowMaximize: () => ipcRenderer.invoke('window-maximize'),
+  windowClose: () => ipcRenderer.invoke('window-close'),
+  windowIsMaximized: () => ipcRenderer.invoke('window-is-maximized'),
 });

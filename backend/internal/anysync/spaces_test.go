@@ -425,7 +425,8 @@ func TestSpaceManager_RouteCredential(t *testing.T) {
 	spaceStore := newMockSpaceStore()
 	ctx := context.Background()
 
-	// Membership credential should be routed to both private and community
+	// All credentials are routed to private space only.
+	// Community-visible data is written by admin via HandleInitMemberProfiles.
 	membershipCred := &Credential{
 		SAID:      "ESAID123",
 		Issuer:    "EORG123",
@@ -438,11 +439,11 @@ func TestSpaceManager_RouteCredential(t *testing.T) {
 		t.Fatalf("RouteCredential failed: %v", err)
 	}
 
-	if len(spaces) != 2 {
-		t.Errorf("membership should be routed to 2 spaces, got %d", len(spaces))
+	if len(spaces) != 1 {
+		t.Errorf("membership should be routed to 1 space (private only), got %d", len(spaces))
 	}
 
-	// Invitation credential should only be routed to private space
+	// Invitation credential should also be routed to private space only
 	invitationCred := &Credential{
 		SAID:      "ESAID789",
 		Issuer:    "EUSER123",
@@ -456,7 +457,7 @@ func TestSpaceManager_RouteCredential(t *testing.T) {
 	}
 
 	if len(spaces) != 1 {
-		t.Errorf("invitation should be routed to 1 space, got %d", len(spaces))
+		t.Errorf("invitation should be routed to 1 space (private only), got %d", len(spaces))
 	}
 }
 

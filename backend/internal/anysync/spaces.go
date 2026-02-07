@@ -321,11 +321,14 @@ func (m *SpaceManager) addCredToSpace(ctx context.Context, spaceID string, cred 
 	return m.client.SyncDocument(ctx, spaceID, cred.SAID, data)
 }
 
-// RouteCredential determines where a credential should be stored and syncs it
+// RouteCredential determines where a credential should be stored and syncs it.
+// Credentials are ONLY synced to the recipient's private space. Community-visible
+// data (CommunityProfile, SharedProfile) is written by the admin during approval
+// via HandleInitMemberProfiles, which has proper ACL authorization.
 func (m *SpaceManager) RouteCredential(ctx context.Context, cred *Credential, spaceStore SpaceStore) ([]string, error) {
 	syncedSpaces := []string{}
 
-	// Always sync to recipient's private space
+	// Sync to recipient's private space only
 	if cred.Recipient != "" {
 		if err := m.SyncToPrivateSpace(ctx, cred.Recipient, cred, spaceStore); err != nil {
 			return syncedSpaces, fmt.Errorf("syncing to private space: %w", err)
@@ -336,13 +339,10 @@ func (m *SpaceManager) RouteCredential(ctx context.Context, cred *Credential, sp
 		}
 	}
 
-	// If community-visible, also sync to community space
-	if IsCommunityVisible(cred) {
-		if err := m.AddToCommunitySpace(ctx, cred); err != nil {
-			return syncedSpaces, fmt.Errorf("syncing to community space: %w", err)
-		}
-		syncedSpaces = append(syncedSpaces, m.communitySpaceID)
-	}
+	// NOTE: Community-visible credentials are NOT written here. The admin backend
+	// writes CommunityProfile and SharedProfile to community spaces during approval
+	// (see HandleInitMemberProfiles in profiles.go). User backends don't have ACL
+	// authorization to write to community spaces until they explicitly join.
 
 	return syncedSpaces, nil
 }

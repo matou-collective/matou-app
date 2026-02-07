@@ -3,7 +3,21 @@
  * Communicates with the Go backend for sync and community operations
  */
 
-export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
+import { getBackendUrl, getBackendUrlSync } from '../platform';
+
+/**
+ * Resolved backend URL. Call initBackendUrl() once at boot to populate.
+ * After init, this holds the correct URL (dynamic Electron port or env var).
+ */
+export let BACKEND_URL = getBackendUrlSync();
+
+/**
+ * Initialize the backend URL (must be called once at app startup).
+ * Resolves the Electron dynamic port via IPC; no-op in browser mode.
+ */
+export async function initBackendUrl(): Promise<void> {
+  BACKEND_URL = await getBackendUrl();
+}
 
 export interface SyncCredentialsRequest {
   userAid: string;
@@ -466,6 +480,103 @@ export async function sendInviteEmail(
   request: SendInviteEmailRequest,
 ): Promise<SendInviteEmailResponse> {
   const response = await fetch(`${BACKEND_URL}/api/v1/invites/send-email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    return { success: false, error: data?.error ?? response.statusText };
+  }
+
+  return response.json();
+}
+
+/**
+ * Booking confirmation email request
+ */
+export interface SendBookingEmailRequest {
+  email: string;
+  name: string;
+  dateTimeUTC: string; // ISO 8601 format
+  dateTimeNZT: string; // Human readable NZT time
+  dateTimeLocal: string; // Human readable local time
+}
+
+/**
+ * Booking confirmation email response
+ */
+export interface SendBookingEmailResponse {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Send a booking confirmation email with calendar invite
+ */
+export async function sendBookingEmail(
+  request: SendBookingEmailRequest,
+): Promise<SendBookingEmailResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/booking/send-email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    return { success: false, error: data?.error ?? response.statusText };
+  }
+
+  return response.json();
+}
+
+// --- Notifications ---
+
+export interface NotificationResponse {
+  success: boolean;
+  skipped?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+/**
+ * Notify onboarding team about a new registration submission
+ */
+export async function sendRegistrationSubmittedNotification(request: {
+  applicantName: string;
+  applicantEmail?: string;
+  applicantAid: string;
+  bio?: string;
+  location?: string;
+  joinReason?: string;
+  interests?: string[];
+  customInterests?: string;
+  submittedAt?: string;
+}): Promise<NotificationResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/notifications/registration-submitted`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    return { success: false, error: data?.error ?? response.statusText };
+  }
+
+  return response.json();
+}
+
+/**
+ * Notify applicant that their registration has been approved
+ */
+export async function sendRegistrationApprovedNotification(request: {
+  applicantEmail: string;
+  applicantName: string;
+}): Promise<NotificationResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/notifications/registration-approved`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),

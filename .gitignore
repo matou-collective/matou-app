@@ -6,6 +6,9 @@ backend/config/.org-passcode
 backend/config/.keria-config.json
 backend/config/secrets.yaml
 
+# Any-sync client config (fetched from config server at runtime)
+backend/config/client-*.yml
+
 # ============================================================================
 # Development
 # ============================================================================
@@ -40,9 +43,7 @@ backend/server
 *.dylib
 
 # Runtime data
-backend/data/
-backend/data-test/
-backend/data-test-*/
+backend/data*/
 backend/**/data/
 
 # Test coverage
@@ -66,6 +67,7 @@ frontend/dist/
 frontend/dist-electron/
 frontend/dist-ssr/
 frontend/build/
+!frontend/build/afterPack.cjs
 
 # Cache
 .cache/

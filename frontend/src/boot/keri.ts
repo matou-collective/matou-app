@@ -7,7 +7,7 @@ import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
 import { useKERIClient, initKeriConfig } from 'src/lib/keri/client';
-import { getBackendIdentity, setBackendIdentity } from 'src/lib/api/client';
+import { getBackendIdentity, setBackendIdentity, initBackendUrl } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 /**
@@ -94,7 +94,10 @@ export default boot(async ({ router }) => {
   const appStore = useAppStore();
   const keriClient = useKERIClient();
 
-  // Step 0: Initialize client config from config server
+  // Step 0a: Resolve backend URL (Electron dynamic port via IPC)
+  await initBackendUrl();
+
+  // Step 0b: Initialize client config from config server
   // This fetches KERIA URLs, witness OOBIs, and anysync config
   console.log('[KERI Boot] Initializing client config...');
   try {

@@ -103,3 +103,100 @@ func renderInviteTemplate(data inviteTemplateData) (string, error) {
 	}
 	return buf.String(), nil
 }
+
+// Booking confirmation email template
+type bookingTemplateData struct {
+	Name          string
+	DateTimeNZT   string
+	DateTimeLocal string
+	LogoURL       template.URL
+	TextURL       template.URL
+}
+
+const bookingEmailHTML = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f5; font-family:Arial, Helvetica, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f4f4f5;">
+    <tr>
+      <td align="center" style="padding:40px 20px;">
+        <table role="presentation" width="480" cellspacing="0" cellpadding="0" border="0" style="background-color:#ffffff; border-radius:12px; overflow:hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="background-color:#1e5f74; padding:24px 32px; text-align:center;">
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center">
+                <tr>
+                  <td style="vertical-align:middle; padding-right:12px;">
+                    <img src="{{.LogoURL}}" alt="" width="80" height="40" style="display:block; border:0;" />
+                  </td>
+                  <td style="vertical-align:middle;">
+                    <img src="{{.TextURL}}" alt="MATOU" width="140" height="40" style="display:block; border:0;" />
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding:32px;">
+              <p style="margin:0 0 20px; color:#1a1a1a; font-size:16px; line-height:1.5;">
+                Kia ora <strong>{{.Name}}</strong>,
+              </p>
+              <p style="margin:0 0 24px; color:#374151; font-size:15px; line-height:1.6;">
+                Your Whakawhānaunga session has been requested! This is a short call to introduce ourselves and get to know each other as part of the MATOU community onboarding process.
+              </p>
+              <!-- Session Details -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                  <td style="background-color:#f0f9fa; border:1px solid #d1e7ea; border-radius:8px; padding:20px;">
+                    <p style="margin:0 0 12px; color:#6b7280; font-size:12px; text-transform:uppercase; letter-spacing:1px;">Session Details</p>
+                    <p style="margin:0 0 8px; color:#1a1a1a; font-size:15px; line-height:1.5;">
+                      <strong>Time (NZT):</strong> {{.DateTimeNZT}}
+                    </p>
+                    <p style="margin:0 0 8px; color:#1a1a1a; font-size:15px; line-height:1.5;">
+                      <strong>Your local time:</strong> {{.DateTimeLocal}}
+                    </p>
+                    <p style="margin:0 0 8px; color:#1a1a1a; font-size:15px; line-height:1.5;">
+                      <strong>Duration:</strong> 30 minutes
+                    </p>
+                    <p style="margin:0; color:#1a1a1a; font-size:15px; line-height:1.5;">
+                      <strong>Meeting link:</strong> <a href="https://meet.jit.si/matou-whakawhanaunga-session" style="color:#1e5f74;">https://meet.jit.si/matou-whakawhanaunga-session</a>
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              <!-- Calendar -->
+              <p style="margin:24px 0 0; color:#374151; font-size:14px; line-height:1.6;">
+                A calendar invite is attached to this email. Please add it to your calendar to receive reminders.
+              </p>
+              <!-- Next Steps -->
+              <p style="margin:20px 0 0; color:#374151; font-size:14px; line-height:1.6;">
+                If you need to reschedule, please contact us at <a href="mailto:contact@matou.nz" style="color:#1e5f74;">contact@matou.nz</a>.
+              </p>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#f9fafb; padding:20px 32px; border-top:1px solid #e5e7eb; text-align:center;">
+              <p style="margin:0; color:#9ca3af; font-size:12px;">MATOU - Connection | Collaboration | Innovation</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
+
+var bookingTemplate = template.Must(template.New("booking").Parse(bookingEmailHTML))
+
+func renderBookingTemplate(data bookingTemplateData) (string, error) {
+	var buf bytes.Buffer
+	if err := bookingTemplate.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}

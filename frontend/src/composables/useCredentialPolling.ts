@@ -2,11 +2,12 @@
  * Composable for IPEX grant polling and credential admission
  * Handles the flow: poll for grants → admit credential → poll for credential in wallet
  */
-import { ref, onUnmounted } from 'vue';
+import { ref, computed, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import { BACKEND_URL } from 'src/lib/api/client';
+import { secureStorage } from 'src/lib/secureStorage';
 
 export interface CredentialPollingOptions {
   pollingInterval?: number; // Default: 5000ms
@@ -64,6 +65,64 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   // Internal state
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
   let isProcessingGrant = false;
+
+  // Rejection persistence (keyed by AID)
+  const rejectionStorageKey = computed(() => {
+    const aid = identityStore.currentAID?.prefix;
+    return aid ? `matou_rejection_${aid}` : null;
+  });
+
+  /**
+   * Save rejection state to secure storage
+   */
+  async function saveRejectionState(): Promise<void> {
+    if (!rejectionStorageKey.value || !rejectionInfo.value) return;
+
+    try {
+      const data = {
+        reason: rejectionInfo.value.reason,
+        declinedAt: rejectionInfo.value.declinedAt,
+        savedAt: new Date().toISOString(),
+      };
+      await secureStorage.setItem(rejectionStorageKey.value, JSON.stringify(data));
+      console.log('[CredentialPolling] Rejection state saved');
+    } catch (err) {
+      console.warn('[CredentialPolling] Failed to save rejection state:', err);
+    }
+  }
+
+  /**
+   * Load rejection state from secure storage
+   * Returns true if rejection state was found and restored
+   */
+  async function loadRejectionState(): Promise<boolean> {
+    if (!rejectionStorageKey.value) return false;
+
+    try {
+      const raw = await secureStorage.getItem(rejectionStorageKey.value);
+      if (!raw) return false;
+
+      const data = JSON.parse(raw);
+      rejectionReceived.value = true;
+      rejectionInfo.value = {
+        reason: data.reason || 'Your registration has been declined.',
+        declinedAt: data.declinedAt || data.savedAt || new Date().toISOString(),
+      };
+      console.log('[CredentialPolling] Rejection state restored from storage');
+      return true;
+    } catch (err) {
+      console.warn('[CredentialPolling] Failed to load rejection state:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Clear rejection state from secure storage
+   */
+  async function clearRejectionState(): Promise<void> {
+    if (!rejectionStorageKey.value) return;
+    await secureStorage.removeItem(rejectionStorageKey.value);
+  }
 
   /**
    * Get the current AID name for IPEX operations
@@ -226,23 +285,32 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         }
       }
 
-      // Check for rejection notifications
-      const rejections = notifications.notes?.filter(
-        (n: IPEXNotification) => n.a?.r === '/exn/matou/registration/decline' && !n.r
+      // Check for rejection notifications (both unread AND read as fallback)
+      // This ensures we detect rejections even after session restart when notification was already marked read
+      const allRejections = notifications.notes?.filter(
+        (n: IPEXNotification) => n.a?.r === '/exn/matou/registration/decline'
       ) ?? [];
+      const unreadRejections = allRejections.filter((n: IPEXNotification) => !n.r);
 
-      if (rejections.length > 0 && !rejectionReceived.value) {
-        console.log('[CredentialPolling] Rejection detected:', rejections[0]);
+      // Process unread rejections first, fall back to read rejections if no unread
+      const rejectionsToProcess = unreadRejections.length > 0 ? unreadRejections : allRejections;
+
+      if (rejectionsToProcess.length > 0 && !rejectionReceived.value) {
+        console.log('[CredentialPolling] Rejection detected:', rejectionsToProcess[0], 'isRead:', rejectionsToProcess[0].r);
         try {
-          const rejectionExn = await client.exchanges().get(rejections[0].a.d);
+          const rejectionExn = await client.exchanges().get(rejectionsToProcess[0].a.d);
           const payload = rejectionExn.exn.a || {};
           rejectionReceived.value = true;
           rejectionInfo.value = {
             reason: (payload.reason as string) || 'Your registration has been declined.',
             declinedAt: (payload.declinedAt as string) || new Date().toISOString(),
           };
-          // Mark as read
-          await client.notifications().mark(rejections[0].i);
+          // Mark as read if not already
+          if (!rejectionsToProcess[0].r) {
+            await client.notifications().mark(rejectionsToProcess[0].i);
+          }
+          // Persist rejection state for future sessions
+          await saveRejectionState();
           stopPolling();
         } catch (rejErr) {
           console.warn('[CredentialPolling] Failed to fetch rejection details:', rejErr);
@@ -455,6 +523,13 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       return;
     }
 
+    // Check for persisted rejection state first (fast path)
+    const wasRejected = await loadRejectionState();
+    if (wasRejected) {
+      console.log('[CredentialPolling] Registration was previously rejected - not polling');
+      return;
+    }
+
     isPolling.value = true;
     error.value = null;
     consecutiveErrors.value = 0;
@@ -567,5 +642,6 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     startPolling,
     stopPolling,
     retry,
+    clearRejectionState,
   };
 }

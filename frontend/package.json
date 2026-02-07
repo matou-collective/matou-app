@@ -1,7 +1,7 @@
 {
   "name": "matou-frontend",
   "version": "0.0.1",
-  "description": "Matou Identity Protocol Frontend",
+  "description": "Matou Community App",
   "productName": "Matou",
   "author": "Matou DAO",
   "private": true,
@@ -47,6 +47,8 @@
     "@typescript-eslint/eslint-plugin": "^8.19.0",
     "@typescript-eslint/parser": "^8.19.0",
     "autoprefixer": "^10.4.20",
+    "electron": "^40.2.1",
+    "electron-builder": "^26.7.0",
     "eslint": "^9.17.0",
     "eslint-plugin-vue": "^9.32.0",
     "playwright": "^1.57.0",
