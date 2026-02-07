@@ -93,7 +93,6 @@ remove "$ROOT/frontend/.quasar"
 
 # --- Frontend generated env ---
 echo -e "${BOLD}Frontend generated env files${NC}"
-remove "$ROOT/frontend/.env.production"
 remove "$ROOT/frontend/.env.local"
 remove "$ROOT/frontend/.env.development.local"
 remove "$ROOT/frontend/.env.test.local"
