@@ -213,60 +213,67 @@ glab release create v0.1.0 \
 ```bash
 # Get your token (create a PAT at https://gitlab.com/-/user_settings/personal_access_tokens)
 TOKEN="<your-gitlab-pat>"
+VERSION="0.1.0"
+PACKAGED="frontend/dist/electron/Packaged"
+REGISTRY="https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/${VERSION}"
 
-# Upload each artifact
-curl --header "PRIVATE-TOKEN: $TOKEN" \
-  --upload-file frontend/dist/electron/Packaged/matou-0.1.0.AppImage \
-  "https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.AppImage"
+# Upload each artifact (use -4 to force IPv4 — IPv6 uploads may fail)
+curl -4 --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file "${PACKAGED}/matou-${VERSION}.AppImage" \
+  "${REGISTRY}/matou-${VERSION}.AppImage"
 
-curl --header "PRIVATE-TOKEN: $TOKEN" \
-  --upload-file frontend/dist/electron/Packaged/matou-0.1.0.exe \
-  "https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.exe"
+curl -4 --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file "${PACKAGED}/matou-${VERSION}.exe" \
+  "${REGISTRY}/matou-${VERSION}.exe"
 
-curl --header "PRIVATE-TOKEN: $TOKEN" \
-  --upload-file matou-0.1.0-mac-arm64.zip \
-  "https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0-mac-arm64.zip"
+curl -4 --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file "${PACKAGED}/matou-${VERSION}-mac-arm64.zip" \
+  "${REGISTRY}/matou-${VERSION}-mac-arm64.zip"
 
-curl --header "PRIVATE-TOKEN: $TOKEN" \
-  --upload-file matou-0.1.0-mac-x64.zip \
-  "https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0-mac-x64.zip"
+curl -4 --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file "${PACKAGED}/matou-${VERSION}-mac-x64.zip" \
+  "${REGISTRY}/matou-${VERSION}-mac-x64.zip"
 ```
 
 Upload only the artifacts you've built. Each successful upload returns `{"message":"201 Created"}`.
 
-**3. Link artifacts to the release:**
+**Re-uploading**: Uploading to the same registry URL replaces the file. The release asset links remain unchanged, so you only need to re-run the curl upload commands — no need to update the release links.
+
+**3. Link artifacts to the release (first release only):**
+
+This step is only needed when creating a new release. If you're updating artifacts for an existing release, skip this — re-uploading to the same registry URL replaces the file and the links stay the same.
 
 ```bash
+RELEASES="https://gitlab.com/api/v4/projects/78188786/releases/v${VERSION}/assets/links"
+
 # Linux
 curl --header "PRIVATE-TOKEN: $TOKEN" \
   --header "Content-Type: application/json" \
   --request POST \
-  --data '{"name":"Linux (AppImage)","url":"https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.AppImage","link_type":"package"}' \
-  "https://gitlab.com/api/v4/projects/78188786/releases/v0.1.0/assets/links"
+  --data "{\"name\":\"Linux (AppImage)\",\"url\":\"${REGISTRY}/matou-${VERSION}.AppImage\",\"link_type\":\"package\"}" \
+  "${RELEASES}"
 
 # Windows
 curl --header "PRIVATE-TOKEN: $TOKEN" \
   --header "Content-Type: application/json" \
   --request POST \
-  --data '{"name":"Windows (Installer)","url":"https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.exe","link_type":"package"}' \
-  "https://gitlab.com/api/v4/projects/78188786/releases/v0.1.0/assets/links"
+  --data "{\"name\":\"Windows (Installer)\",\"url\":\"${REGISTRY}/matou-${VERSION}.exe\",\"link_type\":\"package\"}" \
+  "${RELEASES}"
 
 # macOS Apple Silicon
 curl --header "PRIVATE-TOKEN: $TOKEN" \
   --header "Content-Type: application/json" \
   --request POST \
-  --data '{"name":"macOS Apple Silicon (zip)","url":"https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0-mac-arm64.zip","link_type":"package"}' \
-  "https://gitlab.com/api/v4/projects/78188786/releases/v0.1.0/assets/links"
+  --data "{\"name\":\"macOS Apple Silicon (zip)\",\"url\":\"${REGISTRY}/matou-${VERSION}-mac-arm64.zip\",\"link_type\":\"package\"}" \
+  "${RELEASES}"
 
 # macOS Intel
 curl --header "PRIVATE-TOKEN: $TOKEN" \
   --header "Content-Type: application/json" \
   --request POST \
-  --data '{"name":"macOS Intel (zip)","url":"https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0-mac-x64.zip","link_type":"package"}' \
-  "https://gitlab.com/api/v4/projects/78188786/releases/v0.1.0/assets/links"
+  --data "{\"name\":\"macOS Intel (zip)\",\"url\":\"${REGISTRY}/matou-${VERSION}-mac-x64.zip\",\"link_type\":\"package\"}" \
+  "${RELEASES}"
 ```
-
-**Updating an existing artifact**: Re-uploading to the same package registry URL replaces the file. The release asset links remain unchanged.
 
 ### Upload via GitLab Web UI
 
@@ -369,6 +376,19 @@ POST .../uploads: 413 entity is too large
 ```
 
 GitLab's direct upload API has a ~100 MB limit. Packaged Electron apps typically exceed this. Use the Generic Package Registry instead (see [Upload via glab](#upload-via-glab-cli) above).
+
+### Upload fails with connection reset (exit code 56)
+
+```
+curl: (56) Recv failure: Connection reset by peer
+```
+
+Large file uploads to GitLab can fail over IPv6. Force IPv4 with `curl -4`:
+
+```bash
+curl -4 --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file <file> <url>
+```
 
 ### Linux sandbox errors
 
