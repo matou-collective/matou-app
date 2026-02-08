@@ -53,6 +53,7 @@ function getKeriaUrls() {
 export class KERIClient {
   private client: SignifyClient | null = null;
   private connected = false;
+  private identifierCache = new Map<string, string>();
 
   // KERIA endpoints - fetched from config server
   private get keriaUrl(): string {
@@ -392,6 +393,78 @@ export class KERIClient {
     return this.client;
   }
 
+  /**
+   * Ensure the client is connected, reconnect if necessary
+   * @private
+   */
+  private async ensureConnected(): Promise<void> {
+    if (!this.client) {
+      throw new Error('Not initialized');
+    }
+
+    try {
+      // Try to get client state to verify connection
+      await this.client.state();
+    } catch (err) {
+      console.log('[KERIClient] Connection stale, reconnecting...');
+      await this.reconnect();
+    }
+  }
+
+  /**
+   * Reconnect to KERIA agent
+   * @private
+   */
+  private async reconnect(): Promise<void> {
+    if (!this.client) {
+      throw new Error('Not initialized');
+    }
+
+    console.log('[KERIClient] Reconnecting...');
+    await this.client.connect();
+    this.connected = true;
+    console.log('[KERIClient] Reconnected successfully');
+  }
+
+  /**
+   * Resolve a display name or AID prefix to an AID prefix
+   * Caches results to avoid repeated lookups
+   * @param nameOrAid - Display name (e.g., "Not Gabriel") or AID prefix (e.g., "EABc123...")
+   * @returns The AID prefix
+   */
+  private async resolveAID(nameOrAid: string): Promise<string> {
+    // If it starts with 'E' or 'B', it's likely already an AID prefix
+    if (nameOrAid.startsWith('E') || nameOrAid.startsWith('B')) {
+      return nameOrAid;
+    }
+
+    // Check cache first
+    if (this.identifierCache.has(nameOrAid)) {
+      return this.identifierCache.get(nameOrAid)!;
+    }
+
+    // Look up the AID by name
+    if (!this.client) {
+      throw new Error('Not initialized');
+    }
+
+    try {
+      const aid = await this.client.identifiers().get(nameOrAid);
+      this.identifierCache.set(nameOrAid, aid.prefix);
+      return aid.prefix;
+    } catch (getErr) {
+      // Try listing all AIDs as fallback
+      console.warn(`[KERIClient] get(${nameOrAid}) failed, trying list():`, getErr);
+      const aids = await this.client.identifiers().list();
+      const found = aids.aids.find((a: { name: string }) => a.name === nameOrAid);
+      if (!found) {
+        throw new Error(`No AID found for name: ${nameOrAid}`);
+      }
+      this.identifierCache.set(nameOrAid, found.prefix);
+      return found.prefix;
+    }
+  }
+
   // Organization AID (from backend/config/.keria-config.json)
   private readonly ORG_AID = 'EI7LkuTY607pTjtq2Wtxn6tHcb7--_279EKT5eNNnXU9';
 
@@ -424,6 +497,9 @@ export class KERIClient {
    */
   async resolveOOBI(oobi: string, alias?: string, timeout = 10000): Promise<boolean> {
     if (!this.client) throw new Error('Not initialized');
+
+    // Ensure connection is fresh before OOBI resolution
+    await this.ensureConnected();
 
     try {
       const internalOobi = this.toInternalOobiUrl(oobi);
@@ -717,6 +793,9 @@ export class KERIClient {
   ): Promise<{ said: string }> {
     if (!this.client) throw new Error('Not initialized');
 
+    // Ensure connection is fresh before credential issuance
+    await this.ensureConnected();
+
     console.log(`[KERIClient] Issuing credential to ${recipientAid}...`);
 
     // Get issuer AID info
@@ -778,6 +857,9 @@ export class KERIClient {
    */
   async admitCredential(aidName: string, grantSaid: string): Promise<void> {
     if (!this.client) throw new Error('Not initialized');
+
+    // Ensure connection is fresh before admitting credential
+    await this.ensureConnected();
 
     console.log(`[KERIClient] Admitting credential grant ${grantSaid}...`);
 
@@ -975,8 +1057,8 @@ export class KERIClient {
 
   /**
    * Send a generic EXN message to a recipient
-   * @param senderName - Name of the sender's AID
-   * @param recipientAid - AID of the recipient
+   * @param senderName - Name of the sender's AID or AID prefix
+   * @param recipientAid - AID prefix of the recipient or display name
    * @param route - The message route (e.g., '/matou/registration/apply')
    * @param payload - The message payload
    * @returns Success status and message SAID
@@ -992,20 +1074,30 @@ export class KERIClient {
     }
 
     try {
+      // Ensure connection is fresh before operation
+      await this.ensureConnected();
+
+      // Resolve both sender and recipient to AID prefixes
+      const senderAid = await this.resolveAID(senderName);
+      const recipientAidResolved = await this.resolveAID(recipientAid);
+
+      console.log(`[KERIClient] Creating EXN message for route: ${route}`);
+      console.log(`[KERIClient] Sender AID: ${senderAid}, Recipient AID: ${recipientAidResolved}`);
+
       // Get the sender's AID state
       let sender;
       try {
         sender = await this.client.identifiers().get(senderName);
       } catch (getErr) {
         const aids = await this.client.identifiers().list();
-        const found = aids.aids.find((a: { name: string }) => a.name === senderName);
+        const found = aids.aids.find((a: { name: string; prefix: string }) =>
+          a.name === senderName || a.prefix === senderAid
+        );
         if (!found) {
           throw new Error(`AID "${senderName}" not found`);
         }
         sender = found;
       }
-
-      console.log(`[KERIClient] Creating EXN message for route: ${route}`);
 
       // Create the exchange message
       const [exn, sigs, atc] = await this.client.exchanges().createExchangeMessage(
@@ -1013,13 +1105,13 @@ export class KERIClient {
         route,
         payload,
         {},  // No embeds
-        recipientAid
+        recipientAidResolved
       );
 
-      console.log(`[KERIClient] Sending EXN to ${recipientAid}...`);
+      console.log(`[KERIClient] Sending EXN to ${recipientAidResolved}...`);
       console.log(`[KERIClient] EXN details:`, JSON.stringify({
-        sender: senderName,
-        recipient: recipientAid,
+        sender: senderAid,
+        recipient: recipientAidResolved,
         route,
         exnKed: (exn as any)?.ked,
       }, null, 2));
@@ -1031,7 +1123,7 @@ export class KERIClient {
         exn,
         sigs,
         atc,
-        [recipientAid]
+        [recipientAidResolved]
       );
       console.log('[KERIClient] sendFromEvents result:', sendResult);
 
@@ -1042,6 +1134,59 @@ export class KERIClient {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error('[KERIClient] Failed to send EXN:', err);
+
+      // Retry once with reconnection on 401 errors
+      if (errorMsg.includes('401') || errorMsg.includes('Unauthorized')) {
+        console.log('[KERIClient] Got 401, reconnecting and retrying...');
+        try {
+          await this.reconnect();
+
+          // Retry the operation
+          const senderAid = await this.resolveAID(senderName);
+          const recipientAidResolved = await this.resolveAID(recipientAid);
+
+          let sender;
+          try {
+            sender = await this.client!.identifiers().get(senderName);
+          } catch (getErr) {
+            const aids = await this.client!.identifiers().list();
+            const found = aids.aids.find((a: { name: string; prefix: string }) =>
+              a.name === senderName || a.prefix === senderAid
+            );
+            if (!found) {
+              throw new Error(`AID "${senderName}" not found`);
+            }
+            sender = found;
+          }
+
+          const [exn, sigs, atc] = await this.client!.exchanges().createExchangeMessage(
+            sender,
+            route,
+            payload,
+            {},
+            recipientAidResolved
+          );
+
+          await this.client!.exchanges().sendFromEvents(
+            senderName,
+            route.split('/').pop() || 'message',
+            exn,
+            sigs,
+            atc,
+            [recipientAidResolved]
+          );
+
+          const exnSaid = (exn as { ked?: { d?: string } })?.ked?.d || 'unknown';
+          console.log('[KERIClient] Retry successful, SAID:', exnSaid);
+
+          return { success: true, said: exnSaid };
+        } catch (retryErr) {
+          const retryErrorMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          console.error('[KERIClient] Retry failed:', retryErr);
+          return { success: false, error: retryErrorMsg };
+        }
+      }
+
       return { success: false, error: errorMsg };
     }
   }
@@ -1086,8 +1231,12 @@ export class KERIClient {
     const failed: string[] = [];
 
     // Send to each admin
-    for (const admin of admins) {
+    for (let i = 0; i < admins.length; i++) {
+      const admin = admins[i];
       try {
+        // Ensure connection is fresh before each admin
+        await this.ensureConnected();
+
         // Resolve admin OOBI and create contact (critical for message delivery)
         if (admin.oobi) {
           const internalOobi = this.toInternalOobiUrl(admin.oobi);
@@ -1153,6 +1302,8 @@ export class KERIClient {
         // 2. Also send IPEX apply for native KERIA notification support
         // This provides a backup notification mechanism
         try {
+          // Ensure connection before IPEX operation
+          await this.ensureConnected();
           console.log(`[KERIClient] Sending IPEX apply to ${admin.aid}...`);
           const [apply, applySigs, applyEnd] = await this.client.ipex().apply({
             senderName: senderName,
@@ -1189,6 +1340,12 @@ export class KERIClient {
 
         sent.push(admin.aid);
         console.log(`[KERIClient] Registration sent to admin ${admin.aid}`);
+
+        // Add delay between admins to prevent connection issues
+        if (i < admins.length - 1) {
+          console.log('[KERIClient] Waiting before next admin...');
+          await new Promise(r => setTimeout(r, 500));
+        }
       } catch (err) {
         failed.push(admin.aid);
         console.error(`[KERIClient] Error sending to admin ${admin.aid}:`, err);
