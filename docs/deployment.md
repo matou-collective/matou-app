@@ -75,7 +75,30 @@ npm install
 npx quasar build -m electron
 ```
 
-This produces platform-specific packages in `frontend/dist/electron/Packaged/`.
+This builds the frontend, compiles the Electron main process, and packages for the **current platform**.
+
+#### Cross-Platform Builds (from Linux)
+
+To build Windows and macOS packages from a Linux machine, first run the standard build (which compiles the UI and Electron main process), then use electron-builder with the cross-build config:
+
+```bash
+# 1. Standard build (compiles UI + packages for current platform)
+npx quasar build -m electron
+
+# 2. Build Windows installer
+npx electron-builder --win --config build/electron-builder-cross.json
+
+# 3. Build macOS zips (one arch at a time to avoid filename collision)
+npx electron-builder --mac zip --x64 --config build/electron-builder-cross.json
+mv dist/electron/Packaged/matou-*.zip dist/electron/Packaged/matou-0.0.1-mac-x64.zip
+
+npx electron-builder --mac zip --arm64 --config build/electron-builder-cross.json
+mv dist/electron/Packaged/matou-*.zip dist/electron/Packaged/matou-0.0.1-mac-arm64.zip
+```
+
+The cross-build config (`build/electron-builder-cross.json`) mirrors the settings from `quasar.config.ts` (app ID, product name, extra resources, icons) so that electron-builder can run independently.
+
+Output: `frontend/dist/electron/Packaged/`
 
 ## Platform Details
 
@@ -137,15 +160,26 @@ The version is used in output filenames (e.g. `matou-0.1.0.AppImage`).
 
 ### Build All Platforms
 
+From a Linux machine, you can build all platforms using the cross-build config:
+
 ```bash
 # Build all backend binaries
 cd backend && make build-all
 
-# Build the Electron packages
+# Build frontend + Linux package
 cd ../frontend && npm install && npx quasar build -m electron
+
+# Cross-build Windows and macOS
+npx electron-builder --win --config build/electron-builder-cross.json
+
+npx electron-builder --mac zip --x64 --config build/electron-builder-cross.json
+mv dist/electron/Packaged/matou-0.1.0.zip dist/electron/Packaged/matou-0.1.0-mac-x64.zip
+
+npx electron-builder --mac zip --arm64 --config build/electron-builder-cross.json
+mv dist/electron/Packaged/matou-0.1.0.zip dist/electron/Packaged/matou-0.1.0-mac-arm64.zip
 ```
 
-**Note**: Electron packages are built for the **current OS and architecture** by default. To build for other platforms, you need to run the build on each target OS (or use CI).
+**macOS note**: Both architectures output `matou-{version}.zip`, so build them separately and rename to include the architecture (`-mac-x64` / `-mac-arm64`) before uploading.
 
 ### Tag the Release
 
@@ -154,58 +188,98 @@ git tag -a v0.1.0 -m "Release v0.1.0"
 git push origin v0.1.0
 ```
 
+### Authenticate glab
+
+Releases are managed via the `glab` CLI. Authenticate with a [Personal Access Token](https://gitlab.com/-/user_settings/personal_access_tokens) that has the `api` scope:
+
+```bash
+glab auth login --token <your-token> --hostname gitlab.com
+```
+
 ### Upload via glab (CLI)
 
-Create a release and upload assets with the `glab` CLI:
+Packaged artifacts (AppImage, exe, zip) typically exceed GitLab's 100 MB direct upload limit. Use the **Generic Package Registry** to upload files, then link them to the release.
 
-```bash
-# Create release with all platform artifacts
-glab release create v0.1.0 \
-  --title "Matou v0.1.0" \
-  --notes "Release notes here" \
-  frontend/dist/electron/Packaged/matou-0.1.0.AppImage \
-  frontend/dist/electron/Packaged/matou-0.1.0.zip \
-  frontend/dist/electron/Packaged/matou-0.1.0.exe
-```
-
-Upload only the artifacts you've built. For example, if you only built for Linux:
+**1. Create the release:**
 
 ```bash
 glab release create v0.1.0 \
   --title "Matou v0.1.0" \
-  --notes "Release notes here" \
-  frontend/dist/electron/Packaged/matou-0.1.0.AppImage
+  --notes "Release notes here"
 ```
 
-To add assets to an existing release:
+**2. Upload artifacts to the Generic Package Registry:**
 
 ```bash
-glab release upload v0.1.0 \
-  frontend/dist/electron/Packaged/matou-0.1.0.zip
+# Get your token (create a PAT at https://gitlab.com/-/user_settings/personal_access_tokens)
+TOKEN="<your-gitlab-pat>"
+
+# Upload each artifact
+curl --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file frontend/dist/electron/Packaged/matou-0.1.0.AppImage \
+  "https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.AppImage"
+
+curl --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file frontend/dist/electron/Packaged/matou-0.1.0.exe \
+  "https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.exe"
+
+curl --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file matou-0.1.0-mac-arm64.zip \
+  "https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0-mac-arm64.zip"
+
+curl --header "PRIVATE-TOKEN: $TOKEN" \
+  --upload-file matou-0.1.0-mac-x64.zip \
+  "https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0-mac-x64.zip"
 ```
+
+Upload only the artifacts you've built. Each successful upload returns `{"message":"201 Created"}`.
+
+**3. Link artifacts to the release:**
+
+```bash
+# Linux
+curl --header "PRIVATE-TOKEN: $TOKEN" \
+  --header "Content-Type: application/json" \
+  --request POST \
+  --data '{"name":"Linux (AppImage)","url":"https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.AppImage","link_type":"package"}' \
+  "https://gitlab.com/api/v4/projects/78188786/releases/v0.1.0/assets/links"
+
+# Windows
+curl --header "PRIVATE-TOKEN: $TOKEN" \
+  --header "Content-Type: application/json" \
+  --request POST \
+  --data '{"name":"Windows (Installer)","url":"https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.exe","link_type":"package"}' \
+  "https://gitlab.com/api/v4/projects/78188786/releases/v0.1.0/assets/links"
+
+# macOS Apple Silicon
+curl --header "PRIVATE-TOKEN: $TOKEN" \
+  --header "Content-Type: application/json" \
+  --request POST \
+  --data '{"name":"macOS Apple Silicon (zip)","url":"https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0-mac-arm64.zip","link_type":"package"}' \
+  "https://gitlab.com/api/v4/projects/78188786/releases/v0.1.0/assets/links"
+
+# macOS Intel
+curl --header "PRIVATE-TOKEN: $TOKEN" \
+  --header "Content-Type: application/json" \
+  --request POST \
+  --data '{"name":"macOS Intel (zip)","url":"https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0-mac-x64.zip","link_type":"package"}' \
+  "https://gitlab.com/api/v4/projects/78188786/releases/v0.1.0/assets/links"
+```
+
+**Updating an existing artifact**: Re-uploading to the same package registry URL replaces the file. The release asset links remain unchanged.
 
 ### Upload via GitLab Web UI
 
 1. Go to https://gitlab.com/matou-collective/matou-app/-/releases
-2. Click **New release**
+2. Click **New release** (or edit an existing one)
 3. Choose the tag (e.g. `v0.1.0`) or create a new one
 4. Add a title and release notes
-5. Under **Release assets**, click **Add another link** for each artifact:
-   - **Link title**: `Matou for Linux (AppImage)`, `Matou for macOS (zip)`, or `Matou for Windows (exe)`
-   - **URL**: Upload the file first via **Uploads** (drag-and-drop in the description editor to get a URL), then paste the URL
+5. Upload artifacts to the Generic Package Registry using the curl commands above
+6. Under **Release assets**, click **Add another link** for each artifact:
+   - **Link title**: `Linux (AppImage)`, `Windows (Installer)`, `macOS Apple Silicon (zip)`, or `macOS Intel (zip)`
+   - **URL**: The package registry URL (e.g. `https://gitlab.com/api/v4/projects/78188786/packages/generic/matou/0.1.0/matou-0.1.0.AppImage`)
    - **Type**: Select **Package**
-6. Click **Create release**
-
-Alternatively, upload files as **Generic Packages** first, then link them:
-
-1. Upload each artifact as a generic package:
-   ```bash
-   # Upload to GitLab's generic package registry
-   curl --header "PRIVATE-TOKEN: <your-token>" \
-     --upload-file frontend/dist/electron/Packaged/matou-0.1.0.AppImage \
-     "https://gitlab.com/api/v4/projects/matou-collective%2Fmatou-app/packages/generic/matou/0.1.0/matou-0.1.0.AppImage"
-   ```
-2. Then reference the package URLs in the release asset links
+7. Click **Create release**
 
 ## How It Works
 
@@ -233,18 +307,24 @@ The config server provides:
 
 ```
 frontend/dist/electron/Packaged/
-├── linux-unpacked/              # Unpacked Linux app
-│   ├── matou                    # Shell wrapper (--no-sandbox)
-│   ├── matou.bin                # Real Electron binary
+├── linux-unpacked/                     # Unpacked Linux app
+│   ├── matou                           # Shell wrapper (--no-sandbox)
+│   ├── matou.bin                       # Real Electron binary
 │   └── resources/
-│       ├── app.asar             # Bundled frontend + electron main
-│       ├── backend/
-│       │   └── linux-amd64/
-│       │       └── matou-backend
-│       └── icons/               # App icons
-├── matou-{version}.AppImage     # Linux
-├── matou-{version}.zip          # macOS
-└── matou-{version}.exe          # Windows
+│       ├── app.asar                    # Bundled frontend + electron main
+│       ├── backend/                    # All backend binaries
+│       │   ├── linux-amd64/matou-backend
+│       │   ├── darwin-arm64/matou-backend
+│       │   ├── darwin-amd64/matou-backend
+│       │   └── windows-amd64/matou-backend.exe
+│       └── icons/                      # App icons
+├── win-unpacked/                       # Unpacked Windows app
+├── mac/Matou.app/                      # Unpacked macOS x64 app
+├── mac-arm64/Matou.app/                # Unpacked macOS arm64 app
+├── matou-{version}.AppImage            # Linux
+├── matou-{version}.exe                 # Windows (NSIS installer)
+├── matou-{version}-mac-x64.zip         # macOS Intel (renamed)
+└── matou-{version}-mac-arm64.zip       # macOS Apple Silicon (renamed)
 ```
 
 ## Troubleshooting
@@ -281,6 +361,14 @@ If the backend fails to start, the app may exit without showing an error dialog.
 ./matou-*.AppImage          # Linux
 open Matou.app --args       # macOS (view logs in Console.app)
 ```
+
+### Release upload fails (413 entity too large)
+
+```
+POST .../uploads: 413 entity is too large
+```
+
+GitLab's direct upload API has a ~100 MB limit. Packaged Electron apps typically exceed this. Use the Generic Package Registry instead (see [Upload via glab](#upload-via-glab-cli) above).
 
 ### Linux sandbox errors
 
