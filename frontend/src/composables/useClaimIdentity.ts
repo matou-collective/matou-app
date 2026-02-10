@@ -260,7 +260,7 @@ export function useClaimIdentity() {
       // Persist session (same passcode — no agent rotation)
       await secureStorage.setItem('matou_passcode', passcode);
 
-      // Step 4: Set backend identity (derives peer key, restarts SDK, creates private space)
+      // Step 4: Set up account (backend identity, space join, profiles)
       step.value = 'securing';
       progress.value = 'Configuring backend identity...';
 
@@ -291,6 +291,7 @@ export function useClaimIdentity() {
       identityStore.setCurrentAID({ name: aid.name, prefix: aid.prefix, state: aid.state ?? null });
 
       // Join community + readonly spaces (required — fail if missing or unsuccessful)
+      progress.value = 'Joining community space...';
       if (!spaceInvite) {
         throw new Error('No community space invite found in credential grant');
       }
@@ -339,6 +340,14 @@ export function useClaimIdentity() {
           displayName,
           bio: onboardingStore.profile.bio || '',
           avatar: onboardingStore.profile.avatarFileRef || '',
+          publicEmail: onboardingStore.profile.email || '',
+          location: onboardingStore.profile.location || '',
+          indigenousCommunity: onboardingStore.profile.indigenousCommunity || '',
+          joinReason: onboardingStore.profile.joinReason || '',
+          facebookUrl: onboardingStore.profile.facebookUrl || '',
+          linkedinUrl: onboardingStore.profile.linkedinUrl || '',
+          twitterUrl: onboardingStore.profile.twitterUrl || '',
+          instagramUrl: onboardingStore.profile.instagramUrl || '',
           participationInterests: onboardingStore.profile.participationInterests || [],
           customInterests: onboardingStore.profile.customInterests || '',
           lastActiveAt: now,

@@ -468,11 +468,32 @@ function removeAvatar() {
   }
 }
 
+function saveFormToStore() {
+  store.updateProfile({
+    name: formData.value.name.trim(),
+    email: formData.value.email.trim(),
+    bio: formData.value.bio.trim(),
+    location: formData.value.location.trim(),
+    joinReason: formData.value.joinReason.trim(),
+    indigenousCommunity: formData.value.indigenousCommunity.trim(),
+    facebookUrl: formData.value.facebookUrl.trim(),
+    linkedinUrl: formData.value.linkedinUrl.trim(),
+    twitterUrl: formData.value.twitterUrl.trim(),
+    instagramUrl: formData.value.instagramUrl.trim(),
+    avatarPreview: avatarPreview.value,
+    participationInterests: formData.value.participationInterests,
+    customInterests: formData.value.customInterests.trim(),
+    hasAgreedToTerms: formData.value.hasAgreedToTerms,
+  });
+}
+
 function showTerms() {
+  saveFormToStore();
   router.push('/community-guidelines');
 }
 
 function showPrivacy() {
+  saveFormToStore();
   router.push('/privacy-policy');
 }
 
@@ -492,22 +513,7 @@ async function handleSubmit() {
   }
 
   // Save profile to store first
-  store.updateProfile({
-    name: formData.value.name.trim(),
-    email: formData.value.email.trim(),
-    bio: formData.value.bio.trim(),
-    location: formData.value.location.trim(),
-    joinReason: formData.value.joinReason.trim(),
-    indigenousCommunity: formData.value.indigenousCommunity.trim(),
-    facebookUrl: formData.value.facebookUrl.trim(),
-    linkedinUrl: formData.value.linkedinUrl.trim(),
-    twitterUrl: formData.value.twitterUrl.trim(),
-    instagramUrl: formData.value.instagramUrl.trim(),
-    avatarPreview: avatarPreview.value,
-    participationInterests: formData.value.participationInterests,
-    customInterests: formData.value.customInterests.trim(),
-    hasAgreedToTerms: formData.value.hasAgreedToTerms,
-  });
+  saveFormToStore();
 
   // Upload avatar if selected
   console.log('[ProfileForm] Avatar file selected:', !!avatarFile.value);

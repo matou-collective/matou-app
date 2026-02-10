@@ -174,11 +174,31 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
 
   // ------------------------------------------------------------------
   // Test 2: Invitee claims identity via invite code flow
+  //
+  // Also verifies three onboarding bug fixes:
+  // - Bug 1: Form data persists when navigating to Community Guidelines and back
+  // - Bug 2: Claim processing shows checkmarks (not spinner) on completion and auto-continues
+  // - Bug 3: All profile fields (bio, location, social links, etc.) persist to SharedProfile
   // ------------------------------------------------------------------
   test('invitee claims identity via invite code', async ({ browser }) => {
     test.setTimeout(TIMEOUT.orgSetup); // 2 min — AID key rotation + OOBI resolution
 
     expect(inviteCode, 'Invite code must exist from previous test').toBeTruthy();
+
+    // Profile data used across Bug 1/3 verification
+    const profileData = {
+      name: 'Test Invitee',
+      email: 'test-invitee@matou.nz',
+      bio: 'E2E test bio for verification',
+      location: 'Auckland, New Zealand',
+      indigenousCommunity: 'Ngāti Whātua',
+      joinReason: 'Testing the Matou platform',
+      facebookUrl: 'https://facebook.com/testinvitee',
+      linkedinUrl: 'https://linkedin.com/in/testinvitee',
+      twitterUrl: 'https://x.com/testinvitee',
+      instagramUrl: 'https://instagram.com/testinvitee',
+      customInterests: 'Digital identity, community building',
+    };
 
     // Spawn a dedicated backend for the invitee
     const inviteeBackend = await backends.start('invitee-claim');
@@ -227,17 +247,54 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       await inviteePage.getByRole('button', { name: /I agree, accept invitation/i }).click();
 
       // --- Profile Form Screen ---
-      console.log('[Test] Filling in profile form...');
+      console.log('[Test] Filling in profile form with all fields...');
       await expect(
         inviteePage.getByRole('heading', { name: /claim your profile/i }),
       ).toBeVisible({ timeout: TIMEOUT.short });
 
-      // Fill in display name
-      await inviteePage.locator('#name input').fill('Test Invitee');
+      // Fill in all profile fields
+      await inviteePage.locator('#name input').fill(profileData.name);
+      await inviteePage.locator('#email input').fill(profileData.email);
+      await inviteePage.locator('#bio').fill(profileData.bio);
+      await inviteePage.locator('#location input').fill(profileData.location);
+      await inviteePage.locator('#indigenousCommunity input').fill(profileData.indigenousCommunity);
+      await inviteePage.locator('#joinReason').fill(profileData.joinReason);
+      await inviteePage.locator('#facebookUrl input').fill(profileData.facebookUrl);
+      await inviteePage.locator('#linkedinUrl input').fill(profileData.linkedinUrl);
+      await inviteePage.locator('#twitterUrl input').fill(profileData.twitterUrl);
+      await inviteePage.locator('#instagramUrl input').fill(profileData.instagramUrl);
+      await inviteePage.locator('#customInterests').fill(profileData.customInterests);
 
-      // Agree to terms
+      // --- Bug 1: Verify form data persists across Community Guidelines navigation ---
+      console.log('[Test] Bug 1: Clicking Community Guidelines link...');
+      await inviteePage.getByText('Community Guidelines').click();
+      await expect(inviteePage).toHaveURL(/#\/community-guidelines/, { timeout: TIMEOUT.short });
+
+      // Navigate back to the profile form
+      await inviteePage.goBack();
+      await expect(
+        inviteePage.getByRole('heading', { name: /claim your profile/i }),
+      ).toBeVisible({ timeout: TIMEOUT.short });
+
+      // Verify all form fields are preserved
+      await expect(inviteePage.locator('#name input')).toHaveValue(profileData.name);
+      await expect(inviteePage.locator('#email input')).toHaveValue(profileData.email);
+      await expect(inviteePage.locator('#bio')).toHaveValue(profileData.bio);
+      await expect(inviteePage.locator('#location input')).toHaveValue(profileData.location);
+      await expect(inviteePage.locator('#indigenousCommunity input')).toHaveValue(profileData.indigenousCommunity);
+      await expect(inviteePage.locator('#joinReason')).toHaveValue(profileData.joinReason);
+      await expect(inviteePage.locator('#facebookUrl input')).toHaveValue(profileData.facebookUrl);
+      await expect(inviteePage.locator('#linkedinUrl input')).toHaveValue(profileData.linkedinUrl);
+      await expect(inviteePage.locator('#twitterUrl input')).toHaveValue(profileData.twitterUrl);
+      await expect(inviteePage.locator('#instagramUrl input')).toHaveValue(profileData.instagramUrl);
+      await expect(inviteePage.locator('#customInterests')).toHaveValue(profileData.customInterests);
+      console.log('[Test] Bug 1: PASS - All form fields preserved after Community Guidelines navigation');
+
+      // Agree to terms (checkbox state is also preserved, but re-check to be safe)
       const termsCheckbox = inviteePage.locator('input[type="checkbox"]').last();
-      await termsCheckbox.check();
+      if (!await termsCheckbox.isChecked()) {
+        await termsCheckbox.check();
+      }
 
       // Submit profile form
       await inviteePage.getByRole('button', { name: /continue/i }).click();
@@ -251,14 +308,19 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       ).toBeVisible({ timeout: TIMEOUT.orgSetup });
       console.log('[Test] Invitation claimed successfully');
 
-      // Click "Continue" (now goes to profile-confirmation, not dashboard)
-      await inviteePage.getByRole('button', { name: /continue/i }).click();
+      // --- Bug 2: Verify all steps show checkmarks (no spinners) when done ---
+      await expect(inviteePage.locator('.steps-container .animate-spin')).toHaveCount(0);
+      console.log('[Test] Bug 2: PASS - All steps show checkmarks, no spinners on completion');
+
+      // Bug 2: Auto-continue fires after 1.5s — wait for recovery phrase screen
+      // instead of clicking "Continue" manually
+      console.log('[Test] Bug 2: Waiting for auto-continue to recovery phrase screen...');
 
       // --- Profile Confirmation Screen: Save Your Recovery Phrase ---
-      console.log('[Test] Waiting for recovery phrase screen...');
       await expect(
         inviteePage.getByRole('heading', { level: 1, name: /save your recovery phrase/i }),
       ).toBeVisible({ timeout: TIMEOUT.long });
+      console.log('[Test] Bug 2: PASS - Auto-continued to recovery phrase screen');
 
       // Read 12 mnemonic words from the word cards
       const wordCards = inviteePage.locator('.word-card');
@@ -323,6 +385,31 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       console.log('[Test] Waiting for dashboard...');
       await expect(inviteePage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long });
       console.log('[Test] PASS - Invitee on dashboard after claiming identity');
+
+      // --- Bug 3: Verify profile data persisted to Account Settings ---
+      console.log('[Test] Bug 3: Navigating to Account Settings to verify profile data...');
+      await inviteePage.goto(`${FRONTEND_URL}/#/dashboard/settings`);
+      await expect(
+        inviteePage.locator('.header-title'),
+      ).toContainText('Account Settings', { timeout: TIMEOUT.short });
+
+      // Wait for profile data to load (loading state disappears)
+      await expect(inviteePage.locator('.settings-content')).toBeVisible({ timeout: TIMEOUT.short });
+
+      // Verify text fields persisted from onboarding
+      await expect(inviteePage.locator('input[placeholder="Your display name"]')).toHaveValue(profileData.name);
+      await expect(inviteePage.locator('input[placeholder="Your public email"]')).toHaveValue(profileData.email);
+      await expect(inviteePage.locator('textarea[placeholder="Tell us about yourself"]')).toHaveValue(profileData.bio);
+      await expect(inviteePage.locator('input[placeholder="Village, City, Country"]')).toHaveValue(profileData.location);
+      await expect(inviteePage.locator('input[placeholder="Your community, people"]')).toHaveValue(profileData.indigenousCommunity);
+      await expect(inviteePage.locator('textarea[placeholder="Why you joined"]')).toHaveValue(profileData.joinReason);
+
+      // Verify social links appear in the social links list
+      await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'facebook.com' })).toBeVisible();
+      await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'linkedin.com' })).toBeVisible();
+      await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'x.com' })).toBeVisible();
+      await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'instagram.com' })).toBeVisible();
+      console.log('[Test] Bug 3: PASS - All profile data persisted to Account Settings');
 
       // --- Verify session persisted with passcode derived from the mnemonic ---
       // The invite code is base64url-encoded mnemonic entropy, NOT the raw passcode.
