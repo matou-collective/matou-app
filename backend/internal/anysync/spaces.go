@@ -36,7 +36,7 @@ type SpaceManager struct {
 	credTreeManager          *CredentialTreeManager
 	objTreeManager           *ObjectTreeManager
 	fileManager              *FileManager
-	treeCache                *TreeCache
+	treeManager              *UnifiedTreeManager
 	communitySpaceID         string
 	communityReadOnlySpaceID string
 	adminSpaceID             string
@@ -51,10 +51,18 @@ type SpaceManagerConfig struct {
 	OrgAID                   string
 }
 
-// NewSpaceManager creates a new SpaceManager with shared TreeCache.
-func NewSpaceManager(client AnySyncClient, cfg *SpaceManagerConfig) *SpaceManager {
-	cache := NewTreeCache()
-	objTreeMgr := NewObjectTreeManager(client, nil, cache)
+// NewSpaceManager creates a new SpaceManager with UnifiedTreeManager.
+// If utm is nil (e.g. in tests with mock clients), a standalone instance is created.
+func NewSpaceManager(client AnySyncClient, cfg *SpaceManagerConfig, utm ...*UnifiedTreeManager) *SpaceManager {
+	var treeMgr *UnifiedTreeManager
+	if len(utm) > 0 && utm[0] != nil {
+		treeMgr = utm[0]
+	} else {
+		treeMgr = NewUnifiedTreeManager()
+	}
+
+	objTreeMgr := NewObjectTreeManager(client, nil, treeMgr)
+	credTreeMgr := NewCredentialTreeManager(client, nil, treeMgr)
 
 	// Initialize FileManager if pool and nodeconf are available (real SDK client).
 	// Mock clients return nil for GetPool/GetNodeConf, so FileManager is nil in tests.
@@ -65,18 +73,33 @@ func NewSpaceManager(client AnySyncClient, cfg *SpaceManagerConfig) *SpaceManage
 		}
 	}
 
+	aclMgr := NewMatouACLManager(client, nil)
+
+	// Set the ACL joining client for join-before-open flows when using
+	// a real SDK client. This ensures JoinWithInvite submits the ACL join
+	// record to the consensus node before opening the space, so HeadSync
+	// discovers existing trees immediately.
+	if sdkClient, ok := client.(*SDKClient); ok {
+		aclMgr.SetJoiningClient(sdkClient.GetAclJoiningClient())
+	}
+
 	return &SpaceManager{
 		client:                   client,
-		aclManager:               NewMatouACLManager(client, nil),
-		credTreeManager:          NewCredentialTreeManager(client, nil, cache),
+		aclManager:               aclMgr,
+		credTreeManager:          credTreeMgr,
 		objTreeManager:           objTreeMgr,
 		fileManager:              fileMgr,
-		treeCache:                cache,
+		treeManager:              treeMgr,
 		communitySpaceID:         cfg.CommunitySpaceID,
 		communityReadOnlySpaceID: cfg.CommunityReadOnlySpaceID,
 		adminSpaceID:             cfg.AdminSpaceID,
 		orgAID:                   cfg.OrgAID,
 	}
+}
+
+// TreeManager returns the unified tree manager.
+func (m *SpaceManager) TreeManager() *UnifiedTreeManager {
+	return m.treeManager
 }
 
 // ACLManager returns the SDK-backed ACL manager for invite/join operations.

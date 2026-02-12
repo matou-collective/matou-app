@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/anyproto/any-sync/commonspace/acl/aclclient"
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/util/crypto"
 )
@@ -19,8 +20,9 @@ import (
 // MatouACLManager manages ACL operations for any-sync spaces using the SDK's
 // AclRecordBuilder. It implements the InviteManager interface.
 type MatouACLManager struct {
-	client     AnySyncClient
-	keyManager *PeerKeyManager
+	client        AnySyncClient
+	keyManager    *PeerKeyManager
+	joiningClient aclclient.AclJoiningClient // optional, for join-before-open flows
 }
 
 // NewMatouACLManager creates a new MatouACLManager.
@@ -29,6 +31,13 @@ func NewMatouACLManager(client AnySyncClient, keyManager *PeerKeyManager) *Matou
 		client:     client,
 		keyManager: keyManager,
 	}
+}
+
+// SetJoiningClient sets the ACL joining client for join-before-open flows.
+// When set, JoinWithInvite will submit the join record to the consensus node
+// BEFORE opening the space, ensuring the user is authorized when HeadSync starts.
+func (m *MatouACLManager) SetJoiningClient(jc aclclient.AclJoiningClient) {
+	m.joiningClient = jc
 }
 
 // CreateOpenInvite creates an "anyone can join" invite for a space.
@@ -64,13 +73,45 @@ func (m *MatouACLManager) CreateOpenInvite(ctx context.Context, spaceID string, 
 // JoinWithInvite joins a space using an invite key obtained out-of-band.
 // The invite key is used to decrypt the space's read key from the invite
 // record, then re-encrypt it with the joiner's own public key.
+//
+// When a joiningClient is set, the join record is submitted to the consensus
+// node FIRST (via the joining client), before the space is opened locally.
+// This is critical: if the space is opened before joining, HeadSync and the
+// consensus ACL stream start before the user is authorized, causing "forbidden"
+// errors and preventing tree sync.
 func (m *MatouACLManager) JoinWithInvite(ctx context.Context, spaceID string, inviteKey crypto.PrivKey, metadata []byte) error {
+	// Preferred path: join via consensus node directly BEFORE opening the space.
+	// The aclJoiningClient fetches ACL records from the consensus node, builds
+	// the join record, and submits it — all without opening the space locally.
+	// After the join record is accepted, opening the space will include the user
+	// in the ACL, so HeadSync discovers existing trees.
+	if m.joiningClient != nil {
+		fmt.Printf("[ACL] JoinWithInvite: using joining client (join-before-open) for space %s\n", spaceID)
+		_, err := m.joiningClient.InviteJoin(ctx, spaceID, list.InviteJoinPayload{
+			InviteKey: inviteKey,
+			Metadata:  metadata,
+		})
+		if err != nil {
+			// If the joining client fails (e.g. space already open with stale pool),
+			// fall through to the space-based join path below.
+			fmt.Printf("[ACL] JoinWithInvite: joining client failed (%v), falling back to space-based join\n", err)
+		} else {
+			// Now open the space — user is already in the ACL
+			_, err = m.client.GetSpace(ctx, spaceID)
+			if err != nil {
+				return fmt.Errorf("opening space after join: %w", err)
+			}
+			return nil
+		}
+	}
+
+	// Fallback path: open space first, then join via space's ACL client.
+	// Used by test mocks and as fallback when joining client can't connect.
 	space, err := m.client.GetSpace(ctx, spaceID)
 	if err != nil {
 		return fmt.Errorf("getting space %s: %w", spaceID, err)
 	}
 
-	// Build the join record while holding the ACL lock.
 	acl := space.Acl()
 	acl.Lock()
 	builder := acl.RecordBuilder()
@@ -83,7 +124,6 @@ func (m *MatouACLManager) JoinWithInvite(ctx context.Context, spaceID string, in
 		return fmt.Errorf("building join record: %w", err)
 	}
 
-	// Submit to the network without the ACL lock.
 	aclClient := space.AclClient()
 	return aclClient.AddRecord(ctx, joinRec)
 }

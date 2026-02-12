@@ -290,7 +290,7 @@ func main() {
 		CommunityReadOnlySpaceID: communityReadOnlySpaceID,
 		AdminSpaceID:             adminSpaceID,
 		OrgAID:                   orgAID,
-	})
+	}, sdkClient.GetTreeManager())
 	spaceStore := anystore.NewSpaceStoreAdapter(store)
 
 	fmt.Printf("  Space manager initialized\n")

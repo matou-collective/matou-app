@@ -7,7 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
-import { BACKEND_URL, initMemberProfiles, sendRegistrationApprovedNotification } from 'src/lib/api/client';
+import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistrationApprovedNotification } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -164,19 +164,36 @@ export function useAdminActions() {
       const issuerAidName = await getOrgAidName();
       console.log(`[AdminActions] Issuing credential from AID: ${issuerAidName}`);
 
-      // 4. Issue membership credential
-      // Note: Schema requires communityName to be 'MATOU' literal value
-      // verificationStatus must be one of: unverified, community_verified, identity_verified, expert_verified
-      const credentialData = {
-        communityName: 'MATOU',
+      // 4. Initialize member profiles FIRST — ensures profiles are in the sync
+      //    node before the member receives the invite and joins the space.
+      //    This eliminates the race condition where the member joins before
+      //    their profiles are synced.
+      let credentialSaid = 'pending'; // Updated after credential issuance
+      const initResult = await initMemberProfiles({
+        memberAid: registration.applicantAid,
+        credentialSaid: credentialSaid,
         role: 'Member',
-        verificationStatus: 'community_verified',
-        permissions: ['participate', 'vote', 'propose'],
-        joinedAt: new Date().toISOString(),
-      };
+        displayName: registration.profile?.name,
+        email: registration.profile?.email,
+        avatar: registration.profile?.avatarFileRef,
+        bio: registration.profile?.bio,
+        interests: registration.profile?.interests,
+        customInterests: registration.profile?.customInterests,
+        location: registration.profile?.location,
+        indigenousCommunity: registration.profile?.indigenousCommunity,
+        joinReason: registration.profile?.joinReason,
+        facebookUrl: registration.profile?.facebookUrl,
+        linkedinUrl: registration.profile?.linkedinUrl,
+        twitterUrl: registration.profile?.twitterUrl,
+        instagramUrl: registration.profile?.instagramUrl,
+      });
+      if (!initResult.success) {
+        throw new Error(`Failed to initialize member profiles: ${initResult.error || 'unknown error'}`);
+      }
+      console.log('[AdminActions] Member profiles created for:', registration.applicantAid);
 
-      // 4b. Generate space invite BEFORE issuing credential so we can embed
-      //     the invite data in the IPEX grant's message field (reliable delivery).
+      // 5. Generate space invite so we can embed the invite data in the
+      //    IPEX grant's message field (reliable delivery).
       let grantMessage = '';
       try {
         const inviteResponse = await fetch(`${BACKEND_URL}/api/v1/spaces/community/invite`, {
@@ -184,7 +201,7 @@ export function useAdminActions() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             recipientAid: registration.applicantAid,
-            credentialSaid: 'pending',
+            credentialSaid: credentialSaid,
             schema: 'EMatouMembershipSchemaV1',
           }),
           signal: AbortSignal.timeout(10000),
@@ -217,6 +234,17 @@ export function useAdminActions() {
         console.warn('[AdminActions] Space invitation deferred:', inviteErr);
       }
 
+      // 6. Issue membership credential
+      // Note: Schema requires communityName to be 'MATOU' literal value
+      // verificationStatus must be one of: unverified, community_verified, identity_verified, expert_verified
+      const credentialData = {
+        communityName: 'MATOU',
+        role: 'Member',
+        verificationStatus: 'community_verified',
+        permissions: ['participate', 'vote', 'propose'],
+        joinedAt: new Date().toISOString(),
+      };
+
       console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
       const credResult = await keriClient.issueCredential(
         issuerAidName,
@@ -228,29 +256,23 @@ export function useAdminActions() {
       );
 
       console.log('[AdminActions] Credential issued:', credResult.said);
+      credentialSaid = credResult.said;
 
-      // 5b. Initialize member's CommunityProfile in read-only space
+      // 6b. Update CommunityProfile with real credential SAID
+      //     (profiles were created in step 4 with credentialSaid='pending')
       try {
-        const initResult = await initMemberProfiles({
-          memberAid: registration.applicantAid,
-          credentialSaid: credResult.said,
+        const profileId = `CommunityProfile-${registration.applicantAid}`;
+        await createOrUpdateProfile('CommunityProfile', {
+          credential: credentialSaid,
           role: 'Member',
-          displayName: registration.profile?.name,
-          email: registration.profile?.email,
-          avatar: registration.profile?.avatarFileRef,
-          bio: registration.profile?.bio,
-          interests: registration.profile?.interests,
-        });
-        if (initResult.success) {
-          console.log('[AdminActions] CommunityProfile created for:', registration.applicantAid);
-        } else {
-          console.warn('[AdminActions] Failed to init member profiles:', initResult.error);
-        }
-      } catch (initErr) {
-        console.warn('[AdminActions] Failed to init member profiles:', initErr);
+          credentials: [credentialSaid],
+        }, { id: profileId });
+        console.log('[AdminActions] Updated CommunityProfile with credential SAID:', credentialSaid);
+      } catch (updateErr) {
+        console.warn('[AdminActions] Failed to update CommunityProfile with credential SAID:', updateErr);
       }
 
-      // 5c. Email approval notification (non-blocking)
+      // 7. Email approval notification (non-blocking)
       if (registration.profile?.email) {
         try {
           await sendRegistrationApprovedNotification({
@@ -262,7 +284,7 @@ export function useAdminActions() {
         }
       }
 
-      // 6. Mark ALL notifications for this applicant as read
+      // 8. Mark ALL notifications for this applicant as read
       // (handles both IPEX and custom EXN notifications)
       await markAllApplicantNotificationsRead(registration.applicantAid);
 

@@ -50,7 +50,7 @@ func TestFileMetaObjectType(t *testing.T) {
 func TestNewFileManager(t *testing.T) {
 	nc := &mockNodeConf{filePeers: []string{"peer1"}}
 	p := &mockPool{peer: &mockPeer{}}
-	objTree := NewObjectTreeManager(nil, nil, NewTreeCache())
+	objTree := NewObjectTreeManager(nil, nil, NewUnifiedTreeManager())
 
 	fm := NewFileManager(p, nc, objTree)
 	if fm == nil {

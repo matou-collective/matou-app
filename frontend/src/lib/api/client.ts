@@ -391,7 +391,15 @@ export async function initMemberProfiles(data: {
   avatar?: string;
   bio?: string;
   interests?: string[];
-}): Promise<{ success: boolean; objectId?: string; error?: string }> {
+  customInterests?: string;
+  location?: string;
+  indigenousCommunity?: string;
+  joinReason?: string;
+  facebookUrl?: string;
+  linkedinUrl?: string;
+  twitterUrl?: string;
+  instagramUrl?: string;
+}): Promise<{ success: boolean; objectId?: string; treeId?: string; error?: string }> {
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/profiles/init-member`, {
       method: 'POST',

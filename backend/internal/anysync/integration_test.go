@@ -313,7 +313,7 @@ func TestIntegration_SpaceManagerWithRealNetwork(t *testing.T) {
 	t.Run("create space manager and private space", func(t *testing.T) {
 		manager := NewSpaceManager(client, &SpaceManagerConfig{
 			OrgAID: "ETestOrg" + time.Now().Format("20060102150405"),
-		})
+		}, client.GetTreeManager())
 
 		userAID := "ETestUser" + time.Now().Format("20060102150405")
 		space, err := manager.CreatePrivateSpace(ctx, userAID)

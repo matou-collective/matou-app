@@ -68,10 +68,11 @@ func TestIntegration_FileUploadDownload(t *testing.T) {
 		t.Log("Account file storage limits set on coordinator")
 	}
 
-	// Create SpaceManager which initializes FileManager with real pool/nodeconf
+	// Create SpaceManager which initializes FileManager with real pool/nodeconf.
+	// Pass the UTM from the SDK client so it has access to the app component system.
 	sm := NewSpaceManager(client, &SpaceManagerConfig{
 		CommunitySpaceID: spaceID,
-	})
+	}, client.GetTreeManager())
 
 	fm := sm.FileManager()
 	if fm == nil {
