@@ -11,9 +11,12 @@
     { "from": "src-electron/icons/", "to": "icons/" }
   ],
   "mac": {
-    "target": "zip",
-    "identity": null,
-    "icon": "src-electron/icons/icon.png"
+    "target": ["dmg", "zip"],
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "entitlements.mac.plist",
+    "entitlementsInherit": "entitlements.mac.plist",
+    "type": "distribution"
   },
   "win": {
     "target": "nsis",
