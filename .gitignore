@@ -112,3 +112,6 @@ temp/
 plan.md
 todos/
 frontend/config/client-production.yml
+
+# Claude Code
+.claude/
