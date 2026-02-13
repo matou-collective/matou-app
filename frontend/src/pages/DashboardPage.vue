@@ -75,6 +75,7 @@
         :is-polling="isPolling"
         :is-refreshing="isRefreshing"
         :is-processing="isProcessing"
+        :processing-registration-id="processingRegistrationId"
         :error="pollingError"
         :action-error="actionError"
         @approve="handleApprove"
@@ -184,6 +185,7 @@ const {
 } = useRegistrationPolling({ pollingInterval: 10000 });
 const {
   isProcessing,
+  processingRegistrationId,
   error: actionError,
   approveRegistration,
   declineRegistration,

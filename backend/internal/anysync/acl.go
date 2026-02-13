@@ -7,6 +7,9 @@ package anysync
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
+	"time"
 
 	"github.com/anyproto/any-sync/commonspace/acl/aclclient"
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
@@ -40,34 +43,72 @@ func (m *MatouACLManager) SetJoiningClient(jc aclclient.AclJoiningClient) {
 	m.joiningClient = jc
 }
 
+// createOpenInviteMaxRetries is the maximum number of retries when the
+// consensus node rejects an invite record due to a stale prev id.
+// This happens when background ACL sync or a concurrent invite advances
+// the ACL head between BuildInviteAnyone and AddRecord.
+const createOpenInviteMaxRetries = 5
+
 // CreateOpenInvite creates an "anyone can join" invite for a space.
 // It encrypts the space's read key with the invite public key and returns
 // the invite private key, which should be shared out-of-band (e.g. as a
 // base58-encoded invite code).
+//
+// The method retries automatically when the consensus node rejects the
+// record due to a stale prev id (ErrIncorrectRecordSequence), which can
+// occur when rapid sequential invites cause the ACL head to advance
+// between building and submitting the record.
 func (m *MatouACLManager) CreateOpenInvite(ctx context.Context, spaceID string, permissions list.AclPermissions) (crypto.PrivKey, error) {
 	space, err := m.client.GetSpace(ctx, spaceID)
 	if err != nil {
 		return nil, fmt.Errorf("getting space %s: %w", spaceID, err)
 	}
 
-	// Build the invite record while holding the ACL lock.
-	acl := space.Acl()
-	acl.Lock()
-	builder := acl.RecordBuilder()
-	result, err := builder.BuildInviteAnyone(permissions)
-	acl.Unlock()
-	if err != nil {
-		return nil, fmt.Errorf("building invite: %w", err)
+	var lastErr error
+	for attempt := 0; attempt <= createOpenInviteMaxRetries; attempt++ {
+		if attempt > 0 {
+			// Brief backoff to let the local ACL state catch up with the
+			// consensus node (background sync delivers the conflicting record).
+			delay := time.Duration(attempt) * time.Second
+			log.Printf("[ACL] CreateOpenInvite retry %d/%d for space %s (waiting %v)",
+				attempt, createOpenInviteMaxRetries, spaceID, delay)
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+			case <-time.After(delay):
+			}
+		}
+
+		// Build the invite record while holding the ACL lock.
+		acl := space.Acl()
+		acl.Lock()
+		builder := acl.RecordBuilder()
+		result, err := builder.BuildInviteAnyone(permissions)
+		acl.Unlock()
+		if err != nil {
+			return nil, fmt.Errorf("building invite: %w", err)
+		}
+
+		// Submit the invite record to the network (without the ACL lock —
+		// AddRecord internally re-acquires it after the network round-trip).
+		aclClient := space.AclClient()
+		if err := aclClient.AddRecord(ctx, result.InviteRec); err != nil {
+			// Match both the sentinel error (local validation) and the
+			// string message (DRPC error from consensus node).
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "incorrect prev id") {
+				lastErr = err
+				log.Printf("[ACL] CreateOpenInvite: stale prev id for space %s (attempt %d), will retry",
+					spaceID, attempt+1)
+				continue
+			}
+			return nil, fmt.Errorf("adding invite record: %w", err)
+		}
+
+		return result.InviteKey, nil
 	}
 
-	// Submit the invite record to the network (without the ACL lock —
-	// AddRecord internally re-acquires it after the network round-trip).
-	aclClient := space.AclClient()
-	if err := aclClient.AddRecord(ctx, result.InviteRec); err != nil {
-		return nil, fmt.Errorf("adding invite record: %w", err)
-	}
-
-	return result.InviteKey, nil
+	return nil, fmt.Errorf("adding invite record after %d retries: %w", createOpenInviteMaxRetries, lastErr)
 }
 
 // JoinWithInvite joins a space using an invite key obtained out-of-band.

@@ -1072,8 +1072,10 @@ export class KERIClient {
   }>> {
     if (!this.client) throw new Error('Not initialized');
 
-    const notifications = await this.client.notifications().list();
+    // Fetch ALL notifications (signify-ts defaults to end=24 which truncates)
+    const notifications = await this.client.notifications().list(0, 1000);
     let notes = notifications.notes ?? [];
+    console.log(`[KERI listNotifications] Total notifications from KERIA: ${notes.length}`);
 
     if (filter) {
       if (filter.route !== undefined) {

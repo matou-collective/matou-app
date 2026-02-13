@@ -19,6 +19,7 @@ export function useAdminActions() {
 
   // State
   const isProcessing = ref(false);
+  const processingRegistrationId = ref<string | null>(null);
   const error = ref<string | null>(null);
   const lastAction = ref<{ type: string; success: boolean; registrationId: string } | null>(null);
 
@@ -120,6 +121,7 @@ export function useAdminActions() {
     }
 
     isProcessing.value = true;
+    processingRegistrationId.value = registration.notificationId;
     error.value = null;
 
     try {
@@ -204,7 +206,7 @@ export function useAdminActions() {
             credentialSaid: credentialSaid,
             schema: 'EMatouMembershipSchemaV1',
           }),
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(30000),
         });
 
         if (inviteResponse.ok) {
@@ -309,6 +311,7 @@ export function useAdminActions() {
       return false;
     } finally {
       isProcessing.value = false;
+      processingRegistrationId.value = null;
     }
   }
 
@@ -328,6 +331,7 @@ export function useAdminActions() {
     }
 
     isProcessing.value = true;
+    processingRegistrationId.value = registration.notificationId;
     error.value = null;
 
     try {
@@ -392,6 +396,7 @@ export function useAdminActions() {
       return false;
     } finally {
       isProcessing.value = false;
+      processingRegistrationId.value = null;
     }
   }
 
@@ -483,6 +488,7 @@ export function useAdminActions() {
   return {
     // State
     isProcessing,
+    processingRegistrationId,
     error,
     lastAction,
 

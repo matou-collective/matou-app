@@ -70,6 +70,13 @@ export default defineConfig({
       testMatch: /e2e-recovery-errors\.spec\.ts/,
       use: browserConfig,
     },
+    // Registration stress test - concurrent registrations with admin processing
+    {
+      name: 'stress',
+      testMatch: /e2e-registration-stress\.spec\.ts/,
+      use: browserConfig,
+      dependencies: ['org-setup'],
+    },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above
     {
@@ -82,6 +89,7 @@ export default defineConfig({
         /e2e-multi-backend\.spec\.ts/,
         /e2e-account-recovery\.spec\.ts/,
         /e2e-recovery-errors\.spec\.ts/,
+        /e2e-registration-stress\.spec\.ts/,
       ],
     },
   ],
