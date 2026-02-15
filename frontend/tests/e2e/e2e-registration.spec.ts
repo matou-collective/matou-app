@@ -223,12 +223,13 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Session restart: splash buttons correctly hidden');
 
       // 3. Wait for admin to see registration card
+      // KERIA message delivery through witness network can take 30-60s
       console.log('[Test] Waiting for registration to appear on admin dashboard...');
       const adminSection = adminPage.locator('.admin-section');
       await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
 
       const registrationCard = adminPage.locator('.registration-card').filter({ hasText: userName });
-      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.long });
+      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
       console.log('[Test] Registration card visible');
 
       // B. Set up invite + sync + initMemberProfiles listeners before approval

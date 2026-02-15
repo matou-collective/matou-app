@@ -338,13 +338,17 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       }
 
       // === 5. Deduplicate by applicantAid (prefer verified over pending, newest first) ===
-      // A user might send multiple registration messages (retries), show only the most recent
-      const seenApplicants = new Set<string>();
-      const deduped: PendingRegistration[] = [];
+      // A user might send multiple registration messages (retries), show only the most recent.
+      // When merging, keep the best profile data: a custom EXN pending has full profile
+      // data (name, email, etc.) while an IPEX apply pending may only have "Unknown" name.
+      const applicantMap = new Map<string, PendingRegistration>();
 
-      // Sort: verified first, then by submission time (newest first)
+      // Sort: verified first, then entries with real name first, then newest first
       registrations.sort((a, b) => {
         if (a.isPending !== b.isPending) return a.isPending ? 1 : -1;
+        const aHasName = a.profile.name && a.profile.name !== 'Unknown' ? 0 : 1;
+        const bHasName = b.profile.name && b.profile.name !== 'Unknown' ? 0 : 1;
+        if (aHasName !== bHasName) return aHasName - bHasName;
         return new Date(b.profile.submittedAt).getTime() - new Date(a.profile.submittedAt).getTime();
       });
 
@@ -352,11 +356,12 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         // Skip if no applicant AID (invalid registration)
         if (!reg.applicantAid) continue;
 
-        if (!seenApplicants.has(reg.applicantAid)) {
-          seenApplicants.add(reg.applicantAid);
-          deduped.push(reg);
+        if (!applicantMap.has(reg.applicantAid)) {
+          applicantMap.set(reg.applicantAid, reg);
         }
       }
+
+      const deduped = Array.from(applicantMap.values());
 
       // Re-sort by submission time (newest first)
       deduped.sort((a, b) =>
