@@ -178,6 +178,8 @@ export function useAdminActions() {
         displayName: registration.profile?.name,
         email: registration.profile?.email,
         avatar: registration.profile?.avatarFileRef,
+        avatarData: registration.profile?.avatarData,
+        avatarMimeType: registration.profile?.avatarMimeType,
         bio: registration.profile?.bio,
         interests: registration.profile?.interests,
         customInterests: registration.profile?.customInterests,

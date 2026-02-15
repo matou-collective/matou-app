@@ -215,6 +215,8 @@ const adminName = ref('');
 const adminEmail = ref('');
 const avatarPreview = ref<string | null>(null);
 const avatarFileRef = ref<string | null>(null);
+const avatarBase64Data = ref<string | null>(null);
+const avatarMimeType = ref<string | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const isUploadingAvatar = ref(false);
 
@@ -261,14 +263,21 @@ function handleFileSelect(event: Event) {
     return; // Max 5MB
   }
 
-  // Show preview
+  // Show preview and extract base64 data for fallback
   const reader = new FileReader();
   reader.onload = (e) => {
-    avatarPreview.value = e.target?.result as string;
+    const dataUrl = e.target?.result as string;
+    avatarPreview.value = dataUrl;
+    // Extract raw base64 from data URL (e.g. "data:image/png;base64,iVBOR...")
+    const commaIdx = dataUrl.indexOf(',');
+    if (commaIdx !== -1) {
+      avatarBase64Data.value = dataUrl.substring(commaIdx + 1);
+      avatarMimeType.value = file.type || 'image/png';
+    }
   };
   reader.readAsDataURL(file);
 
-  // Upload to backend
+  // Upload to backend (may fail if community space doesn't exist yet)
   isUploadingAvatar.value = true;
   uploadFile(file)
     .then((result) => {
@@ -278,7 +287,7 @@ function handleFileSelect(event: Event) {
       }
     })
     .catch((err) => {
-      console.warn('[OrgSetup] Avatar upload failed:', err);
+      console.warn('[OrgSetup] Avatar upload failed (will use base64 fallback):', err);
     })
     .finally(() => {
       isUploadingAvatar.value = false;
@@ -288,6 +297,8 @@ function handleFileSelect(event: Event) {
 function removeAvatar() {
   avatarPreview.value = null;
   avatarFileRef.value = null;
+  avatarBase64Data.value = null;
+  avatarMimeType.value = null;
   if (fileInput.value) {
     fileInput.value.value = '';
   }
@@ -300,6 +311,8 @@ async function handleSubmit() {
     adminEmail: adminEmail.value.trim() || undefined,
     adminAvatar: avatarFileRef.value || undefined,
     adminAvatarPreview: avatarPreview.value || undefined,
+    adminAvatarData: avatarBase64Data.value || undefined,
+    adminAvatarMimeType: avatarMimeType.value || undefined,
   });
 
   if (success) {

@@ -63,6 +63,17 @@ if [ "$DRY_RUN" = true ]; then
   echo ""
 fi
 
+# --- Stop dev sessions first ---
+DEV_SESSIONS_SCRIPT="$ROOT/scripts/dev-sessions.sh"
+if [ "$DRY_RUN" = false ] && [ -x "$DEV_SESSIONS_SCRIPT" ]; then
+  # Check if any dev session ports are in use
+  if ss -tlnp 2>/dev/null | grep -qE ':(4000|5100|5101|5102) '; then
+    echo -e "${BOLD}Stopping dev sessions${NC}"
+    "$DEV_SESSIONS_SCRIPT" stop 2>&1 | sed 's/^/  /'
+    echo ""
+  fi
+fi
+
 # --- Backend build artifacts ---
 echo -e "${BOLD}Backend build artifacts${NC}"
 remove "$ROOT/backend/bin"
@@ -192,13 +203,14 @@ HTMLEOF
 
   # Serve the clear page on each dev session origin so browser storage is
   # cleared for the correct localhost:<port> origin.
+  # Kill any leftover processes on storage-cleaner ports
   for port in 5100 5101 5102; do
     if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
-      echo -e "  ${RED}FAILED${NC} port ${port} is in use. Stop dev sessions first:"
-      echo -e "    npm run dev:sessions:stop"
-      echo ""
-      rm -f "$CLEAR_PAGE"
-      exit 1
+      pid=$(lsof -ti :"$port" 2>/dev/null || true)
+      if [ -n "$pid" ]; then
+        kill -9 $pid 2>/dev/null || true
+        sleep 0.3
+      fi
     fi
   done
 

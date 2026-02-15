@@ -336,14 +336,14 @@ func main() {
 	syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore, userIdentity)
 	trustHandler := api.NewTrustHandler(store, orgConfigHandler.GetOrgAID(), spaceManager)
 	healthHandler := api.NewHealthHandler(store, spaceStore, orgConfigHandler.GetOrgAID(), orgConfigHandler.GetAdminAID())
-	spacesHandler := api.NewSpacesHandler(spaceManager, store, userIdentity)
+	spacesHandler := api.NewSpacesHandler(spaceManager, store, userIdentity, spaceManager.FileManager())
 	emailSender := email.NewSender(cfg.SMTP)
 	invitesHandler := api.NewInvitesHandler(emailSender)
 	bookingHandler := api.NewBookingHandler(emailSender)
 	notificationsHandler := api.NewNotificationsHandler(emailSender)
 	identityHandler := api.NewIdentityHandler(userIdentity, sdkClient, spaceManager, spaceStore)
 	eventsHandler := api.NewEventsHandler(eventBroker)
-	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry)
+	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager())
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
 
 	// Create HTTP server

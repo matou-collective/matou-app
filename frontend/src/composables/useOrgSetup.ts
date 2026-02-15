@@ -19,6 +19,8 @@ export interface OrgSetupConfig {
   adminEmail?: string;
   adminAvatar?: string; // fileRef from avatar upload
   adminAvatarPreview?: string; // base64 data URL for UI preview
+  adminAvatarData?: string; // raw base64 avatar data (fallback when upload fails)
+  adminAvatarMimeType?: string; // MIME type for base64 avatar
 }
 
 export interface OrgSetupResult {
@@ -199,9 +201,11 @@ export function useOrgSetup() {
             adminName: config.adminName,
             adminEmail: config.adminEmail,
             adminAvatar: config.adminAvatar,
+            adminAvatarData: config.adminAvatarData,
+            adminAvatarMimeType: config.adminAvatarMimeType,
             credentialSaid: credential.said,
           }),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(30000),
         });
 
         if (spaceResponse.ok) {

@@ -123,6 +123,22 @@ func (m *SpaceManager) FileManager() *FileManager {
 	return m.fileManager
 }
 
+// RefreshFileManager updates the FileManager's pool and nodeconf references
+// from the current client. Must be called after SDKClient.Reinitialize()
+// because reinit closes the old app (killing the pool) and creates a new one.
+// All API handlers that hold a *FileManager pointer will see the update
+// since they share the same instance.
+func (m *SpaceManager) RefreshFileManager() {
+	if m.fileManager == nil {
+		return
+	}
+	p := m.client.GetPool()
+	nc := m.client.GetNodeConf()
+	if p != nil && nc != nil {
+		m.fileManager.RefreshTransport(p, nc)
+	}
+}
+
 // GetCommunityReadOnlySpaceID returns the community read-only space ID.
 func (m *SpaceManager) GetCommunityReadOnlySpaceID() string {
 	return m.communityReadOnlySpaceID

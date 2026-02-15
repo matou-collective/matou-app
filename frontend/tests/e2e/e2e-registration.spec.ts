@@ -1,3 +1,4 @@
+import path from 'path';
 import { test, expect, Page, BrowserContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
@@ -148,6 +149,14 @@ test.describe.serial('Registration Approval Flow', () => {
       await userPage.locator('#twitterUrl input').fill(profileData.twitterUrl);
       await userPage.locator('#instagramUrl input').fill(profileData.instagramUrl);
       await userPage.locator('#customInterests').fill(profileData.customInterests);
+
+      // Upload avatar image
+      const avatarPath = path.resolve(__dirname, 'fixtures/test-avatar.png');
+      const fileInput = userPage.locator('input[type="file"][accept="image/*"]');
+      await fileInput.setInputFiles(avatarPath);
+      // Wait for the preview to appear (FileReader processes the image)
+      await expect(userPage.locator('img[alt="Profile preview"]')).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Avatar uploaded and preview visible');
 
       // Select an interest if available
       const interest = userPage.locator('label').filter({ hasText: 'Governance' }).first();
@@ -344,12 +353,19 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(userPage.locator('textarea[placeholder="Why you joined"]')).toHaveValue(profileData.joinReason);
       await expect(userPage.locator('textarea[placeholder="Other interests"]')).toHaveValue(profileData.customInterests);
 
+      // Verify avatar image is displayed (uploaded during registration, carried into SharedProfile)
+      const avatarImg = userPage.locator('.avatar-img');
+      await expect(avatarImg).toBeVisible({ timeout: TIMEOUT.short });
+      const avatarSrc = await avatarImg.getAttribute('src');
+      expect(avatarSrc).toContain('/api/v1/files/');
+      console.log('[Test] Avatar image visible with fileRef:', avatarSrc);
+
       // Verify social links appear in the social links list
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'facebook.com' })).toBeVisible();
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'linkedin.com' })).toBeVisible();
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'x.com' })).toBeVisible();
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'instagram.com' })).toBeVisible();
-      console.log('[Test] PASS - All registration profile data persisted to Account Settings');
+      console.log('[Test] PASS - All registration profile data (including avatar) persisted to Account Settings');
     } finally {
       await userContext.close();
       await backends.stop('user-approve');

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -18,6 +19,7 @@ type ProfilesHandler struct {
 	spaceManager *anysync.SpaceManager
 	userIdentity *identity.UserIdentity
 	registry     *types.Registry
+	fileManager  *anysync.FileManager
 }
 
 // NewProfilesHandler creates a new profiles handler.
@@ -25,11 +27,13 @@ func NewProfilesHandler(
 	spaceManager *anysync.SpaceManager,
 	userIdentity *identity.UserIdentity,
 	registry *types.Registry,
+	fileManager *anysync.FileManager,
 ) *ProfilesHandler {
 	return &ProfilesHandler{
 		spaceManager: spaceManager,
 		userIdentity: userIdentity,
 		registry:     registry,
+		fileManager:  fileManager,
 	}
 }
 
@@ -354,6 +358,8 @@ type InitMemberProfilesRequest struct {
 	DisplayName          string          `json:"displayName"`
 	Email                string          `json:"email,omitempty"`
 	Avatar               string          `json:"avatar,omitempty"`
+	AvatarData           string          `json:"avatarData,omitempty"`     // Base64-encoded avatar fallback
+	AvatarMimeType       string          `json:"avatarMimeType,omitempty"` // MIME type for base64 avatar
 	Bio                  string          `json:"bio,omitempty"`
 	Interests            []string        `json:"interests,omitempty"`
 	CustomInterests      string          `json:"customInterests,omitempty"`
@@ -401,6 +407,25 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 			"error": "community-readonly space not configured",
 		})
 		return
+	}
+
+	// If no pre-uploaded avatar fileRef but base64 data is available, upload now.
+	// Use a separate context so the retry loop doesn't consume the request timeout.
+	if req.Avatar == "" && req.AvatarData != "" {
+		communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+		if communitySpaceID != "" {
+			client := h.spaceManager.GetClient()
+			if client != nil {
+				avatarCtx, avatarCancel := context.WithTimeout(context.Background(), 12*time.Second)
+				if fileRef, uploadErr := uploadBase64Avatar(avatarCtx, h.fileManager, communitySpaceID, client.GetSigningKey(), req.AvatarData, req.AvatarMimeType); uploadErr != nil {
+					fmt.Printf("Warning: failed to upload base64 member avatar: %v\n", uploadErr)
+				} else {
+					req.Avatar = fileRef
+					fmt.Printf("[InitMemberProfiles] Uploaded base64 avatar for %s, fileRef: %s\n", req.MemberAID, fileRef)
+				}
+				avatarCancel()
+			}
+		}
 	}
 
 	// Build CommunityProfile data

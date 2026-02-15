@@ -389,6 +389,8 @@ export async function initMemberProfiles(data: {
   displayName?: string;
   email?: string;
   avatar?: string;
+  avatarData?: string;
+  avatarMimeType?: string;
   bio?: string;
   interests?: string[];
   customInterests?: string;

@@ -122,6 +122,10 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Refresh the FileManager's pool/nodeconf references — the old pool died
+	// when Reinitialize closed the previous app.
+	h.spaceManager.RefreshFileManager()
+
 	newPeerID := h.sdkClient.GetPeerID()
 	if err := h.userIdentity.SetPeerID(newPeerID); err != nil {
 		fmt.Printf("Warning: failed to persist peer ID: %v\n", err)

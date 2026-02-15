@@ -23,27 +23,31 @@ type SpacesHandler struct {
 	store        *anystore.LocalStore
 	spaceStore   anysync.SpaceStore
 	userIdentity *identity.UserIdentity
+	fileManager  *anysync.FileManager
 }
 
 // NewSpacesHandler creates a new spaces handler
-func NewSpacesHandler(spaceManager *anysync.SpaceManager, store *anystore.LocalStore, userIdentity *identity.UserIdentity) *SpacesHandler {
+func NewSpacesHandler(spaceManager *anysync.SpaceManager, store *anystore.LocalStore, userIdentity *identity.UserIdentity, fileManager *anysync.FileManager) *SpacesHandler {
 	return &SpacesHandler{
 		spaceManager: spaceManager,
 		store:        store,
 		spaceStore:   anystore.NewSpaceStoreAdapter(store),
 		userIdentity: userIdentity,
+		fileManager:  fileManager,
 	}
 }
 
 // CreateCommunityRequest represents a request to create a community space
 type CreateCommunityRequest struct {
-	OrgAID         string `json:"orgAid"`
-	OrgName        string `json:"orgName"`
-	AdminAID       string `json:"adminAid,omitempty"`
-	AdminName      string `json:"adminName,omitempty"`
-	AdminEmail     string `json:"adminEmail,omitempty"`
-	AdminAvatar    string `json:"adminAvatar,omitempty"`
-	CredentialSAID string `json:"credentialSaid,omitempty"`
+	OrgAID              string `json:"orgAid"`
+	OrgName             string `json:"orgName"`
+	AdminAID            string `json:"adminAid,omitempty"`
+	AdminName           string `json:"adminName,omitempty"`
+	AdminEmail          string `json:"adminEmail,omitempty"`
+	AdminAvatar         string `json:"adminAvatar,omitempty"`
+	AdminAvatarData     string `json:"adminAvatarData,omitempty"`     // Base64-encoded avatar fallback
+	AdminAvatarMimeType string `json:"adminAvatarMimeType,omitempty"` // MIME type for base64 avatar
+	CredentialSAID      string `json:"credentialSaid,omitempty"`
 }
 
 // CreateCommunityResponse represents the response for community space creation
@@ -341,6 +345,20 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 
 	// Update space manager with the new community space ID
 	h.spaceManager.SetCommunitySpaceID(result.SpaceID)
+
+	// If no pre-uploaded avatar fileRef but base64 data is available, upload now.
+	// Use a separate context so the avatar retry loop doesn't consume the
+	// request's timeout budget (the frontend has a 15s AbortSignal).
+	if req.AdminAvatar == "" && req.AdminAvatarData != "" {
+		avatarCtx, avatarCancel := context.WithTimeout(context.Background(), 12*time.Second)
+		if fileRef, uploadErr := uploadBase64Avatar(avatarCtx, h.fileManager, result.SpaceID, client.GetSigningKey(), req.AdminAvatarData, req.AdminAvatarMimeType); uploadErr != nil {
+			fmt.Printf("Warning: failed to upload base64 admin avatar: %v\n", uploadErr)
+		} else {
+			req.AdminAvatar = fileRef
+			fmt.Printf("[CreateCommunity] Uploaded base64 admin avatar, fileRef: %s\n", fileRef)
+		}
+		avatarCancel()
+	}
 
 	// Collect seeded objects across all spaces
 	var allObjects []CreatedObject
