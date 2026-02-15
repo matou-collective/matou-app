@@ -60,14 +60,14 @@ test.describe('Recovery & Error Handling', () => {
     await test.step('Clear session', async () => {
       await page.evaluate(() => localStorage.removeItem('matou_passcode'));
       await page.goto(FRONTEND_URL);
-      await expect(page.getByRole('heading', { name: 'Matou' })).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByRole('img', { name: 'Matou', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
     });
 
     // Recover via mnemonic
     await test.step('Recover identity', async () => {
       await page.getByText(/recover identity/i).click();
       await expect(
-        page.getByRole('heading', { name: /recover your identity/i }),
+        page.getByRole('heading', { name: /enter your 12-word recovery phrase/i }),
       ).toBeVisible({ timeout: TIMEOUT.short });
 
       for (let i = 0; i < savedMnemonic.length; i++) {
@@ -89,7 +89,13 @@ test.describe('Recovery & Error Handling', () => {
       }
 
       await page.getByRole('button', { name: /continue to dashboard/i }).click();
-      await page.waitForURL(/\/dashboard/, { timeout: TIMEOUT.short });
+
+      // Welcome overlay verifies recovery steps (community checks will fail without org setup)
+      await expect(
+        page.getByRole('heading', { name: /welcome to matou/i }),
+      ).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText(/identity recovered/i).first()).toBeVisible();
+      console.log('Welcome overlay confirmed identity recovery');
     });
   });
 
@@ -153,7 +159,7 @@ test.describe('Recovery & Error Handling', () => {
 
     // Reload
     await page.goto(FRONTEND_URL);
-    await expect(page.getByRole('heading', { name: 'Matou' })).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(page.getByRole('img', { name: 'Matou', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
 
     // Buttons should be visible immediately
     await expect(
@@ -176,10 +182,11 @@ test.describe('Recovery & Error Handling', () => {
       localStorage.setItem('matou_passcode', 'test_passcode_that_will_fail');
     });
 
-    // Block all KERIA requests
-    await page.route('**/localhost:390*/**', (route) => {
-      route.abort('connectionrefused');
-    });
+    // Block KERIA admin (4901), CESR (4902), and boot (4903) — NOT config server (4904)
+    const keriaBlocker = (route: any) => route.abort('connectionrefused');
+    await page.route('**/localhost:4901/**', keriaBlocker);
+    await page.route('**/localhost:4902/**', keriaBlocker);
+    await page.route('**/localhost:4903/**', keriaBlocker);
 
     // Reload and verify error state
     await page.goto(FRONTEND_URL);
@@ -193,7 +200,9 @@ test.describe('Recovery & Error Handling', () => {
     await expect(page.getByRole('button', { name: /register/i })).not.toBeVisible();
 
     // Unblock and clean up
-    await page.unroute('**/localhost:390*/**');
+    await page.unroute('**/localhost:4901/**');
+    await page.unroute('**/localhost:4902/**');
+    await page.unroute('**/localhost:4903/**');
   });
 
   // ------------------------------------------------------------------
@@ -208,9 +217,15 @@ test.describe('Recovery & Error Handling', () => {
     });
 
     await page.goto(FRONTEND_URL);
-    await page.waitForTimeout(5000);
 
-    // App should either show splash buttons (passcode cleared) or error
+    // App will try to connect with the invalid passcode (any passcode creates valid keys).
+    // Eventually it connects, finds no AIDs, and shows splash — or shows an error.
+    // Wait for either state with a proper timeout.
+    await Promise.race([
+      expect(page.getByRole('button', { name: /register/i })).toBeVisible({ timeout: TIMEOUT.long }),
+      expect(page.getByText(/connection error|failed/i)).toBeVisible({ timeout: TIMEOUT.long }),
+    ]);
+
     const buttonsVisible = await page.getByRole('button', { name: /register/i }).isVisible().catch(() => false);
     const errorVisible = await page.getByText(/connection error|failed/i).isVisible().catch(() => false);
 

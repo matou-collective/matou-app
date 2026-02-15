@@ -269,6 +269,24 @@
                 placeholder="https://instagram.com/username"
               />
             </div>
+            <div class="space-y-1">
+              <label class="text-xs text-muted-foreground" for="githubUrl">GitHub</label>
+              <MInput
+                id="githubUrl"
+                v-model="formData.githubUrl"
+                type="url"
+                placeholder="https://github.com/username"
+              />
+            </div>
+            <div class="space-y-1">
+              <label class="text-xs text-muted-foreground" for="gitlabUrl">GitLab</label>
+              <MInput
+                id="gitlabUrl"
+                v-model="formData.gitlabUrl"
+                type="url"
+                placeholder="https://gitlab.com/username"
+              />
+            </div>
           </div>
         </div>
 
@@ -358,6 +376,8 @@ const formData = ref({
   linkedinUrl: store.profile.linkedinUrl,
   twitterUrl: store.profile.twitterUrl,
   instagramUrl: store.profile.instagramUrl,
+  githubUrl: store.profile.githubUrl,
+  gitlabUrl: store.profile.gitlabUrl,
   participationInterests: [...store.profile.participationInterests] as ParticipationInterest[],
   customInterests: store.profile.customInterests,
   hasAgreedToTerms: store.profile.hasAgreedToTerms,
@@ -468,11 +488,34 @@ function removeAvatar() {
   }
 }
 
+function saveFormToStore() {
+  store.updateProfile({
+    name: formData.value.name.trim(),
+    email: formData.value.email.trim(),
+    bio: formData.value.bio.trim(),
+    location: formData.value.location.trim(),
+    joinReason: formData.value.joinReason.trim(),
+    indigenousCommunity: formData.value.indigenousCommunity.trim(),
+    facebookUrl: formData.value.facebookUrl.trim(),
+    linkedinUrl: formData.value.linkedinUrl.trim(),
+    twitterUrl: formData.value.twitterUrl.trim(),
+    instagramUrl: formData.value.instagramUrl.trim(),
+    githubUrl: formData.value.githubUrl.trim(),
+    gitlabUrl: formData.value.gitlabUrl.trim(),
+    avatarPreview: avatarPreview.value,
+    participationInterests: formData.value.participationInterests,
+    customInterests: formData.value.customInterests.trim(),
+    hasAgreedToTerms: formData.value.hasAgreedToTerms,
+  });
+}
+
 function showTerms() {
+  saveFormToStore();
   router.push('/community-guidelines');
 }
 
 function showPrivacy() {
+  saveFormToStore();
   router.push('/privacy-policy');
 }
 
@@ -492,22 +535,7 @@ async function handleSubmit() {
   }
 
   // Save profile to store first
-  store.updateProfile({
-    name: formData.value.name.trim(),
-    email: formData.value.email.trim(),
-    bio: formData.value.bio.trim(),
-    location: formData.value.location.trim(),
-    joinReason: formData.value.joinReason.trim(),
-    indigenousCommunity: formData.value.indigenousCommunity.trim(),
-    facebookUrl: formData.value.facebookUrl.trim(),
-    linkedinUrl: formData.value.linkedinUrl.trim(),
-    twitterUrl: formData.value.twitterUrl.trim(),
-    instagramUrl: formData.value.instagramUrl.trim(),
-    avatarPreview: avatarPreview.value,
-    participationInterests: formData.value.participationInterests,
-    customInterests: formData.value.customInterests.trim(),
-    hasAgreedToTerms: formData.value.hasAgreedToTerms,
-  });
+  saveFormToStore();
 
   // Upload avatar if selected
   console.log('[ProfileForm] Avatar file selected:', !!avatarFile.value);

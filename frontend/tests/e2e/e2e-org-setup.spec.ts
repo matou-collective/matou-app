@@ -148,16 +148,17 @@ test.describe.serial('Organization Setup', () => {
       await page.getByRole('button', { name: /continue/i }).click();
       await completeMnemonicVerification(page, adminMnemonic);
 
-      // Wait for dashboard or pending
+      // Wait for dashboard, pending, or welcome overlay
+      const enterCommunityBtn = page.getByRole('button', { name: /enter community/i });
       await Promise.race([
         expect(page.getByRole('heading', { name: /registration pending/i })).toBeVisible({ timeout: TIMEOUT.long }),
         expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
+        expect(enterCommunityBtn).toBeVisible({ timeout: TIMEOUT.long }),
       ]);
 
       // Handle welcome overlay if present
-      const welcomeOverlay = page.locator('.welcome-overlay');
-      if (await welcomeOverlay.isVisible().catch(() => false)) {
-        await page.getByRole('button', { name: /enter community/i }).click();
+      if (await enterCommunityBtn.isVisible().catch(() => false)) {
+        await enterCommunityBtn.click();
         await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
       }
 
@@ -260,13 +261,13 @@ test.describe.serial('Organization Setup', () => {
       await expect(page.locator('h1')).toContainText('Welcome back', { timeout: TIMEOUT.short });
       console.log('[Test] Dashboard heading visible');
 
-      // Verify sidebar branding
-      await expect(page.getByText('Matou Community')).toBeVisible({ timeout: TIMEOUT.short });
+      // Verify sidebar branding (name may span multiple text nodes)
+      await expect(page.getByText('Matou').first()).toBeVisible({ timeout: TIMEOUT.short });
 
       // Verify stats cards rendered
-      await expect(page.getByText('Pending Registrations')).toBeVisible({ timeout: TIMEOUT.short });
-      await expect(page.getByText('Community Activity')).toBeVisible({ timeout: TIMEOUT.short });
-      await expect(page.getByText('New Members')).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByRole('heading', { name: 'Pending Registrations', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText('Community Activity').first()).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText('New Members').first()).toBeVisible({ timeout: TIMEOUT.short });
       console.log('[Test] Dashboard sections rendered');
 
       // Verify admin-specific section (Invite Member button)

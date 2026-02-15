@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -22,27 +23,31 @@ type SpacesHandler struct {
 	store        *anystore.LocalStore
 	spaceStore   anysync.SpaceStore
 	userIdentity *identity.UserIdentity
+	fileManager  *anysync.FileManager
 }
 
 // NewSpacesHandler creates a new spaces handler
-func NewSpacesHandler(spaceManager *anysync.SpaceManager, store *anystore.LocalStore, userIdentity *identity.UserIdentity) *SpacesHandler {
+func NewSpacesHandler(spaceManager *anysync.SpaceManager, store *anystore.LocalStore, userIdentity *identity.UserIdentity, fileManager *anysync.FileManager) *SpacesHandler {
 	return &SpacesHandler{
 		spaceManager: spaceManager,
 		store:        store,
 		spaceStore:   anystore.NewSpaceStoreAdapter(store),
 		userIdentity: userIdentity,
+		fileManager:  fileManager,
 	}
 }
 
 // CreateCommunityRequest represents a request to create a community space
 type CreateCommunityRequest struct {
-	OrgAID         string `json:"orgAid"`
-	OrgName        string `json:"orgName"`
-	AdminAID       string `json:"adminAid,omitempty"`
-	AdminName      string `json:"adminName,omitempty"`
-	AdminEmail     string `json:"adminEmail,omitempty"`
-	AdminAvatar    string `json:"adminAvatar,omitempty"`
-	CredentialSAID string `json:"credentialSaid,omitempty"`
+	OrgAID              string `json:"orgAid"`
+	OrgName             string `json:"orgName"`
+	AdminAID            string `json:"adminAid,omitempty"`
+	AdminName           string `json:"adminName,omitempty"`
+	AdminEmail          string `json:"adminEmail,omitempty"`
+	AdminAvatar         string `json:"adminAvatar,omitempty"`
+	AdminAvatarData     string `json:"adminAvatarData,omitempty"`     // Base64-encoded avatar fallback
+	AdminAvatarMimeType string `json:"adminAvatarMimeType,omitempty"` // MIME type for base64 avatar
+	CredentialSAID      string `json:"credentialSaid,omitempty"`
 }
 
 // CreateCommunityResponse represents the response for community space creation
@@ -340,6 +345,20 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 
 	// Update space manager with the new community space ID
 	h.spaceManager.SetCommunitySpaceID(result.SpaceID)
+
+	// If no pre-uploaded avatar fileRef but base64 data is available, upload now.
+	// Use a separate context so the avatar retry loop doesn't consume the
+	// request's timeout budget (the frontend has a 15s AbortSignal).
+	if req.AdminAvatar == "" && req.AdminAvatarData != "" {
+		avatarCtx, avatarCancel := context.WithTimeout(context.Background(), 12*time.Second)
+		if fileRef, uploadErr := uploadBase64Avatar(avatarCtx, h.fileManager, result.SpaceID, client.GetSigningKey(), req.AdminAvatarData, req.AdminAvatarMimeType); uploadErr != nil {
+			fmt.Printf("Warning: failed to upload base64 admin avatar: %v\n", uploadErr)
+		} else {
+			req.AdminAvatar = fileRef
+			fmt.Printf("[CreateCommunity] Uploaded base64 admin avatar, fileRef: %s\n", fileRef)
+		}
+		avatarCancel()
+	}
 
 	// Collect seeded objects across all spaces
 	var allObjects []CreatedObject
@@ -914,6 +933,14 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Wait for initial sync to complete so member sees existing data
+	if treeMgr := h.spaceManager.TreeManager(); treeMgr != nil {
+		if err := treeMgr.WaitForSync(ctx, communitySpace.SpaceID, 1, 30*time.Second); err != nil {
+			fmt.Printf("[JoinCommunity] WaitForSync warning for space %s: %v\n", communitySpace.SpaceID, err)
+			// Don't fail — data will arrive via next HeadSync cycle
+		}
+	}
+
 	// Generate and persist space keys so this backend can write objects
 	// (e.g. SharedProfile) to the community space. Each member gets their
 	// own signing key; the ACL authorizes writes based on peer identity.
@@ -939,25 +966,42 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 	fmt.Printf("[JoinCommunity] Generated and persisted space keys for community space %s\n", communitySpace.SpaceID)
 
 	// Also join community-readonly space if invite key is provided
+	log.Printf("[JoinCommunity] readOnly check: key=%v spaceID=%q", req.ReadOnlyInviteKey != "", req.ReadOnlySpaceID)
 	if req.ReadOnlyInviteKey != "" && req.ReadOnlySpaceID != "" {
 		roKeyBytes, roErr := base64.StdEncoding.DecodeString(req.ReadOnlyInviteKey)
-		if roErr == nil {
+		if roErr != nil {
+			log.Printf("[JoinCommunity] readOnly base64 decode error: %v", roErr)
+		} else {
 			roPrivKey, roUnmarshalErr := crypto.UnmarshalEd25519PrivateKeyProto(roKeyBytes)
-			if roUnmarshalErr == nil {
+			if roUnmarshalErr != nil {
+				log.Printf("[JoinCommunity] readOnly key unmarshal error: %v", roUnmarshalErr)
+			} else {
 				if joinErr := aclMgr.JoinWithInvite(ctx, req.ReadOnlySpaceID, roPrivKey, metadata); joinErr != nil {
-					fmt.Printf("Warning: failed to join community-readonly space: %v\n", joinErr)
+					log.Printf("[JoinCommunity] WARNING: failed to join community-readonly space: %v", joinErr)
 				} else {
 					h.spaceManager.SetCommunityReadOnlySpaceID(req.ReadOnlySpaceID)
-					fmt.Printf("[Spaces] User %s joined community-readonly space %s\n", req.UserAID, req.ReadOnlySpaceID)
+					log.Printf("[JoinCommunity] User %s joined community-readonly space %s", req.UserAID, req.ReadOnlySpaceID)
+
+					// Wait for initial sync of readonly space (same as community space above)
+					if treeMgr := h.spaceManager.TreeManager(); treeMgr != nil {
+						log.Printf("[JoinCommunity] calling WaitForSync for readonly space %s", req.ReadOnlySpaceID)
+						if waitErr := treeMgr.WaitForSync(ctx, req.ReadOnlySpaceID, 1, 30*time.Second); waitErr != nil {
+							log.Printf("[JoinCommunity] WaitForSync warning for readonly space %s: %v", req.ReadOnlySpaceID, waitErr)
+						} else {
+							log.Printf("[JoinCommunity] WaitForSync OK for readonly space %s", req.ReadOnlySpaceID)
+						}
+					} else {
+						log.Printf("[JoinCommunity] TreeManager is nil — skipping WaitForSync for readonly space")
+					}
 
 					// Persist keys for the readonly space too
 					roKeys, roKeyGenErr := anysync.GenerateSpaceKeySet()
 					if roKeyGenErr == nil {
 						roKeys.SigningKey = client.GetSigningKey()
 						if roPersistErr := anysync.PersistSpaceKeySet(dataDir, req.ReadOnlySpaceID, roKeys); roPersistErr != nil {
-							fmt.Printf("[JoinCommunity] Warning: failed to persist readonly space keys: %v\n", roPersistErr)
+							log.Printf("[JoinCommunity] Warning: failed to persist readonly space keys: %v", roPersistErr)
 						} else {
-							fmt.Printf("[JoinCommunity] Generated and persisted space keys for readonly space %s\n", req.ReadOnlySpaceID)
+							log.Printf("[JoinCommunity] Generated and persisted space keys for readonly space %s", req.ReadOnlySpaceID)
 						}
 					}
 				}
@@ -1120,12 +1164,20 @@ type SyncStatusResponse struct {
 	Ready     bool            `json:"ready"`
 }
 
+// SyncMetrics reports P2P sync activity for a space.
+type SyncMetrics struct {
+	TreesChanged  int `json:"treesChanged"`  // number of locally changed trees
+	HeadsReceived int `json:"headsReceived"` // total head receive events from peers
+	HeadsApplied  int `json:"headsApplied"`  // total head apply events (successful merges)
+}
+
 // SpaceSyncStatus describes the sync state of a single space.
 type SpaceSyncStatus struct {
-	SpaceID       string `json:"spaceId,omitempty"`
-	HasObjectTree bool   `json:"hasObjectTree"`
-	ObjectCount   int    `json:"objectCount"`
-	ProfileCount  int    `json:"profileCount"`
+	SpaceID       string       `json:"spaceId,omitempty"`
+	HasObjectTree bool         `json:"hasObjectTree"`
+	ObjectCount   int          `json:"objectCount"`
+	ProfileCount  int          `json:"profileCount"`
+	Sync          *SyncMetrics `json:"sync,omitempty"`
 }
 
 // HandleSyncStatus handles GET /api/v1/spaces/sync-status.
@@ -1139,19 +1191,53 @@ func (h *SpacesHandler) HandleSyncStatus(w http.ResponseWriter, r *http.Request)
 
 	ctx := r.Context()
 	objMgr := h.spaceManager.ObjectTreeManager()
+	treeMgr := h.spaceManager.TreeManager()
 	resp := SyncStatusResponse{}
+
+	// Re-scan space indexes to pick up trees that arrived via sync since last poll.
+	// BuildSpaceIndex is idempotent — it skips already-indexed trees.
+	if treeMgr != nil {
+		ctx := r.Context()
+		if cid := h.spaceManager.GetCommunitySpaceID(); cid != "" {
+			_ = treeMgr.BuildSpaceIndex(ctx, cid)
+		}
+		if rid := h.spaceManager.GetCommunityReadOnlySpaceID(); rid != "" {
+			_ = treeMgr.BuildSpaceIndex(ctx, rid)
+		}
+	}
 
 	// Check community (writable) space
 	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
 	if communitySpaceID != "" {
 		resp.Community.SpaceID = communitySpaceID
-		resp.Community.HasObjectTree = objMgr.HasObjectTree(ctx, communitySpaceID)
-		if resp.Community.HasObjectTree {
-			if objects, err := objMgr.ReadObjects(ctx, communitySpaceID); err == nil {
-				resp.Community.ObjectCount = len(objects)
-				for _, obj := range objects {
-					if obj.Type == "SharedProfile" || obj.Type == "CommunityProfile" {
-						resp.Community.ProfileCount++
+		if treeMgr != nil {
+			// Re-scan storage for newly arrived trees (from sync workers)
+			_ = treeMgr.BuildSpaceIndex(ctx, communitySpaceID)
+			entries := treeMgr.GetTreesForSpace(communitySpaceID)
+			resp.Community.HasObjectTree = len(entries) > 0
+			resp.Community.ObjectCount = len(entries)
+			for _, entry := range entries {
+				if entry.ObjectType == "SharedProfile" || entry.ObjectType == "CommunityProfile" {
+					resp.Community.ProfileCount++
+				}
+			}
+			if ss := treeMgr.GetSyncStatus(communitySpaceID); ss != nil {
+				changed, received, applied := ss.GetStatus()
+				resp.Community.Sync = &SyncMetrics{
+					TreesChanged:  changed,
+					HeadsReceived: received,
+					HeadsApplied:  applied,
+				}
+			}
+		} else {
+			resp.Community.HasObjectTree = objMgr.HasObjectTree(ctx, communitySpaceID)
+			if resp.Community.HasObjectTree {
+				if objects, err := objMgr.ReadObjects(ctx, communitySpaceID); err == nil {
+					resp.Community.ObjectCount = len(objects)
+					for _, obj := range objects {
+						if obj.Type == "SharedProfile" || obj.Type == "CommunityProfile" {
+							resp.Community.ProfileCount++
+						}
 					}
 				}
 			}
@@ -1162,13 +1248,34 @@ func (h *SpacesHandler) HandleSyncStatus(w http.ResponseWriter, r *http.Request)
 	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
 	if roSpaceID != "" {
 		resp.ReadOnly.SpaceID = roSpaceID
-		resp.ReadOnly.HasObjectTree = objMgr.HasObjectTree(ctx, roSpaceID)
-		if resp.ReadOnly.HasObjectTree {
-			if objects, err := objMgr.ReadObjects(ctx, roSpaceID); err == nil {
-				resp.ReadOnly.ObjectCount = len(objects)
-				for _, obj := range objects {
-					if obj.Type == "CommunityProfile" || obj.Type == "OrgProfile" {
-						resp.ReadOnly.ProfileCount++
+		if treeMgr != nil {
+			// Re-scan storage for newly arrived trees (from sync workers)
+			_ = treeMgr.BuildSpaceIndex(ctx, roSpaceID)
+			entries := treeMgr.GetTreesForSpace(roSpaceID)
+			resp.ReadOnly.HasObjectTree = len(entries) > 0
+			resp.ReadOnly.ObjectCount = len(entries)
+			for _, entry := range entries {
+				if entry.ObjectType == "CommunityProfile" || entry.ObjectType == "OrgProfile" {
+					resp.ReadOnly.ProfileCount++
+				}
+			}
+			if ss := treeMgr.GetSyncStatus(roSpaceID); ss != nil {
+				changed, received, applied := ss.GetStatus()
+				resp.ReadOnly.Sync = &SyncMetrics{
+					TreesChanged:  changed,
+					HeadsReceived: received,
+					HeadsApplied:  applied,
+				}
+			}
+		} else {
+			resp.ReadOnly.HasObjectTree = objMgr.HasObjectTree(ctx, roSpaceID)
+			if resp.ReadOnly.HasObjectTree {
+				if objects, err := objMgr.ReadObjects(ctx, roSpaceID); err == nil {
+					resp.ReadOnly.ObjectCount = len(objects)
+					for _, obj := range objects {
+						if obj.Type == "CommunityProfile" || obj.Type == "OrgProfile" {
+							resp.ReadOnly.ProfileCount++
+						}
 					}
 				}
 			}
@@ -1176,6 +1283,26 @@ func (h *SpacesHandler) HandleSyncStatus(w http.ResponseWriter, r *http.Request)
 	}
 
 	resp.Ready = resp.Community.HasObjectTree && resp.ReadOnly.HasObjectTree
+
+	// Log detailed entry info for debugging
+	if communitySpaceID != "" && treeMgr != nil {
+		entries := treeMgr.GetTreesForSpace(communitySpaceID)
+		for i, e := range entries {
+			log.Printf("[SyncStatus] community entry[%d]: treeId=%s objectId=%s objectType=%s changeType=%s",
+				i, e.TreeID, e.ObjectID, e.ObjectType, e.ChangeType)
+		}
+	}
+	if roSpaceID != "" && treeMgr != nil {
+		roEntries := treeMgr.GetTreesForSpace(roSpaceID)
+		for i, e := range roEntries {
+			log.Printf("[SyncStatus] readOnly entry[%d]: treeId=%s objectId=%s objectType=%s changeType=%s",
+				i, e.TreeID, e.ObjectID, e.ObjectType, e.ChangeType)
+		}
+	}
+	log.Printf("[SyncStatus] community={has=%v obj=%d prof=%d} readOnly={has=%v obj=%d prof=%d} ready=%v",
+		resp.Community.HasObjectTree, resp.Community.ObjectCount, resp.Community.ProfileCount,
+		resp.ReadOnly.HasObjectTree, resp.ReadOnly.ObjectCount, resp.ReadOnly.ProfileCount,
+		resp.Ready)
 
 	writeJSON(w, http.StatusOK, resp)
 }

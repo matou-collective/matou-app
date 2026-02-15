@@ -120,7 +120,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, watch } from 'vue';
 import {
   ArrowRight,
   CheckCircle2,
@@ -147,19 +147,27 @@ const steps = [
   { key: 'connecting' as ClaimStep, label: 'Connecting to agent' },
   { key: 'admitting' as ClaimStep, label: 'Accepting credential grants' },
   { key: 'rotating' as ClaimStep, label: 'Rotating keys for security' },
-  { key: 'securing' as ClaimStep, label: 'Generating recovery phrase' },
+  { key: 'securing' as ClaimStep, label: 'Setting up your account' },
   { key: 'done' as ClaimStep, label: 'Claim complete' },
 ];
 
 function isStepComplete(key: ClaimStep): boolean {
+  if (claimStep.value === 'done') return true;
   const currentIdx = stepOrder.indexOf(claimStep.value);
   const stepIdx = stepOrder.indexOf(key);
   return currentIdx > stepIdx;
 }
 
 function isStepActive(key: ClaimStep): boolean {
+  if (claimStep.value === 'done') return false;
   return claimStep.value === key;
 }
+
+watch(claimStep, (newStep) => {
+  if (newStep === 'done') {
+    setTimeout(() => emit('continue'), 1500);
+  }
+});
 
 onMounted(async () => {
   const passcode = store.claimPasscode;

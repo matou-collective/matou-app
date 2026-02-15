@@ -51,34 +51,41 @@
 
     <!-- Actions -->
     <div class="flex items-center gap-2" @click.stop>
-      <button
-        @click="$emit('approve', registration)"
-        class="action-btn flex-1 px-3 py-2 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
-        :disabled="disabled"
-      >
-        <Check class="w-4 h-4 inline mr-1.5" />
-        Approve
-      </button>
-      <button
-        @click="$emit('decline', registration)"
-        class="action-btn px-3 py-2 text-sm rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors"
-        :disabled="disabled"
-      >
-        <X class="w-4 h-4" />
-      </button>
+      <template v-if="isActiveProcessing">
+        <div class="flex-1 px-3 py-2 text-sm rounded-lg bg-primary/80 text-white text-center flex items-center justify-center gap-2">
+          <Loader2 class="w-4 h-4 animate-spin" />
+          Processing...
+        </div>
+      </template>
+      <template v-else>
+        <button
+          @click="$emit('approve', registration)"
+          class="action-btn flex-1 px-3 py-2 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
+          :disabled="disabled"
+        >
+          Approve
+        </button>
+        <button
+          @click="$emit('decline', registration)"
+          class="action-btn flex-1 px-3 py-2 text-sm rounded-lg bg-orange-500 text-white hover:bg-orange-600 transition-colors"
+          :disabled="disabled"
+        >
+          Decline
+        </button>
+      </template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Check, X } from 'lucide-vue-next';
+import { Check, X, Loader2 } from 'lucide-vue-next';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { getFileUrl } from 'src/lib/api/client';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 
 // Map interest value to human-readable label
-const interestLabelMap = new Map(
+const interestLabelMap: Map<string, string> = new Map(
   PARTICIPATION_INTERESTS.map(i => [i.value, i.label])
 );
 
@@ -89,10 +96,12 @@ function getInterestLabel(value: string): string {
 interface Props {
   registration: PendingRegistration;
   disabled?: boolean;
+  isActiveProcessing?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   disabled: false,
+  isActiveProcessing: false,
 });
 
 defineEmits<{

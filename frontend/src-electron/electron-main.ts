@@ -3,11 +3,69 @@
  * Spawns the Go backend as a child process, waits for it to become healthy,
  * then creates the BrowserWindow pointing at the Quasar frontend.
  */
-import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
-import { ChildProcess, spawn } from 'child_process';
+import { app, BrowserWindow, ipcMain, safeStorage, nativeImage } from 'electron';
+import { ChildProcess, spawn, execFileSync } from 'child_process';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import net from 'net';
 import fs from 'fs';
+
+// ESM compatibility: __dirname is not available in ES modules
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Force WM_CLASS to 'matou' so Linux DEs can match it to the .desktop file
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('class', 'matou');
+  app.setDesktopName('matou.desktop');
+}
+
+/**
+ * Install .desktop file and icons for Linux desktop integration.
+ * AppImages don't install these automatically, so the DE can't find the
+ * application icon without them. Runs once on first launch.
+ */
+function installDesktopIntegration(): void {
+  if (process.platform !== 'linux' || !app.isPackaged) return;
+
+  const appsDir = path.join(app.getPath('home'), '.local', 'share', 'applications');
+  const desktopFile = path.join(appsDir, 'matou.desktop');
+
+  // Find the AppImage path from the environment (set by AppImage runtime)
+  const appImagePath = process.env.APPIMAGE;
+  if (!appImagePath) return;
+
+  // Skip if already installed and pointing to the same AppImage
+  if (fs.existsSync(desktopFile)) {
+    const existing = fs.readFileSync(desktopFile, 'utf-8');
+    if (existing.includes(appImagePath)) return;
+  }
+
+  // Install icons to ~/.local/share/icons/hicolor/
+  const iconsBase = path.join(app.getPath('home'), '.local', 'share', 'icons', 'hicolor');
+  const sizes = [16, 32, 48, 64, 128, 256, 512];
+  for (const size of sizes) {
+    const srcIcon = path.join(process.resourcesPath, 'icons', `${size}x${size}.png`);
+    if (!fs.existsSync(srcIcon)) continue;
+    const destDir = path.join(iconsBase, `${size}x${size}`, 'apps');
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.copyFileSync(srcIcon, path.join(destDir, 'matou.png'));
+  }
+
+  // Write .desktop file
+  fs.mkdirSync(appsDir, { recursive: true });
+  const desktopContent = `[Desktop Entry]
+Name=Matou
+Exec="${appImagePath}" %U
+Terminal=false
+Type=Application
+Icon=matou
+StartupWMClass=matou
+Categories=Network;
+Comment=Matou Community
+`;
+  fs.writeFileSync(desktopFile, desktopContent, { mode: 0o755 });
+  console.log('[Electron] Installed desktop integration:', desktopFile);
+}
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
@@ -39,10 +97,12 @@ function findFreePort(): Promise<number> {
 function getBackendPath(): string {
   if (app.isPackaged) {
     // Packaged app: binary is in resources/backend/
+    const archMap: Record<string, string> = { arm64: 'arm64', x64: 'amd64' };
+    const arch = archMap[process.arch] ?? 'amd64';
     const platformMap: Record<string, string> = {
-      darwin: 'darwin-arm64',
-      linux: 'linux-amd64',
-      win32: 'windows-amd64',
+      darwin: `darwin-${arch}`,
+      linux: `linux-${arch}`,
+      win32: `windows-${arch}`,
     };
     const platformDir = platformMap[process.platform] ?? 'linux-amd64';
     const binaryName = process.platform === 'win32' ? 'matou-backend.exe' : 'matou-backend';
@@ -50,7 +110,8 @@ function getBackendPath(): string {
   }
 
   // Development: run from the backend directory
-  return path.join(__dirname, '..', '..', 'backend', 'bin', 'server');
+  // __dirname is .quasar/dev-electron/ in dev, so go up 3 levels to reach the monorepo root
+  return path.join(__dirname, '..', '..', '..', 'backend', 'bin', 'server');
 }
 
 /**
@@ -74,7 +135,12 @@ async function startBackend(): Promise<void> {
       MATOU_SERVER_PORT: String(backendPort),
       MATOU_DATA_DIR: dataDir,
       MATOU_CORS_MODE: 'bundled',
-      ...(isProduction && { MATOU_ENV: 'production' }),
+      ...(isProduction && {
+        MATOU_ENV: 'production',
+        MATOU_CONFIG_SERVER_URL: process.env.PROD_CONFIG_SERVER_URL,
+        MATOU_SMTP_HOST: process.env.PROD_SMTP_HOST,
+        MATOU_SMTP_PORT: process.env.PROD_SMTP_PORT,
+      }),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -141,6 +207,14 @@ function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
+    title: 'Mātou',
+    backgroundColor: '#1e5f74',
+    icon: nativeImage.createFromPath(
+      app.isPackaged
+        ? path.join(process.resourcesPath, 'icons', '256x256.png')
+        : path.join(__dirname, '..', '..', '..', 'src-electron', 'icons', '256x256.png'),
+    ),
+    frame: false,
     webPreferences: {
       preload: path.resolve(__dirname, process.env.QUASAR_ELECTRON_PRELOAD!),
       contextIsolation: true,
@@ -163,6 +237,18 @@ function createWindow() {
 // IPC handlers for preload API
 ipcMain.handle('get-backend-port', () => backendPort);
 ipcMain.handle('get-data-dir', () => path.join(app.getPath('userData'), 'matou-data'));
+
+// Window control IPC handlers
+ipcMain.handle('window-minimize', () => mainWindow?.minimize());
+ipcMain.handle('window-maximize', () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow?.maximize();
+  }
+});
+ipcMain.handle('window-close', () => mainWindow?.close());
+ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() ?? false);
 
 // --- Secure storage IPC handlers (OS-level encryption via safeStorage) ---
 const secureStorePath = path.join(app.getPath('userData'), 'matou-data', 'secure-store.json');
@@ -223,6 +309,7 @@ ipcMain.handle('secure-storage-remove', (_event, key: string): void => {
 });
 
 app.whenReady().then(async () => {
+  installDesktopIntegration();
   try {
     await startBackend();
     createWindow();

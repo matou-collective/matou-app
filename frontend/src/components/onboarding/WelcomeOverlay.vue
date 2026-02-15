@@ -24,7 +24,7 @@
         </div>
 
         <!-- Welcome Text - Rotating Indigenous Languages -->
-        <p v-motion="fadeSlideUp(2400)" class="text-white/80 text-base md:text-lg -mt-4">
+        <p v-motion="fadeSlideUp(1800)" class="text-white/80 text-base md:text-lg -mt-4">
           <span class="welcome-word" :class="{ 'fade-out': wordFading }">{{ currentWelcome.word }}</span>, {{ displayName }}!
         </p>
 
@@ -48,24 +48,15 @@
           </div>
         </div>
 
-        <!-- Timeout warning -->
-        <p v-if="timedOut && !syncReady" v-motion="fadeSlideUp(3600)" class="text-white/60 text-xs">
-          Sync is taking longer than expected. You can enter anyway.
-        </p>
-
         <!-- Continue Button -->
         <MBtn
           v-motion="fadeSlideUp(3600)"
           class="w-full"
-          :disabled="!syncReady && !timedOut"
+          :disabled="!syncReady"
           @click="handleContinue"
         >
           <template v-if="syncReady">
             Enter Community
-            <ArrowRight class="w-4 h-4 ml-2" />
-          </template>
-          <template v-else-if="timedOut">
-            Enter Anyway
             <ArrowRight class="w-4 h-4 ml-2" />
           </template>
           <template v-else>
@@ -84,7 +75,7 @@ import { useAnimationPresets } from 'composables/useAnimationPresets';
 const { fadeSlideUp } = useAnimationPresets();
 import MBtn from '../base/MBtn.vue';
 import { useIdentityStore } from 'stores/identity';
-import { getSyncStatus } from 'src/lib/api/client';
+import { getSyncStatus, getProfiles } from 'src/lib/api/client';
 
 interface Props {
   show: boolean;
@@ -116,7 +107,9 @@ const emit = defineEmits<{
 
 // Welcome words in indigenous languages
 const welcomeWords = [
+  { word: 'Welcome', language: 'English' },
   { word: 'Nau mai', language: 'Māori' },
+  { word: 'Oro mau', language: 'Cook Islands Maori' },
   { word: 'E komo mai', language: 'Hawaiian' },
   { word: "Yá'át'ééh", language: 'Navajo' },
   { word: 'Osiyo', language: 'Cherokee' },
@@ -159,20 +152,18 @@ function stopWelcomeRotation() {
 const communityReady = ref(false);
 const readOnlyReady = ref(false);
 const syncReady = computed(() => communityReady.value && readOnlyReady.value);
-const timedOut = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
 const syncSteps = computed(() => [
   {
     key: 'community',
-    label: 'Syncing community data...',
+    label: communityReady.value ? 'Profile synced' : 'Syncing your profile...',
     done: communityReady.value,
-    active: !communityReady.value && !readOnlyReady.value,
+    active: !communityReady.value,
   },
   {
     key: 'readonly',
-    label: 'Loading community info...',
+    label: readOnlyReady.value ? 'Community directory loaded' : 'Loading community directory...',
     done: readOnlyReady.value,
     active: communityReady.value && !readOnlyReady.value,
   },
@@ -187,9 +178,32 @@ const syncSteps = computed(() => [
 async function pollSyncStatus() {
   try {
     const status = await getSyncStatus();
-    communityReady.value = status.community.hasObjectTree;
-    readOnlyReady.value = status.readOnly.hasObjectTree;
-    if (status.ready) {
+    readOnlyReady.value = status.readOnly.hasObjectTree && status.readOnly.profileCount > 0;
+
+    // Check if the current user's SharedProfile has synced to the community space
+    if (status.community.hasObjectTree && !communityReady.value) {
+      const userAID = identityStore.currentAID?.prefix;
+      const sharedProfiles = await getProfiles('SharedProfile');
+      const profileSummary = sharedProfiles.map(p => {
+        const d = p.data as Record<string, unknown>;
+        return `${p.id}(aid=${d?.aid})`;
+      });
+      console.log(`[WelcomeOverlay] SharedProfiles (${sharedProfiles.length}): ${profileSummary.join(', ')}`);
+      if (userAID) {
+        const myProfile = sharedProfiles.find(p => (p.data as Record<string, unknown>)?.aid === userAID);
+        if (myProfile) {
+          console.log('[WelcomeOverlay] Found current user SharedProfile:', myProfile.id);
+          communityReady.value = true;
+        } else {
+          console.log('[WelcomeOverlay] Waiting for SharedProfile with AID:', userAID);
+        }
+      } else {
+        // Fallback: no AID available, use profileCount
+        communityReady.value = status.community.profileCount > 0;
+      }
+    }
+
+    if (communityReady.value && readOnlyReady.value) {
       stopPolling();
     }
   } catch {
@@ -202,20 +216,12 @@ function startSyncPolling() {
   // Poll immediately, then every 2.5 seconds
   pollSyncStatus();
   pollTimer = setInterval(pollSyncStatus, 2500);
-  // Timeout fallback: allow entering after 30 seconds
-  timeoutTimer = setTimeout(() => {
-    timedOut.value = true;
-  }, 30000);
 }
 
 function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
-  }
-  if (timeoutTimer) {
-    clearTimeout(timeoutTimer);
-    timeoutTimer = null;
   }
 }
 
@@ -225,7 +231,6 @@ watch(() => props.show, (shown) => {
     // Reset state
     communityReady.value = false;
     readOnlyReady.value = false;
-    timedOut.value = false;
     startSyncPolling();
     // Start welcome rotation after the welcome text fades in (2400ms delay + some buffer)
     setTimeout(() => {

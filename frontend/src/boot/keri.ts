@@ -7,7 +7,7 @@ import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
 import { useKERIClient, initKeriConfig } from 'src/lib/keri/client';
-import { getBackendIdentity, setBackendIdentity } from 'src/lib/api/client';
+import { getBackendIdentity, setBackendIdentity, initBackendUrl } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 /**
@@ -75,13 +75,23 @@ async function restoreIdentity(
     } else if (result.error) {
       console.warn('[KERI Boot] Failed to restore session:', result.error);
       onboardingStore.setInitializationError(result.error);
-      await secureStorage.removeItem('matou_passcode');
+      // Only clear passcode for auth failures — not transient network errors
+      const isAuthError = result.error.includes('401') || result.error.includes('Unauthorized')
+        || result.error.includes('404') || result.error.includes('agent not found');
+      if (isAuthError) {
+        await secureStorage.removeItem('matou_passcode');
+      }
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error during restore';
     console.warn('[KERI Boot] Error restoring session:', err);
     onboardingStore.setInitializationError(errorMessage);
-    await secureStorage.removeItem('matou_passcode');
+    // Only clear passcode for auth failures — not transient errors (e.g. KERIA not yet ready)
+    const isAuthError = errorMessage.includes('401') || errorMessage.includes('Unauthorized')
+      || errorMessage.includes('404') || errorMessage.includes('agent not found');
+    if (isAuthError) {
+      await secureStorage.removeItem('matou_passcode');
+    }
   } finally {
     onboardingStore.setAppState('ready');
     identityStore.setInitialized();
@@ -94,7 +104,10 @@ export default boot(async ({ router }) => {
   const appStore = useAppStore();
   const keriClient = useKERIClient();
 
-  // Step 0: Initialize client config from config server
+  // Step 0a: Resolve backend URL (Electron dynamic port via IPC)
+  await initBackendUrl();
+
+  // Step 0b: Initialize client config from config server
   // This fetches KERIA URLs, witness OOBIs, and anysync config
   console.log('[KERI Boot] Initializing client config...');
   try {

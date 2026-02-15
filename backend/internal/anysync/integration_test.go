@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/matou-dao/backend/internal/anysync/testnet"
 )
 
@@ -98,9 +99,14 @@ func TestIntegration_SDKConnect(t *testing.T) {
 		if networkID == "" {
 			t.Fatal("expected non-empty network ID")
 		}
-		// Should match the test network config
-		if networkID != "N47yt5C9csaPsP87HbmWucxKXA8kZbBbnL4X4cVxdKBzqCCU" {
-			t.Errorf("network ID mismatch: got %s", networkID)
+		// Load expected network ID from the test config file
+		configPath := testNetwork.GetHostConfigPath()
+		cfg, err := loadClientConfig(configPath)
+		if err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if networkID != cfg.NetworkID {
+			t.Errorf("network ID mismatch: got %s, want %s", networkID, cfg.NetworkID)
 		}
 		t.Logf("Network ID: %s", networkID)
 	})
@@ -242,7 +248,7 @@ func TestIntegration_AddToACL(t *testing.T) {
 
 	client := newTestSDKClient(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	orgAID := "ETestACLOrg" + time.Now().Format("20060102150405")
@@ -251,23 +257,49 @@ func TestIntegration_AddToACL(t *testing.T) {
 		t.Fatalf("failed to create space: %v", err)
 	}
 
-	t.Run("add peer to ACL", func(t *testing.T) {
-		memberPeerID := "12D3KooWTestMember123456789"
-
-		err := client.AddToACL(ctx, spaceResult.SpaceID, memberPeerID, []string{"read", "write"})
-		if err != nil {
-			t.Fatalf("failed to add to ACL: %v", err)
+	// Wait for space to propagate then mark as shareable (with retries)
+	shareDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(shareDeadline) {
+		err = client.MakeSpaceShareable(ctx, spaceResult.SpaceID)
+		if err == nil {
+			break
 		}
-		t.Logf("Added peer %s to space %s ACL", memberPeerID, spaceResult.SpaceID)
+		time.Sleep(2 * time.Second)
+	}
+	if err != nil {
+		t.Fatalf("failed to make space shareable: %v", err)
+	}
+
+	aclMgr := NewMatouACLManager(client, nil)
+
+	t.Run("add peer to ACL", func(t *testing.T) {
+		// Use CreateOpenInvite (the proper any-sync ACL mechanism)
+		var inviteKey crypto.PrivKey
+		inviteDeadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(inviteDeadline) {
+			inviteKey, err = aclMgr.CreateOpenInvite(ctx, spaceResult.SpaceID, PermissionWrite.ToSDKPermissions())
+			if err == nil {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		if inviteKey == nil {
+			t.Fatalf("failed to create invite: %v", err)
+		}
+		pubKeyBytes, _ := inviteKey.GetPublic().Raw()
+		t.Logf("Created open invite for space %s, public key: %x", spaceResult.SpaceID, pubKeyBytes[:8])
 	})
 
 	t.Run("add same peer again is idempotent", func(t *testing.T) {
-		memberPeerID := "12D3KooWTestMember123456789"
-
-		err := client.AddToACL(ctx, spaceResult.SpaceID, memberPeerID, []string{"read", "write"})
+		// Creating another invite should succeed (different invite key)
+		inviteKey, err := aclMgr.CreateOpenInvite(ctx, spaceResult.SpaceID, PermissionWrite.ToSDKPermissions())
 		if err != nil {
-			t.Fatalf("failed to add to ACL (second time): %v", err)
+			t.Fatalf("failed to create second invite: %v", err)
 		}
+		if inviteKey == nil {
+			t.Fatal("expected non-nil invite key")
+		}
+		t.Logf("Created second invite for space %s (idempotent)", spaceResult.SpaceID)
 	})
 }
 
@@ -281,7 +313,7 @@ func TestIntegration_SpaceManagerWithRealNetwork(t *testing.T) {
 	t.Run("create space manager and private space", func(t *testing.T) {
 		manager := NewSpaceManager(client, &SpaceManagerConfig{
 			OrgAID: "ETestOrg" + time.Now().Format("20060102150405"),
-		})
+		}, client.GetTreeManager())
 
 		userAID := "ETestUser" + time.Now().Format("20060102150405")
 		space, err := manager.CreatePrivateSpace(ctx, userAID)

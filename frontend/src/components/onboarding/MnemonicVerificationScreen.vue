@@ -227,15 +227,24 @@ async function handleVerify() {
         hasAvatar: !!store.profile.avatarFileRef,
       });
 
-      // Note: avatarData/avatarMimeType are NOT included - they would exceed KERI message size limits
-      // The avatar is already uploaded to the backend; only the fileRef is sent
       const success = await submitRegistration({
         name: store.profile.name,
         email: store.profile.email || undefined,
         bio: store.profile.bio,
+        location: store.profile.location || undefined,
+        joinReason: store.profile.joinReason || undefined,
+        indigenousCommunity: store.profile.indigenousCommunity || undefined,
+        facebookUrl: store.profile.facebookUrl || undefined,
+        linkedinUrl: store.profile.linkedinUrl || undefined,
+        twitterUrl: store.profile.twitterUrl || undefined,
+        instagramUrl: store.profile.instagramUrl || undefined,
+        githubUrl: store.profile.githubUrl || undefined,
+        gitlabUrl: store.profile.gitlabUrl || undefined,
         interests: store.profile.participationInterests,
         customInterests: store.profile.customInterests,
         avatarFileRef: store.profile.avatarFileRef || undefined,
+        avatarData: store.profile.avatarData || undefined,
+        avatarMimeType: store.profile.avatarMimeType || undefined,
       });
 
       if (!success) {

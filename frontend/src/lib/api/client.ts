@@ -3,7 +3,21 @@
  * Communicates with the Go backend for sync and community operations
  */
 
-export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080';
+import { getBackendUrl, getBackendUrlSync } from '../platform';
+
+/**
+ * Resolved backend URL. Call initBackendUrl() once at boot to populate.
+ * After init, this holds the correct URL (dynamic Electron port or env var).
+ */
+export let BACKEND_URL = getBackendUrlSync();
+
+/**
+ * Initialize the backend URL (must be called once at app startup).
+ * Resolves the Electron dynamic port via IPC; no-op in browser mode.
+ */
+export async function initBackendUrl(): Promise<void> {
+  BACKEND_URL = await getBackendUrl();
+}
 
 export interface SyncCredentialsRequest {
   userAid: string;
@@ -375,9 +389,21 @@ export async function initMemberProfiles(data: {
   displayName?: string;
   email?: string;
   avatar?: string;
+  avatarData?: string;
+  avatarMimeType?: string;
   bio?: string;
   interests?: string[];
-}): Promise<{ success: boolean; objectId?: string; error?: string }> {
+  customInterests?: string;
+  location?: string;
+  indigenousCommunity?: string;
+  joinReason?: string;
+  facebookUrl?: string;
+  linkedinUrl?: string;
+  twitterUrl?: string;
+  instagramUrl?: string;
+  githubUrl?: string;
+  gitlabUrl?: string;
+}): Promise<{ success: boolean; objectId?: string; treeId?: string; error?: string }> {
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/profiles/init-member`, {
       method: 'POST',

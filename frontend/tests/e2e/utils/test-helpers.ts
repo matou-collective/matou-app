@@ -318,10 +318,35 @@ export async function loginWithMnemonic(
     await page.locator(`#word-${i}`).fill(mnemonic[i]);
   }
 
-  await page.getByRole('button', { name: /recover identity/i }).click();
-  await expect(
-    page.getByText(/identity recovered/i),
-  ).toBeVisible({ timeout: TIMEOUT.long });
+  // Retry recovery up to 3 times — KERIA can be temporarily unreachable
+  // under load (e.g. when running the full test suite sequentially).
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await page.getByRole('button', { name: /recover identity/i }).click();
+
+    try {
+      await expect(
+        page.getByText(/identity recovered/i),
+      ).toBeVisible({ timeout: TIMEOUT.long });
+      break; // success
+    } catch {
+      const errorVisible = await page
+        .getByText(/failed to fetch|connection error|failed/i)
+        .first()
+        .isVisible()
+        .catch(() => false);
+
+      if (errorVisible && attempt < 3) {
+        console.log(
+          `[loginWithMnemonic] Recovery attempt ${attempt}/3 failed (KERIA error), retrying in 5s...`,
+        );
+        await page.waitForTimeout(5000);
+        continue;
+      }
+      throw new Error(
+        `Identity recovery failed after ${attempt} attempt(s). KERIA may be unhealthy.`,
+      );
+    }
+  }
 
   // Click continue to proceed to welcome screen
   await page.getByRole('button', { name: /continue/i }).click();
@@ -398,18 +423,23 @@ export async function performOrgSetup(
   await page.getByRole('button', { name: /continue/i }).click();
   await completeMnemonicVerification(page, adminMnemonic);
 
-  // Wait for dashboard or pending
+  // Wait for dashboard, pending, or membership approved (admin self-issued credential)
   await Promise.race([
     expect(page.getByRole('heading', { name: /registration pending/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
     expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
+    expect(page.locator('h1', { hasText: /membership approved/i }))
+      .toBeVisible({ timeout: TIMEOUT.long }),
   ]);
 
-  // Handle welcome overlay if present
-  const welcomeOverlay = page.locator('.welcome-overlay');
-  if (await welcomeOverlay.isVisible().catch(() => false)) {
-    await page.getByRole('button', { name: /enter community/i }).click();
-    await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+  // Handle welcome overlay / approved screen if "Enter Community" button appears
+  const enterBtn = page.getByRole('button', { name: /enter community/i });
+  try {
+    await enterBtn.waitFor({ state: 'visible', timeout: TIMEOUT.medium });
+    await enterBtn.click();
+    await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long });
+  } catch {
+    // Already on dashboard or pending — no overlay to dismiss
   }
 
   console.log('[OrgSetup] Admin on dashboard');

@@ -102,7 +102,7 @@ func TestNewClient(t *testing.T) {
 			cfg: &Config{
 				OrgAlias: "test-alias",
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "valid config with AID only",

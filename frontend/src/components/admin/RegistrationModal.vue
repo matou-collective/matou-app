@@ -4,11 +4,11 @@
       <div v-if="show" class="modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="$emit('close')">
         <div class="modal-content bg-card border border-border rounded-2xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-hidden">
           <!-- Header -->
-          <div class="modal-header p-4 border-b border-border flex items-center justify-between">
-            <h3 class="font-semibold text-lg">Registration Details</h3>
-            <button @click="$emit('close')" class="p-1.5 rounded-lg hover:bg-secondary transition-colors">
-              <X class="w-5 h-5 text-muted-foreground" />
-            </button>
+          <div class="modal-header bg-primary p-4 border-b border-white/20 flex items-center justify-between">
+            <h3 class="font-semibold text-lg text-white">Registration Details</h3>
+            <q-btn flat @click="$emit('close')" class="p-1.5 rounded-lg transition-colors">
+              <X class="w-5 h-5 text-white" />
+            </q-btn>
           </div>
 
           <!-- Content -->
@@ -26,12 +26,12 @@
                 <span v-else class="text-white text-xl font-semibold">{{ initials }}</span>
               </div>
               <div class="flex-1 min-w-0">
-                <h4 class="text-lg font-medium text-foreground">{{ registration?.profile.name }}</h4>
-                <p class="text-sm text-muted-foreground mb-2">
+                <h4 class="text-lg font-medium text-black">{{ registration?.profile.name }}</h4>
+                <p class="text-sm text-black/70 mb-2">
                   Submitted {{ formattedDate }}
                 </p>
                 <div class="flex items-center gap-2">
-                  <code class="text-xs bg-secondary px-2 py-1 rounded font-mono truncate flex-1">
+                  <code class="text-xs bg-secondary px-2 py-1 rounded font-mono truncate flex-1 text-black">
                     {{ registration?.applicantAid }}
                   </code>
                   <button
@@ -40,7 +40,7 @@
                     :title="copied ? 'Copied!' : 'Copy AID'"
                   >
                     <Check v-if="copied" class="w-4 h-4 text-green-600" />
-                    <Copy v-else class="w-4 h-4 text-muted-foreground" />
+                    <Copy v-else class="w-4 h-4 text-black/60" />
                   </button>
                 </div>
               </div>
@@ -48,34 +48,40 @@
 
             <!-- Profile Fields -->
             <div class="space-y-4 mb-6">
+              <!-- Email -->
+              <div class="profile-field">
+                <h5 class="field-label">Email</h5>
+                <p class="field-value">{{ registration?.profile.email || 'Not provided' }}</p>
+              </div>
+
               <!-- About -->
-              <div v-if="registration?.profile.bio" class="profile-field">
+              <div class="profile-field">
                 <h5 class="field-label">About</h5>
-                <p class="field-value">{{ registration.profile.bio }}</p>
+                <p class="field-value">{{ registration?.profile.bio || 'Not provided' }}</p>
               </div>
 
               <!-- Location -->
-              <div v-if="registration?.profile.location" class="profile-field">
+              <div class="profile-field">
                 <h5 class="field-label">Location</h5>
-                <p class="field-value">{{ registration.profile.location }}</p>
+                <p class="field-value">{{ registration?.profile.location || 'Not provided' }}</p>
               </div>
 
               <!-- Indigenous Community -->
-              <div v-if="registration?.profile.indigenousCommunity" class="profile-field">
+              <div class="profile-field">
                 <h5 class="field-label">Indigenous Community</h5>
-                <p class="field-value">{{ registration.profile.indigenousCommunity }}</p>
+                <p class="field-value">{{ registration?.profile.indigenousCommunity || 'Not provided' }}</p>
               </div>
 
               <!-- Join Reason -->
-              <div v-if="registration?.profile.joinReason" class="profile-field">
+              <div class="profile-field">
                 <h5 class="field-label">Why they want to join</h5>
-                <p class="field-value">{{ registration.profile.joinReason }}</p>
+                <p class="field-value">{{ registration?.profile.joinReason || 'Not provided' }}</p>
               </div>
 
               <!-- Participation Interests -->
-              <div v-if="registration?.profile.interests.length" class="profile-field">
+              <div class="profile-field">
                 <h5 class="field-label">Participation Interests</h5>
-                <div class="flex flex-wrap gap-2">
+                <div v-if="registration?.profile.interests && registration.profile.interests.length" class="flex flex-wrap gap-2">
                   <span
                     v-for="interest in registration.profile.interests"
                     :key="interest"
@@ -84,18 +90,19 @@
                     {{ getInterestLabel(interest) }}
                   </span>
                 </div>
+                <p v-else class="field-value">Not provided</p>
               </div>
 
               <!-- Custom Interests -->
-              <div v-if="registration?.profile.customInterests" class="profile-field">
+              <div class="profile-field">
                 <h5 class="field-label">Additional Interests</h5>
-                <p class="field-value">{{ registration.profile.customInterests }}</p>
+                <p class="field-value">{{ registration?.profile.customInterests || 'Not provided' }}</p>
               </div>
 
               <!-- Social Links -->
-              <div v-if="hasSocialLinks" class="profile-field">
+              <div class="profile-field">
                 <h5 class="field-label">Social Links</h5>
-                <div class="flex flex-wrap gap-3">
+                <div v-if="hasSocialLinks" class="flex flex-wrap gap-3">
                   <a
                     v-if="registration?.profile.facebookUrl"
                     :href="registration.profile.facebookUrl"
@@ -133,15 +140,16 @@
                     Instagram
                   </a>
                 </div>
+                <p v-else class="field-value">Not provided</p>
               </div>
             </div>
 
             <!-- Decline Reason -->
             <div v-if="showDeclineReason" class="mb-6">
-              <h5 class="text-sm font-medium text-muted-foreground mb-2">Reason for Decline (optional)</h5>
+              <h5 class="text-sm font-medium text-black/70 mb-2">Reason for Decline (optional)</h5>
               <textarea
                 v-model="declineReason"
-                class="w-full p-3 border border-border rounded-lg bg-background text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
+                class="w-full p-3 border border-border rounded-lg bg-background text-black resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
                 rows="2"
                 placeholder="Provide a reason for declining..."
               />
@@ -162,15 +170,13 @@
                 :disabled="isProcessing"
               >
                 <Loader2 v-if="isProcessing && action === 'approve'" class="w-4 h-4 inline mr-2 animate-spin" />
-                <Check v-else class="w-4 h-4 inline mr-2" />
                 Approve
               </button>
               <button
                 @click="showDeclineReason = true"
-                class="px-4 py-2.5 text-sm rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-orange-500 text-white hover:bg-orange-600 transition-colors"
                 :disabled="isProcessing"
               >
-                <X class="w-4 h-4 inline mr-2" />
                 Decline
               </button>
             </div>
@@ -209,7 +215,7 @@ import { getFileUrl } from 'src/lib/api/client';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 
 // Map interest value to human-readable label
-const interestLabelMap = new Map(
+const interestLabelMap: Map<string, string> = new Map(
   PARTICIPATION_INTERESTS.map(i => [i.value, i.label])
 );
 
@@ -376,13 +382,13 @@ function handleDecline() {
 .field-label {
   font-size: 0.75rem;
   font-weight: 500;
-  color: var(--matou-muted-foreground);
+  color: rgba(0, 0, 0, 0.7);
   margin-bottom: 0.25rem;
 }
 
 .field-value {
   font-size: 0.875rem;
-  color: var(--matou-foreground);
+  color: black;
   white-space: pre-wrap;
 }
 

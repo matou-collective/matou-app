@@ -129,7 +129,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
    */
   function getAIDName(): string | null {
     const aid = identityStore.currentAID;
-    return aid?.name ?? null;
+    return aid?.prefix ?? null;
   }
 
   /**

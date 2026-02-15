@@ -67,6 +67,8 @@ frontend/dist/
 frontend/dist-electron/
 frontend/dist-ssr/
 frontend/build/
+!frontend/build/afterPack.cjs
+!frontend/build/electron-builder-cross.json
 
 # Cache
 .cache/
@@ -109,3 +111,8 @@ temp/
 # Working notes
 plan.md
 todos/
+frontend/config/client-production.yml
+
+# Claude Code (personal/ephemeral)
+.claude/settings.local.json
+.claude/agent-memory/

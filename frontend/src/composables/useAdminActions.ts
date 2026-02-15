@@ -7,7 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
-import { BACKEND_URL, initMemberProfiles, sendRegistrationApprovedNotification } from 'src/lib/api/client';
+import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistrationApprovedNotification } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -19,6 +19,7 @@ export function useAdminActions() {
 
   // State
   const isProcessing = ref(false);
+  const processingRegistrationId = ref<string | null>(null);
   const error = ref<string | null>(null);
   const lastAction = ref<{ type: string; success: boolean; registrationId: string } | null>(null);
 
@@ -85,7 +86,7 @@ export function useAdminActions() {
       const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === storedOrgAid);
       if (orgAid) {
         console.log('[AdminActions] Using stored org AID:', orgAid.name);
-        return orgAid.name;
+        return orgAid.prefix;
       }
     }
 
@@ -101,11 +102,11 @@ export function useAdminActions() {
     );
 
     if (orgAid) {
-      return orgAid.name;
+      return orgAid.prefix;
     }
 
     // Fall back to first AID (admin's personal AID might be issuing)
-    return aids.aids[0].name;
+    return aids.aids[0].prefix;
   }
 
   /**
@@ -120,6 +121,7 @@ export function useAdminActions() {
     }
 
     isProcessing.value = true;
+    processingRegistrationId.value = registration.notificationId;
     error.value = null;
 
     try {
@@ -142,34 +144,62 @@ export function useAdminActions() {
         throw new Error('No registry configured for credential issuance');
       }
 
-      // 2. Resolve applicant OOBI if provided (so we can send them the credential)
-      if (registration.applicantOOBI) {
-        try {
-          await keriClient.resolveOOBI(registration.applicantOOBI, undefined, 10000);
-          console.log('[AdminActions] Resolved applicant OOBI');
-        } catch (oobiErr) {
-          console.warn('[AdminActions] Could not resolve applicant OOBI:', oobiErr);
-          // Continue anyway - might already be resolved
+      // 2. Resolve applicant OOBI (required for IPEX grant delivery)
+      let applicantOOBI = registration.applicantOOBI;
+      if (!applicantOOBI) {
+        // Fallback: construct OOBI from KERIA CESR URL + applicant AID
+        const cesrUrl = keriClient.getCesrUrl();
+        if (cesrUrl && registration.applicantAid) {
+          applicantOOBI = `${cesrUrl}/oobi/${registration.applicantAid}`;
+          console.log(`[AdminActions] Constructed fallback OOBI: ${applicantOOBI}`);
+        } else {
+          throw new Error('Cannot issue credential: applicant OOBI is missing and could not construct fallback. The applicant may need to re-register.');
         }
       }
+      const oobiResolved = await keriClient.resolveOOBI(applicantOOBI, undefined, 30000);
+      if (!oobiResolved) {
+        throw new Error('Could not resolve applicant OOBI — unable to deliver credential. Please check that KERIA is running and try again.');
+      }
+      console.log('[AdminActions] Resolved applicant OOBI');
 
       // 3. Get the issuing AID name
       const issuerAidName = await getOrgAidName();
       console.log(`[AdminActions] Issuing credential from AID: ${issuerAidName}`);
 
-      // 4. Issue membership credential
-      // Note: Schema requires communityName to be 'MATOU' literal value
-      // verificationStatus must be one of: unverified, community_verified, identity_verified, expert_verified
-      const credentialData = {
-        communityName: 'MATOU',
+      // 4. Initialize member profiles FIRST — ensures profiles are in the sync
+      //    node before the member receives the invite and joins the space.
+      //    This eliminates the race condition where the member joins before
+      //    their profiles are synced.
+      let credentialSaid = 'pending'; // Updated after credential issuance
+      const initResult = await initMemberProfiles({
+        memberAid: registration.applicantAid,
+        credentialSaid: credentialSaid,
         role: 'Member',
-        verificationStatus: 'community_verified',
-        permissions: ['participate', 'vote', 'propose'],
-        joinedAt: new Date().toISOString(),
-      };
+        displayName: registration.profile?.name,
+        email: registration.profile?.email,
+        avatar: registration.profile?.avatarFileRef,
+        avatarData: registration.profile?.avatarData,
+        avatarMimeType: registration.profile?.avatarMimeType,
+        bio: registration.profile?.bio,
+        interests: registration.profile?.interests,
+        customInterests: registration.profile?.customInterests,
+        location: registration.profile?.location,
+        indigenousCommunity: registration.profile?.indigenousCommunity,
+        joinReason: registration.profile?.joinReason,
+        facebookUrl: registration.profile?.facebookUrl,
+        linkedinUrl: registration.profile?.linkedinUrl,
+        twitterUrl: registration.profile?.twitterUrl,
+        instagramUrl: registration.profile?.instagramUrl,
+        githubUrl: registration.profile?.githubUrl,
+        gitlabUrl: registration.profile?.gitlabUrl,
+      });
+      if (!initResult.success) {
+        throw new Error(`Failed to initialize member profiles: ${initResult.error || 'unknown error'}`);
+      }
+      console.log('[AdminActions] Member profiles created for:', registration.applicantAid);
 
-      // 4b. Generate space invite BEFORE issuing credential so we can embed
-      //     the invite data in the IPEX grant's message field (reliable delivery).
+      // 5. Generate space invite so we can embed the invite data in the
+      //    IPEX grant's message field (reliable delivery).
       let grantMessage = '';
       try {
         const inviteResponse = await fetch(`${BACKEND_URL}/api/v1/spaces/community/invite`, {
@@ -177,10 +207,10 @@ export function useAdminActions() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             recipientAid: registration.applicantAid,
-            credentialSaid: 'pending',
+            credentialSaid: credentialSaid,
             schema: 'EMatouMembershipSchemaV1',
           }),
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(30000),
         });
 
         if (inviteResponse.ok) {
@@ -210,6 +240,17 @@ export function useAdminActions() {
         console.warn('[AdminActions] Space invitation deferred:', inviteErr);
       }
 
+      // 6. Issue membership credential
+      // Note: Schema requires communityName to be 'MATOU' literal value
+      // verificationStatus must be one of: unverified, community_verified, identity_verified, expert_verified
+      const credentialData = {
+        communityName: 'MATOU',
+        role: 'Member',
+        verificationStatus: 'community_verified',
+        permissions: ['participate', 'vote', 'propose'],
+        joinedAt: new Date().toISOString(),
+      };
+
       console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
       const credResult = await keriClient.issueCredential(
         issuerAidName,
@@ -221,29 +262,23 @@ export function useAdminActions() {
       );
 
       console.log('[AdminActions] Credential issued:', credResult.said);
+      credentialSaid = credResult.said;
 
-      // 5b. Initialize member's CommunityProfile in read-only space
+      // 6b. Update CommunityProfile with real credential SAID
+      //     (profiles were created in step 4 with credentialSaid='pending')
       try {
-        const initResult = await initMemberProfiles({
-          memberAid: registration.applicantAid,
-          credentialSaid: credResult.said,
+        const profileId = `CommunityProfile-${registration.applicantAid}`;
+        await createOrUpdateProfile('CommunityProfile', {
+          credential: credentialSaid,
           role: 'Member',
-          displayName: registration.profile?.name,
-          email: registration.profile?.email,
-          avatar: registration.profile?.avatarFileRef,
-          bio: registration.profile?.bio,
-          interests: registration.profile?.interests,
-        });
-        if (initResult.success) {
-          console.log('[AdminActions] CommunityProfile created for:', registration.applicantAid);
-        } else {
-          console.warn('[AdminActions] Failed to init member profiles:', initResult.error);
-        }
-      } catch (initErr) {
-        console.warn('[AdminActions] Failed to init member profiles:', initErr);
+          credentials: [credentialSaid],
+        }, { id: profileId });
+        console.log('[AdminActions] Updated CommunityProfile with credential SAID:', credentialSaid);
+      } catch (updateErr) {
+        console.warn('[AdminActions] Failed to update CommunityProfile with credential SAID:', updateErr);
       }
 
-      // 5c. Email approval notification (non-blocking)
+      // 7. Email approval notification (non-blocking)
       if (registration.profile?.email) {
         try {
           await sendRegistrationApprovedNotification({
@@ -255,7 +290,7 @@ export function useAdminActions() {
         }
       }
 
-      // 6. Mark ALL notifications for this applicant as read
+      // 8. Mark ALL notifications for this applicant as read
       // (handles both IPEX and custom EXN notifications)
       await markAllApplicantNotificationsRead(registration.applicantAid);
 
@@ -280,6 +315,7 @@ export function useAdminActions() {
       return false;
     } finally {
       isProcessing.value = false;
+      processingRegistrationId.value = null;
     }
   }
 
@@ -299,6 +335,7 @@ export function useAdminActions() {
     }
 
     isProcessing.value = true;
+    processingRegistrationId.value = registration.notificationId;
     error.value = null;
 
     try {
@@ -327,7 +364,7 @@ export function useAdminActions() {
 
       console.log('[AdminActions] Sending decline notification to:', registration.applicantAid);
       const result = await keriClient.sendEXN(
-        currentAID.name,
+        currentAID.prefix,
         registration.applicantAid,
         '/matou/registration/decline',
         payload
@@ -363,6 +400,7 @@ export function useAdminActions() {
       return false;
     } finally {
       isProcessing.value = false;
+      processingRegistrationId.value = null;
     }
   }
 
@@ -410,7 +448,7 @@ export function useAdminActions() {
 
       console.log('[AdminActions] Sending message to:', registration.applicantAid);
       const result = await keriClient.sendEXN(
-        currentAID.name,
+        currentAID.prefix,
         registration.applicantAid,
         '/matou/registration/message',
         payload
@@ -454,6 +492,7 @@ export function useAdminActions() {
   return {
     // State
     isProcessing,
+    processingRegistrationId,
     error,
     lastAction,
 

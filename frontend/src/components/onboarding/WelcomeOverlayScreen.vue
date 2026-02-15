@@ -125,9 +125,9 @@ const keriClient = useKERIClient();
 
 // Display name: prefer AID name, then profile name, then truncated AID
 const displayName = computed(() => {
+  if (onboardingStore.profile.name) return onboardingStore.profile.name;
   const aid = identityStore.currentAID;
   if (aid?.name) return aid.name;
-  if (onboardingStore.profile.name) return onboardingStore.profile.name;
   const prefix = aid?.prefix ?? '';
   if (prefix.length > 20) return `${prefix.slice(0, 10)}...${prefix.slice(-6)}`;
   return prefix || 'Member';

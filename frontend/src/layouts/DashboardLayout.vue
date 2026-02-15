@@ -53,7 +53,9 @@
     </aside>
 
     <!-- Main Content (nested route) -->
-    <router-view />
+    <main class="main-content">
+      <router-view />
+    </main>
   </div>
 </template>
 
@@ -119,14 +121,30 @@ onMounted(() => {
   background-color: var(--matou-background);
 }
 
+.main-content {
+  flex: 1;
+  margin-left: 240px;
+  min-height: 100vh;
+  width: calc(100% - 240px);
+}
+
 // Sidebar
 .sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  // Top padding accounts for the fixed custom titlebar (36px) in Electron.
+  // Keeps sidebar content from rendering behind the titlebar.
+  padding-top: 40px;
   width: 240px;
+  height: 100vh;
   background-color: var(--matou-sidebar);
   border-right: 1px solid var(--matou-sidebar-border);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  overflow-y: auto;
+  z-index: 40;
 }
 
 .sidebar-header {
@@ -249,6 +267,10 @@ onMounted(() => {
 @media (max-width: 767px) {
   .sidebar {
     display: none;
+  }
+  
+  .main-content {
+    margin-left: 0;
   }
 }
 </style>
