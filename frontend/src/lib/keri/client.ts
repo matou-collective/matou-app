@@ -1067,6 +1067,9 @@ export class KERIClient {
       r: string;    // Route
       d: string;    // SAID
       i?: string;   // Sender AID (if present)
+      a?: Record<string, unknown>; // Embedded data (from KERIA patch for pending notifications)
+      dt?: string;  // Datetime (from KERIA patch)
+      [key: string]: unknown;
     };
     r: boolean;     // Read status
   }>> {
@@ -1272,6 +1275,8 @@ export class KERIClient {
       linkedinUrl?: string;
       twitterUrl?: string;
       instagramUrl?: string;
+      githubUrl?: string;
+      gitlabUrl?: string;
       interests: string[];
       customInterests?: string;
       avatarFileRef?: string;
@@ -1353,6 +1358,8 @@ export class KERIClient {
           linkedinUrl: registrationData.linkedinUrl || '',
           twitterUrl: registrationData.twitterUrl || '',
           instagramUrl: registrationData.instagramUrl || '',
+          githubUrl: registrationData.githubUrl || '',
+          gitlabUrl: registrationData.gitlabUrl || '',
           interests: registrationData.interests,
           customInterests: registrationData.customInterests || '',
           avatarFileRef: registrationData.avatarFileRef || '',
@@ -1379,7 +1386,7 @@ export class KERIClient {
           const [apply, applySigs, applyEnd] = await this.client.ipex().apply({
             senderName: senderAid,  // Use AID prefix — names with spaces break URL signing
             recipient: admin.aid,  // Admin AID should already be a prefix
-            schema: schemaSaid,
+            schemaSaid: schemaSaid,
             attributes: {
               name: registrationData.name,
               email: registrationData.email || '',
@@ -1391,6 +1398,8 @@ export class KERIClient {
               linkedinUrl: registrationData.linkedinUrl || '',
               twitterUrl: registrationData.twitterUrl || '',
               instagramUrl: registrationData.instagramUrl || '',
+              githubUrl: registrationData.githubUrl || '',
+              gitlabUrl: registrationData.gitlabUrl || '',
               interests: registrationData.interests,
               customInterests: registrationData.customInterests || '',
               avatarFileRef: registrationData.avatarFileRef || '',
@@ -1401,7 +1410,7 @@ export class KERIClient {
             },
             datetime: new Date().toISOString(),
           });
-          await this.client.ipex().submitApply(senderAid, apply, applySigs, applyEnd, [admin.aid]);
+          await this.client.ipex().submitApply(senderAid, apply, applySigs, [admin.aid]);
           const applySaid = (apply as { ked?: { d?: string } })?.ked?.d || 'unknown';
           console.log(`[KERIClient] IPEX apply sent, SAID: ${applySaid}`);
         } catch (ipexErr) {

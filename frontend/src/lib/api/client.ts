@@ -401,6 +401,8 @@ export async function initMemberProfiles(data: {
   linkedinUrl?: string;
   twitterUrl?: string;
   instagramUrl?: string;
+  githubUrl?: string;
+  gitlabUrl?: string;
 }): Promise<{ success: boolean; objectId?: string; treeId?: string; error?: string }> {
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/profiles/init-member`, {

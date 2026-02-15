@@ -418,6 +418,8 @@ const SOCIAL_LINK_TYPES = [
   { value: 'linkedinUrl', label: 'LinkedIn' },
   { value: 'twitterUrl', label: 'Twitter / X' },
   { value: 'instagramUrl', label: 'Instagram' },
+  { value: 'githubUrl', label: 'GitHub' },
+  { value: 'gitlabUrl', label: 'GitLab' },
 ] as const;
 
 const existingSocialLinks = computed(() => {
@@ -450,6 +452,10 @@ function getSocialLinkUrl(type: string): string {
       return sharedForm.twitterUrl;
     case 'instagramUrl':
       return sharedForm.instagramUrl;
+    case 'githubUrl':
+      return sharedForm.githubUrl;
+    case 'gitlabUrl':
+      return sharedForm.gitlabUrl;
     default:
       return '';
   }
@@ -468,6 +474,12 @@ function setSocialLinkUrl(type: string, url: string) {
       break;
     case 'instagramUrl':
       sharedForm.instagramUrl = url;
+      break;
+    case 'githubUrl':
+      sharedForm.githubUrl = url;
+      break;
+    case 'gitlabUrl':
+      sharedForm.gitlabUrl = url;
       break;
   }
 }
@@ -512,6 +524,8 @@ const sharedForm = reactive({
   linkedinUrl: '',
   twitterUrl: '',
   instagramUrl: '',
+  githubUrl: '',
+  gitlabUrl: '',
 });
 
 const privateForm = reactive({
@@ -522,7 +536,7 @@ const privateForm = reactive({
 const SHARED_FORM_KEYS = [
   'displayName', 'publicEmail', 'bio', 'location', 'indigenousCommunity', 'joinReason',
   'participationInterests', 'customInterests', 'skills', 'languages', 'publicLinks',
-  'facebookUrl', 'linkedinUrl', 'twitterUrl', 'instagramUrl',
+  'facebookUrl', 'linkedinUrl', 'twitterUrl', 'instagramUrl', 'githubUrl', 'gitlabUrl',
 ] as const;
 
 const PRIVATE_FORM_KEYS = ['privacySettings', 'appPreferences'] as const;
@@ -644,6 +658,8 @@ function initSharedForm() {
   sharedForm.linkedinUrl = (d.linkedinUrl as string) || '';
   sharedForm.twitterUrl = (d.twitterUrl as string) || '';
   sharedForm.instagramUrl = (d.instagramUrl as string) || '';
+  sharedForm.githubUrl = (d.githubUrl as string) || '';
+  sharedForm.gitlabUrl = (d.gitlabUrl as string) || '';
   // Arrays → comma-separated strings
   for (const field of arrayFields) {
     sharedForm[field] = asArray(d[field]).join(', ');
@@ -677,6 +693,8 @@ function buildSharedData(): Record<string, unknown> {
   data.linkedinUrl = sharedForm.linkedinUrl;
   data.twitterUrl = sharedForm.twitterUrl;
   data.instagramUrl = sharedForm.instagramUrl;
+  data.githubUrl = sharedForm.githubUrl;
+  data.gitlabUrl = sharedForm.gitlabUrl;
   // Convert comma-separated strings back to arrays
   for (const field of arrayFields) {
     const val = sharedForm[field];

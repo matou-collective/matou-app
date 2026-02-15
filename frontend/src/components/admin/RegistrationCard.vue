@@ -85,7 +85,7 @@ import { getFileUrl } from 'src/lib/api/client';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 
 // Map interest value to human-readable label
-const interestLabelMap = new Map(
+const interestLabelMap: Map<string, string> = new Map(
   PARTICIPATION_INTERESTS.map(i => [i.value, i.label])
 );
 

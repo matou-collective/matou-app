@@ -370,6 +370,8 @@ type InitMemberProfilesRequest struct {
 	LinkedinUrl          string          `json:"linkedinUrl,omitempty"`
 	TwitterUrl           string          `json:"twitterUrl,omitempty"`
 	InstagramUrl         string          `json:"instagramUrl,omitempty"`
+	GithubUrl            string          `json:"githubUrl,omitempty"`
+	GitlabUrl            string          `json:"gitlabUrl,omitempty"`
 	ProfileData          json.RawMessage `json:"profileData,omitempty"` // Optional registration data
 }
 
@@ -478,6 +480,12 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	if req.InstagramUrl != "" {
 		communityProfileData["instagramUrl"] = req.InstagramUrl
 	}
+	if req.GithubUrl != "" {
+		communityProfileData["githubUrl"] = req.GithubUrl
+	}
+	if req.GitlabUrl != "" {
+		communityProfileData["gitlabUrl"] = req.GitlabUrl
+	}
 
 	dataBytes, err := json.Marshal(communityProfileData)
 	if err != nil {
@@ -561,6 +569,8 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 			"linkedinUrl":           req.LinkedinUrl,
 			"twitterUrl":            req.TwitterUrl,
 			"instagramUrl":          req.InstagramUrl,
+			"githubUrl":             req.GithubUrl,
+			"gitlabUrl":             req.GitlabUrl,
 			"participationInterests": req.Interests,
 			"customInterests":       req.CustomInterests,
 			"lastActiveAt":           now2,

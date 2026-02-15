@@ -22,6 +22,8 @@ export interface RegistrationData {
   linkedinUrl?: string;
   twitterUrl?: string;
   instagramUrl?: string;
+  githubUrl?: string;
+  gitlabUrl?: string;
   interests: string[];
   customInterests?: string;
   avatarFileRef?: string;
@@ -127,6 +129,8 @@ export function useRegistration() {
           linkedinUrl: profile.linkedinUrl,
           twitterUrl: profile.twitterUrl,
           instagramUrl: profile.instagramUrl,
+          githubUrl: profile.githubUrl,
+          gitlabUrl: profile.gitlabUrl,
           interests: profile.interests,
           customInterests: profile.customInterests,
           avatarFileRef: profile.avatarFileRef,

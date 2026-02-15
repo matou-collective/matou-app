@@ -30,6 +30,8 @@ export interface PendingRegistration {
     linkedinUrl?: string;
     twitterUrl?: string;
     instagramUrl?: string;
+    githubUrl?: string;
+    gitlabUrl?: string;
     interests: string[];
     customInterests?: string;
     avatarFileRef?: string;
@@ -158,6 +160,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               linkedinUrl: (embeddedData.linkedinUrl as string) || undefined,
               twitterUrl: (embeddedData.twitterUrl as string) || undefined,
               instagramUrl: (embeddedData.instagramUrl as string) || undefined,
+              githubUrl: (embeddedData.githubUrl as string) || undefined,
+              gitlabUrl: (embeddedData.gitlabUrl as string) || undefined,
               interests: (embeddedData.interests as string[]) || [],
               customInterests: (embeddedData.customInterests as string) || undefined,
               avatarFileRef: (embeddedData.avatarFileRef as string) || undefined,
@@ -207,6 +211,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               linkedinUrl: (embeddedData.linkedinUrl as string) || undefined,
               twitterUrl: (embeddedData.twitterUrl as string) || undefined,
               instagramUrl: (embeddedData.instagramUrl as string) || undefined,
+              githubUrl: (embeddedData.githubUrl as string) || undefined,
+              gitlabUrl: (embeddedData.gitlabUrl as string) || undefined,
               interests: (embeddedData.interests as string[]) || [],
               customInterests: (embeddedData.customInterests as string) || undefined,
               avatarFileRef: (embeddedData.avatarFileRef as string) || undefined,
@@ -261,6 +267,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               linkedinUrl: (attributes.linkedinUrl as string) || undefined,
               twitterUrl: (attributes.twitterUrl as string) || undefined,
               instagramUrl: (attributes.instagramUrl as string) || undefined,
+              githubUrl: (attributes.githubUrl as string) || undefined,
+              gitlabUrl: (attributes.gitlabUrl as string) || undefined,
               interests: (attributes.interests as string[]) || [],
               customInterests: (attributes.customInterests as string) || undefined,
               avatarFileRef: (attributes.avatarFileRef as string) || undefined,
@@ -313,6 +321,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               linkedinUrl: (attributes.linkedinUrl as string) || undefined,
               twitterUrl: (attributes.twitterUrl as string) || undefined,
               instagramUrl: (attributes.instagramUrl as string) || undefined,
+              githubUrl: (attributes.githubUrl as string) || undefined,
+              gitlabUrl: (attributes.gitlabUrl as string) || undefined,
               interests: (attributes.interests as string[]) || [],
               customInterests: (attributes.customInterests as string) || undefined,
               avatarFileRef: (attributes.avatarFileRef as string) || undefined,

@@ -121,6 +121,8 @@ test.describe.serial('Registration Approval Flow', () => {
       linkedinUrl: 'https://linkedin.com/in/approvetest',
       twitterUrl: 'https://x.com/approvetest',
       instagramUrl: 'https://instagram.com/approvetest',
+      githubUrl: 'https://github.com/approvetest',
+      gitlabUrl: 'https://gitlab.com/approvetest',
       customInterests: 'Indigenous governance, digital identity',
     };
 
@@ -148,6 +150,8 @@ test.describe.serial('Registration Approval Flow', () => {
       await userPage.locator('#linkedinUrl input').fill(profileData.linkedinUrl);
       await userPage.locator('#twitterUrl input').fill(profileData.twitterUrl);
       await userPage.locator('#instagramUrl input').fill(profileData.instagramUrl);
+      await userPage.locator('#githubUrl input').fill(profileData.githubUrl);
+      await userPage.locator('#gitlabUrl input').fill(profileData.gitlabUrl);
       await userPage.locator('#customInterests').fill(profileData.customInterests);
 
       // Upload avatar image
@@ -365,6 +369,8 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'linkedin.com' })).toBeVisible();
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'x.com' })).toBeVisible();
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'instagram.com' })).toBeVisible();
+      await expect(userPage.locator('.social-link-url').filter({ hasText: 'github.com' })).toBeVisible();
+      await expect(userPage.locator('.social-link-url').filter({ hasText: 'gitlab.com' })).toBeVisible();
       console.log('[Test] PASS - All registration profile data (including avatar) persisted to Account Settings');
     } finally {
       await userContext.close();

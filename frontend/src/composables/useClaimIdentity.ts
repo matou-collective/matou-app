@@ -373,6 +373,8 @@ export function useClaimIdentity() {
           linkedinUrl: onboardingStore.profile.linkedinUrl || '',
           twitterUrl: onboardingStore.profile.twitterUrl || '',
           instagramUrl: onboardingStore.profile.instagramUrl || '',
+          githubUrl: onboardingStore.profile.githubUrl || '',
+          gitlabUrl: onboardingStore.profile.gitlabUrl || '',
           participationInterests: onboardingStore.profile.participationInterests || [],
           customInterests: onboardingStore.profile.customInterests || '',
           lastActiveAt: now,

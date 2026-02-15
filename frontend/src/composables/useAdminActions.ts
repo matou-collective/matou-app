@@ -190,6 +190,8 @@ export function useAdminActions() {
         linkedinUrl: registration.profile?.linkedinUrl,
         twitterUrl: registration.profile?.twitterUrl,
         instagramUrl: registration.profile?.instagramUrl,
+        githubUrl: registration.profile?.githubUrl,
+        gitlabUrl: registration.profile?.gitlabUrl,
       });
       if (!initResult.success) {
         throw new Error(`Failed to initialize member profiles: ${initResult.error || 'unknown error'}`);

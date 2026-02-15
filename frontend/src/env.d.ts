@@ -1,5 +1,15 @@
 /// <reference types="vite/client" />
 
+interface ElectronAPI {
+  secureStorageGet(key: string): Promise<string | null>;
+  secureStorageSet(key: string, value: string): Promise<void>;
+  secureStorageRemove(key: string): Promise<void>;
+}
+
+interface Window {
+  electronAPI?: ElectronAPI;
+}
+
 interface ImportMetaEnv {
   /** Environment: 'dev' | 'test' | 'prod' (default: 'dev') */
   readonly VITE_ENV?: string;
