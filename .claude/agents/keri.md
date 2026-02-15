@@ -3,7 +3,7 @@ name: keri
 description: KERI identity expert for Matou. Use when working on KERI/KERIA integration, signify-ts, AID management, credential issuance, OOBI resolution, registration flows, or cryptographic identity.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-permissionMode: delegate
+permissionMode: default
 memory: project
 ---
 

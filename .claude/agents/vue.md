@@ -3,7 +3,7 @@ name: vue
 description: Vue/Quasar frontend expert for Matou. Use when working on Vue components, Pinia stores, composables, routing, styling, or frontend UI/UX.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-permissionMode: delegate
+permissionMode: default
 memory: project
 ---
 

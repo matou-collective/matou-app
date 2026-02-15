@@ -3,7 +3,7 @@ name: go
 description: Go backend expert for Matou. Use when working on API handlers, backend architecture, Go patterns, dependency injection, or backend business logic.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-permissionMode: delegate
+permissionMode: default
 memory: project
 ---
 

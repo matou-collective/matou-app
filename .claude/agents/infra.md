@@ -3,7 +3,7 @@ name: infra
 description: Infrastructure expert for Matou. Use when diagnosing service connectivity, managing KERI/any-sync networks, checking health, troubleshooting port conflicts, or understanding the environment matrix.
 tools: Read, Grep, Glob, Bash
 model: sonnet
-permissionMode: delegate
+permissionMode: default
 memory: project
 ---
 

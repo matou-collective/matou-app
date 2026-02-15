@@ -2,8 +2,8 @@
 name: tester
 description: Testing expert for Matou. Use when running tests, debugging test failures, checking test infrastructure health, or understanding test dependencies.
 tools: Read, Grep, Glob, Bash, Skill
-model: sonnet
-permissionMode: delegate
+model: opus
+permissionMode: default
 memory: project
 ---
 

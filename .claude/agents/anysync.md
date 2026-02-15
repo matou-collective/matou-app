@@ -3,7 +3,7 @@ name: anysync
 description: Any-sync and anyproto expert for Matou. Use when working on P2P synchronization, space management, tree operations, ACL/invites, credential trees, object trees, or any-sync SDK integration.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
-permissionMode: delegate
+permissionMode: default
 memory: project
 ---
 
