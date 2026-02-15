@@ -2,11 +2,15 @@ package api
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/ipfs/go-cid"
 	"github.com/matou-dao/backend/internal/anysync"
 )
@@ -174,6 +178,65 @@ func (h *FilesHandler) HandleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.WriteHeader(http.StatusOK)
 	io.Copy(w, reader)
+}
+
+// uploadBase64Avatar decodes base64-encoded image data and uploads it to the
+// filenode. Returns the content-addressed fileRef (CID) on success.
+// This is used as a fallback when the normal file upload couldn't run because
+// the community space didn't exist yet (e.g. during onboarding).
+// Retries with backoff because the filenode peer pool may not be connected yet
+// after an SDK reinit (which happens during identity setup just before this).
+func uploadBase64Avatar(ctx context.Context, fileManager *anysync.FileManager, spaceID string, signingKey crypto.PrivKey, base64Data string, mimeType string) (string, error) {
+	if fileManager == nil {
+		return "", fmt.Errorf("file manager not available")
+	}
+	if spaceID == "" {
+		return "", fmt.Errorf("space ID is required")
+	}
+
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	if !strings.HasPrefix(mimeType, "image/") {
+		return "", fmt.Errorf("only image files are accepted, got %s", mimeType)
+	}
+
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64 data: %w", err)
+	}
+
+	if len(data) > maxFileSize {
+		return "", fmt.Errorf("decoded image exceeds %d byte limit", maxFileSize)
+	}
+
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		fileRef, err := fileManager.AddFile(
+			ctx,
+			spaceID,
+			bytes.NewReader(data),
+			mimeType,
+			int64(len(data)),
+			signingKey,
+		)
+		if err == nil {
+			return fileRef, nil
+		}
+		lastErr = err
+		if attempt < maxAttempts {
+			delay := time.Duration(attempt) * 2 * time.Second
+			fmt.Printf("[uploadBase64Avatar] attempt %d/%d failed: %v — retrying in %v\n", attempt, maxAttempts, err, delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+	}
+
+	return "", fmt.Errorf("failed to upload avatar after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // RegisterRoutes registers file routes on the mux.

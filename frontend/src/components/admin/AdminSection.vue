@@ -53,11 +53,17 @@
 
     <!-- Registrations List -->
     <div v-else class="registrations-list space-y-3">
+      <!-- Processing Banner -->
+      <div v-if="isProcessing" class="processing-banner p-3 bg-primary/10 border border-primary/20 rounded-xl flex items-center gap-2">
+        <Loader2 class="w-4 h-4 text-primary animate-spin" />
+        <span class="text-sm text-primary font-medium">Processing membership action... Other actions are disabled until this completes.</span>
+      </div>
       <RegistrationCard
         v-for="registration in registrations"
         :key="registration.notificationId"
         :registration="registration"
         :disabled="isProcessing"
+        :is-active-processing="processingRegistrationId === registration.notificationId"
         @approve="handleApprove"
         @decline="handleDecline"
         @view="openViewModal"
@@ -87,7 +93,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue';
-import { RefreshCw, Inbox, CheckCircle } from 'lucide-vue-next';
+import { RefreshCw, Inbox, CheckCircle, Loader2 } from 'lucide-vue-next';
 import RegistrationCard from './RegistrationCard.vue';
 import RegistrationModal from './RegistrationModal.vue';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
@@ -97,6 +103,7 @@ interface Props {
   isPolling?: boolean;
   isRefreshing?: boolean;
   isProcessing?: boolean;
+  processingRegistrationId?: string | null;
   error?: string | null;
   actionError?: string | null;
 }
@@ -105,6 +112,7 @@ const props = withDefaults(defineProps<Props>(), {
   isPolling: false,
   isRefreshing: false,
   isProcessing: false,
+  processingRegistrationId: null,
   error: null,
   actionError: null,
 });

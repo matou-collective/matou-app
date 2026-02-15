@@ -84,7 +84,7 @@ func SetupWithConfig(cfg *Config) *Network {
 	}
 
 	network := &Network{
-		ConfigPath:     filepath.Join(infraPath, "client-host-test.yml"),
+		ConfigPath:     filepath.Join(infraPath, "etc-test", "client-test.yml"),
 		CoordinatorURL: "localhost:2004",
 		keepRunning:    cfg.KeepRunning,
 	}

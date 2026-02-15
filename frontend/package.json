@@ -8,8 +8,9 @@
   "scripts": {
     "lint": "eslint --ext .js,.ts,.vue ./src",
     "format": "prettier --write \"./src/**/*.{js,ts,vue,scss,html,json}\" --ignore-path .gitignore",
-    "test": "playwright test",
-    "test:ui": "playwright test --ui",
+    "test": "playwright test --project=org-setup --project=registration --project=invitation --project=multi-backend --project=account-recovery --project=recovery-errors",
+    "test:all": "playwright test",
+"test:ui": "playwright test --ui",
     "test:debug": "playwright test --debug",
     "test:headed": "playwright test --headed",
     "test:serve": "VITE_ENV=test VITE_TEST_CONFIG_URL=http://localhost:4904 VITE_BACKEND_URL=http://localhost:9080 quasar dev -p 9003",

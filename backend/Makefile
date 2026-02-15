@@ -52,11 +52,11 @@ test-coverage:
 test-integration:
 	@echo "Running integration tests..."
 	@echo "Note: Test network will start automatically"
-	go test -tags=integration -v ./internal/anysync/...
+	MATOU_ANYSYNC_INFRA_DIR=$(ANYSYNC_INFRA_DIR) go test -tags=integration -v ./internal/anysync/...
 
 # Run integration tests, keep network running after
 test-integration-keep:
-	KEEP_TEST_NETWORK=1 go test -tags=integration -v ./internal/anysync/...
+	MATOU_ANYSYNC_INFRA_DIR=$(ANYSYNC_INFRA_DIR) KEEP_TEST_NETWORK=1 go test -tags=integration -v ./internal/anysync/...
 
 # Run all tests (unit + integration)
 test-all: test test-integration
@@ -65,7 +65,7 @@ test-all: test test-integration
 # Test Network Management
 # =============================================================================
 
-ANYSYNC_INFRA_DIR ?= ../../matou-infrastructure/any-sync
+ANYSYNC_INFRA_DIR ?= $(abspath ../../matou-infrastructure/any-sync)
 
 # Start the test network manually
 testnet-up:
