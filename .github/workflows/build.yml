@@ -26,6 +26,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          architecture: x64
 
       # 3️⃣ Install frontend dependencies
       - name: Install frontend dependencies
@@ -60,6 +61,8 @@ jobs:
       - name: Build Electron App
         run: |
           cd frontend
+          # temporarily disable signing for apple
+          export CSC_IDENTITY_AUTO_DISCOVERY=false
           npx quasar build -m electron
 
       # 8️⃣ Upload artifacts
