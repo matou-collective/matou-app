@@ -2,33 +2,52 @@ name: Build Electron App
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
+      # 1️⃣ Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2️⃣ Setup Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      # 3️⃣ Install frontend dependencies
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
 
+      # 4️⃣ Install Quasar CLI
+      - name: Install Quasar CLI
+        run: npm install -g @quasar/cli
+
+      # 5️⃣ Setup Go (backend)
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+
+      # 6️⃣ Build backend
       - name: Build backend
         run: |
           cd backend
+          go mod tidy
           if [ "${RUNNER_OS}" == "Linux" ]; then
             make build-linux-amd64
           elif [ "${RUNNER_OS}" == "macOS" ]; then
@@ -37,3 +56,15 @@ jobs:
             powershell.exe -Command "make build-windows-amd64"
           fi
 
+      # 7️⃣ Build Electron App
+      - name: Build Electron App
+        run: |
+          cd frontend
+          npx quasar build -m electron
+
+      # 8️⃣ Upload artifacts
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-packaged
+          path: frontend/dist/electron/Packaged/
