@@ -1,13 +1,13 @@
 <template>
   <button
     class="channel-item"
-    :class="{ active, archived: channel.isArchived }"
+    :class="{ active, archived: channel.isArchived, unread: displayUnreadCount > 0 }"
     @click="$emit('click')"
   >
     <span class="channel-icon">{{ channel.icon || '#' }}</span>
     <span class="channel-name">{{ channel.name }}</span>
     <span v-if="channel.isArchived" class="archived-badge">Archived</span>
-    <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount }}</span>
+    <span v-if="displayUnreadCount > 0" class="unread-badge">{{ displayUnreadCount }}</span>
   </button>
 </template>
 
@@ -18,13 +18,14 @@ import type { Channel } from 'src/lib/api/chat';
 const props = defineProps<{
   channel: Channel;
   active: boolean;
+  unreadCount?: number;
 }>();
 
 defineEmits<{
   (e: 'click'): void;
 }>();
 
-const unreadCount = computed(() => props.channel.unreadCount ?? 0);
+const displayUnreadCount = computed(() => props.unreadCount ?? 0);
 </script>
 
 <style lang="scss" scoped>
@@ -58,6 +59,12 @@ const unreadCount = computed(() => props.channel.unreadCount ?? 0);
 
   &.archived {
     opacity: 0.6;
+  }
+
+  &.unread {
+    .channel-name {
+      font-weight: 700;
+    }
   }
 }
 

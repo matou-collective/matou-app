@@ -282,3 +282,36 @@ export async function removeReaction(
     return { success: false, error: 'Network error' };
   }
 }
+
+// --- Read Cursors API ---
+
+/**
+ * Get read cursors for all channels
+ */
+export async function getReadCursors(): Promise<Record<string, string>> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/chat/read-cursors`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch read cursors: ${response.statusText}`);
+  }
+  const data = await response.json();
+  return data.cursors ?? {};
+}
+
+/**
+ * Update read cursor for a specific channel
+ */
+export async function updateReadCursor(
+  channelId: string,
+  lastReadAt: string
+): Promise<{ success: boolean }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/chat/read-cursors`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId, lastReadAt }),
+    });
+    return response.json();
+  } catch {
+    return { success: false };
+  }
+}

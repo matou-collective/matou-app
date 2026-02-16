@@ -34,6 +34,9 @@
         <button class="nav-item" :class="{ active: route.name === 'chat' }" @click="router.push({ name: 'chat' })">
           <MessageSquare class="nav-icon" />
           <span>Chat</span>
+          <span v-if="chatStore.totalUnreadCount > 0" class="nav-badge">
+            {{ chatStore.totalUnreadCount > 99 ? '99+' : chatStore.totalUnreadCount }}
+          </span>
         </button>
       </nav>
 
@@ -72,6 +75,7 @@ import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
+import { useChatStore } from 'stores/chat';
 import { getFileUrl } from 'src/lib/api/client';
 
 const router = useRouter();
@@ -79,6 +83,7 @@ const route = useRoute();
 const store = useOnboardingStore();
 const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
+const chatStore = useChatStore();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
 const mySharedProfile = computed(() => {
@@ -221,6 +226,21 @@ onMounted(() => {
 .nav-icon {
   width: 18px;
   height: 18px;
+}
+
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 0.375rem;
+  background-color: var(--matou-destructive);
+  color: white;
+  border-radius: 9999px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .sidebar-footer {

@@ -15,16 +15,26 @@
 
     <!-- Messages -->
     <div class="messages">
-      <MessageItem
-        v-for="message in displayMessages"
-        :key="message.id"
-        :message="message"
-        :isOwnMessage="message.senderAid === currentUserAid"
-        @reply="$emit('reply', message)"
-        @edit="$emit('edit', message)"
-        @delete="$emit('delete', message)"
-        @react="(emoji) => $emit('react', message.id, emoji)"
-      />
+      <template v-for="item in displayMessages" :key="item.id">
+        <div
+          v-if="item.type === 'divider'"
+          ref="dividerRef"
+          class="new-messages-divider"
+        >
+          <span class="divider-line"></span>
+          <span class="divider-text">{{ item.count }} new message{{ item.count !== 1 ? 's' : '' }}</span>
+          <span class="divider-line"></span>
+        </div>
+        <MessageItem
+          v-else
+          :message="item"
+          :isOwnMessage="item.senderAid === currentUserAid"
+          @reply="$emit('reply', item as ChatMessage)"
+          @edit="$emit('edit', item as ChatMessage)"
+          @delete="$emit('delete', item as ChatMessage)"
+          @react="(emoji: string) => $emit('react', (item as ChatMessage).id, emoji)"
+        />
+      </template>
     </div>
 
     <!-- Empty state -->
@@ -47,6 +57,7 @@ const props = defineProps<{
   messages: ChatMessage[];
   loading: boolean;
   hasMore: boolean;
+  lastReadAt?: string;
 }>();
 
 defineEmits<{
@@ -58,21 +69,67 @@ defineEmits<{
 }>();
 
 const containerRef = ref<HTMLElement | null>(null);
+const dividerRef = ref<HTMLElement | null>(null);
 const identityStore = useIdentityStore();
 
 const currentUserAid = computed(() => identityStore.aidPrefix || '');
 
+interface NewMessagesDivider {
+  type: 'divider';
+  count: number;
+  id: string;
+}
+
+type DisplayItem = (ChatMessage & { type?: undefined }) | NewMessagesDivider;
+
 // Messages come sorted newest first, so reverse for display (oldest at top)
-const displayMessages = computed(() => {
-  return [...props.messages].reverse();
+const displayMessages = computed((): DisplayItem[] => {
+  const reversed = [...props.messages].reverse();
+  if (!props.lastReadAt || reversed.length === 0) {
+    return reversed;
+  }
+
+  // Find the first message newer than lastReadAt
+  const dividerIndex = reversed.findIndex(m => m.sentAt > props.lastReadAt!);
+  if (dividerIndex <= 0) {
+    // No unread messages or all are unread — no divider needed
+    return reversed;
+  }
+
+  const unreadCount = reversed.length - dividerIndex;
+  const items: DisplayItem[] = [...reversed];
+  items.splice(dividerIndex, 0, {
+    type: 'divider',
+    count: unreadCount,
+    id: 'new-messages-divider',
+  });
+  return items;
 });
 
+let initialScrollDone = false;
+
 // Auto-scroll to bottom when new messages arrive
-watch(() => props.messages.length, async () => {
+watch(() => props.messages.length, async (newLen, oldLen) => {
   await nextTick();
-  if (containerRef.value) {
-    containerRef.value.scrollTop = containerRef.value.scrollHeight;
+  if (!containerRef.value) return;
+
+  // On initial load (or channel switch), scroll to divider if present
+  if (!initialScrollDone && dividerRef.value) {
+    dividerRef.value.scrollIntoView({ block: 'center' });
+    initialScrollDone = true;
+    return;
   }
+
+  // For new messages, scroll to bottom
+  if (!initialScrollDone || (oldLen !== undefined && newLen > oldLen)) {
+    containerRef.value.scrollTop = containerRef.value.scrollHeight;
+    initialScrollDone = true;
+  }
+});
+
+// Reset when lastReadAt changes (channel switch)
+watch(() => props.lastReadAt, () => {
+  initialScrollDone = false;
 });
 </script>
 
@@ -166,5 +223,25 @@ watch(() => props.messages.length, async () => {
   width: 48px;
   height: 48px;
   opacity: 0.5;
+}
+
+.new-messages-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+}
+
+.divider-line {
+  flex: 1;
+  height: 1px;
+  background-color: var(--matou-destructive);
+}
+
+.divider-text {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--matou-destructive);
+  white-space: nowrap;
 }
 </style>

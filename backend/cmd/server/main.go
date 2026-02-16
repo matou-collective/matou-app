@@ -567,6 +567,8 @@ func main() {
 	fmt.Println("  GET  /api/v1/chat/messages/{id}/thread - Get thread replies")
 	fmt.Println("  POST /api/v1/chat/messages/{id}/reactions - Add reaction")
 	fmt.Println("  DELETE /api/v1/chat/messages/{id}/reactions/{emoji} - Remove reaction")
+	fmt.Println("  GET  /api/v1/chat/read-cursors      - Get read cursors")
+	fmt.Println("  PUT  /api/v1/chat/read-cursors      - Update read cursor")
 	fmt.Println()
 	fmt.Println("  Org Config:")
 	fmt.Println("  GET  /api/v1/org/config               - Get org configuration")

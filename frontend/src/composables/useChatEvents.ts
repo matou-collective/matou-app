@@ -3,6 +3,8 @@
  * Connects to the event stream and updates the chat store in real-time.
  */
 import { ref, onMounted, onUnmounted } from 'vue';
+import { Notify } from 'quasar';
+import { useRouter } from 'vue-router';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { useChatStore } from 'stores/chat';
 
@@ -30,6 +32,7 @@ export function useChatEvents() {
     if (eventSource) return;
 
     const chatStore = useChatStore();
+    const router = useRouter();
     const url = `${BACKEND_URL}/api/v1/events`;
     eventSource = new EventSource(url);
 
@@ -44,6 +47,31 @@ export function useChatEvents() {
       lastEvent.value = { type: 'chat:message:new', data };
       chatStore.handleNewMessage(data);
       console.log('[ChatEvents] New message:', data.messageId);
+
+      // Toast notification for messages in non-active channels
+      if (data.channelId !== chatStore.currentChannelId) {
+        const channel = chatStore.channels.find(c => c.id === data.channelId);
+        const channelName = channel?.name ?? 'Unknown';
+        const contentPreview = data.content?.substring(0, 80) ?? '';
+        Notify.create({
+          message: `${data.senderName}: ${contentPreview}`,
+          caption: `#${channelName}`,
+          position: 'top-right',
+          timeout: 5000,
+          color: 'primary',
+          actions: [
+            {
+              label: 'View',
+              color: 'white',
+              handler: () => {
+                router.push({ name: 'chat' });
+                chatStore.selectChannel(data.channelId);
+              },
+            },
+            { label: 'Dismiss', color: 'white' },
+          ],
+        });
+      }
     });
 
     eventSource.addEventListener('chat:message:edit', (event) => {

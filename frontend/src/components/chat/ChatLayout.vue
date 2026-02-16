@@ -20,6 +20,7 @@
           :messages="chatStore.currentMessages"
           :loading="chatStore.loadingMessages"
           :hasMore="hasMoreMessages"
+          :lastReadAt="currentLastReadAt"
           @loadMore="handleLoadMore"
           @reply="handleReply"
           @edit="handleEditStart"
@@ -102,6 +103,11 @@ const hasMoreMessages = computed(() => {
   if (!chatStore.currentChannelId) return false;
   // Access the Map directly from the store
   return false; // Will be updated when we have hasMore in store
+});
+
+const currentLastReadAt = computed(() => {
+  if (!chatStore.currentChannelId) return undefined;
+  return chatStore.readCursors[chatStore.currentChannelId] ?? undefined;
 });
 
 // Handlers

@@ -18,6 +18,7 @@
         :key="channel.id"
         :channel="channel"
         :active="channel.id === currentChannelId"
+        :unreadCount="chatStore.unreadCounts[channel.id] ?? 0"
         @click="$emit('select', channel.id)"
       />
 
@@ -39,6 +40,7 @@ import { computed, onMounted } from 'vue';
 import { Plus, MessageSquare } from 'lucide-vue-next';
 import type { Channel } from 'src/lib/api/chat';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useChatStore } from 'stores/chat';
 import ChannelListItem from './ChannelListItem.vue';
 
 defineProps<{
@@ -52,6 +54,7 @@ defineEmits<{
   (e: 'create'): void;
 }>();
 
+const chatStore = useChatStore();
 const { isSteward, checkAdminStatus } = useAdminAccess();
 const isAdmin = computed(() => isSteward.value);
 

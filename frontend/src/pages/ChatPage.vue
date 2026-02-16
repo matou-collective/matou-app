@@ -15,6 +15,8 @@ const { connected } = useChatEvents();
 
 onMounted(async () => {
   await chatStore.loadChannels();
+  await chatStore.loadReadCursors();
+  await chatStore.loadAllChannelMessages();
 
   // Select first channel if none selected
   if (!chatStore.currentChannelId && chatStore.channels.length > 0) {

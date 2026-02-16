@@ -82,6 +82,11 @@ type MessageReactionData struct {
 	ReactorAIDs []string `json:"reactorAids"`
 }
 
+// ReadCursorsData stores per-channel read cursor timestamps.
+type ReadCursorsData struct {
+	Cursors map[string]string `json:"cursors"` // channelId → lastReadAt ISO timestamp
+}
+
 // --- Request/Response Types ---
 
 // CreateChannelRequest is the request body for creating a channel.
@@ -117,6 +122,12 @@ type EditMessageRequest struct {
 // AddReactionRequest is the request body for adding a reaction.
 type AddReactionRequest struct {
 	Emoji string `json:"emoji"`
+}
+
+// UpdateReadCursorRequest is the request body for updating a read cursor.
+type UpdateReadCursorRequest struct {
+	ChannelID  string `json:"channelId"`
+	LastReadAt string `json:"lastReadAt"`
 }
 
 // ChannelResponse is the response for a single channel.
@@ -1572,6 +1583,194 @@ func (h *ChatHandler) HandleRemoveReaction(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// --- Read Cursor Handlers ---
+
+// HandleGetReadCursors handles GET /api/v1/chat/read-cursors — get read cursors.
+func (h *ChatHandler) HandleGetReadCursors(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	privateSpaceID := h.userIdentity.GetPrivateSpaceID()
+	if privateSpaceID == "" {
+		// User hasn't set identity yet, return empty cursors
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"cursors": map[string]string{},
+		})
+		return
+	}
+
+	userAID := h.userIdentity.GetAID()
+	if userAID == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"cursors": map[string]string{},
+		})
+		return
+	}
+
+	ctx := r.Context()
+
+	// Build space index to discover trees
+	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, privateSpaceID)
+
+	objMgr := h.spaceManager.ObjectTreeManager()
+	objectID := "read-cursors-" + userAID
+
+	obj, err := objMgr.ReadLatestByID(ctx, privateSpaceID, objectID)
+	if err != nil {
+		// Not found is ok, return empty cursors
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"cursors": map[string]string{},
+		})
+		return
+	}
+
+	var data ReadCursorsData
+	if err := json.Unmarshal(obj.Data, &data); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("invalid read cursors data: %v", err),
+		})
+		return
+	}
+
+	if data.Cursors == nil {
+		data.Cursors = map[string]string{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"cursors": data.Cursors,
+	})
+}
+
+// HandleUpdateReadCursor handles PUT /api/v1/chat/read-cursors — update a read cursor.
+func (h *ChatHandler) HandleUpdateReadCursor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var req UpdateReadCursorRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+
+	if req.ChannelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "channelId is required"})
+		return
+	}
+
+	if req.LastReadAt == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "lastReadAt is required"})
+		return
+	}
+
+	privateSpaceID := h.userIdentity.GetPrivateSpaceID()
+	if privateSpaceID == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "private space not configured",
+		})
+		return
+	}
+
+	userAID := h.userIdentity.GetAID()
+	if userAID == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "user identity not configured",
+		})
+		return
+	}
+
+	ctx := r.Context()
+
+	// Get signing key for private space
+	client := h.spaceManager.GetClient()
+	if client == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "any-sync client not available",
+		})
+		return
+	}
+
+	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), privateSpaceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to load space keys: %v", err),
+		})
+		return
+	}
+
+	objectID := "read-cursors-" + userAID
+	objMgr := h.spaceManager.ObjectTreeManager()
+
+	// Try to read existing cursors
+	var data ReadCursorsData
+	existingVersion := 0
+
+	existing, err := objMgr.ReadLatestByID(ctx, privateSpaceID, objectID)
+	if err == nil {
+		// Found existing cursors, update them
+		if err := json.Unmarshal(existing.Data, &data); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("invalid read cursors data: %v", err),
+			})
+			return
+		}
+		existingVersion = existing.Version
+		if data.Cursors == nil {
+			data.Cursors = map[string]string{}
+		}
+		data.Cursors[req.ChannelID] = req.LastReadAt
+	} else {
+		// Not found, create new cursors
+		data = ReadCursorsData{
+			Cursors: map[string]string{
+				req.ChannelID: req.LastReadAt,
+			},
+		}
+	}
+
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to marshal read cursors data: %v", err),
+		})
+		return
+	}
+
+	ownerKey := ""
+	if keys.SigningKey != nil {
+		pubKeyBytes, _ := keys.SigningKey.GetPublic().Marshall()
+		if pubKeyBytes != nil {
+			ownerKey = fmt.Sprintf("%x", pubKeyBytes)
+		}
+	}
+
+	payload := &anysync.ObjectPayload{
+		ID:        objectID,
+		Type:      "ReadCursors",
+		OwnerKey:  ownerKey,
+		Data:      dataBytes,
+		Timestamp: time.Now().Unix(),
+		Version:   existingVersion + 1,
+	}
+
+	_, err = objMgr.AddObject(ctx, privateSpaceID, payload, keys.SigningKey)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to update read cursor: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+	})
+}
+
 // --- Helper Functions ---
 
 func (h *ChatHandler) getUserRole() string {
@@ -1885,6 +2084,9 @@ func (h *ChatHandler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Message routes
 	mux.HandleFunc("/api/v1/chat/messages/", CORSHandler(h.handleMessages))
+
+	// Read cursor routes
+	mux.HandleFunc("/api/v1/chat/read-cursors", CORSHandler(h.handleReadCursors))
 }
 
 // handleChannels routes /api/v1/chat/channels requests.
@@ -2002,4 +2204,18 @@ func (h *ChatHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+}
+
+// handleReadCursors routes /api/v1/chat/read-cursors requests.
+func (h *ChatHandler) handleReadCursors(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.HandleGetReadCursors(w, r)
+	case http.MethodPut:
+		h.HandleUpdateReadCursor(w, r)
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusOK)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
 }

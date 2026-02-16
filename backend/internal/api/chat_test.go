@@ -794,5 +794,293 @@ func TestChat_SSEEvents(t *testing.T) {
 	}
 }
 
+// --- Read Cursor Tests ---
+
+func TestChat_ReadCursors_GetEmpty(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	// Set private space ID
+	privateSpaceID := "space-private-test"
+	if err := env.userIdentity.SetPrivateSpaceID(privateSpaceID); err != nil {
+		t.Fatalf("failed to set private space ID: %v", err)
+	}
+
+	// Generate and persist key set for private space
+	privateKeys, err := anysync.GenerateSpaceKeySet()
+	if err != nil {
+		t.Fatalf("generating private keys: %v", err)
+	}
+	if err := anysync.PersistSpaceKeySet(env.tmpDir, privateSpaceID, privateKeys); err != nil {
+		t.Fatalf("persisting private keys: %v", err)
+	}
+
+	// Register tree factory for private space
+	ctrl := gomock.NewController(t)
+	treeSeq := 0
+	utm := env.spaceManager.TreeManager()
+	makeFactory := func(c *gomock.Controller) anysync.TestTreeFactory {
+		return func(objectID string) objecttree.ObjectTree {
+			treeSeq++
+			state := &statefulMockTree{}
+			tree := setupStatefulMock(c, state)
+			treeID := fmt.Sprintf("tree-%d-%s", treeSeq, objectID)
+			tree.EXPECT().Id().Return(treeID).AnyTimes()
+			tree.EXPECT().Header().Return(nil).AnyTimes()
+			return tree
+		}
+	}
+	utm.SetTestTreeFactory(privateSpaceID, makeFactory(ctrl))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/read-cursors", nil)
+	w := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	cursors, ok := resp["cursors"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected cursors map, got %T", resp["cursors"])
+	}
+
+	if len(cursors) != 0 {
+		t.Errorf("expected empty cursors, got %v", cursors)
+	}
+}
+
+func TestChat_ReadCursors_UpdateAndGet(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	// Set private space ID
+	privateSpaceID := "space-private-test"
+	if err := env.userIdentity.SetPrivateSpaceID(privateSpaceID); err != nil {
+		t.Fatalf("failed to set private space ID: %v", err)
+	}
+
+	// Generate and persist key set for private space
+	privateKeys, err := anysync.GenerateSpaceKeySet()
+	if err != nil {
+		t.Fatalf("generating private keys: %v", err)
+	}
+	if err := anysync.PersistSpaceKeySet(env.tmpDir, privateSpaceID, privateKeys); err != nil {
+		t.Fatalf("persisting private keys: %v", err)
+	}
+
+	// Register tree factory for private space
+	ctrl := gomock.NewController(t)
+	treeSeq := 0
+	utm := env.spaceManager.TreeManager()
+	makeFactory := func(c *gomock.Controller) anysync.TestTreeFactory {
+		return func(objectID string) objecttree.ObjectTree {
+			treeSeq++
+			state := &statefulMockTree{}
+			tree := setupStatefulMock(c, state)
+			treeID := fmt.Sprintf("tree-%d-%s", treeSeq, objectID)
+			tree.EXPECT().Id().Return(treeID).AnyTimes()
+			tree.EXPECT().Header().Return(nil).AnyTimes()
+			return tree
+		}
+	}
+	utm.SetTestTreeFactory(privateSpaceID, makeFactory(ctrl))
+
+	// Update cursor for channel1
+	body1 := `{"channelId":"channel1","lastReadAt":"2026-02-16T08:00:00Z"}`
+	req1 := httptest.NewRequest(http.MethodPut, "/api/v1/chat/read-cursors", bytes.NewBufferString(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	var resp1 map[string]interface{}
+	if err := json.NewDecoder(w1.Body).Decode(&resp1); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp1["success"] != true {
+		t.Errorf("expected success=true, got %v", resp1["success"])
+	}
+
+	// Update cursor for channel2
+	body2 := `{"channelId":"channel2","lastReadAt":"2026-02-16T09:00:00Z"}`
+	req2 := httptest.NewRequest(http.MethodPut, "/api/v1/chat/read-cursors", bytes.NewBufferString(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// Get cursors
+	req3 := httptest.NewRequest(http.MethodGet, "/api/v1/chat/read-cursors", nil)
+	w3 := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w3, req3)
+
+	if w3.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w3.Code, w3.Body.String())
+	}
+
+	var resp3 map[string]interface{}
+	if err := json.NewDecoder(w3.Body).Decode(&resp3); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	cursors, ok := resp3["cursors"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected cursors map, got %T", resp3["cursors"])
+	}
+
+	if len(cursors) != 2 {
+		t.Errorf("expected 2 cursors, got %d", len(cursors))
+	}
+
+	if cursors["channel1"] != "2026-02-16T08:00:00Z" {
+		t.Errorf("expected channel1 cursor 2026-02-16T08:00:00Z, got %v", cursors["channel1"])
+	}
+
+	if cursors["channel2"] != "2026-02-16T09:00:00Z" {
+		t.Errorf("expected channel2 cursor 2026-02-16T09:00:00Z, got %v", cursors["channel2"])
+	}
+}
+
+func TestChat_ReadCursors_UpdateExisting(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	// Set private space ID
+	privateSpaceID := "space-private-test"
+	if err := env.userIdentity.SetPrivateSpaceID(privateSpaceID); err != nil {
+		t.Fatalf("failed to set private space ID: %v", err)
+	}
+
+	// Generate and persist key set for private space
+	privateKeys, err := anysync.GenerateSpaceKeySet()
+	if err != nil {
+		t.Fatalf("generating private keys: %v", err)
+	}
+	if err := anysync.PersistSpaceKeySet(env.tmpDir, privateSpaceID, privateKeys); err != nil {
+		t.Fatalf("persisting private keys: %v", err)
+	}
+
+	// Register tree factory for private space
+	ctrl := gomock.NewController(t)
+	treeSeq := 0
+	utm := env.spaceManager.TreeManager()
+	makeFactory := func(c *gomock.Controller) anysync.TestTreeFactory {
+		return func(objectID string) objecttree.ObjectTree {
+			treeSeq++
+			state := &statefulMockTree{}
+			tree := setupStatefulMock(c, state)
+			treeID := fmt.Sprintf("tree-%d-%s", treeSeq, objectID)
+			tree.EXPECT().Id().Return(treeID).AnyTimes()
+			tree.EXPECT().Header().Return(nil).AnyTimes()
+			return tree
+		}
+	}
+	utm.SetTestTreeFactory(privateSpaceID, makeFactory(ctrl))
+
+	// Update cursor for channel1 first time
+	body1 := `{"channelId":"channel1","lastReadAt":"2026-02-16T08:00:00Z"}`
+	req1 := httptest.NewRequest(http.MethodPut, "/api/v1/chat/read-cursors", bytes.NewBufferString(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// Update cursor for channel1 second time (should update, not create)
+	body2 := `{"channelId":"channel1","lastReadAt":"2026-02-16T10:00:00Z"}`
+	req2 := httptest.NewRequest(http.MethodPut, "/api/v1/chat/read-cursors", bytes.NewBufferString(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// Get cursors
+	req3 := httptest.NewRequest(http.MethodGet, "/api/v1/chat/read-cursors", nil)
+	w3 := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w3, req3)
+
+	if w3.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w3.Code, w3.Body.String())
+	}
+
+	var resp3 map[string]interface{}
+	if err := json.NewDecoder(w3.Body).Decode(&resp3); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	cursors, ok := resp3["cursors"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected cursors map, got %T", resp3["cursors"])
+	}
+
+	if len(cursors) != 1 {
+		t.Errorf("expected 1 cursor, got %d", len(cursors))
+	}
+
+	if cursors["channel1"] != "2026-02-16T10:00:00Z" {
+		t.Errorf("expected channel1 cursor 2026-02-16T10:00:00Z (updated), got %v", cursors["channel1"])
+	}
+}
+
+func TestChat_ReadCursors_MissingFields(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	// Set private space ID
+	privateSpaceID := "space-private-test"
+	if err := env.userIdentity.SetPrivateSpaceID(privateSpaceID); err != nil {
+		t.Fatalf("failed to set private space ID: %v", err)
+	}
+
+	// Test missing channelId
+	body1 := `{"lastReadAt":"2026-02-16T08:00:00Z"}`
+	req1 := httptest.NewRequest(http.MethodPut, "/api/v1/chat/read-cursors", bytes.NewBufferString(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing channelId, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// Test missing lastReadAt
+	body2 := `{"channelId":"channel1"}`
+	req2 := httptest.NewRequest(http.MethodPut, "/api/v1/chat/read-cursors", bytes.NewBufferString(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+
+	env.mux.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing lastReadAt, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
 // Ensure unused import for crypto doesn't cause build failure.
 var _ = crypto.GenerateRandomEd25519KeyPair
