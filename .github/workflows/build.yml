@@ -63,8 +63,6 @@ jobs:
       - name: Build Electron App
         run: |
           cd frontend
-          # temporarily disable signing for apple
-          export CSC_IDENTITY_AUTO_DISCOVERY=false
           npx quasar build -m electron
 
       # 8️⃣ Upload artifacts
