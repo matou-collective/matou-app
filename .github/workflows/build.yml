@@ -22,3 +22,18 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build backend
+        run: |
+          cd backend
+          if [ "${RUNNER_OS}" == "Linux" ]; then
+            make build-linux-amd64
+          elif [ "${RUNNER_OS}" == "macOS" ]; then
+            make build-darwin-amd64
+          elif [ "${RUNNER_OS}" == "Windows" ]; then
+            powershell.exe -Command "make build-windows-amd64"
+          fi
+
