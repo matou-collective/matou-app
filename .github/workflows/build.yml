@@ -26,7 +26,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          architecture: x64
+          cache-dependency-path: frontend/package-lock.json
 
       # 3️⃣ Install frontend dependencies
       - name: Install frontend dependencies
@@ -46,6 +46,7 @@ jobs:
 
       # 6️⃣ Build backend
       - name: Build backend
+        shell: bash
         run: |
           cd backend
           go mod tidy
@@ -54,8 +55,9 @@ jobs:
           elif [ "${RUNNER_OS}" == "macOS" ]; then
             make build-darwin-amd64
           elif [ "${RUNNER_OS}" == "Windows" ]; then
-            powershell.exe -Command "make build-windows-amd64"
+            make build-windows-amd64
           fi
+
 
       # 7️⃣ Build Electron App
       - name: Build Electron App
