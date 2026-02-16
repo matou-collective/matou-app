@@ -112,8 +112,7 @@ export default configure(() => {
       builder: {
         appId: 'org.matou.app',
         productName: 'Matou',
-        // artifactName: 'matou-${version}.${ext}',
-        artifactName: 'matou-${version}-${platform}-${arch}.${ext}',
+        artifactName: 'matou-${version}-${platform}.${ext}',
         afterPack: './build/afterPack.cjs',
         extraResources: [
           { from: '../backend/bin/', to: 'backend/' },
@@ -121,11 +120,13 @@ export default configure(() => {
         ],
         mac: {
           target: ['dmg'],
+          artifactName: 'matou-${version}-${platform}-${arch}.${ext}',
           hardenedRuntime: true,
           gatekeeperAssess: false,
           entitlements: 'build/entitlements.mac.plist',
           entitlementsInherit: 'build/entitlements.mac.plist',
-          icon: 'src-electron/icons/icon.png'
+          icon: 'src-electron/icons/icon.png',
+          
         },
         linux: {
           target: 'AppImage',

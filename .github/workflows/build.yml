@@ -28,6 +28,25 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # Matou App Version
+      - name: Get app version
+        id: version
+        run: |
+          echo "VERSION=$(node -p "require('./frontend/package.json').version")" >> $GITHUB_ENV
+
+      # Platform name
+      - name: Set platform name
+        id: platform
+        run: |
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            echo "PLATFORM=linux" >> $GITHUB_ENV
+          elif [[ "${RUNNER_OS}" == "macOS" ]]; then
+            echo "PLATFORM=mac" >> $GITHUB_ENV
+          elif [[ "${RUNNER_OS}" == "Windows" ]]; then
+            echo "PLATFORM=windows" >> $GITHUB_ENV
+          fi
+
+
       # Install frontend dependencies
       - name: Install frontend dependencies
         run: |
@@ -87,5 +106,10 @@ jobs:
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: electron-packaged-${{ matrix.os }}
-          path: frontend/dist/electron/Packaged/
+          name: matou-${{ env.VERSION }}-${{ env.PLATFORM }}
+          path: |
+            frontend/dist/electron/Packaged/matou-*.AppImage
+            frontend/dist/electron/Packaged/matou-*.exe
+            frontend/dist/electron/Packaged/matou-*-mac-*.dmg
+            # todo add other files needed
+
