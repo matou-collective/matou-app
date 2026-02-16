@@ -41,6 +41,7 @@ export default defineConfig({
       use: browserConfig,
     },
     // Registration tests - uses persisted test config from org-setup
+    // No dependency — self-sufficient (auto-runs org-setup if needed)
     {
       name: 'registration',
       testMatch: /e2e-registration\.spec\.ts/,
@@ -70,6 +71,13 @@ export default defineConfig({
       testMatch: /e2e-recovery-errors\.spec\.ts/,
       use: browserConfig,
     },
+    // Chat feature - full integration with real backend and any-sync P2P
+    // No dependency — requires test-accounts.json from registration
+    {
+      name: 'chat',
+      testMatch: /e2e-chat\.spec\.ts/,
+      use: browserConfig,
+    },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above
     {
@@ -82,6 +90,7 @@ export default defineConfig({
         /e2e-multi-backend\.spec\.ts/,
         /e2e-account-recovery\.spec\.ts/,
         /e2e-recovery-errors\.spec\.ts/,
+        /e2e-chat\.spec\.ts/,
       ],
     },
   ],

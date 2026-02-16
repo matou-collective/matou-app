@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
+	"github.com/anyproto/any-sync/commonspace/object/tree/synctree/updatelistener"
 	"github.com/anyproto/any-sync/commonspace/object/tree/treechangeproto"
 	"github.com/anyproto/any-sync/commonspace/objecttreebuilder"
 	"github.com/anyproto/any-sync/util/crypto"
@@ -56,6 +57,11 @@ func (c *TreeCache) Store(spaceID string, tree objecttree.ObjectTree) {
 	c.trees.Store(spaceID, tree)
 }
 
+// Delete removes a cached tree for a space, forcing re-discovery on next Load.
+func (c *TreeCache) Delete(spaceID string) {
+	c.trees.Delete(spaceID)
+}
+
 // CredentialTreeManager manages credential storage in ObjectTrees.
 // Each space has one credential tree for storing KERI credentials as
 // encrypted, signed CRDT changes. Peers must join the space via ACL
@@ -64,6 +70,7 @@ type CredentialTreeManager struct {
 	client     AnySyncClient
 	keyManager *PeerKeyManager
 	trees      *TreeCache
+	listener   updatelistener.UpdateListener
 }
 
 // NewCredentialTreeManager creates a new CredentialTreeManager with a shared TreeCache.
@@ -118,7 +125,7 @@ func (m *CredentialTreeManager) CreateCredentialTree(ctx context.Context, spaceI
 		return "", fmt.Errorf("creating tree: %w", err)
 	}
 
-	tree, err := treeBuilder.PutTree(ctx, storagePayload, nil)
+	tree, err := treeBuilder.PutTree(ctx, storagePayload, m.listener)
 	if err != nil {
 		return "", fmt.Errorf("putting tree: %w", err)
 	}
@@ -241,7 +248,9 @@ func (m *CredentialTreeManager) discoverTree(ctx context.Context, spaceID string
 	builder := space.TreeBuilder()
 
 	for _, treeID := range storedIds {
-		tree, err := builder.BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{})
+		tree, err := builder.BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{
+			Listener: m.listener,
+		})
 		if err != nil {
 			continue
 		}

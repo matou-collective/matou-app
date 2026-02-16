@@ -26,6 +26,11 @@ const routes: RouteRecordRaw[] = [
         name: 'account-settings',
         component: () => import('pages/AccountSettingsPage.vue'),
       },
+      {
+        path: 'chat',
+        name: 'chat',
+        component: () => import('pages/ChatPage.vue'),
+      },
     ],
   },
   {
@@ -58,17 +63,6 @@ const routes: RouteRecordRaw[] = [
         path: '',
         name: 'privacy-policy',
         component: () => import('pages/PrivacyPolicyPage.vue'),
-      },
-    ],
-  },
-  {
-    path: '/chat',
-    component: () => import('layouts/OnboardingLayout.vue'),
-    children: [
-      {
-        path: '',
-        name: 'chat',
-        component: () => import('pages/ChatPage.vue'),
       },
     ],
   },

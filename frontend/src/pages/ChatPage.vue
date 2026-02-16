@@ -28,5 +28,6 @@ onMounted(async () => {
   height: 100vh;
   display: flex;
   overflow: hidden;
+  width: 100%;
 }
 </style>

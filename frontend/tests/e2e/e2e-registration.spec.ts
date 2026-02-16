@@ -11,6 +11,7 @@ import {
   loginWithMnemonic,
   uniqueSuffix,
   loadAccounts,
+  saveAccounts,
   performOrgSetup,
   TestAccounts,
 } from './utils/test-helpers';
@@ -111,7 +112,7 @@ test.describe.serial('Registration Approval Flow', () => {
       );
 
       // 1. User registers (on their own backend via routing)
-      await registerUser(userPage, userName);
+      const userResult = await registerUser(userPage, userName);
 
       // 2. Verify backend identity was configured during registration
       const idResp = await identitySetResponse;
@@ -187,7 +188,25 @@ test.describe.serial('Registration Approval Flow', () => {
       await enterButton.click({ timeout: TIMEOUT.long + 15_000 });
       await expect(userPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
 
-      // 8. Verify credential synced to backend (through user's backend)
+      // 8. Save member credentials for downstream tests (e.g. chat)
+      const memberAid = await userPage.evaluate(() => {
+        const stored = localStorage.getItem('matou_current_aid');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          return parsed.prefix || parsed.aid || '';
+        }
+        return '';
+      });
+      accounts.member = {
+        mnemonic: userResult.mnemonic,
+        aid: memberAid,
+        name: userName,
+      };
+      accounts.note = 'Auto-generated. Admin from org-setup, member from registration approval.';
+      saveAccounts(accounts);
+      console.log(`[Test] Saved member account: ${userName} (${memberAid.slice(0, 12)}...)`);
+
+      // 9. Verify credential synced to backend (through user's backend)
       const syncResp = await syncResponse;
       expect(syncResp.status()).toBe(200);
       const syncBody = await syncResp.json();

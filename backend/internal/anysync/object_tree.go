@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
+	"github.com/anyproto/any-sync/commonspace/object/tree/synctree/updatelistener"
 	"github.com/anyproto/any-sync/commonspace/object/tree/treechangeproto"
 	"github.com/anyproto/any-sync/commonspace/objecttreebuilder"
 	"github.com/anyproto/any-sync/util/crypto"
@@ -36,6 +37,7 @@ type ObjectTreeManager struct {
 	client     AnySyncClient
 	keyManager *PeerKeyManager
 	trees      *TreeCache
+	listener   updatelistener.UpdateListener
 }
 
 // NewObjectTreeManager creates a new ObjectTreeManager using a shared TreeCache.
@@ -45,6 +47,11 @@ func NewObjectTreeManager(client AnySyncClient, keyManager *PeerKeyManager, cach
 		keyManager: keyManager,
 		trees:      cache,
 	}
+}
+
+// SetListener sets the UpdateListener for push-based change notification.
+func (m *ObjectTreeManager) SetListener(l updatelistener.UpdateListener) {
+	m.listener = l
 }
 
 // AddObject adds a generic object as a signed change to the space's tree.
@@ -58,6 +65,12 @@ func (m *ObjectTreeManager) AddObject(ctx context.Context, spaceID string, paylo
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshaling object: %w", err)
+	}
+
+	// Register with listener before writing so the subsequent P2P callback
+	// doesn't emit a spurious SSE event. Also persists to anystore immediately.
+	if tul, ok := m.listener.(*TreeUpdateListener); ok && tul != nil {
+		tul.RegisterObject(payload)
 	}
 
 	tree.Lock()
@@ -207,7 +220,9 @@ func (m *ObjectTreeManager) discoverTree(ctx context.Context, spaceID string) er
 	builder := space.TreeBuilder()
 
 	for _, treeID := range storedIds {
-		tree, err := builder.BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{})
+		tree, err := builder.BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{
+			Listener: m.listener,
+		})
 		if err != nil {
 			continue
 		}
@@ -296,7 +311,7 @@ func (m *ObjectTreeManager) createTree(ctx context.Context, spaceID string, sign
 		return "", fmt.Errorf("creating tree: %w", err)
 	}
 
-	tree, err := treeBuilder.PutTree(ctx, storagePayload, nil)
+	tree, err := treeBuilder.PutTree(ctx, storagePayload, m.listener)
 	if err != nil {
 		return "", fmt.Errorf("putting tree: %w", err)
 	}

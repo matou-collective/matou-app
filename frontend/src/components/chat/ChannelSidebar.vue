@@ -35,7 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { Plus, MessageSquare } from 'lucide-vue-next';
 import type { Channel } from 'src/lib/api/chat';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
@@ -52,8 +52,12 @@ defineEmits<{
   (e: 'create'): void;
 }>();
 
-const { isSteward } = useAdminAccess();
+const { isSteward, checkAdminStatus } = useAdminAccess();
 const isAdmin = computed(() => isSteward.value);
+
+onMounted(() => {
+  checkAdminStatus();
+});
 </script>
 
 <style lang="scss" scoped>

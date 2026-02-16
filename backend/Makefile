@@ -107,6 +107,17 @@ clean:
 	rm -rf bin/ coverage.out coverage.html
 	go clean -testcache
 
+# Remove all dev session data (identity, org config, space keys, any-sync trees, SQLite)
+clean-data:
+	rm -rf data/ data[0-9]*/
+
+# Remove test mode data
+clean-data-test:
+	rm -rf data-test/
+
+# Full reset: build artifacts + all data (dev + test)
+clean-all: clean clean-data clean-data-test
+
 # =============================================================================
 # Help
 # =============================================================================
@@ -141,8 +152,11 @@ help:
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean              - Remove build artifacts"
+	@echo "  make clean-data         - Remove all dev session data (identity, keys, db, spaces)"
+	@echo "  make clean-data-test    - Remove test mode data"
+	@echo "  make clean-all          - Remove build artifacts + all data (dev + test)"
 
 .PHONY: build build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-windows-amd64 build-all \
         run run-test test test-coverage test-integration test-integration-keep test-all \
         testnet-up testnet-down testnet-clean testnet-status testnet-health \
-        lint fmt vet clean help
+        lint fmt vet clean clean-data clean-data-test clean-all help

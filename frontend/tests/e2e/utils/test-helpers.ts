@@ -56,6 +56,11 @@ export interface TestAccounts {
     aid: string;
     name: string;
   } | null;
+  member?: {
+    mnemonic: string[];
+    aid: string;
+    name: string;
+  } | null;
   createdAt: string | null;
 }
 

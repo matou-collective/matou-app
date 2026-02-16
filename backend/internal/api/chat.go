@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/identity"
 )
 
@@ -19,6 +19,7 @@ type ChatHandler struct {
 	spaceManager *anysync.SpaceManager
 	userIdentity *identity.UserIdentity
 	eventBroker  *EventBroker
+	store        *anystore.LocalStore
 }
 
 // NewChatHandler creates a new chat handler.
@@ -26,17 +27,19 @@ func NewChatHandler(
 	spaceManager *anysync.SpaceManager,
 	userIdentity *identity.UserIdentity,
 	eventBroker *EventBroker,
+	store *anystore.LocalStore,
 ) *ChatHandler {
 	return &ChatHandler{
 		spaceManager: spaceManager,
 		userIdentity: userIdentity,
 		eventBroker:  eventBroker,
+		store:        store,
 	}
 }
 
 // --- Data Types ---
 
-// ChatChannelData represents a chat channel stored in the community-readonly space.
+// ChatChannelData represents a chat channel stored in the community space.
 type ChatChannelData struct {
 	Name         string   `json:"name"`
 	Description  string   `json:"description,omitempty"`
@@ -159,18 +162,52 @@ func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
-	if roSpaceID == "" {
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	if communitySpaceID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "community-readonly space not configured",
+			"error": "community space not configured",
 		})
 		return
 	}
 
 	ctx := r.Context()
-	objMgr := h.spaceManager.ObjectTreeManager()
 
-	objects, err := objMgr.ReadObjectsByType(ctx, roSpaceID, "ChatChannel")
+	// Read from anystore (indexed) if available, fall back to tree scan
+	if h.store != nil {
+		cached, err := h.store.ListChannels(ctx)
+		if err == nil {
+			userRole := h.getUserRole()
+			channels := make([]ChannelResponse, 0, len(cached))
+			for _, ch := range cached {
+				if len(ch.AllowedRoles) > 0 && !containsRole(ch.AllowedRoles, userRole) {
+					continue
+				}
+				if ch.IsArchived && r.URL.Query().Get("includeArchived") != "true" {
+					continue
+				}
+				channels = append(channels, ChannelResponse{
+					ID:           ch.ID,
+					Name:         ch.Name,
+					Description:  ch.Description,
+					Icon:         ch.Icon,
+					Photo:        ch.Photo,
+					CreatedAt:    ch.CreatedAt,
+					CreatedBy:    ch.CreatedBy,
+					IsArchived:   ch.IsArchived,
+					AllowedRoles: ch.AllowedRoles,
+				})
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"channels": channels,
+				"count":    len(channels),
+			})
+			return
+		}
+	}
+
+	// Fallback: tree scan
+	objMgr := h.spaceManager.ObjectTreeManager()
+	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatChannel")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to read channels: %v", err),
@@ -178,44 +215,40 @@ func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get user role to filter by allowed roles
 	userRole := h.getUserRole()
-
-	// Deduplicate and filter
-	channels := make([]ChannelResponse, 0)
-	seen := make(map[string]bool)
-
+	type channelEntry struct {
+		obj  *anysync.ObjectPayload
+		data ChatChannelData
+	}
+	latestByID := make(map[string]*channelEntry)
 	for _, obj := range objects {
-		if seen[obj.ID] {
-			continue
-		}
-		seen[obj.ID] = true
-
 		var data ChatChannelData
 		if err := json.Unmarshal(obj.Data, &data); err != nil {
 			continue
 		}
+		if existing, ok := latestByID[obj.ID]; !ok || obj.Version > existing.obj.Version {
+			latestByID[obj.ID] = &channelEntry{obj: obj, data: data}
+		}
+	}
 
-		// Filter by role if allowedRoles is set
-		if len(data.AllowedRoles) > 0 && !containsRole(data.AllowedRoles, userRole) {
+	channels := make([]ChannelResponse, 0, len(latestByID))
+	for _, entry := range latestByID {
+		if len(entry.data.AllowedRoles) > 0 && !containsRole(entry.data.AllowedRoles, userRole) {
 			continue
 		}
-
-		// Skip archived channels by default
-		if data.IsArchived && r.URL.Query().Get("includeArchived") != "true" {
+		if entry.data.IsArchived && r.URL.Query().Get("includeArchived") != "true" {
 			continue
 		}
-
 		channels = append(channels, ChannelResponse{
-			ID:           obj.ID,
-			Name:         data.Name,
-			Description:  data.Description,
-			Icon:         data.Icon,
-			Photo:        data.Photo,
-			CreatedAt:    data.CreatedAt,
-			CreatedBy:    data.CreatedBy,
-			IsArchived:   data.IsArchived,
-			AllowedRoles: data.AllowedRoles,
+			ID:           entry.obj.ID,
+			Name:         entry.data.Name,
+			Description:  entry.data.Description,
+			Icon:         entry.data.Icon,
+			Photo:        entry.data.Photo,
+			CreatedAt:    entry.data.CreatedAt,
+			CreatedBy:    entry.data.CreatedBy,
+			IsArchived:   entry.data.IsArchived,
+			AllowedRoles: entry.data.AllowedRoles,
 		})
 	}
 
@@ -238,18 +271,43 @@ func (h *ChatHandler) HandleGetChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
-	if roSpaceID == "" {
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	if communitySpaceID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "community-readonly space not configured",
+			"error": "community space not configured",
 		})
 		return
 	}
 
 	ctx := r.Context()
-	objMgr := h.spaceManager.ObjectTreeManager()
 
-	obj, err := objMgr.ReadLatestByID(ctx, roSpaceID, channelID)
+	// Read from anystore if available
+	if h.store != nil {
+		ch, err := h.store.GetChannel(ctx, channelID)
+		if err == nil {
+			userRole := h.getUserRole()
+			if len(ch.AllowedRoles) > 0 && !containsRole(ch.AllowedRoles, userRole) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "access denied"})
+				return
+			}
+			writeJSON(w, http.StatusOK, ChannelResponse{
+				ID:           ch.ID,
+				Name:         ch.Name,
+				Description:  ch.Description,
+				Icon:         ch.Icon,
+				Photo:        ch.Photo,
+				CreatedAt:    ch.CreatedAt,
+				CreatedBy:    ch.CreatedBy,
+				IsArchived:   ch.IsArchived,
+				AllowedRoles: ch.AllowedRoles,
+			})
+			return
+		}
+	}
+
+	// Fallback: tree scan
+	objMgr := h.spaceManager.ObjectTreeManager()
+	obj, err := objMgr.ReadLatestByID(ctx, communitySpaceID, channelID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error": fmt.Sprintf("channel not found: %v", err),
@@ -265,7 +323,6 @@ func (h *ChatHandler) HandleGetChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check role access
 	userRole := h.getUserRole()
 	if len(data.AllowedRoles) > 0 && !containsRole(data.AllowedRoles, userRole) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "access denied"})
@@ -305,10 +362,10 @@ func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
-	if roSpaceID == "" {
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	if communitySpaceID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "community-readonly space not configured",
+			"error": "community space not configured",
 		})
 		return
 	}
@@ -337,7 +394,7 @@ func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Get signing key for readonly space
+	// Get signing key for community space
 	client := h.spaceManager.GetClient()
 	if client == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -346,7 +403,7 @@ func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), roSpaceID)
+	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -375,7 +432,7 @@ func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request
 	ctx := r.Context()
 	objMgr := h.spaceManager.ObjectTreeManager()
 
-	headID, err := objMgr.AddObject(ctx, roSpaceID, payload, keys.SigningKey)
+	headID, err := objMgr.AddObject(ctx, communitySpaceID, payload, keys.SigningKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to create channel: %v", err),
@@ -420,10 +477,10 @@ func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
-	if roSpaceID == "" {
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	if communitySpaceID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "community-readonly space not configured",
+			"error": "community space not configured",
 		})
 		return
 	}
@@ -432,7 +489,7 @@ func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request
 	objMgr := h.spaceManager.ObjectTreeManager()
 
 	// Read existing channel
-	existing, err := objMgr.ReadLatestByID(ctx, roSpaceID, channelID)
+	existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, channelID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error": fmt.Sprintf("channel not found: %v", err),
@@ -475,7 +532,7 @@ func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), roSpaceID)
+	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -500,7 +557,7 @@ func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request
 		Version:   existing.Version + 1,
 	}
 
-	headID, err := objMgr.AddObject(ctx, roSpaceID, payload, keys.SigningKey)
+	headID, err := objMgr.AddObject(ctx, communitySpaceID, payload, keys.SigningKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to update channel: %v", err),
@@ -538,10 +595,10 @@ func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
-	if roSpaceID == "" {
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	if communitySpaceID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "community-readonly space not configured",
+			"error": "community space not configured",
 		})
 		return
 	}
@@ -550,7 +607,7 @@ func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Reques
 	objMgr := h.spaceManager.ObjectTreeManager()
 
 	// Read existing channel
-	existing, err := objMgr.ReadLatestByID(ctx, roSpaceID, channelID)
+	existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, channelID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error": fmt.Sprintf("channel not found: %v", err),
@@ -579,7 +636,7 @@ func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Reques
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), roSpaceID)
+	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -604,7 +661,7 @@ func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Reques
 		Version:   existing.Version + 1,
 	}
 
-	_, err = objMgr.AddObject(ctx, roSpaceID, payload, keys.SigningKey)
+	_, err = objMgr.AddObject(ctx, communitySpaceID, payload, keys.SigningKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to archive channel: %v", err),
@@ -662,109 +719,78 @@ func (h *ChatHandler) HandleListMessages(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	cursor := r.URL.Query().Get("cursor")
+	offset := 0
+	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+		// cursor is "sentAt:messageID" — for anystore we use offset-based pagination
+		// The frontend should switch to offset param, but for backwards compat we ignore cursor
+		// and just return from offset 0. TODO: Add proper cursor→offset mapping.
+	}
 
 	ctx := r.Context()
-	objMgr := h.spaceManager.ObjectTreeManager()
 
-	// Read all messages
-	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatMessage")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("failed to read messages: %v", err),
-		})
-		return
-	}
-
-	// Filter by channel and deduplicate
-	messageMap := make(map[string]*messageEntry)
-
-	for _, obj := range objects {
-		var data ChatMessageData
-		if err := json.Unmarshal(obj.Data, &data); err != nil {
-			continue
-		}
-
-		if data.ChannelID != channelID {
-			continue
-		}
-
-		// Keep latest version
-		if existing, ok := messageMap[obj.ID]; !ok || obj.Version > existing.obj.Version {
-			messageMap[obj.ID] = &messageEntry{obj: obj, data: data}
-		}
-	}
-
-	// Convert to slice and sort by sentAt descending
-	messages := make([]*messageEntry, 0, len(messageMap))
-	for _, entry := range messageMap {
-		messages = append(messages, entry)
-	}
-
-	sort.Slice(messages, func(i, j int) bool {
-		return messages[i].data.SentAt > messages[j].data.SentAt
-	})
-
-	// Apply cursor-based pagination
-	startIdx := 0
-	if cursor != "" {
-		for i, m := range messages {
-			cursorVal := fmt.Sprintf("%s:%s", m.data.SentAt, m.obj.ID)
-			if cursorVal == cursor {
-				startIdx = i + 1
-				break
+	// Read from anystore if available
+	if h.store != nil {
+		msgs, err := h.store.ListMessagesByChannel(ctx, channelID, limit, offset)
+		if err == nil {
+			// Collect message IDs for reaction loading
+			messageIDs := make([]string, len(msgs))
+			for i, m := range msgs {
+				messageIDs[i] = m.ID
 			}
+
+			// Load reactions from anystore
+			reactionsMap, _ := h.store.ListReactionsByMessages(ctx, messageIDs)
+
+			currentAID := ""
+			if h.userIdentity != nil {
+				currentAID = h.userIdentity.GetAID()
+			}
+
+			result := make([]MessageResponse, 0, len(msgs))
+			for _, m := range msgs {
+				rxns := reactionsMap[m.ID]
+				aggregated := aggregateStoreReactions(rxns, currentAID)
+
+				var attachments []AttachmentRef
+				if len(m.Attachments) > 0 {
+					json.Unmarshal(m.Attachments, &attachments)
+				}
+
+				result = append(result, MessageResponse{
+					ID:          m.ID,
+					ChannelID:   m.ChannelID,
+					SenderAID:   m.SenderAID,
+					SenderName:  m.SenderName,
+					Content:     m.Content,
+					Attachments: attachments,
+					ReplyTo:     m.ReplyTo,
+					SentAt:      m.SentAt,
+					EditedAt:    m.EditedAt,
+					DeletedAt:   m.DeletedAt,
+					Reactions:   aggregated,
+					Version:     m.Version,
+				})
+			}
+
+			hasMore := len(msgs) == limit
+			var nextCursor string
+			if hasMore && len(msgs) > 0 {
+				lastMsg := msgs[len(msgs)-1]
+				nextCursor = fmt.Sprintf("%s:%s", lastMsg.SentAt, lastMsg.ID)
+			}
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"messages":   result,
+				"count":      len(result),
+				"nextCursor": nextCursor,
+				"hasMore":    hasMore,
+			})
+			return
 		}
 	}
 
-	endIdx := startIdx + limit
-	if endIdx > len(messages) {
-		endIdx = len(messages)
-	}
-
-	// Load reactions for these messages
-	reactions := h.loadReactionsForMessages(ctx, objMgr, communitySpaceID, messages[startIdx:endIdx])
-
-	// Build response
-	currentAID := ""
-	if h.userIdentity != nil {
-		currentAID = h.userIdentity.GetAID()
-	}
-
-	result := make([]MessageResponse, 0, endIdx-startIdx)
-	for _, m := range messages[startIdx:endIdx] {
-		msgReactions := reactions[m.obj.ID]
-		aggregated := aggregateReactions(msgReactions, currentAID)
-
-		result = append(result, MessageResponse{
-			ID:          m.obj.ID,
-			ChannelID:   m.data.ChannelID,
-			SenderAID:   m.data.SenderAID,
-			SenderName:  m.data.SenderName,
-			Content:     m.data.Content,
-			Attachments: m.data.Attachments,
-			ReplyTo:     m.data.ReplyTo,
-			SentAt:      m.data.SentAt,
-			EditedAt:    m.data.EditedAt,
-			DeletedAt:   m.data.DeletedAt,
-			Reactions:   aggregated,
-			Version:     m.obj.Version,
-		})
-	}
-
-	// Generate next cursor
-	var nextCursor string
-	if endIdx < len(messages) {
-		lastMsg := messages[endIdx-1]
-		nextCursor = fmt.Sprintf("%s:%s", lastMsg.data.SentAt, lastMsg.obj.ID)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"messages":   result,
-		"count":      len(result),
-		"nextCursor": nextCursor,
-		"hasMore":    endIdx < len(messages),
-	})
+	// Fallback: tree scan
+	h.handleListMessagesFallback(w, r, channelID, communitySpaceID, limit)
 }
 
 // HandleSendMessage handles POST /api/v1/chat/channels/{id}/messages — send a message.
@@ -934,23 +960,54 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ctx := r.Context()
-	objMgr := h.spaceManager.ObjectTreeManager()
 
-	// Read existing message
-	existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, messageID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{
-			"error": fmt.Sprintf("message not found: %v", err),
-		})
-		return
+	// Read existing message — prefer anystore, fall back to tree
+	var senderAID, channelID string
+	var existingVersion int
+	var data ChatMessageData
+
+	if h.store != nil {
+		msg, err := h.store.GetMessage(ctx, messageID)
+		if err == nil {
+			senderAID = msg.SenderAID
+			channelID = msg.ChannelID
+			existingVersion = msg.Version
+			data = ChatMessageData{
+				ChannelID:   msg.ChannelID,
+				SenderAID:   msg.SenderAID,
+				SenderName:  msg.SenderName,
+				Content:     msg.Content,
+				ReplyTo:     msg.ReplyTo,
+				SentAt:      msg.SentAt,
+				EditedAt:    msg.EditedAt,
+				DeletedAt:   msg.DeletedAt,
+			}
+			if len(msg.Attachments) > 0 {
+				json.Unmarshal(msg.Attachments, &data.Attachments)
+			}
+		}
+		// If err != nil, senderAID stays empty → falls through to tree scan
 	}
 
-	var data ChatMessageData
-	if err := json.Unmarshal(existing.Data, &data); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("invalid message data: %v", err),
-		})
-		return
+	if senderAID == "" {
+		// Fallback: tree scan
+		objMgr := h.spaceManager.ObjectTreeManager()
+		existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, messageID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": fmt.Sprintf("message not found: %v", err),
+			})
+			return
+		}
+		if err := json.Unmarshal(existing.Data, &data); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("invalid message data: %v", err),
+			})
+			return
+		}
+		senderAID = data.SenderAID
+		channelID = data.ChannelID
+		existingVersion = existing.Version
 	}
 
 	// Check ownership
@@ -958,7 +1015,7 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 	if h.userIdentity != nil {
 		currentAID = h.userIdentity.GetAID()
 	}
-	if data.SenderAID != currentAID {
+	if senderAID != currentAID {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "can only edit own messages"})
 		return
 	}
@@ -999,9 +1056,10 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 		OwnerKey:  ownerKey,
 		Data:      dataBytes,
 		Timestamp: time.Now().Unix(),
-		Version:   existing.Version + 1,
+		Version:   existingVersion + 1,
 	}
 
+	objMgr := h.spaceManager.ObjectTreeManager()
 	headID, err := objMgr.AddObject(ctx, communitySpaceID, payload, keys.SigningKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -1015,7 +1073,7 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 		Type: "chat:message:edit",
 		Data: map[string]interface{}{
 			"messageId": messageID,
-			"channelId": data.ChannelID,
+			"channelId": channelID,
 			"content":   req.Content,
 			"editedAt":  data.EditedAt,
 		},
@@ -1025,7 +1083,7 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 		"success":   true,
 		"messageId": messageID,
 		"headId":    headID,
-		"version":   existing.Version + 1,
+		"version":   existingVersion + 1,
 		"editedAt":  data.EditedAt,
 	})
 }
@@ -1052,23 +1110,50 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := r.Context()
-	objMgr := h.spaceManager.ObjectTreeManager()
 
-	// Read existing message
-	existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, messageID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{
-			"error": fmt.Sprintf("message not found: %v", err),
-		})
-		return
+	// Read existing message — prefer anystore
+	var data ChatMessageData
+	var existingVersion int
+	found := false
+
+	if h.store != nil {
+		msg, err := h.store.GetMessage(ctx, messageID)
+		if err == nil {
+			found = true
+			existingVersion = msg.Version
+			data = ChatMessageData{
+				ChannelID:   msg.ChannelID,
+				SenderAID:   msg.SenderAID,
+				SenderName:  msg.SenderName,
+				Content:     msg.Content,
+				ReplyTo:     msg.ReplyTo,
+				SentAt:      msg.SentAt,
+				EditedAt:    msg.EditedAt,
+				DeletedAt:   msg.DeletedAt,
+			}
+			if len(msg.Attachments) > 0 {
+				json.Unmarshal(msg.Attachments, &data.Attachments)
+			}
+		}
 	}
 
-	var data ChatMessageData
-	if err := json.Unmarshal(existing.Data, &data); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("invalid message data: %v", err),
-		})
-		return
+	if !found {
+		// Fallback: tree scan
+		objMgr := h.spaceManager.ObjectTreeManager()
+		existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, messageID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": fmt.Sprintf("message not found: %v", err),
+			})
+			return
+		}
+		if err := json.Unmarshal(existing.Data, &data); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("invalid message data: %v", err),
+			})
+			return
+		}
+		existingVersion = existing.Version
 	}
 
 	// Check ownership
@@ -1116,9 +1201,10 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 		OwnerKey:  ownerKey,
 		Data:      dataBytes,
 		Timestamp: time.Now().Unix(),
-		Version:   existing.Version + 1,
+		Version:   existingVersion + 1,
 	}
 
+	objMgr := h.spaceManager.ObjectTreeManager()
 	_, err = objMgr.AddObject(ctx, communitySpaceID, payload, keys.SigningKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -1169,80 +1255,59 @@ func (h *ChatHandler) HandleGetThread(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	objMgr := h.spaceManager.ObjectTreeManager()
 
-	// Read all messages
-	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatMessage")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("failed to read messages: %v", err),
-		})
-		return
-	}
+	// Read from anystore if available
+	if h.store != nil {
+		replies, err := h.store.ListReplies(ctx, parentMessageID)
+		if err == nil {
+			messageIDs := make([]string, len(replies))
+			for i, m := range replies {
+				messageIDs[i] = m.ID
+			}
+			reactionsMap, _ := h.store.ListReactionsByMessages(ctx, messageIDs)
 
-	// Filter by replyTo and deduplicate
-	messageMap := make(map[string]*messageEntry)
+			currentAID := ""
+			if h.userIdentity != nil {
+				currentAID = h.userIdentity.GetAID()
+			}
 
-	for _, obj := range objects {
-		var data ChatMessageData
-		if err := json.Unmarshal(obj.Data, &data); err != nil {
-			continue
+			result := make([]MessageResponse, 0, len(replies))
+			for _, m := range replies {
+				rxns := reactionsMap[m.ID]
+				aggregated := aggregateStoreReactions(rxns, currentAID)
+
+				var attachments []AttachmentRef
+				if len(m.Attachments) > 0 {
+					json.Unmarshal(m.Attachments, &attachments)
+				}
+
+				result = append(result, MessageResponse{
+					ID:          m.ID,
+					ChannelID:   m.ChannelID,
+					SenderAID:   m.SenderAID,
+					SenderName:  m.SenderName,
+					Content:     m.Content,
+					Attachments: attachments,
+					ReplyTo:     m.ReplyTo,
+					SentAt:      m.SentAt,
+					EditedAt:    m.EditedAt,
+					DeletedAt:   m.DeletedAt,
+					Reactions:   aggregated,
+					Version:     m.Version,
+				})
+			}
+
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"replies":         result,
+				"count":           len(result),
+				"parentMessageId": parentMessageID,
+			})
+			return
 		}
-
-		if data.ReplyTo != parentMessageID {
-			continue
-		}
-
-		// Keep latest version
-		if existing, ok := messageMap[obj.ID]; !ok || obj.Version > existing.obj.Version {
-			messageMap[obj.ID] = &messageEntry{obj: obj, data: data}
-		}
 	}
 
-	// Convert to slice and sort by sentAt ascending
-	replies := make([]*messageEntry, 0, len(messageMap))
-	for _, entry := range messageMap {
-		replies = append(replies, entry)
-	}
-
-	sort.Slice(replies, func(i, j int) bool {
-		return replies[i].data.SentAt < replies[j].data.SentAt
-	})
-
-	// Load reactions
-	reactions := h.loadReactionsForMessages(ctx, objMgr, communitySpaceID, replies)
-
-	currentAID := ""
-	if h.userIdentity != nil {
-		currentAID = h.userIdentity.GetAID()
-	}
-
-	result := make([]MessageResponse, 0, len(replies))
-	for _, m := range replies {
-		msgReactions := reactions[m.obj.ID]
-		aggregated := aggregateReactions(msgReactions, currentAID)
-
-		result = append(result, MessageResponse{
-			ID:          m.obj.ID,
-			ChannelID:   m.data.ChannelID,
-			SenderAID:   m.data.SenderAID,
-			SenderName:  m.data.SenderName,
-			Content:     m.data.Content,
-			Attachments: m.data.Attachments,
-			ReplyTo:     m.data.ReplyTo,
-			SentAt:      m.data.SentAt,
-			EditedAt:    m.data.EditedAt,
-			DeletedAt:   m.data.DeletedAt,
-			Reactions:   aggregated,
-			Version:     m.obj.Version,
-		})
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"replies":         result,
-		"count":           len(result),
-		"parentMessageId": parentMessageID,
-	})
+	// Fallback: tree scan
+	h.handleGetThreadFallback(w, r, parentMessageID, communitySpaceID)
 }
 
 // --- Reaction Handlers ---
@@ -1290,42 +1355,67 @@ func (h *ChatHandler) HandleAddReaction(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ctx := r.Context()
-	objMgr := h.spaceManager.ObjectTreeManager()
 
-	// Try to find existing reaction object for this message + emoji
 	reactionID := fmt.Sprintf("MessageReaction-%s-%s", messageID, req.Emoji)
 
-	var existing *anysync.ObjectPayload
 	var reactionData MessageReactionData
+	existingVersion := 0
 
-	existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, reactionID)
-	if err == nil {
-		// Existing reaction found
-		if err := json.Unmarshal(existing.Data, &reactionData); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": fmt.Sprintf("invalid reaction data: %v", err),
-			})
-			return
+	// Try anystore first, then tree fallback
+	if h.store != nil {
+		rxn, err := h.store.GetReaction(ctx, reactionID)
+		if err == nil {
+			reactionData = MessageReactionData{
+				MessageID:   rxn.MessageID,
+				Emoji:       rxn.Emoji,
+				ReactorAIDs: rxn.ReactorAIDs,
+			}
+			existingVersion = rxn.Version
+
+			for _, aid := range reactionData.ReactorAIDs {
+				if aid == currentAID {
+					writeJSON(w, http.StatusConflict, map[string]string{
+						"error": "already reacted with this emoji",
+					})
+					return
+				}
+			}
+			reactionData.ReactorAIDs = append(reactionData.ReactorAIDs, currentAID)
+		} else {
+			reactionData = MessageReactionData{
+				MessageID:   messageID,
+				Emoji:       req.Emoji,
+				ReactorAIDs: []string{currentAID},
+			}
 		}
-
-		// Check if user already reacted
-		for _, aid := range reactionData.ReactorAIDs {
-			if aid == currentAID {
-				writeJSON(w, http.StatusConflict, map[string]string{
-					"error": "already reacted with this emoji",
+	} else {
+		// Fallback: tree scan
+		objMgr := h.spaceManager.ObjectTreeManager()
+		existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, reactionID)
+		if err == nil {
+			if err := json.Unmarshal(existing.Data, &reactionData); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{
+					"error": fmt.Sprintf("invalid reaction data: %v", err),
 				})
 				return
 			}
-		}
+			existingVersion = existing.Version
 
-		// Add user to reactors
-		reactionData.ReactorAIDs = append(reactionData.ReactorAIDs, currentAID)
-	} else {
-		// Create new reaction
-		reactionData = MessageReactionData{
-			MessageID:   messageID,
-			Emoji:       req.Emoji,
-			ReactorAIDs: []string{currentAID},
+			for _, aid := range reactionData.ReactorAIDs {
+				if aid == currentAID {
+					writeJSON(w, http.StatusConflict, map[string]string{
+						"error": "already reacted with this emoji",
+					})
+					return
+				}
+			}
+			reactionData.ReactorAIDs = append(reactionData.ReactorAIDs, currentAID)
+		} else {
+			reactionData = MessageReactionData{
+				MessageID:   messageID,
+				Emoji:       req.Emoji,
+				ReactorAIDs: []string{currentAID},
+			}
 		}
 	}
 
@@ -1355,20 +1445,16 @@ func (h *ChatHandler) HandleAddReaction(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	version := 1
-	if existing != nil {
-		version = existing.Version + 1
-	}
-
 	payload := &anysync.ObjectPayload{
 		ID:        reactionID,
 		Type:      "MessageReaction",
 		OwnerKey:  ownerKey,
 		Data:      dataBytes,
 		Timestamp: time.Now().Unix(),
-		Version:   version,
+		Version:   existingVersion + 1,
 	}
 
+	objMgr := h.spaceManager.ObjectTreeManager()
 	_, err = objMgr.AddObject(ctx, communitySpaceID, payload, keys.SigningKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -1427,25 +1513,41 @@ func (h *ChatHandler) HandleRemoveReaction(w http.ResponseWriter, r *http.Reques
 	}
 
 	ctx := r.Context()
-	objMgr := h.spaceManager.ObjectTreeManager()
 
-	// Find existing reaction
 	reactionID := fmt.Sprintf("MessageReaction-%s-%s", messageID, emoji)
 
-	existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, reactionID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{
-			"error": "reaction not found",
-		})
-		return
-	}
-
 	var reactionData MessageReactionData
-	if err := json.Unmarshal(existing.Data, &reactionData); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("invalid reaction data: %v", err),
-		})
-		return
+	existingVersion := 0
+
+	// Try anystore first
+	if h.store != nil {
+		rxn, err := h.store.GetReaction(ctx, reactionID)
+		if err == nil {
+			reactionData = MessageReactionData{
+				MessageID:   rxn.MessageID,
+				Emoji:       rxn.Emoji,
+				ReactorAIDs: rxn.ReactorAIDs,
+			}
+			existingVersion = rxn.Version
+		} else {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "reaction not found"})
+			return
+		}
+	} else {
+		// Fallback: tree scan
+		objMgr := h.spaceManager.ObjectTreeManager()
+		existing, err := objMgr.ReadLatestByID(ctx, communitySpaceID, reactionID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "reaction not found"})
+			return
+		}
+		if err := json.Unmarshal(existing.Data, &reactionData); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("invalid reaction data: %v", err),
+			})
+			return
+		}
+		existingVersion = existing.Version
 	}
 
 	// Remove user from reactors
@@ -1500,9 +1602,10 @@ func (h *ChatHandler) HandleRemoveReaction(w http.ResponseWriter, r *http.Reques
 		OwnerKey:  ownerKey,
 		Data:      dataBytes,
 		Timestamp: time.Now().Unix(),
-		Version:   existing.Version + 1,
+		Version:   existingVersion + 1,
 	}
 
+	objMgr := h.spaceManager.ObjectTreeManager()
 	_, err = objMgr.AddObject(ctx, communitySpaceID, payload, keys.SigningKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -1628,6 +1731,207 @@ func aggregateReactions(reactions []MessageReactionData, currentAID string) []Re
 	}
 
 	return result
+}
+
+// aggregateStoreReactions converts anystore ChatReaction objects to ReactionAggregates.
+func aggregateStoreReactions(reactions []*anystore.ChatReaction, currentAID string) []ReactionAggregate {
+	if len(reactions) == 0 {
+		return nil
+	}
+
+	result := make([]ReactionAggregate, 0, len(reactions))
+	for _, r := range reactions {
+		hasReacted := false
+		for _, aid := range r.ReactorAIDs {
+			if aid == currentAID {
+				hasReacted = true
+				break
+			}
+		}
+		result = append(result, ReactionAggregate{
+			Emoji:       r.Emoji,
+			Count:       len(r.ReactorAIDs),
+			ReactorAIDs: r.ReactorAIDs,
+			HasReacted:  hasReacted,
+		})
+	}
+	return result
+}
+
+// handleListMessagesFallback handles ListMessages via tree scan when anystore is unavailable.
+func (h *ChatHandler) handleListMessagesFallback(w http.ResponseWriter, r *http.Request, channelID, communitySpaceID string, limit int) {
+	ctx := r.Context()
+	objMgr := h.spaceManager.ObjectTreeManager()
+
+	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatMessage")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to read messages: %v", err),
+		})
+		return
+	}
+
+	messageMap := make(map[string]*messageEntry)
+	for _, obj := range objects {
+		var data ChatMessageData
+		if err := json.Unmarshal(obj.Data, &data); err != nil {
+			continue
+		}
+		if data.ChannelID != channelID {
+			continue
+		}
+		if existing, ok := messageMap[obj.ID]; !ok || obj.Version > existing.obj.Version {
+			messageMap[obj.ID] = &messageEntry{obj: obj, data: data}
+		}
+	}
+
+	messages := make([]*messageEntry, 0, len(messageMap))
+	for _, entry := range messageMap {
+		messages = append(messages, entry)
+	}
+
+	// Sort descending by sentAt
+	for i := 0; i < len(messages); i++ {
+		for j := i + 1; j < len(messages); j++ {
+			if messages[i].data.SentAt < messages[j].data.SentAt {
+				messages[i], messages[j] = messages[j], messages[i]
+			}
+		}
+	}
+
+	cursor := r.URL.Query().Get("cursor")
+	startIdx := 0
+	if cursor != "" {
+		for i, m := range messages {
+			cursorVal := fmt.Sprintf("%s:%s", m.data.SentAt, m.obj.ID)
+			if cursorVal == cursor {
+				startIdx = i + 1
+				break
+			}
+		}
+	}
+
+	endIdx := startIdx + limit
+	if endIdx > len(messages) {
+		endIdx = len(messages)
+	}
+
+	reactions := h.loadReactionsForMessages(ctx, objMgr, communitySpaceID, messages[startIdx:endIdx])
+
+	currentAID := ""
+	if h.userIdentity != nil {
+		currentAID = h.userIdentity.GetAID()
+	}
+
+	result := make([]MessageResponse, 0, endIdx-startIdx)
+	for _, m := range messages[startIdx:endIdx] {
+		msgReactions := reactions[m.obj.ID]
+		aggregated := aggregateReactions(msgReactions, currentAID)
+
+		result = append(result, MessageResponse{
+			ID:          m.obj.ID,
+			ChannelID:   m.data.ChannelID,
+			SenderAID:   m.data.SenderAID,
+			SenderName:  m.data.SenderName,
+			Content:     m.data.Content,
+			Attachments: m.data.Attachments,
+			ReplyTo:     m.data.ReplyTo,
+			SentAt:      m.data.SentAt,
+			EditedAt:    m.data.EditedAt,
+			DeletedAt:   m.data.DeletedAt,
+			Reactions:   aggregated,
+			Version:     m.obj.Version,
+		})
+	}
+
+	var nextCursor string
+	if endIdx < len(messages) {
+		lastMsg := messages[endIdx-1]
+		nextCursor = fmt.Sprintf("%s:%s", lastMsg.data.SentAt, lastMsg.obj.ID)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"messages":   result,
+		"count":      len(result),
+		"nextCursor": nextCursor,
+		"hasMore":    endIdx < len(messages),
+	})
+}
+
+// handleGetThreadFallback handles GetThread via tree scan when anystore is unavailable.
+func (h *ChatHandler) handleGetThreadFallback(w http.ResponseWriter, r *http.Request, parentMessageID, communitySpaceID string) {
+	ctx := r.Context()
+	objMgr := h.spaceManager.ObjectTreeManager()
+
+	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatMessage")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to read messages: %v", err),
+		})
+		return
+	}
+
+	messageMap := make(map[string]*messageEntry)
+	for _, obj := range objects {
+		var data ChatMessageData
+		if err := json.Unmarshal(obj.Data, &data); err != nil {
+			continue
+		}
+		if data.ReplyTo != parentMessageID {
+			continue
+		}
+		if existing, ok := messageMap[obj.ID]; !ok || obj.Version > existing.obj.Version {
+			messageMap[obj.ID] = &messageEntry{obj: obj, data: data}
+		}
+	}
+
+	replies := make([]*messageEntry, 0, len(messageMap))
+	for _, entry := range messageMap {
+		replies = append(replies, entry)
+	}
+
+	// Sort ascending by sentAt
+	for i := 0; i < len(replies); i++ {
+		for j := i + 1; j < len(replies); j++ {
+			if replies[i].data.SentAt > replies[j].data.SentAt {
+				replies[i], replies[j] = replies[j], replies[i]
+			}
+		}
+	}
+
+	reactions := h.loadReactionsForMessages(ctx, objMgr, communitySpaceID, replies)
+
+	currentAID := ""
+	if h.userIdentity != nil {
+		currentAID = h.userIdentity.GetAID()
+	}
+
+	result := make([]MessageResponse, 0, len(replies))
+	for _, m := range replies {
+		msgReactions := reactions[m.obj.ID]
+		aggregated := aggregateReactions(msgReactions, currentAID)
+
+		result = append(result, MessageResponse{
+			ID:          m.obj.ID,
+			ChannelID:   m.data.ChannelID,
+			SenderAID:   m.data.SenderAID,
+			SenderName:  m.data.SenderName,
+			Content:     m.data.Content,
+			Attachments: m.data.Attachments,
+			ReplyTo:     m.data.ReplyTo,
+			SentAt:      m.data.SentAt,
+			EditedAt:    m.data.EditedAt,
+			DeletedAt:   m.data.DeletedAt,
+			Reactions:   aggregated,
+			Version:     m.obj.Version,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"replies":         result,
+		"count":           len(result),
+		"parentMessageId": parentMessageID,
+	})
 }
 
 // RegisterRoutes registers chat routes on the mux.
