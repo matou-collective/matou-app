@@ -151,17 +151,23 @@ func setupChatTestEnv(t *testing.T) *chatTestEnv {
 		OrgAID:                   "EOrg_ChatTest",
 	})
 
-	// Create stateful mock trees
-	communityState := &statefulMockTree{}
-	roState := &statefulMockTree{}
-
-	communityTree := setupStatefulMock(ctrl, communityState)
-	roTree := setupStatefulMock(ctrl, roState)
-
-	// Preload trees into the ObjectTreeManager's cache
-	objMgr := spaceManager.ObjectTreeManager()
-	anysync.PreloadObjectTree(objMgr, communitySpaceID, communityTree)
-	anysync.PreloadObjectTree(objMgr, roSpaceID, roTree)
+	// Register test tree factories — each object gets a fresh mock tree.
+	// The factory is called by CreateObjectTree when getSpace fails (test mode).
+	treeSeq := 0
+	utm := spaceManager.TreeManager()
+	makeFactory := func(c *gomock.Controller) anysync.TestTreeFactory {
+		return func(objectID string) objecttree.ObjectTree {
+			treeSeq++
+			state := &statefulMockTree{}
+			tree := setupStatefulMock(c, state)
+			treeID := fmt.Sprintf("tree-%d-%s", treeSeq, objectID)
+			tree.EXPECT().Id().Return(treeID).AnyTimes()
+			tree.EXPECT().Header().Return(nil).AnyTimes()
+			return tree
+		}
+	}
+	utm.SetTestTreeFactory(communitySpaceID, makeFactory(ctrl))
+	utm.SetTestTreeFactory(roSpaceID, makeFactory(ctrl))
 
 	// Create user identity
 	userIdentity := identity.New(tmpDir)
@@ -170,8 +176,8 @@ func setupChatTestEnv(t *testing.T) *chatTestEnv {
 	// Create event broker
 	eventBroker := NewEventBroker()
 
-	// Create chat handler and register routes (nil store = tree-scan fallback)
-	chatHandler := NewChatHandler(spaceManager, userIdentity, eventBroker, nil)
+	// Create chat handler and register routes (nil store = tree-scan fallback, nil listener)
+	chatHandler := NewChatHandler(spaceManager, userIdentity, eventBroker, nil, nil)
 	mux := http.NewServeMux()
 	chatHandler.RegisterRoutes(mux)
 

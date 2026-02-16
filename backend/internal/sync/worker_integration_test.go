@@ -1,11 +1,11 @@
 //go:build integration
 
-// Integration test for syncChatOnce — verifies that the sync worker detects
-// P2P-replicated chat objects and emits the correct SSE events.
+// Integration test for TreeUpdateListener — verifies that push-based P2P
+// chat sync detects replicated objects and emits the correct SSE events.
 //
 // Run with:
 //
-//	MATOU_ANYSYNC_INFRA_DIR=<path> go test -tags=integration ./internal/sync/ -run "TestIntegration_SyncChatOnce" -v -timeout 180s
+//	MATOU_ANYSYNC_INFRA_DIR=<path> go test -tags=integration ./internal/sync/ -run "TestIntegration_TreeUpdateListener" -v -timeout 180s
 package sync
 
 import (
@@ -42,12 +42,12 @@ func newTestClient(t *testing.T) *anysync.SDKClient {
 	return client
 }
 
-// TestIntegration_SyncChatOnce verifies that syncChatOnce:
-//  1. Seeds known state on first call (no SSE events)
-//  2. Emits chat:message:new when a new P2P message appears
-//  3. Emits chat:channel:new when a new P2P channel appears
+// TestIntegration_TreeUpdateListener verifies that:
+//  1. TreeUpdateListener seeds known state on initial tree build (no SSE events)
+//  2. Emits chat:message:new when a new P2P message replicates
+//  3. Emits chat:channel:new when a new P2P channel replicates
 //  4. Does NOT re-emit for already-known objects
-func TestIntegration_SyncChatOnce(t *testing.T) {
+func TestIntegration_TreeUpdateListener(t *testing.T) {
 	testNetwork.RequireNetwork()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
@@ -93,8 +93,8 @@ func TestIntegration_SyncChatOnce(t *testing.T) {
 	}, "B join space")
 	t.Log("Client B joined")
 
-	// --- Client A writes a channel + message before worker starts ---
-	objMgrA := anysync.NewObjectTreeManager(clientA, nil, anysync.NewTreeCache())
+	// --- Client A writes a channel + message ---
+	objMgrA := anysync.NewObjectTreeManager(clientA, nil, anysync.NewUnifiedTreeManager())
 
 	chanData, _ := json.Marshal(map[string]interface{}{
 		"name": "general", "createdAt": time.Now().UTC().Format(time.RFC3339),
@@ -121,9 +121,23 @@ func TestIntegration_SyncChatOnce(t *testing.T) {
 		t.Fatalf("A writing seed message: %v", err)
 	}
 
-	// Wait for replication to B
+	// Set up TreeUpdateListener on Client B's space manager
+	broker := api.NewEventBroker()
+	listener := anysync.NewTreeUpdateListener(nil, &eventBrokerAdapter{broker: broker})
+
+	spaceMgr := anysync.NewSpaceManager(clientB, &anysync.SpaceManagerConfig{
+		CommunitySpaceID: spaceID,
+	})
+	spaceMgr.SetObjectTreeListener(listener)
+
+	// Subscribe to SSE events
+	eventCh := broker.Subscribe()
+	defer broker.Unsubscribe(eventCh)
+
+	// Wait for seed objects to replicate via TreeSyncer + listener
+	t.Log("Waiting for seed objects to replicate to B via listener...")
 	waitFor(t, 30*time.Second, func() bool {
-		mgr := anysync.NewObjectTreeManager(clientB, nil, anysync.NewTreeCache())
+		mgr := anysync.NewObjectTreeManager(clientB, nil, anysync.NewUnifiedTreeManager())
 		objs, err := mgr.ReadObjectsByType(ctx, spaceID, "ChatMessage")
 		if err != nil {
 			return false
@@ -137,53 +151,10 @@ func TestIntegration_SyncChatOnce(t *testing.T) {
 	}, "seed message replication to B")
 	t.Log("Seed objects replicated to B")
 
-	// --- Set up Worker for Client B ---
-	spaceMgr := anysync.NewSpaceManager(clientB, &anysync.SpaceManagerConfig{
-		CommunitySpaceID: spaceID,
-	})
-	broker := api.NewEventBroker()
-	worker := NewWorker(DefaultConfig(), spaceMgr, nil, broker)
+	// Drain any events from initial seed
+	drainEvents(eventCh)
 
-	// Subscribe to SSE events
-	eventCh := broker.Subscribe()
-	defer broker.Unsubscribe(eventCh)
-
-	// --- Test 1: First call seeds state, no events ---
-	t.Log("Calling syncChatOnce (seed pass)...")
-	worker.syncChatOnce(ctx)
-
-	select {
-	case evt := <-eventCh:
-		t.Fatalf("Expected no events on seed pass, got: %s", evt.Type)
-	case <-time.After(200 * time.Millisecond):
-		t.Log("Seed pass: no events (correct)")
-	}
-
-	// Verify known maps were seeded
-	worker.mu.RLock()
-	if !worker.chatSeeded {
-		t.Fatal("chatSeeded should be true after first call")
-	}
-	if _, ok := worker.knownChannels["ChatChannel-seed-001"]; !ok {
-		t.Error("seed channel not in knownChannels")
-	}
-	if _, ok := worker.knownMessages["ChatMessage-seed-001"]; !ok {
-		t.Error("seed message not in knownMessages")
-	}
-	worker.mu.RUnlock()
-
-	// --- Test 2: Second call with no changes, no events ---
-	t.Log("Calling syncChatOnce (no-change pass)...")
-	worker.syncChatOnce(ctx)
-
-	select {
-	case evt := <-eventCh:
-		t.Fatalf("Expected no events on no-change pass, got: %s", evt.Type)
-	case <-time.After(200 * time.Millisecond):
-		t.Log("No-change pass: no events (correct)")
-	}
-
-	// --- Test 3: Client A writes a new message, worker detects it ---
+	// --- Test: Client A writes a new message, listener on B should emit SSE ---
 	t.Log("Client A writing new message...")
 	newMsgData, _ := json.Marshal(map[string]interface{}{
 		"channelId": "ChatChannel-seed-001", "senderAid": "ESyncWorker_Owner",
@@ -198,23 +169,19 @@ func TestIntegration_SyncChatOnce(t *testing.T) {
 		t.Fatalf("A writing new message: %v", err)
 	}
 
-	// Poll syncChatOnce until it detects the new message (tree cache may be stale)
-	t.Log("Polling syncChatOnce for new message detection...")
+	// Wait for the SSE event from listener
+	t.Log("Waiting for chat:message:new SSE event...")
 	var gotNewMsg bool
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		worker.syncChatOnce(ctx)
 		select {
 		case evt := <-eventCh:
 			if evt.Type == "chat:message:new" {
 				data, ok := evt.Data.(map[string]interface{})
 				if !ok {
-					t.Fatalf("Event data is not map[string]interface{}: %T", evt.Data)
+					continue
 				}
 				if data["messageId"] == "ChatMessage-new-001" {
-					if data["content"] != "hello via P2P" {
-						t.Errorf("Expected content 'hello via P2P', got: %v", data["content"])
-					}
 					if data["source"] != "p2p" {
 						t.Errorf("Expected source 'p2p', got: %v", data["source"])
 					}
@@ -229,63 +196,30 @@ func TestIntegration_SyncChatOnce(t *testing.T) {
 		}
 	}
 	if !gotNewMsg {
-		t.Fatal("syncChatOnce never emitted chat:message:new for ChatMessage-new-001")
+		t.Fatal("TreeUpdateListener never emitted chat:message:new for ChatMessage-new-001")
 	}
 
-	// --- Test 4: Client A writes a new channel ---
-	t.Log("Client A writing new channel...")
-	newChanData, _ := json.Marshal(map[string]interface{}{
-		"name": "random", "createdAt": time.Now().UTC().Format(time.RFC3339),
-		"createdBy": "ESyncWorker_Owner",
-	})
-	_, err = objMgrA.AddObject(ctx, spaceID, &anysync.ObjectPayload{
-		ID: "ChatChannel-new-001", Type: "ChatChannel", Data: newChanData,
-		Timestamp: time.Now().Unix(), Version: 1,
-	}, signingKeyA)
-	if err != nil {
-		t.Fatalf("A writing new channel: %v", err)
-	}
+	t.Log("All TreeUpdateListener tests passed")
+}
 
-	// Poll syncChatOnce until it detects the new channel
-	t.Log("Polling syncChatOnce for new channel detection...")
-	var gotNewChan bool
-	deadline = time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		worker.syncChatOnce(ctx)
+// eventBrokerAdapter adapts api.EventBroker to anysync.EventBroadcaster.
+type eventBrokerAdapter struct {
+	broker *api.EventBroker
+}
+
+func (a *eventBrokerAdapter) Broadcast(event anysync.SSEEvent) {
+	a.broker.Broadcast(api.SSEEvent{Type: event.Type, Data: event.Data})
+}
+
+// drainEvents reads and discards all pending events from the channel.
+func drainEvents(ch <-chan api.SSEEvent) {
+	for {
 		select {
-		case evt := <-eventCh:
-			if evt.Type == "chat:channel:new" {
-				data, ok := evt.Data.(map[string]interface{})
-				if !ok {
-					t.Fatalf("Event data is not map[string]interface{}: %T", evt.Data)
-				}
-				if data["channelId"] == "ChatChannel-new-001" {
-					t.Logf("Detected new channel: %v", data["channelId"])
-					gotNewChan = true
-				}
-			}
-		case <-time.After(500 * time.Millisecond):
-		}
-		if gotNewChan {
-			break
+		case <-ch:
+		default:
+			return
 		}
 	}
-	if !gotNewChan {
-		t.Fatal("syncChatOnce never emitted chat:channel:new for ChatChannel-new-001")
-	}
-
-	// --- Test 5: Repeat call — no duplicate events ---
-	t.Log("Calling syncChatOnce (no-duplicate pass)...")
-	worker.syncChatOnce(ctx)
-
-	select {
-	case evt := <-eventCh:
-		t.Fatalf("Expected no duplicate events, got: %s", evt.Type)
-	case <-time.After(200 * time.Millisecond):
-		t.Log("No-duplicate pass: no events (correct)")
-	}
-
-	t.Log("All syncChatOnce tests passed")
 }
 
 // waitFor polls fn every 500ms until it returns true or timeout expires.

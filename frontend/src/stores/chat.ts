@@ -69,7 +69,7 @@ export const useChatStore = defineStore('chat', () => {
 
   async function selectChannel(channelId: string | null): Promise<void> {
     currentChannelId.value = channelId;
-    if (channelId && !messages.value.has(channelId)) {
+    if (channelId) {
       await loadMessages(channelId);
     }
   }

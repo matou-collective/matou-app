@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
+	"github.com/anyproto/any-sync/commonspace/object/tree/treechangeproto"
 )
 
 // ChatPersister is the interface for persisting chat objects to a store.
@@ -74,8 +76,8 @@ func (l *TreeUpdateListener) RegisterObject(payload *ObjectPayload) {
 	}
 }
 
-// processChanges iterates the tree, persists new/changed objects,
-// and emits SSE events for objects not previously known.
+// processChanges reconstructs the object state from the tree using BuildState
+// and emits SSE events for new/changed objects.
 func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -83,55 +85,87 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	wasSeeded := l.seeded
 	ctx := context.Background()
 
-	err := tree.IterateRoot(
-		func(change *objecttree.Change, decrypted []byte) (any, error) {
-			if len(decrypted) == 0 {
-				return nil, nil
-			}
-			if change.DataType != ObjectChangeType {
-				return nil, nil
-			}
-			var p ObjectPayload
-			if err := json.Unmarshal(decrypted, &p); err != nil {
-				return nil, nil // skip unparseable
-			}
-			return &p, nil
-		},
-		func(change *objecttree.Change) bool {
-			if change.Model == nil {
-				return true
-			}
-			p, ok := change.Model.(*ObjectPayload)
-			if !ok {
-				return true
-			}
+	// Extract objectID and objectType from tree root header
+	objectID, objectType := l.extractRootHeader(tree)
+	if objectID == "" {
+		// Not a MATOU object tree, skip
+		l.seeded = true
+		return nil
+	}
 
-			knownVer, exists := l.known[p.ID]
-			if exists && p.Version <= knownVer {
-				return true // already processed
-			}
+	// Only process chat types — profiles/credentials are handled elsewhere
+	switch objectType {
+	case "ChatChannel", "ChatMessage", "MessageReaction":
+		// proceed
+	default:
+		l.seeded = true
+		return nil
+	}
 
-			// Update known version
-			l.known[p.ID] = p.Version
+	// Build the full state from the tree (tree lock is held by caller)
+	state, err := BuildState(tree, objectID, objectType)
+	if err != nil {
+		log.Printf("[TreeUpdateListener] BuildState failed for %s: %v", objectID, err)
+		l.seeded = true
+		return nil
+	}
 
-			// Persist to store
-			if l.persister != nil {
-				if err := l.persister.PersistChatObject(ctx, p); err != nil {
-					fmt.Printf("[TreeUpdateListener] persist failed for %s: %v\n", p.ID, err)
-				}
-			}
+	// Check if this is new/changed
+	knownVer, exists := l.known[objectID]
+	if exists && state.Version <= knownVer {
+		l.seeded = true
+		return nil // already processed this version
+	}
 
-			// Emit SSE only after initial seed and only for genuinely new/changed objects
-			if wasSeeded && l.broker != nil {
-				l.emitSSE(p, exists)
-			}
+	// Update known version
+	l.known[objectID] = state.Version
 
-			return true
-		},
-	)
+	// Convert state to payload
+	p := stateToPayload(state, tree.Id())
+
+	// Persist to store
+	if l.persister != nil {
+		if err := l.persister.PersistChatObject(ctx, p); err != nil {
+			fmt.Printf("[TreeUpdateListener] persist failed for %s: %v\n", p.ID, err)
+		}
+	}
+
+	// Emit SSE only after initial seed and only for genuinely new/changed objects
+	if wasSeeded && l.broker != nil {
+		l.emitSSE(p, exists)
+	}
 
 	l.seeded = true
-	return err
+	return nil
+}
+
+// extractRootHeader parses the tree's root change to get the objectID and objectType.
+func (l *TreeUpdateListener) extractRootHeader(tree objecttree.ObjectTree) (objectID, objectType string) {
+	rawHeader := tree.Header()
+	if rawHeader == nil || len(rawHeader.RawChange) == 0 {
+		return "", ""
+	}
+
+	var rawTreeCh treechangeproto.RawTreeChange
+	if err := rawTreeCh.UnmarshalVT(rawHeader.RawChange); err != nil {
+		return "", ""
+	}
+
+	var rootCh treechangeproto.RootChange
+	if err := rootCh.UnmarshalVT(rawTreeCh.Payload); err != nil {
+		return "", ""
+	}
+
+	if len(rootCh.ChangePayload) == 0 {
+		return "", ""
+	}
+
+	var header TreeRootHeader
+	if err := json.Unmarshal(rootCh.ChangePayload, &header); err != nil {
+		return "", ""
+	}
+
+	return header.ObjectID, header.ObjectType
 }
 
 // emitSSE broadcasts an SSE event for a changed object.

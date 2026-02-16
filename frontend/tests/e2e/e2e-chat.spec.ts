@@ -71,6 +71,19 @@ async function getFirstChannelId(page: Page, backendUrl: string): Promise<string
   }, backendUrl);
 }
 
+async function getChannelIdByName(page: Page, backendUrl: string, name: string): Promise<string | null> {
+  return page.evaluate(async ([url, chName]) => {
+    try {
+      const resp = await fetch(`${url}/api/v1/chat/channels`);
+      const data = await resp.json();
+      const ch = data.channels?.find((c: { name: string }) => c.name === chName);
+      return ch?.id ?? null;
+    } catch {
+      return null;
+    }
+  }, [backendUrl, name] as const);
+}
+
 /**
  * Poll a backend API for a message containing `contentMatch`.
  * Returns true if found within maxAttempts × intervalMs.
@@ -108,24 +121,25 @@ async function pollForMessage(
 }
 
 /**
- * Navigate a member page to chat and wait for at least one channel to appear.
+ * Navigate a member page to chat and wait for a specific channel to appear.
  * Uses reload-based polling since P2P sync may not be instant.
  */
 async function navigateToChatWithChannels(
   page: Page,
   label: string,
+  targetChannel: string,
   maxRetries = 10,
 ): Promise<void> {
   await page.goto(CHAT_URL);
   await expect(page.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
 
-  const channelItem = page.locator('.channel-item').first();
+  const channelItem = page.locator('.channel-item').filter({ hasText: targetChannel });
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     if (await channelItem.isVisible().catch(() => false)) break;
     if (attempt === maxRetries) {
       await expect(channelItem).toBeVisible({ timeout: 5_000 });
     }
-    console.log(`[${label}] No channels yet, retrying (${attempt}/${maxRetries})...`);
+    console.log(`[${label}] Channel '${targetChannel}' not yet visible, retrying (${attempt}/${maxRetries})...`);
     await page.waitForTimeout(5_000);
     await page.locator('button', { hasText: /home/i }).click();
     await page.waitForTimeout(500);
@@ -135,20 +149,21 @@ async function navigateToChatWithChannels(
 }
 
 /**
- * Reload member page and select the first channel, polling for a specific
+ * Reload member page and select the target channel, polling for a specific
  * message to appear via P2P sync.
  */
 async function pollUiForMessage(
   page: Page,
   messageText: string,
   label: string,
+  targetChannel: string,
   maxRetries = 12,
   intervalMs = 5_000,
 ): Promise<boolean> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     await page.goto(CHAT_URL);
     await expect(page.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
-    await page.locator('.channel-item').first().click();
+    await page.locator('.channel-item').filter({ hasText: targetChannel }).click();
     await expect(page.locator('.channel-header .channel-name')).toBeVisible({ timeout: 5_000 });
 
     const found = await page
@@ -330,13 +345,13 @@ test.describe.serial('Chat', () => {
     console.log(`[ChatMember] On dashboard (AID: ${memberAid.slice(0, 12)}...)`);
 
     // 7. Navigate to chat and wait for channel sync
-    await navigateToChatWithChannels(memberPage, 'ChatMember');
+    await navigateToChatWithChannels(memberPage, 'ChatMember', channelName);
 
     // 8. Member does NOT see create button (not admin)
     await expect(memberPage.locator('.create-btn')).not.toBeVisible({ timeout: 5_000 });
 
     // 9. Select the channel
-    await memberPage.locator('.channel-item').first().click();
+    await memberPage.locator('.channel-item').filter({ hasText: channelName }).click();
     await expect(memberPage.locator('.channel-header .channel-name')).toBeVisible({ timeout: 5_000 });
 
     // 10. Member does NOT see channel settings button
@@ -367,8 +382,8 @@ test.describe.serial('Chat', () => {
 
     const memberMsgText = `Hello from new member ${suffix}`;
 
-    // 1. Get channel ID from admin backend
-    const channelId = await getFirstChannelId(adminPage, ADMIN_BACKEND);
+    // 1. Get channel ID from admin backend (by name to avoid stale channels)
+    const channelId = await getChannelIdByName(adminPage, ADMIN_BACKEND, channelName);
     expect(channelId).toBeTruthy();
 
     // 2. Poll admin backend API for member's message (P2P sync)
@@ -381,7 +396,7 @@ test.describe.serial('Chat', () => {
     // 3. Admin navigates to chat and verifies in UI
     await adminPage.goto(CHAT_URL);
     await expect(adminPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
-    await adminPage.locator('.channel-item').first().click();
+    await adminPage.locator('.channel-item').filter({ hasText: channelName }).click();
     await expect(
       adminPage.locator('.message-body').filter({ hasText: memberMsgText }),
     ).toBeVisible({ timeout: 15_000 });
@@ -400,7 +415,7 @@ test.describe.serial('Chat', () => {
     // 5. Member polls UI for admin's response (P2P sync)
     console.log('[ChatMember] Polling for admin response via P2P...');
     const adminResponseFound = await pollUiForMessage(
-      memberPage, adminResponse, 'ChatMember',
+      memberPage, adminResponse, 'ChatMember', channelName,
     );
     expect(adminResponseFound, 'Admin response should propagate to member via P2P').toBe(true);
     await expect(
@@ -456,10 +471,10 @@ test.describe.serial('Chat', () => {
     console.log('[Restart] Member session restored, navigating to chat...');
 
     // ─── 3. Navigate to chat — channels should still be visible ───
-    await navigateToChatWithChannels(memberPage, 'Restart', 8);
+    await navigateToChatWithChannels(memberPage, 'Restart', channelName, 8);
 
     // ─── 4. Member can read past messages ───
-    await memberPage.locator('.channel-item').first().click();
+    await memberPage.locator('.channel-item').filter({ hasText: channelName }).click();
     await expect(memberPage.locator('.channel-header .channel-name')).toBeVisible({ timeout: 5_000 });
     await expect(memberPage.locator('.message-body').first()).toBeVisible({ timeout: 15_000 });
     const msgCount = await memberPage.locator('.message-body').count();
@@ -477,7 +492,7 @@ test.describe.serial('Chat', () => {
     console.log('[Restart] Member sent post-restart message');
 
     // ─── 6. Admin reads member's post-restart message ───
-    const channelId = await getFirstChannelId(adminPage, ADMIN_BACKEND);
+    const channelId = await getChannelIdByName(adminPage, ADMIN_BACKEND, channelName);
     expect(channelId).toBeTruthy();
 
     console.log('[ChatAdmin] Polling for post-restart member message...');
@@ -488,7 +503,7 @@ test.describe.serial('Chat', () => {
 
     await adminPage.goto(CHAT_URL);
     await expect(adminPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
-    await adminPage.locator('.channel-item').first().click();
+    await adminPage.locator('.channel-item').filter({ hasText: channelName }).click();
     await expect(
       adminPage.locator('.message-body').filter({ hasText: postRestartMsg }),
     ).toBeVisible({ timeout: 15_000 });
@@ -507,7 +522,7 @@ test.describe.serial('Chat', () => {
     // ─── 8. Member reads admin's new response ───
     console.log('[ChatMember] Polling for admin post-restart response...');
     const newResponseFound = await pollUiForMessage(
-      memberPage, newAdminMsg, 'Restart',
+      memberPage, newAdminMsg, 'Restart', channelName,
     );
     expect(newResponseFound, 'Admin post-restart response should propagate to member via P2P').toBe(true);
     await expect(

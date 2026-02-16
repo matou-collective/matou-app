@@ -17,6 +17,7 @@ import (
 	"github.com/anyproto/any-sync/app"
 	"github.com/anyproto/any-sync/commonspace"
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
+	"github.com/anyproto/any-sync/commonspace/object/tree/synctree/updatelistener"
 	"github.com/anyproto/any-sync/commonspace/object/tree/treechangeproto"
 	"github.com/anyproto/any-sync/commonspace/object/tree/treestorage"
 	"github.com/anyproto/any-sync/commonspace/objecttreebuilder"
@@ -27,6 +28,7 @@ import (
 const (
 	ProfileTreeType    = "matou.profile.v1"    // ChangeType on profile tree roots
 	CredentialTreeType = "matou.credential.v1" // ChangeType on credential tree roots
+	ChatTreeType       = "matou.chat.v1"       // ChangeType on chat tree roots
 )
 
 // TreeRootHeader is stored in the root change's ChangePayload (unencrypted metadata).
@@ -44,15 +46,20 @@ type ObjectIndexEntry struct {
 	ChangeType string // root change type: "matou.profile.v1" or "matou.credential.v1"
 }
 
+// TestTreeFactory creates a mock tree for test use.
+type TestTreeFactory func(objectID string) objecttree.ObjectTree
+
 // UnifiedTreeManager is the single source of truth for all tree instances.
 // It replaces both sdkTreeManager.cache (keyed by treeId) and TreeCache (keyed by spaceId).
 // Implements treemanager.TreeManager interface (CName: "common.object.treemanager").
 type UnifiedTreeManager struct {
-	trees      sync.Map // treeId → objecttree.ObjectTree (THE single cache)
-	spaceIndex sync.Map // spaceId → *sync.Map[treeId → ObjectIndexEntry]
-	objectMap  sync.Map // objectId → treeId (fast lookup by object ID)
-	syncStatus sync.Map // spaceId → *matouSyncStatus (per-space sync metrics)
-	a          *app.App
+	trees         sync.Map // treeId → objecttree.ObjectTree (THE single cache)
+	spaceIndex    sync.Map // spaceId → *sync.Map[treeId → ObjectIndexEntry]
+	objectMap     sync.Map // objectId → treeId (fast lookup by object ID)
+	syncStatus    sync.Map // spaceId → *matouSyncStatus (per-space sync metrics)
+	a             *app.App
+	listener      updatelistener.UpdateListener
+	testFactories sync.Map // spaceId → TestTreeFactory (test-only)
 }
 
 // NewUnifiedTreeManager creates a new UnifiedTreeManager.
@@ -71,6 +78,18 @@ func (u *UnifiedTreeManager) Name() string                    { return "common.o
 func (u *UnifiedTreeManager) Run(ctx context.Context) error   { return nil }
 func (u *UnifiedTreeManager) Close(ctx context.Context) error { return nil }
 
+// SetListener sets the UpdateListener that will be passed to BuildTree/PutTree
+// for push-based P2P change notification.
+func (u *UnifiedTreeManager) SetListener(l updatelistener.UpdateListener) {
+	u.listener = l
+}
+
+// SetTestTreeFactory registers a factory that creates mock trees for a space.
+// Test-only: used to bypass getSpace/BuildTree in unit tests.
+func (u *UnifiedTreeManager) SetTestTreeFactory(spaceID string, factory TestTreeFactory) {
+	u.testFactories.Store(spaceID, factory)
+}
+
 func (u *UnifiedTreeManager) getSpace(ctx context.Context, spaceId string) (commonspace.Space, error) {
 	resolver := u.a.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
 	return resolver.GetSpace(ctx, spaceId)
@@ -84,13 +103,23 @@ func (u *UnifiedTreeManager) getSpace(ctx context.Context, spaceId string) (comm
 // read keys, causing "no read key" errors on IterateRoot. Building fresh
 // ensures readKeysFromAclState always runs with the latest ACL state.
 func (u *UnifiedTreeManager) GetTree(ctx context.Context, spaceId, treeId string) (objecttree.ObjectTree, error) {
+	// In test mode (no app), check the cache directly.
+	if u.a == nil {
+		if cached, ok := u.trees.Load(treeId); ok {
+			return cached.(objecttree.ObjectTree), nil
+		}
+		return nil, fmt.Errorf("tree %s not found (test mode)", treeId)
+	}
+
 	sp, err := u.getSpace(ctx, spaceId)
 	if err != nil {
 		log.Printf("[UTM] GetTree space=%s tree=%s getSpace error: %v", spaceId, treeId, err)
 		return nil, err
 	}
 
-	tree, err := sp.TreeBuilder().BuildTree(ctx, treeId, objecttreebuilder.BuildTreeOpts{})
+	tree, err := sp.TreeBuilder().BuildTree(ctx, treeId, objecttreebuilder.BuildTreeOpts{
+		Listener: u.listener,
+	})
 	if err != nil {
 		log.Printf("[UTM] GetTree space=%s tree=%s BuildTree error: %v", spaceId, treeId, err)
 		return nil, fmt.Errorf("building tree %s: %w", treeId, err)
@@ -112,7 +141,7 @@ func (u *UnifiedTreeManager) ValidateAndPutTree(ctx context.Context, spaceId str
 		return err
 	}
 
-	tree, err := sp.TreeBuilder().PutTree(ctx, payload, nil)
+	tree, err := sp.TreeBuilder().PutTree(ctx, payload, u.listener)
 	if err != nil {
 		return fmt.Errorf("putting tree in space %s: %w", spaceId, err)
 	}
@@ -158,6 +187,21 @@ func (u *UnifiedTreeManager) DeleteTree(ctx context.Context, spaceId, treeId str
 func (u *UnifiedTreeManager) CreateObjectTree(
 	ctx context.Context, spaceID, objectID, objectType, changeType string, signingKey crypto.PrivKey,
 ) (objecttree.ObjectTree, string, error) {
+	// In test mode, check for a test factory before calling getSpace
+	// (getSpace panics on nil u.a)
+	if factory, ok := u.testFactories.Load(spaceID); ok {
+		tree := factory.(TestTreeFactory)(objectID)
+		treeID := tree.Id()
+		u.trees.Store(treeID, tree)
+		u.addToIndex(spaceID, treeID, ObjectIndexEntry{
+			TreeID:     treeID,
+			ObjectID:   objectID,
+			ObjectType: objectType,
+			ChangeType: changeType,
+		})
+		return tree, treeID, nil
+	}
+
 	sp, err := u.getSpace(ctx, spaceID)
 	if err != nil {
 		return nil, "", fmt.Errorf("getting space %s: %w", spaceID, err)
@@ -209,7 +253,7 @@ func (u *UnifiedTreeManager) CreateObjectTree(
 		return nil, "", fmt.Errorf("creating tree: %w", err)
 	}
 
-	tree, err := treeBuilder.PutTree(ctx, storagePayload, nil)
+	tree, err := treeBuilder.PutTree(ctx, storagePayload, u.listener)
 	if err != nil {
 		return nil, "", fmt.Errorf("putting tree: %w", err)
 	}
@@ -291,6 +335,9 @@ func (u *UnifiedTreeManager) GetTreeIDForObject(objectID string) string {
 // BuildSpaceIndex scans StoredIds(), reads root ChangeType + header, populates indexes.
 // This is called after a space is opened to discover all existing trees.
 func (u *UnifiedTreeManager) BuildSpaceIndex(ctx context.Context, spaceID string) error {
+	if u.a == nil {
+		return nil // test mode — trees are injected directly
+	}
 	sp, err := u.getSpace(ctx, spaceID)
 	if err != nil {
 		return fmt.Errorf("getting space %s: %w", spaceID, err)
@@ -312,7 +359,9 @@ func (u *UnifiedTreeManager) BuildSpaceIndex(ctx context.Context, spaceID string
 			}
 		}
 
-		tree, err := builder.BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{})
+		tree, err := builder.BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{
+			Listener: u.listener,
+		})
 		if err != nil {
 			continue
 		}
@@ -446,7 +495,7 @@ func (u *UnifiedTreeManager) extractIndexEntry(tree objecttree.ObjectTree, treeI
 			var rootCh treechangeproto.RootChange
 			if err := rootCh.UnmarshalVT(rawTreeCh.Payload); err == nil {
 				ct := rootCh.ChangeType
-				if ct == ProfileTreeType || ct == CredentialTreeType || ct == ObjectChangeType || ct == CredentialChangeType {
+				if ct == ProfileTreeType || ct == CredentialTreeType || ct == ChatTreeType || ct == ObjectChangeType || ct == CredentialChangeType {
 					e := &ObjectIndexEntry{
 						TreeID:     treeID,
 						ChangeType: ct,

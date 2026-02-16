@@ -117,10 +117,10 @@ func (m *SpaceManager) ObjectTreeManager() *ObjectTreeManager {
 	return m.objTreeManager
 }
 
-// SetObjectTreeListener sets the UpdateListener on the object tree manager
+// SetObjectTreeListener sets the UpdateListener on the UnifiedTreeManager
 // for push-based P2P change notification.
 func (m *SpaceManager) SetObjectTreeListener(l *TreeUpdateListener) {
-	m.objTreeManager.SetListener(l)
+	m.treeManager.SetListener(l)
 }
 
 // FileManager returns the file manager for filenode-based file storage.

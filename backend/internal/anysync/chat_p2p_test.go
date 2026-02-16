@@ -97,7 +97,7 @@ func TestIntegration_P2PSync_RestartWithoutRejoin(t *testing.T) {
 	t.Log("Client B joined space")
 
 	// Client B writes a message before restart
-	objMgrB := NewObjectTreeManager(clientB, nil, NewTreeCache())
+	objMgrB := NewObjectTreeManager(clientB, nil, NewUnifiedTreeManager())
 	msgData, _ := json.Marshal(map[string]interface{}{
 		"channelId": "ch-restart-test", "senderAid": "ERestart_Joiner",
 		"content": "before restart", "sentAt": time.Now().UTC().Format(time.RFC3339),
@@ -114,7 +114,7 @@ func TestIntegration_P2PSync_RestartWithoutRejoin(t *testing.T) {
 	// Wait for replication to A
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		mgr := NewObjectTreeManager(clientA, nil, NewTreeCache())
+		mgr := NewObjectTreeManager(clientA, nil, NewUnifiedTreeManager())
 		objs, _ := mgr.ReadObjectsByType(ctx, spaceID, "ChatMessage")
 		for _, o := range objs {
 			if o.ID == "msg-before-restart" {
@@ -163,7 +163,7 @@ preRestartReplicated:
 	var canRead bool
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		mgr := NewObjectTreeManager(clientB2, nil, NewTreeCache())
+		mgr := NewObjectTreeManager(clientB2, nil, NewUnifiedTreeManager())
 		objs, err := mgr.ReadObjectsByType(ctx, spaceID, "ChatMessage")
 		if err != nil {
 			time.Sleep(500 * time.Millisecond)
@@ -188,7 +188,7 @@ preRestartReplicated:
 
 	// --- Test 2: Can B2 WRITE a new message? ---
 	t.Log("Testing write after restart...")
-	objMgrB2 := NewObjectTreeManager(clientB2, nil, NewTreeCache())
+	objMgrB2 := NewObjectTreeManager(clientB2, nil, NewUnifiedTreeManager())
 	msgData2, _ := json.Marshal(map[string]interface{}{
 		"channelId": "ch-restart-test", "senderAid": "ERestart_Joiner",
 		"content": "after restart", "sentAt": time.Now().UTC().Format(time.RFC3339),
@@ -209,7 +209,7 @@ preRestartReplicated:
 		var replicated bool
 		deadline = time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
-			mgr := NewObjectTreeManager(clientA, nil, NewTreeCache())
+			mgr := NewObjectTreeManager(clientA, nil, NewUnifiedTreeManager())
 			objs, _ := mgr.ReadObjectsByType(ctx, spaceID, "ChatMessage")
 			for _, o := range objs {
 				if o.ID == "msg-after-restart" {
@@ -235,7 +235,7 @@ preRestartReplicated:
 		"channelId": "ch-restart-test", "senderAid": "ERestart_Owner",
 		"content": "from A after B restart", "sentAt": time.Now().UTC().Format(time.RFC3339),
 	})
-	objMgrA := NewObjectTreeManager(clientA, nil, NewTreeCache())
+	objMgrA := NewObjectTreeManager(clientA, nil, NewUnifiedTreeManager())
 	_, err = objMgrA.AddObject(ctx, spaceID, &ObjectPayload{
 		ID: "msg-from-A-after-restart", Type: "ChatMessage", Data: msgDataA2,
 		Timestamp: time.Now().Unix(), Version: 1,
@@ -247,7 +247,7 @@ preRestartReplicated:
 	var b2Received bool
 	deadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		mgr := NewObjectTreeManager(clientB2, nil, NewTreeCache())
+		mgr := NewObjectTreeManager(clientB2, nil, NewUnifiedTreeManager())
 		objs, _ := mgr.ReadObjectsByType(ctx, spaceID, "ChatMessage")
 		for _, o := range objs {
 			if o.ID == "msg-from-A-after-restart" {
@@ -362,7 +362,7 @@ func TestIntegration_P2PSync_ChatMessageReplication(t *testing.T) {
 	t.Log("Client B joined space with invite key")
 
 	// 6. Client A sends a ChatMessage
-	objMgrA := NewObjectTreeManager(clientA, nil, NewTreeCache())
+	objMgrA := NewObjectTreeManager(clientA, nil, NewUnifiedTreeManager())
 
 	chatMsgA := map[string]interface{}{
 		"id":        "ChatMessage-test-A-001",
@@ -393,7 +393,7 @@ func TestIntegration_P2PSync_ChatMessageReplication(t *testing.T) {
 	var foundA bool
 	pollDeadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(pollDeadline) {
-		freshMgrB := NewObjectTreeManager(clientB, nil, NewTreeCache())
+		freshMgrB := NewObjectTreeManager(clientB, nil, NewUnifiedTreeManager())
 		objects, err := freshMgrB.ReadObjectsByType(ctx, spaceID, "ChatMessage")
 		if err != nil {
 			time.Sleep(500 * time.Millisecond)
@@ -419,7 +419,7 @@ func TestIntegration_P2PSync_ChatMessageReplication(t *testing.T) {
 	}
 
 	// 8. Client B sends a ChatMessage
-	objMgrB := NewObjectTreeManager(clientB, nil, NewTreeCache())
+	objMgrB := NewObjectTreeManager(clientB, nil, NewUnifiedTreeManager())
 
 	chatMsgB := map[string]interface{}{
 		"id":        "ChatMessage-test-B-001",
@@ -450,7 +450,7 @@ func TestIntegration_P2PSync_ChatMessageReplication(t *testing.T) {
 	var foundBoth bool
 	pollDeadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(pollDeadline) {
-		freshMgrA := NewObjectTreeManager(clientA, nil, NewTreeCache())
+		freshMgrA := NewObjectTreeManager(clientA, nil, NewUnifiedTreeManager())
 		objects, err := freshMgrA.ReadObjectsByType(ctx, spaceID, "ChatMessage")
 		if err != nil {
 			time.Sleep(500 * time.Millisecond)

@@ -439,7 +439,7 @@ func main() {
 	eventsHandler := api.NewEventsHandler(eventBroker)
 	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager())
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
-	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store)
+	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store, chatListener)
 
 	// Create HTTP server
 	mux := http.NewServeMux()

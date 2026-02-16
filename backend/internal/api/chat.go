@@ -20,6 +20,7 @@ type ChatHandler struct {
 	userIdentity *identity.UserIdentity
 	eventBroker  *EventBroker
 	store        *anystore.LocalStore
+	chatListener *anysync.TreeUpdateListener
 }
 
 // NewChatHandler creates a new chat handler.
@@ -28,12 +29,14 @@ func NewChatHandler(
 	userIdentity *identity.UserIdentity,
 	eventBroker *EventBroker,
 	store *anystore.LocalStore,
+	chatListener *anysync.TreeUpdateListener,
 ) *ChatHandler {
 	return &ChatHandler{
 		spaceManager: spaceManager,
 		userIdentity: userIdentity,
 		eventBroker:  eventBroker,
 		store:        store,
+		chatListener: chatListener,
 	}
 }
 
@@ -172,40 +175,10 @@ func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request)
 
 	ctx := r.Context()
 
-	// Read from anystore (indexed) if available, fall back to tree scan
-	if h.store != nil {
-		cached, err := h.store.ListChannels(ctx)
-		if err == nil {
-			userRole := h.getUserRole()
-			channels := make([]ChannelResponse, 0, len(cached))
-			for _, ch := range cached {
-				if len(ch.AllowedRoles) > 0 && !containsRole(ch.AllowedRoles, userRole) {
-					continue
-				}
-				if ch.IsArchived && r.URL.Query().Get("includeArchived") != "true" {
-					continue
-				}
-				channels = append(channels, ChannelResponse{
-					ID:           ch.ID,
-					Name:         ch.Name,
-					Description:  ch.Description,
-					Icon:         ch.Icon,
-					Photo:        ch.Photo,
-					CreatedAt:    ch.CreatedAt,
-					CreatedBy:    ch.CreatedBy,
-					IsArchived:   ch.IsArchived,
-					AllowedRoles: ch.AllowedRoles,
-				})
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"channels": channels,
-				"count":    len(channels),
-			})
-			return
-		}
-	}
+	// Always use tree scan — see HandleListMessages for rationale.
+	// Rebuild index to discover P2P-received trees not yet indexed.
+	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
 
-	// Fallback: tree scan
 	objMgr := h.spaceManager.ObjectTreeManager()
 	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatChannel")
 	if err != nil {
@@ -440,6 +413,10 @@ func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if h.chatListener != nil {
+		h.chatListener.RegisterObject(payload)
+	}
+
 	// Broadcast channel creation event
 	h.eventBroker.Broadcast(SSEEvent{
 		Type: "chat:channel:new",
@@ -565,6 +542,10 @@ func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if h.chatListener != nil {
+		h.chatListener.RegisterObject(payload)
+	}
+
 	// Broadcast channel update event
 	h.eventBroker.Broadcast(SSEEvent{
 		Type: "chat:channel:update",
@@ -669,6 +650,10 @@ func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if h.chatListener != nil {
+		h.chatListener.RegisterObject(payload)
+	}
+
 	// Broadcast channel update event
 	h.eventBroker.Broadcast(SSEEvent{
 		Type: "chat:channel:update",
@@ -719,77 +704,11 @@ func (h *ChatHandler) HandleListMessages(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	offset := 0
-	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
-		// cursor is "sentAt:messageID" — for anystore we use offset-based pagination
-		// The frontend should switch to offset param, but for backwards compat we ignore cursor
-		// and just return from offset 0. TODO: Add proper cursor→offset mapping.
-	}
-
-	ctx := r.Context()
-
-	// Read from anystore if available
-	if h.store != nil {
-		msgs, err := h.store.ListMessagesByChannel(ctx, channelID, limit, offset)
-		if err == nil {
-			// Collect message IDs for reaction loading
-			messageIDs := make([]string, len(msgs))
-			for i, m := range msgs {
-				messageIDs[i] = m.ID
-			}
-
-			// Load reactions from anystore
-			reactionsMap, _ := h.store.ListReactionsByMessages(ctx, messageIDs)
-
-			currentAID := ""
-			if h.userIdentity != nil {
-				currentAID = h.userIdentity.GetAID()
-			}
-
-			result := make([]MessageResponse, 0, len(msgs))
-			for _, m := range msgs {
-				rxns := reactionsMap[m.ID]
-				aggregated := aggregateStoreReactions(rxns, currentAID)
-
-				var attachments []AttachmentRef
-				if len(m.Attachments) > 0 {
-					json.Unmarshal(m.Attachments, &attachments)
-				}
-
-				result = append(result, MessageResponse{
-					ID:          m.ID,
-					ChannelID:   m.ChannelID,
-					SenderAID:   m.SenderAID,
-					SenderName:  m.SenderName,
-					Content:     m.Content,
-					Attachments: attachments,
-					ReplyTo:     m.ReplyTo,
-					SentAt:      m.SentAt,
-					EditedAt:    m.EditedAt,
-					DeletedAt:   m.DeletedAt,
-					Reactions:   aggregated,
-					Version:     m.Version,
-				})
-			}
-
-			hasMore := len(msgs) == limit
-			var nextCursor string
-			if hasMore && len(msgs) > 0 {
-				lastMsg := msgs[len(msgs)-1]
-				nextCursor = fmt.Sprintf("%s:%s", lastMsg.SentAt, lastMsg.ID)
-			}
-
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"messages":   result,
-				"count":      len(result),
-				"nextCursor": nextCursor,
-				"hasMore":    hasMore,
-			})
-			return
-		}
-	}
-
-	// Fallback: tree scan
+	// Always use tree scan as source of truth — it correctly finds both
+	// locally-written and P2P-replicated messages. The anystore cache is
+	// populated by write handlers (RegisterObject) but P2P-received trees
+	// are not yet persisted to anystore (TreeUpdateListener doesn't fire
+	// for trees synced by the any-sync framework's internal TreeSyncer).
 	h.handleListMessagesFallback(w, r, channelID, communitySpaceID, limit)
 }
 
@@ -902,6 +821,10 @@ func (h *ChatHandler) HandleSendMessage(w http.ResponseWriter, r *http.Request) 
 			"error": fmt.Sprintf("failed to send message: %v", err),
 		})
 		return
+	}
+
+	if h.chatListener != nil {
+		h.chatListener.RegisterObject(payload)
 	}
 
 	// Broadcast message event
@@ -1068,6 +991,10 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if h.chatListener != nil {
+		h.chatListener.RegisterObject(payload)
+	}
+
 	// Broadcast message edit event
 	h.eventBroker.Broadcast(SSEEvent{
 		Type: "chat:message:edit",
@@ -1211,6 +1138,10 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 			"error": fmt.Sprintf("failed to delete message: %v", err),
 		})
 		return
+	}
+
+	if h.chatListener != nil {
+		h.chatListener.RegisterObject(payload)
 	}
 
 	// Broadcast message delete event
@@ -1463,6 +1394,10 @@ func (h *ChatHandler) HandleAddReaction(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if h.chatListener != nil {
+		h.chatListener.RegisterObject(payload)
+	}
+
 	// Broadcast reaction event
 	h.eventBroker.Broadcast(SSEEvent{
 		Type: "chat:reaction:add",
@@ -1614,6 +1549,10 @@ func (h *ChatHandler) HandleRemoveReaction(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if h.chatListener != nil {
+		h.chatListener.RegisterObject(payload)
+	}
+
 	// Broadcast reaction event
 	h.eventBroker.Broadcast(SSEEvent{
 		Type: "chat:reaction:remove",
@@ -1758,10 +1697,14 @@ func aggregateStoreReactions(reactions []*anystore.ChatReaction, currentAID stri
 	return result
 }
 
-// handleListMessagesFallback handles ListMessages via tree scan when anystore is unavailable.
+// handleListMessagesFallback handles ListMessages via tree scan.
+// Rebuilds the space index first to pick up any P2P-received trees.
 func (h *ChatHandler) handleListMessagesFallback(w http.ResponseWriter, r *http.Request, channelID, communitySpaceID string, limit int) {
 	ctx := r.Context()
 	objMgr := h.spaceManager.ObjectTreeManager()
+
+	// Rebuild index to discover P2P-received trees not yet indexed
+	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
 
 	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatMessage")
 	if err != nil {
