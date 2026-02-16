@@ -66,10 +66,10 @@ jobs:
           cache: false
 
       # Backend set up
-      # - name: Prepare backend modules
-      #   run: |
-      #     cd backend
-      #     go mod tidy
+      - name: Prepare backend modules
+        run: |
+          cd backend
+          go mod tidy
 
       # Build backend
       - name: Build backend
@@ -104,7 +104,7 @@ jobs:
           fi
 
       # Upload artifacts
-      - name: Upload packaged artifacts
+      - name: Upload ${{ env.PLATFORM }} artifacts
         uses: actions/upload-artifact@v4
         with:
           name: matou-${{ env.VERSION }}-${{ env.PLATFORM }}
@@ -113,4 +113,4 @@ jobs:
             frontend/dist/electron/Packaged/matou-*.exe
             frontend/dist/electron/Packaged/matou-*-mac-*.dmg
             # todo add other files needed
-
+          if-no-files-found: ignore
