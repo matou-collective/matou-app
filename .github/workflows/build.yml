@@ -38,7 +38,20 @@ jobs:
       - name: Install Quasar CLI
         run: npm install -g @quasar/cli
 
-      # Cache the Go Modules (backend)
+      # Set up Go
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+          cache: false
+
+      # Backend set up
+      - name: Prepare backend modules
+        run: |
+          cd backend
+          go mod tidy
+
+      # Cache Go modules
       - name: Cache Go modules
         uses: actions/cache@v3
         with:
@@ -49,27 +62,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      # Setup Go (backend)
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: 1.21
-
       # Build backend
       - name: Build backend
         shell: bash {0}
         run: |
           cd backend
-          go mod tidy
           if [ "$RUNNER_OS" == "Linux" ]; then
             make build-linux-amd64
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            make build-darwin-amd64
+            make build-darwin-amd64 # MacOS Intel
+            make build-darwin-arm64 # MacOS Apple Silicone
           elif [ "$RUNNER_OS" == "Windows" ]; then
             make build-windows-amd64
           fi
-
-
 
       # Build Electron App
       - name: Build Electron App
