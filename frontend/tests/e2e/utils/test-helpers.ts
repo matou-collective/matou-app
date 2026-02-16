@@ -361,6 +361,80 @@ export async function loginWithMnemonic(
 }
 
 // ---------------------------------------------------------------------------
+// Activity page helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Navigate to the Activity page via the sidebar.
+ * Waits for the activity sidebar title to confirm the page rendered.
+ */
+export async function navigateToActivity(page: Page): Promise<void> {
+  await page.locator('.nav-item', { hasText: 'Activity' }).click();
+  await expect(page).toHaveURL(/#\/dashboard\/activity/, { timeout: TIMEOUT.short });
+  await expect(page.locator('.activity-sidebar-title')).toContainText('Activity', { timeout: TIMEOUT.short });
+}
+
+/**
+ * Create a notice via the Create Notice dialog.
+ *
+ * @param publish - If true, clicks Publish; otherwise saves as Draft.
+ */
+export async function createNotice(
+  page: Page,
+  opts: {
+    type: 'event' | 'update';
+    title: string;
+    summary: string;
+    eventStart?: string;
+    location?: string;
+    rsvpEnabled?: boolean;
+    ackRequired?: boolean;
+    publish?: boolean;
+  },
+): Promise<void> {
+  await page.locator('.create-notice-btn').click();
+
+  const overlay = page.locator('.dialog-overlay');
+  await expect(overlay).toBeVisible({ timeout: TIMEOUT.short });
+
+  // Select type
+  if (opts.type === 'update') {
+    await page.locator('.type-btn', { hasText: 'Update' }).click();
+  }
+
+  // Fill required fields
+  await page.locator('input[placeholder="Notice title"]').fill(opts.title);
+  await page.locator('textarea[placeholder="Brief summary..."]').fill(opts.summary);
+
+  // Event-specific fields
+  if (opts.type === 'event') {
+    if (opts.eventStart) {
+      await page.locator('input[type="datetime-local"]').first().fill(opts.eventStart);
+    }
+    if (opts.location) {
+      await page.locator('input[placeholder="Where is this event?"]').fill(opts.location);
+    }
+    if (opts.rsvpEnabled) {
+      await page.locator('label', { hasText: 'Enable RSVP' }).locator('input[type="checkbox"]').check();
+    }
+  }
+
+  // Update-specific fields
+  if (opts.type === 'update' && opts.ackRequired) {
+    await page.locator('label', { hasText: 'Require Acknowledgment' }).locator('input[type="checkbox"]').check();
+  }
+
+  // Submit
+  if (opts.publish) {
+    await page.locator('.form-btn.primary', { hasText: 'Publish' }).click();
+  } else {
+    await page.locator('.form-btn', { hasText: 'Save Draft' }).click();
+  }
+
+  await expect(overlay).not.toBeVisible({ timeout: TIMEOUT.medium });
+}
+
+// ---------------------------------------------------------------------------
 // Org setup flow (reusable from registration/invitation tests)
 // ---------------------------------------------------------------------------
 

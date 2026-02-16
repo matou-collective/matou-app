@@ -35,6 +35,7 @@ type SpaceManager struct {
 	aclManager               *MatouACLManager
 	credTreeManager          *CredentialTreeManager
 	objTreeManager           *ObjectTreeManager
+	noticeTreeManager        *NoticeTreeManager
 	fileManager              *FileManager
 	treeManager              *UnifiedTreeManager
 	communitySpaceID         string
@@ -63,6 +64,7 @@ func NewSpaceManager(client AnySyncClient, cfg *SpaceManagerConfig, utm ...*Unif
 
 	objTreeMgr := NewObjectTreeManager(client, nil, treeMgr)
 	credTreeMgr := NewCredentialTreeManager(client, nil, treeMgr)
+	noticeTreeMgr := NewNoticeTreeManager(client, nil, treeMgr)
 
 	// Initialize FileManager if pool and nodeconf are available (real SDK client).
 	// Mock clients return nil for GetPool/GetNodeConf, so FileManager is nil in tests.
@@ -88,6 +90,7 @@ func NewSpaceManager(client AnySyncClient, cfg *SpaceManagerConfig, utm ...*Unif
 		aclManager:               aclMgr,
 		credTreeManager:          credTreeMgr,
 		objTreeManager:           objTreeMgr,
+		noticeTreeManager:        noticeTreeMgr,
 		fileManager:              fileMgr,
 		treeManager:              treeMgr,
 		communitySpaceID:         cfg.CommunitySpaceID,
@@ -115,6 +118,11 @@ func (m *SpaceManager) CredentialTreeManager() *CredentialTreeManager {
 // ObjectTreeManager returns the object tree manager.
 func (m *SpaceManager) ObjectTreeManager() *ObjectTreeManager {
 	return m.objTreeManager
+}
+
+// NoticeTreeManager returns the notice tree manager.
+func (m *SpaceManager) NoticeTreeManager() *NoticeTreeManager {
+	return m.noticeTreeManager
 }
 
 // FileManager returns the file manager for filenode-based file storage.

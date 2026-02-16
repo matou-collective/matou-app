@@ -23,6 +23,10 @@
           <Wallet class="nav-icon" />
           <span>Wallet</span>
         </button>
+        <button class="nav-item" :class="{ active: route.name === 'activity' }" @click="router.push({ name: 'activity' })">
+          <Bell class="nav-icon" />
+          <span>Activity</span>
+        </button>
         <button class="nav-item disabled" disabled>
           <Target class="nav-icon" />
           <span>Contribute</span>
@@ -64,6 +68,7 @@ import { computed, onMounted } from 'vue';
 import {
   Home,
   Wallet,
+  Bell,
   Target,
   Vote,
   MessageSquare,

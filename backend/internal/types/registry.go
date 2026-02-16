@@ -37,10 +37,13 @@ func NewRegistry() *Registry {
 }
 
 // Bootstrap registers the hardcoded meta-type (type_definition) and all
-// built-in profile type definitions. Call this during org setup.
+// built-in type definitions (profiles, notices). Call this during org setup.
 func (r *Registry) Bootstrap() {
 	r.Register(MetaTypeDefinition())
 	for _, def := range ProfileTypeDefinitions() {
+		r.Register(def)
+	}
+	for _, def := range NoticeTypeDefinitions() {
 		r.Register(def)
 	}
 }
