@@ -45,20 +45,10 @@ func TestIntegration_P2PSync_CredentialTree(t *testing.T) {
 		t.Logf("Created space: %s", result.SpaceID)
 	})
 
-	t.Run("create credential tree and add credential", func(t *testing.T) {
-		treeMgr := NewCredentialTreeManager(client, nil)
+	t.Run("add credential (creates tree automatically)", func(t *testing.T) {
+		treeMgr := NewCredentialTreeManager(client, nil, client.GetTreeManager())
 
-		treeID, err := treeMgr.CreateCredentialTree(ctx, result.SpaceID, result.Keys.SigningKey)
-		if err != nil {
-			t.Fatalf("creating credential tree: %v", err)
-		}
-
-		if treeID == "" {
-			t.Fatal("expected non-empty tree ID")
-		}
-		t.Logf("Created tree: %s in space: %s", treeID, result.SpaceID)
-
-		// Add a credential to the tree
+		// Add a credential — this creates the tree automatically
 		cred := &CredentialPayload{
 			SAID:      "ESAID_sync_test_001",
 			Issuer:    "ETestIssuer",
@@ -253,8 +243,8 @@ func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 	}
 	t.Log("Client B joined space with invite key (has ReadKey)")
 
-	// 7. Client A creates a credential tree and adds an encrypted credential
-	treeMgrA := NewCredentialTreeManager(clientA, nil)
+	// 7. Client A adds an encrypted credential (creates tree automatically)
+	treeMgrA := NewCredentialTreeManager(clientA, nil, clientA.GetTreeManager())
 	cred := &CredentialPayload{
 		SAID:      "ESAID_propagation_test_001",
 		Issuer:    "ETestIssuer_A",
@@ -272,11 +262,13 @@ func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 
 	// 8. Poll with timeout: Client B reads credentials via CredentialTreeManager.
 	//    Client B can decrypt because it has the ReadKey from the invite/join flow.
-	treeMgrB := NewCredentialTreeManager(clientB, nil)
+	treeMgrB := NewCredentialTreeManager(clientB, nil, clientB.GetTreeManager())
 
 	var found bool
 	pollDeadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(pollDeadline) {
+		// Re-index the space to discover trees synced from Client A
+		clientB.GetTreeManager().BuildSpaceIndex(ctx, spaceID)
 		creds, err := treeMgrB.ReadCredentials(ctx, spaceID)
 		if err != nil {
 			// Tree may not be available yet on Client B — wait and retry
@@ -333,7 +325,9 @@ func TestIntegration_P2PSync_TwoClientPropagation(t *testing.T) {
 	var foundBoth bool
 	pollDeadline = time.Now().Add(30 * time.Second)
 	for time.Now().Before(pollDeadline) {
-		freshMgrA := NewCredentialTreeManager(clientA, nil)
+		// Re-index to discover trees synced from Client B
+		clientA.GetTreeManager().BuildSpaceIndex(ctx, spaceID)
+		freshMgrA := NewCredentialTreeManager(clientA, nil, clientA.GetTreeManager())
 		creds, err := freshMgrA.ReadCredentials(ctx, spaceID)
 		if err != nil {
 			time.Sleep(500 * time.Millisecond)
@@ -398,8 +392,8 @@ func TestIntegration_P2PSync_PrivateSpaceIsolation(t *testing.T) {
 	signingKey := result.Keys.SigningKey
 	t.Logf("Client A created private space: %s", spaceID)
 
-	// 2. Client A creates a credential tree and adds an encrypted credential
-	treeMgrA := NewCredentialTreeManager(clientA, nil)
+	// 2. Client A adds an encrypted credential (creates tree automatically)
+	treeMgrA := NewCredentialTreeManager(clientA, nil, clientA.GetTreeManager())
 	cred := &CredentialPayload{
 		SAID:      "ESAID_private_test_001",
 		Issuer:    "ETestIssuer_Private",
@@ -439,7 +433,8 @@ func TestIntegration_P2PSync_PrivateSpaceIsolation(t *testing.T) {
 	//    Client B does not have the ReadKey (never invited/joined), so encrypted
 	//    credential changes cannot be decrypted. The SDK returns empty bytes for
 	//    changes it can't decrypt, so ReadCredentials returns 0 credentials.
-	treeMgrB := NewCredentialTreeManager(clientB, nil)
+	treeMgrB := NewCredentialTreeManager(clientB, nil, clientB.GetTreeManager())
+	clientB.GetTreeManager().BuildSpaceIndex(ctx, spaceID)
 	creds, readErr := treeMgrB.ReadCredentials(ctx, spaceID)
 	if readErr != nil {
 		t.Logf("Client B ReadCredentials returned error (expected): %v", readErr)

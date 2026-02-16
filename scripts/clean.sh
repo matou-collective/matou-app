@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #
-# clean.sh — Remove all dev/test data, build artifacts, and caches for a fresh start.
+# clean.sh — Remove dev runtime data and browser storage for a fresh start.
 #
 # Usage:
-#   ./scripts/clean.sh          # clean everything (prompts for confirmation)
-#   ./scripts/clean.sh --all    # clean everything including node_modules
+#   ./scripts/clean.sh          # clean dev data (prompts for confirmation)
 #   ./scripts/clean.sh --dry    # show what would be removed without deleting
 #
 
@@ -12,13 +11,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN=false
-CLEAN_NODE_MODULES=false
 
 for arg in "$@"; do
   case "$arg" in
     --dry)     DRY_RUN=true ;;
-    --all)     CLEAN_NODE_MODULES=true ;;
-    --help|-h) echo "Usage: $0 [--all] [--dry]"; exit 0 ;;
+    --help|-h) echo "Usage: $0 [--dry]"; exit 0 ;;
     *)         echo "Unknown option: $arg"; exit 1 ;;
   esac
 done
@@ -55,7 +52,7 @@ remove() {
 }
 
 echo ""
-echo -e "${BOLD}Matou App — Clean Start${NC}"
+echo -e "${BOLD}Matou App — Clean Dev Data${NC}"
 echo ""
 
 if [ "$DRY_RUN" = true ]; then
@@ -63,53 +60,30 @@ if [ "$DRY_RUN" = true ]; then
   echo ""
 fi
 
-# --- Backend build artifacts ---
-echo -e "${BOLD}Backend build artifacts${NC}"
-remove "$ROOT/backend/bin"
-remove "$ROOT/backend/server"
+# --- Stop dev sessions first ---
+DEV_SESSIONS_SCRIPT="$ROOT/scripts/dev-sessions.sh"
+if [ "$DRY_RUN" = false ] && [ -x "$DEV_SESSIONS_SCRIPT" ]; then
+  # Check if any dev session ports are in use
+  if ss -tlnp 2>/dev/null | grep -qE ':(4000|5100|5101|5102) '; then
+    echo -e "${BOLD}Stopping dev sessions${NC}"
+    "$DEV_SESSIONS_SCRIPT" stop 2>&1 | sed 's/^/  /'
+    echo ""
+  fi
+fi
 
-# --- Backend runtime data ---
+# --- Backend runtime data (dev only) ---
 echo -e "${BOLD}Backend runtime data${NC}"
 for dir in "$ROOT"/backend/data*/; do
+  # Skip data-test/ — that belongs to clean-test.sh
+  case "$dir" in
+    *data-test*) continue ;;
+  esac
   [ -d "$dir" ] && remove "${dir%/}"
 done
 
-# --- Backend generated config ---
+# --- Backend generated config (dev only) ---
 echo -e "${BOLD}Backend generated config${NC}"
-for f in "$ROOT"/backend/config/client-*.yml; do
-  [ -f "$f" ] && remove "$f"
-done
-remove "$ROOT/backend/config/bootstrap.yaml"
-remove "$ROOT/backend/config/.env"
-remove "$ROOT/backend/config/.org-passcode"
-remove "$ROOT/backend/config/.keria-config.json"
-remove "$ROOT/backend/config/secrets.yaml"
-remove "$ROOT/backend/.env"
-
-# --- Frontend build output ---
-echo -e "${BOLD}Frontend build output${NC}"
-remove "$ROOT/frontend/dist"
-remove "$ROOT/frontend/.quasar"
-
-# --- Frontend generated env ---
-echo -e "${BOLD}Frontend generated env files${NC}"
-remove "$ROOT/frontend/.env.local"
-remove "$ROOT/frontend/.env.development.local"
-remove "$ROOT/frontend/.env.test.local"
-remove "$ROOT/frontend/.env.production.local"
-
-# --- Test artifacts ---
-echo -e "${BOLD}Test artifacts${NC}"
-remove "$ROOT/frontend/playwright-report"
-remove "$ROOT/frontend/test-results"
-remove "$ROOT/frontend/tests/e2e/results"
-remove "$ROOT/frontend/tests/e2e/test-accounts.json"
-
-# --- Go test/coverage output ---
-echo -e "${BOLD}Go test/coverage output${NC}"
-for f in "$ROOT"/backend/*.out "$ROOT"/backend/coverage.html; do
-  [ -f "$f" ] && remove "$f"
-done
+remove "$ROOT/backend/config/client-dev.yml"
 
 # --- Browser storage ---
 echo -e "${BOLD}Browser storage${NC}"
@@ -192,13 +166,14 @@ HTMLEOF
 
   # Serve the clear page on each dev session origin so browser storage is
   # cleared for the correct localhost:<port> origin.
+  # Kill any leftover processes on storage-cleaner ports
   for port in 5100 5101 5102; do
     if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
-      echo -e "  ${RED}FAILED${NC} port ${port} is in use. Stop dev sessions first:"
-      echo -e "    npm run dev:sessions:stop"
-      echo ""
-      rm -f "$CLEAR_PAGE"
-      exit 1
+      pid=$(lsof -ti :"$port" 2>/dev/null || true)
+      if [ -n "$pid" ]; then
+        kill -9 $pid 2>/dev/null || true
+        sleep 0.3
+      fi
     fi
   done
 
@@ -232,12 +207,6 @@ srv.shutdown()
 
   # Clean up the HTML file
   rm -f "$CLEAR_PAGE"
-fi
-
-# --- Node modules (only with --all) ---
-if [ "$CLEAN_NODE_MODULES" = true ]; then
-  echo -e "${BOLD}Node modules${NC}"
-  remove "$ROOT/frontend/node_modules"
 fi
 
 # --- Summary ---

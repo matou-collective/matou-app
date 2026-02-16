@@ -1,3 +1,4 @@
+import path from 'path';
 import { test, expect, Page, BrowserContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { BackendManager } from './utils/backend-manager';
@@ -197,6 +198,8 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       linkedinUrl: 'https://linkedin.com/in/testinvitee',
       twitterUrl: 'https://x.com/testinvitee',
       instagramUrl: 'https://instagram.com/testinvitee',
+      githubUrl: 'https://github.com/testinvitee',
+      gitlabUrl: 'https://gitlab.com/testinvitee',
       customInterests: 'Digital identity, community building',
     };
 
@@ -263,7 +266,16 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       await inviteePage.locator('#linkedinUrl input').fill(profileData.linkedinUrl);
       await inviteePage.locator('#twitterUrl input').fill(profileData.twitterUrl);
       await inviteePage.locator('#instagramUrl input').fill(profileData.instagramUrl);
+      await inviteePage.locator('#githubUrl input').fill(profileData.githubUrl);
+      await inviteePage.locator('#gitlabUrl input').fill(profileData.gitlabUrl);
       await inviteePage.locator('#customInterests').fill(profileData.customInterests);
+
+      // Upload avatar image
+      const avatarPath = path.resolve(__dirname, 'fixtures/test-avatar.png');
+      const fileInput = inviteePage.locator('input[type="file"][accept="image/*"]');
+      await fileInput.setInputFiles(avatarPath);
+      await expect(inviteePage.locator('img[alt="Profile preview"]')).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Avatar uploaded and preview visible');
 
       // --- Bug 1: Verify form data persists across Community Guidelines navigation ---
       console.log('[Test] Bug 1: Clicking Community Guidelines link...');
@@ -287,8 +299,11 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       await expect(inviteePage.locator('#linkedinUrl input')).toHaveValue(profileData.linkedinUrl);
       await expect(inviteePage.locator('#twitterUrl input')).toHaveValue(profileData.twitterUrl);
       await expect(inviteePage.locator('#instagramUrl input')).toHaveValue(profileData.instagramUrl);
+      await expect(inviteePage.locator('#githubUrl input')).toHaveValue(profileData.githubUrl);
+      await expect(inviteePage.locator('#gitlabUrl input')).toHaveValue(profileData.gitlabUrl);
       await expect(inviteePage.locator('#customInterests')).toHaveValue(profileData.customInterests);
-      console.log('[Test] Bug 1: PASS - All form fields preserved after Community Guidelines navigation');
+      await expect(inviteePage.locator('img[alt="Profile preview"]')).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Bug 1: PASS - All form fields (including avatar) preserved after Community Guidelines navigation');
 
       // Agree to terms (checkbox state is also preserved, but re-check to be safe)
       const termsCheckbox = inviteePage.locator('input[type="checkbox"]').last();
@@ -387,14 +402,28 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       console.log('[Test] PASS - Invitee on dashboard after claiming identity');
 
       // --- Bug 3: Verify profile data persisted to Account Settings ---
-      console.log('[Test] Bug 3: Navigating to Account Settings to verify profile data...');
-      await inviteePage.goto(`${FRONTEND_URL}/#/dashboard/settings`);
-      await expect(
-        inviteePage.locator('.header-title'),
-      ).toContainText('Account Settings', { timeout: TIMEOUT.short });
+      // SharedProfile sync may not be immediate — retry with backoff (same pattern as registration test)
+      console.log('[Test] Bug 3: Checking Account Settings for profile data (with sync retries)...');
 
-      // Wait for profile data to load (loading state disappears)
-      await expect(inviteePage.locator('.settings-content')).toBeVisible({ timeout: TIMEOUT.short });
+      let profileSynced = false;
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        await inviteePage.goto(`${FRONTEND_URL}/#/dashboard/settings`);
+        await expect(inviteePage.locator('.header-title')).toContainText('Account Settings', { timeout: TIMEOUT.short });
+        await expect(inviteePage.locator('.settings-content')).toBeVisible({ timeout: TIMEOUT.short });
+
+        // Check if display name has populated (indicates this user's SharedProfile synced)
+        const displayName = await inviteePage.locator('input[placeholder="Your display name"]').inputValue();
+        if (displayName && displayName !== '') {
+          console.log(`[Test] SharedProfile synced on attempt ${attempt} — display name: "${displayName}"`);
+          profileSynced = true;
+          break;
+        }
+
+        console.log(`[Test] SharedProfile not synced yet (attempt ${attempt}/8), retrying in 5s...`);
+        await inviteePage.waitForTimeout(5000);
+      }
+
+      expect(profileSynced, 'SharedProfile should sync to user backend within 40s').toBe(true);
 
       // Verify text fields persisted from onboarding
       await expect(inviteePage.locator('input[placeholder="Your display name"]')).toHaveValue(profileData.name);
@@ -404,12 +433,21 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       await expect(inviteePage.locator('input[placeholder="Your community, people"]')).toHaveValue(profileData.indigenousCommunity);
       await expect(inviteePage.locator('textarea[placeholder="Why you joined"]')).toHaveValue(profileData.joinReason);
 
+      // Verify avatar image is displayed
+      const avatarImg = inviteePage.locator('.avatar-img');
+      await expect(avatarImg).toBeVisible({ timeout: TIMEOUT.short });
+      const avatarSrc = await avatarImg.getAttribute('src');
+      expect(avatarSrc).toContain('/api/v1/files/');
+      console.log('[Test] Avatar image visible with fileRef:', avatarSrc);
+
       // Verify social links appear in the social links list
       await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'facebook.com' })).toBeVisible();
       await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'linkedin.com' })).toBeVisible();
       await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'x.com' })).toBeVisible();
       await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'instagram.com' })).toBeVisible();
-      console.log('[Test] Bug 3: PASS - All profile data persisted to Account Settings');
+      await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'github.com' })).toBeVisible();
+      await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'gitlab.com' })).toBeVisible();
+      console.log('[Test] Bug 3: PASS - All profile data (including avatar) persisted to Account Settings');
 
       // --- Verify session persisted with passcode derived from the mnemonic ---
       // The invite code is base64url-encoded mnemonic entropy, NOT the raw passcode.

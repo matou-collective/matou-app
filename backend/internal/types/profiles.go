@@ -99,6 +99,12 @@ func SharedProfileType() *TypeDefinition {
 			{Name: "instagramUrl", Type: "string",
 				Validation: &Validation{MaxLength: &maxSocialLink},
 				UIHints:    &UIHints{InputType: "text", Label: "Instagram", Placeholder: "https://instagram.com/username", Section: "social"}},
+			{Name: "githubUrl", Type: "string",
+				Validation: &Validation{MaxLength: &maxSocialLink},
+				UIHints:    &UIHints{InputType: "text", Label: "GitHub", Placeholder: "https://github.com/username", Section: "social"}},
+			{Name: "gitlabUrl", Type: "string",
+				Validation: &Validation{MaxLength: &maxSocialLink},
+				UIHints:    &UIHints{InputType: "text", Label: "GitLab", Placeholder: "https://gitlab.com/username", Section: "social"}},
 			{Name: "lastActiveAt", Type: "datetime", ReadOnly: true,
 				UIHints: &UIHints{DisplayFormat: "relative-date", Label: "Last Active"}},
 			{Name: "createdAt", Type: "datetime", ReadOnly: true,
@@ -109,8 +115,8 @@ func SharedProfileType() *TypeDefinition {
 		},
 		Layouts: map[string]Layout{
 			"card":   {Fields: []string{"avatar", "displayName"}},
-			"detail": {Fields: []string{"avatar", "displayName", "bio", "location", "indigenousCommunity", "joinReason", "participationInterests", "customInterests", "skills", "languages", "publicEmail", "publicLinks", "facebookUrl", "linkedinUrl", "twitterUrl", "instagramUrl", "lastActiveAt", "createdAt"}},
-			"form":   {Fields: []string{"displayName", "bio", "avatar", "location", "indigenousCommunity", "joinReason", "participationInterests", "customInterests", "skills", "languages", "publicEmail", "publicLinks", "facebookUrl", "linkedinUrl", "twitterUrl", "instagramUrl"}},
+			"detail": {Fields: []string{"avatar", "displayName", "bio", "location", "indigenousCommunity", "joinReason", "participationInterests", "customInterests", "skills", "languages", "publicEmail", "publicLinks", "facebookUrl", "linkedinUrl", "twitterUrl", "instagramUrl", "githubUrl", "gitlabUrl", "lastActiveAt", "createdAt"}},
+			"form":   {Fields: []string{"displayName", "bio", "avatar", "location", "indigenousCommunity", "joinReason", "participationInterests", "customInterests", "skills", "languages", "publicEmail", "publicLinks", "facebookUrl", "linkedinUrl", "twitterUrl", "instagramUrl", "githubUrl", "gitlabUrl"}},
 		},
 		Permissions: TypePermissions{
 			Read:  "community",

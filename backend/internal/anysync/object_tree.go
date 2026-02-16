@@ -1,63 +1,72 @@
 // Package anysync provides any-sync integration for MATOU.
-// object_tree.go manages generic typed object storage as CRDT objects in ObjectTrees.
-// Objects are signed and synced via any-sync's P2P protocol alongside credentials.
+// object_tree.go manages generic typed object storage using a tree-per-object model.
+// Each object (profile, type definition) gets its own ObjectTree, managed by the
+// UnifiedTreeManager. Changes are stored as incremental field operations (ChangeOp)
+// and state is reconstructed by replaying these operations (BuildState).
 package anysync
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
-	"github.com/anyproto/any-sync/commonspace/object/tree/treechangeproto"
-	"github.com/anyproto/any-sync/commonspace/objecttreebuilder"
 	"github.com/anyproto/any-sync/util/crypto"
 )
 
 // ObjectChangeType is the DataType used for generic object changes in ObjectTrees.
 const ObjectChangeType = "matou.object.v1"
 
-// ObjectPayload is the data stored in each ObjectTree change for a generic object.
+// ObjectPayload is the API-level representation of an object.
+// It provides backward compatibility with existing API responses.
+// Internally, data is stored as incremental ChangeOps in the tree.
 type ObjectPayload struct {
 	ID        string          `json:"id"`        // Unique object ID
 	Type      string          `json:"type"`      // e.g. "SharedProfile", "type_definition"
 	OwnerKey  string          `json:"ownerKey"`  // Public signing key of author
-	Data      json.RawMessage `json:"data"`      // Arbitrary typed data
+	Data      json.RawMessage `json:"data"`      // Flat JSON object (reconstructed from state)
 	Timestamp int64           `json:"timestamp"`
-	Version   int             `json:"version"` // Monotonically increasing per ID
+	Version   int             `json:"version"` // Number of changes applied
+	TreeID    string          `json:"treeId,omitempty"` // any-sync tree ID
 }
 
-// ObjectTreeManager manages generic object storage in ObjectTrees.
-// Each space shares the same tree as CredentialTreeManager but uses
-// ObjectChangeType to distinguish object changes from credential changes.
+// ObjectTreeManager manages generic object storage using tree-per-object model.
+// Each object gets its own ObjectTree via UnifiedTreeManager.
 type ObjectTreeManager struct {
-	client     AnySyncClient
-	keyManager *PeerKeyManager
-	trees      *TreeCache
+	client      AnySyncClient
+	keyManager  *PeerKeyManager
+	treeManager *UnifiedTreeManager
 }
 
-// NewObjectTreeManager creates a new ObjectTreeManager using a shared TreeCache.
-func NewObjectTreeManager(client AnySyncClient, keyManager *PeerKeyManager, cache *TreeCache) *ObjectTreeManager {
+// NewObjectTreeManager creates a new ObjectTreeManager backed by UnifiedTreeManager.
+func NewObjectTreeManager(client AnySyncClient, keyManager *PeerKeyManager, treeManager *UnifiedTreeManager) *ObjectTreeManager {
 	return &ObjectTreeManager{
-		client:     client,
-		keyManager: keyManager,
-		trees:      cache,
+		client:      client,
+		keyManager:  keyManager,
+		treeManager: treeManager,
 	}
 }
 
-// AddObject adds a generic object as a signed change to the space's tree.
-// If no tree exists yet, one is created automatically.
-func (m *ObjectTreeManager) AddObject(ctx context.Context, spaceID string, payload *ObjectPayload, signingKey crypto.PrivKey) (string, error) {
-	tree, err := m.getOrCreateTree(ctx, spaceID, signingKey)
+// CreateObject creates a new object with its own tree and initial field values.
+// Returns the tree ID and head ID.
+func (m *ObjectTreeManager) CreateObject(
+	ctx context.Context, spaceID, objectID, objectType string,
+	fields map[string]json.RawMessage, signingKey crypto.PrivKey,
+) (treeID string, headID string, err error) {
+	// Create a new tree for this object
+	tree, treeID, err := m.treeManager.CreateObjectTree(ctx, spaceID, objectID, objectType, ProfileTreeType, signingKey)
 	if err != nil {
-		return "", fmt.Errorf("getting tree for space %s: %w", spaceID, err)
+		return "", "", fmt.Errorf("creating object tree: %w", err)
 	}
 
-	data, err := json.Marshal(payload)
+	// Build the initial change with all fields as "set" ops
+	initOps := InitChange(fields)
+	data, err := json.Marshal(initOps)
 	if err != nil {
-		return "", fmt.Errorf("marshaling object: %w", err)
+		return "", "", fmt.Errorf("marshaling init change: %w", err)
 	}
 
 	tree.Lock()
@@ -66,11 +75,87 @@ func (m *ObjectTreeManager) AddObject(ctx context.Context, spaceID string, paylo
 	result, err := tree.AddContent(ctx, objecttree.SignableChangeContent{
 		Data:              data,
 		Key:               signingKey,
-		IsSnapshot:        false,
+		IsSnapshot:        true, // first change is a snapshot
 		ShouldBeEncrypted: true,
 		Timestamp:         time.Now().Unix(),
 		DataType:          ObjectChangeType,
 	})
+	if err != nil {
+		return "", "", fmt.Errorf("adding init content: %w", err)
+	}
+
+	if len(result.Heads) == 0 {
+		return "", "", fmt.Errorf("no heads returned after adding content")
+	}
+
+	log.Printf("[ObjectTree] CreateObject id=%s type=%s treeId=%s space=%s",
+		objectID, objectType, treeID, spaceID)
+
+	return treeID, result.Heads[0], nil
+}
+
+// UpdateObject updates an existing object with incremental field changes.
+// Only changed fields are stored. Returns empty headID if no changes detected.
+func (m *ObjectTreeManager) UpdateObject(
+	ctx context.Context, spaceID, objectID string,
+	newFields map[string]json.RawMessage, signingKey crypto.PrivKey,
+) (headID string, err error) {
+	tree, err := m.treeManager.GetTreeForObject(ctx, spaceID, objectID)
+	if err != nil {
+		return "", fmt.Errorf("getting tree for object %s: %w", objectID, err)
+	}
+
+	// Read current state (with lock)
+	tree.Lock()
+	state, err := BuildState(tree, objectID, "")
+	if err != nil {
+		tree.Unlock()
+		return "", fmt.Errorf("building state for %s: %w", objectID, err)
+	}
+
+	// Compute diff
+	diff := DiffState(state, newFields)
+	if diff == nil {
+		tree.Unlock()
+		return "", nil // no changes
+	}
+
+	data, err := json.Marshal(diff)
+	if err != nil {
+		tree.Unlock()
+		return "", fmt.Errorf("marshaling diff: %w", err)
+	}
+
+	// Check if we need a snapshot
+	isSnapshot := NeedsSnapshot(state)
+	if isSnapshot {
+		// Apply the diff to current state first, then create snapshot
+		for _, op := range diff.Ops {
+			switch op.Op {
+			case "set":
+				state.Fields[op.Field] = op.Value
+			case "unset":
+				delete(state.Fields, op.Field)
+			}
+		}
+		snap := SnapshotChange(state)
+		data, err = json.Marshal(snap)
+		if err != nil {
+			tree.Unlock()
+			return "", fmt.Errorf("marshaling snapshot: %w", err)
+		}
+	}
+
+	result, err := tree.AddContent(ctx, objecttree.SignableChangeContent{
+		Data:              data,
+		Key:               signingKey,
+		IsSnapshot:        isSnapshot,
+		ShouldBeEncrypted: true,
+		Timestamp:         time.Now().Unix(),
+		DataType:          ObjectChangeType,
+	})
+	tree.Unlock()
+
 	if err != nil {
 		return "", fmt.Errorf("adding content: %w", err)
 	}
@@ -82,225 +167,171 @@ func (m *ObjectTreeManager) AddObject(ctx context.Context, spaceID string, paylo
 	return result.Heads[0], nil
 }
 
-// ReadObjects reads all objects from a space's tree.
-// Returns objects in tree traversal order, skipping credential changes.
-func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]*ObjectPayload, error) {
-	tree, err := m.loadTree(ctx, spaceID)
+// AddObject adds an object using the legacy ObjectPayload format.
+// For new objects, it creates a tree. For existing objects, it updates.
+// This provides backward compatibility with existing API handlers.
+func (m *ObjectTreeManager) AddObject(ctx context.Context, spaceID string, payload *ObjectPayload, signingKey crypto.PrivKey) (string, error) {
+	fields, err := FieldsFromJSON(payload.Data)
 	if err != nil {
-		return nil, err
+		return "", fmt.Errorf("parsing object data: %w", err)
 	}
+
+	// Check if object already has a tree
+	existingTree, _ := m.treeManager.GetTreeForObject(ctx, spaceID, payload.ID)
+	if existingTree != nil {
+		// Update existing object
+		headID, err := m.UpdateObject(ctx, spaceID, payload.ID, fields, signingKey)
+		if err != nil {
+			return "", err
+		}
+		if headID == "" {
+			// No changes detected, return current head
+			return "", nil
+		}
+		return headID, nil
+	}
+
+	// Create new object
+	_, headID, err := m.CreateObject(ctx, spaceID, payload.ID, payload.Type, fields, signingKey)
+	return headID, err
+}
+
+// ReadObject reads a single object by ID, returning its reconstructed state as ObjectPayload.
+func (m *ObjectTreeManager) ReadObject(ctx context.Context, spaceID, objectID string) (*ObjectPayload, error) {
+	tree, err := m.treeManager.GetTreeForObject(ctx, spaceID, objectID)
+	if err != nil {
+		return nil, fmt.Errorf("object %s not found: %w", objectID, err)
+	}
+
+	// Get index entry for type info
+	entry := m.getIndexEntry(objectID)
 
 	tree.Lock()
-	defer tree.Unlock()
-
-	var objects []*ObjectPayload
-
-	err = tree.IterateRoot(
-		func(change *objecttree.Change, decrypted []byte) (any, error) {
-			if len(decrypted) == 0 {
-				return nil, nil
-			}
-			// Only process object changes
-			if change.DataType != ObjectChangeType {
-				return nil, nil
-			}
-			var p ObjectPayload
-			if err := json.Unmarshal(decrypted, &p); err != nil {
-				return nil, fmt.Errorf("unmarshaling object: %w", err)
-			}
-			return &p, nil
-		},
-		func(change *objecttree.Change) bool {
-			if change.Model == nil {
-				return true
-			}
-			if o, ok := change.Model.(*ObjectPayload); ok {
-				objects = append(objects, o)
-			}
-			return true
-		},
-	)
+	state, err := BuildState(tree, objectID, entry.ObjectType)
+	tree.Unlock()
 	if err != nil {
-		return nil, fmt.Errorf("iterating tree: %w", err)
+		return nil, fmt.Errorf("building state for %s: %w", objectID, err)
 	}
 
+	return stateToPayload(state, tree.Id()), nil
+}
+
+// ReadObjectsByType reads all objects of a specific type from a space.
+func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, typeName string) ([]*ObjectPayload, error) {
+	entries := m.treeManager.GetTreesByType(spaceID, typeName)
+	log.Printf("[ObjectTree] ReadObjectsByType space=%s type=%s entries=%d", spaceID, typeName, len(entries))
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	var objects []*ObjectPayload
+	for _, entry := range entries {
+		tree, err := m.treeManager.GetTree(ctx, spaceID, entry.TreeID)
+		if err != nil {
+			log.Printf("[ObjectTree] Warning: failed to get tree %s for object %s: %v",
+				entry.TreeID, entry.ObjectID, err)
+			continue
+		}
+
+		tree.Lock()
+		state, err := BuildState(tree, entry.ObjectID, entry.ObjectType)
+		tree.Unlock()
+		if err != nil {
+			log.Printf("[ObjectTree] Warning: failed to build state for %s: %v",
+				entry.ObjectID, err)
+			continue
+		}
+
+		objects = append(objects, stateToPayload(state, entry.TreeID))
+	}
+
+	log.Printf("[ObjectTree] ReadObjectsByType space=%s type=%s result=%d", spaceID, typeName, len(objects))
 	return objects, nil
 }
 
-// ReadObjectsByType reads all objects of a specific type from a space's tree.
-func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID string, typeName string) ([]*ObjectPayload, error) {
-	all, err := m.ReadObjects(ctx, spaceID)
-	if err != nil {
-		return nil, err
+// ReadObjects reads all profile objects from a space (all types).
+// This is used by sync-status and other callers that need all objects.
+func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]*ObjectPayload, error) {
+	entries := m.treeManager.GetTreesByChangeType(spaceID, ProfileTreeType)
+	if len(entries) == 0 {
+		// Also check for legacy ObjectChangeType trees
+		entries = m.treeManager.GetTreesByChangeType(spaceID, ObjectChangeType)
 	}
 
-	var filtered []*ObjectPayload
-	for _, obj := range all {
-		if obj.Type == typeName {
-			filtered = append(filtered, obj)
-		}
-	}
-	return filtered, nil
-}
-
-// ReadLatestByID reads the latest version of a specific object by ID.
-func (m *ObjectTreeManager) ReadLatestByID(ctx context.Context, spaceID string, objectID string) (*ObjectPayload, error) {
-	all, err := m.ReadObjects(ctx, spaceID)
-	if err != nil {
-		return nil, err
-	}
-
-	var latest *ObjectPayload
-	for _, obj := range all {
-		if obj.ID == objectID {
-			if latest == nil || obj.Version > latest.Version {
-				latest = obj
-			}
-		}
-	}
-
-	if latest == nil {
-		return nil, fmt.Errorf("object %s not found in space %s", objectID, spaceID)
-	}
-	return latest, nil
-}
-
-// HasObjectTree returns true if an ObjectTree exists for the given space,
-// either in cache or discoverable from the space storage.
-func (m *ObjectTreeManager) HasObjectTree(ctx context.Context, spaceID string) bool {
-	if _, ok := m.trees.Load(spaceID); ok {
-		return true
-	}
-	err := m.discoverTree(ctx, spaceID)
-	return err == nil
-}
-
-// loadTree loads an existing tree from the cache or discovers it from the space.
-func (m *ObjectTreeManager) loadTree(ctx context.Context, spaceID string) (objecttree.ObjectTree, error) {
-	if tree, ok := m.trees.Load(spaceID); ok {
-		return tree, nil
-	}
-
-	// Try to discover the tree
-	if err := m.discoverTree(ctx, spaceID); err != nil {
-		return nil, fmt.Errorf("no tree for space %s: %w", spaceID, err)
-	}
-
-	tree, ok := m.trees.Load(spaceID)
-	if !ok {
-		return nil, fmt.Errorf("no tree for space %s", spaceID)
-	}
-	return tree, nil
-}
-
-// discoverTree discovers and loads a tree from the space storage that contains objects.
-func (m *ObjectTreeManager) discoverTree(ctx context.Context, spaceID string) error {
-	if m.client == nil {
-		return fmt.Errorf("no client configured")
-	}
-	space, err := m.client.GetSpace(ctx, spaceID)
-	if err != nil {
-		return fmt.Errorf("getting space: %w", err)
-	}
-
-	storedIds := space.StoredIds()
-	builder := space.TreeBuilder()
-
-	for _, treeID := range storedIds {
-		tree, err := builder.BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{})
+	var objects []*ObjectPayload
+	for _, entry := range entries {
+		tree, err := m.treeManager.GetTree(ctx, spaceID, entry.TreeID)
 		if err != nil {
 			continue
 		}
 
 		tree.Lock()
-		isObjectTree := false
-		_ = tree.IterateRoot(
-			func(change *objecttree.Change, decrypted []byte) (any, error) {
-				return nil, nil
-			},
-			func(change *objecttree.Change) bool {
-				if change.DataType == ObjectChangeType {
-					isObjectTree = true
-					return false
-				}
-				if info, ok := change.Model.(*treechangeproto.TreeChangeInfo); ok {
-					if info.ChangeType == ObjectChangeType {
-						isObjectTree = true
-						return false
-					}
-				}
-				return true
-			},
-		)
+		state, err := BuildState(tree, entry.ObjectID, entry.ObjectType)
 		tree.Unlock()
-		if isObjectTree {
-			m.trees.Store(spaceID, tree)
-			return nil
+		if err != nil {
+			continue
 		}
+
+		objects = append(objects, stateToPayload(state, entry.TreeID))
 	}
-	return fmt.Errorf("no object tree found in %d stored objects", len(storedIds))
+
+	return objects, nil
 }
 
-// getOrCreateTree returns the existing tree for a space, or creates one.
-func (m *ObjectTreeManager) getOrCreateTree(ctx context.Context, spaceID string, signingKey crypto.PrivKey) (objecttree.ObjectTree, error) {
-	if tree, ok := m.trees.Load(spaceID); ok {
-		return tree, nil
-	}
-
-	// Try discovery first (tree may have been created by credential manager or peer)
-	if err := m.discoverTree(ctx, spaceID); err == nil {
-		if tree, ok := m.trees.Load(spaceID); ok {
-			return tree, nil
-		}
-	}
-
-	// Create new tree
-	_, err := m.createTree(ctx, spaceID, signingKey)
-	if err != nil {
-		return nil, err
-	}
-
-	tree, ok := m.trees.Load(spaceID)
-	if !ok {
-		return nil, fmt.Errorf("tree not found after creation for space %s", spaceID)
-	}
-	return tree, nil
+// ReadLatestByID reads the latest version of a specific object by ID.
+// Backward-compatible with the old API.
+func (m *ObjectTreeManager) ReadLatestByID(ctx context.Context, spaceID, objectID string) (*ObjectPayload, error) {
+	return m.ReadObject(ctx, spaceID, objectID)
 }
 
-// createTree creates a new ObjectTree in a space.
-func (m *ObjectTreeManager) createTree(ctx context.Context, spaceID string, signingKey crypto.PrivKey) (string, error) {
-	space, err := m.client.GetSpace(ctx, spaceID)
-	if err != nil {
-		return "", fmt.Errorf("getting space %s: %w", spaceID, err)
+// GetTreeIDForObject returns the tree ID for a given object ID.
+func (m *ObjectTreeManager) GetTreeIDForObject(objectID string) string {
+	return m.treeManager.GetTreeIDForObject(objectID)
+}
+
+// HasObjectTree returns true if any profile trees exist for the given space.
+func (m *ObjectTreeManager) HasObjectTree(ctx context.Context, spaceID string) bool {
+	entries := m.treeManager.GetTreesByChangeType(spaceID, ProfileTreeType)
+	if len(entries) > 0 {
+		return true
 	}
+	// Also check legacy
+	entries = m.treeManager.GetTreesByChangeType(spaceID, ObjectChangeType)
+	return len(entries) > 0
+}
 
-	treeBuilder := space.TreeBuilder()
+// --- Internal helpers ---
 
-	seed := make([]byte, 32)
-	if _, err := rand.Read(seed); err != nil {
-		return "", fmt.Errorf("generating seed: %w", err)
+func (m *ObjectTreeManager) getIndexEntry(objectID string) ObjectIndexEntry {
+	treeID := m.treeManager.GetTreeIDForObject(objectID)
+	if treeID == "" {
+		return ObjectIndexEntry{}
 	}
+	// Search space index for this tree
+	var found ObjectIndexEntry
+	m.treeManager.spaceIndex.Range(func(_, idx any) bool {
+		idx.(*sync.Map).Range(func(key, value any) bool {
+			entry := value.(ObjectIndexEntry)
+			if entry.TreeID == treeID {
+				found = entry
+				return false
+			}
+			return true
+		})
+		return found.TreeID == ""
+	})
+	return found
+}
 
-	payload := objecttree.ObjectTreeCreatePayload{
-		PrivKey:       signingKey,
-		ChangeType:    ObjectChangeType,
-		ChangePayload: nil,
-		SpaceId:       spaceID,
-		IsEncrypted:   true,
-		Seed:          seed,
-		Timestamp:     time.Now().Unix(),
+// stateToPayload converts an ObjectState to an ObjectPayload for API responses.
+func stateToPayload(state *ObjectState, treeID string) *ObjectPayload {
+	return &ObjectPayload{
+		ID:        state.ObjectID,
+		Type:      state.ObjectType,
+		OwnerKey:  state.OwnerKey,
+		Data:      state.ToJSON(),
+		Timestamp: state.Timestamp,
+		Version:   state.Version,
+		TreeID:    treeID,
 	}
-
-	storagePayload, err := treeBuilder.CreateTree(ctx, payload)
-	if err != nil {
-		return "", fmt.Errorf("creating tree: %w", err)
-	}
-
-	tree, err := treeBuilder.PutTree(ctx, storagePayload, nil)
-	if err != nil {
-		return "", fmt.Errorf("putting tree: %w", err)
-	}
-
-	m.trees.Store(spaceID, tree)
-	return tree.Id(), nil
 }

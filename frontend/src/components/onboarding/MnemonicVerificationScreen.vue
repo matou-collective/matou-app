@@ -238,6 +238,8 @@ async function handleVerify() {
         linkedinUrl: store.profile.linkedinUrl || undefined,
         twitterUrl: store.profile.twitterUrl || undefined,
         instagramUrl: store.profile.instagramUrl || undefined,
+        githubUrl: store.profile.githubUrl || undefined,
+        gitlabUrl: store.profile.gitlabUrl || undefined,
         interests: store.profile.participationInterests,
         customInterests: store.profile.customInterests,
         avatarFileRef: store.profile.avatarFileRef || undefined,

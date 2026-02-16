@@ -46,6 +46,10 @@ export interface OrgConfig {
     id: string;
     name: string;
   };
+  schema?: {
+    said: string;
+    oobi: string;
+  };
   // any-sync community space ID (created during org setup)
   communitySpaceId?: string;
   // any-sync community read-only space ID

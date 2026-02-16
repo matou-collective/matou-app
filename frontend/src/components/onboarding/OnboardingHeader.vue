@@ -28,7 +28,8 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowLeft, type Component } from 'lucide-vue-next';
+import { ArrowLeft } from 'lucide-vue-next';
+import type { Component } from 'vue';
 import MBtn from '../base/MBtn.vue';
 
 interface Props {

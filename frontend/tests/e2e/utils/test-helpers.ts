@@ -423,18 +423,23 @@ export async function performOrgSetup(
   await page.getByRole('button', { name: /continue/i }).click();
   await completeMnemonicVerification(page, adminMnemonic);
 
-  // Wait for dashboard or pending
+  // Wait for dashboard, pending, or membership approved (admin self-issued credential)
   await Promise.race([
     expect(page.getByRole('heading', { name: /registration pending/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
     expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
+    expect(page.locator('h1', { hasText: /membership approved/i }))
+      .toBeVisible({ timeout: TIMEOUT.long }),
   ]);
 
-  // Handle welcome overlay if present
-  const welcomeOverlay = page.locator('.welcome-overlay');
-  if (await welcomeOverlay.isVisible().catch(() => false)) {
-    await page.getByRole('button', { name: /enter community/i }).click();
-    await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+  // Handle welcome overlay / approved screen if "Enter Community" button appears
+  const enterBtn = page.getByRole('button', { name: /enter community/i });
+  try {
+    await enterBtn.waitFor({ state: 'visible', timeout: TIMEOUT.medium });
+    await enterBtn.click();
+    await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long });
+  } catch {
+    // Already on dashboard or pending — no overlay to dismiss
   }
 
   console.log('[OrgSetup] Admin on dashboard');

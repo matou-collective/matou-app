@@ -8,7 +8,7 @@ import { ref } from 'vue';
 import { useKERIClient, KERIClient } from 'src/lib/keri/client';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
-import { setBackendIdentity, createOrUpdateProfile } from 'src/lib/api/client';
+import { setBackendIdentity, createOrUpdateProfile, uploadFile } from 'src/lib/api/client';
 import { useIdentityStore } from 'stores/identity';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -306,6 +306,31 @@ export function useClaimIdentity() {
       }
       console.log('[ClaimIdentity] Joined community space');
 
+      // Upload avatar if we have base64 data but no fileRef
+      // (the original upload during onboarding failed because community space didn't exist)
+      if (!onboardingStore.profile.avatarFileRef && onboardingStore.profile.avatarData) {
+        try {
+          progress.value = 'Uploading avatar...';
+          const base64Data = onboardingStore.profile.avatarData;
+          const mimeType = onboardingStore.profile.avatarMimeType || 'image/png';
+          // Convert base64 to File for uploadFile()
+          const byteChars = atob(base64Data);
+          const byteArray = new Uint8Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) {
+            byteArray[i] = byteChars.charCodeAt(i);
+          }
+          const blob = new Blob([byteArray], { type: mimeType });
+          const avatarFile = new File([blob], 'avatar', { type: mimeType });
+          const uploadResult = await uploadFile(avatarFile);
+          if (uploadResult.fileRef) {
+            onboardingStore.updateProfile({ avatarFileRef: uploadResult.fileRef });
+            console.log('[ClaimIdentity] Avatar uploaded after space join, fileRef:', uploadResult.fileRef);
+          }
+        } catch (avatarErr) {
+          console.warn('[ClaimIdentity] Avatar upload after space join failed:', avatarErr);
+        }
+      }
+
       // Populate identity info for the dashboard
       onboardingStore.setUserAID(aid.prefix);
       if (!onboardingStore.profile.name) {
@@ -348,6 +373,8 @@ export function useClaimIdentity() {
           linkedinUrl: onboardingStore.profile.linkedinUrl || '',
           twitterUrl: onboardingStore.profile.twitterUrl || '',
           instagramUrl: onboardingStore.profile.instagramUrl || '',
+          githubUrl: onboardingStore.profile.githubUrl || '',
+          gitlabUrl: onboardingStore.profile.gitlabUrl || '',
           participationInterests: onboardingStore.profile.participationInterests || [],
           customInterests: onboardingStore.profile.customInterests || '',
           lastActiveAt: now,

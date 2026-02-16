@@ -1,3 +1,4 @@
+import path from 'path';
 import { test, expect, Page, BrowserContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
@@ -8,6 +9,9 @@ import {
   setupPageLogging,
   setupBackendRouting,
   registerUser,
+  navigateToProfileForm,
+  captureMnemonicWords,
+  completeMnemonicVerification,
   loginWithMnemonic,
   uniqueSuffix,
   loadAccounts,
@@ -91,6 +95,8 @@ test.describe.serial('Registration Approval Flow', () => {
   // Test 1: Admin approves user registration
   // ------------------------------------------------------------------
   test('admin approves user registration', async ({ browser }) => {
+    test.setTimeout(240_000); // 4 min: registration (~90s) + approval (~30s) + sync (~60s)
+
     // Spawn a dedicated backend for this user
     const userBackend = await backends.start('user-approve');
 
@@ -103,6 +109,23 @@ test.describe.serial('Registration Approval Flow', () => {
 
     const userName = `Approve_${uniqueSuffix()}`;
 
+    // Profile data used for registration form and Account Settings verification
+    const profileData = {
+      name: userName,
+      email: 'approve-test@matou.nz',
+      bio: 'E2E registration approval test bio',
+      location: 'Wellington, New Zealand',
+      indigenousCommunity: 'Ngāti Toa Rangatira',
+      joinReason: 'Testing the registration approval flow',
+      facebookUrl: 'https://facebook.com/approvetest',
+      linkedinUrl: 'https://linkedin.com/in/approvetest',
+      twitterUrl: 'https://x.com/approvetest',
+      instagramUrl: 'https://instagram.com/approvetest',
+      githubUrl: 'https://github.com/approvetest',
+      gitlabUrl: 'https://gitlab.com/approvetest',
+      customInterests: 'Indigenous governance, digital identity',
+    };
+
     try {
       // A. Set up identity/set listener before registration triggers the call
       const identitySetResponse = userPage.waitForResponse(
@@ -110,8 +133,64 @@ test.describe.serial('Registration Approval Flow', () => {
         { timeout: TIMEOUT.aidCreation },
       );
 
-      // 1. User registers (on their own backend via routing)
-      await registerUser(userPage, userName);
+      // 1. User registers with ALL profile fields filled
+      //    (inline instead of registerUser() which only fills name/bio)
+      await userPage.goto(FRONTEND_URL);
+      await navigateToProfileForm(userPage);
+
+      // Fill all profile fields
+      console.log('[Test] Filling registration form with all profile fields...');
+      await userPage.locator('#name input').fill(profileData.name);
+      await userPage.locator('#email input').fill(profileData.email);
+      await userPage.locator('#bio').fill(profileData.bio);
+      await userPage.locator('#location input').fill(profileData.location);
+      await userPage.locator('#indigenousCommunity input').fill(profileData.indigenousCommunity);
+      await userPage.locator('#joinReason').fill(profileData.joinReason);
+      await userPage.locator('#facebookUrl input').fill(profileData.facebookUrl);
+      await userPage.locator('#linkedinUrl input').fill(profileData.linkedinUrl);
+      await userPage.locator('#twitterUrl input').fill(profileData.twitterUrl);
+      await userPage.locator('#instagramUrl input').fill(profileData.instagramUrl);
+      await userPage.locator('#githubUrl input').fill(profileData.githubUrl);
+      await userPage.locator('#gitlabUrl input').fill(profileData.gitlabUrl);
+      await userPage.locator('#customInterests').fill(profileData.customInterests);
+
+      // Upload avatar image
+      const avatarPath = path.resolve(__dirname, 'fixtures/test-avatar.png');
+      const fileInput = userPage.locator('input[type="file"][accept="image/*"]');
+      await fileInput.setInputFiles(avatarPath);
+      // Wait for the preview to appear (FileReader processes the image)
+      await expect(userPage.locator('img[alt="Profile preview"]')).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Avatar uploaded and preview visible');
+
+      // Select an interest if available
+      const interest = userPage.locator('label').filter({ hasText: 'Governance' }).first();
+      if (await interest.isVisible()) await interest.click();
+
+      // Agree to terms
+      await userPage.locator('input[type="checkbox"]').last().check();
+
+      // Submit - creates AID (witness-backed AIDs can take up to 3 minutes)
+      await userPage.getByRole('button', { name: /continue/i }).click();
+      console.log(`[${userName}] Creating identity...`);
+      await expect(
+        userPage.getByText(/identity created successfully/i),
+      ).toBeVisible({ timeout: TIMEOUT.aidCreation });
+
+      // Capture mnemonic
+      const mnemonic = await captureMnemonicWords(userPage);
+
+      // Confirm and proceed to verification
+      await userPage.locator('.confirm-box input[type="checkbox"]').check();
+      await userPage.getByRole('button', { name: /continue to verification/i }).click();
+
+      // Complete verification
+      await completeMnemonicVerification(userPage, mnemonic, /verify and continue/i);
+
+      // Wait for pending screen (submission includes OOBI resolution + EXN + IPEX)
+      await expect(
+        userPage.getByText(/application.*review|pending|under review/i).first(),
+      ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+      console.log(`[${userName}] Registration submitted, on pending screen`);
 
       // 2. Verify backend identity was configured during registration
       const idResp = await identitySetResponse;
@@ -144,18 +223,29 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Session restart: splash buttons correctly hidden');
 
       // 3. Wait for admin to see registration card
+      // KERIA message delivery through witness network can take 30-60s
       console.log('[Test] Waiting for registration to appear on admin dashboard...');
       const adminSection = adminPage.locator('.admin-section');
       await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
 
       const registrationCard = adminPage.locator('.registration-card').filter({ hasText: userName });
-      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.long });
+      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
       console.log('[Test] Registration card visible');
 
-      // B. Set up invite + sync listeners before approval
+      // B. Set up invite + sync + initMemberProfiles listeners before approval
+      // initMemberProfiles creates SharedProfile + CommunityProfile on admin's backend
+      const initProfilesResponse = adminPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/profiles/init-member') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.long },
+      );
       // Invite goes through admin's backend (port 9080)
       const inviteResponse = adminPage.waitForResponse(
         resp => resp.url().includes('/api/v1/spaces/community/invite') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.long },
+      );
+      // Community join goes through user's backend (routed port)
+      const joinResponse = userPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/spaces/community/join') && resp.request().method() === 'POST',
         { timeout: TIMEOUT.long },
       );
       // Sync goes through user's backend (routed port)
@@ -175,16 +265,48 @@ test.describe.serial('Registration Approval Flow', () => {
       expect(invBody.success).toBe(true);
       console.log('[Test] User invited to community space:', invBody);
 
+      // 5b. Verify initMemberProfiles succeeded (SharedProfile + CommunityProfile created)
+      const initResp = await initProfilesResponse;
+      expect(initResp.status()).toBe(200);
+      const initBody = await initResp.json();
+      expect(initBody.success).toBe(true);
+      expect(initBody.sharedProfileObjectId).toBeTruthy();
+      expect(initBody.sharedProfileSpaceId).toBeTruthy();
+      console.log('[Test] initMemberProfiles succeeded:', {
+        objectId: initBody.objectId,
+        sharedProfileObjectId: initBody.sharedProfileObjectId,
+      });
+
+      // 5b2. Query admin backend directly — verify the SharedProfile is readable
+      const adminProfilesResp = await adminPage.request.get('http://localhost:9080/api/v1/profiles/SharedProfile');
+      const adminProfiles = await adminProfilesResp.json();
+      const adminProfileList = (adminProfiles.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
+      console.log(`[Test] Admin backend SharedProfiles (${adminProfileList.length}):`);
+      for (const p of adminProfileList) {
+        console.log(`  - ${p.id} aid=${p.data?.aid} name=${p.data?.displayName}`);
+      }
+      const userProfileOnAdmin = adminProfileList.find(p => p.id === initBody.sharedProfileObjectId);
+      expect(userProfileOnAdmin, `Admin should have SharedProfile ${initBody.sharedProfileObjectId}`).toBeTruthy();
+
+      // 5c. Verify user's backend joined the community space
+      const joinResp = await joinResponse;
+      const joinBody = await joinResp.json();
+      console.log('[Test] Community join response:', { status: joinResp.status(), body: joinBody });
+      expect(joinResp.status()).toBe(200);
+      expect(joinBody.success).toBe(true);
+
       // 6. User receives credential (welcome overlay)
       console.log('[Test] Waiting for user to receive credential...');
       await expect(userPage.locator('.welcome-overlay')).toBeVisible({ timeout: TIMEOUT.long });
       console.log('[Test] User received credential!');
 
       // 7. User enters community and lands on dashboard
-      // Button starts as "Syncing..." (disabled), then becomes "Enter Community" when sync completes
-      // or "Enter Anyway" after 30s timeout. Wait for either enabled state.
-      const enterButton = userPage.getByRole('button', { name: /enter (community|anyway)/i });
-      await enterButton.click({ timeout: TIMEOUT.long + 15_000 });
+      // Button starts as "Syncing..." (disabled), becomes "Enter Community" when profile sync completes.
+      // No timeout fallback — sync must complete before entering.
+      const enterButton = userPage.getByRole('button', { name: /enter community/i });
+      await expect(enterButton).toBeEnabled({ timeout: TIMEOUT.long + 30_000 });
+      console.log('[Test] Enter Community button enabled — profile sync confirmed');
+      await enterButton.click();
       await expect(userPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
 
       // 8. Verify credential synced to backend (through user's backend)
@@ -192,9 +314,6 @@ test.describe.serial('Registration Approval Flow', () => {
       expect(syncResp.status()).toBe(200);
       const syncBody = await syncResp.json();
       expect(syncBody.synced).toBeGreaterThan(0);
-      // Space routing is best-effort on the initial sync — the user's freshly-spawned
-      // backend may still be deriving space keys from the mnemonic. The dashboard URL
-      // check above already proves end-to-end community access works.
       console.log('[Test] Credential synced:', {
         synced: syncBody.synced,
         spaces: syncBody.spaces,
@@ -204,6 +323,56 @@ test.describe.serial('Registration Approval Flow', () => {
       });
 
       console.log('[Test] PASS - User approved, credential synced, dashboard accessible');
+
+      // 9. Verify all profile data persisted to Account Settings
+      //    WelcomeOverlay confirmed the user's SharedProfile synced (matched by AID).
+      //    Retry page loads in case the settings page needs time to read from store.
+      console.log('[Test] Checking Account Settings for profile data (with sync retries)...');
+
+      let profileSynced = false;
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        await userPage.goto(`${FRONTEND_URL}/#/dashboard/settings`);
+        await expect(userPage.locator('.header-title')).toContainText('Account Settings', { timeout: TIMEOUT.short });
+        await expect(userPage.locator('.settings-content')).toBeVisible({ timeout: TIMEOUT.short });
+
+        // Check if display name has populated (indicates this user's SharedProfile synced)
+        const displayName = await userPage.locator('input[placeholder="Your display name"]').inputValue();
+        if (displayName && displayName !== '') {
+          console.log(`[Test] SharedProfile synced on attempt ${attempt} — display name: "${displayName}"`);
+          profileSynced = true;
+          break;
+        }
+
+        console.log(`[Test] SharedProfile not synced yet (attempt ${attempt}/8), retrying in 5s...`);
+        await userPage.waitForTimeout(5000);
+      }
+
+      expect(profileSynced, 'SharedProfile should sync to user backend within 40s').toBe(true);
+
+      // Verify all text fields persisted from registration
+      await expect(userPage.locator('input[placeholder="Your display name"]')).toHaveValue(profileData.name);
+      await expect(userPage.locator('input[placeholder="Your public email"]')).toHaveValue(profileData.email);
+      await expect(userPage.locator('textarea[placeholder="Tell us about yourself"]')).toHaveValue(profileData.bio);
+      await expect(userPage.locator('input[placeholder="Village, City, Country"]')).toHaveValue(profileData.location);
+      await expect(userPage.locator('input[placeholder="Your community, people"]')).toHaveValue(profileData.indigenousCommunity);
+      await expect(userPage.locator('textarea[placeholder="Why you joined"]')).toHaveValue(profileData.joinReason);
+      await expect(userPage.locator('textarea[placeholder="Other interests"]')).toHaveValue(profileData.customInterests);
+
+      // Verify avatar image is displayed (uploaded during registration, carried into SharedProfile)
+      const avatarImg = userPage.locator('.avatar-img');
+      await expect(avatarImg).toBeVisible({ timeout: TIMEOUT.short });
+      const avatarSrc = await avatarImg.getAttribute('src');
+      expect(avatarSrc).toContain('/api/v1/files/');
+      console.log('[Test] Avatar image visible with fileRef:', avatarSrc);
+
+      // Verify social links appear in the social links list
+      await expect(userPage.locator('.social-link-url').filter({ hasText: 'facebook.com' })).toBeVisible();
+      await expect(userPage.locator('.social-link-url').filter({ hasText: 'linkedin.com' })).toBeVisible();
+      await expect(userPage.locator('.social-link-url').filter({ hasText: 'x.com' })).toBeVisible();
+      await expect(userPage.locator('.social-link-url').filter({ hasText: 'instagram.com' })).toBeVisible();
+      await expect(userPage.locator('.social-link-url').filter({ hasText: 'github.com' })).toBeVisible();
+      await expect(userPage.locator('.social-link-url').filter({ hasText: 'gitlab.com' })).toBeVisible();
+      console.log('[Test] PASS - All registration profile data (including avatar) persisted to Account Settings');
     } finally {
       await userContext.close();
       await backends.stop('user-approve');

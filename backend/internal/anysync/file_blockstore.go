@@ -43,6 +43,16 @@ func NewRemoteBlockStore(p pool.Pool, nc nodeconf.Service) *RemoteBlockStore {
 	}
 }
 
+// RefreshTransport replaces the pool and nodeconf references.
+// This must be called after SDKClient.Reinitialize() because the old pool
+// is closed when the app shuts down and the new app creates a fresh pool.
+func (s *RemoteBlockStore) RefreshTransport(p pool.Pool, nc nodeconf.Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pool = p
+	s.nodeConf = nc
+}
+
 // SetContext sets the spaceId and fileId for subsequent blockstore operations.
 // Must be called before FileHandler.AddFile/GetFile since the IPFS DAG builder
 // does not propagate the caller's context.
@@ -77,11 +87,16 @@ func (s *RemoteBlockStore) getFileId(ctx context.Context) string {
 
 // getFilePeer returns a connected peer from the configured file nodes.
 func (s *RemoteBlockStore) getFilePeer(ctx context.Context) (peer.Peer, error) {
-	filePeers := s.nodeConf.FilePeers()
+	s.mu.RLock()
+	p := s.pool
+	nc := s.nodeConf
+	s.mu.RUnlock()
+
+	filePeers := nc.FilePeers()
 	if len(filePeers) == 0 {
 		return nil, fmt.Errorf("no file peers configured")
 	}
-	return s.pool.GetOneOf(ctx, filePeers)
+	return p.GetOneOf(ctx, filePeers)
 }
 
 // Get fetches a single block from the filenode by CID.

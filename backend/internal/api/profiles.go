@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ type ProfilesHandler struct {
 	spaceManager *anysync.SpaceManager
 	userIdentity *identity.UserIdentity
 	registry     *types.Registry
+	fileManager  *anysync.FileManager
 }
 
 // NewProfilesHandler creates a new profiles handler.
@@ -24,11 +27,13 @@ func NewProfilesHandler(
 	spaceManager *anysync.SpaceManager,
 	userIdentity *identity.UserIdentity,
 	registry *types.Registry,
+	fileManager *anysync.FileManager,
 ) *ProfilesHandler {
 	return &ProfilesHandler{
 		spaceManager: spaceManager,
 		userIdentity: userIdentity,
 		registry:     registry,
+		fileManager:  fileManager,
 	}
 }
 
@@ -189,10 +194,14 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Get tree ID for the response
+	treeID := objMgr.GetTreeIDForObject(objectID)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,
 		"objectId": objectID,
 		"headId":   headID,
+		"treeId":   treeID,
 		"version":  version,
 		"spaceId":  spaceID,
 	})
@@ -227,6 +236,7 @@ func (h *ProfilesHandler) HandleListProfiles(w http.ResponseWriter, r *http.Requ
 	}
 
 	spaceID := h.resolveSpaceForType(def)
+	log.Printf("[Profiles] HandleListProfiles type=%s space=%q defSpace=%s", typeName, spaceID, def.Space)
 	if spaceID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": fmt.Sprintf("no space configured for type %s", typeName),
@@ -342,15 +352,27 @@ func (h *ProfilesHandler) HandleMyProfiles(w http.ResponseWriter, r *http.Reques
 
 // InitMemberProfilesRequest represents a request to initialize profiles for a new member.
 type InitMemberProfilesRequest struct {
-	MemberAID      string          `json:"memberAid"`
-	CredentialSAID string          `json:"credentialSaid"`
-	Role           string          `json:"role"`
-	DisplayName    string          `json:"displayName"`
-	Email          string          `json:"email,omitempty"`
-	Avatar         string          `json:"avatar,omitempty"`
-	Bio            string          `json:"bio,omitempty"`
-	Interests      []string        `json:"interests,omitempty"`
-	ProfileData    json.RawMessage `json:"profileData,omitempty"` // Optional registration data
+	MemberAID            string          `json:"memberAid"`
+	CredentialSAID       string          `json:"credentialSaid"`
+	Role                 string          `json:"role"`
+	DisplayName          string          `json:"displayName"`
+	Email                string          `json:"email,omitempty"`
+	Avatar               string          `json:"avatar,omitempty"`
+	AvatarData           string          `json:"avatarData,omitempty"`     // Base64-encoded avatar fallback
+	AvatarMimeType       string          `json:"avatarMimeType,omitempty"` // MIME type for base64 avatar
+	Bio                  string          `json:"bio,omitempty"`
+	Interests            []string        `json:"interests,omitempty"`
+	CustomInterests      string          `json:"customInterests,omitempty"`
+	Location             string          `json:"location,omitempty"`
+	IndigenousCommunity  string          `json:"indigenousCommunity,omitempty"`
+	JoinReason           string          `json:"joinReason,omitempty"`
+	FacebookUrl          string          `json:"facebookUrl,omitempty"`
+	LinkedinUrl          string          `json:"linkedinUrl,omitempty"`
+	TwitterUrl           string          `json:"twitterUrl,omitempty"`
+	InstagramUrl         string          `json:"instagramUrl,omitempty"`
+	GithubUrl            string          `json:"githubUrl,omitempty"`
+	GitlabUrl            string          `json:"gitlabUrl,omitempty"`
+	ProfileData          json.RawMessage `json:"profileData,omitempty"` // Optional registration data
 }
 
 // HandleInitMemberProfiles handles POST /api/v1/profiles/init-member.
@@ -389,6 +411,25 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// If no pre-uploaded avatar fileRef but base64 data is available, upload now.
+	// Use a separate context so the retry loop doesn't consume the request timeout.
+	if req.Avatar == "" && req.AvatarData != "" {
+		communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+		if communitySpaceID != "" {
+			client := h.spaceManager.GetClient()
+			if client != nil {
+				avatarCtx, avatarCancel := context.WithTimeout(context.Background(), 12*time.Second)
+				if fileRef, uploadErr := uploadBase64Avatar(avatarCtx, h.fileManager, communitySpaceID, client.GetSigningKey(), req.AvatarData, req.AvatarMimeType); uploadErr != nil {
+					fmt.Printf("Warning: failed to upload base64 member avatar: %v\n", uploadErr)
+				} else {
+					req.Avatar = fileRef
+					fmt.Printf("[InitMemberProfiles] Uploaded base64 avatar for %s, fileRef: %s\n", req.MemberAID, fileRef)
+				}
+				avatarCancel()
+			}
+		}
+	}
+
 	// Build CommunityProfile data
 	now := time.Now().UTC().Format(time.RFC3339)
 	communityProfileData := map[string]interface{}{
@@ -414,6 +455,36 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	}
 	if len(req.Interests) > 0 {
 		communityProfileData["participationInterests"] = req.Interests
+	}
+	if req.CustomInterests != "" {
+		communityProfileData["customInterests"] = req.CustomInterests
+	}
+	if req.Location != "" {
+		communityProfileData["location"] = req.Location
+	}
+	if req.IndigenousCommunity != "" {
+		communityProfileData["indigenousCommunity"] = req.IndigenousCommunity
+	}
+	if req.JoinReason != "" {
+		communityProfileData["joinReason"] = req.JoinReason
+	}
+	if req.FacebookUrl != "" {
+		communityProfileData["facebookUrl"] = req.FacebookUrl
+	}
+	if req.LinkedinUrl != "" {
+		communityProfileData["linkedinUrl"] = req.LinkedinUrl
+	}
+	if req.TwitterUrl != "" {
+		communityProfileData["twitterUrl"] = req.TwitterUrl
+	}
+	if req.InstagramUrl != "" {
+		communityProfileData["instagramUrl"] = req.InstagramUrl
+	}
+	if req.GithubUrl != "" {
+		communityProfileData["githubUrl"] = req.GithubUrl
+	}
+	if req.GitlabUrl != "" {
+		communityProfileData["gitlabUrl"] = req.GitlabUrl
 	}
 
 	dataBytes, err := json.Marshal(communityProfileData)
@@ -474,10 +545,14 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		"success":  true,
 		"objectId": objectID,
 		"headId":   headID,
+		"treeId":   objMgr.GetTreeIDForObject(objectID),
 		"spaceId":  roSpaceID,
 	}
 
-	// Also create SharedProfile in community writable space
+	// Also create SharedProfile in community writable space.
+	// This is BLOCKING — WelcomeOverlay waits for this profile to appear
+	// before allowing the member to continue. If it fails, the frontend
+	// can retry initMemberProfiles (CommunityProfile update is idempotent).
 	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
 	if communitySpaceID != "" {
 		now2 := time.Now().UTC().Format(time.RFC3339)
@@ -486,52 +561,70 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 			"displayName":            req.DisplayName,
 			"bio":                    req.Bio,
 			"avatar":                 req.Avatar,
+			"publicEmail":            req.Email,
+			"location":              req.Location,
+			"indigenousCommunity":   req.IndigenousCommunity,
+			"joinReason":            req.JoinReason,
+			"facebookUrl":           req.FacebookUrl,
+			"linkedinUrl":           req.LinkedinUrl,
+			"twitterUrl":            req.TwitterUrl,
+			"instagramUrl":          req.InstagramUrl,
+			"githubUrl":             req.GithubUrl,
+			"gitlabUrl":             req.GitlabUrl,
 			"participationInterests": req.Interests,
+			"customInterests":       req.CustomInterests,
 			"lastActiveAt":           now2,
 			"createdAt":              now2,
 			"updatedAt":              now2,
 			"typeVersion":            1,
 		}
-		if req.Email != "" {
-			sharedProfileData["publicEmail"] = req.Email
+
+		sharedDataBytes, err := json.Marshal(sharedProfileData)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to marshal SharedProfile data: %v", err),
+			})
+			return
 		}
 
-		sharedDataBytes, marshalErr := json.Marshal(sharedProfileData)
-		if marshalErr != nil {
-			fmt.Printf("Warning: failed to marshal SharedProfile data: %v\n", marshalErr)
-		} else {
-			communityKeys, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
-			if keyErr != nil {
-				fmt.Printf("Warning: failed to load community space keys for SharedProfile: %v\n", keyErr)
-			} else {
-				sharedOwnerKey := ""
-				if communityKeys.SigningKey != nil {
-					if pub, pubErr := communityKeys.SigningKey.GetPublic().Marshall(); pubErr == nil {
-						sharedOwnerKey = fmt.Sprintf("%x", pub)
-					}
-				}
+		communityKeys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to load community space keys for SharedProfile: %v", err),
+			})
+			return
+		}
 
-				sharedObjectID := fmt.Sprintf("SharedProfile-%s", req.MemberAID)
-				sharedPayload := &anysync.ObjectPayload{
-					ID:        sharedObjectID,
-					Type:      "SharedProfile",
-					OwnerKey:  sharedOwnerKey,
-					Data:      sharedDataBytes,
-					Timestamp: time.Now().Unix(),
-					Version:   1,
-				}
-
-				sharedHeadID, addErr := objMgr.AddObject(ctx, communitySpaceID, sharedPayload, communityKeys.SigningKey)
-				if addErr != nil {
-					fmt.Printf("Warning: failed to write SharedProfile to community space: %v\n", addErr)
-				} else {
-					result["sharedProfileObjectId"] = sharedObjectID
-					result["sharedProfileHeadId"] = sharedHeadID
-					result["sharedProfileSpaceId"] = communitySpaceID
-					fmt.Printf("[Profiles] Created SharedProfile %s in community space %s\n", sharedObjectID, communitySpaceID)
-				}
+		sharedOwnerKey := ""
+		if communityKeys.SigningKey != nil {
+			if pub, pubErr := communityKeys.SigningKey.GetPublic().Marshall(); pubErr == nil {
+				sharedOwnerKey = fmt.Sprintf("%x", pub)
 			}
 		}
+
+		sharedObjectID := fmt.Sprintf("SharedProfile-%s", req.MemberAID)
+		sharedPayload := &anysync.ObjectPayload{
+			ID:        sharedObjectID,
+			Type:      "SharedProfile",
+			OwnerKey:  sharedOwnerKey,
+			Data:      sharedDataBytes,
+			Timestamp: time.Now().Unix(),
+			Version:   1,
+		}
+
+		sharedHeadID, err := objMgr.AddObject(ctx, communitySpaceID, sharedPayload, communityKeys.SigningKey)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to write SharedProfile to community space: %v", err),
+			})
+			return
+		}
+
+		result["sharedProfileObjectId"] = sharedObjectID
+		result["sharedProfileHeadId"] = sharedHeadID
+		result["sharedProfileTreeId"] = objMgr.GetTreeIDForObject(sharedObjectID)
+		result["sharedProfileSpaceId"] = communitySpaceID
+		fmt.Printf("[Profiles] Created SharedProfile %s in community space %s\n", sharedObjectID, communitySpaceID)
 	}
 
 	writeJSON(w, http.StatusOK, result)
