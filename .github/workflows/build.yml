@@ -63,13 +63,7 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: 1.21
-          cache: false
-
-      # Backend set up
-      - name: Prepare backend modules
-        run: |
-          cd backend
-          go mod tidy
+          # cache: false
 
       # Build backend
       - name: Build backend
