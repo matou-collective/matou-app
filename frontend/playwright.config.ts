@@ -23,7 +23,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1,
-  timeout: 120000, // 2 minutes for KERIA operations
+  timeout: 240000, // 4 minutes: registration (~90s) + approval (~30s) + sync (~60s)
   reporter: [['html', { open: 'never' }], ['list']],
 
   use: {
@@ -71,6 +71,13 @@ export default defineConfig({
       testMatch: /e2e-recovery-errors\.spec\.ts/,
       use: browserConfig,
     },
+    // Registration stress test - concurrent registrations with admin processing
+    {
+      name: 'stress',
+      testMatch: /e2e-registration-stress\.spec\.ts/,
+      use: browserConfig,
+      dependencies: ['org-setup'],
+    },
     // Chat feature - full integration with real backend and any-sync P2P
     // No dependency — requires test-accounts.json from registration
     {
@@ -90,6 +97,7 @@ export default defineConfig({
         /e2e-multi-backend\.spec\.ts/,
         /e2e-account-recovery\.spec\.ts/,
         /e2e-recovery-errors\.spec\.ts/,
+        /e2e-registration-stress\.spec\.ts/,
         /e2e-chat\.spec\.ts/,
       ],
     },

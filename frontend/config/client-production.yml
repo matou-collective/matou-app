@@ -1,0 +1,33 @@
+id: 6985df54f8c0ac0017a936e6
+networkId: N8k5rQHecppiR47ovu6M67W7RgRDfy77KA1PkNnkMDQMnpke
+nodes:
+    - addresses:
+        - awa.matou.nz:1001
+      peerId: 12D3KooWJbAjvcjx4cpFsnNJ63gv4EPHiYLxAsJS14YBDn17onQe
+      types:
+        - tree
+    - addresses:
+        - awa.matou.nz:1002
+      peerId: 12D3KooWD5RmhnmDCw6NdhEF2qEB6poTVoBBNSZ1CJ1itJpp3nMy
+      types:
+        - tree
+    - addresses:
+        - awa.matou.nz:1003
+      peerId: 12D3KooWSeG2V3nrRVFHFvYbrVUMpdY9TsnoBSsbTGhcwJBFnmBk
+      types:
+        - tree
+    - addresses:
+        - awa.matou.nz:1004
+      peerId: 12D3KooWQVhNjDFdE1sEWzs6cHKq2K5C2h8RQpswvGnaF7aTeirS
+      types:
+        - coordinator
+    - addresses:
+        - awa.matou.nz:1005
+      peerId: 12D3KooWKSwcrmfARjSvYESbhW22tTTeapdBnUgRd7BpsPcdSx9j
+      types:
+        - file
+    - addresses:
+        - awa.matou.nz:1006
+      peerId: 12D3KooWHq7PoMvNF1Hakxr9jBH7Lhh84bPDafunYWzFFy5L9The
+      types:
+        - consensus

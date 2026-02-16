@@ -56,6 +56,15 @@ func NewFileManager(p pool.Pool, nc nodeconf.Service, objTree *ObjectTreeManager
 	}
 }
 
+// RefreshTransport updates the pool and nodeconf references after an SDK reinit.
+// The old pool is dead after Reinitialize() closes the app; this points the
+// FileManager (and its RemoteBlockStore) at the new live pool.
+func (m *FileManager) RefreshTransport(p pool.Pool, nc nodeconf.Service) {
+	m.pool = p
+	m.nodeConf = nc
+	m.blockStore.RefreshTransport(p, nc)
+}
+
 // AddFile uploads a file to the filenode and records metadata in the ObjectTree.
 //
 // Flow:

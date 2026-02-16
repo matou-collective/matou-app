@@ -77,13 +77,23 @@ async function restoreIdentity(
     } else if (result.error) {
       console.warn('[KERI Boot] Failed to restore session:', result.error);
       onboardingStore.setInitializationError(result.error);
-      await secureStorage.removeItem('matou_passcode');
+      // Only clear passcode for auth failures — not transient network errors
+      const isAuthError = result.error.includes('401') || result.error.includes('Unauthorized')
+        || result.error.includes('404') || result.error.includes('agent not found');
+      if (isAuthError) {
+        await secureStorage.removeItem('matou_passcode');
+      }
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error during restore';
     console.warn('[KERI Boot] Error restoring session:', err);
     onboardingStore.setInitializationError(errorMessage);
-    await secureStorage.removeItem('matou_passcode');
+    // Only clear passcode for auth failures — not transient errors (e.g. KERIA not yet ready)
+    const isAuthError = errorMessage.includes('401') || errorMessage.includes('Unauthorized')
+      || errorMessage.includes('404') || errorMessage.includes('agent not found');
+    if (isAuthError) {
+      await secureStorage.removeItem('matou_passcode');
+    }
   } finally {
     onboardingStore.setAppState('ready');
     identityStore.setInitialized();

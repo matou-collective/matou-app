@@ -76,7 +76,7 @@ export function usePreCreatedInvite() {
       // Add agent end role
       const agentId = inviteeClient.agent?.pre;
       if (agentId) {
-        const endRoleResult = await inviteeClient.identifiers().addEndRole(aidName, 'agent', agentId);
+        const endRoleResult = await inviteeClient.identifiers().addEndRole(inviteeAid.prefix, 'agent', agentId);
         const endRoleOp = await endRoleResult.op();
         await inviteeClient.operations().wait(endRoleOp, { signal: AbortSignal.timeout(30000) });
         console.log('[PreCreatedInvite] Agent end role added');
@@ -88,7 +88,7 @@ export function usePreCreatedInvite() {
       // Get invitee OOBI and resolve on admin's agent
       // OOBI resolution happens server-side (KERIA resolves via its Docker network),
       // so we pass the raw OOBI URL without hostname normalization.
-      const inviteeOobiResult = await inviteeClient.oobis().get(aidName, 'agent');
+      const inviteeOobiResult = await inviteeClient.oobis().get(inviteeAid.prefix, 'agent');
       const inviteeOobi = inviteeOobiResult.oobis?.[0] || inviteeOobiResult.oobi;
       if (!inviteeOobi) {
         throw new Error('Could not get invitee OOBI');
@@ -109,7 +109,7 @@ export function usePreCreatedInvite() {
       const adminAgentId = adminSignifyClient.agent?.pre;
       for (const aid of adminAids.aids) {
         try {
-          let oobiResult = await adminSignifyClient.oobis().get(aid.name, 'agent');
+          let oobiResult = await adminSignifyClient.oobis().get(aid.prefix, 'agent');
           let oobi = oobiResult.oobis?.[0] || oobiResult.oobi;
 
           // If no agent OOBI exists (e.g. group AID created without end role),
@@ -117,12 +117,12 @@ export function usePreCreatedInvite() {
           if (!oobi && adminAgentId) {
             console.log(`[PreCreatedInvite] Adding agent end role to "${aid.name}"...`);
             try {
-              const endRoleResult = await adminSignifyClient.identifiers().addEndRole(aid.name, 'agent', adminAgentId);
+              const endRoleResult = await adminSignifyClient.identifiers().addEndRole(aid.prefix, 'agent', adminAgentId);
               const endRoleOp = await endRoleResult.op();
               await adminSignifyClient.operations().wait(endRoleOp, { signal: AbortSignal.timeout(30000) });
               console.log(`[PreCreatedInvite] Agent end role added to "${aid.name}"`);
 
-              oobiResult = await adminSignifyClient.oobis().get(aid.name, 'agent');
+              oobiResult = await adminSignifyClient.oobis().get(aid.prefix, 'agent');
               oobi = oobiResult.oobis?.[0] || oobiResult.oobi;
             } catch (roleErr) {
               console.warn(`[PreCreatedInvite] Failed to add end role for ${aid.name}:`, roleErr);
@@ -216,10 +216,10 @@ export function usePreCreatedInvite() {
         (a: { prefix: string }) => a.prefix === orgAidPrefix
       );
       if (!orgAidEntry) throw new Error('Organization AID not found in admin identifiers');
-      const orgAidName = orgAidEntry.name;
+      const orgAidId = orgAidEntry.prefix;
 
       // Find the registry for the org AID
-      const registries = await adminSignifyClient.registries().list(orgAidName);
+      const registries = await adminSignifyClient.registries().list(orgAidId);
       if (registries.length === 0) throw new Error('No credential registry found for org');
       const registryId = registries[0].regk;
 
@@ -242,7 +242,7 @@ export function usePreCreatedInvite() {
       };
 
       const credResult = await adminClient.issueCredential(
-        orgAidName,
+        orgAidId,
         registryId,
         MEMBERSHIP_SCHEMA_SAID,
         inviteeAid.prefix,
@@ -259,7 +259,7 @@ export function usePreCreatedInvite() {
       progress.value = 'Syncing credential state...';
       for (const aid of adminAids.aids) {
         try {
-          const oobiResult = await adminSignifyClient.oobis().get(aid.name, 'agent');
+          const oobiResult = await adminSignifyClient.oobis().get(aid.prefix, 'agent');
           let oobi = oobiResult.oobis?.[0] || oobiResult.oobi;
           if (!oobi) {
             oobi = `${KERIA_DOCKER_URL}/oobi/${aid.prefix}`;

@@ -261,13 +261,13 @@ test.describe.serial('Organization Setup', () => {
       await expect(page.locator('h1')).toContainText('Welcome back', { timeout: TIMEOUT.short });
       console.log('[Test] Dashboard heading visible');
 
-      // Verify sidebar branding
-      await expect(page.getByText('Matou Community')).toBeVisible({ timeout: TIMEOUT.short });
+      // Verify sidebar branding (name may span multiple text nodes)
+      await expect(page.getByText('Matou').first()).toBeVisible({ timeout: TIMEOUT.short });
 
       // Verify stats cards rendered
-      await expect(page.getByText('Pending Registrations')).toBeVisible({ timeout: TIMEOUT.short });
-      await expect(page.getByText('Community Activity')).toBeVisible({ timeout: TIMEOUT.short });
-      await expect(page.getByText('New Members')).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByRole('heading', { name: 'Pending Registrations', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText('Community Activity').first()).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText('New Members').first()).toBeVisible({ timeout: TIMEOUT.short });
       console.log('[Test] Dashboard sections rendered');
 
       // Verify admin-specific section (Invite Member button)

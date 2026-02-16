@@ -66,7 +66,7 @@ export type ParticipationInterest = typeof PARTICIPATION_INTERESTS[number]['valu
 /**
  * Onboarding flow path
  */
-export type OnboardingPath = 'register' | 'recover' | 'setup' | 'claim' | 'returning' | null;
+export type OnboardingPath = 'register' | 'recover' | 'setup' | 'claim' | 'returning' | 'invite' | null;
 
 /**
  * User profile data
@@ -82,6 +82,8 @@ export interface ProfileData {
   linkedinUrl: string;
   twitterUrl: string;
   instagramUrl: string;
+  githubUrl: string;
+  gitlabUrl: string;
   avatar: File | null;
   avatarPreview: string | null; // Base64 or object URL for preview
   avatarFileRef: string | null; // Content-addressed fileRef from backend upload
@@ -129,6 +131,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     linkedinUrl: '',
     twitterUrl: '',
     instagramUrl: '',
+    githubUrl: '',
+    gitlabUrl: '',
     avatar: null,
     avatarPreview: null,
     avatarFileRef: null,
@@ -237,6 +241,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
       linkedinUrl: '',
       twitterUrl: '',
       instagramUrl: '',
+      githubUrl: '',
+      gitlabUrl: '',
       avatar: null,
       avatarPreview: null,
       avatarFileRef: null,

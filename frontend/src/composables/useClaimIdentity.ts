@@ -8,7 +8,7 @@ import { ref } from 'vue';
 import { useKERIClient, KERIClient } from 'src/lib/keri/client';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
-import { setBackendIdentity, createOrUpdateProfile } from 'src/lib/api/client';
+import { setBackendIdentity, createOrUpdateProfile, uploadFile } from 'src/lib/api/client';
 import { useIdentityStore } from 'stores/identity';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -72,7 +72,7 @@ export function useClaimIdentity() {
       const aid = aids[0];
       const client = keriClient.getSignifyClient();
       if (client) {
-        const habState = await client.identifiers().get(aid.name);
+        const habState = await client.identifiers().get(aid.prefix);
         const sn = parseInt(String(habState?.state?.s ?? '0'), 16);
         console.log('[ClaimIdentity:validate] AID key state s =', sn, 'raw =', habState?.state?.s);
         if (sn > 0) {
@@ -128,7 +128,7 @@ export function useClaimIdentity() {
         const aidName = profileName.toLowerCase().replace(/\s+/g, '-');
         if (aidName !== aid.name) {
           progress.value = 'Updating identity name...';
-          const updated = await client.identifiers().update(aid.name, { name: aidName });
+          const updated = await client.identifiers().update(aid.prefix, { name: aidName });
           console.log(`[ClaimIdentity] Renamed AID from "${aid.name}" to "${updated.name}"`);
           aid = updated;
         }
@@ -209,7 +209,7 @@ export function useClaimIdentity() {
           // retrieves ACDC/ISS/ANC data from the GRANT's cloned attachments.
           // Including embeds here would cause psr.parseOne() to fail looking
           // for path-labeled CESR attachments that aren't present.
-          const hab = await client.identifiers().get(aid.name);
+          const hab = await client.identifiers().get(aid.prefix);
           const [admit, sigs, atc] = await client.exchanges().createExchangeMessage(
             hab,
             '/ipex/admit',
@@ -219,7 +219,7 @@ export function useClaimIdentity() {
             undefined,
             grant.a.d,
           );
-          await client.ipex().submitAdmit(aid.name, admit, sigs, atc, [grantSender]);
+          await client.ipex().submitAdmit(aid.prefix, admit, sigs, atc, [grantSender]);
           await client.notifications().mark(grant.i);
           console.log(`[ClaimIdentity] Admitted grant ${grant.a.d}`);
         } catch (admitErr) {
@@ -254,13 +254,13 @@ export function useClaimIdentity() {
       step.value = 'rotating';
       progress.value = 'Rotating keys to take ownership...';
 
-      await keriClient.rotateKeys(aid.name);
+      await keriClient.rotateKeys(aid.prefix);
       console.log('[ClaimIdentity] AID keys rotated');
 
       // Persist session (same passcode — no agent rotation)
       await secureStorage.setItem('matou_passcode', passcode);
 
-      // Step 4: Set backend identity (derives peer key, restarts SDK, creates private space)
+      // Step 4: Set up account (backend identity, space join, profiles)
       step.value = 'securing';
       progress.value = 'Configuring backend identity...';
 
@@ -291,6 +291,7 @@ export function useClaimIdentity() {
       identityStore.setCurrentAID({ name: aid.name, prefix: aid.prefix, state: aid.state ?? null });
 
       // Join community + readonly spaces (required — fail if missing or unsuccessful)
+      progress.value = 'Joining community space...';
       if (!spaceInvite) {
         throw new Error('No community space invite found in credential grant');
       }
@@ -304,6 +305,31 @@ export function useClaimIdentity() {
         throw new Error('Failed to join community and readonly spaces');
       }
       console.log('[ClaimIdentity] Joined community space');
+
+      // Upload avatar if we have base64 data but no fileRef
+      // (the original upload during onboarding failed because community space didn't exist)
+      if (!onboardingStore.profile.avatarFileRef && onboardingStore.profile.avatarData) {
+        try {
+          progress.value = 'Uploading avatar...';
+          const base64Data = onboardingStore.profile.avatarData;
+          const mimeType = onboardingStore.profile.avatarMimeType || 'image/png';
+          // Convert base64 to File for uploadFile()
+          const byteChars = atob(base64Data);
+          const byteArray = new Uint8Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) {
+            byteArray[i] = byteChars.charCodeAt(i);
+          }
+          const blob = new Blob([byteArray], { type: mimeType });
+          const avatarFile = new File([blob], 'avatar', { type: mimeType });
+          const uploadResult = await uploadFile(avatarFile);
+          if (uploadResult.fileRef) {
+            onboardingStore.updateProfile({ avatarFileRef: uploadResult.fileRef });
+            console.log('[ClaimIdentity] Avatar uploaded after space join, fileRef:', uploadResult.fileRef);
+          }
+        } catch (avatarErr) {
+          console.warn('[ClaimIdentity] Avatar upload after space join failed:', avatarErr);
+        }
+      }
 
       // Populate identity info for the dashboard
       onboardingStore.setUserAID(aid.prefix);
@@ -339,6 +365,16 @@ export function useClaimIdentity() {
           displayName,
           bio: onboardingStore.profile.bio || '',
           avatar: onboardingStore.profile.avatarFileRef || '',
+          publicEmail: onboardingStore.profile.email || '',
+          location: onboardingStore.profile.location || '',
+          indigenousCommunity: onboardingStore.profile.indigenousCommunity || '',
+          joinReason: onboardingStore.profile.joinReason || '',
+          facebookUrl: onboardingStore.profile.facebookUrl || '',
+          linkedinUrl: onboardingStore.profile.linkedinUrl || '',
+          twitterUrl: onboardingStore.profile.twitterUrl || '',
+          instagramUrl: onboardingStore.profile.instagramUrl || '',
+          githubUrl: onboardingStore.profile.githubUrl || '',
+          gitlabUrl: onboardingStore.profile.gitlabUrl || '',
           participationInterests: onboardingStore.profile.participationInterests || [],
           customInterests: onboardingStore.profile.customInterests || '',
           lastActiveAt: now,

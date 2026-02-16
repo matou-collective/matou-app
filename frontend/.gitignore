@@ -2,6 +2,7 @@
 .thumbs.db
 node_modules
 
+
 # Quasar core related directories
 .quasar
 /dist
@@ -37,8 +38,11 @@ yarn-error.log*
 # local env files
 .env.local
 .env.*.local
+.env.production
+
 
 # Production env (contains actual production URLs)
+.env
 .env.production
 
 # typescript
@@ -51,3 +55,6 @@ yarn-error.log*
 /playwright/.cache/
 tests/e2e/results/
 tests/e2e/screenshots/
+
+# certs
+certs/

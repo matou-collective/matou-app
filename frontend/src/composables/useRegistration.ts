@@ -7,7 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
 import { fetchOrgConfig } from 'src/api/config';
-import { setBackendIdentity, createOrUpdateProfile, sendRegistrationSubmittedNotification } from 'src/lib/api/client';
+import { setBackendIdentity, sendRegistrationSubmittedNotification } from 'src/lib/api/client';
 import { useAppStore } from 'stores/app';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -22,6 +22,8 @@ export interface RegistrationData {
   linkedinUrl?: string;
   twitterUrl?: string;
   instagramUrl?: string;
+  githubUrl?: string;
+  gitlabUrl?: string;
   interests: string[];
   customInterests?: string;
   avatarFileRef?: string;
@@ -86,14 +88,17 @@ export function useRegistration() {
       console.log(`[Registration] Found ${admins.length} admin(s) to notify`);
       console.log('[Registration] Admin details:', JSON.stringify(admins, null, 2));
 
-      // Step 2: Get sender's OOBI to include in registration
+      // Step 2: Get sender's OOBI to include in registration (required for credential delivery)
       let senderOOBI = '';
       try {
-        senderOOBI = await keriClient.getOOBI(currentAID.name);
+        senderOOBI = await keriClient.getOOBI(currentAID.prefix);
         console.log('[Registration] Got sender OOBI:', senderOOBI);
       } catch (oobiErr) {
-        console.warn('[Registration] Could not get sender OOBI:', oobiErr);
-        // Continue without OOBI - admin may not be able to contact back
+        console.error('[Registration] Could not get sender OOBI:', oobiErr);
+        throw new Error('Could not generate your OOBI — the admin needs this to deliver your credential. Please ensure KERIA is running and try again.');
+      }
+      if (!senderOOBI) {
+        throw new Error('Generated OOBI is empty — cannot register without a valid OOBI for credential delivery.');
       }
 
       // Step 3: Resolve org OOBI (required for credential delivery)
@@ -111,7 +116,7 @@ export function useRegistration() {
       // Uses both custom EXN (for our patch) and IPEX apply (native KERIA support)
       console.log('[Registration] Sending registration to admins...');
       const result = await keriClient.sendRegistrationToAdmins(
-        currentAID.name,
+        currentAID.prefix,
         admins.map(a => ({ aid: a.aid, oobi: a.oobi })),
         {
           name: profile.name,
@@ -124,6 +129,8 @@ export function useRegistration() {
           linkedinUrl: profile.linkedinUrl,
           twitterUrl: profile.twitterUrl,
           instagramUrl: profile.instagramUrl,
+          githubUrl: profile.githubUrl,
+          gitlabUrl: profile.gitlabUrl,
           interests: profile.interests,
           customInterests: profile.customInterests,
           avatarFileRef: profile.avatarFileRef,
@@ -229,7 +236,7 @@ export function useRegistration() {
     try {
       // Admin OOBI was already resolved during registration submission
       const result = await keriClient.sendEXN(
-        currentAID.name,
+        currentAID.prefix,
         adminAid,
         '/matou/registration/message_reply',
         {
@@ -255,74 +262,6 @@ export function useRegistration() {
   }
 
   /**
-   * Create user profiles after successfully joining the community.
-   * Called by the frontend after HandleJoinCommunity completes.
-   *
-   * @param credentialSAID - The membership credential SAID
-   * @param registrationData - Profile data from registration form
-   * @param avatarFileRef - Optional avatar file ref from upload
-   */
-  async function createProfilesAfterJoin(
-    credentialSAID: string,
-    registrationData?: {
-      name?: string;
-      bio?: string;
-      location?: string;
-      joinReason?: string;
-      indigenousCommunity?: string;
-      facebookUrl?: string;
-      linkedinUrl?: string;
-      twitterUrl?: string;
-      instagramUrl?: string;
-      interests?: string[];
-      customInterests?: string;
-    },
-    avatarFileRef?: string,
-  ): Promise<void> {
-    const currentAID = identityStore.currentAID;
-    if (!currentAID) return;
-
-    // Create PrivateProfile in personal space
-    try {
-      await createOrUpdateProfile('PrivateProfile', {
-        membershipCredentialSAID: credentialSAID,
-        privacySettings: { allowEndorsements: true, allowDirectMessages: true },
-        appPreferences: { mode: 'light', language: 'es' },
-      });
-      console.log('[Registration] PrivateProfile created');
-    } catch (err) {
-      console.warn('[Registration] Failed to create PrivateProfile:', err);
-    }
-
-    // Create SharedProfile in community space
-    try {
-      const now = new Date().toISOString();
-      await createOrUpdateProfile('SharedProfile', {
-        aid: currentAID.prefix,
-        displayName: registrationData?.name || onboardingStore.profile.name || 'Member',
-        bio: registrationData?.bio || onboardingStore.profile.bio || '',
-        location: registrationData?.location || onboardingStore.profile.location || '',
-        joinReason: registrationData?.joinReason || onboardingStore.profile.joinReason || '',
-        indigenousCommunity: registrationData?.indigenousCommunity || onboardingStore.profile.indigenousCommunity || '',
-        facebookUrl: registrationData?.facebookUrl || onboardingStore.profile.facebookUrl || '',
-        linkedinUrl: registrationData?.linkedinUrl || onboardingStore.profile.linkedinUrl || '',
-        twitterUrl: registrationData?.twitterUrl || onboardingStore.profile.twitterUrl || '',
-        instagramUrl: registrationData?.instagramUrl || onboardingStore.profile.instagramUrl || '',
-        avatar: avatarFileRef || '',
-        participationInterests: registrationData?.interests || onboardingStore.profile.participationInterests || [],
-        customInterests: registrationData?.customInterests || onboardingStore.profile.customInterests || '',
-        lastActiveAt: now,
-        createdAt: now,
-        updatedAt: now,
-        typeVersion: 1,
-      });
-      console.log('[Registration] SharedProfile created');
-    } catch (err) {
-      console.warn('[Registration] Failed to create SharedProfile:', err);
-    }
-  }
-
-  /**
    * Reset registration state
    */
   function reset() {
@@ -342,7 +281,6 @@ export function useRegistration() {
     // Actions
     submitRegistration,
     sendMessageToAdmin,
-    createProfilesAfterJoin,
     reset,
   };
 }

@@ -29,7 +29,7 @@
 import { computed } from 'vue';
 
 interface Props {
-  type?: 'text' | 'email' | 'password' | 'number' | 'tel';
+  type?: 'text' | 'email' | 'password' | 'number' | 'tel' | 'url';
   placeholder?: string;
   disabled?: boolean;
   error?: boolean;

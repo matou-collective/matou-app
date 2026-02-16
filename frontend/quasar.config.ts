@@ -119,9 +119,12 @@ export default configure(() => {
           { from: 'src-electron/icons/', to: 'icons/' },
         ],
         mac: {
-          target: 'zip',
-          identity: null, // Skip code signing (unsigned build)
-          icon: 'src-electron/icons/icon.png',
+          target: ['dmg', 'zip'],
+          hardenedRuntime: true,
+          gatekeeperAssess: false,
+          entitlements: 'build/entitlements.mac.plist',
+          entitlementsInherit: 'build/entitlements.mac.plist',
+          icon: 'src-electron/icons/icon.png'
         },
         linux: {
           target: 'AppImage',

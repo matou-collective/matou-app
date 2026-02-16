@@ -105,6 +105,10 @@ The backend and frontend connect to infrastructure entirely over the network. To
 1. **Backend**: Edit `backend/config/client.yml` to replace `127.0.0.1` addresses with the remote server's address
 2. **Frontend**: Set `VITE_KERIA_ADMIN_URL`, `VITE_KERIA_BOOT_URL`, `VITE_KERIA_CESR_URL` in `frontend/.env` to point to the remote server
 
+## Deployment
+
+See [docs/deployment.md](docs/deployment.md) for instructions on building and releasing the desktop app for Linux, macOS, and Windows.
+
 ## Environment Variables
 
 | Variable | Description | Default |
