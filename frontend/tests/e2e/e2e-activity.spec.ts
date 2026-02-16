@@ -96,8 +96,8 @@ test.describe.serial('Activity Page', () => {
     // Empty state message
     await expect(page.getByText('No upcoming events')).toBeVisible({ timeout: TIMEOUT.short });
 
-    // Create Notice button visible for steward
-    await expect(page.locator('.create-notice-btn')).toBeVisible({ timeout: TIMEOUT.short });
+    // Create Notice button visible for steward (requires async credential check)
+    await expect(page.locator('.create-notice-btn')).toBeVisible({ timeout: TIMEOUT.medium });
   });
 
   // ---------------------------------------------------------------

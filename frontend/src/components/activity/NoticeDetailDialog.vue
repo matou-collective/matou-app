@@ -52,6 +52,7 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted } from 'vue';
 import { X, Calendar, MapPin, User, Clock } from 'lucide-vue-next';
 import type { Notice } from 'src/lib/api/client';
 import { useActivityStore } from 'stores/activity';
@@ -64,7 +65,11 @@ const props = defineProps<{ notice: Notice }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const activityStore = useActivityStore();
-const { isSteward } = useAdminAccess();
+const { isSteward, checkAdminStatus } = useAdminAccess();
+
+onMounted(() => {
+  checkAdminStatus();
+});
 
 function formatDate(dateStr: string): string {
   try {

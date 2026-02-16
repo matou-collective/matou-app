@@ -108,13 +108,14 @@ import CreateNoticeDialog from 'src/components/activity/CreateNoticeDialog.vue';
 import NoticeDetailDialog from 'src/components/activity/NoticeDetailDialog.vue';
 
 const activityStore = useActivityStore();
-const { isSteward } = useAdminAccess();
+const { isSteward, checkAdminStatus } = useAdminAccess();
 
 const activeTab = ref<'upcoming' | 'updates' | 'past' | 'drafts'>('upcoming');
 const showCreateDialog = ref(false);
 const selectedNotice = ref<Notice | null>(null);
 
-onMounted(() => {
+onMounted(async () => {
+  await checkAdminStatus();
   activityStore.refreshAll();
 });
 </script>
