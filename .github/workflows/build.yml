@@ -13,7 +13,26 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+        - os: macos-15-intel
+          platform: mac
+          arch: x64
+          make_target: build-darwin-amd64
+
+        - os: macos-latest
+          platform: mac
+          arch: arm64
+          make_target: build-darwin-arm64
+
+        - os: ubuntu-latest
+          platform: linux
+          arch: amd64
+          make_target: build-linux-amd64
+
+        - os: windows-latest
+          platform: windows
+          arch: amd64
+          make_target: build-windows-amd64
 
     steps:
       # Checkout code
@@ -34,20 +53,6 @@ jobs:
         shell: bash
         run: |
           echo "VERSION=$(node -p "require('./frontend/package.json').version")" >> $GITHUB_ENV
-
-      # Platform name
-      - name: Set platform name
-        id: platform
-        shell: bash {0}
-        run: |
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            echo "PLATFORM=linux" >> $GITHUB_ENV
-          elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            echo "PLATFORM=mac" >> $GITHUB_ENV
-          elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            echo "PLATFORM=windows" >> $GITHUB_ENV
-          fi
-
 
       # Install frontend dependencies
       - name: Install frontend dependencies
@@ -77,41 +82,31 @@ jobs:
         shell: bash {0}
         run: |
           cd backend
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            make build-linux-amd64
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            make build-darwin-amd64 # MacOS Intel
-            make build-darwin-arm64 # MacOS Apple Silicone
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            make build-windows-amd64
-          fi
-
+          make ${{ matrix.make_target }}
 
       # Build Electron app
       - name: Build Electron App
         shell: bash {0}
         run: |
           cd frontend
-          # Linux
-          if [ "$RUNNER_OS" == "Linux" ]; then
+          
+          if [[ "${{ matrix.platform }}" == "mac" ]]; then
+            npx quasar build -m electron --mac --${{ matrix.arch }}
+          else
             npx quasar build -m electron
-          # macOS
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            npx quasar build -m electron --mac --x64 # MacOS Intel
-            npx quasar build -m electron --mac --arm64 # MacOS Apple Silicone
-          # Windows
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            npx quasar build -m electron --win
           fi
 
+
+
       # Upload artifacts
-      - name: Upload ${{ env.PLATFORM }} artifacts
+      - name: Upload ${{ matrix.platform }} artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: matou-${{ env.VERSION }}-${{ env.PLATFORM }}
+          
+          name: matou-${{ env.VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            frontend/dist/electron/Packaged/matou-*.AppImage
-            frontend/dist/electron/Packaged/matou-*.exe
-            frontend/dist/electron/Packaged/matou-*.dmg
-            # todo add other files needed
+            frontend/dist/electron/Packaged/**
+            # frontend/dist/electron/Packaged/**/*.dmg
+            # frontend/dist/electron/Packaged/**/*.exe
+            # frontend/dist/electron/Packaged/**/*.AppImage
           if-no-files-found: ignore
