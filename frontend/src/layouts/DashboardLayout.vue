@@ -19,7 +19,7 @@
           <Home class="nav-icon" />
           <span>Home</span>
         </button>
-        <button class="nav-item disabled" disabled>
+        <button class="nav-item" :class="{ active: route.name === 'wallet' }" @click="router.push({ name: 'wallet' })">
           <Wallet class="nav-icon" />
           <span>Wallet</span>
         </button>
