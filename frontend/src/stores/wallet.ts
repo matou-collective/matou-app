@@ -8,6 +8,8 @@ import { useIdentityStore } from 'stores/identity';
 export interface WalletCredential {
   said: string;
   schemaSaid: string;
+  schemaTitle: string;
+  schemaDescription: string;
   issuerAid: string;
   issueeAid: string;
   communityName: string;
@@ -91,14 +93,21 @@ export const useWalletStore = defineStore('wallet', () => {
 
   // --- Actions ---
 
-  function mapRawCredential(cred: Record<string, unknown>): WalletCredential {
+  function mapRawCredential(
+    cred: Record<string, unknown>,
+    schemaMap: Map<string, { title: string; description: string }>,
+  ): WalletCredential {
     const sad = cred.sad as Record<string, unknown> | undefined;
     const attrs = (sad?.a || {}) as Record<string, unknown>;
     const statusObj = cred.status as Record<string, unknown> | undefined;
+    const schemaSaid = (sad?.s as string) || '';
+    const schema = schemaMap.get(schemaSaid);
 
     return {
       said: (sad?.d as string) || '',
-      schemaSaid: (sad?.s as string) || '',
+      schemaSaid,
+      schemaTitle: schema?.title || '',
+      schemaDescription: schema?.description || '',
       issuerAid: (sad?.i as string) || '',
       issueeAid: (attrs.i as string) || identityStore.currentAID?.prefix || '',
       communityName: (attrs.communityName as string) || '',
@@ -108,6 +117,27 @@ export const useWalletStore = defineStore('wallet', () => {
       issuedAt: (attrs.dt as string) || '',
       status: (statusObj?.s as string) || 'unknown',
     };
+  }
+
+  async function fetchSchemas(
+    client: ReturnType<typeof keriClient.getSignifyClient> & object,
+    schemaSaids: string[],
+  ): Promise<Map<string, { title: string; description: string }>> {
+    const schemaMap = new Map<string, { title: string; description: string }>();
+    await Promise.all(
+      schemaSaids.map(async (said) => {
+        try {
+          const schema = await (client as any).schemas().get(said);
+          schemaMap.set(said, {
+            title: schema?.title || '',
+            description: schema?.description || '',
+          });
+        } catch (err) {
+          console.warn(`[WalletStore] Failed to fetch schema ${said}:`, err);
+        }
+      }),
+    );
+    return schemaMap;
   }
 
   async function loadCredentials(): Promise<void> {
@@ -123,8 +153,19 @@ export const useWalletStore = defineStore('wallet', () => {
     try {
       const rawCredentials = await client.credentials().list();
       console.log('[WalletStore] Loaded credentials:', rawCredentials.length);
+
+      // Collect unique schema SAIDs and fetch their metadata
+      const schemaSaids = [
+        ...new Set(
+          rawCredentials
+            .map((c: any) => c.sad?.s as string)
+            .filter(Boolean),
+        ),
+      ];
+      const schemaMap = await fetchSchemas(client, schemaSaids);
+
       credentials.value = rawCredentials.map((c: unknown) =>
-        mapRawCredential(c as Record<string, unknown>)
+        mapRawCredential(c as Record<string, unknown>, schemaMap)
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

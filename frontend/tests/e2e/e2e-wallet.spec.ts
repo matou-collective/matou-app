@@ -15,8 +15,8 @@ import {
  * E2E: Wallet Page
  *
  * Tests wallet navigation, credential card/graph views, governance and token
- * tabs, and receive dialog. Uses the admin user who already has a self-issued
- * membership credential from org setup — avoids the ~4 min registration overhead.
+ * tabs. Uses the admin user who already has a self-issued membership credential
+ * from org setup — avoids the ~4 min registration overhead.
  *
  * Admin uses the default backend on port 9080 (no routing needed), matching
  * the admin pattern in registration and invitation tests.
@@ -87,7 +87,7 @@ test.describe.serial('Wallet Page', () => {
     await walletNavItem.click();
 
     await expect(page).toHaveURL(/#\/dashboard\/wallet/, { timeout: TIMEOUT.short });
-    await expect(page.locator('.header-title')).toContainText('Wallet', { timeout: TIMEOUT.short });
+    await expect(page.locator('.wallet-sidebar-title')).toContainText('Wallet', { timeout: TIMEOUT.short });
     await expect(walletNavItem).toHaveClass(/active/);
   });
 
@@ -96,7 +96,7 @@ test.describe.serial('Wallet Page', () => {
   // ---------------------------------------------------------------
   test('credentials tab shows card view', async () => {
     // Credentials tab should be active by default
-    const credTab = page.locator('.tab-btn', { hasText: 'Credentials' });
+    const credTab = page.locator('.wallet-nav-item', { hasText: 'Credentials' });
     await expect(credTab).toHaveClass(/active/);
 
     // Loading state should resolve
@@ -106,8 +106,8 @@ test.describe.serial('Wallet Page', () => {
     const card = page.locator('.credential-card').first();
     await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
 
-    // Card shows role, status badge, and date
-    await expect(card.locator('.card-role')).toBeVisible();
+    // Card shows title, status badge, and date
+    await expect(card.locator('.card-title')).toBeVisible();
     await expect(card.locator('.status-badge')).toBeVisible();
     await expect(card.locator('.card-date')).toBeVisible();
   });
@@ -122,11 +122,12 @@ test.describe.serial('Wallet Page', () => {
     const graphView = page.locator('.graph-view');
     await expect(graphView).toBeVisible({ timeout: TIMEOUT.short });
 
-    // Center node "You" and at least one issuer node
+    // Center node (user avatar or "You"), issuer node, and credential edge icon
     const centerNode = page.locator('.center-node');
     await expect(centerNode).toBeVisible();
-    await expect(centerNode.locator('.node-circle.you')).toContainText('You');
+    await expect(centerNode.locator('.node-circle.you')).toBeVisible();
     await expect(page.locator('.issuer-node').first()).toBeVisible();
+    await expect(page.locator('.edge-cred-icon').first()).toBeVisible();
 
     // Toggle back to cards
     await page.locator('.toggle-btn', { hasText: 'Cards' }).click();
@@ -168,8 +169,8 @@ test.describe.serial('Wallet Page', () => {
     await page.locator('.toggle-btn', { hasText: 'Graph' }).click();
     await expect(page.locator('.graph-view')).toBeVisible({ timeout: TIMEOUT.short });
 
-    // Click an issuer node to open dialog
-    await page.locator('.issuer-node').first().click();
+    // Click a credential icon on the edge to open dialog
+    await page.locator('.edge-cred-icon').first().click();
 
     const overlay = page.locator('.credential-overlay');
     await expect(overlay).toBeVisible({ timeout: TIMEOUT.short });
@@ -180,95 +181,61 @@ test.describe.serial('Wallet Page', () => {
   });
 
   // ---------------------------------------------------------------
-  // Test 6: Governance tab empty states
+  // Test 6: Governance tab
   // ---------------------------------------------------------------
-  test('governance tab empty states', async () => {
-    await page.locator('.tab-btn', { hasText: 'Governance' }).click();
-    await expect(page.locator('.tab-btn', { hasText: 'Governance' })).toHaveClass(/active/);
+  test('governance tab', async () => {
+    await page.locator('.wallet-nav-item', { hasText: 'Governance' }).click();
+    await expect(page.locator('.wallet-nav-item', { hasText: 'Governance' })).toHaveClass(/active/);
 
     // GOV balance card
     await expect(page.locator('.balance-card .balance-label')).toContainText(
-      'Governance Balance', { timeout: TIMEOUT.short },
+      'Balance', { timeout: TIMEOUT.short },
     );
 
     // Empty state placeholders
-    await expect(page.getByText('No vesting schedule')).toBeVisible({ timeout: TIMEOUT.short });
-    await expect(page.getByText('votes available')).toBeVisible();
+    await expect(page.getByText('votes available')).toBeVisible({ timeout: TIMEOUT.short });
     await expect(page.getByText('No voting history yet')).toBeVisible();
-    await expect(page.getByText('No achievements yet')).toBeVisible();
+    await expect(page.getByText('No proposals yet')).toBeVisible();
   });
 
   // ---------------------------------------------------------------
-  // Test 7: Tokens tab empty states
+  // Test 7: Tokens tab
   // ---------------------------------------------------------------
-  test('tokens tab empty states', async () => {
-    await page.locator('.tab-btn', { hasText: 'Tokens' }).click();
-    await expect(page.locator('.tab-btn', { hasText: 'Tokens' })).toHaveClass(/active/);
+  test('tokens tab', async () => {
+    await page.locator('.wallet-nav-item', { hasText: 'Transaction' }).click();
+    await expect(page.locator('.wallet-nav-item', { hasText: 'Transaction' })).toHaveClass(/active/);
 
     // UTIL balance card
     await expect(page.locator('.balance-card .balance-label')).toContainText(
-      'Utility Balance', { timeout: TIMEOUT.short },
+      'Balance', { timeout: TIMEOUT.short },
     );
 
-    // Send disabled (0 balance), Receive and QR visible
+    // Send disabled (0 balance), Receive and QR disabled
     const sendBtn = page.locator('.action-btn.send-btn');
     await expect(sendBtn).toBeVisible({ timeout: TIMEOUT.short });
     await expect(sendBtn).toBeDisabled();
-    await expect(page.locator('.action-btn.receive-btn')).toBeVisible();
-    await expect(page.locator('.action-btn.qr-btn')).toBeVisible();
+    await expect(page.locator('.action-btn.receive-btn')).toBeDisabled();
+    await expect(page.locator('.action-btn.qr-btn')).toBeDisabled();
 
     // No transactions
     await expect(page.getByText('No transactions yet')).toBeVisible({ timeout: TIMEOUT.short });
   });
 
   // ---------------------------------------------------------------
-  // Test 8: Receive dialog shows AID
-  // ---------------------------------------------------------------
-  test('receive dialog shows AID', async () => {
-    await page.locator('.action-btn.receive-btn').click();
-
-    const dialog = page.locator('.dialog-overlay');
-    await expect(dialog).toBeVisible({ timeout: TIMEOUT.short });
-
-    // AID box should contain a real AID (not the "—" fallback)
-    const aidText = page.locator('.aid-text');
-    await expect(aidText).toBeVisible();
-    const aidValue = await aidText.textContent();
-    expect(aidValue).toBeTruthy();
-    expect(aidValue).not.toBe('—');
-
-    // Copy button visible
-    await expect(page.locator('.aid-box .copy-btn')).toBeVisible();
-
-    // Close dialog
-    await dialog.locator('.close-btn').click();
-    await expect(dialog).not.toBeVisible({ timeout: TIMEOUT.short });
-  });
-
-  // ---------------------------------------------------------------
-  // Test 9: Back button to dashboard
-  // ---------------------------------------------------------------
-  test('back button navigates to dashboard', async () => {
-    await page.locator('.back-btn').click();
-
-    await expect(page).toHaveURL(/#\/dashboard$/, { timeout: TIMEOUT.short });
-
-    // Home should be the active sidebar item
-    await expect(page.locator('.nav-item', { hasText: 'Home' })).toHaveClass(/active/);
-  });
-
-  // ---------------------------------------------------------------
-  // Test 10: Direct URL navigation
+  // Test 8: Direct URL navigation
   // ---------------------------------------------------------------
   test('direct URL navigation to wallet', async () => {
     await page.goto(`${FRONTEND_URL}/#/dashboard/wallet`);
 
-    await expect(page.locator('.header-title')).toContainText('Wallet', { timeout: TIMEOUT.short });
+    // Wallet page renders with sidebar
+    await expect(page.locator('.wallet-sidebar-title')).toContainText('Wallet', { timeout: TIMEOUT.short });
 
-    // Credentials tab active by default
-    await expect(page.locator('.tab-btn', { hasText: 'Credentials' })).toHaveClass(/active/);
-
-    // Wallet active in sidebar
+    // Wallet active in main sidebar
     await expect(page.locator('.nav-item', { hasText: 'Wallet' })).toHaveClass(/active/);
+
+    // All three wallet nav items visible
+    await expect(page.locator('.wallet-nav-item', { hasText: 'Credentials' })).toBeVisible();
+    await expect(page.locator('.wallet-nav-item', { hasText: 'Governance' })).toBeVisible();
+    await expect(page.locator('.wallet-nav-item', { hasText: 'Transaction' })).toBeVisible();
   });
 });

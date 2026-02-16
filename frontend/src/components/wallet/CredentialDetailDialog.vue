@@ -4,12 +4,13 @@
       <!-- Header -->
       <div class="dialog-header">
         <div class="header-left">
-          <div class="cred-icon">
-            <ShieldCheck :size="22" />
+          <div class="cred-icon" :class="{ 'matou-icon': isMatouCredential }">
+            <img v-if="isMatouCredential" src="../../assets/images/matou-bird-logo-blue.svg" alt="Matou" class="matou-logo" />
+            <ShieldCheck v-else :size="22" />
           </div>
           <div>
-            <h2 class="cred-title">{{ credential.role || 'Credential' }}</h2>
-            <span class="status-badge" :class="statusClass">{{ credential.status }}</span>
+            <h2 class="cred-title">{{ credential.schemaTitle || credential.role || 'Credential' }}</h2>
+            <span class="status-badge" :class="statusClass">{{ statusLabel }}</span>
           </div>
         </div>
         <button class="close-btn" @click="$emit('close')">&times;</button>
@@ -17,6 +18,11 @@
 
       <!-- Body -->
       <div class="dialog-body">
+        <!-- Schema description -->
+        <p v-if="credential.schemaDescription" class="schema-description">
+          {{ credential.schemaDescription }}
+        </p>
+
         <!-- Attribute rows -->
         <div class="attr-row" v-if="credential.communityName">
           <span class="attr-label">Community</span>
@@ -29,10 +35,10 @@
         </div>
 
         <div class="attr-row">
-          <span class="attr-label">Verification Status</span>
+          <span class="attr-label">Status</span>
           <span class="attr-value">
             <span class="status-dot" :class="statusClass"></span>
-            {{ credential.status }}
+            {{ statusLabel }}
           </span>
         </div>
 
@@ -114,11 +120,22 @@ defineEmits<{
 
 const copiedField = ref<string | null>(null);
 
+const isMatouCredential = computed(() => {
+  return (props.credential.schemaTitle || '').toLowerCase().includes('matou');
+});
+
 const statusClass = computed(() => {
   const s = props.credential.status.toLowerCase();
   if (s === 'issued' || s === 'valid' || s === '0') return 'status-active';
   if (s === 'revoked' || s === '1') return 'status-revoked';
   return 'status-pending';
+});
+
+const statusLabel = computed(() => {
+  const s = props.credential.status.toLowerCase();
+  if (s === '0' || s === 'issued' || s === 'valid') return 'Active';
+  if (s === '1' || s === 'revoked') return 'Revoked';
+  return props.credential.status || 'Pending';
 });
 
 function formatDate(dateStr: string): string {
@@ -199,6 +216,16 @@ async function copy(text: string, field = 'said') {
   flex-shrink: 0;
 }
 
+.cred-icon.matou-icon {
+  background: white;
+  border: 1px solid var(--matou-border, #e5e7eb);
+}
+
+.matou-logo {
+  width: 26px;
+  height: 26px;
+}
+
 .cred-title {
   font-size: 1.0625rem;
   font-weight: 600;
@@ -221,6 +248,13 @@ async function copy(text: string, field = 'said') {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.schema-description {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--matou-muted-foreground, #6b7280);
+  line-height: 1.5;
 }
 
 .attr-row {

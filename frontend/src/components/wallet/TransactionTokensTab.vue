@@ -2,7 +2,7 @@
   <div class="tokens-tab">
     <!-- Balance card -->
     <div class="balance-card">
-      <div class="balance-label">Utility Balance</div>
+      <div class="balance-label">Balance</div>
       <div class="balance-amount">
         {{ walletStore.utilBalance.balance.toFixed(walletStore.utilBalance.decimals) }}
         <span class="balance-symbol">{{ walletStore.utilBalance.symbol }}</span>
@@ -21,11 +21,11 @@
         <Send :size="18" />
         <span>Send</span>
       </button>
-      <button class="action-btn receive-btn" @click="showReceive = true">
+      <button class="action-btn receive-btn" @click="showReceive = true" :disabled="true">
         <Download :size="18" />
         <span>Receive</span>
       </button>
-      <button class="action-btn qr-btn" @click="showReceive = true">
+      <button class="action-btn qr-btn" @click="showReceive = true" :disabled="true">
         <QrCode :size="18" />
         <span>QR Code</span>
       </button>

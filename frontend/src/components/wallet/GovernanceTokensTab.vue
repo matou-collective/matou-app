@@ -2,7 +2,7 @@
   <div class="governance-tab">
     <!-- Balance card -->
     <div class="balance-card">
-      <div class="balance-label">Governance Balance</div>
+      <div class="balance-label">Balance</div>
       <div class="balance-amount">
         {{ walletStore.govBalance.balance.toFixed(walletStore.govBalance.decimals) }}
         <span class="balance-symbol">{{ walletStore.govBalance.symbol }}</span>
@@ -11,7 +11,7 @@
     </div>
 
     <!-- Vesting progress -->
-    <section class="section-card">
+    <!-- <section class="section-card">
       <h3 class="section-title"><Clock :size="16" /> Vesting Schedule</h3>
       <div v-if="walletStore.vestingSchedule" class="vesting-info">
         <div class="progress-bar">
@@ -25,7 +25,7 @@
         <CalendarOff :size="20" />
         <span>No vesting schedule</span>
       </div>
-    </section>
+    </section> -->
 
     <!-- Voting power -->
     <section class="section-card">
@@ -56,10 +56,10 @@
 
     <!-- Achievements -->
     <section class="section-card">
-      <h3 class="section-title"><Award :size="16" /> Achievements</h3>
+      <h3 class="section-title"><Award :size="16" /> Proposals</h3>
       <div class="empty-placeholder">
-        <Trophy :size="20" />
-        <span>No achievements yet</span>
+        <Scroll :size="20" />
+        <span>No proposals yet</span>
       </div>
     </section>
   </div>
@@ -75,6 +75,7 @@ import {
   ArchiveX,
   Award,
   Trophy,
+  Scroll
 } from 'lucide-vue-next';
 import { useWalletStore } from 'stores/wallet';
 
