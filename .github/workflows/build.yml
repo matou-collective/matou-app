@@ -46,17 +46,18 @@ jobs:
 
       # 6️⃣ Build backend
       - name: Build backend
-        shell: bash
+        shell: bash {0}
         run: |
           cd backend
           go mod tidy
-          if [ "${RUNNER_OS}" == "Linux" ]; then
+          if [ "$RUNNER_OS" == "Linux" ]; then
             make build-linux-amd64
-          elif [ "${RUNNER_OS}" == "macOS" ]; then
+          elif [ "$RUNNER_OS" == "macOS" ]; then
             make build-darwin-amd64
-          elif [ "${RUNNER_OS}" == "Windows" ]; then
+          elif [ "$RUNNER_OS" == "Windows" ]; then
             make build-windows-amd64
           fi
+
 
 
       # 7️⃣ Build Electron App
