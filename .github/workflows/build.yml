@@ -31,6 +31,7 @@ jobs:
       # Matou App Version
       - name: Get app version
         id: version
+        shell: bash
         run: |
           echo "VERSION=$(node -p "require('./frontend/package.json').version")" >> $GITHUB_ENV
 
@@ -63,7 +64,7 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: 1.21
-          cache: true
+          cache: false
 
       # Backend set up
       - name: Prepare backend modules
@@ -111,6 +112,6 @@ jobs:
           path: |
             frontend/dist/electron/Packaged/matou-*.AppImage
             frontend/dist/electron/Packaged/matou-*.exe
-            frontend/dist/electron/Packaged/matou-*-mac-*.dmg
+            frontend/dist/electron/Packaged/matou-*.dmg
             # todo add other files needed
           if-no-files-found: ignore
