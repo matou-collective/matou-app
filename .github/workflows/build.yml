@@ -65,11 +65,23 @@ jobs:
             make build-windows-amd64
           fi
 
-      # Build Electron App
+
+      # Build Electron app
       - name: Build Electron App
+        shell: bash {0}
         run: |
           cd frontend
-          npx quasar build -m electron
+          # Linux
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            npx quasar build -m electron
+          # macOS
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            npx quasar build -m electron --mac --x64 # MacOS Intel
+            npx quasar build -m electron --mac --arm64 # MacOS Apple Silicone
+          # Windows
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            npx quasar build -m electron --win
+          fi
 
       # Upload artifacts
       - name: Upload packaged artifacts
@@ -77,4 +89,3 @@ jobs:
         with:
           name: electron-packaged-${{ matrix.os }}
           path: frontend/dist/electron/Packaged/
-
