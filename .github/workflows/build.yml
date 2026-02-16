@@ -37,12 +37,13 @@ jobs:
       # Platform name
       - name: Set platform name
         id: platform
+        shell: bash {0}
         run: |
-          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
             echo "PLATFORM=linux" >> $GITHUB_ENV
-          elif [[ "${RUNNER_OS}" == "macOS" ]]; then
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
             echo "PLATFORM=mac" >> $GITHUB_ENV
-          elif [[ "${RUNNER_OS}" == "Windows" ]]; then
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
             echo "PLATFORM=windows" >> $GITHUB_ENV
           fi
 
