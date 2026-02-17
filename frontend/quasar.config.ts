@@ -121,7 +121,8 @@ export default configure(() => {
         publish: [{
           provider: 'github',
           owner: 'matou-collective',
-          repo: 'matou-app'
+          repo: 'matou-app',
+          releaseType: 'release'
         }],
         mac: {
           target: ['dmg'],
