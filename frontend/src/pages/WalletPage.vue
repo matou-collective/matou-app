@@ -103,11 +103,12 @@ onMounted(() => {
 }
 
 .wallet-sidebar-title {
+  font-size: 0.875rem;
   font-weight: 600;
-  font-size: 1.2rem;
   color: var(--matou-sidebar-foreground);
   margin: 0;
-  line-height: 1.3;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .wallet-sidebar-subtitle {
@@ -138,6 +139,7 @@ onMounted(() => {
   width: 100%;
   text-align: left;
   transition: all 0.15s ease;
+  border-radius: 0 10px 10px 0;
 }
 
 .wallet-nav-item:hover {

@@ -32,25 +32,27 @@ const displayUnreadCount = computed(() => props.unreadCount ?? 0);
 .channel-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.75rem;
   width: 100%;
   padding: 0.5rem 0.75rem;
-  border-radius: var(--matou-radius);
+  border-radius: 0 10px 10px 0;
   background: transparent;
   border: none;
   cursor: pointer;
   text-align: left;
   color: var(--matou-foreground);
-  font-size: 0.875rem;
+  font-size: 1rem;
   transition: all 0.15s ease;
 
   &:hover {
-    background-color: var(--matou-secondary);
+    background-color: var(--matou-sidebar-accent);
   }
 
   &.active {
-    background-color: var(--matou-primary);
-    color: white;
+    background-color: var(--matou-sidebar-accent);
+    color: var(--matou-sidebar-primary);
+    border-left: 3px solid var(--matou-sidebar-primary);
+    padding-left: calc(0.75rem - 3px);
 
     .channel-icon {
       opacity: 1;

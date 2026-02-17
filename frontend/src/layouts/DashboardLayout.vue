@@ -19,6 +19,13 @@
           <Home class="nav-icon" />
           <span>Home</span>
         </button>
+        <button class="nav-item" :class="{ active: route.name === 'chat' }" @click="router.push({ name: 'chat' })">
+          <MessageSquare class="nav-icon" />
+          <span>Chat</span>
+          <span v-if="chatStore.totalUnreadCount > 0" class="nav-badge">
+            {{ chatStore.totalUnreadCount > 99 ? '99+' : chatStore.totalUnreadCount }}
+          </span>
+        </button>
         <button class="nav-item" :class="{ active: route.name === 'wallet' }" @click="router.push({ name: 'wallet' })">
           <Wallet class="nav-icon" />
           <span>Wallet</span>
@@ -30,13 +37,6 @@
         <button class="nav-item disabled" disabled>
           <Vote class="nav-icon" />
           <span>Proposals</span>
-        </button>
-        <button class="nav-item" :class="{ active: route.name === 'chat' }" @click="router.push({ name: 'chat' })">
-          <MessageSquare class="nav-icon" />
-          <span>Chat</span>
-          <span v-if="chatStore.totalUnreadCount > 0" class="nav-badge">
-            {{ chatStore.totalUnreadCount > 99 ? '99+' : chatStore.totalUnreadCount }}
-          </span>
         </button>
       </nav>
 
@@ -214,8 +214,8 @@ onMounted(() => {
   align-items: center;
   gap: 0.75rem;
   padding: 0.625rem 0.75rem;
-  border-radius: var(--matou-radius);
-  font-size: 0.875rem;
+  border-radius: 0 10px 10px 0;
+  font-size: 1rem;
   font-weight: 500;
   color: var(--matou-sidebar-foreground);
   background: transparent;
@@ -232,6 +232,8 @@ onMounted(() => {
   &.active {
     background-color: var(--matou-sidebar-accent);
     color: var(--matou-sidebar-primary);
+    border-left: 3px solid var(--matou-sidebar-primary);
+    padding-left: calc(0.75rem - 3px);
   }
 
   &.disabled {

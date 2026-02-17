@@ -1,7 +1,10 @@
 <template>
   <aside class="channel-sidebar">
     <div class="sidebar-header">
-      <h2 class="sidebar-title">Channels</h2>
+      <div>
+        <h2 class="sidebar-title">Channels</h2>
+        <p class="sidebar-description">Chat with your community</p>
+      </div>
       <button
         v-if="isAdmin"
         class="create-btn"
@@ -66,11 +69,11 @@ onMounted(() => {
 <style lang="scss" scoped>
 .channel-sidebar {
   width: 240px;
-  background-color: var(--matou-sidebar);
   border-right: 1px solid var(--matou-border);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  padding-top: 40px;
 }
 
 .sidebar-header {
@@ -78,7 +81,6 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 1rem;
-  border-bottom: 1px solid var(--matou-border);
 }
 
 .sidebar-title {
@@ -90,13 +92,19 @@ onMounted(() => {
   letter-spacing: 0.05em;
 }
 
+.sidebar-description {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--matou-muted-foreground);
+}
+
 .create-btn {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 0.75rem;
   width: 28px;
-  height: 28px;
-  border-radius: var(--matou-radius);
+  border-radius: 0 10px 10px 0;
   background: transparent;
   border: none;
   cursor: pointer;
