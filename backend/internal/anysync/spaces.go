@@ -125,6 +125,12 @@ func (m *SpaceManager) NoticeTreeManager() *NoticeTreeManager {
 	return m.noticeTreeManager
 }
 
+// SetObjectTreeListener sets the UpdateListener on the UnifiedTreeManager
+// for push-based P2P change notification.
+func (m *SpaceManager) SetObjectTreeListener(l *TreeUpdateListener) {
+	m.treeManager.SetListener(l)
+}
+
 // FileManager returns the file manager for filenode-based file storage.
 // Returns nil if the client does not support pool/nodeconf (e.g. mock client).
 func (m *SpaceManager) FileManager() *FileManager {

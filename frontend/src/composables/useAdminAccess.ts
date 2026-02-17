@@ -152,7 +152,15 @@ export function useAdminAccess() {
             console.log('[AdminAccess] User AID found in config admins list');
             isAdmin.value = true;
             permissions.value = ['approve_registrations', 'admin'];
-            // No credential, but still admin by config
+            adminCredential.value = {
+              said: '',
+              schema: '',
+              issuer: '',
+              issuee: currentAID.prefix,
+              status: 'config',
+              role: 'Operations Steward',
+              permissions: ['approve_registrations', 'admin'],
+            };
             return true;
           }
         }

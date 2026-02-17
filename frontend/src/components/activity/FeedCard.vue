@@ -17,7 +17,7 @@
             @click="handlePin"
             title="Pin notice"
           >
-            <Pin :size="26" />
+            <Pin :size="16" />
           </button>
           <SaveButton :notice-id="notice.id" />
         </div>

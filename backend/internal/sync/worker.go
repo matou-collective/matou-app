@@ -12,6 +12,9 @@ import (
 	"github.com/matou-dao/backend/internal/api"
 )
 
+// Chat sync is now handled by TreeUpdateListener (push-based via SyncTree).
+// This worker only handles credential polling.
+
 // WorkerConfig configures the background sync worker.
 type WorkerConfig struct {
 	// Interval between sync polls.
@@ -23,7 +26,7 @@ type WorkerConfig struct {
 // DefaultConfig returns a default worker config.
 func DefaultConfig() *WorkerConfig {
 	return &WorkerConfig{
-		Interval: 10 * time.Second,
+		Interval: 5 * time.Second,
 	}
 }
 
@@ -35,10 +38,10 @@ type Worker struct {
 	store        *anystore.LocalStore
 	broker       *api.EventBroker
 
-	mu            sync.RWMutex
-	knownSAIDs    map[string]bool
-	cancel        context.CancelFunc
-	done          chan struct{}
+	mu         sync.RWMutex
+	knownSAIDs map[string]bool
+	cancel     context.CancelFunc
+	done       chan struct{}
 }
 
 // NewWorker creates a new background sync worker.
@@ -165,4 +168,5 @@ func (w *Worker) syncOnce(ctx context.Context) {
 			},
 		})
 	}
+
 }

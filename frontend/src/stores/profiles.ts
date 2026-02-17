@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import {
   getMyProfiles,
   getProfiles,
@@ -65,10 +65,25 @@ export const useProfilesStore = defineStore('profiles', () => {
     );
   }
 
+  const profilesByAid = computed(() => {
+    const map: Record<string, { displayName: string; avatar: string }> = {};
+    for (const p of communityProfiles.value) {
+      const aid = p.data.aid as string;
+      if (aid) {
+        map[aid] = {
+          displayName: (p.data.displayName as string) || '',
+          avatar: (p.data.avatar as string) || '',
+        };
+      }
+    }
+    return map;
+  });
+
   return {
     myProfiles,
     communityProfiles,
     communityReadOnlyProfiles,
+    profilesByAid,
     loading,
     loadMyProfiles,
     loadCommunityProfiles,

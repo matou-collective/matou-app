@@ -11,63 +11,119 @@ on:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+        - os: macos-15-intel
+          platform: mac
+          arch: x64
+          make_target: build-darwin-amd64
+
+        - os: macos-latest
+          platform: mac
+          arch: arm64
+          make_target: build-darwin-arm64
+
+        - os: ubuntu-latest
+          platform: linux
+          arch: amd64
+          make_target: build-linux-amd64
+
+        - os: windows-latest
+          platform: windows
+          arch: amd64
+          make_target: build-windows-amd64
 
     steps:
-      # 1️⃣ Checkout code
+      # Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup Node.js
+      # Setup Node.js
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          architecture: x64
+          cache-dependency-path: frontend/package-lock.json
 
-      # 3️⃣ Install frontend dependencies
+      # Matou App Version
+      - name: Get app version
+        id: version
+        shell: bash
+        run: |
+          echo "VERSION=$(node -p "require('./frontend/package.json').version")" >> $GITHUB_ENV
+
+      # Install frontend dependencies
       - name: Install frontend dependencies
         run: |
           cd frontend
           npm ci
 
-      # 4️⃣ Install Quasar CLI
+      # Install Quasar CLI
       - name: Install Quasar CLI
         run: npm install -g @quasar/cli
 
-      # 5️⃣ Setup Go (backend)
+      # Set up Go
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
           go-version: 1.21
+          cache: false
 
-      # 6️⃣ Build backend
-      - name: Build backend
+      # Backend set up
+      - name: Prepare backend modules
         run: |
           cd backend
           go mod tidy
-          if [ "${RUNNER_OS}" == "Linux" ]; then
-            make build-linux-amd64
-          elif [ "${RUNNER_OS}" == "macOS" ]; then
-            make build-darwin-amd64
-          elif [ "${RUNNER_OS}" == "Windows" ]; then
-            powershell.exe -Command "make build-windows-amd64"
-          fi
 
-      # 7️⃣ Build Electron App
-      - name: Build Electron App
+      # Build backend
+      - name: Build backend
+        shell: bash {0}
+        run: |
+          cd backend
+          make ${{ matrix.make_target }}
+
+      # Setup macOS Signing
+      - name: Setup macOS Signing (if mac)
+        if: matrix.platform == 'mac'
+        shell: bash
         run: |
           cd frontend
-          # temporarily disable signing for apple
-          export CSC_IDENTITY_AUTO_DISCOVERY=false
-          npx quasar build -m electron
+          # write Apple API key from secret
+          echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
 
-      # 8️⃣ Upload artifacts
-      - name: Upload packaged artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: electron-packaged
-          path: frontend/dist/electron/Packaged/
+      # Build Electron app
+      - name: Build Electron App
+        shell: bash {0}
+        run: |
+          cd frontend
+          
+          if [[ "${{ matrix.platform }}" == "mac" ]]; then
+            npx quasar build -m electron --mac --${{ matrix.arch }}
+          else
+            npx quasar build -m electron
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Upload artifacts
+      # - name: Upload ${{ matrix.platform }} artifacts
+      #   uses: actions/upload-artifact@v4
+      #   with:
+          
+      #     name: matou-${{ env.VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
+      #     path: |
+      #       frontend/dist/electron/Packaged/**
+      #       # frontend/dist/electron/Packaged/**/*.dmg
+      #       # frontend/dist/electron/Packaged/**/*.exe
+      #       # frontend/dist/electron/Packaged/**/*.AppImage
+      #     if-no-files-found: ignore

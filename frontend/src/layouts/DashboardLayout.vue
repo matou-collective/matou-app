@@ -19,6 +19,13 @@
           <Home class="nav-icon" />
           <span>Home</span>
         </button>
+        <button class="nav-item" :class="{ active: route.name === 'chat' }" @click="router.push({ name: 'chat' })">
+          <MessageSquare class="nav-icon" />
+          <span>Chat</span>
+          <span v-if="chatStore.totalUnreadCount > 0" class="nav-badge">
+            {{ chatStore.totalUnreadCount > 99 ? '99+' : chatStore.totalUnreadCount }}
+          </span>
+        </button>
         <button class="nav-item" :class="{ active: route.name === 'wallet' }" @click="router.push({ name: 'wallet' })">
           <Wallet class="nav-icon" />
           <span>Wallet</span>
@@ -34,10 +41,6 @@
         <button class="nav-item disabled" disabled>
           <Vote class="nav-icon" />
           <span>Proposals</span>
-        </button>
-        <button class="nav-item disabled" disabled>
-          <MessageSquare class="nav-icon" />
-          <span>Chat</span>
         </button>
       </nav>
 
@@ -77,6 +80,8 @@ import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
+import { useChatStore } from 'stores/chat';
+import { useChatEvents } from 'src/composables/useChatEvents';
 import { getFileUrl } from 'src/lib/api/client';
 
 const router = useRouter();
@@ -84,6 +89,8 @@ const route = useRoute();
 const store = useOnboardingStore();
 const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
+const chatStore = useChatStore();
+useChatEvents();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
 const mySharedProfile = computed(() => {
@@ -112,10 +119,25 @@ const userAvatarUrl = computed(() => {
 });
 
 onMounted(() => {
+  console.log('[DashboardLayout] mounted, route:', route.name);
   typesStore.loadDefinitions();
   profilesStore.loadMyProfiles();
   profilesStore.loadCommunityProfiles();
   profilesStore.loadCommunityReadOnlyProfiles();
+
+  // Load chat data so the unread badge shows on all dashboard pages.
+  // Fire-and-forget: don't await, so child routes mount immediately.
+  console.log('[DashboardLayout] Starting chat data load...');
+  chatStore.loadChannels().then(() => {
+    console.log('[DashboardLayout] Channels loaded:', chatStore.channels.length);
+    return chatStore.loadReadCursors();
+  }).then(() => {
+    console.log('[DashboardLayout] Read cursors loaded:', JSON.stringify(chatStore.readCursors));
+    return chatStore.loadAllChannelMessages();
+  }).then(() => {
+    console.log('[DashboardLayout] All messages loaded. Unread counts:', JSON.stringify(chatStore.unreadCounts));
+    console.log('[DashboardLayout] Total unread:', chatStore.totalUnreadCount);
+  });
 });
 </script>
 
@@ -197,8 +219,8 @@ onMounted(() => {
   align-items: center;
   gap: 0.75rem;
   padding: 0.625rem 0.75rem;
-  border-radius: var(--matou-radius);
-  font-size: 0.875rem;
+  border-radius: 0 10px 10px 0;
+  font-size: 1rem;
   font-weight: 500;
   color: var(--matou-sidebar-foreground);
   background: transparent;
@@ -215,6 +237,8 @@ onMounted(() => {
   &.active {
     background-color: var(--matou-sidebar-accent);
     color: var(--matou-sidebar-primary);
+    border-left: 3px solid var(--matou-sidebar-primary);
+    padding-left: calc(0.75rem - 3px);
   }
 
   &.disabled {
@@ -226,6 +250,21 @@ onMounted(() => {
 .nav-icon {
   width: 18px;
   height: 18px;
+}
+
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 0.375rem;
+  background-color: var(--matou-destructive);
+  color: white;
+  border-radius: 9999px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .sidebar-footer {
