@@ -84,6 +84,15 @@ jobs:
           cd backend
           make ${{ matrix.make_target }}
 
+      # Setup macOS Signing
+      - name: Setup macOS Signing (if mac)
+        if: matrix.plaform == 'mac'
+        shell: bash
+        run: |
+          cd frontend
+          # write Apple API key from secret
+          echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+
       # Build Electron app
       - name: Build Electron App
         shell: bash {0}
@@ -91,10 +100,17 @@ jobs:
           cd frontend
           
           if [[ "${{ matrix.platform }}" == "mac" ]]; then
-            npx quasar build -m electron --mac --${{ matrix.arch }}
+            npx quasar build -m electron --mac --${{ matrix.arch }} --publish never
           else
             npx quasar build -m electron
           fi
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
 
 
