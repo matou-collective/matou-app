@@ -86,7 +86,7 @@ jobs:
 
       # Setup macOS Signing
       - name: Setup macOS Signing (if mac)
-        if: matrix.plaform == 'mac'
+        if: matrix.platform == 'mac'
         shell: bash
         run: |
           cd frontend
