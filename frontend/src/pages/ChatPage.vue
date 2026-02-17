@@ -5,22 +5,33 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, onUnmounted } from 'vue';
 import ChatLayout from 'src/components/chat/ChatLayout.vue';
 import { useChatStore } from 'stores/chat';
-import { useChatEvents } from 'src/composables/useChatEvents';
 
 const chatStore = useChatStore();
-const { connected } = useChatEvents();
+
+onUnmounted(() => {
+  console.log('[ChatPage] unmounted, clearing active channel');
+  chatStore.selectChannel(null);
+});
 
 onMounted(async () => {
+  console.log('[ChatPage] mounted, channels already loaded:', chatStore.channels.length);
   await chatStore.loadChannels();
   await chatStore.loadReadCursors();
   await chatStore.loadAllChannelMessages();
+  console.log('[ChatPage] Data loaded. Channels:', chatStore.channels.length, 'Cursors:', JSON.stringify(chatStore.readCursors), 'Total unread:', chatStore.totalUnreadCount);
 
-  // Select first channel if none selected
+  // Auto-select first channel only if none selected AND no unread messages.
+  // When there are unreads, let the user see the sidebar badges first.
   if (!chatStore.currentChannelId && chatStore.channels.length > 0) {
-    await chatStore.selectChannel(chatStore.channels[0].id);
+    if (chatStore.totalUnreadCount === 0) {
+      console.log('[ChatPage] No unreads, auto-selecting first channel');
+      await chatStore.selectChannel(chatStore.channels[0].id);
+    } else {
+      console.log('[ChatPage] Has unreads, skipping auto-select');
+    }
   }
 });
 </script>

@@ -76,6 +76,7 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
 import { useChatStore } from 'stores/chat';
+import { useChatEvents } from 'src/composables/useChatEvents';
 import { getFileUrl } from 'src/lib/api/client';
 
 const router = useRouter();
@@ -84,6 +85,7 @@ const store = useOnboardingStore();
 const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const chatStore = useChatStore();
+useChatEvents();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
 const mySharedProfile = computed(() => {
@@ -112,10 +114,25 @@ const userAvatarUrl = computed(() => {
 });
 
 onMounted(() => {
+  console.log('[DashboardLayout] mounted, route:', route.name);
   typesStore.loadDefinitions();
   profilesStore.loadMyProfiles();
   profilesStore.loadCommunityProfiles();
   profilesStore.loadCommunityReadOnlyProfiles();
+
+  // Load chat data so the unread badge shows on all dashboard pages.
+  // Fire-and-forget: don't await, so child routes mount immediately.
+  console.log('[DashboardLayout] Starting chat data load...');
+  chatStore.loadChannels().then(() => {
+    console.log('[DashboardLayout] Channels loaded:', chatStore.channels.length);
+    return chatStore.loadReadCursors();
+  }).then(() => {
+    console.log('[DashboardLayout] Read cursors loaded:', JSON.stringify(chatStore.readCursors));
+    return chatStore.loadAllChannelMessages();
+  }).then(() => {
+    console.log('[DashboardLayout] All messages loaded. Unread counts:', JSON.stringify(chatStore.unreadCounts));
+    console.log('[DashboardLayout] Total unread:', chatStore.totalUnreadCount);
+  });
 });
 </script>
 

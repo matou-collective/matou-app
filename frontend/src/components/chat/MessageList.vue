@@ -18,7 +18,6 @@
       <template v-for="item in displayMessages" :key="item.id">
         <div
           v-if="item.type === 'divider'"
-          ref="dividerRef"
           class="new-messages-divider"
         >
           <span class="divider-line"></span>
@@ -29,6 +28,9 @@
           v-else
           :message="item"
           :isOwnMessage="item.senderAid === currentUserAid"
+          :senderProfile="profilesByAid[item.senderAid]"
+          :replyToMessage="item.replyTo ? messagesById[item.replyTo] : undefined"
+          :replyToProfile="item.replyTo && messagesById[item.replyTo] ? profilesByAid[messagesById[item.replyTo].senderAid] : undefined"
           @reply="$emit('reply', item as ChatMessage)"
           @edit="$emit('edit', item as ChatMessage)"
           @delete="$emit('delete', item as ChatMessage)"
@@ -51,6 +53,7 @@ import { ref, computed, watch, nextTick } from 'vue';
 import { MessageSquare } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
 import { useIdentityStore } from 'stores/identity';
+import { useProfilesStore } from 'stores/profiles';
 import MessageItem from './MessageItem.vue';
 
 const props = defineProps<{
@@ -69,10 +72,19 @@ defineEmits<{
 }>();
 
 const containerRef = ref<HTMLElement | null>(null);
-const dividerRef = ref<HTMLElement | null>(null);
 const identityStore = useIdentityStore();
+const profilesStore = useProfilesStore();
 
 const currentUserAid = computed(() => identityStore.aidPrefix || '');
+const profilesByAid = computed(() => profilesStore.profilesByAid);
+
+const messagesById = computed(() => {
+  const map: Record<string, ChatMessage> = {};
+  for (const m of props.messages) {
+    map[m.id] = m;
+  }
+  return map;
+});
 
 interface NewMessagesDivider {
   type: 'divider';
@@ -114,8 +126,9 @@ watch(() => props.messages.length, async (newLen, oldLen) => {
   if (!containerRef.value) return;
 
   // On initial load (or channel switch), scroll to divider if present
-  if (!initialScrollDone && dividerRef.value) {
-    dividerRef.value.scrollIntoView({ block: 'center' });
+  const dividerEl = containerRef.value.querySelector('.new-messages-divider');
+  if (!initialScrollDone && dividerEl) {
+    dividerEl.scrollIntoView({ block: 'center' });
     initialScrollDone = true;
     return;
   }
@@ -125,10 +138,13 @@ watch(() => props.messages.length, async (newLen, oldLen) => {
     containerRef.value.scrollTop = containerRef.value.scrollHeight;
     initialScrollDone = true;
   }
-});
+}, { immediate: true });
 
-// Reset when lastReadAt changes (channel switch)
+// Reset when channel changes (lastReadAt or messages replaced entirely)
 watch(() => props.lastReadAt, () => {
+  initialScrollDone = false;
+});
+watch(() => props.messages, () => {
   initialScrollDone = false;
 });
 </script>

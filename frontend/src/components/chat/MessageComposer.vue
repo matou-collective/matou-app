@@ -7,26 +7,41 @@
       @cancel="$emit('cancelReply')"
     />
 
+    <!-- Attachment Uploader -->
+    <AttachmentUploader
+      v-show="showUploader"
+      ref="uploaderRef"
+      @change="pendingFileCount = $event"
+      @error="(msg: string) => console.error('[Attachment]', msg)"
+    />
+
     <!-- Input Area -->
     <div class="composer-input-area">
+      <button
+        class="attach-btn"
+        @click="showUploader = !showUploader"
+        title="Attach files"
+      >
+        <Paperclip class="icon" />
+      </button>
+
       <textarea
         ref="textareaRef"
         v-model="content"
         class="message-input"
         :placeholder="placeholder"
         rows="1"
-        :disabled="sending"
         @keydown="handleKeydown"
         @input="autoResize"
       ></textarea>
 
       <button
         class="send-btn"
-        :disabled="!canSend || sending"
+        :disabled="!canSend || sending || uploading"
         @click="handleSend"
-        :title="sending ? 'Sending...' : 'Send message'"
+        :title="sending || uploading ? 'Sending...' : 'Send message'"
       >
-        <Loader2 v-if="sending" class="icon spin" />
+        <Loader2 v-if="sending || uploading" class="icon spin" />
         <Send v-else class="icon" />
       </button>
     </div>
@@ -35,9 +50,11 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted } from 'vue';
-import { Send, Loader2 } from 'lucide-vue-next';
-import type { ChatMessage } from 'src/lib/api/chat';
+import { Send, Loader2, Paperclip } from 'lucide-vue-next';
+import type { ChatMessage, AttachmentRef } from 'src/lib/api/chat';
+import { useProfilesStore } from 'stores/profiles';
 import ReplyPreview from './ReplyPreview.vue';
+import AttachmentUploader from './AttachmentUploader.vue';
 
 const props = defineProps<{
   channelId: string;
@@ -46,42 +63,62 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'send', content: string): void;
+  (e: 'send', content: string, attachments: AttachmentRef[]): void;
   (e: 'cancelReply'): void;
 }>();
 
 const content = ref('');
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const uploaderRef = ref<InstanceType<typeof AttachmentUploader> | null>(null);
+const showUploader = ref(false);
+const uploading = ref(false);
+const pendingFileCount = ref(0);
+const profilesStore = useProfilesStore();
 
 const placeholder = computed(() => {
   if (props.replyTo) {
-    return `Reply to ${props.replyTo.senderName}...`;
+    const profile = profilesStore.profilesByAid[props.replyTo.senderAid];
+    const name = profile?.displayName || props.replyTo.senderName;
+    return `Reply to ${name}...`;
   }
   return 'Type a message...';
 });
 
-const canSend = computed(() => content.value.trim().length > 0);
+const canSend = computed(() => {
+  return content.value.trim().length > 0 || pendingFileCount.value > 0;
+});
 
 function handleKeydown(e: KeyboardEvent) {
   // Send on Enter (without Shift)
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
-    if (canSend.value && !props.sending) {
+    if (canSend.value && !props.sending && !uploading.value) {
       handleSend();
     }
   }
 }
 
-function handleSend() {
-  if (!canSend.value || props.sending) return;
+async function handleSend() {
+  if (!canSend.value || props.sending || uploading.value) return;
 
-  emit('send', content.value.trim());
+  let attachments: AttachmentRef[] = [];
+  if (pendingFileCount.value > 0) {
+    uploading.value = true;
+    try {
+      attachments = await uploaderRef.value!.uploadAll();
+    } finally {
+      uploading.value = false;
+    }
+  }
+
+  emit('send', content.value.trim(), attachments);
   content.value = '';
+  showUploader.value = false;
 
-  // Reset textarea height
   nextTick(() => {
     if (textareaRef.value) {
       textareaRef.value.style.height = 'auto';
+      textareaRef.value.focus();
     }
   });
 }
@@ -95,9 +132,15 @@ function autoResize() {
   textareaRef.value.style.height = `${Math.min(scrollHeight, maxHeight)}px`;
 }
 
-onMounted(() => {
+function focus() {
   textareaRef.value?.focus();
+}
+
+onMounted(() => {
+  focus();
 });
+
+defineExpose({ focus });
 </script>
 
 <style lang="scss" scoped>
@@ -138,6 +181,31 @@ onMounted(() => {
 
   &::placeholder {
     color: var(--matou-muted-foreground);
+  }
+}
+
+.attach-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--matou-radius);
+  background: transparent;
+  border: 1px solid var(--matou-border);
+  cursor: pointer;
+  color: var(--matou-muted-foreground);
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--matou-foreground);
+    border-color: var(--matou-primary);
+  }
+
+  .icon {
+    width: 18px;
+    height: 18px;
   }
 }
 

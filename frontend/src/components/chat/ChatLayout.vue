@@ -20,7 +20,7 @@
           :messages="chatStore.currentMessages"
           :loading="chatStore.loadingMessages"
           :hasMore="hasMoreMessages"
-          :lastReadAt="currentLastReadAt"
+          :lastReadAt="chatStore.channelEntryReadAt"
           @loadMore="handleLoadMore"
           @reply="handleReply"
           @edit="handleEditStart"
@@ -28,6 +28,7 @@
           @react="handleReact"
         />
         <MessageComposer
+          ref="composerRef"
           :channelId="chatStore.currentChannelId!"
           :replyTo="replyingTo"
           :sending="chatStore.sendingMessage"
@@ -76,10 +77,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 import { MessageSquare } from 'lucide-vue-next';
 import { useChatStore } from 'stores/chat';
-import type { ChatMessage } from 'src/lib/api/chat';
+import type { ChatMessage, AttachmentRef } from 'src/lib/api/chat';
 
 import ChannelSidebar from './ChannelSidebar.vue';
 import ChannelHeader from './ChannelHeader.vue';
@@ -92,6 +93,8 @@ import EditMessageModal from './EditMessageModal.vue';
 
 const chatStore = useChatStore();
 
+const composerRef = ref<InstanceType<typeof MessageComposer> | null>(null);
+
 // UI State
 const showCreateModal = ref(false);
 const showSettingsModal = ref(false);
@@ -103,11 +106,6 @@ const hasMoreMessages = computed(() => {
   if (!chatStore.currentChannelId) return false;
   // Access the Map directly from the store
   return false; // Will be updated when we have hasMore in store
-});
-
-const currentLastReadAt = computed(() => {
-  if (!chatStore.currentChannelId) return undefined;
-  return chatStore.readCursors[chatStore.currentChannelId] ?? undefined;
 });
 
 // Handlers
@@ -146,9 +144,10 @@ async function handleReact(messageId: string, emoji: string) {
   await chatStore.toggleReaction(messageId, emoji);
 }
 
-async function handleSend(content: string) {
-  await chatStore.sendMessage(content, { replyTo: replyingTo.value?.id });
+async function handleSend(content: string, attachments?: AttachmentRef[]) {
+  await chatStore.sendMessage(content, { replyTo: replyingTo.value?.id, attachments });
   replyingTo.value = null;
+  nextTick(() => composerRef.value?.focus());
 }
 
 function handleChannelCreated(channelId: string) {

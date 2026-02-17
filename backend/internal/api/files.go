@@ -34,7 +34,7 @@ func NewFilesHandler(fileManager *anysync.FileManager, spaceManager *anysync.Spa
 }
 
 // HandleUpload handles POST /api/v1/files/upload
-// Accepts multipart file upload (image/*, max 5MB).
+// Accepts multipart file upload (max 5MB).
 // Returns a fileRef (CID string) that can be stored in profile objects.
 func (h *FilesHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -67,14 +67,7 @@ func (h *FilesHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Validate content type
 	contentType := header.Header.Get("Content-Type")
-	if !strings.HasPrefix(contentType, "image/") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "only image files are accepted",
-		})
-		return
-	}
 
 	// Read file content (need to know size for metadata)
 	data, err := io.ReadAll(io.LimitReader(file, maxFileSize+1))

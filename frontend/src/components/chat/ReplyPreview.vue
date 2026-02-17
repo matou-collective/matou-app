@@ -2,7 +2,7 @@
   <div class="reply-preview">
     <div class="reply-indicator"></div>
     <div class="reply-content">
-      <span class="reply-label">Replying to <strong>{{ message.senderName }}</strong></span>
+      <span class="reply-label">Replying to <strong>{{ replyToName }}</strong></span>
       <p class="reply-text">{{ truncatedContent }}</p>
     </div>
     <button class="cancel-btn" @click="$emit('cancel')" title="Cancel reply">
@@ -15,6 +15,7 @@
 import { computed } from 'vue';
 import { X } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
+import { useProfilesStore } from 'stores/profiles';
 
 const props = defineProps<{
   message: ChatMessage;
@@ -23,6 +24,13 @@ const props = defineProps<{
 defineEmits<{
   (e: 'cancel'): void;
 }>();
+
+const profilesStore = useProfilesStore();
+
+const replyToName = computed(() => {
+  const profile = profilesStore.profilesByAid[props.message.senderAid];
+  return profile?.displayName || props.message.senderName;
+});
 
 const truncatedContent = computed(() => {
   const content = props.message.content;

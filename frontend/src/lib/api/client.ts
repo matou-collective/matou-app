@@ -417,7 +417,7 @@ export async function initMemberProfiles(data: {
 }
 
 /**
- * Upload a file (avatar) and return a content-addressed fileRef
+ * Upload a file and return a content-addressed fileRef
  */
 export async function uploadFile(file: File): Promise<{ fileRef?: string; error?: string }> {
   try {
@@ -428,6 +428,9 @@ export async function uploadFile(file: File): Promise<{ fileRef?: string; error?
       body: formData,
     });
     const result = await response.json();
+    if (!response.ok) {
+      return { error: result.error || `Upload failed (${response.status})` };
+    }
     return { fileRef: result.fileRef };
   } catch {
     return { error: 'Upload failed' };

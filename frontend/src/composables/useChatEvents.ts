@@ -7,6 +7,7 @@ import { Notify } from 'quasar';
 import { useRouter } from 'vue-router';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { useChatStore } from 'stores/chat';
+import { useProfilesStore } from 'stores/profiles';
 
 export type ChatEventType =
   | 'chat:message:new'
@@ -29,11 +30,16 @@ export function useChatEvents() {
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
   function connect() {
-    if (eventSource) return;
+    if (eventSource) {
+      console.log('[ChatEvents] Already connected, skipping');
+      return;
+    }
 
     const chatStore = useChatStore();
+    const profilesStore = useProfilesStore();
     const router = useRouter();
     const url = `${BACKEND_URL}/api/v1/events`;
+    console.log('[ChatEvents] Opening SSE connection to:', url);
     eventSource = new EventSource(url);
 
     eventSource.addEventListener('connected', () => {
@@ -53,8 +59,11 @@ export function useChatEvents() {
         const channel = chatStore.channels.find(c => c.id === data.channelId);
         const channelName = channel?.name ?? 'Unknown';
         const contentPreview = data.content?.substring(0, 80) ?? '';
+        const profile = profilesStore.profilesByAid[data.senderAid];
+        const displayName = profile?.displayName || data.senderName;
         Notify.create({
-          message: `${data.senderName}: ${contentPreview}`,
+          html: true,
+          message: `<strong>${displayName}</strong><br>${contentPreview}`,
           caption: `#${channelName}`,
           position: 'top-right',
           timeout: 5000,
@@ -138,6 +147,7 @@ export function useChatEvents() {
   }
 
   function disconnect() {
+    console.log('[ChatEvents] Disconnecting SSE');
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
       reconnectTimeout = null;
@@ -151,10 +161,12 @@ export function useChatEvents() {
 
   // Auto-connect and disconnect with component lifecycle
   onMounted(() => {
+    console.log('[ChatEvents] onMounted — starting SSE');
     connect();
   });
 
   onUnmounted(() => {
+    console.log('[ChatEvents] onUnmounted — stopping SSE');
     disconnect();
   });
 

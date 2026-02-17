@@ -51,6 +51,7 @@ import type { AttachmentRef } from 'src/lib/api/chat';
 const emit = defineEmits<{
   (e: 'upload', attachments: AttachmentRef[]): void;
   (e: 'error', message: string): void;
+  (e: 'change', count: number): void;
 }>();
 
 const inputRef = ref<HTMLInputElement | null>(null);
@@ -86,10 +87,12 @@ function addFiles(files: File[]) {
     }
     pendingFiles.value.push(file);
   }
+  emit('change', pendingFiles.value.length);
 }
 
 function removeFile(index: number) {
   pendingFiles.value.splice(index, 1);
+  emit('change', pendingFiles.value.length);
 }
 
 async function uploadAll(): Promise<AttachmentRef[]> {
@@ -110,6 +113,7 @@ async function uploadAll(): Promise<AttachmentRef[]> {
   }
 
   pendingFiles.value = [];
+  emit('change', 0);
   return attachments;
 }
 

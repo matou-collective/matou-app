@@ -47,6 +47,20 @@ import {
  *   4. Admin reads it, responds
  *   5. Member reads admin's new response
  *
+ *  Test 5 (Unread tracking — real cross-user messaging):
+ *   1. Admin marks channel as read, navigates to dashboard
+ *   2. Member sends 3 messages via UI (P2P sync to admin)
+ *   3. Admin returns to chat → unread badge, bold styling
+ *   4. Nav badge on Chat button from dashboard
+ *   5. "New messages" divider when clicking channel
+ *   6. Badge clears after viewing, cursor persists on reload
+ *
+ *  Test 6 (Cross-session unread persistence):
+ *   1. Member marks channel as read, navigates away
+ *   2. Admin sends 2 messages (P2P sync to member backend)
+ *   3. Member reloads page (same context + backend)
+ *   4. Member sees unread badge + divider after session restore
+ *
  * Run:  npx playwright test --project=chat
  * Deps: org-setup must be run first (test-accounts.json with admin)
  */
@@ -529,5 +543,239 @@ test.describe.serial('Chat', () => {
       memberPage.locator('.message-body').filter({ hasText: newAdminMsg }),
     ).toBeVisible({ timeout: 5_000 });
     console.log('[Restart] Full post-restart read-write cycle verified');
+  });
+
+  // ──────────────────────────────────────────────────────────────
+  // Test 5: Unread tracking — real cross-user messaging
+  // ──────────────────────────────────────────────────────────────
+  test('unread tracking: badges, nav indicator, and new messages divider', async () => {
+    test.setTimeout(300_000); // 5 min — includes P2P sync polling
+
+    // ─── 1. Admin navigates to chat and selects channel (marks as read) ───
+    await adminPage.goto(CHAT_URL);
+    await expect(adminPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
+
+    const channelItem = adminPage.locator('.channel-item').filter({ hasText: channelName });
+    await expect(channelItem).toBeVisible({ timeout: 10_000 });
+    await channelItem.click();
+    await expect(adminPage.locator('.channel-header .channel-name')).toHaveText(channelName, { timeout: 5_000 });
+    await adminPage.waitForTimeout(2000); // Allow cursor save
+
+    // Verify read cursor was saved
+    const channelId = await getChannelIdByName(adminPage, ADMIN_BACKEND, channelName);
+    expect(channelId).toBeTruthy();
+    console.log('[Unread] Admin marked channel as read');
+
+    // ─── 2. Admin navigates away from chat to Dashboard Home ───
+    await adminPage.locator('button.nav-item').filter({ hasText: 'Home' }).click();
+    await adminPage.waitForTimeout(1000);
+    console.log('[Unread] Admin navigated to Dashboard Home');
+
+    // ─── 3. Member sends 3 messages via UI ───
+    // Member should still have channelName selected from Test 4.
+    // Ensure member is on chat with the channel selected.
+    await memberPage.goto(CHAT_URL);
+    await expect(memberPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
+    await memberPage.locator('.channel-item').filter({ hasText: channelName }).click();
+    await expect(memberPage.locator('.channel-header .channel-name')).toBeVisible({ timeout: 5_000 });
+
+    const unreadMessages: string[] = [];
+    for (let i = 1; i <= 3; i++) {
+      const msg = `Unread msg ${i} from member ${suffix}`;
+      unreadMessages.push(msg);
+      await memberPage.locator('.message-input').fill(msg);
+      await memberPage.locator('.send-btn').click();
+      await expect(memberPage.locator('.message-input')).toHaveValue('');
+      await expect(
+        memberPage.locator('.message-body').filter({ hasText: msg }),
+      ).toBeVisible({ timeout: 15_000 });
+      console.log(`[Unread] Member sent: "${msg}"`);
+    }
+
+    // ─── 4. Wait for P2P sync to admin's backend ───
+    console.log('[Unread] Waiting for P2P sync to admin backend...');
+    const lastMsg = unreadMessages[unreadMessages.length - 1];
+    const synced = await pollForMessage(
+      adminPage, ADMIN_BACKEND, channelId!, lastMsg, 12, 5_000,
+    );
+    expect(synced, 'Member messages should sync to admin backend via P2P').toBe(true);
+
+    // ─── 5. Admin navigates to chat — data reloads fresh ───
+    await adminPage.locator('button.nav-item').filter({ hasText: 'Chat' }).click();
+    await expect(adminPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
+
+    // Wait for loadChannels + loadReadCursors + loadAllChannelMessages
+    await adminPage.waitForTimeout(3000);
+
+    // ─── 6. Verify unread badge on the channel ───
+    const unreadBadge = channelItem.locator('.unread-badge');
+    await expect(unreadBadge).toBeVisible({ timeout: 10_000 });
+    const badgeText = await unreadBadge.textContent();
+    expect(parseInt(badgeText?.trim() ?? '0')).toBeGreaterThanOrEqual(3);
+    console.log(`[Unread] Channel badge: ${badgeText?.trim()}`);
+
+    // ─── 7. Verify unread styling (bold channel name) ───
+    await expect(channelItem).toHaveClass(/unread/, { timeout: 5_000 });
+    console.log('[Unread] Channel has unread class');
+
+    // ─── 8. Navigate to Dashboard Home — verify nav badge ───
+    await adminPage.locator('button.nav-item').filter({ hasText: 'Home' }).click();
+    await adminPage.waitForTimeout(1000);
+
+    const navBadge = adminPage.locator('.nav-badge');
+    await expect(navBadge).toBeVisible({ timeout: 10_000 });
+    const navBadgeText = await navBadge.textContent();
+    expect(parseInt(navBadgeText?.trim() ?? '0')).toBeGreaterThan(0);
+    console.log(`[Unread] Nav badge: ${navBadgeText?.trim()}`);
+
+    // ─── 9. Navigate back to chat, click channel ───
+    await adminPage.locator('button.nav-item').filter({ hasText: 'Chat' }).click();
+    await expect(adminPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
+    await adminPage.waitForTimeout(2000);
+
+    // Channel should still show unread badge before clicking
+    await expect(channelItem.locator('.unread-badge')).toBeVisible({ timeout: 10_000 });
+
+    // Click to select the channel → triggers selectChannel → markChannelRead
+    await channelItem.click();
+    await expect(adminPage.locator('.channel-header .channel-name')).toHaveText(channelName, { timeout: 5_000 });
+
+    // ─── 10. Verify "new messages" divider ───
+    const divider = adminPage.locator('.new-messages-divider');
+    await expect(divider).toBeVisible({ timeout: 10_000 });
+    const dividerText = await divider.locator('.divider-text').textContent();
+    expect(dividerText).toMatch(/\d+ new message/);
+    console.log(`[Unread] Divider: ${dividerText?.trim()}`);
+
+    // ─── 11. After viewing, unread badge should clear ───
+    await adminPage.waitForTimeout(1500);
+    await expect(channelItem.locator('.unread-badge')).not.toBeVisible({ timeout: 5_000 });
+    console.log('[Unread] Badge cleared after viewing channel');
+
+    // ─── 12. Verify read cursor persists across page reload ───
+    await adminPage.goto(CHAT_URL);
+    await expect(adminPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
+    await adminPage.waitForTimeout(3000);
+
+    const reloadedChannel = adminPage.locator('.channel-item').filter({ hasText: channelName });
+    await expect(reloadedChannel).toBeVisible({ timeout: 10_000 });
+    await expect(reloadedChannel.locator('.unread-badge')).not.toBeVisible({ timeout: 5_000 });
+    console.log('[Unread] After reload, no unread badge (cursor persisted)');
+  });
+
+  // ──────────────────────────────────────────────────────────────
+  // Test 6: Cross-session unread persistence
+  // ──────────────────────────────────────────────────────────────
+  test('unread count persists across member session reload', async () => {
+    test.setTimeout(300_000); // 5 min — includes P2P sync + session restore
+
+    // ─── 1. Member visits channel to set their read cursor ───
+    await memberPage.goto(CHAT_URL);
+    await expect(memberPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
+    await memberPage.locator('.channel-item').filter({ hasText: channelName }).click();
+    await expect(memberPage.locator('.channel-header .channel-name')).toBeVisible({ timeout: 5_000 });
+    await memberPage.waitForTimeout(2000); // Allow cursor save
+    console.log('[CrossSession] Member marked channel as read');
+
+    // ─── 2. Member navigates away from chat ───
+    await memberPage.locator('button.nav-item').filter({ hasText: 'Home' }).click();
+    await memberPage.waitForTimeout(1000);
+    console.log('[CrossSession] Member on Dashboard Home');
+
+    // ─── 3. Admin sends 2 messages via UI ───
+    await adminPage.goto(CHAT_URL);
+    await expect(adminPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
+    await adminPage.locator('.channel-item').filter({ hasText: channelName }).click();
+    await expect(adminPage.locator('.channel-header .channel-name')).toBeVisible({ timeout: 5_000 });
+
+    const crossSessionMessages: string[] = [];
+    for (let i = 1; i <= 2; i++) {
+      const msg = `Cross-session msg ${i} from admin ${suffix}`;
+      crossSessionMessages.push(msg);
+      await adminPage.locator('.message-input').fill(msg);
+      await adminPage.locator('.send-btn').click();
+      await expect(adminPage.locator('.message-input')).toHaveValue('');
+      await expect(
+        adminPage.locator('.message-body').filter({ hasText: msg }),
+      ).toBeVisible({ timeout: 15_000 });
+      console.log(`[CrossSession] Admin sent: "${msg}"`);
+    }
+
+    // ─── 4. Wait for P2P sync to member's backend ───
+    const memberBackendInstance = backends.get('chat-member');
+    expect(memberBackendInstance).toBeTruthy();
+    const memberBackendUrl = memberBackendInstance!.url;
+    const channelId = await getChannelIdByName(adminPage, ADMIN_BACKEND, channelName);
+    expect(channelId).toBeTruthy();
+
+    console.log('[CrossSession] Waiting for P2P sync to member backend...');
+    const lastCrossMsg = crossSessionMessages[crossSessionMessages.length - 1];
+    const crossSynced = await pollForMessage(
+      memberPage, memberBackendUrl, channelId!, lastCrossMsg, 12, 5_000,
+    );
+    expect(crossSynced, 'Admin messages should sync to member backend via P2P').toBe(true);
+
+    // ─── 5. Member reloads page (simulates closing and reopening app) ───
+    //   Same browser context → localStorage preserved (passcode + mnemonic)
+    //   Same backend → data persists, P2P sync intact
+    console.log('[CrossSession] Reloading member page (simulating session restart)...');
+    await memberPage.goto(FRONTEND_URL);
+
+    // Wait for session restore: boot loads passcode → connects to KERIA → restores identity
+    const onDashboard = await memberPage
+      .waitForURL(/#\/dashboard/, { timeout: 15_000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!onDashboard) {
+      // Session restored but may need to click "Enter Community"
+      const enterBtn = memberPage.getByRole('button', { name: /enter (community|anyway)/i });
+      const hasEnterBtn = await enterBtn.isVisible({ timeout: TIMEOUT.long }).catch(() => false);
+
+      if (hasEnterBtn) {
+        console.log('[CrossSession] Session restored — clicking Enter Community');
+        await enterBtn.click();
+        await expect(memberPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+      } else {
+        // Full re-login needed
+        console.log('[CrossSession] Session lost — re-logging in via mnemonic');
+        await loginWithMnemonic(memberPage, memberMnemonic);
+      }
+    } else {
+      console.log('[CrossSession] Auto-restored to dashboard');
+    }
+
+    // ─── 6. Member navigates to chat — should see unread badge ───
+    await memberPage.goto(CHAT_URL);
+    await expect(memberPage.locator('.sidebar-title')).toHaveText('Channels', { timeout: 15_000 });
+    await memberPage.waitForTimeout(3000); // Allow data loading
+
+    const memberChannelItem = memberPage.locator('.channel-item').filter({ hasText: channelName });
+    await expect(memberChannelItem).toBeVisible({ timeout: 10_000 });
+
+    // Verify unread badge shows (at least 2 from admin's messages)
+    const memberBadge = memberChannelItem.locator('.unread-badge');
+    await expect(memberBadge).toBeVisible({ timeout: 10_000 });
+    const memberBadgeText = await memberBadge.textContent();
+    expect(parseInt(memberBadgeText?.trim() ?? '0')).toBeGreaterThanOrEqual(2);
+    console.log(`[CrossSession] Member unread badge: ${memberBadgeText?.trim()}`);
+
+    // Verify unread styling
+    await expect(memberChannelItem).toHaveClass(/unread/, { timeout: 5_000 });
+
+    // ─── 7. Member clicks channel — divider should appear ───
+    await memberChannelItem.click();
+    await expect(memberPage.locator('.channel-header .channel-name')).toBeVisible({ timeout: 5_000 });
+
+    const memberDivider = memberPage.locator('.new-messages-divider');
+    await expect(memberDivider).toBeVisible({ timeout: 10_000 });
+    const memberDividerText = await memberDivider.locator('.divider-text').textContent();
+    expect(memberDividerText).toMatch(/\d+ new message/);
+    console.log(`[CrossSession] Member divider: ${memberDividerText?.trim()}`);
+
+    // ─── 8. Badge clears after viewing ───
+    await memberPage.waitForTimeout(1500);
+    await expect(memberChannelItem.locator('.unread-badge')).not.toBeVisible({ timeout: 5_000 });
+    console.log('[CrossSession] Badge cleared after viewing — cross-session unread persistence verified');
   });
 });

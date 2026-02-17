@@ -1,7 +1,16 @@
 <template>
   <div class="attachment-preview" :class="{ image: isImage }">
     <template v-if="isImage">
-      <img :src="fileUrl" :alt="attachment.fileName" class="attachment-image" @click="openFullscreen" />
+      <img :src="fileUrl" :alt="attachment.fileName" class="attachment-image" @click="showLightbox = true" />
+
+      <Teleport to="body">
+        <div v-if="showLightbox" class="lightbox-overlay" @click.self="showLightbox = false">
+          <button class="lightbox-close" @click="showLightbox = false">
+            <XIcon />
+          </button>
+          <img :src="fileUrl" :alt="attachment.fileName" class="lightbox-image" />
+        </div>
+      </Teleport>
     </template>
     <template v-else>
       <a :href="fileUrl" target="_blank" class="attachment-file" :download="attachment.fileName">
@@ -17,14 +26,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import { File as FileIcon, Download } from 'lucide-vue-next';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { File as FileIcon, Download, X as XIcon } from 'lucide-vue-next';
 import type { AttachmentRef } from 'src/lib/api/chat';
 import { getFileUrl } from 'src/lib/api/client';
 
 const props = defineProps<{
   attachment: AttachmentRef;
 }>();
+
+const showLightbox = ref(false);
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') showLightbox.value = false;
+}
+
+onMounted(() => document.addEventListener('keydown', handleKeydown));
+onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
 
 const isImage = computed(() => {
   return props.attachment.contentType?.startsWith('image/');
@@ -40,9 +58,6 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function openFullscreen() {
-  window.open(fileUrl.value, '_blank');
-}
 </script>
 
 <style lang="scss" scoped>
@@ -117,5 +132,50 @@ function openFullscreen() {
   height: 18px;
   color: var(--matou-muted-foreground);
   flex-shrink: 0;
+}
+</style>
+
+<style lang="scss">
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.85);
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background-color: rgba(255, 255, 255, 0.15);
+  color: white;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+
+  &:hover {
+    background-color: rgba(255, 255, 255, 0.3);
+  }
+
+  svg {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+.lightbox-image {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 4px;
 }
 </style>

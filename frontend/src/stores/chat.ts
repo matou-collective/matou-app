@@ -19,6 +19,7 @@ import {
   type CreateChannelRequest,
   type UpdateChannelRequest,
   type SendMessageRequest,
+  type AttachmentRef,
 } from 'src/lib/api/chat';
 
 export const useChatStore = defineStore('chat', () => {
@@ -33,6 +34,7 @@ export const useChatStore = defineStore('chat', () => {
   const messageCursors = ref<Map<string, string>>(new Map());
   const hasMoreMessages = ref<Map<string, boolean>>(new Map());
   const readCursors = ref<Record<string, string>>({});
+  const channelEntryReadAt = ref<string | undefined>(undefined);
 
   // Computed
   const currentChannel = computed(() => {
@@ -62,21 +64,29 @@ export const useChatStore = defineStore('chat', () => {
       if (!cursor) {
         // Channel never visited — count is 0 (no retroactive unreads)
         counts[channel.id] = 0;
+        console.log(`[ChatStore:unread] #${channel.name}: no cursor, count=0`);
         continue;
       }
       // Count messages in this channel newer than the cursor
       const channelMsgs = messages.value.get(channel.id);
       if (!channelMsgs) {
         counts[channel.id] = 0;
+        console.log(`[ChatStore:unread] #${channel.name}: cursor=${cursor}, no messages loaded, count=0`);
         continue;
       }
-      counts[channel.id] = channelMsgs.filter(m => m.sentAt > cursor && !m.deletedAt).length;
+      const unread = channelMsgs.filter(m => m.sentAt > cursor && !m.deletedAt);
+      counts[channel.id] = unread.length;
+      if (unread.length > 0) {
+        console.log(`[ChatStore:unread] #${channel.name}: cursor=${cursor}, msgs=${channelMsgs.length}, unread=${unread.length}`);
+      }
     }
     return counts;
   });
 
   const totalUnreadCount = computed(() => {
-    return Object.values(unreadCounts.value).reduce((sum, count) => sum + count, 0);
+    const total = Object.values(unreadCounts.value).reduce((sum, count) => sum + count, 0);
+    console.log('[ChatStore:unread] totalUnreadCount:', total);
+    return total;
   });
 
   // Actions
@@ -97,8 +107,12 @@ export const useChatStore = defineStore('chat', () => {
   async function selectChannel(channelId: string | null): Promise<void> {
     currentChannelId.value = channelId;
     if (channelId) {
+      // Snapshot the cursor BEFORE loading/marking so the "new messages" divider persists
+      channelEntryReadAt.value = readCursors.value[channelId] ?? undefined;
       await loadMessages(channelId);
       await markChannelRead(channelId);
+    } else {
+      channelEntryReadAt.value = undefined;
     }
   }
 
@@ -135,7 +149,7 @@ export const useChatStore = defineStore('chat', () => {
     await loadMessages(currentChannelId.value, true);
   }
 
-  async function sendMessage(content: string, options?: { replyTo?: string }): Promise<boolean> {
+  async function sendMessage(content: string, options?: { replyTo?: string; attachments?: AttachmentRef[] }): Promise<boolean> {
     if (!currentChannelId.value) return false;
 
     sendingMessage.value = true;
@@ -145,6 +159,9 @@ export const useChatStore = defineStore('chat', () => {
       const request: SendMessageRequest = { content };
       if (options?.replyTo) {
         request.replyTo = options.replyTo;
+      }
+      if (options?.attachments?.length) {
+        request.attachments = options.attachments;
       }
 
       const result = await apiSendMessage(currentChannelId.value, request);
@@ -345,7 +362,7 @@ export const useChatStore = defineStore('chat', () => {
   async function loadReadCursors(): Promise<void> {
     try {
       readCursors.value = await getReadCursors();
-      console.log('[ChatStore] Loaded read cursors:', Object.keys(readCursors.value).length);
+      console.log('[ChatStore] Loaded read cursors:', JSON.stringify(readCursors.value));
     } catch (err) {
       console.error('[ChatStore] Failed to load read cursors:', err);
     }
@@ -354,10 +371,8 @@ export const useChatStore = defineStore('chat', () => {
   async function loadAllChannelMessages(): Promise<void> {
     try {
       const promises = channels.value.map(async (channel) => {
-        if (!messages.value.has(channel.id)) {
-          const response = await getMessages(channel.id, { limit: 50 });
-          messages.value.set(channel.id, response.messages);
-        }
+        const response = await getMessages(channel.id, { limit: 50 });
+        messages.value.set(channel.id, response.messages);
       });
       await Promise.all(promises);
       console.log('[ChatStore] Loaded messages for all channels');
@@ -373,10 +388,12 @@ export const useChatStore = defineStore('chat', () => {
       ? channelMsgs.reduce((latest, m) => m.sentAt > latest ? m.sentAt : latest, channelMsgs[0].sentAt)
       : new Date().toISOString();
 
+    console.log(`[ChatStore] markChannelRead: ${channelId} -> ${lastReadAt}`);
     readCursors.value = { ...readCursors.value, [channelId]: lastReadAt };
 
     try {
-      await apiUpdateReadCursor(channelId, lastReadAt);
+      const result = await apiUpdateReadCursor(channelId, lastReadAt);
+      console.log(`[ChatStore] markChannelRead API result:`, result);
     } catch (err) {
       console.error('[ChatStore] Failed to update read cursor:', err);
     }
@@ -412,9 +429,14 @@ export const useChatStore = defineStore('chat', () => {
       version: 1,
     });
 
-    // If this is the active channel, auto-mark as read
+    // If this is the active channel, auto-mark as read and clear the entry divider
+    // so new messages don't trigger the "X new messages" line while viewing
     if (data.channelId === currentChannelId.value) {
+      console.log(`[ChatStore] New message in active channel, auto-marking read`);
+      channelEntryReadAt.value = undefined;
       markChannelRead(data.channelId);
+    } else {
+      console.log(`[ChatStore] New message in non-active channel ${data.channelId}, unread will increment`);
     }
   }
 
@@ -449,7 +471,7 @@ export const useChatStore = defineStore('chat', () => {
     if (idx !== -1) {
       channelMessages[idx] = {
         ...channelMessages[idx],
-        deletedAt: data.deletedAt,
+        deletedAt: data.deletedAt || new Date().toISOString(),
       };
     }
   }
@@ -478,6 +500,7 @@ export const useChatStore = defineStore('chat', () => {
     sendingMessage,
     error,
     readCursors,
+    channelEntryReadAt,
 
     // Computed
     currentChannel,

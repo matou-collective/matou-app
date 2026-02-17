@@ -289,12 +289,17 @@ export async function removeReaction(
  * Get read cursors for all channels
  */
 export async function getReadCursors(): Promise<Record<string, string>> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/chat/read-cursors`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch read cursors: ${response.statusText}`);
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/chat/read-cursors`);
+    if (!response.ok) {
+      console.error(`[ReadCursors] GET failed: ${response.status}`);
+      return {};
+    }
+    const data = await response.json();
+    return data.cursors ?? {};
+  } catch {
+    return {};
   }
-  const data = await response.json();
-  return data.cursors ?? {};
 }
 
 /**
@@ -310,7 +315,11 @@ export async function updateReadCursor(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ channelId, lastReadAt }),
     });
-    return response.json();
+    if (!response.ok) {
+      console.error(`[ReadCursors] PUT failed: ${response.status}`);
+      return { success: false };
+    }
+    return await response.json();
   } catch {
     return { success: false };
   }

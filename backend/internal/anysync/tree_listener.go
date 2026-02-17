@@ -212,6 +212,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 				Data: map[string]interface{}{
 					"messageId": p.ID,
 					"channelId": data.ChannelID,
+					"deletedAt": data.DeletedAt,
 					"source":    "p2p",
 				},
 			})
