@@ -114,3 +114,16 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Upload artifacts
+      # - name: Upload ${{ matrix.platform }} artifacts
+      #   uses: actions/upload-artifact@v4
+      #   with:
+          
+      #     name: matou-${{ env.VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
+      #     path: |
+      #       frontend/dist/electron/Packaged/**
+      #       # frontend/dist/electron/Packaged/**/*.dmg
+      #       # frontend/dist/electron/Packaged/**/*.exe
+      #       # frontend/dist/electron/Packaged/**/*.AppImage
+      #     if-no-files-found: ignore
