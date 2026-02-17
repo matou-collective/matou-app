@@ -147,6 +147,12 @@ operations fail with "unable to connect".
 # 1. Stop dev sessions explicitly (backends must die before infra changes)
 cd matou-app/frontend && npm run dev:sessions:stop
 
+# 1b. Force-kill any orphaned processes on dev session ports
+#     dev:sessions:stop may miss processes not started by the script
+for port in 4000 4001 4002 5100 5101 5102; do
+  lsof -ti :$port 2>/dev/null | xargs -r kill -9 2>/dev/null
+done
+
 # 2. Clean app data
 cd matou-app && ./scripts/clean.sh
 
@@ -204,6 +210,12 @@ Cleans frontend/backend data and restarts dev sessions. Does NOT touch infrastru
 
 ```bash
 cd matou-app/frontend && npm run dev:sessions:stop
+
+# Force-kill any orphaned processes on dev session ports
+for port in 4000 4001 4002 5100 5101 5102; do
+  lsof -ti :$port 2>/dev/null | xargs -r kill -9 2>/dev/null
+done
+
 cd matou-app && ./scripts/clean.sh
 cd matou-app/frontend && npm run dev:sessions:3
 ```
@@ -216,6 +228,11 @@ old any-sync network and will fail with "unable to connect" if not restarted.
 ```bash
 # 1. Stop dev sessions (backends must reconnect to new network)
 cd matou-app/frontend && npm run dev:sessions:stop
+
+# 1b. Force-kill any orphaned processes on dev session ports
+for port in 4000 4001 4002 5100 5101 5102; do
+  lsof -ti :$port 2>/dev/null | xargs -r kill -9 2>/dev/null
+done
 
 # 2. Clean and restart infrastructure
 cd matou-infrastructure/keri && make clean
@@ -297,7 +314,18 @@ cd matou-infrastructure/any-sync && make restart-test
 **Cause**: Dev session backends hold persistent connections to the any-sync network. If infra is cleaned/regenerated while backends are still running, they keep connections to the old (now dead) network. The new network has a different NetworkId, different peer keys, etc.
 **Fix**: ALWAYS stop dev sessions (`npm run dev:sessions:stop`) BEFORE cleaning infra. Then restart sessions AFTER infra is healthy. This is critical for both `all` and `infra` scopes.
 
-### 11. Docker volumes persist across clean
+### 11. Orphaned processes survive dev:sessions:stop
+**Symptom**: After `clean-start dev all`, one or more dev session backends show as "STOPPED (stale PID file)" but a `server` process is still listening on the port (e.g., port 4001). The frontend on the corresponding port (e.g., 5101) gets CORS errors with "Status code: (null)" because the orphaned backend can't connect to the new any-sync network.
+**Cause**: `npm run dev:sessions:stop` only kills processes it started (tracked by PID file). Orphaned processes from previous runs or manual starts survive the stop command and block the port.
+**Fix**: Force-kill all processes on dev session ports after stopping sessions:
+```bash
+for port in 4000 4001 4002 5100 5101 5102; do
+  lsof -ti :$port 2>/dev/null | xargs -r kill -9 2>/dev/null
+done
+```
+**Note**: This is now included in all dev clean-start procedures (all, app, infra scopes).
+
+### 12. Docker volumes persist across clean
 **Symptom**: After `make clean`, old data still appears.
 **Cause**: `make down` doesn't remove volumes; `make clean` does (`down -v`).
 **Fix**: Use `make clean` (not `make down`) when you want a fresh start.

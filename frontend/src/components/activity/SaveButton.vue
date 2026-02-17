@@ -4,7 +4,7 @@
     :class="{ saved: isSaved }"
     @click.stop="handleSave"
   >
-    <Bookmark :size="14" :fill="isSaved ? 'currentColor' : 'none'" />
+    <Bookmark :size="16" :fill="isSaved ? 'currentColor' : 'none'" />
   </button>
 </template>
 

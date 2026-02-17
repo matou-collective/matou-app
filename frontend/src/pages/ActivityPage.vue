@@ -1,82 +1,61 @@
 <template>
   <div class="activity-page">
-    <div class="activity-body">
-      <!-- Activity sidebar -->
-      <aside class="activity-sidebar">
-        <div class="activity-sidebar-header">
-          <h2 class="activity-sidebar-title">Activity</h2>
-          <p class="activity-sidebar-subtitle">Community notices, events, and updates</p>
-        </div>
-        <nav class="activity-sidebar-nav">
-          <button
-            class="activity-nav-item"
-            :class="{ active: activeTab === 'upcoming' }"
-            @click="activeTab = 'upcoming'"
-          >
-            <span class="activity-nav-text">
-              <span class="activity-nav-label">Upcoming Events</span>
-              <span class="activity-nav-badge">{{ activityStore.upcomingEvents.length }}</span>
-            </span>
-          </button>
-          <button
-            class="activity-nav-item"
-            :class="{ active: activeTab === 'updates' }"
-            @click="activeTab = 'updates'"
-          >
-            <span class="activity-nav-text">
-              <span class="activity-nav-label">Updates</span>
-              <span class="activity-nav-badge">{{ activityStore.currentUpdates.length }}</span>
-            </span>
-          </button>
-          <button
-            class="activity-nav-item"
-            :class="{ active: activeTab === 'past' }"
-            @click="activeTab = 'past'"
-          >
-            <span class="activity-nav-text">
-              <span class="activity-nav-label">Past</span>
-              <span class="activity-nav-badge">{{ activityStore.pastNotices.length }}</span>
-            </span>
-          </button>
-          <button
-            v-if="isSteward"
-            class="activity-nav-item"
-            :class="{ active: activeTab === 'drafts' }"
-            @click="activeTab = 'drafts'"
-          >
-            <span class="activity-nav-text">
-              <span class="activity-nav-label">Drafts</span>
-              <span class="activity-nav-badge">{{ activityStore.draftNotices.length }}</span>
-            </span>
-          </button>
-        </nav>
+    <!-- Header -->
+    <div class="activity-header">
+      <div class="activity-header-text">
+        <h2 class="activity-title">Activity Feed</h2>
+        <p class="activity-subtitle">Community notices and updates</p>
+      </div>
+      <button v-if="isSteward" class="create-btn" @click="showCreateDialog = true">
+        + Create Notice
+      </button>
+    </div>
 
-        <div v-if="isSteward" class="activity-sidebar-actions">
-          <button class="create-notice-btn" @click="showCreateDialog = true">
-            + Create Notice
-          </button>
-        </div>
-      </aside>
+    <!-- Filter pills -->
+    <div class="filter-row">
+      <button
+        v-for="f in filters"
+        :key="f.value"
+        class="filter-pill"
+        :class="{ active: activityStore.activeFilter === f.value }"
+        @click="activityStore.setFilter(f.value)"
+      >
+        {{ f.label }}
+      </button>
+    </div>
 
-      <!-- Tab content -->
-      <div class="tab-content">
-        <UpcomingTab v-if="activeTab === 'upcoming'" />
-        <UpdatesTab v-if="activeTab === 'updates'" />
-        <PastTab v-if="activeTab === 'past'" />
-        <div v-if="activeTab === 'drafts' && isSteward" class="drafts-tab">
-          <h3 class="tab-title">Draft Notices</h3>
-          <div v-if="activityStore.draftNotices.length === 0" class="empty-state">
-            <p>No draft notices</p>
-          </div>
-          <div v-else class="notice-list">
-            <NoticeCard
-              v-for="notice in activityStore.draftNotices"
-              :key="notice.id"
-              :notice="notice"
-              @click="selectedNotice = notice"
-            />
-          </div>
-        </div>
+    <!-- Feed container -->
+    <div class="feed-container">
+      <!-- Drafts section (steward only) -->
+      <template v-if="isSteward && activityStore.draftNotices.length > 0">
+        <div class="feed-divider">Drafts</div>
+        <FeedCard
+          v-for="notice in activityStore.draftNotices"
+          :key="notice.id"
+          :notice="notice"
+          :is-steward="isSteward"
+        />
+      </template>
+
+      <!-- Published feed -->
+      <FeedCard
+        v-for="notice in activityStore.filteredFeed"
+        :key="notice.id"
+        :notice="notice"
+        :is-steward="isSteward"
+      />
+
+      <!-- Empty state -->
+      <div
+        v-if="activityStore.filteredFeed.length === 0 && !activityStore.loading"
+        class="empty-state"
+      >
+        <p>No notices to show</p>
+      </div>
+
+      <!-- Loading state -->
+      <div v-if="activityStore.loading && activityStore.notices.length === 0" class="loading-state">
+        <p>Loading...</p>
       </div>
     </div>
 
@@ -85,38 +64,46 @@
       v-if="showCreateDialog"
       @close="showCreateDialog = false"
     />
-
-    <!-- Notice Detail Dialog -->
-    <NoticeDetailDialog
-      v-if="selectedNotice"
-      :notice="selectedNotice"
-      @close="selectedNotice = null"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { useActivityStore } from 'stores/activity';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
-import type { Notice } from 'src/lib/api/client';
-import UpcomingTab from 'src/components/activity/UpcomingTab.vue';
-import UpdatesTab from 'src/components/activity/UpdatesTab.vue';
-import PastTab from 'src/components/activity/PastTab.vue';
-import NoticeCard from 'src/components/activity/NoticeCard.vue';
+import { useBackendEvents } from 'src/composables/useBackendEvents';
+import FeedCard from 'src/components/activity/FeedCard.vue';
 import CreateNoticeDialog from 'src/components/activity/CreateNoticeDialog.vue';
-import NoticeDetailDialog from 'src/components/activity/NoticeDetailDialog.vue';
 
 const activityStore = useActivityStore();
 const { isSteward, checkAdminStatus } = useAdminAccess();
+const { lastEvent, connect: connectSSE, disconnect: disconnectSSE } = useBackendEvents();
 
-const activeTab = ref<'upcoming' | 'updates' | 'past' | 'drafts'>('upcoming');
 const showCreateDialog = ref(false);
-const selectedNotice = ref<Notice | null>(null);
+
+const filters = [
+  { label: 'All', value: 'all' as const },
+  { label: 'Events', value: 'event' as const },
+  { label: 'Announcements', value: 'announcement' as const },
+  { label: 'Updates', value: 'update' as const },
+];
+
+watch(lastEvent, (event) => {
+  if (event && (event.type === 'notice_created' || event.type === 'notice_published' || event.type === 'notice_archived')) {
+    activityStore.loadNotices();
+  }
+});
 
 onMounted(async () => {
   await checkAdminStatus();
   activityStore.refreshAll();
+  connectSSE();
+  activityStore.startPolling(15_000);
+});
+
+onUnmounted(() => {
+  disconnectSSE();
+  activityStore.stopPolling();
 });
 </script>
 
@@ -127,107 +114,34 @@ onMounted(async () => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  padding: 1.5rem 2rem;
+  padding-top: 60px;
 }
 
-.activity-body {
-  flex: 1;
-  min-height: 0;
-  margin-left: 220px;
-}
-
-.activity-sidebar {
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 240px;
-  width: 220px;
-  height: 100%;
-  padding-top: 40px;
-  border-right: 1px solid var(--matou-sidebar-border);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
-.activity-sidebar-header {
-  padding: 1.25rem 1rem;
-}
-
-.activity-sidebar-title {
-  font-weight: 600;
-  font-size: 1.2rem;
-  color: var(--matou-sidebar-foreground);
-  margin: 0;
-  line-height: 1.3;
-}
-
-.activity-sidebar-subtitle {
-  font-size: 0.7rem;
-  color: var(--matou-muted-foreground);
-  margin: 0.25rem 0 0;
-  line-height: 1.3;
-}
-
-.activity-sidebar-nav {
-  padding: 1rem 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.activity-nav-item {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 0.75rem;
-  font-size: 1rem;
-  font-weight: 500;
-  color: var(--matou-sidebar-foreground);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  width: 100%;
-  text-align: left;
-  transition: all 0.15s ease;
-}
-
-.activity-nav-item:hover {
-  background-color: var(--matou-sidebar-accent);
-}
-
-.activity-nav-item.active {
-  background-color: var(--matou-sidebar-accent);
-  color: var(--matou-sidebar-primary);
-  border-left: 3px solid var(--matou-sidebar-primary);
-  margin-left: 0;
-  padding-left: calc(0.75rem - 3px);
-}
-
-.activity-nav-text {
+.activity-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  max-width: 56rem;
   width: 100%;
+  margin: 0 auto;
 }
 
-.activity-nav-badge {
-  font-size: 0.7rem;
+.activity-title {
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--matou-foreground);
+}
+
+.activity-subtitle {
+  font-size: 0.8rem;
   color: var(--matou-muted-foreground);
-  font-weight: 400;
+  margin: 0.25rem 0 0;
 }
 
-.activity-nav-item.active .activity-nav-badge {
-  color: var(--matou-sidebar-primary);
-}
-
-.activity-sidebar-actions {
-  padding: 1rem;
-  margin-top: auto;
-}
-
-.create-notice-btn {
-  width: 100%;
-  padding: 0.5rem;
+.create-btn {
+  padding: 0.5rem 1rem;
   background: var(--matou-primary);
   color: white;
   border: none;
@@ -235,37 +149,67 @@ onMounted(async () => {
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
   transition: opacity 0.15s;
 }
 
-.create-notice-btn:hover {
+.create-btn:hover {
   opacity: 0.9;
 }
 
-.tab-content {
-  flex: 1;
-  padding: 1.5rem 2rem;
-  padding-top: 60px;
+.filter-row {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 56rem;
   width: 100%;
-  overflow-y: auto;
+  margin: 1rem auto 0;
 }
 
-.tab-title {
-  font-size: 1.1rem;
-  font-weight: 600;
-  margin: 0 0 1rem;
-  color: var(--matou-foreground);
-}
-
-.empty-state {
-  text-align: center;
-  padding: 3rem 1rem;
+.filter-pill {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--matou-border, #e5e7eb);
+  border-radius: 9999px;
+  background: transparent;
+  font-size: 0.8rem;
   color: var(--matou-muted-foreground);
+  cursor: pointer;
+  transition: all 0.15s;
 }
 
-.notice-list {
+.filter-pill:hover {
+  border-color: var(--matou-primary);
+  color: var(--matou-primary);
+}
+
+.filter-pill.active {
+  background: var(--matou-primary);
+  color: white;
+  border-color: var(--matou-primary);
+}
+
+.feed-container {
+  max-width: 56rem;
+  width: 100%;
+  margin: 1rem auto 0;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+.feed-divider {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--matou-muted-foreground);
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--matou-border, #e5e7eb);
+}
+
+.empty-state,
+.loading-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--matou-muted-foreground);
 }
 </style>

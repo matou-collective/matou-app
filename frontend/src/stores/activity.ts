@@ -11,10 +11,18 @@ import {
   getAcks,
   toggleNoticeSave,
   getSavedNotices,
+  getComments,
+  createComment,
+  getReactions,
+  toggleReaction,
+  toggleNoticePin,
   type Notice,
   type NoticeRSVP,
   type NoticeAck,
   type NoticeSave,
+  type NoticeComment,
+  type NoticeReaction,
+  type ReactionSummary,
   type CreateNoticeRequest,
 } from 'src/lib/api/client';
 
@@ -26,8 +34,26 @@ export const useActivityStore = defineStore('activity', () => {
   const rsvpsByNotice = ref<Record<string, { rsvps: NoticeRSVP[]; counts: Record<string, number> }>>({});
   const acksByNotice = ref<Record<string, NoticeAck[]>>({});
   const savedNotices = ref<NoticeSave[]>([]);
+  const commentsByNotice = ref<Record<string, NoticeComment[]>>({});
+  const reactionsByNotice = ref<Record<string, NoticeReaction[]>>({});
+  const activeFilter = ref<'all' | 'event' | 'announcement' | 'update'>('all');
 
-  // Computed: Board views
+  // Computed: Filtered feed (pinned first, then by date desc)
+  const filteredFeed = computed(() => {
+    let filtered = notices.value.filter(n => n.state === 'published');
+    if (activeFilter.value !== 'all') {
+      filtered = filtered.filter(n => n.type === activeFilter.value);
+    }
+    return filtered.sort((a, b) => {
+      // Pinned first
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      // Then by date desc
+      return (b.publishedAt ?? b.createdAt).localeCompare(a.publishedAt ?? a.createdAt);
+    });
+  });
+
+  // Computed: Board views (kept for backwards compatibility)
   const upcomingEvents = computed(() => {
     const now = new Date().toISOString();
     return notices.value
@@ -152,6 +178,79 @@ export const useActivityStore = defineStore('activity', () => {
     ]);
   }
 
+  // Comments actions
+  async function loadComments(noticeId: string): Promise<void> {
+    const data = await getComments(noticeId);
+    commentsByNotice.value[noticeId] = data.comments;
+  }
+
+  async function handleAddComment(noticeId: string, text: string): Promise<{ success: boolean; error?: string }> {
+    const result = await createComment(noticeId, text);
+    if (result.success) {
+      await loadComments(noticeId);
+    }
+    return result;
+  }
+
+  function getCommentCount(noticeId: string): number {
+    return commentsByNotice.value[noticeId]?.length ?? 0;
+  }
+
+  // Reactions actions
+  async function loadReactions(noticeId: string): Promise<void> {
+    const data = await getReactions(noticeId);
+    reactionsByNotice.value[noticeId] = data.reactions;
+  }
+
+  async function handleToggleReaction(noticeId: string, emoji: string): Promise<{ success: boolean; error?: string }> {
+    const result = await toggleReaction(noticeId, emoji);
+    if (result.success) {
+      await loadReactions(noticeId);
+    }
+    return result;
+  }
+
+  function getReactionSummaries(noticeId: string): ReactionSummary[] {
+    const reactions = reactionsByNotice.value[noticeId] ?? [];
+    const summaryMap = new Map<string, ReactionSummary>();
+    for (const r of reactions) {
+      if (!r.active) continue;
+      const existing = summaryMap.get(r.emoji);
+      if (existing) {
+        existing.count++;
+        // userReacted stays true once set
+      } else {
+        summaryMap.set(r.emoji, { emoji: r.emoji, count: 1, userReacted: false });
+      }
+    }
+    return Array.from(summaryMap.values());
+  }
+
+  // Pin action
+  async function handleTogglePin(noticeId: string): Promise<{ success: boolean; error?: string }> {
+    const result = await toggleNoticePin(noticeId);
+    if (result.success) {
+      await loadNotices();
+    }
+    return result;
+  }
+
+  // Filter action
+  function setFilter(filter: 'all' | 'event' | 'announcement' | 'update') {
+    activeFilter.value = filter;
+  }
+
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+  function startPolling(intervalMs = 15_000) {
+    stopPolling();
+    pollInterval = setInterval(() => { loadNotices().catch(() => {}); }, intervalMs);
+  }
+
+  function stopPolling() {
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+  }
+
   return {
     // State
     notices,
@@ -160,8 +259,12 @@ export const useActivityStore = defineStore('activity', () => {
     rsvpsByNotice,
     acksByNotice,
     savedNotices,
+    commentsByNotice,
+    reactionsByNotice,
+    activeFilter,
 
     // Computed
+    filteredFeed,
     upcomingEvents,
     currentUpdates,
     pastNotices,
@@ -179,9 +282,19 @@ export const useActivityStore = defineStore('activity', () => {
     loadAcks,
     handleToggleSave,
     loadSavedNotices,
+    loadComments,
+    handleAddComment,
+    getCommentCount,
+    loadReactions,
+    handleToggleReaction,
+    getReactionSummaries,
+    handleTogglePin,
+    setFilter,
     getRsvpCounts,
     hasAcked,
     isSaved,
     refreshAll,
+    startPolling,
+    stopPolling,
   };
 });

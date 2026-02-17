@@ -7,6 +7,8 @@ func NoticeTypeDefinitions() []*TypeDefinition {
 		NoticeAckType(),
 		NoticeRSVPType(),
 		NoticeSaveType(),
+		NoticeCommentType(),
+		NoticeReactionType(),
 	}
 }
 
@@ -23,12 +25,12 @@ func NoticeType() *TypeDefinition {
 	return &TypeDefinition{
 		Name:        "Notice",
 		Version:     1,
-		Description: "Community notice board entry (event or update)",
+		Description: "Community notice board entry (event, update, or announcement)",
 		Space:       "community",
 		Fields: []FieldDef{
 			// Core fields
 			{Name: "type", Type: "string", Required: true,
-				Validation: &Validation{Enum: []string{"event", "update"}},
+				Validation: &Validation{Enum: []string{"event", "update", "announcement"}},
 				UIHints:    &UIHints{Label: "Notice Type", Section: "core"}},
 			{Name: "subtype", Type: "string",
 				UIHints: &UIHints{Label: "Subtype", Section: "core"}},
@@ -43,6 +45,12 @@ func NoticeType() *TypeDefinition {
 				UIHints:    &UIHints{InputType: "textarea", Label: "Body", Section: "core"}},
 			{Name: "links", Type: "array",
 				UIHints: &UIHints{Label: "Links", Section: "core"}},
+
+			// Media
+			{Name: "images", Type: "array",
+				UIHints: &UIHints{Label: "Images", Section: "media"}},
+			{Name: "attachments", Type: "array",
+				UIHints: &UIHints{Label: "Attachments", Section: "media"}},
 
 			// Issuer
 			{Name: "issuerType", Type: "string", Required: true,
@@ -101,6 +109,8 @@ func NoticeType() *TypeDefinition {
 				UIHints: &UIHints{Label: "Ack Due Date", Section: "ack"}},
 
 			// Lifecycle
+			{Name: "pinned", Type: "boolean",
+				UIHints: &UIHints{Label: "Pinned", Section: "lifecycle"}},
 			{Name: "state", Type: "string", Required: true,
 				Validation: &Validation{Enum: []string{"draft", "published", "archived"}},
 				UIHints:    &UIHints{DisplayFormat: "badge", Label: "State", Section: "lifecycle"}},
@@ -204,6 +214,78 @@ func NoticeSaveType() *TypeDefinition {
 			Write: "owner",
 		},
 	}
+}
+
+// NoticeCommentType returns the NoticeComment type definition.
+// Stored in the community space. One tree per comment.
+func NoticeCommentType() *TypeDefinition {
+	maxText := 2000
+	maxDisplayName := 100
+	return &TypeDefinition{
+		Name:        "NoticeComment",
+		Version:     1,
+		Description: "Comment on a community notice",
+		Space:       "community",
+		Fields: []FieldDef{
+			{Name: "noticeId", Type: "string", Required: true,
+				UIHints: &UIHints{Label: "Notice ID", Section: "comment"}},
+			{Name: "userId", Type: "string", Required: true,
+				UIHints: &UIHints{Label: "User ID", Section: "comment"}},
+			{Name: "userDisplayName", Type: "string",
+				Validation: &Validation{MaxLength: &maxDisplayName},
+				UIHints:    &UIHints{Label: "User Display Name", Section: "comment"}},
+			{Name: "text", Type: "string", Required: true,
+				Validation: &Validation{MaxLength: &maxText},
+				UIHints:    &UIHints{InputType: "textarea", Label: "Text", Section: "comment"}},
+			{Name: "createdAt", Type: "datetime", Required: true, ReadOnly: true,
+				UIHints: &UIHints{DisplayFormat: "relative-date", Label: "Created At", Section: "comment"}},
+		},
+		Permissions: TypePermissions{
+			Read:  "community",
+			Write: "community",
+		},
+	}
+}
+
+// NoticeReactionType returns the NoticeReaction type definition.
+// Stored in the community space. One tree per (noticeId, userId, emoji) — last-write-wins.
+func NoticeReactionType() *TypeDefinition {
+	return &TypeDefinition{
+		Name:        "NoticeReaction",
+		Version:     1,
+		Description: "Emoji reaction on a community notice",
+		Space:       "community",
+		Fields: []FieldDef{
+			{Name: "noticeId", Type: "string", Required: true,
+				UIHints: &UIHints{Label: "Notice ID", Section: "reaction"}},
+			{Name: "userId", Type: "string", Required: true,
+				UIHints: &UIHints{Label: "User ID", Section: "reaction"}},
+			{Name: "emoji", Type: "string", Required: true,
+				Validation: &Validation{Enum: ValidEmojis},
+				UIHints:    &UIHints{Label: "Emoji", Section: "reaction"}},
+			{Name: "active", Type: "boolean", Required: true,
+				UIHints: &UIHints{Label: "Active", Section: "reaction"}},
+			{Name: "createdAt", Type: "datetime", Required: true, ReadOnly: true,
+				UIHints: &UIHints{DisplayFormat: "relative-date", Label: "Created At", Section: "reaction"}},
+		},
+		Permissions: TypePermissions{
+			Read:  "community",
+			Write: "community",
+		},
+	}
+}
+
+// ValidEmojis are the allowed reaction emoji values.
+var ValidEmojis = []string{"\U0001F44D", "\u2764\uFE0F", "\u2728", "\U0001F389"}
+
+// IsValidEmoji checks if an emoji is in the allowed set.
+func IsValidEmoji(emoji string) bool {
+	for _, e := range ValidEmojis {
+		if e == emoji {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidNoticeStates are the allowed lifecycle states for a notice.

@@ -11,6 +11,11 @@ export type BackendEventType =
   | 'credential:community'
   | 'space:joined'
   | 'identity:configured'
+  | 'notice_created'
+  | 'notice_published'
+  | 'notice_archived'
+  | 'notice_comment'
+  | 'notice_reaction'
   | 'connected';
 
 export interface BackendEvent {
@@ -64,6 +69,36 @@ export function useBackendEvents() {
       const data = JSON.parse(event.data);
       lastEvent.value = { type: 'identity:configured', data };
       console.log('[BackendEvents] Identity configured:', data.aid);
+    });
+
+    eventSource.addEventListener('notice_created', (event) => {
+      const data = JSON.parse(event.data);
+      lastEvent.value = { type: 'notice_created', data };
+      console.log('[BackendEvents] Notice created:', data.noticeId);
+    });
+
+    eventSource.addEventListener('notice_published', (event) => {
+      const data = JSON.parse(event.data);
+      lastEvent.value = { type: 'notice_published', data };
+      console.log('[BackendEvents] Notice published:', data.noticeId);
+    });
+
+    eventSource.addEventListener('notice_archived', (event) => {
+      const data = JSON.parse(event.data);
+      lastEvent.value = { type: 'notice_archived', data };
+      console.log('[BackendEvents] Notice archived:', data.noticeId);
+    });
+
+    eventSource.addEventListener('notice_comment', (event) => {
+      const data = JSON.parse(event.data);
+      lastEvent.value = { type: 'notice_comment', data };
+      console.log('[BackendEvents] Notice comment:', data.noticeId);
+    });
+
+    eventSource.addEventListener('notice_reaction', (event) => {
+      const data = JSON.parse(event.data);
+      lastEvent.value = { type: 'notice_reaction', data };
+      console.log('[BackendEvents] Notice reaction:', data.noticeId);
     });
 
     eventSource.onerror = () => {

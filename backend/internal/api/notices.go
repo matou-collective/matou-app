@@ -99,6 +99,26 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 		}
 	case "save":
 		h.HandleToggleSave(w, r, noticeID)
+	case "comments":
+		switch r.Method {
+		case http.MethodPost:
+			h.HandleCreateComment(w, r, noticeID)
+		case http.MethodGet:
+			h.HandleListComments(w, r, noticeID)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	case "reactions":
+		switch r.Method {
+		case http.MethodPost:
+			h.HandleToggleReaction(w, r, noticeID)
+		case http.MethodGet:
+			h.HandleListReactions(w, r, noticeID)
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		}
+	case "pin":
+		h.HandleTogglePin(w, r, noticeID)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown action"})
 	}
@@ -106,26 +126,29 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 
 // CreateNoticeRequest represents a request to create a notice.
 type CreateNoticeRequest struct {
-	ID           string `json:"id,omitempty"`
-	Type         string `json:"type"`     // "event" or "update"
-	Title        string `json:"title"`
-	Summary      string `json:"summary"`
-	Body         string `json:"body,omitempty"`
-	State        string `json:"state,omitempty"` // "draft" or "published", defaults to "draft"
-	Subtype      string `json:"subtype,omitempty"`
-	EventStart   string `json:"eventStart,omitempty"`
-	EventEnd     string `json:"eventEnd,omitempty"`
-	Timezone     string `json:"timezone,omitempty"`
-	LocationMode string `json:"locationMode,omitempty"`
-	LocationText string `json:"locationText,omitempty"`
-	LocationURL  string `json:"locationUrl,omitempty"`
-	RSVPEnabled  bool   `json:"rsvpEnabled,omitempty"`
-	RSVPRequired bool   `json:"rsvpRequired,omitempty"`
-	RSVPCapacity int    `json:"rsvpCapacity,omitempty"`
-	AckRequired  bool   `json:"ackRequired,omitempty"`
-	AckDueAt     string `json:"ackDueAt,omitempty"`
-	ActiveFrom   string `json:"activeFrom,omitempty"`
-	ActiveUntil  string `json:"activeUntil,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	Type         string          `json:"type"`     // "event", "update", or "announcement"
+	Title        string          `json:"title"`
+	Summary      string          `json:"summary"`
+	Body         string          `json:"body,omitempty"`
+	Links        json.RawMessage `json:"links,omitempty"`
+	Images       json.RawMessage `json:"images,omitempty"`
+	Attachments  json.RawMessage `json:"attachments,omitempty"`
+	State        string          `json:"state,omitempty"` // "draft" or "published", defaults to "draft"
+	Subtype      string          `json:"subtype,omitempty"`
+	EventStart   string          `json:"eventStart,omitempty"`
+	EventEnd     string          `json:"eventEnd,omitempty"`
+	Timezone     string          `json:"timezone,omitempty"`
+	LocationMode string          `json:"locationMode,omitempty"`
+	LocationText string          `json:"locationText,omitempty"`
+	LocationURL  string          `json:"locationUrl,omitempty"`
+	RSVPEnabled  bool            `json:"rsvpEnabled,omitempty"`
+	RSVPRequired bool            `json:"rsvpRequired,omitempty"`
+	RSVPCapacity int             `json:"rsvpCapacity,omitempty"`
+	AckRequired  bool            `json:"ackRequired,omitempty"`
+	AckDueAt     string          `json:"ackDueAt,omitempty"`
+	ActiveFrom   string          `json:"activeFrom,omitempty"`
+	ActiveUntil  string          `json:"activeUntil,omitempty"`
 }
 
 // HandleCreateNotice handles POST /api/v1/notices.
@@ -148,8 +171,8 @@ func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "type is required"})
 		return
 	}
-	if req.Type != "event" && req.Type != "update" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "type must be 'event' or 'update'"})
+	if req.Type != "event" && req.Type != "update" && req.Type != "announcement" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "type must be 'event', 'update', or 'announcement'"})
 		return
 	}
 	if req.Title == "" {
@@ -216,6 +239,9 @@ func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Reque
 		Title:        req.Title,
 		Summary:      req.Summary,
 		Body:         req.Body,
+		Links:        req.Links,
+		Images:       req.Images,
+		Attachments:  req.Attachments,
 		IssuerType:   "person",
 		IssuerID:     aid,
 		AudienceMode: "community",
@@ -326,7 +352,7 @@ func (h *NoticesHandler) HandleListNotices(w http.ResponseWriter, r *http.Reques
 				}
 			}
 		case "current":
-			if n.Type != "update" || n.State != "published" {
+			if (n.Type != "update" && n.Type != "announcement") || n.State != "published" {
 				continue
 			}
 			if n.ActiveUntil != "" {
@@ -748,6 +774,308 @@ func (h *NoticesHandler) HandleListSaved(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"saves": pinned,
 		"count": len(pinned),
+	})
+}
+
+// CommentRequest represents a request to create a comment.
+type CommentRequest struct {
+	Text string `json:"text"`
+}
+
+// HandleCreateComment handles POST /api/v1/notices/{id}/comments.
+func (h *NoticesHandler) HandleCreateComment(w http.ResponseWriter, r *http.Request, noticeID string) {
+	var req CommentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+
+	if req.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		return
+	}
+	if len(req.Text) > 2000 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text must be 2000 characters or less"})
+		return
+	}
+
+	aid := ""
+	if h.userIdentity != nil {
+		aid = h.userIdentity.GetAID()
+	}
+	if aid == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity not configured"})
+		return
+	}
+
+	spaceID := h.spaceManager.GetCommunitySpaceID()
+	if spaceID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "community space not configured"})
+		return
+	}
+
+	client := h.spaceManager.GetClient()
+	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to load space keys: %v", err),
+		})
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	commentID := fmt.Sprintf("%d", time.Now().UnixMilli())
+	comment := &anysync.NoticeCommentPayload{
+		ID:        commentID,
+		NoticeID:  noticeID,
+		UserID:    aid,
+		Text:      req.Text,
+		CreatedAt: now,
+	}
+
+	noticeMgr := h.spaceManager.NoticeTreeManager()
+	treeID, err := noticeMgr.CreateComment(r.Context(), spaceID, comment, keys.SigningKey)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to create comment: %v", err),
+		})
+		return
+	}
+
+	if h.eventBroker != nil {
+		h.eventBroker.Broadcast(SSEEvent{
+			Type: "notice_comment",
+			Data: map[string]interface{}{
+				"noticeId":  noticeID,
+				"commentId": commentID,
+				"userId":    aid,
+			},
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":   true,
+		"noticeId":  noticeID,
+		"commentId": commentID,
+		"treeId":    treeID,
+	})
+}
+
+// HandleListComments handles GET /api/v1/notices/{id}/comments.
+func (h *NoticesHandler) HandleListComments(w http.ResponseWriter, r *http.Request, noticeID string) {
+	spaceID := h.spaceManager.GetCommunitySpaceID()
+	if spaceID == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"comments": []interface{}{},
+			"count":    0,
+		})
+		return
+	}
+
+	noticeMgr := h.spaceManager.NoticeTreeManager()
+	comments, err := noticeMgr.ReadComments(r.Context(), spaceID, noticeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to read comments: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"comments": comments,
+		"count":    len(comments),
+	})
+}
+
+// ReactionRequest represents a request to toggle a reaction.
+type ReactionRequest struct {
+	Emoji string `json:"emoji"`
+}
+
+// HandleToggleReaction handles POST /api/v1/notices/{id}/reactions.
+func (h *NoticesHandler) HandleToggleReaction(w http.ResponseWriter, r *http.Request, noticeID string) {
+	var req ReactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+
+	if req.Emoji == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "emoji is required"})
+		return
+	}
+	if !types.IsValidEmoji(req.Emoji) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid emoji"})
+		return
+	}
+
+	aid := ""
+	if h.userIdentity != nil {
+		aid = h.userIdentity.GetAID()
+	}
+	if aid == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity not configured"})
+		return
+	}
+
+	spaceID := h.spaceManager.GetCommunitySpaceID()
+	if spaceID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "community space not configured"})
+		return
+	}
+
+	client := h.spaceManager.GetClient()
+	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to load space keys: %v", err),
+		})
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	reaction := &anysync.NoticeReactionPayload{
+		NoticeID:  noticeID,
+		UserID:    aid,
+		Emoji:     req.Emoji,
+		Active:    true,
+		CreatedAt: now,
+	}
+
+	// Check existing reactions for toggle behavior
+	noticeMgr := h.spaceManager.NoticeTreeManager()
+	existingReactions, _ := noticeMgr.ReadReactions(r.Context(), spaceID, noticeID)
+	for _, existing := range existingReactions {
+		if existing.UserID == aid && existing.Emoji == req.Emoji {
+			reaction.Active = !existing.Active
+			break
+		}
+	}
+
+	treeID, err := noticeMgr.CreateReaction(r.Context(), spaceID, reaction, keys.SigningKey)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to toggle reaction: %v", err),
+		})
+		return
+	}
+
+	if h.eventBroker != nil {
+		h.eventBroker.Broadcast(SSEEvent{
+			Type: "notice_reaction",
+			Data: map[string]interface{}{
+				"noticeId": noticeID,
+				"userId":   aid,
+				"emoji":    req.Emoji,
+				"active":   reaction.Active,
+			},
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"noticeId": noticeID,
+		"emoji":    req.Emoji,
+		"active":   reaction.Active,
+		"treeId":   treeID,
+	})
+}
+
+// HandleListReactions handles GET /api/v1/notices/{id}/reactions.
+func (h *NoticesHandler) HandleListReactions(w http.ResponseWriter, r *http.Request, noticeID string) {
+	spaceID := h.spaceManager.GetCommunitySpaceID()
+	if spaceID == "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"reactions": []interface{}{},
+			"counts":    map[string]int{},
+		})
+		return
+	}
+
+	noticeMgr := h.spaceManager.NoticeTreeManager()
+	allReactions, err := noticeMgr.ReadReactions(r.Context(), spaceID, noticeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to read reactions: %v", err),
+		})
+		return
+	}
+
+	// Filter to active only and compute counts
+	var active []*anysync.NoticeReactionPayload
+	counts := map[string]int{}
+	for _, r := range allReactions {
+		if r.Active {
+			active = append(active, r)
+			counts[r.Emoji]++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"reactions": active,
+		"counts":    counts,
+	})
+}
+
+// HandleTogglePin handles POST /api/v1/notices/{id}/pin.
+func (h *NoticesHandler) HandleTogglePin(w http.ResponseWriter, r *http.Request, noticeID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	spaceID := h.spaceManager.GetCommunitySpaceID()
+	if spaceID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "community space not configured"})
+		return
+	}
+
+	// Read current notice to determine toggle direction
+	noticeMgr := h.spaceManager.NoticeTreeManager()
+	notice, err := noticeMgr.ReadNotice(r.Context(), spaceID, noticeID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("notice not found: %v", err),
+		})
+		return
+	}
+
+	newPinned := !notice.Pinned
+
+	client := h.spaceManager.GetClient()
+	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to load space keys: %v", err),
+		})
+		return
+	}
+
+	if err := noticeMgr.UpdateNoticePinned(r.Context(), spaceID, noticeID, newPinned, keys.SigningKey); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to toggle pin: %v", err),
+		})
+		return
+	}
+
+	if h.eventBroker != nil {
+		h.eventBroker.Broadcast(SSEEvent{
+			Type: "notice_published",
+			Data: map[string]interface{}{
+				"noticeId": noticeID,
+				"pinned":   newPinned,
+			},
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"noticeId": noticeID,
+		"pinned":   newPinned,
 	})
 }
 

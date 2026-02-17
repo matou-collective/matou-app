@@ -371,7 +371,7 @@ export async function loginWithMnemonic(
 export async function navigateToActivity(page: Page): Promise<void> {
   await page.locator('.nav-item', { hasText: 'Activity' }).click();
   await expect(page).toHaveURL(/#\/dashboard\/activity/, { timeout: TIMEOUT.short });
-  await expect(page.locator('.activity-sidebar-title')).toContainText('Activity', { timeout: TIMEOUT.short });
+  await expect(page.locator('.activity-title')).toContainText('Activity Feed', { timeout: TIMEOUT.short });
 }
 
 /**
@@ -382,7 +382,7 @@ export async function navigateToActivity(page: Page): Promise<void> {
 export async function createNotice(
   page: Page,
   opts: {
-    type: 'event' | 'update';
+    type: 'event' | 'update' | 'announcement';
     title: string;
     summary: string;
     eventStart?: string;
@@ -392,7 +392,7 @@ export async function createNotice(
     publish?: boolean;
   },
 ): Promise<void> {
-  await page.locator('.create-notice-btn').click();
+  await page.locator('.create-btn').click();
 
   const overlay = page.locator('.dialog-overlay');
   await expect(overlay).toBeVisible({ timeout: TIMEOUT.short });

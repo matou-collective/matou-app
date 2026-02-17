@@ -19,12 +19,14 @@ import (
 // NoticePayload is the API-level representation of a notice.
 type NoticePayload struct {
 	ID               string          `json:"id"`
-	Type             string          `json:"type"`     // "event" or "update"
+	Type             string          `json:"type"`     // "event", "update", or "announcement"
 	Subtype          string          `json:"subtype,omitempty"`
 	Title            string          `json:"title"`
 	Summary          string          `json:"summary"`
 	Body             string          `json:"body,omitempty"`
 	Links            json.RawMessage `json:"links,omitempty"`
+	Images           json.RawMessage `json:"images,omitempty"`
+	Attachments      json.RawMessage `json:"attachments,omitempty"`
 	IssuerType       string          `json:"issuerType"`
 	IssuerID         string          `json:"issuerId"`
 	IssuerName       string          `json:"issuerDisplayName,omitempty"`
@@ -44,6 +46,7 @@ type NoticePayload struct {
 	RSVPCapacity     int             `json:"rsvpCapacity,omitempty"`
 	AckRequired      bool            `json:"ackRequired,omitempty"`
 	AckDueAt         string          `json:"ackDueAt,omitempty"`
+	Pinned           bool            `json:"pinned,omitempty"`
 	State            string          `json:"state"` // "draft", "published", "archived"
 	CreatedAt        string          `json:"createdAt"`
 	CreatedBy        string          `json:"createdBy"`
@@ -81,6 +84,28 @@ type NoticeSavePayload struct {
 	SavedAt  string `json:"savedAt"`
 	Pinned   bool   `json:"pinned"`
 	TreeID   string `json:"treeId,omitempty"`
+}
+
+// NoticeCommentPayload represents a comment on a notice.
+type NoticeCommentPayload struct {
+	ID              string `json:"id"`
+	NoticeID        string `json:"noticeId"`
+	UserID          string `json:"userId"`
+	UserDisplayName string `json:"userDisplayName,omitempty"`
+	Text            string `json:"text"`
+	CreatedAt       string `json:"createdAt"`
+	TreeID          string `json:"treeId,omitempty"`
+}
+
+// NoticeReactionPayload represents an emoji reaction on a notice.
+type NoticeReactionPayload struct {
+	ID        string `json:"id"`
+	NoticeID  string `json:"noticeId"`
+	UserID    string `json:"userId"`
+	Emoji     string `json:"emoji"`
+	Active    bool   `json:"active"`
+	CreatedAt string `json:"createdAt"`
+	TreeID    string `json:"treeId,omitempty"`
 }
 
 // NoticeTreeManager manages notice and interaction storage using tree-per-object model.
@@ -466,6 +491,193 @@ func (m *NoticeTreeManager) ReadSaves(ctx context.Context, spaceID string) ([]*N
 	return saves, nil
 }
 
+// CreateComment creates a comment tree for a notice.
+func (m *NoticeTreeManager) CreateComment(ctx context.Context, spaceID string, comment *NoticeCommentPayload, signingKey crypto.PrivKey) (string, error) {
+	objectID := fmt.Sprintf("Comment-%s-%s", comment.NoticeID, comment.ID)
+
+	tree, treeID, err := m.treeManager.CreateObjectTree(ctx, spaceID, objectID, "NoticeComment", InteractionTreeType, signingKey)
+	if err != nil {
+		return "", fmt.Errorf("creating comment tree: %w", err)
+	}
+
+	fields := commentToFields(comment)
+	initOps := InitChange(fields)
+	data, err := json.Marshal(initOps)
+	if err != nil {
+		return "", fmt.Errorf("marshaling comment: %w", err)
+	}
+
+	tree.Lock()
+	defer tree.Unlock()
+
+	_, err = tree.AddContent(ctx, objecttree.SignableChangeContent{
+		Data:              data,
+		Key:               signingKey,
+		IsSnapshot:        true,
+		ShouldBeEncrypted: true,
+		Timestamp:         time.Now().Unix(),
+		DataType:          ObjectChangeType,
+	})
+	if err != nil {
+		return "", fmt.Errorf("adding comment content: %w", err)
+	}
+
+	log.Printf("[NoticeTree] Created comment %s for notice %s user %s treeId=%s", comment.ID, comment.NoticeID, comment.UserID, treeID)
+	return treeID, nil
+}
+
+// ReadComments reads all comments for a specific notice.
+func (m *NoticeTreeManager) ReadComments(ctx context.Context, spaceID, noticeID string) ([]*NoticeCommentPayload, error) {
+	entries := m.treeManager.GetTreesByChangeType(spaceID, InteractionTreeType)
+
+	var comments []*NoticeCommentPayload
+	for _, entry := range entries {
+		if entry.ObjectType != "NoticeComment" {
+			continue
+		}
+
+		tree, err := m.treeManager.GetTree(ctx, spaceID, entry.TreeID)
+		if err != nil {
+			continue
+		}
+
+		tree.Lock()
+		state, err := BuildState(tree, entry.ObjectID, "NoticeComment")
+		tree.Unlock()
+		if err != nil {
+			continue
+		}
+
+		comment := stateToComment(state, entry.TreeID)
+		if comment.NoticeID == noticeID {
+			comments = append(comments, comment)
+		}
+	}
+
+	return comments, nil
+}
+
+// CreateReaction creates or updates a reaction for a notice.
+// Uses objectID "Reaction-{noticeId}-{userId}-{emoji}" for last-write-wins semantics.
+func (m *NoticeTreeManager) CreateReaction(ctx context.Context, spaceID string, reaction *NoticeReactionPayload, signingKey crypto.PrivKey) (string, error) {
+	objectID := fmt.Sprintf("Reaction-%s-%s-%s", reaction.NoticeID, reaction.UserID, reaction.Emoji)
+
+	// Check if reaction tree already exists (toggle case)
+	existingTree, _ := m.treeManager.GetTreeForObject(ctx, spaceID, objectID)
+	if existingTree != nil {
+		return m.updateReaction(ctx, existingTree, objectID, reaction, signingKey)
+	}
+
+	tree, treeID, err := m.treeManager.CreateObjectTree(ctx, spaceID, objectID, "NoticeReaction", InteractionTreeType, signingKey)
+	if err != nil {
+		return "", fmt.Errorf("creating reaction tree: %w", err)
+	}
+
+	fields := reactionToFields(reaction)
+	initOps := InitChange(fields)
+	data, err := json.Marshal(initOps)
+	if err != nil {
+		return "", fmt.Errorf("marshaling reaction: %w", err)
+	}
+
+	tree.Lock()
+	defer tree.Unlock()
+
+	_, err = tree.AddContent(ctx, objecttree.SignableChangeContent{
+		Data:              data,
+		Key:               signingKey,
+		IsSnapshot:        true,
+		ShouldBeEncrypted: true,
+		Timestamp:         time.Now().Unix(),
+		DataType:          ObjectChangeType,
+	})
+	if err != nil {
+		return "", fmt.Errorf("adding reaction content: %w", err)
+	}
+
+	log.Printf("[NoticeTree] Created reaction for notice %s user %s emoji=%s treeId=%s",
+		reaction.NoticeID, reaction.UserID, reaction.Emoji, treeID)
+	return treeID, nil
+}
+
+// ReadReactions reads all reactions for a specific notice.
+func (m *NoticeTreeManager) ReadReactions(ctx context.Context, spaceID, noticeID string) ([]*NoticeReactionPayload, error) {
+	entries := m.treeManager.GetTreesByChangeType(spaceID, InteractionTreeType)
+
+	var reactions []*NoticeReactionPayload
+	for _, entry := range entries {
+		if entry.ObjectType != "NoticeReaction" {
+			continue
+		}
+
+		tree, err := m.treeManager.GetTree(ctx, spaceID, entry.TreeID)
+		if err != nil {
+			continue
+		}
+
+		tree.Lock()
+		state, err := BuildState(tree, entry.ObjectID, "NoticeReaction")
+		tree.Unlock()
+		if err != nil {
+			continue
+		}
+
+		reaction := stateToReaction(state, entry.TreeID)
+		if reaction.NoticeID == noticeID {
+			reactions = append(reactions, reaction)
+		}
+	}
+
+	return reactions, nil
+}
+
+// UpdateNoticePinned toggles the pinned field on a notice tree.
+func (m *NoticeTreeManager) UpdateNoticePinned(ctx context.Context, spaceID, noticeID string, pinned bool, signingKey crypto.PrivKey) error {
+	objectID := fmt.Sprintf("Notice-%s", noticeID)
+
+	tree, err := m.treeManager.GetTreeForObject(ctx, spaceID, objectID)
+	if err != nil {
+		return fmt.Errorf("notice %s not found: %w", noticeID, err)
+	}
+
+	tree.Lock()
+	defer tree.Unlock()
+
+	state, err := BuildState(tree, objectID, "Notice")
+	if err != nil {
+		return fmt.Errorf("building state for notice %s: %w", noticeID, err)
+	}
+
+	fields := map[string]json.RawMessage{}
+	pinnedJSON, _ := json.Marshal(pinned)
+	fields["pinned"] = pinnedJSON
+
+	diff := DiffState(state, mergeFields(state.Fields, fields))
+	if diff == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(diff)
+	if err != nil {
+		return fmt.Errorf("marshaling pinned update: %w", err)
+	}
+
+	_, err = tree.AddContent(ctx, objecttree.SignableChangeContent{
+		Data:              data,
+		Key:               signingKey,
+		IsSnapshot:        false,
+		ShouldBeEncrypted: true,
+		Timestamp:         time.Now().Unix(),
+		DataType:          ObjectChangeType,
+	})
+	if err != nil {
+		return fmt.Errorf("updating pinned: %w", err)
+	}
+
+	log.Printf("[NoticeTree] Updated notice %s pinned=%v", noticeID, pinned)
+	return nil
+}
+
 // --- Internal helpers ---
 
 func (m *NoticeTreeManager) readNoticeFromTree(tree objecttree.ObjectTree, entry ObjectIndexEntry) (*NoticePayload, error) {
@@ -551,6 +763,42 @@ func (m *NoticeTreeManager) updateSave(ctx context.Context, tree objecttree.Obje
 	return tree.Id(), nil
 }
 
+func (m *NoticeTreeManager) updateReaction(ctx context.Context, tree objecttree.ObjectTree, objectID string, reaction *NoticeReactionPayload, signingKey crypto.PrivKey) (string, error) {
+	tree.Lock()
+	defer tree.Unlock()
+
+	state, err := BuildState(tree, objectID, "NoticeReaction")
+	if err != nil {
+		return "", fmt.Errorf("building reaction state: %w", err)
+	}
+
+	newFields := reactionToFields(reaction)
+	diff := DiffState(state, newFields)
+	if diff == nil {
+		return "", nil
+	}
+
+	data, err := json.Marshal(diff)
+	if err != nil {
+		return "", fmt.Errorf("marshaling reaction update: %w", err)
+	}
+
+	_, err = tree.AddContent(ctx, objecttree.SignableChangeContent{
+		Data:              data,
+		Key:               signingKey,
+		IsSnapshot:        false,
+		ShouldBeEncrypted: true,
+		Timestamp:         time.Now().Unix(),
+		DataType:          ObjectChangeType,
+	})
+	if err != nil {
+		return "", fmt.Errorf("updating reaction: %w", err)
+	}
+
+	log.Printf("[NoticeTree] Updated reaction %s active=%v", objectID, reaction.Active)
+	return tree.Id(), nil
+}
+
 // mergeFields merges new fields into existing fields, returning a combined map.
 func mergeFields(existing, updates map[string]json.RawMessage) map[string]json.RawMessage {
 	merged := make(map[string]json.RawMessage, len(existing)+len(updates))
@@ -584,6 +832,12 @@ func noticeToFields(n *NoticePayload) map[string]json.RawMessage {
 	}
 	if len(n.Links) > 0 {
 		fields["links"] = n.Links
+	}
+	if len(n.Images) > 0 {
+		fields["images"] = n.Images
+	}
+	if len(n.Attachments) > 0 {
+		fields["attachments"] = n.Attachments
 	}
 	if n.IssuerName != "" {
 		setField(fields, "issuerDisplayName", n.IssuerName)
@@ -636,6 +890,9 @@ func noticeToFields(n *NoticePayload) map[string]json.RawMessage {
 	if n.AckDueAt != "" {
 		setField(fields, "ackDueAt", n.AckDueAt)
 	}
+	if n.Pinned {
+		setField(fields, "pinned", true)
+	}
 	if n.PublishedAt != "" {
 		setField(fields, "publishedAt", n.PublishedAt)
 	}
@@ -676,6 +933,28 @@ func saveToFields(s *NoticeSavePayload) map[string]json.RawMessage {
 	return fields
 }
 
+func commentToFields(c *NoticeCommentPayload) map[string]json.RawMessage {
+	fields := make(map[string]json.RawMessage)
+	setField(fields, "noticeId", c.NoticeID)
+	setField(fields, "userId", c.UserID)
+	if c.UserDisplayName != "" {
+		setField(fields, "userDisplayName", c.UserDisplayName)
+	}
+	setField(fields, "text", c.Text)
+	setField(fields, "createdAt", c.CreatedAt)
+	return fields
+}
+
+func reactionToFields(r *NoticeReactionPayload) map[string]json.RawMessage {
+	fields := make(map[string]json.RawMessage)
+	setField(fields, "noticeId", r.NoticeID)
+	setField(fields, "userId", r.UserID)
+	setField(fields, "emoji", r.Emoji)
+	setField(fields, "active", r.Active)
+	setField(fields, "createdAt", r.CreatedAt)
+	return fields
+}
+
 func setField(fields map[string]json.RawMessage, key string, value interface{}) {
 	b, err := json.Marshal(value)
 	if err == nil {
@@ -703,6 +982,12 @@ func stateToNotice(state *ObjectState, treeID string) (*NoticePayload, error) {
 	if v, ok := state.Fields["links"]; ok {
 		n.Links = v
 	}
+	if v, ok := state.Fields["images"]; ok {
+		n.Images = v
+	}
+	if v, ok := state.Fields["attachments"]; ok {
+		n.Attachments = v
+	}
 	getStringField(state.Fields, "issuerType", &n.IssuerType)
 	getStringField(state.Fields, "issuerId", &n.IssuerID)
 	getStringField(state.Fields, "issuerDisplayName", &n.IssuerName)
@@ -724,6 +1009,7 @@ func stateToNotice(state *ObjectState, treeID string) (*NoticePayload, error) {
 	getIntField(state.Fields, "rsvpCapacity", &n.RSVPCapacity)
 	getBoolField(state.Fields, "ackRequired", &n.AckRequired)
 	getStringField(state.Fields, "ackDueAt", &n.AckDueAt)
+	getBoolField(state.Fields, "pinned", &n.Pinned)
 	getStringField(state.Fields, "state", &n.State)
 	getStringField(state.Fields, "createdAt", &n.CreatedAt)
 	getStringField(state.Fields, "createdBy", &n.CreatedBy)
@@ -768,6 +1054,32 @@ func stateToSave(state *ObjectState, treeID string) *NoticeSavePayload {
 	getStringField(state.Fields, "savedAt", &s.SavedAt)
 	getBoolField(state.Fields, "pinned", &s.Pinned)
 	return s
+}
+
+func stateToComment(state *ObjectState, treeID string) *NoticeCommentPayload {
+	c := &NoticeCommentPayload{
+		ID:     state.ObjectID,
+		TreeID: treeID,
+	}
+	getStringField(state.Fields, "noticeId", &c.NoticeID)
+	getStringField(state.Fields, "userId", &c.UserID)
+	getStringField(state.Fields, "userDisplayName", &c.UserDisplayName)
+	getStringField(state.Fields, "text", &c.Text)
+	getStringField(state.Fields, "createdAt", &c.CreatedAt)
+	return c
+}
+
+func stateToReaction(state *ObjectState, treeID string) *NoticeReactionPayload {
+	r := &NoticeReactionPayload{
+		ID:     state.ObjectID,
+		TreeID: treeID,
+	}
+	getStringField(state.Fields, "noticeId", &r.NoticeID)
+	getStringField(state.Fields, "userId", &r.UserID)
+	getStringField(state.Fields, "emoji", &r.Emoji)
+	getBoolField(state.Fields, "active", &r.Active)
+	getStringField(state.Fields, "createdAt", &r.CreatedAt)
+	return r
 }
 
 func getStringField(fields map[string]json.RawMessage, key string, target *string) {

@@ -27,7 +27,13 @@ func TestHandleCreateNotice_Validation(t *testing.T) {
 			name:       "invalid type",
 			body:       map[string]string{"type": "invalid", "title": "Test", "summary": "Test"},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "type must be 'event' or 'update'",
+			wantError:  "type must be 'event', 'update', or 'announcement'",
+		},
+		{
+			name:       "valid announcement but no identity",
+			body:       map[string]string{"type": "announcement", "title": "Test", "summary": "Test"},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "identity not configured",
 		},
 		{
 			name:       "missing title",
@@ -285,5 +291,109 @@ func TestHandleArchiveNotice_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleCreateComment_Validation(t *testing.T) {
+	handler := &NoticesHandler{}
+
+	tests := []struct {
+		name       string
+		body       interface{}
+		wantStatus int
+		wantError  string
+	}{
+		{
+			name:       "missing text",
+			body:       map[string]string{},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "text is required",
+		},
+		{
+			name:       "empty text",
+			body:       map[string]string{"text": ""},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "text is required",
+		},
+		{
+			name:       "valid text but no identity",
+			body:       map[string]string{"text": "Hello world"},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "identity not configured",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(tt.body)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/notices/test-id/comments", bytes.NewReader(body))
+			w := httptest.NewRecorder()
+
+			handler.HandleCreateComment(w, req, "test-id")
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			var resp map[string]interface{}
+			json.Unmarshal(w.Body.Bytes(), &resp)
+			if errMsg, ok := resp["error"].(string); ok {
+				if errMsg != tt.wantError {
+					t.Errorf("error = %q, want %q", errMsg, tt.wantError)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleToggleReaction_Validation(t *testing.T) {
+	handler := &NoticesHandler{}
+
+	tests := []struct {
+		name       string
+		body       interface{}
+		wantStatus int
+		wantError  string
+	}{
+		{
+			name:       "missing emoji",
+			body:       map[string]string{},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "emoji is required",
+		},
+		{
+			name:       "invalid emoji",
+			body:       map[string]string{"emoji": "X"},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "invalid emoji",
+		},
+		{
+			name:       "valid emoji but no identity",
+			body:       map[string]string{"emoji": "\U0001F44D"},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "identity not configured",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(tt.body)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/notices/test-id/reactions", bytes.NewReader(body))
+			w := httptest.NewRecorder()
+
+			handler.HandleToggleReaction(w, req, "test-id")
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+
+			var resp map[string]interface{}
+			json.Unmarshal(w.Body.Bytes(), &resp)
+			if errMsg, ok := resp["error"].(string); ok {
+				if errMsg != tt.wantError {
+					t.Errorf("error = %q, want %q", errMsg, tt.wantError)
+				}
+			}
+		})
 	}
 }

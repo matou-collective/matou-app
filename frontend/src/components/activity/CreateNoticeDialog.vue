@@ -4,7 +4,7 @@
       <div class="dialog-header">
         <h2 class="dialog-title">Create Notice</h2>
         <button class="dialog-close" @click="$emit('close')">
-          <X :size="18" />
+          <X :size="20" />
         </button>
       </div>
 
@@ -12,8 +12,15 @@
         <div class="form-group">
           <label class="form-label">Type</label>
           <div class="type-selector">
-            <button type="button" class="type-btn" :class="{ active: form.type === 'event' }" @click="form.type = 'event'">Event</button>
-            <button type="button" class="type-btn" :class="{ active: form.type === 'update' }" @click="form.type = 'update'">Update</button>
+            <button type="button" class="type-btn" :class="{ active: form.type === 'event' }" @click="form.type = 'event'">
+              <Calendar :size="16" /> Event
+            </button>
+            <button type="button" class="type-btn" :class="{ active: form.type === 'announcement' }" @click="form.type = 'announcement'">
+              <Megaphone :size="16" /> Announcement
+            </button>
+            <button type="button" class="type-btn" :class="{ active: form.type === 'update' }" @click="form.type = 'update'">
+              <FileText :size="16" /> Update
+            </button>
           </div>
         </div>
 
@@ -30,6 +37,40 @@
         <div class="form-group">
           <label class="form-label">Body</label>
           <textarea v-model="form.body" class="form-input form-textarea" placeholder="Full details..." rows="4" />
+        </div>
+
+        <!-- Images upload -->
+        <div class="form-group">
+          <label class="form-label">Images</label>
+          <FileUploadInput
+            accept="image/*"
+            :multiple="true"
+            drop-text="Drop images here or click to browse"
+            @update="handleImagesUpdate"
+          />
+        </div>
+
+        <!-- Attachments upload -->
+        <div class="form-group">
+          <label class="form-label">Attachments</label>
+          <FileUploadInput
+            :multiple="true"
+            drop-text="Drop files here or click to browse"
+            @update="handleAttachmentsUpdate"
+          />
+        </div>
+
+        <!-- Links section -->
+        <div class="form-group">
+          <label class="form-label">Links</label>
+          <div v-for="(link, idx) in form.links" :key="idx" class="link-row">
+            <input v-model="link.label" class="form-input link-input" placeholder="Label" />
+            <input v-model="link.url" class="form-input link-input" placeholder="https://..." />
+            <button type="button" class="link-remove" @click="removeLink(idx)">
+              <X :size="16" />
+            </button>
+          </div>
+          <button type="button" class="add-link-btn" @click="addLink">+ Add link</button>
         </div>
 
         <div v-if="form.type === 'event'" class="form-section">
@@ -58,7 +99,7 @@
           </div>
         </div>
 
-        <div v-if="form.type === 'update'" class="form-section">
+        <div v-if="form.type === 'update' || form.type === 'announcement'" class="form-section">
           <div class="form-group">
             <label class="form-label">
               <input type="checkbox" v-model="form.ackRequired" /> Require Acknowledgment
@@ -80,14 +121,15 @@
 
 <script setup lang="ts">
 import { ref, reactive } from 'vue';
-import { X } from 'lucide-vue-next';
+import { X, Calendar, Megaphone, FileText } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
+import FileUploadInput from './FileUploadInput.vue';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 const activityStore = useActivityStore();
 
 const form = reactive({
-  type: 'event' as 'event' | 'update',
+  type: 'event' as 'event' | 'update' | 'announcement',
   title: '',
   summary: '',
   body: '',
@@ -96,15 +138,36 @@ const form = reactive({
   locationText: '',
   rsvpEnabled: false,
   ackRequired: false,
+  images: [] as string[],
+  attachments: [] as { name: string; fileRef: string; mimeType: string; size: number }[],
+  links: [] as { label: string; url: string }[],
 });
 
 const submitting = ref(false);
 const submitError = ref('');
 const publishOnSubmit = ref(false);
 
+function handleImagesUpdate(files: { name: string; fileRef: string; mimeType: string; size: number }[]) {
+  form.images = files.map(f => f.fileRef);
+}
+
+function handleAttachmentsUpdate(files: { name: string; fileRef: string; mimeType: string; size: number }[]) {
+  form.attachments = files;
+}
+
+function addLink() {
+  form.links.push({ label: '', url: '' });
+}
+
+function removeLink(idx: number) {
+  form.links.splice(idx, 1);
+}
+
 async function handleSubmit() {
   submitting.value = true;
   submitError.value = '';
+
+  const validLinks = form.links.filter(l => l.label.trim() && l.url.trim());
 
   const result = await activityStore.handleCreateNotice({
     type: form.type,
@@ -117,6 +180,9 @@ async function handleSubmit() {
     locationText: form.locationText || undefined,
     rsvpEnabled: form.rsvpEnabled || undefined,
     ackRequired: form.ackRequired || undefined,
+    images: form.images.length > 0 ? form.images : undefined,
+    attachments: form.attachments.length > 0 ? form.attachments : undefined,
+    links: validLinks.length > 0 ? validLinks : undefined,
   });
 
   submitting.value = false;
@@ -212,6 +278,10 @@ async function handleSubmit() {
   cursor: pointer;
   font-size: 0.85rem;
   transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
 }
 
 .type-btn.active {
@@ -239,6 +309,44 @@ async function handleSubmit() {
 
 .form-row .form-group {
   flex: 1;
+}
+
+.link-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  align-items: center;
+}
+
+.link-input {
+  flex: 1;
+}
+
+.link-remove {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  border-radius: 50%;
+  background: var(--matou-background, #f4f4f5);
+  cursor: pointer;
+  color: var(--matou-muted-foreground);
+}
+
+.link-remove:hover {
+  color: var(--matou-destructive, #ef4444);
+}
+
+.add-link-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--matou-primary);
+  padding: 0.25rem 0;
 }
 
 .form-error {

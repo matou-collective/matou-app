@@ -7,8 +7,8 @@ import (
 
 func TestNoticeTypeDefinitions(t *testing.T) {
 	defs := NoticeTypeDefinitions()
-	if len(defs) != 4 {
-		t.Fatalf("expected 4 notice type definitions, got %d", len(defs))
+	if len(defs) != 6 {
+		t.Fatalf("expected 6 notice type definitions, got %d", len(defs))
 	}
 
 	names := map[string]bool{}
@@ -16,7 +16,7 @@ func TestNoticeTypeDefinitions(t *testing.T) {
 		names[def.Name] = true
 	}
 
-	expected := []string{"Notice", "NoticeAck", "NoticeRSVP", "NoticeSave"}
+	expected := []string{"Notice", "NoticeAck", "NoticeRSVP", "NoticeSave", "NoticeComment", "NoticeReaction"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing type definition: %s", name)
@@ -62,8 +62,8 @@ func TestNoticeType(t *testing.T) {
 
 	// Verify enum validation on type field
 	typeField := fieldMap["type"]
-	if typeField.Validation == nil || len(typeField.Validation.Enum) != 2 {
-		t.Errorf("type field should have enum validation with 2 values")
+	if typeField.Validation == nil || len(typeField.Validation.Enum) != 3 {
+		t.Errorf("type field should have enum validation with 3 values (event, update, announcement)")
 	}
 
 	// Verify state enum
@@ -178,11 +178,79 @@ func TestNoticeTypeJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNoticeCommentType(t *testing.T) {
+	def := NoticeCommentType()
+	if def.Name != "NoticeComment" {
+		t.Errorf("expected name 'NoticeComment', got %q", def.Name)
+	}
+	if def.Space != "community" {
+		t.Errorf("expected space 'community', got %q", def.Space)
+	}
+	if def.Permissions.Write != "community" {
+		t.Errorf("expected write permission 'community', got %q", def.Permissions.Write)
+	}
+
+	// text field should be required with maxLength 2000
+	fieldMap := make(map[string]FieldDef)
+	for _, f := range def.Fields {
+		fieldMap[f.Name] = f
+	}
+	textField, ok := fieldMap["text"]
+	if !ok {
+		t.Fatal("missing required field: text")
+	}
+	if !textField.Required {
+		t.Error("text field should be required")
+	}
+	if textField.Validation == nil || textField.Validation.MaxLength == nil || *textField.Validation.MaxLength != 2000 {
+		t.Error("text field should have maxLength 2000")
+	}
+}
+
+func TestNoticeReactionType(t *testing.T) {
+	def := NoticeReactionType()
+	if def.Name != "NoticeReaction" {
+		t.Errorf("expected name 'NoticeReaction', got %q", def.Name)
+	}
+	if def.Space != "community" {
+		t.Errorf("expected space 'community', got %q", def.Space)
+	}
+	if def.Permissions.Write != "community" {
+		t.Errorf("expected write permission 'community', got %q", def.Permissions.Write)
+	}
+
+	// emoji field should have enum with 4 values
+	for _, f := range def.Fields {
+		if f.Name == "emoji" {
+			if f.Validation == nil || len(f.Validation.Enum) != 4 {
+				t.Errorf("emoji field should have enum validation with 4 values")
+			}
+		}
+	}
+}
+
+func TestIsValidEmoji(t *testing.T) {
+	// Valid emojis
+	for _, emoji := range ValidEmojis {
+		if !IsValidEmoji(emoji) {
+			t.Errorf("IsValidEmoji(%q) = false, want true", emoji)
+		}
+	}
+
+	// Invalid emojis
+	invalid := []string{"", "hello", "X", "\U0001F600"}
+	for _, emoji := range invalid {
+		if IsValidEmoji(emoji) {
+			t.Errorf("IsValidEmoji(%q) = true, want false", emoji)
+		}
+	}
+}
+
 func TestRegistryIncludesNoticeTypes(t *testing.T) {
 	registry := NewRegistry()
 	registry.Bootstrap()
 
-	noticeTypes := []string{"Notice", "NoticeAck", "NoticeRSVP", "NoticeSave"}
+	noticeTypes := []string{"Notice", "NoticeAck", "NoticeRSVP", "NoticeSave", "NoticeComment", "NoticeReaction"}
 	for _, name := range noticeTypes {
 		if _, ok := registry.Get(name); !ok {
 			t.Errorf("registry missing notice type: %s", name)
