@@ -4,6 +4,8 @@
  * then creates the BrowserWindow pointing at the Quasar frontend.
  */
 import { app, BrowserWindow, ipcMain, safeStorage, nativeImage } from 'electron';
+import { autoUpdater } from 'electron-updater';
+import log from 'electron-log';
 import { ChildProcess, spawn, execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -18,6 +20,14 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('class', 'matou');
   app.setDesktopName('matou.desktop');
 }
+
+// Auto-Updater setup
+const enableAutoUpdate = app.isPackaged;
+
+autoUpdater.logger = log;
+autoUpdater.logger.transports.file.level = 'info';
+autoUpdater.autoDownload = true;
+
 
 /**
  * Install .desktop file and icons for Linux desktop integration.
@@ -308,8 +318,37 @@ ipcMain.handle('secure-storage-remove', (_event, key: string): void => {
   writeSecureStore(store);
 });
 
+function setupAutoUpdater(): void {
+  if (!enableAutoUpdate) {
+    log.info('[Updater] Disabled (dev mode)');
+    return;
+  }
+
+  autoUpdater.on('checking-for-update', () => {
+    log.info('[Updater] Checking for update...');
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    log.info('[Updater] Update available:', info.version);
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    log.info('[Updater] No update available');
+  });
+
+  autoUpdater.on('error', (err) => {
+    log.error('[Updater] Error:', err);
+  });
+
+  autoUpdater.on('update-downloaded', () => {
+    log.info('[Updater] Update downloaded, restarting...');
+    autoUpdater.quitAndInstall();
+  });
+}
+
 app.whenReady().then(async () => {
   installDesktopIntegration();
+  setupAutoUpdater();
   try {
     await startBackend();
     createWindow();

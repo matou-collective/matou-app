@@ -66,9 +66,10 @@ node_modules/
 frontend/dist/
 frontend/dist-electron/
 frontend/dist-ssr/
-frontend/build/
+frontend/build/*
 !frontend/build/afterPack.cjs
 !frontend/build/electron-builder-cross.json
+!frontend/build/entitlements.mac.plist
 
 # Cache
 .cache/
