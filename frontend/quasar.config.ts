@@ -118,6 +118,11 @@ export default configure(() => {
           { from: '../backend/bin/', to: 'backend/' },
           { from: 'src-electron/icons/', to: 'icons/' },
         ],
+        publish: [{
+          provider: 'github',
+          owner: 'matou-collective',
+          repo: 'matou-app'
+        }],
         mac: {
           target: ['dmg'],
           artifactName: 'matou-${version}-${platform}-${arch}.${ext}',

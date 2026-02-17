@@ -102,7 +102,7 @@ jobs:
           cd frontend
           
           if [[ "${{ matrix.platform }}" == "mac" ]]; then
-            npx quasar build -m electron --mac --${{ matrix.arch }} --publish never
+            npx quasar build -m electron --mac --${{ matrix.arch }}
           else
             npx quasar build -m electron
           fi
