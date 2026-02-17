@@ -42,7 +42,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { ChevronDown, Send } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
 import { useProfilesStore } from 'stores/profiles';
@@ -59,19 +59,14 @@ const sending = ref(false);
 const comments = computed(() => activityStore.commentsByNotice[props.noticeId] ?? []);
 const commentCount = computed(() => activityStore.getCommentCount(props.noticeId));
 
+// Load comments on mount so the count is visible immediately
+onMounted(() => {
+  activityStore.loadComments(props.noticeId);
+});
+
 function toggleExpanded() {
   expanded.value = !expanded.value;
-  if (expanded.value && comments.value.length === 0) {
-    activityStore.loadComments(props.noticeId);
-  }
 }
-
-// Lazy load comments when first expanded
-watch(expanded, (val) => {
-  if (val) {
-    activityStore.loadComments(props.noticeId);
-  }
-});
 
 async function submitComment() {
   const text = newComment.value.trim();

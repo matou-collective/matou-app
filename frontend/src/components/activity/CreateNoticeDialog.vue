@@ -30,13 +30,8 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label">Summary *</label>
-          <textarea v-model="form.summary" class="form-input form-textarea" placeholder="Brief summary..." required rows="2" />
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Body</label>
-          <textarea v-model="form.body" class="form-input form-textarea" placeholder="Full details..." rows="4" />
+          <label class="form-label">Description *</label>
+          <textarea v-model="form.summary" class="form-input form-textarea" placeholder="Describe this notice..." required rows="4" />
         </div>
 
         <!-- Images upload -->
@@ -79,11 +74,11 @@
           <div class="form-row">
             <div class="form-group">
               <label class="form-label">Start</label>
-              <input v-model="form.eventStart" type="datetime-local" class="form-input" />
+              <input v-model="form.eventStart" type="datetime-local" class="form-input" :min="minStart" />
             </div>
             <div class="form-group">
               <label class="form-label">End</label>
-              <input v-model="form.eventEnd" type="datetime-local" class="form-input" />
+              <input v-model="form.eventEnd" type="datetime-local" class="form-input" :min="minEnd" />
             </div>
           </div>
 
@@ -120,7 +115,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue';
+import { ref, reactive, watch, computed } from 'vue';
 import { X, Calendar, Megaphone, FileText } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
 import FileUploadInput from './FileUploadInput.vue';
@@ -132,7 +127,6 @@ const form = reactive({
   type: 'event' as 'event' | 'update' | 'announcement',
   title: '',
   summary: '',
-  body: '',
   eventStart: '',
   eventEnd: '',
   locationText: '',
@@ -141,6 +135,31 @@ const form = reactive({
   images: [] as string[],
   attachments: [] as { name: string; fileRef: string; mimeType: string; size: number }[],
   links: [] as { label: string; url: string }[],
+});
+
+// Format a Date as datetime-local value (YYYY-MM-DDTHH:MM)
+function toDatetimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Min values for date inputs: start >= now, end >= start
+const minStart = computed(() => toDatetimeLocal(new Date()));
+const minEnd = computed(() => form.eventStart || minStart.value);
+
+// Auto-set end date to 1 hour after start when start is filled and end is empty
+watch(() => form.eventStart, (val) => {
+  if (val && !form.eventEnd) {
+    const start = new Date(val);
+    start.setHours(start.getHours() + 1);
+    form.eventEnd = toDatetimeLocal(start);
+  }
+  // Clamp end if it's now before start
+  if (val && form.eventEnd && form.eventEnd < val) {
+    const start = new Date(val);
+    start.setHours(start.getHours() + 1);
+    form.eventEnd = toDatetimeLocal(start);
+  }
 });
 
 const submitting = ref(false);
@@ -173,7 +192,6 @@ async function handleSubmit() {
     type: form.type,
     title: form.title,
     summary: form.summary,
-    body: form.body || undefined,
     state: publishOnSubmit.value ? 'published' : 'draft',
     eventStart: form.eventStart ? new Date(form.eventStart).toISOString() : undefined,
     eventEnd: form.eventEnd ? new Date(form.eventEnd).toISOString() : undefined,

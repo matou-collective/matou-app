@@ -34,18 +34,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted } from 'vue';
 import { CheckCircle, HelpCircle, Users, XCircle } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
+import { useIdentityStore } from 'stores/identity';
 
 const props = defineProps<{ noticeId: string }>();
 const activityStore = useActivityStore();
-const currentStatus = ref<string>('');
+const identityStore = useIdentityStore();
 
 const counts = computed(() => activityStore.getRsvpCounts(props.noticeId));
 
+const currentStatus = computed(() => {
+  const userId = identityStore.currentAID?.prefix ?? '';
+  if (!userId) return '';
+  const rsvpData = activityStore.rsvpsByNotice[props.noticeId];
+  const myRsvp = rsvpData?.rsvps?.find(r => r.userId === userId);
+  return myRsvp?.status ?? '';
+});
+
 async function handleRsvp(status: 'going' | 'maybe' | 'not_going') {
-  currentStatus.value = status;
   await activityStore.handleRsvp(props.noticeId, status);
 }
 

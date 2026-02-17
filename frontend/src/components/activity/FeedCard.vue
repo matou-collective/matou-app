@@ -65,12 +65,9 @@
         </div>
       </div>
 
-      <!-- Response section: RSVP, Ack, Reactions, Comments -->
-      <div v-if="notice.state === 'published'" class="card-section card-section-white">
-        <RSVPButton
-          v-if="notice.type === 'event' && notice.rsvpEnabled && notice.state === 'published'"
-          :notice-id="notice.id"
-        />
+      <!-- RSVP for events -->
+      <div v-if="notice.type === 'event' && notice.rsvpEnabled && notice.state === 'published'" class="card-section card-section-white">
+        <RSVPButton :notice-id="notice.id" />
       </div>
       <AckButton
           v-if="notice.ackRequired && notice.state === 'published'"
