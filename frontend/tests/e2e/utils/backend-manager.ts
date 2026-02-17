@@ -45,10 +45,15 @@ export class BackendManager {
    * Start a new backend instance for a test user.
    *
    * @param name  - Unique name for this instance (used for data dir and logging)
-   * @param port  - Optional port number (auto-assigned from 9081+ if omitted)
+   * @param port  - Optional port number (auto-assigned from 9280+ if omitted)
+   * @param opts  - Options: `keepData` preserves the existing data directory
    * @returns The running backend instance
    */
-  async start(name: string, port?: number): Promise<BackendInstance> {
+  async start(
+    name: string,
+    port?: number,
+    opts?: { keepData?: boolean },
+  ): Promise<BackendInstance> {
     if (this.instances.has(name)) {
       return this.instances.get(name)!;
     }
@@ -56,9 +61,11 @@ export class BackendManager {
     const assignedPort = port ?? this.nextPort++;
     const dataDir = path.join(this.backendDir, `data-test-${name}`);
 
-    // Clean and create data directory for a fresh start
-    if (fs.existsSync(dataDir)) {
-      fs.rmSync(dataDir, { recursive: true });
+    // Clean data directory unless keepData is set (e.g. restart scenario)
+    if (!opts?.keepData) {
+      if (fs.existsSync(dataDir)) {
+        fs.rmSync(dataDir, { recursive: true });
+      }
     }
     fs.mkdirSync(dataDir, { recursive: true });
 
@@ -146,6 +153,19 @@ export class BackendManager {
     });
 
     this.instances.delete(name);
+  }
+
+  /**
+   * Restart a backend instance, preserving its data directory.
+   * Stops the process, then re-starts on the same port with the same data dir.
+   * This simulates a user restarting their app (backend state persists on disk).
+   */
+  async restart(name: string): Promise<BackendInstance> {
+    const instance = this.instances.get(name);
+    if (!instance) throw new Error(`No backend instance named '${name}' to restart`);
+    const { port } = instance;
+    await this.stop(name);
+    return this.start(name, port, { keepData: true });
   }
 
   /** Stop all managed backend instances. */

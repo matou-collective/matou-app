@@ -43,6 +43,9 @@ func (r *Registry) Bootstrap() {
 	for _, def := range ProfileTypeDefinitions() {
 		r.Register(def)
 	}
+	for _, def := range ChatTypeDefinitions() {
+		r.Register(def)
+	}
 }
 
 // Register adds or replaces a type definition in the registry.

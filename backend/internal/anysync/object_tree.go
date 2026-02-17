@@ -53,11 +53,11 @@ func NewObjectTreeManager(client AnySyncClient, keyManager *PeerKeyManager, tree
 // CreateObject creates a new object with its own tree and initial field values.
 // Returns the tree ID and head ID.
 func (m *ObjectTreeManager) CreateObject(
-	ctx context.Context, spaceID, objectID, objectType string,
+	ctx context.Context, spaceID, objectID, objectType, changeType string,
 	fields map[string]json.RawMessage, signingKey crypto.PrivKey,
 ) (treeID string, headID string, err error) {
 	// Create a new tree for this object
-	tree, treeID, err := m.treeManager.CreateObjectTree(ctx, spaceID, objectID, objectType, ProfileTreeType, signingKey)
+	tree, treeID, err := m.treeManager.CreateObjectTree(ctx, spaceID, objectID, objectType, changeType, signingKey)
 	if err != nil {
 		return "", "", fmt.Errorf("creating object tree: %w", err)
 	}
@@ -191,8 +191,15 @@ func (m *ObjectTreeManager) AddObject(ctx context.Context, spaceID string, paylo
 		return headID, nil
 	}
 
+	// Determine the tree type based on object type
+	changeType := ProfileTreeType
+	switch payload.Type {
+	case "ChatChannel", "ChatMessage", "MessageReaction":
+		changeType = ChatTreeType
+	}
+
 	// Create new object
-	_, headID, err := m.CreateObject(ctx, spaceID, payload.ID, payload.Type, fields, signingKey)
+	_, headID, err := m.CreateObject(ctx, spaceID, payload.ID, payload.Type, changeType, fields, signingKey)
 	return headID, err
 }
 
@@ -253,6 +260,7 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 // This is used by sync-status and other callers that need all objects.
 func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]*ObjectPayload, error) {
 	entries := m.treeManager.GetTreesByChangeType(spaceID, ProfileTreeType)
+	entries = append(entries, m.treeManager.GetTreesByChangeType(spaceID, ChatTreeType)...)
 	if len(entries) == 0 {
 		// Also check for legacy ObjectChangeType trees
 		entries = m.treeManager.GetTreesByChangeType(spaceID, ObjectChangeType)
@@ -292,6 +300,10 @@ func (m *ObjectTreeManager) GetTreeIDForObject(objectID string) string {
 // HasObjectTree returns true if any profile trees exist for the given space.
 func (m *ObjectTreeManager) HasObjectTree(ctx context.Context, spaceID string) bool {
 	entries := m.treeManager.GetTreesByChangeType(spaceID, ProfileTreeType)
+	if len(entries) > 0 {
+		return true
+	}
+	entries = m.treeManager.GetTreesByChangeType(spaceID, ChatTreeType)
 	if len(entries) > 0 {
 		return true
 	}

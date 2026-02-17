@@ -40,6 +40,8 @@ async function ensureBackendIdentity(
     mnemonic: savedMnemonic,
     orgAid: appStore.orgAid ?? undefined,
     communitySpaceId: identityStore.communitySpaceId ?? undefined,
+    readOnlySpaceId: appStore.orgConfig?.readOnlySpaceId ?? undefined,
+    adminSpaceId: identityStore.adminSpaceId ?? undefined,
   });
 
   if (result.success) {
@@ -138,7 +140,7 @@ export default boot(async ({ router }) => {
     }
 
     // Block dashboard access without verified community space access
-    if (to.path === '/dashboard') {
+    if (to.path.startsWith('/dashboard')) {
       if (!identityStore.hasIdentity) {
         next('/');
         return;

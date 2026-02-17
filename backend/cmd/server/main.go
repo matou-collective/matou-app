@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,6 +70,87 @@ func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) error {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
+	return nil
+}
+
+// eventBrokerAdapter adapts api.EventBroker to anysync.EventBroadcaster.
+type eventBrokerAdapter struct {
+	broker *api.EventBroker
+}
+
+func (a *eventBrokerAdapter) Broadcast(event anysync.SSEEvent) {
+	a.broker.Broadcast(api.SSEEvent{
+		Type: event.Type,
+		Data: event.Data,
+	})
+}
+
+// chatPersisterAdapter adapts anystore.LocalStore to anysync.ChatPersister.
+// It converts ObjectPayload to anystore types, breaking the circular import.
+type chatPersisterAdapter struct {
+	store *anystore.LocalStore
+}
+
+func (a *chatPersisterAdapter) PersistChatObject(ctx context.Context, p *anysync.ObjectPayload) error {
+	switch p.Type {
+	case "ChatChannel":
+		var data struct {
+			Name         string   `json:"name"`
+			Description  string   `json:"description,omitempty"`
+			Icon         string   `json:"icon,omitempty"`
+			Photo        string   `json:"photo,omitempty"`
+			CreatedAt    string   `json:"createdAt"`
+			CreatedBy    string   `json:"createdBy"`
+			IsArchived   bool     `json:"isArchived,omitempty"`
+			AllowedRoles []string `json:"allowedRoles,omitempty"`
+		}
+		if err := json.Unmarshal(p.Data, &data); err != nil {
+			return err
+		}
+		return a.store.UpsertChannel(ctx, &anystore.ChatChannel{
+			ID: p.ID, Name: data.Name, Description: data.Description,
+			Icon: data.Icon, Photo: data.Photo, CreatedAt: data.CreatedAt,
+			CreatedBy: data.CreatedBy, IsArchived: data.IsArchived,
+			AllowedRoles: data.AllowedRoles, Version: p.Version,
+		})
+
+	case "ChatMessage":
+		var data struct {
+			ChannelID   string          `json:"channelId"`
+			SenderAID   string          `json:"senderAid"`
+			SenderName  string          `json:"senderName"`
+			Content     string          `json:"content"`
+			Attachments json.RawMessage `json:"attachments,omitempty"`
+			ReplyTo     string          `json:"replyTo,omitempty"`
+			SentAt      string          `json:"sentAt"`
+			EditedAt    string          `json:"editedAt,omitempty"`
+			DeletedAt   string          `json:"deletedAt,omitempty"`
+		}
+		if err := json.Unmarshal(p.Data, &data); err != nil {
+			return err
+		}
+		return a.store.UpsertMessage(ctx, &anystore.ChatMessage{
+			ID: p.ID, ChannelID: data.ChannelID, SenderAID: data.SenderAID,
+			SenderName: data.SenderName, Content: data.Content,
+			Attachments: data.Attachments, ReplyTo: data.ReplyTo,
+			SentAt: data.SentAt, EditedAt: data.EditedAt,
+			DeletedAt: data.DeletedAt, Version: p.Version,
+		})
+
+	case "MessageReaction":
+		var data struct {
+			MessageID   string   `json:"messageId"`
+			Emoji       string   `json:"emoji"`
+			ReactorAIDs []string `json:"reactorAids"`
+		}
+		if err := json.Unmarshal(p.Data, &data); err != nil {
+			return err
+		}
+		return a.store.UpsertReaction(ctx, &anystore.ChatReaction{
+			ID: p.ID, MessageID: data.MessageID, Emoji: data.Emoji,
+			ReactorAIDs: data.ReactorAIDs, Version: p.Version,
+		})
+	}
 	return nil
 }
 
@@ -259,7 +341,12 @@ func main() {
 	}
 	defer store.Close()
 
-	fmt.Printf("  Local storage initialized\n")
+	// Ensure chat indexes for anystore persistence
+	if err := store.EnsureChatIndexes(context.Background()); err != nil {
+		log.Fatalf("Failed to create chat indexes: %v", err)
+	}
+
+	fmt.Printf("  Local storage initialized (with chat indexes)\n")
 	fmt.Printf("   Data directory: %s\n", dataDir)
 	fmt.Println()
 
@@ -331,6 +418,13 @@ func main() {
 	// Create event broker for SSE
 	eventBroker := api.NewEventBroker()
 
+	// Create push-based listener for P2P chat changes (replaces polling)
+	chatListener := anysync.NewTreeUpdateListener(
+		&chatPersisterAdapter{store: store},
+		&eventBrokerAdapter{broker: eventBroker},
+	)
+	spaceManager.SetObjectTreeListener(chatListener)
+
 	// Create API handlers
 	credHandler := api.NewCredentialsHandler(keriClient, store)
 	syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore, userIdentity)
@@ -345,6 +439,7 @@ func main() {
 	eventsHandler := api.NewEventsHandler(eventBroker)
 	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager())
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
+	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store, chatListener)
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -390,6 +485,7 @@ func main() {
 	eventsHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
+	chatHandler.RegisterRoutes(mux)
 	notificationsHandler.RegisterRoutes(mux)
 	orgConfigHandler.RegisterRoutes(mux)
 
@@ -457,6 +553,22 @@ func main() {
 	fmt.Println()
 	fmt.Println("  Events:")
 	fmt.Println("  GET  /api/v1/events                   - SSE event stream")
+	fmt.Println()
+	fmt.Println("  Chat:")
+	fmt.Println("  GET  /api/v1/chat/channels            - List chat channels")
+	fmt.Println("  POST /api/v1/chat/channels            - Create channel (admin)")
+	fmt.Println("  GET  /api/v1/chat/channels/{id}       - Get channel details")
+	fmt.Println("  PUT  /api/v1/chat/channels/{id}       - Update channel (admin)")
+	fmt.Println("  DELETE /api/v1/chat/channels/{id}     - Archive channel (admin)")
+	fmt.Println("  GET  /api/v1/chat/channels/{id}/messages - List messages")
+	fmt.Println("  POST /api/v1/chat/channels/{id}/messages - Send message")
+	fmt.Println("  PUT  /api/v1/chat/messages/{id}       - Edit message (owner)")
+	fmt.Println("  DELETE /api/v1/chat/messages/{id}     - Delete message (owner)")
+	fmt.Println("  GET  /api/v1/chat/messages/{id}/thread - Get thread replies")
+	fmt.Println("  POST /api/v1/chat/messages/{id}/reactions - Add reaction")
+	fmt.Println("  DELETE /api/v1/chat/messages/{id}/reactions/{emoji} - Remove reaction")
+	fmt.Println("  GET  /api/v1/chat/read-cursors      - Get read cursors")
+	fmt.Println("  PUT  /api/v1/chat/read-cursors      - Update read cursor")
 	fmt.Println()
 	fmt.Println("  Org Config:")
 	fmt.Println("  GET  /api/v1/org/config               - Get org configuration")
