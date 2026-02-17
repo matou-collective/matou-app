@@ -58,6 +58,12 @@ export default defineConfig({
       testMatch: /e2e-multi-backend\.spec\.ts/,
       use: browserConfig,
     },
+    // Wallet page - credential views, governance, tokens
+    {
+      name: 'wallet',
+      testMatch: /e2e-wallet\.spec\.ts/,
+      use: browserConfig,
+    },
     // Account recovery - verifies full space access recovery from mnemonic
     {
       name: 'account-recovery',
@@ -87,6 +93,7 @@ export default defineConfig({
         /e2e-registration\.spec\.ts/,
         /e2e-invitation\.spec\.ts/,
         /e2e-multi-backend\.spec\.ts/,
+        /e2e-wallet\.spec\.ts/,
         /e2e-account-recovery\.spec\.ts/,
         /e2e-recovery-errors\.spec\.ts/,
         /e2e-registration-stress\.spec\.ts/,
