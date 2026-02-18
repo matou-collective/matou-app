@@ -233,6 +233,25 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
       console.log('[Test] Registration card visible');
 
+      // 3b. Verify pending SharedProfile appears in New Members card
+      // Registration polling auto-creates a SharedProfile with status "pending"
+      // when it detects the registration notification. The dashboard's liveMembers
+      // computed reads from communityProfiles which includes pending profiles.
+      console.log('[Test] Waiting for pending member to appear in New Members card...');
+      const membersCard = adminPage.locator('.members-card');
+      const pendingMemberCard = membersCard.locator('.card-name', { hasText: userName });
+      await expect(pendingMemberCard).toBeVisible({ timeout: TIMEOUT.medium });
+      console.log('[Test] Pending member visible in New Members card before approval');
+
+      // Verify the profile has "pending" status via the admin backend API
+      const pendingProfilesResp = await adminPage.request.get('http://localhost:9080/api/v1/profiles/SharedProfile');
+      const pendingProfiles = await pendingProfilesResp.json();
+      const pendingProfileList = (pendingProfiles.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
+      const pendingProfile = pendingProfileList.find(p => (p.data?.displayName as string) === userName);
+      expect(pendingProfile, `SharedProfile for ${userName} should exist before approval`).toBeTruthy();
+      expect(pendingProfile!.data.status, 'SharedProfile status should be "pending" before approval').toBe('pending');
+      console.log(`[Test] Confirmed SharedProfile status is "pending" for ${userName}`);
+
       // B. Set up invite + sync + initMemberProfiles listeners before approval
       // initMemberProfiles creates SharedProfile + CommunityProfile on admin's backend
       const initProfilesResponse = adminPage.waitForResponse(
@@ -278,25 +297,24 @@ test.describe.serial('Registration Approval Flow', () => {
         sharedProfileObjectId: initBody.sharedProfileObjectId,
       });
 
-      // 5b2. Query admin backend directly — verify the SharedProfile is readable
+      // 5b2. Query admin backend directly — verify the SharedProfile is readable and status is "approved"
       const adminProfilesResp = await adminPage.request.get('http://localhost:9080/api/v1/profiles/SharedProfile');
       const adminProfiles = await adminProfilesResp.json();
       const adminProfileList = (adminProfiles.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
       console.log(`[Test] Admin backend SharedProfiles (${adminProfileList.length}):`);
       for (const p of adminProfileList) {
-        console.log(`  - ${p.id} aid=${p.data?.aid} name=${p.data?.displayName}`);
+        console.log(`  - ${p.id} aid=${p.data?.aid} name=${p.data?.displayName} status=${p.data?.status}`);
       }
       const userProfileOnAdmin = adminProfileList.find(p => p.id === initBody.sharedProfileObjectId);
       expect(userProfileOnAdmin, `Admin should have SharedProfile ${initBody.sharedProfileObjectId}`).toBeTruthy();
+      expect(userProfileOnAdmin!.data.status, 'SharedProfile status should be "approved" after approval').toBe('approved');
 
-      // 5b3. Verify new member appears in the New Members card on admin dashboard.
-      // The backend emits a profile:updated SSE event after SharedProfile creation,
-      // which triggers loadCommunityProfiles() in the admin frontend reactively.
-      console.log('[Test] Waiting for new member to appear in New Members card...');
-      const membersCard = adminPage.locator('.members-card');
-      const newMemberCard = membersCard.locator('.card-name', { hasText: userName });
-      await expect(newMemberCard).toBeVisible({ timeout: TIMEOUT.medium });
-      console.log('[Test] New member visible in New Members card');
+      // 5b3. Verify member still appears in the New Members card after approval.
+      // The member was already visible as "pending" (step 3b); after approval the
+      // backend emits a profile:updated SSE event which refreshes the list.
+      console.log('[Test] Verifying member still visible in New Members card after approval...');
+      await expect(pendingMemberCard).toBeVisible({ timeout: TIMEOUT.medium });
+      console.log('[Test] Member still visible in New Members card after approval');
 
       // 5c. Verify user's backend joined the community space
       const joinResp = await joinResponse;

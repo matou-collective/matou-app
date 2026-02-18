@@ -14,6 +14,7 @@
 import { ref, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { createOrUpdateProfile, getProfiles } from 'src/lib/api/client';
+import { useProfilesStore } from 'stores/profiles';
 
 export interface PendingRegistration {
   notificationId: string;
@@ -78,6 +79,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
   const { pollingInterval = 10000, maxConsecutiveErrors = 5 } = options;
 
   const keriClient = useKERIClient();
+  const profilesStore = useProfilesStore();
 
   // State
   const pendingRegistrations = ref<PendingRegistration[]>([]);
@@ -518,6 +520,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       return;
     }
 
+    let createdCount = 0;
     for (const reg of registrations) {
       if (!reg.applicantAid) continue;
       if (existingAids.has(reg.applicantAid)) continue;
@@ -552,6 +555,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         const result = await createOrUpdateProfile('SharedProfile', profileData, { id: profileId });
         if (result.success) {
           createdPendingProfiles.add(reg.applicantAid);
+          createdCount++;
           console.log(`[RegistrationPolling] Created pending SharedProfile for ${reg.applicantAid.slice(0, 12)}...`);
         } else {
           console.warn(`[RegistrationPolling] Failed to create pending SharedProfile: ${result.error}`);
@@ -559,6 +563,11 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       } catch (err) {
         console.warn(`[RegistrationPolling] Error creating pending SharedProfile:`, err);
       }
+    }
+
+    // Refresh the profiles store so the dashboard shows the new pending members
+    if (createdCount > 0) {
+      await profilesStore.loadCommunityProfiles();
     }
   }
 
