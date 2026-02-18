@@ -20,6 +20,7 @@ type ProfilesHandler struct {
 	userIdentity *identity.UserIdentity
 	registry     *types.Registry
 	fileManager  *anysync.FileManager
+	eventBroker  *EventBroker
 }
 
 // NewProfilesHandler creates a new profiles handler.
@@ -28,12 +29,14 @@ func NewProfilesHandler(
 	userIdentity *identity.UserIdentity,
 	registry *types.Registry,
 	fileManager *anysync.FileManager,
+	eventBroker *EventBroker,
 ) *ProfilesHandler {
 	return &ProfilesHandler{
 		spaceManager: spaceManager,
 		userIdentity: userIdentity,
 		registry:     registry,
 		fileManager:  fileManager,
+		eventBroker:  eventBroker,
 	}
 }
 
@@ -625,6 +628,17 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		result["sharedProfileTreeId"] = objMgr.GetTreeIDForObject(sharedObjectID)
 		result["sharedProfileSpaceId"] = communitySpaceID
 		fmt.Printf("[Profiles] Created SharedProfile %s in community space %s\n", sharedObjectID, communitySpaceID)
+
+		if h.eventBroker != nil {
+			h.eventBroker.Broadcast(SSEEvent{
+				Type: "profile:updated",
+				Data: map[string]interface{}{
+					"profileId":   sharedObjectID,
+					"memberAid":   req.MemberAID,
+					"displayName": req.DisplayName,
+				},
+			})
+		}
 	}
 
 	writeJSON(w, http.StatusOK, result)

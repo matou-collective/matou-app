@@ -357,8 +357,9 @@ export function useClaimIdentity() {
         throw new Error(`PrivateProfile creation failed: ${privateResult.error || 'unknown'}`);
       }
 
-      // SharedProfile in community space (required — community space keys are
-      // now persisted during join, so this should succeed after retries)
+      // SharedProfile in community space — update the existing profile created by
+      // admin during invite (ID: SharedProfile-{memberAID}) with full profile data.
+      const existingSharedId = `SharedProfile-${aid.prefix}`;
       const sharedResult = await retryProfile(() =>
         createOrUpdateProfile('SharedProfile', {
           aid: aid.prefix,
@@ -381,7 +382,7 @@ export function useClaimIdentity() {
           createdAt: now,
           updatedAt: now,
           typeVersion: 1,
-        }),
+        }, { id: existingSharedId }),
       );
       if (!sharedResult.success) {
         throw new Error(`SharedProfile creation failed: ${sharedResult.error || 'unknown'}`);
