@@ -26,9 +26,11 @@ import (
 
 // Tree type constants used as ChangeType on tree roots.
 const (
-	ProfileTreeType    = "matou.profile.v1"    // ChangeType on profile tree roots
-	CredentialTreeType = "matou.credential.v1" // ChangeType on credential tree roots
-	ChatTreeType       = "matou.chat.v1"       // ChangeType on chat tree roots
+	ProfileTreeType     = "matou.profile.v1"    // ChangeType on profile tree roots
+	CredentialTreeType  = "matou.credential.v1" // ChangeType on credential tree roots
+	NoticeTreeType      = "matou.notice.v1"     // ChangeType on notice tree roots
+	InteractionTreeType = "matou.interaction.v1" // ChangeType on interaction tree roots (ack, rsvp, save)
+	ChatTreeType        = "matou.chat.v1"        // ChangeType on chat tree roots
 )
 
 // TreeRootHeader is stored in the root change's ChangePayload (unencrypted metadata).
@@ -495,7 +497,7 @@ func (u *UnifiedTreeManager) extractIndexEntry(tree objecttree.ObjectTree, treeI
 			var rootCh treechangeproto.RootChange
 			if err := rootCh.UnmarshalVT(rawTreeCh.Payload); err == nil {
 				ct := rootCh.ChangeType
-				if ct == ProfileTreeType || ct == CredentialTreeType || ct == ChatTreeType || ct == ObjectChangeType || ct == CredentialChangeType {
+				if ct == ProfileTreeType || ct == CredentialTreeType || ct == NoticeTreeType || ct == InteractionTreeType || ct == ChatTreeType || ct == ObjectChangeType || ct == CredentialChangeType {
 					e := &ObjectIndexEntry{
 						TreeID:     treeID,
 						ChangeType: ct,

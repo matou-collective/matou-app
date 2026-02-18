@@ -65,6 +65,12 @@ export default defineConfig({
       testMatch: /e2e-wallet\.spec\.ts/,
       use: browserConfig,
     },
+    // Activity page - notice board, events, updates, interactions
+    {
+      name: 'activity',
+      testMatch: /e2e-activity\.spec\.ts/,
+      use: browserConfig,
+    },
     // Account recovery - verifies full space access recovery from mnemonic
     {
       name: 'account-recovery',
@@ -102,6 +108,7 @@ export default defineConfig({
         /e2e-invitation\.spec\.ts/,
         /e2e-multi-backend\.spec\.ts/,
         /e2e-wallet\.spec\.ts/,
+        /e2e-activity\.spec\.ts/,
         /e2e-account-recovery\.spec\.ts/,
         /e2e-recovery-errors\.spec\.ts/,
         /e2e-registration-stress\.spec\.ts/,

@@ -604,3 +604,306 @@ export async function sendRegistrationApprovedNotification(request: {
 
   return response.json();
 }
+
+// --- Notices (Activity) ---
+
+export interface Notice {
+  id: string;
+  type: 'event' | 'update' | 'announcement';
+  subtype?: string;
+  title: string;
+  summary: string;
+  body?: string;
+  links?: { label: string; url: string }[];
+  images?: string[];
+  attachments?: NoticeAttachment[];
+  pinned?: boolean;
+  issuerType: string;
+  issuerId: string;
+  issuerDisplayName?: string;
+  audienceMode?: string;
+  publishAt?: string;
+  activeFrom?: string;
+  activeUntil?: string;
+  eventStart?: string;
+  eventEnd?: string;
+  timezone?: string;
+  locationMode?: string;
+  locationText?: string;
+  locationUrl?: string;
+  rsvpEnabled?: boolean;
+  rsvpRequired?: boolean;
+  rsvpCapacity?: number;
+  ackRequired?: boolean;
+  ackDueAt?: string;
+  state: 'draft' | 'published' | 'archived';
+  createdAt: string;
+  createdBy: string;
+  publishedAt?: string;
+  archivedAt?: string;
+  amendsNoticeId?: string;
+  treeId?: string;
+}
+
+export interface NoticeRSVP {
+  id: string;
+  noticeId: string;
+  userId: string;
+  status: 'going' | 'maybe' | 'not_going';
+  updatedAt: string;
+  treeId?: string;
+}
+
+export interface NoticeAck {
+  id: string;
+  noticeId: string;
+  userId: string;
+  ackAt: string;
+  method: string;
+  treeId?: string;
+}
+
+export interface NoticeSave {
+  noticeId: string;
+  userId: string;
+  savedAt: string;
+  pinned: boolean;
+}
+
+export interface NoticeAttachment {
+  name: string;
+  fileRef: string;
+  mimeType: string;
+  size: number;
+}
+
+export interface NoticeComment {
+  id: string;
+  noticeId: string;
+  userId: string;
+  userDisplayName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface NoticeReaction {
+  id: string;
+  noticeId: string;
+  userId: string;
+  emoji: string;
+  active: boolean;
+  createdAt: string;
+}
+
+export interface ReactionSummary {
+  emoji: string;
+  count: number;
+  userReacted: boolean;
+}
+
+export interface CreateNoticeRequest {
+  type: 'event' | 'update' | 'announcement';
+  title: string;
+  summary: string;
+  body?: string;
+  state?: 'draft' | 'published';
+  eventStart?: string;
+  eventEnd?: string;
+  timezone?: string;
+  locationMode?: string;
+  locationText?: string;
+  locationUrl?: string;
+  rsvpEnabled?: boolean;
+  rsvpRequired?: boolean;
+  rsvpCapacity?: number;
+  ackRequired?: boolean;
+  ackDueAt?: string;
+  activeFrom?: string;
+  activeUntil?: string;
+  images?: string[];
+  attachments?: { name: string; fileRef: string; mimeType: string; size: number }[];
+  links?: { label: string; url: string }[];
+}
+
+export async function getNotices(params?: { view?: string; type?: string }): Promise<Notice[]> {
+  try {
+    const query = new URLSearchParams();
+    if (params?.view) query.set('view', params.view);
+    if (params?.type) query.set('type', params.type);
+    const qs = query.toString();
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices${qs ? '?' + qs : ''}`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.notices ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getNotice(id: string): Promise<Notice | null> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(id)}`);
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function createNotice(req: CreateNoticeRequest): Promise<{ success: boolean; noticeId?: string; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function publishNotice(id: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(id)}/publish`, {
+      method: 'POST',
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function archiveNotice(id: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function submitRsvp(noticeId: string, status: 'going' | 'maybe' | 'not_going'): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/rsvp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function getRsvps(noticeId: string): Promise<{ rsvps: NoticeRSVP[]; counts: Record<string, number> }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/rsvp`);
+    if (!response.ok) return { rsvps: [], counts: { going: 0, maybe: 0, not_going: 0 } };
+    return response.json();
+  } catch {
+    return { rsvps: [], counts: { going: 0, maybe: 0, not_going: 0 } };
+  }
+}
+
+export async function submitAck(noticeId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/ack`, {
+      method: 'POST',
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function getAcks(noticeId: string): Promise<{ acks: NoticeAck[]; count: number }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/ack`);
+    if (!response.ok) return { acks: [], count: 0 };
+    return response.json();
+  } catch {
+    return { acks: [], count: 0 };
+  }
+}
+
+export async function toggleNoticeSave(noticeId: string): Promise<{ success: boolean; pinned?: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/save`, {
+      method: 'POST',
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function getSavedNotices(): Promise<NoticeSave[]> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/saved`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.saves ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getComments(noticeId: string): Promise<{ comments: NoticeComment[]; count: number }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/comments`);
+    if (!response.ok) return { comments: [], count: 0 };
+    return response.json();
+  } catch {
+    return { comments: [], count: 0 };
+  }
+}
+
+export async function createComment(noticeId: string, text: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function getReactions(noticeId: string): Promise<{ reactions: NoticeReaction[]; counts: Record<string, number> }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/reactions`);
+    if (!response.ok) return { reactions: [], counts: {} };
+    return response.json();
+  } catch {
+    return { reactions: [], counts: {} };
+  }
+}
+
+export async function toggleReaction(noticeId: string, emoji: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/reactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emoji }),
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function toggleNoticePin(noticeId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/pin`, {
+      method: 'POST',
+    });
+    return response.json();
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}

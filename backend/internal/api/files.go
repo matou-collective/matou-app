@@ -15,7 +15,7 @@ import (
 	"github.com/matou-dao/backend/internal/anysync"
 )
 
-const maxFileSize = 5 << 20 // 5 MB
+const maxFileSize = 20 << 20 // 20 MB
 
 // FilesHandler handles file upload and download using the any-sync filenode.
 // Files are chunked into IPFS UnixFS DAG blocks, pushed to the filenode via
@@ -34,7 +34,7 @@ func NewFilesHandler(fileManager *anysync.FileManager, spaceManager *anysync.Spa
 }
 
 // HandleUpload handles POST /api/v1/files/upload
-// Accepts multipart file upload (max 5MB).
+// Accepts multipart file upload (any type, max 20MB).
 // Returns a fileRef (CID string) that can be stored in profile objects.
 func (h *FilesHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -79,7 +79,7 @@ func (h *FilesHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(data) > maxFileSize {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "file exceeds 5MB limit",
+			"error": "file exceeds 20MB limit",
 		})
 		return
 	}
