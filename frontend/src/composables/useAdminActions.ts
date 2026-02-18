@@ -379,6 +379,15 @@ export function useAdminActions() {
       // (handles both IPEX and custom EXN notifications)
       await markAllApplicantNotificationsRead(registration.applicantAid);
 
+      // 4. Update SharedProfile status to declined
+      const profileId = `SharedProfile-${registration.applicantAid}`;
+      try {
+        await createOrUpdateProfile('SharedProfile', { status: 'declined' }, { id: profileId });
+        console.log('[AdminActions] Updated SharedProfile status to declined for:', registration.applicantAid);
+      } catch (profileErr) {
+        console.warn('[AdminActions] Failed to update SharedProfile status to declined:', profileErr);
+      }
+
       lastAction.value = {
         type: 'decline',
         success: true,
