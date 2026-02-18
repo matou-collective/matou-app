@@ -1,4 +1,4 @@
-name: Build Matou App
+name: Matou App Build
 
 # when a new tag is pushed, it will run this workflow
 on:

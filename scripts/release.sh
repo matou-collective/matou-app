@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #
-# release.sh — Updates the app version, creates 
+# release.sh — Updates the app version, creates a tag and a commit and pushes them to main triggering a release
 #
 # Usage:
-#   ./scripts/release.sh <version>    # show what would be removed without deleting
-#
+#   ./scripts/release.sh <version>
 
 set -e
 
