@@ -561,6 +561,7 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		now2 := time.Now().UTC().Format(time.RFC3339)
 		sharedProfileData := map[string]interface{}{
 			"aid":                    req.MemberAID,
+			"status":                 "approved",
 			"displayName":            req.DisplayName,
 			"bio":                    req.Bio,
 			"avatar":                 req.Avatar,
