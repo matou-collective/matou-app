@@ -1,7 +1,9 @@
-name: Build Electron App
+name: Build Matou App
 
+# when a new tag is pushed, it will run this workflow
 on:
-  workflow_dispatch:
+  release:
+    types: [created]
 
 jobs:
   build:
