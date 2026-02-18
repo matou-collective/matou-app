@@ -40,13 +40,7 @@ Notes:
 
 ---
 
-### 2. Matou App Release (GitHub Actions)
+### 2. Matou App Build and Release (GitHub Actions)
 
-When a tag is pushed to main, a draft release is automatically triggered. See [Matou App Release](https://github.com/matou-collective/matou-app/actions/workflows/release.yml)
-
----
-
-### 3. Matou App Build (GitHub Actions)
-
-When a new release is created, the build is automatically triggered.
-See [Matou App Build](https://github.com/matou-collective/matou-app/actions/workflows/build.yml) and the artifacts are uploaded with electron
+The build is automatically triggered when a new tag is pushed
+See [Matou App Build](https://github.com/matou-collective/matou-app/actions/workflows/build.yml). Electron handles creating a release, and building and uploading the installers to the release.
