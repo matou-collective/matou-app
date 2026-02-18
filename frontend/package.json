@@ -25,7 +25,8 @@
     "health": "tsx tests/scripts/health-check.ts",
     "health:test": "TEST_MODE=true tsx tests/scripts/health-check.ts",
     "build": "quasar build",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package",
+    "release": "../scripts/release.sh"
   },
   "dependencies": {
     "@quasar/extras": "^1.16.12",

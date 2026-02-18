@@ -107,7 +107,9 @@ The backend and frontend connect to infrastructure entirely over the network. To
 
 ## Deployment
 
-See [docs/deployment.md](docs/deployment.md) for instructions on building and releasing the desktop app for Linux, macOS, and Windows.
+See [docs/manual-deployment.md](docs/manual-deployment.md) for instructions on building and releasing the desktop app for Linux, macOS, and Windows from your own machine
+
+See [docs/automated-deployment.md](docs/automated-deployment.md) for instructions on building and releasing automatically using GitHub workflows.
 
 ## Environment Variables
 
