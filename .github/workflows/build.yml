@@ -2,11 +2,13 @@ name: Matou App Build
 
 # when a new tag is pushed, it will run this workflow
 on:
-  release:
-    types: [created]
+  push:
+    tags:
+      - 'v*'
 
-jobs:
+jobs:        
   build:
+    needs: release
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -99,9 +101,9 @@ jobs:
           cd frontend
           
           if [[ "${{ matrix.platform }}" == "mac" ]]; then
-            npx quasar build -m electron --mac --${{ matrix.arch }}
+            npx quasar build -m electron --mac --${{ matrix.arch }} --publish=always
           else
-            npx quasar build -m electron
+            npx quasar build -m electron --publish=always
           fi
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
