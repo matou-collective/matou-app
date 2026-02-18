@@ -56,6 +56,9 @@ func SharedProfileType() *TypeDefinition {
 		Fields: []FieldDef{
 			{Name: "aid", Type: "string", Required: true, ReadOnly: true,
 				UIHints: &UIHints{Label: "AID", Section: "identity"}},
+			{Name: "status", Type: "string", Required: true,
+				Validation: &Validation{Enum: []string{"pending", "approved", "declined"}},
+				UIHints:    &UIHints{DisplayFormat: "badge", Label: "Status", Section: "membership"}},
 			{Name: "publicPeerSignkey", Type: "string", ReadOnly: true,
 				UIHints: &UIHints{Label: "Public Signing Key", Section: "identity"}},
 			{Name: "displayName", Type: "string", Required: true,
@@ -114,8 +117,8 @@ func SharedProfileType() *TypeDefinition {
 			{Name: "typeVersion", Type: "number", ReadOnly: true},
 		},
 		Layouts: map[string]Layout{
-			"card":   {Fields: []string{"avatar", "displayName"}},
-			"detail": {Fields: []string{"avatar", "displayName", "bio", "location", "indigenousCommunity", "joinReason", "participationInterests", "customInterests", "skills", "languages", "publicEmail", "publicLinks", "facebookUrl", "linkedinUrl", "twitterUrl", "instagramUrl", "githubUrl", "gitlabUrl", "lastActiveAt", "createdAt"}},
+			"card":   {Fields: []string{"avatar", "displayName", "status"}},
+			"detail": {Fields: []string{"avatar", "displayName", "status", "bio", "location", "indigenousCommunity", "joinReason", "participationInterests", "customInterests", "skills", "languages", "publicEmail", "publicLinks", "facebookUrl", "linkedinUrl", "twitterUrl", "instagramUrl", "githubUrl", "gitlabUrl", "lastActiveAt", "createdAt"}},
 			"form":   {Fields: []string{"displayName", "bio", "avatar", "location", "indigenousCommunity", "joinReason", "participationInterests", "customInterests", "skills", "languages", "publicEmail", "publicLinks", "facebookUrl", "linkedinUrl", "twitterUrl", "instagramUrl", "githubUrl", "gitlabUrl"}},
 		},
 		Permissions: TypePermissions{
