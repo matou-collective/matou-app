@@ -4,13 +4,18 @@
  * then creates the BrowserWindow pointing at the Quasar frontend.
  */
 import { app, BrowserWindow, ipcMain, safeStorage, nativeImage } from 'electron';
-import { autoUpdater } from 'electron-updater';
+import electronUpdater from 'electron-updater';
+
 import log from 'electron-log';
 import { ChildProcess, spawn, execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import net from 'net';
 import fs from 'fs';
+
+// Using destructuring to access autoUpdater due to the CommonJS module of 'electron-updater'.
+// It is a workaround for ESM compatibility issues, see https://github.com/electron-userland/electron-builder/issues/7976.
+const { autoUpdater } = electronUpdater;
 
 // ESM compatibility: __dirname is not available in ES modules
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,7 +32,6 @@ const enableAutoUpdate = app.isPackaged;
 autoUpdater.logger = log;
 autoUpdater.logger.transports.file.level = 'info';
 autoUpdater.autoDownload = true;
-
 
 /**
  * Install .desktop file and icons for Linux desktop integration.
