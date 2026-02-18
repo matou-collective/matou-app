@@ -122,7 +122,7 @@ export default configure(() => {
           provider: 'github',
           owner: 'matou-collective',
           repo: 'matou-app',
-          releaseType: 'release'
+          releaseType: 'draft'
         }],
         mac: {
           target: ['dmg'],
