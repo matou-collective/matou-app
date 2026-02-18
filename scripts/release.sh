@@ -20,7 +20,7 @@ BRANCH="main"
 
 echo "🚀 Releasing version $VERSION"
 
-Ensure clean working tree
+# Ensure clean working tree
 if [ -n "$(git status --porcelain)" ]; then
   echo "❌ Uncommitted changes found. Commit or stash before releasing."
   exit 1
