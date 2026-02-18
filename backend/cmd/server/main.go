@@ -437,7 +437,7 @@ func main() {
 	notificationsHandler := api.NewNotificationsHandler(emailSender)
 	identityHandler := api.NewIdentityHandler(userIdentity, sdkClient, spaceManager, spaceStore)
 	eventsHandler := api.NewEventsHandler(eventBroker)
-	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager())
+	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager(), eventBroker)
 	noticesHandler := api.NewNoticesHandler(spaceManager, userIdentity, eventBroker)
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
 	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store, chatListener)

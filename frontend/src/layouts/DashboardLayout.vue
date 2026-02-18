@@ -82,6 +82,7 @@ import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
 import { useChatStore } from 'stores/chat';
 import { useChatEvents } from 'src/composables/useChatEvents';
+import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { getFileUrl } from 'src/lib/api/client';
 
 const router = useRouter();
@@ -90,6 +91,7 @@ const store = useOnboardingStore();
 const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const chatStore = useChatStore();
+const { connect: connectBackendEvents } = useBackendEvents();
 useChatEvents();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
@@ -120,6 +122,7 @@ const userAvatarUrl = computed(() => {
 
 onMounted(() => {
   console.log('[DashboardLayout] mounted, route:', route.name);
+  connectBackendEvents();
   typesStore.loadDefinitions();
   profilesStore.loadMyProfiles();
   profilesStore.loadCommunityProfiles();

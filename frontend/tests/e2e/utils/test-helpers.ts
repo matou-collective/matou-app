@@ -409,7 +409,7 @@ export async function createNotice(
 
   // Fill required fields
   await page.locator('input[placeholder="Notice title"]').fill(opts.title);
-  await page.locator('textarea[placeholder="Brief summary..."]').fill(opts.summary);
+  await page.locator('textarea[placeholder="Describe this notice..."]').fill(opts.summary);
 
   // Event-specific fields
   if (opts.type === 'event') {

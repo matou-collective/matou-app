@@ -141,7 +141,7 @@ test.describe.serial('Activity Page', () => {
 
     // Fill form
     await page.locator('input[placeholder="Notice title"]').fill(eventTitle);
-    await page.locator('textarea[placeholder="Brief summary..."]').fill('Monthly community meetup at the hall');
+    await page.locator('textarea[placeholder="Describe this notice..."]').fill('Monthly community meetup at the hall');
 
     // Set future event start (use datetime-local input)
     const futureDate = '2099-06-15T18:00';
@@ -208,7 +208,7 @@ test.describe.serial('Activity Page', () => {
 
     // Fill form
     await page.locator('input[placeholder="Notice title"]').fill(updateTitle);
-    await page.locator('textarea[placeholder="Brief summary..."]').fill('Please read this important community announcement');
+    await page.locator('textarea[placeholder="Describe this notice..."]').fill('Please read this important community announcement');
 
     // Enable acknowledgment
     await page.locator('label', { hasText: 'Require Acknowledgment' }).locator('input[type="checkbox"]').check();

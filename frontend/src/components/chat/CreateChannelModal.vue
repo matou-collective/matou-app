@@ -34,16 +34,25 @@
           </div>
 
           <div class="form-group">
-            <label for="icon">Icon (optional)</label>
-            <input
-              id="icon"
-              v-model="form.icon"
-              type="text"
-              placeholder="e.g., 💬"
-              maxlength="10"
-              :disabled="loading"
-            />
-            <span class="hint">Use an emoji as the channel icon</span>
+            <label>Icon (optional)</label>
+            <div class="icon-selector">
+              <div class="icon-preview" :class="{ empty: !form.icon }">
+                {{ form.icon || '💬' }}
+              </div>
+              <div class="icon-grid">
+                <button
+                  v-for="emoji in channelEmojis"
+                  :key="emoji"
+                  type="button"
+                  class="icon-option"
+                  :class="{ selected: form.icon === emoji }"
+                  :disabled="loading"
+                  @click="form.icon = form.icon === emoji ? '' : emoji"
+                >
+                  {{ emoji }}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div class="form-group">
@@ -100,6 +109,11 @@ const emit = defineEmits<{
 }>();
 
 const chatStore = useChatStore();
+
+const channelEmojis = [
+  '💬', '📢', '🎯', '🚀', '💡', '🔥', '⭐', '🎉',
+  '📌', '🛠️', '📋', '🤝', '🌿', '🏠', '🎨', '📚',
+];
 
 const form = reactive({
   name: '',
@@ -247,6 +261,63 @@ async function handleSubmit() {
     font-size: 0.75rem;
     color: var(--matou-muted-foreground);
     margin-top: 0.25rem;
+  }
+}
+
+.icon-selector {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.icon-preview {
+  flex-shrink: 0;
+  width: 3rem;
+  height: 3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  border: 1px solid var(--matou-border);
+  border-radius: var(--matou-radius);
+  background-color: var(--matou-background);
+
+  &.empty {
+    opacity: 0.4;
+  }
+}
+
+.icon-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 0.25rem;
+}
+
+.icon-option {
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--matou-radius);
+  background: transparent;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background-color: var(--matou-secondary);
+  }
+
+  &.selected {
+    border-color: var(--matou-primary);
+    background-color: rgba(0, 100, 0, 0.06);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 }
 

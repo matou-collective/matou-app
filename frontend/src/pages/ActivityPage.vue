@@ -77,7 +77,7 @@ import CreateNoticeDialog from 'src/components/activity/CreateNoticeDialog.vue';
 
 const activityStore = useActivityStore();
 const { isSteward, checkAdminStatus } = useAdminAccess();
-const { lastEvent, connect: connectSSE, disconnect: disconnectSSE } = useBackendEvents();
+const { lastEvent } = useBackendEvents();
 
 const showCreateDialog = ref(false);
 
@@ -97,12 +97,10 @@ watch(lastEvent, (event) => {
 onMounted(async () => {
   await checkAdminStatus();
   activityStore.refreshAll();
-  connectSSE();
   activityStore.startPolling(15_000);
 });
 
 onUnmounted(() => {
-  disconnectSSE();
   activityStore.stopPolling();
 });
 </script>

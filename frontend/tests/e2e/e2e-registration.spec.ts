@@ -289,6 +289,15 @@ test.describe.serial('Registration Approval Flow', () => {
       const userProfileOnAdmin = adminProfileList.find(p => p.id === initBody.sharedProfileObjectId);
       expect(userProfileOnAdmin, `Admin should have SharedProfile ${initBody.sharedProfileObjectId}`).toBeTruthy();
 
+      // 5b3. Verify new member appears in the New Members card on admin dashboard.
+      // The backend emits a profile:updated SSE event after SharedProfile creation,
+      // which triggers loadCommunityProfiles() in the admin frontend reactively.
+      console.log('[Test] Waiting for new member to appear in New Members card...');
+      const membersCard = adminPage.locator('.members-card');
+      const newMemberCard = membersCard.locator('.card-name', { hasText: userName });
+      await expect(newMemberCard).toBeVisible({ timeout: TIMEOUT.medium });
+      console.log('[Test] New member visible in New Members card');
+
       // 5c. Verify user's backend joined the community space
       const joinResp = await joinResponse;
       const joinBody = await joinResp.json();
