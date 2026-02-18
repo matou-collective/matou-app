@@ -13,6 +13,7 @@
  */
 import { ref, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
+import { createOrUpdateProfile, getProfiles } from 'src/lib/api/client';
 
 export interface PendingRegistration {
   notificationId: string;
@@ -89,6 +90,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
   // Track processed applicants to prevent re-adding after removal
   // This is needed because multiple notifications can exist for the same user
   const processedApplicantAids = new Set<string>();
+
+  // Track applicants for whom we've already created a pending SharedProfile
+  const createdPendingProfiles = new Set<string>();
 
   // Internal state
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -414,6 +418,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         }
       }
 
+      // Create pending SharedProfiles for new registrations
+      await createPendingProfiles(filtered);
+
       lastPollTime.value = new Date();
       consecutiveErrors.value = 0;
       error.value = null;
@@ -487,6 +494,72 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
     pendingRegistrations.value = pendingRegistrations.value.filter(
       r => r.notificationId !== notificationId
     );
+  }
+
+  /**
+   * Create pending SharedProfiles for new registrations.
+   * Called after polling detects new registrations.
+   * Idempotent: checks existing profiles and local tracking set.
+   */
+  async function createPendingProfiles(registrations: PendingRegistration[]): Promise<void> {
+    if (registrations.length === 0) return;
+
+    // Load existing SharedProfiles to check which applicants already have one
+    let existingAids: Set<string>;
+    try {
+      const existing = await getProfiles('SharedProfile');
+      existingAids = new Set(
+        existing
+          .map(p => p.data.aid as string)
+          .filter(Boolean)
+      );
+    } catch {
+      console.warn('[RegistrationPolling] Failed to load existing SharedProfiles, skipping pending profile creation');
+      return;
+    }
+
+    for (const reg of registrations) {
+      if (!reg.applicantAid) continue;
+      if (existingAids.has(reg.applicantAid)) continue;
+      if (createdPendingProfiles.has(reg.applicantAid)) continue;
+
+      const profileId = `SharedProfile-${reg.applicantAid}`;
+      const now = new Date().toISOString();
+      const profileData: Record<string, unknown> = {
+        aid: reg.applicantAid,
+        status: 'pending',
+        displayName: reg.profile.name || 'Unknown',
+        bio: reg.profile.bio || '',
+        avatar: reg.profile.avatarFileRef || '',
+        location: reg.profile.location || '',
+        joinReason: reg.profile.joinReason || '',
+        indigenousCommunity: reg.profile.indigenousCommunity || '',
+        participationInterests: reg.profile.interests || [],
+        customInterests: reg.profile.customInterests || '',
+        facebookUrl: reg.profile.facebookUrl || '',
+        linkedinUrl: reg.profile.linkedinUrl || '',
+        twitterUrl: reg.profile.twitterUrl || '',
+        instagramUrl: reg.profile.instagramUrl || '',
+        githubUrl: reg.profile.githubUrl || '',
+        gitlabUrl: reg.profile.gitlabUrl || '',
+        publicEmail: reg.profile.email || '',
+        createdAt: now,
+        updatedAt: now,
+        typeVersion: 1,
+      };
+
+      try {
+        const result = await createOrUpdateProfile('SharedProfile', profileData, { id: profileId });
+        if (result.success) {
+          createdPendingProfiles.add(reg.applicantAid);
+          console.log(`[RegistrationPolling] Created pending SharedProfile for ${reg.applicantAid.slice(0, 12)}...`);
+        } else {
+          console.warn(`[RegistrationPolling] Failed to create pending SharedProfile: ${result.error}`);
+        }
+      } catch (err) {
+        console.warn(`[RegistrationPolling] Error creating pending SharedProfile:`, err);
+      }
+    }
   }
 
   /**
