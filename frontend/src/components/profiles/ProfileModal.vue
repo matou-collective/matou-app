@@ -144,15 +144,33 @@
               </div>
             </div>
 
-            <!-- Decline Reason -->
-            <div v-if="showDeclineReason" class="mb-6">
-              <h5 class="text-sm font-medium text-black/70 mb-2">Reason for Decline (optional)</h5>
-              <textarea
-                v-model="declineReason"
-                class="w-full p-3 border border-border rounded-lg bg-background text-black resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
-                rows="2"
-                placeholder="Provide a reason for declining..."
-              />
+            <!-- Endorsements Section -->
+            <div v-if="props.endorsements.length > 0 || profileStatus === 'pending'" class="endorsements-section mb-6">
+              <h5 class="field-label mb-3">
+                Community Endorsements
+                <span v-if="props.endorsements.length > 0" class="endorsement-count">
+                  ({{ props.endorsements.length }})
+                </span>
+              </h5>
+              <div v-if="props.endorsements.length > 0" class="endorsement-list space-y-2">
+                <div
+                  v-for="endorsement in props.endorsements"
+                  :key="endorsement.credentialSaid"
+                  class="endorsement-item"
+                >
+                  <div class="flex items-center gap-2">
+                    <ThumbsUp class="w-3.5 h-3.5 text-accent shrink-0" />
+                    <span class="text-sm font-medium text-black">{{ endorsement.endorserName }}</span>
+                    <span class="text-xs text-black/50">{{ formatEndorsementDate(endorsement.endorsedAt) }}</span>
+                  </div>
+                  <p v-if="endorsement.message" class="text-xs text-black/70 mt-1 ml-5">
+                    "{{ endorsement.message }}"
+                  </p>
+                </div>
+              </div>
+              <p v-else-if="profileStatus === 'pending'" class="text-sm text-black/50">
+                No endorsements yet
+              </p>
             </div>
 
             <!-- Error Message -->
@@ -162,27 +180,91 @@
           </div>
 
           <!-- Footer Actions -->
-          <div v-if="registration" class="modal-footer p-4 border-t border-border">
-            <div v-if="!showDeclineReason" class="flex items-center gap-3">
+          <div v-if="profileStatus === 'pending'" class="modal-footer p-4 border-t border-border">
+            <!-- Endorse message textarea -->
+            <div v-if="showEndorseMessage" class="mb-4">
+              <h5 class="text-sm font-medium text-black/70 mb-2">Endorsement message (optional)</h5>
+              <textarea
+                v-model="endorseMessage"
+                class="w-full p-3 border border-border rounded-lg bg-background text-black resize-none focus:outline-none focus:ring-2 focus:ring-accent/50"
+                rows="2"
+                placeholder="Why do you endorse this person?"
+              />
+            </div>
+
+            <!-- Decline reason textarea (steward only) -->
+            <div v-if="showDeclineReason" class="mb-4">
+              <h5 class="text-sm font-medium text-black/70 mb-2">Reason for Decline (optional)</h5>
+              <textarea
+                v-model="declineReason"
+                class="w-full p-3 border border-border rounded-lg bg-background text-black resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
+                rows="2"
+                placeholder="Provide a reason for declining..."
+              />
+            </div>
+
+            <!-- Main action buttons -->
+            <div v-if="!showDeclineReason && !showEndorseMessage" class="flex items-center gap-3">
               <button
+                v-if="!props.hasEndorsed"
+                @click="showEndorseMessage = true"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors"
+                :disabled="isProcessing || isEndorsing"
+              >
+                <ThumbsUp class="w-4 h-4 inline mr-2" />
+                Endorse
+              </button>
+              <button
+                v-else
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent/20 text-accent cursor-default"
+                disabled
+              >
+                <ThumbsUp class="w-4 h-4 inline mr-2" />
+                Endorsed
+              </button>
+
+              <button
+                v-if="props.isSteward && registration"
                 @click="handleApprove"
                 class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
                 :disabled="isProcessing"
               >
                 <Loader2 v-if="isProcessing && action === 'approve'" class="w-4 h-4 inline mr-2 animate-spin" />
-                Approve
+                Admit
               </button>
+
               <button
+                v-if="props.isSteward && registration"
                 @click="showDeclineReason = true"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-orange-500 text-white hover:bg-orange-600 transition-colors"
+                class="px-4 py-2.5 text-sm rounded-lg bg-orange-500 text-white hover:bg-orange-600 transition-colors"
                 :disabled="isProcessing"
               >
                 Decline
               </button>
             </div>
 
-            <!-- Decline Actions -->
-            <div v-else class="flex items-center gap-3">
+            <!-- Endorse confirmation buttons -->
+            <div v-if="showEndorseMessage" class="flex items-center gap-3">
+              <button
+                @click="showEndorseMessage = false; endorseMessage = ''"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg border border-border hover:bg-secondary transition-colors"
+                :disabled="props.isEndorsing"
+              >
+                Cancel
+              </button>
+              <button
+                @click="handleEndorse"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors"
+                :disabled="props.isEndorsing"
+              >
+                <Loader2 v-if="props.isEndorsing" class="w-4 h-4 inline mr-2 animate-spin" />
+                <ThumbsUp v-else class="w-4 h-4 inline mr-2" />
+                Confirm Endorsement
+              </button>
+            </div>
+
+            <!-- Decline confirmation buttons (steward only) -->
+            <div v-if="showDeclineReason" class="flex items-center gap-3">
               <button
                 @click="showDeclineReason = false; declineReason = ''"
                 class="flex-1 px-4 py-2.5 text-sm rounded-lg border border-border hover:bg-secondary transition-colors"
@@ -196,7 +278,6 @@
                 :disabled="isProcessing"
               >
                 <Loader2 v-if="isProcessing && action === 'decline'" class="w-4 h-4 inline mr-2 animate-spin" />
-                <X v-else class="w-4 h-4 inline mr-2" />
                 Confirm Decline
               </button>
             </div>
@@ -209,7 +290,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { X, Check, Copy, Loader2 } from 'lucide-vue-next';
+import { X, Check, Copy, Loader2, ThumbsUp } from 'lucide-vue-next';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { getFileUrl } from 'src/lib/api/client';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
@@ -230,6 +311,17 @@ interface Props {
   communityProfile?: Record<string, unknown> | null;
   isProcessing?: boolean;
   error?: string | null;
+  isSteward?: boolean;
+  currentUserAid?: string;
+  endorsements?: Array<{
+    endorserAid: string;
+    endorserName: string;
+    credentialSaid: string;
+    endorsedAt: string;
+    message?: string;
+  }>;
+  hasEndorsed?: boolean;
+  isEndorsing?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -238,12 +330,18 @@ const props = withDefaults(defineProps<Props>(), {
   communityProfile: null,
   isProcessing: false,
   error: null,
+  isSteward: false,
+  currentUserAid: '',
+  endorsements: () => [],
+  hasEndorsed: false,
+  isEndorsing: false,
 });
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'approve', registration: PendingRegistration): void;
   (e: 'decline', registration: PendingRegistration, reason?: string): void;
+  (e: 'endorse'): void;
 }>();
 
 // Unified computed properties for both data sources
@@ -307,11 +405,35 @@ const declineReason = ref('');
 const copied = ref(false);
 const action = ref<'approve' | 'decline' | null>(null);
 
+// Endorsement state
+const showEndorseMessage = ref(false);
+const endorseMessage = ref('');
+
+function formatEndorsementDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function handleEndorse() {
+  emit('endorse');
+}
+
 // Reset state when modal closes
 watch(() => props.show, (isOpen) => {
   if (!isOpen) {
     showDeclineReason.value = false;
     declineReason.value = '';
+    showEndorseMessage.value = false;
+    endorseMessage.value = '';
     action.value = null;
   }
 });
@@ -504,6 +626,22 @@ function handleDecline() {
     background-color: var(--matou-primary);
     color: white;
   }
+}
+
+.endorsements-section {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--matou-border);
+}
+
+.endorsement-count {
+  font-weight: 400;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.endorsement-item {
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  background-color: rgba(74, 157, 156, 0.05);
 }
 
 // Modal transition
