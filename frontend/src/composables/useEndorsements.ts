@@ -7,8 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { createOrUpdateProfile } from 'src/lib/api/client';
-
-const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
+import { ENDORSEMENT_SCHEMA_SAID } from './useAdminActions';
 
 export interface EndorsementRecord {
   endorserAid: string;
