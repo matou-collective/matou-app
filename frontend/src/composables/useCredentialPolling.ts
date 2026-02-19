@@ -39,6 +39,10 @@ export interface RejectionInfo {
 export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   const { pollingInterval = 5000, maxConsecutiveErrors = 5 } = options;
 
+  // Schema SAIDs for distinguishing credential types
+  const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+  const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
+
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
 
@@ -61,6 +65,13 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   const rejectionReceived = ref(false);
   const rejectionInfo = ref<RejectionInfo | null>(null);
   const adminMessages = ref<AdminMessage[]>([]);
+
+  // Endorsement credentials received
+  const endorsementsReceived = ref<Array<{
+    endorserAid: string;
+    credentialSaid: string;
+    endorsedAt: string;
+  }>>([]);
 
   // Internal state
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -164,7 +175,6 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         }
       } else {
         // Fallback: try default schema server URL with known schema SAID
-        const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
         // Schema server URL is internal to Docker network (KERIA resolves it)
         const schemaServerUrl = 'http://schema-server:7723';
         const fallbackSchemaOOBI = `${schemaServerUrl}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
@@ -221,19 +231,34 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     }
 
     try {
-      // First, check if credentials are already in the wallet
-      // This handles the case where admin issues credential to themselves (same agent)
+      // Check if credentials are already in the wallet
       if (!credentialReceived.value) {
         try {
           const credentials = await client.credentials().list();
-          console.log('[CredentialPolling] Existing credentials check:', credentials.length);
           if (credentials.length > 0) {
-            console.log('[CredentialPolling] Credential already in wallet:', credentials[0]);
-            credential.value = credentials[0];
-            credentialReceived.value = true;
-            grantReceived.value = true;
-            syncCredentialToBackend();
-            // Don't stop polling — still need to wait for space invite
+            for (const cred of credentials) {
+              const sad = cred.sad || cred;
+              const schema = (sad as any).s || '';
+              if (schema === ENDORSEMENT_SCHEMA_SAID) {
+                // Endorsement credential — track it but don't trigger admission
+                const existing = endorsementsReceived.value.find(e => e.credentialSaid === ((sad as any).d || ''));
+                if (!existing) {
+                  endorsementsReceived.value.push({
+                    endorserAid: (sad as any).i || '',
+                    credentialSaid: (sad as any).d || '',
+                    endorsedAt: (sad as any).a?.dt || new Date().toISOString(),
+                  });
+                  console.log('[CredentialPolling] Endorsement credential found:', sad.d);
+                }
+              } else {
+                // Membership credential — existing admission flow
+                console.log('[CredentialPolling] Membership credential in wallet:', cred);
+                credential.value = cred;
+                credentialReceived.value = true;
+                grantReceived.value = true;
+                syncCredentialToBackend();
+              }
+            }
           }
         } catch (credErr) {
           console.log('[CredentialPolling] Could not check credentials:', credErr);
@@ -637,6 +662,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     rejectionReceived,
     rejectionInfo,
     adminMessages,
+    endorsementsReceived,
 
     // Actions
     startPolling,
