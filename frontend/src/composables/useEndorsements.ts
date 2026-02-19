@@ -7,7 +7,11 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { createOrUpdateProfile } from 'src/lib/api/client';
-import { ENDORSEMENT_SCHEMA_SAID } from './useAdminActions';
+import { ENDORSEMENT_SCHEMA_SAID, MEMBERSHIP_SCHEMA_SAID } from './useAdminActions';
+
+// Schema server URL as seen by KERIA inside Docker (fixed internal hostname)
+const SCHEMA_SERVER_URL = 'http://schema-server:7723';
+const ENDORSEMENT_SCHEMA_OOBI = `${SCHEMA_SERVER_URL}/oobi/${ENDORSEMENT_SCHEMA_SAID}`;
 
 export interface EndorsementRecord {
   endorserAid: string;
@@ -26,20 +30,33 @@ export function useEndorsements() {
   const error = ref<string | null>(null);
 
   /**
-   * Get the current member's personal registry ID from their CommunityProfile.
+   * Get or create a personal endorsement registry for the current member.
+   * Queries KERIA directly — no need to store registry ID in profiles.
    */
-  function getPersonalRegistryId(): string | null {
-    const myAid = identityStore.currentAID?.prefix;
-    if (!myAid) return null;
+  async function getOrCreatePersonalRegistry(): Promise<string> {
+    const client = keriClient.getSignifyClient();
+    if (!client) throw new Error('Not connected to KERIA');
 
-    const myProfile = profilesStore.communityReadOnlyProfiles.find(p => {
-      const data = (p.data as Record<string, unknown>) || {};
-      return data.userAID === myAid || (p.id as string)?.includes(myAid);
-    });
+    const myAid = identityStore.currentAID;
+    if (!myAid) throw new Error('No identity found');
 
-    if (!myProfile) return null;
-    const data = (myProfile.data as Record<string, unknown>) || {};
-    return (data.personalRegistryId as string) || null;
+    const registryName = `${myAid.prefix.slice(0, 12)}-endorsements`;
+
+    // Check if registry already exists (use prefix for API calls)
+    const registries = await client.registries().list(myAid.prefix);
+    const existing = registries.find(
+      (r: { name: string }) => r.name === registryName
+    );
+    if (existing) {
+      console.log('[Endorsements] Found existing registry:', existing.regk);
+      return existing.regk;
+    }
+
+    // Create a new personal registry
+    console.log('[Endorsements] Creating personal endorsement registry...');
+    const registryId = await keriClient.createRegistry(myAid.prefix, registryName);
+    console.log('[Endorsements] Created registry:', registryId);
+    return registryId;
   }
 
   /**
@@ -55,21 +72,16 @@ export function useEndorsements() {
     error.value = null;
 
     try {
-      const client = keriClient.getSignifyClient();
-      if (!client) throw new Error('Not connected to KERIA');
-
       const myAid = identityStore.currentAID;
       if (!myAid) throw new Error('No identity found');
 
-      // 1. Get endorser's personal registry
-      const registryId = getPersonalRegistryId();
-      if (!registryId) {
-        throw new Error(
-          'No personal registry found. You may need to be re-admitted to get a registry.',
-        );
-      }
+      // 1. Get or create endorser's personal registry
+      const registryId = await getOrCreatePersonalRegistry();
 
-      // 2. Resolve applicant OOBI
+      // 2. Resolve endorsement schema OOBI (KERIA needs it before issuing)
+      await keriClient.resolveOOBI(ENDORSEMENT_SCHEMA_OOBI, ENDORSEMENT_SCHEMA_SAID, 15000);
+
+      // 3. Resolve applicant OOBI
       let oobi = applicantOOBI;
       if (!oobi) {
         const cesrUrl = keriClient.getCesrUrl();
@@ -82,7 +94,19 @@ export function useEndorsements() {
       const resolved = await keriClient.resolveOOBI(oobi, undefined, 30000);
       if (!resolved) throw new Error('Could not resolve applicant identity');
 
-      // 3. Issue endorsement credential
+      // 4. Look up endorser's own membership credential for the edge chain
+      const client = keriClient.getSignifyClient();
+      if (!client) throw new Error('Not connected to KERIA');
+      const allCreds = await client.credentials().list();
+      const membershipCred = allCreds.find(
+        (c: { sad?: { s?: string } }) => c.sad?.s === MEMBERSHIP_SCHEMA_SAID
+      );
+      if (!membershipCred?.sad?.d) {
+        throw new Error('Could not find your membership credential. You must be an admitted member to endorse.');
+      }
+      console.log('[Endorsements] Found endorser membership credential:', membershipCred.sad.d);
+
+      // 5. Issue endorsement credential with edge linking to endorser's membership
       const credentialData = {
         dt: new Date().toISOString(),
         endorsementType: 'membership_endorsement',
@@ -91,15 +115,25 @@ export function useEndorsements() {
         confidence: 'high',
       };
 
+      const edgeData = {
+        d: '', // SAID placeholder — computed by KERIA
+        endorserMembership: {
+          n: membershipCred.sad.d,
+          s: MEMBERSHIP_SCHEMA_SAID,
+        },
+      };
+
       const credResult = await keriClient.issueCredential(
         myAid.prefix,
         registryId,
         ENDORSEMENT_SCHEMA_SAID,
         applicantAid,
         credentialData,
+        undefined, // grantMessage
+        edgeData,
       );
 
-      // 4. Update SharedProfile with endorsement record
+      // 6. Update SharedProfile with endorsement record
       const endorsement: EndorsementRecord = {
         endorserAid: myAid.prefix,
         endorserName: myAid.name || 'Unknown',
@@ -119,12 +153,13 @@ export function useEndorsements() {
       await createOrUpdateProfile(
         'SharedProfile',
         {
+          ...currentData,
           endorsements: [...existingEndorsements, endorsement],
         },
         { id: profileId },
       );
 
-      // 5. Refresh profiles
+      // 7. Refresh profiles
       await profilesStore.loadCommunityProfiles();
 
       return true;

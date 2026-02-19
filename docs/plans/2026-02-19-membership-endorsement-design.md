@@ -11,7 +11,7 @@ Allow approved community members to endorse pending applicants by issuing KERI e
 
 - **Who endorses:** Any approved member can endorse. Stewards can endorse AND admit.
 - **Admission:** Two-step — endorsements collected, admin clicks "Admit" to complete approval flow.
-- **Schema:** Uses friend's endorsement schema (`$id: EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh`) with simplified fields: hard-code `endorsementType='membership_endorsement'`, `confidence='high'`, optional message only.
+- **Schema:** Uses friend's endorsement schema (`$id: ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI`) with simplified fields: hard-code `endorsementType='membership_endorsement'`, `confidence='high'`, optional message only.
 - **Registry:** Personal credential registry per member, created during admission flow.
 - **Endorsement visibility:** Badge on ProfileCard + detailed list in ProfileModal.
 - **Storage:** Endorsement records stored in SharedProfile `endorsements` array.
@@ -25,7 +25,7 @@ Allow approved community members to endorse pending applicants by issuing KERI e
 Member clicks "Endorse" on pending profile
   → Frontend resolves applicant OOBI
   → keriClient.issueCredential() with member's personal registry
-    - Schema: EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh
+    - Schema: ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI
     - Attributes: endorsementType, claim, confidence, category, dt
     - Edge: links to applicant's registration EXN SAID
   → IPEX grant sent to applicant
@@ -120,7 +120,7 @@ personalRegistryId: string;  // KERI registry for issuing credentials
 ## Schema Reference
 
 Endorsement schema from friend's fork:
-- `$id`: `EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh`
+- `$id`: `ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI`
 - `credentialType`: `MatouEndorsementCredential`
 - Required attributes: `d`, `i`, `dt`, `endorsementType`, `claim`, `confidence`
 - Edge section: links to endorsee's membership credential (or registration EXN SAID for pending applicants)

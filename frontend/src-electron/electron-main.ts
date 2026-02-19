@@ -15,6 +15,11 @@ import fs from 'fs';
 // ESM compatibility: __dirname is not available in ES modules
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Prevent EPIPE crashes when stdout/stderr pipes are broken
+// (common in packaged AppImage — no terminal attached to receive output)
+process.stdout?.on('error', () => {});
+process.stderr?.on('error', () => {});
+
 // Force WM_CLASS to 'matou' so Linux DEs can match it to the .desktop file
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('class', 'matou');
@@ -156,11 +161,11 @@ async function startBackend(): Promise<void> {
   });
 
   backendProcess.stdout?.on('data', (data: Buffer) => {
-    console.log(`[Backend] ${data.toString().trimEnd()}`);
+    log.info(`[Backend] ${data.toString().trimEnd()}`);
   });
 
   backendProcess.stderr?.on('data', (data: Buffer) => {
-    console.error(`[Backend:err] ${data.toString().trimEnd()}`);
+    log.warn(`[Backend:err] ${data.toString().trimEnd()}`);
   });
 
   backendProcess.on('exit', (code) => {

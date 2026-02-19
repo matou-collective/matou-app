@@ -54,7 +54,7 @@ type OrgInfo struct {
 // Schema SAIDs
 const (
 	MembershipSchemaSAID  = "EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT"
-	EndorsementSchemaSAID = "EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh"
+	EndorsementSchemaSAID = "EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE"
 )
 
 // EndorsementData contains endorsement credential attributes

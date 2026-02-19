@@ -96,7 +96,7 @@ test.describe.serial('Registration Approval Flow', () => {
   // Test 1: Admin approves user registration
   // ------------------------------------------------------------------
   test('admin approves user registration', async ({ browser }) => {
-    test.setTimeout(240_000); // 4 min: registration (~90s) + approval (~30s) + sync (~60s)
+    test.setTimeout(360_000); // 6 min: registration (~90s) + endorsement (~60s) + approval (~30s) + sync (~60s)
 
     // Spawn a dedicated backend for this user
     const userBackend = await backends.start('user-approve');
@@ -223,17 +223,8 @@ test.describe.serial('Registration Approval Flow', () => {
       ).not.toBeVisible();
       console.log('[Test] Session restart: splash buttons correctly hidden');
 
-      // 3. Wait for admin to see registration card
+      // 3. Wait for admin to see pending member in New Members card
       // KERIA message delivery through witness network can take 30-60s
-      console.log('[Test] Waiting for registration to appear on admin dashboard...');
-      const adminSection = adminPage.locator('.admin-section');
-      await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
-
-      const registrationCard = adminPage.locator('.registration-card').filter({ hasText: userName });
-      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
-      console.log('[Test] Registration card visible');
-
-      // 3b. Verify pending SharedProfile appears in New Members card
       // Registration polling auto-creates a SharedProfile with status "pending"
       // when it detects the registration notification. The dashboard's liveMembers
       // computed reads from communityProfiles which includes pending profiles.
@@ -252,6 +243,74 @@ test.describe.serial('Registration Approval Flow', () => {
       expect(pendingProfile!.data.status, 'SharedProfile status should be "pending" before approval').toBe('pending');
       console.log(`[Test] Confirmed SharedProfile status is "pending" for ${userName}`);
 
+      // ================================================================
+      // 3c. ENDORSEMENT: Admin endorses the pending applicant
+      // ================================================================
+      console.log('[Test] --- Starting endorsement flow ---');
+
+      // Click on the pending member card in New Members to open ProfileModal
+      const memberProfileCard = membersCard.locator('.profile-card').filter({ hasText: userName });
+      await memberProfileCard.click();
+
+      // Verify ProfileModal opens and shows the pending member
+      const profileModal = adminPage.locator('.modal-content');
+      await expect(profileModal).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(profileModal.locator('h4').first()).toContainText(userName, { timeout: TIMEOUT.short });
+      console.log('[Test] ProfileModal opened for pending member');
+
+      // Verify "Endorse" button is visible (admin is steward, so should see Endorse + Admit + Decline)
+      const endorseBtn = profileModal.getByRole('button', { name: /^Endorse$/i });
+      await expect(endorseBtn).toBeVisible({ timeout: TIMEOUT.short });
+      const admitBtn = profileModal.getByRole('button', { name: /admit/i });
+      await expect(admitBtn).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Endorse and Admit buttons visible');
+
+      // Click "Endorse" to show the endorsement message textarea
+      await endorseBtn.click();
+      const endorseTextarea = profileModal.locator('textarea[placeholder="Why do you endorse this person?"]');
+      await expect(endorseTextarea).toBeVisible({ timeout: TIMEOUT.short });
+
+      // Fill an optional endorsement message
+      const endorseMessage = 'I endorse this applicant for E2E testing';
+      await endorseTextarea.fill(endorseMessage);
+
+      // Click "Confirm Endorsement" and wait for credential issuance
+      // This involves: registry creation, schema OOBI resolution, OOBI resolution, credential issuance, IPEX grant
+      const confirmEndorseBtn = profileModal.getByRole('button', { name: /confirm endorsement/i });
+      await expect(confirmEndorseBtn).toBeEnabled({ timeout: TIMEOUT.short });
+      await confirmEndorseBtn.click();
+      console.log('[Test] Clicked Confirm Endorsement — waiting for credential issuance...');
+
+      // Wait for "Endorsed" (disabled) button to appear — indicates endorsement succeeded
+      const endorsedBtn = profileModal.getByRole('button', { name: /^Endorsed$/i });
+      await expect(endorsedBtn).toBeVisible({ timeout: TIMEOUT.long });
+      console.log('[Test] Endorsement succeeded — "Endorsed" button visible');
+
+      // Verify endorsement appears in the modal's endorsements section
+      const endorsementItem = profileModal.locator('.endorsement-item');
+      await expect(endorsementItem).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Endorsement item visible in ProfileModal');
+
+      // Close the modal
+      await profileModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
+      await expect(profileModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // 3d. Verify endorsement badge appears on the ProfileCard in New Members
+      const endorsementBadge = membersCard.locator('.profile-card').filter({ hasText: userName }).locator('.card-endorsements');
+      await expect(endorsementBadge).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(endorsementBadge).toContainText('1');
+      console.log('[Test] Endorsement badge visible on ProfileCard (1 endorsement)');
+
+      // 3e. Verify applicant's PendingApprovalScreen shows the endorsement credential
+      // The applicant's credential poller should detect the endorsement grant and auto-admit it
+      console.log('[Test] Waiting for endorsement to appear on applicant pending screen...');
+      const endorsementsCard = userPage.locator('.endorsements-card');
+      await expect(endorsementsCard).toBeVisible({ timeout: TIMEOUT.long });
+      await expect(endorsementsCard).toContainText('1 Community Endorsement', { timeout: TIMEOUT.short });
+      console.log('[Test] Endorsement credential received by applicant and shown on pending screen');
+
+      console.log('[Test] --- Endorsement flow complete ---');
+
       // B. Set up invite + sync + initMemberProfiles listeners before approval
       // initMemberProfiles creates SharedProfile + CommunityProfile on admin's backend
       const initProfilesResponse = adminPage.waitForResponse(
@@ -264,19 +323,28 @@ test.describe.serial('Registration Approval Flow', () => {
         { timeout: TIMEOUT.long },
       );
       // Community join goes through user's backend (routed port)
+      // Longer timeout: admission involves credential issuance (~12s) + IPEX grant (~10s)
+      // + KERIA delivery (~10s) + user poll/admit/sync (~20s) = ~50s total
       const joinResponse = userPage.waitForResponse(
         resp => resp.url().includes('/api/v1/spaces/community/join') && resp.request().method() === 'POST',
-        { timeout: TIMEOUT.long },
+        { timeout: TIMEOUT.aidCreation },
       );
       // Sync goes through user's backend (routed port)
       const syncResponse = userPage.waitForResponse(
         resp => resp.url().includes('/api/v1/sync/credentials') && resp.request().method() === 'POST',
-        { timeout: TIMEOUT.long },
+        { timeout: TIMEOUT.aidCreation },
       );
 
-      // 4. Admin approves
-      console.log('[Test] Admin clicking approve...');
-      await registrationCard.getByRole('button', { name: /approve/i }).click();
+      // 4. Admin approves — re-open ProfileModal and click "Admit"
+      console.log('[Test] Opening ProfileModal to admit member...');
+      const memberCardForAdmit = membersCard.locator('.profile-card').filter({ hasText: userName });
+      await memberCardForAdmit.click();
+      const admitModal = adminPage.locator('.modal-content');
+      await expect(admitModal).toBeVisible({ timeout: TIMEOUT.short });
+      const admitButton = admitModal.getByRole('button', { name: /admit/i });
+      await expect(admitButton).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Admin clicking Admit...');
+      await admitButton.click();
 
       // 5. Verify community space invite during approval (from admin's backend)
       const invResp = await inviteResponse;
@@ -467,27 +535,32 @@ test.describe.serial('Registration Approval Flow', () => {
       // User registers (on their own backend)
       await registerUser(userPage, userName);
 
-      // Wait for admin to see registration card
-      const adminSection = adminPage.locator('.admin-section');
-      await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
+      // Wait for admin to see pending member in New Members card
+      const membersCard = adminPage.locator('.members-card');
+      const pendingMemberName = membersCard.locator('.card-name', { hasText: userName });
+      await expect(pendingMemberName).toBeVisible({ timeout: TIMEOUT.long });
 
-      const registrationCard = adminPage.locator('.registration-card').filter({ hasText: userName });
-      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.long });
+      // Click on the pending member card to open ProfileModal
+      console.log('[Test] Opening profile modal for pending member...');
+      const memberProfileCard = membersCard.locator('.profile-card').filter({ hasText: userName });
+      await memberProfileCard.click();
 
-      // Admin declines
+      // Verify ProfileModal opens
+      const profileModal = adminPage.locator('.modal-content');
+      await expect(profileModal).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(profileModal.locator('h4').first()).toContainText(userName, { timeout: TIMEOUT.short });
+
+      // Click "Decline" button in the modal
       console.log('[Test] Admin clicking decline...');
-      const declineBtn = registrationCard.locator('button').last();
+      const declineBtn = profileModal.getByRole('button', { name: /^Decline$/i });
+      await expect(declineBtn).toBeVisible({ timeout: TIMEOUT.short });
       await declineBtn.click();
 
-      // Handle decline modal if present
-      const modal = adminPage.locator('.modal-content');
-      if (await modal.isVisible({ timeout: TIMEOUT.short }).catch(() => false)) {
-        const reasonField = modal.locator('textarea');
-        if (await reasonField.isVisible().catch(() => false)) {
-          await reasonField.fill('Declined for testing');
-        }
-        await modal.getByRole('button', { name: /confirm|decline/i }).click();
-      }
+      // Fill decline reason and confirm
+      const reasonField = profileModal.locator('textarea[placeholder="Provide a reason for declining..."]');
+      await expect(reasonField).toBeVisible({ timeout: TIMEOUT.short });
+      await reasonField.fill('Declined for testing');
+      await profileModal.getByRole('button', { name: /confirm decline/i }).click();
 
       // User sees rejection
       console.log('[Test] Waiting for user to see rejection...');

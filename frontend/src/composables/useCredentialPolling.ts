@@ -41,7 +41,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
   // Schema SAIDs for distinguishing credential types
   const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
-  const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
+  const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
 
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
@@ -232,15 +232,28 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
     try {
       // Check if credentials are already in the wallet
-      if (!credentialReceived.value) {
+      // NOTE: client.credentials().list() returns ALL credentials KERIA knows about,
+      // including chained credentials from ACDC edges (e.g., the endorser's membership
+      // credential pulled in when admitting an endorsement). We must check the recipient
+      // field (sad.a.i) matches our AID to avoid treating someone else's credential as ours.
+      const myAid = identityStore.currentAID?.prefix;
+      if (!credentialReceived.value && myAid) {
         try {
           const credentials = await client.credentials().list();
           if (credentials.length > 0) {
             for (const cred of credentials) {
               const sad = cred.sad || cred;
               const schema = (sad as any).s || '';
-              if (schema === ENDORSEMENT_SCHEMA_SAID) {
-                // Endorsement credential — track it but don't trigger admission
+              const recipient = (sad as any).a?.i || '';
+              if (schema === MEMBERSHIP_SCHEMA_SAID && recipient === myAid) {
+                // Membership credential issued TO us — existing admission flow
+                console.log('[CredentialPolling] Membership credential in wallet (mine):', cred);
+                credential.value = cred;
+                credentialReceived.value = true;
+                grantReceived.value = true;
+                syncCredentialToBackend();
+              } else if (schema === ENDORSEMENT_SCHEMA_SAID && recipient === myAid) {
+                // Endorsement credential issued TO us — track it but don't trigger admission
                 const existing = endorsementsReceived.value.find(e => e.credentialSaid === ((sad as any).d || ''));
                 if (!existing) {
                   endorsementsReceived.value.push({
@@ -248,15 +261,10 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
                     credentialSaid: (sad as any).d || '',
                     endorsedAt: (sad as any).a?.dt || new Date().toISOString(),
                   });
-                  console.log('[CredentialPolling] Endorsement credential found:', sad.d);
+                  console.log('[CredentialPolling] Endorsement credential found:', (sad as any).d);
                 }
               } else {
-                // Membership credential — existing admission flow
-                console.log('[CredentialPolling] Membership credential in wallet:', cred);
-                credential.value = cred;
-                credentialReceived.value = true;
-                grantReceived.value = true;
-                syncCredentialToBackend();
+                console.log('[CredentialPolling] Skipping credential — schema:', schema, 'recipient:', recipient, '(my AID:', myAid, ')');
               }
             }
           }
@@ -269,21 +277,50 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       const notifications = await client.notifications().list();
       console.log('[CredentialPolling] Raw notifications response:', JSON.stringify(notifications, null, 2));
 
-      // Check for grant notifications (only if credential not yet received)
-      if (!credentialReceived.value) {
-        const grants = notifications.notes?.filter(
-          (n: IPEXNotification) => n.a?.r === '/exn/ipex/grant' && !n.r
-        ) ?? [];
+      // Check for grant notifications
+      const grants = notifications.notes?.filter(
+        (n: IPEXNotification) => n.a?.r === '/exn/ipex/grant' && !n.r
+      ) ?? [];
 
-        console.log('[CredentialPolling] Filtered grants:', grants.length, grants);
+      console.log('[CredentialPolling] Filtered grants:', grants.length, grants);
 
-        if (grants.length > 0) {
-          console.log('[CredentialPolling] Grant detected:', grants[0]);
+      for (const grant of grants) {
+        // Determine credential type from the exchange message before admitting
+        let grantSchema = '';
+        try {
+          const grantExn = await client.exchanges().get(grant.a.d);
+          grantSchema = grantExn.exn?.e?.acdc?.s || '';
+          console.log('[CredentialPolling] Grant schema:', grantSchema, 'for grant:', grant.a.d);
+        } catch (exnErr) {
+          console.warn('[CredentialPolling] Could not inspect grant exchange:', exnErr);
+        }
+
+        if (grantSchema === ENDORSEMENT_SCHEMA_SAID) {
+          // Endorsement grant — admit silently, track, but DON'T trigger membership flow
+          console.log('[CredentialPolling] Endorsement grant detected — admitting silently');
+          try {
+            await admitGrant(grant);
+            // Track the endorsement (credential details will populate once in wallet)
+            const existing = endorsementsReceived.value.find(e => e.credentialSaid === grant.a.d);
+            if (!existing) {
+              endorsementsReceived.value.push({
+                endorserAid: grant.a.i || '',
+                credentialSaid: grant.a.d,
+                endorsedAt: new Date().toISOString(),
+              });
+            }
+            console.log('[CredentialPolling] Endorsement grant admitted');
+          } catch (endorseErr) {
+            console.warn('[CredentialPolling] Failed to admit endorsement grant:', endorseErr);
+          }
+        } else if (!credentialReceived.value) {
+          // Membership grant — existing admission flow
+          console.log('[CredentialPolling] Membership grant detected:', grant);
           grantReceived.value = true;
           isProcessingGrant = true;
 
           // Extract space invite data from grant message (embedded by admin)
-          const grantMsg = grants[0].a?.m;
+          const grantMsg = grant.a?.m;
           if (grantMsg && !spaceInviteReceived.value) {
             try {
               const inviteData = JSON.parse(grantMsg);
@@ -301,12 +338,13 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           }
 
           try {
-            await admitGrant(grants[0]);
-            // After admitting, poll for credential to appear in wallet
+            await admitGrant(grant);
+            // After admitting, poll for membership credential to appear in wallet
             await pollForCredential();
           } finally {
             isProcessingGrant = false;
           }
+          break; // Only process one membership grant at a time
         }
       }
 
@@ -476,12 +514,18 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     const maxAttempts = 30; // 60 seconds max
     let attempts = 0;
 
+    const myAidPrefix = identityStore.currentAID?.prefix;
     const checkCredential = async (): Promise<boolean> => {
       try {
         const credentials = await client.credentials().list();
-        if (credentials.length > 0) {
-          console.log('[CredentialPolling] Credential received:', credentials[0]);
-          credential.value = credentials[0];
+        // Find membership credential issued TO us (not chained credentials from edges)
+        const membershipCred = credentials.find((c: any) => {
+          const sad = c.sad || c;
+          return (sad.s || '') === MEMBERSHIP_SCHEMA_SAID && (sad.a?.i || '') === myAidPrefix;
+        });
+        if (membershipCred) {
+          console.log('[CredentialPolling] Membership credential received (mine):', membershipCred);
+          credential.value = membershipCred;
           credentialReceived.value = true;
           // Sync to backend for space routing (non-blocking)
           syncCredentialToBackend();

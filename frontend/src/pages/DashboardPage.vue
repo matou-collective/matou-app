@@ -368,13 +368,13 @@ async function handleDecline(registration: PendingRegistration, reason?: string)
   }
 }
 
-async function handleEndorse() {
+async function handleEndorse(message?: string) {
   clearEndorseError();
   const aid = selectedMember.value?.shared?.aid as string;
   if (!aid) return;
   const registration = selectedMemberRegistration.value;
   const oobi = registration?.applicantOOBI;
-  await endorseApplicant(aid, oobi);
+  await endorseApplicant(aid, oobi, message);
 }
 </script>
 

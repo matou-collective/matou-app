@@ -12,7 +12,7 @@ import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
 export const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
-export const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
+export const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
 
 export function useAdminActions() {
   const keriClient = useKERIClient();
@@ -265,30 +265,16 @@ export function useAdminActions() {
       console.log('[AdminActions] Credential issued:', credResult.said);
       credentialSaid = credResult.said;
 
-      // 6b. Create personal registry for the new member
-      //     This enables them to issue endorsement credentials later.
-      let personalRegistryId = '';
-      try {
-        const registryName = `${registration.applicantAid.slice(0, 12)}-endorsements`;
-        personalRegistryId = await keriClient.createRegistry(
-          registration.applicantAid,
-          registryName
-        );
-        console.log('[AdminActions] Created personal registry for member:', personalRegistryId);
-      } catch (regErr) {
-        // Non-fatal: member can function without a registry, just can't endorse yet
-        console.warn('[AdminActions] Could not create personal registry:', regErr);
-      }
-
-      // 6c. Update CommunityProfile with real credential SAID and registry ID
+      // 6b. Update CommunityProfile with real credential SAID
       //     (profiles were created in step 4 with credentialSaid='pending')
+      //     Note: personal endorsement registries are created lazily by each member
+      //     via useEndorsements when they first try to endorse someone.
       try {
         const profileId = `CommunityProfile-${registration.applicantAid}`;
         await createOrUpdateProfile('CommunityProfile', {
           credential: credentialSaid,
           role: 'Member',
           credentials: [credentialSaid],
-          ...(personalRegistryId && { personalRegistryId }),
         }, { id: profileId });
         console.log('[AdminActions] Updated CommunityProfile with credential SAID:', credentialSaid);
       } catch (updateErr) {

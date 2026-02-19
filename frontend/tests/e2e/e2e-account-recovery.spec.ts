@@ -8,6 +8,8 @@ import {
   setupBackendRouting,
   loginWithMnemonic,
   loadAccounts,
+  registerUser,
+  uniqueSuffix,
   TestAccounts,
 } from './utils/test-helpers';
 
@@ -22,6 +24,8 @@ import {
  * 5. Community read-only space (keys available)
  * 6. Admin space (keys available)
  * 7. Community dashboard with active membership credential
+ * 8. Admin can approve registrations after recovery
+ * 9. Admin can generate anysync invites after recovery
  *
  * Prerequisites:
  *   - org-setup must have been run (test-accounts.json has admin mnemonic)
@@ -231,5 +235,141 @@ test.describe.serial('Admin Account Recovery', () => {
     ).toBeVisible({ timeout: TIMEOUT.short });
 
     console.log('[Test] PASS - Dashboard accessible with community data visible');
+  });
+
+  // ------------------------------------------------------------------
+  // Test 8: Admin can approve registrations after recovery
+  // ------------------------------------------------------------------
+  test('can approve registrations after recovery', async ({ browser }) => {
+    test.setTimeout(240_000); // 4 min: registration (~90s) + approval (~30s) + sync (~60s)
+
+    // Spawn a dedicated backend for the registering user
+    const userBackend = await backends.start('user-post-recovery');
+
+    const userContext = await browser.newContext();
+    await setupTestConfig(userContext);
+    await setupBackendRouting(userContext, userBackend.port);
+    const userPage = await userContext.newPage();
+    setupPageLogging(userPage, 'User-PostRecovery');
+
+    const userName = `Recovery_Approve_${uniqueSuffix()}`;
+
+    try {
+      // 1. User registers (on their own backend)
+      await registerUser(userPage, userName);
+      console.log(`[Test] ${userName} registered, waiting for admin to see registration card...`);
+
+      // 2. Wait for registration card to appear on recovered admin's dashboard
+      const adminSection = recoveryPage.locator('.admin-section');
+      await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
+
+      const registrationCard = recoveryPage.locator('.registration-card').filter({ hasText: userName });
+      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+      console.log('[Test] Registration card visible on recovered admin dashboard');
+
+      // 3. Set up listeners for approval API calls
+      const inviteResponse = recoveryPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/spaces/community/invite') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.long },
+      );
+      const initProfilesResponse = recoveryPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/profiles/init-member') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.long },
+      );
+
+      // 4. Admin approves the registration
+      console.log('[Test] Recovered admin clicking approve...');
+      await registrationCard.getByRole('button', { name: /approve/i }).click();
+
+      // 5. Verify community space invite succeeded
+      const invResp = await inviteResponse;
+      expect(invResp.status()).toBe(200);
+      const invBody = await invResp.json();
+      expect(invBody.success, 'Community space invite should succeed').toBe(true);
+      console.log('[Test] Community space invite succeeded:', invBody.communitySpaceId);
+
+      // 6. Verify initMemberProfiles succeeded
+      const initResp = await initProfilesResponse;
+      expect(initResp.status()).toBe(200);
+      const initBody = await initResp.json();
+      expect(initBody.success, 'initMemberProfiles should succeed').toBe(true);
+      expect(initBody.sharedProfileObjectId, 'SharedProfile should be created').toBeTruthy();
+      console.log('[Test] initMemberProfiles succeeded:', {
+        objectId: initBody.objectId,
+        sharedProfileObjectId: initBody.sharedProfileObjectId,
+      });
+
+      // 7. Verify user receives credential (welcome overlay appears)
+      console.log('[Test] Waiting for user to receive credential...');
+      await expect(userPage.locator('.welcome-overlay')).toBeVisible({ timeout: TIMEOUT.long });
+      console.log('[Test] User received credential');
+
+      // 8. User enters community and lands on dashboard
+      const enterButton = userPage.getByRole('button', { name: /enter community/i });
+      await expect(enterButton).toBeEnabled({ timeout: TIMEOUT.long + 30_000 });
+      await enterButton.click();
+      await expect(userPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+
+      console.log('[Test] PASS - Recovered admin can approve registrations');
+    } finally {
+      await userContext.close();
+      await backends.stop('user-post-recovery');
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Test 9: Admin can generate anysync invites after recovery
+  // ------------------------------------------------------------------
+  test('can generate anysync invites after recovery', async () => {
+    test.setTimeout(TIMEOUT.orgSetup); // 2 min — credential issuance + OOBI resolution
+
+    // Ensure we're on the dashboard
+    await expect(recoveryPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+
+    // 1. Wait for Invite Member button (admin section)
+    console.log('[Test] Waiting for Invite Member button...');
+    const inviteBtn = recoveryPage.getByRole('button', { name: /invite member/i });
+    await expect(inviteBtn).toBeVisible({ timeout: TIMEOUT.long });
+
+    // 2. Click "Invite Member" to open modal
+    console.log('[Test] Clicking Invite Member...');
+    await inviteBtn.click();
+
+    const modal = recoveryPage.locator('.invite-modal');
+    await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+
+    // 3. Fill invite form
+    await modal.locator('input[type="text"]').fill('Recovery Invitee');
+    // Leave role as default "Member"
+
+    // 4. Submit and wait for invitation creation (KERI operations)
+    console.log('[Test] Creating invitation (KERI operations)...');
+    await modal.getByRole('button', { name: /create invitation/i }).click();
+
+    // Wait for progress to appear
+    await expect(modal.locator('.progress-box')).toBeVisible({ timeout: TIMEOUT.short });
+
+    // 5. Wait for success — invite code input appears
+    const inviteCodeInput = modal.locator('input[readonly]');
+    await expect(inviteCodeInput).toBeVisible({ timeout: TIMEOUT.orgSetup });
+
+    // 6. Verify invite code was generated
+    const inviteCode = await inviteCodeInput.inputValue();
+    expect(inviteCode, 'Invite code should be generated').toBeTruthy();
+    expect(inviteCode.length, 'Invite code should have reasonable length').toBeGreaterThan(10);
+    console.log(`[Test] Invite code generated (length: ${inviteCode.length})`);
+
+    // 7. Verify invitee AID is shown
+    const aidInfo = modal.locator('.aid-info code');
+    await expect(aidInfo).toBeVisible({ timeout: TIMEOUT.short });
+    const aidText = await aidInfo.textContent();
+    expect(aidText, 'Invitee AID should be displayed').toBeTruthy();
+    console.log(`[Test] Invitee AID: ${aidText}`);
+
+    // 8. Close modal
+    await modal.getByRole('button', { name: /done/i }).click();
+    await expect(modal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+    console.log('[Test] PASS - Recovered admin can generate anysync invites');
   });
 });

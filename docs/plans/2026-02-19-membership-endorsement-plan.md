@@ -20,11 +20,11 @@ Add the endorsement JSON schema file and update the Go backend with the endorsem
 
 **Step 1: Create the endorsement schema file**
 
-Create `backend/schemas/matou-endorsement-schema.json` with the full endorsement schema from the friend's fork. The `$id` is the schema SAID: `EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh`.
+Create `backend/schemas/matou-endorsement-schema.json` with the full endorsement schema from the friend's fork. The `$id` is the schema SAID: `ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI`.
 
 ```json
 {
-    "$id": "EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh",
+    "$id": "ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI",
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "MATOU Endorsement Credential",
     "description": "A credential representing an endorsement of a member's identity, skills, or qualifications",
@@ -108,7 +108,7 @@ In `backend/internal/keri/client.go`, add endorsement-related constants after th
 // Schema SAIDs
 const (
 	MembershipSchemaSAID  = "EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT"
-	EndorsementSchemaSAID = "EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh"
+	EndorsementSchemaSAID = "ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI"
 )
 
 // EndorsementData contains endorsement credential attributes
@@ -165,7 +165,7 @@ import { useProfilesStore } from 'stores/profiles';
 import { createOrUpdateProfile } from 'src/lib/api/client';
 
 // Endorsement credential schema SAID (from matou-endorsement-schema.json)
-const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
+const ENDORSEMENT_SCHEMA_SAID = 'ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI';
 
 export interface EndorsementRecord {
   endorserAid: string;
@@ -940,7 +940,7 @@ const endorsementsReceived = ref<Array<{
 Add schema SAIDs at the top of the function:
 ```typescript
 const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
-const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
+const ENDORSEMENT_SCHEMA_SAID = 'ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI';
 ```
 
 **Step 2: Update grant processing to distinguish credential types**
@@ -1192,7 +1192,7 @@ After the existing `MEMBERSHIP_SCHEMA_SAID` (line 14), add:
 
 ```typescript
 // Endorsement credential schema
-export const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
+export const ENDORSEMENT_SCHEMA_SAID = 'ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI';
 ```
 
 Also export the membership one:
@@ -1211,7 +1211,7 @@ In `useCredentialPolling.ts`, import:
 ```typescript
 // Import at top — these come from useAdminActions but we only need the constants, not the composable
 const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
-const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
+const ENDORSEMENT_SCHEMA_SAID = 'ENQU2Ty2QB1rU0DgYblcjKJnQmiF31_eUzBiwRKOi9EI';
 ```
 
 (Keep local constants in useCredentialPolling since it can't import from a composable at module level — composables use Vue's composition API)

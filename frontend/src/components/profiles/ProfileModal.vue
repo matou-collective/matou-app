@@ -341,7 +341,7 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'approve', registration: PendingRegistration): void;
   (e: 'decline', registration: PendingRegistration, reason?: string): void;
-  (e: 'endorse'): void;
+  (e: 'endorse', message?: string): void;
 }>();
 
 // Unified computed properties for both data sources
@@ -424,8 +424,16 @@ function formatEndorsementDate(dateStr: string): string {
 }
 
 function handleEndorse() {
-  emit('endorse');
+  emit('endorse', endorseMessage.value || undefined);
 }
+
+// Reset endorsement form after endorsement completes
+watch(() => props.isEndorsing, (endorsing, wasEndorsing) => {
+  if (wasEndorsing && !endorsing) {
+    showEndorseMessage.value = false;
+    endorseMessage.value = '';
+  }
+});
 
 // Reset state when modal closes
 watch(() => props.show, (isOpen) => {
