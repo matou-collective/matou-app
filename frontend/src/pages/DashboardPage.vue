@@ -131,10 +131,16 @@
       :communityProfile="selectedMember?.community"
       :registration="selectedMemberRegistration"
       :isProcessing="isProcessing"
-      :error="actionError"
+      :error="actionError || endorseError"
+      :isSteward="isSteward"
+      :currentUserAid="identityStore.currentAID?.prefix || ''"
+      :endorsements="selectedMemberEndorsements"
+      :hasEndorsed="selectedMemberHasEndorsed"
+      :isEndorsing="isEndorsing"
       @close="selectedMember = null"
       @approve="handleApprove"
       @decline="handleDecline"
+      @endorse="handleEndorse"
     />
   </div>
 </template>
@@ -154,7 +160,9 @@ import {
 import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
+import { useEndorsements } from 'src/composables/useEndorsements';
 import { useProfilesStore } from 'stores/profiles';
+import { useIdentityStore } from 'stores/identity';
 import InviteMemberModal from 'src/components/dashboard/InviteMemberModal.vue';
 import ProfileCard from 'src/components/profiles/ProfileCard.vue';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
@@ -175,6 +183,17 @@ const {
   clearError,
 } = useAdminActions();
 
+const {
+  isEndorsing,
+  error: endorseError,
+  endorseApplicant,
+  hasEndorsed,
+  getEndorsements,
+  clearError: clearEndorseError,
+} = useEndorsements();
+
+const identityStore = useIdentityStore();
+
 const profilesStore = useProfilesStore();
 
 const showInviteModal = ref(false);
@@ -185,6 +204,18 @@ const selectedMemberRegistration = computed(() => {
   const aid = selectedMember.value?.shared?.aid as string;
   if (!aid) return null;
   return pendingRegistrations.value.find(r => r.applicantAid === aid) || null;
+});
+
+const selectedMemberEndorsements = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return [];
+  return getEndorsements(aid);
+});
+
+const selectedMemberHasEndorsed = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return false;
+  return hasEndorsed(aid);
 });
 
 // Dark mode state
@@ -235,10 +266,8 @@ onMounted(async () => {
 
   // Check if user is admin/steward
   await checkAdminStatus();
-  if (isSteward.value) {
-    console.log('[Dashboard] User is steward, starting registration polling');
-    startPolling();
-  }
+  // Start polling for all users — approved members can see and endorse pending registrations
+  startPolling();
 });
 
 onUnmounted(() => {
@@ -337,6 +366,15 @@ async function handleDecline(registration: PendingRegistration, reason?: string)
     removeRegistration(registration.notificationId);
     selectedMember.value = null;
   }
+}
+
+async function handleEndorse() {
+  clearEndorseError();
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return;
+  const registration = selectedMemberRegistration.value;
+  const oobi = registration?.applicantOOBI;
+  await endorseApplicant(aid, oobi);
 }
 </script>
 
