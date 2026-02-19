@@ -1,5 +1,5 @@
 <template>
-  <div class="profile-card" @click="$emit('click')">
+  <div class="profile-card" :class="status === 'pending' ? 'border-pending' : 'border-approved'" @click="$emit('click')">
     <div class="card-avatar">
       <img
         v-if="avatarUrl"
@@ -14,7 +14,13 @@
     <div class="card-info">
       <span class="card-name">{{ displayName }}</span>
       <span v-if="role" class="card-role">{{ role }}</span>
-      <span v-if="memberSince" class="card-date">{{ formatDate(memberSince) }}</span>
+      <span v-if="dateLabel" class="card-date">{{ dateLabel }}</span>
+    </div>
+    <div v-if="status === 'pending'" class="card-status status-pending" title="Pending approval">
+      <q-icon name="help" size="1.25rem" />
+    </div>
+    <div v-else-if="status === 'approved'" class="card-status status-approved" title="Approved">
+      <q-icon name="check_circle" size="1.25rem" />
     </div>
   </div>
 </template>
@@ -52,9 +58,18 @@ const initials = computed(() => {
   return name.substring(0, 2).toUpperCase();
 });
 
+const status = computed(() => (props.profile?.status as string) || '');
+
 const role = computed(() => (props.communityProfile?.role as string) || '');
 
 const memberSince = computed(() => (props.communityProfile?.memberSince as string) || '');
+
+const dateLabel = computed(() => {
+  if (memberSince.value) return formatDate(memberSince.value, 'Joined');
+  const createdAt = props.profile?.createdAt as string;
+  if (createdAt) return formatDate(createdAt, 'Applied');
+  return '';
+});
 
 const colorClass = computed(() => {
   const colors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
@@ -62,16 +77,16 @@ const colorClass = computed(() => {
   return colors[hash % colors.length];
 });
 
-function formatDate(dateStr: string): string {
+function formatDate(dateStr: string, verb: string): string {
   if (!dateStr) return '';
   const date = new Date(dateStr);
   const now = new Date();
   const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays === 0) return 'Joined today';
-  if (diffDays === 1) return 'Joined yesterday';
-  if (diffDays < 7) return `Joined ${diffDays} days ago`;
-  if (diffDays < 30) return `Joined ${Math.floor(diffDays / 7)} weeks ago`;
-  return `Joined ${date.toLocaleDateString('en-NZ', { month: 'short', year: 'numeric' })}`;
+  if (diffDays === 0) return `${verb} today`;
+  if (diffDays === 1) return `${verb} yesterday`;
+  if (diffDays < 7) return `${verb} ${diffDays} days ago`;
+  if (diffDays < 30) return `${verb} ${Math.floor(diffDays / 7)} weeks ago`;
+  return `${verb} ${date.toLocaleDateString('en-NZ', { month: 'short', year: 'numeric' })}`;
 }
 </script>
 
@@ -82,12 +97,25 @@ function formatDate(dateStr: string): string {
   gap: 0.75rem;
   padding: 0.75rem;
   border-radius: 0.5rem;
+  border: 1px solid transparent;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.profile-card:hover {
-  background: var(--matou-surface-alt, #f3f4f6);
+.border-pending {
+  border-color: var(--matou-warning, #f59e0b);
+}
+
+.border-approved {
+  border-color: var(--matou-accent, #4a9d9c);
+}
+
+.border-pending:hover {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.border-approved:hover {
+  background: rgba(74, 157, 156, 0.08);
 }
 
 .card-avatar {
@@ -122,6 +150,20 @@ function formatDate(dateStr: string): string {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex: 1;
+}
+
+.card-status {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.status-pending {
+  color: var(--matou-warning, #f59e0b);
+}
+
+.status-approved {
+  color: var(--matou-success, #22c55e);
 }
 
 .card-name {

@@ -5,7 +5,7 @@
         <div class="modal-content bg-card border border-border rounded-2xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-hidden">
           <!-- Header -->
           <div class="modal-header bg-primary p-4 border-b border-white/20 flex items-center justify-between">
-            <h3 class="font-semibold text-lg text-white">Registration Details</h3>
+            <h3 class="font-semibold text-lg text-white">{{ headerTitle }}</h3>
             <q-btn flat @click="$emit('close')" class="p-1.5 rounded-lg transition-colors">
               <X class="w-5 h-5 text-white" />
             </q-btn>
@@ -26,13 +26,13 @@
                 <span v-else class="text-white text-xl font-semibold">{{ initials }}</span>
               </div>
               <div class="flex-1 min-w-0">
-                <h4 class="text-lg font-medium text-black">{{ registration?.profile.name }}</h4>
+                <h4 class="text-lg font-medium text-black">{{ profileName }}</h4>
                 <p class="text-sm text-black/70 mb-2">
-                  Submitted {{ formattedDate }}
+                  {{ formattedDate }}
                 </p>
-                <div class="flex items-center gap-2">
+                <div v-if="profileAid" class="flex items-center gap-2">
                   <code class="text-xs bg-secondary px-2 py-1 rounded font-mono truncate flex-1 text-black">
-                    {{ registration?.applicantAid }}
+                    {{ profileAid }}
                   </code>
                   <button
                     @click="copyAid"
@@ -51,39 +51,39 @@
               <!-- Email -->
               <div class="profile-field">
                 <h5 class="field-label">Email</h5>
-                <p class="field-value">{{ registration?.profile.email || 'Not provided' }}</p>
+                <p class="field-value">{{ profileFields.email || 'Not provided' }}</p>
               </div>
 
               <!-- About -->
               <div class="profile-field">
                 <h5 class="field-label">About</h5>
-                <p class="field-value">{{ registration?.profile.bio || 'Not provided' }}</p>
+                <p class="field-value">{{ profileFields.bio || 'Not provided' }}</p>
               </div>
 
               <!-- Location -->
               <div class="profile-field">
                 <h5 class="field-label">Location</h5>
-                <p class="field-value">{{ registration?.profile.location || 'Not provided' }}</p>
+                <p class="field-value">{{ profileFields.location || 'Not provided' }}</p>
               </div>
 
               <!-- Indigenous Community -->
               <div class="profile-field">
                 <h5 class="field-label">Indigenous Community</h5>
-                <p class="field-value">{{ registration?.profile.indigenousCommunity || 'Not provided' }}</p>
+                <p class="field-value">{{ profileFields.indigenousCommunity || 'Not provided' }}</p>
               </div>
 
               <!-- Join Reason -->
               <div class="profile-field">
                 <h5 class="field-label">Why they want to join</h5>
-                <p class="field-value">{{ registration?.profile.joinReason || 'Not provided' }}</p>
+                <p class="field-value">{{ profileFields.joinReason || 'Not provided' }}</p>
               </div>
 
               <!-- Participation Interests -->
               <div class="profile-field">
                 <h5 class="field-label">Participation Interests</h5>
-                <div v-if="registration?.profile.interests && registration.profile.interests.length" class="flex flex-wrap gap-2">
+                <div v-if="profileFields.interests.length" class="flex flex-wrap gap-2">
                   <span
-                    v-for="interest in registration.profile.interests"
+                    v-for="interest in profileFields.interests"
                     :key="interest"
                     class="interest-chip"
                   >
@@ -96,7 +96,7 @@
               <!-- Custom Interests -->
               <div class="profile-field">
                 <h5 class="field-label">Additional Interests</h5>
-                <p class="field-value">{{ registration?.profile.customInterests || 'Not provided' }}</p>
+                <p class="field-value">{{ profileFields.customInterests || 'Not provided' }}</p>
               </div>
 
               <!-- Social Links -->
@@ -104,8 +104,8 @@
                 <h5 class="field-label">Social Links</h5>
                 <div v-if="hasSocialLinks" class="flex flex-wrap gap-3">
                   <a
-                    v-if="registration?.profile.facebookUrl"
-                    :href="registration.profile.facebookUrl"
+                    v-if="profileFields.facebookUrl"
+                    :href="profileFields.facebookUrl"
                     target="_blank"
                     rel="noopener noreferrer"
                     class="social-link"
@@ -113,8 +113,8 @@
                     Facebook
                   </a>
                   <a
-                    v-if="registration?.profile.linkedinUrl"
-                    :href="registration.profile.linkedinUrl"
+                    v-if="profileFields.linkedinUrl"
+                    :href="profileFields.linkedinUrl"
                     target="_blank"
                     rel="noopener noreferrer"
                     class="social-link"
@@ -122,8 +122,8 @@
                     LinkedIn
                   </a>
                   <a
-                    v-if="registration?.profile.twitterUrl"
-                    :href="registration.profile.twitterUrl"
+                    v-if="profileFields.twitterUrl"
+                    :href="profileFields.twitterUrl"
                     target="_blank"
                     rel="noopener noreferrer"
                     class="social-link"
@@ -131,8 +131,8 @@
                     X (Twitter)
                   </a>
                   <a
-                    v-if="registration?.profile.instagramUrl"
-                    :href="registration.profile.instagramUrl"
+                    v-if="profileFields.instagramUrl"
+                    :href="profileFields.instagramUrl"
                     target="_blank"
                     rel="noopener noreferrer"
                     class="social-link"
@@ -162,7 +162,7 @@
           </div>
 
           <!-- Footer Actions -->
-          <div class="modal-footer p-4 border-t border-border">
+          <div v-if="registration" class="modal-footer p-4 border-t border-border">
             <div v-if="!showDeclineReason" class="flex items-center gap-3">
               <button
                 @click="handleApprove"
@@ -225,12 +225,17 @@ function getInterestLabel(value: string): string {
 
 interface Props {
   show: boolean;
-  registration: PendingRegistration | null;
+  registration?: PendingRegistration | null;
+  sharedProfile?: Record<string, unknown> | null;
+  communityProfile?: Record<string, unknown> | null;
   isProcessing?: boolean;
   error?: string | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  registration: null,
+  sharedProfile: null,
+  communityProfile: null,
   isProcessing: false,
   error: null,
 });
@@ -240,6 +245,61 @@ const emit = defineEmits<{
   (e: 'approve', registration: PendingRegistration): void;
   (e: 'decline', registration: PendingRegistration, reason?: string): void;
 }>();
+
+// Unified computed properties for both data sources
+const profileName = computed(() => {
+  if (props.registration) return props.registration.profile.name;
+  return (props.sharedProfile?.displayName as string) || 'Unknown';
+});
+
+const profileAid = computed(() => {
+  if (props.registration) return props.registration.applicantAid;
+  return (props.sharedProfile?.aid as string) || '';
+});
+
+const profileStatus = computed(() => {
+  if (props.registration) return 'pending';
+  return (props.sharedProfile?.status as string) || 'approved';
+});
+
+const headerTitle = computed(() => {
+  if (props.registration) return 'Registration Details';
+  if (profileStatus.value === 'pending') return 'Pending Member';
+  return 'Member Profile';
+});
+
+const profileFields = computed(() => {
+  if (props.registration) {
+    const p = props.registration.profile;
+    return {
+      email: p.email || '',
+      bio: p.bio || '',
+      location: p.location || '',
+      indigenousCommunity: p.indigenousCommunity || '',
+      joinReason: p.joinReason || '',
+      interests: p.interests || [],
+      customInterests: p.customInterests || '',
+      facebookUrl: p.facebookUrl || '',
+      linkedinUrl: p.linkedinUrl || '',
+      twitterUrl: p.twitterUrl || '',
+      instagramUrl: p.instagramUrl || '',
+    };
+  }
+  const s = props.sharedProfile || {};
+  return {
+    email: (s.publicEmail as string) || '',
+    bio: (s.bio as string) || '',
+    location: (s.location as string) || '',
+    indigenousCommunity: (s.indigenousCommunity as string) || '',
+    joinReason: (s.joinReason as string) || '',
+    interests: (s.participationInterests as string[]) || [],
+    customInterests: (s.customInterests as string) || '',
+    facebookUrl: (s.facebookUrl as string) || '',
+    linkedinUrl: (s.linkedinUrl as string) || '',
+    twitterUrl: (s.twitterUrl as string) || '',
+    instagramUrl: (s.instagramUrl as string) || '',
+  };
+});
 
 // Local state
 const showDeclineReason = ref(false);
@@ -259,31 +319,38 @@ watch(() => props.show, (isOpen) => {
 // Avatar image handling
 const avatarError = ref(false);
 const hasAvatar = computed(() => {
-  // Check for either base64 data (preferred) or file ref
-  const hasBase64 = !!props.registration?.profile.avatarData && !!props.registration?.profile.avatarMimeType;
-  const hasRef = !!props.registration?.profile.avatarFileRef && !avatarError.value;
-  return hasBase64 || hasRef;
+  if (props.registration) {
+    const hasBase64 = !!props.registration.profile.avatarData && !!props.registration.profile.avatarMimeType;
+    const hasRef = !!props.registration.profile.avatarFileRef && !avatarError.value;
+    return hasBase64 || hasRef;
+  }
+  const ref = (props.sharedProfile?.avatar as string) || '';
+  return !!ref && !avatarError.value;
 });
 const avatarUrl = computed(() => {
-  // Prefer base64 data URL (works cross-backend)
-  if (props.registration?.profile.avatarData && props.registration?.profile.avatarMimeType) {
-    return `data:${props.registration.profile.avatarMimeType};base64,${props.registration.profile.avatarData}`;
+  if (props.registration) {
+    if (props.registration.profile.avatarData && props.registration.profile.avatarMimeType) {
+      return `data:${props.registration.profile.avatarMimeType};base64,${props.registration.profile.avatarData}`;
+    }
+    if (props.registration.profile.avatarFileRef) {
+      return getFileUrl(props.registration.profile.avatarFileRef);
+    }
+    return '';
   }
-  // Fallback to file ref URL
-  if (props.registration?.profile.avatarFileRef) {
-    return getFileUrl(props.registration.profile.avatarFileRef);
-  }
-  return '';
+  const ref = (props.sharedProfile?.avatar as string) || '';
+  if (!ref) return '';
+  if (ref.startsWith('http') || ref.startsWith('data:')) return ref;
+  return getFileUrl(ref);
 });
 
-// Reset avatar error when registration changes
-watch(() => props.registration, () => {
+// Reset avatar error when data changes
+watch(() => [props.registration, props.sharedProfile], () => {
   avatarError.value = false;
 });
 
 // Avatar initials (fallback)
 const initials = computed(() => {
-  const name = props.registration?.profile.name || '';
+  const name = profileName.value;
   const parts = name.split(' ');
   if (parts.length >= 2) {
     return `${parts[0].charAt(0)}${parts[1].charAt(0)}`.toUpperCase();
@@ -294,35 +361,50 @@ const initials = computed(() => {
 // Avatar color (fallback)
 const avatarClass = computed(() => {
   const colors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
-  const name = props.registration?.profile.name || '';
+  const name = profileName.value;
   const hash = name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
   return colors[hash % colors.length];
 });
 
 // Formatted date
 const formattedDate = computed(() => {
-  if (!props.registration) return '';
-  const date = new Date(props.registration.profile.submittedAt);
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  if (props.registration) {
+    const date = new Date(props.registration.profile.submittedAt);
+    return 'Submitted ' + date.toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    });
+  }
+  // For SharedProfile, use createdAt or memberSince from communityProfile
+  const communityData = props.communityProfile || {};
+  const memberSince = communityData.memberSince as string;
+  if (memberSince) {
+    const date = new Date(memberSince);
+    return 'Joined ' + date.toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+    });
+  }
+  const createdAt = (props.sharedProfile?.createdAt as string) || '';
+  if (createdAt) {
+    const date = new Date(createdAt);
+    return 'Applied ' + date.toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+    });
+  }
+  return '';
 });
 
 // Check if any social links exist
 const hasSocialLinks = computed(() => {
-  if (!props.registration) return false;
-  const { facebookUrl, linkedinUrl, twitterUrl, instagramUrl } = props.registration.profile;
-  return !!(facebookUrl || linkedinUrl || twitterUrl || instagramUrl);
+  const f = profileFields.value;
+  return !!(f.facebookUrl || f.linkedinUrl || f.twitterUrl || f.instagramUrl);
 });
 
 // Copy AID to clipboard
 function copyAid() {
-  if (props.registration?.applicantAid) {
-    navigator.clipboard.writeText(props.registration.applicantAid);
+  const aid = profileAid.value;
+  if (aid) {
+    navigator.clipboard.writeText(aid);
     copied.value = true;
     setTimeout(() => { copied.value = false; }, 2000);
   }

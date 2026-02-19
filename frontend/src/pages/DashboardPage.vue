@@ -58,9 +58,9 @@
       </div>
     </section>
 
-    <!-- Admin Section (conditional) - Only for Operations Steward or Community Steward -->
+    <!-- Admin Actions -->
     <div v-if="isSteward" class="admin-area px-6 mb-6">
-      <div class="admin-actions mb-4">
+      <div class="admin-actions">
         <button
           class="invite-btn"
           @click="showInviteModal = true"
@@ -69,20 +69,6 @@
           Invite Member
         </button>
       </div>
-      <AdminSection
-        ref="adminSectionRef"
-        :registrations="pendingRegistrations"
-        :is-polling="isPolling"
-        :is-refreshing="isRefreshing"
-        :is-processing="isProcessing"
-        :processing-registration-id="processingRegistrationId"
-        :error="pollingError"
-        :action-error="actionError"
-        @approve="handleApprove"
-        @decline="handleDecline"
-        @refresh="handleRefresh"
-        @retry="retryPolling"
-      />
     </div>
 
     <!-- Content Grid -->
@@ -139,14 +125,17 @@
     <InviteMemberModal v-model="showInviteModal" />
 
     <!-- Member Profile Dialog -->
-    <Teleport to="body">
-      <MemberProfileDialog
-        v-if="selectedMember"
-        :sharedProfile="selectedMember.shared"
-        :communityProfile="selectedMember.community"
-        @close="selectedMember = null"
-      />
-    </Teleport>
+    <ProfileModal
+      :show="!!selectedMember"
+      :sharedProfile="selectedMember?.shared"
+      :communityProfile="selectedMember?.community"
+      :registration="selectedMemberRegistration"
+      :isProcessing="isProcessing"
+      :error="actionError"
+      @close="selectedMember = null"
+      @approve="handleApprove"
+      @decline="handleDecline"
+    />
   </div>
 </template>
 
@@ -166,26 +155,20 @@ import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useProfilesStore } from 'stores/profiles';
-import AdminSection from 'src/components/admin/AdminSection.vue';
 import InviteMemberModal from 'src/components/dashboard/InviteMemberModal.vue';
 import ProfileCard from 'src/components/profiles/ProfileCard.vue';
-import MemberProfileDialog from 'src/components/profiles/MemberProfileDialog.vue';
+import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
 const { isSteward, checkAdminStatus } = useAdminAccess();
 const {
   pendingRegistrations,
-  isPolling,
-  error: pollingError,
   startPolling,
   stopPolling,
-  refresh: refreshRegistrations,
   removeRegistration,
-  retry: retryPolling,
 } = useRegistrationPolling({ pollingInterval: 10000 });
 const {
   isProcessing,
-  processingRegistrationId,
   error: actionError,
   approveRegistration,
   declineRegistration,
@@ -194,10 +177,15 @@ const {
 
 const profilesStore = useProfilesStore();
 
-const isRefreshing = ref(false);
-const adminSectionRef = ref<InstanceType<typeof AdminSection> | null>(null);
 const showInviteModal = ref(false);
 const selectedMember = ref<{ shared?: Record<string, unknown>; community?: Record<string, unknown> } | null>(null);
+
+// Find matching PendingRegistration for the selected member (enables approve/decline buttons)
+const selectedMemberRegistration = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return null;
+  return pendingRegistrations.value.find(r => r.applicantAid === aid) || null;
+});
 
 // Dark mode state
 const isDark = ref(false);
@@ -338,7 +326,7 @@ async function handleApprove(registration: PendingRegistration) {
   const success = await approveRegistration(registration);
   if (success) {
     removeRegistration(registration.notificationId);
-    adminSectionRef.value?.showSuccess(`Approved ${registration.profile.name}`);
+    selectedMember.value = null;
   }
 }
 
@@ -347,14 +335,8 @@ async function handleDecline(registration: PendingRegistration, reason?: string)
   const success = await declineRegistration(registration, reason);
   if (success) {
     removeRegistration(registration.notificationId);
-    adminSectionRef.value?.showSuccess(`Declined ${registration.profile.name}`);
+    selectedMember.value = null;
   }
-}
-
-async function handleRefresh() {
-  isRefreshing.value = true;
-  await refreshRegistrations();
-  isRefreshing.value = false;
 }
 </script>
 
