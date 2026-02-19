@@ -114,6 +114,34 @@
           </div>
         </div>
 
+        <!-- Community Endorsements -->
+        <div
+          v-if="endorsementsReceived.length > 0 && currentStatus !== 'rejected'"
+          class="endorsements-card bg-card border border-accent/30 rounded-2xl p-5 shadow-sm"
+        >
+          <div class="flex items-center gap-2 mb-3">
+            <CheckCircle2 class="w-5 h-5 text-accent" />
+            <h3 class="font-medium text-foreground">
+              {{ endorsementsReceived.length }} Community {{ endorsementsReceived.length === 1 ? 'Endorsement' : 'Endorsements' }}
+            </h3>
+          </div>
+          <div class="space-y-2">
+            <div
+              v-for="endorsement in endorsementsReceived"
+              :key="endorsement.credentialSaid"
+              class="flex items-center gap-2 p-2 rounded-lg bg-accent/5"
+            >
+              <CheckCircle2 class="w-4 h-4 text-accent shrink-0" />
+              <span class="text-sm text-foreground">
+                A community member endorsed your application
+              </span>
+              <span class="text-xs text-muted-foreground ml-auto">
+                {{ formatEndorsementTime(endorsement.endorsedAt) }}
+              </span>
+            </div>
+          </div>
+        </div>
+
         <!-- What Happens Next -->
         <div v-if="currentStatus !== 'rejected'">
           <h3 class="mb-4">What happens next?</h3>
@@ -220,7 +248,7 @@
               </div>
             </div>
 
-            <!-- Step 2: Admin Review -->
+            <!-- Step 2: Community Endorsements -->
             <div
               v-motion="slideInLeft(400)"
               class="step-card flex items-start gap-4 bg-card border border-border rounded-xl p-4"
@@ -229,12 +257,12 @@
                 <span class="text-sm font-semibold text-primary">2</span>
               </div>
               <div>
-                <h4 class="mb-1">Admin Review</h4>
-                <p class="text-sm text-muted-foreground">An admin will review your registration details</p>
+                <h4 class="mb-1">Community Endorsements</h4>
+                <p class="text-sm text-muted-foreground">Community members will review and endorse your application</p>
               </div>
             </div>
 
-            <!-- Step 3: Approval Decision -->
+            <!-- Step 3: Admin Admission -->
             <div
               v-motion="slideInLeft(500)"
               class="step-card flex items-start gap-4 bg-card border border-border rounded-xl p-4"
@@ -243,8 +271,8 @@
                 <span class="text-sm font-semibold text-primary">3</span>
               </div>
               <div>
-                <h4 class="mb-1">Approval Decision</h4>
-                <p class="text-sm text-muted-foreground">You'll receive notification of the decision</p>
+                <h4 class="mb-1">Admin Admission</h4>
+                <p class="text-sm text-muted-foreground">Once endorsed, an admin will admit you to the community</p>
               </div>
             </div>
 
@@ -401,6 +429,7 @@ const {
   readOnlySpaceId,
   rejectionReceived,
   rejectionInfo,
+  endorsementsReceived,
   startPolling,
   retry,
 } = useCredentialPolling({ pollingInterval: 5000 });
@@ -673,6 +702,18 @@ const availableSlots = computed<TimeSlot[]>(() => {
   return slots;
 });
 
+function formatEndorsementTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 // Format selected slot for display
 function formatSlotDisplay(slot: TimeSlot): string {
   const fullDate = slot.dateLocal.toLocaleDateString('en-US', {
@@ -897,6 +938,10 @@ const resources = [
 }
 
 .aid-card {
+  background-color: var(--matou-card);
+}
+
+.endorsements-card {
   background-color: var(--matou-card);
 }
 
