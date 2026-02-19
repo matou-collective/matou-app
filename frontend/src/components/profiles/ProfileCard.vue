@@ -15,6 +15,9 @@
       <span class="card-name">{{ displayName }}</span>
       <span v-if="role" class="card-role">{{ role }}</span>
       <span v-if="dateLabel" class="card-date">{{ dateLabel }}</span>
+      <span v-if="endorsements.length > 0" class="card-endorsements">
+        <q-icon name="thumb_up" size="0.7rem" /> {{ endorsements.length }} {{ endorsements.length === 1 ? 'endorsement' : 'endorsements' }}
+      </span>
     </div>
     <div v-if="status === 'pending'" class="card-status status-pending" title="Pending approval">
       <q-icon name="help" size="1.25rem" />
@@ -43,7 +46,6 @@ const displayName = computed(() => (props.profile?.displayName as string) || 'Un
 const avatarUrl = computed(() => {
   // Check SharedProfile avatar first, then CommunityProfile avatar as fallback
   const ref = (props.profile?.avatar as string) || (props.communityProfile?.avatar as string);
-  console.log('[ProfileCard] Avatar ref for', props.profile?.displayName, ':', ref, 'profile:', props.profile);
   if (!ref) return '';
   if (ref.startsWith('http') || ref.startsWith('data:')) return ref;
   return getFileUrl(ref);
@@ -69,6 +71,10 @@ const dateLabel = computed(() => {
   const createdAt = props.profile?.createdAt as string;
   if (createdAt) return formatDate(createdAt, 'Applied');
   return '';
+});
+
+const endorsements = computed(() => {
+  return (props.profile?.endorsements as Array<unknown>) || [];
 });
 
 const colorClass = computed(() => {
@@ -183,5 +189,14 @@ function formatDate(dateStr: string, verb: string): string {
 .card-date {
   font-size: 0.75rem;
   color: var(--matou-text-secondary, #6b7280);
+}
+
+.card-endorsements {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  color: var(--matou-accent, #4a9d9c);
+  font-weight: 500;
 }
 </style>
