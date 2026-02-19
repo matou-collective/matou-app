@@ -11,7 +11,8 @@ import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistratio
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
-const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+export const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+export const ENDORSEMENT_SCHEMA_SAID = 'EPIm7hiwSUt5css49iLXFPaPDFOJx0MmfNoB3PkSMXkh';
 
 export function useAdminActions() {
   const keriClient = useKERIClient();
@@ -264,7 +265,22 @@ export function useAdminActions() {
       console.log('[AdminActions] Credential issued:', credResult.said);
       credentialSaid = credResult.said;
 
-      // 6b. Update CommunityProfile with real credential SAID
+      // 6b. Create personal registry for the new member
+      //     This enables them to issue endorsement credentials later.
+      let personalRegistryId = '';
+      try {
+        const registryName = `${registration.applicantAid.slice(0, 12)}-endorsements`;
+        personalRegistryId = await keriClient.createRegistry(
+          registration.applicantAid,
+          registryName
+        );
+        console.log('[AdminActions] Created personal registry for member:', personalRegistryId);
+      } catch (regErr) {
+        // Non-fatal: member can function without a registry, just can't endorse yet
+        console.warn('[AdminActions] Could not create personal registry:', regErr);
+      }
+
+      // 6c. Update CommunityProfile with real credential SAID and registry ID
       //     (profiles were created in step 4 with credentialSaid='pending')
       try {
         const profileId = `CommunityProfile-${registration.applicantAid}`;
@@ -272,6 +288,7 @@ export function useAdminActions() {
           credential: credentialSaid,
           role: 'Member',
           credentials: [credentialSaid],
+          ...(personalRegistryId && { personalRegistryId }),
         }, { id: profileId });
         console.log('[AdminActions] Updated CommunityProfile with credential SAID:', credentialSaid);
       } catch (updateErr) {
