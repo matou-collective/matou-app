@@ -224,6 +224,26 @@
 
             <!-- Main action buttons -->
             <div v-if="!showDeclineReason && !showEndorseMessage" class="flex items-center gap-3">
+              <!-- Mark Attended button (steward only) -->
+              <button
+                v-if="props.isSteward && !props.hasMarkedAttended"
+                @click="emit('mark-attended')"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                :disabled="isProcessing || props.isMarkingAttended"
+              >
+                <Loader2 v-if="props.isMarkingAttended" class="w-4 h-4 inline mr-2 animate-spin" />
+                <CalendarCheck v-else class="w-4 h-4 inline mr-2" />
+                Mark Attended
+              </button>
+              <button
+                v-else-if="props.isSteward && props.hasMarkedAttended"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-blue-600/20 text-blue-600 cursor-default"
+                disabled
+              >
+                <CalendarCheck class="w-4 h-4 inline mr-2" />
+                Attended
+              </button>
+
               <button
                 v-if="!props.hasEndorsed"
                 @click="showEndorseMessage = true"
@@ -309,7 +329,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { X, Check, Copy, Loader2, ThumbsUp } from 'lucide-vue-next';
+import { X, Check, Copy, Loader2, ThumbsUp, CalendarCheck } from 'lucide-vue-next';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { getFileUrl } from 'src/lib/api/client';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
@@ -341,6 +361,8 @@ interface Props {
   }>;
   hasEndorsed?: boolean;
   isEndorsing?: boolean;
+  hasMarkedAttended?: boolean;
+  isMarkingAttended?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -354,6 +376,8 @@ const props = withDefaults(defineProps<Props>(), {
   endorsements: () => [],
   hasEndorsed: false,
   isEndorsing: false,
+  hasMarkedAttended: false,
+  isMarkingAttended: false,
 });
 
 const emit = defineEmits<{
@@ -361,6 +385,7 @@ const emit = defineEmits<{
   (e: 'approve', registration: PendingRegistration): void;
   (e: 'decline', registration: PendingRegistration, reason?: string): void;
   (e: 'endorse', message?: string): void;
+  (e: 'mark-attended'): void;
 }>();
 
 // Unified computed properties for both data sources
