@@ -203,6 +203,15 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         console.log('[CredentialPolling] Could not resolve endorsement schema OOBI:', err);
       }
 
+      // Resolve event attendance schema OOBI
+      const eventAttendanceSchemaOOBI = `${schemaServerUrl}/oobi/${EVENT_ATTENDANCE_SCHEMA_SAID}`;
+      try {
+        await keriClient.resolveOOBI(eventAttendanceSchemaOOBI, undefined, 10000);
+        console.log('[CredentialPolling] Resolved event attendance schema OOBI');
+      } catch (err) {
+        console.log('[CredentialPolling] Could not resolve event attendance schema OOBI:', err);
+      }
+
       // Resolve org OOBI (for receiving credentials)
       // The org OOBI is stored at config.organization.oobi
       const orgOOBI = config.organization?.oobi;
@@ -400,6 +409,17 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             console.log('[CredentialPolling] Endorsement admitted, SAID:', credSaid);
           } catch (endorseErr) {
             console.warn('[CredentialPolling] Failed to admit endorsement grant:', endorseErr);
+          }
+        } else if (grantSchema === EVENT_ATTENDANCE_SCHEMA_SAID) {
+          // Event attendance grant — admit silently
+          console.log('[CredentialPolling] Event attendance grant detected — admitting');
+          try {
+            await admitGrant(grant);
+            await new Promise(r => setTimeout(r, 3000));
+            sessionAttendanceVerified.value = true;
+            console.log('[CredentialPolling] Event attendance admitted');
+          } catch (attendErr) {
+            console.warn('[CredentialPolling] Failed to admit event attendance grant:', attendErr);
           }
         } else if (!credentialReceived.value) {
           // Membership grant — existing admission flow
