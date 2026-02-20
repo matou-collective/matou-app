@@ -282,8 +282,9 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Clicked Confirm Endorsement — waiting for credential issuance...');
 
       // Wait for "Endorsed" (disabled) button to appear — indicates endorsement succeeded
+      // Endorsement involves: registry creation, schema OOBI, applicant OOBI, credential issuance, IPEX grant
       const endorsedBtn = profileModal.getByRole('button', { name: /^Endorsed$/i });
-      await expect(endorsedBtn).toBeVisible({ timeout: TIMEOUT.long });
+      await expect(endorsedBtn).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
       console.log('[Test] Endorsement succeeded — "Endorsed" button visible');
 
       // Verify endorsement appears in the modal's endorsements section

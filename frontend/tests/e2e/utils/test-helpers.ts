@@ -502,12 +502,14 @@ export async function performOrgSetup(
   await page.getByRole('button', { name: /continue/i }).click();
   await completeMnemonicVerification(page, adminMnemonic);
 
-  // Wait for dashboard, pending, or membership approved (admin self-issued credential)
+  // Wait for dashboard, pending, membership approved, or welcome screen
   await Promise.race([
     expect(page.getByRole('heading', { name: /registration pending/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
     expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
     expect(page.locator('h1', { hasText: /membership approved/i }))
+      .toBeVisible({ timeout: TIMEOUT.long }),
+    expect(page.locator('h1', { hasText: /welcome to matou/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
   ]);
 

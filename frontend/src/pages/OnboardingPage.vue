@@ -16,6 +16,7 @@
         @approved="handleApproved"
         @continue-to-dashboard="handleContinueToDashboard"
         @needs-approval="handleNeedsApproval"
+        @navigate-to-welcome="handleNavigateToWelcome"
       />
     </Transition>
   </q-page>
@@ -103,12 +104,18 @@ const handleApproved = (credential: any) => {
 const handleContinueToDashboard = async () => {
   // Ensure backend has community space ID before navigating
   await identityStore.fetchUserSpaces();
+  await identityStore.verifyCommunityAccess();
   store.navigateTo('main');
 };
 
 const handleNeedsApproval = () => {
   // Redirect to pending-approval when returning user has no credential
   store.navigateTo('pending-approval');
+};
+
+const handleNavigateToWelcome = () => {
+  // Navigate from PendingApprovalScreen to WelcomeOverlayScreen after approval
+  store.navigateTo('welcome-overlay');
 };
 
 // Navigation handlers
@@ -127,9 +134,16 @@ const startRecoverFlow = () => {
   store.navigateTo('recovery');
 };
 
-const handleContinue = (data?: unknown) => {
+const handleContinue = async (data?: unknown) => {
   const current = currentScreen.value;
   const path = store.onboardingPath;
+
+  // All paths: welcome-overlay → dashboard (ensure community access verified first)
+  if (current === 'welcome-overlay') {
+    await identityStore.verifyCommunityAccess();
+    router.push('/dashboard');
+    return;
+  }
 
   // Note: ProfileConfirmationScreen already sets mnemonic and AID in the store before emitting
   // So we don't need to handle the data here - just navigate to next screen
@@ -150,16 +164,6 @@ const handleContinue = (data?: unknown) => {
     // Recovery flow goes through welcome overlay for membership checks
     if (current === 'recovery') {
       store.navigateTo('welcome-overlay');
-    } else if (current === 'welcome-overlay') {
-      // Route directly to dashboard to avoid flash
-      router.push('/dashboard');
-      return;
-    }
-  } else if (path === 'returning') {
-    // Returning user flow: welcome-overlay → dashboard (if credential exists)
-    if (current === 'welcome-overlay') {
-      router.push('/dashboard');
-      return;
     }
   } else if (path === 'setup') {
     // Admin setup flow: profile-confirmation → mnemonic-verification → pending-approval
@@ -181,11 +185,6 @@ const handleContinue = (data?: unknown) => {
       'profile-confirmation': 'mnemonic-verification',
       'mnemonic-verification': 'welcome-overlay',
     };
-    // Route directly to dashboard from welcome-overlay to avoid flash
-    if (current === 'welcome-overlay') {
-      router.push('/dashboard');
-      return;
-    }
     const next = forwardMap[current];
     if (next) {
       store.navigateTo(next as typeof store.currentScreen);

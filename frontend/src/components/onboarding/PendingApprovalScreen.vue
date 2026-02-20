@@ -343,13 +343,6 @@
       </div>
     </div>
 
-    <!-- Welcome Overlay -->
-    <WelcomeOverlay
-      :show="showWelcome"
-      :user-name="displayUserName"
-      :credential="credential"
-      @continue="handleContinue"
-    />
   </div>
 </template>
 
@@ -358,7 +351,6 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { Clock, FileText, Target, ExternalLink, CheckCircle, CheckCircle2, Circle, XCircle, Loader2, Copy, Check } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import OnboardingHeader from './OnboardingHeader.vue';
-import WelcomeOverlay from './WelcomeOverlay.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useCredentialPolling } from 'composables/useCredentialPolling';
 import { useIdentityStore } from 'stores/identity';
@@ -413,6 +405,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'approved', credential: any): void;
   (e: 'continue-to-dashboard'): void;
+  (e: 'navigate-to-welcome'): void;
 }>();
 
 // Credential polling
@@ -433,9 +426,6 @@ const {
   startPolling,
   retry,
 } = useCredentialPolling({ pollingInterval: 5000 });
-
-// UI State
-const showWelcome = ref(false);
 
 // Booking state
 interface TimeSlot {
@@ -852,13 +842,14 @@ watch(
 
       processingStep.value = 'verifying';
       if (joined) {
-        // Refresh spaces in store so dashboard guard passes
+        // Refresh spaces in store and verify access so dashboard guard passes
         await identityStore.fetchUserSpaces();
+        await identityStore.verifyCommunityAccess();
       }
 
       processingStep.value = 'done';
-      showWelcome.value = true;
       emit('approved', credential.value);
+      emit('navigate-to-welcome');
     } else if (!hasInvite && !joinInProgress && processingStep.value === 'admitting') {
       // Credential just received, invite not yet — advance step indicator
       processingStep.value = 'invite';
@@ -869,20 +860,14 @@ watch(
         console.log('[PendingApproval] Already have community access (space owner)');
         joinInProgress = true;
         processingStep.value = 'done';
-        showWelcome.value = true;
         emit('approved', credential.value);
+        emit('navigate-to-welcome');
       }
       // Otherwise, wait — polling continues and will find the space invite,
       // which triggers this watcher again with [true, true]
     }
   }
 );
-
-// Handle continue from welcome overlay
-function handleContinue() {
-  emit('continue-to-dashboard');
-}
-
 
 const resources = [
   {

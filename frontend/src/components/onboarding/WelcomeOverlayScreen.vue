@@ -51,8 +51,31 @@
           </p>
         </div>
 
-        <!-- Status Summary -->
-        <div class="w-full space-y-3">
+        <!-- Sync Status (register path) -->
+        <div v-if="isRegisterFlow" class="w-full space-y-3">
+          <div
+            v-for="check in syncChecks"
+            :key="check.id"
+            class="status-item flex items-center gap-3 bg-white/10 rounded-xl px-4 py-3"
+          >
+            <CheckCircle2
+              v-if="check.status === 'passed'"
+              class="w-5 h-5 text-emerald-300 shrink-0"
+            />
+            <Loader2
+              v-else-if="check.status === 'checking'"
+              class="w-5 h-5 text-white/70 shrink-0 animate-spin"
+            />
+            <Circle
+              v-else
+              class="w-5 h-5 text-white/30 shrink-0"
+            />
+            <span class="text-white/90 text-sm">{{ check.label }}</span>
+          </div>
+        </div>
+
+        <!-- Recovery/Returning Status Summary -->
+        <div v-else class="w-full space-y-3">
           <div
             v-for="check in checks"
             :key="check.id"
@@ -95,7 +118,7 @@
         :disabled="!allChecksPassed"
         @click="handleContinue"
       >
-        {{ allChecksPassed ? 'Enter Community' : 'Verifying...' }}
+        {{ allChecksPassed ? 'Enter Community' : (isRegisterFlow ? 'Syncing...' : 'Verifying...') }}
         <ArrowRight class="w-5 h-5 ml-2" />
       </MBtn>
     </div>
@@ -110,7 +133,7 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { useKERIClient } from 'src/lib/keri/client';
-import { setBackendIdentity } from 'src/lib/api/client';
+import { setBackendIdentity, getSyncStatus, getProfiles } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 const emit = defineEmits<{
@@ -135,7 +158,9 @@ const displayName = computed(() => {
 
 // Welcome words in indigenous languages
 const welcomeWords = [
+  { word: 'Welcome', language: 'English' },
   { word: 'Nau mai', language: 'Māori' },
+  { word: 'Oro mai', language: 'Cook Islands Maori' },
   { word: 'E komo mai', language: 'Hawaiian' },
   { word: "Yá'át'ééh", language: 'Navajo' },
   { word: 'Osiyo', language: 'Cherokee' },
@@ -182,8 +207,14 @@ interface StatusCheck {
 
 const isRecoveryFlow = computed(() => onboardingStore.onboardingPath === 'recover');
 const isReturningFlow = computed(() => onboardingStore.onboardingPath === 'returning');
+const isRegisterFlow = computed(() => onboardingStore.onboardingPath === 'register');
 
 const subtitle = computed(() => {
+  if (isRegisterFlow.value) {
+    return syncReady.value
+      ? 'Your community spaces are ready!'
+      : 'Setting up your community spaces...';
+  }
   if (!isRecoveryFlow.value && !isReturningFlow.value) {
     return 'Your identity has been claimed, your community spaces are ready, and your profiles have been created.';
   }
@@ -206,10 +237,91 @@ const checks = reactive<StatusCheck[]>([
   { id: 'credential', label: 'Membership credential', status: 'pending', error: null },
 ]);
 
-const allChecksPassed = computed(() => checks.every(c => c.status === 'passed'));
+// Sync state (for register path — polls sync/status after community join)
+const communityReady = ref(false);
+const readOnlyReady = ref(false);
+const syncReady = computed(() => communityReady.value && readOnlyReady.value);
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+const syncChecks = computed(() => [
+  {
+    id: 'sync-community',
+    label: communityReady.value ? 'Profile synced' : 'Syncing your profile...',
+    status: (communityReady.value ? 'passed' : 'checking') as CheckStatus,
+    error: null,
+  },
+  {
+    id: 'sync-readonly',
+    label: readOnlyReady.value ? 'Community directory loaded' : 'Loading community directory...',
+    status: (readOnlyReady.value ? 'passed' : (communityReady.value ? 'checking' : 'pending')) as CheckStatus,
+    error: null,
+  },
+  {
+    id: 'sync-ready',
+    label: 'Ready!',
+    status: (syncReady.value ? 'passed' : 'pending') as CheckStatus,
+    error: null,
+  },
+]);
+
+const allChecksPassed = computed(() => {
+  if (isRegisterFlow.value) {
+    return syncReady.value;
+  }
+  return checks.every(c => c.status === 'passed');
+});
 
 function findCheck(id: string): StatusCheck {
   return checks.find(c => c.id === id)!;
+}
+
+async function pollSyncStatus() {
+  try {
+    const status = await getSyncStatus();
+    readOnlyReady.value = status.readOnly.hasObjectTree && status.readOnly.profileCount > 0;
+
+    // Check if the current user's SharedProfile has synced to the community space
+    if (status.community.hasObjectTree && !communityReady.value) {
+      const userAID = identityStore.currentAID?.prefix;
+      const sharedProfiles = await getProfiles('SharedProfile');
+      const profileSummary = sharedProfiles.map((p: any) => {
+        const d = p.data as Record<string, unknown>;
+        return `${p.id}(aid=${d?.aid})`;
+      });
+      console.log(`[WelcomeOverlayScreen] SharedProfiles (${sharedProfiles.length}): ${profileSummary.join(', ')}`);
+      if (userAID) {
+        const myProfile = sharedProfiles.find((p: any) => (p.data as Record<string, unknown>)?.aid === userAID);
+        if (myProfile) {
+          console.log('[WelcomeOverlayScreen] Found current user SharedProfile:', myProfile.id);
+          communityReady.value = true;
+        } else {
+          console.log('[WelcomeOverlayScreen] Waiting for SharedProfile with AID:', userAID);
+        }
+      } else {
+        // Fallback: no AID available, use profileCount
+        communityReady.value = status.community.profileCount > 0;
+      }
+    }
+
+    if (communityReady.value && readOnlyReady.value) {
+      stopSyncPolling();
+    }
+  } catch {
+    // Ignore errors, keep polling
+  }
+}
+
+function startSyncPolling() {
+  stopSyncPolling();
+  pollSyncStatus();
+  pollTimer = setInterval(pollSyncStatus, 2500);
+}
+
+function stopSyncPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
 }
 
 async function runRecoveryChecks() {
@@ -415,6 +527,7 @@ function markAllPassed() {
 }
 
 function handleContinue() {
+  stopSyncPolling();
   emit('continue');
 }
 
@@ -430,7 +543,10 @@ watch(allChecksPassed, (passed) => {
 });
 
 onMounted(() => {
-  if (isRecoveryFlow.value) {
+  if (isRegisterFlow.value) {
+    // Register flow: poll sync status until community + readOnly spaces are ready
+    startSyncPolling();
+  } else if (isRecoveryFlow.value) {
     runRecoveryChecks();
   } else if (isReturningFlow.value) {
     // Returning flow: Splash already verified credential exists, skip checks
@@ -445,6 +561,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopWelcomeRotation();
+  stopSyncPolling();
 });
 </script>
 
