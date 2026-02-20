@@ -42,6 +42,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   // Schema SAIDs for distinguishing credential types
   const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
   const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
+  const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J';
 
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
@@ -77,7 +78,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   const membershipVerified = ref(false);
   const memberEndorsementVerified = ref(false);
   const stewardEndorsementVerified = ref(false);
-  const sessionAttendanceVerified = ref(false); // Placeholder — no event attendance schema yet
+  const sessionAttendanceVerified = ref(false);
 
   // Internal state
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -280,6 +281,11 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
                   });
                   console.log('[CredentialPolling] Endorsement credential found:', credSaid);
                 }
+              } else if (schema === EVENT_ATTENDANCE_SCHEMA_SAID && recipient === myAid) {
+                // Event attendance credential issued TO us
+                const credSaid = (sad as any).d || '';
+                console.log('[CredentialPolling] Event attendance credential found:', credSaid);
+                sessionAttendanceVerified.value = true;
               }
             }
 
