@@ -302,15 +302,64 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(endorsementBadge).toContainText('1');
       console.log('[Test] Endorsement badge visible on ProfileCard (1 endorsement)');
 
-      // 3e. Verify applicant's PendingApprovalScreen shows the endorsement credential
+      // 3e. Verify applicant's PendingApprovalScreen shows endorsement in requirement cards
       // The applicant's credential poller should detect the endorsement grant and auto-admit it
-      console.log('[Test] Waiting for endorsement to appear on applicant pending screen...');
-      const endorsementsCard = userPage.locator('.endorsements-card');
-      await expect(endorsementsCard).toBeVisible({ timeout: TIMEOUT.long });
-      await expect(endorsementsCard).toContainText('1 Community Endorsement', { timeout: TIMEOUT.short });
-      console.log('[Test] Endorsement credential received by applicant and shown on pending screen');
+      console.log('[Test] Waiting for endorsement to appear in requirement cards...');
+      const requirementsGrid = userPage.locator('.requirements-grid');
+      await expect(requirementsGrid).toBeVisible({ timeout: TIMEOUT.short });
+
+      // Admin is a steward — their endorsement should turn the "Steward" card green
+      const stewardCard = requirementsGrid.locator('.requirement-card', { hasText: 'Steward' });
+      await expect(stewardCard).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
+      console.log('[Test] Steward requirement card turned green after endorsement');
+
+      // Only 1 endorsement — "Endorsement" card (req 2) should still be pending
+      const memberEndorsementCard = requirementsGrid.locator('.requirement-card', { hasText: 'Endorsement' });
+      await expect(memberEndorsementCard).toHaveClass(/requirement-pending/);
+      console.log('[Test] Member endorsement card still pending (needs a second endorsement)');
 
       console.log('[Test] --- Endorsement flow complete ---');
+
+      // ================================================================
+      // 3f. EVENT ATTENDANCE: Admin marks applicant as attended
+      // ================================================================
+      console.log('[Test] --- Starting event attendance flow ---');
+
+      // Re-open ProfileModal for the pending member
+      const memberCardForAttendance = membersCard.locator('.profile-card').filter({ hasText: userName });
+      await memberCardForAttendance.click();
+      const attendanceModal = adminPage.locator('.modal-content');
+      await expect(attendanceModal).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(attendanceModal.locator('h4').first()).toContainText(userName, { timeout: TIMEOUT.short });
+      console.log('[Test] ProfileModal re-opened for event attendance');
+
+      // Verify "Mark Attended" button is visible (admin is steward)
+      const markAttendedBtn = attendanceModal.getByRole('button', { name: /mark attended/i });
+      await expect(markAttendedBtn).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Mark Attended button visible');
+
+      // Click "Mark Attended" — issues event attendance credential
+      // This involves: registry lookup, schema OOBI resolution, applicant OOBI resolution, credential issuance, IPEX grant
+      await markAttendedBtn.click();
+      console.log('[Test] Clicked Mark Attended — waiting for credential issuance...');
+
+      // Wait for "Attended" (disabled) button to appear — indicates issuance succeeded
+      const attendedBtn = attendanceModal.getByRole('button', { name: /^Attended$/i });
+      await expect(attendedBtn).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+      console.log('[Test] Event attendance succeeded — "Attended" button visible');
+
+      // Close the modal
+      await attendanceModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
+      await expect(attendanceModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // 3g. Verify applicant's PendingApprovalScreen shows attendance in requirement cards
+      // The applicant's credential poller should detect the event attendance grant and auto-admit it
+      console.log('[Test] Waiting for session attendance to appear in requirement cards...');
+      const whakawhanaunga = requirementsGrid.locator('.requirement-card', { hasText: 'Whakawhanaunga' });
+      await expect(whakawhanaunga).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
+      console.log('[Test] Whakawhanaunga requirement card turned green after event attendance');
+
+      console.log('[Test] --- Event attendance flow complete ---');
 
       // B. Set up invite + sync + initMemberProfiles listeners before approval
       // initMemberProfiles creates SharedProfile + CommunityProfile on admin's backend
