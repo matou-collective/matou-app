@@ -131,16 +131,19 @@
       :communityProfile="selectedMember?.community"
       :registration="selectedMemberRegistration"
       :isProcessing="isProcessing"
-      :error="actionError || endorseError"
+      :error="actionError || endorseError || attendanceError"
       :isSteward="isSteward"
       :currentUserAid="identityStore.currentAID?.prefix || ''"
       :endorsements="selectedMemberEndorsements"
       :hasEndorsed="selectedMemberHasEndorsed"
       :isEndorsing="isEndorsing"
+      :hasMarkedAttended="selectedMemberHasAttended"
+      :isMarkingAttended="isMarkingAttended"
       @close="selectedMember = null"
       @approve="handleApprove"
       @decline="handleDecline"
       @endorse="handleEndorse"
+      @mark-attended="handleMarkAttended"
     />
   </div>
 </template>
@@ -161,6 +164,7 @@ import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useEndorsements } from 'src/composables/useEndorsements';
+import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
 import InviteMemberModal from 'src/components/dashboard/InviteMemberModal.vue';
@@ -192,6 +196,14 @@ const {
   clearError: clearEndorseError,
 } = useEndorsements();
 
+const {
+  isMarking: isMarkingAttended,
+  error: attendanceError,
+  markAttended,
+  hasMarkedAttended,
+  clearError: clearAttendanceError,
+} = useEventAttendance();
+
 const identityStore = useIdentityStore();
 
 const profilesStore = useProfilesStore();
@@ -216,6 +228,12 @@ const selectedMemberHasEndorsed = computed(() => {
   const aid = selectedMember.value?.shared?.aid as string;
   if (!aid) return false;
   return hasEndorsed(aid);
+});
+
+const selectedMemberHasAttended = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return false;
+  return hasMarkedAttended(aid);
 });
 
 // Dark mode state
@@ -375,6 +393,15 @@ async function handleEndorse(message?: string) {
   const registration = selectedMemberRegistration.value;
   const oobi = registration?.applicantOOBI;
   await endorseApplicant(aid, oobi, message);
+}
+
+async function handleMarkAttended() {
+  clearAttendanceError();
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return;
+  const registration = selectedMemberRegistration.value;
+  const oobi = registration?.applicantOOBI;
+  await markAttended(aid, oobi);
 }
 </script>
 
