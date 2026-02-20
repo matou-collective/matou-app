@@ -139,7 +139,7 @@
       :isEndorsing="isEndorsing"
       :hasMarkedAttended="selectedMemberHasAttended"
       :isMarkingAttended="isMarkingAttended"
-      @close="selectedMember = null"
+      @close="handleCloseModal"
       @approve="handleApprove"
       @decline="handleDecline"
       @endorse="handleEndorse"
@@ -402,6 +402,13 @@ async function handleMarkAttended() {
   const registration = selectedMemberRegistration.value;
   const oobi = registration?.applicantOOBI;
   await markAttended(aid, oobi);
+}
+
+function handleCloseModal() {
+  clearError();
+  clearEndorseError();
+  clearAttendanceError();
+  selectedMember.value = null;
 }
 </script>
 
