@@ -2,10 +2,11 @@
   <div class="profile-card" :class="status === 'pending' ? 'border-pending' : 'border-approved'" @click="$emit('click')">
     <div class="card-avatar">
       <img
-        v-if="avatarUrl"
+        v-if="avatarUrl && !avatarError"
         :src="avatarUrl"
         :alt="displayName"
         class="avatar-img"
+        @error="avatarError = true"
       />
       <div v-else class="avatar-placeholder" :class="colorClass">
         {{ initials }}
@@ -19,17 +20,34 @@
         <q-icon name="thumb_up" size="0.7rem" /> {{ endorsements.length }} {{ endorsements.length === 1 ? 'endorsement' : 'endorsements' }}
       </span>
     </div>
-    <div v-if="status === 'pending'" class="card-status status-pending" title="Pending approval">
-      <q-icon name="help" size="1.25rem" />
-    </div>
-    <div v-else-if="status === 'approved'" class="card-status status-approved" title="Approved">
-      <q-icon name="check_circle" size="1.25rem" />
+    <div class="card-badges">
+      <q-icon
+        v-if="hasCredential"
+        name="groups"
+        size="1.1rem"
+        class="badge-membership"
+        title="Membership credential"
+      />
+      <q-icon
+        v-if="endorsements.length > 0"
+        name="person_add"
+        size="1.1rem"
+        class="badge-endorsement"
+        title="Endorsed"
+      />
+      <q-icon
+        v-if="status === 'pending' && !hasCredential"
+        name="help"
+        size="1.25rem"
+        class="status-pending"
+        title="Pending approval"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { getFileUrl } from 'src/lib/api/client';
 
 const props = defineProps<{
@@ -43,8 +61,14 @@ defineEmits<{
 
 const displayName = computed(() => (props.profile?.displayName as string) || 'Unknown');
 
+const avatarError = ref(false);
+
+// Reset error state when profile data changes (e.g. avatar syncs in later)
+watch(() => [props.profile?.avatar, props.communityProfile?.avatar], () => {
+  avatarError.value = false;
+});
+
 const avatarUrl = computed(() => {
-  // Check SharedProfile avatar first, then CommunityProfile avatar as fallback
   const ref = (props.profile?.avatar as string) || (props.communityProfile?.avatar as string);
   if (!ref) return '';
   if (ref.startsWith('http') || ref.startsWith('data:')) return ref;
@@ -76,6 +100,8 @@ const dateLabel = computed(() => {
 const endorsements = computed(() => {
   return (props.profile?.endorsements as Array<unknown>) || [];
 });
+
+const hasCredential = computed(() => !!(props.communityProfile?.credential));
 
 const colorClass = computed(() => {
   const colors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
@@ -159,17 +185,24 @@ function formatDate(dateStr: string, verb: string): string {
   flex: 1;
 }
 
-.card-status {
+.card-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   flex-shrink: 0;
   margin-left: auto;
 }
 
-.status-pending {
-  color: var(--matou-warning, #f59e0b);
+.badge-membership {
+  color: var(--matou-accent, #4a9d9c);
 }
 
-.status-approved {
-  color: var(--matou-success, #22c55e);
+.badge-endorsement {
+  color: var(--matou-primary, #6366f1);
+}
+
+.status-pending {
+  color: var(--matou-warning, #f59e0b);
 }
 
 .card-name {

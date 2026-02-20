@@ -139,6 +139,24 @@
                   >
                     Instagram
                   </a>
+                  <a
+                    v-if="profileFields.githubUrl"
+                    :href="profileFields.githubUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="social-link"
+                  >
+                    GitHub
+                  </a>
+                  <a
+                    v-if="profileFields.gitlabUrl"
+                    :href="profileFields.gitlabUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="social-link"
+                  >
+                    GitLab
+                  </a>
                 </div>
                 <p v-else class="field-value">Not provided</p>
               </div>
@@ -159,11 +177,11 @@
                   class="endorsement-item"
                 >
                   <div class="flex items-center gap-2">
-                    <ThumbsUp class="w-3.5 h-3.5 text-accent shrink-0" />
-                    <span class="text-sm font-medium text-black">{{ endorsement.endorserName }}</span>
-                    <span class="text-xs text-black/50">{{ formatEndorsementDate(endorsement.endorsedAt) }}</span>
+                    <ThumbsUp class="w-3.5 h-3.5 text-white shrink-0" />
+                    <span class="text-sm font-medium text-white">{{ endorsement.endorserName }}</span>
+                    <span class="text-xs text-white/60">{{ formatEndorsementDate(endorsement.endorsedAt) }}</span>
                   </div>
-                  <p v-if="endorsement.message" class="text-xs text-black/70 mt-1 ml-5">
+                  <p v-if="endorsement.message" class="text-xs text-white/80 mt-1 ml-5">
                     "{{ endorsement.message }}"
                   </p>
                 </div>
@@ -183,21 +201,22 @@
           <div v-if="profileStatus === 'pending'" class="modal-footer p-4 border-t border-border">
             <!-- Endorse message textarea -->
             <div v-if="showEndorseMessage" class="mb-4">
-              <h5 class="text-sm font-medium text-black/70 mb-2">Endorsement message (optional)</h5>
+              <h5 class="field-label">Endorsement reason</h5>
               <textarea
                 v-model="endorseMessage"
-                class="w-full p-3 border border-border rounded-lg bg-background text-black resize-none focus:outline-none focus:ring-2 focus:ring-accent/50"
+                class="field-input"
                 rows="2"
                 placeholder="Why do you endorse this person?"
+                required
               />
             </div>
 
             <!-- Decline reason textarea (steward only) -->
             <div v-if="showDeclineReason" class="mb-4">
-              <h5 class="text-sm font-medium text-black/70 mb-2">Reason for Decline (optional)</h5>
+              <h5 class="field-label">Reason for Decline (optional)</h5>
               <textarea
                 v-model="declineReason"
-                class="w-full p-3 border border-border rounded-lg bg-background text-black resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
+                class="field-input"
                 rows="2"
                 placeholder="Provide a reason for declining..."
               />
@@ -254,8 +273,8 @@
               </button>
               <button
                 @click="handleEndorse"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors"
-                :disabled="props.isEndorsing"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-50"
+                :disabled="props.isEndorsing || !endorseMessage.trim()"
               >
                 <Loader2 v-if="props.isEndorsing" class="w-4 h-4 inline mr-2 animate-spin" />
                 <ThumbsUp v-else class="w-4 h-4 inline mr-2" />
@@ -381,6 +400,8 @@ const profileFields = computed(() => {
       linkedinUrl: p.linkedinUrl || '',
       twitterUrl: p.twitterUrl || '',
       instagramUrl: p.instagramUrl || '',
+      githubUrl: p.githubUrl || '',
+      gitlabUrl: p.gitlabUrl || '',
     };
   }
   const s = props.sharedProfile || {};
@@ -396,6 +417,8 @@ const profileFields = computed(() => {
     linkedinUrl: (s.linkedinUrl as string) || '',
     twitterUrl: (s.twitterUrl as string) || '',
     instagramUrl: (s.instagramUrl as string) || '',
+    githubUrl: (s.githubUrl as string) || '',
+    gitlabUrl: (s.gitlabUrl as string) || '',
   };
 });
 
@@ -527,7 +550,7 @@ const formattedDate = computed(() => {
 // Check if any social links exist
 const hasSocialLinks = computed(() => {
   const f = profileFields.value;
-  return !!(f.facebookUrl || f.linkedinUrl || f.twitterUrl || f.instagramUrl);
+  return !!(f.facebookUrl || f.linkedinUrl || f.twitterUrl || f.instagramUrl || f.githubUrl || f.gitlabUrl);
 });
 
 // Copy AID to clipboard
@@ -592,10 +615,45 @@ function handleDecline() {
 }
 
 .field-label {
+  display: block;
   font-size: 0.75rem;
   font-weight: 500;
-  color: rgba(0, 0, 0, 0.7);
-  margin-bottom: 0.25rem;
+  color: var(--matou-muted-foreground, #6b7280);
+  margin-bottom: 0.375rem;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.field-input {
+  background: #f0f9fa;
+  border: 1px solid #d1e7ea;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  color: var(--matou-foreground, #1f2937);
+  width: 100%;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
+}
+
+.field-input:hover {
+  border-color: #a8d4da;
+}
+
+.field-input:focus {
+  border-color: #1a4f5e;
+  box-shadow: 0 0 0 2px rgba(26, 79, 94, 0.1);
+}
+
+.field-input::placeholder {
+  color: #9ca3af;
+}
+
+textarea.field-input {
+  resize: vertical;
+  min-height: 60px;
 }
 
 .field-value {
@@ -643,13 +701,13 @@ function handleDecline() {
 
 .endorsement-count {
   font-weight: 400;
-  color: rgba(0, 0, 0, 0.5);
 }
 
 .endorsement-item {
   padding: 0.5rem;
   border-radius: 0.5rem;
-  background-color: rgba(74, 157, 156, 0.05);
+  background-color: var(--matou-primary, #6366f1);
+  color: white;
 }
 
 // Modal transition

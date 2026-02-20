@@ -13,7 +13,7 @@
  */
 import { ref, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
-import { createOrUpdateProfile, getProfiles } from 'src/lib/api/client';
+import { createOrUpdateProfile, getProfiles, uploadFile } from 'src/lib/api/client';
 import { useProfilesStore } from 'stores/profiles';
 
 export interface PendingRegistration {
@@ -528,12 +528,33 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
 
       const profileId = `SharedProfile-${reg.applicantAid}`;
       const now = new Date().toISOString();
+
+      // Upload avatar from base64 registration data to get a local fileRef
+      let avatarRef = '';
+      if (reg.profile.avatarData && reg.profile.avatarMimeType) {
+        try {
+          const byteChars = atob(reg.profile.avatarData);
+          const byteArray = new Uint8Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) {
+            byteArray[i] = byteChars.charCodeAt(i);
+          }
+          const blob = new Blob([byteArray], { type: reg.profile.avatarMimeType });
+          const avatarFile = new File([blob], 'avatar', { type: reg.profile.avatarMimeType });
+          const uploadResult = await uploadFile(avatarFile);
+          if (uploadResult.fileRef) {
+            avatarRef = uploadResult.fileRef;
+          }
+        } catch (avatarErr) {
+          console.warn(`[RegistrationPolling] Avatar upload failed for ${reg.applicantAid.slice(0, 12)}...:`, avatarErr);
+        }
+      }
+
       const profileData: Record<string, unknown> = {
         aid: reg.applicantAid,
         status: 'pending',
         displayName: reg.profile.name || 'Unknown',
         bio: reg.profile.bio || '',
-        avatar: reg.profile.avatarFileRef || '',
+        avatar: avatarRef || reg.profile.avatarFileRef || '',
         location: reg.profile.location || '',
         joinReason: reg.profile.joinReason || '',
         indigenousCommunity: reg.profile.indigenousCommunity || '',

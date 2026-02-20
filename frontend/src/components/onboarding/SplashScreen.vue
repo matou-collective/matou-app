@@ -101,6 +101,7 @@ import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import { useKERIClient } from 'src/lib/keri/client';
+import { MEMBERSHIP_SCHEMA_SAID } from 'src/composables/useAdminActions';
 
 const { fadeSlideUp, fadeScale, logoWobble } = useAnimationPresets();
 const onboardingStore = useOnboardingStore();
@@ -131,14 +132,26 @@ watch(
       const credentials = await client.credentials().list();
       console.log(`[Splash] Found ${credentials.length} credentials`);
 
-      if (credentials.length > 0) {
-        // Has credential - go to welcome overlay
-        console.log('[Splash] Credential found, routing to welcome-overlay');
-        onboardingStore.setPath('returning');
-        onboardingStore.navigateTo('welcome-overlay');
+      const myAid = identityStore.currentAID!.prefix;
+      const hasMembership = credentials.some(
+        (c: { sad?: { s?: string; a?: { i?: string } } }) =>
+          c.sad?.s === MEMBERSHIP_SCHEMA_SAID && c.sad?.a?.i === myAid
+      );
+
+      if (hasMembership) {
+        // Has membership credential — verify community space access before routing
+        const hasAccess = await identityStore.verifyCommunityAccess();
+        if (hasAccess) {
+          console.log('[Splash] Membership credential + community access confirmed, routing to welcome-overlay');
+          onboardingStore.setPath('returning');
+          onboardingStore.navigateTo('welcome-overlay');
+        } else {
+          console.log('[Splash] Membership credential found but no community access, routing to pending-approval');
+          onboardingStore.navigateTo('pending-approval');
+        }
       } else {
-        // No credential - go to pending approval
-        console.log('[Splash] No credential, routing to pending-approval');
+        // No membership credential - go to pending approval
+        console.log('[Splash] No membership credential, routing to pending-approval');
         onboardingStore.navigateTo('pending-approval');
       }
     } catch (err) {
