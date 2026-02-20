@@ -114,31 +114,26 @@
           </div>
         </div>
 
-        <!-- Community Endorsements -->
+        <!-- Requirement Cards -->
         <div
-          v-if="endorsementsReceived.length > 0 && currentStatus !== 'rejected'"
-          class="endorsements-card bg-card border border-accent/30 rounded-2xl p-5 shadow-sm"
+          v-if="currentStatus !== 'rejected'"
+          class="requirements-grid"
         >
-          <div class="flex items-center gap-2 mb-3">
-            <CheckCircle2 class="w-5 h-5 text-accent" />
-            <h3 class="font-medium text-foreground">
-              {{ endorsementsReceived.length }} Community {{ endorsementsReceived.length === 1 ? 'Endorsement' : 'Endorsements' }}
-            </h3>
-          </div>
-          <div class="space-y-2">
-            <div
-              v-for="endorsement in endorsementsReceived"
-              :key="endorsement.credentialSaid"
-              class="flex items-center gap-2 p-2 rounded-lg bg-accent/5"
-            >
-              <CheckCircle2 class="w-4 h-4 text-accent shrink-0" />
-              <span class="text-sm text-foreground">
-                A community member endorsed your application
-              </span>
-              <span class="text-xs text-muted-foreground ml-auto">
-                {{ formatEndorsementTime(endorsement.endorsedAt) }}
-              </span>
+          <div
+            v-for="req in requirements"
+            :key="req.num"
+            class="requirement-card"
+            :class="req.met ? 'requirement-met' : 'requirement-pending'"
+          >
+            <div class="req-header">
+              <div class="req-icon">
+                <CheckCircle2 v-if="req.met" class="w-5 h-5" />
+                <Circle v-else class="w-5 h-5" />
+              </div>
+              <span class="req-num">{{ req.num }}</span>
             </div>
+            <h4 class="req-title">{{ req.title }}</h4>
+            <p class="req-desc">{{ req.description }}</p>
           </div>
         </div>
 
@@ -422,7 +417,10 @@ const {
   readOnlySpaceId,
   rejectionReceived,
   rejectionInfo,
-  endorsementsReceived,
+  membershipVerified,
+  memberEndorsementVerified,
+  stewardEndorsementVerified,
+  sessionAttendanceVerified,
   startPolling,
   retry,
 } = useCredentialPolling({ pollingInterval: 5000 });
@@ -692,17 +690,12 @@ const availableSlots = computed<TimeSlot[]>(() => {
   return slots;
 });
 
-function formatEndorsementTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
+const requirements = computed(() => [
+  { num: 1, title: 'Membership', description: 'Issued by Matou organisation', met: membershipVerified.value },
+  { num: 2, title: 'Endorsement', description: 'From a verified member', met: memberEndorsementVerified.value },
+  { num: 3, title: 'Steward', description: 'From a steward or founder', met: stewardEndorsementVerified.value },
+  { num: 4, title: 'Whakawhanaunga', description: 'Session attendance', met: sessionAttendanceVerified.value },
+]);
 
 // Format selected slot for display
 function formatSlotDisplay(slot: TimeSlot): string {
@@ -926,8 +919,57 @@ const resources = [
   background-color: var(--matou-card);
 }
 
-.endorsements-card {
-  background-color: var(--matou-card);
+.requirements-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.75rem;
+
+  @media (min-width: 1024px) {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.requirement-card {
+  border-radius: var(--matou-radius, 0.75rem);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.requirement-pending {
+  background-color: var(--matou-secondary, #f1f5f9);
+  color: var(--matou-muted-foreground, #94a3b8);
+}
+
+.requirement-met {
+  background-color: var(--matou-accent, #4a9d9c);
+  color: white;
+}
+
+.req-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.req-num {
+  font-size: 0.75rem;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.req-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.req-desc {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  line-height: 1.3;
 }
 
 .rejection-card {
