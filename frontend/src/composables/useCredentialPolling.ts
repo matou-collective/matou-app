@@ -297,77 +297,68 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
                 sessionAttendanceVerified.value = true;
               }
             }
-
-            // Requirement verification: check issuer and endorsement chains
-            let orgAid: string | null = null;
-            try {
-              const configResult = await fetchOrgConfig();
-              const config = configResult.status === 'configured'
-                ? configResult.config
-                : configResult.status === 'server_unreachable'
-                  ? configResult.cached
-                  : null;
-              orgAid = config?.organization?.aid || null;
-            } catch {
-              // Non-fatal — verification checks skipped this cycle
-            }
-
-            if (orgAid) {
-              // Req 1: Membership credential issued by org AID to us
-              for (const cred of credentials) {
-                const sad = cred.sad || cred;
-                if (
-                  ((sad as any).s || '') === MEMBERSHIP_SCHEMA_SAID &&
-                  ((sad as any).a?.i || '') === myAid &&
-                  ((sad as any).i || '') === orgAid
-                ) {
-                  membershipVerified.value = true;
-                  break;
-                }
-              }
-
-              // Req 2 & 3: Endorsement chain verification
-              // Each endorsement can only satisfy ONE requirement, so we need at least 2.
-              let stewardCount = 0;
-              let memberCount = 0;
-
-              for (const endorsement of endorsementsReceived.value) {
-                const endorsementCred = credentials.find((c: any) => {
-                  const sad = c.sad || c;
-                  return ((sad as any).d || '') === endorsement.credentialSaid;
-                });
-                if (!endorsementCred) continue;
-
-                const eSad = (endorsementCred as any).sad || endorsementCred;
-                const edgeSaid = eSad.e?.endorserMembership?.n;
-                if (!edgeSaid) continue;
-
-                // Find the endorser's chained membership credential in wallet
-                const chainedMembership = credentials.find((c: any) => {
-                  const sad = c.sad || c;
-                  return ((sad as any).d || '') === edgeSaid;
-                });
-                if (!chainedMembership) continue;
-
-                const cSad = (chainedMembership as any).sad || chainedMembership;
-                if (((cSad as any).i || '') === orgAid) {
-                  const role = ((cSad as any).a?.role || '').toLowerCase();
-                  if (['founding member', 'operations steward', 'community steward'].includes(role)) {
-                    stewardCount++;
-                  } else {
-                    memberCount++;
-                  }
-                }
-              }
-
-              // Req 3: At least one steward/founder endorsement
-              stewardEndorsementVerified.value = stewardCount >= 1;
-              // Req 2: At least one separate member endorsement (or a second steward)
-              memberEndorsementVerified.value = memberCount >= 1 || stewardCount >= 2;
-            }
           }
         } catch (credErr) {
           console.log('[CredentialPolling] Could not check credentials:', credErr);
+        }
+
+        // Requirement verification: runs every cycle regardless of credentials in wallet.
+        // endorsementsReceived is populated from both the grant-admit path and the wallet check.
+        let orgAid: string | null = null;
+        let config: import('src/api/config').OrgConfig | null = null;
+        try {
+          const configResult = await fetchOrgConfig();
+          config = configResult.status === 'configured'
+            ? configResult.config
+            : configResult.status === 'server_unreachable'
+              ? configResult.cached
+              : null;
+          orgAid = config?.organization?.aid || null;
+        } catch {
+          // Non-fatal — verification checks skipped this cycle
+        }
+
+        if (orgAid) {
+          // Req 1: Membership credential issued by org AID to us
+          try {
+            const credentials = await client.credentials().list();
+            for (const cred of credentials) {
+              const sad = cred.sad || cred;
+              if (
+                ((sad as any).s || '') === MEMBERSHIP_SCHEMA_SAID &&
+                ((sad as any).a?.i || '') === myAid &&
+                ((sad as any).i || '') === orgAid
+              ) {
+                membershipVerified.value = true;
+                break;
+              }
+            }
+          } catch {
+            // Non-fatal — membership check retried next cycle
+          }
+
+          // Req 2 & 3: Endorsement verification
+          // Determine endorser role by checking if they're in the org config admins list.
+          // Admins/stewards are listed in config.admins; regular members are not.
+          const adminAids = new Set(
+            (config?.admins || []).map((a: { aid: string }) => a.aid)
+          );
+
+          let stewardCount = 0;
+          let memberCount = 0;
+
+          for (const endorsement of endorsementsReceived.value) {
+            if (adminAids.has(endorsement.endorserAid)) {
+              stewardCount++;
+            } else {
+              memberCount++;
+            }
+          }
+
+          // Req 3: At least one steward/founder endorsement
+          stewardEndorsementVerified.value = stewardCount >= 1;
+          // Req 2: At least one separate member endorsement (or a second steward)
+          memberEndorsementVerified.value = memberCount >= 1 || stewardCount >= 2;
         }
       }
 

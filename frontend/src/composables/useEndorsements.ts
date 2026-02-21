@@ -94,7 +94,7 @@ export function useEndorsements() {
       const resolved = await keriClient.resolveOOBI(oobi, undefined, 30000);
       if (!resolved) throw new Error('Could not resolve applicant identity');
 
-      // 4. Look up endorser's own membership credential for the edge chain
+      // 4. Verify endorser has a membership credential (must be admitted member)
       const client = keriClient.getSignifyClient();
       if (!client) throw new Error('Not connected to KERIA');
       const allCreds = await client.credentials().list();
@@ -106,7 +106,12 @@ export function useEndorsements() {
       }
       console.log('[Endorsements] Found endorser membership credential:', membershipCred.sad.d);
 
-      // 5. Issue endorsement credential with edge linking to endorser's membership
+      // 5. Issue endorsement credential
+      // NOTE: Edge data (endorserMembership chain) is omitted because KERIA's
+      // per-agent verifier isolation means the personal AID agent's reger.saved
+      // doesn't contain the membership credential (issued by the org AID agent).
+      // The schema allows "e" to be optional. The membership check above still
+      // ensures only admitted members can endorse.
       const credentialData = {
         dt: new Date().toISOString(),
         endorsementType: 'membership_endorsement',
@@ -115,22 +120,12 @@ export function useEndorsements() {
         confidence: 'high',
       };
 
-      const edgeData = {
-        d: '', // SAID placeholder — computed by KERIA
-        endorserMembership: {
-          n: membershipCred.sad.d,
-          s: MEMBERSHIP_SCHEMA_SAID,
-        },
-      };
-
       const credResult = await keriClient.issueCredential(
         myAid.prefix,
         registryId,
         ENDORSEMENT_SCHEMA_SAID,
         applicantAid,
         credentialData,
-        undefined, // grantMessage
-        edgeData,
       );
 
       // 6. Update SharedProfile with endorsement record

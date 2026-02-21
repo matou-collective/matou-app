@@ -379,17 +379,21 @@ test.describe.serial('Activity Page', () => {
     await page.locator('.nav-item', { hasText: 'Home' }).click();
     await expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
 
-    // Wait for admin section with pending registrations
-    const adminSection = page.locator('.admin-section');
-    await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
-
-    const registrationCard = page.locator('.registration-card').filter({ hasText: memberName });
-    await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+    // Wait for pending member to appear in New Members card
+    const membersCard = page.locator('.members-card');
+    const pendingMemberName = membersCard.locator('.card-name', { hasText: memberName });
+    await expect(pendingMemberName).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
     console.log('[Test 11] Member registration card visible on admin dashboard');
 
-    // 3. Admin approves the registration
+    // 3. Admin approves via ProfileModal
     console.log('[Test 11] Admin clicking approve...');
-    await registrationCard.getByRole('button', { name: /approve/i }).click();
+    const memberProfileCard = membersCard.locator('.profile-card').filter({ hasText: memberName });
+    await memberProfileCard.click();
+    const profileModal = page.locator('.modal-content');
+    await expect(profileModal).toBeVisible({ timeout: TIMEOUT.short });
+    const admitButton = profileModal.getByRole('button', { name: /admit/i });
+    await expect(admitButton).toBeVisible({ timeout: TIMEOUT.short });
+    await admitButton.click();
 
     // 4. Member sees welcome overlay and enters community
     await expect(memberPage.locator('.welcome-overlay')).toBeVisible({ timeout: TIMEOUT.long });

@@ -260,11 +260,9 @@ test.describe.serial('Admin Account Recovery', () => {
       console.log(`[Test] ${userName} registered, waiting for admin to see registration card...`);
 
       // 2. Wait for registration card to appear on recovered admin's dashboard
-      const adminSection = recoveryPage.locator('.admin-section');
-      await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
-
-      const registrationCard = recoveryPage.locator('.registration-card').filter({ hasText: userName });
-      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+      const membersCard = recoveryPage.locator('.members-card');
+      const pendingMemberCard = membersCard.locator('.card-name', { hasText: userName });
+      await expect(pendingMemberCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
       console.log('[Test] Registration card visible on recovered admin dashboard');
 
       // 3. Set up listeners for approval API calls
@@ -277,9 +275,15 @@ test.describe.serial('Admin Account Recovery', () => {
         { timeout: TIMEOUT.long },
       );
 
-      // 4. Admin approves the registration
+      // 4. Admin approves via ProfileModal
       console.log('[Test] Recovered admin clicking approve...');
-      await registrationCard.getByRole('button', { name: /approve/i }).click();
+      const memberProfileCard = membersCard.locator('.profile-card').filter({ hasText: userName });
+      await memberProfileCard.click();
+      const profileModal = recoveryPage.locator('.modal-content');
+      await expect(profileModal).toBeVisible({ timeout: TIMEOUT.short });
+      const admitButton = profileModal.getByRole('button', { name: /admit/i });
+      await expect(admitButton).toBeVisible({ timeout: TIMEOUT.short });
+      await admitButton.click();
 
       // 5. Verify community space invite succeeded
       const invResp = await inviteResponse;

@@ -93,7 +93,7 @@ export function useEventAttendance() {
       const resolved = await keriClient.resolveOOBI(oobi, undefined, 30000);
       if (!resolved) throw new Error('Could not resolve applicant identity');
 
-      // 4. Look up host's own membership credential (for the edge)
+      // 4. Verify host has a membership credential (must be admitted member)
       const client = keriClient.getSignifyClient();
       if (!client) throw new Error('Not connected to KERIA');
       const allCreds = await client.credentials().list();
@@ -106,6 +106,11 @@ export function useEventAttendance() {
       console.log('[EventAttendance] Found host membership credential:', membershipCred.sad.d);
 
       // 5. Issue event attendance credential
+      // NOTE: Edge data (hostMembership chain) is omitted because KERIA's
+      // per-agent verifier isolation means the personal AID agent's reger.saved
+      // doesn't contain the membership credential (issued by the org AID agent).
+      // The schema allows "e" to be optional. The membership check above still
+      // ensures only admitted members can issue attendance credentials.
       const now = new Date().toISOString();
       const credentialData = {
         dt: now,
@@ -114,22 +119,12 @@ export function useEventAttendance() {
         sessionDate: sessionDate || now,
       };
 
-      const edgeData = {
-        d: '', // SAID placeholder — computed by KERIA
-        hostMembership: {
-          n: membershipCred.sad.d,
-          s: MEMBERSHIP_SCHEMA_SAID,
-        },
-      };
-
       const credResult = await keriClient.issueCredential(
         myAid.prefix,
         registryId,
         EVENT_ATTENDANCE_SCHEMA_SAID,
         applicantAid,
         credentialData,
-        undefined, // grantMessage
-        edgeData,
       );
 
       // 6. Update SharedProfile with attendance record
