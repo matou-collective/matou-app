@@ -691,10 +691,9 @@ const availableSlots = computed<TimeSlot[]>(() => {
 });
 
 const requirements = computed(() => [
-  { num: 1, title: 'Membership', description: 'Issued by Matou organisation', met: membershipVerified.value },
-  { num: 2, title: 'Endorsement', description: 'From a verified member', met: memberEndorsementVerified.value },
-  { num: 3, title: 'Steward', description: 'From a steward or founder', met: stewardEndorsementVerified.value },
-  { num: 4, title: 'Whakawhanaunga', description: 'Session attendance', met: sessionAttendanceVerified.value },
+  { num: 1, title: 'Endorsement', description: 'From a community member', met: memberEndorsementVerified.value },
+  { num: 2, title: 'Confirmation', description: 'From a community admin', met: stewardEndorsementVerified.value },
+  { num: 3, title: 'Attendance', description: 'Whakawhanaunga session', met: sessionAttendanceVerified.value },
 ]);
 
 // Format selected slot for display
@@ -921,12 +920,8 @@ const resources = [
 
 .requirements-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 0.75rem;
-
-  @media (min-width: 1024px) {
-    grid-template-columns: repeat(4, 1fr);
-  }
 }
 
 .requirement-card {

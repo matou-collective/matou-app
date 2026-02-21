@@ -281,7 +281,7 @@ test.describe.serial('Admin Account Recovery', () => {
       await memberProfileCard.click();
       const profileModal = recoveryPage.locator('.modal-content');
       await expect(profileModal).toBeVisible({ timeout: TIMEOUT.short });
-      const admitButton = profileModal.getByRole('button', { name: /admit/i });
+      const admitButton = profileModal.getByRole('button', { name: /approve/i });
       await expect(admitButton).toBeVisible({ timeout: TIMEOUT.short });
       await admitButton.click();
 

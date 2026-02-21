@@ -258,12 +258,13 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(profileModal.locator('h4').first()).toContainText(userName, { timeout: TIMEOUT.short });
       console.log('[Test] ProfileModal opened for pending member');
 
-      // Verify "Endorse" button is visible (admin is steward, so should see Endorse + Admit + Decline)
+      // Verify "Endorse" button is visible (admin is steward, so should see Endorse + Decline)
+      // "Approve" button is hidden until requirements are met (2 endorsements + 1 attendance)
       const endorseBtn = profileModal.getByRole('button', { name: /^Endorse$/i });
       await expect(endorseBtn).toBeVisible({ timeout: TIMEOUT.short });
-      const admitBtn = profileModal.getByRole('button', { name: /admit/i });
-      await expect(admitBtn).toBeVisible({ timeout: TIMEOUT.short });
-      console.log('[Test] Endorse and Admit buttons visible');
+      const approveBtn = profileModal.getByRole('button', { name: /approve/i });
+      await expect(approveBtn).not.toBeVisible();
+      console.log('[Test] Endorse button visible, Approve button hidden (requirements not met)');
 
       // Click "Endorse" to show the endorsement message textarea
       await endorseBtn.click();
@@ -333,20 +334,20 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(attendanceModal.locator('h4').first()).toContainText(userName, { timeout: TIMEOUT.short });
       console.log('[Test] ProfileModal re-opened for event attendance');
 
-      // Verify "Mark Attended" button is visible (admin is steward)
-      const markAttendedBtn = attendanceModal.getByRole('button', { name: /mark attended/i });
-      await expect(markAttendedBtn).toBeVisible({ timeout: TIMEOUT.short });
-      console.log('[Test] Mark Attended button visible');
+      // Verify "Onboarded" button is visible (admin is steward)
+      const onboardedBtn = attendanceModal.getByRole('button', { name: /onboarded/i });
+      await expect(onboardedBtn).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Onboarded button visible');
 
-      // Click "Mark Attended" — issues event attendance credential
+      // Click "Onboarded" — issues event attendance credential
       // This involves: registry lookup, schema OOBI resolution, applicant OOBI resolution, credential issuance, IPEX grant
-      await markAttendedBtn.click();
-      console.log('[Test] Clicked Mark Attended — waiting for credential issuance...');
+      await onboardedBtn.click();
+      console.log('[Test] Clicked Onboarded — waiting for credential issuance...');
 
-      // Wait for "Attended" (disabled) button to appear — indicates issuance succeeded
-      const attendedBtn = attendanceModal.getByRole('button', { name: /^Attended$/i });
-      await expect(attendedBtn).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
-      console.log('[Test] Event attendance succeeded — "Attended" button visible');
+      // Wait for disabled "Onboarded" button to appear — indicates issuance succeeded
+      const onboardedDoneBtn = attendanceModal.locator('button:disabled', { hasText: /onboarded/i });
+      await expect(onboardedDoneBtn).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+      console.log('[Test] Event attendance succeeded — "Onboarded" button disabled');
 
       // Close the modal
       await attendanceModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
@@ -391,10 +392,10 @@ test.describe.serial('Registration Approval Flow', () => {
       await memberCardForAdmit.click();
       const admitModal = adminPage.locator('.modal-content');
       await expect(admitModal).toBeVisible({ timeout: TIMEOUT.short });
-      const admitButton = admitModal.getByRole('button', { name: /admit/i });
-      await expect(admitButton).toBeVisible({ timeout: TIMEOUT.short });
-      console.log('[Test] Admin clicking Admit...');
-      await admitButton.click();
+      const approveButton = admitModal.getByRole('button', { name: /approve/i });
+      await expect(approveButton).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Admin clicking Approve...');
+      await approveButton.click();
 
       // 5. Verify community space invite during approval (from admin's backend)
       const invResp = await inviteResponse;

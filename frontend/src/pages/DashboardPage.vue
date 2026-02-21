@@ -80,6 +80,19 @@
           <div class="card community-card">
             <h3 class="card-title">Community Activity</h3>
             <div class="activity-list">
+              <div
+                v-for="(evt, i) in recentProfileEvents"
+                :key="'pe-' + i"
+                class="activity-item"
+              >
+                <div class="activity-icon bg-accent-light">
+                  <UserRoundPlus class="icon text-accent" />
+                </div>
+                <div class="activity-info">
+                  <h4>New profile created</h4>
+                  <p>{{ evt.displayName }}</p>
+                </div>
+              </div>
               <div class="activity-item">
                 <div class="activity-icon bg-primary-light">
                   <TrendingUp class="icon text-primary" />
@@ -113,6 +126,7 @@
                 :key="index"
                 :profile="member.profile"
                 :communityProfile="member.communityProfile"
+                :adminAids="adminAids"
                 @click="handleMemberClick(member)"
               />
             </div>
@@ -149,7 +163,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import {
   Moon,
   Sun,
@@ -159,8 +173,11 @@ import {
   Vote,
   Target,
   UserPlus,
+  UserRoundPlus,
 } from 'lucide-vue-next';
+import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useEndorsements } from 'src/composables/useEndorsements';
@@ -208,6 +225,29 @@ const identityStore = useIdentityStore();
 
 const profilesStore = useProfilesStore();
 
+const { lastEvent } = useBackendEvents();
+
+// Track recent profile creation events from SSE
+interface ProfileEvent {
+  displayName: string;
+  timestamp: Date;
+}
+const recentProfileEvents = ref<ProfileEvent[]>([]);
+
+watch(lastEvent, (event) => {
+  if (event?.type === 'profile:updated' && event.data?.displayName) {
+    recentProfileEvents.value.unshift({
+      displayName: event.data.displayName,
+      timestamp: new Date(),
+    });
+    // Keep only last 10
+    if (recentProfileEvents.value.length > 10) {
+      recentProfileEvents.value.length = 10;
+    }
+  }
+});
+
+const adminAids = ref<string[]>([]);
 const showInviteModal = ref(false);
 const selectedMember = ref<{ shared?: Record<string, unknown>; community?: Record<string, unknown> } | null>(null);
 
@@ -284,8 +324,24 @@ onMounted(async () => {
 
   // Check if user is admin/steward
   await checkAdminStatus();
-  // Start polling for all users — approved members can see and endorse pending registrations
-  startPolling();
+
+  // Fetch admin AIDs for endorsement badge distinction
+  try {
+    const configResult = await fetchOrgConfig();
+    const config = configResult.status === 'configured'
+      ? configResult.config
+      : configResult.status === 'server_unreachable'
+        ? configResult.cached
+        : null;
+    if (config?.admins) {
+      adminAids.value = config.admins.map((a: { aid: string }) => a.aid);
+    }
+  } catch { /* non-fatal */ }
+
+  // Only poll for pending registrations if the user is a steward/admin
+  if (isSteward.value) {
+    startPolling();
+  }
 });
 
 onUnmounted(() => {

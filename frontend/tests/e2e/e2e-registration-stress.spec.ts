@@ -209,7 +209,7 @@ test.describe.serial('Registration Stress Test', () => {
         await card.click();
         const modal = adminPage.locator('.modal-content');
         await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
-        const admitBtn = modal.getByRole('button', { name: /admit/i });
+        const admitBtn = modal.getByRole('button', { name: /approve/i });
         await expect(admitBtn).toBeVisible({ timeout: TIMEOUT.short });
         await admitBtn.click();
 

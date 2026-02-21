@@ -85,8 +85,11 @@ export const useIdentityStore = defineStore('identity', () => {
     }
 
     try {
-      // Create AID (witnesses can be enabled later for production)
-      const aid = await keriClient.createAID(name, { useWitnesses: options?.useWitnesses ?? false });
+      // Sanitize name for use as KERIA alias — signify-ts uses the alias
+      // directly in URL paths (e.g. /identifiers/{name}/credentials) without
+      // encoding, so slashes and other URL-unsafe characters break API calls.
+      const safeName = name.replace(/[/\\?#%]/g, '-').trim();
+      const aid = await keriClient.createAID(safeName, { useWitnesses: options?.useWitnesses ?? false });
       currentAID.value = aid;
       return aid;
     } catch (e) {

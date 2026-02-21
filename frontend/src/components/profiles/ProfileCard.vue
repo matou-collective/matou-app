@@ -29,11 +29,19 @@
         title="Membership credential"
       />
       <q-icon
-        v-if="endorsements.length > 0"
-        name="person_add"
+        v-for="(e, i) in endorsements"
+        :key="i"
+        :name="isAdminEndorsement(e) ? 'admin_panel_settings' : 'person_add'"
         size="1.1rem"
         class="badge-endorsement"
-        title="Endorsed"
+        :title="isAdminEndorsement(e) ? 'Steward endorsement' : 'Member endorsement'"
+      />
+      <q-icon
+        v-if="hasAttendance"
+        name="event_available"
+        size="1.1rem"
+        class="badge-attendance"
+        title="Onboarded"
       />
       <q-icon
         v-if="status === 'pending' && !hasCredential"
@@ -53,6 +61,7 @@ import { getFileUrl } from 'src/lib/api/client';
 const props = defineProps<{
   profile: Record<string, unknown>;
   communityProfile?: Record<string, unknown>;
+  adminAids?: string[];
 }>();
 
 defineEmits<{
@@ -98,10 +107,17 @@ const dateLabel = computed(() => {
 });
 
 const endorsements = computed(() => {
-  return (props.profile?.endorsements as Array<unknown>) || [];
+  return (props.profile?.endorsements as Array<Record<string, unknown>>) || [];
 });
 
+function isAdminEndorsement(e: Record<string, unknown>): boolean {
+  const admins = new Set(props.adminAids || []);
+  return admins.size > 0 && admins.has(e.endorserAid as string);
+}
+
 const hasCredential = computed(() => !!(props.communityProfile?.credential));
+
+const hasAttendance = computed(() => !!(props.profile?.attendanceRecord));
 
 const colorClass = computed(() => {
   const colors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
@@ -188,7 +204,7 @@ function formatDate(dateStr: string, verb: string): string {
 .card-badges {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.15rem;
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -198,7 +214,11 @@ function formatDate(dateStr: string, verb: string): string {
 }
 
 .badge-endorsement {
-  color: var(--matou-primary, #6366f1);
+  color: var(--matou-accent, #4a9d9c);
+}
+
+.badge-attendance {
+  color: var(--matou-accent, #4a9d9c);
 }
 
 .status-pending {

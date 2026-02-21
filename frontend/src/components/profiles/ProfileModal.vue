@@ -224,38 +224,41 @@
 
             <!-- Main action buttons -->
             <div v-if="!showDeclineReason && !showEndorseMessage" class="flex items-center gap-3">
-              <!-- Mark Attended button (steward only) -->
+              <!-- Onboarded button (admin only, hidden once requirements met) -->
               <button
-                v-if="props.isSteward && !props.hasMarkedAttended"
+                v-if="props.isSteward && !props.hasMarkedAttended && !requirementsMet"
                 @click="emit('mark-attended')"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors"
                 :disabled="isProcessing || props.isMarkingAttended"
               >
                 <Loader2 v-if="props.isMarkingAttended" class="w-4 h-4 inline mr-2 animate-spin" />
                 <CalendarCheck v-else class="w-4 h-4 inline mr-2" />
-                Mark Attended
+                Onboarded
               </button>
               <button
-                v-else-if="props.isSteward && props.hasMarkedAttended"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-blue-600/20 text-blue-600 cursor-default"
+                v-else-if="props.isSteward && props.hasMarkedAttended && !requirementsMet"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent/20 text-accent cursor-default"
                 disabled
               >
                 <CalendarCheck class="w-4 h-4 inline mr-2" />
-                Attended
+                Onboarded
               </button>
 
+              <!-- Endorse button (hidden once requirements met) -->
               <button
-                v-if="!props.hasEndorsed"
+                v-if="!props.hasEndorsed && !requirementsMet"
                 @click="showEndorseMessage = true"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg text-white hover:opacity-90 transition-colors"
+                style="background-color: #6738ab"
                 :disabled="isProcessing || isEndorsing"
               >
                 <ThumbsUp class="w-4 h-4 inline mr-2" />
                 Endorse
               </button>
               <button
-                v-else
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent/20 text-accent cursor-default"
+                v-else-if="props.hasEndorsed && !requirementsMet"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg cursor-default"
+                style="background-color: rgba(103, 56, 171, 0.2); color: #6738ab"
                 disabled
               >
                 <ThumbsUp class="w-4 h-4 inline mr-2" />
@@ -263,13 +266,13 @@
               </button>
 
               <button
-                v-if="props.isSteward && registration"
+                v-if="props.isSteward && registration && requirementsMet"
                 @click="handleApprove"
                 class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
                 :disabled="isProcessing"
               >
                 <Loader2 v-if="isProcessing && action === 'approve'" class="w-4 h-4 inline mr-2 animate-spin" />
-                Admit
+                Approve
               </button>
 
               <button
@@ -293,7 +296,8 @@
               </button>
               <button
                 @click="handleEndorse"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-50"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg text-white hover:opacity-90 transition-colors disabled:opacity-50"
+                style="background-color: #6738ab"
                 :disabled="props.isEndorsing || !endorseMessage.trim()"
               >
                 <Loader2 v-if="props.isEndorsing" class="w-4 h-4 inline mr-2 animate-spin" />
@@ -387,6 +391,13 @@ const emit = defineEmits<{
   (e: 'endorse', message?: string): void;
   (e: 'mark-attended'): void;
 }>();
+
+// Requirements gate: approve button only shown when applicant has met requirements
+const requirementsMet = computed(() => {
+  const hasEnoughEndorsements = (props.endorsements?.length ?? 0) >= 1;
+  const hasAttendance = !!(props.sharedProfile as Record<string, unknown>)?.attendanceRecord;
+  return hasEnoughEndorsements && hasAttendance;
+});
 
 // Unified computed properties for both data sources
 const profileName = computed(() => {
