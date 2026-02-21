@@ -97,6 +97,13 @@ export default defineConfig({
       testMatch: /e2e-chat\.spec\.ts/,
       use: browserConfig,
     },
+    // Credential chain verification — tests KERIA reger.saved isolation bug
+    // Self-sufficient: auto-runs org-setup if needed
+    {
+      name: 'credential-chain',
+      testMatch: /e2e-credential-chain\.spec\.ts/,
+      use: browserConfig,
+    },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above
     {
@@ -113,6 +120,7 @@ export default defineConfig({
         /e2e-recovery-errors\.spec\.ts/,
         /e2e-registration-stress\.spec\.ts/,
         /e2e-chat\.spec\.ts/,
+        /e2e-credential-chain\.spec\.ts/,
       ],
     },
   ],
