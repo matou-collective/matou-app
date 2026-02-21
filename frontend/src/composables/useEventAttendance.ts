@@ -105,12 +105,7 @@ export function useEventAttendance() {
       }
       console.log('[EventAttendance] Found host membership credential:', membershipCred.sad.d);
 
-      // 5. Issue event attendance credential
-      // NOTE: Edge data (hostMembership chain) is omitted because KERIA's
-      // per-agent verifier isolation means the personal AID agent's reger.saved
-      // doesn't contain the membership credential (issued by the org AID agent).
-      // The schema allows "e" to be optional. The membership check above still
-      // ensures only admitted members can issue attendance credentials.
+      // 5. Issue event attendance credential with edge linking to host's membership
       const now = new Date().toISOString();
       const credentialData = {
         dt: now,
@@ -119,12 +114,21 @@ export function useEventAttendance() {
         sessionDate: sessionDate || now,
       };
 
+      const edgeData = {
+        hostMembership: {
+          n: membershipCred.sad.d,
+          s: MEMBERSHIP_SCHEMA_SAID,
+        },
+      };
+
       const credResult = await keriClient.issueCredential(
         myAid.prefix,
         registryId,
         EVENT_ATTENDANCE_SCHEMA_SAID,
         applicantAid,
         credentialData,
+        undefined,
+        edgeData,
       );
 
       // 6. Update SharedProfile with attendance record

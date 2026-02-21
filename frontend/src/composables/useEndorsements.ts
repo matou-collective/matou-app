@@ -106,12 +106,7 @@ export function useEndorsements() {
       }
       console.log('[Endorsements] Found endorser membership credential:', membershipCred.sad.d);
 
-      // 5. Issue endorsement credential
-      // NOTE: Edge data (endorserMembership chain) is omitted because KERIA's
-      // per-agent verifier isolation means the personal AID agent's reger.saved
-      // doesn't contain the membership credential (issued by the org AID agent).
-      // The schema allows "e" to be optional. The membership check above still
-      // ensures only admitted members can endorse.
+      // 5. Issue endorsement credential with edge linking to endorser's membership
       const credentialData = {
         dt: new Date().toISOString(),
         endorsementType: 'membership_endorsement',
@@ -120,12 +115,21 @@ export function useEndorsements() {
         confidence: 'high',
       };
 
+      const edgeData = {
+        endorserMembership: {
+          n: membershipCred.sad.d,
+          s: MEMBERSHIP_SCHEMA_SAID,
+        },
+      };
+
       const credResult = await keriClient.issueCredential(
         myAid.prefix,
         registryId,
         ENDORSEMENT_SCHEMA_SAID,
         applicantAid,
         credentialData,
+        undefined,
+        edgeData,
       );
 
       // 6. Update SharedProfile with endorsement record
