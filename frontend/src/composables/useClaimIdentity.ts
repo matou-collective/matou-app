@@ -8,7 +8,7 @@ import { ref } from 'vue';
 import { useKERIClient, KERIClient } from 'src/lib/keri/client';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useAppStore } from 'stores/app';
-import { setBackendIdentity, createOrUpdateProfile, uploadFile } from 'src/lib/api/client';
+import { setBackendIdentity, createOrUpdateProfile } from 'src/lib/api/client';
 import { useIdentityStore } from 'stores/identity';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -145,14 +145,6 @@ export function useClaimIdentity() {
 
       console.log(`[ClaimIdentity] Found ${grants.length} pending grant(s)`);
 
-      // Capture space invite data from grant messages
-      let spaceInvite: {
-        inviteKey: string;
-        spaceId?: string;
-        readOnlyInviteKey?: string;
-        readOnlySpaceId?: string;
-      } | null = null;
-
       // Pre-resolve grant senders' key state via KERIA OOBI.
       // The grant may be escrowed on the invitee's KERIA agent because the
       // sender's AID was not in kevers when the grant arrived (the OOBI
@@ -191,18 +183,6 @@ export function useClaimIdentity() {
         try {
           const grantExn = await client.exchanges().get(grant.a.d);
           const grantSender = grantExn.exn.i;
-
-          // Extract space invite from grant message
-          const msg = grantExn.exn.a?.m || (grant.a as Record<string, unknown>)?.m;
-          if (msg && !spaceInvite) {
-            try {
-              const parsed = JSON.parse(String(msg));
-              if (parsed.type === 'space_invite' && parsed.inviteKey) {
-                spaceInvite = parsed;
-                console.log('[ClaimIdentity] Space invite found in grant message');
-              }
-            } catch { /* not JSON */ }
-          }
 
           // Submit admit with empty embeds. KERIA's sendAdmit() for single-sig
           // AIDs does not process path labels — the Admitter background task
@@ -260,7 +240,7 @@ export function useClaimIdentity() {
       // Persist session (same passcode — no agent rotation)
       await secureStorage.setItem('matou_passcode', passcode);
 
-      // Step 4: Set up account (backend identity, space join, profiles)
+      // Step 4: Set up account (backend identity, profiles)
       step.value = 'securing';
       progress.value = 'Configuring backend identity...';
 
@@ -290,47 +270,6 @@ export function useClaimIdentity() {
       const identityStore = useIdentityStore();
       identityStore.setCurrentAID({ name: aid.name, prefix: aid.prefix, state: aid.state ?? null });
 
-      // Join community + readonly spaces (required — fail if missing or unsuccessful)
-      progress.value = 'Joining community space...';
-      if (!spaceInvite) {
-        throw new Error('No community space invite found in credential grant');
-      }
-      const joined = await identityStore.joinCommunitySpace({
-        inviteKey: spaceInvite.inviteKey,
-        spaceId: spaceInvite.spaceId,
-        readOnlyInviteKey: spaceInvite.readOnlyInviteKey,
-        readOnlySpaceId: spaceInvite.readOnlySpaceId,
-      });
-      if (!joined) {
-        throw new Error('Failed to join community and readonly spaces');
-      }
-      console.log('[ClaimIdentity] Joined community space');
-
-      // Upload avatar if we have base64 data but no fileRef
-      // (the original upload during onboarding failed because community space didn't exist)
-      if (!onboardingStore.profile.avatarFileRef && onboardingStore.profile.avatarData) {
-        try {
-          progress.value = 'Uploading avatar...';
-          const base64Data = onboardingStore.profile.avatarData;
-          const mimeType = onboardingStore.profile.avatarMimeType || 'image/png';
-          // Convert base64 to File for uploadFile()
-          const byteChars = atob(base64Data);
-          const byteArray = new Uint8Array(byteChars.length);
-          for (let i = 0; i < byteChars.length; i++) {
-            byteArray[i] = byteChars.charCodeAt(i);
-          }
-          const blob = new Blob([byteArray], { type: mimeType });
-          const avatarFile = new File([blob], 'avatar', { type: mimeType });
-          const uploadResult = await uploadFile(avatarFile);
-          if (uploadResult.fileRef) {
-            onboardingStore.updateProfile({ avatarFileRef: uploadResult.fileRef });
-            console.log('[ClaimIdentity] Avatar uploaded after space join, fileRef:', uploadResult.fileRef);
-          }
-        } catch (avatarErr) {
-          console.warn('[ClaimIdentity] Avatar upload after space join failed:', avatarErr);
-        }
-      }
-
       // Populate identity info for the dashboard
       onboardingStore.setUserAID(aid.prefix);
       if (!onboardingStore.profile.name) {
@@ -339,13 +278,13 @@ export function useClaimIdentity() {
 
       // Create profiles (required — retry with backoff since space key derivation is async)
       progress.value = 'Creating profiles...';
-      const displayName = onboardingStore.profile.name || aid.name;
-      const now = new Date().toISOString();
 
       const creds = await client.credentials().list();
       const credSAID = creds.length > 0 ? (creds[0].sad?.d || '') : '';
 
       // PrivateProfile in personal space
+      // Note: credSAID here is the endorsement credential from invite;
+      // it will be updated with the membership credential after registration approval.
       const privateResult = await retryProfile(() =>
         createOrUpdateProfile('PrivateProfile', {
           membershipCredentialSAID: credSAID,
@@ -355,37 +294,6 @@ export function useClaimIdentity() {
       );
       if (!privateResult.success) {
         throw new Error(`PrivateProfile creation failed: ${privateResult.error || 'unknown'}`);
-      }
-
-      // SharedProfile in community space — update the existing profile created by
-      // admin during invite (ID: SharedProfile-{memberAID}) with full profile data.
-      const existingSharedId = `SharedProfile-${aid.prefix}`;
-      const sharedResult = await retryProfile(() =>
-        createOrUpdateProfile('SharedProfile', {
-          aid: aid.prefix,
-          displayName,
-          bio: onboardingStore.profile.bio || '',
-          avatar: onboardingStore.profile.avatarFileRef || '',
-          publicEmail: onboardingStore.profile.email || '',
-          location: onboardingStore.profile.location || '',
-          indigenousCommunity: onboardingStore.profile.indigenousCommunity || '',
-          joinReason: onboardingStore.profile.joinReason || '',
-          facebookUrl: onboardingStore.profile.facebookUrl || '',
-          linkedinUrl: onboardingStore.profile.linkedinUrl || '',
-          twitterUrl: onboardingStore.profile.twitterUrl || '',
-          instagramUrl: onboardingStore.profile.instagramUrl || '',
-          githubUrl: onboardingStore.profile.githubUrl || '',
-          gitlabUrl: onboardingStore.profile.gitlabUrl || '',
-          participationInterests: onboardingStore.profile.participationInterests || [],
-          customInterests: onboardingStore.profile.customInterests || '',
-          lastActiveAt: now,
-          createdAt: now,
-          updatedAt: now,
-          typeVersion: 1,
-        }, { id: existingSharedId }),
-      );
-      if (!sharedResult.success) {
-        throw new Error(`SharedProfile creation failed: ${sharedResult.error || 'unknown'}`);
       }
 
       console.log('[ClaimIdentity] Profiles created');
