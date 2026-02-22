@@ -117,13 +117,26 @@
 
         <!-- Right Column -->
         <div class="right-column">
-          <!-- New Members -->
           <div class="card members-card">
-            <h3 class="card-title">New Members</h3>
+            <template v-if="pendingMembers.length > 0">
+              <h3 class="card-title">Pending</h3>
+              <div class="members-list">
+                <ProfileCard
+                  v-for="(member, index) in pendingMembers"
+                  :key="'pending-' + index"
+                  :profile="member.profile"
+                  :communityProfile="member.communityProfile"
+                  :adminAids="adminAids"
+                  @click="handleMemberClick(member)"
+                />
+              </div>
+            </template>
+
+            <h3 class="card-title" :style="pendingMembers.length > 0 ? 'padding-top: 1rem' : ''">Members</h3>
             <div class="members-list">
               <ProfileCard
                 v-for="(member, index) in liveMembers"
-                :key="index"
+                :key="'member-' + index"
                 :profile="member.profile"
                 :communityProfile="member.communityProfile"
                 :adminAids="adminAids"
@@ -367,16 +380,28 @@ const notificationStats = computed(() => [
 ]);
 
 // Live member data from profiles store (with fallback to static data)
-const liveMembers = computed(() => {
+const allMembers = computed(() => {
   const shared = profilesStore.communityProfiles;
-  if (shared.length > 0) {
-    return shared.map(p => ({
+  if (shared.length === 0) return [];
+  return shared
+    .map(p => ({
       profile: (p.data as Record<string, unknown>) || p,
       communityProfile: findCommunityProfile(p),
-    }));
-  }
-  return [];
+    }))
+    .sort((a, b) => {
+      const dateA = (a.communityProfile?.memberSince as string) || (a.profile.createdAt as string) || '';
+      const dateB = (b.communityProfile?.memberSince as string) || (b.profile.createdAt as string) || '';
+      return new Date(dateB).getTime() - new Date(dateA).getTime();
+    });
 });
+
+const pendingMembers = computed(() =>
+  allMembers.value.filter(m => (m.profile.status as string) === 'pending')
+);
+
+const liveMembers = computed(() =>
+  allMembers.value.filter(m => (m.profile.status as string) !== 'pending')
+);
 
 // Calculate new members this week
 const newMembersThisWeek = computed(() => {

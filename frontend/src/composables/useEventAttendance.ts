@@ -115,6 +115,7 @@ export function useEventAttendance() {
       };
 
       const edgeData = {
+        d: '', // SAID placeholder — signify-ts computes this
         hostMembership: {
           n: membershipCred.sad.d,
           s: MEMBERSHIP_SCHEMA_SAID,

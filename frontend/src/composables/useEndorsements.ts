@@ -116,6 +116,7 @@ export function useEndorsements() {
       };
 
       const edgeData = {
+        d: '', // SAID placeholder — signify-ts computes this
         endorserMembership: {
           n: membershipCred.sad.d,
           s: MEMBERSHIP_SCHEMA_SAID,

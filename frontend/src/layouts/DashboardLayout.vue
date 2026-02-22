@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, onBeforeUnmount } from 'vue';
 import {
   Home,
   Wallet,
@@ -120,6 +120,10 @@ const userAvatarUrl = computed(() => {
   return avatar ? getFileUrl(avatar) : null;
 });
 
+// Poll community profiles every 15s to pick up cross-session any-sync changes
+// (SSE profile:updated only fires on the backend that wrote the profile)
+let profilePollTimer: ReturnType<typeof setInterval> | null = null;
+
 onMounted(() => {
   console.log('[DashboardLayout] mounted, route:', route.name);
   connectBackendEvents();
@@ -127,6 +131,11 @@ onMounted(() => {
   profilesStore.loadMyProfiles();
   profilesStore.loadCommunityProfiles();
   profilesStore.loadCommunityReadOnlyProfiles();
+
+  profilePollTimer = setInterval(() => {
+    profilesStore.loadCommunityProfiles();
+    profilesStore.loadCommunityReadOnlyProfiles();
+  }, 15000);
 
   // Load chat data so the unread badge shows on all dashboard pages.
   // Fire-and-forget: don't await, so child routes mount immediately.
@@ -141,6 +150,13 @@ onMounted(() => {
     console.log('[DashboardLayout] All messages loaded. Unread counts:', JSON.stringify(chatStore.unreadCounts));
     console.log('[DashboardLayout] Total unread:', chatStore.totalUnreadCount);
   });
+});
+
+onBeforeUnmount(() => {
+  if (profilePollTimer) {
+    clearInterval(profilePollTimer);
+    profilePollTimer = null;
+  }
 });
 </script>
 

@@ -88,7 +88,7 @@ export const useIdentityStore = defineStore('identity', () => {
       // Sanitize name for use as KERIA alias — signify-ts uses the alias
       // directly in URL paths (e.g. /identifiers/{name}/credentials) without
       // encoding, so slashes and other URL-unsafe characters break API calls.
-      const safeName = name.replace(/[/\\?#%]/g, '-').trim();
+      const safeName = name.replace(/[/\\?#%\s]+/g, '-').replace(/^-|-$/g, '').trim();
       const aid = await keriClient.createAID(safeName, { useWitnesses: options?.useWitnesses ?? false });
       currentAID.value = aid;
       return aid;

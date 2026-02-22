@@ -309,15 +309,15 @@ test.describe.serial('Registration Approval Flow', () => {
       const requirementsGrid = userPage.locator('.requirements-grid');
       await expect(requirementsGrid).toBeVisible({ timeout: TIMEOUT.short });
 
-      // Admin is a steward — their endorsement should turn the "Steward" card green
-      const stewardCard = requirementsGrid.locator('.requirement-card', { hasText: 'Steward' });
-      await expect(stewardCard).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
-      console.log('[Test] Steward requirement card turned green after endorsement');
+      // Admin is a steward — their endorsement should turn the "Confirmation" card green
+      const confirmationCard = requirementsGrid.locator('.requirement-card', { hasText: 'Confirmation' });
+      await expect(confirmationCard).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
+      console.log('[Test] Confirmation requirement card turned green after steward endorsement');
 
-      // Only 1 endorsement — "Endorsement" card (req 2) should still be pending
+      // Only steward endorsement — "Endorsement" card (req 1) should still be pending (needs a non-steward member)
       const memberEndorsementCard = requirementsGrid.locator('.requirement-card', { hasText: 'Endorsement' });
       await expect(memberEndorsementCard).toHaveClass(/requirement-pending/);
-      console.log('[Test] Member endorsement card still pending (needs a second endorsement)');
+      console.log('[Test] Member endorsement card still pending (needs a member endorsement)');
 
       console.log('[Test] --- Endorsement flow complete ---');
 

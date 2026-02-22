@@ -22,8 +22,8 @@
         </div>
 
         <!-- Rotating Indigenous Welcome -->
-        <p class="text-white/80 text-base md:text-lg mt-4 mb-6">
-          <span class="welcome-word" :class="{ 'fade-out': wordFading }">{{ currentWelcome.word }}</span>, {{ displayName }}!
+        <p class="text-white text-xl md:text-2xl font-light mt-4 mb-6 text-center">
+          <span class="welcome-word" :class="{ 'fade-out': wordFading }">{{ currentWelcome.word }}</span>, {{ displayName }}
         </p>
       </template>
 

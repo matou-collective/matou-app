@@ -228,7 +228,8 @@
               <button
                 v-if="props.isSteward && !props.hasMarkedAttended && !requirementsMet"
                 @click="emit('mark-attended')"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg text-white transition-colors"
+                style="background-color: rgb(103, 56, 171)"
                 :disabled="isProcessing || props.isMarkingAttended"
               >
                 <Loader2 v-if="props.isMarkingAttended" class="w-4 h-4 inline mr-2 animate-spin" />
@@ -237,7 +238,8 @@
               </button>
               <button
                 v-else-if="props.isSteward && props.hasMarkedAttended && !requirementsMet"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-accent/20 text-accent cursor-default"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg cursor-default"
+                style="background-color: rgba(103, 56, 171, 0.2); color: rgb(103, 56, 171)"
                 disabled
               >
                 <CalendarCheck class="w-4 h-4 inline mr-2" />
@@ -248,8 +250,7 @@
               <button
                 v-if="!props.hasEndorsed && !requirementsMet"
                 @click="showEndorseMessage = true"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg text-white hover:opacity-90 transition-colors"
-                style="background-color: #6738ab"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
                 :disabled="isProcessing || isEndorsing"
               >
                 <ThumbsUp class="w-4 h-4 inline mr-2" />
@@ -257,8 +258,7 @@
               </button>
               <button
                 v-else-if="props.hasEndorsed && !requirementsMet"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg cursor-default"
-                style="background-color: rgba(103, 56, 171, 0.2); color: #6738ab"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-primary/20 text-primary cursor-default"
                 disabled
               >
                 <ThumbsUp class="w-4 h-4 inline mr-2" />
@@ -296,8 +296,7 @@
               </button>
               <button
                 @click="handleEndorse"
-                class="flex-1 px-4 py-2.5 text-sm rounded-lg text-white hover:opacity-90 transition-colors disabled:opacity-50"
-                style="background-color: #6738ab"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-50"
                 :disabled="props.isEndorsing || !endorseMessage.trim()"
               >
                 <Loader2 v-if="props.isEndorsing" class="w-4 h-4 inline mr-2 animate-spin" />

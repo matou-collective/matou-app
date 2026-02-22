@@ -229,7 +229,7 @@ const handleSubmit = async () => {
 
   try {
     // Create AID using Identity Store
-    const aid = await identityStore.createIdentity(formData.value.name);
+    const aid = await identityStore.createIdentity(formData.value.name, { useWitnesses: true });
 
     if (!aid) {
       throw new Error(identityStore.error || 'Failed to create identity');

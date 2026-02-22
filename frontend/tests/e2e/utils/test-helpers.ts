@@ -511,6 +511,8 @@ export async function performOrgSetup(
       .toBeVisible({ timeout: TIMEOUT.long }),
     expect(page.locator('h1', { hasText: /welcome to matou/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
+    expect(page.getByRole('button', { name: /enter community/i }))
+      .toBeVisible({ timeout: TIMEOUT.long }),
   ]);
 
   // Handle welcome overlay / approved screen if "Enter Community" button appears

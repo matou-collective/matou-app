@@ -67,6 +67,11 @@ export function useAdminAccess() {
 
     try {
       // Method 1: Check credentials in wallet
+      // NOTE: client.credentials().list() returns ALL credentials KERIA knows about,
+      // including chained credentials from ACDC edges (e.g., the admin's membership
+      // credential pulled in when admitting an endorsement or attendance credential).
+      // We must check the issuee field (sad.a.i) matches our AID to avoid treating
+      // someone else's credential as ours.
       const credentials = await client.credentials().list();
       console.log('[AdminAccess] Checking credentials:', credentials.length);
 
@@ -77,6 +82,12 @@ export function useAdminAccess() {
         const credData = (sad?.a || sad?.d || {}) as Record<string, unknown>;
         const schemaId = typeof credAny.schema === 'string' ? credAny.schema : (sad?.s as string) || '';
         const statusObj = credAny.status as Record<string, unknown> | undefined;
+
+        // Only consider credentials issued TO the current user.
+        // KERIA stores chained ACDC credentials (from edge resolution) that belong
+        // to other users — skip those to prevent false admin detection.
+        const issuee = (credData.i as string) || '';
+        if (issuee && issuee !== currentAID.prefix) continue;
 
         // Check for Operations Steward schema
         if (schemaId === OPERATIONS_STEWARD_SCHEMA) {
