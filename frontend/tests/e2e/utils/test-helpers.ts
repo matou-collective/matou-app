@@ -61,6 +61,11 @@ export interface TestAccounts {
     aid: string;
     name: string;
   } | null;
+  member2?: {
+    mnemonic: string[];
+    aid: string;
+    name: string;
+  } | null;
   createdAt: string | null;
 }
 
@@ -100,7 +105,8 @@ export function setupPageLogging(page: Page, prefix: string): void {
       text.includes('KERIClient') || text.includes('Polling') ||
       text.includes('OrgSetup') || text.includes('Config') ||
       text.includes('ClaimIdentity') || text.includes('WelcomeOverlay') ||
-      text.includes('IdentityStore') ||
+      text.includes('IdentityStore') || text.includes('Endorsement') ||
+      text.includes('EventAttendance') ||
       text.includes('Error') || msg.type() === 'error'
     ) {
       console.log(`[${prefix}] ${text}`);

@@ -903,21 +903,33 @@ export class KERIClient {
     const credentialSaid = acdcKed?.d || 'unknown';
     console.log(`[KERIClient] Credential issued with SAID: ${credentialSaid}`);
 
-    // Now grant the credential via IPEX
+    // Now grant the credential via IPEX (with timeout protection)
     console.log('[KERIClient] Granting credential via IPEX...');
 
-    const [grant, gsigs, end] = await this.client.ipex().grant({
-      senderName: issuerAid.prefix,
-      recipient: recipientAid,
-      message: grantMessage || '',
-      acdc: credResult.acdc,
-      iss: credResult.iss,
-      anc: credResult.anc,
-      datetime: new Date().toISOString(),
-    });
+    const grantResult = await Promise.race([
+      this.client.ipex().grant({
+        senderName: issuerAid.prefix,
+        recipient: recipientAid,
+        message: grantMessage || '',
+        acdc: credResult.acdc,
+        iss: credResult.iss,
+        anc: credResult.anc,
+        datetime: new Date().toISOString(),
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('IPEX grant timed out after 30s')), 30000)
+      ),
+    ]);
+    const [grant, gsigs, end] = grantResult;
 
-    // Submit the grant
-    await this.client.ipex().submitGrant(issuerAid.prefix, grant, gsigs, end, [recipientAid]);
+    // Submit the grant (with timeout protection)
+    console.log('[KERIClient] Submitting IPEX grant...');
+    await Promise.race([
+      this.client.ipex().submitGrant(issuerAid.prefix, grant, gsigs, end, [recipientAid]),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('IPEX submitGrant timed out after 30s')), 30000)
+      ),
+    ]);
     const grantSaid = (grant as { ked?: { d?: string } })?.ked?.d || 'unknown';
     console.log(`[KERIClient] IPEX grant submitted, SAID: ${grantSaid}`);
 

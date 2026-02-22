@@ -22,6 +22,11 @@ export interface AttendanceRecord {
   issuedAt: string;
 }
 
+// Track attendance marks issued in this session so hasMarkedAttended() works
+// even if the SharedProfile update failed (e.g. profile not yet synced via any-sync).
+// Key format: `${hostAid}:${applicantAid}`
+const locallyMarkedSet = new Set<string>();
+
 export function useEventAttendance() {
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
@@ -94,11 +99,16 @@ export function useEventAttendance() {
       if (!resolved) throw new Error('Could not resolve applicant identity');
 
       // 4. Verify host has a membership credential (must be admitted member)
+      // IMPORTANT: Filter by issuee (sad.a.i) matching the current user's AID.
+      // KERIA's credential store contains ALL credentials the agent knows about,
+      // including credentials issued TO other users. Without filtering, we could
+      // pick up another user's membership credential and create an invalid edge.
       const client = keriClient.getSignifyClient();
       if (!client) throw new Error('Not connected to KERIA');
       const allCreds = await client.credentials().list();
       const membershipCred = allCreds.find(
-        (c: { sad?: { s?: string } }) => c.sad?.s === MEMBERSHIP_SCHEMA_SAID
+        (c: { sad?: { s?: string; a?: { i?: string } } }) =>
+          c.sad?.s === MEMBERSHIP_SCHEMA_SAID && c.sad?.a?.i === myAid.prefix
       );
       if (!membershipCred?.sad?.d) {
         throw new Error('Could not find your membership credential. You must be an admitted member to mark attendance.');
@@ -132,35 +142,47 @@ export function useEventAttendance() {
         edgeData,
       );
 
-      // 6. Update SharedProfile with attendance record
-      const attendance: AttendanceRecord = {
-        hostAid: myAid.prefix,
-        hostName: myAid.name || 'Unknown',
-        credentialSaid: credResult.said,
-        eventType: 'community_onboarding',
-        eventName: 'Whakawhanaungatanga Session',
-        sessionDate: sessionDate || now,
-        issuedAt: now,
-      };
+      // Track locally so hasMarkedAttended() works immediately
+      locallyMarkedSet.add(`${myAid.prefix}:${applicantAid}`);
 
-      const profileId = `SharedProfile-${applicantAid}`;
-      const currentProfile = profilesStore.communityProfiles.find(p => {
-        const data = (p.data as Record<string, unknown>) || {};
-        return data.aid === applicantAid || (p.id as string)?.includes(applicantAid);
-      });
-      const currentData = (currentProfile?.data as Record<string, unknown>) || {};
+      // 6. Update SharedProfile with attendance record (best-effort).
+      // The KERI credential is the authoritative record — the SharedProfile
+      // attendance is just UI metadata. If the profile update fails (e.g.
+      // because the applicant's SharedProfile hasn't synced to this backend
+      // via any-sync yet), we still return success since the credential was
+      // issued and granted successfully.
+      try {
+        const attendance: AttendanceRecord = {
+          hostAid: myAid.prefix,
+          hostName: myAid.name || 'Unknown',
+          credentialSaid: credResult.said,
+          eventType: 'community_onboarding',
+          eventName: 'Whakawhanaungatanga Session',
+          sessionDate: sessionDate || now,
+          issuedAt: now,
+        };
 
-      await createOrUpdateProfile(
-        'SharedProfile',
-        {
-          ...currentData,
-          attendanceRecord: attendance,
-        },
-        { id: profileId },
-      );
+        const profileId = `SharedProfile-${applicantAid}`;
+        const currentProfile = profilesStore.communityProfiles.find(p => {
+          const data = (p.data as Record<string, unknown>) || {};
+          return data.aid === applicantAid || (p.id as string)?.includes(applicantAid);
+        });
+        const currentData = (currentProfile?.data as Record<string, unknown>) || {};
 
-      // 7. Refresh profiles
-      await profilesStore.loadCommunityProfiles();
+        await createOrUpdateProfile(
+          'SharedProfile',
+          {
+            ...currentData,
+            attendanceRecord: attendance,
+          },
+          { id: profileId },
+        );
+
+        // 7. Refresh profiles
+        await profilesStore.loadCommunityProfiles();
+      } catch (profileErr) {
+        console.warn('[EventAttendance] SharedProfile update failed (non-fatal, credential was issued):', profileErr);
+      }
 
       return true;
     } catch (err) {
@@ -179,6 +201,8 @@ export function useEventAttendance() {
   function hasMarkedAttended(applicantAid: string): boolean {
     const myAid = identityStore.currentAID?.prefix;
     if (!myAid) return false;
+    // Check local session tracking first (handles SharedProfile sync race)
+    if (locallyMarkedSet.has(`${myAid}:${applicantAid}`)) return true;
     const profile = profilesStore.communityProfiles.find(p => {
       const data = (p.data as Record<string, unknown>) || {};
       return data.aid === applicantAid || (p.id as string)?.includes(applicantAid);
