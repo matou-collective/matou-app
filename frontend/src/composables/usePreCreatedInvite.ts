@@ -1,6 +1,6 @@
 /**
  * Composable for admin pre-created invite flow.
- * Creates a KERIA agent + AID for an invitee, issues membership credential
+ * Creates a KERIA agent + AID for an invitee, issues endorsement credential
  * via IPEX grant, then generates a claim link with the agent passcode.
  */
 import { ref } from 'vue';
@@ -8,11 +8,10 @@ import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { KERIClient, useKERIClient } from 'src/lib/keri/client';
 import { fetchOrgConfig } from 'src/api/config';
-import { BACKEND_URL, initMemberProfiles } from 'src/lib/api/client';
 
 export interface InviteConfig {
   inviteeName: string;
-  role?: string;
+  reason: string;
 }
 
 export interface InviteResult {
@@ -20,11 +19,11 @@ export interface InviteResult {
   inviteeAid: string;
 }
 
-// Membership credential schema SAID (from schema server)
-const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+// Endorsement credential schema SAID (from schema server)
+const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
 // Schema server URL is internal to Docker network (KERIA resolves it)
 const SCHEMA_SERVER_URL = 'http://schema-server:7723';
-const SCHEMA_OOBI_URL = `${SCHEMA_SERVER_URL}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
+const SCHEMA_OOBI_URL = `${SCHEMA_SERVER_URL}/oobi/${ENDORSEMENT_SCHEMA_SAID}`;
 
 const WITNESS_AID = 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha';
 
@@ -151,54 +150,17 @@ export function usePreCreatedInvite() {
       // The invitee's agent needs the schema to verify and store the credential
       // after IPEX admit; the admin needs it for credential issuance.
       progress.value = 'Loading credential schema...';
-      await adminClient.resolveOOBI(SCHEMA_OOBI_URL, MEMBERSHIP_SCHEMA_SAID);
+      await adminClient.resolveOOBI(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID);
       console.log('[PreCreatedInvite] Schema OOBI resolved on admin agent');
 
-      const schemaResolveOp = await inviteeClient.oobis().resolve(SCHEMA_OOBI_URL, MEMBERSHIP_SCHEMA_SAID);
+      const schemaResolveOp = await inviteeClient.oobis().resolve(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID);
       await inviteeClient.operations().wait(schemaResolveOp, { signal: AbortSignal.timeout(30000) });
       console.log('[PreCreatedInvite] Schema OOBI resolved on invitee agent');
 
-      // Step 5b: Generate space invite keys (mirrors useAdminActions.ts)
-      progress.value = 'Generating community space access...';
-      let grantMessage = '';
-      try {
-        const inviteResponse = await fetch(`${BACKEND_URL}/api/v1/spaces/community/invite`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            recipientAid: inviteeAid.prefix,
-            credentialSaid: 'pending',
-            schema: 'EMatouMembershipSchemaV1',
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
-        if (inviteResponse.ok) {
-          const inviteResult = await inviteResponse.json() as {
-            success: boolean;
-            communitySpaceId?: string;
-            inviteKey?: string;
-            readOnlyInviteKey?: string;
-            readOnlySpaceId?: string;
-          };
-          console.log('[PreCreatedInvite] Invite generated:', inviteResult);
-          if (inviteResult.inviteKey) {
-            grantMessage = JSON.stringify({
-              type: 'space_invite',
-              spaceId: inviteResult.communitySpaceId,
-              inviteKey: inviteResult.inviteKey,
-              readOnlyInviteKey: inviteResult.readOnlyInviteKey,
-              readOnlySpaceId: inviteResult.readOnlySpaceId,
-            });
-          }
-        } else {
-          console.warn('[PreCreatedInvite] Space invitation failed:', await inviteResponse.text());
-        }
-      } catch (inviteErr) {
-        console.warn('[PreCreatedInvite] Space invitation deferred:', inviteErr);
-      }
+      const grantMessage = '';
 
-      // Step 6: Issue membership credential from admin's agent
-      progress.value = 'Issuing membership credential...';
+      // Step 6: Issue endorsement credential from admin's agent
+      progress.value = 'Issuing endorsement credential...';
 
       // Get org AID from config (more reliable than localStorage which is context-specific)
       const configResult = await fetchOrgConfig();
@@ -208,7 +170,6 @@ export function usePreCreatedInvite() {
           ? configResult.cached
           : null;
       const orgAidPrefix = orgConfig?.organization?.aid;
-      const adminAidPrefix = orgConfig?.admins?.[0]?.aid || orgConfig?.admin?.aid;
       if (!orgAidPrefix) throw new Error('Organization not set up — no org AID found');
 
       // Find the org AID name from the admin's identifiers
@@ -223,33 +184,22 @@ export function usePreCreatedInvite() {
       if (registries.length === 0) throw new Error('No credential registry found for org');
       const registryId = registries[0].regk;
 
-      const role = config.role || 'Member';
-      const permissionsByRole: Record<string, string[]> = {
-        'Member': [],
-        'Contributor': [],
-        'Steward': [
-          'manage_members',
-          'approve_registrations',
-          'issue_credentials',
-        ],
-      };
       const credentialData = {
-        communityName: 'MATOU',
-        role,
-        verificationStatus: 'identity_verified',
-        permissions: permissionsByRole[role] || [],
-        joinedAt: new Date().toISOString(),
+        endorsementType: 'community_endorsement',
+        category: 'general',
+        claim: config.reason,
+        confidence: 'high',
       };
 
-      const credResult = await adminClient.issueCredential(
+      await adminClient.issueCredential(
         orgAidId,
         registryId,
-        MEMBERSHIP_SCHEMA_SAID,
+        ENDORSEMENT_SCHEMA_SAID,
         inviteeAid.prefix,
         credentialData,
         grantMessage
       );
-      console.log('[PreCreatedInvite] Credential issued and IPEX grant sent');
+      console.log('[PreCreatedInvite] Endorsement credential issued and IPEX grant sent');
 
       // Step 6b: Re-resolve admin OOBI on invitee's agent.
       // Credential issuance (step 6) created new IXN events on the admin's AID.
@@ -271,19 +221,6 @@ export function usePreCreatedInvite() {
         }
       }
       console.log('[PreCreatedInvite] Admin OOBI re-resolved on invitee agent');
-
-      // Step 6c: Init member profiles in readonly + community spaces
-      try {
-        await initMemberProfiles({
-          memberAid: inviteeAid.prefix,
-          credentialSaid: credResult.said,
-          role: config.role || 'Member',
-          displayName: config.inviteeName,
-        });
-        console.log('[PreCreatedInvite] Member profiles initialized');
-      } catch (err) {
-        console.warn('[PreCreatedInvite] Profile init deferred:', err);
-      }
 
       // Step 7: Generate invite code (encode mnemonic entropy as base64url)
       // The invite code encodes the mnemonic, NOT the raw passcode.
