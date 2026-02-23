@@ -11,7 +11,8 @@ import { useIdentityStore } from 'stores/identity';
 
 export interface InviteConfig {
   inviteeName: string;
-  reason: string;
+  reason?: string;
+  role?: string;
 }
 
 export interface InviteResult {
