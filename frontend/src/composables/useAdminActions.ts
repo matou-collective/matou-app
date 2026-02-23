@@ -81,7 +81,30 @@ export function useAdminActions() {
     const client = keriClient.getSignifyClient();
     if (!client) throw new Error('Not connected to KERIA');
 
-    // First check secure storage (set during org setup)
+    // First: check org config for the canonical org AID prefix
+    try {
+      const configResult = await fetchOrgConfig();
+      const config = configResult.status === 'configured'
+        ? configResult.config
+        : configResult.status === 'server_unreachable'
+          ? configResult.cached
+          : null;
+
+      if (config?.organization?.aid) {
+        const aids = await client.identifiers().list();
+        const orgAid = aids.aids?.find(
+          (a: { prefix: string }) => a.prefix === config.organization.aid
+        );
+        if (orgAid) {
+          console.log('[AdminActions] Using org AID from config:', orgAid.name);
+          return orgAid.prefix;
+        }
+      }
+    } catch {
+      // Fall through to other methods
+    }
+
+    // Second: check secure storage (set during org setup or multisig join)
     const storedOrgAid = await secureStorage.getItem('matou_org_aid');
     if (storedOrgAid) {
       const aids = await client.identifiers().list();
@@ -98,7 +121,6 @@ export function useAdminActions() {
       throw new Error('No AIDs found in wallet');
     }
 
-    // Look for an org-type AID (group AID or one named with org prefix)
     const orgAid = aids.aids.find((a: { name: string }) =>
       a.name.includes('org') || a.name.includes('matou') || a.name.includes('community')
     );
@@ -107,7 +129,6 @@ export function useAdminActions() {
       return orgAid.prefix;
     }
 
-    // Fall back to first AID (admin's personal AID might be issuing)
     return aids.aids[0].prefix;
   }
 
