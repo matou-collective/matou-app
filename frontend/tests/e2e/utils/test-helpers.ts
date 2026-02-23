@@ -61,6 +61,11 @@ export interface TestAccounts {
     aid: string;
     name: string;
   } | null;
+  member2?: {
+    mnemonic: string[];
+    aid: string;
+    name: string;
+  } | null;
   createdAt: string | null;
 }
 
@@ -100,7 +105,8 @@ export function setupPageLogging(page: Page, prefix: string): void {
       text.includes('KERIClient') || text.includes('Polling') ||
       text.includes('OrgSetup') || text.includes('Config') ||
       text.includes('ClaimIdentity') || text.includes('WelcomeOverlay') ||
-      text.includes('IdentityStore') ||
+      text.includes('IdentityStore') || text.includes('MnemonicVerification') ||
+      text.includes('Endorsement') || text.includes('EventAttendance') ||
       text.includes('Error') || msg.type() === 'error'
     ) {
       console.log(`[${prefix}] ${text}`);
@@ -502,12 +508,16 @@ export async function performOrgSetup(
   await page.getByRole('button', { name: /continue/i }).click();
   await completeMnemonicVerification(page, adminMnemonic);
 
-  // Wait for dashboard, pending, or membership approved (admin self-issued credential)
+  // Wait for dashboard, pending, membership approved, or welcome screen
   await Promise.race([
     expect(page.getByRole('heading', { name: /registration pending/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
     expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
     expect(page.locator('h1', { hasText: /membership approved/i }))
+      .toBeVisible({ timeout: TIMEOUT.long }),
+    expect(page.locator('h1', { hasText: /welcome to matou/i }))
+      .toBeVisible({ timeout: TIMEOUT.long }),
+    expect(page.getByRole('button', { name: /enter community/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
   ]);
 

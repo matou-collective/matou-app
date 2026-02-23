@@ -194,19 +194,24 @@ test.describe.serial('Registration Stress Test', () => {
       const user = successfulUsers[i];
       const shouldApprove = i < APPROVE_COUNT;
 
-      // Wait for the registration card to appear
+      // Wait for the member card to appear in New Members
       console.log(`[Stress] Waiting for card: ${user.name}...`);
-      const adminSection = adminPage.locator('.admin-section');
-      await expect(adminSection).toBeVisible({ timeout: TIMEOUT.medium });
-
-      const card = adminPage.locator('.registration-card').filter({ hasText: user.name });
+      const membersCard = adminPage.locator('.members-card');
+      const cardName = membersCard.locator('.card-name', { hasText: user.name });
       // Under cumulative KERIA load (many agents from prior batches), notification
       // delivery slows down. Give polling enough time to pick up new registrations.
-      await expect(card).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+      await expect(cardName).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+
+      const card = membersCard.locator('.profile-card').filter({ hasText: user.name });
 
       if (shouldApprove) {
         console.log(`[Stress] Approving ${user.name}...`);
-        await card.getByRole('button', { name: /approve/i }).click();
+        await card.click();
+        const modal = adminPage.locator('.modal-content');
+        await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+        const admitBtn = modal.getByRole('button', { name: /approve/i });
+        await expect(admitBtn).toBeVisible({ timeout: TIMEOUT.short });
+        await admitBtn.click();
 
         // Wait for the card to disappear (admin-side processing complete)
         await expect(card).not.toBeVisible({ timeout: TIMEOUT.long + 30_000 });
@@ -214,18 +219,20 @@ test.describe.serial('Registration Stress Test', () => {
         console.log(`[Stress] ${user.name}: admin approval processed`);
       } else {
         console.log(`[Stress] Declining ${user.name}...`);
-        const declineBtn = card.locator('button').last();
+        await card.click();
+        const modal = adminPage.locator('.modal-content');
+        await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+
+        // Click Decline to show reason textarea
+        const declineBtn = modal.getByRole('button', { name: /^Decline$/i });
+        await expect(declineBtn).toBeVisible({ timeout: TIMEOUT.short });
         await declineBtn.click();
 
-        // Handle decline modal if present
-        const modal = adminPage.locator('.modal-content');
-        if (await modal.isVisible({ timeout: TIMEOUT.short }).catch(() => false)) {
-          const reasonField = modal.locator('textarea');
-          if (await reasonField.isVisible().catch(() => false)) {
-            await reasonField.fill('Declined during stress test');
-          }
-          await modal.getByRole('button', { name: /confirm|decline/i }).click();
+        const reasonField = modal.locator('textarea[placeholder="Provide a reason for declining..."]');
+        if (await reasonField.isVisible().catch(() => false)) {
+          await reasonField.fill('Declined during stress test');
         }
+        await modal.getByRole('button', { name: /confirm decline/i }).click();
 
         // Wait for the card to disappear
         await expect(card).not.toBeVisible({ timeout: TIMEOUT.long });

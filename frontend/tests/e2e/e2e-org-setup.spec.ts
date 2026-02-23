@@ -264,8 +264,7 @@ test.describe.serial('Organization Setup', () => {
       // Verify sidebar branding (name may span multiple text nodes)
       await expect(page.getByText('Matou').first()).toBeVisible({ timeout: TIMEOUT.short });
 
-      // Verify stats cards rendered
-      await expect(page.getByRole('heading', { name: 'Pending Registrations', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
+      // Verify dashboard sections rendered
       await expect(page.getByText('Community Activity').first()).toBeVisible({ timeout: TIMEOUT.short });
       await expect(page.getByText('New Members').first()).toBeVisible({ timeout: TIMEOUT.short });
       console.log('[Test] Dashboard sections rendered');

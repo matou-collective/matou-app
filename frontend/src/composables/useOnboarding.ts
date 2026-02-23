@@ -91,8 +91,7 @@ export function useOnboarding() {
         'invitation-welcome': 'profile-form',
         'profile-form': 'profile-confirmation',
         'profile-confirmation': 'mnemonic-verification',
-        'mnemonic-verification': 'credential-issuance',
-        'credential-issuance': 'main',
+        'mnemonic-verification': 'pending-approval',
       };
       const nextScreen = forwardMap[currentScreenValue];
       if (nextScreen) {

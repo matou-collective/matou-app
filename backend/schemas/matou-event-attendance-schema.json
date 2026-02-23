@@ -1,0 +1,139 @@
+{
+    "$id": "ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "MATOU Event Attendance Credential",
+    "description": "A credential proving attendance at a community event such as a Whakawhanaungatanga session",
+    "type": "object",
+    "credentialType": "MatouEventAttendanceCredential",
+    "version": "1.0.0",
+    "properties": {
+        "v": {
+            "description": "Version string",
+            "type": "string"
+        },
+        "d": {
+            "description": "Credential SAID",
+            "type": "string"
+        },
+        "u": {
+            "description": "One time use nonce",
+            "type": "string"
+        },
+        "i": {
+            "description": "Host AID (issuer)",
+            "type": "string"
+        },
+        "ri": {
+            "description": "Credential status registry",
+            "type": "string"
+        },
+        "s": {
+            "description": "Schema SAID",
+            "type": "string"
+        },
+        "a": {
+            "oneOf": [
+                {
+                    "description": "Attributes block SAID",
+                    "type": "string"
+                },
+                {
+                    "description": "Attributes block",
+                    "type": "object",
+                    "properties": {
+                        "d": {
+                            "description": "Attributes block SAID",
+                            "type": "string"
+                        },
+                        "i": {
+                            "description": "Attendee AID (credential recipient)",
+                            "type": "string"
+                        },
+                        "dt": {
+                            "description": "Issuance date-time",
+                            "type": "string",
+                            "format": "date-time"
+                        },
+                        "eventType": {
+                            "description": "Type of event attended",
+                            "type": "string",
+                            "enum": [
+                                "community_onboarding",
+                                "project_onboarding"
+                            ]
+                        },
+                        "eventName": {
+                            "description": "Name of the event",
+                            "type": "string"
+                        },
+                        "sessionDate": {
+                            "description": "Actual date/time of the session attended",
+                            "type": "string",
+                            "format": "date-time"
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "d",
+                        "i",
+                        "dt",
+                        "eventType",
+                        "eventName",
+                        "sessionDate"
+                    ]
+                }
+            ]
+        },
+        "e": {
+            "description": "Edge section linking to the host's membership credential, proving their authority as a verified community member",
+            "oneOf": [
+                {
+                    "description": "Edge block SAID",
+                    "type": "string"
+                },
+                {
+                    "description": "Edge block",
+                    "type": "object",
+                    "properties": {
+                        "d": {
+                            "description": "Edge block SAID",
+                            "type": "string"
+                        },
+                        "hostMembership": {
+                            "description": "Reference to the host's own membership credential",
+                            "type": "object",
+                            "properties": {
+                                "n": {
+                                    "description": "SAID of the host's membership credential",
+                                    "type": "string"
+                                },
+                                "s": {
+                                    "description": "Schema SAID of the membership credential",
+                                    "type": "string"
+                                }
+                            },
+                            "required": [
+                                "n",
+                                "s"
+                            ]
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                        "d",
+                        "hostMembership"
+                    ]
+                }
+            ]
+        }
+    },
+    "additionalProperties": false,
+    "required": [
+        "v",
+        "d",
+        "i",
+        "ri",
+        "s",
+        "a"
+    ]
+}

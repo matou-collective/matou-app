@@ -6,10 +6,10 @@
         <div class="header-left">
           <div class="cred-icon" :class="{ 'matou-icon': isMatouCredential }">
             <img v-if="isMatouCredential" src="../../assets/images/matou-bird-logo-blue.svg" alt="Matou" class="matou-logo" />
-            <ShieldCheck v-else :size="22" />
+            <q-icon v-else :name="iconName" size="22px" />
           </div>
           <div>
-            <h2 class="cred-title">{{ credential.schemaTitle || credential.role || 'Credential' }}</h2>
+            <h2 class="cred-title">{{ title }}</h2>
             <span class="status-badge" :class="statusClass">{{ statusLabel }}</span>
           </div>
         </div>
@@ -23,16 +23,33 @@
           {{ credential.schemaDescription }}
         </p>
 
-        <!-- Attribute rows -->
-        <div class="attr-row" v-if="credential.communityName">
-          <span class="attr-label">Community</span>
-          <span class="attr-value">{{ credential.communityName }}</span>
-        </div>
+        <!-- Membership attributes -->
+        <template v-if="isMembership">
+          <div class="attr-row" v-if="credential.communityName">
+            <span class="attr-label">Community</span>
+            <span class="attr-value">{{ credential.communityName }}</span>
+          </div>
+          <div class="attr-row">
+            <span class="attr-label">Role</span>
+            <span class="attr-value">{{ credential.role || '—' }}</span>
+          </div>
+        </template>
 
-        <div class="attr-row">
-          <span class="attr-label">Role</span>
-          <span class="attr-value">{{ credential.role || '—' }}</span>
-        </div>
+        <!-- Endorsement attributes -->
+        <template v-else-if="isEndorsement">
+          <div class="attr-row" v-if="credential.claim">
+            <span class="attr-label">Endorsement</span>
+            <span class="attr-value">{{ credential.claim }}</span>
+          </div>
+        </template>
+
+        <!-- Event attendance attributes -->
+        <template v-else-if="isEventAttendance">
+          <div class="attr-row" v-if="credential.eventName">
+            <span class="attr-label">Event</span>
+            <span class="attr-value">{{ credential.eventName }}</span>
+          </div>
+        </template>
 
         <div class="attr-row">
           <span class="attr-label">Status</span>
@@ -107,8 +124,12 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { ShieldCheck, Copy, Check } from 'lucide-vue-next';
+import { Copy, Check } from 'lucide-vue-next';
 import type { WalletCredential } from 'stores/wallet';
+import {
+  ENDORSEMENT_SCHEMA_SAID,
+  EVENT_ATTENDANCE_SCHEMA_SAID,
+} from 'src/composables/useAdminActions';
 
 const props = defineProps<{
   credential: WalletCredential;
@@ -120,8 +141,24 @@ defineEmits<{
 
 const copiedField = ref<string | null>(null);
 
+const isEndorsement = computed(() => props.credential.schemaSaid === ENDORSEMENT_SCHEMA_SAID);
+const isEventAttendance = computed(() => props.credential.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID);
+const isMembership = computed(() => !isEndorsement.value && !isEventAttendance.value);
+
 const isMatouCredential = computed(() => {
   return (props.credential.schemaTitle || '').toLowerCase().includes('matou');
+});
+
+const iconName = computed(() => {
+  if (isEndorsement.value) return 'person_add';
+  if (isEventAttendance.value) return 'event_available';
+  return 'groups';
+});
+
+const title = computed(() => {
+  if (isEndorsement.value) return 'Membership Endorsement';
+  if (isEventAttendance.value) return props.credential.eventName || 'Event Attendance';
+  return props.credential.schemaTitle || props.credential.role || 'Credential';
 });
 
 const statusClass = computed(() => {

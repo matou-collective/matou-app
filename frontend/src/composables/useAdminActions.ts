@@ -11,7 +11,9 @@ import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistratio
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
-const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+export const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+export const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
+export const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J';
 
 export function useAdminActions() {
   const keriClient = useKERIClient();
@@ -266,6 +268,8 @@ export function useAdminActions() {
 
       // 6b. Update CommunityProfile with real credential SAID
       //     (profiles were created in step 4 with credentialSaid='pending')
+      //     Note: personal endorsement registries are created lazily by each member
+      //     via useEndorsements when they first try to endorse someone.
       try {
         const profileId = `CommunityProfile-${registration.applicantAid}`;
         await createOrUpdateProfile('CommunityProfile', {
@@ -378,6 +382,15 @@ export function useAdminActions() {
       // 3. Mark ALL notifications for this applicant as read
       // (handles both IPEX and custom EXN notifications)
       await markAllApplicantNotificationsRead(registration.applicantAid);
+
+      // 4. Update SharedProfile status to declined
+      const profileId = `SharedProfile-${registration.applicantAid}`;
+      try {
+        await createOrUpdateProfile('SharedProfile', { status: 'declined' }, { id: profileId });
+        console.log('[AdminActions] Updated SharedProfile status to declined for:', registration.applicantAid);
+      } catch (profileErr) {
+        console.warn('[AdminActions] Failed to update SharedProfile status to declined:', profileErr);
+      }
 
       lastAction.value = {
         type: 'decline',

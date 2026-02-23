@@ -51,7 +51,7 @@
         <div class="card-top">
           <div class="card-icon" :class="{ 'matou-icon': isMatouCredential(cred) }">
             <img v-if="isMatouCredential(cred)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Matou" class="matou-logo" />
-            <ShieldCheck v-else :size="20" />
+            <q-icon v-else :name="credentialIconName(cred)" size="20px" />
           </div>
           <div class="card-top-right">
             <span v-if="isIssuedByMe(cred)" class="direction-badge direction-issued">Issued</span>
@@ -62,9 +62,9 @@
           </div>
         </div>
         <div class="card-body">
-          <h4 class="card-title">{{ cred.schemaTitle || cred.role || 'Credential' }}</h4>
-          <p class="card-role" v-if="cred.schemaTitle && cred.role">{{ cred.role }}</p>
-          <p class="card-community">{{ cred.communityName || 'Unknown community' }}</p>
+          <h4 class="card-title">{{ credentialTitle(cred) }}</h4>
+          <p class="card-role" v-if="credentialSubtitle(cred)">{{ credentialSubtitle(cred) }}</p>
+          <p class="card-community">{{ credentialDescription(cred) }}</p>
           <p v-if="isIssuedByMe(cred)" class="card-recipient">To: {{ issuerDisplayName(cred.issueeAid) }}</p>
         </div>
         <div class="card-footer">
@@ -84,18 +84,18 @@
             <polygon points="0 0, 10 4, 0 8" fill="#e57e24" />
           </marker>
         </defs>
-        <!-- Connection lines — received: outer→center, issued: center→outer -->
+        <!-- Connection lines — one per unique counterparty -->
         <line
-          v-for="(cred, idx) in walletStore.credentials"
-          :key="'line-' + cred.said"
-          :x1="lineStartX(cred, idx)"
-          :y1="lineStartY(cred, idx)"
-          :x2="lineEndX(cred, idx)"
-          :y2="lineEndY(cred, idx)"
-          :stroke="isIssuedByMe(cred) ? '#e57e24' : 'var(--matou-muted-foreground, #9ca3af)'"
+          v-for="(cp, idx) in uniqueCounterparties"
+          :key="'line-' + cp.aid"
+          :x1="lineStartX(cp.credentials[0], idx)"
+          :y1="lineStartY(cp.credentials[0], idx)"
+          :x2="lineEndX(cp.credentials[0], idx)"
+          :y2="lineEndY(cp.credentials[0], idx)"
+          :stroke="isIssuedByMe(cp.credentials[0]) ? '#e57e24' : 'var(--matou-muted-foreground, #9ca3af)'"
           stroke-width="1.5"
           stroke-dasharray="6,4"
-          :marker-end="isIssuedByMe(cred) ? 'url(#arrowhead-issued)' : 'url(#arrowhead)'"
+          :marker-end="isIssuedByMe(cp.credentials[0]) ? 'url(#arrowhead-issued)' : 'url(#arrowhead)'"
         />
       </svg>
 
@@ -114,44 +114,43 @@
         </div>
       </div>
 
-      <!-- Counterparty nodes (issuer for received, issuee for issued) -->
+      <!-- Counterparty nodes (one per unique person) -->
       <div
-        v-for="(cred, idx) in walletStore.credentials"
-        :key="'node-' + cred.said"
+        v-for="(cp, idx) in uniqueCounterparties"
+        :key="'node-' + cp.aid"
         class="graph-node issuer-node"
         :style="{ left: outerNodeX(idx) + 'px', top: outerNodeY(idx) + 'px' }"
       >
-        <div class="node-circle issuer" :class="isOrgIssuer(counterpartyAid(cred)) ? '' : issuerAvatarColor(counterpartyAid(cred))">
-          <img v-if="isOrgIssuer(counterpartyAid(cred))" src="../../assets/images/matou-bird-logo-blue.svg" alt="Matou" class="node-logo" />
-          <img v-else-if="issuerAvatarUrl(counterpartyAid(cred))" :src="issuerAvatarUrl(counterpartyAid(cred))" :alt="isIssuedByMe(cred) ? 'Recipient' : 'Issuer'" class="node-avatar" />
-          <span v-else class="node-initials">{{ issuerInitials(counterpartyAid(cred)) }}</span>
+        <div class="node-circle issuer" :class="isOrgIssuer(cp.aid) ? '' : issuerAvatarColor(cp.aid)">
+          <img v-if="isOrgIssuer(cp.aid)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Matou" class="node-logo" />
+          <img v-else-if="issuerAvatarUrl(cp.aid)" :src="issuerAvatarUrl(cp.aid)" alt="Counterparty" class="node-avatar" />
+          <span v-else class="node-initials">{{ issuerInitials(cp.aid) }}</span>
         </div>
-        <span class="node-label">{{ issuerDisplayName(counterpartyAid(cred)) }}</span>
+        <span class="node-label">{{ issuerDisplayName(cp.aid) }}</span>
         <div class="node-tooltip">
-          <span class="tooltip-name">{{ issuerDisplayName(counterpartyAid(cred)) }}</span>
-          <span class="tooltip-aid">{{ truncateAid(counterpartyAid(cred)) }}</span>
+          <span class="tooltip-name">{{ issuerDisplayName(cp.aid) }}</span>
+          <span class="tooltip-aid">{{ truncateAid(cp.aid) }}</span>
         </div>
       </div>
 
-      <!-- Credential icons on edges (clickable) -->
-      <div
-        v-for="(cred, idx) in walletStore.credentials"
-        :key="'cred-icon-' + cred.said"
-        class="edge-cred-icon"
-        :style="{
-          left: (centerX + outerNodeX(idx)) / 2 + 'px',
-          top: (centerY + outerNodeY(idx)) / 2 + 'px',
-        }"
-        @click="selectedCredential = cred"
-      >
-        <div class="edge-icon-circle">
-          <ShieldCheck :size="22" />
+      <!-- Credential icons on edges (spread along edge, clickable) -->
+      <template v-for="(cp, nodeIdx) in uniqueCounterparties" :key="'cp-icons-' + cp.aid">
+        <div
+          v-for="(cred, credIdx) in cp.credentials"
+          :key="'cred-icon-' + cred.said"
+          class="edge-cred-icon"
+          :style="credIconStyle(nodeIdx, credIdx, cp.credentials.length)"
+          @click="selectedCredential = cred"
+        >
+          <div class="edge-icon-circle">
+            <q-icon :name="credentialIconName(cred)" size="22px" />
+          </div>
+          <div class="edge-tooltip">
+            <span class="tooltip-name">{{ cred.schemaTitle || cred.role || 'Credential' }}</span>
+            <span class="tooltip-aid">{{ cred.said }}</span>
+          </div>
         </div>
-        <div class="edge-tooltip">
-          <span class="tooltip-name">{{ cred.schemaTitle || cred.role || 'Credential' }}</span>
-          <span class="tooltip-aid">{{ cred.said }}</span>
-        </div>
-      </div>
+      </template>
     </div>
 
     <!-- Detail dialog -->
@@ -171,10 +170,13 @@ import {
   Loader2,
   AlertCircle,
   ShieldOff,
-  ShieldCheck,
 } from 'lucide-vue-next';
 import { useWalletStore } from 'stores/wallet';
 import type { WalletCredential } from 'stores/wallet';
+import {
+  ENDORSEMENT_SCHEMA_SAID,
+  EVENT_ATTENDANCE_SCHEMA_SAID,
+} from 'src/composables/useAdminActions';
 import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
@@ -223,16 +225,87 @@ onUnmounted(() => {
   resizeObserver?.disconnect();
 });
 
+// Group credentials by counterparty AID so each person gets one node
+interface CounterpartyNode {
+  aid: string;
+  credentials: WalletCredential[];
+}
+
+const uniqueCounterparties = computed<CounterpartyNode[]>(() => {
+  const map = new Map<string, WalletCredential[]>();
+  for (const cred of walletStore.credentials) {
+    const aid = counterpartyAid(cred);
+    if (!map.has(aid)) map.set(aid, []);
+    map.get(aid)!.push(cred);
+  }
+  return Array.from(map.entries()).map(([aid, credentials]) => ({ aid, credentials }));
+});
+
 function outerNodeX(idx: number): number {
-  const count = walletStore.credentials.length;
+  const count = uniqueCounterparties.value.length;
   const angle = (2 * Math.PI * idx) / Math.max(count, 1) - Math.PI / 2;
   return centerX.value + graphRadius.value * Math.cos(angle);
 }
 
 function outerNodeY(idx: number): number {
-  const count = walletStore.credentials.length;
+  const count = uniqueCounterparties.value.length;
   const angle = (2 * Math.PI * idx) / Math.max(count, 1) - Math.PI / 2;
   return centerY.value + graphRadius.value * Math.sin(angle);
+}
+
+// Spread credential icons along edge so they don't overlap
+function credIconStyle(nodeIdx: number, credIdx: number, credCount: number): Record<string, string> {
+  const fraction = credCount === 1
+    ? 0.5
+    : 0.3 + (0.4 * credIdx) / (credCount - 1);
+  const nx = outerNodeX(nodeIdx);
+  const ny = outerNodeY(nodeIdx);
+  return {
+    left: centerX.value + (nx - centerX.value) * fraction + 'px',
+    top: centerY.value + (ny - centerY.value) * fraction + 'px',
+  };
+}
+
+// Map credential schema to the same icons used in ProfileCard
+function credentialIconName(cred: WalletCredential): string {
+  if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) return 'person_add';
+  if (cred.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID) return 'event_available';
+  return 'groups'; // membership
+}
+
+// Credential-type-specific card text
+function credentialTitle(cred: WalletCredential): string {
+  if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) return 'Membership Endorsement';
+  if (cred.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID) return cred.eventName || 'Event Attendance';
+  return cred.schemaTitle || cred.role || 'Credential';
+}
+
+function credentialSubtitle(cred: WalletCredential): string {
+  if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) {
+    return cred.claim || 'Endorsement of membership application';
+  }
+  if (cred.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID) {
+    return 'Community onboarding session';
+  }
+  // Membership: show role if both title and role exist
+  if (cred.schemaTitle && cred.role) return cred.role;
+  return '';
+}
+
+function credentialDescription(cred: WalletCredential): string {
+  if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) {
+    const name = isIssuedByMe(cred)
+      ? issuerDisplayName(cred.issueeAid)
+      : issuerDisplayName(cred.issuerAid);
+    return isIssuedByMe(cred) ? `Endorsed ${name}` : `From ${name}`;
+  }
+  if (cred.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID) {
+    const name = isIssuedByMe(cred)
+      ? issuerDisplayName(cred.issueeAid)
+      : issuerDisplayName(cred.issuerAid);
+    return isIssuedByMe(cred) ? `Issued to ${name}` : `Confirmed by ${name}`;
+  }
+  return cred.communityName || 'Matou community';
 }
 
 const outerNodeRadius = 36; // half of outer node size (72px)
@@ -742,8 +815,8 @@ function formatDate(dateStr: string): string {
 }
 
 .edge-icon-circle {
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: var(--matou-secondary, #e8f4f8);
   border: 1px solid var(--matou-border, #e5e7eb);

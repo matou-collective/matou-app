@@ -163,6 +163,7 @@ export class KERIClient {
     }
 
     this.connected = true;
+    this.patchClientFetch();
     console.log('[KERIClient] Connection established');
 
     // Get KERIA config and resolve witness iurls if present
@@ -467,6 +468,27 @@ export class KERIClient {
     await this.client.connect();
     this.connected = true;
     console.log('[KERIClient] Reconnected successfully');
+  }
+
+  /**
+   * Patch the signify client's fetch to URL-encode path segments.
+   * signify-ts constructs paths like `/identifiers/${hab.name}/credentials`
+   * without encoding, which breaks when AID names contain spaces.
+   */
+  private patchClientFetch(): void {
+    if (!this.client) return;
+    const c = this.client as unknown as { fetch: (...args: unknown[]) => unknown; _origFetch?: (...args: unknown[]) => unknown };
+    if (c._origFetch) return; // already patched
+    c._origFetch = c.fetch.bind(this.client);
+    c.fetch = (path: unknown, ...rest: unknown[]) => {
+      if (typeof path === 'string') {
+        // Split off query string before encoding path segments
+        const [pathPart, ...queryParts] = path.split('?');
+        const encodedPath = pathPart.split('/').map(seg => encodeURIComponent(seg)).join('/');
+        path = queryParts.length > 0 ? `${encodedPath}?${queryParts.join('?')}` : encodedPath;
+      }
+      return c._origFetch!(path, ...rest);
+    };
   }
 
   /**
@@ -836,7 +858,8 @@ export class KERIClient {
     schemaId: string,
     recipientAid: string,
     credentialData: Record<string, unknown>,
-    grantMessage?: string
+    grantMessage?: string,
+    edgeData?: Record<string, unknown>,
   ): Promise<{ said: string }> {
     if (!this.client) throw new Error('Not initialized');
 
@@ -857,14 +880,18 @@ export class KERIClient {
     }
 
     // Create the credential — use prefix, not display name
-    const credResult = await this.client.credentials().issue(issuerAid.prefix, {
+    const issueArgs: Record<string, unknown> = {
       ri: registryId,
       s: schemaId,
       a: {
         i: recipientAid, // Issuee
         ...credentialData,
       },
-    });
+    };
+    if (edgeData) {
+      issueArgs.e = edgeData;
+    }
+    const credResult = await this.client.credentials().issue(issuerAid.prefix, issueArgs);
 
     console.log('[KERIClient] Waiting for credential issuance...');
     // The issue() returns an object with op property (not a function)
@@ -876,21 +903,33 @@ export class KERIClient {
     const credentialSaid = acdcKed?.d || 'unknown';
     console.log(`[KERIClient] Credential issued with SAID: ${credentialSaid}`);
 
-    // Now grant the credential via IPEX
+    // Now grant the credential via IPEX (with timeout protection)
     console.log('[KERIClient] Granting credential via IPEX...');
 
-    const [grant, gsigs, end] = await this.client.ipex().grant({
-      senderName: issuerAid.prefix,
-      recipient: recipientAid,
-      message: grantMessage || '',
-      acdc: credResult.acdc,
-      iss: credResult.iss,
-      anc: credResult.anc,
-      datetime: new Date().toISOString(),
-    });
+    const grantResult = await Promise.race([
+      this.client.ipex().grant({
+        senderName: issuerAid.prefix,
+        recipient: recipientAid,
+        message: grantMessage || '',
+        acdc: credResult.acdc,
+        iss: credResult.iss,
+        anc: credResult.anc,
+        datetime: new Date().toISOString(),
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('IPEX grant timed out after 30s')), 30000)
+      ),
+    ]);
+    const [grant, gsigs, end] = grantResult;
 
-    // Submit the grant
-    await this.client.ipex().submitGrant(issuerAid.prefix, grant, gsigs, end, [recipientAid]);
+    // Submit the grant (with timeout protection)
+    console.log('[KERIClient] Submitting IPEX grant...');
+    await Promise.race([
+      this.client.ipex().submitGrant(issuerAid.prefix, grant, gsigs, end, [recipientAid]),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('IPEX submitGrant timed out after 30s')), 30000)
+      ),
+    ]);
     const grantSaid = (grant as { ked?: { d?: string } })?.ked?.d || 'unknown';
     console.log(`[KERIClient] IPEX grant submitted, SAID: ${grantSaid}`);
 

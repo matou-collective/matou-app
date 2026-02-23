@@ -58,9 +58,9 @@
       </div>
     </section>
 
-    <!-- Admin Section (conditional) - Only for Operations Steward or Community Steward -->
+    <!-- Admin Actions -->
     <div v-if="isSteward" class="admin-area px-6 mb-6">
-      <div class="admin-actions mb-4">
+      <div class="admin-actions">
         <button
           class="invite-btn"
           @click="showInviteModal = true"
@@ -69,20 +69,6 @@
           Invite Member
         </button>
       </div>
-      <AdminSection
-        ref="adminSectionRef"
-        :registrations="pendingRegistrations"
-        :is-polling="isPolling"
-        :is-refreshing="isRefreshing"
-        :is-processing="isProcessing"
-        :processing-registration-id="processingRegistrationId"
-        :error="pollingError"
-        :action-error="actionError"
-        @approve="handleApprove"
-        @decline="handleDecline"
-        @refresh="handleRefresh"
-        @retry="retryPolling"
-      />
     </div>
 
     <!-- Content Grid -->
@@ -94,6 +80,19 @@
           <div class="card community-card">
             <h3 class="card-title">Community Activity</h3>
             <div class="activity-list">
+              <div
+                v-for="(evt, i) in recentProfileEvents"
+                :key="'pe-' + i"
+                class="activity-item"
+              >
+                <div class="activity-icon bg-accent-light">
+                  <UserRoundPlus class="icon text-accent" />
+                </div>
+                <div class="activity-info">
+                  <h4>New profile created</h4>
+                  <p>{{ evt.displayName }}</p>
+                </div>
+              </div>
               <div class="activity-item">
                 <div class="activity-icon bg-primary-light">
                   <TrendingUp class="icon text-primary" />
@@ -118,15 +117,29 @@
 
         <!-- Right Column -->
         <div class="right-column">
-          <!-- New Members -->
           <div class="card members-card">
-            <h3 class="card-title">New Members</h3>
+            <template v-if="pendingMembers.length > 0">
+              <h3 class="card-title">Pending</h3>
+              <div class="members-list">
+                <ProfileCard
+                  v-for="(member, index) in pendingMembers"
+                  :key="'pending-' + index"
+                  :profile="member.profile"
+                  :communityProfile="member.communityProfile"
+                  :adminAids="adminAids"
+                  @click="handleMemberClick(member)"
+                />
+              </div>
+            </template>
+
+            <h3 class="card-title" :style="pendingMembers.length > 0 ? 'padding-top: 1rem' : ''">Members</h3>
             <div class="members-list">
               <ProfileCard
                 v-for="(member, index) in liveMembers"
-                :key="index"
+                :key="'member-' + index"
                 :profile="member.profile"
                 :communityProfile="member.communityProfile"
+                :adminAids="adminAids"
                 @click="handleMemberClick(member)"
               />
             </div>
@@ -139,19 +152,31 @@
     <InviteMemberModal v-model="showInviteModal" />
 
     <!-- Member Profile Dialog -->
-    <Teleport to="body">
-      <MemberProfileDialog
-        v-if="selectedMember"
-        :sharedProfile="selectedMember.shared"
-        :communityProfile="selectedMember.community"
-        @close="selectedMember = null"
-      />
-    </Teleport>
+    <ProfileModal
+      :show="!!selectedMember"
+      :sharedProfile="selectedMemberSharedProfile"
+      :communityProfile="selectedMember?.community"
+      :registration="selectedMemberRegistration"
+      :isProcessing="isProcessing"
+      :error="actionError || endorseError || attendanceError"
+      :isSteward="isSteward"
+      :currentUserAid="identityStore.currentAID?.prefix || ''"
+      :endorsements="selectedMemberEndorsements"
+      :hasEndorsed="selectedMemberHasEndorsed"
+      :isEndorsing="isEndorsing"
+      :hasMarkedAttended="selectedMemberHasAttended"
+      :isMarkingAttended="isMarkingAttended"
+      @close="handleCloseModal"
+      @approve="handleApprove"
+      @decline="handleDecline"
+      @endorse="handleEndorse"
+      @mark-attended="handleMarkAttended"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import {
   Moon,
   Sun,
@@ -161,43 +186,132 @@ import {
   Vote,
   Target,
   UserPlus,
+  UserRoundPlus,
 } from 'lucide-vue-next';
+import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
+import { useEndorsements } from 'src/composables/useEndorsements';
+import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
-import AdminSection from 'src/components/admin/AdminSection.vue';
+import { useIdentityStore } from 'stores/identity';
 import InviteMemberModal from 'src/components/dashboard/InviteMemberModal.vue';
 import ProfileCard from 'src/components/profiles/ProfileCard.vue';
-import MemberProfileDialog from 'src/components/profiles/MemberProfileDialog.vue';
+import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
 const { isSteward, checkAdminStatus } = useAdminAccess();
 const {
   pendingRegistrations,
-  isPolling,
-  error: pollingError,
   startPolling,
   stopPolling,
-  refresh: refreshRegistrations,
   removeRegistration,
-  retry: retryPolling,
 } = useRegistrationPolling({ pollingInterval: 10000 });
 const {
   isProcessing,
-  processingRegistrationId,
   error: actionError,
   approveRegistration,
   declineRegistration,
   clearError,
 } = useAdminActions();
 
+const {
+  isEndorsing,
+  error: endorseError,
+  endorseApplicant,
+  hasEndorsed,
+  getEndorsements,
+  loadIssuedEndorsements,
+  clearError: clearEndorseError,
+} = useEndorsements();
+
+const {
+  isMarking: isMarkingAttended,
+  error: attendanceError,
+  markAttended,
+  hasMarkedAttended,
+  clearError: clearAttendanceError,
+} = useEventAttendance();
+
+const identityStore = useIdentityStore();
+
 const profilesStore = useProfilesStore();
 
-const isRefreshing = ref(false);
-const adminSectionRef = ref<InstanceType<typeof AdminSection> | null>(null);
+const { lastEvent } = useBackendEvents();
+
+// Track recent profile creation events from SSE
+interface ProfileEvent {
+  displayName: string;
+  timestamp: Date;
+}
+const recentProfileEvents = ref<ProfileEvent[]>([]);
+
+watch(lastEvent, (event) => {
+  if (event?.type === 'profile:updated' && event.data?.displayName) {
+    recentProfileEvents.value.unshift({
+      displayName: event.data.displayName,
+      timestamp: new Date(),
+    });
+    // Keep only last 10
+    if (recentProfileEvents.value.length > 10) {
+      recentProfileEvents.value.length = 10;
+    }
+  }
+});
+
+const adminAids = ref<string[]>([]);
 const showInviteModal = ref(false);
 const selectedMember = ref<{ shared?: Record<string, unknown>; community?: Record<string, unknown> } | null>(null);
+
+// Reactively track the selected member's SharedProfile from the store.
+// Without this, the sharedProfile prop passed to ProfileModal is a stale
+// snapshot captured at click-time and never sees attendanceRecord updates.
+const selectedMemberSharedProfile = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return selectedMember.value?.shared;
+  const fresh = profilesStore.communityProfiles.find(p => {
+    const data = (p.data as Record<string, unknown>) || {};
+    return data.aid === aid || (p.id as string)?.includes(aid);
+  });
+  if (fresh) return (fresh.data as Record<string, unknown>) || fresh;
+  return selectedMember.value?.shared;
+});
+
+// Find matching PendingRegistration for the selected member (enables approve/decline buttons)
+const selectedMemberRegistration = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return null;
+  return pendingRegistrations.value.find(r => r.applicantAid === aid) || null;
+});
+
+const selectedMemberEndorsements = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return [];
+  return getEndorsements(aid);
+});
+
+const selectedMemberHasEndorsed = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return false;
+  return hasEndorsed(aid);
+});
+
+// Reload issued endorsements from KERIA when a member is selected.
+// The onMounted load may have run before any endorsements were issued
+// (e.g. the invite flow issues credentials after the dashboard mounts).
+watch(selectedMember, (member) => {
+  if (member) {
+    loadIssuedEndorsements();
+  }
+});
+
+const selectedMemberHasAttended = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return false;
+  return hasMarkedAttended(aid);
+});
 
 // Dark mode state
 const isDark = ref(false);
@@ -247,8 +361,26 @@ onMounted(async () => {
 
   // Check if user is admin/steward
   await checkAdminStatus();
+
+  // Fetch admin AIDs for endorsement badge distinction
+  try {
+    const configResult = await fetchOrgConfig();
+    const config = configResult.status === 'configured'
+      ? configResult.config
+      : configResult.status === 'server_unreachable'
+        ? configResult.cached
+        : null;
+    if (config?.admins) {
+      adminAids.value = config.admins.map((a: { aid: string }) => a.aid);
+    }
+  } catch { /* non-fatal */ }
+
+  // Load endorsement credentials issued by this user from KERIA.
+  // Covers endorsements issued outside useEndorsements (e.g. invite flow).
+  await loadIssuedEndorsements();
+
+  // Only poll for pending registrations if the user is a steward/admin
   if (isSteward.value) {
-    console.log('[Dashboard] User is steward, starting registration polling');
     startPolling();
   }
 });
@@ -276,16 +408,28 @@ const notificationStats = computed(() => [
 ]);
 
 // Live member data from profiles store (with fallback to static data)
-const liveMembers = computed(() => {
+const allMembers = computed(() => {
   const shared = profilesStore.communityProfiles;
-  if (shared.length > 0) {
-    return shared.map(p => ({
+  if (shared.length === 0) return [];
+  return shared
+    .map(p => ({
       profile: (p.data as Record<string, unknown>) || p,
       communityProfile: findCommunityProfile(p),
-    }));
-  }
-  return [];
+    }))
+    .sort((a, b) => {
+      const dateA = (a.communityProfile?.memberSince as string) || (a.profile.createdAt as string) || '';
+      const dateB = (b.communityProfile?.memberSince as string) || (b.profile.createdAt as string) || '';
+      return new Date(dateB).getTime() - new Date(dateA).getTime();
+    });
 });
+
+const pendingMembers = computed(() =>
+  allMembers.value.filter(m => (m.profile.status as string) === 'pending')
+);
+
+const liveMembers = computed(() =>
+  allMembers.value.filter(m => (m.profile.status as string) !== 'pending')
+);
 
 // Calculate new members this week
 const newMembersThisWeek = computed(() => {
@@ -338,7 +482,7 @@ async function handleApprove(registration: PendingRegistration) {
   const success = await approveRegistration(registration);
   if (success) {
     removeRegistration(registration.notificationId);
-    adminSectionRef.value?.showSuccess(`Approved ${registration.profile.name}`);
+    selectedMember.value = null;
   }
 }
 
@@ -347,14 +491,33 @@ async function handleDecline(registration: PendingRegistration, reason?: string)
   const success = await declineRegistration(registration, reason);
   if (success) {
     removeRegistration(registration.notificationId);
-    adminSectionRef.value?.showSuccess(`Declined ${registration.profile.name}`);
+    selectedMember.value = null;
   }
 }
 
-async function handleRefresh() {
-  isRefreshing.value = true;
-  await refreshRegistrations();
-  isRefreshing.value = false;
+async function handleEndorse(message?: string) {
+  clearEndorseError();
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return;
+  const registration = selectedMemberRegistration.value;
+  const oobi = registration?.applicantOOBI;
+  await endorseApplicant(aid, oobi, message);
+}
+
+async function handleMarkAttended() {
+  clearAttendanceError();
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return;
+  const registration = selectedMemberRegistration.value;
+  const oobi = registration?.applicantOOBI;
+  await markAttended(aid, oobi);
+}
+
+function handleCloseModal() {
+  clearError();
+  clearEndorseError();
+  clearAttendanceError();
+  selectedMember.value = null;
 }
 </script>
 

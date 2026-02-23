@@ -1,0 +1,73 @@
+{
+    "$id": "EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "MATOU Endorsement Credential",
+    "description": "A credential representing an endorsement of a member's identity, skills, or qualifications",
+    "type": "object",
+    "credentialType": "MatouEndorsementCredential",
+    "version": "1.0.0",
+    "properties": {
+        "v": { "description": "Version string", "type": "string" },
+        "d": { "description": "Credential SAID", "type": "string" },
+        "u": { "description": "One time use nonce", "type": "string" },
+        "i": { "description": "Endorser AID (issuer)", "type": "string" },
+        "ri": { "description": "Credential status registry", "type": "string" },
+        "s": { "description": "Schema SAID", "type": "string" },
+        "a": {
+            "oneOf": [
+                { "description": "Attributes block SAID", "type": "string" },
+                {
+                    "description": "Attributes block",
+                    "type": "object",
+                    "properties": {
+                        "d": { "description": "Attributes block SAID", "type": "string" },
+                        "i": { "description": "Endorsee AID (credential recipient)", "type": "string" },
+                        "dt": { "description": "Issuance date-time", "type": "string", "format": "date-time" },
+                        "endorsementType": {
+                            "description": "Type of endorsement",
+                            "type": "string",
+                            "enum": ["identity_verification", "skill_endorsement", "role_competency", "character_reference", "membership_endorsement"]
+                        },
+                        "category": { "description": "Specific category", "type": "string" },
+                        "claim": { "description": "The specific claim being endorsed", "type": "string" },
+                        "evidence": { "description": "Optional evidence or context", "type": "string" },
+                        "confidence": {
+                            "description": "Confidence level",
+                            "type": "string",
+                            "enum": ["low", "medium", "high", "very_high"]
+                        },
+                        "relationship": { "description": "Endorser's relationship to endorsee", "type": "string" }
+                    },
+                    "additionalProperties": false,
+                    "required": ["d", "i", "dt", "endorsementType", "claim", "confidence"]
+                }
+            ]
+        },
+        "e": {
+            "description": "Edge section linking to the endorser's own membership credential, proving their authority as a verified community member",
+            "oneOf": [
+                { "description": "Edge block SAID", "type": "string" },
+                {
+                    "description": "Edge block",
+                    "type": "object",
+                    "properties": {
+                        "d": { "description": "Edge block SAID", "type": "string" },
+                        "endorserMembership": {
+                            "description": "Reference to the endorser's own membership credential, proving they are a verified Matou member",
+                            "type": "object",
+                            "properties": {
+                                "n": { "description": "SAID of the endorser's membership credential", "type": "string" },
+                                "s": { "description": "Schema SAID of the membership credential", "type": "string" }
+                            },
+                            "required": ["n", "s"]
+                        }
+                    },
+                    "additionalProperties": false,
+                    "required": ["d", "endorserMembership"]
+                }
+            ]
+        }
+    },
+    "additionalProperties": false,
+    "required": ["v", "d", "i", "ri", "s", "a"]
+}

@@ -117,3 +117,4 @@ frontend/config/client-production.yml
 # Claude Code (personal/ephemeral)
 .claude/settings.local.json
 .claude/agent-memory/
+.claude/worktrees/

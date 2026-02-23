@@ -253,15 +253,24 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	}
 
 	// 6. Recover community space (if configured) — skip in claim mode.
-	// Only open the space if we have persisted keys (meaning we previously
-	// joined or created it). Opening a space we haven't joined triggers
-	// HeadSync and consensus connections that fail with "forbidden" because
-	// our peer isn't in the ACL yet.
+	// If keys don't exist locally, re-derive them from the mnemonic (same
+	// indices used during space creation) so the recovered admin can write
+	// to the space immediately. The read key will differ from the original
+	// random one, but any-sync recovers the real read key from ACL state
+	// during tree sync (readKeysFromAclState).
 	const spaceRecoverTimeout = 10 * time.Second
 	if req.CommunitySpaceID != "" && !isClaim {
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID); keyErr != nil {
-			fmt.Printf("[Identity] Skipping community space %s recovery (no keys — not yet joined)\n", req.CommunitySpaceID)
-		} else {
+			// Re-derive keys from mnemonic (index 1, matching community space creation)
+			if communityKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 1); deriveErr != nil {
+				fmt.Printf("[Identity] Failed to derive community space keys: %v\n", deriveErr)
+			} else {
+				communityKeys.SigningKey = client.GetSigningKey()
+				anysync.PersistSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID, communityKeys)
+				fmt.Printf("[Identity] Re-derived community space keys for %s\n", req.CommunitySpaceID)
+			}
+		}
+		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID); keyErr == nil {
 			communityCtx, communityCancel := context.WithTimeout(ctx, spaceRecoverTimeout)
 			_, err := client.GetSpace(communityCtx, req.CommunitySpaceID)
 			communityCancel()
@@ -276,8 +285,15 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	// 7. Recover read-only space (if configured) — skip in claim mode
 	if req.ReadOnlySpaceID != "" && !isClaim {
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID); keyErr != nil {
-			fmt.Printf("[Identity] Skipping readonly space %s recovery (no keys — not yet joined)\n", req.ReadOnlySpaceID)
-		} else {
+			if roKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 2); deriveErr != nil {
+				fmt.Printf("[Identity] Failed to derive readonly space keys: %v\n", deriveErr)
+			} else {
+				roKeys.SigningKey = client.GetSigningKey()
+				anysync.PersistSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID, roKeys)
+				fmt.Printf("[Identity] Re-derived readonly space keys for %s\n", req.ReadOnlySpaceID)
+			}
+		}
+		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID); keyErr == nil {
 			roCtx, roCancel := context.WithTimeout(ctx, spaceRecoverTimeout)
 			_, err := client.GetSpace(roCtx, req.ReadOnlySpaceID)
 			roCancel()
@@ -292,8 +308,15 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	// 8. Recover admin space (if configured) — skip in claim mode
 	if adminSpaceID := h.spaceManager.GetAdminSpaceID(); adminSpaceID != "" && !isClaim {
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), adminSpaceID); keyErr != nil {
-			fmt.Printf("[Identity] Skipping admin space %s recovery (no keys — not yet joined)\n", adminSpaceID)
-		} else {
+			if adminKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 3); deriveErr != nil {
+				fmt.Printf("[Identity] Failed to derive admin space keys: %v\n", deriveErr)
+			} else {
+				adminKeys.SigningKey = client.GetSigningKey()
+				anysync.PersistSpaceKeySet(client.GetDataDir(), adminSpaceID, adminKeys)
+				fmt.Printf("[Identity] Re-derived admin space keys for %s\n", adminSpaceID)
+			}
+		}
+		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), adminSpaceID); keyErr == nil {
 			adminCtx, adminCancel := context.WithTimeout(ctx, spaceRecoverTimeout)
 			_, err := client.GetSpace(adminCtx, adminSpaceID)
 			adminCancel()

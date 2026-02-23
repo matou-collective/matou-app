@@ -18,6 +18,12 @@ export interface WalletCredential {
   joinedAt: string;
   issuedAt: string;
   status: string;
+  // Endorsement-specific
+  claim: string;
+  endorsementType: string;
+  // Event attendance-specific
+  eventName: string;
+  eventType: string;
 }
 
 export interface TokenBalance {
@@ -116,6 +122,10 @@ export const useWalletStore = defineStore('wallet', () => {
       joinedAt: (attrs.joinedAt as string) || '',
       issuedAt: (attrs.dt as string) || '',
       status: (statusObj?.s as string) || 'unknown',
+      claim: (attrs.claim as string) || '',
+      endorsementType: (attrs.endorsementType as string) || '',
+      eventName: (attrs.eventName as string) || '',
+      eventType: (attrs.eventType as string) || '',
     };
   }
 

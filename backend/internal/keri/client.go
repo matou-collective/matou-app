@@ -51,6 +51,22 @@ type OrgInfo struct {
 	Schema string   `json:"schema"`
 }
 
+// Schema SAIDs
+const (
+	MembershipSchemaSAID  = "EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT"
+	EndorsementSchemaSAID = "EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE"
+)
+
+// EndorsementData contains endorsement credential attributes
+type EndorsementData struct {
+	EndorsementType string `json:"endorsementType"`
+	Category        string `json:"category"`
+	Claim           string `json:"claim"`
+	Confidence      string `json:"confidence"`
+	Evidence        string `json:"evidence,omitempty"`
+	Relationship    string `json:"relationship,omitempty"`
+}
+
 // NewClient creates a new KERI client.
 // OrgAID can be empty if org is not yet configured (will be set later via org config).
 func NewClient(cfg *Config) (*Client, error) {

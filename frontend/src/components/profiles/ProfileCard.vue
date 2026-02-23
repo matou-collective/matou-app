@@ -1,11 +1,12 @@
 <template>
-  <div class="profile-card" @click="$emit('click')">
+  <div class="profile-card" :class="status === 'pending' ? 'border-pending' : 'border-approved'" @click="$emit('click')">
     <div class="card-avatar">
       <img
-        v-if="avatarUrl"
+        v-if="avatarUrl && !avatarError"
         :src="avatarUrl"
         :alt="displayName"
         class="avatar-img"
+        @error="avatarError = true"
       />
       <div v-else class="avatar-placeholder" :class="colorClass">
         {{ initials }}
@@ -14,18 +15,53 @@
     <div class="card-info">
       <span class="card-name">{{ displayName }}</span>
       <span v-if="role" class="card-role">{{ role }}</span>
-      <span v-if="memberSince" class="card-date">{{ formatDate(memberSince) }}</span>
+      <span v-if="dateLabel" class="card-date">{{ dateLabel }}</span>
+      <span v-if="endorsements.length > 0" class="card-endorsements">
+        <q-icon name="thumb_up" size="0.7rem" /> {{ endorsements.length }} {{ endorsements.length === 1 ? 'endorsement' : 'endorsements' }}
+      </span>
+    </div>
+    <div class="card-badges">
+      <q-icon
+        v-if="hasCredential"
+        name="groups"
+        size="1.1rem"
+        class="badge-membership"
+        title="Membership credential"
+      />
+      <q-icon
+        v-for="(e, i) in endorsements"
+        :key="i"
+        :name="isAdminEndorsement(e) ? 'admin_panel_settings' : 'person_add'"
+        size="1.1rem"
+        class="badge-endorsement"
+        :title="isAdminEndorsement(e) ? 'Steward endorsement' : 'Member endorsement'"
+      />
+      <q-icon
+        v-if="hasAttendance"
+        name="event_available"
+        size="1.1rem"
+        class="badge-attendance"
+        title="Onboarded"
+      />
+      <q-icon
+        v-if="status === 'pending' && !hasCredential"
+        name="help"
+        size="1.25rem"
+        class="status-pending"
+        title="Pending approval"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { getFileUrl } from 'src/lib/api/client';
 
 const props = defineProps<{
   profile: Record<string, unknown>;
   communityProfile?: Record<string, unknown>;
+  adminAids?: string[];
 }>();
 
 defineEmits<{
@@ -34,10 +70,15 @@ defineEmits<{
 
 const displayName = computed(() => (props.profile?.displayName as string) || 'Unknown');
 
+const avatarError = ref(false);
+
+// Reset error state when profile data changes (e.g. avatar syncs in later)
+watch(() => [props.profile?.avatar, props.communityProfile?.avatar], () => {
+  avatarError.value = false;
+});
+
 const avatarUrl = computed(() => {
-  // Check SharedProfile avatar first, then CommunityProfile avatar as fallback
   const ref = (props.profile?.avatar as string) || (props.communityProfile?.avatar as string);
-  console.log('[ProfileCard] Avatar ref for', props.profile?.displayName, ':', ref, 'profile:', props.profile);
   if (!ref) return '';
   if (ref.startsWith('http') || ref.startsWith('data:')) return ref;
   return getFileUrl(ref);
@@ -52,9 +93,31 @@ const initials = computed(() => {
   return name.substring(0, 2).toUpperCase();
 });
 
+const status = computed(() => (props.profile?.status as string) || '');
+
 const role = computed(() => (props.communityProfile?.role as string) || '');
 
 const memberSince = computed(() => (props.communityProfile?.memberSince as string) || '');
+
+const dateLabel = computed(() => {
+  if (memberSince.value) return formatDate(memberSince.value, 'Joined');
+  const createdAt = props.profile?.createdAt as string;
+  if (createdAt) return formatDate(createdAt, 'Applied');
+  return '';
+});
+
+const endorsements = computed(() => {
+  return (props.profile?.endorsements as Array<Record<string, unknown>>) || [];
+});
+
+function isAdminEndorsement(e: Record<string, unknown>): boolean {
+  const admins = new Set(props.adminAids || []);
+  return admins.size > 0 && admins.has(e.endorserAid as string);
+}
+
+const hasCredential = computed(() => !!(props.communityProfile?.credential));
+
+const hasAttendance = computed(() => !!(props.profile?.attendanceRecord));
 
 const colorClass = computed(() => {
   const colors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
@@ -62,16 +125,16 @@ const colorClass = computed(() => {
   return colors[hash % colors.length];
 });
 
-function formatDate(dateStr: string): string {
+function formatDate(dateStr: string, verb: string): string {
   if (!dateStr) return '';
   const date = new Date(dateStr);
   const now = new Date();
   const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays === 0) return 'Joined today';
-  if (diffDays === 1) return 'Joined yesterday';
-  if (diffDays < 7) return `Joined ${diffDays} days ago`;
-  if (diffDays < 30) return `Joined ${Math.floor(diffDays / 7)} weeks ago`;
-  return `Joined ${date.toLocaleDateString('en-NZ', { month: 'short', year: 'numeric' })}`;
+  if (diffDays === 0) return `${verb} today`;
+  if (diffDays === 1) return `${verb} yesterday`;
+  if (diffDays < 7) return `${verb} ${diffDays} days ago`;
+  if (diffDays < 30) return `${verb} ${Math.floor(diffDays / 7)} weeks ago`;
+  return `${verb} ${date.toLocaleDateString('en-NZ', { month: 'short', year: 'numeric' })}`;
 }
 </script>
 
@@ -82,12 +145,25 @@ function formatDate(dateStr: string): string {
   gap: 0.75rem;
   padding: 0.75rem;
   border-radius: 0.5rem;
+  border: 1px solid transparent;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.profile-card:hover {
-  background: var(--matou-surface-alt, #f3f4f6);
+.border-pending {
+  border-color: var(--matou-warning, #f59e0b);
+}
+
+.border-approved {
+  border-color: var(--matou-accent, #4a9d9c);
+}
+
+.border-pending:hover {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.border-approved:hover {
+  background: rgba(74, 157, 156, 0.08);
 }
 
 .card-avatar {
@@ -122,6 +198,31 @@ function formatDate(dateStr: string): string {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex: 1;
+}
+
+.card-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.badge-membership {
+  color: var(--matou-accent, #4a9d9c);
+}
+
+.badge-endorsement {
+  color: var(--matou-accent, #4a9d9c);
+}
+
+.badge-attendance {
+  color: var(--matou-accent, #4a9d9c);
+}
+
+.status-pending {
+  color: var(--matou-warning, #f59e0b);
 }
 
 .card-name {
@@ -141,5 +242,14 @@ function formatDate(dateStr: string): string {
 .card-date {
   font-size: 0.75rem;
   color: var(--matou-text-secondary, #6b7280);
+}
+
+.card-endorsements {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  color: var(--matou-accent, #4a9d9c);
+  font-weight: 500;
 }
 </style>

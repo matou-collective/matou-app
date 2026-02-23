@@ -69,8 +69,11 @@ async function restoreIdentity(
       });
 
       // Fetch user spaces and verify access in background (don't block navigation)
+      // Guard: only call verifyCommunityAccess if joinCommunitySpace hasn't already set it true
       identityStore.fetchUserSpaces().then(() => {
-        identityStore.verifyCommunityAccess();
+        if (!identityStore.communityAccessVerified) {
+          identityStore.verifyCommunityAccess();
+        }
       });
     } else if (result.success) {
       console.log('[KERI Boot] Session restored but no AID found');
@@ -151,9 +154,16 @@ export default boot(async ({ router }) => {
         return;
       }
 
-      // Try to verify
+      // Try to verify — fetchUserSpaces may take time, and joinCommunitySpace
+      // may have set communityAccessVerified=true while we were fetching
       if (!identityStore.spacesLoaded) {
         await identityStore.fetchUserSpaces();
+      }
+
+      // Re-check: joinCommunitySpace may have set it true while we were fetching
+      if (identityStore.communityAccessVerified) {
+        next();
+        return;
       }
 
       if (!identityStore.communitySpaceId) {

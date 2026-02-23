@@ -39,6 +39,11 @@ export interface RejectionInfo {
 export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   const { pollingInterval = 5000, maxConsecutiveErrors = 5 } = options;
 
+  // Schema SAIDs for distinguishing credential types
+  const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+  const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
+  const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J';
+
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
 
@@ -61,6 +66,19 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   const rejectionReceived = ref(false);
   const rejectionInfo = ref<RejectionInfo | null>(null);
   const adminMessages = ref<AdminMessage[]>([]);
+
+  // Endorsement credentials received
+  const endorsementsReceived = ref<Array<{
+    endorserAid: string;
+    credentialSaid: string;
+    endorsedAt: string;
+  }>>([]);
+
+  // Requirement verification state
+  const membershipVerified = ref(false);
+  const memberEndorsementVerified = ref(false);
+  const stewardEndorsementVerified = ref(false);
+  const sessionAttendanceVerified = ref(false);
 
   // Internal state
   let pollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -163,17 +181,35 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           console.log('[CredentialPolling] Could not resolve schema OOBI:', err);
         }
       } else {
-        // Fallback: try default schema server URL with known schema SAID
-        const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+        // Fallback: try default schema server URL with known schema SAIDs
         // Schema server URL is internal to Docker network (KERIA resolves it)
         const schemaServerUrl = 'http://schema-server:7723';
-        const fallbackSchemaOOBI = `${schemaServerUrl}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
+        const fallbackMembershipOOBI = `${schemaServerUrl}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
         try {
-          await keriClient.resolveOOBI(fallbackSchemaOOBI, undefined, 10000);
-          console.log('[CredentialPolling] Resolved schema OOBI (fallback):', fallbackSchemaOOBI);
+          await keriClient.resolveOOBI(fallbackMembershipOOBI, undefined, 10000);
+          console.log('[CredentialPolling] Resolved membership schema OOBI');
         } catch (err) {
-          console.log('[CredentialPolling] Could not resolve schema OOBI:', err);
+          console.log('[CredentialPolling] Could not resolve membership schema OOBI:', err);
         }
+      }
+
+      // Resolve endorsement schema OOBI (required for KERIA to verify and store endorsement credentials)
+      const schemaServerUrl = 'http://schema-server:7723';
+      const endorsementSchemaOOBI = `${schemaServerUrl}/oobi/${ENDORSEMENT_SCHEMA_SAID}`;
+      try {
+        await keriClient.resolveOOBI(endorsementSchemaOOBI, undefined, 10000);
+        console.log('[CredentialPolling] Resolved endorsement schema OOBI');
+      } catch (err) {
+        console.log('[CredentialPolling] Could not resolve endorsement schema OOBI:', err);
+      }
+
+      // Resolve event attendance schema OOBI
+      const eventAttendanceSchemaOOBI = `${schemaServerUrl}/oobi/${EVENT_ATTENDANCE_SCHEMA_SAID}`;
+      try {
+        await keriClient.resolveOOBI(eventAttendanceSchemaOOBI, undefined, 10000);
+        console.log('[CredentialPolling] Resolved event attendance schema OOBI');
+      } catch (err) {
+        console.log('[CredentialPolling] Could not resolve event attendance schema OOBI:', err);
       }
 
       // Resolve org OOBI (for receiving credentials)
@@ -221,44 +257,169 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     }
 
     try {
-      // First, check if credentials are already in the wallet
-      // This handles the case where admin issues credential to themselves (same agent)
-      if (!credentialReceived.value) {
+      // Check if credentials are already in the wallet
+      // NOTE: client.credentials().list() returns ALL credentials KERIA knows about,
+      // including chained credentials from ACDC edges (e.g., the endorser's membership
+      // credential pulled in when admitting an endorsement). We must check the recipient
+      // field (sad.a.i) matches our AID to avoid treating someone else's credential as ours.
+      const myAid = identityStore.currentAID?.prefix;
+      if (myAid) {
         try {
           const credentials = await client.credentials().list();
-          console.log('[CredentialPolling] Existing credentials check:', credentials.length);
           if (credentials.length > 0) {
-            console.log('[CredentialPolling] Credential already in wallet:', credentials[0]);
-            credential.value = credentials[0];
-            credentialReceived.value = true;
-            grantReceived.value = true;
-            syncCredentialToBackend();
-            // Don't stop polling — still need to wait for space invite
+            for (const cred of credentials) {
+              const sad = cred.sad || cred;
+              const schema = (sad as any).s || '';
+              const recipient = (sad as any).a?.i || '';
+              if (schema === MEMBERSHIP_SCHEMA_SAID && recipient === myAid && !credentialReceived.value) {
+                // Membership credential issued TO us — existing admission flow
+                console.log('[CredentialPolling] Membership credential in wallet (mine):', cred);
+                credential.value = cred;
+                credentialReceived.value = true;
+                grantReceived.value = true;
+                syncCredentialToBackend();
+              } else if (schema === ENDORSEMENT_SCHEMA_SAID && recipient === myAid) {
+                // Endorsement credential issued TO us — always track (survives session restart)
+                const credSaid = (sad as any).d || '';
+                const existing = endorsementsReceived.value.find(e => e.credentialSaid === credSaid);
+                if (!existing) {
+                  endorsementsReceived.value.push({
+                    endorserAid: (sad as any).i || '',
+                    credentialSaid: credSaid,
+                    endorsedAt: (sad as any).a?.dt || new Date().toISOString(),
+                  });
+                  console.log('[CredentialPolling] Endorsement credential found:', credSaid);
+                }
+              } else if (schema === EVENT_ATTENDANCE_SCHEMA_SAID && recipient === myAid) {
+                // Event attendance credential issued TO us
+                const credSaid = (sad as any).d || '';
+                console.log('[CredentialPolling] Event attendance credential found:', credSaid);
+                sessionAttendanceVerified.value = true;
+              }
+            }
           }
         } catch (credErr) {
           console.log('[CredentialPolling] Could not check credentials:', credErr);
+        }
+
+        // Requirement verification: runs every cycle regardless of credentials in wallet.
+        // endorsementsReceived is populated from both the grant-admit path and the wallet check.
+        let orgAid: string | null = null;
+        let config: import('src/api/config').OrgConfig | null = null;
+        try {
+          const configResult = await fetchOrgConfig();
+          config = configResult.status === 'configured'
+            ? configResult.config
+            : configResult.status === 'server_unreachable'
+              ? configResult.cached
+              : null;
+          orgAid = config?.organization?.aid || null;
+        } catch {
+          // Non-fatal — verification checks skipped this cycle
+        }
+
+        if (orgAid) {
+          // Req 1: Membership credential issued by org AID to us
+          try {
+            const credentials = await client.credentials().list();
+            for (const cred of credentials) {
+              const sad = cred.sad || cred;
+              if (
+                ((sad as any).s || '') === MEMBERSHIP_SCHEMA_SAID &&
+                ((sad as any).a?.i || '') === myAid &&
+                ((sad as any).i || '') === orgAid
+              ) {
+                membershipVerified.value = true;
+                break;
+              }
+            }
+          } catch {
+            // Non-fatal — membership check retried next cycle
+          }
+
+          // Req 2 & 3: Endorsement verification
+          // Determine endorser role by checking if they're in the org config admins list.
+          // Admins/stewards are listed in config.admins; regular members are not.
+          const adminAids = new Set(
+            (config?.admins || []).map((a: { aid: string }) => a.aid)
+          );
+
+          let stewardCount = 0;
+          let memberCount = 0;
+
+          for (const endorsement of endorsementsReceived.value) {
+            if (adminAids.has(endorsement.endorserAid)) {
+              stewardCount++;
+            } else {
+              memberCount++;
+            }
+          }
+
+          // Req 3: At least one steward/founder endorsement
+          stewardEndorsementVerified.value = stewardCount >= 1;
+          // Req 2: At least one separate member endorsement (or a second steward)
+          memberEndorsementVerified.value = memberCount >= 1 || stewardCount >= 2;
         }
       }
 
       // Check notifications for grants, invites, rejections, and messages
       const notifications = await client.notifications().list();
-      console.log('[CredentialPolling] Raw notifications response:', JSON.stringify(notifications, null, 2));
 
-      // Check for grant notifications (only if credential not yet received)
-      if (!credentialReceived.value) {
-        const grants = notifications.notes?.filter(
-          (n: IPEXNotification) => n.a?.r === '/exn/ipex/grant' && !n.r
-        ) ?? [];
+      // Check for grant notifications
+      const grants = notifications.notes?.filter(
+        (n: IPEXNotification) => n.a?.r === '/exn/ipex/grant' && !n.r
+      ) ?? [];
 
-        console.log('[CredentialPolling] Filtered grants:', grants.length, grants);
+      for (const grant of grants) {
+        // Determine credential type from the exchange message before admitting
+        let grantSchema = '';
+        try {
+          const grantExn = await client.exchanges().get(grant.a.d);
+          grantSchema = grantExn.exn?.e?.acdc?.s || '';
+          console.log('[CredentialPolling] Grant schema:', grantSchema, 'for grant:', grant.a.d);
+        } catch (exnErr) {
+          console.warn('[CredentialPolling] Could not inspect grant exchange:', exnErr);
+        }
 
-        if (grants.length > 0) {
-          console.log('[CredentialPolling] Grant detected:', grants[0]);
+        if (grantSchema === ENDORSEMENT_SCHEMA_SAID) {
+          // Endorsement grant — admit silently, track, but DON'T trigger membership flow
+          console.log('[CredentialPolling] Endorsement grant detected — admitting');
+          try {
+            await admitGrant(grant);
+            // Wait for KERIA's Admitter to process and store the credential
+            const endorsementCred = await pollForEndorsementCredential(client, myAid);
+            const credSaid = endorsementCred?.d || grant.a.d;
+            const existing = endorsementsReceived.value.find(e => e.credentialSaid === credSaid);
+            if (!existing) {
+              endorsementsReceived.value.push({
+                endorserAid: endorsementCred?.i || grant.a.i || '',
+                credentialSaid: credSaid,
+                endorsedAt: endorsementCred?.a?.dt || new Date().toISOString(),
+              });
+            }
+            console.log('[CredentialPolling] Endorsement admitted, SAID:', credSaid);
+          } catch (endorseErr) {
+            console.warn('[CredentialPolling] Failed to admit endorsement grant:', endorseErr);
+          }
+        } else if (grantSchema === EVENT_ATTENDANCE_SCHEMA_SAID) {
+          // Event attendance grant — admit silently
+          console.log('[CredentialPolling] Event attendance grant detected — admitting');
+          try {
+            await admitGrant(grant);
+            await new Promise(r => setTimeout(r, 3000));
+            sessionAttendanceVerified.value = true;
+            console.log('[CredentialPolling] Event attendance admitted');
+          } catch (attendErr) {
+            console.warn('[CredentialPolling] Failed to admit event attendance grant:', attendErr);
+          }
+        } else if (!credentialReceived.value) {
+          // Membership grant — existing admission flow
+          console.log('[CredentialPolling] Membership grant detected:', grant);
           grantReceived.value = true;
           isProcessingGrant = true;
 
           // Extract space invite data from grant message (embedded by admin)
-          const grantMsg = grants[0].a?.m;
+          const grantMsg = grant.a?.m;
           if (grantMsg && !spaceInviteReceived.value) {
             try {
               const inviteData = JSON.parse(grantMsg);
@@ -276,12 +437,13 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           }
 
           try {
-            await admitGrant(grants[0]);
-            // After admitting, poll for credential to appear in wallet
+            await admitGrant(grant);
+            // After admitting, poll for membership credential to appear in wallet
             await pollForCredential();
           } finally {
             isProcessingGrant = false;
           }
+          break; // Only process one membership grant at a time
         }
       }
 
@@ -451,12 +613,18 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     const maxAttempts = 30; // 60 seconds max
     let attempts = 0;
 
+    const myAidPrefix = identityStore.currentAID?.prefix;
     const checkCredential = async (): Promise<boolean> => {
       try {
         const credentials = await client.credentials().list();
-        if (credentials.length > 0) {
-          console.log('[CredentialPolling] Credential received:', credentials[0]);
-          credential.value = credentials[0];
+        // Find membership credential issued TO us (not chained credentials from edges)
+        const membershipCred = credentials.find((c: any) => {
+          const sad = c.sad || c;
+          return (sad.s || '') === MEMBERSHIP_SCHEMA_SAID && (sad.a?.i || '') === myAidPrefix;
+        });
+        if (membershipCred) {
+          console.log('[CredentialPolling] Membership credential received (mine):', membershipCred);
+          credential.value = membershipCred;
           credentialReceived.value = true;
           // Sync to backend for space routing (non-blocking)
           syncCredentialToBackend();
@@ -494,6 +662,40 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         }
       }, credentialPollInterval);
     });
+  }
+
+  /**
+   * Poll briefly for an endorsement credential to appear in the wallet after admitting.
+   * KERIA's Admitter runs asynchronously — we need to wait for it to store the credential.
+   */
+  async function pollForEndorsementCredential(
+    client: any,
+    myAid: string,
+  ): Promise<any | null> {
+    const maxAttempts = 10;
+    const interval = 1500;
+    const knownSaids = new Set(endorsementsReceived.value.map(e => e.credentialSaid));
+
+    for (let i = 0; i < maxAttempts; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, interval));
+      try {
+        const credentials = await client.credentials().list();
+        for (const cred of credentials) {
+          const sad = cred.sad || cred;
+          if (
+            (sad.s || '') === ENDORSEMENT_SCHEMA_SAID &&
+            (sad.a?.i || '') === myAid &&
+            !knownSaids.has(sad.d || '')
+          ) {
+            return sad;
+          }
+        }
+      } catch {
+        // KERIA may still be processing — retry
+      }
+    }
+    console.warn('[CredentialPolling] Endorsement credential did not appear in wallet after admit');
+    return null;
   }
 
   /**
@@ -637,6 +839,11 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     rejectionReceived,
     rejectionInfo,
     adminMessages,
+    endorsementsReceived,
+    membershipVerified,
+    memberEndorsementVerified,
+    stewardEndorsementVerified,
+    sessionAttendanceVerified,
 
     // Actions
     startPolling,

@@ -83,10 +83,10 @@ export default defineConfig({
       testMatch: /e2e-recovery-errors\.spec\.ts/,
       use: browserConfig,
     },
-    // Registration stress test - concurrent registrations with admin processing
+    // KERIA stress test - concurrent registrations with admin processing
     {
       name: 'stress',
-      testMatch: /e2e-registration-stress\.spec\.ts/,
+      testMatch: /e2e-keria-stress\.spec\.ts/,
       use: browserConfig,
       dependencies: ['org-setup'],
     },
@@ -95,6 +95,13 @@ export default defineConfig({
     {
       name: 'chat',
       testMatch: /e2e-chat\.spec\.ts/,
+      use: browserConfig,
+    },
+    // Credential chain verification — tests KERIA reger.saved isolation bug
+    // Self-sufficient: auto-runs org-setup if needed
+    {
+      name: 'credential-chain',
+      testMatch: /e2e-credential-chain\.spec\.ts/,
       use: browserConfig,
     },
     // Default project for running individual test files
@@ -111,8 +118,9 @@ export default defineConfig({
         /e2e-activity\.spec\.ts/,
         /e2e-account-recovery\.spec\.ts/,
         /e2e-recovery-errors\.spec\.ts/,
-        /e2e-registration-stress\.spec\.ts/,
+        /e2e-keria-stress\.spec\.ts/,
         /e2e-chat\.spec\.ts/,
+        /e2e-credential-chain\.spec\.ts/,
       ],
     },
   ],

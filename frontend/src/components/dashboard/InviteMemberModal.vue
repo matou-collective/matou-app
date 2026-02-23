@@ -8,7 +8,7 @@
           </div>
           <div>
             <h3 class="text-lg font-semibold">Invite Member</h3>
-            <p class="text-sm text-muted-foreground">Create a pre-configured identity for a new member</p>
+            <p class="text-sm text-muted-foreground">Create an invitation code and endorsement</p>
           </div>
         </div>
       </q-card-section>
@@ -30,16 +30,14 @@
           </div>
 
           <div>
-            <label class="block text-sm font-medium mb-1.5">Role</label>
-            <select
-              v-model="role"
-              class="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+            <label class="block text-sm font-medium mb-1.5">Reason for Endorsement</label>
+            <textarea
+              v-model="endorsementReason"
+              class="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+              placeholder="e.g. Active community contributor and governance participant"
+              rows="3"
               :disabled="isSubmitting"
-            >
-              <option value="Member">Member</option>
-              <option value="Contributor">Contributor</option>
-              <option value="Steward">Steward</option>
-            </select>
+            />
           </div>
 
           <div>
@@ -154,7 +152,7 @@
           </button>
           <button
             class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-            :disabled="!inviteeName.trim() || isSubmitting"
+            :disabled="!inviteeName.trim() || !endorsementReason.trim() || isSubmitting"
             @click="handleCreate"
           >
             <span v-if="isSubmitting" class="flex items-center gap-2">
@@ -206,7 +204,7 @@ defineEmits<{
 const { isSubmitting, error: inviteError, progress, result, createInvite, reset } = usePreCreatedInvite();
 
 const inviteeName = ref('');
-const role = ref('Member');
+const endorsementReason = ref('');
 const inviteeEmail = ref('');
 const copied = ref(false);
 const emailSending = ref(false);
@@ -214,10 +212,10 @@ const emailSent = ref(false);
 const emailError = ref('');
 
 async function handleCreate() {
-  if (!inviteeName.value.trim()) return;
+  if (!inviteeName.value.trim() || !endorsementReason.value.trim()) return;
   await createInvite({
     inviteeName: inviteeName.value.trim(),
-    role: role.value,
+    reason: endorsementReason.value.trim(),
   });
 }
 
@@ -250,7 +248,7 @@ async function handleSendEmail() {
 function handleCreateAnother() {
   reset();
   inviteeName.value = '';
-  role.value = 'Member';
+  endorsementReason.value = '';
   inviteeEmail.value = '';
   copied.value = false;
   emailSending.value = false;
