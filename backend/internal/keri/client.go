@@ -148,14 +148,16 @@ func (c *Client) IsOrgIssued(cred *Credential) bool {
 // GetPermissionsForRole returns the permissions for a given role
 func GetPermissionsForRole(role string) []string {
 	permissions := map[string][]string{
-		"Member":             {"read", "comment"},
-		"Verified Member":    {"read", "comment", "vote"},
-		"Trusted Member":     {"read", "comment", "vote", "propose"},
-		"Expert Member":      {"read", "comment", "vote", "propose", "review"},
-		"Contributor":        {"read", "comment", "vote", "contribute"},
-		"Moderator":          {"read", "comment", "vote", "moderate"},
-		"Admin":              {"read", "comment", "vote", "propose", "moderate", "admin"},
-		"Operations Steward": {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
+		"Member":              {"read", "comment"},
+		"Contributor":         {"read", "comment", "vote", "contribute"},
+		"Community Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "approve_registrations"},
+		"Operations Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
+		"Founding Member":     {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
+		"Financial Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_finances"},
+		"Governance Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "manage_governance"},
+		"Treasury Steward":    {"read", "comment", "vote", "propose", "moderate", "admin", "manage_treasury"},
+		"Technical Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_technical"},
+		"Cultural Steward":    {"read", "comment", "vote", "propose", "moderate", "admin", "manage_cultural"},
 	}
 
 	if perms, ok := permissions[role]; ok {
@@ -168,13 +170,15 @@ func GetPermissionsForRole(role string) []string {
 func ValidRoles() []string {
 	return []string{
 		"Member",
-		"Verified Member",
-		"Trusted Member",
-		"Expert Member",
 		"Contributor",
-		"Moderator",
-		"Admin",
+		"Community Steward",
 		"Operations Steward",
+		"Founding Member",
+		"Financial Steward",
+		"Governance Steward",
+		"Treasury Steward",
+		"Technical Steward",
+		"Cultural Steward",
 	}
 }
 
