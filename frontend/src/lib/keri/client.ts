@@ -807,6 +807,108 @@ export class KERIClient {
   }
 
   /**
+   * Add a member's AID to an existing group AID via two-rotation protocol.
+   * Rotation 1: adds member to rstates (next keys)
+   * Rotation 2: promotes member to states (signing keys)
+   * Then sends /multisig/rot EXN notification to the new member.
+   *
+   * @param groupName - Name of the group AID (e.g., "matou-dao")
+   * @param newMemberAidPrefix - AID prefix of the member to add
+   * @param masterAidName - Name of the admin's personal AID (master controller)
+   */
+  async addMemberToGroup(
+    groupName: string,
+    newMemberAidPrefix: string,
+    masterAidName: string,
+  ): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+
+    console.log(`[KERIClient] Adding ${newMemberAidPrefix.slice(0, 12)}... to group "${groupName}"`);
+
+    // 1. Get current group AID state
+    const groupAid = await this.client.identifiers().get(groupName);
+    console.log(`[KERIClient] Group AID: ${groupAid.prefix}, seq: ${groupAid.state?.s}`);
+
+    // 2. Get master AID (admin's personal AID)
+    const masterAid = await this.client.identifiers().get(masterAidName);
+
+    // 3. Query the new member's key state (must have resolved their OOBI first)
+    console.log(`[KERIClient] Querying key state for ${newMemberAidPrefix.slice(0, 12)}...`);
+    const queryOp = await this.client.keyStates().query(newMemberAidPrefix, undefined, undefined);
+    const ksResult = await this.client.operations().wait(queryOp, { signal: AbortSignal.timeout(30000) });
+    const newMemberState = ksResult.response as Record<string, unknown>;
+    console.log(`[KERIClient] Got key state for new member, seq: ${newMemberState?.s}`);
+
+    // 4. Also refresh master's key state
+    const masterQueryOp = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
+    const masterKsResult = await this.client.operations().wait(masterQueryOp, { signal: AbortSignal.timeout(30000) });
+    const masterState = masterKsResult.response as Record<string, unknown>;
+
+    // 5. Rotation 1: Add new member to rstates only (next keys)
+    console.log('[KERIClient] Rotation 1: adding member to next rotation keys...');
+    const states1 = [masterState];
+    const rstates1 = [masterState, newMemberState];
+
+    const rot1Result = await this.client.identifiers().rotate(groupName, {
+      states: states1,
+      rstates: rstates1,
+    });
+    const rot1Op = await rot1Result.op();
+    await this.client.operations().wait(rot1Op, { signal: AbortSignal.timeout(60000) });
+    console.log('[KERIClient] Rotation 1 complete');
+
+    // 6. Rotation 2: Promote new member to signing keys
+    console.log('[KERIClient] Rotation 2: promoting member to signing keys...');
+    const states2 = [masterState, newMemberState];
+    const rstates2 = [masterState, newMemberState];
+
+    const rot2Result = await this.client.identifiers().rotate(groupName, {
+      states: states2,
+      rstates: rstates2,
+    });
+    const rot2Serder = rot2Result.serder;
+    const rot2Sigs = rot2Result.sigs;
+    const rot2Op = await rot2Result.op();
+    await this.client.operations().wait(rot2Op, { signal: AbortSignal.timeout(60000) });
+    console.log('[KERIClient] Rotation 2 complete');
+
+    // 7. Send /multisig/rot EXN to new member so they can join
+    console.log('[KERIClient] Sending /multisig/rot notification to new member...');
+    const smids = states2.map((s) => s.i as string);
+    const rmids = rstates2.map((s) => s.i as string);
+
+    try {
+      await this.client.exchanges().send(
+        masterAidName,
+        groupName,
+        masterAid,
+        '/multisig/rot',
+        { gid: groupAid.prefix, smids, rmids },
+        { rot: [rot2Serder.sad, rot2Sigs] },
+        [newMemberAidPrefix],
+      );
+      console.log('[KERIClient] /multisig/rot EXN sent to new member');
+    } catch (exnErr) {
+      console.warn('[KERIClient] Failed to send /multisig/rot EXN:', exnErr);
+    }
+
+    // 8. Add agent end role for updated group AID
+    const agentId = this.client.agent?.pre;
+    if (agentId) {
+      try {
+        const endRoleResult = await this.client.identifiers().addEndRole(groupAid.prefix, 'agent', agentId);
+        const endRoleOp = await endRoleResult.op();
+        await this.client.operations().wait(endRoleOp, { signal: AbortSignal.timeout(30000) });
+        console.log('[KERIClient] Agent end role refreshed for group AID');
+      } catch (err) {
+        console.warn('[KERIClient] Failed to refresh agent end role:', err);
+      }
+    }
+
+    console.log(`[KERIClient] Member ${newMemberAidPrefix.slice(0, 12)}... added to group "${groupName}"`);
+  }
+
+  /**
    * Create a credential registry for an AID
    * A registry is needed to issue credentials
    * @param aidName - Name of the AID that will own the registry
