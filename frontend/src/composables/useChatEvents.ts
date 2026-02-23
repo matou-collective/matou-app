@@ -23,6 +23,17 @@ export interface ChatEvent {
   data: Record<string, unknown>;
 }
 
+/** Safely parse SSE event data. Returns null on failure. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function safeParse(event: MessageEvent): any | null {
+  try {
+    return JSON.parse(event.data);
+  } catch {
+    console.warn('[ChatEvents] Malformed event data:', event.data);
+    return null;
+  }
+}
+
 export function useChatEvents() {
   const connected = ref(false);
   const lastEvent = ref<ChatEvent | null>(null);
@@ -49,7 +60,8 @@ export function useChatEvents() {
 
     // Message events
     eventSource.addEventListener('chat:message:new', (event) => {
-      const data = JSON.parse(event.data);
+      const data = safeParse(event);
+      if (!data) return;
       lastEvent.value = { type: 'chat:message:new', data };
       chatStore.handleNewMessage(data);
       console.log('[ChatEvents] New message:', data.messageId);
@@ -58,8 +70,9 @@ export function useChatEvents() {
       if (data.channelId !== chatStore.currentChannelId) {
         const channel = chatStore.channels.find(c => c.id === data.channelId);
         const channelName = channel?.name ?? 'Unknown';
-        const contentPreview = data.content?.substring(0, 80) ?? '';
-        const profile = profilesStore.profilesByAid[data.senderAid];
+        const content = data.content as string | undefined;
+        const contentPreview = content?.substring(0, 80) ?? '';
+        const profile = profilesStore.profilesByAid[data.senderAid as string];
         const displayName = profile?.displayName || data.senderName;
         Notify.create({
           html: true,
@@ -74,7 +87,7 @@ export function useChatEvents() {
               color: 'white',
               handler: () => {
                 router.push({ name: 'chat' });
-                chatStore.selectChannel(data.channelId);
+                chatStore.selectChannel(data.channelId as string);
               },
             },
             { label: 'Dismiss', color: 'white' },
@@ -84,14 +97,16 @@ export function useChatEvents() {
     });
 
     eventSource.addEventListener('chat:message:edit', (event) => {
-      const data = JSON.parse(event.data);
+      const data = safeParse(event);
+      if (!data) return;
       lastEvent.value = { type: 'chat:message:edit', data };
       chatStore.handleEditMessage(data);
       console.log('[ChatEvents] Message edited:', data.messageId);
     });
 
     eventSource.addEventListener('chat:message:delete', (event) => {
-      const data = JSON.parse(event.data);
+      const data = safeParse(event);
+      if (!data) return;
       lastEvent.value = { type: 'chat:message:delete', data };
       chatStore.handleDeleteMessage(data);
       console.log('[ChatEvents] Message deleted:', data.messageId);
@@ -99,7 +114,8 @@ export function useChatEvents() {
 
     // Reaction events
     eventSource.addEventListener('chat:reaction:add', (event) => {
-      const data = JSON.parse(event.data);
+      const data = safeParse(event);
+      if (!data) return;
       lastEvent.value = { type: 'chat:reaction:add', data };
       // Reload messages to get updated reactions
       if (chatStore.currentChannelId) {
@@ -109,7 +125,8 @@ export function useChatEvents() {
     });
 
     eventSource.addEventListener('chat:reaction:remove', (event) => {
-      const data = JSON.parse(event.data);
+      const data = safeParse(event);
+      if (!data) return;
       lastEvent.value = { type: 'chat:reaction:remove', data };
       // Reload messages to get updated reactions
       if (chatStore.currentChannelId) {
@@ -120,14 +137,16 @@ export function useChatEvents() {
 
     // Channel events
     eventSource.addEventListener('chat:channel:new', (event) => {
-      const data = JSON.parse(event.data);
+      const data = safeParse(event);
+      if (!data) return;
       lastEvent.value = { type: 'chat:channel:new', data };
       chatStore.handleNewChannel(data);
       console.log('[ChatEvents] New channel:', data.channelId);
     });
 
     eventSource.addEventListener('chat:channel:update', (event) => {
-      const data = JSON.parse(event.data);
+      const data = safeParse(event);
+      if (!data) return;
       lastEvent.value = { type: 'chat:channel:update', data };
       chatStore.handleUpdateChannel(data);
       console.log('[ChatEvents] Channel updated:', data.channelId);

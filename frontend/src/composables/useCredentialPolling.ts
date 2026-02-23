@@ -387,7 +387,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           try {
             await admitGrant(grant);
             // Wait for KERIA's Admitter to process and store the credential
-            const endorsementCred = await pollForEndorsementCredential(client, myAid);
+            const endorsementCred = await pollForEndorsementCredential(client, myAid!);
             const credSaid = endorsementCred?.d || grant.a.d;
             const existing = endorsementsReceived.value.find(e => e.credentialSaid === credSaid);
             if (!existing) {

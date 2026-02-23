@@ -1,6 +1,8 @@
 package api
 
 import (
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -72,11 +74,19 @@ func CORSMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Limit request body size to prevent memory exhaustion attacks.
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
 
-// CORSHandler wraps a handler function with CORS support
+// maxRequestBodySize limits request body size to prevent memory exhaustion (10 MB).
+const maxRequestBodySize = 10 << 20
+
+// CORSHandler wraps a handler function with CORS support and body size limits.
 func CORSHandler(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -91,6 +101,11 @@ func CORSHandler(handler http.HandlerFunc) http.HandlerFunc {
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
+		}
+
+		// Limit request body size to prevent memory exhaustion attacks.
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 		}
 
 		handler(w, r)
@@ -134,5 +149,40 @@ func (m *CORSMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Limit request body size to prevent memory exhaustion attacks.
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	}
+
 	m.mux.ServeHTTP(w, r)
+}
+
+// LocalhostGuard rejects non-loopback requests when MATOU_CORS_MODE=bundled.
+// The Matou backend is designed to run as a local child process of the Electron
+// app and has no authentication layer. This middleware ensures that in production
+// (bundled) mode, only requests originating from localhost are accepted.
+// In dev/test mode this middleware is a no-op.
+func LocalhostGuard(next http.Handler) http.Handler {
+	mode := os.Getenv("MATOU_CORS_MODE")
+	if mode != "bundled" {
+		return next // no-op in dev/test
+	}
+
+	log.Println("[Security] Localhost guard ACTIVE (MATOU_CORS_MODE=bundled)")
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
