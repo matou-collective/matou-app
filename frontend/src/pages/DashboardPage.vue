@@ -195,6 +195,7 @@ import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
+import { useMultisigJoin } from 'src/composables/useMultisigJoin';
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
@@ -218,6 +219,12 @@ const {
   declineRegistration,
   clearError,
 } = useAdminActions();
+
+const {
+  hasJoined: hasJoinedMultisig,
+  startPolling: startMultisigPolling,
+  stopPolling: stopMultisigPolling,
+} = useMultisigJoin();
 
 const {
   isEndorsing,
@@ -364,6 +371,9 @@ onMounted(async () => {
   // Check if user is admin/steward
   await checkAdminStatus();
 
+  // Start multisig join polling for all authenticated users
+  startMultisigPolling(5000);
+
   // Fetch admin AIDs for endorsement badge distinction
   try {
     const configResult = await fetchOrgConfig();
@@ -389,6 +399,17 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopPolling();
+  stopMultisigPolling();
+});
+
+watch(hasJoinedMultisig, async (joined) => {
+  if (joined) {
+    console.log('[Dashboard] Joined org multisig, re-checking admin status...');
+    await checkAdminStatus();
+    if (isSteward.value) {
+      startPolling();
+    }
+  }
 });
 
 const toggleDarkMode = () => {
