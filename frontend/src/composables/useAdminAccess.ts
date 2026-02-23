@@ -156,6 +156,41 @@ export function useAdminAccess() {
         }
       }
 
+      // Method 1b: Check if user participates in the org group AID
+      // After multisig join, the org AID appears in identifiers list
+      try {
+        const configResult2 = await fetchOrgConfig();
+        const orgConfig = configResult2.status === 'configured'
+          ? configResult2.config
+          : configResult2.status === 'server_unreachable'
+            ? configResult2.cached
+            : null;
+
+        if (orgConfig?.organization?.aid) {
+          const aids = await client.identifiers().list();
+          const orgGroupAid = aids.aids?.find(
+            (a: { prefix: string }) => a.prefix === orgConfig.organization.aid
+          );
+          if (orgGroupAid) {
+            console.log('[AdminAccess] User is a member of the org group AID');
+            isAdmin.value = true;
+            adminCredential.value = {
+              said: '',
+              schema: '',
+              issuer: orgConfig.organization.aid,
+              issuee: currentAID.prefix,
+              status: 'group_member',
+              role: 'Community Steward',
+              permissions: ['approve_registrations', 'admin', 'issue_membership'],
+            };
+            permissions.value = adminCredential.value.permissions || [];
+            return true;
+          }
+        }
+      } catch (groupErr) {
+        console.warn('[AdminAccess] Failed to check org group membership:', groupErr);
+      }
+
       // Method 2: Check if user's AID is in org config admins list
       const configResult = await fetchOrgConfig();
       if (configResult.status === 'configured' || configResult.status === 'server_unreachable') {
