@@ -556,8 +556,9 @@ test.describe.serial('Registration Approval Flow', () => {
   // Test 2: Role upgrade enables member to approve registrations
   //
   // User1 (from test 1) endorses User2 as a regular Member (no admin buttons).
-  // Admin upgrades User1 to Community Steward. User1 now has admin powers
-  // and can approve User2's registration.
+  // Admin upgrades User1 to Community Steward (triggers KERI multisig rotation).
+  // User1's dashboard detects the /multisig/rot notification via useMultisigJoin
+  // polling, auto-joins the org group, and gains admin powers to approve User2.
   // ------------------------------------------------------------------
   test('role upgrade enables member to approve registrations', async ({ browser }) => {
     test.setTimeout(480_000); // 8 min: registration + endorsements + role upgrade + approval
@@ -832,27 +833,59 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] User1 CommunityProfile role confirmed as "Community Steward" via API');
 
       // ================================================================
-      // J. User1 reopens User2's profile — now sees Approve button
+      // J. User1 reloads dashboard — multisig join polling detects the
+      //    /multisig/rot notification and auto-joins the org group
       // ================================================================
       console.log('[Test] --- User1 reopening User2 profile (as Community Steward) ---');
 
-      // User1 needs to reload dashboard to pick up their new role
-      // The adminAccess check reads credentials from KERIA on page load
+      // User1 needs to reload dashboard to pick up their new role.
+      // On mount, DashboardPage starts useMultisigJoin polling (every 5s).
+      // The admin's ChangeRoleModal triggered a KERI multisig rotation which
+      // sent a /multisig/rot EXN to User1's KERIA. The poller will detect it,
+      // call joinGroup, and then the watch(hasJoinedMultisig) handler will
+      // re-check admin status via useAdminAccess.checkAdminStatus().
       await user1Page.goto(`${FRONTEND_URL}/#/dashboard`);
       await expect(user1Page.locator('.members-card')).toBeVisible({ timeout: TIMEOUT.medium });
 
-      // Re-find User2 on User1's members list and open profile
-      const user2CardOnUser1Again = user1Page.locator('.members-card .profile-card').filter({ hasText: user2Name });
-      await expect(user2CardOnUser1Again).toBeVisible({ timeout: TIMEOUT.medium });
-      await user2CardOnUser1Again.click();
+      // Wait for the multisig join polling to complete.
+      // The poller runs every 5s. KERIA notification delivery through the
+      // witness network can take 10-30s, plus the join operation itself ~10s.
+      // We retry opening User2's profile until the Approve button appears,
+      // which indicates the multisig join succeeded and useAdminAccess
+      // detected the org group membership.
+      console.log('[Test] Waiting for multisig join to complete (polling every 5s)...');
 
+      let approveVisible = false;
+      for (let attempt = 1; attempt <= 12; attempt++) {
+        // Re-find User2 on User1's members list and open profile
+        const user2Card = user1Page.locator('.members-card .profile-card').filter({ hasText: user2Name });
+        await expect(user2Card).toBeVisible({ timeout: TIMEOUT.medium });
+        await user2Card.click();
+
+        const modal = user1Page.locator('.modal-content');
+        await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+        await expect(modal.locator('h4').first()).toContainText(user2Name, { timeout: TIMEOUT.short });
+
+        // Check if Approve button is now visible
+        const approveBtnCheck = modal.getByRole('button', { name: /approve/i });
+        if (await approveBtnCheck.isVisible({ timeout: 2000 }).catch(() => false)) {
+          console.log(`[Test] Approve button visible on attempt ${attempt} — multisig join complete`);
+          approveVisible = true;
+          break;
+        }
+
+        // Close modal and wait for next poll cycle
+        console.log(`[Test] Approve not visible yet (attempt ${attempt}/12), waiting for multisig join...`);
+        await modal.locator('button').filter({ has: user1Page.locator('svg') }).first().click();
+        await expect(modal).not.toBeVisible({ timeout: TIMEOUT.short });
+        await user1Page.waitForTimeout(5000);
+      }
+
+      expect(approveVisible, 'Approve button should become visible after multisig join completes').toBe(true);
+
+      // At this point the modal is still open with the Approve button visible
       const user1ModalAgain = user1Page.locator('.modal-content');
-      await expect(user1ModalAgain).toBeVisible({ timeout: TIMEOUT.short });
-      await expect(user1ModalAgain.locator('h4').first()).toContainText(user2Name, { timeout: TIMEOUT.short });
-
-      // User1 should NOW see Approve button (Community Steward + all requirements met)
       const approveButton = user1ModalAgain.getByRole('button', { name: /approve/i });
-      await expect(approveButton).toBeVisible({ timeout: TIMEOUT.short });
       console.log('[Test] Approve button visible for User1 (now Community Steward)!');
 
       // ================================================================
