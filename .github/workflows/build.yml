@@ -376,14 +376,9 @@ jobs:
           Start-Process "$installDir\Uninstall Matou.exe" -ArgumentList '/S' -Wait -ErrorAction SilentlyContinue
 
       # Upload artifacts
-      # - name: Upload ${{ matrix.platform }} artifacts
-      #   uses: actions/upload-artifact@v4
-      #   with:
-          
-      #     name: matou-${{ env.VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
-      #     path: |
-      #       frontend/dist/electron/Packaged/**
-      #       # frontend/dist/electron/Packaged/**/*.dmg
-      #       # frontend/dist/electron/Packaged/**/*.exe
-      #       # frontend/dist/electron/Packaged/**/*.AppImage
-      #     if-no-files-found: ignore
+      - name: Upload ${{ matrix.platform }} artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: matou-${{ env.VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: frontend/dist/electron/Packaged/**
+          if-no-files-found: error
