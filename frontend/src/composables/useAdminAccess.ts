@@ -37,10 +37,16 @@ export function useAdminAccess() {
     permissions.value.includes('steward')
   );
 
-  // Check if user has a steward role (Operations Steward or Community Steward)
+  // Check if user has a role that can manage members (update roles)
+  const canManageMembers = computed(() => {
+    const role = (adminCredential.value?.role || '').toLowerCase();
+    return role.includes('operations steward') || role.includes('founding member');
+  });
+
+  // Check if user has any steward/admin role
   const isSteward = computed(() => {
     const role = (adminCredential.value?.role || '').toLowerCase();
-    return role.includes('operations steward') || role.includes('community steward');
+    return role.includes('steward') || role.includes('founding member');
   });
 
   /**
@@ -214,6 +220,7 @@ export function useAdminAccess() {
     // Computed
     canApproveRegistrations,
     isSteward,
+    canManageMembers,
 
     // Actions
     checkAdminStatus,

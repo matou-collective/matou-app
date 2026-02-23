@@ -244,12 +244,9 @@ export function useAdminActions() {
 
       // 6. Issue membership credential
       // Note: Schema requires communityName to be 'MATOU' literal value
-      // verificationStatus must be one of: unverified, community_verified, identity_verified, expert_verified
       const credentialData = {
         communityName: 'MATOU',
         role: 'Member',
-        verificationStatus: 'community_verified',
-        permissions: ['participate', 'vote', 'propose'],
         joinedAt: new Date().toISOString(),
       };
 

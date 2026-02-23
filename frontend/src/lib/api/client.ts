@@ -417,6 +417,21 @@ export async function initMemberProfiles(data: {
 }
 
 /**
+ * Update a member's role.
+ */
+export async function updateMemberRole(
+  memberAid: string,
+  role: string,
+): Promise<{ success: boolean; role?: string; error?: string }> {
+  const res = await fetch(`${BACKEND_URL}/api/v1/members/${memberAid}/role`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role }),
+  });
+  return res.json();
+}
+
+/**
  * Upload a file and return a content-addressed fileRef
  */
 export async function uploadFile(file: File): Promise<{ fileRef?: string; error?: string }> {

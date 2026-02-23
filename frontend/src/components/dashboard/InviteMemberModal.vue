@@ -41,6 +41,26 @@
           </div>
 
           <div>
+            <label class="block text-sm font-medium mb-1.5">Initial Role</label>
+            <select
+              v-model="initialRole"
+              class="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              :disabled="isSubmitting"
+            >
+              <option value="Member">Member</option>
+              <option value="Contributor">Contributor</option>
+              <option value="Community Steward">Community Steward</option>
+              <option value="Operations Steward">Operations Steward</option>
+              <option value="Founding Member">Founding Member</option>
+              <option value="Financial Steward">Financial Steward</option>
+              <option value="Governance Steward">Governance Steward</option>
+              <option value="Treasury Steward">Treasury Steward</option>
+              <option value="Technical Steward">Technical Steward</option>
+              <option value="Cultural Steward">Cultural Steward</option>
+            </select>
+          </div>
+
+          <div>
             <label class="block text-sm font-medium mb-1.5">Email <span class="text-muted-foreground font-normal">(optional)</span></label>
             <input
               v-model="inviteeEmail"
@@ -205,6 +225,7 @@ const { isSubmitting, error: inviteError, progress, result, createInvite, reset 
 
 const inviteeName = ref('');
 const endorsementReason = ref('');
+const initialRole = ref('Member');
 const inviteeEmail = ref('');
 const copied = ref(false);
 const emailSending = ref(false);
@@ -249,6 +270,7 @@ function handleCreateAnother() {
   reset();
   inviteeName.value = '';
   endorsementReason.value = '';
+  initialRole.value = 'Member';
   inviteeEmail.value = '';
   copied.value = false;
   emailSending.value = false;
