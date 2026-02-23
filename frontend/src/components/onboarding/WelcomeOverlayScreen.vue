@@ -19,6 +19,7 @@
             alt="Matou"
             class="w-[300px] h-[100px] mx-auto"
           />
+          <p class="text-white/80 text-base md:text-lg">Connection &middot; Collaboration &middot; Innovation</p>
         </div>
 
         <!-- Rotating Indigenous Welcome -->
