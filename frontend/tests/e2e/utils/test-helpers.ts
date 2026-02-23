@@ -105,8 +105,8 @@ export function setupPageLogging(page: Page, prefix: string): void {
       text.includes('KERIClient') || text.includes('Polling') ||
       text.includes('OrgSetup') || text.includes('Config') ||
       text.includes('ClaimIdentity') || text.includes('WelcomeOverlay') ||
-      text.includes('IdentityStore') || text.includes('Endorsement') ||
-      text.includes('EventAttendance') ||
+      text.includes('IdentityStore') || text.includes('MnemonicVerification') ||
+      text.includes('Endorsement') || text.includes('EventAttendance') ||
       text.includes('Error') || msg.type() === 'error'
     ) {
       console.log(`[${prefix}] ${text}`);

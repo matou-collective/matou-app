@@ -11,6 +11,7 @@ import (
 
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/identity"
+	"github.com/matou-dao/backend/internal/keri"
 	"github.com/matou-dao/backend/internal/types"
 )
 
@@ -378,6 +379,11 @@ type InitMemberProfilesRequest struct {
 	ProfileData          json.RawMessage `json:"profileData,omitempty"` // Optional registration data
 }
 
+// UpdateMemberRoleRequest represents a request to update a member's role.
+type UpdateMemberRoleRequest struct {
+	Role string `json:"role"`
+}
+
 // HandleInitMemberProfiles handles POST /api/v1/profiles/init-member.
 // Called by admin after credential issuance + space invite to create the
 // member's CommunityProfile in the read-only space.
@@ -442,7 +448,6 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		"memberSince":  now,
 		"lastActiveAt": now,
 		"credentials":  []string{req.CredentialSAID},
-		"permissions":  []string{"participate", "vote", "propose"},
 	}
 	if req.DisplayName != "" {
 		communityProfileData["displayName"] = req.DisplayName
@@ -645,6 +650,113 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, result)
 }
 
+// HandleUpdateMemberRole handles PUT /api/v1/members/{aid}/role.
+// Updates the member's CommunityProfile role in the read-only space.
+func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	// Extract member AID from URL path: /api/v1/members/{aid}/role
+	path := r.URL.Path
+	parts := strings.Split(strings.TrimPrefix(path, "/api/v1/members/"), "/")
+	if len(parts) < 2 || parts[1] != "role" || parts[0] == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid path, expected /api/v1/members/{aid}/role"})
+		return
+	}
+	memberAID := parts[0]
+
+	var req UpdateMemberRoleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+
+	if !keri.IsValidRole(req.Role) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid role: %s", req.Role),
+		})
+		return
+	}
+
+	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
+	if roSpaceID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "community-readonly space not configured",
+		})
+		return
+	}
+
+	client := h.spaceManager.GetClient()
+	if client == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "any-sync client not available",
+		})
+		return
+	}
+
+	ctx := r.Context()
+	objMgr := h.spaceManager.ObjectTreeManager()
+
+	objects, err := objMgr.ReadObjectsByType(ctx, roSpaceID, "CommunityProfile")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to read profiles: %v", err),
+		})
+		return
+	}
+
+	var targetObj *anysync.ObjectPayload
+	for _, obj := range objects {
+		var data map[string]interface{}
+		if err := json.Unmarshal(obj.Data, &data); err == nil {
+			if aid, ok := data["userAID"].(string); ok && aid == memberAID {
+				targetObj = obj
+				break
+			}
+		}
+	}
+
+	if targetObj == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("no CommunityProfile found for AID %s", memberAID),
+		})
+		return
+	}
+
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	roleBytes, _ := json.Marshal(req.Role)
+	nowBytes, _ := json.Marshal(nowStr)
+	newFields := map[string]json.RawMessage{
+		"role":         roleBytes,
+		"lastActiveAt": nowBytes,
+	}
+
+	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), roSpaceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to load space keys: %v", err),
+		})
+		return
+	}
+
+	if _, err := objMgr.UpdateObject(ctx, roSpaceID, targetObj.ID, newFields, keys.SigningKey); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to update profile: %v", err),
+		})
+		return
+	}
+
+	log.Printf("[UpdateMemberRole] Updated role for %s to %s", memberAID, req.Role)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"success": "true",
+		"role":    req.Role,
+	})
+}
+
 // resolveSpaceForType returns the space ID for a given type definition.
 func (h *ProfilesHandler) resolveSpaceForType(def *types.TypeDefinition) string {
 	switch def.Space {
@@ -711,6 +823,16 @@ func (h *ProfilesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/profiles/", h.HandleListProfiles)
 	mux.HandleFunc("/api/v1/profiles/me", h.HandleMyProfiles)
 	mux.HandleFunc("/api/v1/profiles/init-member", h.HandleInitMemberProfiles)
+	mux.HandleFunc("/api/v1/members/", h.handleMembers)
+}
+
+// handleMembers routes /api/v1/members/* requests.
+func (h *ProfilesHandler) handleMembers(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/role") && r.Method == http.MethodPut {
+		h.HandleUpdateMemberRole(w, r)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 }
 
 // handleTypes routes /api/v1/types requests.

@@ -176,14 +176,16 @@ const handleContinue = async (data?: unknown) => {
       store.navigateTo(next as typeof store.currentScreen);
     }
   } else if (path === 'claim') {
-    // Claim flow: invite-code → claim-welcome → profile-form → claim-processing → profile-confirmation → mnemonic-verification → welcome-overlay → dashboard
+    // Claim flow: invite-code → claim-welcome → profile-form → claim-processing →
+    // profile-confirmation → mnemonic-verification → pending-approval
+    // (mnemonic verification submits registration; pending-approval waits for admin approval)
     const forwardMap: Record<string, string> = {
       'invite-code': 'claim-welcome',
       'claim-welcome': 'profile-form',
       'profile-form': 'claim-processing',
       'claim-processing': 'profile-confirmation',
       'profile-confirmation': 'mnemonic-verification',
-      'mnemonic-verification': 'welcome-overlay',
+      'mnemonic-verification': 'pending-approval',
     };
     const next = forwardMap[current];
     if (next) {

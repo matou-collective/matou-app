@@ -217,9 +217,9 @@ async function handleVerify() {
     // Mnemonic verified! Now send registration to org
     store.recordVerificationAttempt(true);
 
-    // Send registration for both 'register' and 'invite' paths
+    // Send registration for both 'register' and 'claim' (invite) paths
     // Invite path: invitee already has endorsement credential, now registers for membership
-    if (store.onboardingPath === 'register' || store.onboardingPath === 'invite') {
+    if (store.onboardingPath === 'register' || store.onboardingPath === 'claim') {
       console.log('[MnemonicVerification] Sending registration to org...');
       console.log('[MnemonicVerification] Profile data:', {
         name: store.profile.name,
