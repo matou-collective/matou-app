@@ -20,40 +20,35 @@ on:
           - windows
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          ALL='[
+            {"id":"mac-x64","os":"macos-15-intel","platform":"mac","arch":"x64","make_target":"build-darwin-amd64"},
+            {"id":"mac-arm64","os":"macos-latest","platform":"mac","arch":"arm64","make_target":"build-darwin-arm64"},
+            {"id":"linux","os":"ubuntu-latest","platform":"linux","arch":"amd64","make_target":"build-linux-amd64"},
+            {"id":"windows","os":"windows-latest","platform":"windows","arch":"amd64","make_target":"build-windows-amd64"}
+          ]'
+
+          PLATFORM="${{ inputs.platform || 'all' }}"
+          if [ "$PLATFORM" = "all" ]; then
+            echo "matrix={\"include\":$ALL}" >> "$GITHUB_OUTPUT"
+          else
+            FILTERED=$(echo "$ALL" | jq -c --arg id "$PLATFORM" '[.[] | select(.id == $id)]')
+            echo "matrix={\"include\":$FILTERED}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: prepare
     runs-on: ${{ matrix.os }}
-    if: >-
-      github.event_name == 'push' ||
-      inputs.platform == 'all' ||
-      inputs.platform == matrix.id
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
     strategy:
-      matrix:
-        include:
-        - id: mac-x64
-          os: macos-15-intel
-          platform: mac
-          arch: x64
-          make_target: build-darwin-amd64
-
-        - id: mac-arm64
-          os: macos-latest
-          platform: mac
-          arch: arm64
-          make_target: build-darwin-arm64
-
-        - id: linux
-          os: ubuntu-latest
-          platform: linux
-          arch: amd64
-          make_target: build-linux-amd64
-
-        - id: windows
-          os: windows-latest
-          platform: windows
-          arch: amd64
-          make_target: build-windows-amd64
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
       # Checkout code
