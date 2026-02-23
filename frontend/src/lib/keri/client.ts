@@ -1061,17 +1061,15 @@ export class KERIClient {
     }
 
     // Create the credential — use prefix, not display name
-    const issueArgs: Record<string, unknown> = {
+    const issueArgs: import('signify-ts').CredentialData = {
       ri: registryId,
       s: schemaId,
       a: {
         i: recipientAid, // Issuee
         ...credentialData,
       },
+      ...(edgeData ? { e: edgeData } : {}),
     };
-    if (edgeData) {
-      issueArgs.e = edgeData;
-    }
     const credResult = await this.client.credentials().issue(issuerAid.prefix, issueArgs);
 
     console.log('[KERIClient] Waiting for credential issuance...');
