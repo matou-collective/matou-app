@@ -237,6 +237,7 @@ async function handleCreate() {
   await createInvite({
     inviteeName: inviteeName.value.trim(),
     reason: endorsementReason.value.trim(),
+    role: initialRole.value,
   });
 }
 

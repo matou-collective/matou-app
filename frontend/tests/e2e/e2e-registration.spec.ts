@@ -465,14 +465,10 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(userPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
 
       // 8. Save member credentials for downstream tests (e.g. chat)
-      const memberAid = await userPage.evaluate(() => {
-        const stored = localStorage.getItem('matou_current_aid');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          return parsed.prefix || parsed.aid || '';
-        }
-        return '';
-      });
+      // Get AID from the user's backend (identity store is in memory, not localStorage)
+      const identityResp = await userPage.request.get(`http://localhost:${userBackend.port}/api/v1/identity`);
+      const identityBody = await identityResp.json();
+      const memberAid = identityBody.aid || '';
       accounts.member = {
         mnemonic: mnemonic,
         aid: memberAid,
@@ -563,9 +559,13 @@ test.describe.serial('Registration Approval Flow', () => {
   test('role upgrade enables member to approve registrations', async ({ browser }) => {
     test.setTimeout(480_000); // 8 min: registration + endorsements + role upgrade + approval
 
-    // Reload accounts saved by test 1 (includes member mnemonic)
+    // Reload accounts saved by test 1 (includes member mnemonic).
+    // Skip gracefully when running standalone without test 1.
     accounts = loadAccounts();
-    expect(accounts.member?.mnemonic, 'Test 1 must save member account').toBeTruthy();
+    if (!accounts.member?.mnemonic) {
+      test.skip(true, 'Test 1 must run first to create member account');
+      return;
+    }
 
     // --- Set up User2 (new registrant) ---
     const user2Backend = await backends.start('user2-approve');
@@ -764,9 +764,28 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(roleModal.locator('h4').first()).toContainText(accounts.member!.name, { timeout: TIMEOUT.short });
       console.log('[Test] ProfileModal opened for User1 role upgrade');
 
-      // Verify role badge shows "Member" and is clickable (admin is Operations Steward)
+      // Verify role badge shows "Member" — CommunityProfile may take time to sync
+      // If not visible after initial wait, close modal, wait for sync, and retry
       const roleBadge = roleModal.locator('span.inline-flex', { hasText: 'Member' });
-      await expect(roleBadge).toBeVisible({ timeout: TIMEOUT.short });
+      let badgeVisible = await roleBadge.isVisible({ timeout: 2000 }).catch(() => false);
+      if (!badgeVisible) {
+        console.log('[Test] Role badge not yet visible, waiting for CommunityProfile sync...');
+        // Close modal
+        await roleModal.locator('button').first().click();
+        await adminPage.waitForTimeout(5000);
+        // Reopen
+        await user1CardOnAdmin.click();
+        await expect(roleModal).toBeVisible({ timeout: TIMEOUT.short });
+        badgeVisible = await roleBadge.isVisible({ timeout: 2000 }).catch(() => false);
+        if (!badgeVisible) {
+          // One more retry
+          await roleModal.locator('button').first().click();
+          await adminPage.waitForTimeout(5000);
+          await user1CardOnAdmin.click();
+          await expect(roleModal).toBeVisible({ timeout: TIMEOUT.short });
+        }
+      }
+      await expect(roleBadge).toBeVisible({ timeout: TIMEOUT.medium });
       console.log('[Test] User1 role badge shows "Member"');
 
       // Click the role badge to open ChangeRoleModal
@@ -778,8 +797,8 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] ChangeRoleModal opened');
 
       // Verify current role "Member" is pre-selected with "(current)" label
-      const currentRoleLabel = changeRoleModal.locator('span', { hasText: '(current)' });
-      await expect(currentRoleLabel).toBeVisible({ timeout: TIMEOUT.short });
+      const currentRoleRadio = changeRoleModal.getByRole('radio', { name: 'Member (current)' });
+      await expect(currentRoleRadio).toBeChecked({ timeout: TIMEOUT.short });
 
       // Confirm button should be disabled (same role selected)
       const confirmRoleBtn = changeRoleModal.getByRole('button', { name: /confirm/i });
@@ -809,7 +828,16 @@ test.describe.serial('Registration Approval Flow', () => {
       expect(roleBody.role).toBe('Community Steward');
       console.log('[Test] Role update API succeeded:', roleBody);
 
-      // ChangeRoleModal should close after success
+      // Wait for the full steward upgrade stepper to complete.
+      // The modal shows progress steps: role update, resolve identity,
+      // key rotation, revoke credential, issue new credential.
+      // The "Done" button appears when all steps finish.
+      const doneBtn = changeRoleModal.getByRole('button', { name: /done/i });
+      await expect(doneBtn).toBeVisible({ timeout: TIMEOUT.stewardUpgrade });
+      console.log('[Test] Steward upgrade stepper completed');
+      await doneBtn.click();
+
+      // ChangeRoleModal should close after clicking Done
       await expect(changeRoleModal.locator('h3', { hasText: 'Change Role' })).not.toBeVisible({ timeout: TIMEOUT.short });
 
       // Verify role badge updated

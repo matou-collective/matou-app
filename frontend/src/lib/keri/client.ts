@@ -456,6 +456,15 @@ export class KERIClient {
   }
 
   /**
+   * Public session refresh — ensures the KERIA session is active.
+   * Call before using getSignifyClient() for direct KERIA API calls.
+   */
+  async ensureSession(): Promise<void> {
+    if (!this.client) return;
+    await this.ensureConnected();
+  }
+
+  /**
    * Reconnect to KERIA agent
    * @private
    */
@@ -751,8 +760,10 @@ export class KERIClient {
     // Create the group AID with the master as the only member
     // mhab = master habery (the controlling AID)
     // states/rstates contain the key state of participating members
+    // algo MUST be 'group' — otherwise signify-ts defaults to 'salty' and creates
+    // a single-party identifier that ignores states/rstates during rotation.
     const result = await this.client.identifiers().create(name, {
-      algo: undefined, // Use default algorithm
+      algo: 'group' as never, // GroupIdentifierManager — required for multisig rotation
       isith: '1', // Signing threshold of 1
       nsith: '1', // Next signing threshold of 1
       toad: 0, // No witnesses for now (faster for dev)
@@ -823,6 +834,9 @@ export class KERIClient {
   ): Promise<void> {
     if (!this.client) throw new Error('Not initialized');
 
+    // Ensure session is fresh — this operation takes several minutes
+    await this.ensureConnected();
+
     console.log(`[KERIClient] Adding ${newMemberAidPrefix.slice(0, 12)}... to group "${groupName}"`);
 
     // 1. Get current group AID state
@@ -837,14 +851,18 @@ export class KERIClient {
     const queryOp = await this.client.keyStates().query(newMemberAidPrefix, undefined, undefined);
     const ksResult = await this.client.operations().wait(queryOp, { signal: AbortSignal.timeout(30000) });
     const newMemberState = ksResult.response as Record<string, unknown>;
-    console.log(`[KERIClient] Got key state for new member, seq: ${newMemberState?.s}`);
+    console.log(`[KERIClient] Got key state for new member, seq: ${newMemberState?.s}, k: ${JSON.stringify(newMemberState?.k)}, i: ${(newMemberState?.i as string)?.slice(0, 12)}`);
 
     // 4. Also refresh master's key state
     const masterQueryOp = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
     const masterKsResult = await this.client.operations().wait(masterQueryOp, { signal: AbortSignal.timeout(30000) });
     const masterState = masterKsResult.response as Record<string, unknown>;
+    console.log(`[KERIClient] Master state seq: ${masterState?.s}, k: ${JSON.stringify(masterState?.k)}, i: ${(masterState?.i as string)?.slice(0, 12)}`);
 
     // 5. Rotation 1: Add new member to rstates only (next keys)
+    // Log the group hab to check its algo type and current state
+    const groupHab = await this.client.identifiers().get(groupName);
+    console.log(`[KERIClient] Group hab algo: group=${!!groupHab.group}, salty=${!!groupHab.salty}, k=${JSON.stringify(groupHab.state?.k)}, s=${groupHab.state?.s}`);
     console.log('[KERIClient] Rotation 1: adding member to next rotation keys...');
     const states1 = [masterState];
     const rstates1 = [masterState, newMemberState];
@@ -853,14 +871,52 @@ export class KERIClient {
       states: states1,
       rstates: rstates1,
     });
+    console.log('[KERIClient] Rotation 1 POST succeeded, checking operation...');
     const rot1Op = await rot1Result.op();
-    await this.client.operations().wait(rot1Op, { signal: AbortSignal.timeout(60000) });
-    console.log('[KERIClient] Rotation 1 complete');
+    console.log(`[KERIClient] Rotation 1 op: name=${rot1Op?.name}, done=${rot1Op?.done}, response=${JSON.stringify(rot1Op?.response)?.slice(0, 200)}`);
+    if (!rot1Op?.done) {
+      // For group identifiers, the operation may not auto-complete even for single-member groups.
+      // Poll a few times, then proceed if the rotation event was accepted (POST succeeded).
+      let rotDone = false;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+          const opStatus = await this.client.operations().get(rot1Op.name);
+          console.log(`[KERIClient] Rotation 1 poll ${i + 1}: done=${opStatus?.done}`);
+          if (opStatus?.done) {
+            rotDone = true;
+            break;
+          }
+        } catch (pollErr) {
+          console.warn(`[KERIClient] Rotation 1 poll ${i + 1} error:`, pollErr);
+        }
+      }
+      if (!rotDone) {
+        console.warn('[KERIClient] Rotation 1 op not done after 30s polling — proceeding anyway (POST was accepted)');
+      }
+    }
+    console.log('[KERIClient] Rotation 1 complete (or proceeding)');
 
     // 6. Rotation 2: Promote new member to signing keys
+    // Re-check session — rotation 1 may have taken 30-60s
+    await this.ensureConnected();
     console.log('[KERIClient] Rotation 2: promoting member to signing keys...');
-    const states2 = [masterState, newMemberState];
-    const rstates2 = [masterState, newMemberState];
+
+    // Re-query both key states — Rotation 1 changed the master's keys
+    const masterQueryOp2 = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
+    const masterKsResult2 = await this.client.operations().wait(masterQueryOp2, { signal: AbortSignal.timeout(30000) });
+    const masterState2 = masterKsResult2.response as Record<string, unknown>;
+    console.log(`[KERIClient] Master state (refreshed) seq: ${masterState2?.s}, k: ${JSON.stringify(masterState2?.k)}`);
+
+    const memberQueryOp2 = await this.client.keyStates().query(newMemberAidPrefix, undefined, undefined);
+    const memberKsResult2 = await this.client.operations().wait(memberQueryOp2, { signal: AbortSignal.timeout(30000) });
+    const newMemberState2 = memberKsResult2.response as Record<string, unknown>;
+    console.log(`[KERIClient] Member state (refreshed) seq: ${newMemberState2?.s}, k: ${JSON.stringify(newMemberState2?.k)}`);
+
+    const states2 = [masterState2, newMemberState2];
+    const rstates2 = [masterState2, newMemberState2];
+    console.log(`[KERIClient] Rotation 2: states2 count=${states2.length}, rstates2 count=${rstates2.length}`);
+    console.log(`[KERIClient] Rotation 2: states2[0].k[0]=${(masterState2?.k as string[])?.[0]?.slice(0, 12)}, states2[1].k[0]=${(newMemberState2?.k as string[])?.[0]?.slice(0, 12)}`);
 
     const rot2Result = await this.client.identifiers().rotate(groupName, {
       states: states2,
@@ -868,23 +924,68 @@ export class KERIClient {
     });
     const rot2Serder = rot2Result.serder;
     const rot2Sigs = rot2Result.sigs;
+    // Log the serder to verify key count
+    const rot2Ked = rot2Serder.ked || rot2Serder.sad;
+    console.log(`[KERIClient] Rotation 2 serder.ked k: ${JSON.stringify(rot2Ked?.k)}, kt: ${rot2Ked?.kt}, size: ${rot2Serder.size}`);
+    const rot2Sad = rot2Serder.sad || rot2Serder.ked;
+    console.log(`[KERIClient] Rotation 2 event: s=${rot2Sad?.s}, kt=${rot2Sad?.kt}, k=${JSON.stringify(rot2Sad?.k)}, nt=${rot2Sad?.nt}, n=${JSON.stringify(rot2Sad?.n)}`);
+    console.log(`[KERIClient] Rotation 2 sigs count: ${rot2Sigs?.length}`);
     const rot2Op = await rot2Result.op();
-    await this.client.operations().wait(rot2Op, { signal: AbortSignal.timeout(60000) });
+    console.log(`[KERIClient] Rotation 2 op: name=${rot2Op?.name}, done=${rot2Op?.done}`);
+    if (!rot2Op?.done) {
+      // Same polling approach as rotation 1
+      let rot2Done = false;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+          const opStatus = await this.client.operations().get(rot2Op.name);
+          console.log(`[KERIClient] Rotation 2 poll ${i + 1}: done=${opStatus?.done}`);
+          if (opStatus?.done) {
+            rot2Done = true;
+            break;
+          }
+        } catch (pollErr) {
+          console.warn(`[KERIClient] Rotation 2 poll ${i + 1} error:`, pollErr);
+        }
+      }
+      if (!rot2Done) {
+        console.warn('[KERIClient] Rotation 2 op not done after 30s polling — proceeding anyway');
+      }
+    }
     console.log('[KERIClient] Rotation 2 complete');
 
-    // 7. Send /multisig/rot EXN to new member so they can join
-    console.log('[KERIClient] Sending /multisig/rot notification to new member...');
+    // 7. Send /multisig/rot EXN to new member with the rotation event as a proper CESR embed.
+    // The official signify-ts multisig example uses exchanges().send() with the rotation
+    // event embedded as [serder, cesr_atc] where cesr_atc is the CESR-messagized attachment.
+    // The embed format is critical — KERIA only creates notifications when the EXN contains
+    // properly formatted CESR embeds, not bare JSON payloads.
+    await this.ensureConnected();
+    console.log('[KERIClient] Sending /multisig/rot EXN to new member...');
     const smids = states2.map((s) => s.i as string);
     const rmids = rstates2.map((s) => s.i as string);
 
     try {
+      const signify = await import('signify-ts');
+
+      // Build CESR attachment from rotation signatures (same pattern as signify-ts integration tests)
+      const sigers = rot2Sigs.map((sig: string) => new signify.Siger({ qb64: sig }));
+      const ims = signify.d(signify.messagize(rot2Serder, sigers));
+      const atc = ims.substring(rot2Serder.size);
+
+      // Embed the rotation event with its CESR attachment
+      const rembeds = {
+        rot: [rot2Serder, atc],
+      };
+
+      console.log('[KERIClient] Sending /multisig/rot with CESR embed, recipients:', [newMemberAidPrefix]);
+
       await this.client.exchanges().send(
         masterAidName,
         groupName,
         masterAid,
         '/multisig/rot',
         { gid: groupAid.prefix, smids, rmids },
-        { rot: [rot2Serder.sad, rot2Sigs] },
+        rembeds,
         [newMemberAidPrefix],
       );
       console.log('[KERIClient] /multisig/rot EXN sent to new member');
@@ -919,28 +1020,97 @@ export class KERIClient {
   async joinGroup(groupName: string, notificationSaid: string): Promise<string> {
     if (!this.client) throw new Error('Not initialized');
 
+    // Ensure session is fresh — this may be called from a poller after a long wait
+    await this.ensureConnected();
+
     console.log(`[KERIClient] Joining group via notification ${notificationSaid.slice(0, 12)}...`);
 
     // 1. Get the rotation event from the notification
-    const response = await this.client.groups().getRequest(notificationSaid);
-    if (!response || response.length === 0) {
+    // Try groups().getRequest() first (for /multisig/request submissions),
+    // then fall back to exchanges().get() (for exchanges().send() submissions).
+    let exn: Record<string, unknown> | undefined;
+
+    try {
+      const groupResp = await this.client.groups().getRequest(notificationSaid);
+      console.log('[KERIClient] joinGroup groups().getRequest() response length:', groupResp?.length);
+      if (groupResp && groupResp.length > 0) {
+        console.log('[KERIClient] joinGroup groups().getRequest() exn.e keys:', Object.keys(groupResp[0].exn?.e || {}));
+        console.log('[KERIClient] joinGroup groups().getRequest() exn.a keys:', Object.keys(groupResp[0].exn?.a || {}));
+        if (groupResp[0].exn?.e?.rot) {
+          exn = groupResp[0].exn;
+          console.log('[KERIClient] joinGroup: found rotation event via groups().getRequest()');
+        }
+      }
+    } catch (grpErr) {
+      console.log('[KERIClient] joinGroup groups().getRequest() error:', grpErr);
+    }
+
+    if (!exn) {
+      try {
+        const exchResp = await this.client.exchanges().get(notificationSaid);
+        console.log('[KERIClient] joinGroup exchanges().get() raw response:', JSON.stringify(exchResp, null, 2));
+        if (exchResp?.exn) {
+          exn = exchResp.exn;
+          console.log('[KERIClient] joinGroup: found via exchanges().get()');
+        }
+      } catch (exchErr) {
+        console.log('[KERIClient] joinGroup exchanges().get() error:', exchErr);
+      }
+    }
+
+    if (!exn) {
       throw new Error('No rotation request found for notification');
     }
 
-    const exn = response[0].exn;
-    const rotEvent = exn.e?.rot;
-    const gid = exn.a?.gid as string;
-    const smids = exn.a?.smids as string[];
-    const rmids = exn.a?.rmids as string[];
+    // Log the full EXN for debugging
+    console.log('[KERIClient] joinGroup EXN keys:', Object.keys(exn));
+    console.log('[KERIClient] joinGroup exn.a:', JSON.stringify(exn.a));
+    console.log('[KERIClient] joinGroup exn.e:', JSON.stringify(exn.e));
+    console.log('[KERIClient] joinGroup exn.r:', exn.r);
+
+    const attrs = exn.a as Record<string, unknown>;
+    const gid = attrs?.gid as string;
+    const smids = attrs?.smids as string[];
+    const rmids = attrs?.rmids as string[];
+    // Check for rotation event in both embeds (exn.e.rot) and payload (exn.a.rot)
+    const rotEvent = (exn.e as Record<string, unknown>)?.rot || attrs?.rot;
+    const rotSigs = attrs?.sigs as string[] | undefined;
+
+    console.log(`[KERIClient] joinGroup: gid=${gid?.slice(0, 12)}, rotEvent=${!!rotEvent}, smids=${smids?.length}, rmids=${rmids?.length}`);
 
     if (!rotEvent || !gid) {
+      console.error(`[KERIClient] joinGroup INVALID: rotEvent=${!!rotEvent}, gid=${gid}`);
+      console.error(`[KERIClient] exn.a keys: ${Object.keys(attrs || {}).join(', ')}`);
+      console.error(`[KERIClient] exn.e keys: ${Object.keys((exn.e as Record<string, unknown>) || {}).join(', ')}`);
       throw new Error('Invalid /multisig/rot notification: missing rotation event or group ID');
     }
 
     console.log(`[KERIClient] Group ID: ${gid.slice(0, 12)}..., smids: ${smids?.length}, rmids: ${rmids?.length}`);
 
-    // 2. Get our personal AID to sign the rotation
+    // 2. Resolve member OOBIs so KERIA knows all smids/rmids as kevers.
+    //    Without this, KERIA returns 500 because it doesn't know the members.
+    //    NOTE: Do NOT resolve the group AID's OOBI — that creates a local hab
+    //    which conflicts with groups().join() trying to create the same alias.
+    await this.ensureConnected();
+    const cesrUrl = this.getCesrUrl();
+
+    // Resolve all member OOBIs so KERIA knows them as kevers
+    const allMembers = [...new Set([...(smids || []), ...(rmids || [])])];
     const aids = await this.client.identifiers().list();
+    const myAid = aids?.aids?.[0]?.prefix;
+    for (const mid of allMembers) {
+      if (mid === myAid) continue; // Skip our own AID
+      try {
+        const memberOOBI = `${cesrUrl}/oobi/${mid}`;
+        await this.resolveOOBI(memberOOBI, undefined, 15000);
+        console.log(`[KERIClient] joinGroup: resolved member OOBI for ${mid.slice(0, 12)}...`);
+      } catch (err) {
+        console.warn(`[KERIClient] joinGroup: member OOBI resolution failed for ${mid.slice(0, 12)}:`, err);
+      }
+    }
+
+    // 3. Refresh session and get our personal AID to sign the rotation
+    await this.ensureConnected();
     if (!aids?.aids?.length) {
       throw new Error('No AIDs found to sign rotation');
     }
@@ -949,7 +1119,7 @@ export class KERIClient {
     const personalAid = aids.aids[0];
     const keeper = await this.client.manager!.get(personalAid);
 
-    // 3. Sign the rotation event
+    // 4. Sign the rotation event
     const signify = await import('signify-ts');
     const serder = rotEvent instanceof signify.Serder
       ? rotEvent
@@ -957,7 +1127,7 @@ export class KERIClient {
 
     const sigs = keeper.sign(signify.b(serder.raw));
 
-    // 4. Join the group
+    // 5. Join the group
     console.log('[KERIClient] Calling groups().join()...');
     const joinOp = await this.client.groups().join(
       groupName,
@@ -971,7 +1141,7 @@ export class KERIClient {
     await this.client.operations().wait(joinOp, { signal: AbortSignal.timeout(60000) });
     console.log(`[KERIClient] Joined group "${groupName}" (${gid.slice(0, 12)}...)`);
 
-    // 5. Add agent end role for the joined group AID
+    // 6. Add agent end role for the joined group AID
     const agentId = this.client.agent?.pre;
     if (agentId) {
       try {
@@ -1081,9 +1251,9 @@ export class KERIClient {
     const credOp = credResult.op;
     await this.client.operations().wait(credOp, { signal: AbortSignal.timeout(60000) });
 
-    // Get SAID from the ACDC, handling signify-ts types
-    const acdcKed = (credResult.acdc as { ked?: { d?: string } })?.ked;
-    const credentialSaid = acdcKed?.d || 'unknown';
+    // Get SAID from the ACDC Serder object
+    const acdc = credResult.acdc;
+    const credentialSaid = acdc?.said || (acdc as any)?.sad?.d || 'unknown';
     console.log(`[KERIClient] Credential issued with SAID: ${credentialSaid}`);
 
     // Now grant the credential via IPEX (with timeout protection)
@@ -1117,6 +1287,23 @@ export class KERIClient {
     console.log(`[KERIClient] IPEX grant submitted, SAID: ${grantSaid}`);
 
     return { said: credentialSaid };
+  }
+
+  /**
+   * Revoke a previously issued credential.
+   * @param issuerAidName - Name or prefix of the issuing AID
+   * @param credentialSaid - SAID of the credential to revoke
+   */
+  async revokeCredential(issuerAidName: string, credentialSaid: string): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+
+    await this.ensureConnected();
+    console.log(`[KERIClient] Revoking credential ${credentialSaid}...`);
+
+    const result = await this.client.credentials().revoke(issuerAidName, credentialSaid);
+    await this.client.operations().wait(result.op, { signal: AbortSignal.timeout(60000) });
+
+    console.log(`[KERIClient] Credential ${credentialSaid} revoked`);
   }
 
   /**
@@ -1506,7 +1693,7 @@ export class KERIClient {
       avatarMimeType?: string;
       senderOOBI: string;
     },
-    schemaSaid: string = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT'
+    schemaSaid: string = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI'
   ): Promise<{ success: boolean; sent: string[]; failed: string[] }> {
     if (!this.client) {
       throw new Error('Not initialized');

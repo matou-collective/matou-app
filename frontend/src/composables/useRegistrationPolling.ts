@@ -309,7 +309,49 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         }
       }
 
-      // === 5. Deduplicate by applicantAid (prefer verified over pending, newest first) ===
+      // === 5. Fallback: load pending registrations from backend SharedProfiles ===
+      // A steward who joined the org group AFTER a registration was submitted won't have
+      // the KERIA notification (it was delivered before they joined). Load pending
+      // SharedProfiles from the backend API to fill the gap.
+      if (registrations.length === 0) {
+        try {
+          const profilesResp = await getProfiles('SharedProfile');
+          const sharedProfiles = (profilesResp.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
+          const pendingProfiles = sharedProfiles.filter(
+            p => (p.data?.status as string) === 'pending'
+          );
+
+          for (const sp of pendingProfiles) {
+            const aid = (sp.data?.aid as string) || '';
+            if (!aid || processedApplicantAids.has(aid)) continue;
+
+            registrations.push({
+              notificationId: sp.id,
+              exnSaid: sp.id,
+              applicantAid: aid,
+              profile: {
+                name: (sp.data?.displayName as string) || 'Unknown',
+                email: (sp.data?.email as string) || undefined,
+                bio: (sp.data?.bio as string) || '',
+                location: (sp.data?.location as string) || undefined,
+                joinReason: (sp.data?.joinReason as string) || undefined,
+                indigenousCommunity: (sp.data?.indigenousCommunity as string) || undefined,
+                interests: (sp.data?.interests as string[]) || [],
+                submittedAt: (sp.data?.createdAt as string) || new Date().toISOString(),
+              },
+              isPending: false,
+            });
+          }
+
+          if (pendingProfiles.length > 0) {
+            console.log(`[RegistrationPolling] Loaded ${pendingProfiles.length} pending registrations from backend API`);
+          }
+        } catch (apiErr) {
+          console.warn('[RegistrationPolling] Failed to load pending profiles from backend:', apiErr);
+        }
+      }
+
+      // === 6. Deduplicate by applicantAid (prefer verified over pending, newest first) ===
       // A user might send multiple registration messages (retries), show only the most recent.
       // When merging, keep the best profile data: a custom EXN pending has full profile
       // data (name, email, etc.) while an IPEX apply pending may only have "Unknown" name.
@@ -351,7 +393,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
 
       pendingRegistrations.value = filtered;
 
-      // === 6. Check for MESSAGE REPLY notifications from applicants ===
+      // === 7. Check for MESSAGE REPLY notifications from applicants ===
       const messageReplyNotifications = await keriClient.listNotifications({
         route: REGISTRATION_ROUTES.MESSAGE_REPLY,
         read: false,
@@ -382,7 +424,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         }
       }
 
-      // Create pending SharedProfiles for new registrations
+      // Create pending SharedProfiles for new registrations (from KERIA notifications)
       await createPendingProfiles(filtered);
 
       lastPollTime.value = new Date();

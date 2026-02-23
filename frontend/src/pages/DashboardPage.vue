@@ -155,7 +155,7 @@
     <ProfileModal
       :show="!!selectedMember"
       :sharedProfile="selectedMemberSharedProfile"
-      :communityProfile="selectedMember?.community"
+      :communityProfile="selectedMemberCommunityProfile"
       :registration="selectedMemberRegistration"
       :isProcessing="isProcessing"
       :error="actionError || endorseError || attendanceError"
@@ -166,7 +166,7 @@
       :isEndorsing="isEndorsing"
       :hasMarkedAttended="selectedMemberHasAttended"
       :isMarkingAttended="isMarkingAttended"
-      :canChangeRole="canManageMembers"
+      :canChangeRole="false /* TODO: disabled pending multisig rotation fix — see docs/multisig-rotation-report.md */"
       @close="handleCloseModal"
       @approve="handleApprove"
       @decline="handleDecline"
@@ -288,6 +288,15 @@ const selectedMemberSharedProfile = computed(() => {
   return selectedMember.value?.shared;
 });
 
+// Reactively track the selected member's CommunityProfile from the store.
+// Without this, the communityProfile prop is a stale snapshot that may not
+// have loaded yet when the modal first opens (CommunityProfile syncs async).
+const selectedMemberCommunityProfile = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return selectedMember.value?.community;
+  return findCommunityProfile({ data: { aid } } as Record<string, unknown>) || selectedMember.value?.community;
+});
+
 // Find matching PendingRegistration for the selected member (enables approve/decline buttons)
 const selectedMemberRegistration = computed(() => {
   const aid = selectedMember.value?.shared?.aid as string;
@@ -395,6 +404,10 @@ onMounted(async () => {
   if (isSteward.value) {
     startPolling();
   }
+
+  // Poll for multisig rotation notifications (e.g., after being promoted to steward).
+  // All members should poll — a member can be promoted at any time.
+  startMultisigPolling();
 });
 
 onUnmounted(() => {

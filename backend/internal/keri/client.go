@@ -21,14 +21,12 @@ type Config struct {
 	OrgName  string
 }
 
-// CredentialData contains ACDC credential attributes
+// CredentialData contains ACDC credential attributes (schema v2)
 type CredentialData struct {
-	CommunityName      string   `json:"communityName"`
-	Role               string   `json:"role"`
-	VerificationStatus string   `json:"verificationStatus"`
-	Permissions        []string `json:"permissions"`
-	JoinedAt           string   `json:"joinedAt"`
-	ExpiresAt          string   `json:"expiresAt,omitempty"`
+	CommunityName string `json:"communityName"`
+	Role          string `json:"role"`
+	JoinedAt      string `json:"joinedAt"`
+	ExpiresAt     string `json:"expiresAt,omitempty"`
 }
 
 // Credential represents an ACDC credential
@@ -53,7 +51,7 @@ type OrgInfo struct {
 
 // Schema SAIDs
 const (
-	MembershipSchemaSAID  = "EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT"
+	MembershipSchemaSAID  = "ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI"
 	EndorsementSchemaSAID = "EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE"
 )
 

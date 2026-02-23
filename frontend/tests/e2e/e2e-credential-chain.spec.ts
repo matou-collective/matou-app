@@ -39,7 +39,7 @@ import {
  */
 
 // Schema SAIDs
-const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
 // Schema OOBI URL as seen by KERIA inside Docker
 const SCHEMA_SERVER_URL = 'http://schema-server:7723';

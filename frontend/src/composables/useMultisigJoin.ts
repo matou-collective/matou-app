@@ -27,14 +27,23 @@ export function useMultisigJoin() {
     if (!client) return false;
 
     try {
-      const notifications = await keriClient.listNotifications({
-        route: MULTISIG_ROT_ROUTE,
-        read: false,
-      });
+      // Ensure KERIA session is fresh before polling
+      await keriClient.ensureSession();
+
+      // First log ALL notifications so we can see what's arriving
+      const allNotifications = await keriClient.listNotifications();
+      console.log(`[MultisigJoin] All notifications: ${allNotifications.length}`);
+      for (const n of allNotifications) {
+        console.log(`[MultisigJoin]   route=${n.a?.r} said=${n.a?.d} read=${n.r} id=${n.i}`);
+      }
+
+      const notifications = allNotifications.filter(
+        n => n.a?.r === MULTISIG_ROT_ROUTE && !n.r
+      );
 
       if (notifications.length === 0) return false;
 
-      console.log(`[MultisigJoin] Found ${notifications.length} /multisig/rot notifications`);
+      console.log(`[MultisigJoin] Found ${notifications.length} unread /multisig/rot notifications`);
 
       const configResult = await fetchOrgConfig();
       const config = configResult.status === 'configured'
@@ -70,7 +79,7 @@ export function useMultisigJoin() {
         console.error('[MultisigJoin] Join failed:', joinErr);
         error.value = msg;
 
-        await keriClient.markNotificationRead(notification.i).catch(() => {});
+        // Don't mark as read on failure — let the poller retry on next cycle
         return false;
       } finally {
         isJoining.value = false;

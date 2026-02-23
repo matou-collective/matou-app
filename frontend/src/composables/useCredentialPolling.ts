@@ -10,7 +10,7 @@ import { BACKEND_URL } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
-const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J';
 
 export interface CredentialPollingOptions {
@@ -182,7 +182,6 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         }
       } else {
         // Fallback: try default schema server URL with known schema SAID
-        const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
         // Schema server URL is internal to Docker network (KERIA resolves it)
         const schemaServerUrl = 'http://schema-server:7723';
         const fallbackSchemaOOBI = `${schemaServerUrl}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
@@ -341,30 +340,39 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
       // Check notifications for grants, invites, rejections, and messages
       const notifications = await client.notifications().list();
-      console.log('[CredentialPolling] Raw notifications response:', JSON.stringify(notifications, null, 2));
 
-      // Check for grant notifications (only if credential not yet received)
-      if (!credentialReceived.value) {
-        const grants = notifications.notes?.filter(
-          (n: IPEXNotification) => n.a?.r === '/exn/ipex/grant' && !n.r
-        ) ?? [];
+      // Check for grant notifications
+      const grants = notifications.notes?.filter(
+        (n: IPEXNotification) => n.a?.r === '/exn/ipex/grant' && !n.r
+      ) ?? [];
 
-        console.log('[CredentialPolling] Filtered grants:', grants.length, grants);
+      for (const grant of grants) {
+        // Determine credential type from the exchange message before admitting
+        let grantSchema = '';
+        let grantExn: any = null;
+        try {
+          grantExn = await client.exchanges().get(grant.a.d);
+          grantSchema = grantExn.exn?.e?.acdc?.s || '';
+          console.log('[CredentialPolling] Grant schema:', grantSchema, 'for grant:', grant.a.d);
+        } catch (exnErr) {
+          console.warn('[CredentialPolling] Could not inspect grant exchange:', exnErr);
+        }
 
         if (grantSchema === ENDORSEMENT_SCHEMA_SAID) {
           // Endorsement grant — admit silently, track, but DON'T trigger membership flow
-          console.log('[CredentialPolling] Endorsement grant detected — admitting');
+          // Extract endorser AID from the exchange message (exn.i = sender)
+          const endorserAid = grantExn?.exn?.i || grant.a.i || '';
+          const acdc = grantExn?.exn?.e?.acdc || {};
+          console.log('[CredentialPolling] Endorsement grant detected — admitting, endorser:', endorserAid);
           try {
             await admitGrant(grant);
-            // Wait for KERIA's Admitter to process and store the credential
-            const endorsementCred = await pollForEndorsementCredential(client, myAid!);
-            const credSaid = endorsementCred?.d || grant.a.d;
+            const credSaid = acdc.d || grant.a.d;
             const existing = endorsementsReceived.value.find(e => e.credentialSaid === credSaid);
             if (!existing) {
               endorsementsReceived.value.push({
-                endorserAid: endorsementCred?.i || grant.a.i || '',
+                endorserAid,
                 credentialSaid: credSaid,
-                endorsedAt: endorsementCred?.a?.dt || new Date().toISOString(),
+                endorsedAt: acdc.a?.dt || new Date().toISOString(),
               });
             }
             console.log('[CredentialPolling] Endorsement admitted, SAID:', credSaid);
@@ -389,7 +397,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           isProcessingGrant = true;
 
           // Extract space invite data from grant message (embedded by admin)
-          const grantMsg = grants[0].a?.m;
+          const grantMsg = grant.a?.m;
           if (grantMsg && !spaceInviteReceived.value) {
             try {
               const inviteData = JSON.parse(grantMsg);
@@ -407,12 +415,13 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           }
 
           try {
-            await admitGrant(grants[0]);
-            // After admitting, poll for credential to appear in wallet
+            await admitGrant(grant);
+            // After admitting, poll for membership credential to appear in wallet
             await pollForCredential();
           } finally {
             isProcessingGrant = false;
           }
+          break; // Only process one membership grant at a time
         }
       }
 
@@ -728,8 +737,6 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         data: {
           communityName: sad.a?.communityName || '',
           role: sad.a?.role || '',
-          verificationStatus: sad.a?.verificationStatus || 'unverified',
-          permissions: sad.a?.permissions || [],
           joinedAt: sad.a?.joinedAt || new Date().toISOString(),
         },
       };

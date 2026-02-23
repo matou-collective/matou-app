@@ -101,13 +101,12 @@ func TestTrustNodeCRUD(t *testing.T) {
 
 	// Create a test trust node
 	node := &TrustGraphNode{
-		AID:                "EAID123456789",
-		DisplayName:        "Test User",
-		VerificationStatus: "verified",
-		TrustScore:         0.85,
-		Connections:        []string{"EAID111", "EAID222", "EAID333"},
-		Depth:              2,
-		CachedAt:           time.Now().UTC(),
+		AID:         "EAID123456789",
+		DisplayName: "Test User",
+		TrustScore:  0.85,
+		Connections:  []string{"EAID111", "EAID222", "EAID333"},
+		Depth:       2,
+		CachedAt:    time.Now().UTC(),
 	}
 
 	// Store node

@@ -126,13 +126,12 @@ type CachedCredential struct {
 
 // TrustGraphNode represents a cached trust graph node.
 type TrustGraphNode struct {
-	AID                string    `json:"id"`                 // AID (used as document ID)
-	DisplayName        string    `json:"displayName"`        // Display name
-	VerificationStatus string    `json:"verificationStatus"` // member/verified/trusted/expert
-	TrustScore         float64   `json:"trustScore"`         // Computed trust score
-	Connections        []string  `json:"connections"`        // Connected AIDs
-	Depth              int       `json:"depth"`              // Depth from root
-	CachedAt           time.Time `json:"cachedAt"`           // When computed
+	AID         string    `json:"id"`          // AID (used as document ID)
+	DisplayName string    `json:"displayName"` // Display name
+	TrustScore  float64   `json:"trustScore"`  // Computed trust score
+	Connections []string  `json:"connections"`  // Connected AIDs
+	Depth       int       `json:"depth"`        // Depth from root
+	CachedAt    time.Time `json:"cachedAt"`     // When computed
 }
 
 // UserPreference represents a user preference setting.

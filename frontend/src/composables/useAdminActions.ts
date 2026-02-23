@@ -11,7 +11,7 @@ import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistratio
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
-export const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+export const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 export const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
 export const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J';
 
@@ -290,10 +290,14 @@ export function useAdminActions() {
       //     via useEndorsements when they first try to endorse someone.
       try {
         const profileId = `CommunityProfile-${registration.applicantAid}`;
+        const now = new Date().toISOString();
         await createOrUpdateProfile('CommunityProfile', {
+          userAID: registration.applicantAid,
           credential: credentialSaid,
           role: 'Member',
           credentials: [credentialSaid],
+          memberSince: now,
+          lastActiveAt: now,
         }, { id: profileId });
         console.log('[AdminActions] Updated CommunityProfile with credential SAID:', credentialSaid);
       } catch (updateErr) {
@@ -346,50 +350,105 @@ export function useAdminActions() {
    * Called after changing a member's role to Founding Member or Community Steward.
    * @param stewardAid - The steward's personal AID prefix
    */
-  async function addStewardToOrgMultisig(stewardAid: string): Promise<boolean> {
+  /**
+   * Upgrade a member to steward: multisig rotation + credential revoke/re-issue.
+   * Reports progress via onStep callback.
+   */
+  async function upgradeMemberToSteward(
+    stewardAid: string,
+    newRole: string,
+    onStep?: (step: string) => void,
+  ): Promise<boolean> {
     const client = keriClient.getSignifyClient();
     if (!client) {
-      console.error('[AdminActions] No SignifyClient for multisig rotation');
+      console.error('[AdminActions] No SignifyClient for steward upgrade');
       return false;
     }
 
     try {
+      // --- Step 1: Resolve steward identity ---
+      onStep?.('Resolving steward identity...');
       console.log(`[AdminActions] Adding steward ${stewardAid.slice(0, 12)}... to org multisig`);
 
-      // 1. Get the org AID name
       const orgAidPrefix = await getOrgAidName();
-
-      // Find the org AID by prefix to get its name
       const aids = await client.identifiers().list();
       const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === orgAidPrefix);
       const orgName = orgAid?.name;
-      if (!orgName) {
-        throw new Error('Could not find org AID name');
-      }
+      if (!orgName) throw new Error('Could not find org AID name');
 
-      // 2. Find admin's personal AID name (the master controller)
       const personalAid = aids.aids?.find((a: { prefix: string; name: string }) =>
         a.prefix !== orgAidPrefix && !a.name?.includes('org')
       );
-      if (!personalAid) {
-        throw new Error('Could not find admin personal AID');
-      }
+      if (!personalAid) throw new Error('Could not find admin personal AID');
 
-      // 3. Resolve steward's OOBI (should already be resolved from earlier interactions)
       const cesrUrl = keriClient.getCesrUrl();
       const stewardOOBI = `${cesrUrl}/oobi/${stewardAid}`;
-      console.log(`[AdminActions] Resolving steward OOBI: ${stewardOOBI}`);
       await keriClient.resolveOOBI(stewardOOBI, undefined, 30000);
 
-      // 4. Perform the two-rotation process
+      // --- Step 2: Key rotation ---
+      onStep?.('Performing key rotation...');
       await keriClient.addMemberToGroup(orgName, stewardAid, personalAid.name);
+      console.log('[AdminActions] Steward added to org multisig');
 
-      console.log('[AdminActions] Steward added to org multisig successfully');
+      // --- Step 3: Revoke old credential ---
+      onStep?.('Revoking old credential...');
+      const configResult = await fetchOrgConfig();
+      if (configResult.status !== 'configured') throw new Error('Org config not available');
+      const config = configResult.config;
+      if (!config.registry?.id) throw new Error('Registry not found in org config');
+      const creds = await client.credentials().list();
+      const oldCred = creds.find(
+        (c: { sad: { s: string; a?: { i?: string } } }) =>
+          c.sad.s === MEMBERSHIP_SCHEMA_SAID && c.sad.a?.i === stewardAid
+      );
+      if (oldCred) {
+        await keriClient.revokeCredential(orgAid!.prefix, oldCred.sad.d);
+        console.log('[AdminActions] Old credential revoked:', oldCred.sad.d);
+      } else {
+        console.warn('[AdminActions] No existing membership credential found to revoke');
+      }
+
+      // --- Step 4: Issue new credential with updated role ---
+      onStep?.('Issuing new credential...');
+      const grantMessage = `Role updated to ${newRole}`;
+      const credResult = await keriClient.issueCredential(
+        orgName,
+        config.registry.id,
+        MEMBERSHIP_SCHEMA_SAID,
+        stewardAid,
+        {
+          communityName: 'MATOU',
+          role: newRole,
+          joinedAt: new Date().toISOString(),
+        },
+        grantMessage,
+      );
+      console.log('[AdminActions] New credential issued:', credResult.said);
+
+      // Update CommunityProfile with new credential SAID
+      const profileId = `CommunityProfile-${stewardAid}`;
+      const now = new Date().toISOString();
+      await createOrUpdateProfile('CommunityProfile', {
+        userAID: stewardAid,
+        credential: credResult.said,
+        role: newRole,
+        credentials: oldCred ? [oldCred.sad.d, credResult.said] : [credResult.said],
+        memberSince: now,
+        lastActiveAt: now,
+      }, { id: profileId });
+
+      onStep?.('Complete');
+      console.log('[AdminActions] Steward upgrade complete');
       return true;
     } catch (err) {
-      console.error('[AdminActions] Failed to add steward to org multisig:', err);
+      console.error('[AdminActions] Failed to upgrade steward:', err);
       return false;
     }
+  }
+
+  /** @deprecated Use upgradeMemberToSteward instead */
+  async function addStewardToOrgMultisig(stewardAid: string): Promise<boolean> {
+    return upgradeMemberToSteward(stewardAid, 'Community Steward');
   }
 
   /**
@@ -581,6 +640,7 @@ export function useAdminActions() {
     // Actions
     approveRegistration,
     addStewardToOrgMultisig,
+    upgradeMemberToSteward,
     declineRegistration,
     sendMessageToApplicant,
     clearError,
