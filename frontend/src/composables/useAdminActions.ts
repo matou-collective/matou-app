@@ -321,6 +321,57 @@ export function useAdminActions() {
   }
 
   /**
+   * Add a steward's AID to the org group AID via multisig rotation.
+   * Called after changing a member's role to Founding Member or Community Steward.
+   * @param stewardAid - The steward's personal AID prefix
+   */
+  async function addStewardToOrgMultisig(stewardAid: string): Promise<boolean> {
+    const client = keriClient.getSignifyClient();
+    if (!client) {
+      console.error('[AdminActions] No SignifyClient for multisig rotation');
+      return false;
+    }
+
+    try {
+      console.log(`[AdminActions] Adding steward ${stewardAid.slice(0, 12)}... to org multisig`);
+
+      // 1. Get the org AID name
+      const orgAidPrefix = await getOrgAidName();
+
+      // Find the org AID by prefix to get its name
+      const aids = await client.identifiers().list();
+      const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === orgAidPrefix);
+      const orgName = orgAid?.name;
+      if (!orgName) {
+        throw new Error('Could not find org AID name');
+      }
+
+      // 2. Find admin's personal AID name (the master controller)
+      const personalAid = aids.aids?.find((a: { prefix: string; name: string }) =>
+        a.prefix !== orgAidPrefix && !a.name?.includes('org')
+      );
+      if (!personalAid) {
+        throw new Error('Could not find admin personal AID');
+      }
+
+      // 3. Resolve steward's OOBI (should already be resolved from earlier interactions)
+      const cesrUrl = keriClient.getCesrUrl();
+      const stewardOOBI = `${cesrUrl}/oobi/${stewardAid}`;
+      console.log(`[AdminActions] Resolving steward OOBI: ${stewardOOBI}`);
+      await keriClient.resolveOOBI(stewardOOBI, undefined, 30000);
+
+      // 4. Perform the two-rotation process
+      await keriClient.addMemberToGroup(orgName, stewardAid, personalAid.name);
+
+      console.log('[AdminActions] Steward added to org multisig successfully');
+      return true;
+    } catch (err) {
+      console.error('[AdminActions] Failed to add steward to org multisig:', err);
+      return false;
+    }
+  }
+
+  /**
    * Decline a registration and send rejection notification
    * @param registration - The registration to decline
    * @param reason - Optional reason for decline
@@ -508,6 +559,7 @@ export function useAdminActions() {
 
     // Actions
     approveRegistration,
+    addStewardToOrgMultisig,
     declineRegistration,
     sendMessageToApplicant,
     clearError,
