@@ -546,6 +546,97 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'github.com' })).toBeVisible();
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'gitlab.com' })).toBeVisible();
       console.log('[Test] PASS - All registration profile data (including avatar) persisted to Account Settings');
+
+      // ================================================================
+      // 10. ROLE UPGRADE: Admin upgrades User1 from Member to Community Steward
+      // ================================================================
+      console.log('[Test] --- Starting role upgrade flow ---');
+
+      // Navigate admin back to dashboard
+      await adminPage.goto(`${FRONTEND_URL}/#/dashboard`);
+      await expect(adminPage.locator('.members-card')).toBeVisible({ timeout: TIMEOUT.short });
+
+      // Click on the approved member's ProfileCard
+      const memberCardForRole = adminPage.locator('.members-card .profile-card').filter({ hasText: userName });
+      await expect(memberCardForRole).toBeVisible({ timeout: TIMEOUT.medium });
+      await memberCardForRole.click();
+
+      const roleModal = adminPage.locator('.modal-content');
+      await expect(roleModal).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(roleModal.locator('h4').first()).toContainText(userName, { timeout: TIMEOUT.short });
+      console.log('[Test] ProfileModal opened for role upgrade');
+
+      // Verify role badge shows "Member" and is clickable (admin is Operations Steward)
+      const roleBadge = roleModal.locator('span.inline-flex', { hasText: 'Member' });
+      await expect(roleBadge).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Role badge shows "Member"');
+
+      // Click the role badge to open ChangeRoleModal
+      await roleBadge.click();
+
+      // ChangeRoleModal should open (z-index 60, on top of ProfileModal)
+      const changeRoleModal = adminPage.locator('.modal-overlay').last().locator('.modal-content');
+      await expect(changeRoleModal.locator('h3', { hasText: 'Change Role' })).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] ChangeRoleModal opened');
+
+      // Verify current role "Member" is pre-selected with "(current)" label
+      const currentRoleLabel = changeRoleModal.locator('span', { hasText: '(current)' });
+      await expect(currentRoleLabel).toBeVisible({ timeout: TIMEOUT.short });
+
+      // Confirm button should be disabled (same role selected)
+      const confirmRoleBtn = changeRoleModal.getByRole('button', { name: /confirm/i });
+      await expect(confirmRoleBtn).toBeDisabled();
+      console.log('[Test] Confirm disabled with current role selected');
+
+      // Set up response listener for role update API
+      const roleUpdateResponse = adminPage.waitForResponse(
+        resp => resp.url().includes('/api/v1/members/') && resp.url().includes('/role') && resp.request().method() === 'PUT',
+        { timeout: TIMEOUT.medium },
+      );
+
+      // Select "Community Steward"
+      const communityStewardRadio = changeRoleModal.locator('label', { hasText: 'Community Steward' }).locator('input[type="radio"]');
+      await communityStewardRadio.check();
+      console.log('[Test] Selected Community Steward');
+
+      // Confirm button should now be enabled
+      await expect(confirmRoleBtn).toBeEnabled({ timeout: TIMEOUT.short });
+      await confirmRoleBtn.click();
+      console.log('[Test] Clicked Confirm role change');
+
+      // Verify API call succeeded
+      const roleResp = await roleUpdateResponse;
+      expect(roleResp.status()).toBe(200);
+      const roleBody = await roleResp.json();
+      expect(roleBody.success).toBe('true');
+      expect(roleBody.role).toBe('Community Steward');
+      console.log('[Test] Role update API succeeded:', roleBody);
+
+      // ChangeRoleModal should close after success
+      await expect(changeRoleModal.locator('h3', { hasText: 'Change Role' })).not.toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] ChangeRoleModal closed after update');
+
+      // Verify the role badge in ProfileModal now shows "Community Steward"
+      const updatedRoleBadge = roleModal.locator('span.inline-flex', { hasText: 'Community Steward' });
+      await expect(updatedRoleBadge).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Role badge updated to "Community Steward"');
+
+      // Close ProfileModal
+      await roleModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
+      await expect(roleModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // Verify the role persisted via API query
+      const communityProfilesResp = await adminPage.request.get('http://localhost:9080/api/v1/profiles/CommunityProfile');
+      const communityProfiles = await communityProfilesResp.json();
+      const communityProfileList = (communityProfiles.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
+      const memberCommunityProfile = communityProfileList.find(
+        p => (p.data?.userAID as string) === memberAid,
+      );
+      expect(memberCommunityProfile, 'CommunityProfile should exist for member').toBeTruthy();
+      expect(memberCommunityProfile!.data.role, 'Role should be updated to Community Steward').toBe('Community Steward');
+      console.log('[Test] PASS - Role upgrade from Member to Community Steward verified via API');
+
+      console.log('[Test] --- Role upgrade flow complete ---');
     } finally {
       await userContext.close();
       await backends.stop('user-approve');
