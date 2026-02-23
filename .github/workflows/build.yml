@@ -43,6 +43,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
     strategy:
+      fail-fast: false
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
@@ -133,7 +134,12 @@ jobs:
           #    we just need to confirm it's a working executable.
           if [[ "${{ matrix.platform }}" != "windows" ]]; then
             chmod +x "$BIN"
-            OUTPUT=$(timeout 5 ./"$BIN" 2>&1 || true)
+            ./"$BIN" > /tmp/backend-output.txt 2>&1 &
+            BIN_PID=$!
+            sleep 5
+            kill $BIN_PID 2>/dev/null || true
+            wait $BIN_PID 2>/dev/null || true
+            OUTPUT=$(cat /tmp/backend-output.txt)
             if echo "$OUTPUT" | grep -q "MATOU DAO Backend Server"; then
               echo "Binary executes correctly (startup banner detected)"
             else
@@ -221,7 +227,12 @@ jobs:
 
           # Verify the backend binary executes inside the package
           chmod +x "$BACKEND_BIN"
-          OUTPUT=$(timeout 5 "$BACKEND_BIN" 2>&1 || true)
+          "$BACKEND_BIN" > /tmp/pkg-backend-output.txt 2>&1 &
+          PKG_PID=$!
+          sleep 5
+          kill $PKG_PID 2>/dev/null || true
+          wait $PKG_PID 2>/dev/null || true
+          OUTPUT=$(cat /tmp/pkg-backend-output.txt)
           if echo "$OUTPUT" | grep -q "MATOU DAO Backend Server"; then
             echo "Packaged backend binary executes correctly"
           else
@@ -293,7 +304,12 @@ jobs:
           echo "Backend binary found in app bundle"
 
           # Verify the backend binary executes
-          OUTPUT=$(timeout 5 "$BACKEND_BIN" 2>&1 || true)
+          "$BACKEND_BIN" > /tmp/dmg-backend-output.txt 2>&1 &
+          DMG_PID=$!
+          sleep 5
+          kill $DMG_PID 2>/dev/null || true
+          wait $DMG_PID 2>/dev/null || true
+          OUTPUT=$(cat /tmp/dmg-backend-output.txt)
           if echo "$OUTPUT" | grep -q "MATOU DAO Backend Server"; then
             echo "Packaged backend binary executes correctly"
           else
