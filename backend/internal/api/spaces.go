@@ -254,7 +254,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 			if verifyErr := client.MakeSpaceShareable(r.Context(), existingSpace.SpaceID); verifyErr == nil {
 				spaceValid = true
 			} else {
-				fmt.Printf("[CreateCommunity] Cached space %s no longer valid: %v — will recreate\n", existingSpace.SpaceID, verifyErr)
+				log.Printf("[CreateCommunity] Cached space %s no longer valid: %v — will recreate\n", existingSpace.SpaceID, verifyErr)
 			}
 		}
 		if spaceValid {
@@ -325,7 +325,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 
 	// Make space shareable on coordinator (required before CreateOpenInvite)
 	if err := client.MakeSpaceShareable(ctx, result.SpaceID); err != nil {
-		fmt.Printf("Warning: failed to make space shareable: %v\n", err)
+		log.Printf("Warning: failed to make space shareable: %v\n", err)
 	}
 
 	// Save space record to local store
@@ -340,7 +340,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 
 	if err := h.spaceStore.SaveSpace(ctx, space); err != nil {
 		// Log but don't fail - space was created in any-sync
-		fmt.Printf("Warning: failed to save community space record: %v\n", err)
+		log.Printf("Warning: failed to save community space record: %v\n", err)
 	}
 
 	// Update space manager with the new community space ID
@@ -351,13 +351,13 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	// request's timeout budget (the frontend has a 15s AbortSignal).
 	if req.AdminAvatar == "" && req.AdminAvatarData != "" {
 		avatarCtx, avatarCancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer avatarCancel()
 		if fileRef, uploadErr := uploadBase64Avatar(avatarCtx, h.fileManager, result.SpaceID, client.GetSigningKey(), req.AdminAvatarData, req.AdminAvatarMimeType); uploadErr != nil {
-			fmt.Printf("Warning: failed to upload base64 admin avatar: %v\n", uploadErr)
+			log.Printf("Warning: failed to upload base64 admin avatar: %v\n", uploadErr)
 		} else {
 			req.AdminAvatar = fileRef
-			fmt.Printf("[CreateCommunity] Uploaded base64 admin avatar, fileRef: %s\n", fileRef)
+			log.Printf("[CreateCommunity] Uploaded base64 admin avatar, fileRef: %s\n", fileRef)
 		}
-		avatarCancel()
 	}
 
 	// Collect seeded objects across all spaces
@@ -377,7 +377,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 			"typeVersion":  1,
 		}, fmt.Sprintf("SharedProfile-%s", req.AdminAID))
 		if seedErr != nil {
-			fmt.Printf("Warning: failed to seed community space: %v\n", seedErr)
+			log.Printf("Warning: failed to seed community space: %v\n", seedErr)
 		} else {
 			allObjects = append(allObjects, communityObjects...)
 		}
@@ -386,15 +386,15 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	// Create community read-only space (key derivation index 2)
 	roKeys, err := anysync.DeriveSpaceKeySet(mnemonic, 2)
 	if err != nil {
-		fmt.Printf("Warning: failed to derive community-readonly space keys: %v\n", err)
+		log.Printf("Warning: failed to derive community-readonly space keys: %v\n", err)
 	} else {
 		roKeys.SigningKey = client.GetSigningKey()
 		roResult, err := client.CreateSpaceWithKeys(ctx, req.OrgAID, anysync.SpaceTypeCommunityReadOnly, roKeys)
 		if err != nil {
-			fmt.Printf("Warning: failed to create community-readonly space: %v\n", err)
+			log.Printf("Warning: failed to create community-readonly space: %v\n", err)
 		} else {
 			if err := client.MakeSpaceShareable(ctx, roResult.SpaceID); err != nil {
-				fmt.Printf("Warning: failed to make community-readonly space shareable: %v\n", err)
+				log.Printf("Warning: failed to make community-readonly space shareable: %v\n", err)
 			}
 			roSpace := &anysync.Space{
 				SpaceID:   roResult.SpaceID,
@@ -405,12 +405,12 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 				LastSync:  roResult.CreatedAt,
 			}
 			if err := h.spaceStore.SaveSpace(ctx, roSpace); err != nil {
-				fmt.Printf("Warning: failed to save community-readonly space record: %v\n", err)
+				log.Printf("Warning: failed to save community-readonly space record: %v\n", err)
 			}
 			h.spaceManager.SetCommunityReadOnlySpaceID(roResult.SpaceID)
 			if h.userIdentity != nil {
 				if err := h.userIdentity.SetCommunityReadOnlySpaceID(roResult.SpaceID); err != nil {
-					fmt.Printf("Warning: failed to persist community-readonly space ID: %v\n", err)
+					log.Printf("Warning: failed to persist community-readonly space ID: %v\n", err)
 				}
 			}
 
@@ -427,7 +427,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 					"permissions":  []string{"participate", "vote", "propose"},
 				}, fmt.Sprintf("CommunityProfile-%s", req.AdminAID))
 				if seedErr != nil {
-					fmt.Printf("Warning: failed to seed community-readonly space: %v\n", seedErr)
+					log.Printf("Warning: failed to seed community-readonly space: %v\n", seedErr)
 				} else {
 					allObjects = append(allObjects, roObjects...)
 				}
@@ -440,7 +440,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 					"createdAt":     now,
 				}, fmt.Sprintf("OrgProfile-%s", req.OrgAID))
 				if orgSeedErr != nil {
-					fmt.Printf("Warning: failed to seed OrgProfile: %v\n", orgSeedErr)
+					log.Printf("Warning: failed to seed OrgProfile: %v\n", orgSeedErr)
 				} else {
 					allObjects = append(allObjects, orgProfileObjects...)
 				}
@@ -451,15 +451,15 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	// Create admin space (key derivation index 3)
 	adminKeys, err := anysync.DeriveSpaceKeySet(mnemonic, 3)
 	if err != nil {
-		fmt.Printf("Warning: failed to derive admin space keys: %v\n", err)
+		log.Printf("Warning: failed to derive admin space keys: %v\n", err)
 	} else {
 		adminKeys.SigningKey = client.GetSigningKey()
 		adminResult, err := client.CreateSpaceWithKeys(ctx, req.OrgAID, anysync.SpaceTypeAdmin, adminKeys)
 		if err != nil {
-			fmt.Printf("Warning: failed to create admin space: %v\n", err)
+			log.Printf("Warning: failed to create admin space: %v\n", err)
 		} else {
 			if err := client.MakeSpaceShareable(ctx, adminResult.SpaceID); err != nil {
-				fmt.Printf("Warning: failed to make admin space shareable: %v\n", err)
+				log.Printf("Warning: failed to make admin space shareable: %v\n", err)
 			}
 			adminSpace := &anysync.Space{
 				SpaceID:   adminResult.SpaceID,
@@ -470,12 +470,12 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 				LastSync:  adminResult.CreatedAt,
 			}
 			if err := h.spaceStore.SaveSpace(ctx, adminSpace); err != nil {
-				fmt.Printf("Warning: failed to save admin space record: %v\n", err)
+				log.Printf("Warning: failed to save admin space record: %v\n", err)
 			}
 			h.spaceManager.SetAdminSpaceID(adminResult.SpaceID)
 			if h.userIdentity != nil {
 				if err := h.userIdentity.SetAdminSpaceID(adminResult.SpaceID); err != nil {
-					fmt.Printf("Warning: failed to persist admin space ID: %v\n", err)
+					log.Printf("Warning: failed to persist admin space ID: %v\n", err)
 				}
 			}
 		}
@@ -521,7 +521,7 @@ func (h *SpacesHandler) seedSpace(ctx context.Context, spaceID string, typeDef *
 	}
 	headID, err := objMgr.AddObject(ctx, spaceID, typePayload, keys.SigningKey)
 	if err != nil {
-		fmt.Printf("Warning: failed to write type definition %s to space %s: %v\n", typeDef.Name, spaceID, err)
+		log.Printf("Warning: failed to write type definition %s to space %s: %v\n", typeDef.Name, spaceID, err)
 	} else {
 		objects = append(objects, CreatedObject{SpaceID: spaceID, ObjectID: typeDefID, HeadID: headID, Type: "type_definition"})
 	}
@@ -540,7 +540,7 @@ func (h *SpacesHandler) seedSpace(ctx context.Context, spaceID string, typeDef *
 	}
 	headID2, err := objMgr.AddObject(ctx, spaceID, profilePayload, keys.SigningKey)
 	if err != nil {
-		fmt.Printf("Warning: failed to write %s to space %s: %v\n", typeDef.Name, spaceID, err)
+		log.Printf("Warning: failed to write %s to space %s: %v\n", typeDef.Name, spaceID, err)
 	} else {
 		objects = append(objects, CreatedObject{SpaceID: spaceID, ObjectID: profileObjectID, HeadID: headID2, Type: typeDef.Name})
 	}
@@ -657,10 +657,10 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 		// Derive and persist user's peer key for future operations (e.g. JoinWithInvite)
 		peerKey, peerErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0)
 		if peerErr != nil {
-			fmt.Printf("Warning: failed to derive peer key: %v\n", peerErr)
+			log.Printf("Warning: failed to derive peer key: %v\n", peerErr)
 		} else {
 			if persistErr := anysync.PersistUserPeerKey(client.GetDataDir(), req.UserAID, peerKey); persistErr != nil {
-				fmt.Printf("Warning: failed to persist peer key: %v\n", persistErr)
+				log.Printf("Warning: failed to persist peer key: %v\n", persistErr)
 			}
 		}
 
@@ -683,7 +683,7 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 		}
 
 		if err := h.spaceStore.SaveSpace(ctx, space); err != nil {
-			fmt.Printf("Warning: failed to save private space record: %v\n", err)
+			log.Printf("Warning: failed to save private space record: %v\n", err)
 		}
 
 		writeJSON(w, http.StatusOK, CreatePrivateResponse{
@@ -706,7 +706,7 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 
 	// Save space record
 	if err := h.spaceStore.SaveSpace(ctx, space); err != nil {
-		fmt.Printf("Warning: failed to save private space record: %v\n", err)
+		log.Printf("Warning: failed to save private space record: %v\n", err)
 	}
 
 	writeJSON(w, http.StatusOK, CreatePrivateResponse{
@@ -778,7 +778,7 @@ func (h *SpacesHandler) HandleInvite(w http.ResponseWriter, r *http.Request) {
 	client := h.spaceManager.GetClient()
 	if client != nil {
 		if err := client.MakeSpaceShareable(ctx, communitySpace.SpaceID); err != nil {
-			fmt.Printf("[Invite] Warning: MakeSpaceShareable: %v\n", err)
+			log.Printf("[Invite] Warning: MakeSpaceShareable: %v\n", err)
 		}
 	}
 
@@ -814,7 +814,7 @@ func (h *SpacesHandler) HandleInvite(w http.ResponseWriter, r *http.Request) {
 	if roSpaceID != "" {
 		roInviteKey, roErr := aclMgr.CreateOpenInvite(ctx, roSpaceID, list.AclPermissionsReader)
 		if roErr != nil {
-			fmt.Printf("Warning: failed to create community-readonly invite: %v\n", roErr)
+			log.Printf("Warning: failed to create community-readonly invite: %v\n", roErr)
 		} else {
 			roKeyBytes, roMarshalErr := roInviteKey.Marshall()
 			if roMarshalErr == nil {
@@ -919,7 +919,7 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 
 	// Ensure the space is shareable on the coordinator (required before join)
 	if err := client.MakeSpaceShareable(ctx, communitySpace.SpaceID); err != nil {
-		fmt.Printf("[JoinCommunity] Warning: MakeSpaceShareable: %v\n", err)
+		log.Printf("[JoinCommunity] Warning: MakeSpaceShareable: %v\n", err)
 	}
 
 	aclMgr := h.spaceManager.ACLManager()
@@ -936,7 +936,7 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 	// Wait for initial sync to complete so member sees existing data
 	if treeMgr := h.spaceManager.TreeManager(); treeMgr != nil {
 		if err := treeMgr.WaitForSync(ctx, communitySpace.SpaceID, 1, 30*time.Second); err != nil {
-			fmt.Printf("[JoinCommunity] WaitForSync warning for space %s: %v\n", communitySpace.SpaceID, err)
+			log.Printf("[JoinCommunity] WaitForSync warning for space %s: %v\n", communitySpace.SpaceID, err)
 			// Don't fail — data will arrive via next HeadSync cycle
 		}
 	}
@@ -963,7 +963,7 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
-	fmt.Printf("[JoinCommunity] Generated and persisted space keys for community space %s\n", communitySpace.SpaceID)
+	log.Printf("[JoinCommunity] Generated and persisted space keys for community space %s\n", communitySpace.SpaceID)
 
 	// Also join community-readonly space if invite key is provided
 	log.Printf("[JoinCommunity] readOnly check: key=%v spaceID=%q", req.ReadOnlyInviteKey != "", req.ReadOnlySpaceID)
@@ -1284,21 +1284,6 @@ func (h *SpacesHandler) HandleSyncStatus(w http.ResponseWriter, r *http.Request)
 
 	resp.Ready = resp.Community.HasObjectTree && resp.ReadOnly.HasObjectTree
 
-	// Log detailed entry info for debugging
-	if communitySpaceID != "" && treeMgr != nil {
-		entries := treeMgr.GetTreesForSpace(communitySpaceID)
-		for i, e := range entries {
-			log.Printf("[SyncStatus] community entry[%d]: treeId=%s objectId=%s objectType=%s changeType=%s",
-				i, e.TreeID, e.ObjectID, e.ObjectType, e.ChangeType)
-		}
-	}
-	if roSpaceID != "" && treeMgr != nil {
-		roEntries := treeMgr.GetTreesForSpace(roSpaceID)
-		for i, e := range roEntries {
-			log.Printf("[SyncStatus] readOnly entry[%d]: treeId=%s objectId=%s objectType=%s changeType=%s",
-				i, e.TreeID, e.ObjectID, e.ObjectType, e.ChangeType)
-		}
-	}
 	log.Printf("[SyncStatus] community={has=%v obj=%d prof=%d} readOnly={has=%v obj=%d prof=%d} ready=%v",
 		resp.Community.HasObjectTree, resp.Community.ObjectCount, resp.Community.ProfileCount,
 		resp.ReadOnly.HasObjectTree, resp.ReadOnly.ObjectCount, resp.ReadOnly.ProfileCount,

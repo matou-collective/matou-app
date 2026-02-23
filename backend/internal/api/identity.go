@@ -128,7 +128,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 
 	newPeerID := h.sdkClient.GetPeerID()
 	if err := h.userIdentity.SetPeerID(newPeerID); err != nil {
-		fmt.Printf("Warning: failed to persist peer ID: %v\n", err)
+		log.Printf("Warning: failed to persist peer ID: %v\n", err)
 	}
 
 	log.Printf("[Identity] Set identity: aid=%s, orgAid=%s, communitySpace=%s, readOnlySpace=%s, adminSpace=%s",
@@ -137,7 +137,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	// 3. Update org config if provided
 	if req.OrgAID != "" || req.CommunitySpaceID != "" {
 		if err := h.userIdentity.SetOrgConfig(req.OrgAID, req.CommunitySpaceID); err != nil {
-			fmt.Printf("Warning: failed to persist org config: %v\n", err)
+			log.Printf("Warning: failed to persist org config: %v\n", err)
 		}
 		// Update SpaceManager with runtime config
 		if req.CommunitySpaceID != "" {
@@ -151,7 +151,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	// 3b. Persist read-only space ID if provided
 	if req.ReadOnlySpaceID != "" {
 		if err := h.userIdentity.SetCommunityReadOnlySpaceID(req.ReadOnlySpaceID); err != nil {
-			fmt.Printf("Warning: failed to persist read-only space ID: %v\n", err)
+			log.Printf("Warning: failed to persist read-only space ID: %v\n", err)
 		}
 		h.spaceManager.SetCommunityReadOnlySpaceID(req.ReadOnlySpaceID)
 	}
@@ -159,7 +159,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	// 3c. Persist admin space ID if provided
 	if req.AdminSpaceID != "" {
 		if err := h.userIdentity.SetAdminSpaceID(req.AdminSpaceID); err != nil {
-			fmt.Printf("Warning: failed to persist admin space ID: %v\n", err)
+			log.Printf("Warning: failed to persist admin space ID: %v\n", err)
 		}
 		h.spaceManager.SetAdminSpaceID(req.AdminSpaceID)
 	}
@@ -168,7 +168,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	peerKey := h.sdkClient.GetSigningKey()
 	if peerKey != nil {
 		if err := anysync.PersistUserPeerKey(h.sdkClient.GetDataDir(), req.AID, peerKey); err != nil {
-			fmt.Printf("Warning: failed to persist user peer key: %v\n", err)
+			log.Printf("Warning: failed to persist user peer key: %v\n", err)
 		}
 	}
 
@@ -205,7 +205,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 				}
 				actualID = result.SpaceID
 				if actualID != derivedID {
-					fmt.Printf("[Identity] Warning: derived ID %s != created ID %s, using created ID\n", derivedID, actualID)
+					log.Printf("[Identity] Warning: derived ID %s != created ID %s, using created ID\n", derivedID, actualID)
 				}
 			} else {
 				// Recovery mode: try to recover existing space, fall back to create.
@@ -248,7 +248,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 				})
 				return
 			}
-			fmt.Printf("[Identity] Warning: failed to seed private space: %v\n", seedErr)
+			log.Printf("[Identity] Warning: failed to seed private space: %v\n", seedErr)
 		}
 	}
 
@@ -263,11 +263,11 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID); keyErr != nil {
 			// Re-derive keys from mnemonic (index 1, matching community space creation)
 			if communityKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 1); deriveErr != nil {
-				fmt.Printf("[Identity] Failed to derive community space keys: %v\n", deriveErr)
+				log.Printf("[Identity] Failed to derive community space keys: %v\n", deriveErr)
 			} else {
 				communityKeys.SigningKey = client.GetSigningKey()
 				anysync.PersistSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID, communityKeys)
-				fmt.Printf("[Identity] Re-derived community space keys for %s\n", req.CommunitySpaceID)
+				log.Printf("[Identity] Re-derived community space keys for %s\n", req.CommunitySpaceID)
 			}
 		}
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID); keyErr == nil {
@@ -275,9 +275,9 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 			_, err := client.GetSpace(communityCtx, req.CommunitySpaceID)
 			communityCancel()
 			if err != nil {
-				fmt.Printf("[Identity] Failed to sync community space %s: %v\n", req.CommunitySpaceID, err)
+				log.Printf("[Identity] Failed to sync community space %s: %v\n", req.CommunitySpaceID, err)
 			} else {
-				fmt.Printf("[Identity] Recovered community space: %s\n", req.CommunitySpaceID)
+				log.Printf("[Identity] Recovered community space: %s\n", req.CommunitySpaceID)
 			}
 		}
 	}
@@ -286,11 +286,11 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	if req.ReadOnlySpaceID != "" && !isClaim {
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID); keyErr != nil {
 			if roKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 2); deriveErr != nil {
-				fmt.Printf("[Identity] Failed to derive readonly space keys: %v\n", deriveErr)
+				log.Printf("[Identity] Failed to derive readonly space keys: %v\n", deriveErr)
 			} else {
 				roKeys.SigningKey = client.GetSigningKey()
 				anysync.PersistSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID, roKeys)
-				fmt.Printf("[Identity] Re-derived readonly space keys for %s\n", req.ReadOnlySpaceID)
+				log.Printf("[Identity] Re-derived readonly space keys for %s\n", req.ReadOnlySpaceID)
 			}
 		}
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID); keyErr == nil {
@@ -298,9 +298,9 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 			_, err := client.GetSpace(roCtx, req.ReadOnlySpaceID)
 			roCancel()
 			if err != nil {
-				fmt.Printf("[Identity] Failed to sync readonly space %s: %v\n", req.ReadOnlySpaceID, err)
+				log.Printf("[Identity] Failed to sync readonly space %s: %v\n", req.ReadOnlySpaceID, err)
 			} else {
-				fmt.Printf("[Identity] Recovered readonly space: %s\n", req.ReadOnlySpaceID)
+				log.Printf("[Identity] Recovered readonly space: %s\n", req.ReadOnlySpaceID)
 			}
 		}
 	}
@@ -309,11 +309,11 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	if adminSpaceID := h.spaceManager.GetAdminSpaceID(); adminSpaceID != "" && !isClaim {
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), adminSpaceID); keyErr != nil {
 			if adminKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 3); deriveErr != nil {
-				fmt.Printf("[Identity] Failed to derive admin space keys: %v\n", deriveErr)
+				log.Printf("[Identity] Failed to derive admin space keys: %v\n", deriveErr)
 			} else {
 				adminKeys.SigningKey = client.GetSigningKey()
 				anysync.PersistSpaceKeySet(client.GetDataDir(), adminSpaceID, adminKeys)
-				fmt.Printf("[Identity] Re-derived admin space keys for %s\n", adminSpaceID)
+				log.Printf("[Identity] Re-derived admin space keys for %s\n", adminSpaceID)
 			}
 		}
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), adminSpaceID); keyErr == nil {
@@ -321,9 +321,9 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 			_, err := client.GetSpace(adminCtx, adminSpaceID)
 			adminCancel()
 			if err != nil {
-				fmt.Printf("[Identity] Failed to sync admin space %s: %v\n", adminSpaceID, err)
+				log.Printf("[Identity] Failed to sync admin space %s: %v\n", adminSpaceID, err)
 			} else {
-				fmt.Printf("[Identity] Recovered admin space: %s\n", adminSpaceID)
+				log.Printf("[Identity] Recovered admin space: %s\n", adminSpaceID)
 			}
 		}
 	}
@@ -380,7 +380,7 @@ func (h *IdentityHandler) seedPrivateSpace(ctx context.Context, spaceID, userAID
 	}
 	profileBytes, err := json.Marshal(profileData)
 	if err != nil {
-		fmt.Printf("[Identity] Warning: failed to marshal PrivateProfile data: %v\n", err)
+		log.Printf("[Identity] Warning: failed to marshal PrivateProfile data: %v\n", err)
 		return nil
 	}
 	profilePayload := &anysync.ObjectPayload{
@@ -391,7 +391,7 @@ func (h *IdentityHandler) seedPrivateSpace(ctx context.Context, spaceID, userAID
 		Version:   1,
 	}
 	if _, err := objMgr.AddObject(ctx, spaceID, profilePayload, privateKeys.SigningKey); err != nil {
-		fmt.Printf("[Identity] Warning: failed to seed PrivateProfile: %v\n", err)
+		log.Printf("[Identity] Warning: failed to seed PrivateProfile: %v\n", err)
 	}
 	return nil
 }

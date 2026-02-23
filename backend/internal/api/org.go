@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,12 +81,12 @@ func (h *OrgConfigHandler) loadFromDisk() {
 
 	var config OrgConfigData
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		fmt.Printf("[OrgConfig] Failed to parse config: %v\n", err)
+		log.Printf("[OrgConfig] Failed to parse config: %v\n", err)
 		return
 	}
 
 	h.cache = &config
-	fmt.Printf("[OrgConfig] Loaded config for: %s\n", config.Organization.Name)
+	log.Printf("[OrgConfig] Loaded config for: %s\n", config.Organization.Name)
 }
 
 // saveToDisk writes config to disk
@@ -180,7 +181,7 @@ func (h *OrgConfigHandler) HandleSaveConfig(w http.ResponseWriter, r *http.Reque
 		onUpdate(&config)
 	}
 
-	fmt.Printf("[OrgConfig] Saved config for: %s\n", config.Organization.Name)
+	log.Printf("[OrgConfig] Saved config for: %s\n", config.Organization.Name)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "saved",
 	})
@@ -245,7 +246,7 @@ func (h *OrgConfigHandler) HandleDeleteConfig(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	fmt.Println("[OrgConfig] Deleted org config")
+	log.Println("[OrgConfig] Deleted org config")
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "deleted",
 	})

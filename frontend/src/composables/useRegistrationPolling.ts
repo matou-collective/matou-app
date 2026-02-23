@@ -112,31 +112,11 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
     try {
       const registrations: PendingRegistration[] = [];
 
-      // Debug: List ALL unread notifications to see what routes exist
-      const allNotes = await keriClient.listNotifications({ read: false });
-      const routeCounts = allNotes.reduce((acc: Record<string, number>, n: { a?: { r?: string } }) => {
-        const route = n.a?.r || 'unknown';
-        acc[route] = (acc[route] || 0) + 1;
-        return acc;
-      }, {});
-      console.log(`[RegistrationPolling] All unread notifications by route:`, JSON.stringify(routeCounts));
-
       // === 1. Check for PENDING notifications (from KERIA patch) ===
       const pendingNotifications = await keriClient.listNotifications({
         route: REGISTRATION_ROUTES.PENDING,
         read: false,
       });
-
-      console.log(`[RegistrationPolling] Pending notifications: ${pendingNotifications.length}`);
-
-      // Log first few notifications for debugging - dump full structure
-      if (pendingNotifications.length > 0) {
-        console.log('[RegistrationPolling] Sample pending notifications (full structure):');
-        for (let i = 0; i < Math.min(3, pendingNotifications.length); i++) {
-          const n = pendingNotifications[i];
-          console.log(`  [${i}] FULL NOTIFICATION:`, JSON.stringify(n, null, 2));
-        }
-      }
 
       for (const notification of pendingNotifications) {
         try {
@@ -146,9 +126,6 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
 
           const applicantAid = attrs?.i || '';
           const name = (embeddedData.name as string) || 'Unknown';
-
-          // Log each unique applicant we find
-          console.log(`[RegistrationPolling] Parsed: aid=${applicantAid.slice(0, 12)}..., name="${name}"`);
 
           registrations.push({
             notificationId: notification.i,
@@ -188,8 +165,6 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         read: false,
       });
 
-      console.log(`[RegistrationPolling] IPEX apply pending notifications: ${ipexApplyPendingNotifications.length}`);
-
       for (const notification of ipexApplyPendingNotifications) {
         try {
           // Pending notifications from patch have data directly in a.a
@@ -198,8 +173,6 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
 
           const applicantAid = attrs?.i || '';
           const name = (embeddedData.name as string) || 'Unknown';
-
-          console.log(`[RegistrationPolling] IPEX apply pending: aid=${applicantAid.slice(0, 12)}..., name="${name}"`);
 
           registrations.push({
             notificationId: notification.i,
@@ -239,8 +212,6 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         read: false,
       });
 
-      console.log(`[RegistrationPolling] IPEX apply notifications: ${ipexApplyNotifications.length}`);
-
       for (const notification of ipexApplyNotifications) {
         try {
           const exchange = await keriClient.getExchange(notification.a.d);
@@ -251,11 +222,8 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
 
           // Skip if no name - not a valid registration
           if (!attributes.name) {
-            console.log(`[RegistrationPolling] Skipping IPEX apply without name:`, notification.a.d);
             continue;
           }
-
-          console.log(`[RegistrationPolling] IPEX apply from ${exn.i?.slice(0, 12)}..., name="${attributes.name}"`);
 
           registrations.push({
             notificationId: notification.i,
@@ -294,8 +262,6 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         route: REGISTRATION_ROUTES.VERIFIED,
         read: false,
       });
-
-      console.log(`[RegistrationPolling] Verified custom EXN notifications: ${verifiedNotifications.length}`);
 
       for (const notification of verifiedNotifications) {
         try {
@@ -377,14 +343,10 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       // Filter out already-processed registrations (approved/declined)
       const filtered = deduped.filter(r => !processedApplicantAids.has(r.applicantAid));
 
-      const pendingCount = filtered.filter(r => r.isPending).length;
-      const verifiedCount = filtered.filter(r => !r.isPending).length;
-      console.log(`[RegistrationPolling] After dedup: ${deduped.length} unique applicants, after filter: ${filtered.length}`);
-      console.log(`[RegistrationPolling] Found ${filtered.length} registrations (${pendingCount} pending, ${verifiedCount} verified)`);
-
-      // Log the final registrations
-      for (const reg of filtered) {
-        console.log(`[RegistrationPolling] Registration: aid=${reg.applicantAid.slice(0, 12)}..., name="${reg.profile.name}", pending=${reg.isPending}`);
+      if (filtered.length > 0) {
+        const pendingCount = filtered.filter(r => r.isPending).length;
+        const verifiedCount = filtered.filter(r => !r.isPending).length;
+        console.log(`[RegistrationPolling] ${filtered.length} registrations (${pendingCount} pending, ${verifiedCount} verified)`);
       }
 
       pendingRegistrations.value = filtered;
