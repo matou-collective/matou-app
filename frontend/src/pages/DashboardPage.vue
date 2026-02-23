@@ -166,11 +166,13 @@
       :isEndorsing="isEndorsing"
       :hasMarkedAttended="selectedMemberHasAttended"
       :isMarkingAttended="isMarkingAttended"
+      :canChangeRole="canManageMembers"
       @close="handleCloseModal"
       @approve="handleApprove"
       @decline="handleDecline"
       @endorse="handleEndorse"
       @mark-attended="handleMarkAttended"
+      @role-updated="handleRoleUpdated"
     />
   </div>
 </template>
@@ -202,7 +204,7 @@ import ProfileCard from 'src/components/profiles/ProfileCard.vue';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
-const { isSteward, checkAdminStatus } = useAdminAccess();
+const { isSteward, canManageMembers, checkAdminStatus } = useAdminAccess();
 const {
   pendingRegistrations,
   startPolling,
@@ -518,6 +520,12 @@ function handleCloseModal() {
   clearEndorseError();
   clearAttendanceError();
   selectedMember.value = null;
+}
+
+function handleRoleUpdated(newRole: string) {
+  if (selectedMember.value?.community) {
+    (selectedMember.value.community as Record<string, unknown>).role = newRole;
+  }
 }
 </script>
 
