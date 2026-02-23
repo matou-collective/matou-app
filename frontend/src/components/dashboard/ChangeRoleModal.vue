@@ -73,6 +73,7 @@
 import { ref, watch } from 'vue';
 import { X, Loader2 } from 'lucide-vue-next';
 import { updateMemberRole } from 'src/lib/api/client';
+import { useAdminActions } from 'src/composables/useAdminActions';
 
 interface Props {
   show: boolean;
@@ -87,6 +88,10 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'role-updated', role: string): void;
 }>();
+
+const { addStewardToOrgMultisig } = useAdminActions();
+
+const STEWARD_ROLES = ['Founding Member', 'Community Steward'];
 
 const roles = [
   'Member',
@@ -119,11 +124,22 @@ async function handleConfirm() {
   error.value = null;
 
   try {
+    // 1. Update role in backend (CommunityProfile)
     const result = await updateMemberRole(props.memberAid, selectedRole.value);
     if (result.error) {
       error.value = result.error;
       return;
     }
+
+    // 2. If promoting to steward role, add to org multisig
+    if (STEWARD_ROLES.includes(selectedRole.value)) {
+      console.log(`[ChangeRoleModal] Promoting to ${selectedRole.value}, triggering multisig rotation...`);
+      const multisigOk = await addStewardToOrgMultisig(props.memberAid);
+      if (!multisigOk) {
+        console.warn('[ChangeRoleModal] Multisig rotation failed, role updated but steward cannot yet issue credentials');
+      }
+    }
+
     emit('role-updated', selectedRole.value);
     emit('close');
   } catch (err) {
