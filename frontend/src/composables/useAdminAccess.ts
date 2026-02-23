@@ -1,21 +1,19 @@
 /**
- * Composable for checking admin access based on credentials
- * Determines if the current user has admin privileges for registration approval
+ * Composable for checking admin access based on credentials.
+ * Determines if the current user has admin privileges for registration approval.
+ *
+ * Admin detection methods (in priority order):
+ * 1. Credential role field — matches steward/admin/founding roles
+ * 2. Org group AID membership — user participates in multisig group
+ * 3. Config admins list — user AID listed in org config
  */
 import { ref, computed } from 'vue';
 import { useKERIClient, CredentialInfo } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 
-// Schema SAIDs for admin credentials
-const OPERATIONS_STEWARD_SCHEMA = 'EOperationsStewardSchemaV1';
-
-// Permissions that grant admin access
-const ADMIN_PERMISSIONS = ['approve_registrations', 'admin', 'steward'];
-
 export interface AdminCredentialInfo extends CredentialInfo {
   role?: string;
-  permissions?: string[];
   communityName?: string;
 }
 
@@ -26,26 +24,27 @@ export function useAdminAccess() {
   // State
   const isAdmin = ref(false);
   const adminCredential = ref<AdminCredentialInfo | null>(null);
-  const permissions = ref<string[]>([]);
   const isChecking = ref(false);
   const error = ref<string | null>(null);
 
-  // Computed
-  const canApproveRegistrations = computed(() =>
-    permissions.value.includes('approve_registrations') ||
-    permissions.value.includes('admin') ||
-    permissions.value.includes('steward')
-  );
+  // Computed — admin status implies approval rights
+  const canApproveRegistrations = computed(() => isAdmin.value);
 
-  // Check if user has a steward role (Operations Steward or Community Steward)
+  // Check if user has a role that can manage members (update roles)
+  const canManageMembers = computed(() => {
+    const role = (adminCredential.value?.role || '').toLowerCase();
+    return role.includes('operations steward') || role.includes('founding member');
+  });
+
+  // Check if user has any steward/admin role
   const isSteward = computed(() => {
     const role = (adminCredential.value?.role || '').toLowerCase();
-    return role.includes('operations steward') || role.includes('community steward');
+    return role.includes('steward') || role.includes('founding member');
   });
 
   /**
-   * Check if the current user has admin status
-   * Looks for Operations Steward credential or credentials with admin permissions
+   * Check if the current user has admin status.
+   * Checks credential roles, org group membership, and config admins list.
    */
   async function checkAdminStatus(): Promise<boolean> {
     const client = keriClient.getSignifyClient();
@@ -66,6 +65,9 @@ export function useAdminAccess() {
     error.value = null;
 
     try {
+      // Ensure KERIA session is fresh before making credential queries
+      await keriClient.ensureSession();
+
       // Method 1: Check credentials in wallet
       // NOTE: client.credentials().list() returns ALL credentials KERIA knows about,
       // including chained credentials from ACDC edges (e.g., the admin's membership
@@ -89,27 +91,9 @@ export function useAdminAccess() {
         const issuee = (credData.i as string) || '';
         if (issuee && issuee !== currentAID.prefix) continue;
 
-        // Check for Operations Steward schema
-        if (schemaId === OPERATIONS_STEWARD_SCHEMA) {
-          console.log('[AdminAccess] Found Operations Steward credential');
-          isAdmin.value = true;
-          adminCredential.value = {
-            said: (sad?.d as string) || (sad?.i as string) || '',
-            schema: schemaId,
-            issuer: (sad?.i as string) || '',
-            issuee: (credData.i as string) || currentAID.prefix,
-            status: (statusObj?.s as string) || 'issued',
-            role: (credData.role as string) || 'Operations Steward',
-            permissions: (credData.permissions as string[]) || ['approve_registrations', 'admin'],
-            communityName: credData.communityName as string | undefined,
-          };
-          permissions.value = adminCredential.value?.permissions || [];
-          return true;
-        }
-
         // Check for role field indicating admin/steward
         const role = ((credData.role as string) || '').toLowerCase();
-        if (role.includes('steward') || role.includes('admin') || role.includes('operations')) {
+        if (role.includes('steward') || role.includes('admin') || role.includes('founding')) {
           console.log('[AdminAccess] Found admin role in credential:', role);
           isAdmin.value = true;
           adminCredential.value = {
@@ -119,35 +103,43 @@ export function useAdminAccess() {
             issuee: (credData.i as string) || currentAID.prefix,
             status: (statusObj?.s as string) || 'issued',
             role: credData.role as string | undefined,
-            permissions: (credData.permissions as string[]) || ['approve_registrations'],
             communityName: credData.communityName as string | undefined,
           };
-          permissions.value = adminCredential.value?.permissions || [];
           return true;
         }
+      }
 
-        // Check for permissions array
-        const credPermissions = (credData.permissions as string[]) || [];
-        const hasAdminPermission = credPermissions.some((p: string) =>
-          ADMIN_PERMISSIONS.includes(p.toLowerCase())
-        );
+      // Method 1b: Check if user participates in the org group AID
+      // After multisig join, the org AID appears in identifiers list
+      try {
+        const configResult2 = await fetchOrgConfig();
+        const orgConfig = configResult2.status === 'configured'
+          ? configResult2.config
+          : configResult2.status === 'server_unreachable'
+            ? configResult2.cached
+            : null;
 
-        if (hasAdminPermission) {
-          console.log('[AdminAccess] Found admin permissions in credential');
-          isAdmin.value = true;
-          adminCredential.value = {
-            said: (sad?.d as string) || '',
-            schema: schemaId,
-            issuer: (sad?.i as string) || '',
-            issuee: (credData.i as string) || currentAID.prefix,
-            status: (statusObj?.s as string) || 'issued',
-            role: credData.role as string | undefined,
-            permissions: credPermissions,
-            communityName: credData.communityName as string | undefined,
-          };
-          permissions.value = credPermissions;
-          return true;
+        if (orgConfig?.organization?.aid) {
+          const aids = await client.identifiers().list();
+          const orgGroupAid = aids.aids?.find(
+            (a: { prefix: string }) => a.prefix === orgConfig.organization.aid
+          );
+          if (orgGroupAid) {
+            console.log('[AdminAccess] User is a member of the org group AID');
+            isAdmin.value = true;
+            adminCredential.value = {
+              said: '',
+              schema: '',
+              issuer: orgConfig.organization.aid,
+              issuee: currentAID.prefix,
+              status: 'group_member',
+              role: 'Community Steward',
+            };
+            return true;
+          }
         }
+      } catch (groupErr) {
+        console.warn('[AdminAccess] Failed to check org group membership:', groupErr);
       }
 
       // Method 2: Check if user's AID is in org config admins list
@@ -162,15 +154,13 @@ export function useAdminAccess() {
           if (isConfigAdmin) {
             console.log('[AdminAccess] User AID found in config admins list');
             isAdmin.value = true;
-            permissions.value = ['approve_registrations', 'admin'];
             adminCredential.value = {
               said: '',
               schema: '',
               issuer: '',
               issuee: currentAID.prefix,
               status: 'config',
-              role: 'Operations Steward',
-              permissions: ['approve_registrations', 'admin'],
+              role: 'Founding Member',
             };
             return true;
           }
@@ -180,7 +170,6 @@ export function useAdminAccess() {
       console.log('[AdminAccess] User is not an admin');
       isAdmin.value = false;
       adminCredential.value = null;
-      permissions.value = [];
       return false;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -199,7 +188,6 @@ export function useAdminAccess() {
   function reset() {
     isAdmin.value = false;
     adminCredential.value = null;
-    permissions.value = [];
     error.value = null;
   }
 
@@ -207,13 +195,13 @@ export function useAdminAccess() {
     // State
     isAdmin,
     adminCredential,
-    permissions,
     isChecking,
     error,
 
     // Computed
     canApproveRegistrations,
     isSteward,
+    canManageMembers,
 
     // Actions
     checkAdminStatus,

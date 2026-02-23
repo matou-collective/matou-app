@@ -11,9 +11,12 @@ func TestGetPermissionsForRole(t *testing.T) {
 		hasPermission   string
 	}{
 		{"Member", 2, "read"},
-		{"Verified Member", 3, "vote"},
-		{"Admin", 6, "admin"},
-		{"Operations Steward", 9, "issue_membership"},
+		{"Contributor", 4, "contribute"},
+		{"Community Steward", 8, "issue_membership"},
+		{"Operations Steward", 9, "revoke_membership"},
+		{"Founding Member", 9, "approve_registrations"},
+		{"Financial Steward", 7, "manage_finances"},
+		{"Cultural Steward", 7, "manage_cultural"},
 		{"Unknown", 1, "read"},
 	}
 
@@ -40,14 +43,16 @@ func TestGetPermissionsForRole(t *testing.T) {
 
 func TestValidRoles(t *testing.T) {
 	roles := ValidRoles()
-	if len(roles) != 8 {
-		t.Errorf("expected 8 roles, got %d", len(roles))
+	if len(roles) != 10 {
+		t.Errorf("expected 10 roles, got %d", len(roles))
 	}
 
 	expected := []string{
 		"Member",
-		"Verified Member",
+		"Contributor",
 		"Operations Steward",
+		"Founding Member",
+		"Cultural Steward",
 	}
 
 	for _, e := range expected {
@@ -70,17 +75,20 @@ func TestIsValidRole(t *testing.T) {
 		valid bool
 	}{
 		{"Member", true},
-		{"Admin", true},
+		{"Founding Member", true},
 		{"Operations Steward", true},
+		{"Cultural Steward", true},
+		{"Admin", false},
+		{"Verified Member", false},
 		{"SuperAdmin", false},
 		{"", false},
-		{"member", false}, // case sensitive
+		{"member", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.role, func(t *testing.T) {
 			if got := IsValidRole(tt.role); got != tt.valid {
-				t.Errorf("IsValidRole(%s) = %v, want %v", tt.role, got, tt.valid)
+				t.Errorf("IsValidRole(%q) = %v, want %v", tt.role, got, tt.valid)
 			}
 		})
 	}
@@ -156,8 +164,8 @@ func TestGetOrgInfo(t *testing.T) {
 	if info.Name != "Test Organization" {
 		t.Errorf("expected name Test Organization, got %s", info.Name)
 	}
-	if len(info.Roles) != 8 {
-		t.Errorf("expected 8 roles, got %d", len(info.Roles))
+	if len(info.Roles) != 10 {
+		t.Errorf("expected 10 roles, got %d", len(info.Roles))
 	}
 }
 
@@ -208,11 +216,9 @@ func TestValidateCredential(t *testing.T) {
 				Recipient: "ERECIPIENT123",
 				Schema:    "EMatouMembershipSchemaV1",
 				Data: CredentialData{
-					CommunityName:      "MATOU",
-					Role:               "Member",
-					VerificationStatus: "unverified",
-					Permissions:        []string{"read", "comment"},
-					JoinedAt:           "2026-01-18T00:00:00Z",
+					CommunityName: "MATOU",
+					Role:          "Member",
+					JoinedAt:      "2026-01-18T00:00:00Z",
 				},
 			},
 			wantErr: false,

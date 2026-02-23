@@ -420,7 +420,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 				roObjects, seedErr := h.seedSpace(ctx, roResult.SpaceID, types.CommunityProfileType(), map[string]interface{}{
 					"userAID":    req.AdminAID,
 					"credential": req.CredentialSAID,
-					"role":       "Operations Steward",
+					"role":       "Founding Member",
 					"memberSince": now,
 					"lastActiveAt": now,
 					"credentials":  []string{req.CredentialSAID},

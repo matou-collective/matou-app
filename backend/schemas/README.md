@@ -157,7 +157,7 @@ cat backend/schemas/matou-membership-schema.json | \
 
 ```bash
 grep '"\$id"' backend/schemas/matou-membership-schema.json
-# Output: "$id": "EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT",
+# Output: "$id": "ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI",
 ```
 
 ### Step 4: Update References
@@ -166,7 +166,7 @@ Update `MEMBERSHIP_SCHEMA_SAID` in the frontend composables:
 
 ```typescript
 // In frontend/src/composables/useOrgSetup.ts (and other composables listed above)
-const MEMBERSHIP_SCHEMA_SAID = "EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT";
+const MEMBERSHIP_SCHEMA_SAID = "ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI";
 ```
 
 ### Step 5: Restart Schema Server
@@ -204,14 +204,14 @@ Example:
 curl http://localhost:7723/
 
 # Get a specific schema
-curl http://localhost:7723/oobi/EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT
+curl http://localhost:7723/oobi/ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI
 ```
 
 ## Current Schemas
 
 | Schema | SAID | Description |
 |--------|------|-------------|
-| matou-membership-schema.json | `EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT` | Membership credential with community name, role, verification status, permissions, and join date |
+| matou-membership-schema.json | `ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI` | Membership credential v2 with community name, role, and join date |
 | operations-steward-schema.json | `EOperationsStewardSchemaV1` (placeholder, not SAIDified) | Operations Steward role credential with admin permissions |
 
 > **Note**: `operations-steward-schema.json` has a placeholder `$id`, not a real SAID. It needs to be SAIDified before use in credential issuance.

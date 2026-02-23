@@ -43,6 +43,17 @@
                     <Copy v-else class="w-4 h-4 text-black/60" />
                   </button>
                 </div>
+                <!-- Role (clickable for stewards) -->
+                <div v-if="memberRole" class="mt-2 flex items-center gap-2">
+                  <span
+                    class="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full"
+                    :class="canChangeRole ? 'bg-primary/15 text-primary cursor-pointer hover:bg-primary/25 transition-colors' : 'bg-secondary text-black/70'"
+                    @click="canChangeRole && (showChangeRole = true)"
+                  >
+                    {{ memberRole }}
+                    <Pencil v-if="canChangeRole" class="w-3 h-3 ml-1.5 opacity-60" />
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -328,14 +339,25 @@
       </div>
     </Transition>
   </Teleport>
+
+  <!-- Change Role Modal -->
+  <ChangeRoleModal
+    :show="showChangeRole"
+    :memberName="profileName"
+    :memberAid="profileAid"
+    :currentRole="memberRole"
+    @close="showChangeRole = false"
+    @role-updated="handleRoleUpdated"
+  />
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { X, Check, Copy, Loader2, ThumbsUp, CalendarCheck } from 'lucide-vue-next';
+import { X, Check, Copy, Loader2, ThumbsUp, CalendarCheck, Pencil } from 'lucide-vue-next';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { getFileUrl } from 'src/lib/api/client';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
+import ChangeRoleModal from 'src/components/dashboard/ChangeRoleModal.vue';
 
 // Map interest value to human-readable label
 const interestLabelMap: Map<string, string> = new Map(
@@ -366,6 +388,7 @@ interface Props {
   isEndorsing?: boolean;
   hasMarkedAttended?: boolean;
   isMarkingAttended?: boolean;
+  canChangeRole?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -381,6 +404,7 @@ const props = withDefaults(defineProps<Props>(), {
   isEndorsing: false,
   hasMarkedAttended: false,
   isMarkingAttended: false,
+  canChangeRole: false,
 });
 
 const emit = defineEmits<{
@@ -389,7 +413,15 @@ const emit = defineEmits<{
   (e: 'decline', registration: PendingRegistration, reason?: string): void;
   (e: 'endorse', message?: string): void;
   (e: 'mark-attended'): void;
+  (e: 'role-updated', role: string): void;
 }>();
+
+const memberRole = computed(() => (props.communityProfile?.role as string) || '');
+const showChangeRole = ref(false);
+
+function handleRoleUpdated(newRole: string) {
+  emit('role-updated', newRole);
+}
 
 // Requirements gate: approve button only shown when applicant has met requirements
 const requirementsMet = computed(() => {
@@ -501,6 +533,7 @@ watch(() => props.show, (isOpen) => {
     showEndorseMessage.value = false;
     endorseMessage.value = '';
     action.value = null;
+    showChangeRole.value = false;
   }
 });
 

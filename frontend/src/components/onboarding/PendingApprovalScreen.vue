@@ -243,7 +243,7 @@
               </div>
             </div>
 
-            <!-- Step 2: Community Endorsements -->
+            <!-- Step 2: Admin Review -->
             <div
               v-motion="slideInLeft(400)"
               class="step-card flex items-start gap-4 bg-card border border-border rounded-xl p-4"
@@ -252,12 +252,12 @@
                 <span class="text-sm font-semibold text-primary">2</span>
               </div>
               <div>
-                <h4 class="mb-1">Community Endorsements</h4>
-                <p class="text-sm text-muted-foreground">Community members will review and endorse your application</p>
+                <h4 class="mb-1">Admin Review</h4>
+                <p class="text-sm text-muted-foreground">An admin will review your registration details</p>
               </div>
             </div>
 
-            <!-- Step 3: Admin Admission -->
+            <!-- Step 3: Approval Decision -->
             <div
               v-motion="slideInLeft(500)"
               class="step-card flex items-start gap-4 bg-card border border-border rounded-xl p-4"
@@ -266,8 +266,8 @@
                 <span class="text-sm font-semibold text-primary">3</span>
               </div>
               <div>
-                <h4 class="mb-1">Admin Admission</h4>
-                <p class="text-sm text-muted-foreground">Once endorsed, an admin will admit you to the community</p>
+                <h4 class="mb-1">Approval Decision</h4>
+                <p class="text-sm text-muted-foreground">You'll receive notification of the decision</p>
               </div>
             </div>
 
@@ -410,6 +410,10 @@ const {
   grantReceived,
   credentialReceived,
   credential,
+  endorsementReceived,
+  memberEndorsementVerified,
+  stewardEndorsementVerified,
+  sessionAttendanceVerified,
   spaceInviteReceived,
   spaceInviteKey,
   spaceId,
@@ -417,10 +421,6 @@ const {
   readOnlySpaceId,
   rejectionReceived,
   rejectionInfo,
-  membershipVerified,
-  memberEndorsementVerified,
-  stewardEndorsementVerified,
-  sessionAttendanceVerified,
   startPolling,
   retry,
 } = useCredentialPolling({ pollingInterval: 5000 });
@@ -902,22 +902,6 @@ const resources = [
   justify-content: center;
 }
 
-.help-box {
-  background-color: rgba(232, 244, 248, 0.5);
-}
-
-.error-box {
-  background-color: rgba(var(--matou-destructive-rgb, 220, 38, 38), 0.1);
-}
-
-.processing-steps {
-  background-color: rgba(232, 244, 248, 0.5);
-}
-
-.aid-card {
-  background-color: var(--matou-card);
-}
-
 .requirements-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -965,6 +949,22 @@ const resources = [
   font-size: 0.75rem;
   opacity: 0.8;
   line-height: 1.3;
+}
+
+.help-box {
+  background-color: rgba(232, 244, 248, 0.5);
+}
+
+.error-box {
+  background-color: rgba(var(--matou-destructive-rgb, 220, 38, 38), 0.1);
+}
+
+.processing-steps {
+  background-color: rgba(232, 244, 248, 0.5);
+}
+
+.aid-card {
+  background-color: var(--matou-card);
 }
 
 .rejection-card {

@@ -151,7 +151,7 @@ test.describe.serial('Organization Setup', () => {
       // Wait for dashboard, pending, or welcome overlay
       const enterCommunityBtn = page.getByRole('button', { name: /enter community/i });
       await Promise.race([
-        expect(page.getByRole('heading', { name: /registration pending/i })).toBeVisible({ timeout: TIMEOUT.long }),
+        expect(page.locator('h1', { hasText: /application is under review/i })).toBeVisible({ timeout: TIMEOUT.long }),
         expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
         expect(enterCommunityBtn).toBeVisible({ timeout: TIMEOUT.long }),
       ]);

@@ -155,7 +155,7 @@
     <ProfileModal
       :show="!!selectedMember"
       :sharedProfile="selectedMemberSharedProfile"
-      :communityProfile="selectedMember?.community"
+      :communityProfile="selectedMemberCommunityProfile"
       :registration="selectedMemberRegistration"
       :isProcessing="isProcessing"
       :error="actionError || endorseError || attendanceError"
@@ -166,11 +166,13 @@
       :isEndorsing="isEndorsing"
       :hasMarkedAttended="selectedMemberHasAttended"
       :isMarkingAttended="isMarkingAttended"
+      :canChangeRole="false /* TODO: disabled pending multisig rotation fix — see docs/multisig-rotation-report.md */"
       @close="handleCloseModal"
       @approve="handleApprove"
       @decline="handleDecline"
       @endorse="handleEndorse"
       @mark-attended="handleMarkAttended"
+      @role-updated="handleRoleUpdated"
     />
   </div>
 </template>
@@ -193,6 +195,7 @@ import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
+import { useMultisigJoin } from 'src/composables/useMultisigJoin';
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
@@ -202,7 +205,7 @@ import ProfileCard from 'src/components/profiles/ProfileCard.vue';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
-const { isSteward, checkAdminStatus } = useAdminAccess();
+const { isSteward, canManageMembers, checkAdminStatus } = useAdminAccess();
 const {
   pendingRegistrations,
   startPolling,
@@ -216,6 +219,12 @@ const {
   declineRegistration,
   clearError,
 } = useAdminActions();
+
+const {
+  hasJoined: hasJoinedMultisig,
+  startPolling: startMultisigPolling,
+  stopPolling: stopMultisigPolling,
+} = useMultisigJoin();
 
 const {
   isEndorsing,
@@ -277,6 +286,15 @@ const selectedMemberSharedProfile = computed(() => {
   });
   if (fresh) return (fresh.data as Record<string, unknown>) || fresh;
   return selectedMember.value?.shared;
+});
+
+// Reactively track the selected member's CommunityProfile from the store.
+// Without this, the communityProfile prop is a stale snapshot that may not
+// have loaded yet when the modal first opens (CommunityProfile syncs async).
+const selectedMemberCommunityProfile = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return selectedMember.value?.community;
+  return findCommunityProfile({ data: { aid } } as Record<string, unknown>) || selectedMember.value?.community;
 });
 
 // Find matching PendingRegistration for the selected member (enables approve/decline buttons)
@@ -362,6 +380,9 @@ onMounted(async () => {
   // Check if user is admin/steward
   await checkAdminStatus();
 
+  // Start multisig join polling for all authenticated users
+  startMultisigPolling(5000);
+
   // Fetch admin AIDs for endorsement badge distinction
   try {
     const configResult = await fetchOrgConfig();
@@ -383,10 +404,25 @@ onMounted(async () => {
   if (isSteward.value) {
     startPolling();
   }
+
+  // Poll for multisig rotation notifications (e.g., after being promoted to steward).
+  // All members should poll — a member can be promoted at any time.
+  startMultisigPolling();
 });
 
 onUnmounted(() => {
   stopPolling();
+  stopMultisigPolling();
+});
+
+watch(hasJoinedMultisig, async (joined) => {
+  if (joined) {
+    console.log('[Dashboard] Joined org multisig, re-checking admin status...');
+    await checkAdminStatus();
+    if (isSteward.value) {
+      startPolling();
+    }
+  }
 });
 
 const toggleDarkMode = () => {
@@ -518,6 +554,12 @@ function handleCloseModal() {
   clearEndorseError();
   clearAttendanceError();
   selectedMember.value = null;
+}
+
+function handleRoleUpdated(newRole: string) {
+  if (selectedMember.value?.community) {
+    (selectedMember.value.community as Record<string, unknown>).role = newRole;
+  }
 }
 </script>
 

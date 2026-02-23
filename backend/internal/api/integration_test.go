@@ -917,12 +917,11 @@ func TestIntegration_MixedCredentialTypesRouting(t *testing.T) {
 				"said": "ESAID_STEWARD",
 				"issuer": "EOrg123456789TestOrg",
 				"recipient": "EUSER001",
-				"schema": "EOperationsStewardSchemaV1",
+				"schema": "ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI",
 				"data": {
 					"communityName": "MATOU",
-					"role": "Operations Steward",
-					"permissions": ["admin_keria", "manage_members"],
-					"grantedAt": "2026-01-22T00:00:00Z"
+					"role": "Founding Member",
+					"joinedAt": "2026-01-22T00:00:00Z"
 				}
 			},
 			{

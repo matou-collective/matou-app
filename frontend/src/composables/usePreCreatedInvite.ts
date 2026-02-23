@@ -12,7 +12,8 @@ import { getOrCreatePersonalRegistry } from 'src/lib/keri/registry';
 
 export interface InviteConfig {
   inviteeName: string;
-  reason: string;
+  reason?: string;
+  role?: string;
 }
 
 export interface InviteResult {
@@ -22,7 +23,7 @@ export interface InviteResult {
 
 // Schema SAIDs (from schema server)
 const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
-const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 // Schema server URL is internal to Docker network (KERIA resolves it)
 const SCHEMA_SERVER_URL = 'http://schema-server:7723';
 const SCHEMA_OOBI_URL = `${SCHEMA_SERVER_URL}/oobi/${ENDORSEMENT_SCHEMA_SAID}`;

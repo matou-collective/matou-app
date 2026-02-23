@@ -85,13 +85,11 @@ type SyncKELResponse struct {
 
 // CommunityMember represents a member in the community
 type CommunityMember struct {
-	AID                string   `json:"aid"`
-	Alias              string   `json:"alias,omitempty"`
-	Role               string   `json:"role"`
-	VerificationStatus string   `json:"verificationStatus"`
-	Permissions        []string `json:"permissions"`
-	JoinedAt           string   `json:"joinedAt"`
-	CredentialSAID     string   `json:"credentialSaid"`
+	AID            string `json:"aid"`
+	Alias          string `json:"alias,omitempty"`
+	Role           string `json:"role"`
+	JoinedAt       string `json:"joinedAt"`
+	CredentialSAID string `json:"credentialSaid"`
 }
 
 // CommunityMembersResponse represents the community members list
@@ -358,12 +356,10 @@ func (h *SyncHandler) HandleGetCommunityMembers(w http.ResponseWriter, r *http.R
 						json.Unmarshal(cred.Data, &data)
 					}
 					members = append(members, CommunityMember{
-						AID:                cred.Recipient,
-						Role:               data.Role,
-						VerificationStatus: data.VerificationStatus,
-						Permissions:        data.Permissions,
-						JoinedAt:           data.JoinedAt,
-						CredentialSAID:     cred.SAID,
+						AID:            cred.Recipient,
+						Role:           data.Role,
+						JoinedAt:       data.JoinedAt,
+						CredentialSAID: cred.SAID,
 					})
 				}
 				writeJSON(w, http.StatusOK, CommunityMembersResponse{
@@ -410,12 +406,10 @@ func (h *SyncHandler) HandleGetCommunityMembers(w http.ResponseWriter, r *http.R
 		json.Unmarshal(dataBytes, &data)
 
 		members = append(members, CommunityMember{
-			AID:                cached.SubjectAID,
-			Role:               data.Role,
-			VerificationStatus: data.VerificationStatus,
-			Permissions:        data.Permissions,
-			JoinedAt:           data.JoinedAt,
-			CredentialSAID:     cached.ID,
+			AID:            cached.SubjectAID,
+			Role:           data.Role,
+			JoinedAt:       data.JoinedAt,
+			CredentialSAID: cached.ID,
 		})
 	}
 

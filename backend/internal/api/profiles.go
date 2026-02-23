@@ -710,13 +710,20 @@ func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.
 	}
 
 	var targetObj *anysync.ObjectPayload
+	expectedID := "CommunityProfile-" + memberAID
 	for _, obj := range objects {
+		// Match by userAID field in data
 		var data map[string]interface{}
 		if err := json.Unmarshal(obj.Data, &data); err == nil {
 			if aid, ok := data["userAID"].(string); ok && aid == memberAID {
 				targetObj = obj
 				break
 			}
+		}
+		// Fallback: match by object ID convention
+		if obj.ID == expectedID {
+			targetObj = obj
+			break
 		}
 	}
 

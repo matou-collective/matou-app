@@ -41,6 +41,7 @@ export const TIMEOUT = {
   registrationSubmit: 60_000, // 60s - OOBI resolution + EXN + IPEX apply to admins
   aidCreation: 90_000,  // 1.5 min - connect + OOBI resolution + witness-backed AID creation + end role
   orgSetup: 120_000,   // 2 min - full org setup
+  stewardUpgrade: 300_000, // 5 min - OOBI + 2 key rotations + credential revoke + re-issue
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,7 @@ export function setupPageLogging(page: Page, prefix: string): void {
       text.includes('ClaimIdentity') || text.includes('WelcomeOverlay') ||
       text.includes('IdentityStore') || text.includes('MnemonicVerification') ||
       text.includes('Endorsement') || text.includes('EventAttendance') ||
+      text.includes('MultisigJoin') || text.includes('listNotifications') ||
       text.includes('Error') || msg.type() === 'error'
     ) {
       console.log(`[${prefix}] ${text}`);
@@ -508,17 +510,15 @@ export async function performOrgSetup(
   await page.getByRole('button', { name: /continue/i }).click();
   await completeMnemonicVerification(page, adminMnemonic);
 
-  // Wait for dashboard, pending, membership approved, or welcome screen
+  // Wait for any post-mnemonic state: pending review, approved, welcome overlay, or dashboard
   await Promise.race([
-    expect(page.getByRole('heading', { name: /registration pending/i }))
+    expect(page.locator('h1', { hasText: /application is under review/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
     expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
-    expect(page.locator('h1', { hasText: /membership approved/i }))
+    expect(page.getByRole('heading', { name: /membership approved/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
-    expect(page.locator('h1', { hasText: /welcome to matou/i }))
-      .toBeVisible({ timeout: TIMEOUT.long }),
-    expect(page.getByRole('button', { name: /enter community/i }))
-      .toBeVisible({ timeout: TIMEOUT.long }),
+    page.getByRole('button', { name: /enter community/i })
+      .waitFor({ state: 'visible', timeout: TIMEOUT.long }),
   ]);
 
   // Handle welcome overlay / approved screen if "Enter Community" button appears

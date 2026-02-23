@@ -36,7 +36,7 @@ export interface OrgSetupResult {
 }
 
 // Membership credential schema SAID (from schema server)
-const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
+const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 // Schema server URL as seen by KERIA inside Docker (fixed internal hostname)
 const SCHEMA_SERVER_URL = 'http://schema-server:7723';
 const SCHEMA_OOBI_URL = `${SCHEMA_SERVER_URL}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
@@ -102,21 +102,11 @@ export function useOrgSetup() {
       await keriClient.resolveOOBI(SCHEMA_OOBI_URL, MEMBERSHIP_SCHEMA_SAID);
       console.log('[OrgSetup] Schema OOBI resolved');
 
-      // Step 7: Issue membership credential to admin (as Operations Steward)
+      // Step 7: Issue membership credential to admin (as Founding Member)
       progress.value = 'Issuing admin credential...';
       const credentialData = {
         communityName: 'MATOU',
-        role: 'Operations Steward',
-        verificationStatus: 'identity_verified',
-        permissions: [
-          'admin_keria',
-          'manage_members',
-          'approve_registrations',
-          'issue_credentials',
-          'revoke_credentials',
-          'manage_spaces',
-          'view_analytics',
-        ],
+        role: 'Founding Member',
         joinedAt: new Date().toISOString(),
       };
 

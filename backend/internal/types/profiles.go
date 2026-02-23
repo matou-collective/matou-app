@@ -142,7 +142,7 @@ func CommunityProfileType() *TypeDefinition {
 			{Name: "credential", Type: "string", Required: true, ReadOnly: true,
 				UIHints: &UIHints{Label: "Membership Credential SAID", Section: "membership"}},
 			{Name: "role", Type: "string", Required: true,
-				Validation: &Validation{Enum: []string{"Member", "Operations Steward", "Moderator", "Elder"}},
+				Validation: &Validation{Enum: []string{"Member", "Contributor", "Community Steward", "Operations Steward", "Founding Member", "Financial Steward", "Governance Steward", "Treasury Steward", "Technical Steward", "Cultural Steward"}},
 				UIHints:    &UIHints{DisplayFormat: "badge", Label: "Role", Section: "membership"}},
 			{Name: "memberSince", Type: "datetime", ReadOnly: true,
 				UIHints: &UIHints{DisplayFormat: "relative-date", Label: "Member Since", Section: "membership"}},

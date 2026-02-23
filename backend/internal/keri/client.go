@@ -21,14 +21,12 @@ type Config struct {
 	OrgName  string
 }
 
-// CredentialData contains ACDC credential attributes
+// CredentialData contains ACDC credential attributes (schema v2)
 type CredentialData struct {
-	CommunityName      string   `json:"communityName"`
-	Role               string   `json:"role"`
-	VerificationStatus string   `json:"verificationStatus"`
-	Permissions        []string `json:"permissions"`
-	JoinedAt           string   `json:"joinedAt"`
-	ExpiresAt          string   `json:"expiresAt,omitempty"`
+	CommunityName string `json:"communityName"`
+	Role          string `json:"role"`
+	JoinedAt      string `json:"joinedAt"`
+	ExpiresAt     string `json:"expiresAt,omitempty"`
 }
 
 // Credential represents an ACDC credential
@@ -53,7 +51,7 @@ type OrgInfo struct {
 
 // Schema SAIDs
 const (
-	MembershipSchemaSAID  = "EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT"
+	MembershipSchemaSAID  = "ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI"
 	EndorsementSchemaSAID = "EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE"
 )
 
@@ -148,14 +146,16 @@ func (c *Client) IsOrgIssued(cred *Credential) bool {
 // GetPermissionsForRole returns the permissions for a given role
 func GetPermissionsForRole(role string) []string {
 	permissions := map[string][]string{
-		"Member":             {"read", "comment"},
-		"Verified Member":    {"read", "comment", "vote"},
-		"Trusted Member":     {"read", "comment", "vote", "propose"},
-		"Expert Member":      {"read", "comment", "vote", "propose", "review"},
-		"Contributor":        {"read", "comment", "vote", "contribute"},
-		"Moderator":          {"read", "comment", "vote", "moderate"},
-		"Admin":              {"read", "comment", "vote", "propose", "moderate", "admin"},
-		"Operations Steward": {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
+		"Member":              {"read", "comment"},
+		"Contributor":         {"read", "comment", "vote", "contribute"},
+		"Community Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "approve_registrations"},
+		"Operations Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
+		"Founding Member":     {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
+		"Financial Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_finances"},
+		"Governance Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "manage_governance"},
+		"Treasury Steward":    {"read", "comment", "vote", "propose", "moderate", "admin", "manage_treasury"},
+		"Technical Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_technical"},
+		"Cultural Steward":    {"read", "comment", "vote", "propose", "moderate", "admin", "manage_cultural"},
 	}
 
 	if perms, ok := permissions[role]; ok {
@@ -168,13 +168,15 @@ func GetPermissionsForRole(role string) []string {
 func ValidRoles() []string {
 	return []string{
 		"Member",
-		"Verified Member",
-		"Trusted Member",
-		"Expert Member",
 		"Contributor",
-		"Moderator",
-		"Admin",
+		"Community Steward",
 		"Operations Steward",
+		"Founding Member",
+		"Financial Steward",
+		"Governance Steward",
+		"Treasury Steward",
+		"Technical Steward",
+		"Cultural Steward",
 	}
 }
 

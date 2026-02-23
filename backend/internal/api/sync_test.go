@@ -215,12 +215,10 @@ func TestHandleSyncCredentials_MultipleCredentials(t *testing.T) {
 				"said": "ESAID002",
 				"issuer": "EAID123456789",
 				"recipient": "EUSER123",
-				"schema": "EOperationsStewardSchemaV1",
+				"schema": "ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI",
 				"data": {
 					"communityName": "MATOU",
-					"role": "Operations Steward",
-					"verificationStatus": "expert_verified",
-					"permissions": ["admin_keria", "manage_members"],
+					"role": "Founding Member",
 					"joinedAt": "2026-01-19T00:00:00Z"
 				}
 			}
