@@ -107,16 +107,6 @@ export function useOrgSetup() {
       const credentialData = {
         communityName: 'MATOU',
         role: 'Operations Steward',
-        verificationStatus: 'identity_verified',
-        permissions: [
-          'admin_keria',
-          'manage_members',
-          'approve_registrations',
-          'issue_credentials',
-          'revoke_credentials',
-          'manage_spaces',
-          'view_analytics',
-        ],
         joinedAt: new Date().toISOString(),
       };
 
