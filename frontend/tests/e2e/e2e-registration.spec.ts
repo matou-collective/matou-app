@@ -649,37 +649,11 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Confirmation card green (steward endorsement)');
 
       // ================================================================
-      // E. Admin marks User2 attendance
+      // E. User1 endorses User2 (member endorsement)
       // ================================================================
-      console.log('[Test] --- Admin marking User2 attendance ---');
-      const user2CardForAttendance = membersCard.locator('.profile-card').filter({ hasText: user2Name });
-      await user2CardForAttendance.click();
-
-      const attendanceModal = adminPage.locator('.modal-content');
-      await expect(attendanceModal).toBeVisible({ timeout: TIMEOUT.short });
-
-      const onboardedBtn = attendanceModal.getByRole('button', { name: /onboarded/i });
-      await expect(onboardedBtn).toBeVisible({ timeout: TIMEOUT.short });
-      await onboardedBtn.click();
-      console.log('[Test] Clicked Onboarded...');
-
-      const onboardedDoneBtn = attendanceModal.locator('button:disabled', { hasText: /onboarded/i });
-      await expect(onboardedDoneBtn).toBeVisible({ timeout: TIMEOUT.aidCreation });
-      console.log('[Test] Event attendance succeeded');
-
-      // Close modal
-      await attendanceModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
-      await expect(attendanceModal).not.toBeVisible({ timeout: TIMEOUT.short });
-
-      // Verify attendance on User2's PendingApprovalScreen
-      console.log('[Test] Verifying Whakawhanaunga requirement card on User2 screen...');
-      const whakawhanaunga = requirementsGrid.locator('.requirement-card', { hasText: 'Whakawhanaunga' });
-      await expect(whakawhanaunga).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
-      console.log('[Test] Whakawhanaunga card green (attendance)');
-
-      // ================================================================
-      // F. User1 endorses User2 (member endorsement)
-      // ================================================================
+      // NOTE: User1 endorsement must happen BEFORE admin marks attendance.
+      // Once both endorsement + attendance are present, requirementsMet becomes
+      // true and the Endorse button is hidden from the modal.
       console.log('[Test] --- User1 endorsing User2 ---');
 
       // Wait for User2 to appear in User1's members list (cross-backend sync via any-sync)
@@ -730,6 +704,35 @@ test.describe.serial('Registration Approval Flow', () => {
       const endorsementCard = requirementsGrid.locator('.requirement-card', { hasText: 'Endorsement' });
       await expect(endorsementCard).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
       console.log('[Test] Endorsement card green (member endorsement)');
+
+      // ================================================================
+      // F. Admin marks User2 attendance
+      // ================================================================
+      console.log('[Test] --- Admin marking User2 attendance ---');
+      const user2CardForAttendance = membersCard.locator('.profile-card').filter({ hasText: user2Name });
+      await user2CardForAttendance.click();
+
+      const attendanceModal = adminPage.locator('.modal-content');
+      await expect(attendanceModal).toBeVisible({ timeout: TIMEOUT.short });
+
+      const onboardedBtn = attendanceModal.getByRole('button', { name: /onboarded/i });
+      await expect(onboardedBtn).toBeVisible({ timeout: TIMEOUT.short });
+      await onboardedBtn.click();
+      console.log('[Test] Clicked Onboarded...');
+
+      const onboardedDoneBtn = attendanceModal.locator('button:disabled', { hasText: /onboarded/i });
+      await expect(onboardedDoneBtn).toBeVisible({ timeout: TIMEOUT.aidCreation });
+      console.log('[Test] Event attendance succeeded');
+
+      // Close modal
+      await attendanceModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
+      await expect(attendanceModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // Verify attendance on User2's PendingApprovalScreen
+      console.log('[Test] Verifying Whakawhanaunga requirement card on User2 screen...');
+      const whakawhanaunga = requirementsGrid.locator('.requirement-card', { hasText: 'Whakawhanaunga' });
+      await expect(whakawhanaunga).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
+      console.log('[Test] Whakawhanaunga card green (attendance)');
 
       // ================================================================
       // G. Verify all 3 requirement cards are green

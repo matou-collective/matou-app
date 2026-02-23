@@ -148,6 +148,7 @@ export function useEndorsements() {
 
       // Track locally so hasEndorsed() works immediately
       locallyEndorsedSet.add(`${myAid.prefix}:${applicantAid}`);
+      endorsedVersion.value++; // Trigger Vue computed re-evaluation
 
       // 6. Update SharedProfile with endorsement record (best-effort).
       // The KERI credential is the authoritative record — the SharedProfile
