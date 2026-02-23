@@ -243,7 +243,7 @@
               </div>
             </div>
 
-            <!-- Step 2: Community Endorsements -->
+            <!-- Step 2: Admin Review -->
             <div
               v-motion="slideInLeft(400)"
               class="step-card flex items-start gap-4 bg-card border border-border rounded-xl p-4"
@@ -252,12 +252,12 @@
                 <span class="text-sm font-semibold text-primary">2</span>
               </div>
               <div>
-                <h4 class="mb-1">Community Endorsements</h4>
-                <p class="text-sm text-muted-foreground">Community members will review and endorse your application</p>
+                <h4 class="mb-1">Admin Review</h4>
+                <p class="text-sm text-muted-foreground">An admin will review your registration details</p>
               </div>
             </div>
 
-            <!-- Step 3: Admin Admission -->
+            <!-- Step 3: Approval Decision -->
             <div
               v-motion="slideInLeft(500)"
               class="step-card flex items-start gap-4 bg-card border border-border rounded-xl p-4"
@@ -266,8 +266,8 @@
                 <span class="text-sm font-semibold text-primary">3</span>
               </div>
               <div>
-                <h4 class="mb-1">Admin Admission</h4>
-                <p class="text-sm text-muted-foreground">Once endorsed, an admin will admit you to the community</p>
+                <h4 class="mb-1">Approval Decision</h4>
+                <p class="text-sm text-muted-foreground">You'll receive notification of the decision</p>
               </div>
             </div>
 
@@ -338,6 +338,13 @@
       </div>
     </div>
 
+    <!-- Welcome Overlay -->
+    <WelcomeOverlay
+      :show="showWelcome"
+      :user-name="displayUserName"
+      :credential="credential"
+      @continue="handleContinue"
+    />
   </div>
 </template>
 
@@ -346,6 +353,7 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { Clock, FileText, Target, ExternalLink, CheckCircle, CheckCircle2, Circle, XCircle, Loader2, Copy, Check } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import OnboardingHeader from './OnboardingHeader.vue';
+import WelcomeOverlay from './WelcomeOverlay.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useCredentialPolling } from 'composables/useCredentialPolling';
 import { useIdentityStore } from 'stores/identity';
@@ -400,7 +408,6 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'approved', credential: any): void;
   (e: 'continue-to-dashboard'): void;
-  (e: 'navigate-to-welcome'): void;
 }>();
 
 // Credential polling
@@ -410,6 +417,10 @@ const {
   grantReceived,
   credentialReceived,
   credential,
+  endorsementReceived,
+  memberEndorsementVerified,
+  stewardEndorsementVerified,
+  sessionAttendanceVerified,
   spaceInviteReceived,
   spaceInviteKey,
   spaceId,
@@ -417,13 +428,12 @@ const {
   readOnlySpaceId,
   rejectionReceived,
   rejectionInfo,
-  membershipVerified,
-  memberEndorsementVerified,
-  stewardEndorsementVerified,
-  sessionAttendanceVerified,
   startPolling,
   retry,
 } = useCredentialPolling({ pollingInterval: 5000 });
+
+// UI State
+const showWelcome = ref(false);
 
 // Booking state
 interface TimeSlot {
@@ -834,14 +844,13 @@ watch(
 
       processingStep.value = 'verifying';
       if (joined) {
-        // Refresh spaces in store and verify access so dashboard guard passes
+        // Refresh spaces in store so dashboard guard passes
         await identityStore.fetchUserSpaces();
-        await identityStore.verifyCommunityAccess();
       }
 
       processingStep.value = 'done';
+      showWelcome.value = true;
       emit('approved', credential.value);
-      emit('navigate-to-welcome');
     } else if (!hasInvite && !joinInProgress && processingStep.value === 'admitting') {
       // Credential just received, invite not yet — advance step indicator
       processingStep.value = 'invite';
@@ -852,14 +861,20 @@ watch(
         console.log('[PendingApproval] Already have community access (space owner)');
         joinInProgress = true;
         processingStep.value = 'done';
+        showWelcome.value = true;
         emit('approved', credential.value);
-        emit('navigate-to-welcome');
       }
       // Otherwise, wait — polling continues and will find the space invite,
       // which triggers this watcher again with [true, true]
     }
   }
 );
+
+// Handle continue from welcome overlay
+function handleContinue() {
+  emit('continue-to-dashboard');
+}
+
 
 const resources = [
   {
@@ -900,22 +915,6 @@ const resources = [
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.help-box {
-  background-color: rgba(232, 244, 248, 0.5);
-}
-
-.error-box {
-  background-color: rgba(var(--matou-destructive-rgb, 220, 38, 38), 0.1);
-}
-
-.processing-steps {
-  background-color: rgba(232, 244, 248, 0.5);
-}
-
-.aid-card {
-  background-color: var(--matou-card);
 }
 
 .requirements-grid {
@@ -965,6 +964,22 @@ const resources = [
   font-size: 0.75rem;
   opacity: 0.8;
   line-height: 1.3;
+}
+
+.help-box {
+  background-color: rgba(232, 244, 248, 0.5);
+}
+
+.error-box {
+  background-color: rgba(var(--matou-destructive-rgb, 220, 38, 38), 0.1);
+}
+
+.processing-steps {
+  background-color: rgba(232, 244, 248, 0.5);
+}
+
+.aid-card {
+  background-color: var(--matou-card);
 }
 
 .rejection-card {

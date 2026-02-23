@@ -61,11 +61,6 @@ export interface TestAccounts {
     aid: string;
     name: string;
   } | null;
-  member2?: {
-    mnemonic: string[];
-    aid: string;
-    name: string;
-  } | null;
   createdAt: string | null;
 }
 
@@ -508,16 +503,12 @@ export async function performOrgSetup(
   await page.getByRole('button', { name: /continue/i }).click();
   await completeMnemonicVerification(page, adminMnemonic);
 
-  // Wait for dashboard, pending, membership approved, or welcome screen
+  // Wait for dashboard, pending, or membership approved (admin self-issued credential)
   await Promise.race([
     expect(page.getByRole('heading', { name: /registration pending/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
     expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
     expect(page.locator('h1', { hasText: /membership approved/i }))
-      .toBeVisible({ timeout: TIMEOUT.long }),
-    expect(page.locator('h1', { hasText: /welcome to matou/i }))
-      .toBeVisible({ timeout: TIMEOUT.long }),
-    expect(page.getByRole('button', { name: /enter community/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
   ]);
 

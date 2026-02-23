@@ -387,7 +387,8 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
         await input.fill(mnemonicWords[wordIndex]);
       }
 
-      // Click "Verify and Continue"
+      // Click "Verify and Continue" — submits registration (apply EXN) and navigates to pending-approval
+      console.log('[Test] Clicking verify and continue (triggers registration submission)...');
       await inviteePage.getByRole('button', { name: /verify and continue/i }).click();
 
       // --- Pending Approval Screen ---
