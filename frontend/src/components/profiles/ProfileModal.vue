@@ -393,8 +393,8 @@ const emit = defineEmits<{
 
 // Requirements gate: approve button only shown when applicant has met requirements
 const requirementsMet = computed(() => {
-  const hasEnoughEndorsements = (props.endorsements?.length ?? 0) >= 1;
-  const hasAttendance = !!(props.sharedProfile as Record<string, unknown>)?.attendanceRecord;
+  const hasEnoughEndorsements = (props.endorsements?.length ?? 0) >= 1 || props.hasEndorsed;
+  const hasAttendance = !!(props.sharedProfile as Record<string, unknown>)?.attendanceRecord || props.hasMarkedAttended;
   return hasEnoughEndorsements && hasAttendance;
 });
 

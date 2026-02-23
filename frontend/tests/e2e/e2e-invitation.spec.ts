@@ -14,12 +14,14 @@ import {
 } from './utils/test-helpers';
 
 /**
- * E2E: Pre-Created Identity Invitation Flow
+ * E2E: Pre-Created Identity Invitation Flow (Endorsement + Membership)
  *
  * Tests the full invitation lifecycle:
- * 1. Admin creates a pre-configured invitation from the dashboard
- * 2. Invitee enters invite code on splash, goes through welcome + profile + processing
- * 3. Invitee reaches the dashboard
+ * 1. Admin creates an endorsement invitation from the dashboard
+ * 2. Invitee claims identity, completes profile, goes through pending-approval
+ *    where admin approves membership → welcome overlay → dashboard
+ * 3. Used invite code is rejected
+ * 4. Invitee recovers identity with mnemonic
  *
  * Multi-backend: Admin uses the default backend on port 9080. The invitee gets
  * a dedicated backend instance so their identity/set call doesn't overwrite
@@ -116,7 +118,9 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
     await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
 
     await modal.locator('input[type="text"]').fill('Test Invitee');
-    // Leave role as default "Member"
+
+    // Fill endorsement reason (required textarea)
+    await modal.locator('textarea').fill('Active community contributor and governance participant');
 
     // Fill in optional email field
     await modal.locator('input[type="email"]').fill('ben@matou.nz');
@@ -174,15 +178,19 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
   });
 
   // ------------------------------------------------------------------
-  // Test 2: Invitee claims identity via invite code flow
+  // Test 2: Invitee claims identity and admin approves membership
+  //
+  // After mnemonic verification, invitee lands on pending-approval.
+  // The 3 membership requirements are shown. Admin approves from dashboard.
+  // Invitee receives credential + space invite → welcome overlay → dashboard.
   //
   // Also verifies three onboarding bug fixes:
   // - Bug 1: Form data persists when navigating to Community Guidelines and back
   // - Bug 2: Claim processing shows checkmarks (not spinner) on completion and auto-continues
   // - Bug 3: All profile fields (bio, location, social links, etc.) persist to SharedProfile
   // ------------------------------------------------------------------
-  test('invitee claims identity via invite code', async ({ browser }) => {
-    test.setTimeout(TIMEOUT.orgSetup); // 2 min — AID key rotation + OOBI resolution
+  test('invitee claims identity and admin approves membership', async ({ browser }) => {
+    test.setTimeout(240_000); // 4 min — includes credential issuance + OOBI resolution + admin approval
 
     expect(inviteCode, 'Invite code must exist from previous test').toBeTruthy();
 
@@ -382,16 +390,96 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       // Click "Verify and Continue"
       await inviteePage.getByRole('button', { name: /verify and continue/i }).click();
 
-      // --- Welcome Overlay Screen ---
-      console.log('[Test] Waiting for welcome overlay...');
-      // Welcome overlay shows rotating greetings (starting with "Welcome, <name>!")
-      // and the Matou logo as an img element
+      // --- Pending Approval Screen ---
+      console.log('[Test] Waiting for pending approval screen...');
       await expect(
-        inviteePage.getByRole('img', { name: 'Matou' }),
-      ).toBeVisible({ timeout: TIMEOUT.long });
+        inviteePage.getByText(/application.*review|pending|under review/i).first(),
+      ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+      console.log('[Test] On pending approval screen');
+
+      // --- Verify 3 membership requirement cards are visible ---
+      console.log('[Test] Verifying 3 requirement cards...');
+      const requirementCards = inviteePage.locator('.requirement-card');
+      await expect(requirementCards).toHaveCount(3, { timeout: TIMEOUT.short });
+
+      // Verify requirement titles (use exact match within requirement cards)
+      await expect(requirementCards.filter({ hasText: 'Endorsement' }).first()).toBeVisible();
+      await expect(requirementCards.filter({ hasText: 'Confirmation' })).toBeVisible();
+      await expect(requirementCards.filter({ hasText: 'Attendance' })).toBeVisible();
+      console.log('[Test] PASS - All 3 requirement cards visible');
+
+      // Check Confirmation requirement is met (admin issued the endorsement via invite)
+      const confirmationCard = requirementCards.filter({ hasText: 'Confirmation' }).first();
+      await expect(confirmationCard).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
+      console.log('[Test] Confirmation requirement card is marked as met (admin endorsement)');
+
+      // --- Admin approves from dashboard ---
+      console.log('[Test] Admin: Looking for pending registration...');
+
+      // Navigate admin to dashboard to see pending registrations
+      await adminPage.goto(`${FRONTEND_URL}/#/dashboard`);
+      await expect(adminPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+
+      // Wait for the pending profile card for "Test Invitee"
+      // The Pending section uses ProfileCard components; click to open ProfileModal
+      const pendingSection = adminPage.locator('.members-card');
+      const pendingCard = pendingSection.locator('.profile-card').filter({ hasText: 'Test Invitee' }).first();
+      await expect(pendingCard).toBeVisible({ timeout: TIMEOUT.long });
+      console.log('[Test] Admin: Found pending registration for Test Invitee');
+
+      // Click the profile card to open the modal
+      await pendingCard.click();
+
+      // ProfileModal opens — verify endorsement already detected, then mark attendance
+      const modal = adminPage.locator('.modal-content');
+      await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+      console.log('[Test] Admin: ProfileModal opened');
+
+      // Verify the admin's endorsement from the invite flow is already detected.
+      // The "Endorse" button should be replaced by a disabled "Endorsed" button.
+      // Check BEFORE clicking Onboarded, because once both conditions are met
+      // requirementsMet becomes true and the Endorsed button disappears.
+      const endorsedBtn = modal.getByRole('button', { name: /^endorsed$/i });
+      await expect(endorsedBtn).toBeVisible({ timeout: TIMEOUT.long });
+      await expect(endorsedBtn).toBeDisabled();
+      console.log('[Test] Admin: Endorse button shows "Endorsed" (already issued via invite)');
+
+      // Click "Onboarded" to satisfy attendance requirement
+      const onboardedBtn = modal.getByRole('button', { name: /onboarded/i });
+      await expect(onboardedBtn).toBeVisible({ timeout: TIMEOUT.short });
+      await onboardedBtn.click();
+      console.log('[Test] Admin: Clicked Onboarded');
+
+      // Wait for KERI credential operations to complete.
+      // Both endorsement (already detected) and attendance (just issued) satisfy
+      // requirementsMet, so the Approve button should appear.
+      console.log('[Test] Admin: Waiting for KERI operations to complete...');
+      await adminPage.waitForTimeout(5000);
+
+      // Set up response listener for init-member (approval triggers credential issuance)
+      const initMemberPromise = adminPage.waitForResponse(
+        (r) => r.url().includes('/init-member') && r.status() === 200,
+        { timeout: TIMEOUT.orgSetup },
+      );
+
+      // Wait for "Approve" button to appear (requirements now met via reactive props)
+      const approveBtn = modal.getByRole('button', { name: /approve/i });
+      await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.long });
+      await approveBtn.click();
+      console.log('[Test] Admin: Clicked Approve, waiting for init-member...');
+
+      // Wait for init-member to complete (credential issuance + space invite)
+      await initMemberPromise;
+      console.log('[Test] Admin: init-member complete');
+
+      // --- Invitee: Welcome overlay after approval ---
+      console.log('[Test] Invitee: Waiting for welcome overlay...');
+      await expect(
+        inviteePage.locator('.welcome-overlay'),
+      ).toBeVisible({ timeout: TIMEOUT.aidCreation });
       console.log('[Test] Welcome overlay shown');
 
-      // Click "Enter Community" (waits for sync or timeout)
+      // Click "Enter Community"
       const enterBtn = inviteePage.getByRole('button', { name: /enter community|enter anyway/i });
       await expect(enterBtn).toBeEnabled({ timeout: TIMEOUT.long });
       await enterBtn.click();
@@ -399,10 +487,9 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       // --- Should navigate to dashboard ---
       console.log('[Test] Waiting for dashboard...');
       await expect(inviteePage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long });
-      console.log('[Test] PASS - Invitee on dashboard after claiming identity');
+      console.log('[Test] PASS - Invitee on dashboard after admin approval');
 
       // --- Bug 3: Verify profile data persisted to Account Settings ---
-      // SharedProfile sync may not be immediate — retry with backoff (same pattern as registration test)
       console.log('[Test] Bug 3: Checking Account Settings for profile data (with sync retries)...');
 
       let profileSynced = false;
@@ -411,7 +498,6 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
         await expect(inviteePage.locator('.header-title')).toContainText('Account Settings', { timeout: TIMEOUT.short });
         await expect(inviteePage.locator('.settings-content')).toBeVisible({ timeout: TIMEOUT.short });
 
-        // Check if display name has populated (indicates this user's SharedProfile synced)
         const displayName = await inviteePage.locator('input[placeholder="Your display name"]').inputValue();
         if (displayName && displayName !== '') {
           console.log(`[Test] SharedProfile synced on attempt ${attempt} — display name: "${displayName}"`);
@@ -425,7 +511,6 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
 
       expect(profileSynced, 'SharedProfile should sync to user backend within 40s').toBe(true);
 
-      // Verify text fields persisted from onboarding
       await expect(inviteePage.locator('input[placeholder="Your display name"]')).toHaveValue(profileData.name);
       await expect(inviteePage.locator('input[placeholder="Your public email"]')).toHaveValue(profileData.email);
       await expect(inviteePage.locator('textarea[placeholder="Tell us about yourself"]')).toHaveValue(profileData.bio);
@@ -433,14 +518,12 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       await expect(inviteePage.locator('input[placeholder="Your community, people"]')).toHaveValue(profileData.indigenousCommunity);
       await expect(inviteePage.locator('textarea[placeholder="Why you joined"]')).toHaveValue(profileData.joinReason);
 
-      // Verify avatar image is displayed
       const avatarImg = inviteePage.locator('.avatar-img');
       await expect(avatarImg).toBeVisible({ timeout: TIMEOUT.short });
       const avatarSrc = await avatarImg.getAttribute('src');
       expect(avatarSrc).toContain('/api/v1/files/');
       console.log('[Test] Avatar image visible with fileRef:', avatarSrc);
 
-      // Verify social links appear in the social links list
       await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'facebook.com' })).toBeVisible();
       await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'linkedin.com' })).toBeVisible();
       await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'x.com' })).toBeVisible();
@@ -449,14 +532,12 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       await expect(inviteePage.locator('.social-link-url').filter({ hasText: 'gitlab.com' })).toBeVisible();
       console.log('[Test] Bug 3: PASS - All profile data (including avatar) persisted to Account Settings');
 
-      // --- Verify session persisted with passcode derived from the mnemonic ---
-      // The invite code is base64url-encoded mnemonic entropy, NOT the raw passcode.
-      // The stored passcode is derived from the mnemonic via PBKDF2.
+      // Verify session persisted with passcode derived from the mnemonic
       const storedPasscode = await inviteePage.evaluate(() => {
         return localStorage.getItem('matou_passcode');
       });
       expect(storedPasscode, 'Passcode should be persisted in localStorage').toBeTruthy();
-      expect(storedPasscode, 'Stored passcode should differ from invite code (invite code encodes mnemonic, not passcode)').not.toBe(inviteCode);
+      expect(storedPasscode, 'Stored passcode should differ from invite code').not.toBe(inviteCode);
     } finally {
       await inviteeContext.close();
       await backends.stop('invitee-claim');

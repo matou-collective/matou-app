@@ -154,7 +154,7 @@
     <!-- Member Profile Dialog -->
     <ProfileModal
       :show="!!selectedMember"
-      :sharedProfile="selectedMember?.shared"
+      :sharedProfile="selectedMemberSharedProfile"
       :communityProfile="selectedMember?.community"
       :registration="selectedMemberRegistration"
       :isProcessing="isProcessing"
@@ -223,6 +223,7 @@ const {
   endorseApplicant,
   hasEndorsed,
   getEndorsements,
+  loadIssuedEndorsements,
   clearError: clearEndorseError,
 } = useEndorsements();
 
@@ -264,6 +265,20 @@ const adminAids = ref<string[]>([]);
 const showInviteModal = ref(false);
 const selectedMember = ref<{ shared?: Record<string, unknown>; community?: Record<string, unknown> } | null>(null);
 
+// Reactively track the selected member's SharedProfile from the store.
+// Without this, the sharedProfile prop passed to ProfileModal is a stale
+// snapshot captured at click-time and never sees attendanceRecord updates.
+const selectedMemberSharedProfile = computed(() => {
+  const aid = selectedMember.value?.shared?.aid as string;
+  if (!aid) return selectedMember.value?.shared;
+  const fresh = profilesStore.communityProfiles.find(p => {
+    const data = (p.data as Record<string, unknown>) || {};
+    return data.aid === aid || (p.id as string)?.includes(aid);
+  });
+  if (fresh) return (fresh.data as Record<string, unknown>) || fresh;
+  return selectedMember.value?.shared;
+});
+
 // Find matching PendingRegistration for the selected member (enables approve/decline buttons)
 const selectedMemberRegistration = computed(() => {
   const aid = selectedMember.value?.shared?.aid as string;
@@ -281,6 +296,15 @@ const selectedMemberHasEndorsed = computed(() => {
   const aid = selectedMember.value?.shared?.aid as string;
   if (!aid) return false;
   return hasEndorsed(aid);
+});
+
+// Reload issued endorsements from KERIA when a member is selected.
+// The onMounted load may have run before any endorsements were issued
+// (e.g. the invite flow issues credentials after the dashboard mounts).
+watch(selectedMember, (member) => {
+  if (member) {
+    loadIssuedEndorsements();
+  }
 });
 
 const selectedMemberHasAttended = computed(() => {
@@ -350,6 +374,10 @@ onMounted(async () => {
       adminAids.value = config.admins.map((a: { aid: string }) => a.aid);
     }
   } catch { /* non-fatal */ }
+
+  // Load endorsement credentials issued by this user from KERIA.
+  // Covers endorsements issued outside useEndorsements (e.g. invite flow).
+  await loadIssuedEndorsements();
 
   // Only poll for pending registrations if the user is a steward/admin
   if (isSteward.value) {

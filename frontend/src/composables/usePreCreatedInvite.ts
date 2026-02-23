@@ -7,7 +7,7 @@ import { ref } from 'vue';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { KERIClient, useKERIClient } from 'src/lib/keri/client';
-import { fetchOrgConfig } from 'src/api/config';
+import { useIdentityStore } from 'stores/identity';
 
 export interface InviteConfig {
   inviteeName: string;
@@ -19,8 +19,9 @@ export interface InviteResult {
   inviteeAid: string;
 }
 
-// Endorsement credential schema SAID (from schema server)
+// Schema SAIDs (from schema server)
 const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
+const MEMBERSHIP_SCHEMA_SAID = 'EOVL3N0K_tYc9U-HXg7r2jDPo4Gnq3ebCjDqbJzl6fsT';
 // Schema server URL is internal to Docker network (KERIA resolves it)
 const SCHEMA_SERVER_URL = 'http://schema-server:7723';
 const SCHEMA_OOBI_URL = `${SCHEMA_SERVER_URL}/oobi/${ENDORSEMENT_SCHEMA_SAID}`;
@@ -35,6 +36,7 @@ const KERIA_DOCKER_URL = 'http://keria:3902';
 
 export function usePreCreatedInvite() {
   const adminClient = useKERIClient();
+  const identityStore = useIdentityStore();
 
   const isSubmitting = ref(false);
   const error = ref<string | null>(null);
@@ -146,58 +148,79 @@ export function usePreCreatedInvite() {
         }
       }
 
-      // Step 5: Resolve schema OOBI on both agents
-      // The invitee's agent needs the schema to verify and store the credential
+      // Step 5: Resolve schema OOBIs on both agents
+      // The invitee's agent needs the schemas to verify and store the credential
       // after IPEX admit; the admin needs it for credential issuance.
-      progress.value = 'Loading credential schema...';
-      await adminClient.resolveOOBI(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID);
-      console.log('[PreCreatedInvite] Schema OOBI resolved on admin agent');
+      // Both endorsement AND membership schemas are needed because the endorsement
+      // credential has an edge linking to the admin's membership credential.
+      progress.value = 'Loading credential schemas...';
+      const membershipSchemaOOBI = `${SCHEMA_SERVER_URL}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
 
-      const schemaResolveOp = await inviteeClient.oobis().resolve(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID);
-      await inviteeClient.operations().wait(schemaResolveOp, { signal: AbortSignal.timeout(30000) });
-      console.log('[PreCreatedInvite] Schema OOBI resolved on invitee agent');
+      await adminClient.resolveOOBI(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID);
+      await adminClient.resolveOOBI(membershipSchemaOOBI, MEMBERSHIP_SCHEMA_SAID);
+      console.log('[PreCreatedInvite] Schema OOBIs resolved on admin agent');
+
+      const endorseSchemaOp = await inviteeClient.oobis().resolve(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID);
+      await inviteeClient.operations().wait(endorseSchemaOp, { signal: AbortSignal.timeout(30000) });
+      const membershipSchemaOp = await inviteeClient.oobis().resolve(membershipSchemaOOBI, MEMBERSHIP_SCHEMA_SAID);
+      await inviteeClient.operations().wait(membershipSchemaOp, { signal: AbortSignal.timeout(30000) });
+      console.log('[PreCreatedInvite] Schema OOBIs resolved on invitee agent');
 
       const grantMessage = '';
 
-      // Step 6: Issue endorsement credential from admin's agent
+      // Step 6: Issue endorsement credential from admin's personal AID
+      // (not the org AID — endorsements should come from the admin who invited)
       progress.value = 'Issuing endorsement credential...';
 
-      // Get org AID from config (more reliable than localStorage which is context-specific)
-      const configResult = await fetchOrgConfig();
-      const orgConfig = configResult.status === 'configured'
-        ? configResult.config
-        : configResult.status === 'server_unreachable'
-          ? configResult.cached
-          : null;
-      const orgAidPrefix = orgConfig?.organization?.aid;
-      if (!orgAidPrefix) throw new Error('Organization not set up — no org AID found');
+      const adminAid = identityStore.currentAID;
+      if (!adminAid) throw new Error('No admin identity found');
 
-      // Find the org AID name from the admin's identifiers
-      const orgAidEntry = adminAids.aids.find(
-        (a: { prefix: string }) => a.prefix === orgAidPrefix
+      // Get or create a personal endorsement registry for the admin
+      const registryName = `${adminAid.prefix.slice(0, 12)}-endorsements`;
+      const registries = await adminSignifyClient.registries().list(adminAid.prefix);
+      let registryId: string;
+      const existingReg = registries.find((r: { name: string }) => r.name === registryName);
+      if (existingReg) {
+        registryId = existingReg.regk;
+      } else {
+        registryId = await adminClient.createRegistry(adminAid.prefix, registryName);
+        console.log('[PreCreatedInvite] Created admin endorsement registry:', registryId);
+      }
+
+      // Find the admin's membership credential for the endorsement edge
+      const allCreds = await adminSignifyClient.credentials().list();
+      const membershipCred = allCreds.find(
+        (c: { sad?: { s?: string; a?: { i?: string } } }) =>
+          c.sad?.s === MEMBERSHIP_SCHEMA_SAID && c.sad?.a?.i === adminAid.prefix
       );
-      if (!orgAidEntry) throw new Error('Organization AID not found in admin identifiers');
-      const orgAidId = orgAidEntry.prefix;
-
-      // Find the registry for the org AID
-      const registries = await adminSignifyClient.registries().list(orgAidId);
-      if (registries.length === 0) throw new Error('No credential registry found for org');
-      const registryId = registries[0].regk;
+      if (!membershipCred?.sad?.d) {
+        throw new Error('Could not find admin membership credential. Admin must be an admitted member to invite.');
+      }
+      console.log('[PreCreatedInvite] Found admin membership credential:', membershipCred.sad.d);
 
       const credentialData = {
-        endorsementType: 'community_endorsement',
+        endorsementType: 'membership_endorsement',
         category: 'general',
         claim: config.reason,
         confidence: 'high',
       };
 
+      const edgeData = {
+        d: '', // SAID placeholder — signify-ts computes this
+        endorserMembership: {
+          n: membershipCred.sad.d,
+          s: MEMBERSHIP_SCHEMA_SAID,
+        },
+      };
+
       await adminClient.issueCredential(
-        orgAidId,
+        adminAid.prefix,
         registryId,
         ENDORSEMENT_SCHEMA_SAID,
         inviteeAid.prefix,
         credentialData,
-        grantMessage
+        grantMessage,
+        edgeData,
       );
       console.log('[PreCreatedInvite] Endorsement credential issued and IPEX grant sent');
 

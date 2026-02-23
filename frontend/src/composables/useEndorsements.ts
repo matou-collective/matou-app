@@ -25,6 +25,9 @@ export interface EndorsementRecord {
 // the SharedProfile update failed (e.g. profile not yet synced via any-sync).
 // Key format: `${endorserAid}:${applicantAid}`
 const locallyEndorsedSet = new Set<string>();
+// Reactive trigger so Vue computeds that call hasEndorsed() re-evaluate
+// when loadIssuedEndorsements() discovers new credentials.
+const endorsedVersion = ref(0);
 
 export function useEndorsements() {
   const keriClient = useKERIClient();
@@ -198,6 +201,8 @@ export function useEndorsements() {
   function hasEndorsed(applicantAid: string): boolean {
     const myAid = identityStore.currentAID?.prefix;
     if (!myAid) return false;
+    // Read reactive trigger so Vue computeds re-evaluate when set changes
+    void endorsedVersion.value;
     // Check local session tracking first (handles SharedProfile sync race)
     if (locallyEndorsedSet.has(`${myAid}:${applicantAid}`)) return true;
     const profile = profilesStore.communityProfiles.find(p => {
@@ -220,6 +225,49 @@ export function useEndorsements() {
     return (data.endorsements as EndorsementRecord[]) || [];
   }
 
+  /**
+   * Load endorsement credentials issued by the current user from KERIA.
+   * Populates locallyEndorsedSet so hasEndorsed() works for credentials
+   * issued outside this composable (e.g. via the pre-created invite flow).
+   */
+  async function loadIssuedEndorsements(): Promise<void> {
+    try {
+      const client = keriClient.getSignifyClient();
+      if (!client) {
+        console.log('[Endorsements] loadIssuedEndorsements: no signify client');
+        return;
+      }
+      const myAid = identityStore.currentAID?.prefix;
+      if (!myAid) {
+        console.log('[Endorsements] loadIssuedEndorsements: no current AID');
+        return;
+      }
+
+      const allCreds = await client.credentials().list();
+      console.log(`[Endorsements] loadIssuedEndorsements: ${allCreds.length} credentials, myAid=${myAid}`);
+      let found = 0;
+      for (const cred of allCreds) {
+        const sad = (cred as any).sad || cred;
+        const schema = sad?.s || '';
+        const issuer = sad?.i || '';
+        const issuee = sad?.a?.i || '';
+        if (schema === ENDORSEMENT_SCHEMA_SAID && issuer === myAid && issuee) {
+          const key = `${myAid}:${issuee}`;
+          if (!locallyEndorsedSet.has(key)) {
+            locallyEndorsedSet.add(key);
+            found++;
+            console.log(`[Endorsements] Found issued endorsement: ${myAid} → ${issuee}`);
+          }
+        }
+      }
+      if (found > 0) {
+        endorsedVersion.value++;
+      }
+    } catch (err) {
+      console.warn('[Endorsements] Failed to load issued endorsements from KERIA:', err);
+    }
+  }
+
   function clearError() {
     error.value = null;
   }
@@ -230,6 +278,7 @@ export function useEndorsements() {
     endorseApplicant,
     hasEndorsed,
     getEndorsements,
+    loadIssuedEndorsements,
     clearError,
   };
 }
