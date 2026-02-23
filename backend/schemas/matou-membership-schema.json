@@ -5,7 +5,7 @@
     "description": "A credential proving membership in the MATOU organization",
     "type": "object",
     "credentialType": "MatouMembershipCredential",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "properties": {
         "v": {
             "description": "Version string",
@@ -64,31 +64,16 @@
                             "type": "string",
                             "enum": [
                                 "Member",
-                                "Verified Member",
-                                "Trusted Member",
-                                "Expert Member",
                                 "Contributor",
-                                "Moderator",
-                                "Admin",
-                                "Operations Steward"
+                                "Community Steward",
+                                "Operations Steward",
+                                "Founding Member",
+                                "Financial Steward",
+                                "Governance Steward",
+                                "Treasury Steward",
+                                "Technical Steward",
+                                "Cultural Steward"
                             ]
-                        },
-                        "verificationStatus": {
-                            "description": "Level of identity verification",
-                            "type": "string",
-                            "enum": [
-                                "unverified",
-                                "community_verified",
-                                "identity_verified",
-                                "expert_verified"
-                            ]
-                        },
-                        "permissions": {
-                            "description": "Permissions granted to member",
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
                         },
                         "joinedAt": {
                             "description": "ISO 8601 timestamp of when membership was granted",
@@ -103,8 +88,6 @@
                         "dt",
                         "communityName",
                         "role",
-                        "verificationStatus",
-                        "permissions",
                         "joinedAt"
                     ]
                 }
