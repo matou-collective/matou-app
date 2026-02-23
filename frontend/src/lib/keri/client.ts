@@ -909,6 +909,85 @@ export class KERIClient {
   }
 
   /**
+   * Join an existing group AID after receiving a /multisig/rot notification.
+   * Called by a new member being added to the group.
+   *
+   * @param groupName - Local alias for the group AID
+   * @param notificationSaid - SAID from the /multisig/rot notification
+   * @returns The group AID prefix
+   */
+  async joinGroup(groupName: string, notificationSaid: string): Promise<string> {
+    if (!this.client) throw new Error('Not initialized');
+
+    console.log(`[KERIClient] Joining group via notification ${notificationSaid.slice(0, 12)}...`);
+
+    // 1. Get the rotation event from the notification
+    const response = await this.client.groups().getRequest(notificationSaid);
+    if (!response || response.length === 0) {
+      throw new Error('No rotation request found for notification');
+    }
+
+    const exn = response[0].exn;
+    const rotEvent = exn.e?.rot;
+    const gid = exn.a?.gid as string;
+    const smids = exn.a?.smids as string[];
+    const rmids = exn.a?.rmids as string[];
+
+    if (!rotEvent || !gid) {
+      throw new Error('Invalid /multisig/rot notification: missing rotation event or group ID');
+    }
+
+    console.log(`[KERIClient] Group ID: ${gid.slice(0, 12)}..., smids: ${smids?.length}, rmids: ${rmids?.length}`);
+
+    // 2. Get our personal AID to sign the rotation
+    const aids = await this.client.identifiers().list();
+    if (!aids?.aids?.length) {
+      throw new Error('No AIDs found to sign rotation');
+    }
+
+    // Use first AID (personal AID)
+    const personalAid = aids.aids[0];
+    const keeper = await this.client.manager!.get(personalAid);
+
+    // 3. Sign the rotation event
+    const signify = await import('signify-ts');
+    const serder = rotEvent instanceof signify.Serder
+      ? rotEvent
+      : new signify.Serder(rotEvent);
+
+    const sigs = keeper.sign(signify.b(serder.raw));
+
+    // 4. Join the group
+    console.log('[KERIClient] Calling groups().join()...');
+    const joinOp = await this.client.groups().join(
+      groupName,
+      serder,
+      sigs,
+      gid,
+      smids,
+      rmids,
+    );
+
+    await this.client.operations().wait(joinOp, { signal: AbortSignal.timeout(60000) });
+    console.log(`[KERIClient] Joined group "${groupName}" (${gid.slice(0, 12)}...)`);
+
+    // 5. Add agent end role for the joined group AID
+    const agentId = this.client.agent?.pre;
+    if (agentId) {
+      try {
+        const endRoleResult = await this.client.identifiers().addEndRole(gid, 'agent', agentId);
+        const endRoleOp = await endRoleResult.op();
+        await this.client.operations().wait(endRoleOp, { signal: AbortSignal.timeout(30000) });
+        console.log(`[KERIClient] Agent end role added for group AID`);
+      } catch (err) {
+        console.warn('[KERIClient] Failed to add agent end role for group:', err);
+      }
+    }
+
+    return gid;
+  }
+
+  /**
    * Create a credential registry for an AID
    * A registry is needed to issue credentials
    * @param aidName - Name of the AID that will own the registry
