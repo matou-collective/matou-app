@@ -1,5 +1,5 @@
 <template>
-  <div class="welcome-overlay h-full flex flex-col items-center justify-center p-8 md:p-12">
+  <div class="welcome-overlay relative h-full flex flex-col items-center justify-center p-8 md:p-12">
     <div class="flex flex-col items-center gap-6 max-w-md w-full">
       <!-- Success state: Logo + Text Logo + Rotating Welcome -->
       <template v-if="allChecksPassed">
@@ -123,6 +123,9 @@
         <ArrowRight class="w-5 h-5 ml-2" />
       </MBtn>
     </div>
+
+    <!-- Version -->
+    <span class="absolute bottom-4 right-4 text-white/30 text-xs">v{{ appVersion }}</span>
   </div>
 </template>
 
@@ -136,6 +139,7 @@ import { useAppStore } from 'stores/app';
 import { useKERIClient } from 'src/lib/keri/client';
 import { setBackendIdentity, getSyncStatus, getProfiles } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { version as appVersion } from '../../../package.json';
 
 const emit = defineEmits<{
   (e: 'continue'): void;
