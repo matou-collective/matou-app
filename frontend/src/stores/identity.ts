@@ -55,7 +55,7 @@ export const useIdentityStore = defineStore('identity', () => {
         }
 
         const aids = await keriClient.listAIDs();
-        console.log('[IdentityStore] Listed AIDs from KERIA:', JSON.stringify(aids, null, 2));
+        console.log(`[IdentityStore] Found ${aids.length} AID(s) in KERIA`);
         if (aids.length > 0) {
           currentAID.value = aids[0];
           console.log('[IdentityStore] Set currentAID to:', aids[0].prefix);

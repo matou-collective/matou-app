@@ -1070,7 +1070,11 @@ export class KERIClient {
       },
       ...(edgeData ? { e: edgeData } : {}),
     };
-    const credResult = await this.client.credentials().issue(issuerAid.prefix, issueArgs);
+    if (edgeData) {
+      issueArgs.e = edgeData;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const credResult = await this.client.credentials().issue(issuerAid.prefix, issueArgs as any);
 
     console.log('[KERIClient] Waiting for credential issuance...');
     // The issue() returns an object with op property (not a function)

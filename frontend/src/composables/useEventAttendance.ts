@@ -8,6 +8,7 @@ import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { createOrUpdateProfile } from 'src/lib/api/client';
 import { EVENT_ATTENDANCE_SCHEMA_SAID, MEMBERSHIP_SCHEMA_SAID } from './useAdminActions';
+import { getOrCreatePersonalRegistry } from 'src/lib/keri/registry';
 
 const SCHEMA_SERVER_URL = 'http://schema-server:7723';
 const EVENT_ATTENDANCE_SCHEMA_OOBI = `${SCHEMA_SERVER_URL}/oobi/${EVENT_ATTENDANCE_SCHEMA_SAID}`;
@@ -34,34 +35,6 @@ export function useEventAttendance() {
 
   const isMarking = ref(false);
   const error = ref<string | null>(null);
-
-  /**
-   * Get or create a personal registry for the current member.
-   * Reuses the same registry naming pattern as endorsements.
-   */
-  async function getOrCreatePersonalRegistry(): Promise<string> {
-    const client = keriClient.getSignifyClient();
-    if (!client) throw new Error('Not connected to KERIA');
-
-    const myAid = identityStore.currentAID;
-    if (!myAid) throw new Error('No identity found');
-
-    const registryName = `${myAid.prefix.slice(0, 12)}-endorsements`;
-
-    const registries = await client.registries().list(myAid.prefix);
-    const existing = registries.find(
-      (r: { name: string }) => r.name === registryName
-    );
-    if (existing) {
-      console.log('[EventAttendance] Found existing registry:', existing.regk);
-      return existing.regk;
-    }
-
-    console.log('[EventAttendance] Creating personal registry...');
-    const registryId = await keriClient.createRegistry(myAid.prefix, registryName);
-    console.log('[EventAttendance] Created registry:', registryId);
-    return registryId;
-  }
 
   /**
    * Issue an event attendance credential to a pending applicant.

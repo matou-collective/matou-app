@@ -314,7 +314,10 @@ ipcMain.handle('secure-storage-set', (_event, key: string, value: string): void 
   if (safeStorage.isEncryptionAvailable()) {
     store[key] = safeStorage.encryptString(value).toString('base64');
   } else {
-    // Fallback: store plaintext (some Linux systems lack keyring)
+    // SECURITY WARNING: storing plaintext because OS keyring is unavailable.
+    // This happens on some Linux systems without gnome-keyring or kwallet.
+    // The passcode and mnemonic will be readable on disk.
+    log.warn(`[SecureStorage] Encryption unavailable — storing "${key}" as plaintext. Install a keyring (gnome-keyring, kwallet) for OS-level encryption.`);
     store[key] = value;
   }
 

@@ -8,6 +8,7 @@ import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { createOrUpdateProfile } from 'src/lib/api/client';
 import { ENDORSEMENT_SCHEMA_SAID, MEMBERSHIP_SCHEMA_SAID } from './useAdminActions';
+import { getOrCreatePersonalRegistry } from 'src/lib/keri/registry';
 
 // Schema server URL as seen by KERIA inside Docker (fixed internal hostname)
 const SCHEMA_SERVER_URL = 'http://schema-server:7723';
@@ -36,36 +37,6 @@ export function useEndorsements() {
 
   const isEndorsing = ref(false);
   const error = ref<string | null>(null);
-
-  /**
-   * Get or create a personal endorsement registry for the current member.
-   * Queries KERIA directly — no need to store registry ID in profiles.
-   */
-  async function getOrCreatePersonalRegistry(): Promise<string> {
-    const client = keriClient.getSignifyClient();
-    if (!client) throw new Error('Not connected to KERIA');
-
-    const myAid = identityStore.currentAID;
-    if (!myAid) throw new Error('No identity found');
-
-    const registryName = `${myAid.prefix.slice(0, 12)}-endorsements`;
-
-    // Check if registry already exists (use prefix for API calls)
-    const registries = await client.registries().list(myAid.prefix);
-    const existing = registries.find(
-      (r: { name: string }) => r.name === registryName
-    );
-    if (existing) {
-      console.log('[Endorsements] Found existing registry:', existing.regk);
-      return existing.regk;
-    }
-
-    // Create a new personal registry
-    console.log('[Endorsements] Creating personal endorsement registry...');
-    const registryId = await keriClient.createRegistry(myAid.prefix, registryName);
-    console.log('[Endorsements] Created registry:', registryId);
-    return registryId;
-  }
 
   /**
    * Endorse a pending applicant by issuing an endorsement credential.

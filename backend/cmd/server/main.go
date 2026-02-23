@@ -212,7 +212,7 @@ func main() {
 			admins[i] = config.AdminInfo{AID: a.AID, Name: a.Name, OOBI: a.OOBI}
 		}
 		cfg.SetOrgConfig(orgData.Organization.AID, orgData.Organization.Name, admins, orgData.CommunitySpaceID)
-		fmt.Printf("[Config] Updated in-memory config from org-config.yaml\n")
+		log.Printf("[Config] Updated in-memory config from org-config.yaml\n")
 	})
 
 	// Load org config into main config if available
@@ -598,8 +598,8 @@ func main() {
 	syncWorker.Start()
 	defer syncWorker.Stop()
 
-	// Wrap with CORS middleware
-	handler := api.CORSMiddleware(mux)
+	// Wrap with middleware: localhost guard (production) → CORS
+	handler := api.LocalhostGuard(api.CORSMiddleware(mux))
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

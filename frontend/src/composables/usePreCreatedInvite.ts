@@ -8,6 +8,7 @@ import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { KERIClient, useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
+import { getOrCreatePersonalRegistry } from 'src/lib/keri/registry';
 
 export interface InviteConfig {
   inviteeName: string;
@@ -177,16 +178,7 @@ export function usePreCreatedInvite() {
       if (!adminAid) throw new Error('No admin identity found');
 
       // Get or create a personal endorsement registry for the admin
-      const registryName = `${adminAid.prefix.slice(0, 12)}-endorsements`;
-      const registries = await adminSignifyClient.registries().list(adminAid.prefix);
-      let registryId: string;
-      const existingReg = registries.find((r: { name: string }) => r.name === registryName);
-      if (existingReg) {
-        registryId = existingReg.regk;
-      } else {
-        registryId = await adminClient.createRegistry(adminAid.prefix, registryName);
-        console.log('[PreCreatedInvite] Created admin endorsement registry:', registryId);
-      }
+      const registryId = await getOrCreatePersonalRegistry();
 
       // Find the admin's membership credential for the endorsement edge
       const allCreds = await adminSignifyClient.credentials().list();

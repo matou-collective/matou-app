@@ -35,6 +35,16 @@ const lastEvent = ref<BackendEvent | null>(null);
 let eventSource: EventSource | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
+/** Safely parse SSE event data. Returns null on failure. */
+function safeParse(event: MessageEvent): Record<string, string> | null {
+  try {
+    return JSON.parse(event.data);
+  } catch {
+    console.warn('[BackendEvents] Malformed event data:', event.data);
+    return null;
+  }
+}
+
 function connect() {
   if (eventSource) return;
 
@@ -47,13 +57,15 @@ function connect() {
   });
 
   eventSource.addEventListener('credential:new', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'credential:new', data };
     console.log('[BackendEvents] New credential:', data.said);
   });
 
   eventSource.addEventListener('credential:community', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'credential:community', data };
     console.log('[BackendEvents] Community credential:', data.said);
 
@@ -63,7 +75,8 @@ function connect() {
   });
 
   eventSource.addEventListener('space:joined', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'space:joined', data };
     console.log('[BackendEvents] Space joined:', data.spaceId);
 
@@ -72,43 +85,50 @@ function connect() {
   });
 
   eventSource.addEventListener('identity:configured', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'identity:configured', data };
     console.log('[BackendEvents] Identity configured:', data.aid);
   });
 
   eventSource.addEventListener('notice_created', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'notice_created', data };
     console.log('[BackendEvents] Notice created:', data.noticeId);
   });
 
   eventSource.addEventListener('notice_published', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'notice_published', data };
     console.log('[BackendEvents] Notice published:', data.noticeId);
   });
 
   eventSource.addEventListener('notice_archived', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'notice_archived', data };
     console.log('[BackendEvents] Notice archived:', data.noticeId);
   });
 
   eventSource.addEventListener('notice_comment', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'notice_comment', data };
     console.log('[BackendEvents] Notice comment:', data.noticeId);
   });
 
   eventSource.addEventListener('notice_reaction', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'notice_reaction', data };
     console.log('[BackendEvents] Notice reaction:', data.noticeId);
   });
 
   eventSource.addEventListener('profile:updated', (event) => {
-    const data = JSON.parse(event.data);
+    const data = safeParse(event);
+    if (!data) return;
     lastEvent.value = { type: 'profile:updated', data };
     console.log('[BackendEvents] Profile updated:', data.profileId);
 

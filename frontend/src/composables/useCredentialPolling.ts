@@ -245,21 +245,28 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       // field (sad.a.i) matches our AID to avoid treating someone else's credential as ours.
       const myAid = identityStore.currentAID?.prefix;
       if (myAid) {
+        // Fetch credentials once per poll cycle and reuse the cached list.
+        let cachedCredentials: any[] = [];
         try {
-          const credentials = await client.credentials().list();
-          console.log('[CredentialPolling] Existing credentials check:', credentials.length);
-          for (const cred of credentials) {
+          cachedCredentials = await client.credentials().list();
+        } catch (credErr) {
+          console.log('[CredentialPolling] Could not fetch credentials:', credErr);
+        }
+
+        if (cachedCredentials.length > 0) {
+          for (const cred of cachedCredentials) {
             const sad = cred.sad || cred;
             const schema = (sad as any).s || '';
             const recipient = (sad as any).a?.i || '';
             if (schema === MEMBERSHIP_SCHEMA_SAID && recipient === myAid && !credentialReceived.value) {
+              // Membership credential issued TO us — existing admission flow
               console.log('[CredentialPolling] Membership credential in wallet (mine):', cred);
               credential.value = cred;
               credentialReceived.value = true;
               grantReceived.value = true;
               syncCredentialToBackend();
             } else if (schema === ENDORSEMENT_SCHEMA_SAID && recipient === myAid) {
-              endorsementReceived.value = true;
+              // Endorsement credential issued TO us — always track (survives session restart)
               const credSaid = (sad as any).d || '';
               const existing = endorsementsReceived.value.find(e => e.credentialSaid === credSaid);
               if (!existing) {
@@ -271,12 +278,12 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
                 console.log('[CredentialPolling] Endorsement credential found:', credSaid);
               }
             } else if (schema === EVENT_ATTENDANCE_SCHEMA_SAID && recipient === myAid) {
-              console.log('[CredentialPolling] Event attendance credential found:', (sad as any).d);
+              // Event attendance credential issued TO us
+              const credSaid = (sad as any).d || '';
+              console.log('[CredentialPolling] Event attendance credential found:', credSaid);
               sessionAttendanceVerified.value = true;
             }
           }
-        } catch (credErr) {
-          console.log('[CredentialPolling] Could not check credentials:', credErr);
         }
 
         // Requirement verification: runs every cycle regardless of credentials in wallet
@@ -296,21 +303,17 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
         if (orgAid) {
           // Req 1: Membership credential issued by org AID to us
-          try {
-            const credentials = await client.credentials().list();
-            for (const cred of credentials) {
-              const sad = cred.sad || cred;
-              if (
-                ((sad as any).s || '') === MEMBERSHIP_SCHEMA_SAID &&
-                ((sad as any).a?.i || '') === myAid &&
-                ((sad as any).i || '') === orgAid
-              ) {
-                membershipVerified.value = true;
-                break;
-              }
+          // Reuse cachedCredentials instead of fetching again
+          for (const cred of cachedCredentials) {
+            const sad = cred.sad || cred;
+            if (
+              ((sad as any).s || '') === MEMBERSHIP_SCHEMA_SAID &&
+              ((sad as any).a?.i || '') === myAid &&
+              ((sad as any).i || '') === orgAid
+            ) {
+              membershipVerified.value = true;
+              break;
             }
-          } catch {
-            // Non-fatal — membership check retried next cycle
           }
 
           // Req 2 & 3: Endorsement verification
@@ -348,8 +351,40 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
         console.log('[CredentialPolling] Filtered grants:', grants.length, grants);
 
-        if (grants.length > 0) {
-          console.log('[CredentialPolling] Grant detected:', grants[0]);
+        if (grantSchema === ENDORSEMENT_SCHEMA_SAID) {
+          // Endorsement grant — admit silently, track, but DON'T trigger membership flow
+          console.log('[CredentialPolling] Endorsement grant detected — admitting');
+          try {
+            await admitGrant(grant);
+            // Wait for KERIA's Admitter to process and store the credential
+            const endorsementCred = await pollForEndorsementCredential(client, myAid!);
+            const credSaid = endorsementCred?.d || grant.a.d;
+            const existing = endorsementsReceived.value.find(e => e.credentialSaid === credSaid);
+            if (!existing) {
+              endorsementsReceived.value.push({
+                endorserAid: endorsementCred?.i || grant.a.i || '',
+                credentialSaid: credSaid,
+                endorsedAt: endorsementCred?.a?.dt || new Date().toISOString(),
+              });
+            }
+            console.log('[CredentialPolling] Endorsement admitted, SAID:', credSaid);
+          } catch (endorseErr) {
+            console.warn('[CredentialPolling] Failed to admit endorsement grant:', endorseErr);
+          }
+        } else if (grantSchema === EVENT_ATTENDANCE_SCHEMA_SAID) {
+          // Event attendance grant — admit silently
+          console.log('[CredentialPolling] Event attendance grant detected — admitting');
+          try {
+            await admitGrant(grant);
+            await new Promise(r => setTimeout(r, 3000));
+            sessionAttendanceVerified.value = true;
+            console.log('[CredentialPolling] Event attendance admitted');
+          } catch (attendErr) {
+            console.warn('[CredentialPolling] Failed to admit event attendance grant:', attendErr);
+          }
+        } else if (!credentialReceived.value) {
+          // Membership grant — existing admission flow
+          console.log('[CredentialPolling] Membership grant detected:', grant);
           grantReceived.value = true;
           isProcessingGrant = true;
 
