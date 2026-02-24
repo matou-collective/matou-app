@@ -1,8 +1,8 @@
 <template>
   <div v-if="visible" class="update-banner">
     <span class="update-banner-text">A new version is available.</span>
-    <button class="update-banner-restart" @click="installUpdate">
-      Restart Now
+    <button class="update-banner-restart" @click="installUpdate" :disabled="restarting">
+      {{ restarting ? 'Restarting...' : 'Restart Now' }}
     </button>
     <button class="update-banner-dismiss" @click="dismiss" aria-label="Dismiss">
       <svg width="10" height="10" viewBox="0 0 10 10">
@@ -22,6 +22,7 @@ interface UpdateAPI {
 }
 
 const visible = ref(false);
+const restarting = ref(false);
 
 function getAPI(): UpdateAPI | null {
   if (!isElectron()) return null;
@@ -29,6 +30,7 @@ function getAPI(): UpdateAPI | null {
 }
 
 function installUpdate() {
+  restarting.value = true;
   getAPI()?.installUpdate();
 }
 

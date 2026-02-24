@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowClose: () => ipcRenderer.invoke('window-close'),
   windowIsMaximized: () => ipcRenderer.invoke('window-is-maximized'),
   onUpdateDownloaded: (callback: () => void) => {
-    ipcRenderer.on('update-downloaded', () => callback());
+    ipcRenderer.once('update-downloaded', () => callback());
   },
   installUpdate: () => ipcRenderer.invoke('install-update'),
 });
