@@ -58,19 +58,6 @@
       </div>
     </section>
 
-    <!-- Admin Actions -->
-    <div v-if="isSteward" class="admin-area px-6 mb-6">
-      <div class="admin-actions">
-        <button
-          class="invite-btn"
-          @click="showInviteModal = true"
-        >
-          <UserPlus class="w-4 h-4" />
-          Invite Member
-        </button>
-      </div>
-    </div>
-
     <!-- Content Grid -->
     <div class="content-area">
       <div class="content-grid">
@@ -78,37 +65,55 @@
         <div class="left-column">
           <!-- Community Activity -->
           <div class="card community-card">
-            <h3 class="card-title">Community Activity</h3>
+            <div class="community-header">
+              <h3 class="card-title">Community Activity</h3>
+              <button class="refresh-btn" @click="refreshActivity" :disabled="refreshingActivity">
+                <RotateCw class="refresh-icon" :class="{ spinning: refreshingActivity }" />
+              </button>
+            </div>
+            <div class="community-stats">
+              <div class="community-stat">
+                <Users class="community-stat-icon" />
+                <span class="community-stat-value">{{ liveMembers.length }}</span>
+                <span class="community-stat-label">Members</span>
+              </div>
+              <div class="community-stat">
+                <MessageCircle class="community-stat-icon" />
+                <span class="community-stat-value">{{ totalChannels }}</span>
+                <span class="community-stat-label">Channels</span>
+              </div>
+              <div class="community-stat">
+                <CalendarDays class="community-stat-icon" />
+                <span class="community-stat-value">{{ totalEvents }}</span>
+                <span class="community-stat-label">Events</span>
+              </div>
+              <div class="community-stat">
+                <Megaphone class="community-stat-icon" />
+                <span class="community-stat-value">{{ totalAnnouncements }}</span>
+                <span class="community-stat-label">Announcements</span>
+              </div>
+              <div class="community-stat">
+                <RefreshCw class="community-stat-icon" />
+                <span class="community-stat-value">{{ totalUpdates }}</span>
+                <span class="community-stat-label">Updates</span>
+              </div>
+            </div>
             <div class="activity-list">
+              <div v-if="activityFeed.length === 0" class="activity-empty">
+                No recent activity
+              </div>
               <div
-                v-for="(evt, i) in recentProfileEvents"
-                :key="'pe-' + i"
-                class="activity-item"
+                v-for="item in activityFeed"
+                :key="item.key"
+                class="activity-item clickable"
+                @click="handleFeedClick(item)"
               >
-                <div class="activity-icon bg-accent-light">
-                  <UserRoundPlus class="icon text-accent" />
+                <div class="activity-icon" :class="item.iconBg">
+                  <component :is="item.icon" class="icon" :class="item.iconColor" />
                 </div>
                 <div class="activity-info">
-                  <h4>New profile created</h4>
-                  <p>{{ evt.displayName }}</p>
-                </div>
-              </div>
-              <div class="activity-item">
-                <div class="activity-icon bg-primary-light">
-                  <TrendingUp class="icon text-primary" />
-                </div>
-                <div class="activity-info">
-                  <h4>Growing Together</h4>
-                  <p>{{ newMembersThisWeek }} new {{ newMembersThisWeek === 1 ? 'member' : 'members' }} this week</p>
-                </div>
-              </div>
-              <div class="activity-item">
-                <div class="activity-icon bg-accent-light">
-                  <Users class="icon text-accent" />
-                </div>
-                <div class="activity-info">
-                  <h4>Monthly Growth</h4>
-                  <p>{{ newMembersThisMonth }} new {{ newMembersThisMonth === 1 ? 'member' : 'members' }} this month</p>
+                  <h4>{{ item.title }}</h4>
+                  <p>{{ item.timeAgo }}</p>
                 </div>
               </div>
             </div>
@@ -118,8 +123,18 @@
         <!-- Right Column -->
         <div class="right-column">
           <div class="card members-card">
+            <div class="members-header">
+              <h3 class="card-title" v-if="pendingMembers.length > 0">Pending</h3>
+              <h3 class="card-title" v-else>Members</h3>
+              <button
+                class="invite-btn"
+                @click="showInviteModal = true"
+              >
+                <UserPlus class="w-4 h-4" />
+                Invite Member
+              </button>
+            </div>
             <template v-if="pendingMembers.length > 0">
-              <h3 class="card-title">Pending</h3>
               <div class="members-list">
                 <ProfileCard
                   v-for="(member, index) in pendingMembers"
@@ -132,7 +147,7 @@
               </div>
             </template>
 
-            <h3 class="card-title" :style="pendingMembers.length > 0 ? 'padding-top: 1rem' : ''">Members</h3>
+            <h3 v-if="pendingMembers.length > 0" class="card-title" style="padding-top: 1rem">Members</h3>
             <div class="members-list">
               <ProfileCard
                 v-for="(member, index) in liveMembers"
@@ -149,7 +164,7 @@
     </div>
 
     <!-- Invite Member Modal -->
-    <InviteMemberModal v-model="showInviteModal" />
+    <InviteMemberModal v-model="showInviteModal" :isSteward="isSteward" />
 
     <!-- Member Profile Dialog -->
     <ProfileModal
@@ -179,6 +194,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   Moon,
   Sun,
@@ -189,6 +205,11 @@ import {
   Target,
   UserPlus,
   UserRoundPlus,
+  MessageCircle,
+  CalendarDays,
+  Megaphone,
+  RefreshCw,
+  RotateCw,
 } from 'lucide-vue-next';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
@@ -200,6 +221,8 @@ import { useEndorsements } from 'src/composables/useEndorsements';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
+import { useActivityStore } from 'stores/activity';
+import { useChatStore } from 'stores/chat';
 import InviteMemberModal from 'src/components/dashboard/InviteMemberModal.vue';
 import ProfileCard from 'src/components/profiles/ProfileCard.vue';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
@@ -248,6 +271,10 @@ const identityStore = useIdentityStore();
 
 const profilesStore = useProfilesStore();
 
+const activityStore = useActivityStore();
+const chatStore = useChatStore();
+const router = useRouter();
+
 const { lastEvent } = useBackendEvents();
 
 // Track recent profile creation events from SSE
@@ -272,6 +299,19 @@ watch(lastEvent, (event) => {
 
 const adminAids = ref<string[]>([]);
 const showInviteModal = ref(false);
+const refreshingActivity = ref(false);
+
+async function refreshActivity() {
+  refreshingActivity.value = true;
+  try {
+    await Promise.all([
+      activityStore.loadNotices(),
+      chatStore.loadChannels(),
+    ]);
+  } finally {
+    refreshingActivity.value = false;
+  }
+}
 const selectedMember = ref<{ shared?: Record<string, unknown>; community?: Record<string, unknown> } | null>(null);
 
 // Reactively track the selected member's SharedProfile from the store.
@@ -408,6 +448,10 @@ onMounted(async () => {
   // Poll for multisig rotation notifications (e.g., after being promoted to steward).
   // All members should poll — a member can be promoted at any time.
   startMultisigPolling();
+
+  // Load activity and chat data for community stats
+  activityStore.loadNotices();
+  chatStore.loadChannels();
 });
 
 onUnmounted(() => {
@@ -496,6 +540,115 @@ const newMembersThisMonth = computed(() => {
     return joinDate >= startOfMonth;
   }).length;
 });
+
+// Community stats from activity and chat stores
+const totalChannels = computed(() => chatStore.channels.length);
+const totalEvents = computed(() => activityStore.notices.filter(n => n.type === 'event').length);
+const totalAnnouncements = computed(() => activityStore.notices.filter(n => n.type === 'announcement').length);
+const totalUpdates = computed(() => activityStore.notices.filter(n => n.type === 'update').length);
+
+// Time ago helper
+function timeAgo(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const seconds = Math.floor((now - then) / 1000);
+  if (seconds < 60) return 'Just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
+}
+
+// Unified activity feed
+const noticeIconMap = {
+  event: { icon: CalendarDays, iconBg: 'bg-primary-light', iconColor: 'text-primary' },
+  announcement: { icon: Megaphone, iconBg: 'bg-accent-light', iconColor: 'text-accent' },
+  update: { icon: RefreshCw, iconBg: 'bg-primary-light', iconColor: 'text-primary' },
+};
+
+interface FeedItem {
+  key: string;
+  icon: typeof Users;
+  iconBg: string;
+  iconColor: string;
+  title: string;
+  timeAgo: string;
+  timestamp: number;
+  action: { type: 'member'; member: { profile: Record<string, unknown>; communityProfile?: Record<string, unknown> } }
+    | { type: 'channel'; channelId: string }
+    | { type: 'notice' };
+}
+
+const activityFeed = computed(() => {
+  const items: FeedItem[] = [];
+
+  // New members
+  for (const m of allMembers.value) {
+    const dateStr = (m.communityProfile?.memberSince as string) || (m.profile.createdAt as string);
+    if (!dateStr) continue;
+    const name = (m.profile.displayName as string) || (m.profile.name as string) || 'Unknown';
+    items.push({
+      key: `member-${m.profile.aid || name}`,
+      icon: UserRoundPlus,
+      iconBg: 'bg-accent-light',
+      iconColor: 'text-accent',
+      title: `${name} joined`,
+      timeAgo: timeAgo(dateStr),
+      timestamp: new Date(dateStr).getTime(),
+      action: { type: 'member', member: m },
+    });
+  }
+
+  // New channels
+  for (const ch of chatStore.channels) {
+    items.push({
+      key: `channel-${ch.id}`,
+      icon: MessageCircle,
+      iconBg: 'bg-primary-light',
+      iconColor: 'text-primary',
+      title: `#${ch.name} channel created`,
+      timeAgo: timeAgo(ch.createdAt),
+      timestamp: new Date(ch.createdAt).getTime(),
+      action: { type: 'channel', channelId: ch.id },
+    });
+  }
+
+  // Notices (events, announcements, updates)
+  for (const n of activityStore.notices.filter(n => n.state === 'published')) {
+    const meta = noticeIconMap[n.type];
+    const dateStr = n.publishedAt || n.createdAt;
+    items.push({
+      key: `notice-${n.id}`,
+      icon: meta.icon,
+      iconBg: meta.iconBg,
+      iconColor: meta.iconColor,
+      title: n.title,
+      timeAgo: timeAgo(dateStr),
+      timestamp: new Date(dateStr).getTime(),
+      action: { type: 'notice' },
+    });
+  }
+
+  // Sort by most recent first, limit to 20
+  return items.sort((a, b) => b.timestamp - a.timestamp).slice(0, 20);
+});
+
+function handleFeedClick(item: FeedItem) {
+  if (item.action.type === 'member') {
+    handleMemberClick(item.action.member);
+  } else if (item.action.type === 'channel') {
+    chatStore.selectChannel(item.action.channelId);
+    router.push({ name: 'chat' });
+  } else if (item.action.type === 'notice') {
+    router.push({ name: 'activity' });
+  }
+}
 
 function findCommunityProfile(sharedProfile: Record<string, unknown>): Record<string, unknown> | undefined {
   const aid = ((sharedProfile.data as Record<string, unknown>)?.aid || sharedProfile.id) as string;
@@ -785,14 +938,15 @@ function handleRoleUpdated(newRole: string) {
   transition: all 0.15s ease;
 }
 
-// Admin Area
-.admin-area {
-  margin-top: 1.5rem;
-}
-
-.admin-actions {
+.members-header {
   display: flex;
-  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+
+  .card-title {
+    margin: 0;
+  }
 }
 
 .invite-btn {
@@ -862,25 +1016,131 @@ function handleRoleUpdated(newRole: string) {
   padding: 1rem 1.25rem;
 }
 
+.community-stats {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.community-stat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.75rem 0.25rem;
+  border-radius: var(--matou-radius);
+  background-color: var(--matou-secondary);
+}
+
+.community-stat-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--matou-primary);
+}
+
+.community-stat-value {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--matou-foreground);
+  line-height: 1;
+}
+
+.community-stat-label {
+  font-size: 0.65rem;
+  color: var(--matou-muted-foreground);
+  text-align: center;
+  line-height: 1.2;
+}
+
 .activity-list {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.75rem;
+}
+
+.activity-empty {
+  font-size: 0.825rem;
+  color: var(--matou-muted-foreground);
+  text-align: center;
+  padding: 1rem 0;
 }
 
 .activity-item {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+
+  &.clickable {
+    cursor: pointer;
+    border-radius: var(--matou-radius);
+    padding: 0.5rem;
+    margin: -0.5rem;
+    transition: background-color 0.15s ease;
+
+    &:hover {
+      background-color: var(--matou-secondary);
+    }
+  }
+}
+
+.community-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+
+  .card-title {
+    margin: 0;
+  }
+}
+
+.refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.375rem;
+  border: none;
+  background: transparent;
+  border-radius: var(--matou-radius);
+  cursor: pointer;
+  color: var(--matou-muted-foreground);
+  transition: all 0.15s ease;
+
+  &:hover {
+    background-color: var(--matou-secondary);
+    color: var(--matou-foreground);
+  }
+
+  &:disabled {
+    cursor: default;
+  }
+}
+
+.refresh-icon {
+  width: 16px;
+  height: 16px;
+
+  &.spinning {
+    animation: spin 0.8s linear infinite;
+  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .activity-icon {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--matou-radius);
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 
   &.bg-primary-light {
     background-color: rgba(30, 95, 116, 0.1);
@@ -891,8 +1151,8 @@ function handleRoleUpdated(newRole: string) {
   }
 
   .icon {
-    width: 16px;
-    height: 16px;
+    width: 20px;
+    height: 20px;
 
     &.text-primary {
       color: var(--matou-primary);

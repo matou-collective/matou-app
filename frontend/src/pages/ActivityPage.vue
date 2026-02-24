@@ -3,7 +3,7 @@
     <!-- Header -->
     <div class="activity-header">
       <div class="activity-header-text">
-        <h2 class="activity-title">Activity Feed</h2>
+        <h2 class="activity-title">Notices</h2>
         <p class="activity-subtitle">Community notices and updates</p>
       </div>
       <button v-if="isSteward" class="create-btn" @click="showCreateDialog = true">

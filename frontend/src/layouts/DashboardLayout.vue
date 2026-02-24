@@ -32,7 +32,7 @@
         </button>
         <button class="nav-item" :class="{ active: route.name === 'activity' }" @click="router.push({ name: 'activity' })">
           <Bell class="nav-icon" />
-          <span>Activity</span>
+          <span>Notices</span>
         </button>
         <button class="nav-item disabled" disabled>
           <Target class="nav-icon" />

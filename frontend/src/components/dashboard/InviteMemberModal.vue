@@ -3,12 +3,10 @@
     <q-card class="invite-modal" style="min-width: 420px; max-width: 540px;">
       <q-card-section class="modal-header">
         <div class="flex items-center gap-3">
-          <div class="icon-box bg-primary/10 p-2 rounded-lg">
-            <UserPlus class="w-5 h-5 text-primary" />
-          </div>
+          <UserPlus class="w-5 h-5" />
           <div>
             <h3 class="text-lg font-semibold">Invite Member</h3>
-            <p class="text-sm text-muted-foreground">Create an invitation code and endorsement</p>
+            <p class="text-sm" style="opacity: 0.85">Create an invitation code and endorsement</p>
           </div>
         </div>
       </q-card-section>
@@ -24,7 +22,7 @@
               v-model="inviteeName"
               type="text"
               class="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              placeholder="e.g. Aroha Tamaki"
+              placeholder=""
               :disabled="isSubmitting"
             />
           </div>
@@ -34,13 +32,13 @@
             <textarea
               v-model="endorsementReason"
               class="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
-              placeholder="e.g. Active community contributor and governance participant"
+              placeholder=""
               rows="3"
               :disabled="isSubmitting"
             />
           </div>
 
-          <div>
+          <div v-if="isSteward">
             <label class="block text-sm font-medium mb-1.5">Initial Role</label>
             <select
               v-model="initialRole"
@@ -67,7 +65,7 @@
               type="email"
               required
               class="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              placeholder="e.g. aroha@example.com"
+              placeholder=""
               :disabled="isSubmitting"
             />
             <p class="text-xs text-muted-foreground mt-1">The invite code will be emailed after creation</p>
@@ -165,7 +163,7 @@
       <q-card-actions align="right" class="modal-footer">
         <template v-if="!result">
           <button
-            class="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            class="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-lg"
             :disabled="isSubmitting"
             @click="$emit('update:modelValue', false)"
           >
@@ -185,7 +183,7 @@
         </template>
         <template v-else>
           <button
-            class="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            class="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-lg"
             @click="handleCreateAnother"
           >
             Invite Another
@@ -216,6 +214,7 @@ import { sendInviteEmail } from 'src/lib/api/client';
 
 defineProps<{
   modelValue: boolean;
+  isSteward?: boolean;
 }>();
 
 defineEmits<{
@@ -298,6 +297,9 @@ function copyLink() {
 
 .modal-header {
   padding: 1.25rem 1.5rem;
+  background: linear-gradient(135deg, var(--matou-primary), rgba(30, 95, 116, 0.9), var(--matou-accent));
+  color: white;
+  border-radius: 12px 12px 0 0;
 }
 
 .modal-body {
@@ -306,12 +308,7 @@ function copyLink() {
 
 .modal-footer {
   padding: 0.75rem 1.5rem;
-}
-
-.icon-box {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  gap: 0.5rem;
 }
 
 .progress-box {
