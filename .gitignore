@@ -1,3 +1,6 @@
+# Production config (infrastructure-specific)
+config/
+
 # Backend configuration with secrets
 backend/.env
 backend/config/bootstrap.yaml
