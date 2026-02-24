@@ -681,6 +681,10 @@ function initPrivateForm() {
 function buildSharedData(): Record<string, unknown> {
   // Start with existing store data to preserve fields we don't edit (e.g. avatar)
   const data: Record<string, unknown> = { ...sharedProfileData.value };
+  // Ensure required status field is always present (may be missing from synced data)
+  if (!data.status) {
+    data.status = 'approved';
+  }
   // Overlay editable text fields
   data.displayName = sharedForm.displayName;
   data.publicEmail = sharedForm.publicEmail;
