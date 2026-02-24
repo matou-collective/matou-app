@@ -2,20 +2,27 @@ import { configure } from 'quasar/wrappers';
 import path from 'path';
 import fs from 'fs';
 
-// Load .env.production vars for electron main process injection
-function loadEnvFile(filename: string): Record<string, string> {
-  const envPath = path.join(__dirname, filename);
-  if (!fs.existsSync(envPath)) return {};
+// Load production env vars for electron main process injection.
+// Reads .env.production file first, then process env vars override
+// (CI passes secrets as env vars, not files).
+function loadProdEnv(filename: string): Record<string, string> {
   const vars: Record<string, string> = {};
-  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq > 0) vars[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+  const envPath = path.join(__dirname, filename);
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq > 0) vars[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+    }
+  }
+  // Process env vars override file values (for CI)
+  for (const key of ['VITE_PROD_CONFIG_URL', 'VITE_SMTP_HOST', 'VITE_SMTP_PORT', 'VITE_ENV']) {
+    if (process.env[key]) vars[key] = process.env[key]!;
   }
   return vars;
 }
-const prodEnv = loadEnvFile('.env.production');
+const prodEnv = loadProdEnv('.env.production');
 
 export default configure(() => {
   return {
