@@ -13,7 +13,7 @@ import { secureStorage } from 'src/lib/secureStorage';
 
 export interface RegistrationData {
   name: string;
-  email?: string;
+  email: string;
   bio: string;
   location?: string;
   joinReason?: string;

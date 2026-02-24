@@ -229,7 +229,7 @@ async function handleVerify() {
 
       const success = await submitRegistration({
         name: store.profile.name,
-        email: store.profile.email || undefined,
+        email: store.profile.email,
         bio: store.profile.bio,
         location: store.profile.location || undefined,
         joinReason: store.profile.joinReason || undefined,

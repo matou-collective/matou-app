@@ -61,15 +61,16 @@
           </div>
 
           <div>
-            <label class="block text-sm font-medium mb-1.5">Email <span class="text-muted-foreground font-normal">(optional)</span></label>
+            <label class="block text-sm font-medium mb-1.5">Email *</label>
             <input
               v-model="inviteeEmail"
               type="email"
+              required
               class="w-full px-3 py-2.5 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
               placeholder="e.g. aroha@example.com"
               :disabled="isSubmitting"
             />
-            <p class="text-xs text-muted-foreground mt-1">If provided, the invite code will be emailed after creation</p>
+            <p class="text-xs text-muted-foreground mt-1">The invite code will be emailed after creation</p>
           </div>
 
           <!-- Progress -->
@@ -172,7 +173,7 @@
           </button>
           <button
             class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-            :disabled="!inviteeName.trim() || !endorsementReason.trim() || isSubmitting"
+            :disabled="!inviteeName.trim() || !endorsementReason.trim() || !inviteeEmail.trim() || isSubmitting"
             @click="handleCreate"
           >
             <span v-if="isSubmitting" class="flex items-center gap-2">

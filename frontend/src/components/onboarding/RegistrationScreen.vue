@@ -22,16 +22,18 @@
         </div>
 
         <div class="space-y-2">
-          <label class="text-sm font-medium" for="email">Email (optional)</label>
+          <label class="text-sm font-medium" for="email">Email *</label>
           <MInput
             id="email"
             v-model="formData.email"
             type="email"
             placeholder="your@email.com"
+            required
           />
           <p class="text-sm text-muted-foreground">
             For recovery and important notifications only
           </p>
+
         </div>
 
         <!-- DID Display -->
@@ -175,7 +177,7 @@ const connectionMessage = computed(() => {
 });
 
 const canSubmit = computed(() => {
-  return formData.value.name.trim().length > 0 && identityStore.isConnected;
+  return formData.value.name.trim().length > 0 && formData.value.email.trim().length > 0 && identityStore.isConnected;
 });
 
 const submitButtonText = computed(() => {
