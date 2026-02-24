@@ -330,6 +330,11 @@ ipcMain.handle('secure-storage-remove', (_event, key: string): void => {
   writeSecureStore(store);
 });
 
+ipcMain.handle('install-update', () => {
+  log.info('[Updater] User requested install, quitting and installing...');
+  autoUpdater.quitAndInstall();
+});
+
 function setupAutoUpdater(): void {
   if (!enableAutoUpdate) {
     log.info('[Updater] Disabled (dev mode)');
@@ -353,8 +358,8 @@ function setupAutoUpdater(): void {
   });
 
   autoUpdater.on('update-downloaded', () => {
-    log.info('[Updater] Update downloaded, restarting...');
-    autoUpdater.quitAndInstall();
+    log.info('[Updater] Update downloaded, notifying renderer');
+    mainWindow?.webContents.send('update-downloaded');
   });
 
   autoUpdater.checkForUpdates();
