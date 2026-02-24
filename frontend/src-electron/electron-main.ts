@@ -356,6 +356,8 @@ function setupAutoUpdater(): void {
     log.info('[Updater] Update downloaded, restarting...');
     autoUpdater.quitAndInstall();
   });
+
+  autoUpdater.checkForUpdates();
 }
 
 app.whenReady().then(async () => {
