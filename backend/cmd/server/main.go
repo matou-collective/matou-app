@@ -258,33 +258,46 @@ func main() {
 			// Test network uses ports 2001-2006
 			anysyncConfigPath = "config/client-test.yml"
 		case isProd:
-			// Production network uses remote any-sync nodes
-			anysyncConfigPath = "config/client-production.yml"
+			// Production: always fetch from config server to stay in sync with infrastructure
+			anysyncConfigPath = filepath.Join(dataDir, "client-production.yml")
 		default:
 			// Dev network uses ports 1001-1006
 			anysyncConfigPath = "config/client-dev.yml"
 		}
 	}
 
-	// If the config file doesn't exist, try fetching it from the config server
-	if _, err := os.Stat(anysyncConfigPath); os.IsNotExist(err) {
+	// In production, always fetch fresh config from the config server.
+	// For dev/test, fetch only if the config file doesn't exist.
+	shouldFetch := isProd || os.IsNotExist(func() error { _, err := os.Stat(anysyncConfigPath); return err }())
+	if shouldFetch {
 		configServerURL := os.Getenv("MATOU_CONFIG_SERVER_URL")
 		if configServerURL == "" {
 			switch {
 			case isTest:
 				configServerURL = "http://localhost:4904"
 			case isProd:
-				log.Fatalf("any-sync config file not found at %s and MATOU_CONFIG_SERVER_URL is not set for production", anysyncConfigPath)
+				log.Fatalf("MATOU_CONFIG_SERVER_URL is not set for production")
 			default:
 				configServerURL = "http://localhost:3904"
 			}
 		}
-		fmt.Printf("  Config file %s not found, fetching from config server %s...\n", anysyncConfigPath, configServerURL)
+		fmt.Printf("  Fetching any-sync config from config server %s...\n", configServerURL)
 		if err := fetchAndSaveAnySyncConfig(configServerURL, anysyncConfigPath); err != nil {
-			log.Fatalf("Failed to fetch any-sync config from config server: %v\n\n"+
-				"Ensure the config server is running at %s\n", err, configServerURL)
+			// In production, try using cached config if fetch fails
+			if isProd {
+				if _, statErr := os.Stat(anysyncConfigPath); statErr == nil {
+					fmt.Printf("  Config server unreachable, using cached config at %s\n", anysyncConfigPath)
+				} else {
+					log.Fatalf("Failed to fetch any-sync config from config server: %v\n\n"+
+						"Ensure the config server is running at %s\n", err, configServerURL)
+				}
+			} else {
+				log.Fatalf("Failed to fetch any-sync config from config server: %v\n\n"+
+					"Ensure the config server is running at %s\n", err, configServerURL)
+			}
+		} else {
+			fmt.Printf("  Config saved to %s\n", anysyncConfigPath)
 		}
-		fmt.Printf("  Config saved to %s\n", anysyncConfigPath)
 	}
 
 	// If identity is persisted with mnemonic, derive peer key for SDK initialization
