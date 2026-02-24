@@ -383,9 +383,8 @@ jobs:
             exit 1
           }
 
-          # Clean up (best-effort, don't fail the step if uninstaller errors)
-          try { Start-Process "$installDir\Uninstall Matou.exe" -ArgumentList '/S' -Wait -ErrorAction SilentlyContinue } catch {}
-          Remove-Item -Recurse -Force $installDir -ErrorAction SilentlyContinue
+          # All checks passed
+          exit 0
 
       # Upload artifacts
       - name: Upload ${{ matrix.platform }} artifacts
