@@ -90,6 +90,9 @@
         </button>
       </template>
     </div>
+
+    <!-- Version -->
+    <span class="version-label">v{{ appVersion }}</span>
   </div>
 </template>
 
@@ -102,6 +105,7 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import { useKERIClient } from 'src/lib/keri/client';
 import { MEMBERSHIP_SCHEMA_SAID } from 'src/composables/useAdminActions';
+import { version as appVersion } from '../../../package.json';
 
 const { fadeSlideUp, fadeScale, logoWobble } = useAnimationPresets();
 const onboardingStore = useOnboardingStore();
@@ -189,6 +193,7 @@ const onRetry = () => {
 
 <style lang="scss" scoped>
 .splash-screen {
+  position: relative;
   background: linear-gradient(
     135deg,
     var(--matou-primary) 0%,
@@ -279,5 +284,12 @@ button.text-white\/50 {
 
 .error-banner {
   backdrop-filter: blur(8px);
+}
+
+.version-label {
+  position: absolute;
+  bottom: 1.5rem;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.4);
 }
 </style>
