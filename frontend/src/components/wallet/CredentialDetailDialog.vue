@@ -117,6 +117,24 @@
             </div>
           </div>
         </div>
+
+        <!-- Revoke action -->
+        <div v-if="isIssuedByMe && isActive" class="revoke-section">
+          <template v-if="!showRevokeConfirm">
+            <button class="revoke-btn" @click="showRevokeConfirm = true">Revoke Credential</button>
+          </template>
+          <template v-else>
+            <p class="revoke-warning">This will permanently revoke this credential. This action cannot be undone.</p>
+            <div class="revoke-actions">
+              <button class="revoke-cancel-btn" @click="showRevokeConfirm = false" :disabled="revoking">Cancel</button>
+              <button class="revoke-confirm-btn" @click="handleRevoke" :disabled="revoking">
+                <Loader2 v-if="revoking" :size="14" class="spinner" />
+                {{ revoking ? 'Revoking...' : 'Confirm Revoke' }}
+              </button>
+            </div>
+            <p v-if="revokeError" class="revoke-error">{{ revokeError }}</p>
+          </template>
+        </div>
       </div>
     </div>
   </div>
@@ -124,8 +142,10 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { Copy, Check } from 'lucide-vue-next';
+import { Copy, Check, Loader2 } from 'lucide-vue-next';
 import type { WalletCredential } from 'stores/wallet';
+import { useWalletStore } from 'stores/wallet';
+import { useIdentityStore } from 'stores/identity';
 import {
   ENDORSEMENT_SCHEMA_SAID,
   EVENT_ATTENDANCE_SCHEMA_SAID,
@@ -135,11 +155,40 @@ const props = defineProps<{
   credential: WalletCredential;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
+const walletStore = useWalletStore();
+const identityStore = useIdentityStore();
+
 const copiedField = ref<string | null>(null);
+const showRevokeConfirm = ref(false);
+const revoking = ref(false);
+const revokeError = ref<string | null>(null);
+
+const isIssuedByMe = computed(() => {
+  const myAid = identityStore.currentAID?.prefix || identityStore.aidPrefix;
+  return !!myAid && props.credential.issuerAid === myAid;
+});
+
+const isActive = computed(() => {
+  const s = props.credential.status.toLowerCase();
+  return s === '0' || s === 'issued' || s === 'valid';
+});
+
+async function handleRevoke() {
+  revoking.value = true;
+  revokeError.value = null;
+  try {
+    await walletStore.revokeCredential(props.credential.said);
+    emit('close');
+  } catch (err) {
+    revokeError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    revoking.value = false;
+  }
+}
 
 const isEndorsement = computed(() => props.credential.schemaSaid === ENDORSEMENT_SCHEMA_SAID);
 const isEventAttendance = computed(() => props.credential.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID);
@@ -442,5 +491,88 @@ async function copy(text: string, field = 'said') {
 
 .copy-btn:hover {
   background: rgba(26, 79, 94, 0.1);
+}
+
+/* Revoke section */
+.revoke-section {
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--matou-border, #e5e7eb);
+}
+
+.revoke-btn {
+  width: 100%;
+  padding: 0.625rem 1rem;
+  background: transparent;
+  border: 1px solid #dc2626;
+  border-radius: 0.5rem;
+  color: #dc2626;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.revoke-btn:hover {
+  background: #fef2f2;
+}
+
+.revoke-warning {
+  margin: 0 0 0.75rem;
+  font-size: 0.8125rem;
+  color: #dc2626;
+  line-height: 1.4;
+}
+
+.revoke-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.revoke-cancel-btn {
+  flex: 1;
+  padding: 0.5rem 1rem;
+  background: var(--matou-card, white);
+  border: 1px solid var(--matou-border, #e5e7eb);
+  border-radius: 0.5rem;
+  color: var(--matou-foreground, #1f2937);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.revoke-confirm-btn {
+  flex: 1;
+  padding: 0.5rem 1rem;
+  background: #dc2626;
+  border: 1px solid #dc2626;
+  border-radius: 0.5rem;
+  color: white;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+}
+
+.revoke-confirm-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.revoke-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  color: #dc2626;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>

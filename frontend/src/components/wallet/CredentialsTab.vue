@@ -1,23 +1,29 @@
 <template>
   <div class="credentials-tab">
-    <!-- View toggle -->
-    <div class="view-toggle">
-      <button
-        class="toggle-btn"
-        :class="{ active: viewMode === 'cards' }"
-        @click="viewMode = 'cards'"
-      >
-        <LayoutGrid :size="16" />
-        Cards
-      </button>
-      <button
-        class="toggle-btn"
-        :class="{ active: viewMode === 'graph' }"
-        @click="viewMode = 'graph'"
-      >
-        <Network :size="16" />
-        Graph
-      </button>
+    <!-- View toggle & filter -->
+    <div class="view-toolbar">
+      <div class="view-toggle">
+        <button
+          class="toggle-btn"
+          :class="{ active: viewMode === 'cards' }"
+          @click="viewMode = 'cards'"
+        >
+          <LayoutGrid :size="16" />
+          Cards
+        </button>
+        <button
+          class="toggle-btn"
+          :class="{ active: viewMode === 'graph' }"
+          @click="viewMode = 'graph'"
+        >
+          <Network :size="16" />
+          Graph
+        </button>
+      </div>
+      <label v-if="walletStore.credentials.length > 0" class="revoked-toggle">
+        <input type="checkbox" v-model="showRevoked" />
+        <span>Show revoked</span>
+      </label>
     </div>
 
     <!-- Loading -->
@@ -39,10 +45,17 @@
       <p>Credentials issued to your wallet will appear here.</p>
     </div>
 
+    <!-- All-revoked state -->
+    <div v-else-if="filteredCredentials.length === 0" class="empty-state">
+      <ShieldOff :size="40" />
+      <h3>All credentials are revoked</h3>
+      <p>Toggle "Show revoked" to view revoked credentials.</p>
+    </div>
+
     <!-- Card list view -->
     <div v-else-if="viewMode === 'cards'" class="cards-grid">
       <div
-        v-for="cred in walletStore.credentials"
+        v-for="cred in filteredCredentials"
         :key="cred.said"
         class="credential-card"
         :class="{ 'card-issued': isIssuedByMe(cred) }"
@@ -86,7 +99,7 @@
         </defs>
         <!-- Connection lines — one per unique counterparty -->
         <line
-          v-for="(cp, idx) in uniqueCounterparties"
+          v-for="(cp, idx) in filteredCounterparties"
           :key="'line-' + cp.aid"
           :x1="lineStartX(cp.credentials[0], idx)"
           :y1="lineStartY(cp.credentials[0], idx)"
@@ -116,7 +129,7 @@
 
       <!-- Counterparty nodes (one per unique person) -->
       <div
-        v-for="(cp, idx) in uniqueCounterparties"
+        v-for="(cp, idx) in filteredCounterparties"
         :key="'node-' + cp.aid"
         class="graph-node issuer-node"
         :style="{ left: outerNodeX(idx) + 'px', top: outerNodeY(idx) + 'px' }"
@@ -134,7 +147,7 @@
       </div>
 
       <!-- Credential icons on edges (spread along edge, clickable) -->
-      <template v-for="(cp, nodeIdx) in uniqueCounterparties" :key="'cp-icons-' + cp.aid">
+      <template v-for="(cp, nodeIdx) in filteredCounterparties" :key="'cp-icons-' + cp.aid">
         <div
           v-for="(cred, credIdx) in cp.credentials"
           :key="'cred-icon-' + cred.said"
@@ -190,6 +203,17 @@ const appStore = useAppStore();
 
 const viewMode = ref<'cards' | 'graph'>('cards');
 const selectedCredential = ref<WalletCredential | null>(null);
+const showRevoked = ref(false);
+
+function isRevoked(status: string): boolean {
+  const s = status.toLowerCase();
+  return s === '1' || s === 'revoked';
+}
+
+const filteredCredentials = computed(() => {
+  if (showRevoked.value) return walletStore.credentials;
+  return walletStore.credentials.filter((c) => !isRevoked(c.status));
+});
 
 // Graph layout — responsive to container size
 const graphContainer = ref<HTMLElement | null>(null);
@@ -241,14 +265,24 @@ const uniqueCounterparties = computed<CounterpartyNode[]>(() => {
   return Array.from(map.entries()).map(([aid, credentials]) => ({ aid, credentials }));
 });
 
+const filteredCounterparties = computed<CounterpartyNode[]>(() => {
+  const map = new Map<string, WalletCredential[]>();
+  for (const cred of filteredCredentials.value) {
+    const aid = counterpartyAid(cred);
+    if (!map.has(aid)) map.set(aid, []);
+    map.get(aid)!.push(cred);
+  }
+  return Array.from(map.entries()).map(([aid, credentials]) => ({ aid, credentials }));
+});
+
 function outerNodeX(idx: number): number {
-  const count = uniqueCounterparties.value.length;
+  const count = filteredCounterparties.value.length;
   const angle = (2 * Math.PI * idx) / Math.max(count, 1) - Math.PI / 2;
   return centerX.value + graphRadius.value * Math.cos(angle);
 }
 
 function outerNodeY(idx: number): number {
-  const count = uniqueCounterparties.value.length;
+  const count = filteredCounterparties.value.length;
   const angle = (2 * Math.PI * idx) / Math.max(count, 1) - Math.PI / 2;
   return centerY.value + graphRadius.value * Math.sin(angle);
 }
@@ -460,9 +494,30 @@ function formatDate(dateStr: string): string {
   gap: 1.25rem;
 }
 
+.view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .view-toggle {
   display: flex;
   gap: 0.5rem;
+}
+
+.revoked-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--matou-muted-foreground, #6b7280);
+  cursor: pointer;
+  user-select: none;
+}
+
+.revoked-toggle input[type="checkbox"] {
+  accent-color: var(--matou-primary, #1e5f74);
+  cursor: pointer;
 }
 
 .toggle-btn {

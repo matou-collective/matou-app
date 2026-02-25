@@ -186,6 +186,15 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  async function revokeCredential(said: string): Promise<void> {
+    const aidName = identityStore.currentAID?.name;
+    if (!aidName) throw new Error('No active AID');
+    await keriClient.revokeCredential(aidName, said);
+    // Update local state immediately so UI reflects the revocation
+    const cred = credentials.value.find((c) => c.said === said);
+    if (cred) cred.status = '1';
+  }
+
   async function refreshAll(): Promise<void> {
     await loadCredentials();
   }
@@ -203,6 +212,7 @@ export const useWalletStore = defineStore('wallet', () => {
 
     // Actions
     loadCredentials,
+    revokeCredential,
     refreshAll,
   };
 });
