@@ -182,9 +182,12 @@
       :hasMarkedAttended="selectedMemberHasAttended"
       :isMarkingAttended="isMarkingAttended"
       :canChangeRole="false /* TODO: disabled pending multisig rotation fix — see docs/multisig-rotation-report.md */"
+      :canRemoveMember="isSteward && !!selectedMemberSharedProfile && (selectedMemberSharedProfile.aid as string) !== (identityStore.currentAID?.prefix || '')"
+      :isRemoving="isRemoving"
       @close="handleCloseModal"
       @approve="handleApprove"
       @decline="handleDecline"
+      @remove="handleRemoveMember"
       @endorse="handleEndorse"
       @mark-attended="handleMarkAttended"
       @role-updated="handleRoleUpdated"
@@ -240,6 +243,7 @@ const {
   error: actionError,
   approveRegistration,
   declineRegistration,
+  removeMember,
   clearError,
 } = useAdminActions();
 
@@ -312,6 +316,7 @@ async function refreshActivity() {
     refreshingActivity.value = false;
   }
 }
+const isRemoving = ref(false);
 const selectedMember = ref<{ shared?: Record<string, unknown>; community?: Record<string, unknown> } | null>(null);
 
 // Reactively track the selected member's SharedProfile from the store.
@@ -504,7 +509,10 @@ const pendingMembers = computed(() =>
 );
 
 const liveMembers = computed(() =>
-  allMembers.value.filter(m => (m.profile.status as string) !== 'pending')
+  allMembers.value.filter(m => {
+    const status = m.profile.status as string;
+    return status !== 'pending' && status !== 'removed';
+  })
 );
 
 // Calculate new members this week
@@ -677,6 +685,20 @@ async function handleDecline(registration: PendingRegistration, reason?: string)
   if (success) {
     removeRegistration(registration.notificationId);
     selectedMember.value = null;
+  }
+}
+
+async function handleRemoveMember(aid: string, reason?: string) {
+  const community = selectedMemberCommunityProfile.value;
+  const credentialSaid = (community?.credential as string) || '';
+
+  isRemoving.value = true;
+  const success = await removeMember(aid, credentialSaid, reason);
+  isRemoving.value = false;
+
+  if (success) {
+    selectedMember.value = null;
+    await profilesStore.loadCommunityProfiles();
   }
 }
 
