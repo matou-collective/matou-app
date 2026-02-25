@@ -19,24 +19,24 @@
             </span>
           </button>
           <button
-            class="wallet-nav-item"
-            :class="{ active: activeTab === 'governance' }"
-            @click="activeTab = 'governance'"
+            class="wallet-nav-item disabled"
+            disabled
           >
             <span class="wallet-nav-text">
               <span class="wallet-nav-label">Governance Tokens</span>
               <span class="wallet-nav-badge">GOV</span>
             </span>
+            <span class="wallet-nav-coming-soon">Coming soon</span>
           </button>
           <button
-            class="wallet-nav-item"
-            :class="{ active: activeTab === 'tokens' }"
-            @click="activeTab = 'tokens'"
+            class="wallet-nav-item disabled"
+            disabled
           >
             <span class="wallet-nav-text">
               <span class="wallet-nav-label">Transaction Tokens</span>
               <span class="wallet-nav-badge">UTIL</span>
             </span>
+            <span class="wallet-nav-coming-soon">Coming soon</span>
           </button>
         </nav>
       </aside>
@@ -174,6 +174,21 @@ onMounted(() => {
 
 .wallet-nav-item.active .wallet-nav-badge {
   color: var(--matou-sidebar-primary);
+}
+
+.wallet-nav-item.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.wallet-nav-item.disabled:hover {
+  background: transparent;
+}
+
+.wallet-nav-coming-soon {
+  font-size: 0.65rem;
+  color: var(--matou-muted-foreground);
+  margin-left: auto;
 }
 
 .tab-content {

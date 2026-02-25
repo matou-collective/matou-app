@@ -44,7 +44,7 @@ func NewProfilesHandler(
 // HandleListTypes handles GET /api/v1/types — list all type definitions.
 func (h *ProfilesHandler) HandleListTypes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -58,7 +58,7 @@ func (h *ProfilesHandler) HandleListTypes(w http.ResponseWriter, r *http.Request
 // HandleGetType handles GET /api/v1/types/{name} — get specific type definition.
 func (h *ProfilesHandler) HandleGetType(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -88,7 +88,7 @@ type CreateProfileRequest struct {
 // HandleCreateProfile handles POST /api/v1/profiles — create or update a profile.
 func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -214,7 +214,7 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 // HandleListProfiles handles GET /api/v1/profiles/{type} — list profiles of a type.
 func (h *ProfilesHandler) HandleListProfiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -304,7 +304,7 @@ func (h *ProfilesHandler) handleGetProfile(w http.ResponseWriter, r *http.Reques
 // HandleMyProfiles handles GET /api/v1/profiles/me — get current user's profiles.
 func (h *ProfilesHandler) HandleMyProfiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -314,7 +314,7 @@ func (h *ProfilesHandler) HandleMyProfiles(w http.ResponseWriter, r *http.Reques
 	}
 	if aid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "identity not configured",
+			"error": "Identity not configured",
 		})
 		return
 	}
@@ -389,7 +389,7 @@ type UpdateMemberRoleRequest struct {
 // member's CommunityProfile in the read-only space.
 func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -654,7 +654,7 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 // Updates the member's CommunityProfile role in the read-only space.
 func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -773,7 +773,7 @@ type RemoveMemberRequest struct {
 // Marks the member's CommunityProfile and SharedProfile as removed.
 func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -988,6 +988,6 @@ func (h *ProfilesHandler) handleProfiles(w http.ResponseWriter, r *http.Request)
 	case http.MethodGet:
 		h.HandleMyProfiles(w, r)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }

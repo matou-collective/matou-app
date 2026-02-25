@@ -53,7 +53,7 @@ func (h *NotificationsHandler) HandleRegistrationSubmitted(w http.ResponseWriter
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, NotificationResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -112,7 +112,7 @@ func (h *NotificationsHandler) HandleRegistrationApproved(w http.ResponseWriter,
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, NotificationResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -131,7 +131,7 @@ func (h *NotificationsHandler) HandleRegistrationApproved(w http.ResponseWriter,
 		writeJSON(w, http.StatusOK, NotificationResponse{
 			Success: true,
 			Skipped: true,
-			Reason:  "no email address provided for applicant",
+			Reason:  "No email address provided for applicant",
 		})
 		return
 	}

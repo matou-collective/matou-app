@@ -78,7 +78,7 @@ type GetIdentityResponse struct {
 func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, SetIdentityResponse{
-			Error: "method not allowed",
+			Error: "Method not allowed",
 		})
 		return
 	}
@@ -286,11 +286,11 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	if req.ReadOnlySpaceID != "" && !isClaim {
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID); keyErr != nil {
 			if roKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 2); deriveErr != nil {
-				log.Printf("[Identity] Failed to derive readonly space keys: %v\n", deriveErr)
+				log.Printf("[Identity] Failed to derive read-only space keys: %v\n", deriveErr)
 			} else {
 				roKeys.SigningKey = client.GetSigningKey()
 				anysync.PersistSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID, roKeys)
-				log.Printf("[Identity] Re-derived readonly space keys for %s\n", req.ReadOnlySpaceID)
+				log.Printf("[Identity] Re-derived read-only space keys for %s\n", req.ReadOnlySpaceID)
 			}
 		}
 		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID); keyErr == nil {
@@ -298,9 +298,9 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 			_, err := client.GetSpace(roCtx, req.ReadOnlySpaceID)
 			roCancel()
 			if err != nil {
-				log.Printf("[Identity] Failed to sync readonly space %s: %v\n", req.ReadOnlySpaceID, err)
+				log.Printf("[Identity] Failed to sync read-only space %s: %v\n", req.ReadOnlySpaceID, err)
 			} else {
-				log.Printf("[Identity] Recovered readonly space: %s\n", req.ReadOnlySpaceID)
+				log.Printf("[Identity] Recovered read-only space: %s\n", req.ReadOnlySpaceID)
 			}
 		}
 	}
@@ -400,7 +400,7 @@ func (h *IdentityHandler) seedPrivateSpace(ctx context.Context, spaceID, userAID
 func (h *IdentityHandler) HandleGetIdentity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -421,7 +421,7 @@ func (h *IdentityHandler) HandleGetIdentity(w http.ResponseWriter, r *http.Reque
 func (h *IdentityHandler) HandleDeleteIdentity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -447,7 +447,7 @@ func (h *IdentityHandler) handleIdentity(w http.ResponseWriter, r *http.Request)
 		h.HandleDeleteIdentity(w, r)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 	}
 }

@@ -131,7 +131,7 @@ type SpaceInfo struct {
 func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -142,7 +142,7 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 	}
 	if aid == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "identity not configured",
+			"error": "Identity not configured",
 		})
 		return
 	}
@@ -221,7 +221,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, CreateCommunityResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -552,7 +552,7 @@ func (h *SpacesHandler) seedSpace(ctx context.Context, spaceID string, typeDef *
 func (h *SpacesHandler) HandleGetCommunity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, GetCommunityResponse{
-			Error: "method not allowed",
+			Error: "Method not allowed",
 		})
 		return
 	}
@@ -578,7 +578,7 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, CreatePrivateResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -721,7 +721,7 @@ func (h *SpacesHandler) HandleInvite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, InviteResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -854,7 +854,7 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, JoinCommunityResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -1032,7 +1032,7 @@ type VerifyAccessResponse struct {
 // HandleVerifyAccess handles GET /api/v1/spaces/community/verify-access?aid=<prefix>
 func (h *SpacesHandler) HandleVerifyAccess(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -1111,7 +1111,7 @@ func (h *SpacesHandler) handleCommunitySpace(w http.ResponseWriter, r *http.Requ
 		h.HandleGetCommunity(w, r)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 	}
 }
@@ -1122,7 +1122,7 @@ func (h *SpacesHandler) HandleCommunityReadOnlyInvite(w http.ResponseWriter, r *
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, InviteResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -1191,7 +1191,7 @@ type SpaceSyncStatus struct {
 // whether ObjectTrees have been synced and how many objects exist.
 func (h *SpacesHandler) HandleSyncStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 

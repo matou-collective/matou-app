@@ -48,7 +48,7 @@ func (h *NoticesHandler) handleNotices(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		h.HandleCreateNotice(w, r)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
@@ -66,7 +66,7 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 	if len(parts) == 1 {
 		// GET /api/v1/notices/{id}
 		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 			return
 		}
 		h.HandleGetNotice(w, r, noticeID)
@@ -86,7 +86,7 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 		case http.MethodGet:
 			h.HandleListRSVPs(w, r, noticeID)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 	case "ack":
 		switch r.Method {
@@ -95,7 +95,7 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 		case http.MethodGet:
 			h.HandleListAcks(w, r, noticeID)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 	case "save":
 		h.HandleToggleSave(w, r, noticeID)
@@ -106,7 +106,7 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 		case http.MethodGet:
 			h.HandleListComments(w, r, noticeID)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 	case "reactions":
 		switch r.Method {
@@ -115,7 +115,7 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 		case http.MethodGet:
 			h.HandleListReactions(w, r, noticeID)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 	case "pin":
 		h.HandleTogglePin(w, r, noticeID)
@@ -154,7 +154,7 @@ type CreateNoticeRequest struct {
 // HandleCreateNotice handles POST /api/v1/notices.
 func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -199,7 +199,7 @@ func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Reque
 		aid = h.userIdentity.GetAID()
 	}
 	if aid == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity not configured"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Identity not configured"})
 		return
 	}
 
@@ -303,7 +303,7 @@ func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Reque
 // Supports query params: ?view=upcoming|current|past&type=event|update
 func (h *NoticesHandler) HandleListNotices(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -408,7 +408,7 @@ func (h *NoticesHandler) HandleGetNotice(w http.ResponseWriter, r *http.Request,
 // HandlePublishNotice handles POST /api/v1/notices/{id}/publish.
 func (h *NoticesHandler) HandlePublishNotice(w http.ResponseWriter, r *http.Request, noticeID string) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -418,7 +418,7 @@ func (h *NoticesHandler) HandlePublishNotice(w http.ResponseWriter, r *http.Requ
 // HandleArchiveNotice handles POST /api/v1/notices/{id}/archive.
 func (h *NoticesHandler) HandleArchiveNotice(w http.ResponseWriter, r *http.Request, noticeID string) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -512,7 +512,7 @@ func (h *NoticesHandler) HandleCreateRSVP(w http.ResponseWriter, r *http.Request
 		aid = h.userIdentity.GetAID()
 	}
 	if aid == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity not configured"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Identity not configured"})
 		return
 	}
 
@@ -596,7 +596,7 @@ func (h *NoticesHandler) HandleCreateAck(w http.ResponseWriter, r *http.Request,
 		aid = h.userIdentity.GetAID()
 	}
 	if aid == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity not configured"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Identity not configured"})
 		return
 	}
 
@@ -668,7 +668,7 @@ func (h *NoticesHandler) HandleListAcks(w http.ResponseWriter, r *http.Request, 
 // HandleToggleSave handles POST /api/v1/notices/{id}/save.
 func (h *NoticesHandler) HandleToggleSave(w http.ResponseWriter, r *http.Request, noticeID string) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -677,7 +677,7 @@ func (h *NoticesHandler) HandleToggleSave(w http.ResponseWriter, r *http.Request
 		aid = h.userIdentity.GetAID()
 	}
 	if aid == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity not configured"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Identity not configured"})
 		return
 	}
 
@@ -738,7 +738,7 @@ func (h *NoticesHandler) HandleToggleSave(w http.ResponseWriter, r *http.Request
 // HandleListSaved handles GET /api/v1/notices/saved.
 func (h *NoticesHandler) HandleListSaved(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -806,7 +806,7 @@ func (h *NoticesHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		aid = h.userIdentity.GetAID()
 	}
 	if aid == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity not configured"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Identity not configured"})
 		return
 	}
 
@@ -918,7 +918,7 @@ func (h *NoticesHandler) HandleToggleReaction(w http.ResponseWriter, r *http.Req
 		aid = h.userIdentity.GetAID()
 	}
 	if aid == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identity not configured"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Identity not configured"})
 		return
 	}
 
@@ -1024,7 +1024,7 @@ func (h *NoticesHandler) HandleListReactions(w http.ResponseWriter, r *http.Requ
 // HandleTogglePin handles POST /api/v1/notices/{id}/pin.
 func (h *NoticesHandler) HandleTogglePin(w http.ResponseWriter, r *http.Request, noticeID string) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 

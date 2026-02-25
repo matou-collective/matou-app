@@ -33,7 +33,7 @@ func TestHandleCreateNotice_Validation(t *testing.T) {
 			name:       "valid announcement but no identity",
 			body:       map[string]string{"type": "announcement", "title": "Test", "summary": "Test"},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "identity not configured",
+			wantError:  "Identity not configured",
 		},
 		{
 			name:       "missing title",
@@ -57,7 +57,7 @@ func TestHandleCreateNotice_Validation(t *testing.T) {
 			name:       "valid but no identity",
 			body:       map[string]string{"type": "event", "title": "Test", "summary": "Test"},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "identity not configured",
+			wantError:  "Identity not configured",
 		},
 	}
 
@@ -116,19 +116,19 @@ func TestHandleCreateRSVP_Validation(t *testing.T) {
 			name:       "valid going but no identity",
 			body:       map[string]string{"status": "going"},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "identity not configured",
+			wantError:  "Identity not configured",
 		},
 		{
 			name:       "valid maybe but no identity",
 			body:       map[string]string{"status": "maybe"},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "identity not configured",
+			wantError:  "Identity not configured",
 		},
 		{
 			name:       "valid not_going but no identity",
 			body:       map[string]string{"status": "not_going"},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "identity not configured",
+			wantError:  "Identity not configured",
 		},
 	}
 
@@ -319,7 +319,7 @@ func TestHandleCreateComment_Validation(t *testing.T) {
 			name:       "valid text but no identity",
 			body:       map[string]string{"text": "Hello world"},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "identity not configured",
+			wantError:  "Identity not configured",
 		},
 	}
 
@@ -371,7 +371,7 @@ func TestHandleToggleReaction_Validation(t *testing.T) {
 			name:       "valid emoji but no identity",
 			body:       map[string]string{"emoji": "\U0001F44D"},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "identity not configured",
+			wantError:  "Identity not configured",
 		},
 	}
 

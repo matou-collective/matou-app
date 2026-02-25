@@ -60,7 +60,7 @@ type TrustStatus struct {
 func (h *HealthHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}

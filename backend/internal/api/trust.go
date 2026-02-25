@@ -99,7 +99,7 @@ func (h *TrustHandler) newBuilder(ctx context.Context) *trust.Builder {
 func (h *TrustHandler) HandleGetGraph(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -156,7 +156,7 @@ func (h *TrustHandler) HandleGetGraph(w http.ResponseWriter, r *http.Request) {
 func (h *TrustHandler) HandleGetScore(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -208,7 +208,7 @@ func (h *TrustHandler) HandleGetScore(w http.ResponseWriter, r *http.Request) {
 func (h *TrustHandler) HandleGetScores(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -247,7 +247,7 @@ func (h *TrustHandler) HandleGetScores(w http.ResponseWriter, r *http.Request) {
 func (h *TrustHandler) HandleGetSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}

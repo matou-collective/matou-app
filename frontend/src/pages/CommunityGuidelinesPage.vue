@@ -15,7 +15,7 @@
         <section class="p-6">
           <h2 class="text-2xl font-semibold mb-4">Welcome to Matou</h2>
           <p class="text-muted-foreground mb-4">
-            Matou is an indigenous led digital community built for the purpose of open innovation and collaboration to support data sovereignty and community autonomy. We're creating a space where people can participate in meaningful governance, contribute to projects, and build lasting connections.
+            Matou is an indigenous-led digital community built for the purpose of open innovation and collaboration to support data sovereignty and community autonomy. We're creating a space where people can participate in meaningful governance, contribute to projects, and build lasting connections.
           </p>
         </section>
 

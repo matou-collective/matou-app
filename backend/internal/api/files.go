@@ -38,7 +38,7 @@ func NewFilesHandler(fileManager *anysync.FileManager, spaceManager *anysync.Spa
 // Returns a fileRef (CID string) that can be stored in profile objects.
 func (h *FilesHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -123,7 +123,7 @@ func (h *FilesHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 // Returns the file bytes with appropriate Content-Type.
 func (h *FilesHandler) HandleDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 

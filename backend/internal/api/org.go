@@ -113,7 +113,7 @@ func (h *OrgConfigHandler) saveToDisk() error {
 func (h *OrgConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -136,7 +136,7 @@ func (h *OrgConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Reques
 func (h *OrgConfigHandler) HandleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -191,7 +191,7 @@ func (h *OrgConfigHandler) HandleSaveConfig(w http.ResponseWriter, r *http.Reque
 func (h *OrgConfigHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -218,7 +218,7 @@ func (h *OrgConfigHandler) handleConfig(w http.ResponseWriter, r *http.Request) 
 		h.HandleDeleteConfig(w, r)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 	}
 }
@@ -228,7 +228,7 @@ func (h *OrgConfigHandler) handleConfig(w http.ResponseWriter, r *http.Request) 
 func (h *OrgConfigHandler) HandleDeleteConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}

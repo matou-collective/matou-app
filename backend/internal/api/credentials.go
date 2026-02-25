@@ -81,7 +81,7 @@ func (h *CredentialsHandler) HandleStore(w http.ResponseWriter, r *http.Request)
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, StoreResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -134,7 +134,7 @@ func (h *CredentialsHandler) HandleStore(w http.ResponseWriter, r *http.Request)
 func (h *CredentialsHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, CredentialResponse{
-			Error: "method not allowed",
+			Error: "Method not allowed",
 		})
 		return
 	}
@@ -185,7 +185,7 @@ func (h *CredentialsHandler) HandleValidate(w http.ResponseWriter, r *http.Reque
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, ValidateResponse{
 			Valid: false,
-			Error: "method not allowed",
+			Error: "Method not allowed",
 		})
 		return
 	}
@@ -228,7 +228,7 @@ func (h *CredentialsHandler) HandleValidate(w http.ResponseWriter, r *http.Reque
 func (h *CredentialsHandler) HandleRoles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -248,7 +248,7 @@ func (h *CredentialsHandler) HandleRoles(w http.ResponseWriter, r *http.Request)
 func (h *CredentialsHandler) HandleOrg(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -277,7 +277,7 @@ func (h *CredentialsHandler) handleCredentials(w http.ResponseWriter, r *http.Re
 		h.handleList(w, r)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 	}
 }

@@ -36,7 +36,7 @@
         </button>
         <button class="nav-item disabled" disabled>
           <Target class="nav-icon" />
-          <span>Contribute</span>
+          <span>Projects</span>
         </button>
         <button class="nav-item disabled" disabled>
           <Vote class="nav-icon" />

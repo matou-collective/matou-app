@@ -40,7 +40,7 @@ func (h *InvitesHandler) HandleSendEmail(w http.ResponseWriter, r *http.Request)
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, SendEmailResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}

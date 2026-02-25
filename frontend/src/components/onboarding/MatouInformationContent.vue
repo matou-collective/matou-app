@@ -142,7 +142,7 @@ const defaultGoals = [
 ];
 
 const defaultExpectations = [
-  'Uphold our values and support to our community goals',
+  'Uphold our values and support our community goals',
   'Participate in governance with respect and good faith',
   'Contribute to the community in ways that align with collective wellbeing',
   'Engage in open and transparent communication',

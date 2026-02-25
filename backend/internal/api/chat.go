@@ -172,7 +172,7 @@ type ReactionAggregate struct {
 // HandleListChannels handles GET /api/v1/chat/channels — list all channels.
 func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -245,7 +245,7 @@ func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request)
 // HandleGetChannel handles GET /api/v1/chat/channels/{id} — get channel details.
 func (h *ChatHandler) HandleGetChannel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -329,7 +329,7 @@ func (h *ChatHandler) HandleGetChannel(w http.ResponseWriter, r *http.Request) {
 // HandleCreateChannel handles POST /api/v1/chat/channels — create a new channel.
 func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -447,7 +447,7 @@ func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request
 // HandleUpdateChannel handles PUT /api/v1/chat/channels/{id} — update a channel.
 func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -577,7 +577,7 @@ func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request
 // HandleArchiveChannel handles DELETE /api/v1/chat/channels/{id} — archive a channel.
 func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -686,7 +686,7 @@ func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Reques
 // HandleListMessages handles GET /api/v1/chat/channels/{id}/messages — list messages in a channel.
 func (h *ChatHandler) HandleListMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -726,7 +726,7 @@ func (h *ChatHandler) HandleListMessages(w http.ResponseWriter, r *http.Request)
 // HandleSendMessage handles POST /api/v1/chat/channels/{id}/messages — send a message.
 func (h *ChatHandler) HandleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -862,7 +862,7 @@ func (h *ChatHandler) HandleSendMessage(w http.ResponseWriter, r *http.Request) 
 // HandleEditMessage handles PUT /api/v1/chat/messages/{id} — edit a message.
 func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -1029,7 +1029,7 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 // HandleDeleteMessage handles DELETE /api/v1/chat/messages/{id} — soft delete a message.
 func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -1175,7 +1175,7 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 // HandleGetThread handles GET /api/v1/chat/messages/{id}/thread — get thread replies.
 func (h *ChatHandler) HandleGetThread(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -1257,7 +1257,7 @@ func (h *ChatHandler) HandleGetThread(w http.ResponseWriter, r *http.Request) {
 // HandleAddReaction handles POST /api/v1/chat/messages/{id}/reactions — add a reaction.
 func (h *ChatHandler) HandleAddReaction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -1431,7 +1431,7 @@ func (h *ChatHandler) HandleAddReaction(w http.ResponseWriter, r *http.Request) 
 // HandleRemoveReaction handles DELETE /api/v1/chat/messages/{id}/reactions/{emoji} — remove a reaction.
 func (h *ChatHandler) HandleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -1588,7 +1588,7 @@ func (h *ChatHandler) HandleRemoveReaction(w http.ResponseWriter, r *http.Reques
 // HandleGetReadCursors handles GET /api/v1/chat/read-cursors — get read cursors.
 func (h *ChatHandler) HandleGetReadCursors(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -1646,7 +1646,7 @@ func (h *ChatHandler) HandleGetReadCursors(w http.ResponseWriter, r *http.Reques
 // HandleUpdateReadCursor handles PUT /api/v1/chat/read-cursors — update a read cursor.
 func (h *ChatHandler) HandleUpdateReadCursor(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 
@@ -2099,7 +2099,7 @@ func (h *ChatHandler) handleChannels(w http.ResponseWriter, r *http.Request) {
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusOK)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }
 
@@ -2120,7 +2120,7 @@ func (h *ChatHandler) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 		case http.MethodOptions:
 			w.WriteHeader(http.StatusOK)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 		return
 	}
@@ -2135,7 +2135,7 @@ func (h *ChatHandler) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 		case http.MethodOptions:
 			w.WriteHeader(http.StatusOK)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 		return
 	}
@@ -2158,7 +2158,7 @@ func (h *ChatHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		case http.MethodOptions:
 			w.WriteHeader(http.StatusOK)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 		return
 	}
@@ -2184,7 +2184,7 @@ func (h *ChatHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 				case http.MethodOptions:
 					w.WriteHeader(http.StatusOK)
 				default:
-					writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+					writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 				}
 				return
 			}
@@ -2196,7 +2196,7 @@ func (h *ChatHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 				case http.MethodOptions:
 					w.WriteHeader(http.StatusOK)
 				default:
-					writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+					writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 				}
 				return
 			}
@@ -2216,6 +2216,6 @@ func (h *ChatHandler) handleReadCursors(w http.ResponseWriter, r *http.Request) 
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusOK)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
 }

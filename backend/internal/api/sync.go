@@ -110,7 +110,7 @@ func (h *SyncHandler) HandleSyncCredentials(w http.ResponseWriter, r *http.Reque
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, SyncCredentialsResponse{
 			Success: false,
-			Errors:  []string{"method not allowed"},
+			Errors:  []string{"Method not allowed"},
 		})
 		return
 	}
@@ -235,7 +235,7 @@ func (h *SyncHandler) HandleSyncKEL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, SyncKELResponse{
 			Success: false,
-			Error:   "method not allowed",
+			Error:   "Method not allowed",
 		})
 		return
 	}
@@ -332,7 +332,7 @@ func (h *SyncHandler) HandleSyncKEL(w http.ResponseWriter, r *http.Request) {
 func (h *SyncHandler) HandleGetCommunityMembers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
@@ -426,7 +426,7 @@ func (h *SyncHandler) HandleGetCommunityMembers(w http.ResponseWriter, r *http.R
 func (h *SyncHandler) HandleGetCommunityCredentials(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}

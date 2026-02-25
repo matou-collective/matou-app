@@ -78,7 +78,7 @@ func NewEventsHandler(broker *EventBroker) *EventsHandler {
 func (h *EventsHandler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
+			"error": "Method not allowed",
 		})
 		return
 	}
