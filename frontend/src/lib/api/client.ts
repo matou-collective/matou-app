@@ -922,3 +922,28 @@ export async function toggleNoticePin(noticeId: string): Promise<{ success: bool
     return { success: false, error: 'Network error' };
   }
 }
+
+// --- Members ---
+
+/**
+ * Remove a member (soft-delete their profiles on the backend)
+ */
+export async function removeMember(
+  memberAid: string,
+  reason?: string,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/members/${encodeURIComponent(memberAid)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      return { success: false, error: data.error || 'Failed to remove member' };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

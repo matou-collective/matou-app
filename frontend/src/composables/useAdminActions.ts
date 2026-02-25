@@ -7,7 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
-import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistrationApprovedNotification } from 'src/lib/api/client';
+import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -624,6 +624,93 @@ export function useAdminActions() {
   }
 
   /**
+   * Remove a member: revoke their membership credential and soft-delete their profiles.
+   * @param memberAid - The member's AID prefix
+   * @param credentialSaid - The member's credential SAID (optional; will search if omitted)
+   * @param reason - Optional removal reason
+   * @param onStep - Optional progress callback
+   * @returns Success status
+   */
+  async function removeMember(
+    memberAid: string,
+    credentialSaid: string,
+    reason?: string,
+    onStep?: (step: string) => void,
+  ): Promise<boolean> {
+    if (isProcessing.value) {
+      console.warn('[AdminActions] Already processing an action');
+      return false;
+    }
+
+    isProcessing.value = true;
+    error.value = null;
+
+    try {
+      const client = keriClient.getSignifyClient();
+      if (!client) throw new Error('Not connected to KERIA');
+
+      // --- Step 1: Resolve the org AID ---
+      onStep?.('Resolving org identity...');
+      const orgAidPrefix = await getOrgAidName();
+
+      // --- Step 2: Find and revoke the credential ---
+      onStep?.('Revoking credential...');
+      let saidToRevoke = credentialSaid;
+
+      if (!saidToRevoke) {
+        // Search for the member's credential by schema + subject AID
+        const creds = await client.credentials().list();
+        const memberCred = creds.find(
+          (c: { sad: { s: string; a?: { i?: string } } }) =>
+            c.sad.s === MEMBERSHIP_SCHEMA_SAID && c.sad.a?.i === memberAid
+        );
+        if (memberCred) {
+          saidToRevoke = memberCred.sad.d;
+          console.log('[AdminActions] Found credential to revoke:', saidToRevoke);
+        } else {
+          console.warn('[AdminActions] No membership credential found for member:', memberAid);
+        }
+      }
+
+      if (saidToRevoke) {
+        await keriClient.revokeCredential(orgAidPrefix, saidToRevoke);
+        console.log('[AdminActions] Credential revoked:', saidToRevoke);
+      }
+
+      // --- Step 3: Soft-delete profiles on the backend ---
+      onStep?.('Removing member profiles...');
+      const removeResult = await removeMemberAPI(memberAid, reason);
+      if (!removeResult.success) {
+        throw new Error(removeResult.error || 'Failed to remove member profiles');
+      }
+      console.log('[AdminActions] Member profiles removed for:', memberAid);
+
+      onStep?.('Complete');
+      lastAction.value = {
+        type: 'remove',
+        success: true,
+        registrationId: memberAid,
+      };
+
+      return true;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error('[AdminActions] Remove member failed:', err);
+      error.value = errorMsg;
+
+      lastAction.value = {
+        type: 'remove',
+        success: false,
+        registrationId: memberAid,
+      };
+
+      return false;
+    } finally {
+      isProcessing.value = false;
+    }
+  }
+
+  /**
    * Clear error state
    */
   function clearError() {
@@ -643,6 +730,7 @@ export function useAdminActions() {
     upgradeMemberToSteward,
     declineRegistration,
     sendMessageToApplicant,
+    removeMember,
     clearError,
   };
 }
