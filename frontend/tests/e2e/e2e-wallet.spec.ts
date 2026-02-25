@@ -331,44 +331,21 @@ test.describe.serial('Wallet Page', () => {
   });
 
   // ---------------------------------------------------------------
-  // Test 11: Governance tab
+  // Test 11: Governance tab is disabled (not yet implemented)
   // ---------------------------------------------------------------
-  test('governance tab', async () => {
-    await page.locator('.wallet-nav-item', { hasText: 'Governance' }).click();
-    await expect(page.locator('.wallet-nav-item', { hasText: 'Governance' })).toHaveClass(/active/);
-
-    // GOV balance card
-    await expect(page.locator('.balance-card .balance-label')).toContainText(
-      'Balance', { timeout: TIMEOUT.short },
-    );
-
-    // Empty state placeholders
-    await expect(page.getByText('votes available')).toBeVisible({ timeout: TIMEOUT.short });
-    await expect(page.getByText('No voting history yet')).toBeVisible();
-    await expect(page.getByText('No proposals yet')).toBeVisible();
+  test('governance tab is disabled', async () => {
+    const govTab = page.locator('.wallet-nav-item', { hasText: 'Governance' });
+    await expect(govTab).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(govTab).toBeDisabled();
   });
 
   // ---------------------------------------------------------------
-  // Test 12: Tokens tab
+  // Test 12: Tokens tab is disabled (not yet implemented)
   // ---------------------------------------------------------------
-  test('tokens tab', async () => {
-    await page.locator('.wallet-nav-item', { hasText: 'Transaction' }).click();
-    await expect(page.locator('.wallet-nav-item', { hasText: 'Transaction' })).toHaveClass(/active/);
-
-    // UTIL balance card
-    await expect(page.locator('.balance-card .balance-label')).toContainText(
-      'Balance', { timeout: TIMEOUT.short },
-    );
-
-    // Send disabled (0 balance), Receive and QR disabled
-    const sendBtn = page.locator('.action-btn.send-btn');
-    await expect(sendBtn).toBeVisible({ timeout: TIMEOUT.short });
-    await expect(sendBtn).toBeDisabled();
-    await expect(page.locator('.action-btn.receive-btn')).toBeDisabled();
-    await expect(page.locator('.action-btn.qr-btn')).toBeDisabled();
-
-    // No transactions
-    await expect(page.getByText('No transactions yet')).toBeVisible({ timeout: TIMEOUT.short });
+  test('tokens tab is disabled', async () => {
+    const tokensTab = page.locator('.wallet-nav-item', { hasText: 'Transaction' });
+    await expect(tokensTab).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(tokensTab).toBeDisabled();
   });
 
   // ---------------------------------------------------------------
