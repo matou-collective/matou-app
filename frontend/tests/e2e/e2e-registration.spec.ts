@@ -1,7 +1,7 @@
 import path from 'path';
 import { ChildProcess, spawn, execSync } from 'child_process';
 import * as fs from 'fs';
-import { test, expect, Page, BrowserContext } from '@playwright/test';
+import { test, expect, Page, BrowserContext, request } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
 import { BackendManager } from './utils/backend-manager';
@@ -32,10 +32,12 @@ async function restartAdminBackend(): Promise<ChildProcess> {
   const backendDir = path.resolve(__dirname, '..', '..', '..', 'backend');
   const dataDir = path.join(backendDir, 'data-test');
 
-  // Kill existing process on port 9080
+  // Kill the LISTENING process on port 9080 (the server binary).
+  // IMPORTANT: Use -sTCP:LISTEN to avoid killing Chromium or other clients
+  // that have open connections to port 9080.
   console.log('[AdminBackend] Stopping admin backend on port 9080...');
   try {
-    const pids = execSync('lsof -ti :9080 2>/dev/null', { encoding: 'utf-8' }).trim();
+    const pids = execSync('lsof -ti :9080 -sTCP:LISTEN 2>/dev/null', { encoding: 'utf-8' }).trim();
     if (pids) {
       for (const pid of pids.split('\n')) {
         try { process.kill(Number(pid), 'SIGTERM'); } catch { /* already dead */ }
@@ -44,7 +46,7 @@ async function restartAdminBackend(): Promise<ChildProcess> {
       await new Promise(r => setTimeout(r, 2000));
       // Force kill if still alive
       try {
-        const remaining = execSync('lsof -ti :9080 2>/dev/null', { encoding: 'utf-8' }).trim();
+        const remaining = execSync('lsof -ti :9080 -sTCP:LISTEN 2>/dev/null', { encoding: 'utf-8' }).trim();
         if (remaining) {
           for (const pid of remaining.split('\n')) {
             try { process.kill(Number(pid), 'SIGKILL'); } catch { /* ok */ }
@@ -64,6 +66,7 @@ async function restartAdminBackend(): Promise<ChildProcess> {
   const args = useGoBuild ? [] : ['run', './cmd/server'];
 
   console.log(`[AdminBackend] Restarting on port 9080 (${useGoBuild ? 'binary' : 'go run'})...`);
+  const logFile = fs.openSync('/tmp/matou-test-backend.log', 'a');
   const proc = spawn(cmd, args, {
     cwd: backendDir,
     env: {
@@ -72,14 +75,12 @@ async function restartAdminBackend(): Promise<ChildProcess> {
       MATOU_DATA_DIR: dataDir,
       MATOU_SMTP_PORT: '3525',
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', logFile, logFile],
+    detached: true,
   });
-
-  proc.stderr?.on('data', (data: Buffer) => {
-    if (process.env.TEST_VERBOSE === '1') {
-      console.error(`[AdminBackend:err] ${data.toString().trimEnd()}`);
-    }
-  });
+  // Detach so the process survives test exit — this is the replacement
+  // admin backend on port 9080 and must keep running for subsequent tests.
+  proc.unref();
 
   // Wait for health
   for (let i = 0; i < 60; i++) {
@@ -174,9 +175,12 @@ test.describe.serial('Registration Approval Flow', () => {
   test.afterAll(async () => {
     // Stop all user backends spawned during tests
     await backends.stopAll();
-    // Stop restarted admin backend (if we restarted it during tests)
+    // NOTE: Do NOT kill adminBackendProc here. If we restarted the admin
+    // backend during tests, the spawned process is the new admin backend
+    // on port 9080. Killing it would leave no backend for subsequent runs.
+    // Detach so it keeps running after the test process exits.
     if (adminBackendProc) {
-      adminBackendProc.kill('SIGTERM');
+      adminBackendProc.unref();
       adminBackendProc = null;
     }
     await adminContext?.close();
@@ -584,38 +588,6 @@ test.describe.serial('Registration Approval Flow', () => {
 
       console.log('[Test] PASS - User approved, credential synced, dashboard accessible');
 
-      // ================================================================
-      // 9a. Restart admin backend and verify invite still includes readonly keys
-      // ================================================================
-      // This tests that the backend recovers its any-sync SDK state from disk
-      // and can produce invites with readonly keys after a restart.
-      console.log('[Test] --- Restarting admin backend to verify invite resilience ---');
-      adminBackendProc = await restartAdminBackend();
-
-      // Call the invite endpoint directly (requires a membership credential SAID —
-      // use a dummy value; the endpoint validates the community space + ACL, not
-      // the credential itself for invite key generation)
-      const reinviteResp = await adminPage.request.post('http://localhost:9080/api/v1/spaces/community/invite', {
-        data: {
-          recipientAid: memberAid,
-          credentialSaid: 'ETestDummySAIDForReinviteVerification',
-          schema: 'EMatouMembershipSchemaV1',
-        },
-      });
-      expect(reinviteResp.status()).toBe(200);
-      const reinviteBody = await reinviteResp.json();
-      expect(reinviteBody.success, 'Post-restart invite should succeed').toBe(true);
-      expect(reinviteBody.inviteKey, 'Post-restart invite should include community invite key').toBeTruthy();
-      expect(reinviteBody.readOnlyInviteKey, 'Post-restart invite should include readOnlyInviteKey').toBeTruthy();
-      expect(reinviteBody.readOnlySpaceId, 'Post-restart invite should include readOnlySpaceId').toBeTruthy();
-      console.log('[Test] Post-restart invite includes readonly keys:', {
-        communitySpaceId: reinviteBody.communitySpaceId?.slice(0, 16) + '...',
-        readOnlySpaceId: reinviteBody.readOnlySpaceId?.slice(0, 16) + '...',
-        hasInviteKey: !!reinviteBody.inviteKey,
-        hasReadOnlyInviteKey: !!reinviteBody.readOnlyInviteKey,
-      });
-      console.log('[Test] PASS - Admin backend restart: invite with readonly keys verified');
-
       // 9. Verify all profile data persisted to Account Settings
       //    WelcomeOverlay confirmed the user's SharedProfile synced (matched by AID).
       //    Retry page loads in case the settings page needs time to read from store.
@@ -665,9 +637,49 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'github.com' })).toBeVisible();
       await expect(userPage.locator('.social-link-url').filter({ hasText: 'gitlab.com' })).toBeVisible();
       console.log('[Test] PASS - All registration profile data (including avatar) persisted to Account Settings');
-    } finally {
-      await userContext.close();
+
+      // ================================================================
+      // 10. Restart admin backend and verify invite still includes readonly keys
+      // ================================================================
+      // This tests that the backend recovers its any-sync SDK state from disk
+      // and can produce invites with readonly keys after a restart.
+      // NOTE: Must happen after Account Settings check because restartAdminBackend()
+      // kills/respawns port 9080, which can disrupt other running backends.
+      // Stop the user backend first so it doesn't get caught in the crossfire.
       await backends.stop('user-approve');
+      await userContext.close();
+
+      console.log('[Test] --- Restarting admin backend to verify invite resilience ---');
+      adminBackendProc = await restartAdminBackend();
+
+      // Call the invite endpoint directly using a standalone request context
+      const apiCtx = await request.newContext({ baseURL: 'http://localhost:9080' });
+      const reinviteResp = await apiCtx.post('/api/v1/spaces/community/invite', {
+        data: {
+          recipientAid: memberAid,
+          credentialSaid: 'ETestDummySAIDForReinviteVerification',
+          schema: 'EMatouMembershipSchemaV1',
+        },
+      });
+      expect(reinviteResp.status()).toBe(200);
+      const reinviteBody = await reinviteResp.json();
+      expect(reinviteBody.success, 'Post-restart invite should succeed').toBe(true);
+      expect(reinviteBody.inviteKey, 'Post-restart invite should include community invite key').toBeTruthy();
+      expect(reinviteBody.readOnlyInviteKey, 'Post-restart invite should include readOnlyInviteKey').toBeTruthy();
+      expect(reinviteBody.readOnlySpaceId, 'Post-restart invite should include readOnlySpaceId').toBeTruthy();
+      console.log('[Test] Post-restart invite includes readonly keys:', {
+        communitySpaceId: reinviteBody.communitySpaceId?.slice(0, 16) + '...',
+        readOnlySpaceId: reinviteBody.readOnlySpaceId?.slice(0, 16) + '...',
+        hasInviteKey: !!reinviteBody.inviteKey,
+        hasReadOnlyInviteKey: !!reinviteBody.readOnlyInviteKey,
+      });
+      console.log('[Test] PASS - Admin backend restart: invite with readonly keys verified');
+      await apiCtx.dispose();
+    } finally {
+      // User context and backend may already be closed (step 10 cleans up before restart).
+      // Calling stop/close again is safe — they're no-ops if already stopped.
+      await backends.stop('user-approve').catch(() => {});
+      await userContext?.close().catch(() => {});
     }
   });
 
