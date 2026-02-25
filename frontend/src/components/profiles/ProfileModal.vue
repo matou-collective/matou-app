@@ -335,6 +335,49 @@
               </button>
             </div>
           </div>
+
+          <!-- Footer: Approved member actions (remove) -->
+          <div v-if="profileStatus === 'approved' && props.canRemoveMember" class="modal-footer p-4 border-t border-border">
+            <!-- Remove reason textarea -->
+            <div v-if="showRemoveConfirm" class="mb-4">
+              <h5 class="field-label">Reason for removal (optional)</h5>
+              <textarea
+                v-model="removeReason"
+                class="field-input"
+                rows="2"
+                placeholder="Provide a reason for removing this member..."
+              />
+            </div>
+
+            <!-- Remove confirmation buttons -->
+            <div v-if="showRemoveConfirm" class="flex items-center gap-3">
+              <button
+                @click="showRemoveConfirm = false; removeReason = ''"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg border border-border hover:bg-secondary transition-colors"
+                :disabled="props.isRemoving"
+              >
+                Cancel
+              </button>
+              <button
+                @click="handleRemove"
+                class="flex-1 px-4 py-2.5 text-sm rounded-lg bg-destructive text-white hover:bg-destructive/90 transition-colors"
+                :disabled="props.isRemoving"
+              >
+                <Loader2 v-if="props.isRemoving" class="w-4 h-4 inline mr-2 animate-spin" />
+                Confirm Removal
+              </button>
+            </div>
+
+            <!-- Initial remove button -->
+            <div v-else>
+              <button
+                @click="showRemoveConfirm = true"
+                class="w-full px-4 py-2.5 text-sm rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors"
+              >
+                Remove Member
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </Transition>
@@ -389,6 +432,8 @@ interface Props {
   hasMarkedAttended?: boolean;
   isMarkingAttended?: boolean;
   canChangeRole?: boolean;
+  canRemoveMember?: boolean;
+  isRemoving?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -405,6 +450,8 @@ const props = withDefaults(defineProps<Props>(), {
   hasMarkedAttended: false,
   isMarkingAttended: false,
   canChangeRole: false,
+  canRemoveMember: false,
+  isRemoving: false,
 });
 
 const emit = defineEmits<{
@@ -414,6 +461,7 @@ const emit = defineEmits<{
   (e: 'endorse', message?: string): void;
   (e: 'mark-attended'): void;
   (e: 'role-updated', role: string): void;
+  (e: 'remove', aid: string, reason?: string): void;
 }>();
 
 const memberRole = computed(() => (props.communityProfile?.role as string) || '');
@@ -499,6 +547,10 @@ const action = ref<'approve' | 'decline' | null>(null);
 const showEndorseMessage = ref(false);
 const endorseMessage = ref('');
 
+// Remove member state
+const showRemoveConfirm = ref(false);
+const removeReason = ref('');
+
 function formatEndorsementDate(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();
@@ -534,6 +586,8 @@ watch(() => props.show, (isOpen) => {
     endorseMessage.value = '';
     action.value = null;
     showChangeRole.value = false;
+    showRemoveConfirm.value = false;
+    removeReason.value = '';
   }
 });
 
@@ -643,6 +697,13 @@ function handleDecline() {
   if (props.registration) {
     action.value = 'decline';
     emit('decline', props.registration, declineReason.value || undefined);
+  }
+}
+
+function handleRemove() {
+  const aid = profileAid.value;
+  if (aid) {
+    emit('remove', aid, removeReason.value || undefined);
   }
 }
 </script>
