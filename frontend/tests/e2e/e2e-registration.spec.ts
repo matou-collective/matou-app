@@ -1,4 +1,6 @@
 import path from 'path';
+import { ChildProcess, spawn, execSync } from 'child_process';
+import * as fs from 'fs';
 import { test, expect, Page, BrowserContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
@@ -19,6 +21,79 @@ import {
   performOrgSetup,
   TestAccounts,
 } from './utils/test-helpers';
+
+/**
+ * Restart the admin backend on port 9080.
+ * Kills the current process, re-spawns with the same data directory,
+ * and waits for the health endpoint to respond.
+ * Returns the new child process (caller is responsible for cleanup).
+ */
+async function restartAdminBackend(): Promise<ChildProcess> {
+  const backendDir = path.resolve(__dirname, '..', '..', '..', 'backend');
+  const dataDir = path.join(backendDir, 'data-test');
+
+  // Kill existing process on port 9080
+  console.log('[AdminBackend] Stopping admin backend on port 9080...');
+  try {
+    const pids = execSync('lsof -ti :9080 2>/dev/null', { encoding: 'utf-8' }).trim();
+    if (pids) {
+      for (const pid of pids.split('\n')) {
+        try { process.kill(Number(pid), 'SIGTERM'); } catch { /* already dead */ }
+      }
+      // Wait for process to exit
+      await new Promise(r => setTimeout(r, 2000));
+      // Force kill if still alive
+      try {
+        const remaining = execSync('lsof -ti :9080 2>/dev/null', { encoding: 'utf-8' }).trim();
+        if (remaining) {
+          for (const pid of remaining.split('\n')) {
+            try { process.kill(Number(pid), 'SIGKILL'); } catch { /* ok */ }
+          }
+        }
+      } catch { /* no process left */ }
+    }
+  } catch { /* no process found */ }
+
+  // Wait a moment for port to be released
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Prefer pre-built binary
+  const binaryPath = path.join(backendDir, 'bin', 'server');
+  const useGoBuild = fs.existsSync(binaryPath);
+  const cmd = useGoBuild ? binaryPath : 'go';
+  const args = useGoBuild ? [] : ['run', './cmd/server'];
+
+  console.log(`[AdminBackend] Restarting on port 9080 (${useGoBuild ? 'binary' : 'go run'})...`);
+  const proc = spawn(cmd, args, {
+    cwd: backendDir,
+    env: {
+      ...process.env,
+      MATOU_ENV: 'test',
+      MATOU_DATA_DIR: dataDir,
+      MATOU_SMTP_PORT: '3525',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  proc.stderr?.on('data', (data: Buffer) => {
+    if (process.env.TEST_VERBOSE === '1') {
+      console.error(`[AdminBackend:err] ${data.toString().trimEnd()}`);
+    }
+  });
+
+  // Wait for health
+  for (let i = 0; i < 60; i++) {
+    try {
+      const resp = await fetch('http://localhost:9080/health');
+      if (resp.ok) {
+        console.log('[AdminBackend] Restarted and healthy');
+        return proc;
+      }
+    } catch { /* not ready */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error('Admin backend did not become healthy within 30s after restart');
+}
 
 /**
  * E2E: Registration Approval Flow
@@ -48,6 +123,7 @@ test.describe.serial('Registration Approval Flow', () => {
   let accounts: TestAccounts;
   let adminContext: BrowserContext;
   let adminPage: Page;
+  let adminBackendProc: ChildProcess | null = null; // tracks restarted admin backend
   const backends = new BackendManager();
 
   test.beforeAll(async ({ browser, request }) => {
@@ -98,6 +174,11 @@ test.describe.serial('Registration Approval Flow', () => {
   test.afterAll(async () => {
     // Stop all user backends spawned during tests
     await backends.stopAll();
+    // Stop restarted admin backend (if we restarted it during tests)
+    if (adminBackendProc) {
+      adminBackendProc.kill('SIGTERM');
+      adminBackendProc = null;
+    }
     await adminContext?.close();
   });
 
@@ -411,7 +492,16 @@ test.describe.serial('Registration Approval Flow', () => {
       expect(invResp.status()).toBe(200);
       const invBody = await invResp.json();
       expect(invBody.success).toBe(true);
-      console.log('[Test] User invited to community space:', invBody);
+      expect(invBody.communitySpaceId, 'Invite should include communitySpaceId').toBeTruthy();
+      expect(invBody.inviteKey, 'Invite should include community invite key').toBeTruthy();
+      expect(invBody.readOnlyInviteKey, 'Invite should include readOnlyInviteKey').toBeTruthy();
+      expect(invBody.readOnlySpaceId, 'Invite should include readOnlySpaceId').toBeTruthy();
+      console.log('[Test] Invite includes readonly keys:', {
+        communitySpaceId: invBody.communitySpaceId?.slice(0, 16) + '...',
+        readOnlySpaceId: invBody.readOnlySpaceId?.slice(0, 16) + '...',
+        hasInviteKey: !!invBody.inviteKey,
+        hasReadOnlyInviteKey: !!invBody.readOnlyInviteKey,
+      });
 
       // 5b. Verify initMemberProfiles succeeded (SharedProfile + CommunityProfile created)
       const initResp = await initProfilesResponse;
@@ -493,6 +583,38 @@ test.describe.serial('Registration Approval Flow', () => {
       });
 
       console.log('[Test] PASS - User approved, credential synced, dashboard accessible');
+
+      // ================================================================
+      // 9a. Restart admin backend and verify invite still includes readonly keys
+      // ================================================================
+      // This tests that the backend recovers its any-sync SDK state from disk
+      // and can produce invites with readonly keys after a restart.
+      console.log('[Test] --- Restarting admin backend to verify invite resilience ---');
+      adminBackendProc = await restartAdminBackend();
+
+      // Call the invite endpoint directly (requires a membership credential SAID —
+      // use a dummy value; the endpoint validates the community space + ACL, not
+      // the credential itself for invite key generation)
+      const reinviteResp = await adminPage.request.post('http://localhost:9080/api/v1/spaces/community/invite', {
+        data: {
+          recipientAid: memberAid,
+          credentialSaid: 'ETestDummySAIDForReinviteVerification',
+          schema: 'EMatouMembershipSchemaV1',
+        },
+      });
+      expect(reinviteResp.status()).toBe(200);
+      const reinviteBody = await reinviteResp.json();
+      expect(reinviteBody.success, 'Post-restart invite should succeed').toBe(true);
+      expect(reinviteBody.inviteKey, 'Post-restart invite should include community invite key').toBeTruthy();
+      expect(reinviteBody.readOnlyInviteKey, 'Post-restart invite should include readOnlyInviteKey').toBeTruthy();
+      expect(reinviteBody.readOnlySpaceId, 'Post-restart invite should include readOnlySpaceId').toBeTruthy();
+      console.log('[Test] Post-restart invite includes readonly keys:', {
+        communitySpaceId: reinviteBody.communitySpaceId?.slice(0, 16) + '...',
+        readOnlySpaceId: reinviteBody.readOnlySpaceId?.slice(0, 16) + '...',
+        hasInviteKey: !!reinviteBody.inviteKey,
+        hasReadOnlyInviteKey: !!reinviteBody.readOnlyInviteKey,
+      });
+      console.log('[Test] PASS - Admin backend restart: invite with readonly keys verified');
 
       // 9. Verify all profile data persisted to Account Settings
       //    WelcomeOverlay confirmed the user's SharedProfile synced (matched by AID).
