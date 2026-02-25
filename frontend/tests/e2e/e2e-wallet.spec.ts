@@ -181,7 +181,157 @@ test.describe.serial('Wallet Page', () => {
   });
 
   // ---------------------------------------------------------------
-  // Test 6: Governance tab
+  // Test 6: Show revoked toggle is visible
+  // ---------------------------------------------------------------
+  test('show revoked toggle is visible', async () => {
+    // Ensure we're on the Credentials tab in card view
+    await page.locator('.wallet-nav-item', { hasText: 'Credentials' }).click();
+    await page.locator('.toggle-btn', { hasText: 'Cards' }).click();
+    await expect(page.locator('.credential-card').first()).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // "Show revoked" toggle should be visible next to view toggle
+    const toggle = page.locator('.revoked-toggle');
+    await expect(toggle).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(toggle).toContainText('Show revoked');
+
+    // Checkbox should be unchecked by default
+    const checkbox = toggle.locator('input[type="checkbox"]');
+    await expect(checkbox).not.toBeChecked();
+  });
+
+  // ---------------------------------------------------------------
+  // Test 7: Revoke button in detail dialog for self-issued credential
+  // ---------------------------------------------------------------
+  test('revoke button visible for self-issued credential', async () => {
+    // Admin has self-issued membership cred — find the "Issued" card
+    const issuedCard = page.locator('.credential-card.card-issued').first();
+    await expect(issuedCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await issuedCard.click();
+
+    const overlay = page.locator('.credential-overlay');
+    await expect(overlay).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Revoke section should be visible (issued + active credential)
+    const revokeBtn = overlay.locator('.revoke-btn');
+    await expect(revokeBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(revokeBtn).toContainText('Revoke Credential');
+
+    // Close without revoking
+    await overlay.locator('.close-btn').click();
+    await expect(overlay).not.toBeVisible({ timeout: TIMEOUT.short });
+  });
+
+  // ---------------------------------------------------------------
+  // Test 8: Revoke credential confirmation flow
+  // ---------------------------------------------------------------
+  test('revoke credential with confirmation', async () => {
+    test.setTimeout(120_000); // credential revocation can take time
+
+    // Count credentials before revocation
+    const cardsBefore = await page.locator('.credential-card').count();
+
+    // Open an issued credential's detail dialog
+    const issuedCard = page.locator('.credential-card.card-issued').first();
+    await expect(issuedCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await issuedCard.click();
+
+    const overlay = page.locator('.credential-overlay');
+    await expect(overlay).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Click "Revoke Credential" to show confirmation
+    await overlay.locator('.revoke-btn').click();
+
+    // Warning message and confirm/cancel buttons should appear
+    await expect(overlay.locator('.revoke-warning')).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(overlay.locator('.revoke-warning')).toContainText('permanently revoke');
+    await expect(overlay.locator('.revoke-cancel-btn')).toBeVisible();
+    await expect(overlay.locator('.revoke-confirm-btn')).toBeVisible();
+
+    // Click "Confirm Revoke"
+    await overlay.locator('.revoke-confirm-btn').click();
+
+    // Dialog should close after successful revocation
+    await expect(overlay).not.toBeVisible({ timeout: TIMEOUT.long });
+    console.log('[Wallet] Credential revoked successfully');
+
+    // With "Show revoked" unchecked, the revoked credential should be hidden
+    // Wait for the card list to update
+    await page.waitForTimeout(500);
+    const cardsAfter = await page.locator('.credential-card').count();
+    expect(cardsAfter).toBeLessThan(cardsBefore);
+    console.log(`[Wallet] Cards before: ${cardsBefore}, after: ${cardsAfter}`);
+  });
+
+  // ---------------------------------------------------------------
+  // Test 9: Toggle shows revoked credentials
+  // ---------------------------------------------------------------
+  test('show revoked toggle reveals revoked credentials', async () => {
+    // Check "Show revoked" toggle
+    const checkbox = page.locator('.revoked-toggle input[type="checkbox"]');
+    await checkbox.check();
+    await expect(checkbox).toBeChecked();
+
+    // Revoked credential should now be visible with "Revoked" status badge
+    const revokedCard = page.locator('.credential-card .status-badge.status-revoked');
+    await expect(revokedCard.first()).toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Wallet] Revoked credential visible with toggle on');
+
+    // Open the revoked credential's detail dialog
+    const card = page.locator('.credential-card').filter({
+      has: page.locator('.status-badge.status-revoked'),
+    }).first();
+    await card.click();
+
+    const overlay = page.locator('.credential-overlay');
+    await expect(overlay).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Revoke button should NOT be visible (credential already revoked)
+    await expect(overlay.locator('.revoke-btn')).not.toBeVisible();
+    await expect(overlay.locator('.revoke-section')).not.toBeVisible();
+
+    // Close
+    await overlay.locator('.close-btn').click();
+    await expect(overlay).not.toBeVisible({ timeout: TIMEOUT.short });
+
+    // Uncheck the toggle — revoked credential should disappear again
+    await checkbox.uncheck();
+    await expect(checkbox).not.toBeChecked();
+    await expect(revokedCard.first()).not.toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Wallet] Revoked credential hidden again with toggle off');
+  });
+
+  // ---------------------------------------------------------------
+  // Test 10: Graph view respects revoked filter
+  // ---------------------------------------------------------------
+  test('graph view hides nodes with only revoked credentials', async () => {
+    // Ensure "Show revoked" is off
+    const checkbox = page.locator('.revoked-toggle input[type="checkbox"]');
+    if (await checkbox.isChecked()) await checkbox.uncheck();
+
+    // Switch to graph view
+    await page.locator('.toggle-btn', { hasText: 'Graph' }).click();
+    const graphView = page.locator('.graph-view');
+    await expect(graphView).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Count nodes with filter off
+    const nodesFiltered = await page.locator('.issuer-node').count();
+
+    // Enable "Show revoked"
+    await checkbox.check();
+    await page.waitForTimeout(300);
+    const nodesAll = await page.locator('.issuer-node').count();
+
+    // With revoked credentials shown, there should be >= as many nodes
+    expect(nodesAll).toBeGreaterThanOrEqual(nodesFiltered);
+    console.log(`[Wallet] Graph nodes — filtered: ${nodesFiltered}, all: ${nodesAll}`);
+
+    // Reset: uncheck toggle, switch back to cards
+    await checkbox.uncheck();
+    await page.locator('.toggle-btn', { hasText: 'Cards' }).click();
+  });
+
+  // ---------------------------------------------------------------
+  // Test 11: Governance tab
   // ---------------------------------------------------------------
   test('governance tab', async () => {
     await page.locator('.wallet-nav-item', { hasText: 'Governance' }).click();
@@ -199,7 +349,7 @@ test.describe.serial('Wallet Page', () => {
   });
 
   // ---------------------------------------------------------------
-  // Test 7: Tokens tab
+  // Test 12: Tokens tab
   // ---------------------------------------------------------------
   test('tokens tab', async () => {
     await page.locator('.wallet-nav-item', { hasText: 'Transaction' }).click();
@@ -222,7 +372,7 @@ test.describe.serial('Wallet Page', () => {
   });
 
   // ---------------------------------------------------------------
-  // Test 8: Direct URL navigation
+  // Test 13: Direct URL navigation
   // ---------------------------------------------------------------
   test('direct URL navigation to wallet', async () => {
     await page.goto(`${FRONTEND_URL}/#/dashboard/wallet`);
