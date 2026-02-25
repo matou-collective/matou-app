@@ -55,7 +55,7 @@ func (s *Sender) SendInvite(req SendInviteRequest) error {
 		return fmt.Errorf("rendering email template: %w", err)
 	}
 
-	msg := s.buildMIMEMessage(req.To, "Your MATOU invite code", body)
+	msg := s.buildMIMEMessage(req.To, "Your MĀTOU invite code", body)
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	if err := s.sendMail(addr, req.To, []byte(msg)); err != nil {
@@ -85,7 +85,7 @@ func (s *Sender) SendBookingConfirmation(to, name string, startTime time.Time, d
 
 	recipients := []string{to, "contact@matou.nz"}
 	toHeader := strings.Join(recipients, ", ")
-	msg := s.buildMIMEMessageWithCalendarFrom(toHeader, "MATOU - Whakawhānaunga Session", body, icsContent, s.from)
+	msg := s.buildMIMEMessageWithCalendarFrom(toHeader, "MĀTOU - Whakawhānaunga Session", body, icsContent, s.from)
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	if err := s.sendMailFromMulti(addr, s.from, recipients, []byte(msg)); err != nil {
@@ -121,7 +121,7 @@ func (s *Sender) generateICSWithFrom(startTime, endTime time.Time, attendeeName,
 	b.WriteString(fmt.Sprintf("DTEND:%s\r\n", dtEnd))
 	b.WriteString(fmt.Sprintf("SUMMARY:Whakawhānaunga Session - %s\r\n", attendeeName))
 	b.WriteString("DESCRIPTION:A short call to introduce ourselves and get to know each other as part of the MATOU community onboarding process.\r\n")
-	b.WriteString(fmt.Sprintf("ORGANIZER;CN=MATOU:mailto:%s\r\n", fromEmail))
+	b.WriteString(fmt.Sprintf("ORGANIZER;CN=MĀTOU:mailto:%s\r\n", fromEmail))
 	b.WriteString("LOCATION:https://meet.jit.si/matou-whakawhanaunga-session\r\n")
 	b.WriteString("STATUS:CONFIRMED\r\n")
 	b.WriteString("END:VEVENT\r\n")
@@ -190,7 +190,7 @@ func (s *Sender) SendApprovalNotification(req SendApprovalNotificationRequest) e
 		return fmt.Errorf("rendering email template: %w", err)
 	}
 
-	msg := s.buildMIMEMessage(req.To, "Welcome to MATOU!", body)
+	msg := s.buildMIMEMessage(req.To, "Welcome to MĀTOU!", body)
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	if err := s.sendMail(addr, req.To, []byte(msg)); err != nil {

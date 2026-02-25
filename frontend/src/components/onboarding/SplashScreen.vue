@@ -70,7 +70,7 @@
             @click="onRegister"
           >
             <UserPlus class="w-5 h-5 mr-2" />
-            Register
+            Join Now
           </MBtn>
         </div>
 

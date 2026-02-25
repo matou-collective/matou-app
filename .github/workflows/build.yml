@@ -186,6 +186,8 @@ jobs:
           # vite
           VITE_PROD_CONFIG_URL: ${{ secrets.VITE_PROD_CONFIG_URL }}
           VITE_ENV: ${{ secrets.VITE_ENV }}
+          VITE_SMTP_HOST: ${{ secrets.VITE_SMTP_HOST }}
+          VITE_SMTP_PORT: ${{ secrets.VITE_SMTP_PORT }}
 
 
       # Smoke test - verify the packaged app contains the backend and is runnable

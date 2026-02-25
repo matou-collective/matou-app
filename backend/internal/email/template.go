@@ -33,7 +33,7 @@ const inviteEmailHTML = `<!DOCTYPE html>
                     <img src="{{.LogoURL}}" alt="" width="80" height="40" style="display:block; border:0;" />
                   </td>
                   <td style="vertical-align:middle;">
-                    <img src="{{.TextURL}}" alt="MATOU" width="140" height="40" style="display:block; border:0;" />
+                    <img src="{{.TextURL}}" alt="MĀTOU" width="140" height="40" style="display:block; border:0;" />
                   </td>
                 </tr>
               </table>
@@ -46,13 +46,13 @@ const inviteEmailHTML = `<!DOCTYPE html>
                 Kia ora{{if .InviteeName}} <strong>{{.InviteeName}}</strong>{{end}},
               </p>
               <p style="margin:0 0 24px; color:#374151; font-size:15px; line-height:1.6;">
-                {{.InviterName}} has invited you to join MATOU. Follow these steps to get started:
+                {{.InviterName}} has invited you to join MĀTOU. Follow these steps to get started:
               </p>
               <!-- Steps -->
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px;">
                 <tr>
                   <td style="padding:8px 0; color:#374151; font-size:14px; line-height:1.5;">
-                    <strong style="color:#1e5f74;">1.</strong> Download MATOU from <strong>matou.nz/download</strong>
+                    <strong style="color:#1e5f74;">1.</strong> Download MĀTOU from <strong>matou.nz/download</strong>
                   </td>
                 </tr>
                 <tr>
@@ -84,7 +84,7 @@ const inviteEmailHTML = `<!DOCTYPE html>
           <!-- Footer -->
           <tr>
             <td style="background-color:#f9fafb; padding:20px 32px; border-top:1px solid #e5e7eb; text-align:center;">
-              <p style="margin:0; color:#9ca3af; font-size:12px;">MATOU &mdash; Connection &vert; Collaboration &vert; Innovation </p>
+              <p style="margin:0; color:#9ca3af; font-size:12px;">MĀTOU &mdash; Connection &vert; Collaboration &vert; Innovation </p>
             </td>
           </tr>
         </table>
@@ -133,7 +133,7 @@ const bookingEmailHTML = `<!DOCTYPE html>
                     <img src="{{.LogoURL}}" alt="" width="80" height="40" style="display:block; border:0;" />
                   </td>
                   <td style="vertical-align:middle;">
-                    <img src="{{.TextURL}}" alt="MATOU" width="140" height="40" style="display:block; border:0;" />
+                    <img src="{{.TextURL}}" alt="MĀTOU" width="140" height="40" style="display:block; border:0;" />
                   </td>
                 </tr>
               </table>
@@ -146,7 +146,7 @@ const bookingEmailHTML = `<!DOCTYPE html>
                 Kia ora <strong>{{.Name}}</strong>,
               </p>
               <p style="margin:0 0 24px; color:#374151; font-size:15px; line-height:1.6;">
-                Your Whakawhānaunga session has been requested! This is a short call to introduce ourselves and get to know each other as part of the MATOU community onboarding process.
+                Your Whakawhānaunga session has been requested! This is a short call to introduce ourselves and get to know each other as part of the MĀTOU community onboarding process.
               </p>
               <!-- Session Details -->
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
@@ -181,7 +181,7 @@ const bookingEmailHTML = `<!DOCTYPE html>
           <!-- Footer -->
           <tr>
             <td style="background-color:#f9fafb; padding:20px 32px; border-top:1px solid #e5e7eb; text-align:center;">
-              <p style="margin:0; color:#9ca3af; font-size:12px;">MATOU - Connection | Collaboration | Innovation</p>
+              <p style="margin:0; color:#9ca3af; font-size:12px;">MĀTOU - Connection | Collaboration | Innovation</p>
             </td>
           </tr>
         </table>
