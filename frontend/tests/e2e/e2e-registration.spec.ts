@@ -33,6 +33,7 @@ import {
  *         can now see Approve button and approves User2.
  * Test 3: Admin declines a user registration
  * Test 4: User books a Whakawhānaunga session while pending
+ * Test 5: Admin removes an approved member (User2) — credential revocation + soft delete
  *
  * Multi-backend: In per-user mode, admin and each user run their own Go backend
  * instance. The admin uses the default backend on port 9080 (started manually).
@@ -1184,5 +1185,110 @@ test.describe.serial('Registration Approval Flow', () => {
       await userContext.close();
       await backends.stop('user-booking');
     }
+  });
+
+  // ------------------------------------------------------------------
+  // Test 5: Admin removes an approved member
+  // ------------------------------------------------------------------
+  test('admin removes an approved member', async () => {
+    test.setTimeout(120_000); // 2 min: credential revocation + profile update
+
+    // This test uses User2 (accounts.member2) who was approved in Test 2.
+    // User1 (accounts.member) was promoted to Community Steward and is part
+    // of the org multisig, so removing them could break the group.
+    const memberToRemove = accounts.member2;
+    if (!memberToRemove) {
+      test.skip();
+      return;
+    }
+
+    console.log(`[Test] Removing member: ${memberToRemove.name} (${memberToRemove.aid.slice(0, 12)}...)`);
+
+    // Navigate admin to dashboard
+    await adminPage.goto(`${FRONTEND_URL}/#/dashboard`);
+    const membersCard = adminPage.locator('.members-card');
+    await expect(membersCard).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Find the member in the member list
+    const memberCard = membersCard.locator('.profile-card').filter({ hasText: memberToRemove.name });
+    await expect(memberCard).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Test] Member visible in member list');
+
+    // Open ProfileModal
+    await memberCard.click();
+    const profileModal = adminPage.locator('.modal-content');
+    await expect(profileModal).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(profileModal.locator('h4').first()).toContainText(memberToRemove.name, { timeout: TIMEOUT.short });
+    console.log('[Test] ProfileModal opened');
+
+    // Verify "Remove Member" button is visible (admin is steward, member is approved, not self)
+    const removeBtn = profileModal.getByRole('button', { name: /remove member/i });
+    await expect(removeBtn).toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Test] Remove Member button visible');
+
+    // Click "Remove Member" to show confirmation
+    await removeBtn.click();
+
+    // Fill optional reason
+    const reasonField = profileModal.locator('textarea[placeholder="Provide a reason for removing this member..."]');
+    await expect(reasonField).toBeVisible({ timeout: TIMEOUT.short });
+    await reasonField.fill('Removed for E2E testing');
+    console.log('[Test] Filled removal reason');
+
+    // Set up response listener for the DELETE API call
+    const removeResponse = adminPage.waitForResponse(
+      resp => resp.url().includes('/api/v1/members/') && resp.request().method() === 'DELETE',
+      { timeout: TIMEOUT.long },
+    );
+
+    // Click "Confirm Removal"
+    const confirmBtn = profileModal.getByRole('button', { name: /confirm removal/i });
+    await expect(confirmBtn).toBeEnabled({ timeout: TIMEOUT.short });
+    await confirmBtn.click();
+    console.log('[Test] Clicked Confirm Removal');
+
+    // Verify DELETE API call succeeded
+    const removeResp = await removeResponse;
+    expect(removeResp.status()).toBe(200);
+    const removeBody = await removeResp.json();
+    expect(removeBody.success).toBe('true');
+    expect(removeBody.status).toBe('removed');
+    console.log('[Test] Remove member API succeeded:', removeBody);
+
+    // Modal should close after successful removal
+    await expect(profileModal).not.toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Test] ProfileModal closed after removal');
+
+    // Verify the member no longer appears in the member list
+    // The dashboard filters out members with status 'removed'
+    await expect(memberCard).not.toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Test] Removed member no longer visible in member list');
+
+    // Verify via API that the SharedProfile has status 'removed'
+    const profilesResp = await adminPage.request.get('http://localhost:9080/api/v1/profiles/SharedProfile');
+    const profiles = await profilesResp.json();
+    const profileList = (profiles.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
+    const removedProfile = profileList.find(
+      p => (p.data?.aid as string) === memberToRemove.aid,
+    );
+    expect(removedProfile, 'SharedProfile should still exist for removed member').toBeTruthy();
+    expect(removedProfile!.data.status).toBe('removed');
+    expect(removedProfile!.data.removedAt).toBeTruthy();
+    console.log('[Test] SharedProfile status confirmed as "removed" via API');
+
+    // Verify CommunityProfile also has status 'removed'
+    const cpResp = await adminPage.request.get('http://localhost:9080/api/v1/profiles/CommunityProfile');
+    const cpProfiles = await cpResp.json();
+    const cpList = (cpProfiles.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
+    const removedCP = cpList.find(
+      p => (p.data?.userAID as string) === memberToRemove.aid,
+    );
+    expect(removedCP, 'CommunityProfile should still exist for removed member').toBeTruthy();
+    expect(removedCP!.data.status).toBe('removed');
+    expect(removedCP!.data.removedBy).toBeTruthy();
+    expect(removedCP!.data.removalReason).toBe('Removed for E2E testing');
+    console.log('[Test] CommunityProfile status confirmed as "removed" via API');
+
+    console.log('[Test] PASS - Admin removed member, profiles soft-deleted, member filtered from list');
   });
 });
