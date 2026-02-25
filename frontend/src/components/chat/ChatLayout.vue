@@ -174,7 +174,6 @@ function handleChannelUpdated() {
   flex-direction: column;
   min-width: 0;
   background-color: var(--matou-card);
-  padding-top: 40px;
 }
 
 .no-channel {

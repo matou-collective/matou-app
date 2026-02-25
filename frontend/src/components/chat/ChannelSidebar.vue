@@ -73,7 +73,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  padding-top: 40px;
 }
 
 .sidebar-header {
