@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/mail"
 	"time"
@@ -101,7 +102,9 @@ func (h *BookingHandler) HandleSendEmail(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Send the booking confirmation email
+	log.Printf("[Booking] Sending confirmation email to=%s name=%s time=%s", req.Email, req.Name, req.DateTimeNZT)
 	if err := h.emailSender.SendBookingConfirmation(req.Email, req.Name, startTime, req.DateTimeNZT, req.DateTimeLocal); err != nil {
+		log.Printf("[Booking] FAILED to send email to=%s: %v", req.Email, err)
 		writeJSON(w, http.StatusInternalServerError, SendBookingEmailResponse{
 			Success: false,
 			Error:   fmt.Sprintf("failed to send email: %v", err),
@@ -109,6 +112,7 @@ func (h *BookingHandler) HandleSendEmail(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	log.Printf("[Booking] Email sent successfully to=%s", req.Email)
 	writeJSON(w, http.StatusOK, SendBookingEmailResponse{
 		Success: true,
 	})
