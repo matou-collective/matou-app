@@ -668,18 +668,12 @@ export function useAdminActions() {
           saidToRevoke = memberCred.sad.d;
           console.log('[AdminActions] Found credential to revoke:', saidToRevoke);
         } else {
-          console.warn('[AdminActions] No membership credential found for member:', memberAid);
+          throw new Error(`No membership credential found for member ${memberAid}. Cannot remove without revoking credential.`);
         }
       }
 
-      if (saidToRevoke) {
-        try {
-          await keriClient.revokeCredential(orgAidPrefix, saidToRevoke);
-          console.log('[AdminActions] Credential revoked:', saidToRevoke);
-        } catch (revokeErr) {
-          console.warn('[AdminActions] Credential revocation failed (continuing with removal):', revokeErr);
-        }
-      }
+      await keriClient.revokeCredential(orgAidPrefix, saidToRevoke);
+      console.log('[AdminActions] Credential revoked:', saidToRevoke);
 
       // --- Step 3: Soft-delete profiles on the backend ---
       onStep?.('Removing member profiles...');
