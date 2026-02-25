@@ -263,6 +263,25 @@ onBeforeUnmount(() => {
   &.disabled {
     opacity: 0.6;
     cursor: not-allowed;
+    position: relative;
+
+    &:hover::after {
+      content: 'Coming soon';
+      position: absolute;
+      left: 100%;
+      top: 50%;
+      transform: translateY(-50%);
+      margin-left: 8px;
+      padding: 4px 8px;
+      background: var(--matou-popover);
+      color: var(--matou-popover-foreground);
+      font-size: 0.65rem;
+      border-radius: 4px;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      z-index: 10;
+      pointer-events: none;
+    }
   }
 }
 

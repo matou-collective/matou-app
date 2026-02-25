@@ -47,6 +47,8 @@
             v-for="(stat, index) in notificationStats.filter(s => s.visible)"
             :key="index"
             class="stat-item"
+            :class="{ 'stat-coming-soon': stat.comingSoon }"
+            :disabled="stat.comingSoon"
           >
             <div class="stat-value">
               <component :is="stat.icon" class="stat-icon" />
@@ -483,9 +485,9 @@ const notificationStats = computed(() => [
     icon: Users,
     visible: isSteward.value,
   },
-  { label: 'New Transactions', value: 0, icon: CoinsIcon, visible: true },
-  { label: 'Proposal Updates', value: 0, icon: Vote, visible: true },
-  { label: 'Contribution Actions', value: 0, icon: Target, visible: true },
+  { label: 'New Transactions', value: 0, icon: CoinsIcon, visible: true, comingSoon: true },
+  { label: 'Proposal Updates', value: 0, icon: Vote, visible: true, comingSoon: true },
+  { label: 'Contribution Actions', value: 0, icon: Target, visible: true, comingSoon: true },
 ]);
 
 // Live member data from profiles store (with fallback to static data)
@@ -925,10 +927,34 @@ function handleRoleUpdated(newRole: string) {
   cursor: pointer;
   transition: all 0.15s ease;
 
-  &:hover {
+  &:hover:not(.stat-coming-soon) {
     .stat-value,
     .stat-label {
       filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.8));
+    }
+  }
+
+  &.stat-coming-soon {
+    opacity: 0.5;
+    cursor: default;
+    position: relative;
+
+    &:hover::after {
+      content: 'Coming soon';
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      margin-bottom: 6px;
+      padding: 4px 8px;
+      background: var(--matou-popover);
+      color: var(--matou-popover-foreground);
+      font-size: 0.65rem;
+      border-radius: 4px;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      z-index: 10;
+      pointer-events: none;
     }
   }
 }
