@@ -104,6 +104,13 @@ export default defineConfig({
       testMatch: /e2e-credential-chain\.spec\.ts/,
       use: browserConfig,
     },
+    // Member removal — approve then remove a member
+    // Requires test-accounts.json from registration tests
+    {
+      name: 'member-removal',
+      testMatch: /e2e-member-removal\.spec\.ts/,
+      use: browserConfig,
+    },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above
     {
@@ -121,6 +128,7 @@ export default defineConfig({
         /e2e-keria-stress\.spec\.ts/,
         /e2e-chat\.spec\.ts/,
         /e2e-credential-chain\.spec\.ts/,
+        /e2e-member-removal\.spec\.ts/,
       ],
     },
   ],
