@@ -673,8 +673,12 @@ export function useAdminActions() {
       }
 
       if (saidToRevoke) {
-        await keriClient.revokeCredential(orgAidPrefix, saidToRevoke);
-        console.log('[AdminActions] Credential revoked:', saidToRevoke);
+        try {
+          await keriClient.revokeCredential(orgAidPrefix, saidToRevoke);
+          console.log('[AdminActions] Credential revoked:', saidToRevoke);
+        } catch (revokeErr) {
+          console.warn('[AdminActions] Credential revocation failed (continuing with removal):', revokeErr);
+        }
       }
 
       // --- Step 3: Soft-delete profiles on the backend ---
