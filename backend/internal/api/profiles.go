@@ -764,6 +764,135 @@ func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.
 	})
 }
 
+// RemoveMemberRequest represents a request to remove a member from the community.
+type RemoveMemberRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// HandleRemoveMember handles DELETE /api/v1/members/{aid}.
+// Marks the member's CommunityProfile and SharedProfile as removed.
+func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	// Extract member AID from URL path: /api/v1/members/{aid}
+	memberAID := strings.TrimPrefix(r.URL.Path, "/api/v1/members/")
+	if memberAID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid path, expected /api/v1/members/{aid}"})
+		return
+	}
+
+	var req RemoveMemberRequest
+	// Body is optional for DELETE; ignore decode errors
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	adminAID := ""
+	if h.userIdentity != nil {
+		adminAID = h.userIdentity.GetAID()
+	}
+
+	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
+	if roSpaceID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "community-readonly space not configured",
+		})
+		return
+	}
+
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	if communitySpaceID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "community space not configured",
+		})
+		return
+	}
+
+	client := h.spaceManager.GetClient()
+	if client == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "any-sync client not available",
+		})
+		return
+	}
+
+	ctx := r.Context()
+	objMgr := h.spaceManager.ObjectTreeManager()
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+
+	// Update CommunityProfile in the read-only space
+	statusBytes, _ := json.Marshal("removed")
+	nowBytes, _ := json.Marshal(nowStr)
+	adminAIDBytes, _ := json.Marshal(adminAID)
+
+	roFields := map[string]json.RawMessage{
+		"status":    statusBytes,
+		"removedAt": nowBytes,
+		"removedBy": adminAIDBytes,
+	}
+	if req.Reason != "" {
+		reasonBytes, _ := json.Marshal(req.Reason)
+		roFields["removalReason"] = reasonBytes
+	}
+
+	roKeys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), roSpaceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to load read-only space keys: %v", err),
+		})
+		return
+	}
+
+	communityProfileID := fmt.Sprintf("CommunityProfile-%s", memberAID)
+	if _, err := objMgr.UpdateObject(ctx, roSpaceID, communityProfileID, roFields, roKeys.SigningKey); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to update CommunityProfile: %v", err),
+		})
+		return
+	}
+
+	// Update SharedProfile in the community space
+	communityFields := map[string]json.RawMessage{
+		"status":    statusBytes,
+		"removedAt": nowBytes,
+	}
+
+	communityKeys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to load community space keys: %v", err),
+		})
+		return
+	}
+
+	sharedProfileID := fmt.Sprintf("SharedProfile-%s", memberAID)
+	if _, err := objMgr.UpdateObject(ctx, communitySpaceID, sharedProfileID, communityFields, communityKeys.SigningKey); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to update SharedProfile: %v", err),
+		})
+		return
+	}
+
+	log.Printf("[RemoveMember] Removed member %s by admin %s", memberAID, adminAID)
+
+	if h.eventBroker != nil {
+		h.eventBroker.Broadcast(SSEEvent{
+			Type: "member:removed",
+			Data: map[string]interface{}{
+				"memberAid": memberAID,
+				"removedBy": adminAID,
+				"removedAt": nowStr,
+			},
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"success":   "true",
+		"memberAid": memberAID,
+	})
+}
+
 // resolveSpaceForType returns the space ID for a given type definition.
 func (h *ProfilesHandler) resolveSpaceForType(def *types.TypeDefinition) string {
 	switch def.Space {
@@ -837,6 +966,10 @@ func (h *ProfilesHandler) RegisterRoutes(mux *http.ServeMux) {
 func (h *ProfilesHandler) handleMembers(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/role") && r.Method == http.MethodPut {
 		h.HandleUpdateMemberRole(w, r)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		h.HandleRemoveMember(w, r)
 		return
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
