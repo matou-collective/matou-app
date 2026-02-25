@@ -200,6 +200,7 @@ const onRetry = () => {
     rgba(30, 95, 116, 0.9) 50%,
     var(--matou-accent) 100%
   );
+  min-height: calc(100vh - var(--titlebar-height));
 }
 
 .logo-container {

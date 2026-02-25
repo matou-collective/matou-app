@@ -28,4 +28,7 @@ async function handleSetupComplete() {
 </script>
 
 <style lang="scss" scoped>
+.setup-page {
+  min-height: calc(100vh - var(--titlebar-height));
+}
 </style>

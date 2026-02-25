@@ -297,6 +297,7 @@ watch(
 
 <style lang="scss" scoped>
 .onboarding-page {
+  min-height: calc(100vh - var(--titlebar-height)) !important;
 }
 
 // Transition animations
