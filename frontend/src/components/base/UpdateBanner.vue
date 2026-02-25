@@ -4,11 +4,7 @@
     <button class="update-banner-restart" @click="installUpdate" :disabled="restarting">
       {{ restarting ? 'Restarting...' : 'Restart Now' }}
     </button>
-    <button class="update-banner-dismiss" @click="dismiss" aria-label="Dismiss">
-      <svg width="10" height="10" viewBox="0 0 10 10">
-        <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-      </svg>
-    </button>
+    <button class="update-banner-dismiss" @click="dismiss">Dismiss</button>
   </div>
 </template>
 
@@ -79,16 +75,13 @@ onMounted(() => {
 }
 
 .update-banner-dismiss {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin-left: 4px;
-  border: none;
-  border-radius: 3px;
+  padding: 3px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
   background: transparent;
   color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
