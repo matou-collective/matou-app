@@ -812,6 +812,12 @@ func (h *SpacesHandler) HandleInvite(w http.ResponseWriter, r *http.Request) {
 	// Also generate a community-readonly invite key (Reader permissions)
 	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
 	if roSpaceID != "" {
+		// Ensure readonly space is also shareable (same SDK reinit issue as community space)
+		if client != nil {
+			if err := client.MakeSpaceShareable(ctx, roSpaceID); err != nil {
+				log.Printf("[Invite] Warning: MakeSpaceShareable (readonly): %v\n", err)
+			}
+		}
 		roInviteKey, roErr := aclMgr.CreateOpenInvite(ctx, roSpaceID, list.AclPermissionsReader)
 		if roErr != nil {
 			log.Printf("Warning: failed to create community-readonly invite: %v\n", roErr)

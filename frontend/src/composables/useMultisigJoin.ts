@@ -30,12 +30,7 @@ export function useMultisigJoin() {
       // Ensure KERIA session is fresh before polling
       await keriClient.ensureSession();
 
-      // First log ALL notifications so we can see what's arriving
       const allNotifications = await keriClient.listNotifications();
-      console.log(`[MultisigJoin] All notifications: ${allNotifications.length}`);
-      for (const n of allNotifications) {
-        console.log(`[MultisigJoin]   route=${n.a?.r} said=${n.a?.d} read=${n.r} id=${n.i}`);
-      }
 
       const notifications = allNotifications.filter(
         n => n.a?.r === MULTISIG_ROT_ROUTE && !n.r

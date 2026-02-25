@@ -1487,7 +1487,7 @@ export class KERIClient {
     // Fetch ALL notifications (signify-ts defaults to end=24 which truncates)
     const notifications = await this.client.notifications().list(0, 1000);
     let notes = notifications.notes ?? [];
-    console.log(`[KERI listNotifications] Total notifications from KERIA: ${notes.length}`);
+    // Verbose logging removed — called frequently by multiple pollers
 
     if (filter) {
       if (filter.route !== undefined) {

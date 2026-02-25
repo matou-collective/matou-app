@@ -420,7 +420,7 @@ onMounted(async () => {
   // Check if user is admin/steward
   await checkAdminStatus();
 
-  // Start multisig join polling for all authenticated users
+  // Poll for multisig rotation notifications (e.g., after being promoted to steward)
   startMultisigPolling(5000);
 
   // Fetch admin AIDs for endorsement badge distinction
@@ -444,10 +444,6 @@ onMounted(async () => {
   if (isSteward.value) {
     startPolling();
   }
-
-  // Poll for multisig rotation notifications (e.g., after being promoted to steward).
-  // All members should poll — a member can be promoted at any time.
-  startMultisigPolling();
 
   // Load activity and chat data for community stats
   activityStore.loadNotices();
