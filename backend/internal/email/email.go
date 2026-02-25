@@ -69,7 +69,7 @@ func (s *Sender) SendInvite(req SendInviteRequest) error {
 func (s *Sender) SendBookingConfirmation(to, name string, startTime time.Time, dateTimeNZT, dateTimeLocal string) error {
 	// Generate ICS content
 	endTime := startTime.Add(30 * time.Minute) // 30-minute session
-	icsContent := s.generateICSWithFrom(startTime, endTime, name, "invites@matou.nz")
+	icsContent := s.generateICSWithFrom(startTime, endTime, name, s.from)
 
 	// Generate email body
 	body, err := renderBookingTemplate(bookingTemplateData{
@@ -85,10 +85,10 @@ func (s *Sender) SendBookingConfirmation(to, name string, startTime time.Time, d
 
 	recipients := []string{to, "contact@matou.nz"}
 	toHeader := strings.Join(recipients, ", ")
-	msg := s.buildMIMEMessageWithCalendarFrom(toHeader, "MATOU - Whakawhānaunga Session", body, icsContent, "invites@matou.nz")
+	msg := s.buildMIMEMessageWithCalendarFrom(toHeader, "MATOU - Whakawhānaunga Session", body, icsContent, s.from)
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-	if err := s.sendMailFromMulti(addr, "invites@matou.nz", recipients, []byte(msg)); err != nil {
+	if err := s.sendMailFromMulti(addr, s.from, recipients, []byte(msg)); err != nil {
 		return fmt.Errorf("sending email: %w", err)
 	}
 
