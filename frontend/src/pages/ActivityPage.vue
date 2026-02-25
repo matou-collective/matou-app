@@ -113,7 +113,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   padding: 1.5rem 2rem;
-  padding-top: 60px;
+  padding-top: 20px;
 }
 
 .activity-header {

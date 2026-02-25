@@ -179,7 +179,7 @@ onMounted(() => {
 .tab-content {
   flex: 1;
   padding: 1.5rem 2rem;
-  padding-top: 60px;
+  padding-top: 20px;
   width: 100%;
   overflow-y: auto;
 }
