@@ -29,6 +29,6 @@ async function handleSetupComplete() {
 
 <style lang="scss" scoped>
 .setup-page {
-  min-height: 100vh;
+  min-height: calc(100vh - 36px);
 }
 </style>

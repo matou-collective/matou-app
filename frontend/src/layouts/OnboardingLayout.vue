@@ -13,10 +13,10 @@
 
 <style lang="scss" scoped>
 .q-layout {
-  min-height: 100vh;
+  min-height: calc(100vh - 36px);
 }
 
 :deep(.q-page-container) {
-  min-height: 100vh;
+  min-height: calc(100vh - 36px);
 }
 </style>

@@ -329,7 +329,7 @@ async function handleSubmit() {
     rgba(30, 95, 116, 0.9) 50%,
     var(--matou-accent) 100%
   );
-  min-height: 100vh;
+  min-height: calc(100vh - 36px);
 }
 
 .icon-container {

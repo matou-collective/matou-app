@@ -29,6 +29,6 @@ const goHome = () => {
 <style lang="scss" scoped>
 .error-page {
   background-color: var(--matou-background);
-  min-height: 100vh;
+  min-height: calc(100vh - 36px);
 }
 </style>

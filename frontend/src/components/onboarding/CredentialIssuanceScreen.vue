@@ -254,7 +254,7 @@ const onComplete = () => {
     var(--matou-background) 50%,
     rgba(232, 244, 248, 0.5) 100%
   );
-  min-height: 100vh;
+  min-height: calc(100vh - 36px);
 }
 
 .icon-container {
