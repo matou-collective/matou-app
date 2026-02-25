@@ -511,7 +511,7 @@ const pendingMembers = computed(() =>
 const liveMembers = computed(() =>
   allMembers.value.filter(m => {
     const status = m.profile.status as string;
-    return status !== 'pending' && status !== 'removed';
+    return status !== 'pending' && status !== 'removed' && status !== 'declined';
   })
 );
 
@@ -685,6 +685,7 @@ async function handleDecline(registration: PendingRegistration, reason?: string)
   if (success) {
     removeRegistration(registration.notificationId);
     selectedMember.value = null;
+    await profilesStore.loadCommunityProfiles();
   }
 }
 
