@@ -13,10 +13,12 @@
 
 <style lang="scss" scoped>
 .q-layout {
-  min-height: calc(100vh - 36px);
+  // Override Quasar's inline min-height: ${screen.height}px which doesn't
+  // account for the Electron titlebar spacer
+  min-height: calc(100vh - var(--titlebar-height)) !important;
 }
 
 :deep(.q-page-container) {
-  min-height: calc(100vh - 36px);
+  min-height: calc(100vh - var(--titlebar-height));
 }
 </style>

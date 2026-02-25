@@ -317,10 +317,19 @@ func (u *UnifiedTreeManager) GetTreesByChangeType(spaceID, changeType string) []
 }
 
 // GetTreeForObject looks up a tree by object ID and returns it.
+// If the object isn't in the in-memory index, it rebuilds the space index
+// from storage (trees may have arrived via sync since the last index build).
 func (u *UnifiedTreeManager) GetTreeForObject(ctx context.Context, spaceID, objectID string) (objecttree.ObjectTree, error) {
 	treeID, ok := u.objectMap.Load(objectID)
 	if !ok {
-		return nil, fmt.Errorf("no tree found for object %s", objectID)
+		// Index miss — rebuild from storage and retry once
+		if err := u.BuildSpaceIndex(ctx, spaceID); err != nil {
+			return nil, fmt.Errorf("rebuilding index for space %s: %w", spaceID, err)
+		}
+		treeID, ok = u.objectMap.Load(objectID)
+		if !ok {
+			return nil, fmt.Errorf("no tree found for object %s", objectID)
+		}
 	}
 	return u.GetTree(ctx, spaceID, treeID.(string))
 }

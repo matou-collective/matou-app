@@ -163,14 +163,14 @@ onBeforeUnmount(() => {
 <style lang="scss" scoped>
 .dashboard-layout {
   display: flex;
-  min-height: calc(100vh - 36px);
+  min-height: calc(100vh - var(--titlebar-height));
   background-color: var(--matou-background);
 }
 
 .main-content {
   flex: 1;
   margin-left: 240px;
-  min-height: calc(100vh - 36px);
+  min-height: calc(100vh - var(--titlebar-height));
   width: calc(100% - 240px);
 }
 

@@ -95,7 +95,7 @@ function onBack() {
 <style lang="scss" scoped>
 .community-guidelines-page {
   background-color: var(--matou-background);
-  min-height: calc(100vh - 36px);
+  min-height: calc(100vh - var(--titlebar-height));
 }
 
 h1, h2, h3 {

@@ -38,7 +38,7 @@ onMounted(async () => {
 
 <style lang="scss" scoped>
 .chat-page {
-  height: calc(100vh - 36px);
+  height: calc(100vh - var(--titlebar-height));
   display: flex;
   overflow: hidden;
   width: 100%;
