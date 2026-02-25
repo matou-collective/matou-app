@@ -1,11 +1,13 @@
 <template>
   <TitleBar />
   <div v-if="electron" class="titlebar-spacer" />
+  <UpdateBanner />
   <router-view />
 </template>
 
 <script setup lang="ts">
 import TitleBar from 'src/components/base/TitleBar.vue';
+import UpdateBanner from 'src/components/base/UpdateBanner.vue';
 import { isElectron } from 'src/lib/platform';
 
 const electron = isElectron();
