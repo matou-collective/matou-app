@@ -66,12 +66,16 @@ export function usePreCreatedInvite() {
       // Step 3: Create AID in invitee's agent
       progress.value = 'Creating invitee identity...';
       const aidName = config.inviteeName.toLowerCase().replace(/\s+/g, '-');
+      console.log(`[PreCreatedInvite] Creating AID "${aidName}" with witness ${WITNESS_AID}...`);
       const createResult = await inviteeClient.identifiers().create(aidName, {
         wits: [WITNESS_AID],
         toad: 1,
       });
+      console.log('[PreCreatedInvite] identifiers().create() returned, waiting for operation...');
       const createOp = await createResult.op();
+      console.log('[PreCreatedInvite] Operation:', JSON.stringify(createOp));
       await inviteeClient.operations().wait(createOp, { signal: AbortSignal.timeout(180000) });
+      console.log('[PreCreatedInvite] AID operation completed');
 
       const inviteeAid = await inviteeClient.identifiers().get(aidName);
       console.log('[PreCreatedInvite] Created invitee AID:', inviteeAid.prefix);

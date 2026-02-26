@@ -16,6 +16,7 @@ type SMTPConfig struct {
 	FromName    string `yaml:"fromName"`
 	LogoURL     string `yaml:"logoUrl"`
 	TextLogoURL string `yaml:"textLogoUrl"`
+	RelayURL    string `yaml:"relayUrl"` // Config server URL for email relay (production)
 }
 
 // Config represents the complete application configuration
@@ -148,6 +149,9 @@ func Load(configPath, bootstrapPath string) (*Config, error) {
 		if port, err := strconv.Atoi(portStr); err == nil {
 			cfg.SMTP.Port = port
 		}
+	}
+	if relayURL := os.Getenv("MATOU_SMTP_RELAY_URL"); relayURL != "" {
+		cfg.SMTP.RelayURL = relayURL
 	}
 
 	return cfg, nil

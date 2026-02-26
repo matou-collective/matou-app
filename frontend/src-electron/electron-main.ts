@@ -159,6 +159,7 @@ async function startBackend(): Promise<void> {
         MATOU_CONFIG_SERVER_URL: process.env.PROD_CONFIG_SERVER_URL,
         MATOU_SMTP_HOST: process.env.PROD_SMTP_HOST,
         MATOU_SMTP_PORT: process.env.PROD_SMTP_PORT,
+        MATOU_SMTP_RELAY_URL: process.env.PROD_CONFIG_SERVER_URL,
       }),
     },
     stdio: ['ignore', 'pipe', 'pipe'],

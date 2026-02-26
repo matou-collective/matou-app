@@ -105,6 +105,8 @@ export class KERIClient {
       const config = await client.config().get();
       if (config.iurls && Array.isArray(config.iurls) && config.iurls.length > 0) {
         console.log(`[KERIClient] Resolving ${config.iurls.length} witness OOBIs for ephemeral client...`);
+        let resolved = 0;
+        let failed = 0;
         for (let i = 0; i < config.iurls.length; i++) {
           let iurl = config.iurls[i];
           try {
@@ -112,12 +114,17 @@ export class KERIClient {
               iurl = iurl.replace('/controller', '');
             }
             const alias = `wit${i}`;
+            console.log(`[KERIClient] Ephemeral: resolving witness OOBI ${alias}: ${iurl}`);
             const op = await client.oobis().resolve(iurl, alias);
             await client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+            console.log(`[KERIClient] Ephemeral: resolved ${alias}`);
+            resolved++;
           } catch (resolveErr) {
-            console.warn(`[KERIClient] Failed to resolve witness OOBI ${iurl}:`, resolveErr);
+            failed++;
+            console.warn(`[KERIClient] Ephemeral: FAILED to resolve witness OOBI ${iurl}:`, resolveErr);
           }
         }
+        console.log(`[KERIClient] Ephemeral witness OOBI resolution: ${resolved} resolved, ${failed} failed`);
       }
     } catch (configErr) {
       console.warn('[KERIClient] Could not fetch KERIA config for ephemeral client:', configErr);

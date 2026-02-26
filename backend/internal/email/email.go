@@ -1,10 +1,14 @@
 package email
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"net"
+	"net/http"
 	"net/smtp"
 	"strings"
 	"time"
@@ -20,7 +24,7 @@ type SendInviteRequest struct {
 	InviteeName string
 }
 
-// Sender handles sending emails via SMTP
+// Sender handles sending emails via SMTP or config server relay
 type Sender struct {
 	host       string
 	port       int
@@ -28,18 +32,58 @@ type Sender struct {
 	fromName   string
 	logoURL    template.URL
 	textURL    template.URL
+	relayURL   string // config server URL for email relay (production)
 }
 
 // NewSender creates a new email Sender from SMTP config.
 func NewSender(cfg config.SMTPConfig) *Sender {
-	return &Sender{
+	s := &Sender{
 		host:     cfg.Host,
 		port:     cfg.Port,
 		from:     cfg.From,
 		fromName: cfg.FromName,
 		logoURL:  template.URL(cfg.LogoURL),
 		textURL:  template.URL(cfg.TextLogoURL),
+		relayURL: cfg.RelayURL,
 	}
+	if s.relayURL != "" {
+		log.Printf("[Email] Using relay: %s/api/send-email", s.relayURL)
+	}
+	return s
+}
+
+// sendViaRelay sends an email through the config server's /api/send-email endpoint.
+func (s *Sender) sendViaRelay(to, subject, htmlBody string) error {
+	payload := map[string]string{
+		"to":        to,
+		"subject":   subject,
+		"html":      htmlBody,
+		"from_name": s.fromName,
+		"from_addr": s.from,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling relay request: %w", err)
+	}
+
+	url := strings.TrimRight(s.relayURL, "/") + "/api/send-email"
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("relay request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decoding relay response: %w", err)
+	}
+	if !result.Success {
+		return fmt.Errorf("relay error: %s", result.Error)
+	}
+	return nil
 }
 
 // SendInvite sends an invite code email to the specified recipient
@@ -55,8 +99,13 @@ func (s *Sender) SendInvite(req SendInviteRequest) error {
 		return fmt.Errorf("rendering email template: %w", err)
 	}
 
-	msg := s.buildMIMEMessage(req.To, "Your MĀTOU invite code", body)
+	subject := "Your MĀTOU invite code"
 
+	if s.relayURL != "" {
+		return s.sendViaRelay(req.To, subject, body)
+	}
+
+	msg := s.buildMIMEMessage(req.To, subject, body)
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	if err := s.sendMail(addr, req.To, []byte(msg)); err != nil {
 		return fmt.Errorf("sending email: %w", err)
@@ -67,10 +116,6 @@ func (s *Sender) SendInvite(req SendInviteRequest) error {
 
 // SendBookingConfirmation sends a booking confirmation email with calendar invite
 func (s *Sender) SendBookingConfirmation(to, name string, startTime time.Time, dateTimeNZT, dateTimeLocal string) error {
-	// Generate ICS content
-	endTime := startTime.Add(30 * time.Minute) // 30-minute session
-	icsContent := s.generateICSWithFrom(startTime, endTime, name, s.from)
-
 	// Generate email body
 	body, err := renderBookingTemplate(bookingTemplateData{
 		Name:          name,
@@ -83,9 +128,23 @@ func (s *Sender) SendBookingConfirmation(to, name string, startTime time.Time, d
 		return fmt.Errorf("rendering booking email template: %w", err)
 	}
 
+	subject := "MĀTOU - Whakawhānaunga Session"
+
+	// Relay doesn't support ICS attachments, so send HTML-only to both recipients
+	if s.relayURL != "" {
+		if err := s.sendViaRelay(to, subject, body); err != nil {
+			return err
+		}
+		return s.sendViaRelay("contact@matou.nz", subject, body)
+	}
+
+	// Generate ICS content for direct SMTP path
+	endTime := startTime.Add(30 * time.Minute) // 30-minute session
+	icsContent := s.generateICSWithFrom(startTime, endTime, name, s.from)
+
 	recipients := []string{to, "contact@matou.nz"}
 	toHeader := strings.Join(recipients, ", ")
-	msg := s.buildMIMEMessageWithCalendarFrom(toHeader, "MĀTOU - Whakawhānaunga Session", body, icsContent, s.from)
+	msg := s.buildMIMEMessageWithCalendarFrom(toHeader, subject, body, icsContent, s.from)
 
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	if err := s.sendMailFromMulti(addr, s.from, recipients, []byte(msg)); err != nil {
@@ -163,8 +222,12 @@ func (s *Sender) SendRegistrationNotification(req SendRegistrationNotificationRe
 	}
 
 	subject := fmt.Sprintf("New Registration - %s", req.ApplicantName)
-	msg := s.buildMIMEMessage("contact@matou.nz", subject, body)
 
+	if s.relayURL != "" {
+		return s.sendViaRelay("contact@matou.nz", subject, body)
+	}
+
+	msg := s.buildMIMEMessage("contact@matou.nz", subject, body)
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	if err := s.sendMail(addr, "contact@matou.nz", []byte(msg)); err != nil {
 		return fmt.Errorf("sending email: %w", err)
@@ -190,8 +253,13 @@ func (s *Sender) SendApprovalNotification(req SendApprovalNotificationRequest) e
 		return fmt.Errorf("rendering email template: %w", err)
 	}
 
-	msg := s.buildMIMEMessage(req.To, "Welcome to MĀTOU!", body)
+	subject := "Welcome to MĀTOU!"
 
+	if s.relayURL != "" {
+		return s.sendViaRelay(req.To, subject, body)
+	}
+
+	msg := s.buildMIMEMessage(req.To, subject, body)
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	if err := s.sendMail(addr, req.To, []byte(msg)); err != nil {
 		return fmt.Errorf("sending email: %w", err)
