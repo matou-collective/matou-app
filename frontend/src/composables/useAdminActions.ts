@@ -22,6 +22,7 @@ export function useAdminActions() {
   // State
   const isProcessing = ref(false);
   const processingRegistrationId = ref<string | null>(null);
+  const processingStep = ref('');
   const error = ref<string | null>(null);
   const lastAction = ref<{ type: string; success: boolean; registrationId: string } | null>(null);
 
@@ -145,6 +146,7 @@ export function useAdminActions() {
 
     isProcessing.value = true;
     processingRegistrationId.value = registration.notificationId;
+    processingStep.value = 'Preparing...';
     error.value = null;
 
     try {
@@ -154,6 +156,7 @@ export function useAdminActions() {
       }
 
       // 1. Get org config for registry ID
+      processingStep.value = 'Loading organisation configuration...';
       const configResult = await fetchOrgConfig();
       if (configResult.status === 'not_configured') {
         throw new Error('Organization not configured');
@@ -168,6 +171,7 @@ export function useAdminActions() {
       }
 
       // 2. Resolve applicant OOBI (required for IPEX grant delivery)
+      processingStep.value = 'Resolving applicant identity...';
       let applicantOOBI = registration.applicantOOBI;
       if (!applicantOOBI) {
         // Fallback: construct OOBI from KERIA CESR URL + applicant AID
@@ -190,6 +194,7 @@ export function useAdminActions() {
       console.log(`[AdminActions] Issuing credential from AID: ${issuerAidName}`);
 
       // 4. Initialize member profiles FIRST — ensures profiles are in the sync
+      processingStep.value = 'Creating member profiles...';
       //    node before the member receives the invite and joins the space.
       //    This eliminates the race condition where the member joins before
       //    their profiles are synced.
@@ -222,6 +227,7 @@ export function useAdminActions() {
       console.log('[AdminActions] Member profiles created for:', registration.applicantAid);
 
       // 5. Generate space invite so we can embed the invite data in the
+      processingStep.value = 'Generating community space invite...';
       //    IPEX grant's message field (reliable delivery).
       let grantMessage = '';
       try {
@@ -264,6 +270,7 @@ export function useAdminActions() {
       }
 
       // 6. Issue membership credential
+      processingStep.value = 'Issuing membership credential...';
       // Note: Schema requires communityName to be 'MATOU' literal value
       const credentialData = {
         communityName: 'MATOU',
@@ -285,6 +292,7 @@ export function useAdminActions() {
       credentialSaid = credResult.said;
 
       // 6b. Update CommunityProfile with real credential SAID
+      processingStep.value = 'Updating community profile...';
       //     (profiles were created in step 4 with credentialSaid='pending')
       //     Note: personal endorsement registries are created lazily by each member
       //     via useEndorsements when they first try to endorse someone.
@@ -305,6 +313,7 @@ export function useAdminActions() {
       }
 
       // 7. Email approval notification (non-blocking)
+      processingStep.value = 'Sending approval notification...';
       if (registration.profile?.email) {
         try {
           await sendRegistrationApprovedNotification({
@@ -317,6 +326,7 @@ export function useAdminActions() {
       }
 
       // 8. Mark ALL notifications for this applicant as read
+      processingStep.value = 'Finalising...';
       // (handles both IPEX and custom EXN notifications)
       await markAllApplicantNotificationsRead(registration.applicantAid);
 
@@ -342,6 +352,7 @@ export function useAdminActions() {
     } finally {
       isProcessing.value = false;
       processingRegistrationId.value = null;
+      processingStep.value = '';
     }
   }
 
@@ -365,8 +376,12 @@ export function useAdminActions() {
       return false;
     }
 
+    isProcessing.value = true;
+    processingStep.value = 'Preparing...';
+
     try {
       // --- Step 1: Resolve steward identity ---
+      processingStep.value = 'Resolving steward identity...';
       onStep?.('Resolving steward identity...');
       console.log(`[AdminActions] Adding steward ${stewardAid.slice(0, 12)}... to org multisig`);
 
@@ -386,11 +401,13 @@ export function useAdminActions() {
       await keriClient.resolveOOBI(stewardOOBI, undefined, 30000);
 
       // --- Step 2: Key rotation ---
+      processingStep.value = 'Performing key rotation...';
       onStep?.('Performing key rotation...');
       await keriClient.addMemberToGroup(orgName, stewardAid, personalAid.name);
       console.log('[AdminActions] Steward added to org multisig');
 
       // --- Step 3: Revoke old credential ---
+      processingStep.value = 'Revoking old credential...';
       onStep?.('Revoking old credential...');
       const configResult = await fetchOrgConfig();
       if (configResult.status !== 'configured') throw new Error('Org config not available');
@@ -409,6 +426,7 @@ export function useAdminActions() {
       }
 
       // --- Step 4: Issue new credential with updated role ---
+      processingStep.value = 'Issuing new credential...';
       onStep?.('Issuing new credential...');
       const grantMessage = `Role updated to ${newRole}`;
       const credResult = await keriClient.issueCredential(
@@ -443,6 +461,9 @@ export function useAdminActions() {
     } catch (err) {
       console.error('[AdminActions] Failed to upgrade steward:', err);
       return false;
+    } finally {
+      isProcessing.value = false;
+      processingStep.value = '';
     }
   }
 
@@ -719,6 +740,7 @@ export function useAdminActions() {
     // State
     isProcessing,
     processingRegistrationId,
+    processingStep,
     error,
     lastAction,
 

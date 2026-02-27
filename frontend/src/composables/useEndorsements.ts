@@ -36,6 +36,7 @@ export function useEndorsements() {
   const profilesStore = useProfilesStore();
 
   const isEndorsing = ref(false);
+  const endorsingStep = ref('');
   const error = ref<string | null>(null);
 
   /**
@@ -48,6 +49,7 @@ export function useEndorsements() {
   ): Promise<boolean> {
     if (isEndorsing.value) return false;
     isEndorsing.value = true;
+    endorsingStep.value = 'Preparing...';
     error.value = null;
 
     try {
@@ -55,12 +57,15 @@ export function useEndorsements() {
       if (!myAid) throw new Error('No identity found');
 
       // 1. Get or create endorser's personal registry
+      endorsingStep.value = 'Setting up credential registry...';
       const registryId = await getOrCreatePersonalRegistry();
 
       // 2. Resolve endorsement schema OOBI (KERIA needs it before issuing)
+      endorsingStep.value = 'Resolving schema...';
       await keriClient.resolveOOBI(ENDORSEMENT_SCHEMA_OOBI, ENDORSEMENT_SCHEMA_SAID, 15000);
 
       // 3. Resolve applicant OOBI
+      endorsingStep.value = 'Resolving applicant identity...';
       let oobi = applicantOOBI;
       if (!oobi) {
         const cesrUrl = keriClient.getCesrUrl();
@@ -74,6 +79,7 @@ export function useEndorsements() {
       if (!resolved) throw new Error('Could not resolve applicant identity');
 
       // 4. Verify endorser has a membership credential (must be admitted member)
+      endorsingStep.value = 'Verifying membership...';
       // IMPORTANT: Filter by issuee (sad.a.i) matching the current user's AID.
       // KERIA's credential store contains ALL credentials the agent knows about,
       // including credentials issued TO other users. Without filtering, we could
@@ -91,6 +97,7 @@ export function useEndorsements() {
       console.log('[Endorsements] Found endorser membership credential:', membershipCred.sad.d);
 
       // 5. Issue endorsement credential with edge linking to endorser's membership
+      endorsingStep.value = 'Issuing endorsement credential...';
       const credentialData = {
         dt: new Date().toISOString(),
         endorsementType: 'membership_endorsement',
@@ -122,6 +129,7 @@ export function useEndorsements() {
       endorsedVersion.value++; // Trigger Vue computed re-evaluation
 
       // 6. Update SharedProfile with endorsement record (best-effort).
+      endorsingStep.value = 'Updating profile...';
       // The KERI credential is the authoritative record — the SharedProfile
       // endorsement is just UI metadata. If the profile update fails (e.g.
       // because the applicant's SharedProfile hasn't synced to this backend
@@ -167,6 +175,7 @@ export function useEndorsements() {
       return false;
     } finally {
       isEndorsing.value = false;
+      endorsingStep.value = '';
     }
   }
 
@@ -246,6 +255,7 @@ export function useEndorsements() {
 
   return {
     isEndorsing,
+    endorsingStep,
     error,
     endorseApplicant,
     hasEndorsed,

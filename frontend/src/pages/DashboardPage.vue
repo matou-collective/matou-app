@@ -166,7 +166,7 @@
     </div>
 
     <!-- Invite Member Modal -->
-    <InviteMemberModal v-model="showInviteModal" :isSteward="isSteward" />
+    <InviteMemberModal ref="inviteModalRef" v-model="showInviteModal" :isSteward="isSteward" />
 
     <!-- Member Profile Dialog -->
     <ProfileModal
@@ -194,6 +194,19 @@
       @mark-attended="handleMarkAttended"
       @role-updated="handleRoleUpdated"
     />
+
+    <!-- Credential Issuance Overlay -->
+    <Teleport to="body">
+      <Transition name="overlay-fade">
+        <div v-if="showOverlay" class="issuance-overlay">
+          <div class="issuance-dialog">
+            <Loader2 class="issuance-spinner" />
+            <p class="issuance-title">{{ overlayTitle }}</p>
+            <p class="issuance-step">{{ overlayStep }}</p>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -215,6 +228,7 @@ import {
   Megaphone,
   RefreshCw,
   RotateCw,
+  Loader2,
 } from 'lucide-vue-next';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
@@ -242,6 +256,7 @@ const {
 } = useRegistrationPolling({ pollingInterval: 10000 });
 const {
   isProcessing,
+  processingStep,
   error: actionError,
   approveRegistration,
   declineRegistration,
@@ -257,6 +272,7 @@ const {
 
 const {
   isEndorsing,
+  endorsingStep,
   error: endorseError,
   endorseApplicant,
   hasEndorsed,
@@ -267,6 +283,7 @@ const {
 
 const {
   isMarking: isMarkingAttended,
+  markingStep,
   error: attendanceError,
   markAttended,
   hasMarkedAttended,
@@ -281,6 +298,30 @@ const activityStore = useActivityStore();
 const chatStore = useChatStore();
 const router = useRouter();
 const membersCardRef = ref<HTMLElement | null>(null);
+const inviteModalRef = ref<InstanceType<typeof InviteMemberModal> | null>(null);
+
+const isInviting = computed(() => inviteModalRef.value?.isSubmitting ?? false);
+const invitingStep = computed(() => inviteModalRef.value?.progress ?? '');
+
+const showOverlay = computed(() =>
+  isProcessing.value || isEndorsing.value || isMarkingAttended.value || isInviting.value
+);
+
+const overlayTitle = computed(() => {
+  if (isProcessing.value) return 'Issuing Membership Credential';
+  if (isEndorsing.value) return 'Issuing Endorsement';
+  if (isMarkingAttended.value) return 'Recording Attendance';
+  if (isInviting.value) return 'Creating Invitation';
+  return '';
+});
+
+const overlayStep = computed(() => {
+  if (isProcessing.value) return processingStep.value;
+  if (isEndorsing.value) return endorsingStep.value;
+  if (isMarkingAttended.value) return markingStep.value;
+  if (isInviting.value) return invitingStep.value;
+  return '';
+});
 
 function scrollToMembers() {
   const el = membersCardRef.value;
@@ -1341,5 +1382,65 @@ function handleRoleUpdated(newRole: string) {
     color: var(--matou-muted-foreground);
     margin: 0.125rem 0 0;
   }
+}
+
+// Credential Issuance Overlay
+.issuance-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.issuance-dialog {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 2rem 3rem;
+  background: var(--matou-card);
+  border: 1px solid var(--matou-border);
+  border-radius: var(--matou-radius-lg, 12px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.issuance-spinner {
+  width: 32px;
+  height: 32px;
+  color: var(--matou-primary);
+  animation: spin 1s linear infinite;
+}
+
+.issuance-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--matou-foreground);
+  margin: 0;
+}
+
+.issuance-step {
+  font-size: 0.8rem;
+  color: var(--matou-muted-foreground);
+  margin: 0;
+  min-height: 1.2em;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.overlay-fade-enter-active,
+.overlay-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.overlay-fade-enter-from,
+.overlay-fade-leave-to {
+  opacity: 0;
 }
 </style>

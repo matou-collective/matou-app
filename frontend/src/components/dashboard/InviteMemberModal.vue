@@ -287,6 +287,8 @@ function copyLink() {
     copied.value = false;
   }, 2000);
 }
+
+defineExpose({ isSubmitting, progress });
 </script>
 
 <style lang="scss" scoped>

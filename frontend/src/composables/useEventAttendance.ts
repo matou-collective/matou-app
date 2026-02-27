@@ -34,6 +34,7 @@ export function useEventAttendance() {
   const profilesStore = useProfilesStore();
 
   const isMarking = ref(false);
+  const markingStep = ref('');
   const error = ref<string | null>(null);
 
   /**
@@ -46,6 +47,7 @@ export function useEventAttendance() {
   ): Promise<boolean> {
     if (isMarking.value) return false;
     isMarking.value = true;
+    markingStep.value = 'Preparing...';
     error.value = null;
 
     try {
@@ -53,12 +55,15 @@ export function useEventAttendance() {
       if (!myAid) throw new Error('No identity found');
 
       // 1. Get or create host's personal registry
+      markingStep.value = 'Setting up credential registry...';
       const registryId = await getOrCreatePersonalRegistry();
 
       // 2. Resolve event attendance schema OOBI
+      markingStep.value = 'Resolving schema...';
       await keriClient.resolveOOBI(EVENT_ATTENDANCE_SCHEMA_OOBI, EVENT_ATTENDANCE_SCHEMA_SAID, 15000);
 
       // 3. Resolve applicant OOBI
+      markingStep.value = 'Resolving applicant identity...';
       let oobi = applicantOOBI;
       if (!oobi) {
         const cesrUrl = keriClient.getCesrUrl();
@@ -72,6 +77,7 @@ export function useEventAttendance() {
       if (!resolved) throw new Error('Could not resolve applicant identity');
 
       // 4. Verify host has a membership credential (must be admitted member)
+      markingStep.value = 'Verifying membership...';
       // IMPORTANT: Filter by issuee (sad.a.i) matching the current user's AID.
       // KERIA's credential store contains ALL credentials the agent knows about,
       // including credentials issued TO other users. Without filtering, we could
@@ -89,6 +95,7 @@ export function useEventAttendance() {
       console.log('[EventAttendance] Found host membership credential:', membershipCred.sad.d);
 
       // 5. Issue event attendance credential with edge linking to host's membership
+      markingStep.value = 'Issuing attendance credential...';
       const now = new Date().toISOString();
       const credentialData = {
         dt: now,
@@ -119,6 +126,7 @@ export function useEventAttendance() {
       locallyMarkedSet.add(`${myAid.prefix}:${applicantAid}`);
 
       // 6. Update SharedProfile with attendance record (best-effort).
+      markingStep.value = 'Updating profile...';
       // The KERI credential is the authoritative record — the SharedProfile
       // attendance is just UI metadata. If the profile update fails (e.g.
       // because the applicant's SharedProfile hasn't synced to this backend
@@ -165,6 +173,7 @@ export function useEventAttendance() {
       return false;
     } finally {
       isMarking.value = false;
+      markingStep.value = '';
     }
   }
 
@@ -192,6 +201,7 @@ export function useEventAttendance() {
 
   return {
     isMarking,
+    markingStep,
     error,
     markAttended,
     hasMarkedAttended,
