@@ -139,8 +139,8 @@
             <template v-if="pendingMembers.length > 0">
               <div class="members-list">
                 <ProfileCard
-                  v-for="(member, index) in pendingMembers"
-                  :key="'pending-' + index"
+                  v-for="member in pendingMembers"
+                  :key="'pending-' + ((member.profile.aid as string) || (member.profile.id as string))"
                   :profile="member.profile"
                   :communityProfile="member.communityProfile"
                   :adminAids="adminAids"
@@ -152,8 +152,8 @@
             <h3 v-if="pendingMembers.length > 0" class="card-title" style="padding-top: 1rem">Members</h3>
             <div class="members-list">
               <ProfileCard
-                v-for="(member, index) in liveMembers"
-                :key="'member-' + index"
+                v-for="member in liveMembers"
+                :key="'member-' + ((member.profile.aid as string) || (member.profile.id as string))"
                 :profile="member.profile"
                 :communityProfile="member.communityProfile"
                 :adminAids="adminAids"
@@ -500,9 +500,15 @@ const allMembers = computed(() => {
       communityProfile: findCommunityProfile(p),
     }))
     .sort((a, b) => {
-      const dateA = (a.communityProfile?.memberSince as string) || (a.profile.createdAt as string) || '';
-      const dateB = (b.communityProfile?.memberSince as string) || (b.profile.createdAt as string) || '';
-      return new Date(dateB).getTime() - new Date(dateA).getTime();
+      const rawA = (a.communityProfile?.memberSince as string) || (a.profile.createdAt as string) || '';
+      const rawB = (b.communityProfile?.memberSince as string) || (b.profile.createdAt as string) || '';
+      const timeA = rawA ? new Date(rawA).getTime() : 0;
+      const timeB = rawB ? new Date(rawB).getTime() : 0;
+      if (timeA !== timeB) return timeA - timeB;
+      // Stable tiebreaker: sort by AID so equal-date items never shuffle
+      const aidA = (a.profile.aid as string) || '';
+      const aidB = (b.profile.aid as string) || '';
+      return aidA.localeCompare(aidB);
     });
 });
 
@@ -594,8 +600,8 @@ interface FeedItem {
 const activityFeed = computed(() => {
   const items: FeedItem[] = [];
 
-  // New members
-  for (const m of allMembers.value) {
+  // New members (exclude declined/removed)
+  for (const m of liveMembers.value) {
     const dateStr = (m.communityProfile?.memberSince as string) || (m.profile.createdAt as string);
     if (!dateStr) continue;
     const name = (m.profile.displayName as string) || (m.profile.name as string) || 'Unknown';

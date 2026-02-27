@@ -50,10 +50,12 @@ let profileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 function debouncedProfileReload() {
   if (profileDebounceTimer) clearTimeout(profileDebounceTimer);
-  profileDebounceTimer = setTimeout(() => {
+  profileDebounceTimer = setTimeout(async () => {
     const profilesStore = useProfilesStore();
-    profilesStore.loadCommunityProfiles();
-    profilesStore.loadCommunityReadOnlyProfiles();
+    await Promise.all([
+      profilesStore.loadCommunityProfiles(),
+      profilesStore.loadCommunityReadOnlyProfiles(),
+    ]);
     profileDebounceTimer = null;
   }, 2000);
 }

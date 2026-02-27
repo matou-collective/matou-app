@@ -227,18 +227,19 @@
                 <p class="text-xs text-muted-foreground mb-3">
                   Select a time that works for you (shown in {{ userTimezone }}):
                 </p>
-                <div class="time-slots-grid">
-                  <button
-                    v-for="slot in availableSlots"
-                    :key="slot.id"
-                    @click="pendingSlot = slot"
-                    class="time-slot-btn"
-                  >
-                    <span class="slot-day">{{ slot.dayLabel }}</span>
-                    <span class="slot-date">{{ slot.dateLabel }}</span>
-                    <span class="slot-time">{{ slot.timeLabel }}</span>
-                    <span class="slot-nzt">{{ slot.timeNZTLabel }}</span>
-                  </button>
+                <div v-for="group in slotsByDate" :key="group.dateKey" class="slot-date-group">
+                  <div class="slot-date-label">{{ group.dayLabel }}, {{ group.dateLabel }}</div>
+                  <div class="slot-date-row">
+                    <button
+                      v-for="slot in group.slots"
+                      :key="slot.id"
+                      @click="pendingSlot = slot"
+                      class="time-slot-btn"
+                    >
+                      <span class="slot-time">{{ slot.timeLabel }}</span>
+                      <span class="slot-nzt">{{ slot.timeNZTLabel }}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -694,6 +695,23 @@ const availableSlots = computed<TimeSlot[]>(() => {
   return slots;
 });
 
+// Group slots by date for row-of-3 layout
+const slotsByDate = computed(() => {
+  const groups: { dateKey: string; dayLabel: string; dateLabel: string; slots: TimeSlot[] }[] = [];
+  const seen = new Map<string, number>();
+
+  for (const slot of availableSlots.value) {
+    const key = slot.dateLabel; // e.g., "Feb 11"
+    if (seen.has(key)) {
+      groups[seen.get(key)!].slots.push(slot);
+    } else {
+      seen.set(key, groups.length);
+      groups.push({ dateKey: key, dayLabel: slot.dayLabel, dateLabel: slot.dateLabel, slots: [slot] });
+    }
+  }
+  return groups;
+});
+
 const requirements = computed(() => [
   { num: 1, title: 'Endorsement', description: 'From a community member', met: memberEndorsementVerified.value },
   { num: 2, title: 'Confirmation', description: 'From a community admin', met: stewardEndorsementVerified.value },
@@ -994,18 +1012,25 @@ const resources = [
   background-color: rgba(74, 157, 156, 0.1);
 }
 
-.time-slots-grid {
+.slot-date-group {
+  margin-bottom: 0.75rem;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.slot-date-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--matou-foreground);
+  margin-bottom: 0.5rem;
+}
+
+.slot-date-row {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.75rem;
-
-  @media (min-width: 480px) {
-    grid-template-columns: repeat(3, 1fr);
-  }
-
-  @media (min-width: 640px) {
-    grid-template-columns: repeat(4, 1fr);
-  }
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
 }
 
 .time-slot-btn {
