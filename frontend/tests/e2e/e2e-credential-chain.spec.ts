@@ -216,7 +216,7 @@ test.describe.serial('Credential Chain Verification (KERIA reger.saved isolation
     const needsSetup = await Promise.race([
       adminPage.waitForURL(/.*#\/setup/, { timeout: TIMEOUT.long }).then(() => true),
       adminPage
-        .locator('button', { hasText: /register/i })
+        .locator('button', { hasText: /join now/i })
         .waitFor({ state: 'visible', timeout: TIMEOUT.long })
         .then(() => false),
       // Also check for the dashboard (admin may auto-restore session)

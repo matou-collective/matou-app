@@ -73,7 +73,7 @@ test.describe.serial('Registration Stress Test', () => {
     const needsSetup = await Promise.race([
       adminPage.waitForURL(/.*#\/setup/, { timeout: TIMEOUT.medium })
         .then(() => true),
-      adminPage.locator('button', { hasText: /register/i })
+      adminPage.locator('button', { hasText: /join now/i })
         .waitFor({ state: 'visible', timeout: TIMEOUT.medium })
         .then(() => false),
     ]);
@@ -145,7 +145,7 @@ test.describe.serial('Registration Stress Test', () => {
     for (const user of users) {
       await user.page.goto(FRONTEND_URL);
       await expect(
-        user.page.getByRole('button', { name: /register/i }),
+        user.page.getByRole('button', { name: /join now/i }),
       ).toBeVisible({ timeout: TIMEOUT.medium });
       console.log(`[Stress] ${user.name}: page loaded`);
     }
