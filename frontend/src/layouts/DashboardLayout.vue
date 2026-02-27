@@ -81,7 +81,6 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
 import { useChatStore } from 'stores/chat';
-import { useChatEvents } from 'src/composables/useChatEvents';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { getFileUrl } from 'src/lib/api/client';
 
@@ -92,7 +91,6 @@ const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const chatStore = useChatStore();
 const { connect: connectBackendEvents } = useBackendEvents();
-useChatEvents();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
 const mySharedProfile = computed(() => {

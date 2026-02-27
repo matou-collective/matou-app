@@ -7,9 +7,12 @@
  * (ActivityPage, etc.) can watch `lastEvent` without opening a second socket.
  */
 import { ref } from 'vue';
+import { Notify } from 'quasar';
+import { useRouter } from 'vue-router';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
+import { useChatStore } from 'stores/chat';
 
 export type BackendEventType =
   | 'credential:new'
@@ -22,6 +25,13 @@ export type BackendEventType =
   | 'notice_comment'
   | 'notice_reaction'
   | 'profile:updated'
+  | 'chat:message:new'
+  | 'chat:message:edit'
+  | 'chat:message:delete'
+  | 'chat:reaction:add'
+  | 'chat:reaction:remove'
+  | 'chat:channel:new'
+  | 'chat:channel:update'
   | 'connected';
 
 export interface BackendEvent {
@@ -134,6 +144,93 @@ function connect() {
 
     const profilesStore = useProfilesStore();
     profilesStore.loadCommunityProfiles();
+  });
+
+  // --- Chat events ---
+  const chatStore = useChatStore();
+  const router = useRouter();
+
+  eventSource.addEventListener('chat:message:new', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'chat:message:new', data };
+    chatStore.handleNewMessage(data);
+
+    // Toast notification for messages in non-active channels
+    if (data.channelId !== chatStore.currentChannelId) {
+      const channel = chatStore.channels.find((c: { id: string }) => c.id === data.channelId);
+      const channelName = channel?.name ?? 'Unknown';
+      const content = data.content as string | undefined;
+      const contentPreview = content?.substring(0, 80) ?? '';
+      const profilesStore = useProfilesStore();
+      const profile = profilesStore.profilesByAid[data.senderAid as string];
+      const displayName = profile?.displayName || data.senderName;
+      Notify.create({
+        html: true,
+        message: `<strong>${displayName}</strong><br>${contentPreview}`,
+        caption: `#${channelName}`,
+        position: 'top-right',
+        timeout: 5000,
+        color: 'primary',
+        actions: [
+          {
+            label: 'View',
+            color: 'white',
+            handler: () => {
+              router.push({ name: 'chat' });
+              chatStore.selectChannel(data.channelId as string);
+            },
+          },
+          { label: 'Dismiss', color: 'white' },
+        ],
+      });
+    }
+  });
+
+  eventSource.addEventListener('chat:message:edit', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'chat:message:edit', data };
+    chatStore.handleEditMessage(data);
+  });
+
+  eventSource.addEventListener('chat:message:delete', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'chat:message:delete', data };
+    chatStore.handleDeleteMessage(data);
+  });
+
+  eventSource.addEventListener('chat:reaction:add', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'chat:reaction:add', data };
+    if (chatStore.currentChannelId) {
+      chatStore.loadMessages(chatStore.currentChannelId);
+    }
+  });
+
+  eventSource.addEventListener('chat:reaction:remove', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'chat:reaction:remove', data };
+    if (chatStore.currentChannelId) {
+      chatStore.loadMessages(chatStore.currentChannelId);
+    }
+  });
+
+  eventSource.addEventListener('chat:channel:new', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'chat:channel:new', data };
+    chatStore.handleNewChannel(data);
+  });
+
+  eventSource.addEventListener('chat:channel:update', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'chat:channel:update', data };
+    chatStore.handleUpdateChannel(data);
   });
 
   eventSource.onerror = () => {
