@@ -74,27 +74,27 @@
               </button>
             </div>
             <div class="community-stats">
-              <div class="community-stat">
+              <div class="community-stat clickable" @click="scrollToMembers">
                 <Users class="community-stat-icon" />
                 <span class="community-stat-value">{{ liveMembers.length }}</span>
                 <span class="community-stat-label">Members</span>
               </div>
-              <div class="community-stat">
+              <div class="community-stat clickable" @click="router.push({ name: 'chat' })">
                 <MessageCircle class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalChannels }}</span>
                 <span class="community-stat-label">Channels</span>
               </div>
-              <div class="community-stat">
+              <div class="community-stat clickable" @click="navigateToNotices('event')">
                 <CalendarDays class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalEvents }}</span>
                 <span class="community-stat-label">Events</span>
               </div>
-              <div class="community-stat">
+              <div class="community-stat clickable" @click="navigateToNotices('announcement')">
                 <Megaphone class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalAnnouncements }}</span>
                 <span class="community-stat-label">Announcements</span>
               </div>
-              <div class="community-stat">
+              <div class="community-stat clickable" @click="navigateToNotices('update')">
                 <RefreshCw class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalUpdates }}</span>
                 <span class="community-stat-label">Updates</span>
@@ -124,7 +124,7 @@
 
         <!-- Right Column -->
         <div class="right-column">
-          <div class="card members-card">
+          <div ref="membersCardRef" class="card members-card">
             <div class="members-header">
               <h3 class="card-title" v-if="pendingMembers.length > 0">Pending</h3>
               <h3 class="card-title" v-else>Members</h3>
@@ -280,6 +280,20 @@ const profilesStore = useProfilesStore();
 const activityStore = useActivityStore();
 const chatStore = useChatStore();
 const router = useRouter();
+const membersCardRef = ref<HTMLElement | null>(null);
+
+function scrollToMembers() {
+  const el = membersCardRef.value;
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  el.classList.add('bounce');
+  el.addEventListener('animationend', () => el.classList.remove('bounce'), { once: true });
+}
+
+function navigateToNotices(filter: 'event' | 'announcement' | 'update') {
+  activityStore.setFilter(filter);
+  router.push({ name: 'activity' });
+}
 
 const { lastEvent } = useBackendEvents();
 
@@ -1084,6 +1098,15 @@ function handleRoleUpdated(newRole: string) {
   padding: 0.75rem 0.25rem;
   border-radius: var(--matou-radius);
   background-color: var(--matou-secondary);
+
+  &.clickable {
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+
+    &:hover {
+      background-color: color-mix(in srgb, var(--matou-secondary) 85%, var(--matou-primary) 15%);
+    }
+  }
 }
 
 .community-stat-icon {
@@ -1235,6 +1258,17 @@ function handleRoleUpdated(newRole: string) {
 // Members Card
 .members-card {
   padding: 1rem 1.25rem;
+
+  &.bounce {
+    animation: card-bounce 0.5s ease;
+  }
+}
+
+@keyframes card-bounce {
+  0%, 100% { transform: translateY(0); }
+  25% { transform: translateY(-6px); }
+  50% { transform: translateY(2px); }
+  75% { transform: translateY(-2px); }
 }
 
 .members-list {

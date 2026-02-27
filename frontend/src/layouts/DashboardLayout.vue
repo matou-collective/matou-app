@@ -36,13 +36,11 @@
         </button>
         <button class="nav-item disabled" disabled>
           <Target class="nav-icon" />
-          <span>Projects</span>
-          <q-tooltip anchor="center right" self="center left" :offset="[8, 0]">Coming soon</q-tooltip>
+          <span>Projects<q-tooltip anchor="center right" self="center left">Coming soon</q-tooltip></span>
         </button>
         <button class="nav-item disabled" disabled>
           <Vote class="nav-icon" />
-          <span>Proposals</span>
-          <q-tooltip anchor="center right" self="center left" :offset="[8, 0]">Coming soon</q-tooltip>
+          <span>Proposals<q-tooltip anchor="center right" self="center left">Coming soon</q-tooltip></span>
         </button>
       </nav>
 
