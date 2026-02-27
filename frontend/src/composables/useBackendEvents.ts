@@ -45,6 +45,19 @@ const lastEvent = ref<BackendEvent | null>(null);
 let eventSource: EventSource | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
+// Debounce profile reloads — any-sync can fire many profile:updated events in quick succession
+let profileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function debouncedProfileReload() {
+  if (profileDebounceTimer) clearTimeout(profileDebounceTimer);
+  profileDebounceTimer = setTimeout(() => {
+    const profilesStore = useProfilesStore();
+    profilesStore.loadCommunityProfiles();
+    profilesStore.loadCommunityReadOnlyProfiles();
+    profileDebounceTimer = null;
+  }, 2000);
+}
+
 /** Safely parse SSE event data. Returns null on failure. */
 function safeParse(event: MessageEvent): Record<string, string> | null {
   try {
@@ -140,10 +153,7 @@ function connect() {
     const data = safeParse(event);
     if (!data) return;
     lastEvent.value = { type: 'profile:updated', data };
-    console.log('[BackendEvents] Profile updated:', data.profileId);
-
-    const profilesStore = useProfilesStore();
-    profilesStore.loadCommunityProfiles();
+    debouncedProfileReload();
   });
 
   // --- Chat events ---
