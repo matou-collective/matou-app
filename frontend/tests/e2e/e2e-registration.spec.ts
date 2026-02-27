@@ -144,7 +144,7 @@ test.describe.serial('Registration Approval Flow', () => {
     const needsSetup = await Promise.race([
       adminPage.waitForURL(/.*#\/setup/, { timeout: TIMEOUT.medium })
         .then(() => true),
-      adminPage.locator('button', { hasText: /register/i })
+      adminPage.locator('button', { hasText: /join now/i })
         .waitFor({ state: 'visible', timeout: TIMEOUT.medium })
         .then(() => false),
     ]);
@@ -312,7 +312,7 @@ test.describe.serial('Registration Approval Flow', () => {
 
       // Splash buttons should NOT be visible
       await expect(
-        userPage.getByRole('button', { name: /register/i }),
+        userPage.getByRole('button', { name: /join now/i }),
       ).not.toBeVisible();
       console.log('[Test] Session restart: splash buttons correctly hidden');
 
@@ -1050,7 +1050,7 @@ test.describe.serial('Registration Approval Flow', () => {
 
       // Splash buttons should NOT be visible
       await expect(
-        userPage.getByRole('button', { name: /register/i }),
+        userPage.getByRole('button', { name: /join now/i }),
       ).not.toBeVisible();
       console.log('[Test] Session restart: splash buttons correctly hidden');
 

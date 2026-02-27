@@ -319,7 +319,7 @@ export async function loginWithMnemonic(
 ): Promise<void> {
   await page.goto(FRONTEND_URL);
   await expect(
-    page.getByRole('button', { name: /register/i }),
+    page.getByRole('button', { name: /join now/i }),
   ).toBeVisible({ timeout: TIMEOUT.short });
 
   await page.getByText(/recover identity/i).click();
