@@ -418,16 +418,21 @@ export const useChatStore = defineStore('chat', () => {
     // Check if message already exists
     if (channelMessages.some(m => m.id === data.messageId)) return;
 
-    // Add new message at the beginning (newest first)
-    channelMessages.unshift({
-      id: data.messageId,
-      channelId: data.channelId,
-      senderAid: data.senderAid,
-      senderName: data.senderName,
-      content: data.content,
-      sentAt: data.sentAt,
-      version: 1,
-    });
+    // Replace the Map entry with a new array to trigger Vue reactivity.
+    // In-place mutations (unshift) on an array retrieved from a reactive Map
+    // don't reliably re-evaluate computed properties that depend on Map.get().
+    messages.value.set(data.channelId, [
+      {
+        id: data.messageId,
+        channelId: data.channelId,
+        senderAid: data.senderAid,
+        senderName: data.senderName,
+        content: data.content,
+        sentAt: data.sentAt,
+        version: 1,
+      },
+      ...channelMessages,
+    ]);
 
     // If this is the active channel, auto-mark as read and clear the entry divider
     // so new messages don't trigger the "X new messages" line while viewing
@@ -451,11 +456,9 @@ export const useChatStore = defineStore('chat', () => {
 
     const idx = channelMessages.findIndex(m => m.id === data.messageId);
     if (idx !== -1) {
-      channelMessages[idx] = {
-        ...channelMessages[idx],
-        content: data.content,
-        editedAt: data.editedAt,
-      };
+      const updated = [...channelMessages];
+      updated[idx] = { ...updated[idx], content: data.content, editedAt: data.editedAt };
+      messages.value.set(data.channelId, updated);
     }
   }
 
@@ -469,10 +472,9 @@ export const useChatStore = defineStore('chat', () => {
 
     const idx = channelMessages.findIndex(m => m.id === data.messageId);
     if (idx !== -1) {
-      channelMessages[idx] = {
-        ...channelMessages[idx],
-        deletedAt: data.deletedAt || new Date().toISOString(),
-      };
+      const updated = [...channelMessages];
+      updated[idx] = { ...updated[idx], deletedAt: data.deletedAt || new Date().toISOString() };
+      messages.value.set(data.channelId, updated);
     }
   }
 

@@ -611,8 +611,8 @@ func main() {
 	syncWorker.Start()
 	defer syncWorker.Stop()
 
-	// Wrap with middleware: localhost guard (production) → CORS
-	handler := api.LocalhostGuard(api.CORSMiddleware(mux))
+	// Wrap with middleware: request logger → localhost guard (production) → CORS
+	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(mux)))
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

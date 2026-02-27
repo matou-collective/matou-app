@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // isBundledOrigin returns true if the origin is a valid bundled-app origin
@@ -155,6 +156,35 @@ func (m *CORSMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m.mux.ServeHTTP(w, r)
+}
+
+// RequestLogger logs each non-OPTIONS HTTP request with method, path, status, and duration.
+// Enabled by setting MATOU_REQUEST_LOG=1.
+func RequestLogger(next http.Handler) http.Handler {
+	if os.Getenv("MATOU_REQUEST_LOG") != "1" {
+		return next
+	}
+	log.Println("[RequestLog] Request logging enabled")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: 200}
+		next.ServeHTTP(sw, r)
+		log.Printf("[REQ] %s %s %d %s", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 // LocalhostGuard rejects non-loopback requests when MATOU_CORS_MODE=bundled.

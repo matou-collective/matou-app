@@ -382,8 +382,10 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           grantReceived.value = true;
           isProcessingGrant = true;
 
-          // Extract space invite data from grant message (embedded by admin)
-          const grantMsg = grant.a?.m;
+          // Extract space invite data from the IPEX exchange message (embedded by admin).
+          // The grant notification's `a` field only has `{ r, d }` — the actual message
+          // is in the exchange object at `grantExn.exn.a.m`.
+          const grantMsg = grantExn?.exn?.a?.m;
           if (grantMsg && !spaceInviteReceived.value) {
             try {
               const inviteData = JSON.parse(grantMsg);

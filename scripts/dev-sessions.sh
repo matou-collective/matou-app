@@ -98,6 +98,7 @@ start_backend() {
         cd "$BACKEND_DIR"
         MATOU_DATA_DIR="$data_dir" \
         MATOU_SERVER_PORT="$port" \
+        MATOU_REQUEST_LOG="${MATOU_REQUEST_LOG:-}" \
         exec go run ./cmd/server
     ) > "$log_file" 2>&1 &
 
