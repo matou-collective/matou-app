@@ -2,10 +2,11 @@
  * Composable for IPEX grant polling and credential admission
  * Handles the flow: poll for grants → admit credential → poll for credential in wallet
  */
-import { ref, computed, onUnmounted } from 'vue';
+import { ref, computed, watch, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
-import { fetchOrgConfig } from 'src/api/config';
+import { getOrFetchOrgConfig } from 'src/api/config';
+import { useKERINotificationService, type KERINotification } from './useKERINotificationService';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -41,10 +42,11 @@ export interface RejectionInfo {
 }
 
 export function useCredentialPolling(options: CredentialPollingOptions = {}) {
-  const { pollingInterval = 5000, maxConsecutiveErrors = 5 } = options;
+  const { maxConsecutiveErrors = 5 } = options;
 
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
+  const notificationService = useKERINotificationService();
 
   // State
   const isPolling = ref(false);
@@ -81,7 +83,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   const sessionAttendanceVerified = ref(false);
 
   // Internal state
-  let pollingTimer: ReturnType<typeof setInterval> | null = null;
+  let stopWatcher: (() => void) | null = null;
   let isProcessingGrant = false;
 
   // Rejection persistence (keyed by AID)
@@ -157,13 +159,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   async function resolveOrgOobis(): Promise<void> {
     console.log('[CredentialPolling] Resolving org OOBIs...');
     try {
-      const configResult = await fetchOrgConfig();
-      console.log('[CredentialPolling] Config result status:', configResult.status);
-      const config = configResult.status === 'configured'
-        ? configResult.config
-        : configResult.status === 'server_unreachable'
-          ? configResult.cached
-          : null;
+      const config = await getOrFetchOrgConfig();
 
       if (!config) {
         console.log('[CredentialPolling] No org config available for OOBI resolution');
@@ -246,11 +242,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       if (myAid) {
         // Fetch credentials once per poll cycle and reuse the cached list.
         let cachedCredentials: any[] = [];
-        try {
-          cachedCredentials = await client.credentials().list();
-        } catch (credErr) {
-          console.log('[CredentialPolling] Could not fetch credentials:', credErr);
-        }
+        cachedCredentials = [...notificationService.credentials.value];
 
         if (cachedCredentials.length > 0) {
           for (const cred of cachedCredentials) {
@@ -287,18 +279,8 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
         // Requirement verification: runs every cycle regardless of credentials in wallet
         let orgAid: string | null = null;
-        let config: import('src/api/config').OrgConfig | null = null;
-        try {
-          const configResult = await fetchOrgConfig();
-          config = configResult.status === 'configured'
-            ? configResult.config
-            : configResult.status === 'server_unreachable'
-              ? configResult.cached
-              : null;
-          orgAid = config?.organization?.aid || null;
-        } catch {
-          // Non-fatal — verification checks skipped this cycle
-        }
+        const config = await getOrFetchOrgConfig();
+        orgAid = config?.organization?.aid || null;
 
         if (orgAid) {
           // Req 1: Membership credential issued by org AID to us
@@ -339,7 +321,8 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       }
 
       // Check notifications for grants, invites, rejections, and messages
-      const notifications = await client.notifications().list();
+      const allNotes = notificationService.notifications.value;
+      const notifications = { notes: [...allNotes] };
 
       // Check for grant notifications
       const grants = notifications.notes?.filter(
@@ -593,7 +576,8 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
     const checkCredential = async (): Promise<boolean> => {
       try {
-        const credentials = await client.credentials().list();
+        await notificationService.triggerNow();
+        const credentials = [...notificationService.credentials.value];
         for (const cred of credentials) {
           const schema = cred.sad?.s || '';
           if (schema === ENDORSEMENT_SCHEMA_SAID) {
@@ -685,22 +669,23 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     // Resolve org/admin OOBIs so we can receive messages from them
     await resolveOrgOobis();
 
-    // Poll immediately
+    // Process immediately with current data
     pollForGrants();
 
-    // Then poll at interval
-    pollingTimer = setInterval(() => {
-      pollForGrants();
-    }, pollingInterval);
+    // Then react whenever the notification service fetches new data
+    stopWatcher = watch(
+      () => notificationService.lastFetchTime.value,
+      () => { pollForGrants(); },
+    );
   }
 
   /**
    * Stop polling
    */
   function stopPolling(): void {
-    if (pollingTimer) {
-      clearInterval(pollingTimer);
-      pollingTimer = null;
+    if (stopWatcher) {
+      stopWatcher();
+      stopWatcher = null;
     }
     isPolling.value = false;
     console.log('[CredentialPolling] Polling stopped');
