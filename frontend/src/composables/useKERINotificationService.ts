@@ -38,7 +38,7 @@ const fetchError = ref<string | null>(null);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let keriClientInstance: ReturnType<typeof useKERIClient> | null = null;
 
-const DEFAULT_INTERVAL = 30_000; // 30 seconds
+const DEFAULT_INTERVAL = 15_000; // 15 seconds
 
 async function fetchAll(): Promise<void> {
   const client = keriClientInstance?.getSignifyClient();
