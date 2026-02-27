@@ -359,6 +359,8 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
               });
             }
             console.log('[CredentialPolling] Endorsement admitted, SAID:', credSaid);
+            // Trigger immediate re-fetch so verification runs on next cycle
+            notificationService.triggerNow();
           } catch (endorseErr) {
             console.warn('[CredentialPolling] Failed to admit endorsement grant:', endorseErr);
           }
@@ -370,6 +372,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             await new Promise(r => setTimeout(r, 3000));
             sessionAttendanceVerified.value = true;
             console.log('[CredentialPolling] Event attendance admitted');
+            notificationService.triggerNow();
           } catch (attendErr) {
             console.warn('[CredentialPolling] Failed to admit event attendance grant:', attendErr);
           }
