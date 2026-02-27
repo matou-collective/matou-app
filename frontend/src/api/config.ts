@@ -204,6 +204,10 @@ export async function saveOrgConfig(config: OrgConfig): Promise<void> {
     console.warn('[Config] Config server save failed:', err);
   }
 
+  // Update in-memory cache so getOrFetchOrgConfig() returns fresh data immediately
+  orgConfigCache = config;
+  orgConfigFetchedAt = Date.now();
+
   // Cache locally regardless
   await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
   console.log('[Config] Cached config in secure storage');
