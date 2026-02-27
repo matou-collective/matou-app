@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, onBeforeUnmount } from 'vue';
 import {
   Home,
   Wallet,
@@ -82,6 +82,8 @@ import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
 import { useChatStore } from 'stores/chat';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
+import { useKERINotificationService } from 'src/composables/useKERINotificationService';
+import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
 
 const router = useRouter();
@@ -91,6 +93,7 @@ const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const chatStore = useChatStore();
 const { connect: connectBackendEvents } = useBackendEvents();
+const notificationService = useKERINotificationService();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
 const mySharedProfile = computed(() => {
@@ -121,6 +124,12 @@ const userAvatarUrl = computed(() => {
 onMounted(() => {
   console.log('[DashboardLayout] mounted, route:', route.name);
   connectBackendEvents();
+
+  // Fetch org config once at startup (cached for entire session)
+  fetchOrgConfig().catch(err => console.warn('[DashboardLayout] Org config fetch failed:', err));
+
+  // Start the unified KERIA notification service (30s polling)
+  notificationService.start();
   typesStore.loadDefinitions();
   profilesStore.loadMyProfiles();
   profilesStore.loadCommunityProfiles();
@@ -139,6 +148,10 @@ onMounted(() => {
     console.log('[DashboardLayout] All messages loaded. Unread counts:', JSON.stringify(chatStore.unreadCounts));
     console.log('[DashboardLayout] Total unread:', chatStore.totalUnreadCount);
   });
+});
+
+onBeforeUnmount(() => {
+  notificationService.stop();
 });
 </script>
 
