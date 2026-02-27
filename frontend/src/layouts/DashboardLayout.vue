@@ -81,8 +81,9 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
 import { useChatStore } from 'stores/chat';
-import { useChatEvents } from 'src/composables/useChatEvents';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
+import { useKERINotificationService } from 'src/composables/useKERINotificationService';
+import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
 
 const router = useRouter();
@@ -92,7 +93,7 @@ const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const chatStore = useChatStore();
 const { connect: connectBackendEvents } = useBackendEvents();
-useChatEvents();
+const notificationService = useKERINotificationService();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
 const mySharedProfile = computed(() => {
@@ -120,22 +121,19 @@ const userAvatarUrl = computed(() => {
   return avatar ? getFileUrl(avatar) : null;
 });
 
-// Poll community profiles every 15s to pick up cross-session any-sync changes
-// (SSE profile:updated only fires on the backend that wrote the profile)
-let profilePollTimer: ReturnType<typeof setInterval> | null = null;
-
 onMounted(() => {
   console.log('[DashboardLayout] mounted, route:', route.name);
   connectBackendEvents();
+
+  // Fetch org config once at startup (cached for entire session)
+  fetchOrgConfig().catch(err => console.warn('[DashboardLayout] Org config fetch failed:', err));
+
+  // Start the unified KERIA notification service (30s polling)
+  notificationService.start();
   typesStore.loadDefinitions();
   profilesStore.loadMyProfiles();
   profilesStore.loadCommunityProfiles();
   profilesStore.loadCommunityReadOnlyProfiles();
-
-  profilePollTimer = setInterval(() => {
-    profilesStore.loadCommunityProfiles();
-    profilesStore.loadCommunityReadOnlyProfiles();
-  }, 15000);
 
   // Load chat data so the unread badge shows on all dashboard pages.
   // Fire-and-forget: don't await, so child routes mount immediately.
@@ -153,10 +151,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  if (profilePollTimer) {
-    clearInterval(profilePollTimer);
-    profilePollTimer = null;
-  }
+  notificationService.stop();
 });
 </script>
 

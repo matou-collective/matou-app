@@ -165,7 +165,7 @@ test.describe('Recovery & Error Handling', () => {
     await expect(
       page.getByRole('button', { name: /i have an invite code/i }),
     ).toBeVisible({ timeout: 3000 });
-    await expect(page.getByRole('button', { name: /register/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /join now/i })).toBeVisible();
     await expect(page.getByText(/recover identity/i)).toBeVisible();
     console.log('Fresh user sees splash with buttons');
   });
@@ -197,7 +197,7 @@ test.describe('Recovery & Error Handling', () => {
     console.log('Retry button visible');
 
     // Splash buttons should NOT be visible
-    await expect(page.getByRole('button', { name: /register/i })).not.toBeVisible();
+    await expect(page.getByRole('button', { name: /join now/i })).not.toBeVisible();
 
     // Unblock and clean up
     await page.unroute('**/localhost:4901/**');
@@ -222,11 +222,11 @@ test.describe('Recovery & Error Handling', () => {
     // Eventually it connects, finds no AIDs, and shows splash — or shows an error.
     // Wait for either state with a proper timeout.
     await Promise.race([
-      expect(page.getByRole('button', { name: /register/i })).toBeVisible({ timeout: TIMEOUT.long }),
+      expect(page.getByRole('button', { name: /join now/i })).toBeVisible({ timeout: TIMEOUT.long }),
       expect(page.getByText(/connection error|failed/i)).toBeVisible({ timeout: TIMEOUT.long }),
     ]);
 
-    const buttonsVisible = await page.getByRole('button', { name: /register/i }).isVisible().catch(() => false);
+    const buttonsVisible = await page.getByRole('button', { name: /join now/i }).isVisible().catch(() => false);
     const errorVisible = await page.getByText(/connection error|failed/i).isVisible().catch(() => false);
 
     console.log(`After invalid passcode: buttons=${buttonsVisible}, error=${errorVisible}`);

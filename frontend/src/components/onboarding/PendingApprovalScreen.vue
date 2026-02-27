@@ -348,6 +348,7 @@ import MBtn from '../base/MBtn.vue';
 import OnboardingHeader from './OnboardingHeader.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useCredentialPolling } from 'composables/useCredentialPolling';
+import { useKERINotificationService } from 'composables/useKERINotificationService';
 import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
 import { sendBookingEmail } from 'src/lib/api/client';
@@ -423,7 +424,10 @@ const {
   rejectionInfo,
   startPolling,
   retry,
-} = useCredentialPolling({ pollingInterval: 5000 });
+} = useCredentialPolling();
+
+// Ensure the shared notification service is running (PendingApprovalScreen is outside DashboardLayout)
+const notificationService = useKERINotificationService();
 
 // Booking state
 interface TimeSlot {
@@ -793,6 +797,7 @@ function isProcessingStepActive(key: ProcessingStep): boolean {
 
 // Start polling and load persisted booking on mount
 onMounted(async () => {
+  notificationService.start();
   startPolling();
   await loadBookingState();
 });

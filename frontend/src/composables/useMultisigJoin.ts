@@ -1,23 +1,25 @@
 /**
  * Composable for auto-joining the org multisig group.
- * Polls for /multisig/rot notifications and completes the join.
+ * Watches the shared notification service for /multisig/rot notifications and completes the join.
  * Used by stewards after being promoted to Founding Member or Community Steward.
  */
-import { ref, onUnmounted } from 'vue';
+import { ref, watch, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
-import { fetchOrgConfig } from 'src/api/config';
+import { getOrFetchOrgConfig } from 'src/api/config';
 import { secureStorage } from 'src/lib/secureStorage';
+import { useKERINotificationService } from './useKERINotificationService';
 
 const MULTISIG_ROT_ROUTE = '/multisig/rot';
 
 export function useMultisigJoin() {
   const keriClient = useKERIClient();
+  const notificationService = useKERINotificationService();
 
   const isJoining = ref(false);
   const hasJoined = ref(false);
   const error = ref<string | null>(null);
 
-  let pollingTimer: ReturnType<typeof setInterval> | null = null;
+  let stopWatcher: (() => void) | null = null;
 
   /**
    * Check for /multisig/rot notifications and join if found
@@ -27,10 +29,7 @@ export function useMultisigJoin() {
     if (!client) return false;
 
     try {
-      // Ensure KERIA session is fresh before polling
-      await keriClient.ensureSession();
-
-      const allNotifications = await keriClient.listNotifications();
+      const allNotifications = notificationService.notifications.value;
 
       const notifications = allNotifications.filter(
         n => n.a?.r === MULTISIG_ROT_ROUTE && !n.r
@@ -40,12 +39,7 @@ export function useMultisigJoin() {
 
       console.log(`[MultisigJoin] Found ${notifications.length} unread /multisig/rot notifications`);
 
-      const configResult = await fetchOrgConfig();
-      const config = configResult.status === 'configured'
-        ? configResult.config
-        : configResult.status === 'server_unreachable'
-          ? configResult.cached
-          : null;
+      const config = await getOrFetchOrgConfig();
 
       if (!config?.organization?.aid) {
         console.warn('[MultisigJoin] No org config available');
@@ -74,7 +68,7 @@ export function useMultisigJoin() {
         console.error('[MultisigJoin] Join failed:', joinErr);
         error.value = msg;
 
-        // Don't mark as read on failure — let the poller retry on next cycle
+        // Don't mark as read on failure — let the watcher retry on next fetch
         return false;
       } finally {
         isJoining.value = false;
@@ -85,27 +79,32 @@ export function useMultisigJoin() {
     }
   }
 
-  function startPolling(interval = 5000): void {
-    if (pollingTimer) return;
+  function startPolling(interval?: number): void {
+    if (stopWatcher) return;
 
-    console.log('[MultisigJoin] Starting poll for /multisig/rot...');
+    console.log('[MultisigJoin] Starting watch for /multisig/rot...');
 
+    // Check immediately
     checkAndJoinMultisig().then(joined => {
       if (joined) stopPolling();
     });
 
-    pollingTimer = setInterval(async () => {
-      const joined = await checkAndJoinMultisig();
-      if (joined) stopPolling();
-    }, interval);
+    // React to service fetches
+    stopWatcher = watch(
+      () => notificationService.lastFetchTime.value,
+      async () => {
+        const joined = await checkAndJoinMultisig();
+        if (joined) stopPolling();
+      },
+    );
   }
 
   function stopPolling(): void {
-    if (pollingTimer) {
-      clearInterval(pollingTimer);
-      pollingTimer = null;
-      console.log('[MultisigJoin] Polling stopped');
+    if (stopWatcher) {
+      stopWatcher();
+      stopWatcher = null;
     }
+    console.log('[MultisigJoin] Stopped');
   }
 
   onUnmounted(() => {

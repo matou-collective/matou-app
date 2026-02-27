@@ -15,6 +15,10 @@ const CONFIG_SERVER_URL = getConfigUrl();
 const IS_TEST_CONFIG = getEnv() === 'test';
 const LOCAL_CACHE_KEY = 'matou_org_config';
 
+// In-memory config cache — fetched once at startup, never re-fetched during session
+let orgConfigCache: OrgConfig | null = null;
+let orgConfigFetchedAt = 0;
+
 /** Build headers for config requests, adding test isolation header when needed */
 function configHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...extra };
@@ -105,6 +109,8 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     if (response.ok) {
       const rawConfig = await response.json() as OrgConfig;
       const config = normalizeOrgConfig(rawConfig);
+      orgConfigCache = config;
+      orgConfigFetchedAt = Date.now();
       await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
       console.log('[Config] Fetched config from backend for:', config.organization.name);
       return { status: 'configured', config };
@@ -128,6 +134,8 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     if (response.ok) {
       const rawConfig = await response.json() as OrgConfig;
       const config = normalizeOrgConfig(rawConfig);
+      orgConfigCache = config;
+      orgConfigFetchedAt = Date.now();
       await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
       console.log('[Config] Fetched config from config server for:', config.organization.name);
       return { status: 'configured', config };
@@ -143,6 +151,10 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     // All servers unreachable - check secure storage cache
     console.warn('[Config] All servers unreachable:', err);
     const cached = await getCachedConfig();
+    if (cached) {
+      orgConfigCache = cached;
+      orgConfigFetchedAt = Date.now();
+    }
     return { status: 'server_unreachable', cached };
   }
 }
@@ -192,6 +204,10 @@ export async function saveOrgConfig(config: OrgConfig): Promise<void> {
     console.warn('[Config] Config server save failed:', err);
   }
 
+  // Update in-memory cache so getOrFetchOrgConfig() returns fresh data immediately
+  orgConfigCache = config;
+  orgConfigFetchedAt = Date.now();
+
   // Cache locally regardless
   await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
   console.log('[Config] Cached config in secure storage');
@@ -221,6 +237,29 @@ export async function getCachedConfig(): Promise<OrgConfig | null> {
  */
 export async function clearCachedConfig(): Promise<void> {
   await secureStorage.removeItem(LOCAL_CACHE_KEY);
+  orgConfigCache = null;
+  orgConfigFetchedAt = 0;
+}
+
+/**
+ * Get org config from in-memory cache (no network call).
+ * Returns null if not yet fetched. Call fetchOrgConfig() once at startup.
+ */
+export function getOrgConfig(): OrgConfig | null {
+  return orgConfigCache;
+}
+
+/**
+ * Returns cached org config if available, otherwise fetches once from network.
+ * Use this in pollers and composables instead of fetchOrgConfig() directly.
+ */
+export async function getOrFetchOrgConfig(): Promise<OrgConfig | null> {
+  if (orgConfigCache) return orgConfigCache;
+
+  const result = await fetchOrgConfig();
+  if (result.status === 'configured') return result.config;
+  if (result.status === 'server_unreachable') return result.cached;
+  return null;
 }
 
 /**

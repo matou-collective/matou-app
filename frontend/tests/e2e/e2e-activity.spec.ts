@@ -63,7 +63,7 @@ test.describe.serial('Activity Page', () => {
     const needsSetup = await Promise.race([
       page.waitForURL(/.*#\/setup/, { timeout: TIMEOUT.medium })
         .then(() => true),
-      page.locator('button', { hasText: /register/i })
+      page.locator('button', { hasText: /join now/i })
         .waitFor({ state: 'visible', timeout: TIMEOUT.medium })
         .then(() => false),
     ]);

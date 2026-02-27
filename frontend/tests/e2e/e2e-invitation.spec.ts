@@ -55,7 +55,7 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
     const needsSetup = await Promise.race([
       adminPage.waitForURL(/.*#\/setup/, { timeout: TIMEOUT.medium })
         .then(() => true),
-      adminPage.locator('button', { hasText: /register/i })
+      adminPage.locator('button', { hasText: /join now/i })
         .waitFor({ state: 'visible', timeout: TIMEOUT.medium })
         .then(() => false),
     ]);

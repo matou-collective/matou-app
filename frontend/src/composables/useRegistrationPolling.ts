@@ -11,8 +11,9 @@
  *    Route: /exn/ipex/apply or /exn/matou/registration/apply
  *    Data must be fetched via getExchange()
  */
-import { ref, onUnmounted } from 'vue';
+import { ref, watch, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
+import { useKERINotificationService } from './useKERINotificationService';
 import { createOrUpdateProfile, getProfiles, uploadFile } from 'src/lib/api/client';
 import { useProfilesStore } from 'stores/profiles';
 
@@ -71,14 +72,14 @@ const REGISTRATION_ROUTES = {
 };
 
 export interface RegistrationPollingOptions {
-  pollingInterval?: number;  // Default: 10000ms (10 seconds)
   maxConsecutiveErrors?: number;  // Default: 5
 }
 
 export function useRegistrationPolling(options: RegistrationPollingOptions = {}) {
-  const { pollingInterval = 10000, maxConsecutiveErrors = 5 } = options;
+  const { maxConsecutiveErrors = 5 } = options;
 
   const keriClient = useKERIClient();
+  const notificationService = useKERINotificationService();
   const profilesStore = useProfilesStore();
 
   // State
@@ -97,7 +98,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
   const createdPendingProfiles = new Set<string>();
 
   // Internal state
-  let pollingTimer: ReturnType<typeof setInterval> | null = null;
+  let stopWatcher: (() => void) | null = null;
 
   /**
    * Poll for registration notifications
@@ -110,13 +111,13 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
     }
 
     try {
+      const allNotes = notificationService.notifications.value;
       const registrations: PendingRegistration[] = [];
 
       // === 1. Check for PENDING notifications (from KERIA patch) ===
-      const pendingNotifications = await keriClient.listNotifications({
-        route: REGISTRATION_ROUTES.PENDING,
-        read: false,
-      });
+      const pendingNotifications = allNotes.filter(
+        n => n.a?.r === REGISTRATION_ROUTES.PENDING && !n.r
+      );
 
       for (const notification of pendingNotifications) {
         try {
@@ -160,10 +161,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       }
 
       // === 2. Check for IPEX APPLY PENDING notifications (from KERIA patch) ===
-      const ipexApplyPendingNotifications = await keriClient.listNotifications({
-        route: REGISTRATION_ROUTES.IPEX_APPLY_PENDING,
-        read: false,
-      });
+      const ipexApplyPendingNotifications = allNotes.filter(
+        n => n.a?.r === REGISTRATION_ROUTES.IPEX_APPLY_PENDING && !n.r
+      );
 
       for (const notification of ipexApplyPendingNotifications) {
         try {
@@ -207,10 +207,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       }
 
       // === 3. Check for IPEX APPLY notifications (primary registration route) ===
-      const ipexApplyNotifications = await keriClient.listNotifications({
-        route: REGISTRATION_ROUTES.IPEX_APPLY,
-        read: false,
-      });
+      const ipexApplyNotifications = allNotes.filter(
+        n => n.a?.r === REGISTRATION_ROUTES.IPEX_APPLY && !n.r
+      );
 
       for (const notification of ipexApplyNotifications) {
         try {
@@ -258,10 +257,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       }
 
       // === 4. Check for VERIFIED custom EXN notifications (fallback) ===
-      const verifiedNotifications = await keriClient.listNotifications({
-        route: REGISTRATION_ROUTES.VERIFIED,
-        read: false,
-      });
+      const verifiedNotifications = allNotes.filter(
+        n => n.a?.r === REGISTRATION_ROUTES.VERIFIED && !n.r
+      );
 
       for (const notification of verifiedNotifications) {
         try {
@@ -394,10 +392,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       pendingRegistrations.value = filtered;
 
       // === 7. Check for MESSAGE REPLY notifications from applicants ===
-      const messageReplyNotifications = await keriClient.listNotifications({
-        route: REGISTRATION_ROUTES.MESSAGE_REPLY,
-        read: false,
-      });
+      const messageReplyNotifications = allNotes.filter(
+        n => n.a?.r === REGISTRATION_ROUTES.MESSAGE_REPLY && !n.r
+      );
 
       for (const notification of messageReplyNotifications) {
         try {
@@ -454,27 +451,28 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       return;
     }
 
-    console.log('[RegistrationPolling] Starting polling...');
+    console.log('[RegistrationPolling] Starting...');
     isPolling.value = true;
     error.value = null;
     consecutiveErrors.value = 0;
 
-    // Poll immediately
+    // Process immediately
     pollForRegistrations();
 
-    // Then poll at interval
-    pollingTimer = setInterval(() => {
-      pollForRegistrations();
-    }, pollingInterval);
+    // React to service fetches
+    stopWatcher = watch(
+      () => notificationService.lastFetchTime.value,
+      () => { pollForRegistrations(); },
+    );
   }
 
   /**
    * Stop polling
    */
   function stopPolling(): void {
-    if (pollingTimer) {
-      clearInterval(pollingTimer);
-      pollingTimer = null;
+    if (stopWatcher) {
+      stopWatcher();
+      stopWatcher = null;
     }
     isPolling.value = false;
     console.log('[RegistrationPolling] Polling stopped');

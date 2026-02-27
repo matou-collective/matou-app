@@ -249,9 +249,9 @@ export async function fillProfileForm(
  */
 export async function navigateToProfileForm(page: Page): Promise<void> {
   await expect(
-    page.getByRole('button', { name: /register/i }),
+    page.getByRole('button', { name: /join now/i }),
   ).toBeVisible({ timeout: TIMEOUT.short });
-  await page.getByRole('button', { name: /register/i }).click();
+  await page.getByRole('button', { name: /join now/i }).click();
 
   await expect(
     page.getByRole('heading', { name: /join matou/i }),
@@ -319,7 +319,7 @@ export async function loginWithMnemonic(
 ): Promise<void> {
   await page.goto(FRONTEND_URL);
   await expect(
-    page.getByRole('button', { name: /register/i }),
+    page.getByRole('button', { name: /join now/i }),
   ).toBeVisible({ timeout: TIMEOUT.short });
 
   await page.getByText(/recover identity/i).click();

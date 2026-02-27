@@ -80,7 +80,7 @@ test.describe.serial('Admin Account Recovery', () => {
     // Wait for splash to fully render so loginWithMnemonic's 10s timeout is sufficient.
     await recoveryPage.goto(FRONTEND_URL);
     await expect(
-      recoveryPage.getByRole('button', { name: /register/i }),
+      recoveryPage.getByRole('button', { name: /join now/i }),
     ).toBeVisible({ timeout: TIMEOUT.long });
 
     // Clear any existing session
