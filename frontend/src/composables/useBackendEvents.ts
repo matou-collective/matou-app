@@ -32,6 +32,19 @@ export type BackendEventType =
   | 'chat:reaction:remove'
   | 'chat:channel:new'
   | 'chat:channel:update'
+  | 'proposal:submitted'
+  | 'proposal:endorsed'
+  | 'proposal:approved'
+  | 'proposal:rejected'
+  | 'project:created'
+  | 'contribution:assigned'
+  | 'contribution:needs_review'
+  | 'contribution:approved'
+  | 'contribution:declined'
+  | 'contribution:registered'
+  | 'decision_plan:submitted'
+  | 'decision_plan:signed_off'
+  | 'governance_action:completed'
   | 'connected';
 
 export interface BackendEvent {
@@ -244,6 +257,32 @@ function connect() {
     lastEvent.value = { type: 'chat:channel:update', data };
     chatStore.handleUpdateChannel(data);
   });
+
+  // --- Contribution system events ---
+  const contribEventTypes: BackendEventType[] = [
+    'proposal:submitted',
+    'proposal:endorsed',
+    'proposal:approved',
+    'proposal:rejected',
+    'project:created',
+    'contribution:assigned',
+    'contribution:needs_review',
+    'contribution:approved',
+    'contribution:declined',
+    'contribution:registered',
+    'decision_plan:submitted',
+    'decision_plan:signed_off',
+    'governance_action:completed',
+  ];
+
+  for (const eventType of contribEventTypes) {
+    eventSource.addEventListener(eventType, (event) => {
+      const data = safeParse(event);
+      if (!data) return;
+      lastEvent.value = { type: eventType, data };
+      console.log(`[BackendEvents] ${eventType}:`, data);
+    });
+  }
 
   eventSource.onerror = () => {
     connected.value = false;

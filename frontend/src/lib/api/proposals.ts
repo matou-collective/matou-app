@@ -1,0 +1,104 @@
+/**
+ * Proposals API Client
+ * CRUD operations, status transitions, and endorsements for proposals.
+ */
+import { BACKEND_URL } from './client';
+import { createLogger } from '../logging';
+
+const log = createLogger('ProposalsAPI');
+
+export interface CreateProposalRequest {
+  proposer_id: string;
+  title: string;
+  type: string[];
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  description: string;
+  problem_statement: string;
+  solution: string;
+  expected_outcomes: string[];
+  estimated_budget: string;
+  timeline: string;
+  project_plan?: { title: string; description: string; duration: string }[];
+}
+
+export interface Proposal {
+  id: string;
+  proposer_id: string;
+  title: string;
+  type: string[];
+  priority: string;
+  description: string;
+  problem_statement: string;
+  solution: string;
+  expected_outcomes: string[];
+  estimated_budget: string;
+  timeline: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Endorsement {
+  endorser_id: string;
+  endorsed_at: string;
+  comment?: string;
+}
+
+export async function createProposal(req: CreateProposalRequest): Promise<Proposal> {
+  log.info('Creating proposal: %s', req.title);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to create proposal');
+  }
+  return response.json();
+}
+
+export async function listProposals(): Promise<{ proposals: Proposal[]; total: number }> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals`);
+  if (!response.ok) throw new Error('Failed to list proposals');
+  return response.json();
+}
+
+export async function getProposal(id: string): Promise<Proposal> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}`);
+  if (!response.ok) throw new Error('Proposal not found');
+  return response.json();
+}
+
+export async function transitionProposal(id: string, status: string): Promise<Proposal> {
+  log.info('Transitioning proposal %s to %s', id, status);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}/transition`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Transition failed');
+  }
+  return response.json();
+}
+
+export async function addEndorsement(proposalId: string, endorsement: Endorsement): Promise<void> {
+  log.info('Endorsing proposal %s', proposalId);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/endorsements`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(endorsement),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to endorse');
+  }
+}
+
+export async function listEndorsements(proposalId: string): Promise<{ endorsements: Endorsement[]; total: number }> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/endorsements`);
+  if (!response.ok) throw new Error('Failed to list endorsements');
+  return response.json();
+}

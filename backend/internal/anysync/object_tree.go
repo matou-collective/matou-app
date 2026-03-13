@@ -20,6 +20,20 @@ import (
 // ObjectChangeType is the DataType used for generic object changes in ObjectTrees.
 const ObjectChangeType = "matou.object.v1"
 
+// Object type identifiers for contributions system entities.
+// These are stored in ObjectPayload.Type to distinguish entity types within the same tree.
+const (
+	TypeProposal           = "proposal"
+	TypeEndorsement        = "endorsement"
+	TypeProject            = "project"
+	TypeDecisionPlan       = "decision_plan"
+	TypeGovernanceAction   = "governance_action"
+	TypeImplementationPlan = "implementation_plan"
+	TypeMilestone          = "milestone"
+	TypeContribution       = "contribution"
+	TypeNotification       = "notification"
+)
+
 // ObjectPayload is the API-level representation of an object.
 // It provides backward compatibility with existing API responses.
 // Internally, data is stored as incremental ChangeOps in the tree.
@@ -289,6 +303,13 @@ func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]
 // ReadLatestByID reads the latest version of a specific object by ID.
 // Backward-compatible with the old API.
 func (m *ObjectTreeManager) ReadLatestByID(ctx context.Context, spaceID, objectID string) (*ObjectPayload, error) {
+	return m.ReadObject(ctx, spaceID, objectID)
+}
+
+// ReadObjectByID reads a single object by its ID from a space's tree.
+// Uses UnifiedTreeManager.GetTreeForObject for O(1) index lookup.
+// This is the preferred read path for the contributions system.
+func (m *ObjectTreeManager) ReadObjectByID(ctx context.Context, spaceID, objectID string) (*ObjectPayload, error) {
 	return m.ReadObject(ctx, spaceID, objectID)
 }
 
