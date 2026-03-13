@@ -111,6 +111,13 @@ export default defineConfig({
       testMatch: /e2e-member-removal\.spec\.ts/,
       use: browserConfig,
     },
+    // Proposals — proposal lifecycle (API + UI)
+    // Requires test-accounts.json from org-setup
+    {
+      name: 'proposals',
+      testMatch: /e2e-proposals\.spec\.ts/,
+      use: browserConfig,
+    },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above
     {
@@ -129,6 +136,7 @@ export default defineConfig({
         /e2e-chat\.spec\.ts/,
         /e2e-credential-chain\.spec\.ts/,
         /e2e-member-removal\.spec\.ts/,
+        /e2e-proposals\.spec\.ts/,
       ],
     },
   ],
