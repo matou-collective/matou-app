@@ -118,6 +118,13 @@ export default defineConfig({
       testMatch: /e2e-proposals\.spec\.ts/,
       use: browserConfig,
     },
+    // Proposal link cards in chat — rich preview cards + detail modal
+    // Requires test-accounts.json from org-setup
+    {
+      name: 'proposal-link-cards',
+      testMatch: /e2e-proposal-link-cards\.spec\.ts/,
+      use: browserConfig,
+    },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above
     {
@@ -137,6 +144,7 @@ export default defineConfig({
         /e2e-credential-chain\.spec\.ts/,
         /e2e-member-removal\.spec\.ts/,
         /e2e-proposals\.spec\.ts/,
+        /e2e-proposal-link-cards\.spec\.ts/,
       ],
     },
   ],
