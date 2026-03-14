@@ -82,6 +82,7 @@ import { useRouter } from 'vue-router';
 import { Vote } from 'lucide-vue-next';
 import { useQuasar } from 'quasar';
 import { useProposalsStore } from 'stores/proposals';
+import { listEndorsements } from 'src/lib/api/proposals';
 import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.vue';
 
 const router = useRouter();
@@ -112,8 +113,20 @@ const filteredProposals = computed(() => {
   return all.filter(p => p.status === activeFilter.value);
 });
 
-onMounted(() => {
-  proposalsStore.fetchProposals();
+async function fetchEndorsementCounts() {
+  for (const p of proposalsStore.proposals) {
+    try {
+      const result = await listEndorsements(p.id);
+      endorsementCounts.value[p.id] = result.total || result.endorsements?.length || 0;
+    } catch {
+      endorsementCounts.value[p.id] = 0;
+    }
+  }
+}
+
+onMounted(async () => {
+  await proposalsStore.fetchProposals();
+  fetchEndorsementCounts();
 });
 
 function formatStatus(status: string) {

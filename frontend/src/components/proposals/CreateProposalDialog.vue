@@ -22,8 +22,11 @@
               label="Type *"
               outlined
               multiple
+              use-chips
               emit-value
               map-options
+              @update:model-value="closeTypeSelect"
+              ref="typeSelectRef"
             />
           </div>
           <div class="col-6">
@@ -195,6 +198,11 @@ const priorityOptions = [
 
 const isEdit = ref(false);
 const submitting = ref(false);
+const typeSelectRef = ref<InstanceType<typeof import('quasar').QSelect> | null>(null);
+
+function closeTypeSelect() {
+  typeSelectRef.value?.hidePopup();
+}
 
 function makeDefaultForm(): ProposalFormData {
   return {

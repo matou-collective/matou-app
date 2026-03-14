@@ -4,8 +4,15 @@
  */
 import { BACKEND_URL } from './client';
 import { createLogger } from '../logging';
+import { useIdentityStore } from 'stores/identity';
 
 const log = createLogger('ProposalsAPI');
+
+function authHeaders(): Record<string, string> {
+  const identityStore = useIdentityStore();
+  const aid = identityStore.currentAID?.prefix;
+  return aid ? { 'X-User-AID': aid } : {};
+}
 
 export interface CreateProposalRequest {
   proposer_id: string;
@@ -70,7 +77,7 @@ export async function createProposal(req: CreateProposalRequest): Promise<Propos
   log.info('Creating proposal: %s', req.title);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -81,7 +88,9 @@ export async function createProposal(req: CreateProposalRequest): Promise<Propos
 }
 
 export async function listProposals(): Promise<{ proposals: Proposal[]; total: number }> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/proposals`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals`, {
+    headers: { ...authHeaders() },
+  });
   if (!response.ok) throw new Error('Failed to list proposals');
   return response.json();
 }
