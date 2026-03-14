@@ -128,6 +128,30 @@ async function getProposalAPI(request: APIRequestContext, proposalId: string) {
   return { response, body: await response.json() };
 }
 
+async function addCommentAPI(
+  request: APIRequestContext,
+  proposalId: string,
+  userId: string,
+  userName: string,
+  text: string,
+) {
+  const response = await request.post(
+    `${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`,
+    {
+      headers: { 'Content-Type': 'application/json' },
+      data: { user_id: userId, user_name: userName, text },
+    },
+  );
+  return { response, body: await response.json() };
+}
+
+async function listCommentsAPI(request: APIRequestContext, proposalId: string) {
+  const response = await request.get(
+    `${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`,
+  );
+  return { response, body: await response.json() };
+}
+
 async function getHistoryAPI(request: APIRequestContext, proposalId: string) {
   const response = await request.get(
     `${BACKEND_URL}/api/v1/proposals/${proposalId}/history`,
@@ -1167,5 +1191,121 @@ test.describe.serial('Proposals Veto Flow', () => {
     );
     expect(vetoEntry).toBeTruthy();
     console.log('[Veto] Veto rejection recorded in history');
+  });
+});
+
+// ===========================================================================
+// Group 6: Proposal Comments
+// ===========================================================================
+
+test.describe.serial('Proposal Comments', () => {
+  let proposalId: string;
+  let storageAvailable = false;
+
+  test('probe storage', async ({ request }) => {
+    const { response, body } = await createProposalAPI(request, 'comment-test-user', {
+      title: 'Comment Test Proposal',
+    });
+    if (response.ok() && body.id) {
+      proposalId = body.id;
+      storageAvailable = true;
+      console.log('[Comments] Storage available, proposal created:', proposalId);
+    } else {
+      console.log('[Comments] Storage not available, skipping comment tests');
+    }
+  });
+
+  test('empty comment list for new proposal', async ({ request }) => {
+    test.skip(!storageAvailable, 'storage not available');
+
+    const { response, body } = await listCommentsAPI(request, proposalId);
+    expect(response.ok()).toBeTruthy();
+    expect(body.comments || []).toHaveLength(0);
+    expect(body.total).toBe(0);
+    console.log('[Comments] New proposal has no comments');
+  });
+
+  test('add comment with user identity', async ({ request }) => {
+    test.skip(!storageAvailable, 'storage not available');
+
+    const { response, body } = await addCommentAPI(
+      request,
+      proposalId,
+      'ETestAID123',
+      'Test User',
+      'This is a test comment',
+    );
+    expect(response.status()).toBe(201);
+    expect(body.id).toBeTruthy();
+    expect(body.proposal_id).toBe(proposalId);
+    expect(body.user_id).toBe('ETestAID123');
+    expect(body.user_name).toBe('Test User');
+    expect(body.text).toBe('This is a test comment');
+    expect(body.created_at).toBeTruthy();
+    console.log('[Comments] Comment created:', body.id);
+  });
+
+  test('add second comment from different user', async ({ request }) => {
+    test.skip(!storageAvailable, 'storage not available');
+
+    const { response, body } = await addCommentAPI(
+      request,
+      proposalId,
+      'EAnotherAID456',
+      'Another User',
+      'I agree with this proposal',
+    );
+    expect(response.status()).toBe(201);
+    expect(body.user_name).toBe('Another User');
+    console.log('[Comments] Second comment created:', body.id);
+  });
+
+  test('list comments returns both comments', async ({ request }) => {
+    test.skip(!storageAvailable, 'storage not available');
+
+    const { response, body } = await listCommentsAPI(request, proposalId);
+    expect(response.ok()).toBeTruthy();
+    const comments = body.comments || [];
+    expect(comments).toHaveLength(2);
+    expect(body.total).toBe(2);
+
+    expect(comments[0].user_name).toBe('Test User');
+    expect(comments[0].text).toBe('This is a test comment');
+    expect(comments[1].user_name).toBe('Another User');
+    expect(comments[1].text).toBe('I agree with this proposal');
+    console.log('[Comments] Both comments returned correctly');
+  });
+
+  test('reject empty comment text', async ({ request }) => {
+    test.skip(!storageAvailable, 'storage not available');
+
+    const { response, body } = await addCommentAPI(
+      request,
+      proposalId,
+      'ETestAID123',
+      'Test User',
+      '',
+    );
+    expect(response.status()).toBe(400);
+    expect(body.error).toContain('text is required');
+    console.log('[Comments] Empty comment rejected');
+  });
+
+  test('comments are scoped to proposal', async ({ request }) => {
+    test.skip(!storageAvailable, 'storage not available');
+
+    // Create a different proposal
+    const { body: otherProposal } = await createProposalAPI(request, 'comment-test-user', {
+      title: 'Other Proposal',
+    });
+    if (!otherProposal.id) {
+      test.skip(true, 'could not create second proposal');
+      return;
+    }
+
+    // Other proposal should have no comments
+    const { body } = await listCommentsAPI(request, otherProposal.id);
+    expect(body.comments || []).toHaveLength(0);
+    console.log('[Comments] Comments correctly scoped to proposal');
   });
 });

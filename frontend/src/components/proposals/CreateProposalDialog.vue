@@ -96,10 +96,22 @@
 
         <div class="row q-col-gutter-md">
           <div class="col-12 col-sm-6">
-            <q-input v-model="form.estimated_budget" label="Estimated Budget *" outlined />
+            <q-input
+              v-model="form.estimated_budget"
+              label="Estimated Budget *"
+              outlined
+              type="number"
+              :rules="[val => !!val || 'Required', val => /^\d+$/.test(val) || 'Must be a whole number']"
+            />
           </div>
           <div class="col-12 col-sm-6">
-            <q-input v-model="form.timeline" label="Timeline *" outlined />
+            <q-input
+              v-model="form.timeline"
+              label="Timeline (months) *"
+              outlined
+              type="number"
+              :rules="[val => !!val || 'Required', val => /^\d+$/.test(val) || 'Must be a whole number']"
+            />
           </div>
         </div>
 

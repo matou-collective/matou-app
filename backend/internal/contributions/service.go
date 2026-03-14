@@ -271,6 +271,34 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 	return result, nil
 }
 
+// --- Proposal Comments ---
+
+func (s *Service) AddProposalComment(ctx context.Context, spaceID string, comment *ProposalComment) (*ProposalComment, error) {
+	comment.ID = generateID("pcmt")
+	comment.CreatedAt = time.Now()
+	if err := s.store.Save(spaceID, comment.ID, "proposal_comment", comment); err != nil {
+		return nil, err
+	}
+	return comment, nil
+}
+
+func (s *Service) ListProposalComments(ctx context.Context, spaceID, proposalID string) ([]*ProposalComment, error) {
+	raw, err := s.store.List(spaceID, "proposal_comment")
+	if err != nil {
+		return nil, err
+	}
+	var comments []*ProposalComment
+	for _, r := range raw {
+		var c ProposalComment
+		if err := json.Unmarshal(r, &c); err == nil {
+			if c.ProposalID == proposalID {
+				comments = append(comments, &c)
+			}
+		}
+	}
+	return comments, nil
+}
+
 func (s *Service) CreateRoleContributions(ctx context.Context, spaceID string, proposal *Proposal) {
 	// Create Proposal Lead contribution
 	leadID := generateID("ctr")

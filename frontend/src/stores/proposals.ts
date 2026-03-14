@@ -9,10 +9,13 @@ import {
   listEndorsements as apiListEndorsements,
   updateProposal as apiUpdate,
   getProposalHistory as apiGetHistory,
+  addProposalComment as apiAddComment,
+  listProposalComments as apiListComments,
   type Proposal,
   type CreateProposalRequest,
   type Endorsement,
   type ProposalHistoryEntry,
+  type ProposalComment,
   type EndorsementResult,
 } from 'src/lib/api/proposals';
 import { createLogger } from 'src/lib/logging';
@@ -24,6 +27,7 @@ export const useProposalsStore = defineStore('proposals', () => {
   const currentProposal = ref<Proposal | null>(null);
   const endorsements = ref<Endorsement[]>([]);
   const history = ref<ProposalHistoryEntry[]>([]);
+  const comments = ref<ProposalComment[]>([]);
   const isLoading = ref(false);
   const error = ref<string | null>(null);
 
@@ -142,11 +146,33 @@ export const useProposalsStore = defineStore('proposals', () => {
     }
   }
 
+  async function fetchComments(proposalId: string) {
+    try {
+      const result = await apiListComments(proposalId);
+      comments.value = result.comments || [];
+    } catch (e) {
+      log.error('fetchComments failed: %s', e);
+    }
+  }
+
+  async function addComment(proposalId: string, userId: string, userName: string, text: string) {
+    try {
+      const comment = await apiAddComment(proposalId, userId, userName, text);
+      comments.value.push(comment);
+      log.info('Comment added to proposal %s', proposalId);
+      return comment;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to add comment';
+      throw e;
+    }
+  }
+
   return {
     proposals,
     currentProposal,
     endorsements,
     history,
+    comments,
     isLoading,
     error,
     draftProposals,
@@ -159,5 +185,7 @@ export const useProposalsStore = defineStore('proposals', () => {
     endorse,
     fetchEndorsements,
     fetchHistory,
+    fetchComments,
+    addComment,
   };
 });

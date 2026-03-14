@@ -58,6 +58,15 @@ export interface Endorsement {
   comment?: string;
 }
 
+export interface ProposalComment {
+  id: string;
+  proposal_id: string;
+  user_id: string;
+  user_name: string;
+  text: string;
+  created_at: string;
+}
+
 export interface ProposalHistoryEntry {
   id: string;
   proposal_id: string;
@@ -162,5 +171,32 @@ export async function listEndorsements(
 ): Promise<{ endorsements: Endorsement[]; total: number }> {
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/endorsements`);
   if (!response.ok) throw new Error('Failed to list endorsements');
+  return response.json();
+}
+
+export async function addProposalComment(
+  proposalId: string,
+  userId: string,
+  userName: string,
+  text: string,
+): Promise<ProposalComment> {
+  log.info('Adding comment to proposal %s', proposalId);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, user_name: userName, text }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to add comment');
+  }
+  return response.json();
+}
+
+export async function listProposalComments(
+  proposalId: string,
+): Promise<{ comments: ProposalComment[]; total: number }> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`);
+  if (!response.ok) throw new Error('Failed to list comments');
   return response.json();
 }

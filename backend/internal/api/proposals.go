@@ -74,6 +74,17 @@ func (h *ProposalsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLoo
 			h.HandleListHistory(w, r, id)
 			return
 		}
+		if len(parts) == 2 && parts[1] == "comments" {
+			switch r.Method {
+			case http.MethodGet:
+				h.HandleListComments(w, r, id)
+			case http.MethodPost:
+				h.HandleAddComment(w, r, id)
+			default:
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			}
+			return
+		}
 		if r.Method == http.MethodPatch {
 			h.HandleUpdate(w, r, id)
 			return
@@ -264,6 +275,50 @@ func (h *ProposalsHandler) HandleListHistory(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"history": entries,
 		"total":   len(entries),
+	})
+}
+
+// HandleAddComment handles POST /api/v1/proposals/{id}/comments
+func (h *ProposalsHandler) HandleAddComment(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	var req struct {
+		UserID   string `json:"user_id"`
+		UserName string `json:"user_name"`
+		Text     string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		return
+	}
+	comment := &contributions.ProposalComment{
+		ProposalID: id,
+		UserID:     req.UserID,
+		UserName:   req.UserName,
+		Text:       req.Text,
+	}
+	created, err := h.service.AddProposalComment(r.Context(), spaceID, comment)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// HandleListComments handles GET /api/v1/proposals/{id}/comments
+func (h *ProposalsHandler) HandleListComments(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	comments, err := h.service.ListProposalComments(r.Context(), spaceID, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"comments": comments,
+		"total":    len(comments),
 	})
 }
 

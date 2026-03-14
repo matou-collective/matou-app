@@ -261,7 +261,7 @@
             <p class="info-card-value">{{ proposal.estimated_budget }}</p>
           </div>
           <div class="info-card">
-            <h4 class="info-card-label">Timeline</h4>
+            <h4 class="info-card-label">Timeline (months)</h4>
             <p class="info-card-value">{{ proposal.timeline }}</p>
           </div>
         </div>
@@ -299,21 +299,21 @@
         <div class="content-section">
           <h3 class="section-title row items-center q-gutter-sm">
             <q-icon name="chat" size="20px" />
-            <span>Discussion ({{ comments.length }})</span>
+            <span>Discussion ({{ proposalsStore.comments.length }})</span>
           </h3>
-          <div v-if="comments.length === 0" class="empty-discussion">
+          <div v-if="proposalsStore.comments.length === 0" class="empty-discussion">
             No comments yet. Be the first to share your thoughts!
           </div>
           <div v-else class="comments-list">
-            <div v-for="(c, i) in comments" :key="i" class="comment-card">
+            <div v-for="c in proposalsStore.comments" :key="c.id" class="comment-card">
               <div class="comment-header">
                 <div class="comment-avatar">
                   <q-icon name="person" size="14px" />
                 </div>
-                <span class="comment-author">{{ c.author }}</span>
-                <span class="comment-time">&middot; {{ c.timestamp }}</span>
+                <span class="comment-author">{{ c.user_name }}</span>
+                <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
               </div>
-              <p class="comment-text">{{ c.comment }}</p>
+              <p class="comment-text">{{ c.text }}</p>
             </div>
           </div>
           <div class="comment-input-row">
@@ -466,7 +466,6 @@ const showRejectDialog = ref(false);
 
 const rejectReason = ref('');
 const newComment = ref('');
-const comments = ref<{ author: string; comment: string; timestamp: string }[]>([]);
 const selectedAction = ref<GovernanceAction | null>(null);
 
 // ── Derived state ─────────────────────────────────────────────────────────────
@@ -504,6 +503,7 @@ async function loadProposal(id: string) {
   if (proposalsStore.currentProposal) {
     void proposalsStore.fetchEndorsements(id);
     void proposalsStore.fetchHistory(id);
+    void proposalsStore.fetchComments(id);
     void decisionPlansStore.fetchForProposal(id);
   }
 }
@@ -747,15 +747,17 @@ async function createProject() {
 
 // ── Discussion ────────────────────────────────────────────────────────────────
 
-function addComment() {
-  if (!newComment.value.trim()) return;
-  comments.value.push({
-    author: 'Current User',
-    comment: newComment.value.trim(),
-    timestamp: 'Just now',
-  });
-  newComment.value = '';
-  $q.notify({ type: 'positive', message: 'Comment added!' });
+async function addComment() {
+  if (!newComment.value.trim() || !proposal.value) return;
+  const userId = identityStore.currentAID?.prefix || 'unknown';
+  const userName = identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown';
+  try {
+    await proposalsStore.addComment(proposal.value.id, userId, userName, newComment.value.trim());
+    newComment.value = '';
+    $q.notify({ type: 'positive', message: 'Comment added!' });
+  } catch {
+    $q.notify({ type: 'negative', message: 'Failed to add comment' });
+  }
 }
 </script>
 
