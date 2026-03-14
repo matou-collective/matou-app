@@ -439,6 +439,7 @@ import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.
 import CreateDecisionPlanDialog from 'src/components/proposals/CreateDecisionPlanDialog.vue';
 import AddGovernanceActionDialog from 'src/components/proposals/AddGovernanceActionDialog.vue';
 import GovernanceActionModal from 'src/components/proposals/GovernanceActionModal.vue';
+import { useIdentityStore } from 'stores/identity';
 
 // ── Router / store setup ──────────────────────────────────────────────────────
 
@@ -447,6 +448,7 @@ const router = useRouter();
 const $q = useQuasar();
 const proposalsStore = useProposalsStore();
 const decisionPlansStore = useDecisionPlansStore();
+const identityStore = useIdentityStore();
 
 // ── Local state ───────────────────────────────────────────────────────────────
 
@@ -573,7 +575,7 @@ async function confirmEndorse(comment: string) {
   endorsing.value = true;
   try {
     const result = await proposalsStore.endorse(proposal.value.id, {
-      endorser_id: 'current-user',
+      endorser_id: identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown',
       endorsed_at: new Date().toISOString(),
       comment: comment || undefined,
     });
@@ -607,10 +609,11 @@ function copyLink() {
 async function claimRole(role: 'lead' | 'steward') {
   if (!proposal.value) return;
   try {
+    const userId = identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown';
     const fields =
       role === 'lead'
-        ? { proposal_lead_id: 'current-user' }
-        : { proposal_steward_id: 'current-user' };
+        ? { proposal_lead_id: userId }
+        : { proposal_steward_id: userId };
     await proposalsStore.update(proposal.value.id, fields);
     $q.notify({
       type: 'positive',

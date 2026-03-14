@@ -509,6 +509,7 @@ func (s *Service) GetDecisionPlan(ctx context.Context, spaceID, dpID string) (*D
 	if err := s.store.Get(spaceID, dpID, &dp); err != nil {
 		return nil, err
 	}
+	s.hydrateDecisionPlanActions(spaceID, &dp)
 	return &dp, nil
 }
 
@@ -521,10 +522,28 @@ func (s *Service) ListDecisionPlans(ctx context.Context, spaceID string) ([]*Dec
 	for _, r := range raw {
 		var dp DecisionPlan
 		if err := json.Unmarshal(r, &dp); err == nil {
+			s.hydrateDecisionPlanActions(spaceID, &dp)
 			plans = append(plans, &dp)
 		}
 	}
 	return plans, nil
+}
+
+func (s *Service) hydrateDecisionPlanActions(spaceID string, dp *DecisionPlan) {
+	raw, err := s.store.List(spaceID, "governance_action")
+	if err != nil {
+		return
+	}
+	var actions []GovernanceAction
+	for _, r := range raw {
+		var a GovernanceAction
+		if err := json.Unmarshal(r, &a); err == nil {
+			if a.DecisionPlanID == dp.ID {
+				actions = append(actions, a)
+			}
+		}
+	}
+	dp.GovernanceActions = actions
 }
 
 func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID string, newStatus DecisionPlanStatus) (*DecisionPlan, error) {

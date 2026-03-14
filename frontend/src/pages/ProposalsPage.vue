@@ -82,12 +82,14 @@ import { useRouter } from 'vue-router';
 import { Vote } from 'lucide-vue-next';
 import { useQuasar } from 'quasar';
 import { useProposalsStore } from 'stores/proposals';
+import { useIdentityStore } from 'stores/identity';
 import { listEndorsements } from 'src/lib/api/proposals';
 import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.vue';
 
 const router = useRouter();
 const $q = useQuasar();
 const proposalsStore = useProposalsStore();
+const identityStore = useIdentityStore();
 const showCreateDialog = ref(false);
 const activeFilter = ref('all');
 
@@ -157,7 +159,7 @@ async function handleCreateSubmit(form: {
 }) {
   try {
     await proposalsStore.create({
-      proposer_id: 'current-user',
+      proposer_id: identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown',
       title: form.title,
       type: form.type,
       priority: form.priority as 'low' | 'medium' | 'high' | 'critical',
