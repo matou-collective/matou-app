@@ -123,7 +123,7 @@
             </div>
             <span :class="endorsementProgress >= 100 ? 'text-positive' : 'text-grey-6'">
               {{ proposalsStore.endorsements.length }} /
-              {{ proposal.endorsement_threshold || 100 }}
+              {{ proposal.endorsement_threshold || 1 }}
             </span>
           </div>
           <q-linear-progress
@@ -472,7 +472,7 @@ const selectedAction = ref<GovernanceAction | null>(null);
 const proposal = computed(() => proposalsStore.currentProposal);
 
 const endorsementProgress = computed(() => {
-  const threshold = proposal.value?.endorsement_threshold || 100;
+  const threshold = proposal.value?.endorsement_threshold || 1;
   return (proposalsStore.endorsements.length / threshold) * 100;
 });
 
@@ -533,8 +533,9 @@ async function signOff() {
   try {
     await proposalsStore.transition(proposal.value.id, 'signed_off');
     $q.notify({ type: 'positive', message: 'Proposal signed off!' });
-  } catch {
-    $q.notify({ type: 'negative', message: 'Sign off failed' });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Sign off failed';
+    $q.notify({ type: 'negative', message: msg });
   } finally {
     transitioning.value = false;
   }

@@ -120,6 +120,15 @@ func (s *Service) TransitionProposal(ctx context.Context, spaceID, proposalID st
 	if err := ValidateProposalTransition(p.Status, newStatus); err != nil {
 		return nil, err
 	}
+	// Require Lead and Steward roles before sign-off
+	if p.Status == ProposalInReview && newStatus == ProposalSignedOff {
+		if p.ProposalLeadID == "" {
+			return nil, fmt.Errorf("proposal lead must be assigned before sign-off")
+		}
+		if p.ProposalStewardID == "" {
+			return nil, fmt.Errorf("proposal steward must be assigned before sign-off")
+		}
+	}
 	p.Status = newStatus
 	p.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, p.ID, "proposal", p); err != nil {
@@ -238,7 +247,7 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 	if err == nil {
 		threshold := p.EndorsementThreshold
 		if threshold <= 0 {
-			threshold = 100
+			threshold = 1
 		}
 		if len(endorsements) >= threshold {
 			result.ThresholdMet = true
