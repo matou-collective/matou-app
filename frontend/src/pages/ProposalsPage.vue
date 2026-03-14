@@ -189,14 +189,14 @@ async function handleCreateSubmit(form: {
 }
 
 .create-btn {
-  background: var(--matou-teal);
-  color: white;
-  border: none;
+  background: transparent;
+  color: var(--matou-teal, #0d9488);
+  border: 2px solid var(--matou-teal, #0d9488);
   border-radius: 8px;
   padding: 8px 16px;
   font-weight: 500;
   cursor: pointer;
-  &:hover { opacity: 0.9; }
+  &:hover { background: var(--matou-teal, #0d9488); color: white; }
 }
 
 .filter-row {
@@ -214,9 +214,9 @@ async function handleCreateSubmit(form: {
   cursor: pointer;
   color: var(--text-secondary);
   &.active {
-    background: var(--matou-teal);
+    background: var(--matou-teal, #0d9488);
     color: white;
-    border-color: var(--matou-teal);
+    border-color: var(--matou-teal, #0d9488);
   }
 }
 
