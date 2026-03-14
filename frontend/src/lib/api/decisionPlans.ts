@@ -13,6 +13,10 @@ export interface GovernanceAction {
   house: 'elders_council' | 'community_reps' | 'contributors';
   action_type: 'discussion' | 'decision' | 'meeting';
   description: string;
+  meeting_date?: string;
+  meeting_time?: string;
+  meeting_location?: string;
+  linked_action_id?: string;
   status: 'planned' | 'completed' | 'archived';
   outcome?: 'no_veto' | 'veto' | 'approved' | 'rejected';
   vote_data?: Record<string, unknown>;
@@ -72,7 +76,15 @@ export async function transitionDecisionPlan(id: string, status: string): Promis
 
 export async function addGovernanceAction(
   dpId: string,
-  action: { house: string; action_type: string; description: string },
+  action: {
+    house: string;
+    action_type: string;
+    description: string;
+    meeting_date?: string;
+    meeting_time?: string;
+    meeting_location?: string;
+    linked_action_id?: string;
+  },
 ): Promise<GovernanceAction> {
   const response = await fetch(`${BACKEND_URL}/api/v1/decision-plans/${dpId}/actions`, {
     method: 'POST',

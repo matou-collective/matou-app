@@ -7,9 +7,9 @@ import "fmt"
 
 var proposalTransitions = map[ProposalStatus][]ProposalStatus{
 	ProposalDraft:         {ProposalSubmitted},
-	ProposalSubmitted:     {ProposalEndorsing},
+	ProposalSubmitted:     {ProposalEndorsing, ProposalInReview},
 	ProposalEndorsing:     {ProposalInReview},
-	ProposalInReview:      {ProposalSignedOff, ProposalDraft},
+	ProposalInReview:      {ProposalSignedOff, ProposalRejected, ProposalDraft},
 	ProposalSignedOff:     {ProposalVotingProcess},
 	ProposalVotingProcess: {ProposalApproved, ProposalRejected},
 	ProposalApproved:      {ProposalCompleted},

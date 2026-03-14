@@ -413,7 +413,6 @@ After a project is set up, implementation plans define the work breakdown:
 |-------|------|-------------|
 | `id` | UUID | Plan identifier |
 | `project_id` | UUID | Associated project |
-| `title` | String | Implementation plan title |
 | `total_budget` | String | Allocated budget |
 | `milestones` | Array | Project phases |
 | `project_lead` | UUID | Assigned lead |

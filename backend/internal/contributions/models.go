@@ -50,15 +50,41 @@ type Proposal struct {
 	EstimatedBudget  string            `json:"estimated_budget"`
 	Timeline         string            `json:"timeline"`
 	ProjectPlan      []ProjectPlanItem `json:"project_plan,omitempty"`
-	Status           ProposalStatus    `json:"status"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	Status                ProposalStatus    `json:"status"`
+	CreatedAt             time.Time         `json:"created_at"`
+	UpdatedAt             time.Time         `json:"updated_at"`
+	ProposalLeadID        string            `json:"proposal_lead_id,omitempty"`
+	ProposalStewardID     string            `json:"proposal_steward_id,omitempty"`
+	EndorsementThreshold  int               `json:"endorsement_threshold"`
+	LeadContributionID    string            `json:"lead_contribution_id,omitempty"`
+	StewardContributionID string            `json:"steward_contribution_id,omitempty"`
+	Attachments           []Attachment      `json:"attachments,omitempty"`
 }
 
 type ProjectPlanItem struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Duration    string `json:"duration"`
+}
+
+type Attachment struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+type ProposalHistoryEntry struct {
+	ID         string        `json:"id"`
+	ProposalID string        `json:"proposal_id"`
+	UserID     string        `json:"user_id"`
+	Action     string        `json:"action"`
+	Changes    []FieldChange `json:"changes,omitempty"`
+	CreatedAt  time.Time     `json:"created_at"`
+}
+
+type FieldChange struct {
+	Field    string `json:"field"`
+	OldValue string `json:"old_value"`
+	NewValue string `json:"new_value"`
 }
 
 // --- Endorsement ---
@@ -174,16 +200,20 @@ const (
 )
 
 type GovernanceAction struct {
-	ID             string                 `json:"id"`
-	DecisionPlanID string                 `json:"decision_plan_id"`
-	House          HouseType              `json:"house"`
-	ActionType     ActionType             `json:"action_type"`
-	Description    string                 `json:"description"`
-	Status         GovernanceActionStatus `json:"status"`
-	Outcome        OutcomeType            `json:"outcome,omitempty"`
-	VoteData       map[string]interface{} `json:"vote_data,omitempty"`
-	CreatedAt      time.Time              `json:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at"`
+	ID              string                 `json:"id"`
+	DecisionPlanID  string                 `json:"decision_plan_id"`
+	House           HouseType              `json:"house"`
+	ActionType      ActionType             `json:"action_type"`
+	Description     string                 `json:"description"`
+	MeetingDate     string                 `json:"meeting_date,omitempty"`
+	MeetingTime     string                 `json:"meeting_time,omitempty"`
+	MeetingLocation string                 `json:"meeting_location,omitempty"`
+	LinkedActionID  string                 `json:"linked_action_id,omitempty"`
+	Status          GovernanceActionStatus `json:"status"`
+	Outcome         OutcomeType            `json:"outcome,omitempty"`
+	VoteData        map[string]interface{} `json:"vote_data,omitempty"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
 }
 
 // --- Implementation Plan ---
@@ -191,7 +221,6 @@ type GovernanceAction struct {
 type ImplementationPlan struct {
 	ID               string      `json:"id"`
 	ProjectID        string      `json:"project_id"`
-	Title            string      `json:"title"`
 	TotalBudget      string      `json:"total_budget"`
 	Milestones       []Milestone `json:"milestones"`
 	ProjectLeadID    string      `json:"project_lead"`

@@ -76,7 +76,7 @@ func TestService_AddEndorsement(t *testing.T) {
 	svc.TransitionProposal(ctx, "space-1", p.ID, ProposalSubmitted)
 	svc.TransitionProposal(ctx, "space-1", p.ID, ProposalEndorsing)
 
-	err := svc.AddEndorsement(ctx, "space-1", p.ID, &Endorsement{
+	_, err := svc.AddEndorsement(ctx, "space-1", p.ID, &Endorsement{
 		EndorserID: "user-2",
 		EndorsedAt: time.Now(),
 		Comment:    "Looks good",
@@ -297,7 +297,6 @@ func TestService_CreateImplementationPlan(t *testing.T) {
 
 	ip, err := svc.CreateImplementationPlan(ctx, "space-1", &CreateImplementationPlanRequest{
 		ProjectID:        "proj-1",
-		Title:            "Phase 1 Implementation",
 		TotalBudget:      "$10000",
 		ProjectLeadID:    "lead-1",
 		ProjectStewardID: "steward-1",
@@ -318,7 +317,7 @@ func TestService_AddMilestone(t *testing.T) {
 	ctx := context.Background()
 
 	ip, _ := svc.CreateImplementationPlan(ctx, "space-1", &CreateImplementationPlanRequest{
-		ProjectID: "proj-1", Title: "Plan", TotalBudget: "$1",
+		ProjectID: "proj-1", TotalBudget: "$1",
 		ProjectLeadID: "lead-1", ProjectStewardID: "steward-1",
 	})
 
@@ -519,7 +518,7 @@ func TestService_DeriveProjectStatus(t *testing.T) {
 
 	// Add an implementation plan with status "created"
 	ip, _ := svc.CreateImplementationPlan(ctx, "space-1", &CreateImplementationPlanRequest{
-		ProjectID: proj.ID, Title: "Plan 1", TotalBudget: "$1",
+		ProjectID: proj.ID, TotalBudget: "$1",
 		ProjectLeadID: "l", ProjectStewardID: "s",
 	})
 	_ = ip

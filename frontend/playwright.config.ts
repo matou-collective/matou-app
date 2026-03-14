@@ -6,9 +6,9 @@ const TEST_SERVER_PORT = 9003;
 // Shared browser config
 const browserConfig = {
   ...devices['Desktop Chrome'],
-  headless: false, // Show browser for debugging
+  headless: !process.env.HEADED,
   launchOptions: {
-    slowMo: 100, // Slow down for visibility
+    slowMo: process.env.HEADED ? 100 : 0,
     args: [
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',

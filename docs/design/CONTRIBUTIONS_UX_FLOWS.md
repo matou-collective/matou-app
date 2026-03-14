@@ -114,32 +114,45 @@ Actor: Governance Houses
 ## 2. Project Setup → Implementation Planning
 
 ```
-Actor: Admin / Operations Steward
+System
 
-1. Proposal approved → System shows project creation prompt
-   OR: Navigate to Projects → "+ New Project"
-2. Create Project dialog
-   → Link to proposal(s)
-   → Assign project steward and lead
-3. Navigate to project detail page
+1. Proposal approved → System auto-creates a new project
+   in "Draft" status, linked to the approved proposal
+   → Project appears on the Projects page
+
+Actor: Admin / Operations Steward
+(Only admins can see the "+ New Project" button on the Projects page
+ for creating projects independently of proposals)
+
+2. Admin opens the project detail page
+   → Project detail shows: project information, milestones,
+     contributions, and updates
+3. Admin assigns Project Lead and Project Steward
+   → From project detail sidebar via "Assign Lead" / "Assign Steward"
+   → Can also be done during project creation if creating manually
+   → Both assignments are optional at creation but required
+     before milestones can be signed off
 
 Actor: Project Lead
 
-4. In project detail → "Implementation Plans" tab
-5. Click "+ Create Implementation Plan"
-6. Fill out plan details (title, budget, lead, steward)
-7. Within plan detail, click "+ Add Milestone"
-   → Create milestones with titles and durations
-8. Within each milestone, click "+ Add Contribution"
-   → Create contributions (see Flow 3)
-9. Click "Submit for Sign-off"
+4. In project detail, click "+ Add Milestone"
+   → Milestone dialog opens
+   → Fill out milestone details (title, duration)
+   → Contributions can also be created within the milestone dialog
+5. Create contributions for each milestone
+   → From the milestone dialog or from the project detail page
+   → See Flow 3 for contribution lifecycle
+6. Repeat steps 4-5 for all milestones needed
 
 Actor: Project Steward
 
-10. Review implementation plan
-11. Click "Sign Off Plan"
-    → Plan marked as signed off
-    → Contributions within it can be marked as "Confirmed"
+7. Review all contributions within each milestone
+   → Steward must "Confirm" each contribution individually
+   → All contributions must be confirmed before the
+     implementation plan can be signed off
+8. Once all contributions are confirmed, click "Sign Off Plan"
+   → Implementation plan marked as signed off
+   → Confirmed contributions can proceed to assignment
 ```
 
 ---
@@ -154,63 +167,106 @@ Actor: Project Lead / Operations Steward
    → Contribution in "Created" status
 2. Review contribution → Click "Confirm"
    → Status changes to "Confirmed"
-3. Contribution opens for interest registration (48h window)
+3. Project Lead can share the contribution:
+   → Click "Share Contribution"
+   → Choose sharing scope:
+     a) Share with specific role(s) (e.g. Contributors, Community Reps)
+     b) Share with a link
+   → Only shared contributions are visible to other members
+   → Only visible to the role(s) it has been shared with
+4. Project Lead can offer a contribution directly to any member
+   at any time:
+   → Click "Offer Contribution" → search members by name → select
+   → Status changes to "Offered"
+   → Contributor receives notification (see step 10)
+5. Contribution opens for interest registration
+   (only if shared, not directly offered)
 
-Actor: Contributors
+Actor: Contributors (Browsing)
 
-4. Browse open contributions on Contributions page
-   → Filter by "Confirmed" status
-5. Click "Register Interest" on a contribution
+6. On the Projects page, active projects with shared contributions
+   show the first 3 contributions listed under the project card,
+   along with the total number of shared contributions visible
+   to the current user's role
+7. User clicks "Contributions" tab in Projects page
+   → Shows all shared contributions in a table view
+   → Layout is separated into project sections:
+     - Each project section has a header (clickable → opens project view)
+     - Inside each project section are individual tables per milestone
+     - Each milestone has a milestone header
+     - Each row in the table is a contribution
+8. Click on a contribution row → opens contribution dialog
+   with full contribution details
+9. Click "Register Interest" on a contribution
    → Fill out interest form
-6. Wait for assignment notification
+   → Wait for assignment notification
 
 Actor: Project Lead
 
-7. View interested contributors on contribution detail
-8. Select contributor → Click "Assign Contributor"
-   → Status changes to "Assigned"
-   → Contributor receives notification
+10. View interested contributors on contribution detail
+11. Select a registered contributor or search for a different
+    member by name → select them
+    → Click "Offer Contribution"
+    → Status changes to "Offered"
+    → Contributor receives notification
+
+Actor: Contributor (Offered)
+
+12. Contributor receives notification of contribution offer
+    → Opens contribution detail
+    → Click "Accept" → Status changes to "Assigned"
+    → Click "Decline" → Status returns to "Confirmed"
+      (Project Lead can offer to someone else)
 
 Actor: Assigned Contributor
 
-9. Work on contribution
-10. (Optional) Create nested sub-contributions
+13. Work on contribution
+14. (Optional) Create nested sub-contributions
     → Click "+ Add Sub-task" within contribution detail
-11. Complete work
-12. Fill out Evidence & Completion section:
+
+Actor: Project Lead
+
+15. Review and confirm any sub-contributions created
+    → Sub-contributions require Project Lead confirmation
+      before they can be assigned
+
+Actor: Assigned Contributor
+
+16. Complete work
+17. Fill out Evidence & Completion section:
     → Completion notes
     → How acceptance criteria were met
     → Upload evidence files or add URLs
     → Report actual hours
     → Upload time report
-13. Click "Submit for Review"
+18. Click "Submit for Review"
     → Status changes to "Needs Review"
 
 Actor: Project Lead
 
-14. Review submission on contribution detail page
-15. In Review section:
+19. Review submission on contribution detail page
+20. In Review section:
     → Select outcome: Approve / Incomplete / Decline
     → Set quality rating (1-10)
     → Enter review comments
     → Confirm approved resources
-16. Click "Submit Review"
+21. Click "Submit Review"
     → If Approved: status → "Approved"
     → If Incomplete: status → "Assigned" (contributor reworks)
     → If Declined: status → "Archived"
 
 Actor: Project Steward / Operations Steward
 
-17. Review approved contribution
-18. Click "Sign Off Contribution"
+22. Review approved contribution
+23. Click "Sign Off Contribution"
     → Status changes to "Signed Off"
     → Treasury action generated (future: reward distribution)
 
 System
 
-19. (Future) Distribute rewards
+24. (Future) Distribute rewards
     → Status changes to "Rewarded"
-20. (Future) Archive
+25. (Future) Archive
     → Status changes to "Archived"
 ```
 

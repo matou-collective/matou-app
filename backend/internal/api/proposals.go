@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 type ProposalsHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
+	broker       *EventBroker
 }
 
 // NewProposalsHandler creates a new proposals handler.
@@ -22,6 +24,11 @@ func NewProposalsHandler(service *contributions.Service, spaceManager *anysync.S
 		service:      service,
 		spaceManager: spaceManager,
 	}
+}
+
+// SetBroker sets the event broker for SSE broadcasting.
+func (h *ProposalsHandler) SetBroker(broker *EventBroker) {
+	h.broker = broker
 }
 
 // RegisterRoutes registers proposal routes on the mux.
@@ -61,6 +68,14 @@ func (h *ProposalsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLoo
 			default:
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			}
+			return
+		}
+		if len(parts) == 2 && parts[1] == "history" && r.Method == http.MethodGet {
+			h.HandleListHistory(w, r, id)
+			return
+		}
+		if r.Method == http.MethodPatch {
+			h.HandleUpdate(w, r, id)
 			return
 		}
 		if r.Method == http.MethodGet {
@@ -128,6 +143,7 @@ func (h *ProposalsHandler) HandleGet(w http.ResponseWriter, r *http.Request, id 
 func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
 		Status string `json:"status"`
+		Reason string `json:"reason,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -141,6 +157,28 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 		log.Printf("[Proposals] transition failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+
+	// Record history
+	action := fmt.Sprintf("Transitioned to %s", req.Status)
+	if req.Reason != "" {
+		action = fmt.Sprintf("Transitioned to %s - %s", req.Status, req.Reason)
+	}
+	h.service.AddHistoryEntry(r.Context(), spaceID, &contributions.ProposalHistoryEntry{
+		ProposalID: id,
+		UserID:     "current-user",
+		Action:     action,
+	})
+
+	// Broadcast SSE event
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "proposal:status_changed",
+			Data: map[string]string{
+				"proposal_id": id,
+				"status":      req.Status,
+			},
+		})
 	}
 
 	log.Printf("[Proposals] proposal %s transitioned to %s", id, req.Status)
@@ -157,14 +195,27 @@ func (h *ProposalsHandler) HandleAddEndorsement(w http.ResponseWriter, r *http.R
 
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
 
-	if err := h.service.AddEndorsement(r.Context(), spaceID, id, &endorsement); err != nil {
+	result, err := h.service.AddEndorsement(r.Context(), spaceID, id, &endorsement)
+	if err != nil {
 		log.Printf("[Proposals] failed to add endorsement for proposal %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
-	log.Printf("[Proposals] endorsement added for proposal %s by %s", id, endorsement.EndorserID)
-	writeJSON(w, http.StatusCreated, map[string]string{"success": "true"})
+	// Broadcast SSE event
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "proposal:endorsed",
+			Data: map[string]interface{}{
+				"proposal_id":   id,
+				"endorser_id":   endorsement.EndorserID,
+				"threshold_met": result.ThresholdMet,
+			},
+		})
+	}
+
+	log.Printf("[Proposals] endorsement added for proposal %s by %s (threshold_met=%v)", id, endorsement.EndorserID, result.ThresholdMet)
+	writeJSON(w, http.StatusCreated, result)
 }
 
 // HandleListEndorsements handles GET /api/v1/proposals/{id}/endorsements
@@ -181,6 +232,38 @@ func (h *ProposalsHandler) HandleListEndorsements(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"endorsements": endorsements,
 		"total":        len(endorsements),
+	})
+}
+
+// HandleUpdate handles PATCH /api/v1/proposals/{id}
+func (h *ProposalsHandler) HandleUpdate(w http.ResponseWriter, r *http.Request, id string) {
+	var req contributions.UpdateProposalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	proposal, err := h.service.UpdateProposal(r.Context(), spaceID, id, &req)
+	if err != nil {
+		log.Printf("[Proposals] update failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Proposals] proposal %s updated", id)
+	writeJSON(w, http.StatusOK, proposal)
+}
+
+// HandleListHistory handles GET /api/v1/proposals/{id}/history
+func (h *ProposalsHandler) HandleListHistory(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	entries, err := h.service.ListHistory(r.Context(), spaceID, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"history": entries,
+		"total":   len(entries),
 	})
 }
 

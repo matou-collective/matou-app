@@ -7,9 +7,13 @@ import {
   transitionProposal as apiTransition,
   addEndorsement as apiEndorse,
   listEndorsements as apiListEndorsements,
+  updateProposal as apiUpdate,
+  getProposalHistory as apiGetHistory,
   type Proposal,
   type CreateProposalRequest,
   type Endorsement,
+  type ProposalHistoryEntry,
+  type EndorsementResult,
 } from 'src/lib/api/proposals';
 import { createLogger } from 'src/lib/logging';
 
@@ -19,6 +23,7 @@ export const useProposalsStore = defineStore('proposals', () => {
   const proposals = ref<Proposal[]>([]);
   const currentProposal = ref<Proposal | null>(null);
   const endorsements = ref<Endorsement[]>([]);
+  const history = ref<ProposalHistoryEntry[]>([]);
   const isLoading = ref(false);
   const error = ref<string | null>(null);
 
@@ -84,12 +89,35 @@ export const useProposalsStore = defineStore('proposals', () => {
     }
   }
 
-  async function endorse(proposalId: string, endorsement: Endorsement) {
+  async function update(
+    id: string,
+    fields: Parameters<typeof apiUpdate>[1],
+  ): Promise<Proposal> {
     error.value = null;
     try {
-      await apiEndorse(proposalId, endorsement);
+      const updated = await apiUpdate(id, fields);
+      const idx = proposals.value.findIndex(p => p.id === id);
+      if (idx >= 0) proposals.value[idx] = updated;
+      if (currentProposal.value?.id === id) currentProposal.value = updated;
+      log.info('Proposal %s updated', id);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Update failed';
+      log.error('update failed: %s', error.value);
+      throw e;
+    }
+  }
+
+  async function endorse(
+    proposalId: string,
+    endorsement: Endorsement,
+  ): Promise<EndorsementResult | undefined> {
+    error.value = null;
+    try {
+      const result = await apiEndorse(proposalId, endorsement);
       endorsements.value.push(endorsement);
-      log.info('Endorsed proposal %s', proposalId);
+      log.info('Endorsed proposal %s (threshold_met=%s)', proposalId, result.threshold_met);
+      return result;
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Endorsement failed';
       throw e;
@@ -105,10 +133,20 @@ export const useProposalsStore = defineStore('proposals', () => {
     }
   }
 
+  async function fetchHistory(proposalId: string) {
+    try {
+      const result = await apiGetHistory(proposalId);
+      history.value = result.history || [];
+    } catch (e) {
+      log.error('fetchHistory failed: %s', e);
+    }
+  }
+
   return {
     proposals,
     currentProposal,
     endorsements,
+    history,
     isLoading,
     error,
     draftProposals,
@@ -117,7 +155,9 @@ export const useProposalsStore = defineStore('proposals', () => {
     fetchProposal,
     create,
     transition,
+    update,
     endorse,
     fetchEndorsements,
+    fetchHistory,
   };
 });

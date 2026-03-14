@@ -36,6 +36,7 @@ export type BackendEventType =
   | 'proposal:endorsed'
   | 'proposal:approved'
   | 'proposal:rejected'
+  | 'proposal:status_changed'
   | 'project:created'
   | 'contribution:assigned'
   | 'contribution:needs_review'
@@ -258,10 +259,39 @@ function connect() {
     chatStore.handleUpdateChannel(data);
   });
 
-  // --- Contribution system events ---
+  // --- Proposal events with reactive handling ---
+  eventSource.addEventListener('proposal:endorsed', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'proposal:endorsed', data };
+    console.log('[BackendEvents] proposal:endorsed:', data);
+    if (data.threshold_met === 'true') {
+      Notify.create({
+        message: 'Endorsement threshold met! Proposal moved to In Review.',
+        color: 'positive',
+        position: 'top-right',
+        timeout: 5000,
+      });
+    }
+  });
+
+  eventSource.addEventListener('proposal:status_changed', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'proposal:status_changed', data };
+    console.log('[BackendEvents] proposal:status_changed:', data);
+  });
+
+  eventSource.addEventListener('governance_action:completed', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'governance_action:completed', data };
+    console.log('[BackendEvents] governance_action:completed:', data);
+  });
+
+  // --- Other contribution system events (generic handler) ---
   const contribEventTypes: BackendEventType[] = [
     'proposal:submitted',
-    'proposal:endorsed',
     'proposal:approved',
     'proposal:rejected',
     'project:created',
@@ -272,7 +302,6 @@ function connect() {
     'contribution:registered',
     'decision_plan:submitted',
     'decision_plan:signed_off',
-    'governance_action:completed',
   ];
 
   for (const eventType of contribEventTypes) {

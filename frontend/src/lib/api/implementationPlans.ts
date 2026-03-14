@@ -18,7 +18,6 @@ export interface Milestone {
 export interface ImplementationPlan {
   id: string;
   project_id: string;
-  title: string;
   total_budget: string;
   milestones: Milestone[];
   project_lead: string;
@@ -30,7 +29,6 @@ export interface ImplementationPlan {
 
 export interface CreateImplementationPlanRequest {
   project_id: string;
-  title: string;
   total_budget: string;
   project_lead: string;
   project_steward_id: string;

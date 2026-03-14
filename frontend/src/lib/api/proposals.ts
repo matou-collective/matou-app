@@ -19,6 +19,7 @@ export interface CreateProposalRequest {
   estimated_budget: string;
   timeline: string;
   project_plan?: { title: string; description: string; duration: string }[];
+  attachments?: { name: string; url: string }[];
 }
 
 export interface Proposal {
@@ -34,6 +35,12 @@ export interface Proposal {
   estimated_budget: string;
   timeline: string;
   status: string;
+  proposal_lead_id?: string;
+  proposal_steward_id?: string;
+  endorsement_threshold: number;
+  lead_contribution_id?: string;
+  steward_contribution_id?: string;
+  attachments?: { name: string; url: string }[];
   created_at: string;
   updated_at: string;
 }
@@ -42,6 +49,21 @@ export interface Endorsement {
   endorser_id: string;
   endorsed_at: string;
   comment?: string;
+}
+
+export interface ProposalHistoryEntry {
+  id: string;
+  proposal_id: string;
+  user_id: string;
+  action: string;
+  changes?: { field: string; old_value: string; new_value: string }[];
+  created_at: string;
+}
+
+export interface EndorsementResult {
+  endorsement: Endorsement;
+  threshold_met: boolean;
+  new_status?: string;
 }
 
 export async function createProposal(req: CreateProposalRequest): Promise<Proposal> {
@@ -84,7 +106,35 @@ export async function transitionProposal(id: string, status: string): Promise<Pr
   return response.json();
 }
 
-export async function addEndorsement(proposalId: string, endorsement: Endorsement): Promise<void> {
+export async function updateProposal(
+  id: string,
+  fields: Partial<Omit<Proposal, 'id' | 'status' | 'created_at' | 'updated_at'>>,
+): Promise<Proposal> {
+  log.info('Updating proposal %s', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to update proposal');
+  }
+  return response.json();
+}
+
+export async function getProposalHistory(
+  id: string,
+): Promise<{ history: ProposalHistoryEntry[]; total: number }> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}/history`);
+  if (!response.ok) throw new Error('Failed to fetch history');
+  return response.json();
+}
+
+export async function addEndorsement(
+  proposalId: string,
+  endorsement: Endorsement,
+): Promise<EndorsementResult> {
   log.info('Endorsing proposal %s', proposalId);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/endorsements`, {
     method: 'POST',
@@ -95,9 +145,12 @@ export async function addEndorsement(proposalId: string, endorsement: Endorsemen
     const err = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(err.error || 'Failed to endorse');
   }
+  return response.json();
 }
 
-export async function listEndorsements(proposalId: string): Promise<{ endorsements: Endorsement[]; total: number }> {
+export async function listEndorsements(
+  proposalId: string,
+): Promise<{ endorsements: Endorsement[]; total: number }> {
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/endorsements`);
   if (!response.ok) throw new Error('Failed to list endorsements');
   return response.json();

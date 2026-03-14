@@ -51,27 +51,31 @@ type CreateProposalRequest struct {
 	ExpectedOutcomes []string          `json:"expected_outcomes"`
 	EstimatedBudget  string            `json:"estimated_budget"`
 	Timeline         string            `json:"timeline"`
-	ProjectPlan      []ProjectPlanItem `json:"project_plan,omitempty"`
+	ProjectPlan          []ProjectPlanItem `json:"project_plan,omitempty"`
+	Attachments          []Attachment      `json:"attachments,omitempty"`
+	EndorsementThreshold int               `json:"endorsement_threshold,omitempty"`
 }
 
 func (s *Service) CreateProposal(ctx context.Context, spaceID string, req *CreateProposalRequest) (*Proposal, error) {
 	now := time.Now()
 	p := &Proposal{
-		ID:               generateID("prop"),
-		ProposerID:       req.ProposerID,
-		Title:            req.Title,
-		Types:            req.Types,
-		Priority:         req.Priority,
-		Description:      req.Description,
-		ProblemStatement: req.ProblemStatement,
-		Solution:         req.Solution,
-		ExpectedOutcomes: req.ExpectedOutcomes,
-		EstimatedBudget:  req.EstimatedBudget,
-		Timeline:         req.Timeline,
-		ProjectPlan:      req.ProjectPlan,
-		Status:           ProposalDraft,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                   generateID("prop"),
+		ProposerID:           req.ProposerID,
+		Title:                req.Title,
+		Types:                req.Types,
+		Priority:             req.Priority,
+		Description:          req.Description,
+		ProblemStatement:     req.ProblemStatement,
+		Solution:             req.Solution,
+		ExpectedOutcomes:     req.ExpectedOutcomes,
+		EstimatedBudget:      req.EstimatedBudget,
+		Timeline:             req.Timeline,
+		ProjectPlan:          req.ProjectPlan,
+		Attachments:          req.Attachments,
+		EndorsementThreshold: req.EndorsementThreshold,
+		Status:               ProposalDraft,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 
 	errs := ValidateProposal(p)
@@ -124,22 +128,197 @@ func (s *Service) TransitionProposal(ctx context.Context, spaceID, proposalID st
 	return p, nil
 }
 
+type UpdateProposalRequest struct {
+	Title             *string      `json:"title,omitempty"`
+	Description       *string      `json:"description,omitempty"`
+	ProblemStatement  *string      `json:"problem_statement,omitempty"`
+	Solution          *string      `json:"solution,omitempty"`
+	ExpectedOutcomes  []string     `json:"expected_outcomes,omitempty"`
+	EstimatedBudget   *string      `json:"estimated_budget,omitempty"`
+	Timeline          *string      `json:"timeline,omitempty"`
+	ProposalLeadID    *string      `json:"proposal_lead_id,omitempty"`
+	ProposalStewardID *string      `json:"proposal_steward_id,omitempty"`
+	Attachments       []Attachment `json:"attachments,omitempty"`
+}
+
+func (s *Service) UpdateProposal(ctx context.Context, spaceID, proposalID string, req *UpdateProposalRequest) (*Proposal, error) {
+	p, err := s.GetProposal(ctx, spaceID, proposalID)
+	if err != nil {
+		return nil, err
+	}
+	if req.Title != nil {
+		p.Title = *req.Title
+	}
+	if req.Description != nil {
+		p.Description = *req.Description
+	}
+	if req.ProblemStatement != nil {
+		p.ProblemStatement = *req.ProblemStatement
+	}
+	if req.Solution != nil {
+		p.Solution = *req.Solution
+	}
+	if req.ExpectedOutcomes != nil {
+		p.ExpectedOutcomes = req.ExpectedOutcomes
+	}
+	if req.EstimatedBudget != nil {
+		p.EstimatedBudget = *req.EstimatedBudget
+	}
+	if req.Timeline != nil {
+		p.Timeline = *req.Timeline
+	}
+	if req.ProposalLeadID != nil {
+		p.ProposalLeadID = *req.ProposalLeadID
+	}
+	if req.ProposalStewardID != nil {
+		p.ProposalStewardID = *req.ProposalStewardID
+	}
+	if req.Attachments != nil {
+		p.Attachments = req.Attachments
+	}
+	p.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, p.ID, "proposal", p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (s *Service) AddHistoryEntry(ctx context.Context, spaceID string, entry *ProposalHistoryEntry) error {
+	entry.ID = generateID("hist")
+	entry.CreatedAt = time.Now()
+	return s.store.Save(spaceID, entry.ID, "proposal_history", entry)
+}
+
+func (s *Service) ListHistory(ctx context.Context, spaceID, proposalID string) ([]*ProposalHistoryEntry, error) {
+	raw, err := s.store.List(spaceID, "proposal_history")
+	if err != nil {
+		return nil, err
+	}
+	var entries []*ProposalHistoryEntry
+	for _, r := range raw {
+		var e ProposalHistoryEntry
+		if err := json.Unmarshal(r, &e); err == nil {
+			if e.ProposalID == proposalID {
+				entries = append(entries, &e)
+			}
+		}
+	}
+	return entries, nil
+}
+
 // --- Endorsements ---
 
 func endorsementKey(proposalID, endorserID string) string {
 	return fmt.Sprintf("endorse_%s_%s", proposalID, endorserID)
 }
 
-func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string, e *Endorsement) error {
+type EndorsementResult struct {
+	Endorsement  *Endorsement `json:"endorsement"`
+	ThresholdMet bool         `json:"threshold_met"`
+	NewStatus    string       `json:"new_status,omitempty"`
+}
+
+func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string, e *Endorsement) (*EndorsementResult, error) {
 	p, err := s.GetProposal(ctx, spaceID, proposalID)
 	if err != nil {
-		return fmt.Errorf("proposal not found: %w", err)
+		return nil, fmt.Errorf("proposal not found: %w", err)
 	}
-	if p.Status != ProposalEndorsing {
-		return fmt.Errorf("proposal must be in endorsing status, currently: %s", p.Status)
+	if p.Status != ProposalSubmitted && p.Status != ProposalEndorsing {
+		return nil, fmt.Errorf("proposal must be in submitted or endorsing status, currently: %s", p.Status)
 	}
 	key := endorsementKey(proposalID, e.EndorserID)
-	return s.store.Save(spaceID, key, "endorsement", e)
+	if err := s.store.Save(spaceID, key, "endorsement", e); err != nil {
+		return nil, err
+	}
+
+	result := &EndorsementResult{Endorsement: e}
+
+	// Check threshold
+	endorsements, err := s.GetEndorsements(ctx, spaceID, proposalID)
+	if err == nil {
+		threshold := p.EndorsementThreshold
+		if threshold <= 0 {
+			threshold = 100
+		}
+		if len(endorsements) >= threshold {
+			result.ThresholdMet = true
+			// Auto-transition to in_review
+			p.Status = ProposalInReview
+			p.UpdatedAt = time.Now()
+			if err := s.store.Save(spaceID, p.ID, "proposal", p); err == nil {
+				result.NewStatus = string(ProposalInReview)
+				// Auto-create role contributions
+				s.CreateRoleContributions(ctx, spaceID, p)
+				// Record history
+				s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+					ProposalID: proposalID,
+					UserID:     "system",
+					Action:     "Endorsement threshold met - moved to In Review",
+				})
+			}
+		}
+	}
+
+	return result, nil
+}
+
+func (s *Service) CreateRoleContributions(ctx context.Context, spaceID string, proposal *Proposal) {
+	// Create Proposal Lead contribution
+	leadID := generateID("ctr")
+	leadContrib := &Contribution{
+		ID:               leadID,
+		ProjectID:        "proposals",
+		Title:            fmt.Sprintf("Proposal Lead - %s", proposal.Title),
+		Description:      fmt.Sprintf("Lead reviewer for proposal: %s", proposal.Title),
+		ContributionType: ProposalTypeGovernance,
+		Priority:         proposal.Priority,
+		CreatedBy:        "system",
+		Objectives:       []string{"Review and sign off proposal"},
+		Deliverables:     []string{"Proposal review and sign-off"},
+		AcceptanceCriteria: []string{"Proposal reviewed and decision made"},
+		Status:           ContribCreated,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+	if err := s.store.Save(spaceID, leadID, "contribution", leadContrib); err == nil {
+		proposal.LeadContributionID = leadID
+	}
+
+	// Create Proposal Steward contribution
+	stewardID := generateID("ctr")
+	stewardContrib := &Contribution{
+		ID:               stewardID,
+		ProjectID:        "proposals",
+		Title:            fmt.Sprintf("Proposal Steward - %s", proposal.Title),
+		Description:      fmt.Sprintf("Steward reviewer for proposal: %s", proposal.Title),
+		ContributionType: ProposalTypeGovernance,
+		Priority:         proposal.Priority,
+		CreatedBy:        "system",
+		Objectives:       []string{"Review and sign off decision plan"},
+		Deliverables:     []string{"Decision plan review and sign-off"},
+		AcceptanceCriteria: []string{"Decision plan reviewed and signed off"},
+		Status:           ContribCreated,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+	if err := s.store.Save(spaceID, stewardID, "contribution", stewardContrib); err == nil {
+		proposal.StewardContributionID = stewardID
+	}
+
+	// Save updated proposal with contribution IDs
+	s.store.Save(spaceID, proposal.ID, "proposal", proposal)
+
+	// Record history
+	s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+		ProposalID: proposal.ID,
+		UserID:     "system",
+		Action:     "Created Proposal Lead contribution request",
+	})
+	s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+		ProposalID: proposal.ID,
+		UserID:     "system",
+		Action:     "Created Proposal Steward contribution request",
+	})
 }
 
 func (s *Service) GetEndorsements(ctx context.Context, spaceID, proposalID string) ([]*Endorsement, error) {
@@ -352,29 +531,55 @@ func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID stri
 	if err := s.store.Save(spaceID, dp.ID, "decision_plan", dp); err != nil {
 		return nil, err
 	}
+
+	// Auto-transition proposal to voting_process when decision plan is signed off
+	if newStatus == DecisionPlanSignedOff && dp.ProposalID != "" {
+		p, err := s.GetProposal(ctx, spaceID, dp.ProposalID)
+		if err == nil && p.Status == ProposalSignedOff {
+			if err := ValidateProposalTransition(p.Status, ProposalVotingProcess); err == nil {
+				p.Status = ProposalVotingProcess
+				p.UpdatedAt = time.Now()
+				s.store.Save(spaceID, p.ID, "proposal", p)
+				s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+					ProposalID: dp.ProposalID,
+					UserID:     "system",
+					Action:     "Decision plan signed off - moved to voting process",
+				})
+			}
+		}
+	}
+
 	return dp, nil
 }
 
 // --- Governance Actions ---
 
 type CreateGovernanceActionRequest struct {
-	DecisionPlanID string     `json:"decision_plan_id"`
-	House          HouseType  `json:"house"`
-	ActionType     ActionType `json:"action_type"`
-	Description    string     `json:"description"`
+	DecisionPlanID  string     `json:"decision_plan_id"`
+	House           HouseType  `json:"house"`
+	ActionType      ActionType `json:"action_type"`
+	Description     string     `json:"description"`
+	MeetingDate     string     `json:"meeting_date,omitempty"`
+	MeetingTime     string     `json:"meeting_time,omitempty"`
+	MeetingLocation string     `json:"meeting_location,omitempty"`
+	LinkedActionID  string     `json:"linked_action_id,omitempty"`
 }
 
 func (s *Service) AddGovernanceAction(ctx context.Context, spaceID string, req *CreateGovernanceActionRequest) (*GovernanceAction, error) {
 	now := time.Now()
 	action := &GovernanceAction{
-		ID:             generateID("ga"),
-		DecisionPlanID: req.DecisionPlanID,
-		House:          req.House,
-		ActionType:     req.ActionType,
-		Description:    req.Description,
-		Status:         GovActionPlanned,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:              generateID("ga"),
+		DecisionPlanID:  req.DecisionPlanID,
+		House:           req.House,
+		ActionType:      req.ActionType,
+		Description:     req.Description,
+		MeetingDate:     req.MeetingDate,
+		MeetingTime:     req.MeetingTime,
+		MeetingLocation: req.MeetingLocation,
+		LinkedActionID:  req.LinkedActionID,
+		Status:          GovActionPlanned,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if err := s.store.Save(spaceID, action.ID, "governance_action", action); err != nil {
 		return nil, err
@@ -404,6 +609,16 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 	if err := s.store.Save(spaceID, action.ID, "governance_action", action); err != nil {
 		return nil, err
 	}
+
+	// If this was a decision action, check if all decisions are now complete
+	if action.ActionType == ActionDecision {
+		// Find the proposal ID through the decision plan
+		dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
+		if err == nil && dp.ProposalID != "" {
+			s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
+		}
+	}
+
 	return action, nil
 }
 
@@ -411,7 +626,6 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 
 type CreateImplementationPlanRequest struct {
 	ProjectID        string `json:"project_id"`
-	Title            string `json:"title"`
 	TotalBudget      string `json:"total_budget"`
 	ProjectLeadID    string `json:"project_lead"`
 	ProjectStewardID string `json:"project_steward_id"`
@@ -422,7 +636,6 @@ func (s *Service) CreateImplementationPlan(ctx context.Context, spaceID string, 
 	ip := &ImplementationPlan{
 		ID:               generateID("ip"),
 		ProjectID:        req.ProjectID,
-		Title:            req.Title,
 		TotalBudget:      req.TotalBudget,
 		ProjectLeadID:    req.ProjectLeadID,
 		ProjectStewardID: req.ProjectStewardID,
@@ -698,4 +911,79 @@ func (s *Service) RefreshProjectStatus(ctx context.Context, spaceID, projectID s
 		}
 	}
 	return proj, nil
+}
+
+// EvaluateGovernanceOutcome checks all decision actions for a proposal's decision plan
+// and auto-transitions the proposal to approved or rejected when all decisions are complete.
+func (s *Service) EvaluateGovernanceOutcome(ctx context.Context, spaceID, proposalID string) error {
+	// Find decision plan for this proposal
+	plans, err := s.ListDecisionPlans(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+	var dp *DecisionPlan
+	for _, p := range plans {
+		if p.ProposalID == proposalID {
+			dp = p
+			break
+		}
+	}
+	if dp == nil {
+		return fmt.Errorf("no decision plan found for proposal %s", proposalID)
+	}
+
+	// Load all governance actions for this plan
+	raw, err := s.store.List(spaceID, "governance_action")
+	if err != nil {
+		return err
+	}
+	var actions []*GovernanceAction
+	for _, r := range raw {
+		var a GovernanceAction
+		if err := json.Unmarshal(r, &a); err == nil {
+			if a.DecisionPlanID == dp.ID && a.ActionType == ActionDecision {
+				actions = append(actions, &a)
+			}
+		}
+	}
+
+	if len(actions) == 0 {
+		return nil
+	}
+
+	// Check if all decision actions are completed
+	allCompleted := true
+	allFavorable := true
+	for _, a := range actions {
+		if a.Status != GovActionCompleted {
+			allCompleted = false
+			break
+		}
+		if a.Outcome == OutcomeVeto || a.Outcome == OutcomeRejected {
+			allFavorable = false
+		}
+	}
+
+	if !allCompleted {
+		return nil
+	}
+
+	// All decision actions completed - determine outcome
+	if allFavorable {
+		s.TransitionProposal(ctx, spaceID, proposalID, ProposalApproved)
+		s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+			ProposalID: proposalID,
+			UserID:     "system",
+			Action:     "All governance votes favorable - proposal approved",
+		})
+	} else {
+		s.TransitionProposal(ctx, spaceID, proposalID, ProposalRejected)
+		s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+			ProposalID: proposalID,
+			UserID:     "system",
+			Action:     "Governance vote unfavorable - proposal rejected",
+		})
+	}
+
+	return nil
 }

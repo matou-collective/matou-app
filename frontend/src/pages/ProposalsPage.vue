@@ -37,12 +37,28 @@
           v-for="proposal in filteredProposals"
           :key="proposal.id"
           class="proposal-card"
+          @click="router.push({ name: 'proposal-detail', params: { id: proposal.id } })"
         >
           <div class="proposal-card-header">
             <h3>{{ proposal.title }}</h3>
-            <span class="status-badge" :class="proposal.status">{{ proposal.status.replace('_', ' ') }}</span>
+            <span class="status-badge" :class="proposal.status">{{ formatStatus(proposal.status) }}</span>
           </div>
           <p class="proposal-description">{{ proposal.description }}</p>
+
+          <!-- Endorsement progress bar for submitted proposals -->
+          <div v-if="proposal.status === 'submitted'" class="endorsement-bar">
+            <div class="endorsement-bar-header">
+              <span class="endorsement-label">Endorsements</span>
+              <span class="endorsement-count">{{ getEndorsementCount(proposal.id) }} / {{ proposal.endorsement_threshold || 100 }}</span>
+            </div>
+            <q-linear-progress
+              :value="getEndorsementProgress(proposal.id, proposal.endorsement_threshold)"
+              color="pink"
+              rounded
+              size="6px"
+            />
+          </div>
+
           <div class="proposal-meta">
             <span class="proposal-type">{{ proposal.type?.join(', ') }}</span>
             <span class="proposal-priority" :class="proposal.priority">{{ proposal.priority }}</span>
@@ -53,107 +69,97 @@
     </div>
 
     <!-- Create Proposal Dialog -->
-    <q-dialog v-model="showCreateDialog">
-      <q-card style="min-width: 550px">
-        <q-card-section>
-          <div class="text-h6">Create Proposal</div>
-        </q-card-section>
-        <q-card-section>
-          <q-input v-model="newProposal.title" label="Title" outlined class="q-mb-md" />
-          <q-input v-model="newProposal.description" label="Description" type="textarea" outlined class="q-mb-md" />
-          <q-input v-model="newProposal.problem_statement" label="Problem Statement" type="textarea" outlined class="q-mb-md" />
-          <q-input v-model="newProposal.solution" label="Proposed Solution" type="textarea" outlined class="q-mb-md" />
-          <q-select
-            v-model="newProposal.type"
-            :options="proposalTypes"
-            label="Type"
-            outlined
-            multiple
-            class="q-mb-md"
-          />
-          <q-select
-            v-model="newProposal.priority"
-            :options="priorities"
-            label="Priority"
-            outlined
-          />
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" v-close-popup />
-          <q-btn flat label="Submit" color="primary" @click="createProposal" :loading="creating" />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
+    <CreateProposalDialog
+      v-model="showCreateDialog"
+      @submit="handleCreateSubmit"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { Vote } from 'lucide-vue-next';
+import { useQuasar } from 'quasar';
 import { useProposalsStore } from 'stores/proposals';
+import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.vue';
 
+const router = useRouter();
+const $q = useQuasar();
 const proposalsStore = useProposalsStore();
 const showCreateDialog = ref(false);
-const creating = ref(false);
 const activeFilter = ref('all');
+
+// Track endorsement counts per proposal
+const endorsementCounts = ref<Record<string, number>>({});
 
 const filters = [
   { label: 'All', value: 'all' },
+  { label: 'Active', value: 'active' },
   { label: 'Draft', value: 'draft' },
-  { label: 'Submitted', value: 'submitted' },
-  { label: 'In Review', value: 'in_review' },
-  { label: 'Approved', value: 'approved' },
+  { label: 'Closed', value: 'closed' },
 ];
 
-const proposalTypes = ['technical', 'community', 'governance', 'operations'];
-const priorities = ['low', 'medium', 'high', 'critical'];
-
-const newProposal = ref({
-  proposer_id: '',
-  title: '',
-  description: '',
-  problem_statement: '',
-  solution: '',
-  type: [] as string[],
-  priority: 'medium' as 'low' | 'medium' | 'high' | 'critical',
-  expected_outcomes: [] as string[],
-  estimated_budget: '',
-  timeline: '',
-});
-
 const filteredProposals = computed(() => {
-  if (activeFilter.value === 'all') return proposalsStore.proposals;
-  return proposalsStore.proposals.filter(
-    (p: { status: string }) => p.status === activeFilter.value,
-  );
+  const all = proposalsStore.proposals;
+  if (activeFilter.value === 'all') return all;
+  if (activeFilter.value === 'active') {
+    return all.filter(p => ['submitted', 'in_review', 'signed_off', 'voting_process'].includes(p.status));
+  }
+  if (activeFilter.value === 'closed') {
+    return all.filter(p => ['approved', 'rejected', 'completed'].includes(p.status));
+  }
+  return all.filter(p => p.status === activeFilter.value);
 });
 
 onMounted(() => {
   proposalsStore.fetchProposals();
 });
 
-async function createProposal() {
-  creating.value = true;
+function formatStatus(status: string) {
+  return status.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+}
+
+function getEndorsementCount(proposalId: string): number {
+  return endorsementCounts.value[proposalId] || 0;
+}
+
+function getEndorsementProgress(proposalId: string, threshold?: number): number {
+  const count = getEndorsementCount(proposalId);
+  const t = threshold || 100;
+  return Math.min(count / t, 1);
+}
+
+async function handleCreateSubmit(form: {
+  title: string;
+  type: string[];
+  priority: string;
+  description: string;
+  problem_statement: string;
+  solution: string;
+  expected_outcomes: string[];
+  estimated_budget: string;
+  timeline: string;
+  attachments?: { name: string; url: string }[];
+}) {
   try {
     await proposalsStore.create({
-      ...newProposal.value,
-      proposer_id: newProposal.value.proposer_id || 'current-user',
+      proposer_id: 'current-user',
+      title: form.title,
+      type: form.type,
+      priority: form.priority as 'low' | 'medium' | 'high' | 'critical',
+      description: form.description,
+      problem_statement: form.problem_statement,
+      solution: form.solution,
+      expected_outcomes: form.expected_outcomes,
+      estimated_budget: form.estimated_budget,
+      timeline: form.timeline,
+      attachments: form.attachments,
     });
     showCreateDialog.value = false;
-    newProposal.value = {
-      proposer_id: '',
-      title: '',
-      description: '',
-      problem_statement: '',
-      solution: '',
-      type: [],
-      priority: 'medium',
-      expected_outcomes: [],
-      estimated_budget: '',
-      timeline: '',
-    };
-  } finally {
-    creating.value = false;
+    $q.notify({ type: 'positive', message: 'Proposal created!' });
+  } catch {
+    $q.notify({ type: 'negative', message: 'Failed to create proposal' });
   }
 }
 </script>
@@ -232,6 +238,12 @@ async function createProposal() {
   border-radius: 12px;
   padding: 20px;
   margin-bottom: 12px;
+  cursor: pointer;
+  transition: box-shadow 0.15s, border-color 0.15s;
+  &:hover {
+    border-color: var(--matou-teal, #0d9488);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  }
 }
 
 .proposal-card-header {
@@ -249,8 +261,11 @@ async function createProposal() {
   text-transform: capitalize;
   background: var(--matou-teal-light, #e0f7f4);
   color: var(--matou-teal);
+  &.draft { background: #f3f4f6; color: #6b7280; }
   &.submitted { background: #fef3c7; color: #d97706; }
   &.in_review { background: #dbeafe; color: #2563eb; }
+  &.signed_off { background: #d1fae5; color: #059669; }
+  &.voting_process { background: #e0e7ff; color: #4f46e5; }
   &.approved { background: #d1fae5; color: #059669; }
   &.rejected { background: #fee2e2; color: #dc2626; }
 }
@@ -258,6 +273,31 @@ async function createProposal() {
 .proposal-description {
   color: var(--text-secondary);
   margin: 0 0 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.endorsement-bar {
+  margin-bottom: 12px;
+}
+
+.endorsement-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.endorsement-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.endorsement-count {
+  font-size: 0.8rem;
+  color: var(--text-tertiary, #9ca3af);
 }
 
 .proposal-meta {
