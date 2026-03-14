@@ -11,11 +11,11 @@
         <q-btn icon="close" flat round dense v-close-popup />
       </q-card-section>
 
-      <q-card-section class="q-gutter-md" style="max-height: 70vh; overflow-y: auto">
+      <q-card-section class="form-fields" style="max-height: 70vh; overflow-y: auto">
         <q-input v-model="form.title" label="Title *" outlined />
 
         <div class="row q-col-gutter-md">
-          <div class="col-6">
+          <div class="col-12 col-sm-6">
             <q-select
               v-model="form.type"
               :options="typeOptions"
@@ -29,7 +29,7 @@
               ref="typeSelectRef"
             />
           </div>
-          <div class="col-6">
+          <div class="col-12 col-sm-6">
             <q-select
               v-model="form.priority"
               :options="priorityOptions"
@@ -95,10 +95,10 @@
         </div>
 
         <div class="row q-col-gutter-md">
-          <div class="col-6">
+          <div class="col-12 col-sm-6">
             <q-input v-model="form.estimated_budget" label="Estimated Budget *" outlined />
           </div>
-          <div class="col-6">
+          <div class="col-12 col-sm-6">
             <q-input v-model="form.timeline" label="Timeline *" outlined />
           </div>
         </div>
@@ -271,3 +271,11 @@ function handleSubmit() {
   emit('submit', { ...f, expected_outcomes: outcomes, attachments });
 }
 </script>
+
+<style scoped>
+.form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+</style>
