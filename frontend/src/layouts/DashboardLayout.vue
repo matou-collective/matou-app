@@ -42,6 +42,10 @@
           <Vote class="nav-icon" />
           <span>Proposals</span>
         </button>
+        <button class="nav-item" :class="{ active: route.name === 'contributions' || route.name === 'contribution-detail' }" @click="router.push({ name: 'contributions' })">
+          <Hammer class="nav-icon" />
+          <span>Contributions</span>
+        </button>
       </nav>
 
       <!-- User Profile -->
@@ -75,6 +79,7 @@ import {
   Target,
   Vote,
   MessageSquare,
+  Hammer,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';

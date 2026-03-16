@@ -438,8 +438,9 @@ func TestService_RegisterInterest(t *testing.T) {
 		Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
 		SkillRequirements: []string{"s"},
 	})
-	// Move to confirmed (eligible for registration)
+	// Move to confirmed then shared (eligible for interest registration)
 	svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
+	svc.TransitionContribution(ctx, "space-1", c.ID, ContribShared)
 
 	reg, err := svc.RegisterInterest(ctx, "space-1", c.ID, "user-2", "I have frontend experience")
 	if err != nil {
@@ -487,7 +488,9 @@ func TestService_AssignFromRegistration(t *testing.T) {
 		Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
 		SkillRequirements: []string{"s"},
 	})
+	// Move to confirmed then shared so that RegisterInterest is valid
 	svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
+	svc.TransitionContribution(ctx, "space-1", c.ID, ContribShared)
 	svc.RegisterInterest(ctx, "space-1", c.ID, "user-2", "Interested")
 
 	updated, err := svc.AssignContributor(ctx, "space-1", c.ID, "user-2")

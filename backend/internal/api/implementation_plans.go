@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 type ImplementationPlansHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
+	broker       *EventBroker
 }
 
 // NewImplementationPlansHandler creates a new implementation plans handler.
@@ -22,6 +24,11 @@ func NewImplementationPlansHandler(service *contributions.Service, spaceManager 
 		service:      service,
 		spaceManager: spaceManager,
 	}
+}
+
+// SetBroker sets the event broker for SSE broadcasting.
+func (h *ImplementationPlansHandler) SetBroker(broker *EventBroker) {
+	h.broker = broker
 }
 
 // RegisterRoutes registers implementation plan routes on the mux.
@@ -48,6 +55,10 @@ func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux) {
 
 		if len(parts) == 2 && parts[1] == "milestones" && r.Method == http.MethodPost {
 			h.HandleAddMilestone(w, r, id)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "sign-off" && r.Method == http.MethodPost {
+			h.HandleSignOff(w, r, id)
 			return
 		}
 		if r.Method == http.MethodGet {
@@ -114,6 +125,64 @@ func (h *ImplementationPlansHandler) HandleAddMilestone(w http.ResponseWriter, r
 		return
 	}
 	writeJSON(w, http.StatusCreated, milestone)
+}
+
+// HandleSignOff handles POST /api/v1/implementation-plans/{id}/sign-off
+// Signs off the plan if all milestones have contributions and all contributions are confirmed.
+// Returns 409 if already signed off, 422 if contributions are unconfirmed.
+func (h *ImplementationPlansHandler) HandleSignOff(w http.ResponseWriter, r *http.Request, id string) {
+	userID := GetUserAID(r)
+	if userID == "" {
+		// Allow caller to pass user_id in body when running without RBAC middleware
+		var body struct {
+			UserID string `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.UserID != "" {
+			userID = body.UserID
+		}
+	}
+	if userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	plan, err := h.service.SignOffPlan(r.Context(), spaceID, id, userID)
+	if err != nil {
+		log.Printf("[ImplementationPlans] SignOffPlan failed for %s: %v", id, err)
+
+		// 409 — plan already signed off
+		if err.Error() == "plan is already signed off" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+
+		// 422 — unconfirmed contributions
+		var unconfirmedErr *contributions.UnconfirmedContributionsError
+		if errors.As(err, &unconfirmedErr) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
+				"error":                   "unconfirmed contributions",
+				"unconfirmed_contribution_ids": unconfirmedErr.IDs,
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	log.Printf("[ImplementationPlans] plan %s signed off by %s", id, userID)
+
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "implementation_plan:signed_off",
+			Data: map[string]string{
+				"plan_id":      id,
+				"signed_off_by": userID,
+			},
+		})
+	}
+
+	writeJSON(w, http.StatusOK, plan)
 }
 
 // setupTestImplementationPlansHandler creates a handler with mock store for testing.

@@ -484,11 +484,27 @@ func main() {
 	contribNotifier := &contribNotifierAdapter{svc: notifService}
 	roleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
 
-	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager)
-	projectsHandler := api.NewProjectsHandler(contribService, spaceManager)
-	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager)
+	// Grant community_admin role to all configured org admins
+	if orgConfigHandler.IsConfigured() {
+		orgData := orgConfigHandler.GetConfig()
+		adminAIDs := make([]string, 0, len(orgData.Admins))
+		for _, a := range orgData.Admins {
+			if a.AID != "" {
+				adminAIDs = append(adminAIDs, a.AID)
+			}
+		}
+		roleLookup.SetAdminAIDs(adminAIDs)
+	}
+
+	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
+	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)
+	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager, contribNotifier)
 	implPlansHandler := api.NewImplementationPlansHandler(contribService, spaceManager)
 	contributionsHandler := api.NewContributionsHandler(contribService, spaceManager, contribNotifier)
+
+	// Wire event broker to contribution and plan handlers for SSE broadcasts
+	contributionsHandler.SetBroker(eventBroker)
+	implPlansHandler.SetBroker(eventBroker)
 	fmt.Println("  Contributions system initialized")
 	fmt.Println()
 
@@ -540,10 +556,10 @@ func main() {
 	chatHandler.RegisterRoutes(mux)
 	notificationsHandler.RegisterRoutes(mux)
 	proposalsHandler.RegisterRoutes(mux, roleLookup)
-	projectsHandler.RegisterRoutes(mux)
+	projectsHandler.RegisterRoutes(mux, roleLookup)
 	decisionPlansHandler.RegisterRoutes(mux)
 	implPlansHandler.RegisterRoutes(mux)
-	contributionsHandler.RegisterRoutes(mux)
+	contributionsHandler.RegisterRoutes(mux, roleLookup)
 	orgConfigHandler.RegisterRoutes(mux)
 
 	// Start server
@@ -670,6 +686,16 @@ func main() {
 	fmt.Println("  POST /api/v1/contributions/{id}/register  - Register interest")
 	fmt.Println("  GET  /api/v1/contributions/{id}/registrations - List registrations")
 	fmt.Println("  POST /api/v1/contributions/{id}/assign    - Assign contributor")
+	fmt.Println("  POST /api/v1/contributions/{id}/confirm   - Confirm contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/share     - Share contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/offer     - Offer contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/accept-offer - Accept offered contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/submit-evidence - Submit evidence")
+	fmt.Println("  POST /api/v1/contributions/{id}/review    - Review contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/sign-off  - Sign off contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/approve-sub - Approve sub-contribution")
+	fmt.Println("  POST /api/v1/implementation-plans/{id}/sign-off - Sign off plan")
+	fmt.Println("  GET  /api/v1/projects/{id}/contributions  - List project contributions")
 	fmt.Println()
 	fmt.Println("  Org Config:")
 	fmt.Println("  GET  /api/v1/org/config               - Get org configuration")

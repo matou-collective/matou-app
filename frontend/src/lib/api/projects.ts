@@ -25,7 +25,12 @@ export interface Project {
   proposal_ids?: string[];
   implementation_plan_ids?: string[];
   project_steward_id?: string;
+  project_steward_name?: string;
   project_lead_id?: string;
+  project_lead_name?: string;
+  budget?: string;
+  start_date?: string;
+  end_date?: string;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -95,5 +100,29 @@ export async function linkProposalToProject(projectId: string, proposalId: strin
     body: JSON.stringify({ proposal_id: proposalId }),
   });
   if (!response.ok) throw new Error('Failed to link proposal');
+  return response.json();
+}
+
+export async function assignProjectRole(
+  projectId: string,
+  role: 'lead' | 'steward',
+  userId: string,
+): Promise<Project> {
+  log.info('Assigning %s role to %s on project %s', role, userId, projectId);
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/assign-role`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role, user_id: userId }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to assign role');
+  }
+  return response.json();
+}
+
+export async function listProjectContributions(projectId: string): Promise<{ contributions: import('src/lib/api/contributions').Contribution[] }> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/contributions`);
+  if (!response.ok) throw new Error('Failed to list project contributions');
   return response.json();
 }

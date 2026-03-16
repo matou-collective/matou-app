@@ -3,6 +3,26 @@ package contributions
 
 import "fmt"
 
+// UnconfirmedContributionsError is returned when plan sign-off is attempted
+// with contributions that have not yet reached the confirmed status.
+type UnconfirmedContributionsError struct {
+	IDs []string
+}
+
+func (e *UnconfirmedContributionsError) Error() string {
+	return fmt.Sprintf("contributions not confirmed: %v", e.IDs)
+}
+
+// BlockingChildrenError is returned when a parent contribution cannot advance
+// because one or more child contributions are not yet signed off.
+type BlockingChildrenError struct {
+	IDs []string
+}
+
+func (e *BlockingChildrenError) Error() string {
+	return fmt.Sprintf("child contributions not signed off: %v", e.IDs)
+}
+
 // --- Proposal transitions ---
 
 var proposalTransitions = map[ProposalStatus][]ProposalStatus{
@@ -32,7 +52,9 @@ func ValidateProposalTransition(from, to ProposalStatus) error {
 
 var contributionTransitions = map[ContributionStatus][]ContributionStatus{
 	ContribCreated:     {ContribConfirmed},
-	ContribConfirmed:   {ContribAssigned},
+	ContribConfirmed:   {ContribShared, ContribOffered, ContribAssigned, ContribArchived},
+	ContribShared:      {ContribOffered, ContribAssigned, ContribArchived},
+	ContribOffered:     {ContribAssigned, ContribArchived},
 	ContribAssigned:    {ContribChanged, ContribNeedsReview},
 	ContribChanged:     {ContribConfirmed},
 	ContribNeedsReview: {ContribApproved, ContribIncomplete, ContribDeclined},
@@ -207,6 +229,29 @@ func ValidateNoCyclicDependency(contribID, depID string, deps map[string][]strin
 	}
 	if walk(depID) {
 		return fmt.Errorf("adding dependency %s → %s would create a cycle", contribID, depID)
+	}
+	return nil
+}
+
+// ValidatePlanSignOff validates that an implementation plan is ready to be signed off.
+// Requirements: at least one milestone, each milestone has contributions, all contributions are confirmed.
+func ValidatePlanSignOff(plan *ImplementationPlan, milestones []Milestone, contributions []Contribution) error {
+	if len(milestones) == 0 {
+		return fmt.Errorf("plan must have at least one milestone")
+	}
+	for _, m := range milestones {
+		if len(m.ContributionIDs) == 0 {
+			return fmt.Errorf("milestone %q has no contributions", m.Title)
+		}
+	}
+	var unconfirmed []string
+	for _, c := range contributions {
+		if c.Status != ContribConfirmed {
+			unconfirmed = append(unconfirmed, c.ID)
+		}
+	}
+	if len(unconfirmed) > 0 {
+		return &UnconfirmedContributionsError{IDs: unconfirmed}
 	}
 	return nil
 }

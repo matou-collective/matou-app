@@ -10,76 +10,99 @@
       </button>
     </div>
 
+    <!-- Filter pills -->
+    <div class="filter-row">
+      <button
+        v-for="f in filters"
+        :key="f.value"
+        class="filter-pill"
+        :class="{ active: activeFilter === f.value }"
+        @click="activeFilter = f.value"
+      >
+        {{ f.label }}
+      </button>
+    </div>
+
     <div class="feed-container">
       <div v-if="projectsStore.isLoading" class="loading-state">
         <q-spinner-dots size="40px" color="primary" />
       </div>
-      <div v-else-if="projectsStore.projects.length === 0" class="empty-state">
+      <div v-else-if="filteredProjects.length === 0" class="empty-state">
         <Target :size="48" class="empty-icon" />
         <h3>No projects yet</h3>
-        <p>Create a project to organize contributions and track progress.</p>
+        <p>Create a project to organise contributions and track progress.</p>
       </div>
       <div v-else class="projects-list">
-        <div
-          v-for="project in projectsStore.projects"
+        <ProjectCard
+          v-for="project in filteredProjects"
           :key="project.id"
-          class="project-card"
-        >
-          <div class="project-card-header">
-            <h3>{{ project.title }}</h3>
-            <span class="status-badge" :class="project.status">{{ project.status }}</span>
-          </div>
-          <p class="project-description">{{ project.description }}</p>
-          <div class="project-meta">
-            <span>Created {{ new Date(project.created_at).toLocaleDateString() }}</span>
-          </div>
-        </div>
+          :project="project"
+          @click="router.push({ name: 'project-detail', params: { id: project.id } })"
+        />
       </div>
     </div>
 
     <!-- Create Project Dialog -->
-    <q-dialog v-model="showCreateDialog">
-      <q-card style="min-width: 500px">
-        <q-card-section>
-          <div class="text-h6">Create Project</div>
-        </q-card-section>
-        <q-card-section>
-          <q-input v-model="newProject.title" label="Title" outlined class="q-mb-md" />
-          <q-input v-model="newProject.description" label="Description" type="textarea" outlined />
-        </q-card-section>
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" v-close-popup />
-          <q-btn flat label="Create" color="primary" @click="createProject" :loading="creating" />
-        </q-card-actions>
-      </q-card>
-    </q-dialog>
+    <ProjectForm
+      v-model="showCreateDialog"
+      :is-submitting="creating"
+      :submit-error="createError"
+      @submit="handleCreateSubmit"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { Target } from 'lucide-vue-next';
+import { useQuasar } from 'quasar';
 import { useProjectsStore } from 'stores/projects';
+import { useOnboardingStore } from 'stores/onboarding';
+import ProjectCard from 'src/components/projects/ProjectCard.vue';
+import ProjectForm from 'src/components/projects/ProjectForm.vue';
 
+const router = useRouter();
+const $q = useQuasar();
 const projectsStore = useProjectsStore();
+const onboardingStore = useOnboardingStore();
+
 const showCreateDialog = ref(false);
 const creating = ref(false);
-const newProject = ref({ title: '', description: '', created_by: '' });
+const createError = ref<string | null>(null);
+const activeFilter = ref('all');
+
+const filters = [
+  { label: 'All', value: 'all' },
+  { label: 'Active', value: 'active' },
+  { label: 'Created', value: 'created' },
+  { label: 'Completed', value: 'completed' },
+  { label: 'Archived', value: 'archived' },
+];
+
+const filteredProjects = computed(() => {
+  if (activeFilter.value === 'all') return projectsStore.projects;
+  return projectsStore.projects.filter(p => p.status === activeFilter.value);
+});
 
 onMounted(() => {
   projectsStore.fetchProjects();
 });
 
-async function createProject() {
+async function handleCreateSubmit(data: { title: string; description: string }) {
   creating.value = true;
+  createError.value = null;
   try {
     await projectsStore.create({
-      title: newProject.value.title,
-      description: newProject.value.description,
-      created_by: newProject.value.created_by || 'current-user',
+      title: data.title,
+      description: data.description,
+      created_by: onboardingStore.profile.name || 'current-user',
     });
     showCreateDialog.value = false;
-    newProject.value = { title: '', description: '', created_by: '' };
+    $q.notify({ type: 'positive', message: 'Project created!' });
+  } catch (e) {
+    createError.value = e instanceof Error ? e.message : 'Failed to create project';
+    $q.notify({ type: 'negative', message: 'Failed to create project' });
   } finally {
     creating.value = false;
   }
@@ -96,36 +119,79 @@ async function createProject() {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
 .projects-title {
   font-size: 1.5rem;
   font-weight: 600;
   margin: 0;
+  color: var(--matou-foreground);
 }
 
 .projects-subtitle {
-  color: var(--text-secondary);
+  color: var(--matou-muted-foreground);
   margin: 4px 0 0;
+  font-size: 0.9rem;
 }
 
 .create-btn {
-  background: var(--matou-teal);
+  background: var(--matou-primary);
   color: white;
   border: none;
   border-radius: 8px;
   padding: 8px 16px;
   font-weight: 500;
   cursor: pointer;
-  &:hover { opacity: 0.9; }
+  font-size: 0.875rem;
+  transition: opacity 0.15s;
+  &:hover { opacity: 0.88; }
+}
+
+.filter-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.filter-pill {
+  background: transparent;
+  border: 1px solid var(--matou-border);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--matou-muted-foreground);
+  transition: all 0.15s;
+
+  &.active {
+    background: var(--matou-primary);
+    color: white;
+    border-color: var(--matou-primary);
+  }
+
+  &:hover:not(.active) {
+    border-color: var(--matou-accent);
+    color: var(--matou-foreground);
+  }
 }
 
 .loading-state,
 .empty-state {
   text-align: center;
   padding: 60px 20px;
-  color: var(--text-secondary);
+  color: var(--matou-muted-foreground);
+
+  h3 {
+    margin: 12px 0 8px;
+    font-size: 1.1rem;
+  }
+
+  p {
+    margin: 0;
+    font-size: 0.9rem;
+  }
 }
 
 .empty-icon {
@@ -133,40 +199,9 @@ async function createProject() {
   margin-bottom: 16px;
 }
 
-.project-card {
-  background: var(--card-bg, #fff);
-  border: 1px solid var(--border-color, #e5e7eb);
-  border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 12px;
-}
-
-.project-card-header {
+.projects-list {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-  h3 { margin: 0; font-size: 1.1rem; }
-}
-
-.status-badge {
-  font-size: 0.75rem;
-  padding: 2px 8px;
-  border-radius: 12px;
-  background: var(--matou-teal-light, #e0f7f4);
-  color: var(--matou-teal);
-  &.active { background: #d1fae5; color: #059669; }
-  &.completed { background: #dbeafe; color: #2563eb; }
-  &.archived { background: #f3f4f6; color: #6b7280; }
-}
-
-.project-description {
-  color: var(--text-secondary);
-  margin: 0 0 12px;
-}
-
-.project-meta {
-  font-size: 0.8rem;
-  color: var(--text-tertiary, #9ca3af);
+  flex-direction: column;
+  gap: 10px;
 }
 </style>

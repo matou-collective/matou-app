@@ -13,7 +13,7 @@ import (
 func setupTestDecisionPlansHandler() *DecisionPlansHandler {
 	store := contributions.NewMockStore()
 	svc := contributions.NewService(store)
-	return NewDecisionPlansHandler(svc, nil)
+	return NewDecisionPlansHandler(svc, nil, nil)
 }
 
 func TestDecisionPlansHandler_Create(t *testing.T) {

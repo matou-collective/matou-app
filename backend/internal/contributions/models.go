@@ -3,6 +3,25 @@ package contributions
 
 import "time"
 
+// FileRef represents a file attachment stored via the files service.
+type FileRef struct {
+	FileRef     string `json:"file_ref"`
+	FileName    string `json:"file_name"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size,omitempty"`
+	Category    string `json:"category"`
+	UploadedBy  string `json:"uploaded_by"`
+	UploadedAt  string `json:"uploaded_at"`
+}
+
+// InterestedContributor records a user who has registered interest in a shared contribution.
+type InterestedContributor struct {
+	UserID       string `json:"user_id"`
+	UserName     string `json:"user_name"`
+	RegisteredAt string `json:"registered_at"`
+	InterestNote string `json:"interest_note"`
+}
+
 // --- Proposal ---
 
 type ProposalStatus string
@@ -218,6 +237,15 @@ type GovernanceAction struct {
 
 // --- Implementation Plan ---
 
+// PlanStatus represents the lifecycle state of an implementation plan.
+type PlanStatus string
+
+const (
+	PlanDraft    PlanStatus = "draft"
+	PlanActive   PlanStatus = "active"
+	PlanArchived PlanStatus = "archived"
+)
+
 type ImplementationPlan struct {
 	ID               string      `json:"id"`
 	ProjectID        string      `json:"project_id"`
@@ -228,9 +256,27 @@ type ImplementationPlan struct {
 	CurrentStatus    string      `json:"current_status"`
 	CreatedAt        time.Time   `json:"created_at"`
 	UpdatedAt        time.Time   `json:"updated_at"`
+
+	// Plan lifecycle
+	Version     string     `json:"version,omitempty"`
+	Status      PlanStatus `json:"status,omitempty"`
+	SignedOff   bool       `json:"signed_off"`
+	SignedOffBy string     `json:"signed_off_by,omitempty"`
+	SignedOffAt *time.Time `json:"signed_off_at,omitempty"`
+	CreatedBy   string     `json:"created_by,omitempty"`
 }
 
 // --- Milestone ---
+
+// MilestoneStatus represents the lifecycle state of a milestone.
+type MilestoneStatus string
+
+const (
+	MilestonePlanned    MilestoneStatus = "planned"
+	MilestoneInProgress MilestoneStatus = "in_progress"
+	MilestoneCompleted  MilestoneStatus = "completed"
+	MilestoneDelayed    MilestoneStatus = "delayed"
+)
 
 type Milestone struct {
 	MilestoneID          string   `json:"milestone_id"`
@@ -238,6 +284,17 @@ type Milestone struct {
 	Title                string   `json:"title"`
 	Duration             string   `json:"duration"`
 	ContributionIDs      []string `json:"contribution_ids,omitempty"`
+
+	// Extended milestone fields
+	ProjectID          string          `json:"project_id,omitempty"`
+	Description        string          `json:"description,omitempty"`
+	StartDate          string          `json:"start_date,omitempty"`
+	EndDate            string          `json:"end_date,omitempty"`
+	Status             MilestoneStatus `json:"status,omitempty"`
+	SuccessCriteria    []string        `json:"success_criteria,omitempty"`
+	Dependencies       []string        `json:"dependencies,omitempty"`
+	BudgetAllocation   float64         `json:"budget_allocation,omitempty"`
+	ActualCost         float64         `json:"actual_cost,omitempty"`
 }
 
 // --- Contribution ---
@@ -247,6 +304,8 @@ type ContributionStatus string
 const (
 	ContribCreated     ContributionStatus = "created"
 	ContribConfirmed   ContributionStatus = "confirmed"
+	ContribShared      ContributionStatus = "shared"
+	ContribOffered     ContributionStatus = "offered"
 	ContribAssigned    ContributionStatus = "assigned"
 	ContribChanged     ContributionStatus = "changed"
 	ContribNeedsReview ContributionStatus = "needs_review"
@@ -299,6 +358,27 @@ type Contribution struct {
 	QualityRating          int                `json:"quality_rating,omitempty"`
 	SignedOffBy            string             `json:"signed_off_by,omitempty"`
 	SignedOffAt            *time.Time         `json:"signed_off_at,omitempty"`
+
+	// Sharing & offering
+	IsShared              bool                    `json:"is_shared,omitempty"`
+	SharedWithRoles       []string                `json:"shared_with_roles,omitempty"`
+	ShareLink             string                  `json:"share_link,omitempty"`
+	OfferedTo             string                  `json:"offered_to,omitempty"`
+	OfferedToName         string                  `json:"offered_to_name,omitempty"`
+	OfferedAt             *time.Time              `json:"offered_at,omitempty"`
+
+	// Interest registration
+	InterestedContributors []InterestedContributor `json:"interested_contributors,omitempty"`
+
+	// Contributor name denormalisation
+	AssignedContributorName string `json:"assigned_contributor_name,omitempty"`
+
+	// Evidence & completion (extended)
+	AcceptanceNotes   []string  `json:"acceptance_notes,omitempty"`
+	EvidenceURLs      []string  `json:"evidence_urls,omitempty"`
+	EvidenceFiles     []FileRef `json:"evidence_files,omitempty"`
+	TimeReportFile    *FileRef  `json:"time_report_file,omitempty"`
+	AttachmentFiles   []FileRef `json:"attachment_files,omitempty"`
 }
 
 // --- Contribution Registration ---

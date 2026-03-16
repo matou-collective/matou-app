@@ -14,24 +14,33 @@ import (
 type ProjectsHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
+	notifier     ContribNotifier
 }
 
 // NewProjectsHandler creates a new projects handler.
-func NewProjectsHandler(service *contributions.Service, spaceManager *anysync.SpaceManager) *ProjectsHandler {
+// notifier may be nil — notifications are skipped gracefully when not configured.
+func NewProjectsHandler(service *contributions.Service, spaceManager *anysync.SpaceManager, notifier ContribNotifier) *ProjectsHandler {
 	return &ProjectsHandler{
 		service:      service,
 		spaceManager: spaceManager,
+		notifier:     notifier,
 	}
 }
 
 // RegisterRoutes registers project routes on the mux.
-func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux) {
+// roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
+func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	createHandler := http.HandlerFunc(h.HandleCreate)
+	if roleLookup != nil {
+		createHandler = RBACMiddleware(roleLookup, RequireAction(contributions.ActionCreateProject, h.HandleCreate))
+	}
+
 	mux.HandleFunc("/api/v1/projects", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			h.HandleList(w, r)
 		case http.MethodPost:
-			h.HandleCreate(w, r)
+			createHandler(w, r)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -46,18 +55,44 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 
-		if len(parts) == 2 && parts[1] == "link-proposal" && r.Method == http.MethodPost {
-			h.HandleLinkProposal(w, r, id)
-			return
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "link-proposal":
+				if r.Method == http.MethodPost {
+					h.HandleLinkProposal(w, r, id)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "contributions":
+				if r.Method == http.MethodGet {
+					h.HandleListProjectContributions(w, r, id)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
 		}
 
 		switch r.Method {
 		case http.MethodGet:
 			h.HandleGet(w, r, id)
 		case http.MethodPut:
-			h.HandleUpdate(w, r, id)
+			if roleLookup != nil {
+				RBACMiddleware(roleLookup, RequireAction(contributions.ActionEditProject, func(w http.ResponseWriter, r *http.Request) {
+					h.HandleUpdate(w, r, id)
+				}))(w, r)
+			} else {
+				h.HandleUpdate(w, r, id)
+			}
 		case http.MethodDelete:
-			h.HandleDelete(w, r, id)
+			if roleLookup != nil {
+				RBACMiddleware(roleLookup, RequireAction(contributions.ActionDeleteProject, func(w http.ResponseWriter, r *http.Request) {
+					h.HandleDelete(w, r, id)
+				}))(w, r)
+			} else {
+				h.HandleDelete(w, r, id)
+			}
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -79,6 +114,19 @@ func (h *ProjectsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[Projects] project created: %s", project.ID)
+
+	// Notify the creator that their project was created
+	if h.notifier != nil && project.CreatedBy != "" {
+		h.notifier.Notify(&ContribNotification{
+			Type:        "project:created",
+			RecipientID: project.CreatedBy,
+			Title:       "Project Created",
+			Message:     "Project has been created: " + project.Title,
+			EntityID:    project.ID,
+			EntityType:  "project",
+		})
+	}
+
 	writeJSON(w, http.StatusCreated, project)
 }
 
@@ -133,6 +181,24 @@ func (h *ProjectsHandler) HandleDelete(w http.ResponseWriter, r *http.Request, i
 	writeJSON(w, http.StatusOK, map[string]string{"success": "true"})
 }
 
+// HandleListProjectContributions handles GET /api/v1/projects/{id}/contributions
+func (h *ProjectsHandler) HandleListProjectContributions(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contribs, err := h.service.ListContributionsByProject(r.Context(), spaceID, id)
+	if err != nil {
+		log.Printf("[Projects] failed to list contributions for project %s: %v", id, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if contribs == nil {
+		contribs = []*contributions.Contribution{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"contributions": contribs,
+		"total":         len(contribs),
+	})
+}
+
 // HandleLinkProposal handles POST /api/v1/projects/{id}/link-proposal
 func (h *ProjectsHandler) HandleLinkProposal(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
@@ -152,8 +218,9 @@ func (h *ProjectsHandler) HandleLinkProposal(w http.ResponseWriter, r *http.Requ
 }
 
 // setupTestProjectsHandler creates a handler with mock store for testing.
+// roleLookup is nil so RBAC is skipped in tests.
 func setupTestProjectsHandler() *ProjectsHandler {
 	store := contributions.NewMockStore()
 	svc := contributions.NewService(store)
-	return NewProjectsHandler(svc, nil)
+	return NewProjectsHandler(svc, nil, nil)
 }

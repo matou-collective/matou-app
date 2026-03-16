@@ -6,10 +6,27 @@ import {
   getContribution as apiGet,
   transitionContribution as apiTransition,
   updateContribution as apiUpdate,
+  confirmContribution as apiConfirm,
+  shareContribution as apiShare,
+  offerContribution as apiOffer,
+  acceptOffer as apiAcceptOffer,
+  registerInterest as apiRegisterInterest,
+  submitEvidence as apiSubmitEvidence,
+  submitReview as apiSubmitReview,
+  signOffContribution as apiSignOff,
+  createChildContribution as apiCreateChild,
+  approveSub as apiApproveSub,
   type Contribution,
   type CreateContributionRequest,
   type UpdateContributionRequest,
 } from 'src/lib/api/contributions';
+import type {
+  ShareContributionRequest,
+  OfferContributionRequest,
+  RegisterInterestRequest,
+  SubmitEvidenceRequest,
+  SubmitReviewRequest,
+} from 'src/types/projects';
 import { createLogger } from 'src/lib/logging';
 
 const log = createLogger('ContributionsStore');
@@ -100,6 +117,133 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  function _patch(updated: Contribution) {
+    const idx = contributions.value.findIndex(c => c.id === updated.id);
+    if (idx >= 0) contributions.value[idx] = updated;
+    if (currentContribution.value?.id === updated.id) currentContribution.value = updated;
+  }
+
+  async function confirm(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiConfirm(id);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Confirm failed';
+      throw e;
+    }
+  }
+
+  async function share(id: string, req: ShareContributionRequest) {
+    error.value = null;
+    try {
+      const updated = await apiShare(id, req);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Share failed';
+      throw e;
+    }
+  }
+
+  async function offer(id: string, req: OfferContributionRequest) {
+    error.value = null;
+    try {
+      const updated = await apiOffer(id, req);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Offer failed';
+      throw e;
+    }
+  }
+
+  async function acceptOffer(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiAcceptOffer(id);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Accept offer failed';
+      throw e;
+    }
+  }
+
+  async function registerInterest(id: string, req: RegisterInterestRequest) {
+    error.value = null;
+    try {
+      const updated = await apiRegisterInterest(id, req);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Register interest failed';
+      throw e;
+    }
+  }
+
+  async function submitEvidence(id: string, req: SubmitEvidenceRequest) {
+    error.value = null;
+    try {
+      const updated = await apiSubmitEvidence(id, req);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Submit evidence failed';
+      throw e;
+    }
+  }
+
+  async function review(id: string, req: SubmitReviewRequest) {
+    error.value = null;
+    try {
+      const updated = await apiSubmitReview(id, req);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Review failed';
+      throw e;
+    }
+  }
+
+  async function signOff(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiSignOff(id);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Sign off failed';
+      throw e;
+    }
+  }
+
+  async function createChild(parentId: string, req: CreateContributionRequest) {
+    error.value = null;
+    try {
+      const result = await apiCreateChild(parentId, req);
+      contributions.value.push(result.child);
+      _patch(result.parent);
+      return result;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Create sub-contribution failed';
+      throw e;
+    }
+  }
+
+  async function approveSub(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiApproveSub(id);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Approve sub-contribution failed';
+      throw e;
+    }
+  }
+
   return {
     contributions,
     currentContribution,
@@ -112,5 +256,15 @@ export const useContributionsStore = defineStore('contributions', () => {
     create,
     transition,
     update,
+    confirm,
+    share,
+    offer,
+    acceptOffer,
+    registerInterest,
+    submitEvidence,
+    review,
+    signOff,
+    createChild,
+    approveSub,
   };
 });

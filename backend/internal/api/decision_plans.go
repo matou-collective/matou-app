@@ -14,11 +14,13 @@ import (
 type DecisionPlansHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
+	notifier     ContribNotifier
 }
 
 // NewDecisionPlansHandler creates a new decision plans handler.
-func NewDecisionPlansHandler(service *contributions.Service, spaceManager *anysync.SpaceManager) *DecisionPlansHandler {
-	return &DecisionPlansHandler{service: service, spaceManager: spaceManager}
+// notifier may be nil — notifications are skipped gracefully when not configured.
+func NewDecisionPlansHandler(service *contributions.Service, spaceManager *anysync.SpaceManager, notifier ContribNotifier) *DecisionPlansHandler {
+	return &DecisionPlansHandler{service: service, spaceManager: spaceManager, notifier: notifier}
 }
 
 // RegisterRoutes registers decision plan and governance action routes on the mux.
@@ -136,6 +138,40 @@ func (h *DecisionPlansHandler) HandleTransition(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Send typed notification based on the new decision plan status
+	if h.notifier != nil {
+		var notifType, recipientID, title, message string
+		switch contributions.DecisionPlanStatus(req.Status) {
+		case contributions.DecisionPlanSubmitted:
+			// Notify the steward that a plan has been submitted for their sign-off
+			if dp.ProposalStewardID != "" {
+				notifType = "decision_plan:submitted"
+				recipientID = dp.ProposalStewardID
+				title = "Decision Plan Submitted"
+				message = "A decision plan is ready for sign-off: " + dp.Title
+			}
+		case contributions.DecisionPlanSignedOff:
+			// Notify the proposal lead that the plan has been signed off
+			if dp.ProposalLeadID != "" {
+				notifType = "decision_plan:signed_off"
+				recipientID = dp.ProposalLeadID
+				title = "Decision Plan Signed Off"
+				message = "Decision plan has been signed off: " + dp.Title
+			}
+		}
+		if notifType != "" && recipientID != "" {
+			h.notifier.Notify(&ContribNotification{
+				Type:        notifType,
+				RecipientID: recipientID,
+				Title:       title,
+				Message:     message,
+				EntityID:    id,
+				EntityType:  "decision_plan",
+			})
+		}
+	}
+
 	writeJSON(w, http.StatusOK, dp)
 }
 

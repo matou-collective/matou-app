@@ -675,9 +675,10 @@ func (s *Service) ListImplementationPlans(ctx context.Context, spaceID string) (
 // --- Milestones ---
 
 type CreateMilestoneRequest struct {
-	ImplementationPlanID string `json:"implementation_plan_id"`
-	Title                string `json:"title"`
-	Duration             string `json:"duration"`
+	ImplementationPlanID string   `json:"implementation_plan_id"`
+	Title                string   `json:"title"`
+	Duration             string   `json:"duration"`
+	ContributionIDs      []string `json:"contribution_ids,omitempty"`
 }
 
 func (s *Service) AddMilestone(ctx context.Context, spaceID string, req *CreateMilestoneRequest) (*Milestone, error) {
@@ -686,6 +687,7 @@ func (s *Service) AddMilestone(ctx context.Context, spaceID string, req *CreateM
 		ImplementationPlanID: req.ImplementationPlanID,
 		Title:                req.Title,
 		Duration:             req.Duration,
+		ContributionIDs:      req.ContributionIDs,
 	}
 	if err := s.store.Save(spaceID, ms.MilestoneID, "milestone", ms); err != nil {
 		return nil, err
@@ -741,6 +743,17 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, err
 	}
+
+	// Update parent's ChildContributionIDs if this is a sub-contribution
+	if c.ParentContributionID != "" {
+		parent, err := s.GetContribution(ctx, spaceID, c.ParentContributionID)
+		if err == nil {
+			parent.ChildContributionIDs = append(parent.ChildContributionIDs, c.ID)
+			parent.UpdatedAt = now
+			_ = s.store.Save(spaceID, parent.ID, "contribution", parent)
+		}
+	}
+
 	return c, nil
 }
 
@@ -806,8 +819,8 @@ func (s *Service) RegisterInterest(ctx context.Context, spaceID, contribID, user
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
 	}
-	if c.Status != ContribConfirmed {
-		return nil, fmt.Errorf("can only register interest on confirmed contributions, current status: %s", c.Status)
+	if c.Status != ContribShared {
+		return nil, fmt.Errorf("can only register interest on shared contributions, current status: %s", c.Status)
 	}
 	reg := &ContributionRegistration{
 		ID:             generateID("reg"),
@@ -844,8 +857,8 @@ func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, use
 	if err != nil {
 		return nil, err
 	}
-	if c.Status != ContribConfirmed {
-		return nil, fmt.Errorf("contribution must be confirmed to assign, current: %s", c.Status)
+	if c.Status != ContribConfirmed && c.Status != ContribShared {
+		return nil, fmt.Errorf("contribution must be confirmed or shared to assign, current: %s", c.Status)
 	}
 	c.AssignedContributorID = userID
 	c.Status = ContribAssigned
@@ -854,6 +867,328 @@ func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, use
 		return nil, err
 	}
 	return c, nil
+}
+
+// SubmitEvidenceRequest carries evidence data for a contribution completion.
+type SubmitEvidenceRequest struct {
+	CompletionNotes string   `json:"completion_notes"`
+	EvidenceURLs    []string `json:"evidence_urls,omitempty"`
+}
+
+// ReviewRequest carries a review decision and supporting details.
+type ReviewRequest struct {
+	Decision      string `json:"decision"` // "approved", "incomplete", "declined"
+	ReviewNotes   string `json:"review_notes"`
+	QualityRating int    `json:"quality_rating,omitempty"`
+}
+
+// ConfirmContribution transitions a contribution from created → confirmed.
+func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contributionID string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribCreated {
+		return nil, fmt.Errorf("contribution must be in created status to confirm, current: %s", c.Status)
+	}
+	if err := ValidateContributionTransition(c.Status, ContribConfirmed); err != nil {
+		return nil, err
+	}
+	c.Status = ContribConfirmed
+	c.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
+// ShareContribution transitions a confirmed contribution to shared, broadcasting it to eligible roles.
+func (s *Service) ShareContribution(ctx context.Context, spaceID, contributionID string, sharedWithRoles []string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribConfirmed {
+		return nil, fmt.Errorf("contribution must be confirmed to share, current: %s", c.Status)
+	}
+	if err := ValidateContributionTransition(c.Status, ContribShared); err != nil {
+		return nil, err
+	}
+	c.IsShared = true
+	c.SharedWithRoles = sharedWithRoles
+	c.Status = ContribShared
+	c.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
+// OfferContribution transitions a confirmed contribution to offered, directing it at a specific user.
+func (s *Service) OfferContribution(ctx context.Context, spaceID, contributionID, offeredTo, offeredToName string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribConfirmed && c.Status != ContribShared {
+		return nil, fmt.Errorf("contribution must be confirmed or shared to offer, current: %s", c.Status)
+	}
+	now := time.Now()
+	c.OfferedTo = offeredTo
+	c.OfferedToName = offeredToName
+	c.OfferedAt = &now
+	c.Status = ContribOffered
+	c.UpdatedAt = now
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
+// AcceptOffer assigns a contribution to the accepting user.
+// For offered contributions the userID must match OfferedTo.
+// For shared contributions any interested user may accept.
+func (s *Service) AcceptOffer(ctx context.Context, spaceID, contributionID, userID string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	switch c.Status {
+	case ContribOffered:
+		if c.OfferedTo != userID {
+			return nil, fmt.Errorf("contribution is offered to %s, not %s", c.OfferedTo, userID)
+		}
+	case ContribShared:
+		// Any user may accept a shared contribution
+	default:
+		return nil, fmt.Errorf("contribution must be offered or shared to accept, current: %s", c.Status)
+	}
+	if err := ValidateContributionTransition(c.Status, ContribAssigned); err != nil {
+		return nil, err
+	}
+	c.AssignedContributorID = userID
+	c.Status = ContribAssigned
+	c.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
+// SubmitEvidence records evidence for an assigned contribution and transitions it to needs_review.
+// All child contributions must be signed_off before the parent can submit evidence.
+func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID string, req SubmitEvidenceRequest) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribAssigned {
+		return nil, fmt.Errorf("contribution must be assigned to submit evidence, current: %s", c.Status)
+	}
+
+	// Verify all children are signed off
+	if len(c.ChildContributionIDs) > 0 {
+		var blocking []string
+		for _, childID := range c.ChildContributionIDs {
+			child, err := s.GetContribution(ctx, spaceID, childID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load child contribution %s: %w", childID, err)
+			}
+			if child.Status != ContribSignedOff && child.Status != ContribRewarded && child.Status != ContribArchived {
+				blocking = append(blocking, childID)
+			}
+		}
+		if len(blocking) > 0 {
+			return nil, &BlockingChildrenError{IDs: blocking}
+		}
+	}
+
+	if err := ValidateContributionTransition(c.Status, ContribNeedsReview); err != nil {
+		return nil, err
+	}
+	c.CompletionNotes = req.CompletionNotes
+	if req.EvidenceURLs != nil {
+		c.EvidenceURLs = req.EvidenceURLs
+	}
+	c.Status = ContribNeedsReview
+	c.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
+// ReviewContribution records a review decision and transitions the contribution accordingly.
+// decision must be one of "approved", "incomplete", or "declined".
+func (s *Service) ReviewContribution(ctx context.Context, spaceID, contributionID string, req ReviewRequest) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribNeedsReview {
+		return nil, fmt.Errorf("contribution must be in needs_review to review, current: %s", c.Status)
+	}
+
+	var newStatus ContributionStatus
+	switch req.Decision {
+	case "approved":
+		newStatus = ContribApproved
+	case "incomplete":
+		newStatus = ContribIncomplete
+	case "declined":
+		newStatus = ContribDeclined
+	default:
+		return nil, fmt.Errorf("invalid review decision %q: must be approved, incomplete, or declined", req.Decision)
+	}
+
+	if err := ValidateContributionTransition(c.Status, newStatus); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	c.ReviewOutcome = req.Decision
+	c.ReviewFeedback = req.ReviewNotes
+	c.ReviewedAt = &now
+	if req.QualityRating > 0 {
+		c.QualityRating = req.QualityRating
+	}
+	c.Status = newStatus
+	c.UpdatedAt = now
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
+// SignOffContribution transitions an approved contribution to signed_off.
+func (s *Service) SignOffContribution(ctx context.Context, spaceID, contributionID, userID string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribApproved {
+		return nil, fmt.Errorf("contribution must be approved to sign off, current: %s", c.Status)
+	}
+	if err := ValidateContributionTransition(c.Status, ContribSignedOff); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	c.SignedOffBy = userID
+	c.SignedOffAt = &now
+	c.Status = ContribSignedOff
+	c.UpdatedAt = now
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
+// ApproveSubContribution approves a child contribution by assigning the parent's contributor and
+// transitioning the child from created → assigned.
+func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contributionID string) (*Contribution, error) {
+	child, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if child.ParentContributionID == "" {
+		return nil, fmt.Errorf("contribution %s is not a sub-contribution (no parent)", contributionID)
+	}
+	if child.Status != ContribCreated {
+		return nil, fmt.Errorf("sub-contribution must be in created status to approve, current: %s", child.Status)
+	}
+
+	parent, err := s.GetContribution(ctx, spaceID, child.ParentContributionID)
+	if err != nil {
+		return nil, fmt.Errorf("parent contribution not found: %w", err)
+	}
+
+	// The sub-contribution inherits the parent's assigned contributor
+	if parent.AssignedContributorID == "" {
+		return nil, fmt.Errorf("parent contribution %s has no assigned contributor", parent.ID)
+	}
+
+	if err := ValidateContributionTransition(child.Status, ContribAssigned); err != nil {
+		return nil, err
+	}
+
+	child.AssignedContributorID = parent.AssignedContributorID
+	child.Status = ContribAssigned
+	child.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return child, nil
+}
+
+// SignOffPlan marks an implementation plan as signed off after validating all milestones and contributions.
+func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID string) (*ImplementationPlan, error) {
+	plan, err := s.GetImplementationPlan(ctx, spaceID, planID)
+	if err != nil {
+		return nil, fmt.Errorf("implementation plan not found: %w", err)
+	}
+	if plan.SignedOff {
+		return nil, fmt.Errorf("plan is already signed off")
+	}
+
+	// Load all milestones for this plan
+	rawMilestones, err := s.store.List(spaceID, "milestone")
+	if err != nil {
+		return nil, fmt.Errorf("loading milestones: %w", err)
+	}
+	var milestones []Milestone
+	for _, r := range rawMilestones {
+		var m Milestone
+		if err := json.Unmarshal(r, &m); err == nil && m.ImplementationPlanID == planID {
+			milestones = append(milestones, m)
+		}
+	}
+
+	// Collect all contribution IDs referenced by milestones
+	contribIDSet := map[string]struct{}{}
+	for _, m := range milestones {
+		for _, cid := range m.ContributionIDs {
+			contribIDSet[cid] = struct{}{}
+		}
+	}
+
+	// Load all referenced contributions
+	var planContribs []Contribution
+	for cid := range contribIDSet {
+		c, err := s.GetContribution(ctx, spaceID, cid)
+		if err != nil {
+			return nil, fmt.Errorf("loading contribution %s: %w", cid, err)
+		}
+		planContribs = append(planContribs, *c)
+	}
+
+	if err := ValidatePlanSignOff(plan, milestones, planContribs); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	plan.SignedOff = true
+	plan.SignedOffBy = userID
+	plan.SignedOffAt = &now
+	plan.UpdatedAt = now
+	if err := s.store.Save(spaceID, plan.ID, "implementation_plan", plan); err != nil {
+		return nil, fmt.Errorf("saving plan: %w", err)
+	}
+	return plan, nil
+}
+
+// ListContributionsByProject returns all contributions that belong to the given project.
+func (s *Service) ListContributionsByProject(ctx context.Context, spaceID, projectID string) ([]*Contribution, error) {
+	all, err := s.ListContributions(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	var result []*Contribution
+	for _, c := range all {
+		if c.ProjectID == projectID {
+			result = append(result, c)
+		}
+	}
+	return result, nil
 }
 
 // SaveContribution persists a contribution after external updates (e.g., evidence, review feedback).

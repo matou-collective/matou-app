@@ -16,13 +16,16 @@ type ProposalsHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
 	broker       *EventBroker
+	notifier     ContribNotifier
 }
 
 // NewProposalsHandler creates a new proposals handler.
-func NewProposalsHandler(service *contributions.Service, spaceManager *anysync.SpaceManager) *ProposalsHandler {
+// notifier may be nil — notifications are skipped gracefully when not configured.
+func NewProposalsHandler(service *contributions.Service, spaceManager *anysync.SpaceManager, notifier ContribNotifier) *ProposalsHandler {
 	return &ProposalsHandler{
 		service:      service,
 		spaceManager: spaceManager,
+		notifier:     notifier,
 	}
 }
 
@@ -105,6 +108,19 @@ func (h *ProposalsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	log.Printf("[Proposals] proposal created: %s by %s", proposal.ID, proposal.ProposerID)
+
+	// Notify proposer that their proposal was submitted
+	if h.notifier != nil && proposal.ProposerID != "" {
+		h.notifier.Notify(&ContribNotification{
+			Type:        "proposal:submitted",
+			RecipientID: proposal.ProposerID,
+			Title:       "Proposal Submitted",
+			Message:     "Your proposal has been submitted: " + proposal.Title,
+			EntityID:    proposal.ID,
+			EntityType:  "proposal",
+		})
+	}
+
 	writeJSON(w, http.StatusCreated, proposal)
 }
 
@@ -170,7 +186,7 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 		Action:     action,
 	})
 
-	// Broadcast SSE event
+	// Broadcast raw SSE event for real-time UI updates
 	if h.broker != nil {
 		h.broker.Broadcast(SSEEvent{
 			Type: "proposal:status_changed",
@@ -179,6 +195,31 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 				"status":      req.Status,
 			},
 		})
+	}
+
+	// Send typed notification to the proposer for meaningful status transitions
+	if h.notifier != nil && proposal.ProposerID != "" {
+		var notifType, title, message string
+		switch contributions.ProposalStatus(req.Status) {
+		case contributions.ProposalApproved:
+			notifType = "proposal:approved"
+			title = "Proposal Approved"
+			message = "Your proposal has been approved: " + proposal.Title
+		case contributions.ProposalRejected:
+			notifType = "proposal:rejected"
+			title = "Proposal Rejected"
+			message = "Your proposal was not approved: " + proposal.Title
+		}
+		if notifType != "" {
+			h.notifier.Notify(&ContribNotification{
+				Type:        notifType,
+				RecipientID: proposal.ProposerID,
+				Title:       title,
+				Message:     message,
+				EntityID:    id,
+				EntityType:  "proposal",
+			})
+		}
 	}
 
 	log.Printf("[Proposals] proposal %s transitioned to %s", id, req.Status)
@@ -273,7 +314,7 @@ func (h *ProposalsHandler) HandleListHistory(w http.ResponseWriter, r *http.Requ
 func setupTestProposalsHandler() *ProposalsHandler {
 	store := contributions.NewMockStore()
 	svc := contributions.NewService(store)
-	return NewProposalsHandler(svc, nil)
+	return NewProposalsHandler(svc, nil, nil)
 }
 
 // resolveCommunitySpaceID resolves the community space ID.

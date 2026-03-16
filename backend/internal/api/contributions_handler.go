@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -33,6 +34,8 @@ type ContributionsHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
 	notifier     ContribNotifier
+	roleLookup   RoleLookup
+	broker       *EventBroker
 }
 
 // NewContributionsHandler creates a new contributions handler.
@@ -45,8 +48,16 @@ func NewContributionsHandler(service *contributions.Service, spaceManager *anysy
 	}
 }
 
+// SetBroker sets the event broker for SSE broadcasting.
+func (h *ContributionsHandler) SetBroker(broker *EventBroker) {
+	h.broker = broker
+}
+
 // RegisterRoutes registers contribution routes on the mux.
-func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux) {
+// roleLookup is required for RBAC on mutating endpoints; pass nil to skip auth (tests only).
+func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	h.roleLookup = roleLookup
+
 	mux.HandleFunc("/api/v1/contributions", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -97,6 +108,62 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux) {
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "confirm":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionConfirmContribution, h.HandleConfirm)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "share":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionShareContribution, h.HandleShare)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "offer":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionOfferContribution, h.HandleOffer)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "accept-offer":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionAcceptOffer, h.HandleAcceptOffer)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "submit-evidence":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionSubmitEvidence, h.HandleSubmitEvidence)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "review":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionReviewContribution, h.HandleReview)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "sign-off":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionSignOffContribution, h.HandleSignOff)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "approve-sub":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionApproveSubContrib, h.HandleApproveSub)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			}
 		}
 
@@ -109,6 +176,15 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
 	}))
+}
+
+// withRBAC applies RBAC middleware when a roleLookup is configured.
+// When roleLookup is nil (tests), the handler is invoked directly.
+func (h *ContributionsHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
 }
 
 // HandleCreate handles POST /api/v1/contributions
@@ -168,6 +244,48 @@ func (h *ContributionsHandler) HandleTransition(w http.ResponseWriter, r *http.R
 		return
 	}
 	log.Printf("[Contributions] contribution %s transitioned to %s", id, req.Status)
+
+	// Notify relevant parties based on the new status
+	if h.notifier != nil {
+		var notifType, recipientID, title, message string
+		switch contributions.ContributionStatus(req.Status) {
+		case contributions.ContribNeedsReview:
+			// Notify the project lead (creator) that work is ready for review
+			if contrib.CreatedBy != "" {
+				notifType = "contribution:needs_review"
+				recipientID = contrib.CreatedBy
+				title = "Contribution Ready for Review"
+				message = contrib.Title + " is ready for review"
+			}
+		case contributions.ContribApproved:
+			// Notify the assigned contributor that their work was approved
+			if contrib.AssignedContributorID != "" {
+				notifType = "contribution:approved"
+				recipientID = contrib.AssignedContributorID
+				title = "Contribution Approved"
+				message = "Your contribution has been approved: " + contrib.Title
+			}
+		case contributions.ContribDeclined:
+			// Notify the assigned contributor that their work was declined
+			if contrib.AssignedContributorID != "" {
+				notifType = "contribution:declined"
+				recipientID = contrib.AssignedContributorID
+				title = "Contribution Declined"
+				message = "Your contribution was declined: " + contrib.Title
+			}
+		}
+		if notifType != "" && recipientID != "" {
+			h.notifier.Notify(&ContribNotification{
+				Type:        notifType,
+				RecipientID: recipientID,
+				Title:       title,
+				Message:     message,
+				EntityID:    id,
+				EntityType:  "contribution",
+			})
+		}
+	}
+
 	writeJSON(w, http.StatusOK, contrib)
 }
 
@@ -307,6 +425,320 @@ func (h *ContributionsHandler) HandleAssign(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleConfirm handles POST /api/v1/contributions/{id}/confirm
+// RBAC: ActionConfirmContribution (steward/admin).
+func (h *ContributionsHandler) HandleConfirm(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/confirm")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.ConfirmContribution(r.Context(), spaceID, id)
+	if err != nil {
+		log.Printf("[Contributions] ConfirmContribution failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s confirmed", id)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:confirmed",
+			Data: map[string]string{"contribution_id": id},
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleShare handles POST /api/v1/contributions/{id}/share
+// Body: {"shared_with_roles": [...]}.
+// RBAC: ActionShareContribution (lead/steward/admin).
+func (h *ContributionsHandler) HandleShare(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/share")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req struct {
+		SharedWithRoles []string `json:"shared_with_roles"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.ShareContribution(r.Context(), spaceID, id, req.SharedWithRoles)
+	if err != nil {
+		log.Printf("[Contributions] ShareContribution failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s shared with roles %v", id, req.SharedWithRoles)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:shared",
+			Data: map[string]interface{}{
+				"contribution_id":   id,
+				"shared_with_roles": req.SharedWithRoles,
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleOffer handles POST /api/v1/contributions/{id}/offer
+// Body: {"offered_to": "...", "offered_to_name": "..."}.
+// RBAC: ActionOfferContribution (lead/steward/admin).
+func (h *ContributionsHandler) HandleOffer(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/offer")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req struct {
+		OfferedTo     string `json:"offered_to"`
+		OfferedToName string `json:"offered_to_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if req.OfferedTo == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "offered_to is required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.OfferContribution(r.Context(), spaceID, id, req.OfferedTo, req.OfferedToName)
+	if err != nil {
+		log.Printf("[Contributions] OfferContribution failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s offered to %s", id, req.OfferedTo)
+	if h.notifier != nil {
+		h.notifier.Notify(&ContribNotification{
+			Type:        "contribution:offered",
+			RecipientID: req.OfferedTo,
+			Title:       "Contribution Offered",
+			Message:     "You have been offered: " + contrib.Title,
+			EntityID:    id,
+			EntityType:  "contribution",
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleAcceptOffer handles POST /api/v1/contributions/{id}/accept-offer
+// RBAC: ActionAcceptOffer (contributor/member).
+func (h *ContributionsHandler) HandleAcceptOffer(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/accept-offer")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	userID := GetUserAID(r)
+	if userID == "" {
+		// Fallback: read from body for backward compatibility
+		var req struct {
+			UserID string `json:"user_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.UserID != "" {
+			userID = req.UserID
+		}
+	}
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user identity required (X-User-AID header or user_id body field)"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.AcceptOffer(r.Context(), spaceID, id, userID)
+	if err != nil {
+		log.Printf("[Contributions] AcceptOffer failed for %s by %s: %v", id, userID, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s accepted by %s", id, userID)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:accepted",
+			Data: map[string]string{
+				"contribution_id": id,
+				"user_id":         userID,
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleSubmitEvidence handles POST /api/v1/contributions/{id}/submit-evidence
+// RBAC: ActionSubmitEvidence (contributor).
+func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/submit-evidence")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req contributions.SubmitEvidenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.SubmitEvidence(r.Context(), spaceID, id, req)
+	if err != nil {
+		log.Printf("[Contributions] SubmitEvidence failed for %s: %v", id, err)
+		var blockingErr *contributions.BlockingChildrenError
+		if errors.As(err, &blockingErr) {
+			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"error":              "blocking child contributions",
+				"blocking_children":  blockingErr.IDs,
+			})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] evidence submitted for %s", id)
+	if h.notifier != nil && contrib.CreatedBy != "" {
+		h.notifier.Notify(&ContribNotification{
+			Type:        "contribution:needs_review",
+			RecipientID: contrib.CreatedBy,
+			Title:       "Contribution Ready for Review",
+			Message:     contrib.Title + " is ready for review",
+			EntityID:    id,
+			EntityType:  "contribution",
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleReview handles POST /api/v1/contributions/{id}/review
+// Body: ReviewRequest.
+// RBAC: ActionReviewContribution (lead/admin).
+func (h *ContributionsHandler) HandleReview(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/review")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req contributions.ReviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if req.Decision == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "decision is required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.ReviewContribution(r.Context(), spaceID, id, req)
+	if err != nil {
+		log.Printf("[Contributions] ReviewContribution failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s reviewed: %s", id, req.Decision)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:reviewed",
+			Data: map[string]string{
+				"contribution_id": id,
+				"decision":        req.Decision,
+			},
+		})
+	}
+	// Notify contributor of review outcome
+	if h.notifier != nil && contrib.AssignedContributorID != "" {
+		var notifType, title, message string
+		switch req.Decision {
+		case "approved":
+			notifType = "contribution:approved"
+			title = "Contribution Approved"
+			message = "Your contribution has been approved: " + contrib.Title
+		case "declined":
+			notifType = "contribution:declined"
+			title = "Contribution Declined"
+			message = "Your contribution was declined: " + contrib.Title
+		case "incomplete":
+			notifType = "contribution:incomplete"
+			title = "Contribution Incomplete"
+			message = "Your contribution needs more work: " + contrib.Title
+		}
+		if notifType != "" {
+			h.notifier.Notify(&ContribNotification{
+				Type:        notifType,
+				RecipientID: contrib.AssignedContributorID,
+				Title:       title,
+				Message:     message,
+				EntityID:    id,
+				EntityType:  "contribution",
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleSignOff handles POST /api/v1/contributions/{id}/sign-off
+// RBAC: ActionSignOffContribution (steward/admin).
+func (h *ContributionsHandler) HandleSignOff(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/sign-off")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	userID := GetUserAID(r)
+	if userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.SignOffContribution(r.Context(), spaceID, id, userID)
+	if err != nil {
+		log.Printf("[Contributions] SignOffContribution failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s signed off by %s", id, userID)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:signed_off",
+			Data: map[string]string{
+				"contribution_id": id,
+				"signed_off_by":   userID,
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleApproveSub handles POST /api/v1/contributions/{id}/approve-sub
+// RBAC: ActionApproveSubContrib (lead/admin).
+func (h *ContributionsHandler) HandleApproveSub(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/approve-sub")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.ApproveSubContribution(r.Context(), spaceID, id)
+	if err != nil {
+		log.Printf("[Contributions] ApproveSubContribution failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] sub-contribution %s approved", id)
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// extractContribID parses the contribution ID from the URL path.
+// prefix is the path prefix (e.g. "/api/v1/contributions/") and
+// suffix is the sub-resource suffix (e.g. "/confirm").
+func extractContribID(r *http.Request, prefix, suffix string) string {
+	path := strings.TrimPrefix(r.URL.Path, prefix)
+	path = strings.TrimSuffix(path, suffix)
+	return path
 }
 
 // setupTestContributionsHandler creates a handler with mock store for testing.

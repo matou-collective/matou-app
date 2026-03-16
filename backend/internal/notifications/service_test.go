@@ -135,3 +135,124 @@ func TestService_AssignsIDAndTimestamp(t *testing.T) {
 		t.Error("expected CreatedAt to be set")
 	}
 }
+
+// TestService_AllNotificationTypes verifies that every notification type constant
+// can be dispatched through the service without error.
+func TestService_AllNotificationTypes(t *testing.T) {
+	types := []struct {
+		notifType  NotificationType
+		entityType string
+	}{
+		{NotifyProposalSubmitted, "proposal"},
+		{NotifyProposalEndorsed, "proposal"},
+		{NotifyProposalApproved, "proposal"},
+		{NotifyProposalRejected, "proposal"},
+		{NotifyProjectCreated, "project"},
+		{NotifyContributionAssigned, "contribution"},
+		{NotifyContributionReview, "contribution"},
+		{NotifyContributionApproved, "contribution"},
+		{NotifyContributionDeclined, "contribution"},
+		{NotifyContributionRegistered, "contribution"},
+		{NotifyDecisionPlanSubmitted, "decision_plan"},
+		{NotifyDecisionPlanSignedOff, "decision_plan"},
+		{NotifyGovActionCompleted, "decision_plan"},
+	}
+
+	for _, tc := range types {
+		t.Run(string(tc.notifType), func(t *testing.T) {
+			broker := &MockBroker{}
+			svc := NewService(broker, nil)
+
+			err := svc.Notify(&Notification{
+				Type:        tc.notifType,
+				RecipientID: "user-1",
+				Title:       "Test",
+				Message:     "msg",
+				EntityID:    "entity-1",
+				EntityType:  tc.entityType,
+				Channel:     ChannelInApp,
+			})
+			if err != nil {
+				t.Fatalf("Notify(%s) failed: %v", tc.notifType, err)
+			}
+			if len(broker.events) != 1 {
+				t.Errorf("expected 1 broadcast for %s, got %d", tc.notifType, len(broker.events))
+			}
+			evt := broker.events[0]
+			if evt.Type != string(tc.notifType) {
+				t.Errorf("expected event type %q, got %q", tc.notifType, evt.Type)
+			}
+		})
+	}
+}
+
+// TestService_NotifyContributionRegistered specifically tests the contribution:registered
+// notification type used when a contributor registers interest.
+func TestService_NotifyContributionRegistered(t *testing.T) {
+	broker := &MockBroker{}
+	svc := NewService(broker, nil)
+
+	err := svc.Notify(&Notification{
+		Type:        NotifyContributionRegistered,
+		RecipientID: "project-lead-1",
+		Title:       "New Registration",
+		Message:     "user-2 registered interest in Build API",
+		EntityID:    "contrib-1",
+		EntityType:  "contribution",
+		Channel:     ChannelInApp,
+	})
+	if err != nil {
+		t.Fatalf("Notify failed: %v", err)
+	}
+	if len(broker.events) != 1 {
+		t.Errorf("expected 1 broadcast, got %d", len(broker.events))
+	}
+	if broker.events[0].Type != string(NotifyContributionRegistered) {
+		t.Errorf("expected type %q, got %q", NotifyContributionRegistered, broker.events[0].Type)
+	}
+}
+
+// TestService_NotifyDecisionPlanTransitions tests decision plan submitted and signed-off events.
+func TestService_NotifyDecisionPlanTransitions(t *testing.T) {
+	t.Run("submitted", func(t *testing.T) {
+		broker := &MockBroker{}
+		svc := NewService(broker, nil)
+
+		err := svc.Notify(&Notification{
+			Type:        NotifyDecisionPlanSubmitted,
+			RecipientID: "steward-1",
+			Title:       "Decision Plan Submitted",
+			Message:     "A decision plan is ready for sign-off",
+			EntityID:    "dp-1",
+			EntityType:  "decision_plan",
+			Channel:     ChannelInApp,
+		})
+		if err != nil {
+			t.Fatalf("Notify failed: %v", err)
+		}
+		if len(broker.events) != 1 {
+			t.Errorf("expected 1 broadcast, got %d", len(broker.events))
+		}
+	})
+
+	t.Run("signed_off", func(t *testing.T) {
+		broker := &MockBroker{}
+		svc := NewService(broker, nil)
+
+		err := svc.Notify(&Notification{
+			Type:        NotifyDecisionPlanSignedOff,
+			RecipientID: "lead-1",
+			Title:       "Decision Plan Signed Off",
+			Message:     "Decision plan has been signed off",
+			EntityID:    "dp-1",
+			EntityType:  "decision_plan",
+			Channel:     ChannelInApp,
+		})
+		if err != nil {
+			t.Fatalf("Notify failed: %v", err)
+		}
+		if len(broker.events) != 1 {
+			t.Errorf("expected 1 broadcast, got %d", len(broker.events))
+		}
+	})
+}

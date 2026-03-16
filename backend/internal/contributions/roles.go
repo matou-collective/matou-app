@@ -61,20 +61,53 @@ const (
 	ActionDeleteProject       Action = "delete_project"
 	ActionCreateSubContrib    Action = "create_sub_contribution"
 	ActionRegisterInterest    Action = "register_interest"
+
+	// Workflow actions added in Stage 1
+	ActionShareContribution  Action = "share_contribution"
+	ActionOfferContribution  Action = "offer_contribution"
+	ActionAcceptOffer        Action = "accept_offer"
+	ActionSubmitEvidence     Action = "submit_evidence"
+	ActionReviewContribution Action = "review_contribution"
+	ActionSignOffPlan        Action = "sign_off_plan"
+	ActionApproveSubContrib  Action = "approve_sub_contribution"
 )
 
 // actionPermissions maps each action to the roles that can perform it.
+// 5-role model: Community Admin (OperationsSteward/FoundingMember), Project Steward,
+// Project Lead, Contributor, Member.
 var actionPermissions = map[Action][]Role{
-	ActionCreateContribution:  {RoleOperationsSteward, RoleProjectLead, RoleFoundingMember},
-	ActionConfirmContribution: {RoleProjectSteward, RoleProjectLead, RoleOperationsSteward},
-	ActionAssignContribution:  {RoleProjectLead, RoleOperationsSteward},
-	ActionApproveContribution: {RoleProjectLead, RoleOperationsSteward},
-	ActionSignOffContribution: {RoleProjectSteward, RoleOperationsSteward},
-	ActionCreateProject:       {RoleOperationsSteward, RoleFoundingMember},
-	ActionEditProject:         {RoleOperationsSteward, RoleFoundingMember},
-	ActionDeleteProject:       {RoleOperationsSteward, RoleFoundingMember},
-	ActionCreateSubContrib:    {RoleContributor, RoleProjectLead, RoleOperationsSteward},
-	ActionRegisterInterest:    {RoleMember, RoleContributor, RoleProjectLead, RoleTechSteward, RoleCommunitySteward},
+	// Project management
+	ActionCreateProject: {RoleOperationsSteward, RoleFoundingMember},
+	ActionEditProject:   {RoleOperationsSteward, RoleFoundingMember, RoleProjectLead},
+	ActionDeleteProject: {RoleOperationsSteward, RoleFoundingMember},
+
+	// Contribution lifecycle
+	ActionCreateContribution:  {RoleOperationsSteward, RoleFoundingMember, RoleProjectLead},
+	ActionConfirmContribution: {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+	ActionAssignContribution:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+	ActionApproveContribution: {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+	ActionSignOffContribution: {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+
+	// Sharing & offering — lead, steward, admin
+	ActionShareContribution: {RoleProjectLead, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+	ActionOfferContribution: {RoleProjectLead, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+
+	// Contributor self-service
+	ActionAcceptOffer:    {RoleMember, RoleContributor, RoleProjectLead},
+	ActionSubmitEvidence: {RoleContributor, RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+
+	// Review — lead and admin
+	ActionReviewContribution: {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+
+	// Plan sign-off — steward and admin
+	ActionSignOffPlan: {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+
+	// Sub-contributions
+	ActionCreateSubContrib:   {RoleContributor, RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+	ActionApproveSubContrib:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+
+	// Interest registration — all community members
+	ActionRegisterInterest: {RoleMember, RoleContributor, RoleProjectLead, RoleTechSteward, RoleCommunitySteward, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
 }
 
 // HasRole checks if a role list contains the given role.
