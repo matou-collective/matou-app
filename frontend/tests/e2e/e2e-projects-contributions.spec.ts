@@ -26,7 +26,6 @@ import {
   TIMEOUT,
   setupPageLogging,
   setupBackendRouting,
-  registerUser,
   loginWithMnemonic,
   loadAccounts,
   saveAccounts,
@@ -188,88 +187,25 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     memberPage = await memberContext.newPage();
     setupPageLogging(memberPage, 'Member');
 
-    // Check whether we already have a saved member account
-    if (accounts.member?.mnemonic && accounts.member.mnemonic.length === 12) {
-      console.log('[Setup] Reusing saved member account, logging in...');
-      await loginWithMnemonic(memberPage, accounts.member.mnemonic);
-      memberAID = accounts.member.aid ?? '';
-      console.log('[Setup] Member logged in, AID: %s', memberAID);
-    } else {
-      // --- Registration flow for the member ---
-      console.log('[Setup] No member account found — registering new member...');
-      const { mnemonic: memberMnemonic } = await registerUser(memberPage, MEMBER_NAME);
-
-      // Resolve the member's AID from their localStorage
-      memberAID = await memberPage.evaluate(() => {
-        const stored = localStorage.getItem('matou_current_aid');
-        if (stored) {
-          try { const p = JSON.parse(stored); return p.prefix || p.aid || ''; } catch { return ''; }
-        }
-        return '';
-      });
-      console.log('[Setup] Member registered, AID: %s', memberAID);
-
-      // Admin approves the member
-      console.log('[Setup] Admin approving member...');
-      await adminPage.bringToFront();
-
-      // Navigate admin to the dashboard / admin panel to approve
-      const pendingItem = adminPage.locator('.pending-member, .approval-item').filter({ hasText: MEMBER_NAME });
-      const hasPending = await pendingItem.isVisible({ timeout: 10_000 }).catch(() => false);
-
-      if (hasPending) {
-        await pendingItem.getByRole('button', { name: /approve/i }).click();
-        await waitForSettle(adminPage);
-      } else {
-        // Try navigating to admin panel
-        const adminPanelBtn = adminPage.getByRole('button', { name: /admin|members/i }).first();
-        if (await adminPanelBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
-          await adminPanelBtn.click();
-          await waitForSettle(adminPage);
-          const pendingTab = adminPage.getByRole('tab', { name: /pending/i });
-          if (await pendingTab.isVisible().catch(() => false)) {
-            await pendingTab.click();
-            await waitForSettle(adminPage);
-          }
-          const approveBtn = adminPage.getByRole('button', { name: /approve/i }).first();
-          if (await approveBtn.isVisible({ timeout: TIMEOUT.medium }).catch(() => false)) {
-            await approveBtn.click();
-            await waitForSettle(adminPage, 2000);
-          }
-        }
-      }
-
-      console.log('[Setup] Member approval triggered');
-
-      // Member waits for approval then proceeds to dashboard
-      await memberPage.bringToFront();
-      const enterBtn = memberPage.getByRole('button', { name: /enter community/i });
-      try {
-        await expect(enterBtn).toBeVisible({ timeout: TIMEOUT.stewardUpgrade });
-        await enterBtn.click();
-        await expect(memberPage).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.medium });
-      } catch {
-        // Member may already be on dashboard (credential delivered quickly) or
-        // still on pending screen — resolve by checking URL
-        const url = memberPage.url();
-        if (!url.includes('/dashboard')) {
-          throw new Error(
-            'Member did not reach dashboard after approval. ' +
-            `Current URL: ${url}`,
-          );
-        }
-      }
-      console.log('[Setup] Member on dashboard');
-
-      // Save the member account for future runs
-      accounts.member = {
-        mnemonic: memberMnemonic,
-        aid: memberAID,
-        name: MEMBER_NAME,
-      };
-      saveAccounts(accounts);
-      console.log('[Setup] Member account saved to test-accounts.json');
+    // Require member account from a prior registration test run
+    if (!accounts.member?.mnemonic || accounts.member.mnemonic.length !== 12) {
+      throw new Error(
+        'No member account in test-accounts.json.\n' +
+        'Run the registration test first:\n' +
+        '  npx playwright test --project=registration\n' +
+        'Then re-run this test.',
+      );
     }
+
+    console.log('[Setup] Reusing saved member account, logging in...');
+    await loginWithMnemonic(memberPage, accounts.member.mnemonic);
+    memberAID = accounts.member.aid ?? '';
+    if (!memberAID) {
+      memberAID = await memberPage.evaluate(() => {
+        return localStorage.getItem('matou_admin_aid') || '';
+      });
+    }
+    console.log('[Setup] Member logged in, AID: %s', memberAID);
   });
 
   test.afterAll(async () => {
