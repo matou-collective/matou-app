@@ -260,6 +260,30 @@
             class="q-mb-md"
           />
 
+          <!-- Per-criterion acceptance responses -->
+          <div v-if="contribution.acceptance_criteria?.length" class="evidence-criteria">
+            <div class="section-label">Acceptance Criteria Responses</div>
+            <div
+              v-for="(criterion, idx) in contribution.acceptance_criteria"
+              :key="idx"
+              class="criterion-response"
+            >
+              <div class="criterion-text">
+                <q-icon name="check_circle" size="16px" color="positive" />
+                <span>{{ criterion }}</span>
+              </div>
+              <q-input
+                v-model="evidenceForm.acceptance_notes[idx]"
+                type="textarea"
+                :rows="2"
+                dense
+                outlined
+                placeholder="How was this criterion met?"
+                class="criterion-input"
+              />
+            </div>
+          </div>
+
           <!-- Evidence URLs -->
           <div class="evidence-urls">
             <div class="text-subtitle2 q-mb-sm">Evidence URLs</div>
@@ -631,7 +655,14 @@ const evidenceForm = ref({
   completion_notes: '',
   evidence_urls: [''],
   actual_duration: undefined as number | undefined,
+  acceptance_notes: [] as string[],
 });
+
+watch(() => props.contribution.acceptance_criteria, (criteria) => {
+  if (criteria?.length && evidenceForm.value.acceptance_notes.length === 0) {
+    evidenceForm.value.acceptance_notes = criteria.map(() => '');
+  }
+}, { immediate: true });
 
 const reviewForm = ref({
   outcome: '' as 'approved' | 'incomplete' | 'declined' | '',
@@ -837,9 +868,10 @@ async function handleSubmitEvidence() {
       completion_notes: evidenceForm.value.completion_notes.trim(),
       evidence_urls: evidenceForm.value.evidence_urls.filter((u) => u.trim()),
       actual_duration: evidenceForm.value.actual_duration,
+      acceptance_notes: evidenceForm.value.acceptance_notes.filter((n) => n.trim()),
     });
     $q.notify({ type: 'positive', message: 'Submitted for review!' });
-    evidenceForm.value = { completion_notes: '', evidence_urls: [''], actual_duration: undefined };
+    evidenceForm.value = { completion_notes: '', evidence_urls: [''], actual_duration: undefined, acceptance_notes: [] };
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Submission failed' });
@@ -1425,5 +1457,25 @@ async function handleApproveSub(subId: string) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.evidence-criteria {
+  margin-bottom: 1rem;
+
+  .criterion-response {
+    margin-bottom: 0.75rem;
+  }
+
+  .criterion-text {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+    font-size: 0.85rem;
+
+    .q-icon { margin-top: 2px; flex-shrink: 0; }
+  }
+
+  .criterion-input { margin-left: 1.5rem; }
 }
 </style>
