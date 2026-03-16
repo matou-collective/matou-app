@@ -2,7 +2,7 @@
  * Contributions API Client
  * CRUD operations and status transitions for contributions.
  */
-import { BACKEND_URL } from './client';
+import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
 import type {
   ShareContributionRequest,
@@ -67,7 +67,7 @@ export async function createContribution(req: CreateContributionRequest): Promis
   log.info('Creating contribution: %s', req.title);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -97,7 +97,7 @@ export async function transitionContribution(id: string, status: string): Promis
   log.info('Transitioning contribution %s to %s', id, status);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/transition`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ status }),
   });
   if (!response.ok) {
@@ -111,7 +111,7 @@ export async function updateContribution(id: string, req: UpdateContributionRequ
   log.info('Updating contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -125,7 +125,7 @@ export async function confirmContribution(id: string): Promise<Contribution> {
   log.info('Confirming contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/confirm`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({}),
   });
   if (!response.ok) {
@@ -142,7 +142,7 @@ export async function shareContribution(
   log.info('Sharing contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/share`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -159,7 +159,7 @@ export async function offerContribution(
   log.info('Offering contribution %s to %s', id, req.offered_to);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/offer`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -173,7 +173,7 @@ export async function acceptOffer(id: string): Promise<Contribution> {
   log.info('Accepting offer for contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/accept-offer`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({}),
   });
   if (!response.ok) {
@@ -190,7 +190,7 @@ export async function registerInterest(
   log.info('Registering interest in contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/register`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -207,7 +207,7 @@ export async function submitEvidence(
   log.info('Submitting evidence for contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/submit-evidence`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -224,7 +224,7 @@ export async function submitReview(
   log.info('Reviewing contribution %s with outcome %s', id, req.outcome);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/review`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -238,7 +238,7 @@ export async function signOffContribution(id: string): Promise<Contribution> {
   log.info('Signing off contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/sign-off`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({}),
   });
   if (!response.ok) {
@@ -257,7 +257,7 @@ export async function createChildContribution(
   // links it back on the parent's child_contributions list.
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ ...req, parent_contribution_id: parentId }),
   });
   if (!response.ok) {
@@ -277,7 +277,7 @@ export async function approveSub(id: string): Promise<Contribution> {
   log.info('Approving sub-contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/approve-sub`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({}),
   });
   if (!response.ok) {

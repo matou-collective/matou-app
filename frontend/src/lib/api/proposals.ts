@@ -2,7 +2,7 @@
  * Proposals API Client
  * CRUD operations, status transitions, and endorsements for proposals.
  */
-import { BACKEND_URL } from './client';
+import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
 
 const log = createLogger('ProposalsAPI');
@@ -70,7 +70,7 @@ export async function createProposal(req: CreateProposalRequest): Promise<Propos
   log.info('Creating proposal: %s', req.title);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -96,7 +96,7 @@ export async function transitionProposal(id: string, status: string): Promise<Pr
   log.info('Transitioning proposal %s to %s', id, status);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}/transition`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ status }),
   });
   if (!response.ok) {
@@ -113,7 +113,7 @@ export async function updateProposal(
   log.info('Updating proposal %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(fields),
   });
   if (!response.ok) {
@@ -138,7 +138,7 @@ export async function addEndorsement(
   log.info('Endorsing proposal %s', proposalId);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/endorsements`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(endorsement),
   });
   if (!response.ok) {

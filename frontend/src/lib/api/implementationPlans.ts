@@ -2,7 +2,7 @@
  * Implementation Plans API Client
  * CRUD operations and milestone management for implementation plans.
  */
-import { BACKEND_URL } from './client';
+import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
 
 const log = createLogger('ImplementationPlansAPI');
@@ -58,7 +58,7 @@ export async function createImplementationPlan(req: CreateImplementationPlanRequ
   log.info('Creating implementation plan for project %s', req.project_id);
   const response = await fetch(`${BACKEND_URL}/api/v1/implementation-plans`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -84,7 +84,7 @@ export async function addMilestone(planId: string, req: AddMilestoneRequest): Pr
   log.info('Adding milestone to plan %s', planId);
   const response = await fetch(`${BACKEND_URL}/api/v1/implementation-plans/${planId}/milestones`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -112,7 +112,7 @@ export async function signOffImplementationPlan(planId: string): Promise<Impleme
     `${BACKEND_URL}/api/v1/implementation-plans/${planId}/sign-off`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({}),
     },
   );

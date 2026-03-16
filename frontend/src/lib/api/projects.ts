@@ -2,7 +2,7 @@
  * Projects API Client
  * CRUD operations for projects and linking to proposals.
  */
-import { BACKEND_URL } from './client';
+import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
 
 const log = createLogger('ProjectsAPI');
@@ -53,7 +53,7 @@ export async function createProject(req: CreateProjectRequest): Promise<Project>
   log.info('Creating project: %s', req.title);
   const response = await fetch(`${BACKEND_URL}/api/v1/projects`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -78,7 +78,7 @@ export async function getProject(id: string): Promise<Project> {
 export async function updateProject(id: string, req: UpdateProjectRequest): Promise<Project> {
   const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(req),
   });
   if (!response.ok) throw new Error('Failed to update project');
@@ -96,7 +96,7 @@ export async function deleteProject(id: string): Promise<void> {
 export async function linkProposalToProject(projectId: string, proposalId: string): Promise<Project> {
   const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/link-proposal`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ proposal_id: proposalId }),
   });
   if (!response.ok) throw new Error('Failed to link proposal');
@@ -111,7 +111,7 @@ export async function assignProjectRole(
   log.info('Assigning %s role to %s on project %s', role, userId, projectId);
   const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/assign-role`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ role, user_id: userId }),
   });
   if (!response.ok) {
