@@ -215,7 +215,8 @@
             <div
               v-for="child in childContributions"
               :key="child.id"
-              class="sub-item"
+              class="sub-item clickable"
+              @click="selectedChildContribution = child"
             >
               <div class="sub-item-badges">
                 <ContributionStatusBadge :status="child.status" />
@@ -230,17 +231,24 @@
                 label="Approve"
                 color="primary"
                 :loading="actionLoading === `approve-sub-${child.id}`"
-                @click="handleApproveSub(child.id)"
+                @click.stop="handleApproveSub(child.id)"
               />
             </div>
           </div>
 
           <!-- Blocking warning -->
           <div v-if="hasBlockingChildren" class="blocking-warning">
-            <AlertTriangle class="warning-icon" />
-            <span>
-              Cannot submit for review — {{ blockingChildCount }} sub-contribution{{ blockingChildCount !== 1 ? 's' : '' }} must be signed off first.
-            </span>
+            <q-icon name="warning" color="warning" size="20px" />
+            <div>
+              <div class="blocking-title">Sub-Contributions Not Complete</div>
+              <div class="blocking-text">All sub-contributions must be signed off before submission:</div>
+              <ul class="blocking-list">
+                <li v-for="child in blockingChildren" :key="child.id">
+                  {{ child.title }} —
+                  <ContributionStatusBadge :status="child.status" size="sm" />
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
 
@@ -634,6 +642,23 @@
       </q-card-actions>
     </q-card>
   </q-dialog>
+
+  <!-- Recursive child contribution dialog -->
+  <ContributionDetailDialog
+    v-if="selectedChildContribution"
+    v-model="showChildDialog"
+    :contribution="selectedChildContribution"
+    :user-role="userRole"
+    :current-user-id="currentUserId"
+    :current-user-name="currentUserName"
+    :all-contributions="allContributions"
+    :is-plan-signed-off="isPlanSignedOff"
+    @update="(updated: Contribution) => {
+      emit('update', updated);
+      selectedChildContribution = null;
+    }"
+    @create-child-contribution="(parentId: string) => emit('create-child-contribution', parentId)"
+  />
 </template>
 
 <script setup lang="ts">
@@ -664,6 +689,8 @@ import ContributionTypeBadge from './ContributionTypeBadge.vue';
 import ContributionPriorityBadge from './ContributionPriorityBadge.vue';
 import { useContributionsStore } from 'stores/contributions';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
+
+defineOptions({ name: 'ContributionDetailDialog' });
 
 interface Props {
   modelValue: boolean;
@@ -760,6 +787,18 @@ const blockingChildCount = computed(
       (c) => !['signed_off', 'rewarded', 'archived'].includes(c.status as string),
     ).length,
 );
+
+const blockingChildren = computed(() =>
+  childContributions.value.filter(
+    (c) => !['signed_off', 'rewarded', 'archived'].includes(c.status as string),
+  ),
+);
+
+const selectedChildContribution = ref<Contribution | null>(null);
+const showChildDialog = computed({
+  get: () => !!selectedChildContribution.value,
+  set: (v: boolean) => { if (!v) selectedChildContribution.value = null; },
+});
 
 // Assigned name
 const assignedName = computed(
@@ -1316,6 +1355,15 @@ async function handleApproveSub(subId: string) {
   background: var(--matou-secondary);
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius-sm);
+
+  &.clickable {
+    cursor: pointer;
+    transition: background-color 0.15s;
+
+    &:hover {
+      background-color: rgba(0, 0, 0, 0.04);
+    }
+  }
 }
 
 .sub-item-badges {
@@ -1333,21 +1381,36 @@ async function handleApproveSub(subId: string) {
 // Blocking warning
 .blocking-warning {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 10px 14px;
-  background: rgba(200, 70, 58, 0.07);
-  border: 1px solid rgba(200, 70, 58, 0.3);
-  border-radius: var(--matou-radius-sm);
-  font-size: 0.85rem;
-  color: var(--matou-destructive);
-}
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(255, 152, 0, 0.08);
+  border: 1px solid rgba(255, 152, 0, 0.2);
+  border-radius: 8px;
+  margin-top: 0.75rem;
 
-.warning-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
+  .blocking-title {
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .blocking-text {
+    font-size: 0.8rem;
+    color: $grey-7;
+    margin-top: 0.25rem;
+  }
+
+  .blocking-list {
+    margin: 0.5rem 0 0 0;
+    padding-left: 1.25rem;
+    font-size: 0.8rem;
+
+    li {
+      margin-bottom: 0.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+  }
 }
 
 // Evidence URLs
