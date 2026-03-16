@@ -305,6 +305,56 @@
             <q-btn flat size="sm" icon="add" no-caps label="Add URL" color="primary" @click="evidenceForm.evidence_urls.push('')" />
           </div>
 
+          <!-- Time Report Upload -->
+          <div class="file-upload-section">
+            <div class="section-label">Time Report</div>
+            <div v-if="!evidenceForm.time_report_file" class="file-drop-zone">
+              <q-icon name="upload_file" size="32px" color="grey-6" />
+              <div class="file-drop-text">Upload time report (.pdf, .csv, .xlsx)</div>
+              <q-btn outline size="sm" label="Choose File" @click="timeReportInput?.click()" />
+              <input
+                ref="timeReportInput"
+                type="file"
+                accept=".pdf,.csv,.xlsx"
+                style="display: none"
+                @change="(e: Event) => {
+                  const f = (e.target as HTMLInputElement).files?.[0];
+                  if (f) handleTimeReportUpload(f);
+                }"
+              />
+            </div>
+            <div v-else class="file-item">
+              <q-icon name="description" size="20px" />
+              <span class="file-name">{{ evidenceForm.time_report_file.name }}</span>
+              <q-btn flat round dense icon="close" size="sm" @click="removeTimeReport" />
+            </div>
+          </div>
+
+          <!-- Attachment Files Upload -->
+          <div class="file-upload-section">
+            <div class="section-label">Attachments</div>
+            <div class="file-drop-zone">
+              <q-icon name="attach_file" size="32px" color="grey-6" />
+              <div class="file-drop-text">Upload screenshots, documents, or other files</div>
+              <q-btn outline size="sm" label="Choose Files" @click="attachmentInput?.click()" />
+              <input
+                ref="attachmentInput"
+                type="file"
+                multiple
+                style="display: none"
+                @change="(e: Event) => {
+                  const files = (e.target as HTMLInputElement).files;
+                  if (files?.length) handleAttachmentUpload(files);
+                }"
+              />
+            </div>
+            <div v-for="(file, idx) in evidenceForm.attachment_files" :key="idx" class="file-item">
+              <q-icon name="description" size="20px" />
+              <span class="file-name">{{ file.name }}</span>
+              <q-btn flat round dense icon="close" size="sm" @click="removeAttachment(idx)" />
+            </div>
+          </div>
+
           <q-input
             v-model.number="evidenceForm.actual_duration"
             label="Actual Hours"
@@ -587,7 +637,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import {
   CheckCircle,
@@ -608,7 +658,7 @@ import {
   XCircle,
   LinkIcon,
 } from 'lucide-vue-next';
-import type { Contribution, ProjectRole, InterestedContributor } from 'src/types/projects';
+import type { Contribution, ProjectRole, InterestedContributor, AttachedFile } from 'src/types/projects';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionTypeBadge from './ContributionTypeBadge.vue';
 import ContributionPriorityBadge from './ContributionPriorityBadge.vue';
@@ -650,12 +700,18 @@ const showShareDialog = ref(false);
 const showOfferDialog = ref(false);
 const showInterestDialog = ref(false);
 
+// File input template refs
+const timeReportInput = ref<HTMLInputElement | null>(null);
+const attachmentInput = ref<HTMLInputElement | null>(null);
+
 // Forms
 const evidenceForm = ref({
   completion_notes: '',
   evidence_urls: [''],
   actual_duration: undefined as number | undefined,
   acceptance_notes: [] as string[],
+  time_report_file: null as AttachedFile | null,
+  attachment_files: [] as AttachedFile[],
 });
 
 watch(() => props.contribution.acceptance_criteria, (criteria) => {
@@ -860,6 +916,30 @@ async function handleRegisterInterest() {
   }
 }
 
+function handleTimeReportUpload(file: File) {
+  const url = URL.createObjectURL(file);
+  evidenceForm.value.time_report_file = { name: file.name, url, type: file.type };
+}
+
+function handleAttachmentUpload(files: FileList | File[]) {
+  for (const file of Array.from(files)) {
+    const url = URL.createObjectURL(file);
+    evidenceForm.value.attachment_files.push({ name: file.name, url, type: file.type });
+  }
+}
+
+function removeTimeReport() {
+  const f = evidenceForm.value.time_report_file;
+  if (f?.url.startsWith('blob:')) URL.revokeObjectURL(f.url);
+  evidenceForm.value.time_report_file = null;
+}
+
+function removeAttachment(idx: number) {
+  const file = evidenceForm.value.attachment_files[idx];
+  if (file?.url.startsWith('blob:')) URL.revokeObjectURL(file.url);
+  evidenceForm.value.attachment_files.splice(idx, 1);
+}
+
 async function handleSubmitEvidence() {
   if (!evidenceForm.value.completion_notes.trim()) return;
   actionLoading.value = 'submit-evidence';
@@ -869,9 +949,11 @@ async function handleSubmitEvidence() {
       evidence_urls: evidenceForm.value.evidence_urls.filter((u) => u.trim()),
       actual_duration: evidenceForm.value.actual_duration,
       acceptance_notes: evidenceForm.value.acceptance_notes.filter((n) => n.trim()),
+      time_report_file: evidenceForm.value.time_report_file ?? undefined,
+      attachment_files: evidenceForm.value.attachment_files.length ? evidenceForm.value.attachment_files : undefined,
     });
     $q.notify({ type: 'positive', message: 'Submitted for review!' });
-    evidenceForm.value = { completion_notes: '', evidence_urls: [''], actual_duration: undefined, acceptance_notes: [] };
+    evidenceForm.value = { completion_notes: '', evidence_urls: [''], actual_duration: undefined, acceptance_notes: [], time_report_file: null, attachment_files: [] };
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Submission failed' });
@@ -1477,5 +1559,44 @@ async function handleApproveSub(subId: string) {
   }
 
   .criterion-input { margin-left: 1.5rem; }
+}
+
+// File upload
+.file-upload-section {
+  margin-bottom: 1rem;
+}
+
+.file-drop-zone {
+  border: 2px dashed $separator-color;
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+
+  .file-drop-text {
+    font-size: 0.8rem;
+    color: $grey-7;
+  }
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid $separator-color;
+  border-radius: 6px;
+  margin-top: 0.5rem;
+
+  .file-name {
+    flex: 1;
+    font-size: 0.85rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 </style>
