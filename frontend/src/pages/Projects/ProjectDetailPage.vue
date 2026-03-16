@@ -107,7 +107,7 @@
               @click="handleSignOffPlan"
             />
             <q-btn
-              v-if="perms.canAddMilestones.value && implementationPlan"
+              v-if="perms.canAddMilestones.value"
               flat
               no-caps
               icon="add"
@@ -115,26 +115,26 @@
               color="primary"
               @click="showAddMilestoneDialog = true"
             />
-            <q-btn
-              v-if="perms.canCreateProject.value && !implementationPlan"
-              flat
-              no-caps
-              icon="add"
-              label="Create Plan"
-              color="primary"
-              @click="showCreatePlanDialog = true"
-            />
           </div>
         </div>
 
-        <!-- No plan -->
-        <div v-if="!implementationPlan" class="empty-plan">
+        <!-- No milestones yet -->
+        <div v-if="milestones.length === 0" class="empty-plan">
           <Clock class="empty-icon" />
-          <span>No implementation plan yet.</span>
+          <span>No milestones yet</span>
+          <span class="empty-hint">Create your first milestone to begin planning the implementation</span>
+          <q-btn
+            v-if="perms.canAddMilestones.value"
+            outline
+            no-caps
+            icon="add"
+            label="Create First Milestone"
+            @click="showAddMilestoneDialog = true"
+          />
         </div>
 
-        <!-- Plan exists -->
-        <template v-else>
+        <!-- Has milestones -->
+        <template v-if="implementationPlan">
           <!-- Confirmation progress bar -->
           <div v-if="!implementationPlan.signed_off && planContributions.length > 0" class="progress-section">
             <div class="progress-label">
@@ -510,10 +510,21 @@ async function handleCreatePlan() {
 }
 
 async function handleAddMilestone(req: CreateMilestoneRequest) {
-  if (!project.value || !implementationPlan.value) return;
+  if (!project.value) return;
   addingMilestone.value = true;
   try {
-    await projectsStore.addMilestone(implementationPlan.value.id, project.value.id, {
+    // Auto-create implementation plan if it doesn't exist yet
+    let planId = implementationPlan.value?.id;
+    if (!planId) {
+      const plan = await projectsStore.createPlan(project.value.id, {
+        project_id: project.value.id,
+        total_budget: 'TBD',
+        project_lead: 'TBD',
+        project_steward_id: 'TBD',
+      });
+      planId = plan.id;
+    }
+    await projectsStore.addMilestone(planId, project.value.id, {
       title: req.title,
       duration: req.duration,
       contribution_ids: [],
@@ -848,17 +859,26 @@ function handleContributionUpdate(updated: Contribution) {
 .empty-plan,
 .empty-milestones {
   display: flex;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   color: var(--matou-muted-foreground);
   font-size: 0.875rem;
-  padding: 8px 0;
+  padding: 2rem 1rem;
+  text-align: center;
+}
+
+.empty-hint {
+  font-size: 0.8rem;
+  color: var(--matou-muted-foreground);
+  opacity: 0.7;
 }
 
 .empty-icon {
-  width: 18px;
-  height: 18px;
-  opacity: 0.5;
+  width: 32px;
+  height: 32px;
+  opacity: 0.4;
 }
 
 .progress-section {

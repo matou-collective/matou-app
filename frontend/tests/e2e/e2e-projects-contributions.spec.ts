@@ -210,9 +210,38 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(title.first()).toBeVisible({ timeout: TIMEOUT.medium });
     console.log('[Phase 2] On project detail page');
 
+    // 2.2 Assign Project Lead
+    const assignLeadBtn = page.getByRole('button', { name: /Assign Lead/i });
+    if (await assignLeadBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await assignLeadBtn.click();
+      const roleDlg = dialog(page, 'Assign Project Lead');
+      await expect(roleDlg).toBeVisible({ timeout: TIMEOUT.short });
+      // Select the first member in the list (admin user)
+      const memberItem = roleDlg.locator('.member-item').first();
+      await expect(memberItem).toBeVisible({ timeout: TIMEOUT.short });
+      await memberItem.click();
+      await roleDlg.getByRole('button', { name: /Assign Project Lead/i }).click();
+      await waitForSettle(page);
+      console.log('[Phase 2] Project Lead assigned');
+    }
+
+    // 2.3 Assign Project Steward
+    const assignStewardBtn = page.getByRole('button', { name: /Assign Steward/i });
+    if (await assignStewardBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await assignStewardBtn.click();
+      const roleDlg = dialog(page, 'Assign Project Steward');
+      await expect(roleDlg).toBeVisible({ timeout: TIMEOUT.short });
+      const memberItem = roleDlg.locator('.member-item').first();
+      await expect(memberItem).toBeVisible({ timeout: TIMEOUT.short });
+      await memberItem.click();
+      await roleDlg.getByRole('button', { name: /Assign Project Steward/i }).click();
+      await waitForSettle(page);
+      console.log('[Phase 2] Project Steward assigned');
+    }
+
     // 2.4 Create first milestone — click "Add Milestone" or "Create First Milestone"
     const addMilestoneBtn = page.getByRole('button', { name: /Milestone/i }).first();
-    await expect(addMilestoneBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(addMilestoneBtn).toBeVisible({ timeout: TIMEOUT.medium });
     await addMilestoneBtn.click();
 
     // 2.5 Fill milestone form
