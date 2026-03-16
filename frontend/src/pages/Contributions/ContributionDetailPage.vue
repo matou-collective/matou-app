@@ -342,6 +342,7 @@ import type { Contribution } from 'src/types/projects';
 import ContributionDetail from 'src/components/contributions/ContributionDetail.vue';
 import ContributionForm from 'src/components/contributions/ContributionForm.vue';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
+import { useAdminAccess } from 'src/composables/useAdminAccess';
 
 const route = useRoute();
 const router = useRouter();
@@ -349,6 +350,7 @@ const $q = useQuasar();
 const store = useContributionsStore();
 const identityStore = useIdentityStore();
 const workflow = useContributionWorkflow();
+const { isAdmin: isKeriAdmin, checkAdminStatus } = useAdminAccess();
 
 // ── Local state ───────────────────────────────────────────────────────────────
 
@@ -390,7 +392,7 @@ const outcomeOptions = [
 
 const contribution = computed(() => store.currentContribution as Contribution | null);
 const currentUserId = computed(() => identityStore.aidPrefix ?? '');
-const currentUserRole = computed(() => 'member'); // Will come from identity/profile store
+const currentUserRole = computed(() => isKeriAdmin.value ? 'community_admin' : 'member');
 
 const TERMINAL_STATUSES = ['signed_off', 'rewarded', 'archived', 'declined', 'cancelled', 'rejected'];
 
@@ -408,7 +410,8 @@ const allChildrenSignedOff = computed(() => {
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-onMounted(() => {
+onMounted(async () => {
+  await checkAdminStatus();
   void store.fetchContribution(route.params.id as string);
 });
 

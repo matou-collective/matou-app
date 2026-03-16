@@ -305,6 +305,7 @@ import type { CreateContributionRequest } from 'src/lib/api/contributions';
 import type { CreateMilestoneRequest } from 'src/types/projects';
 import { useProjectPermissions } from 'src/composables/useProjectPermissions';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
+import { useAdminAccess } from 'src/composables/useAdminAccess';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import MilestoneCard from 'src/components/projects/MilestoneCard.vue';
 import AddMilestoneDialog from 'src/components/projects/AddMilestoneDialog.vue';
@@ -320,11 +321,14 @@ const proposalsStore = useProposalsStore();
 const identityStore = useIdentityStore();
 const contributionsStore = useContributionsStore();
 const workflow = useContributionWorkflow();
+const { isAdmin: isKeriAdmin, checkAdminStatus } = useAdminAccess();
 
 // ── Current user context ─────────────────────────────────────────────────────
 
 const currentUserId = computed(() => identityStore.aidPrefix ?? '');
 const currentUserRole = computed(() => {
+  // KERI-verified admin (founding member, steward, etc.) gets full admin role
+  if (isKeriAdmin.value) return 'community_admin';
   const p = project.value;
   if (!p) return 'member';
   if (p.project_lead_id === currentUserId.value) return 'project_lead';
@@ -425,7 +429,8 @@ const communityMembers = computed(() =>
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
-onMounted(() => {
+onMounted(async () => {
+  await checkAdminStatus();
   void loadProject(route.params.id as string);
 });
 
