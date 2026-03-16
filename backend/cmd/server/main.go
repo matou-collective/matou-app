@@ -482,7 +482,11 @@ func main() {
 	notifEmailAdapter := notifications.NewEmailAdapter(emailSender)
 	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
 	contribNotifier := &contribNotifierAdapter{svc: notifService}
-	roleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
+	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
+	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
+	credentialRoleLookup := api.NewCredentialRoleLookup(store)
+	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
+	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
 
 	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager)
 	projectsHandler := api.NewProjectsHandler(contribService, spaceManager)

@@ -153,6 +153,65 @@ func TestService_AutoCreateProjectOnApproval(t *testing.T) {
 	}
 }
 
+func TestService_LinkProposalToProject_RejectsDuplicate(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	// Create two projects
+	proj1, _ := svc.CreateProject(ctx, "space-1", &CreateProjectRequest{
+		Title: "Project A", Description: "First", CreatedBy: "admin-1",
+	})
+	proj2, _ := svc.CreateProject(ctx, "space-1", &CreateProjectRequest{
+		Title: "Project B", Description: "Second", CreatedBy: "admin-1",
+	})
+
+	// Link proposal to first project — should succeed
+	_, err := svc.LinkProposalToProject(ctx, "space-1", proj1.ID, "proposal-1")
+	if err != nil {
+		t.Fatalf("first link should succeed: %v", err)
+	}
+
+	// Try linking same proposal to second project — should fail
+	_, err = svc.LinkProposalToProject(ctx, "space-1", proj2.ID, "proposal-1")
+	if err == nil {
+		t.Fatal("expected error when linking proposal to a second project")
+	}
+
+	// Re-linking to the same project should be idempotent (no error)
+	_, err = svc.LinkProposalToProject(ctx, "space-1", proj1.ID, "proposal-1")
+	if err != nil {
+		t.Fatalf("re-link to same project should be idempotent: %v", err)
+	}
+}
+
+func TestService_GetProjectByProposalID(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	proj, _ := svc.CreateProject(ctx, "space-1", &CreateProjectRequest{
+		Title: "Project", Description: "Test", CreatedBy: "admin-1",
+	})
+	svc.LinkProposalToProject(ctx, "space-1", proj.ID, "proposal-1")
+
+	// Should find the linked project
+	found, err := svc.GetProjectByProposalID(ctx, "space-1", "proposal-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found == nil || found.ID != proj.ID {
+		t.Errorf("expected project %s, got %v", proj.ID, found)
+	}
+
+	// Should return nil for unlinked proposal
+	found, err = svc.GetProjectByProposalID(ctx, "space-1", "proposal-999")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found != nil {
+		t.Errorf("expected nil for unlinked proposal, got %v", found)
+	}
+}
+
 func TestService_UpdateProject(t *testing.T) {
 	svc := NewService(NewMockStore())
 	ctx := context.Background()

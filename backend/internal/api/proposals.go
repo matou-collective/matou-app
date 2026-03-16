@@ -16,7 +16,6 @@ type ProposalsHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
 	broker       *EventBroker
-	roleLookup   RoleLookup
 }
 
 // NewProposalsHandler creates a new proposals handler.
@@ -33,9 +32,8 @@ func (h *ProposalsHandler) SetBroker(broker *EventBroker) {
 }
 
 // RegisterRoutes registers proposal routes on the mux.
-// ProposalsHandler uses RBACMiddleware on the collection endpoint.
+// Both the collection and sub-resource endpoints use RBAC middleware for role resolution.
 func (h *ProposalsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
-	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/proposals", CORSHandler(RBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -48,7 +46,9 @@ func (h *ProposalsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLoo
 	})))
 
 	// Pattern: /api/v1/proposals/{id}[/sub-resource]
-	mux.HandleFunc("/api/v1/proposals/", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
+	// OptionalRBACMiddleware populates roles in context when X-User-AID is present
+	// but does not reject unauthenticated requests (e.g. GET).
+	mux.HandleFunc("/api/v1/proposals/", CORSHandler(OptionalRBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/proposals/")
 		parts := strings.SplitN(path, "/", 2)
 		id := parts[0]
@@ -96,7 +96,18 @@ func (h *ProposalsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLoo
 			return
 		}
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-	}))
+	})))
+}
+
+// isRoleClaimOnly returns true if the update request only sets role assignment
+// fields (proposal_lead_id and/or proposal_steward_id) and no content fields.
+func isRoleClaimOnly(req *contributions.UpdateProposalRequest) bool {
+	hasRoleField := req.ProposalLeadID != nil || req.ProposalStewardID != nil
+	hasContentField := req.Title != nil || req.Description != nil ||
+		req.ProblemStatement != nil || req.Solution != nil ||
+		req.ExpectedOutcomes != nil || req.EstimatedBudget != nil ||
+		req.Timeline != nil || req.Attachments != nil
+	return hasRoleField && !hasContentField
 }
 
 // HandleCreate handles POST /api/v1/proposals
@@ -178,13 +189,7 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 			return
 		}
-		var roles []contributions.Role
-		if h.roleLookup != nil {
-			roles, _ = h.roleLookup.GetUserRoles(aid)
-		} else {
-			// Fallback to context roles (set by RBACMiddleware or tests)
-			roles = GetUserRoles(r)
-		}
+		roles := GetUserRoles(r)
 		if !contributions.CanPerformAction(roles, requiredAction) {
 			log.Printf("[Proposals] %s denied for proposal %s: aid=%s roles=%v", req.Status, id, aid, roles)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: admin role required"})
@@ -286,13 +291,14 @@ func (h *ProposalsHandler) HandleUpdate(w http.ResponseWriter, r *http.Request, 
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
 
-	// For in_review proposals, only the proposer or an admin can edit
+	// For in_review proposals, only the proposer or an admin can edit content.
+	// Role claims (proposal_lead_id, proposal_steward_id) are allowed for any authenticated user.
 	existing, err := h.service.GetProposal(r.Context(), spaceID, id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "proposal not found"})
 		return
 	}
-	if existing.Status == contributions.ProposalInReview {
+	if existing.Status == contributions.ProposalInReview && !isRoleClaimOnly(&req) {
 		aid := r.Header.Get("X-User-AID")
 		if aid == "" {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
@@ -301,12 +307,7 @@ func (h *ProposalsHandler) HandleUpdate(w http.ResponseWriter, r *http.Request, 
 		userName := r.Header.Get("X-User-Name")
 		isProposer := aid == existing.ProposerID || (userName != "" && userName == existing.ProposerID)
 
-		var roles []contributions.Role
-		if h.roleLookup != nil {
-			roles, _ = h.roleLookup.GetUserRoles(aid)
-		} else {
-			roles = GetUserRoles(r)
-		}
+		roles := GetUserRoles(r)
 		isAdmin := contributions.CanPerformAction(roles, contributions.ActionEditProposal)
 
 		if !isProposer && !isAdmin {

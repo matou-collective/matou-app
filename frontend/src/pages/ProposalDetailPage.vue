@@ -107,9 +107,18 @@
             />
           </template>
 
-          <!-- Approved — create project -->
+          <!-- Approved — create or view project -->
           <template v-if="proposal.status === 'approved'">
             <q-btn
+              v-if="linkedProject"
+              color="primary"
+              no-caps
+              icon="open_in_new"
+              label="View Project"
+              :to="{ name: 'projects' }"
+            />
+            <q-btn
+              v-else
               color="positive"
               no-caps
               icon="rocket_launch"
@@ -432,6 +441,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
 import { BACKEND_URL } from 'src/lib/api/client';
+import { getProjectForProposal, type Project } from 'src/lib/api/projects';
 import { useProposalsStore } from 'stores/proposals';
 import { useDecisionPlansStore } from 'stores/decisionPlans';
 import type { GovernanceAction } from 'src/lib/api/decisionPlans';
@@ -463,6 +473,7 @@ const { isSteward, checkAdminStatus } = useAdminAccess();
 const transitioning = ref(false);
 const endorsing = ref(false);
 const creatingProject = ref(false);
+const linkedProject = ref<Project | null>(null);
 
 const showEndorseModal = ref(false);
 const showHistory = ref(false);
@@ -522,6 +533,9 @@ async function loadProposal(id: string) {
     void proposalsStore.fetchHistory(id);
     void proposalsStore.fetchComments(id);
     void decisionPlansStore.fetchForProposal(id);
+    if (proposalsStore.currentProposal.status === 'approved') {
+      linkedProject.value = await getProjectForProposal(id);
+    }
   }
 }
 

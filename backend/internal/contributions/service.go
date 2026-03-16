@@ -465,14 +465,39 @@ func (s *Service) DeleteProject(ctx context.Context, spaceID, projectID string) 
 	return s.store.Delete(spaceID, projectID)
 }
 
+// GetProjectByProposalID returns the project linked to the given proposal, or nil if none exists.
+func (s *Service) GetProjectByProposalID(ctx context.Context, spaceID, proposalID string) (*Project, error) {
+	projects, err := s.ListProjects(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range projects {
+		for _, pid := range p.ProposalIDs {
+			if pid == proposalID {
+				return p, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
 func (s *Service) LinkProposalToProject(ctx context.Context, spaceID, projectID, proposalID string) (*Project, error) {
+	// Prevent a proposal from being linked to multiple projects.
+	existing, err := s.GetProjectByProposalID(ctx, spaceID, proposalID)
+	if err != nil {
+		return nil, fmt.Errorf("checking existing project: %w", err)
+	}
+	if existing != nil && existing.ID != projectID {
+		return nil, fmt.Errorf("proposal %s already has a project (%s)", proposalID, existing.ID)
+	}
+
 	p, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
 	}
 	for _, id := range p.ProposalIDs {
 		if id == proposalID {
-			return p, nil // already linked
+			return p, nil // already linked to this project
 		}
 	}
 	p.ProposalIDs = append(p.ProposalIDs, proposalID)

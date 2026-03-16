@@ -88,6 +88,13 @@ export async function deleteProject(id: string): Promise<void> {
   }
 }
 
+export async function getProjectForProposal(proposalId: string): Promise<Project | null> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects?proposal_id=${encodeURIComponent(proposalId)}`);
+  if (!response.ok) return null;
+  const data = (await response.json()) as { projects: Project[]; total: number };
+  return data.projects.length > 0 ? data.projects[0] : null;
+}
+
 export async function linkProposalToProject(projectId: string, proposalId: string): Promise<Project> {
   const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/link-proposal`, {
     method: 'POST',
