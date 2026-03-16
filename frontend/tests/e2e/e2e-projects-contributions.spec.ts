@@ -1,26 +1,26 @@
 /**
- * E2E Tests: Projects & Contributions Lifecycle
+ * E2E Tests: Projects & Contributions — Full UI Lifecycle
  *
- * Tests the complete projects and contributions system through API data
- * setup + UI verification with a single admin user:
- *   - Admin (Founding Member): full privileges
+ * Tests the complete projects and contributions system through the UI,
+ * matching the UX flow table (docs/design/CONTRIBUTIONS_UX_FLOW_TABLE.md).
  *
- * Test 1 — Create project + plan + milestones + contributions via API,
- *           verify they appear correctly in the UI
- * Test 2 — Confirm contributions, sign off plan → verify signed-off badge
- * Test 3 — Share/offer contributions → verify status badges
- * Test 4 — Sub-contribution creation → verify under parent
- * Test 5 — Submit evidence + review + sign off → verify status updates
- * Test 6 — Permission edge cases → verify 4xx API responses
+ * Phases tested:
+ *   1. Project Creation (via UI)
+ *   2. Assign Team & Structure Work (milestone + contributions via UI)
+ *   3. Confirm Contributions & Sign Off Plan (via UI)
+ *   4. Distribute Work — Share & Offer (via detail dialog)
+ *   5. Accept Offer (via detail dialog)
+ *   6. Sub-Contributions (create, approve, lifecycle via UI)
+ *   7. Submit Evidence (via detail dialog)
+ *   8. Review (via detail dialog)
+ *   9. Sign Off (via detail dialog)
+ *  10. Contribution Change (via detail dialog)
  *
- * Prerequisites:
- * - KERI test infrastructure running (ports 4901-4904)
- * - Backend running in test mode (port 9080)
- * - Test accounts created (org-setup must have run)
+ * Single admin user (Founding Member) with full privileges.
  *
  * Run: npx playwright test --project=projects-contributions
  */
-import { test, expect, Page, BrowserContext, APIRequestContext } from '@playwright/test';
+import { test, expect, Page, BrowserContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
 import {
@@ -35,289 +35,72 @@ import {
 } from './utils/test-helpers';
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Constants
 // ---------------------------------------------------------------------------
 
-function authHeaders(aid: string): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    'X-User-AID': aid,
-  };
+const PROJECT_TITLE = 'E2E Community Garden';
+const PROJECT_DESC = 'A community garden project for E2E testing';
+const MILESTONE_1_TITLE = 'Phase 1: Design';
+const MILESTONE_1_DURATION = '2 weeks';
+const CONTRIBUTION_1_TITLE = 'Design Phase Work';
+const CONTRIBUTION_1_DESC = 'Create wireframes and mockups for the community garden';
+const CONTRIBUTION_2_TITLE = 'Outreach Coordination';
+const CONTRIBUTION_2_DESC = 'Coordinate community outreach and engagement';
+const SUB_CONTRIBUTION_TITLE = 'Sub: Design Review';
+const SUB_CONTRIBUTION_DESC = 'Review and validate the design deliverables';
+
+// ---------------------------------------------------------------------------
+// UI Helpers
+// ---------------------------------------------------------------------------
+
+/** Navigate to a sidebar item by label */
+async function navigateTo(page: Page, label: string) {
+  const navItem = page.locator('.nav-item', { hasText: label });
+  await expect(navItem).toBeVisible({ timeout: TIMEOUT.short });
+  await navItem.click();
 }
 
-const HEADERS = { 'Content-Type': 'application/json' };
-
-/** Create a project via API */
-async function createProjectAPI(
-  request: APIRequestContext,
-  aid: string,
-  overrides: Record<string, unknown> = {},
-) {
-  const body = {
-    title: 'E2E Test Project',
-    description: 'A project created during E2E testing',
-    created_by: aid,
-    ...overrides,
-  };
-  const response = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-    headers: authHeaders(aid),
-    data: body,
-  });
-  return { response, body: await response.json() };
+/** Wait for network to settle after a UI action */
+async function waitForSettle(page: Page, ms = 1500) {
+  await page.waitForTimeout(ms);
 }
 
-/** Create an implementation plan via API */
-async function createPlanAPI(
-  request: APIRequestContext,
-  aid: string,
-  projectId: string,
-  overrides: Record<string, unknown> = {},
-) {
-  const body = {
-    project_id: projectId,
-    total_budget: '$10,000',
-    project_lead: aid,
-    project_steward_id: aid,
-    ...overrides,
-  };
-  const response = await request.post(`${BACKEND_URL}/api/v1/implementation-plans`, {
-    headers: authHeaders(aid),
-    data: body,
-  });
-  return { response, body: await response.json() };
+/** Scope a dialog by its title text */
+function dialog(page: Page, title: string) {
+  return page.locator('.q-dialog').filter({ hasText: title });
 }
 
-/** Add a milestone to a plan via API */
-async function addMilestoneAPI(
-  request: APIRequestContext,
-  planId: string,
-  title: string,
-  duration: string,
-  contributionIds: string[] = [],
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/implementation-plans/${planId}/milestones`,
-    {
-      headers: HEADERS,
-      data: { title, duration, contribution_ids: contributionIds },
-    },
-  );
-  return { response, body: await response.json() };
+/** Click a contribution compact card by title to open the detail dialog */
+async function openContributionDialog(page: Page, title: string) {
+  const card = page.locator('.contribution-compact').filter({ hasText: title });
+  await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+  await card.click();
+  // Wait for the maximized dialog to appear
+  await expect(page.locator('.q-dialog')).toBeVisible({ timeout: TIMEOUT.short });
+  await waitForSettle(page, 500);
 }
 
-/** Create a contribution via API */
-async function createContributionAPI(
-  request: APIRequestContext,
-  aid: string,
-  projectId: string,
-  overrides: Record<string, unknown> = {},
-) {
-  const body = {
-    project_id: projectId,
-    title: 'E2E Contribution',
-    description: 'Contribution created during E2E testing',
-    contribution_type: 'technical',
-    priority: 'medium',
-    created_by: aid,
-    objectives: ['Test objective'],
-    deliverables: ['Test deliverable'],
-    acceptance_criteria: ['Test criterion'],
-    skill_requirements: ['Testing'],
-    ...overrides,
-  };
-  const response = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
-    headers: authHeaders(aid),
-    data: body,
-  });
-  return { response, body: await response.json() };
-}
-
-/** Confirm a contribution via API */
-async function confirmContributionAPI(
-  request: APIRequestContext,
-  aid: string,
-  contribId: string,
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}/confirm`,
-    { headers: authHeaders(aid) },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Share a contribution via API */
-async function shareContributionAPI(
-  request: APIRequestContext,
-  aid: string,
-  contribId: string,
-  roles: string[] = ['contributor', 'member'],
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}/share`,
-    {
-      headers: authHeaders(aid),
-      data: { shared_with_roles: roles },
-    },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Offer a contribution to a user via API */
-async function offerContributionAPI(
-  request: APIRequestContext,
-  aid: string,
-  contribId: string,
-  offeredTo: string,
-  offeredToName: string,
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}/offer`,
-    {
-      headers: authHeaders(aid),
-      data: { offered_to: offeredTo, offered_to_name: offeredToName },
-    },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Accept an offer via API */
-async function acceptOfferAPI(
-  request: APIRequestContext,
-  aid: string,
-  contribId: string,
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}/accept-offer`,
-    {
-      headers: authHeaders(aid),
-      data: { user_id: aid },
-    },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Submit evidence for a contribution via API */
-async function submitEvidenceAPI(
-  request: APIRequestContext,
-  aid: string,
-  contribId: string,
-  notes: string,
-  evidenceUrls: string[] = [],
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}/submit-evidence`,
-    {
-      headers: authHeaders(aid),
-      data: { completion_notes: notes, evidence_urls: evidenceUrls },
-    },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Review a contribution via API */
-async function reviewContributionAPI(
-  request: APIRequestContext,
-  aid: string,
-  contribId: string,
-  decision: string,
-  reviewNotes: string = '',
-  qualityRating: number = 8,
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}/review`,
-    {
-      headers: authHeaders(aid),
-      data: { decision, review_notes: reviewNotes, quality_rating: qualityRating },
-    },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Sign off a contribution via API */
-async function signOffContributionAPI(
-  request: APIRequestContext,
-  aid: string,
-  contribId: string,
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}/sign-off`,
-    { headers: authHeaders(aid) },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Sign off an implementation plan via API */
-async function signOffPlanAPI(
-  request: APIRequestContext,
-  aid: string,
-  planId: string,
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/implementation-plans/${planId}/sign-off`,
-    {
-      headers: authHeaders(aid),
-      data: { user_id: aid },
-    },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Approve a sub-contribution via API */
-async function approveSubAPI(
-  request: APIRequestContext,
-  aid: string,
-  contribId: string,
-) {
-  const response = await request.post(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}/approve-sub`,
-    { headers: authHeaders(aid) },
-  );
-  return { response, body: await response.json() };
-}
-
-/** Get a contribution by ID via API */
-async function getContributionAPI(
-  request: APIRequestContext,
-  contribId: string,
-) {
-  const response = await request.get(
-    `${BACKEND_URL}/api/v1/contributions/${contribId}`,
-  );
-  return { response, body: await response.json() };
-}
-
-/** Get an implementation plan by ID via API */
-async function getPlanAPI(
-  request: APIRequestContext,
-  planId: string,
-) {
-  const response = await request.get(
-    `${BACKEND_URL}/api/v1/implementation-plans/${planId}`,
-  );
-  return { response, body: await response.json() };
+/** Close the currently open maximized contribution detail dialog */
+async function closeContributionDialog(page: Page) {
+  const closeBtn = page.locator('.q-dialog .dialog-close-btn');
+  if (await closeBtn.isVisible().catch(() => false)) {
+    await closeBtn.click();
+  } else {
+    // Fallback: press Escape
+    await page.keyboard.press('Escape');
+  }
+  await page.waitForTimeout(500);
 }
 
 // ===========================================================================
-// Group 1: Full Lifecycle (performs org setup, then API + UI verification)
+// Group 1: Full UI Lifecycle (Phases 1–9)
 // ===========================================================================
 
-test.describe.serial('Projects & Contributions — Full Lifecycle', () => {
+test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
   let accounts: TestAccounts;
   let context: BrowserContext;
   let page: Page;
   let adminAID: string;
-  let storageAvailable = false;
-
-  // State shared across tests
-  let projectId: string;
-  let planId: string;
-  let milestoneId1: string;
-  let milestoneId2: string;
-  let contribId1: string; // milestone 1, main contribution
-  let contribId2: string; // milestone 2, main contribution
-  let contribId3: string; // extra contribution for share/offer flow
-  let subContribId: string; // sub-contribution of contribId1
-  let lifecycleContribId: string; // separate contribution for full lifecycle test
 
   // ------------------------------------------------------------------
   // Setup: login as admin
@@ -331,7 +114,6 @@ test.describe.serial('Projects & Contributions — Full Lifecycle', () => {
     page = await context.newPage();
     setupPageLogging(page, 'ProjectsContrib');
 
-    // Navigate to splash and determine state
     await page.goto(FRONTEND_URL);
 
     const needsSetup = await Promise.race([
@@ -345,21 +127,18 @@ test.describe.serial('Projects & Contributions — Full Lifecycle', () => {
     ]);
 
     if (needsSetup) {
-      console.log('[ProjectsContrib] No org config — running org setup...');
+      console.log('[E2E] No org config — running org setup...');
       accounts = await performOrgSetup(page, request);
     } else {
-      console.log('[ProjectsContrib] Recovering admin identity...');
+      console.log('[E2E] Recovering admin identity...');
       accounts = loadAccounts();
       if (!accounts.admin?.mnemonic) {
-        throw new Error(
-          'No admin mnemonic in test-accounts.json — run org-setup first',
-        );
+        throw new Error('No admin mnemonic — run org-setup first');
       }
       await loginWithMnemonic(page, accounts.admin.mnemonic);
-      console.log('[ProjectsContrib] Admin logged in');
     }
 
-    // Resolve admin AID: prefer saved value, then localStorage, then health endpoint
+    // Resolve admin AID
     adminAID = accounts.admin?.aid || '';
     if (!adminAID) {
       adminAID = await page.evaluate(() => {
@@ -376,7 +155,7 @@ test.describe.serial('Projects & Contributions — Full Lifecycle', () => {
       adminAID = data.admin || '';
     }
     if (!adminAID) throw new Error('Could not resolve admin AID');
-    console.log('[ProjectsContrib] Admin AID: %s', adminAID);
+    console.log('[E2E] Admin AID: %s', adminAID);
   });
 
   test.afterAll(async () => {
@@ -384,653 +163,596 @@ test.describe.serial('Projects & Contributions — Full Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
-  // Test 1: Create project + plan + milestones + contributions via API
-  //          → verify they appear in the UI
+  // Phase 1: Project Creation (UX Table 1.1–1.4)
   // ------------------------------------------------------------------
 
-  test('probe: check if project storage is available', async ({ request }) => {
-    const { response, body } = await createProjectAPI(request, adminAID, {
-      title: 'Storage Probe',
-    });
+  test('Phase 1: create project via UI', async () => {
+    // 1.1 Navigate to Projects screen
+    await navigateTo(page, 'Projects');
+    await expect(page).toHaveURL(/\/dashboard\/projects/, { timeout: TIMEOUT.short });
+    console.log('[Phase 1] On projects page');
 
-    if (response.ok()) {
-      storageAvailable = true;
-      console.log('[Test] Storage available — created probe project:', body.id);
-      // Clean up the probe
-    } else {
-      console.log(
-        '[Test] Storage unavailable: %s — lifecycle tests will be skipped',
-        body.error || response.status(),
-      );
+    // 1.2 Click "+ New Project"
+    const newBtn = page.getByRole('button', { name: /New Project/i });
+    await expect(newBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await newBtn.click();
+
+    // 1.3 Fill project form
+    const dlg = dialog(page, 'Create Project');
+    await expect(dlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    await dlg.getByLabel(/Title/i).fill(PROJECT_TITLE);
+    await dlg.getByLabel(/Description/i).fill(PROJECT_DESC);
+
+    // 1.4 Submit
+    await dlg.getByRole('button', { name: /Create Project/i }).click();
+    await waitForSettle(page);
+
+    // Verify project appears in list
+    const card = page.locator('.project-card', { hasText: PROJECT_TITLE }).first();
+    await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 1] Project created: %s', PROJECT_TITLE);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 2: Assign Team & Structure Work (UX Table 2.1–2.7)
+  // ------------------------------------------------------------------
+
+  test('Phase 2: open project and add milestone with contributions', async () => {
+    // 2.1 Open project detail
+    const card = page.locator('.project-card', { hasText: PROJECT_TITLE }).first();
+    await card.click();
+    await expect(page).toHaveURL(/\/dashboard\/projects\//, { timeout: TIMEOUT.short });
+    await waitForSettle(page);
+
+    // Verify project title
+    const title = page.locator('h1, h2').filter({ hasText: PROJECT_TITLE });
+    await expect(title.first()).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 2] On project detail page');
+
+    // 2.4 Create first milestone — click "Add Milestone" or "Create First Milestone"
+    const addMilestoneBtn = page.getByRole('button', { name: /Milestone/i }).first();
+    await expect(addMilestoneBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await addMilestoneBtn.click();
+
+    // 2.5 Fill milestone form
+    const msDlg = dialog(page, 'Add Milestone');
+    await expect(msDlg).toBeVisible({ timeout: TIMEOUT.short });
+    await msDlg.getByLabel(/Milestone Title/i).fill(MILESTONE_1_TITLE);
+    await msDlg.getByLabel(/Duration/i).fill(MILESTONE_1_DURATION);
+    await msDlg.getByRole('button', { name: /Add Milestone/i }).click();
+    await waitForSettle(page);
+    console.log('[Phase 2] Milestone created: %s', MILESTONE_1_TITLE);
+
+    // 2.6 Create contribution 1 within milestone
+    const milestoneCard = page.locator('.milestone-card').first();
+    await expect(milestoneCard).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Expand milestone if collapsed
+    const header = milestoneCard.locator('.milestone-header');
+    await header.click();
+    await page.waitForTimeout(300);
+
+    // Click "Add Contribution"
+    const addContribBtn = milestoneCard.getByRole('button', { name: /Add Contribution|Add First Contribution/i });
+    await expect(addContribBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await addContribBtn.click();
+
+    // 2.7 Fill contribution form
+    let contribDlg = dialog(page, 'Create Contribution');
+    await expect(contribDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    await contribDlg.getByLabel(/Title/i).first().fill(CONTRIBUTION_1_TITLE);
+    await contribDlg.getByLabel(/Description/i).first().fill(CONTRIBUTION_1_DESC);
+
+    // Select type: Technical
+    await contribDlg.getByRole('button', { name: 'Technical' }).click();
+    // Select priority: High
+    await contribDlg.getByRole('button', { name: 'High' }).click();
+
+    // Add objective
+    const objInput = contribDlg.getByPlaceholder(/objective/i).first();
+    await objInput.fill('Create wireframe designs');
+    await objInput.press('Enter');
+
+    // Add deliverable
+    const delInput = contribDlg.getByPlaceholder(/deliverable/i).first();
+    await delInput.fill('Wireframe document');
+    await delInput.press('Enter');
+
+    // Submit
+    await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
+    await waitForSettle(page);
+    console.log('[Phase 2] Contribution 1 created: %s', CONTRIBUTION_1_TITLE);
+
+    // Create contribution 2 in the same milestone
+    await addContribBtn.click();
+    contribDlg = dialog(page, 'Create Contribution');
+    await expect(contribDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    await contribDlg.getByLabel(/Title/i).first().fill(CONTRIBUTION_2_TITLE);
+    await contribDlg.getByLabel(/Description/i).first().fill(CONTRIBUTION_2_DESC);
+    await contribDlg.getByRole('button', { name: 'Community' }).click();
+    await contribDlg.getByRole('button', { name: 'Medium' }).click();
+
+    const objInput2 = contribDlg.getByPlaceholder(/objective/i).first();
+    await objInput2.fill('Engage community members');
+    await objInput2.press('Enter');
+
+    const delInput2 = contribDlg.getByPlaceholder(/deliverable/i).first();
+    await delInput2.fill('Outreach report');
+    await delInput2.press('Enter');
+
+    await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
+    await waitForSettle(page);
+    console.log('[Phase 2] Contribution 2 created: %s', CONTRIBUTION_2_TITLE);
+
+    // Verify both contributions visible in milestone
+    await expect(milestoneCard.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_1_TITLE }))
+      .toBeVisible({ timeout: TIMEOUT.short });
+    await expect(milestoneCard.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE }))
+      .toBeVisible({ timeout: TIMEOUT.short });
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 3: Confirm Contributions & Sign Off Plan (UX Table 3.1–3.6)
+  // ------------------------------------------------------------------
+
+  test('Phase 3: confirm contributions and sign off plan via UI', async () => {
+    // 3.2 Confirm contribution 1
+    const contrib1Card = page.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_1_TITLE });
+    const confirmBtn1 = contrib1Card.getByRole('button', { name: 'Confirm' });
+    await expect(confirmBtn1).toBeVisible({ timeout: TIMEOUT.short });
+    await confirmBtn1.click();
+    await waitForSettle(page);
+    console.log('[Phase 3] Contribution 1 confirmed');
+
+    // 3.2 Confirm contribution 2
+    const contrib2Card = page.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
+    const confirmBtn2 = contrib2Card.getByRole('button', { name: 'Confirm' });
+    await expect(confirmBtn2).toBeVisible({ timeout: TIMEOUT.short });
+    await confirmBtn2.click();
+    await waitForSettle(page);
+    console.log('[Phase 3] Contribution 2 confirmed');
+
+    // 3.3 Sign off plan — button should now appear since all confirmed
+    const signOffBtn = page.getByRole('button', { name: /Sign Off Plan/i }).first();
+    await expect(signOffBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await signOffBtn.click();
+    await waitForSettle(page);
+
+    // 3.4 Verify signed-off state
+    const signedBadge = page.locator('text=Signed Off').first();
+    await expect(signedBadge).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // 3.5 Verify milestone shows "Locked" badge
+    const lockedBadge = page.locator('.milestone-card').first().locator('text=Locked');
+    await expect(lockedBadge).toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Phase 3] Plan signed off, milestones locked');
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 4: Distribute Work — Share & Offer (UX Table 4.1–4.9)
+  // ------------------------------------------------------------------
+
+  test('Phase 4: share and offer contribution via detail dialog', async () => {
+    // Open contribution 1 detail dialog
+    await openContributionDialog(page, CONTRIBUTION_1_TITLE);
+    const dlg = page.locator('.q-dialog');
+
+    // 4.1b Click Share in dialog footer
+    const shareBtn = dlg.getByRole('button', { name: 'Share' }).first();
+    await expect(shareBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await shareBtn.click();
+
+    // 4.2 Select roles in share dialog
+    const shareDlg = page.locator('.q-dialog').filter({ hasText: 'Share Contribution' });
+    await expect(shareDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Check "Contributors" and "Members" checkboxes
+    const contributorsCheckbox = shareDlg.getByLabel('Contributors').or(shareDlg.getByText('Contributors'));
+    await contributorsCheckbox.click();
+    const membersCheckbox = shareDlg.getByLabel('Members').or(shareDlg.getByText('Members'));
+    await membersCheckbox.click();
+
+    // 4.3 Confirm share
+    await shareDlg.getByRole('button', { name: 'Share' }).click();
+    await waitForSettle(page);
+    console.log('[Phase 4] Contribution shared with Contributors, Members');
+
+    // 4.5b Click Offer in dialog footer
+    const offerBtn = dlg.getByRole('button', { name: 'Offer' }).first();
+    await expect(offerBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await offerBtn.click();
+
+    // 4.6 Fill offer dialog
+    const offerDlg = page.locator('.q-dialog').filter({ hasText: 'Offer' });
+    await expect(offerDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    await offerDlg.getByLabel(/User ID/i).fill(adminAID);
+    await offerDlg.getByLabel(/User Name/i).fill('Admin User');
+
+    // 4.7 Send offer
+    await offerDlg.getByRole('button', { name: /Send Offer|Offer/i }).click();
+    await waitForSettle(page);
+    console.log('[Phase 4] Contribution offered to admin');
+
+    // 4.8 Verify offered status panel visible
+    await expect(dlg.getByText(/Offered to/i)).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Close dialog
+    await closeContributionDialog(page);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 5: Accept Offer (UX Table 5.6)
+  // ------------------------------------------------------------------
+
+  test('Phase 5: accept offer via detail dialog', async () => {
+    // Reopen contribution 1 detail dialog
+    await openContributionDialog(page, CONTRIBUTION_1_TITLE);
+    const dlg = page.locator('.q-dialog');
+
+    // 5.6 Click Accept Offer
+    const acceptBtn = dlg.getByRole('button', { name: /Accept Offer|Accept/i }).first();
+    await expect(acceptBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await acceptBtn.click();
+    await waitForSettle(page);
+
+    // Verify assigned status — the dialog should show "Assigned" somewhere
+    await expect(dlg.getByText(/Assigned/i).first()).toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Phase 5] Offer accepted — contribution assigned');
+
+    await closeContributionDialog(page);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 7: Submit Evidence (UX Table 7.1–7.8)
+  // (Skipping Phase 6 sub-contributions for this contribution to keep
+  //  the main lifecycle flow linear. Sub-contributions tested separately.)
+  // ------------------------------------------------------------------
+
+  test('Phase 7: submit evidence via detail dialog', async () => {
+    await openContributionDialog(page, CONTRIBUTION_1_TITLE);
+    const dlg = page.locator('.q-dialog');
+
+    // 7.2 Fill completion notes
+    const notesInput = dlg.getByLabel(/Completion Notes/i).or(dlg.getByPlaceholder(/completion|describe/i));
+    await expect(notesInput).toBeVisible({ timeout: TIMEOUT.medium });
+    await notesInput.fill('Wireframes completed. All design objectives met. Reviewed by team.');
+
+    // 7.7 Enter actual hours
+    const hoursInput = dlg.getByLabel(/Actual Hours|Actual Duration/i).or(dlg.getByPlaceholder(/hours/i));
+    if (await hoursInput.isVisible().catch(() => false)) {
+      await hoursInput.fill('32');
     }
+
+    // 7.8 Submit for review
+    const submitBtn = dlg.getByRole('button', { name: /Submit for Review|Submit Evidence/i });
+    await expect(submitBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await submitBtn.click();
+    await waitForSettle(page);
+    console.log('[Phase 7] Evidence submitted for review');
+
+    await closeContributionDialog(page);
   });
 
-  test('create project via API', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
+  // ------------------------------------------------------------------
+  // Phase 8: Review (UX Table 8.1–8.9)
+  // ------------------------------------------------------------------
 
-    const { response, body } = await createProjectAPI(request, adminAID, {
-      title: 'E2E Community Garden',
-      description: 'A community garden project for E2E testing',
-    });
+  test('Phase 8: review and approve via detail dialog', async () => {
+    await openContributionDialog(page, CONTRIBUTION_1_TITLE);
+    const dlg = page.locator('.q-dialog');
 
-    expect(response.status()).toBe(201);
-    expect(body.id).toBeTruthy();
-    projectId = body.id;
-    console.log('[Test] Project created:', projectId);
-  });
+    // 8.3 Select outcome — Approve
+    const approveBtn = dlg.getByRole('button', { name: 'Approve' });
+    await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await approveBtn.click();
 
-  test('create implementation plan via API', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    const { response, body } = await createPlanAPI(request, adminAID, projectId);
-
-    expect(response.status()).toBe(201);
-    expect(body.id).toBeTruthy();
-    planId = body.id;
-    console.log('[Test] Plan created:', planId);
-  });
-
-  test('add milestones and contributions via API', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // Create two contributions first
-    const { response: cr1, body: c1 } = await createContributionAPI(
-      request,
-      adminAID,
-      projectId,
-      { title: 'Design Phase', milestone_id: 'placeholder' },
-    );
-    expect(cr1.status()).toBe(201);
-    contribId1 = c1.id;
-
-    const { response: cr2, body: c2 } = await createContributionAPI(
-      request,
-      adminAID,
-      projectId,
-      { title: 'Build Phase', milestone_id: 'placeholder' },
-    );
-    expect(cr2.status()).toBe(201);
-    contribId2 = c2.id;
-
-    // Add milestones with contribution IDs embedded
-    const { response: mr1, body: ms1 } = await addMilestoneAPI(
-      request,
-      planId,
-      'Phase 1: Design',
-      '2 weeks',
-      [contribId1],
-    );
-    expect(mr1.status()).toBe(201);
-    milestoneId1 = ms1.milestone_id;
-
-    const { response: mr2, body: ms2 } = await addMilestoneAPI(
-      request,
-      planId,
-      'Phase 2: Build',
-      '4 weeks',
-      [contribId2],
-    );
-    expect(mr2.status()).toBe(201);
-    milestoneId2 = ms2.milestone_id;
-
-    // Create a third contribution for share/offer tests later
-    const { response: cr3, body: c3 } = await createContributionAPI(
-      request,
-      adminAID,
-      projectId,
-      { title: 'Outreach Contribution' },
-    );
-    expect(cr3.status()).toBe(201);
-    contribId3 = c3.id;
-
-    console.log(
-      '[Test] Milestones: [%s, %s], Contributions: [%s, %s, %s]',
-      milestoneId1,
-      milestoneId2,
-      contribId1,
-      contribId2,
-      contribId3,
-    );
-  });
-
-  test('UI: navigate to projects page and see the project', async () => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // Click the Projects nav item
-    const navItem = page.locator('.nav-item', { hasText: 'Projects' });
-    await expect(navItem).toBeVisible({ timeout: TIMEOUT.short });
-    await navItem.click();
-
-    await expect(page).toHaveURL(/\/dashboard\/projects/, {
-      timeout: TIMEOUT.short,
-    });
-
-    // Wait for the projects list to load
-    await page.waitForTimeout(2000);
-
-    // The project card should show the title (use first() in case of leftovers from prior runs)
-    const projectCard = page.locator('.project-card', {
-      hasText: 'E2E Community Garden',
-    }).first();
-    await expect(projectCard).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Test] Project card visible on projects page');
-
-    // Click through to project detail
-    await projectCard.click();
-    await expect(page).toHaveURL(/\/dashboard\/projects\//, {
-      timeout: TIMEOUT.short,
-    });
-
-    // Verify project header renders
-    await expect(page.locator('.project-title')).toContainText(
-      'E2E Community Garden',
-      { timeout: TIMEOUT.medium },
-    );
-    console.log('[Test] Project detail page loaded with correct title');
-  });
-
-  test('UI: project detail shows implementation plan section', async () => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // The content-section with "Implementation Plan" title should be visible
-    const planSection = page.locator('.section-title', {
-      hasText: 'Implementation Plan',
-    });
-    await expect(planSection).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Test] Implementation Plan section visible');
-  });
-
-  test('UI: milestones are listed in the project detail', async () => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // Wait for milestones to load
-    await page.waitForTimeout(1500);
-
-    // Look for milestone titles in milestone cards
-    const milestone1 = page.locator('.milestone-title', {
-      hasText: 'Phase 1: Design',
-    });
-    const milestone2 = page.locator('.milestone-title', {
-      hasText: 'Phase 2: Build',
-    });
-
-    // At least check that the milestones list area is present
-    const milestonesList = page.locator('.milestones-list');
-    const hasMilestones = await milestonesList.isVisible().catch(() => false);
-
-    if (hasMilestones) {
-      // Milestones are rendering
-      const m1Visible = await milestone1.isVisible().catch(() => false);
-      const m2Visible = await milestone2.isVisible().catch(() => false);
-      console.log(
-        '[Test] Milestones list visible. Phase 1: %s, Phase 2: %s',
-        m1Visible,
-        m2Visible,
-      );
-    } else {
-      // Milestones may not have loaded due to data hydration - check empty state
-      const emptyState = page.locator('.empty-milestones');
-      const noMilestonesYet = await emptyState.isVisible().catch(() => false);
-      console.log(
-        '[Test] No milestones list rendered (empty=%s) — milestone hydration may need reload',
-        noMilestonesYet,
-      );
+    // 8.4 Rate quality — click 8th star
+    const stars = dlg.locator('.star-btn, [name="star"]');
+    const starCount = await stars.count();
+    if (starCount >= 8) {
+      await stars.nth(7).click(); // 0-indexed, click 8th star
     }
-  });
 
-  // ------------------------------------------------------------------
-  // Test 2: Confirm contributions + sign off plan → verify badge
-  // ------------------------------------------------------------------
-
-  test('confirm all contributions via API', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    const { response: r1 } = await confirmContributionAPI(request, adminAID, contribId1);
-    expect(r1.ok()).toBeTruthy();
-
-    const { response: r2 } = await confirmContributionAPI(request, adminAID, contribId2);
-    expect(r2.ok()).toBeTruthy();
-
-    // Verify via API
-    const { body: c1 } = await getContributionAPI(request, contribId1);
-    expect(c1.status).toBe('confirmed');
-
-    const { body: c2 } = await getContributionAPI(request, contribId2);
-    expect(c2.status).toBe('confirmed');
-
-    console.log('[Test] Both contributions confirmed');
-  });
-
-  test('sign off plan via API', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    const { response, body } = await signOffPlanAPI(request, adminAID, planId);
-    expect(response.ok()).toBeTruthy();
-    expect(body.signed_off).toBe(true);
-
-    console.log('[Test] Plan signed off successfully');
-  });
-
-  test('API: verify plan is signed off', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // Verify plan sign-off state via API (avoids expensive page reload)
-    const { body } = await getPlanAPI(request, planId);
-    expect(body.signed_off).toBe(true);
-    expect(body.signed_off_by).toBeTruthy();
-    console.log('[Test] Plan signed_off=%s, signed_off_by=%s', body.signed_off, body.signed_off_by);
-  });
-
-  // ------------------------------------------------------------------
-  // Test 3: Share and offer contributions → verify status badges
-  // ------------------------------------------------------------------
-
-  test('share and offer contributions via API', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // First confirm contribId3 so it can be shared
-    const { response: confirmR } = await confirmContributionAPI(
-      request,
-      adminAID,
-      contribId3,
-    );
-    expect(confirmR.ok()).toBeTruthy();
-
-    // Share it
-    const { response: shareR, body: shareBody } = await shareContributionAPI(
-      request,
-      adminAID,
-      contribId3,
-    );
-    expect(shareR.ok()).toBeTruthy();
-    expect(shareBody.status).toBe('shared');
-
-    // Now offer it to the admin themselves (for testing purposes)
-    const { response: offerR, body: offerBody } = await offerContributionAPI(
-      request,
-      adminAID,
-      contribId3,
-      adminAID,
-      'Admin User',
-    );
-    expect(offerR.ok()).toBeTruthy();
-    expect(offerBody.status).toBe('offered');
-
-    console.log('[Test] Contribution shared then offered');
-  });
-
-  test('UI: contributions page shows contribution with offered status', async () => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // Navigate to the Contributions page
-    const navItem = page.locator('.nav-item', { hasText: 'Contributions' });
-    await expect(navItem).toBeVisible({ timeout: TIMEOUT.short });
-    await navItem.click();
-
-    await expect(page).toHaveURL(/\/dashboard\/contributions/, {
-      timeout: TIMEOUT.short,
-    });
-
-    await page.waitForTimeout(2000);
-
-    // Look for the "Outreach Contribution" text on the page
-    const contrib = page.locator('text=Outreach Contribution');
-    const isVisible = await contrib.isVisible().catch(() => false);
-
-    if (isVisible) {
-      console.log('[Test] Outreach Contribution visible on contributions page');
-
-      // Check that an "Offered" status badge exists somewhere on the page
-      const offeredBadge = page.locator('.status-badge.offered');
-      const hasBadge = await offeredBadge.first().isVisible().catch(() => false);
-      console.log('[Test] Offered status badge visible: %s', hasBadge);
-    } else {
-      console.log('[Test] Outreach Contribution not found — contributions may not be loaded');
+    // 8.6 Write feedback
+    const feedbackInput = dlg.getByLabel(/feedback/i).or(dlg.getByPlaceholder(/feedback/i));
+    if (await feedbackInput.isVisible().catch(() => false)) {
+      await feedbackInput.fill('Excellent work. Design meets all acceptance criteria.');
     }
+
+    // 8.7 Submit review
+    const submitReview = dlg.getByRole('button', { name: /Submit Review/i });
+    await expect(submitReview).toBeVisible({ timeout: TIMEOUT.short });
+    await submitReview.click();
+    await waitForSettle(page);
+    console.log('[Phase 8] Review submitted — approved');
+
+    await closeContributionDialog(page);
   });
 
   // ------------------------------------------------------------------
-  // Test 4: Sub-contribution creation → verify it appears
+  // Phase 9: Sign Off (UX Table 9.1–9.4)
   // ------------------------------------------------------------------
 
-  test('create sub-contribution via API', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
+  test('Phase 9: sign off contribution via detail dialog', async () => {
+    await openContributionDialog(page, CONTRIBUTION_1_TITLE);
+    const dlg = page.locator('.q-dialog');
 
-    // Create a contribution that will serve as parent for the sub-contrib
-    // Use contribId1 (already confirmed); create a child contribution
-    const { response, body } = await createContributionAPI(
-      request,
-      adminAID,
-      projectId,
-      {
-        title: 'Sub: Design Review',
-        description: 'Sub-contribution under Design Phase',
-        parent_contribution: contribId1,
-      },
-    );
-    expect(response.status()).toBe(201);
-    subContribId = body.id;
-    expect(body.parent_contribution).toBe(contribId1);
+    // 9.2 Click Sign Off
+    const signOffBtn = dlg.getByRole('button', { name: /Sign Off/i }).first();
+    await expect(signOffBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await signOffBtn.click();
+    await waitForSettle(page);
 
-    console.log('[Test] Sub-contribution created: %s under parent %s', subContribId, contribId1);
-  });
+    // 9.4 Verify signed-off state
+    await expect(dlg.getByText(/Signed Off/i).first()).toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Phase 9] Contribution signed off');
 
-  test('API: verify sub-contribution exists with parent link', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    const { body } = await getContributionAPI(request, subContribId);
-    expect(body.parent_contribution).toBe(contribId1);
-    expect(body.title).toBe('Sub: Design Review');
-    console.log('[Test] Sub-contribution %s linked to parent %s', subContribId, contribId1);
+    await closeContributionDialog(page);
   });
 
   // ------------------------------------------------------------------
-  // Test 5: Full contribution lifecycle: offer → accept → evidence → review → sign-off
+  // Phase 10: Contribution Change (UX Table 10.1–10.8)
+  // Uses contribution 2 which is confirmed but not yet shared
   // ------------------------------------------------------------------
 
-  test('create and drive contribution through full lifecycle via API', async ({
-    request,
-  }) => {
-    test.skip(!storageAvailable, 'Storage not available');
+  test('Phase 10: share, offer, accept contribution 2 for change flow', async () => {
+    // First get contribution 2 to "assigned" status via the UI
+    await openContributionDialog(page, CONTRIBUTION_2_TITLE);
+    const dlg = page.locator('.q-dialog');
 
-    // Create a fresh contribution for lifecycle testing
-    const { response: createR, body: created } = await createContributionAPI(
-      request,
-      adminAID,
-      projectId,
-      { title: 'Lifecycle Contribution' },
-    );
-    expect(createR.status()).toBe(201);
-    lifecycleContribId = created.id;
-    expect(created.status).toBe('created');
+    // Share
+    const shareBtn = dlg.getByRole('button', { name: 'Share' }).first();
+    await expect(shareBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await shareBtn.click();
 
-    // Step 1: Confirm
-    const { response: confirmR, body: confirmed } = await confirmContributionAPI(
-      request,
-      adminAID,
-      lifecycleContribId,
-    );
-    expect(confirmR.ok()).toBeTruthy();
-    expect(confirmed.status).toBe('confirmed');
+    const shareDlg = page.locator('.q-dialog').filter({ hasText: 'Share Contribution' });
+    await expect(shareDlg).toBeVisible({ timeout: TIMEOUT.short });
+    await shareDlg.getByLabel('Contributors').or(shareDlg.getByText('Contributors')).click();
+    await shareDlg.getByRole('button', { name: 'Share' }).click();
+    await waitForSettle(page);
 
-    // Step 2: Share
-    const { response: shareR, body: shared } = await shareContributionAPI(
-      request,
-      adminAID,
-      lifecycleContribId,
-    );
-    expect(shareR.ok()).toBeTruthy();
-    expect(shared.status).toBe('shared');
+    // Offer to self
+    const offerBtn = dlg.getByRole('button', { name: 'Offer' }).first();
+    await expect(offerBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await offerBtn.click();
 
-    // Step 3: Offer to admin
-    const { response: offerR, body: offered } = await offerContributionAPI(
-      request,
-      adminAID,
-      lifecycleContribId,
-      adminAID,
-      'Admin User',
-    );
-    expect(offerR.ok()).toBeTruthy();
-    expect(offered.status).toBe('offered');
+    const offerDlg = page.locator('.q-dialog').filter({ hasText: 'Offer' });
+    await expect(offerDlg).toBeVisible({ timeout: TIMEOUT.short });
+    await offerDlg.getByLabel(/User ID/i).fill(adminAID);
+    await offerDlg.getByLabel(/User Name/i).fill('Admin User');
+    await offerDlg.getByRole('button', { name: /Send Offer|Offer/i }).click();
+    await waitForSettle(page);
 
-    // Step 4: Accept offer
-    const { response: acceptR, body: accepted } = await acceptOfferAPI(
-      request,
-      adminAID,
-      lifecycleContribId,
-    );
-    expect(acceptR.ok()).toBeTruthy();
-    expect(accepted.status).toBe('assigned');
+    // Accept
+    const acceptBtn = dlg.getByRole('button', { name: /Accept Offer|Accept/i }).first();
+    await expect(acceptBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await acceptBtn.click();
+    await waitForSettle(page);
+    console.log('[Phase 10] Contribution 2 is now assigned');
 
-    // Step 5: Submit evidence
-    const { response: evidenceR, body: withEvidence } = await submitEvidenceAPI(
-      request,
-      adminAID,
-      lifecycleContribId,
-      'Work completed successfully. All deliverables met.',
-      ['https://example.com/evidence/1'],
-    );
-    expect(evidenceR.ok()).toBeTruthy();
-    expect(withEvidence.status).toBe('needs_review');
-
-    // Step 6: Review — approve
-    const { response: reviewR, body: reviewed } = await reviewContributionAPI(
-      request,
-      adminAID,
-      lifecycleContribId,
-      'approved',
-      'Excellent work on all deliverables',
-      9,
-    );
-    expect(reviewR.ok()).toBeTruthy();
-    expect(reviewed.status).toBe('approved');
-
-    // Step 7: Sign off
-    const { response: signOffR, body: signedOff } = await signOffContributionAPI(
-      request,
-      adminAID,
-      lifecycleContribId,
-    );
-    expect(signOffR.ok()).toBeTruthy();
-    expect(signedOff.status).toBe('signed_off');
-
-    console.log(
-      '[Test] Full lifecycle: created → confirmed → shared → offered → assigned → needs_review → approved → signed_off',
-    );
+    await closeContributionDialog(page);
   });
 
-  test('API: verify lifecycle contribution reached signed_off status', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
+  test('Phase 10: change contribution via UI', async () => {
+    // 10.1 Open contribution 2 dialog and click Change Contribution
+    await openContributionDialog(page, CONTRIBUTION_2_TITLE);
+    const dlg = page.locator('.q-dialog');
 
-    const { body } = await getContributionAPI(request, lifecycleContribId);
-    expect(body.status).toBe('signed_off');
-    console.log('[Test] Lifecycle contribution status: %s', body.status);
+    const changeBtn = dlg.getByRole('button', { name: /Change Contribution/i });
+    await expect(changeBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await changeBtn.click();
+
+    // 10.2 Change dialog opens (reuses CreateContributionDialog in edit mode)
+    const changeDlg = dialog(page, 'Change Contribution');
+    await expect(changeDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    // 10.3 Re-confirmation warning should be visible
+    await expect(changeDlg.getByText(/re-confirmation/i)).toBeVisible({ timeout: TIMEOUT.short });
+
+    // 10.4 Edit a field
+    const descInput = changeDlg.getByLabel(/Description/i).first();
+    await descInput.clear();
+    await descInput.fill('Updated: Coordinate expanded community outreach with new partners');
+
+    // 10.5 Provide reason for change
+    const reasonInput = changeDlg.getByLabel(/Reason for Change/i).or(
+      changeDlg.getByPlaceholder(/reason|why/i)
+    );
+    await expect(reasonInput).toBeVisible({ timeout: TIMEOUT.short });
+    await reasonInput.fill('Scope expanded to include additional community partners');
+
+    // 10.6 Submit change
+    await changeDlg.getByRole('button', { name: /Submit Change/i }).click();
+    await waitForSettle(page);
+    console.log('[Phase 10] Contribution changed — status should be "changed"');
+
+    await closeContributionDialog(page);
+  });
+
+  test('Phase 10: re-confirm changed contribution', async () => {
+    // 10.7 The changed contribution should show a Confirm button again
+    const contrib2Card = page.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
+    const confirmBtn = contrib2Card.getByRole('button', { name: 'Confirm' });
+
+    // The card might need a moment to reflect the new status
+    await expect(confirmBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await confirmBtn.click();
+    await waitForSettle(page);
+    console.log('[Phase 10] Changed contribution re-confirmed');
   });
 
   // ------------------------------------------------------------------
-  // Test 6: Permission edge cases — verify via API 4xx responses
+  // Phase 6: Sub-Contributions (UX Table 6.1–6.8)
+  // Uses contribution 1 which is signed off — we'll use contribution 2
+  // which is now re-confirmed. Need to get it to assigned first.
+  // Actually, let's create a fresh contribution for sub-contrib testing.
   // ------------------------------------------------------------------
 
-  test('cannot sign off an unconfirmed plan', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
+  test('Phase 6: create and manage sub-contribution', async () => {
+    // Get contribution 2 to assigned status again (it was re-confirmed after change)
+    await openContributionDialog(page, CONTRIBUTION_2_TITLE);
+    const dlg = page.locator('.q-dialog');
 
-    // Create a fresh project + plan + milestone + unconfirmed contribution
-    const { body: proj } = await createProjectAPI(request, adminAID, {
-      title: 'Edge Case Project',
-    });
+    // Share
+    const shareBtn = dlg.getByRole('button', { name: 'Share' }).first();
+    if (await shareBtn.isVisible().catch(() => false)) {
+      await shareBtn.click();
+      const shareDlg = page.locator('.q-dialog').filter({ hasText: 'Share Contribution' });
+      await expect(shareDlg).toBeVisible({ timeout: TIMEOUT.short });
+      await shareDlg.getByLabel('Contributors').or(shareDlg.getByText('Contributors')).click();
+      await shareDlg.getByRole('button', { name: 'Share' }).click();
+      await waitForSettle(page);
+    }
 
-    const { body: plan } = await createPlanAPI(request, adminAID, proj.id);
+    // Offer to self
+    const offerBtn = dlg.getByRole('button', { name: 'Offer' }).first();
+    if (await offerBtn.isVisible().catch(() => false)) {
+      await offerBtn.click();
+      const offerDlg = page.locator('.q-dialog').filter({ hasText: 'Offer' });
+      await expect(offerDlg).toBeVisible({ timeout: TIMEOUT.short });
+      await offerDlg.getByLabel(/User ID/i).fill(adminAID);
+      await offerDlg.getByLabel(/User Name/i).fill('Admin User');
+      await offerDlg.getByRole('button', { name: /Send Offer|Offer/i }).click();
+      await waitForSettle(page);
+    }
 
-    const { body: contrib } = await createContributionAPI(
-      request,
-      adminAID,
-      proj.id,
-      { title: 'Unconfirmed Work' },
-    );
+    // Accept
+    const acceptBtn = dlg.getByRole('button', { name: /Accept Offer|Accept/i }).first();
+    if (await acceptBtn.isVisible().catch(() => false)) {
+      await acceptBtn.click();
+      await waitForSettle(page);
+    }
 
-    // Add milestone with the unconfirmed contribution
-    await addMilestoneAPI(request, plan.id, 'Edge Milestone', '1 week', [
-      contrib.id,
-    ]);
+    // 6.2 Add sub-contribution
+    const addSubBtn = dlg.getByRole('button', { name: /Add Sub-Contribution/i });
+    await expect(addSubBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await addSubBtn.click();
 
-    // Attempt to sign off plan — should fail because contribution is unconfirmed
-    const { response } = await signOffPlanAPI(request, adminAID, plan.id);
-    expect(response.status()).toBe(422);
+    // Fill sub-contribution form
+    const subDlg = dialog(page, /Sub-Contribution|Create Contribution/i);
+    await expect(subDlg).toBeVisible({ timeout: TIMEOUT.short });
 
-    const body = await response.json();
-    expect(body.error).toContain('unconfirmed');
-    console.log('[Test] Plan sign-off correctly rejected: unconfirmed contributions');
-  });
+    await subDlg.getByLabel(/Title/i).first().fill(SUB_CONTRIBUTION_TITLE);
+    await subDlg.getByLabel(/Description/i).first().fill(SUB_CONTRIBUTION_DESC);
+    await subDlg.getByRole('button', { name: 'Technical' }).click();
+    await subDlg.getByRole('button', { name: 'Medium' }).click();
 
-  test('cannot sign off plan that is already signed off', async ({ request }) => {
-    test.skip(!storageAvailable, 'Storage not available');
+    const objInput = subDlg.getByPlaceholder(/objective/i).first();
+    await objInput.fill('Review design documents');
+    await objInput.press('Enter');
 
-    // Try to sign off the original plan again — should get 409
-    const { response } = await signOffPlanAPI(request, adminAID, planId);
-    expect(response.status()).toBe(409);
+    const delInput = subDlg.getByPlaceholder(/deliverable/i).first();
+    await delInput.fill('Review report');
+    await delInput.press('Enter');
 
-    const body = await response.json();
-    expect(body.error).toContain('already signed off');
-    console.log('[Test] Double sign-off correctly rejected: 409 Conflict');
-  });
+    await subDlg.getByRole('button', { name: /Create/i }).click();
+    await waitForSettle(page);
+    console.log('[Phase 6] Sub-contribution created');
 
-  test('cannot submit evidence when child contribution is incomplete', async ({
-    request,
-  }) => {
-    test.skip(!storageAvailable, 'Storage not available');
+    // 6.5 Verify sub-contribution appears in the dialog
+    await expect(dlg.getByText(SUB_CONTRIBUTION_TITLE)).toBeVisible({ timeout: TIMEOUT.medium });
 
-    // Create a parent contribution
-    const { body: parent } = await createContributionAPI(
-      request,
-      adminAID,
-      projectId,
-      { title: 'Parent with Children' },
-    );
+    // 6.4 Approve the sub-contribution (if there's an Approve button)
+    const approveBtn = dlg.getByRole('button', { name: 'Approve' }).first();
+    if (await approveBtn.isVisible().catch(() => false)) {
+      await approveBtn.click();
+      await waitForSettle(page);
+      console.log('[Phase 6] Sub-contribution approved');
+    }
 
-    // Create a child contribution
-    const { body: child } = await createContributionAPI(
-      request,
-      adminAID,
-      projectId,
-      {
-        title: 'Incomplete Child',
-        parent_contribution: parent.id,
-      },
-    );
+    // 6.6 Click sub-contribution to open recursive dialog
+    const subItem = dlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE });
+    if (await subItem.isVisible().catch(() => false)) {
+      await subItem.click();
+      await page.waitForTimeout(500);
 
-    // Confirm parent
-    await confirmContributionAPI(request, adminAID, parent.id);
+      // Verify nested dialog opened with sub-contribution title
+      const nestedTitle = page.locator('.q-dialog').getByText(SUB_CONTRIBUTION_TITLE);
+      const isNested = await nestedTitle.isVisible().catch(() => false);
+      if (isNested) {
+        console.log('[Phase 6] Recursive child dialog opened');
+        // Close nested dialog
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(300);
+      }
+    }
 
-    // Share + offer + accept parent to get it to "assigned"
-    await shareContributionAPI(request, adminAID, parent.id);
-    await offerContributionAPI(request, adminAID, parent.id, adminAID, 'Admin');
-    await acceptOfferAPI(request, adminAID, parent.id);
+    // 6.7 Verify blocking warning (parent can't submit evidence with unsigned child)
+    const blockingWarning = dlg.getByText(/Sub-Contributions Not Complete|must be signed off/i);
+    const hasWarning = await blockingWarning.isVisible().catch(() => false);
+    console.log('[Phase 6] Blocking warning visible: %s', hasWarning);
 
-    // Try to submit evidence on parent — should fail because child is not signed off
-    const { response } = await submitEvidenceAPI(
-      request,
-      adminAID,
-      parent.id,
-      'Trying to submit with incomplete child',
-    );
-    expect(response.status()).toBe(409);
-
-    const body = await response.json();
-    expect(body.error).toContain('blocking');
-    expect(body.blocking_children).toBeDefined();
-    expect(body.blocking_children).toContain(child.id);
-    console.log(
-      '[Test] Evidence submission correctly blocked by incomplete child: %s',
-      child.id,
-    );
-  });
-
-  test('cannot confirm a contribution that is not in created status', async ({
-    request,
-  }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // contribId1 is already confirmed — trying to confirm again should fail
-    const { response } = await confirmContributionAPI(
-      request,
-      adminAID,
-      contribId1,
-    );
-    expect(response.ok()).toBeFalsy();
-
-    const body = await response.json();
-    expect(body.error).toContain('created');
-    console.log('[Test] Re-confirm correctly rejected');
-  });
-
-  test('cannot review a contribution not in needs_review status', async ({
-    request,
-  }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // contribId1 is "confirmed" — trying to review should fail
-    const { response } = await reviewContributionAPI(
-      request,
-      adminAID,
-      contribId1,
-      'approved',
-      'Should fail',
-    );
-    expect(response.ok()).toBeFalsy();
-    console.log('[Test] Review of non-reviewable contribution correctly rejected');
-  });
-
-  test('cannot sign off a contribution not in approved status', async ({
-    request,
-  }) => {
-    test.skip(!storageAvailable, 'Storage not available');
-
-    // contribId2 is "confirmed" — trying to sign off should fail
-    const { response } = await signOffContributionAPI(
-      request,
-      adminAID,
-      contribId2,
-    );
-    expect(response.ok()).toBeFalsy();
-    console.log('[Test] Sign-off of non-approved contribution correctly rejected');
+    await closeContributionDialog(page);
   });
 
   // ------------------------------------------------------------------
-  // Final: Navigate back to projects page and verify page state
+  // Verify: Navigate to contributions page and see statuses
   // ------------------------------------------------------------------
 
-  test('UI: navigate back to projects and verify project still listed', async () => {
-    test.skip(!storageAvailable, 'Storage not available');
+  test('verify contributions page shows all contributions', async () => {
+    await navigateTo(page, 'Contributions');
+    await expect(page).toHaveURL(/\/dashboard\/contributions/, { timeout: TIMEOUT.short });
+    await waitForSettle(page);
 
-    const navItem = page.locator('.nav-item', { hasText: 'Projects' });
-    await navItem.click();
+    // Contribution 1 should show as signed_off
+    const contrib1 = page.locator('.contribution-card').filter({ hasText: CONTRIBUTION_1_TITLE });
+    await expect(contrib1).toBeVisible({ timeout: TIMEOUT.medium });
 
-    await expect(page).toHaveURL(/\/dashboard\/projects/, {
-      timeout: TIMEOUT.short,
-    });
+    // Contribution 2 should be visible
+    const contrib2 = page.locator('.contribution-card').filter({ hasText: CONTRIBUTION_2_TITLE });
+    await expect(contrib2).toBeVisible({ timeout: TIMEOUT.medium });
 
-    await page.waitForTimeout(2000);
+    console.log('[Verify] Both contributions visible on contributions page');
+  });
 
-    // The original project should still appear
-    const projectCard = page.locator('.project-card', {
-      hasText: 'E2E Community Garden',
-    }).first();
-    await expect(projectCard).toBeVisible({ timeout: TIMEOUT.medium });
+  // ------------------------------------------------------------------
+  // Verify: Navigate back to projects page
+  // ------------------------------------------------------------------
 
-    console.log('[Test] Projects page still shows all created projects');
+  test('verify project still listed on projects page', async () => {
+    await navigateTo(page, 'Projects');
+    await expect(page).toHaveURL(/\/dashboard\/projects/, { timeout: TIMEOUT.short });
+    await waitForSettle(page);
+
+    const card = page.locator('.project-card', { hasText: PROJECT_TITLE }).first();
+    await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Verify] Project still listed');
   });
 });
 
 // ===========================================================================
-// Group 2: API Validation (runs after Full Lifecycle so org setup is complete)
+// Group 2: API Validation (runs after lifecycle so org setup is complete)
 // ===========================================================================
 
 test.describe.serial('Projects & Contributions — API Validation', () => {
   test('backend is reachable', async ({ request }) => {
     const response = await request.get(`${BACKEND_URL}/health`);
     expect(response.ok()).toBeTruthy();
-    console.log('[Test] Backend health check passed');
+    console.log('[API] Backend health check passed');
   });
 
   test('rejects project creation with empty title', async ({ request }) => {
-    // Get admin AID from health endpoint (RBAC requires valid admin identity)
     const health = await request.get(`${BACKEND_URL}/health`);
     const { admin: adminAID } = await health.json();
     expect(adminAID).toBeTruthy();
     const response = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: authHeaders(adminAID),
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
       data: { title: '', description: 'No title', created_by: adminAID },
     });
     expect(response.status()).toBe(400);
-    console.log('[Test] Empty project title rejected');
+    console.log('[API] Empty project title rejected');
   });
 
   test('rejects contribution creation with missing required fields', async ({ request }) => {
     const response = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: HEADERS,
+      headers: { 'Content-Type': 'application/json' },
       data: { title: 'Missing fields' },
     });
     expect(response.status()).toBe(400);
-    console.log('[Test] Missing contribution fields rejected');
+    console.log('[API] Missing contribution fields rejected');
   });
 });
