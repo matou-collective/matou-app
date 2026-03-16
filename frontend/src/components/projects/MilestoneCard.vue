@@ -15,6 +15,7 @@
         </div>
       </div>
       <div class="milestone-header-right">
+        <span class="milestone-meta-count">{{ totalCount }} contributions</span>
         <span v-if="isPlanSignedOff" class="badge-locked">
           <Lock class="badge-icon" />
           Locked
@@ -27,6 +28,19 @@
           <ChevronDown class="expand-icon" :class="{ rotated: isExpanded }" />
         </div>
       </div>
+    </div>
+
+    <q-linear-progress
+      v-if="totalCount > 0 && isExpanded"
+      :value="progressPercent / 100"
+      color="primary"
+      track-color="grey-3"
+      rounded
+      size="6px"
+      class="milestone-progress"
+    />
+    <div v-if="totalCount > 0 && isExpanded" class="milestone-progress-label">
+      {{ confirmedCount }} of {{ totalCount }} confirmed
     </div>
 
     <!-- Contributions list (expanded) -->
@@ -51,6 +65,8 @@
           @update="$emit('update-contribution', $event)"
           @view-detail="$emit('view-contribution', $event)"
           @create-child="$emit('create-child-contribution', $event)"
+          @share="(c: Contribution) => emit('share-contribution', c)"
+          @offer="(c: Contribution) => emit('offer-contribution', c)"
         />
       </div>
 
@@ -98,6 +114,8 @@ const emit = defineEmits<{
   (e: 'update-contribution', contribution: Contribution): void;
   (e: 'view-contribution', contribution: Contribution): void;
   (e: 'create-child-contribution', parentId: string): void;
+  (e: 'share-contribution', contribution: Contribution): void;
+  (e: 'offer-contribution', contribution: Contribution): void;
 }>();
 
 const isExpanded = ref(true);
@@ -110,6 +128,14 @@ const allConfirmed = computed(
   () =>
     contributions.value.length > 0 &&
     contributions.value.every((c) => c.status === 'confirmed'),
+);
+
+const confirmedCount = computed(() =>
+  contributions.value.filter((c) => c.status !== 'created').length,
+);
+const totalCount = computed(() => contributions.value.length);
+const progressPercent = computed(() =>
+  totalCount.value === 0 ? 0 : Math.round((confirmedCount.value / totalCount.value) * 100),
 );
 
 function formatDate(iso: string): string {
@@ -318,5 +344,20 @@ function formatDate(iso: string): string {
 .add-icon {
   width: 14px;
   height: 14px;
+}
+
+.milestone-meta-count {
+  font-size: 0.75rem;
+  color: $grey-7;
+}
+
+.milestone-progress {
+  margin: 0.5rem 1rem 0;
+}
+
+.milestone-progress-label {
+  font-size: 0.7rem;
+  color: $grey-6;
+  padding: 0.25rem 1rem;
 }
 </style>
