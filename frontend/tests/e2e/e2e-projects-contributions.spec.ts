@@ -332,17 +332,9 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await contribDlg.getByRole('button', { name: 'Technical' }).click();
     await contribDlg.getByRole('button', { name: 'High' }).click();
 
-    const objInput1 = contribDlg.getByPlaceholder(/objective/i).first();
-    await objInput1.fill('Create wireframe designs');
-    await objInput1.press('Enter');
-
-    const delInput1 = contribDlg.getByPlaceholder(/deliverable/i).first();
-    await delInput1.fill('Wireframe document');
-    await delInput1.press('Enter');
-
-    const acInput1 = contribDlg.getByPlaceholder(/acceptance criteria/i).first();
-    await acInput1.fill('Wireframes reviewed by team');
-    await acInput1.press('Enter');
+    await contribDlg.getByLabel('Objective 1').fill('Create wireframe designs');
+    await contribDlg.getByLabel('Deliverable 1').fill('Wireframe document');
+    await contribDlg.getByLabel('Criterion 1').fill('Wireframes reviewed by team');
 
     await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
     await waitForSettle(adminPage);
@@ -358,17 +350,9 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await contribDlg.getByRole('button', { name: 'Community' }).click();
     await contribDlg.getByRole('button', { name: 'Medium' }).click();
 
-    const objInput2 = contribDlg.getByPlaceholder(/objective/i).first();
-    await objInput2.fill('Engage community members');
-    await objInput2.press('Enter');
-
-    const delInput2 = contribDlg.getByPlaceholder(/deliverable/i).first();
-    await delInput2.fill('Outreach report');
-    await delInput2.press('Enter');
-
-    const acInput2 = contribDlg.getByPlaceholder(/acceptance criteria/i).first();
-    await acInput2.fill('Community engagement report submitted');
-    await acInput2.press('Enter');
+    await contribDlg.getByLabel('Objective 1').fill('Engage community members');
+    await contribDlg.getByLabel('Deliverable 1').fill('Outreach report');
+    await contribDlg.getByLabel('Criterion 1').fill('Community engagement report submitted');
 
     await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
     await waitForSettle(adminPage);
