@@ -139,7 +139,16 @@
             </div>
             <p class="feedback-text">{{ contribution.review_feedback }}</p>
             <div v-if="contribution.quality_rating" class="quality-rating">
-              Quality: {{ contribution.quality_rating }}/10
+              <div class="star-rating">
+                <q-icon
+                  v-for="i in 10"
+                  :key="i"
+                  :name="i <= contribution.quality_rating ? 'star' : 'star_border'"
+                  :color="i <= contribution.quality_rating ? 'amber' : 'grey-4'"
+                  size="18px"
+                />
+                <span class="rating-label">{{ contribution.quality_rating }} / 10</span>
+              </div>
             </div>
           </div>
         </template>
@@ -234,6 +243,30 @@
         </q-card-section>
         <q-card-section class="q-gutter-md">
           <q-input v-model="evidenceNotes" label="Completion Notes *" type="textarea" outlined autogrow />
+          <!-- Evidence URLs -->
+          <div class="q-mb-md">
+            <div class="text-caption q-mb-xs">Evidence URLs</div>
+            <div v-for="(url, idx) in evidenceUrls" :key="idx" class="row items-center q-mb-xs">
+              <q-icon name="link" size="18px" class="q-mr-sm" />
+              <span class="col text-body2" style="word-break: break-all;">{{ url }}</span>
+              <q-btn flat round dense icon="close" size="sm" @click="evidenceUrls.splice(idx, 1)" />
+            </div>
+            <div class="row items-center q-gutter-sm">
+              <q-input
+                v-model="newEvidenceUrl"
+                dense
+                outlined
+                placeholder="https://github.com/..."
+                class="col"
+                @keyup.enter="if (newEvidenceUrl.trim()) { evidenceUrls.push(newEvidenceUrl.trim()); newEvidenceUrl = ''; }"
+              />
+              <q-btn
+                flat dense icon="add"
+                :disable="!newEvidenceUrl.trim()"
+                @click="evidenceUrls.push(newEvidenceUrl.trim()); newEvidenceUrl = '';"
+              />
+            </div>
+          </div>
           <q-input v-model.number="evidenceHours" label="Actual Hours" type="number" outlined min="0" />
         </q-card-section>
         <q-card-actions align="right">
@@ -270,8 +303,19 @@
             </div>
           </div>
           <div>
-            <div class="text-subtitle2 q-mb-sm">Quality ({{ reviewRating }}/10)</div>
-            <q-slider v-model="reviewRating" :min="1" :max="10" :step="1" color="primary" label />
+            <div class="text-subtitle2 q-mb-sm">Quality</div>
+            <div class="star-rating">
+              <q-icon
+                v-for="i in 10"
+                :key="i"
+                :name="i <= reviewRating ? 'star' : 'star_border'"
+                :color="i <= reviewRating ? 'amber' : 'grey-4'"
+                size="24px"
+                class="star-icon"
+                @click="reviewRating = i"
+              />
+              <span class="rating-label">{{ reviewRating }} / 10</span>
+            </div>
           </div>
           <q-input v-model="reviewFeedback" label="Feedback" type="textarea" outlined autogrow />
         </q-card-section>
@@ -323,6 +367,8 @@ const offerUserName = ref('');
 const interestNote = ref('');
 const evidenceNotes = ref('');
 const evidenceHours = ref<number | undefined>(undefined);
+const evidenceUrls = ref<string[]>([]);
+const newEvidenceUrl = ref('');
 const reviewOutcome = ref<'approved' | 'incomplete' | 'declined' | ''>('');
 const reviewRating = ref(5);
 const reviewFeedback = ref('');
@@ -464,11 +510,14 @@ async function handleSubmitEvidence() {
     await store.submitEvidence(contribution.value.id, {
       completion_notes: evidenceNotes.value.trim(),
       actual_duration: evidenceHours.value,
+      evidence_urls: evidenceUrls.value,
     });
     $q.notify({ type: 'positive', message: 'Submitted for review!' });
     showEvidenceDialog.value = false;
     evidenceNotes.value = '';
     evidenceHours.value = undefined;
+    evidenceUrls.value = [];
+    newEvidenceUrl.value = '';
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Submission failed' });
   } finally {
@@ -621,6 +670,16 @@ async function handleEditSubmit(form: CreateContributionRequest | UpdateContribu
 .quality-rating {
   font-size: 0.78rem;
   color: var(--matou-muted-foreground);
+}
+
+.star-rating {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+
+  .star-icon { cursor: pointer; transition: color 0.1s; }
+  .rating-label { margin-left: 0.5rem; font-size: 0.85rem; color: $grey-7; }
 }
 
 .outcome-row {
