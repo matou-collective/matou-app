@@ -153,15 +153,29 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       console.log('[Setup] Admin logged in and on dashboard');
     }
 
+    // Resolve admin AID from multiple sources
     adminAID = accounts.admin?.aid ?? '';
     if (!adminAID) {
+      // Try secureStorage keys (browser mode = localStorage)
       adminAID = await adminPage.evaluate(() => {
-        const stored = localStorage.getItem('matou_current_aid');
-        if (stored) {
-          try { const p = JSON.parse(stored); return p.prefix || p.aid || ''; } catch { return ''; }
+        // matou_admin_aid is set by useOrgSetup
+        const adminAid = localStorage.getItem('matou_admin_aid');
+        if (adminAid) return adminAid;
+        // matou_current_aid is set by some login flows
+        const currentAid = localStorage.getItem('matou_current_aid');
+        if (currentAid) {
+          try { const p = JSON.parse(currentAid); return p.prefix || p.aid || currentAid; } catch { return currentAid; }
         }
         return '';
       });
+    }
+    if (!adminAID) {
+      // Fallback: health endpoint
+      try {
+        const health = await request.get(`${BACKEND_URL}/health`);
+        const data = await health.json();
+        adminAID = data.admin || '';
+      } catch { /* ignore */ }
     }
     if (!adminAID) throw new Error('Could not resolve admin AID');
     console.log('[Setup] Admin AID: %s', adminAID);
