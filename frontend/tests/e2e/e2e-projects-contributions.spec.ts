@@ -340,6 +340,10 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await delInput1.fill('Wireframe document');
     await delInput1.press('Enter');
 
+    const acInput1 = contribDlg.getByPlaceholder(/acceptance criteria/i).first();
+    await acInput1.fill('Wireframes reviewed by team');
+    await acInput1.press('Enter');
+
     await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
     await waitForSettle(adminPage);
     console.log('[Phase 2] Contribution 1 created: %s', CONTRIBUTION_1_TITLE);
@@ -361,6 +365,10 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     const delInput2 = contribDlg.getByPlaceholder(/deliverable/i).first();
     await delInput2.fill('Outreach report');
     await delInput2.press('Enter');
+
+    const acInput2 = contribDlg.getByPlaceholder(/acceptance criteria/i).first();
+    await acInput2.fill('Community engagement report submitted');
+    await acInput2.press('Enter');
 
     await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
     await waitForSettle(adminPage);
