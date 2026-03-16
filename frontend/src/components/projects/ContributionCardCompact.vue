@@ -8,6 +8,19 @@
 
     <div class="compact-title">{{ contribution.title }}</div>
 
+    <!-- Description preview (2-line clamp) -->
+    <div v-if="contribution.description" class="compact-description">
+      {{ contribution.description }}
+    </div>
+
+    <!-- Metadata row: hours + ID -->
+    <div class="compact-meta">
+      <span v-if="contribution.estimated_hours" class="meta-item">
+        <q-icon name="schedule" size="14px" /> {{ contribution.estimated_hours }}h
+      </span>
+      <span class="meta-item meta-id">ID: {{ contribution.id.slice(0, 12) }}</span>
+    </div>
+
     <div class="compact-right">
       <span v-if="assignedName" class="assigned-chip">
         <UserCheck class="chip-icon" />
@@ -41,7 +54,33 @@
         @click.stop="$emit('create-child', contribution.id)"
       />
 
+      <!-- Share/Offer quick actions (lead only, after plan sign-off, if confirmed) -->
+      <template v-if="isPlanSignedOff && isLead && isConfirmed">
+        <q-btn flat dense size="sm" label="Share" icon="share" @click.stop="emit('share', contribution)" />
+        <q-btn flat dense size="sm" label="Offer" icon="person_add" @click.stop="emit('offer', contribution)" />
+      </template>
+
       <ChevronRight class="nav-icon" />
+    </div>
+
+    <!-- Sub-contribution preview -->
+    <div v-if="childContributions.length > 0" class="sub-preview">
+      <div class="sub-preview-header">
+        <q-icon name="warning" size="14px" color="warning" />
+        Sub-Contributions ({{ childContributions.length }})
+      </div>
+      <div
+        v-for="child in childContributions.slice(0, 3)"
+        :key="child.id"
+        class="sub-preview-item"
+        @click.stop="emit('view-detail', child)"
+      >
+        <span class="sub-preview-title">{{ child.title }}</span>
+        <ContributionStatusBadge :status="child.status" size="sm" />
+      </div>
+      <div v-if="childContributions.length > 3" class="sub-preview-more">
+        + {{ childContributions.length - 3 }} more
+      </div>
     </div>
   </div>
 </template>
@@ -76,6 +115,8 @@ const emit = defineEmits<{
   (e: 'view-detail', contribution: Contribution): void;
   (e: 'update', contribution: Contribution & { _action?: string }): void;
   (e: 'create-child', parentId: string): void;
+  (e: 'share', contribution: Contribution): void;
+  (e: 'offer', contribution: Contribution): void;
 }>();
 
 const { canAddSubContribution } = useContributionWorkflow();
@@ -97,6 +138,20 @@ const canAddChild = computed(
       props.userRole as ProjectRole,
     ),
 );
+
+const isLead = computed(() =>
+  ['community_admin', 'project_lead'].includes(props.userRole ?? ''),
+);
+
+const isConfirmed = computed(() =>
+  !['created', 'pending_approval'].includes(props.contribution.status),
+);
+
+const childContributions = computed(() => {
+  const childIds = props.contribution.child_contributions ?? [];
+  if (!childIds.length || !props.allContributions?.length) return [];
+  return props.allContributions.filter(c => childIds.includes(c.id));
+});
 </script>
 
 <style scoped lang="scss">
@@ -174,5 +229,82 @@ const canAddChild = computed(
   width: 16px;
   height: 16px;
   color: var(--matou-muted-foreground);
+}
+
+.compact-description {
+  font-size: 0.8rem;
+  color: $grey-7;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0.25rem 0;
+  width: 100%;
+}
+
+.compact-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: $grey-6;
+  margin: 0.25rem 0;
+  width: 100%;
+
+  .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .meta-id {
+    margin-left: auto;
+  }
+}
+
+.sub-preview {
+  border-top: 1px solid $separator-color;
+  padding-top: 0.5rem;
+  margin-top: 0.5rem;
+  width: 100%;
+
+  .sub-preview-header {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+
+  .sub-preview-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    background: rgba(0, 0, 0, 0.02);
+    border-radius: 4px;
+    margin-bottom: 0.25rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+
+    &:hover {
+      background: rgba(0, 0, 0, 0.05);
+    }
+  }
+
+  .sub-preview-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 0.5rem;
+  }
+
+  .sub-preview-more {
+    font-size: 0.7rem;
+    color: $grey-6;
+    padding-left: 0.5rem;
+  }
 }
 </style>
