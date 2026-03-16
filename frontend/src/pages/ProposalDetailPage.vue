@@ -401,6 +401,7 @@
       v-model="showGovernanceAction"
       :action="selectedAction"
       :all-actions="decisionPlansStore.currentPlan?.governance_actions ?? []"
+      :proposal-status="proposal?.status"
       @complete="handleCompleteAction"
     />
 

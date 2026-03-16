@@ -684,6 +684,25 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 	if err := ValidateGovernanceActionTransition(action.Status, GovActionCompleted); err != nil {
 		return nil, err
 	}
+
+	// Decision actions (votes) can only be completed during the voting process.
+	// Meetings and discussions can be completed earlier as preparatory steps.
+	if action.ActionType == ActionDecision {
+		dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
+		if err != nil {
+			return nil, fmt.Errorf("finding decision plan: %w", err)
+		}
+		if dp.ProposalID != "" {
+			prop, err := s.GetProposal(ctx, spaceID, dp.ProposalID)
+			if err != nil {
+				return nil, fmt.Errorf("finding proposal: %w", err)
+			}
+			if prop.Status != ProposalVotingProcess {
+				return nil, fmt.Errorf("voting is only allowed when the proposal is in voting process (current status: %s)", prop.Status)
+			}
+		}
+	}
+
 	action.Status = GovActionCompleted
 	action.Outcome = outcome
 	action.UpdatedAt = time.Now()
@@ -693,7 +712,6 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 
 	// If this was a decision action, check if all decisions are now complete
 	if action.ActionType == ActionDecision {
-		// Find the proposal ID through the decision plan
 		dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
 		if err == nil && dp.ProposalID != "" {
 			s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)

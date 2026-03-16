@@ -60,8 +60,19 @@
             </div>
           </div>
 
-          <!-- Voting locked -->
-          <div v-if="votingLocked" class="voting-locked">
+          <!-- Voting not yet open (proposal not in voting process) -->
+          <div v-if="votingNotOpen" class="voting-locked">
+            <q-icon name="schedule" size="20px" />
+            <div>
+              <div class="text-weight-bold">Voting Not Yet Open</div>
+              <div class="text-caption">
+                Voting begins when the proposal moves to the voting process.
+              </div>
+            </div>
+          </div>
+
+          <!-- Voting locked (linked meeting not complete) -->
+          <div v-else-if="votingLocked" class="voting-locked">
             <q-icon name="lock" size="20px" />
             <div>
               <div class="text-weight-bold">Voting Locked</div>
@@ -143,6 +154,7 @@ const props = defineProps<{
   modelValue: boolean;
   action: GovernanceAction;
   allActions: GovernanceAction[];
+  proposalStatus?: string;
 }>();
 
 const emit = defineEmits<{
@@ -161,6 +173,11 @@ const linkedAction = computed<GovernanceAction | null>(() => {
 const votingLocked = computed<boolean>(() => {
   if (!linkedAction.value) return false;
   return linkedAction.value.status !== 'completed';
+});
+
+const votingNotOpen = computed<boolean>(() => {
+  if (props.action.action_type !== 'decision') return false;
+  return props.proposalStatus !== 'voting_process';
 });
 
 const outcomePositive = computed<boolean>(() => {
