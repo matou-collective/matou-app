@@ -225,12 +225,11 @@ interface Contribution {
 
 ### Contribution Status Flow
 ```typescript
-type ContributionStatus = 
-  | 'created'           // Initial creation by Project Lead
-  | 'confirmed'         // Confirmed by Project Lead after plan sign-off
-  | 'pending_approval'  // Sub-contribution waiting for admin approval
-  | 'shared'            // Shared with community roles
-  | 'offered'           // Directly offered to a specific member
+type ContributionStatus =
+  | 'created'           // Initial creation (parent and sub-contributions)
+  | 'confirmed'         // Confirmed by Project Steward before plan sign-off
+  | 'shared'            // Shared with community roles (after plan sign-off)
+  | 'offered'           // Directly offered to a specific member (after plan sign-off)
   | 'assigned'          // Accepted/assigned to a contributor
   | 'changed'           // Modified after initial creation
   | 'needs_review'      // Submitted for review
@@ -373,8 +372,9 @@ const [showCreateDialog, setShowCreateDialog] = useState(false);
 3. **Implementation Plan Tab**
    - Plan version management
    - Milestone structure
-   - Sign-off workflow (requires steward approval)
-   - Once signed off, contributions can be confirmed
+   - Sign-off workflow (requires Project Steward or Community Admin)
+   - All contributions must be confirmed before plan can be signed off
+   - Once signed off, confirmed contributions can be shared/offered
 
 4. **Activity Tab**
    - Timeline of project events
@@ -536,7 +536,7 @@ const handleSignOffPlan = () => {
 │  - Sub-Contributions Section               │
 │  - Evidence Submission (if assigned)       │
 │  - Review Section (if project lead)        │
-│  - Sign-Off (if steward/admin)             │
+│  - Sign-Off (if project steward/community admin) │
 │                                            │
 ├────────────────────────────────────────────┤
 │ Footer: Role-based action buttons          │
@@ -577,7 +577,7 @@ const handleSignOffPlan = () => {
    - Updates status based on outcome
 
 6. **Sign-Off:**
-   - Final approval by Project Steward or Admin
+   - Final approval by Project Steward or Community Admin
    - Triggers treasury action (reward distribution)
    - Marks contribution as complete
 
@@ -622,40 +622,40 @@ const [selectedChildContribution, setSelectedChildContribution] = useState<Contr
 **Purpose:** Form dialog for creating new projects
 
 **Form Fields:**
-- Project Name (required)
-- Description (required)
-- Project Lead (auto-filled with current user)
-- Project Steward (select from users)
-- Tags (multi-select)
-- Initial Implementation Plan (optional)
-- Initial Milestones (optional)
+- Project Title (required)
+- Project Description (required)
+- Linked Proposal (auto-filled if created from an approved proposal)
+
+**Note:** Project Lead and Project Steward are assigned separately from within ProjectDetail via the AssignRoleDialog component after the project is created.
 
 **Validation:**
-- Required field checking
-- Character limits
-- Duplicate name prevention
+- Required field checking (title and description)
 
 **Create Logic:**
 ```typescript
-const handleCreate = () => {
+const handleSubmit = () => {
+  if (!title.trim()) {
+    toast.error('Please provide a project title');
+    return;
+  }
+  if (!description.trim()) {
+    toast.error('Please provide a project description');
+    return;
+  }
+
   const newProject: Project = {
-    project_id: generateId(),
-    name: projectName,
-    description: projectDescription,
+    id: `proj-${Date.now()}`,
+    title: title.trim(),
+    description: description.trim(),
     status: 'created',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    project_lead: currentUser.id,
-    project_lead_name: currentUser.name,
-    steward: selectedSteward.id,
-    steward_name: selectedSteward.name,
-    tags: selectedTags,
     images: [],
-    implementation_plans: [],
-    milestones: [],
-    contributions: []
+    proposal_ids: proposalId ? [proposalId] : [],
+    implementation_plan_ids: [],
+    created_by: 'current-user',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
   };
-  
+
   onCreate(newProject);
 };
 ```
@@ -702,20 +702,21 @@ const newContribution: Contribution = {
   description: formData.description,
   contribution_type: formData.type,
   priority: formData.priority,
-  status: isSubContribution ? 'pending_approval' : 'created',
+  status: 'created',
   parent_contribution: parentContributionId,
   child_contributions: [],
   // ... other fields
 };
 
-// Sub-contributions require admin approval before assignment
-// Parent contributions start as 'created' and can be confirmed by Project Lead
+// All contributions (parent and sub) start as 'created'
+// Sub-contributions require Project Lead approval before assignment
+// Parent contributions can be confirmed by Project Steward
 ```
 
 **Sub-Contribution Special Handling:**
-- Status starts as `pending_approval` (not `created`)
+- Status starts as `created` (same as parent contributions)
 - Automatically linked to parent contribution
-- Can only be approved by Admin/Project Lead
+- Can only be approved by Project Lead
 - Once approved, assigned to parent's assigned contributor
 - Cannot have their own child contributions (single-level hierarchy)
 
@@ -729,12 +730,13 @@ const newContribution: Contribution = {
 ┌──────────┐
 │ CREATED  │ ← Project Lead creates contribution
 └────┬─────┘
-     │ Plan must be signed off by Steward
+     │ Project Steward confirms contribution
      ↓
 ┌──────────┐
-│CONFIRMED │ ← Project Lead confirms after plan sign-off
+│CONFIRMED │ ← All contributions must be confirmed before plan sign-off
 └────┬─────┘
-     │ Project Lead can share or offer
+     │ Once ALL contributions confirmed, Steward signs off plan
+     │ After plan sign-off, Project Lead can share or offer
      ├─────────────┬────────────┐
      ↓             ↓            ↓
 ┌────────┐   ┌─────────┐   ┌─────────┐
@@ -780,36 +782,36 @@ const newContribution: Contribution = {
 ### 5.2 Sub-Contribution Workflow
 
 ```
-┌──────────────────┐
-│ PENDING_APPROVAL │ ← Member/Contributor creates sub-contribution
-└────────┬─────────┘
-         │ Admin/Project Lead reviews
-         ├─────────────┬──────────┐
-         ↓             ↓          ↓
-   ┌──────────┐  ┌──────────┐ ┌──────────┐
-   │ ASSIGNED │  │ DECLINED │ │ ARCHIVED │
-   └────┬─────┘  └──────────┘ └──────────┘
-        │ Auto-assigned to parent's contributor
-        │ Contributor submits evidence
-        ↓
-  ┌──────────────┐
-  │ NEEDS_REVIEW │
-  └──────┬───────┘
-         │ Admin/Project Lead reviews
-         ├──────────┬──────────┐
-         ↓          ↓          ↓
-  ┌──────────┐ ┌────────┐ ┌──────────┐
-  │ APPROVED │ │INCOMPLETE│ │ DECLINED │
-  └────┬─────┘ └────┬───┘ └──────────┘
-       │            │ back to ASSIGNED
-       ↓            ↓
+┌──────────┐
+│ CREATED  │ ← Member/Contributor creates sub-contribution
+└────┬─────┘
+     │ Project Lead approves
+     ├─────────────┬──────────┐
+     ↓             ↓          ↓
+┌──────────┐  ┌──────────┐ ┌──────────┐
+│ ASSIGNED │  │ DECLINED │ │ ARCHIVED │
+└────┬─────┘  └──────────┘ └──────────┘
+     │ Auto-assigned to parent's contributor
+     │ Contributor submits evidence
+     ↓
+┌──────────────┐
+│ NEEDS_REVIEW │
+└──────┬───────┘
+       │ Project Lead reviews
+       ├──────────┬──────────┐
+       ↓          ↓          ↓
+┌──────────┐ ┌────────┐ ┌──────────┐
+│ APPROVED │ │INCOMPLETE│ │ DECLINED │
+└────┬─────┘ └────┬───┘ └──────────┘
+     │            │ back to ASSIGNED
+     ↓            ↓
 ┌────────────┐
-│ SIGNED_OFF │ ← Admin/Steward signs off
+│ SIGNED_OFF │ ← Project Steward signs off
 └────────────┘
 ```
 
 **Key Differences:**
-- Sub-contributions start at `pending_approval` (not `created`)
+- Sub-contributions start at `created` (same as parent contributions)
 - No sharing/offering workflow (directly assigned after approval)
 - Assigned to parent's contributor automatically
 - Cannot have their own children (flat hierarchy)
@@ -820,21 +822,28 @@ const newContribution: Contribution = {
 ```typescript
 // Plan cannot be signed off until:
 const canSignOffPlan = () => {
-  // 1. User is Project Steward or Admin
-  if (!isProjectSteward) return false;
-  
+  // 1. User is Project Steward or Community Admin
+  if (!isProjectSteward && !isCommunityAdmin) return false;
+
   // 2. Plan is not already signed off
   if (currentPlan.signed_off) return false;
-  
+
   // 3. Plan has at least one milestone
   if (currentPlan.milestones.length === 0) return false;
-  
+
   // 4. Each milestone has at least one contribution
   const allMilestonesHaveContributions = currentPlan.milestones.every(
     m => m.contributions.length > 0
   );
   if (!allMilestonesHaveContributions) return false;
-  
+
+  // 5. All contributions must be confirmed before sign-off
+  const allContributions = currentPlan.milestones.flatMap(m => m.contributions);
+  const allContributionsConfirmed = allContributions.every(
+    c => c.status === 'confirmed'
+  );
+  if (!allContributionsConfirmed) return false;
+
   return true;
 };
 ```
@@ -842,6 +851,7 @@ const canSignOffPlan = () => {
 **Effect of Plan Sign-Off:**
 - Confirmed contributions can be shared/offered
 - Prevents further structural changes to milestones
+- All contributions must be in `confirmed` status before the plan can be signed off
 
 ### 5.4 Parent Contribution Blocking Logic
 
@@ -891,44 +901,51 @@ const canSubmitParentContribution = (contribution: Contribution) => {
 ### 6.1 User Roles
 
 ```typescript
-type UserRole = 
-  | 'project_lead'     // Creates projects, manages contributions, reviews work
-  | 'project_steward'  // Signs off plans and contributions, governance oversight
-  | 'contributor'      // Can be assigned contributions, submit work
-  | 'member';          // Can view shared contributions, register interest
+type UserRole =
+  | 'community_admin'   // Full access: creates projects, all management actions
+  | 'project_lead'      // Manages contributions, shares/offers, reviews work
+  | 'project_steward'   // Confirms contributions, signs off plans and contributions
+  | 'contributor'       // Can be assigned contributions, submit work
+  | 'member';           // Can view shared contributions, register interest
 ```
 
 ### 6.2 Permission Matrix
 
-| Action | Project Lead | Project Steward | Contributor | Member |
-|--------|-------------|----------------|-------------|--------|
-| Create Project | ✅ | ✅ | ❌ | ❌ |
-| Create Contribution (Parent) | ✅ | ✅ | ❌ | ❌ |
-| Create Sub-Contribution | ✅ (any) | ✅ (any) | ✅ (if assigned to parent) | ❌ |
-| Confirm Contribution | ✅ | ❌ | ❌ | ❌ |
-| Share Contribution | ✅ | ❌ | ❌ | ❌ |
-| Offer Contribution | ✅ | ❌ | ❌ | ❌ |
-| Register Interest | ❌ | ❌ | ✅ | ✅ |
-| Accept Offer | N/A | N/A | ✅ | ✅ |
-| Submit Evidence | N/A | N/A | ✅ (if assigned) | N/A |
-| Review Submission | ✅ | ❌ | ❌ | ❌ |
-| Approve Sub-Contribution | ✅ | ✅ | ❌ | ❌ |
-| Sign Off Contribution | ✅* | ✅ | ❌ | ❌ |
-| Sign Off Plan | ❌ | ✅ | ❌ | ❌ |
+| Action | Community Admin | Project Steward | Project Lead | Contributor | Member |
+|--------|----------------|----------------|-------------|-------------|--------|
+| Create Project | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Create Contribution (Parent) | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Create Sub-Contribution | ✅ | ❌ | ✅ | ✅ (if assigned to parent) | ❌ |
+| Confirm Contribution | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Share Contribution | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Offer Contribution | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Register Interest | ❌ | ❌ | ❌ | ✅ | ✅ |
+| Accept Offer | N/A | N/A | N/A | ✅ | ✅ |
+| Submit Evidence | N/A | N/A | N/A | ✅ (if assigned) | N/A |
+| Review Submission | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Approve Sub-Contribution | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Sign Off Contribution | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Sign Off Plan | ✅ | ✅ | ❌ | ❌ | ❌ |
 
-*Admin users (project_lead) also have steward permissions for testing purposes
+Community Admin has full access to all actions across all projects.
 
 ### 6.3 Role-Based UI Rendering
 
 ```typescript
+const isCommunityAdmin = currentUser.isCommunityAdmin;
 const isProjectLead = userRole === 'project_lead';
-const isProjectSteward = userRole === 'project_steward' || userRole === 'project_lead';
+const isProjectSteward = userRole === 'project_steward';
 const isAssignedContributor = contribution.assigned_contributor === currentUserId;
 const isOfferedToMe = contribution.offered_to === currentUserId;
-const isAdmin = isCommunityAdmin;
+
+// Share/Offer: Project Steward, Project Lead, or Community Admin
+const canShareOrOffer = isProjectSteward || isProjectLead || isCommunityAdmin;
+
+// Confirm/Sign-off: Project Steward or Community Admin only
+const canConfirmOrSignOff = isProjectSteward || isCommunityAdmin;
 
 // Example: Conditional button rendering
-{isProjectLead && contribution.status === 'confirmed' && (
+{canShareOrOffer && contribution.status === 'confirmed' && (
   <Button onClick={handleShare}>Share Contribution</Button>
 )}
 
@@ -936,7 +953,7 @@ const isAdmin = isCommunityAdmin;
   <Button onClick={handleSubmitEvidence}>Submit Evidence</Button>
 )}
 
-{isProjectSteward && contribution.status === 'approved' && (
+{canConfirmOrSignOff && contribution.status === 'approved' && (
   <Button onClick={handleSignOff}>Sign Off</Button>
 )}
 ```
@@ -948,7 +965,7 @@ const isAdmin = isCommunityAdmin;
 **Purpose:** Make contributions available to specific community roles
 
 **Flow:**
-1. Project Lead clicks "Share Contribution"
+1. Project Lead or Project Steward clicks "Share Contribution"
 2. Modal opens with role checkboxes
 3. Select one or more roles (Contributors, Community Reps, Technical Team, etc.)
 4. Optionally generate a share link
@@ -993,7 +1010,7 @@ const handleShare = () => {
 **Purpose:** Directly offer a contribution to a specific member
 
 **Flow:**
-1. Project Lead clicks "Offer to Member"
+1. Project Lead or Project Steward clicks "Offer to Member"
 2. Search/select member from list
 3. Send offer
 4. Member receives notification (future: actual notification system)
@@ -1210,7 +1227,7 @@ const handleSubmitReview = () => {
 
 ### 7.6 Sign-Off Feature
 
-**Purpose:** Final approval by Project Steward/Admin before reward distribution
+**Purpose:** Final approval by Project Steward or Community Admin before reward distribution
 
 **Access:** Project Steward or Admin (Project Lead has steward permissions for testing)
 
@@ -1263,8 +1280,8 @@ const handleSignOff = () => {
 1. Project Lead or Assigned Contributor clicks "Add Sub-Contribution"
 2. CreateContributionDialog opens with `parentContributionId` set
 3. Fill out sub-contribution details (same form as parent)
-4. Status starts as 'pending_approval' (not 'created')
-5. Admin must approve before work can begin
+4. Status starts as 'created'
+5. Project Lead must approve before work can begin
 6. Once approved, auto-assigned to parent's contributor
 
 **Approval Logic:**
@@ -1405,413 +1422,532 @@ ContributionDetailDialog
       └─ Triggers re-render cascade
 ```
 
-### 9.2 Future Backend Integration
+### 9.2 Data Synchronisation (any-sync)
 
-**Recommended Approach: Supabase**
+Projects, contributions, and all related data are stored and synchronised using the any-sync protocol. Each entity maps to an object tree within a shared space, providing peer-to-peer replication, offline support, and conflict-free merging across community members.
 
-**Database Schema:**
+**Object Tree Mapping:**
 
-```sql
--- Projects table
-CREATE TABLE projects (
-  project_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name TEXT NOT NULL,
-  description TEXT,
-  status TEXT NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  project_lead UUID REFERENCES users(user_id),
-  steward UUID REFERENCES users(user_id),
-  tags TEXT[],
-  proposal_id UUID REFERENCES proposals(id),
-  CONSTRAINT valid_status CHECK (status IN ('created', 'active', 'completed', 'archived'))
-);
+| Entity | any-sync Object Type | Key | Parent |
+|--------|---------------------|-----|--------|
+| Project | `objectTree` | `project:{project_id}` | Space root |
+| Implementation Plan | `objectTree` | `plan:{plan_id}` | Project tree |
+| Milestone | `objectTree` | `milestone:{milestone_id}` | Plan tree |
+| Contribution | `objectTree` | `contribution:{id}` | Milestone tree |
+| Sub-Contribution | `objectTree` | `contribution:{id}` | Parent contribution tree |
+| Interested Contributor | change within | contribution tree | Contribution tree |
 
--- Implementation Plans table
-CREATE TABLE implementation_plans (
-  plan_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  project_id UUID REFERENCES projects(project_id),
-  version TEXT NOT NULL,
-  status TEXT NOT NULL,
-  signed_off BOOLEAN DEFAULT FALSE,
-  signed_off_by UUID REFERENCES users(user_id),
-  signed_off_at TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW(),
-  created_by UUID REFERENCES users(user_id)
-);
+**Data Flow:**
 
--- Milestones table
-CREATE TABLE milestones (
-  milestone_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  implementation_plan_id UUID REFERENCES implementation_plans(plan_id),
-  project_id UUID REFERENCES projects(project_id),
-  name TEXT NOT NULL,
-  description TEXT,
-  start_date DATE,
-  end_date DATE,
-  status TEXT NOT NULL,
-  success_criteria TEXT[],
-  dependencies UUID[],
-  CONSTRAINT valid_status CHECK (status IN ('planned', 'in_progress', 'completed', 'delayed'))
-);
-
--- Contributions table
-CREATE TABLE contributions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  project_id UUID REFERENCES projects(project_id),
-  milestone_id UUID REFERENCES milestones(milestone_id),
-  parent_contribution UUID REFERENCES contributions(id),
-  title TEXT NOT NULL,
-  description TEXT,
-  contribution_type TEXT NOT NULL,
-  priority TEXT NOT NULL,
-  status TEXT NOT NULL,
-  estimated_duration INTEGER,
-  actual_duration INTEGER,
-  deadline TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  created_by UUID REFERENCES users(user_id),
-  assigned_contributor UUID REFERENCES users(user_id),
-  objectives TEXT[],
-  deliverables TEXT[],
-  acceptance_criteria TEXT[],
-  skill_requirements TEXT[],
-  eligible_roles TEXT[],
-  tags TEXT[],
-  completion_notes TEXT,
-  evidence_urls TEXT[],
-  quality_rating INTEGER,
-  review_feedback TEXT,
-  reviewed_by UUID REFERENCES users(user_id),
-  reviewed_at TIMESTAMP,
-  signed_off_by UUID REFERENCES users(user_id),
-  signed_off_at TIMESTAMP,
-  CONSTRAINT valid_status CHECK (status IN ('created', 'confirmed', 'pending_approval', 'shared', 'offered', 'assigned', 'needs_review', 'approved', 'incomplete', 'declined', 'signed_off', 'rewarded', 'archived'))
-);
-
--- Interested Contributors table
-CREATE TABLE interested_contributors (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  contribution_id UUID REFERENCES contributions(id),
-  user_id UUID REFERENCES users(user_id),
-  registered_at TIMESTAMP DEFAULT NOW(),
-  interest_note TEXT
-);
-
--- File Attachments table
-CREATE TABLE contribution_files (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  contribution_id UUID REFERENCES contributions(id),
-  file_name TEXT NOT NULL,
-  file_url TEXT NOT NULL,
-  file_type TEXT,
-  file_category TEXT, -- 'time_report' | 'attachment' | 'evidence'
-  uploaded_at TIMESTAMP DEFAULT NOW(),
-  uploaded_by UUID REFERENCES users(user_id)
-);
+```
+Community Space (any-sync shared space)
+  └─ Project Object Tree
+       ├─ metadata (name, description, status, roles)
+       ├─ Implementation Plan Object Tree
+       │    ├─ plan metadata (version, signed_off, signed_off_by)
+       │    └─ Milestone Object Trees
+       │         ├─ milestone metadata (name, dates, status)
+       │         └─ Contribution Object Trees
+       │              ├─ contribution metadata (status, assignment, evidence)
+       │              └─ Sub-Contribution Object Trees
+       └─ activity log (append-only changes)
 ```
 
-**API Calls (Supabase):**
+**Backend API (Go):**
 
-```typescript
-// Fetch all projects
-const { data: projects, error } = await supabase
-  .from('projects')
-  .select(`
-    *,
-    implementation_plans(*),
-    milestones(*),
-    contributions(*)
-  `)
-  .eq('status', 'active');
+```go
+// Create a new project in the community space
+func (h *ProjectHandler) CreateProject(w http.ResponseWriter, r *http.Request) {
+    spaceID := r.Context().Value("spaceID").(string)
 
-// Create contribution
-const { data, error } = await supabase
-  .from('contributions')
-  .insert({
-    project_id: projectId,
-    milestone_id: milestoneId,
-    title: formData.title,
-    description: formData.description,
-    status: 'created',
-    created_by: currentUserId
-  })
-  .select()
-  .single();
-
-// Update contribution status
-const { error } = await supabase
-  .from('contributions')
-  .update({
-    status: 'assigned',
-    assigned_contributor: userId,
-    updated_at: new Date().toISOString()
-  })
-  .eq('id', contributionId);
-
-// Register interest
-const { error } = await supabase
-  .from('interested_contributors')
-  .insert({
-    contribution_id: contributionId,
-    user_id: currentUserId,
-    interest_note: note
-  });
-```
-
-**Real-time Updates:**
-
-```typescript
-// Subscribe to contribution changes
-const contributionSubscription = supabase
-  .channel('contributions')
-  .on(
-    'postgres_changes',
-    { event: '*', schema: 'public', table: 'contributions' },
-    (payload) => {
-      // Update local state with new/updated contribution
-      setContributions(prev => {
-        if (payload.eventType === 'INSERT') {
-          return [...prev, payload.new];
-        }
-        if (payload.eventType === 'UPDATE') {
-          return prev.map(c => c.id === payload.new.id ? payload.new : c);
-        }
-        if (payload.eventType === 'DELETE') {
-          return prev.filter(c => c.id !== payload.old.id);
-        }
-        return prev;
-      });
+    var req CreateProjectRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
     }
-  )
-  .subscribe();
+
+    // Create project object tree in the shared space
+    treeID, err := h.anysync.CreateObjectTree(r.Context(), spaceID, ObjectTreePayload{
+        Type:   "project",
+        Key:    fmt.Sprintf("project:%s", req.ProjectID),
+        Data:   req,
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    json.NewEncoder(w).Encode(CreateProjectResponse{TreeID: treeID})
+}
+
+// Update contribution status — applies a change to the contribution object tree
+func (h *ContributionHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
+    contributionTreeID := chi.URLParam(r, "treeID")
+
+    var req UpdateStatusRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    // Apply change to the object tree (synced to all peers)
+    err := h.anysync.AddChange(r.Context(), contributionTreeID, Change{
+        Field: "status",
+        Value: req.Status,
+        By:    req.UserID,
+        At:    time.Now(),
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    w.WriteHeader(http.StatusOK)
+}
 ```
 
-### 9.3 File Storage Integration
-
-**Recommended: IPFS or Supabase Storage**
+**Frontend Sync (Pinia Store):**
 
 ```typescript
-// Upload file to storage
-const uploadFile = async (file: File, category: string) => {
-  const fileName = `${Date.now()}-${file.name}`;
-  const filePath = `contributions/${contributionId}/${category}/${fileName}`;
-  
-  const { data, error } = await supabase.storage
-    .from('contribution-files')
-    .upload(filePath, file);
-  
-  if (error) throw error;
-  
-  // Get public URL
-  const { data: { publicUrl } } = supabase.storage
-    .from('contribution-files')
-    .getPublicUrl(filePath);
-  
-  return {
-    name: file.name,
-    url: publicUrl,
-    type: file.type
+// projects store subscribes to any-sync space changes
+const projectsStore = defineStore('projects', () => {
+  const projects = ref<Project[]>([]);
+
+  // Subscribe to real-time changes via SSE from the backend
+  const subscribeToChanges = (spaceId: string) => {
+    const eventSource = new EventSource(
+      `/api/v1/spaces/${spaceId}/subscribe?types=project,contribution`
+    );
+
+    eventSource.onmessage = (event) => {
+      const change = JSON.parse(event.data);
+
+      if (change.objectType === 'project') {
+        updateProjectFromChange(change);
+      }
+      if (change.objectType === 'contribution') {
+        updateContributionFromChange(change);
+      }
+    };
   };
-};
 
-// Usage in component
-const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  
-  try {
-    const uploadedFile = await uploadFile(file, 'time_reports');
-    setTimeReportFile(uploadedFile);
-    toast.success('File uploaded successfully!');
-  } catch (error) {
-    toast.error('File upload failed');
-  }
-};
+  return { projects, subscribeToChanges };
+});
 ```
 
-### 9.4 Notification System Integration
+### 9.3 File Storage (any-sync)
 
-**Future: Push notifications for workflow events**
+Evidence files, time reports, and attachments are stored as file objects within the any-sync space. Each file is added to the contribution's object tree as a linked file node, synchronised across peers alongside the contribution data.
+
+```go
+// Upload a file and attach it to a contribution tree
+func (h *FileHandler) UploadContributionFile(w http.ResponseWriter, r *http.Request) {
+    contributionTreeID := chi.URLParam(r, "treeID")
+    category := r.FormValue("category") // "evidence", "time_report", "attachment"
+
+    file, header, err := r.FormFile("file")
+    if err != nil {
+        http.Error(w, "file required", http.StatusBadRequest)
+        return
+    }
+    defer file.Close()
+
+    // Store file in the any-sync space as a file object
+    fileObjectID, err := h.anysync.AddFileObject(r.Context(), AddFileRequest{
+        SpaceID:  r.Context().Value("spaceID").(string),
+        FileName: header.Filename,
+        MimeType: header.Header.Get("Content-Type"),
+        Reader:   file,
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Link the file object to the contribution tree
+    err = h.anysync.AddChange(r.Context(), contributionTreeID, Change{
+        Field: fmt.Sprintf("files.%s", category),
+        Value: FileReference{
+            ObjectID: fileObjectID,
+            Name:     header.Filename,
+            MimeType: header.Header.Get("Content-Type"),
+            Category: category,
+        },
+        By: r.Context().Value("userID").(string),
+        At: time.Now(),
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    json.NewEncoder(w).Encode(map[string]string{"fileObjectID": fileObjectID})
+}
+```
+
+**Frontend File Upload:**
 
 ```typescript
-// Trigger notifications on key events
-const sendNotification = async (
-  userId: string,
-  type: string,
-  title: string,
-  message: string,
-  actionUrl: string
+// Upload evidence file for a contribution
+const uploadContributionFile = async (
+  treeID: string,
+  file: File,
+  category: 'evidence' | 'time_report' | 'attachment'
 ) => {
-  await supabase.from('notifications').insert({
-    user_id: userId,
-    type,
-    title,
-    message,
-    action_url: actionUrl,
-    read: false
-  });
-  
-  // Also send push notification via service worker
-  // Also send email via email service
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('category', category);
+
+  const response = await api.post(
+    `/api/v1/contributions/${treeID}/files`,
+    formData,
+    { headers: { 'Content-Type': 'multipart/form-data' } }
+  );
+
+  return response.data.fileObjectID;
 };
-
-// Example usage
-// When contribution is offered
-sendNotification(
-  offeredToUserId,
-  'contribution_offered',
-  'New Contribution Offer',
-  `You've been offered: ${contribution.title}`,
-  `/projects/${projectId}/contributions/${contributionId}`
-);
-
-// When review is complete
-sendNotification(
-  assignedContributorId,
-  'review_complete',
-  'Review Complete',
-  `Your contribution "${contribution.title}" has been ${reviewOutcome}`,
-  `/projects/${projectId}/contributions/${contributionId}`
-);
 ```
 
 ---
 
 ## 10. Testing Strategy
 
-### 10.1 User Role Testing
+**Prerequisites:** All E2E tests require three community members:
+- **Founding Member** (community admin) — full admin privileges
+- **Member 1** (approved community member) — assigned as project lead
+- **Member 2** (approved community member) — assigned as contributor
 
-**Built-in User Switcher:**
-- Engie (project lead)
-- Ben (admin and project steward)
-- Tama Smith (Member) - Limited permissions
+Tests run against the test environment (backend port `9080`, frontend port `9003`).
 
-**Test Scenarios:**
-
-1. **Admin Workflow:**
-   - Create project
-   - Create implementation plan
-   - Add milestones
-   - Create contributions
-   - Sign off plan
-   - Confirm contributions
-   - Share/offer contributions
-   - Approve sub-contributions
-   - Review submissions
-   - Sign off completed work
-
-2. **Member Workflow:**
-   - View shared contributions
-   - Register interest
-   - Accept offers
-   - Create sub-contributions (if assigned to parent)
-   - Submit evidence
-   - Respond to review feedback
-
-3. **Cross-Role Testing:**
-   - Member registers interest → Admin offers → Member completes → Admin approves
-
-### 10.2 Workflow State Testing
-
-**Test Each Status Transition:**
+### 10.1 E2E Test: Proposal Creation and Project Setup
 
 ```typescript
-// Test contribution lifecycle
-test('Contribution workflow - happy path', async () => {
-  // 1. Create
-  const contribution = createContribution();
-  expect(contribution.status).toBe('created');
-  
-  // 2. Sign off plan (prerequisite)
-  signOffPlan();
-  
-  // 3. Confirm
-  confirmContribution(contribution.id);
-  expect(contribution.status).toBe('confirmed');
-  
-  // 4. Share
-  shareContribution(contribution.id, ['Contributors']);
-  expect(contribution.status).toBe('shared');
-  expect(contribution.is_shared).toBe(true);
-  
-  // 5. Member registers interest
-  registerInterest(contribution.id, memberId);
-  expect(contribution.interested_contributors.length).toBe(1);
-  
-  // 6. Offer to member
-  offerContribution(contribution.id, memberId);
-  expect(contribution.status).toBe('offered');
-  
-  // 7. Member accepts
-  acceptOffer(contribution.id);
-  expect(contribution.status).toBe('assigned');
-  
-  // 8. Submit evidence
-  submitEvidence(contribution.id, evidence);
-  expect(contribution.status).toBe('needs_review');
-  
-  // 9. Review and approve
-  reviewContribution(contribution.id, 'approved', 9);
-  expect(contribution.status).toBe('approved');
-  
-  // 10. Sign off
-  signOffContribution(contribution.id);
-  expect(contribution.status).toBe('signed_off');
+test('Proposal creation and project setup', async ({ page, context }) => {
+  // --- Founding Member (Community Admin) creates a proposal ---
+  const adminPage = await context.newPage();
+  await loginAs(adminPage, foundingMember);
+  await adminPage.goto('/projects');
+
+  // Create a new proposal
+  await adminPage.getByRole('button', { name: 'Create Proposal' }).click();
+  await adminPage.getByLabel('Title').fill('Whakapapa Data Archive');
+  await adminPage.getByLabel('Description').fill('Digital archive for community whakapapa records');
+  await adminPage.getByLabel('Estimated Budget').fill('5000');
+  await adminPage.getByLabel('Estimated Timeline').fill('3 months');
+
+  // Assign self as steward, Member 1 as project lead
+  await adminPage.getByLabel('Project Steward').selectOption(foundingMember.name);
+  await adminPage.getByLabel('Project Lead').selectOption(member1.name);
+  await adminPage.getByRole('button', { name: 'Submit Proposal' }).click();
+
+  // Verify proposal created and project appears in draft
+  await expect(adminPage.getByText('Proposal submitted')).toBeVisible();
+
+  // --- Member 1 can see the new project in draft ---
+  const member1Page = await context.newPage();
+  await loginAs(member1Page, member1);
+  await member1Page.goto('/projects');
+  await expect(member1Page.getByText('Whakapapa Data Archive')).toBeVisible();
+  await member1Page.getByText('Whakapapa Data Archive').click();
+  await expect(member1Page.getByText('created')).toBeVisible();
+
+  // --- Member 2 can also see the project ---
+  const member2Page = await context.newPage();
+  await loginAs(member2Page, member2);
+  await member2Page.goto('/projects');
+  await expect(member2Page.getByText('Whakapapa Data Archive')).toBeVisible();
 });
 ```
 
-### 10.3 Sub-Contribution Testing
+### 10.2 E2E Test: Implementation Plan and Contribution Confirmation
 
 ```typescript
-test('Sub-contribution blocks parent submission', () => {
-  // Create parent
-  const parent = createContribution();
-  assignContribution(parent.id, contributorId);
-  
-  // Create sub-contribution
-  const child = createSubContribution(parent.id);
-  approveSubContribution(child.id);
-  
-  // Try to submit parent - should be blocked
-  expect(canSubmitParent(parent.id)).toBe(false);
-  
-  // Complete child workflow
-  submitEvidence(child.id);
-  reviewContribution(child.id, 'approved');
-  signOffContribution(child.id);
-  
-  // Now parent can be submitted
-  expect(canSubmitParent(parent.id)).toBe(true);
+test('Project lead creates plan, steward confirms and signs off', async ({ page, context }) => {
+  // --- Member 1 (Project Lead) creates implementation plan ---
+  const leadPage = await context.newPage();
+  await loginAs(leadPage, member1);
+  await leadPage.goto(`/projects/${projectId}`);
+  await leadPage.getByRole('tab', { name: 'Implementation Plan' }).click();
+
+  // Create implementation plan
+  await leadPage.getByRole('button', { name: 'Create Plan' }).click();
+  await leadPage.getByLabel('Version').fill('1.0');
+  await leadPage.getByRole('button', { name: 'Save Plan' }).click();
+
+  // Add Milestone 1
+  await leadPage.getByRole('button', { name: 'Add Milestone' }).click();
+  await leadPage.getByLabel('Milestone Name').fill('Phase 1 — Research');
+  await leadPage.getByLabel('Start Date').fill('2026-04-01');
+  await leadPage.getByLabel('End Date').fill('2026-05-01');
+  await leadPage.getByRole('button', { name: 'Save Milestone' }).click();
+
+  // Add two contributions to Milestone 1
+  await leadPage.getByRole('button', { name: 'Add Contribution' }).first().click();
+  await leadPage.getByLabel('Title').fill('Community interviews');
+  await leadPage.getByLabel('Type').selectOption('community');
+  await leadPage.getByLabel('Priority').selectOption('high');
+  await leadPage.getByRole('button', { name: 'Create' }).click();
+
+  await leadPage.getByRole('button', { name: 'Add Contribution' }).first().click();
+  await leadPage.getByLabel('Title').fill('Archive structure design');
+  await leadPage.getByLabel('Type').selectOption('technical');
+  await leadPage.getByLabel('Priority').selectOption('medium');
+  await leadPage.getByRole('button', { name: 'Create' }).click();
+
+  // Add Milestone 2
+  await leadPage.getByRole('button', { name: 'Add Milestone' }).click();
+  await leadPage.getByLabel('Milestone Name').fill('Phase 2 — Build');
+  await leadPage.getByLabel('Start Date').fill('2026-05-01');
+  await leadPage.getByLabel('End Date').fill('2026-06-15');
+  await leadPage.getByRole('button', { name: 'Save Milestone' }).click();
+
+  // Add contribution to Milestone 2
+  await leadPage.getByRole('button', { name: 'Add Contribution' }).last().click();
+  await leadPage.getByLabel('Title').fill('Build data ingestion tool');
+  await leadPage.getByLabel('Type').selectOption('technical');
+  await leadPage.getByLabel('Priority').selectOption('high');
+  await leadPage.getByRole('button', { name: 'Create' }).click();
+
+  // Verify all contributions are in 'created' status
+  await expect(leadPage.getByText('created').first()).toBeVisible();
+
+  // Project lead edits a contribution
+  await leadPage.getByText('Community interviews').click();
+  await leadPage.getByLabel('Description').fill('Interview 10 community elders about whakapapa practices');
+  await leadPage.getByRole('button', { name: 'Save' }).click();
+
+  // --- Founding Member (Steward) confirms contributions and signs off plan ---
+  const stewardPage = await context.newPage();
+  await loginAs(stewardPage, foundingMember);
+  await stewardPage.goto(`/projects/${projectId}`);
+  await stewardPage.getByRole('tab', { name: 'Implementation Plan' }).click();
+
+  // Confirm each contribution
+  for (const title of ['Community interviews', 'Archive structure design', 'Build data ingestion tool']) {
+    await stewardPage.getByText(title).click();
+    await stewardPage.getByRole('button', { name: 'Confirm' }).click();
+    await expect(stewardPage.getByText('confirmed')).toBeVisible();
+    await stewardPage.getByRole('button', { name: 'Close' }).click();
+  }
+
+  // Sign off the implementation plan
+  await stewardPage.getByRole('button', { name: 'Sign Off Plan' }).click();
+  await stewardPage.getByRole('button', { name: 'Confirm Sign Off' }).click();
+  await expect(stewardPage.getByText('Plan signed off')).toBeVisible();
 });
 ```
 
-### 10.4 Edge Cases
+### 10.3 E2E Test: Share, Offer, Register, Accept, Sub-Contributions, and Completion
 
-**Test Scenarios:**
+```typescript
+test('Full contribution lifecycle — share, offer, register, accept', async ({ page, context }) => {
+  // --- 3. Project Lead shares and offers contributions ---
+  const leadPage = await context.newPage();
+  await loginAs(leadPage, member1);
+  await leadPage.goto(`/projects/${projectId}`);
 
-1. **Empty States:**
-   - Project with no milestones
-   - Milestone with no contributions
-   - Contribution with no sub-contributions
-   - No interested contributors
+  // Share "Community interviews"
+  await leadPage.getByText('Community interviews').click();
+  await leadPage.getByRole('button', { name: 'Share' }).click();
+  await leadPage.getByLabel('Contributors').check();
+  await leadPage.getByRole('button', { name: 'Share Contribution' }).click();
+  await expect(leadPage.getByText('shared')).toBeVisible();
+  await leadPage.getByRole('button', { name: 'Close' }).click();
 
-2. **Permission Boundaries:**
-   - Member trying to create contribution (should fail)
-   - Contributor trying to review (should fail)
-   - Non-assigned user trying to submit evidence (should fail)
+  // Offer "Archive structure design" directly to Member 2
+  await leadPage.getByText('Archive structure design').click();
+  await leadPage.getByRole('button', { name: 'Offer' }).click();
+  await leadPage.getByLabel('Select Member').selectOption(member2.name);
+  await leadPage.getByRole('button', { name: 'Send Offer' }).click();
+  await expect(leadPage.getByText('offered')).toBeVisible();
+  await leadPage.getByRole('button', { name: 'Close' }).click();
 
-3. **Data Validation:**
-   - Empty required fields
-   - Invalid status transitions
-   - Circular dependencies in contributions
-   - Duplicate contribution IDs
+  // --- Member 2 registers interest in shared contribution, accepts offered one ---
+  const member2Page = await context.newPage();
+  await loginAs(member2Page, member2);
+  await member2Page.goto(`/projects/${projectId}`);
 
-4. **Concurrent Updates:**
-   - Two users updating same contribution
-   - Parent and child updated simultaneously
-   - Race conditions in interest registration
+  // Register interest in "Community interviews"
+  await member2Page.getByText('Community interviews').click();
+  await member2Page.getByRole('button', { name: 'Register Interest' }).click();
+  await member2Page.getByLabel('Interest Note').fill('I have connections with local kaumatua');
+  await member2Page.getByRole('button', { name: 'Submit' }).click();
+  await expect(member2Page.getByText('Interest registered')).toBeVisible();
+  await member2Page.getByRole('button', { name: 'Close' }).click();
+
+  // Accept offered "Archive structure design"
+  await member2Page.getByText('Archive structure design').click();
+  await member2Page.getByRole('button', { name: 'Accept Offer' }).click();
+  await expect(member2Page.getByText('assigned')).toBeVisible();
+  await member2Page.getByRole('button', { name: 'Close' }).click();
+});
+
+test('Sub-contribution creation, approval, and completion', async ({ page, context }) => {
+  // --- 4. Member 2 creates a sub-contribution ---
+  const member2Page = await context.newPage();
+  await loginAs(member2Page, member2);
+  await member2Page.goto(`/projects/${projectId}`);
+
+  // Open the assigned "Archive structure design" contribution
+  await member2Page.getByText('Archive structure design').click();
+  await member2Page.getByRole('button', { name: 'Add Sub-Contribution' }).click();
+  await member2Page.getByLabel('Title').fill('Draft metadata schema');
+  await member2Page.getByLabel('Description').fill('Define JSON schema for whakapapa records');
+  await member2Page.getByLabel('Type').selectOption('technical');
+  await member2Page.getByRole('button', { name: 'Create' }).click();
+  await expect(member2Page.getByText('Draft metadata schema')).toBeVisible();
+  await expect(member2Page.getByText('created')).toBeVisible();
+
+  // --- Project Lead approves the sub-contribution ---
+  const leadPage = await context.newPage();
+  await loginAs(leadPage, member1);
+  await leadPage.goto(`/projects/${projectId}`);
+  await leadPage.getByText('Archive structure design').click();
+  await leadPage.getByText('Draft metadata schema').click();
+  await leadPage.getByRole('button', { name: 'Approve' }).click();
+  await expect(leadPage.getByText('assigned')).toBeVisible();
+  await leadPage.getByRole('button', { name: 'Close' }).click();
+});
+
+test('Contribution completion, review, and sign-off', async ({ page, context }) => {
+  // --- 5. Member 2 completes sub-contribution ---
+  const member2Page = await context.newPage();
+  await loginAs(member2Page, member2);
+  await member2Page.goto(`/projects/${projectId}`);
+
+  // Complete sub-contribution
+  await member2Page.getByText('Archive structure design').click();
+  await member2Page.getByText('Draft metadata schema').click();
+  await member2Page.getByRole('button', { name: 'Submit Evidence' }).click();
+  await member2Page.getByLabel('Completion Notes').fill('Schema defined and documented');
+  await member2Page.getByRole('button', { name: 'Submit for Review' }).click();
+  await expect(member2Page.getByText('needs_review')).toBeVisible();
+  await member2Page.getByRole('button', { name: 'Close' }).click();
+
+  // --- Project Lead approves sub-contribution ---
+  const leadPage = await context.newPage();
+  await loginAs(leadPage, member1);
+  await leadPage.goto(`/projects/${projectId}`);
+  await leadPage.getByText('Archive structure design').click();
+  await leadPage.getByText('Draft metadata schema').click();
+  await leadPage.getByRole('button', { name: 'Review' }).click();
+  await leadPage.getByLabel('Outcome').selectOption('approved');
+  await leadPage.getByLabel('Quality Rating').fill('8');
+  await leadPage.getByRole('button', { name: 'Submit Review' }).click();
+  await expect(leadPage.getByText('approved')).toBeVisible();
+  await leadPage.getByRole('button', { name: 'Close' }).click();
+
+  // --- Steward signs off sub-contribution ---
+  const stewardPage = await context.newPage();
+  await loginAs(stewardPage, foundingMember);
+  await stewardPage.goto(`/projects/${projectId}`);
+  await stewardPage.getByText('Archive structure design').click();
+  await stewardPage.getByText('Draft metadata schema').click();
+  await stewardPage.getByRole('button', { name: 'Sign Off' }).click();
+  await expect(stewardPage.getByText('signed_off')).toBeVisible();
+  await stewardPage.getByRole('button', { name: 'Close' }).click();
+
+  // --- Member 2 completes parent contribution ---
+  await member2Page.goto(`/projects/${projectId}`);
+  await member2Page.getByText('Archive structure design').click();
+  await member2Page.getByRole('button', { name: 'Submit Evidence' }).click();
+  await member2Page.getByLabel('Completion Notes').fill('Structure designed and validated');
+  await member2Page.getByRole('button', { name: 'Submit for Review' }).click();
+  await expect(member2Page.getByText('needs_review')).toBeVisible();
+  await member2Page.getByRole('button', { name: 'Close' }).click();
+
+  // --- Project Lead approves parent contribution ---
+  await leadPage.goto(`/projects/${projectId}`);
+  await leadPage.getByText('Archive structure design').click();
+  await leadPage.getByRole('button', { name: 'Review' }).click();
+  await leadPage.getByLabel('Outcome').selectOption('approved');
+  await leadPage.getByLabel('Quality Rating').fill('9');
+  await leadPage.getByRole('button', { name: 'Submit Review' }).click();
+  await expect(leadPage.getByText('approved')).toBeVisible();
+  await leadPage.getByRole('button', { name: 'Close' }).click();
+
+  // --- Steward signs off parent contribution ---
+  await stewardPage.goto(`/projects/${projectId}`);
+  await stewardPage.getByText('Archive structure design').click();
+  await stewardPage.getByRole('button', { name: 'Sign Off' }).click();
+  await expect(stewardPage.getByText('signed_off')).toBeVisible();
+});
+```
+
+### 10.4 E2E Test: Edge Cases
+
+```typescript
+test('Permission boundaries — member cannot create project', async ({ context }) => {
+  const memberPage = await context.newPage();
+  await loginAs(memberPage, member2);
+  await memberPage.goto('/projects');
+
+  // Create Project button should not be visible to non-admin members
+  await expect(memberPage.getByRole('button', { name: 'Create Proposal' })).not.toBeVisible();
+});
+
+test('Permission boundaries — project lead cannot sign off contributions', async ({ context }) => {
+  const leadPage = await context.newPage();
+  await loginAs(leadPage, member1);
+  await leadPage.goto(`/projects/${projectId}`);
+  await leadPage.getByText('Build data ingestion tool').click();
+
+  // Sign Off button should not be visible to project lead
+  await expect(leadPage.getByRole('button', { name: 'Sign Off' })).not.toBeVisible();
+});
+
+test('Permission boundaries — unassigned member cannot submit evidence', async ({ context }) => {
+  const memberPage = await context.newPage();
+  await loginAs(memberPage, member2);
+  await memberPage.goto(`/projects/${projectId}`);
+
+  // Open a contribution not assigned to this member
+  await memberPage.getByText('Community interviews').click();
+
+  // Submit Evidence button should not be visible
+  await expect(memberPage.getByRole('button', { name: 'Submit Evidence' })).not.toBeVisible();
+});
+
+test('Parent contribution blocked when sub-contributions incomplete', async ({ context }) => {
+  // Member tries to submit parent while sub-contribution is still in progress
+  const memberPage = await context.newPage();
+  await loginAs(memberPage, member2);
+  await memberPage.goto(`/projects/${projectId}`);
+  await memberPage.getByText('Archive structure design').click();
+
+  // If sub-contributions exist and are not signed off, Submit Evidence should be disabled
+  const submitButton = memberPage.getByRole('button', { name: 'Submit Evidence' });
+  if (await submitButton.isVisible()) {
+    await expect(submitButton).toBeDisabled();
+    await expect(memberPage.getByText('Sub-Contributions Not Complete')).toBeVisible();
+  }
+});
+
+test('Plan cannot be signed off without all contributions confirmed', async ({ context }) => {
+  const stewardPage = await context.newPage();
+  await loginAs(stewardPage, foundingMember);
+  await stewardPage.goto(`/projects/${projectId}`);
+  await stewardPage.getByRole('tab', { name: 'Implementation Plan' }).click();
+
+  // If any contribution is not confirmed, Sign Off Plan should be disabled
+  const signOffButton = stewardPage.getByRole('button', { name: 'Sign Off Plan' });
+  if (await signOffButton.isVisible()) {
+    await expect(signOffButton).toBeDisabled();
+  }
+});
+
+test('Invalid status transition — cannot share unconfirmed contribution', async ({ context }) => {
+  const leadPage = await context.newPage();
+  await loginAs(leadPage, member1);
+  await leadPage.goto(`/projects/${projectId}`);
+
+  // Open a contribution still in 'created' status
+  await leadPage.getByText('Build data ingestion tool').click();
+
+  // Share button should not be available for unconfirmed contributions
+  await expect(leadPage.getByRole('button', { name: 'Share' })).not.toBeVisible();
+});
+```
 
 ---
 
