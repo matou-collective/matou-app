@@ -114,7 +114,7 @@ export async function transitionProposal(id: string, status: string): Promise<Pr
   log.info('Transitioning proposal %s to %s', id, status);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}/transition`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ status }),
   });
   if (!response.ok) {
@@ -129,9 +129,15 @@ export async function updateProposal(
   fields: Partial<Omit<Proposal, 'id' | 'status' | 'created_at' | 'updated_at'>>,
 ): Promise<Proposal> {
   log.info('Updating proposal %s', id);
+  const identityStore = useIdentityStore();
+  const userName = identityStore.currentAID?.name;
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(userName ? { 'X-User-Name': userName } : {}),
+    },
     body: JSON.stringify(fields),
   });
   if (!response.ok) {

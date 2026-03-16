@@ -16,6 +16,7 @@ type ProposalsHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
 	broker       *EventBroker
+	roleLookup   RoleLookup
 }
 
 // NewProposalsHandler creates a new proposals handler.
@@ -34,6 +35,7 @@ func (h *ProposalsHandler) SetBroker(broker *EventBroker) {
 // RegisterRoutes registers proposal routes on the mux.
 // ProposalsHandler uses RBACMiddleware on the collection endpoint.
 func (h *ProposalsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/proposals", CORSHandler(RBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -161,6 +163,35 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Sign-off and rejection require admin (steward/founding) role
+	targetStatus := contributions.ProposalStatus(req.Status)
+	var requiredAction contributions.Action
+	switch targetStatus {
+	case contributions.ProposalSignedOff:
+		requiredAction = contributions.ActionSignOffProposal
+	case contributions.ProposalRejected:
+		requiredAction = contributions.ActionRejectProposal
+	}
+	if requiredAction != "" {
+		aid := r.Header.Get("X-User-AID")
+		if aid == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+			return
+		}
+		var roles []contributions.Role
+		if h.roleLookup != nil {
+			roles, _ = h.roleLookup.GetUserRoles(aid)
+		} else {
+			// Fallback to context roles (set by RBACMiddleware or tests)
+			roles = GetUserRoles(r)
+		}
+		if !contributions.CanPerformAction(roles, requiredAction) {
+			log.Printf("[Proposals] %s denied for proposal %s: aid=%s roles=%v", req.Status, id, aid, roles)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: admin role required"})
+			return
+		}
+	}
+
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
 
 	proposal, err := h.service.TransitionProposal(r.Context(), spaceID, id, contributions.ProposalStatus(req.Status))
@@ -177,7 +208,7 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 	}
 	h.service.AddHistoryEntry(r.Context(), spaceID, &contributions.ProposalHistoryEntry{
 		ProposalID: id,
-		UserID:     "current-user",
+		UserID:     r.Header.Get("X-User-AID"),
 		Action:     action,
 	})
 
@@ -254,6 +285,37 @@ func (h *ProposalsHandler) HandleUpdate(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+
+	// For in_review proposals, only the proposer or an admin can edit
+	existing, err := h.service.GetProposal(r.Context(), spaceID, id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "proposal not found"})
+		return
+	}
+	if existing.Status == contributions.ProposalInReview {
+		aid := r.Header.Get("X-User-AID")
+		if aid == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+			return
+		}
+		userName := r.Header.Get("X-User-Name")
+		isProposer := aid == existing.ProposerID || (userName != "" && userName == existing.ProposerID)
+
+		var roles []contributions.Role
+		if h.roleLookup != nil {
+			roles, _ = h.roleLookup.GetUserRoles(aid)
+		} else {
+			roles = GetUserRoles(r)
+		}
+		isAdmin := contributions.CanPerformAction(roles, contributions.ActionEditProposal)
+
+		if !isProposer && !isAdmin {
+			log.Printf("[Proposals] edit denied for proposal %s: aid=%s userName=%s roles=%v", id, aid, userName, roles)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: admin role or proposer identity required"})
+			return
+		}
+	}
+
 	proposal, err := h.service.UpdateProposal(r.Context(), spaceID, id, &req)
 	if err != nil {
 		log.Printf("[Proposals] update failed for %s: %v", id, err)

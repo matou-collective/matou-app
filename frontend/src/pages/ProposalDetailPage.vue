@@ -71,6 +71,7 @@
           <!-- In Review -->
           <template v-if="proposal.status === 'in_review'">
             <q-btn
+              v-if="isSteward"
               color="positive"
               no-caps
               icon="check"
@@ -79,13 +80,18 @@
               :loading="transitioning"
             />
             <q-btn
+              v-if="isSteward"
               color="negative"
               no-caps
               icon="block"
               label="Reject Proposal"
               @click="showRejectDialog = true"
             />
-            <q-btn flat no-caps icon="edit" label="Edit Proposal" @click="showEditDialog = true" />
+            <q-btn v-if="isSteward || isProposer" flat no-caps icon="edit" label="Edit Proposal" @click="showEditDialog = true" />
+            <div v-if="!isSteward && !isProposer" class="review-info-banner">
+              <q-icon name="info" color="primary" size="20px" />
+              <span>Proposal is currently in review.</span>
+            </div>
           </template>
 
           <!-- Signed Off — create plan when none exists -->
@@ -440,6 +446,7 @@ import CreateDecisionPlanDialog from 'src/components/proposals/CreateDecisionPla
 import AddGovernanceActionDialog from 'src/components/proposals/AddGovernanceActionDialog.vue';
 import GovernanceActionModal from 'src/components/proposals/GovernanceActionModal.vue';
 import { useIdentityStore } from 'stores/identity';
+import { useAdminAccess } from 'src/composables/useAdminAccess';
 
 // ── Router / store setup ──────────────────────────────────────────────────────
 
@@ -449,6 +456,7 @@ const $q = useQuasar();
 const proposalsStore = useProposalsStore();
 const decisionPlansStore = useDecisionPlansStore();
 const identityStore = useIdentityStore();
+const { isSteward, checkAdminStatus } = useAdminAccess();
 
 // ── Local state ───────────────────────────────────────────────────────────────
 
@@ -482,9 +490,18 @@ const showRoleAssignments = computed(() => {
   return s === 'in_review' || s === 'signed_off' || s === 'voting_process';
 });
 
+const isProposer = computed(() => {
+  const p = proposal.value;
+  if (!p) return false;
+  const aid = identityStore.currentAID;
+  if (!aid) return false;
+  return p.proposer_id === aid.name || p.proposer_id === aid.prefix;
+});
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(() => {
+  void checkAdminStatus();
   const id = route.params.id as string;
   void loadProposal(id);
 });
@@ -551,7 +568,10 @@ async function confirmReject() {
       `${BACKEND_URL}/api/v1/proposals/${proposal.value.id}/transition`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(identityStore.currentAID?.prefix ? { 'X-User-AID': identityStore.currentAID.prefix } : {}),
+        },
         body: JSON.stringify({ status: 'rejected', reason: rejectReason.value.trim() }),
       },
     );
@@ -890,6 +910,18 @@ async function addComment() {
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius);
   padding: 16px;
+}
+
+.review-info-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--matou-radius-sm);
+  color: var(--matou-foreground);
+  font-size: 0.9rem;
 }
 
 .roles-notice {

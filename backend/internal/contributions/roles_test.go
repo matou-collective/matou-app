@@ -66,6 +66,116 @@ func TestCanPerformAction_ApproveContribution(t *testing.T) {
 	}
 }
 
+func TestCanPerformAction_SignOffProposal(t *testing.T) {
+	// Admin roles (steward/founding) can sign off proposals
+	adminRoles := []struct {
+		name string
+		role Role
+	}{
+		{"project_steward", RoleProjectSteward},
+		{"operations_steward", RoleOperationsSteward},
+		{"community_steward", RoleCommunitySteward},
+		{"founding_member", RoleFoundingMember},
+	}
+	for _, tt := range adminRoles {
+		if !CanPerformAction([]Role{tt.role}, ActionSignOffProposal) {
+			t.Errorf("%s should be allowed to sign off proposals", tt.name)
+		}
+	}
+
+	// Non-admin roles cannot sign off proposals
+	nonAdminRoles := []struct {
+		name string
+		role Role
+	}{
+		{"member", RoleMember},
+		{"contributor", RoleContributor},
+		{"project_lead", RoleProjectLead},
+		{"tech_steward", RoleTechSteward},
+		{"treasury_steward", RoleTreasurySteward},
+		{"elder_council", RoleElderCouncil},
+	}
+	for _, tt := range nonAdminRoles {
+		if CanPerformAction([]Role{tt.role}, ActionSignOffProposal) {
+			t.Errorf("%s should NOT be allowed to sign off proposals", tt.name)
+		}
+	}
+
+	// No roles at all should be denied
+	if CanPerformAction([]Role{}, ActionSignOffProposal) {
+		t.Error("empty roles should not be allowed to sign off proposals")
+	}
+	if CanPerformAction(nil, ActionSignOffProposal) {
+		t.Error("nil roles should not be allowed to sign off proposals")
+	}
+}
+
+func TestCanPerformAction_RejectProposal(t *testing.T) {
+	// Admin roles can reject proposals
+	adminRoles := []struct {
+		name string
+		role Role
+	}{
+		{"project_steward", RoleProjectSteward},
+		{"operations_steward", RoleOperationsSteward},
+		{"community_steward", RoleCommunitySteward},
+		{"founding_member", RoleFoundingMember},
+	}
+	for _, tt := range adminRoles {
+		if !CanPerformAction([]Role{tt.role}, ActionRejectProposal) {
+			t.Errorf("%s should be allowed to reject proposals", tt.name)
+		}
+	}
+
+	// Non-admin roles cannot reject proposals
+	nonAdminRoles := []struct {
+		name string
+		role Role
+	}{
+		{"member", RoleMember},
+		{"contributor", RoleContributor},
+		{"project_lead", RoleProjectLead},
+	}
+	for _, tt := range nonAdminRoles {
+		if CanPerformAction([]Role{tt.role}, ActionRejectProposal) {
+			t.Errorf("%s should NOT be allowed to reject proposals", tt.name)
+		}
+	}
+}
+
+func TestCanPerformAction_EditProposal(t *testing.T) {
+	// Admin roles can edit in_review proposals
+	adminRoles := []struct {
+		name string
+		role Role
+	}{
+		{"project_steward", RoleProjectSteward},
+		{"operations_steward", RoleOperationsSteward},
+		{"community_steward", RoleCommunitySteward},
+		{"founding_member", RoleFoundingMember},
+	}
+	for _, tt := range adminRoles {
+		if !CanPerformAction([]Role{tt.role}, ActionEditProposal) {
+			t.Errorf("%s should be allowed to edit proposals", tt.name)
+		}
+	}
+
+	// Non-admin roles cannot edit in_review proposals (proposer check is separate)
+	nonAdminRoles := []struct {
+		name string
+		role Role
+	}{
+		{"member", RoleMember},
+		{"contributor", RoleContributor},
+		{"project_lead", RoleProjectLead},
+	}
+	for _, tt := range nonAdminRoles {
+		if CanPerformAction([]Role{tt.role}, ActionEditProposal) {
+			t.Errorf("%s should NOT be allowed to edit proposals via role alone", tt.name)
+		}
+	}
+}
+
 func TestCanPerformAction_RegisterInterest(t *testing.T) {
 	if !CanPerformAction([]Role{RoleContributor}, ActionRegisterInterest) {
 		t.Error("contributor should register interest")
