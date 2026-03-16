@@ -417,17 +417,39 @@ const linkedProposals = computed(() => {
   return proposalsStore.proposals.filter((pr) => p.proposal_ids!.includes(pr.id));
 });
 
-// Community members for AssignRoleDialog — fetched from backend
+// Community members for AssignRoleDialog — fetched from SharedProfile API
 const communityMembersList = ref<{ id: string; name: string; role: string }[]>([]);
 const communityMembers = computed(() => communityMembersList.value);
 
 async function loadCommunityMembers() {
   try {
-    const { getCommunityMembers } = await import('src/lib/api/client');
-    const members = await getCommunityMembers();
-    communityMembersList.value = members
-      .filter(m => m.name && m.role !== 'pending')
-      .map(m => ({ id: m.aid, name: m.name, role: m.role }));
+    const { BACKEND_URL } = await import('src/lib/api/client');
+    // SharedProfiles have displayName + status; CommunityProfiles have role
+    const [sharedResp, communityResp] = await Promise.all([
+      fetch(`${BACKEND_URL}/api/v1/profiles/SharedProfile`),
+      fetch(`${BACKEND_URL}/api/v1/profiles/CommunityProfile`),
+    ]);
+    const shared = sharedResp.ok ? await sharedResp.json() : { profiles: [] };
+    const community = communityResp.ok ? await communityResp.json() : { profiles: [] };
+
+    // Build a role map from CommunityProfiles (keyed by userAID)
+    const roleMap = new Map<string, string>();
+    for (const p of (community.profiles ?? []) as { data: Record<string, string> }[]) {
+      const aid = p.data?.userAID;
+      if (aid) roleMap.set(aid, p.data?.role ?? 'Member');
+    }
+
+    // Map SharedProfiles to member list, excluding pending
+    communityMembersList.value = ((shared.profiles ?? []) as { id: string; data: Record<string, string> }[])
+      .filter(p => p.data?.displayName && p.data?.status !== 'pending')
+      .map(p => {
+        const aid = p.data?.aid || p.id.replace('SharedProfile-', '');
+        return {
+          id: aid,
+          name: p.data.displayName,
+          role: roleMap.get(aid) ?? 'Member',
+        };
+      });
   } catch {
     communityMembersList.value = [];
   }
