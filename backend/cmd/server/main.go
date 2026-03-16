@@ -461,7 +461,7 @@ func main() {
 	credHandler := api.NewCredentialsHandler(keriClient, store)
 	syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore, userIdentity)
 	trustHandler := api.NewTrustHandler(store, orgConfigHandler.GetOrgAID(), spaceManager)
-	healthHandler := api.NewHealthHandler(store, spaceStore, orgConfigHandler.GetOrgAID(), orgConfigHandler.GetAdminAID())
+	healthHandler := api.NewHealthHandler(store, spaceStore, orgConfigHandler.GetOrgAID, orgConfigHandler.GetAdminAID)
 	spacesHandler := api.NewSpacesHandler(spaceManager, store, userIdentity, spaceManager.FileManager())
 	emailSender := email.NewSender(cfg.SMTP)
 	invitesHandler := api.NewInvitesHandler(emailSender)
@@ -484,9 +484,10 @@ func main() {
 	contribNotifier := &contribNotifierAdapter{svc: notifService}
 	roleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
 
-	// Grant community_admin role to all configured org admins
-	if orgConfigHandler.IsConfigured() {
-		orgData := orgConfigHandler.GetConfig()
+	// Grant community_admin role to all configured org admins.
+	// Also register a callback so admin AIDs are updated whenever org config changes
+	// (e.g. when org setup runs after server start).
+	setAdminAIDsFromConfig := func(orgData *api.OrgConfigData) {
 		adminAIDs := make([]string, 0, len(orgData.Admins))
 		for _, a := range orgData.Admins {
 			if a.AID != "" {
@@ -494,7 +495,12 @@ func main() {
 			}
 		}
 		roleLookup.SetAdminAIDs(adminAIDs)
+		log.Printf("[RBAC] Updated admin AIDs: %v", adminAIDs)
 	}
+	if orgConfigHandler.IsConfigured() {
+		setAdminAIDsFromConfig(orgConfigHandler.GetConfig())
+	}
+	orgConfigHandler.AddOnUpdate(setAdminAIDsFromConfig)
 
 	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
 	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)

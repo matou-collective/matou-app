@@ -56,6 +56,17 @@ type Registry struct {
 	Name string `json:"name" yaml:"name"`
 }
 
+// AddOnUpdate chains an additional callback that fires when org config is updated.
+func (h *OrgConfigHandler) AddOnUpdate(fn func(*OrgConfigData)) {
+	prev := h.onUpdate
+	h.onUpdate = func(data *OrgConfigData) {
+		if prev != nil {
+			prev(data)
+		}
+		fn(data)
+	}
+}
+
 // NewOrgConfigHandler creates a new org config handler
 func NewOrgConfigHandler(dataDir string, onUpdate func(*OrgConfigData)) *OrgConfigHandler {
 	configPath := filepath.Join(dataDir, "org-config.yaml")
