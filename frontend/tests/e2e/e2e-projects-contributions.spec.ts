@@ -298,40 +298,7 @@ async function getPlanAPI(
 }
 
 // ===========================================================================
-// Group 1: API Validation (no browser needed)
-// ===========================================================================
-
-test.describe.serial('Projects & Contributions — API Validation', () => {
-  test('backend is reachable', async ({ request }) => {
-    const response = await request.get(`${BACKEND_URL}/health`);
-    expect(response.ok()).toBeTruthy();
-    console.log('[Test] Backend health check passed');
-  });
-
-  test('rejects project creation with empty title', async ({ request }) => {
-    // Get admin AID from health endpoint (RBAC requires valid admin identity)
-    const health = await request.get(`${BACKEND_URL}/health`);
-    const { admin: adminAID } = await health.json();
-    const response = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: authHeaders(adminAID),
-      data: { title: '', description: 'No title', created_by: adminAID },
-    });
-    expect(response.status()).toBe(400);
-    console.log('[Test] Empty project title rejected');
-  });
-
-  test('rejects contribution creation with missing required fields', async ({ request }) => {
-    const response = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: HEADERS,
-      data: { title: 'Missing fields' },
-    });
-    expect(response.status()).toBe(400);
-    console.log('[Test] Missing contribution fields rejected');
-  });
-});
-
-// ===========================================================================
-// Group 2: UI Verification (requires admin login + API-created data)
+// Group 1: Full Lifecycle (performs org setup, then API + UI verification)
 // ===========================================================================
 
 test.describe.serial('Projects & Contributions — Full Lifecycle', () => {
@@ -1031,5 +998,39 @@ test.describe.serial('Projects & Contributions — Full Lifecycle', () => {
     await expect(projectCard).toBeVisible({ timeout: TIMEOUT.medium });
 
     console.log('[Test] Projects page still shows all created projects');
+  });
+});
+
+// ===========================================================================
+// Group 2: API Validation (runs after Full Lifecycle so org setup is complete)
+// ===========================================================================
+
+test.describe.serial('Projects & Contributions — API Validation', () => {
+  test('backend is reachable', async ({ request }) => {
+    const response = await request.get(`${BACKEND_URL}/health`);
+    expect(response.ok()).toBeTruthy();
+    console.log('[Test] Backend health check passed');
+  });
+
+  test('rejects project creation with empty title', async ({ request }) => {
+    // Get admin AID from health endpoint (RBAC requires valid admin identity)
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+    const response = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: authHeaders(adminAID),
+      data: { title: '', description: 'No title', created_by: adminAID },
+    });
+    expect(response.status()).toBe(400);
+    console.log('[Test] Empty project title rejected');
+  });
+
+  test('rejects contribution creation with missing required fields', async ({ request }) => {
+    const response = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: HEADERS,
+      data: { title: 'Missing fields' },
+    });
+    expect(response.status()).toBe(400);
+    console.log('[Test] Missing contribution fields rejected');
   });
 });
