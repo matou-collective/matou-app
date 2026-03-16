@@ -563,6 +563,14 @@
             :loading="actionLoading === 'accept'"
             @click="handleAccept"
           />
+          <q-btn
+            v-if="canChangeNow"
+            flat
+            label="Change Contribution"
+            icon="edit_note"
+            @click="showChangeDialog = true"
+            :loading="actionLoading === 'change'"
+          />
         </div>
         <q-btn flat round icon="close" v-close-popup />
       </div>
@@ -659,6 +667,16 @@
     }"
     @create-child-contribution="(parentId: string) => emit('create-child-contribution', parentId)"
   />
+
+  <!-- Change Contribution Dialog -->
+  <CreateContributionDialog
+    v-model="showChangeDialog"
+    :project-id="contribution.project_id"
+    :milestone-id="contribution.milestone_id"
+    :editing="true"
+    :contribution="contribution"
+    @change="handleChange"
+  />
 </template>
 
 <script setup lang="ts">
@@ -689,6 +707,7 @@ import ContributionTypeBadge from './ContributionTypeBadge.vue';
 import ContributionPriorityBadge from './ContributionPriorityBadge.vue';
 import { useContributionsStore } from 'stores/contributions';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
+import CreateContributionDialog from './CreateContributionDialog.vue';
 
 defineOptions({ name: 'ContributionDetailDialog' });
 
@@ -726,6 +745,7 @@ const actionLoading = ref<string | null>(null);
 const showShareDialog = ref(false);
 const showOfferDialog = ref(false);
 const showInterestDialog = ref(false);
+const showChangeDialog = ref(false);
 
 // File input template refs
 const timeReportInput = ref<HTMLInputElement | null>(null);
@@ -834,6 +854,9 @@ const canAddSub = computed(() =>
   workflow.canAddSubContribution(props.contribution, props.currentUserId, role.value),
 );
 const canApproveSub = computed(() => isLead.value || isSteward.value);
+const canChangeNow = computed(() =>
+  workflow.canChange(props.contribution, props.currentUserId, role.value),
+);
 const canOfferToContributor = computed(() => isLead.value || isSteward.value);
 
 // Evidence/review reads
@@ -1041,6 +1064,20 @@ async function handleApproveSub(subId: string) {
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Approve failed' });
+  } finally {
+    actionLoading.value = null;
+  }
+}
+
+async function handleChange(data: { updates: Record<string, unknown>; reason: string }) {
+  actionLoading.value = 'change';
+  try {
+    await store.update(props.contribution.id, data.updates as any);
+    const updated = await store.transition(props.contribution.id, 'changed');
+    emit('update', updated);
+    showChangeDialog.value = false;
+  } catch (err) {
+    console.error('[ContribDetail] change failed:', err);
   } finally {
     actionLoading.value = null;
   }

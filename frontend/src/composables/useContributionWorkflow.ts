@@ -26,7 +26,10 @@ export function useContributionWorkflow() {
     role: ProjectRole | string,
   ): boolean {
     if (isPlanSignedOff) return false;
-    return contribution.status === 'created' && _isRole(role, CONFIRM_ROLES);
+    return (
+      (contribution.status === 'created' || contribution.status === 'changed') &&
+      _isRole(role, CONFIRM_ROLES)
+    );
   }
 
   /**
@@ -145,6 +148,22 @@ export function useContributionWorkflow() {
   }
 
   /**
+   * Assigned contributor or lead/admin can request a change to an assigned contribution.
+   * The contribution must be in 'assigned' status.
+   */
+  function canChange(
+    contribution: Contribution,
+    currentUserId: string,
+    role: ProjectRole | string,
+  ): boolean {
+    if (contribution.status !== 'assigned') return false;
+    const assignedId =
+      contribution.assigned_contributor ?? contribution.assigned_contributor_id;
+    if (assignedId === currentUserId) return true;
+    return _isRole(role, LEAD_ROLES);
+  }
+
+  /**
    * Admin can assign roles to projects.
    */
   function canAssignProjectRole(role: ProjectRole | string): boolean {
@@ -167,6 +186,7 @@ export function useContributionWorkflow() {
     canSubmitEvidence,
     canReview,
     canSignOff,
+    canChange,
     canAddSubContribution,
     canApproveSub,
     canAssignProjectRole,
