@@ -270,11 +270,11 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       await assignLeadBtn.click();
       const roleDlg = dialog(adminPage, 'Assign Project Lead');
       await expect(roleDlg).toBeVisible({ timeout: TIMEOUT.short });
-      // Select the admin user (first member matching "Admin")
       const adminItem = roleDlg.locator('.member-item').filter({ hasText: /Admin/i }).first();
       await expect(adminItem).toBeVisible({ timeout: TIMEOUT.medium });
       await adminItem.click();
       await roleDlg.getByRole('button', { name: /Assign Project Lead/i }).click();
+      await expect(roleDlg).not.toBeVisible({ timeout: TIMEOUT.short });
       await waitForSettle(adminPage);
       console.log('[Phase 2] Project Lead assigned (Admin User)');
     }
@@ -283,12 +283,13 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     const assignStewardBtn = adminPage.getByRole('button', { name: /Assign Steward/i });
     if (await assignStewardBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
       await assignStewardBtn.click();
-      const roleDlg = dialog(adminPage, 'Assign Project Steward');
-      await expect(roleDlg).toBeVisible({ timeout: TIMEOUT.short });
-      const adminItem = roleDlg.locator('.member-item').filter({ hasText: /Admin/i }).first();
-      await expect(adminItem).toBeVisible({ timeout: TIMEOUT.medium });
-      await adminItem.click();
-      await roleDlg.getByRole('button', { name: /Assign Project Steward/i }).click();
+      const roleDlg2 = dialog(adminPage, 'Assign Project Steward');
+      await expect(roleDlg2).toBeVisible({ timeout: TIMEOUT.short });
+      const adminItem2 = roleDlg2.locator('.member-item').filter({ hasText: /Admin/i }).first();
+      await expect(adminItem2).toBeVisible({ timeout: TIMEOUT.medium });
+      await adminItem2.click();
+      await roleDlg2.getByRole('button', { name: /Assign Project Steward/i }).click();
+      await expect(roleDlg2).not.toBeVisible({ timeout: TIMEOUT.short });
       await waitForSettle(adminPage);
       console.log('[Phase 2] Project Steward assigned (Admin User)');
     }

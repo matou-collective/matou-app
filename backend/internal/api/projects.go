@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/contributions"
@@ -57,6 +58,19 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 
 		if len(parts) == 2 {
 			switch parts[1] {
+			case "assign-role":
+				if r.Method == http.MethodPost {
+					if roleLookup != nil {
+						RBACMiddleware(roleLookup, RequireAction(contributions.ActionCreateProject, func(w http.ResponseWriter, r *http.Request) {
+							h.HandleAssignRole(w, r, id)
+						}))(w, r)
+					} else {
+						h.HandleAssignRole(w, r, id)
+					}
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "link-proposal":
 				if r.Method == http.MethodPost {
 					h.HandleLinkProposal(w, r, id)
@@ -197,6 +211,50 @@ func (h *ProjectsHandler) HandleListProjectContributions(w http.ResponseWriter, 
 		"contributions": contribs,
 		"total":         len(contribs),
 	})
+}
+
+// HandleAssignRole handles POST /api/v1/projects/{id}/assign-role
+func (h *ProjectsHandler) HandleAssignRole(w http.ResponseWriter, r *http.Request, id string) {
+	var req struct {
+		Role   string `json:"role"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if req.Role == "" || req.UserID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "role and user_id are required"})
+		return
+	}
+	if req.Role != "lead" && req.Role != "steward" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "role must be 'lead' or 'steward'"})
+		return
+	}
+
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	project, err := h.service.GetProject(r.Context(), spaceID, id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+
+	switch req.Role {
+	case "lead":
+		project.ProjectLeadID = req.UserID
+	case "steward":
+		project.ProjectStewardID = req.UserID
+	}
+	project.UpdatedAt = time.Now()
+
+	if err := h.service.SaveProject(r.Context(), spaceID, project); err != nil {
+		log.Printf("[Projects] failed to assign role: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to assign role"})
+		return
+	}
+
+	log.Printf("[Projects] assigned %s to %s on project %s", req.Role, req.UserID, id)
+	writeJSON(w, http.StatusOK, project)
 }
 
 // HandleLinkProposal handles POST /api/v1/projects/{id}/link-proposal

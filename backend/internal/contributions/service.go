@@ -417,6 +417,11 @@ func (s *Service) UpdateProject(ctx context.Context, spaceID, projectID string, 
 	return p, nil
 }
 
+// SaveProject persists a project that was modified externally (e.g. role assignment).
+func (s *Service) SaveProject(ctx context.Context, spaceID string, p *Project) error {
+	return s.store.Save(spaceID, p.ID, "project", p)
+}
+
 func (s *Service) DeleteProject(ctx context.Context, spaceID, projectID string) error {
 	p, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
