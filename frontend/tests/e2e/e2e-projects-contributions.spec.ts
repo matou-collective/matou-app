@@ -308,15 +308,18 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await waitForSettle(adminPage);
     console.log('[Phase 2] Milestone created: %s', MILESTONE_TITLE);
 
-    // Expand milestone card if collapsed
+    // Wait for milestone card and ensure it's expanded
     const milestoneCard = adminPage.locator('.milestone-card').first();
     await expect(milestoneCard).toBeVisible({ timeout: TIMEOUT.short });
-    const milestoneHeader = milestoneCard.locator('.milestone-header');
-    await milestoneHeader.click();
-    await adminPage.waitForTimeout(300);
 
     // 2.6 Create contribution 1 within milestone
-    const addContribBtn = milestoneCard.getByRole('button', { name: /Add Contribution|Add First Contribution/i });
+    // The card starts expanded by default — only click header if "Add Contribution" isn't visible
+    let addContribBtn = milestoneCard.getByRole('button', { name: /Add Contribution|Add First Contribution/i });
+    if (!await addContribBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      // Card is collapsed — click header to expand
+      await milestoneCard.locator('.milestone-header').click();
+      await adminPage.waitForTimeout(500);
+    }
     await expect(addContribBtn).toBeVisible({ timeout: TIMEOUT.short });
     await addContribBtn.click();
 
