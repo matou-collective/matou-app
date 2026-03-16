@@ -697,6 +697,15 @@ func (s *Service) AddMilestone(ctx context.Context, spaceID string, req *CreateM
 	if err := s.store.Save(spaceID, ms.MilestoneID, "milestone", ms); err != nil {
 		return nil, err
 	}
+
+	// Update the plan's milestones array so it's hydrated when fetched
+	plan, err := s.GetImplementationPlan(ctx, spaceID, req.ImplementationPlanID)
+	if err == nil {
+		plan.Milestones = append(plan.Milestones, *ms)
+		plan.UpdatedAt = time.Now()
+		_ = s.store.Save(spaceID, plan.ID, "implementation_plan", plan)
+	}
+
 	return ms, nil
 }
 

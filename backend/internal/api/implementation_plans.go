@@ -110,6 +110,7 @@ func (h *ImplementationPlansHandler) HandleGet(w http.ResponseWriter, r *http.Re
 }
 
 // HandleAddMilestone handles POST /api/v1/implementation-plans/{id}/milestones
+// Creates a milestone and returns the updated implementation plan with all milestones hydrated.
 func (h *ImplementationPlansHandler) HandleAddMilestone(w http.ResponseWriter, r *http.Request, id string) {
 	var req contributions.CreateMilestoneRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -118,13 +119,21 @@ func (h *ImplementationPlansHandler) HandleAddMilestone(w http.ResponseWriter, r
 	}
 	req.ImplementationPlanID = id
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	milestone, err := h.service.AddMilestone(r.Context(), spaceID, &req)
+	_, err := h.service.AddMilestone(r.Context(), spaceID, &req)
 	if err != nil {
 		log.Printf("[ImplementationPlans] failed to add milestone to plan %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, milestone)
+
+	// Return the full updated plan with milestones hydrated
+	plan, err := h.service.GetImplementationPlan(r.Context(), spaceID, id)
+	if err != nil {
+		log.Printf("[ImplementationPlans] failed to fetch plan after adding milestone: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "milestone created but plan fetch failed"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, plan)
 }
 
 // HandleSignOff handles POST /api/v1/implementation-plans/{id}/sign-off
