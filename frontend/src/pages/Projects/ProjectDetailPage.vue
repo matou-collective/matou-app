@@ -417,21 +417,28 @@ const linkedProposals = computed(() => {
   return proposalsStore.proposals.filter((pr) => p.proposal_ids!.includes(pr.id));
 });
 
-// Fake community members list for AssignRoleDialog
-// In production this would come from a members store
-const communityMembers = computed(() =>
-  proposalsStore.proposals.map((p) => ({
-    id: p.proposer_id ?? p.id,
-    name: p.title ?? p.id,
-    role: 'member',
-  })),
-);
+// Community members for AssignRoleDialog — fetched from backend
+const communityMembersList = ref<{ id: string; name: string; role: string }[]>([]);
+const communityMembers = computed(() => communityMembersList.value);
+
+async function loadCommunityMembers() {
+  try {
+    const { getCommunityMembers } = await import('src/lib/api/client');
+    const members = await getCommunityMembers();
+    communityMembersList.value = members
+      .filter(m => m.name && m.role !== 'pending')
+      .map(m => ({ id: m.aid, name: m.name, role: m.role }));
+  } catch {
+    communityMembersList.value = [];
+  }
+}
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
 onMounted(async () => {
   await checkAdminStatus();
   void loadProject(route.params.id as string);
+  void loadCommunityMembers();
 });
 
 watch(
