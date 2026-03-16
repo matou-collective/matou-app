@@ -10,7 +10,7 @@
           <PlusCircle class="header-icon" />
           <div>
             <div class="text-h6">
-              {{ parentContributionId ? 'Add Sub-Contribution' : 'Create Contribution' }}
+              {{ editing ? 'Change Contribution' : parentContributionId ? 'Add Sub-Contribution' : 'Create Contribution' }}
             </div>
             <div v-if="parentContributionId" class="text-caption text-muted">
               Sub-task of parent contribution
@@ -21,6 +21,15 @@
       </div>
 
       <q-card-section class="form-body q-gutter-md">
+        <!-- Re-confirmation warning (edit mode only) -->
+        <q-banner v-if="editing" class="change-warning q-mb-md" rounded>
+          <template #avatar>
+            <q-icon name="warning" color="warning" />
+          </template>
+          <div class="text-subtitle2">This change requires re-confirmation</div>
+          <div class="text-caption">After submitting, the contribution will need to be re-confirmed by a steward before work can continue.</div>
+        </q-banner>
+
         <!-- Title -->
         <q-input v-model="form.title" label="Title *" outlined />
 
@@ -33,8 +42,8 @@
           autogrow
         />
 
-        <!-- Type selector (2x2 grid) -->
-        <div>
+        <!-- Type selector (2x2 grid) — read-only in edit mode -->
+        <div v-if="!editing">
           <div class="text-subtitle2 q-mb-sm">Contribution Type *</div>
           <div class="type-grid">
             <button
@@ -49,6 +58,11 @@
               <span>{{ t.label }}</span>
             </button>
           </div>
+        </div>
+        <div v-if="editing" class="q-mb-md">
+          <div class="field-label">Contribution Type</div>
+          <q-badge :label="form.contribution_type" color="primary" />
+          <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
         </div>
 
         <!-- Priority selector (2x2 grid) -->
@@ -235,13 +249,26 @@
             @click="form.skill_requirements.push('')"
           />
         </div>
+        <!-- Reason for change (edit mode only) -->
+        <div v-if="editing" class="q-mb-md">
+          <div class="field-label">Reason for Change *</div>
+          <q-input
+            v-model="changeReason"
+            type="textarea"
+            :rows="3"
+            dense
+            outlined
+            placeholder="Explain why this contribution needs to change..."
+            :rules="[val => !!val?.trim() || 'Reason is required']"
+          />
+        </div>
       </q-card-section>
 
       <div class="dialog-footer">
         <q-btn flat no-caps label="Cancel" v-close-popup @click="resetForm" />
         <q-btn
           no-caps
-          :label="parentContributionId ? 'Create Sub-Contribution' : 'Create Contribution'"
+          :label="editing ? 'Submit Change' : parentContributionId ? 'Create Sub-Contribution' : 'Create Contribution'"
           color="primary"
           :loading="isSubmitting"
           :disable="!isValid"
@@ -256,6 +283,7 @@
 import { ref, computed, watch } from 'vue';
 import { PlusCircle, Scale, Code2, Landmark, Users } from 'lucide-vue-next';
 import type { CreateContributionRequest } from 'src/lib/api/contributions';
+import type { Contribution } from 'src/types/projects';
 
 interface Props {
   modelValue: boolean;
@@ -263,17 +291,22 @@ interface Props {
   milestoneId?: string;
   parentContributionId?: string;
   isSubmitting?: boolean;
+  editing?: boolean;
+  contribution?: Contribution | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   milestoneId: undefined,
   parentContributionId: undefined,
   isSubmitting: false,
+  editing: false,
+  contribution: null,
 });
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
   (e: 'submit', req: CreateContributionRequest): void;
+  (e: 'change', data: { updates: Record<string, unknown>; reason: string }): void;
 }>();
 
 interface ContributionForm {
@@ -321,6 +354,7 @@ function makeDefault(): ContributionForm {
 }
 
 const form = ref<ContributionForm>(makeDefault());
+const changeReason = ref('');
 
 const isValid = computed(
   () =>
@@ -334,7 +368,24 @@ const isValid = computed(
 watch(
   () => props.modelValue,
   (open) => {
-    if (!open) resetForm();
+    if (open && props.editing && props.contribution) {
+      const c = props.contribution;
+      form.value.title = c.title || '';
+      form.value.description = c.description || '';
+      form.value.contribution_type = c.contribution_type || 'technical';
+      form.value.priority = c.priority || 'medium';
+      form.value.estimated_hours = c.estimated_hours ?? undefined;
+      form.value.deadline = c.deadline || '';
+      form.value.budget = c.budget || '';
+      form.value.objectives = c.objectives?.length ? [...c.objectives] : [''];
+      form.value.deliverables = c.deliverables?.length ? [...c.deliverables] : [''];
+      form.value.acceptance_criteria = c.acceptance_criteria?.length ? [...c.acceptance_criteria] : [''];
+      form.value.skill_requirements = c.skill_requirements?.length ? [...c.skill_requirements] : [''];
+      changeReason.value = '';
+    } else if (!open) {
+      resetForm();
+      changeReason.value = '';
+    }
   },
 );
 
@@ -344,6 +395,27 @@ function resetForm() {
 
 function handleSubmit() {
   if (!isValid.value) return;
+
+  if (props.editing && props.contribution) {
+    if (!changeReason.value.trim()) return;
+    emit('change', {
+      updates: {
+        title: form.value.title.trim(),
+        description: form.value.description.trim(),
+        priority: form.value.priority,
+        objectives: form.value.objectives.filter((o) => o.trim()),
+        deliverables: form.value.deliverables.filter((d) => d.trim()),
+        acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
+        skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
+        estimated_hours: form.value.estimated_hours,
+        budget: form.value.budget?.trim() || undefined,
+      },
+      reason: changeReason.value.trim(),
+    });
+    emit('update:modelValue', false);
+    return;
+  }
+
   const req: CreateContributionRequest = {
     project_id: props.projectId,
     milestone_id: props.milestoneId,
@@ -491,6 +563,12 @@ function handleSubmit() {
     color: var(--matou-destructive, #c8463a);
     border-color: var(--matou-destructive, #c8463a);
   }
+}
+
+// Change warning banner
+.change-warning {
+  background: rgba(255, 152, 0, 0.08);
+  border: 1px solid rgba(255, 152, 0, 0.2);
 }
 
 // List rows
