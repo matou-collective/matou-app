@@ -360,10 +360,10 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     // Verify both contributions visible in milestone
     await expect(
-      milestoneCard.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_1_TITLE }),
+      milestoneCard.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_1_TITLE }).first(),
     ).toBeVisible({ timeout: TIMEOUT.short });
     await expect(
-      milestoneCard.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE }),
+      milestoneCard.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE }).first(),
     ).toBeVisible({ timeout: TIMEOUT.short });
   });
 
