@@ -86,6 +86,20 @@ func (u *UnifiedTreeManager) SetListener(l updatelistener.UpdateListener) {
 	u.listener = l
 }
 
+// ClearTreeCache removes all cached tree instances. Must be called during
+// SDKClient.Reinitialize() to avoid stale trees with old peer keys or ACL state.
+func (u *UnifiedTreeManager) ClearTreeCache() {
+	u.trees.Range(func(key, _ any) bool {
+		u.trees.Delete(key)
+		return true
+	})
+	u.spaceIndex.Range(func(key, _ any) bool {
+		u.spaceIndex.Delete(key)
+		return true
+	})
+	log.Println("[UTM] Tree cache and space index cleared")
+}
+
 // SetTestTreeFactory registers a factory that creates mock trees for a space.
 // Test-only: used to bypass getSpace/BuildTree in unit tests.
 func (u *UnifiedTreeManager) SetTestTreeFactory(spaceID string, factory TestTreeFactory) {
@@ -97,19 +111,27 @@ func (u *UnifiedTreeManager) getSpace(ctx context.Context, spaceId string) (comm
 	return resolver.GetSpace(ctx, spaceId)
 }
 
-// GetTree builds a tree from storage each time it's called.
-// We intentionally do NOT cache tree instances because the tree's internal
-// decryption keys (ot.keys) are populated once during BuildTree from the ACL
-// state at that moment. If the ACL wasn't fully synced when the tree was first
-// built (common after JoinWithInvite), the cached tree would permanently lack
-// read keys, causing "no read key" errors on IterateRoot. Building fresh
-// ensures readKeysFromAclState always runs with the latest ACL state.
+// GetTree returns a long-lived cached tree if available, otherwise builds one
+// from storage and caches it. Caching is essential for P2P push: the any-sync
+// SDK's HeadSync calls GetTree to obtain a SyncTree, then delivers peer changes
+// via AddRawChanges on that instance. If we build a fresh ephemeral tree each
+// time, it already has the data from storage, so hasHeads() returns true and
+// the listener's Update() is never called. By returning the same long-lived
+// instance, AddRawChanges processes genuinely new changes and fires Update().
+//
+// NOTE: Trees built before ACL fully syncs may lack decryption keys. This is
+// safe because BuildSpaceIndex (which populates the cache) only runs after the
+// space is fully open with ACL synced. Trees discovered later via TreeSyncer
+// go through ValidateAndPutTree which also caches. The cache is cleared on
+// SDKClient.Reinitialize() to avoid stale keys across identity changes.
 func (u *UnifiedTreeManager) GetTree(ctx context.Context, spaceId, treeId string) (objecttree.ObjectTree, error) {
-	// In test mode (no app), check the cache directly.
+	// Return cached long-lived tree if available.
+	if cached, ok := u.trees.Load(treeId); ok {
+		return cached.(objecttree.ObjectTree), nil
+	}
+
+	// In test mode (no app), nothing more to try.
 	if u.a == nil {
-		if cached, ok := u.trees.Load(treeId); ok {
-			return cached.(objecttree.ObjectTree), nil
-		}
 		return nil, fmt.Errorf("tree %s not found (test mode)", treeId)
 	}
 
@@ -126,6 +148,9 @@ func (u *UnifiedTreeManager) GetTree(ctx context.Context, spaceId, treeId string
 		log.Printf("[UTM] GetTree space=%s tree=%s BuildTree error: %v", spaceId, treeId, err)
 		return nil, fmt.Errorf("building tree %s: %w", treeId, err)
 	}
+
+	// Cache for P2P listener continuity.
+	u.trees.Store(treeId, tree)
 
 	// Index newly discovered trees (e.g. fetched from remote peer by TreeSyncer).
 	// This is idempotent — addToIndex is a no-op if already indexed.
@@ -377,19 +402,18 @@ func (u *UnifiedTreeManager) BuildSpaceIndex(ctx context.Context, spaceID string
 			continue
 		}
 
+		// Cache the tree for P2P listener continuity. BuildSpaceIndex runs
+		// after the space is fully open with ACL synced, so keys are valid.
+		u.trees.Store(treeID, tree)
+
 		entry := u.extractIndexEntry(tree, treeID)
 		if entry != nil {
-			// Only add to index, don't cache the tree — it may not have all
-			// content changes yet (they arrive via sync). GetTree will build
-			// a fresh tree from storage on demand.
 			u.addToIndex(spaceID, treeID, *entry)
 			indexed++
 		}
 	}
 
 	log.Printf("[UTM] BuildSpaceIndex space=%s storedIds=%d indexed=%d", spaceID, len(storedIds), indexed)
-	log.Printf("[UnifiedTreeManager] BuildSpaceIndex space=%s storedIds=%d indexed=%d",
-		spaceID, len(storedIds), indexed)
 	return nil
 }
 
@@ -456,6 +480,43 @@ func (u *UnifiedTreeManager) GetSyncStatus(spaceID string) *matouSyncStatus {
 		return nil
 	}
 	return val.(*matouSyncStatus)
+}
+
+// SpaceForTree returns the space ID that contains the given tree, or empty string.
+func (u *UnifiedTreeManager) SpaceForTree(treeId string) string {
+	var spaceId string
+	u.spaceIndex.Range(func(key, value any) bool {
+		if idx, ok := value.(*sync.Map); ok {
+			if _, found := idx.Load(treeId); found {
+				spaceId = key.(string)
+				return false
+			}
+		}
+		return true
+	})
+	return spaceId
+}
+
+// BuildFreshTree builds a fresh (uncached) tree from storage for reading.
+// This bypasses the tree cache so that readKeysFromAclState runs against the
+// current ACL state, fixing the timing race where the cached tree was built
+// before the joiner's InviteJoin record was applied to the ACL.
+// The fresh tree is ephemeral — not stored in the cache and has no listener.
+func (u *UnifiedTreeManager) BuildFreshTree(ctx context.Context, spaceId, treeId string) (objecttree.ObjectTree, error) {
+	if u.a == nil {
+		return nil, fmt.Errorf("BuildFreshTree: no app (test mode)")
+	}
+	sp, err := u.getSpace(ctx, spaceId)
+	if err != nil {
+		return nil, fmt.Errorf("BuildFreshTree getSpace: %w", err)
+	}
+	tree, err := sp.TreeBuilder().BuildTree(ctx, treeId, objecttreebuilder.BuildTreeOpts{
+		// No listener — this tree is for reading only, not for sync.
+	})
+	if err != nil {
+		return nil, fmt.Errorf("BuildFreshTree BuildTree: %w", err)
+	}
+	return tree, nil
 }
 
 // --- Internal helpers ---

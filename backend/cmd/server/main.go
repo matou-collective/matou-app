@@ -13,6 +13,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
+
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/api"
@@ -456,6 +458,17 @@ func main() {
 		&eventBrokerAdapter{broker: eventBroker},
 	)
 	spaceManager.SetObjectTreeListener(chatListener)
+
+	// Wire up FreshTreeReader so the listener can rebuild trees with updated ACL keys
+	// when the cached tree was built before the joiner's InviteJoin was applied.
+	chatListener.SetFreshTreeReader(func(treeId string) (objecttree.ObjectTree, error) {
+		utm := spaceManager.TreeManager()
+		spaceId := utm.SpaceForTree(treeId)
+		if spaceId == "" {
+			return nil, fmt.Errorf("no space found for tree %s", treeId)
+		}
+		return utm.BuildFreshTree(context.Background(), spaceId, treeId)
+	})
 
 	// Create API handlers
 	credHandler := api.NewCredentialsHandler(keriClient, store)

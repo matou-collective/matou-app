@@ -120,31 +120,34 @@ const displayMessages = computed((): DisplayItem[] => {
 
 let initialScrollDone = false;
 
-// Auto-scroll to bottom when new messages arrive
+// Auto-scroll when messages change
 watch(() => props.messages.length, async (newLen, oldLen) => {
   await nextTick();
   if (!containerRef.value) return;
 
-  // On initial load (or channel switch), scroll to divider if present
-  const dividerEl = containerRef.value.querySelector('.new-messages-divider');
-  if (!initialScrollDone && dividerEl) {
-    dividerEl.scrollIntoView({ block: 'center' });
+  // New messages arrived — always scroll to bottom so the user sees them.
+  if (oldLen !== undefined && newLen > oldLen) {
+    containerRef.value.scrollTop = containerRef.value.scrollHeight;
     initialScrollDone = true;
     return;
   }
 
-  // For new messages, scroll to bottom
-  if (!initialScrollDone || (oldLen !== undefined && newLen > oldLen)) {
-    containerRef.value.scrollTop = containerRef.value.scrollHeight;
+  // Initial load or channel switch — scroll to divider if present, else bottom.
+  if (!initialScrollDone) {
+    const dividerEl = containerRef.value.querySelector('.new-messages-divider');
+    if (dividerEl) {
+      dividerEl.scrollIntoView({ block: 'center' });
+    } else {
+      containerRef.value.scrollTop = containerRef.value.scrollHeight;
+    }
     initialScrollDone = true;
   }
 }, { immediate: true });
 
-// Reset when channel changes (lastReadAt or messages replaced entirely)
+// Reset scroll state only on channel switch (lastReadAt changes).
+// Do NOT reset on props.messages replacement — loadMessages() replaces the
+// array reference on every poll/reload, which would re-trigger scroll-to-divider.
 watch(() => props.lastReadAt, () => {
-  initialScrollDone = false;
-});
-watch(() => props.messages, () => {
   initialScrollDone = false;
 });
 </script>
