@@ -709,6 +709,14 @@ func (s *Service) AddMilestone(ctx context.Context, spaceID string, req *CreateM
 	return ms, nil
 }
 
+func (s *Service) GetMilestone(ctx context.Context, spaceID, msID string) (*Milestone, error) {
+	var ms Milestone
+	if err := s.store.Get(spaceID, msID, &ms); err != nil {
+		return nil, err
+	}
+	return &ms, nil
+}
+
 // --- Contributions ---
 
 type CreateContributionRequest struct {
@@ -765,6 +773,30 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 			parent.ChildContributionIDs = append(parent.ChildContributionIDs, c.ID)
 			parent.UpdatedAt = now
 			_ = s.store.Save(spaceID, parent.ID, "contribution", parent)
+		}
+	}
+
+	// Update milestone's ContributionIDs and refresh the plan's inline milestones
+	if c.MilestoneID != "" {
+		ms, err := s.GetMilestone(ctx, spaceID, c.MilestoneID)
+		if err == nil {
+			ms.ContributionIDs = append(ms.ContributionIDs, c.ID)
+			_ = s.store.Save(spaceID, ms.MilestoneID, "milestone", ms)
+
+			// Refresh the plan's inline milestone copy
+			if ms.ImplementationPlanID != "" {
+				plan, planErr := s.GetImplementationPlan(ctx, spaceID, ms.ImplementationPlanID)
+				if planErr == nil {
+					for i := range plan.Milestones {
+						if plan.Milestones[i].MilestoneID == ms.MilestoneID {
+							plan.Milestones[i] = *ms
+							break
+						}
+					}
+					plan.UpdatedAt = now
+					_ = s.store.Save(spaceID, plan.ID, "implementation_plan", plan)
+				}
+			}
 		}
 	}
 
