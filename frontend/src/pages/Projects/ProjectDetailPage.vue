@@ -643,10 +643,20 @@ function handleViewContribution(contribution: Contribution) {
   showContributionDetail.value = true;
 }
 
-function handleContributionUpdate(updated: Contribution) {
+async function handleContributionUpdate(updated: Contribution & { _action?: string }) {
+  // Dispatch the action if specified (e.g. confirm from ContributionCardCompact)
+  if (updated._action === 'confirm') {
+    try {
+      await contributionsStore.confirm(updated.id);
+      $q.notify({ type: 'positive', message: 'Contribution confirmed!' });
+    } catch (e) {
+      $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to confirm' });
+    }
+  }
+
   // Refresh the implementation plan to get latest contributions state
   if (project.value) {
-    void projectsStore.fetchImplementationPlan(project.value.id);
+    await projectsStore.fetchImplementationPlan(project.value.id);
   }
 }
 </script>

@@ -1,5 +1,18 @@
 <template>
   <div class="contribution-compact" @click="$emit('view-detail', contribution)">
+    <!-- Confirm button: top-right corner with border -->
+    <q-btn
+      v-if="canConfirm && (contribution.status === 'created' || contribution.status === 'changed')"
+      outline
+      dense
+      no-caps
+      size="sm"
+      label="Confirm"
+      color="primary"
+      class="confirm-btn-corner"
+      @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
+    />
+
     <div class="compact-left">
       <ContributionStatusBadge :status="contribution.status" />
       <ContributionTypeBadge :type="contribution.contribution_type" />
@@ -30,18 +43,6 @@
         <UserPlus class="chip-icon" />
         Unassigned
       </span>
-
-      <!-- Quick action buttons (visible based on role/status) -->
-      <q-btn
-        v-if="canConfirm && contribution.status === 'created'"
-        flat
-        dense
-        no-caps
-        size="sm"
-        label="Confirm"
-        color="primary"
-        @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
-      />
 
       <q-btn
         v-if="canAddChild"
@@ -156,6 +157,7 @@ const childContributions = computed(() => {
 
 <style scoped lang="scss">
 .contribution-compact {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -306,5 +308,12 @@ const childContributions = computed(() => {
     color: $grey-6;
     padding-left: 0.5rem;
   }
+}
+
+.confirm-btn-corner {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
 }
 </style>
