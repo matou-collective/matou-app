@@ -388,6 +388,10 @@ const allProjectContributions = computed<Contribution[]>(() => {
 });
 
 const planContributions = computed<Contribution[]>(() => {
+  // Use hydrated contributions from milestones (populated by HydratePlan in the backend)
+  const hydrated = milestones.value.flatMap((m) => (m.contributions ?? []) as Contribution[]);
+  if (hydrated.length > 0) return hydrated;
+  // Fallback: join contribution_ids with separately-fetched project contributions
   const contribIds = new Set(milestones.value.flatMap((m) => m.contribution_ids ?? []));
   return allProjectContributions.value.filter((c) => contribIds.has(c.contribution_id ?? c.id));
 });
