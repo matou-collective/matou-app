@@ -27,7 +27,8 @@
           <div class="team-row">
             <div class="team-chip lead" v-if="project.project_lead_id">
               <Shield class="team-icon" />
-              <span>Lead: {{ project.project_lead_name ?? project.project_lead_id }}</span>
+              <span>Project Lead</span>
+              <strong>{{ resolvedLeadName }}</strong>
             </div>
             <button
               v-else-if="perms.canAssignRoles.value"
@@ -40,7 +41,8 @@
 
             <div class="team-chip steward" v-if="project.project_steward_id">
               <Users class="team-icon" />
-              <span>Steward: {{ project.project_steward_name ?? project.project_steward_id }}</span>
+              <span>Project Steward</span>
+              <strong>{{ resolvedStewardName }}</strong>
             </div>
             <button
               v-else-if="perms.canAssignRoles.value"
@@ -424,6 +426,21 @@ const linkedProposals = computed(() => {
 // Community members for AssignRoleDialog — fetched from SharedProfile API
 const communityMembersList = ref<{ id: string; name: string; role: string }[]>([]);
 const communityMembers = computed(() => communityMembersList.value);
+
+// Resolve lead/steward display names from community members list
+const resolvedLeadName = computed(() => {
+  const id = project.value?.project_lead_id;
+  if (!id) return '';
+  const member = communityMembersList.value.find(m => m.id === id);
+  return member?.name || project.value?.project_lead_name || id.slice(0, 12) + '...';
+});
+
+const resolvedStewardName = computed(() => {
+  const id = project.value?.project_steward_id;
+  if (!id) return '';
+  const member = communityMembersList.value.find(m => m.id === id);
+  return member?.name || project.value?.project_steward_name || id.slice(0, 12) + '...';
+});
 
 async function loadCommunityMembers() {
   try {
