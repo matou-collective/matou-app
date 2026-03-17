@@ -390,15 +390,20 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await waitForSettle(adminPage);
     console.log('[Phase 3] Contribution 2 confirmed');
 
-    // 3.3 Sign off plan — appears when all contributions are confirmed
-    const signOffBtn = adminPage.getByRole('button', { name: /Sign Off Plan/i }).first();
-    await expect(signOffBtn).toBeVisible({ timeout: TIMEOUT.medium });
-    await signOffBtn.click();
-    await waitForSettle(adminPage);
+    // 3.3 Sign off plan — click the banner button (more reliable than header)
+    // Wait for the sign-off banner to appear
+    const signOffBanner = adminPage.getByText(/ready for sign-off|All contributions confirmed/i);
+    await expect(signOffBanner).toBeVisible({ timeout: TIMEOUT.medium });
 
-    // 3.4 Verify signed-off banner
-    const signedBadge = adminPage.locator('text=Signed Off').first();
-    await expect(signedBadge).toBeVisible({ timeout: TIMEOUT.medium });
+    // Use the banner's Sign Off Plan button (last one on page, filled style)
+    const signOffBtn = adminPage.getByRole('button', { name: /Sign Off Plan/i }).last();
+    await expect(signOffBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await signOffBtn.click();
+    await waitForSettle(adminPage, 3000);
+
+    // 3.4 Verify signed-off state — the banner text changes or "Signed Off" badge appears
+    const signedIndicator = adminPage.getByText(/Implementation Plan Signed Off|Plan Signed Off|Signed Off/i).first();
+    await expect(signedIndicator).toBeVisible({ timeout: TIMEOUT.medium });
 
     // 3.5 Verify milestone shows "Locked" badge
     const lockedBadge = adminPage.locator('.milestone-card').first().locator('text=Locked');
