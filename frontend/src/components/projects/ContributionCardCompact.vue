@@ -13,21 +13,31 @@
       @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
     />
 
-    <div class="compact-left">
-      <ContributionStatusBadge :status="contribution.status" />
-      <ContributionTypeBadge :type="contribution.contribution_type" />
-      <ContributionPriorityBadge :priority="contribution.priority" />
+    <!-- Top row: title left, status + assignment right -->
+    <div class="compact-header">
+      <div class="compact-title">{{ contribution.title }}</div>
+      <div class="compact-badges-right">
+        <ContributionStatusBadge :status="contribution.status" />
+        <span v-if="assignedName" class="assigned-chip">
+          <UserCheck class="chip-icon" />
+          {{ assignedName }}
+        </span>
+        <span v-else class="unassigned-chip">
+          <UserPlus class="chip-icon" />
+          Unassigned
+        </span>
+      </div>
     </div>
-
-    <div class="compact-title">{{ contribution.title }}</div>
 
     <!-- Description preview (2-line clamp) -->
     <div v-if="contribution.description" class="compact-description">
       {{ contribution.description }}
     </div>
 
-    <!-- Metadata row: hours + ID -->
+    <!-- Metadata row: type + priority + hours + ID -->
     <div class="compact-meta">
+      <ContributionTypeBadge :type="contribution.contribution_type" />
+      <ContributionPriorityBadge :priority="contribution.priority" />
       <span v-if="contribution.estimated_hours" class="meta-item">
         <q-icon name="schedule" size="14px" /> {{ contribution.estimated_hours }}h
       </span>
@@ -35,14 +45,6 @@
     </div>
 
     <div class="compact-right">
-      <span v-if="assignedName" class="assigned-chip">
-        <UserCheck class="chip-icon" />
-        {{ assignedName }}
-      </span>
-      <span v-else class="unassigned-chip">
-        <UserPlus class="chip-icon" />
-        Unassigned
-      </span>
 
       <q-btn
         v-if="canAddChild"
@@ -61,7 +63,6 @@
         <q-btn flat dense size="sm" label="Offer" icon="person_add" @click.stop="emit('offer', contribution)" />
       </template>
 
-      <ChevronRight class="nav-icon" />
     </div>
 
     <!-- Sub-contribution preview -->
@@ -88,7 +89,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { UserCheck, UserPlus, ChevronRight } from 'lucide-vue-next';
+import { UserCheck, UserPlus } from 'lucide-vue-next';
 import type { Contribution, ProjectRole } from 'src/types/projects';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionTypeBadge from './ContributionTypeBadge.vue';
@@ -175,11 +176,18 @@ const childContributions = computed(() => {
   }
 }
 
-.compact-left {
+.compact-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.compact-badges-right {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
   flex-shrink: 0;
 }
 

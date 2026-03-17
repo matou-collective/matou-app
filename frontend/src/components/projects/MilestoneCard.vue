@@ -30,19 +30,6 @@
       </div>
     </div>
 
-    <q-linear-progress
-      v-if="totalCount > 0 && isExpanded"
-      :value="progressPercent / 100"
-      color="primary"
-      track-color="grey-3"
-      rounded
-      size="6px"
-      class="milestone-progress"
-    />
-    <div v-if="totalCount > 0 && isExpanded" class="milestone-progress-label">
-      {{ confirmedCount }} of {{ totalCount }} confirmed
-    </div>
-
     <!-- Contributions list (expanded) -->
     <div v-if="isExpanded" class="contributions-body">
       <!-- Empty state -->

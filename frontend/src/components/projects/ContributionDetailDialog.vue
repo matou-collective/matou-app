@@ -2,7 +2,6 @@
   <q-dialog
     :model-value="modelValue"
     @update:model-value="$emit('update:modelValue', $event)"
-    maximized
   >
     <q-card class="detail-dialog">
       <!-- Sticky header -->
@@ -114,8 +113,7 @@
         </div>
 
         <!-- Description -->
-        <div class="content-section">
-          <h3 class="section-title">Description</h3>
+        <div class="description-section">
           <p class="section-text">{{ contribution.description }}</p>
         </div>
 
@@ -187,28 +185,33 @@
         </div>
 
         <!-- Sub-contributions section -->
-        <div class="content-section">
+        <div class="sub-contributions-section">
           <div class="section-header">
-            <h3 class="section-title">
-              <GitBranch class="section-icon" />
-              Sub-Contributions
-              <span v-if="childContributions.length" class="count-chip">{{ childContributions.length }}</span>
-            </h3>
+            <h3 class="section-title">Sub-Contributions ({{ childContributions.length }})</h3>
             <q-btn
-              v-if="canAddSub && !isPlanSignedOff"
-              flat
+              v-if="canAddSub && !isPlanSignedOff && childContributions.length > 0"
+              outline
               dense
               no-caps
               icon="add"
               label="Add Sub-Contribution"
-              color="primary"
               size="sm"
               @click="$emit('create-child-contribution', contribution.id)"
             />
           </div>
 
           <div v-if="childContributions.length === 0" class="sub-empty">
-            No sub-contributions yet. Break down this contribution into smaller tasks.
+            <span>No sub-contributions yet. Break down this contribution into smaller tasks.</span>
+            <q-btn
+              v-if="canAddSub && !isPlanSignedOff"
+              outline
+              no-caps
+              icon="add"
+              label="Add Sub-Contribution"
+              size="sm"
+              class="q-mt-sm"
+              @click="$emit('create-child-contribution', contribution.id)"
+            />
           </div>
 
           <div v-else class="sub-list">
@@ -528,21 +531,22 @@
         <div class="footer-actions">
           <q-btn
             v-if="canShareNow"
-            flat
+            outline
             no-caps
-            label="Share"
-            icon-right="share"
-            color="primary"
+            label="Share Contribution"
+            icon="share"
+            class="footer-btn"
             :loading="actionLoading === 'share'"
             @click="showShareDialog = true"
           />
           <q-btn
             v-if="canOfferNow"
-            flat
+            unelevated
             no-caps
-            label="Offer"
-            icon-right="send"
+            label="Offer to Member"
+            icon="person_add"
             color="primary"
+            class="footer-btn"
             :loading="actionLoading === 'offer'"
             @click="showOfferDialog = true"
           />
@@ -572,7 +576,6 @@
             :loading="actionLoading === 'change'"
           />
         </div>
-        <q-btn flat round icon="close" v-close-popup />
       </div>
     </q-card>
   </q-dialog>
@@ -1092,6 +1095,7 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-radius: 12px;
 }
 
 // Sticky header
@@ -1159,6 +1163,15 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  width: 100%;
+
+  .footer-btn {
+    flex: 1;
+    min-width: 0;
+    border-radius: 8px;
+    padding: 10px 20px;
+    margin: 10px 0;
+  }
 }
 
 // Status panels
@@ -1200,6 +1213,14 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 }
 
 // Content sections
+.description-section {
+  padding: 0 18px;
+
+  .section-text {
+    color: var(--matou-muted-foreground);
+  }
+}
+
 .content-section {
   background: var(--matou-card);
   border: 1px solid var(--matou-border);
@@ -1372,7 +1393,19 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 }
 
 // Sub-contributions
+.sub-contributions-section {
+  background: rgba(74, 157, 156, 0.04);
+  border: 1px solid rgba(74, 157, 156, 0.15);
+  border-radius: var(--matou-radius);
+  padding: 14px 18px;
+}
+
 .sub-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 1rem 0;
   font-size: 0.85rem;
   color: var(--matou-muted-foreground);
   font-style: italic;
