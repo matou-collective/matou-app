@@ -95,6 +95,9 @@ func (h *ImplementationPlansHandler) HandleList(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	for _, p := range plans {
+		h.service.HydratePlan(r.Context(), spaceID, p)
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"implementation_plans": plans, "total": len(plans)})
 }
 
@@ -106,6 +109,7 @@ func (h *ImplementationPlansHandler) HandleGet(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "implementation plan not found"})
 		return
 	}
+	h.service.HydratePlan(r.Context(), spaceID, plan)
 	writeJSON(w, http.StatusOK, plan)
 }
 
@@ -126,13 +130,14 @@ func (h *ImplementationPlansHandler) HandleAddMilestone(w http.ResponseWriter, r
 		return
 	}
 
-	// Return the full updated plan with milestones hydrated
+	// Return the full updated plan with milestones and contributions hydrated
 	plan, err := h.service.GetImplementationPlan(r.Context(), spaceID, id)
 	if err != nil {
 		log.Printf("[ImplementationPlans] failed to fetch plan after adding milestone: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "milestone created but plan fetch failed"})
 		return
 	}
+	h.service.HydratePlan(r.Context(), spaceID, plan)
 	writeJSON(w, http.StatusCreated, plan)
 }
 

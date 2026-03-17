@@ -717,6 +717,20 @@ func (s *Service) GetMilestone(ctx context.Context, spaceID, msID string) (*Mile
 	return &ms, nil
 }
 
+// HydratePlan populates each milestone's Contributions field from ContributionIDs.
+func (s *Service) HydratePlan(ctx context.Context, spaceID string, plan *ImplementationPlan) {
+	for i := range plan.Milestones {
+		ms := &plan.Milestones[i]
+		ms.Contributions = nil
+		for _, cid := range ms.ContributionIDs {
+			c, err := s.GetContribution(ctx, spaceID, cid)
+			if err == nil {
+				ms.Contributions = append(ms.Contributions, c)
+			}
+		}
+	}
+}
+
 // --- Contributions ---
 
 type CreateContributionRequest struct {

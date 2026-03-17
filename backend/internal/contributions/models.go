@@ -295,6 +295,9 @@ type Milestone struct {
 	Dependencies       []string        `json:"dependencies,omitempty"`
 	BudgetAllocation   float64         `json:"budget_allocation,omitempty"`
 	ActualCost         float64         `json:"actual_cost,omitempty"`
+
+	// Hydrated contributions — populated at read time, not stored
+	Contributions []*Contribution `json:"contributions,omitempty"`
 }
 
 // --- Contribution ---
