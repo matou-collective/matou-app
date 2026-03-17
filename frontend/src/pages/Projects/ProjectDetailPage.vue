@@ -669,6 +669,7 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
 .project-detail-page {
   padding: 24px;
   max-width: 960px;
+  margin: 0 auto;
 }
 
 .loading-state,

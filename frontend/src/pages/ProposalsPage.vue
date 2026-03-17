@@ -134,6 +134,7 @@ async function handleCreateSubmit(form: {
 .proposals-page {
   padding: 24px;
   max-width: 900px;
+  margin: 0 auto;
 }
 
 .proposals-header {

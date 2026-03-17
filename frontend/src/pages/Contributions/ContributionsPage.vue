@@ -169,6 +169,7 @@ async function handleCreateSubmit(form: CreateContributionRequest | UpdateContri
 .contributions-page {
   padding: 24px;
   max-width: 900px;
+  margin: 0 auto;
 }
 
 .page-header {

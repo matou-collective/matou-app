@@ -113,6 +113,7 @@ async function handleCreateSubmit(data: { title: string; description: string }) 
 .projects-page {
   padding: 24px;
   max-width: 900px;
+  margin: 0 auto;
 }
 
 .projects-header {
