@@ -126,6 +126,10 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	// when Reinitialize closed the previous app.
 	h.spaceManager.RefreshFileManager()
 
+	// Clear cached tree instances — old trees hold stale peer keys and ACL state
+	// from the previous SDK session.
+	h.spaceManager.TreeManager().ClearTreeCache()
+
 	newPeerID := h.sdkClient.GetPeerID()
 	if err := h.userIdentity.SetPeerID(newPeerID); err != nil {
 		log.Printf("Warning: failed to persist peer ID: %v\n", err)

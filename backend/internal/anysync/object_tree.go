@@ -217,7 +217,16 @@ func (m *ObjectTreeManager) ReadObject(ctx context.Context, spaceID, objectID st
 	state, err := BuildState(tree, objectID, entry.ObjectType)
 	tree.Unlock()
 	if err != nil {
-		return nil, fmt.Errorf("building state for %s: %w", objectID, err)
+		// Cached tree may have stale keys (ACL timing race). Try fresh tree.
+		freshTree, freshErr := m.treeManager.BuildFreshTree(ctx, spaceID, tree.Id())
+		if freshErr == nil {
+			freshTree.Lock()
+			state, err = BuildState(freshTree, objectID, entry.ObjectType)
+			freshTree.Unlock()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("building state for %s: %w", objectID, err)
+		}
 	}
 
 	return stateToPayload(state, tree.Id()), nil
@@ -244,9 +253,19 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 		state, err := BuildState(tree, entry.ObjectID, entry.ObjectType)
 		tree.Unlock()
 		if err != nil {
-			log.Printf("[ObjectTree] Warning: failed to build state for %s: %v",
-				entry.ObjectID, err)
-			continue
+			// Cached tree may have stale keys (ACL timing race). Try a fresh
+			// tree built from storage with current ACL state.
+			freshTree, freshErr := m.treeManager.BuildFreshTree(ctx, spaceID, entry.TreeID)
+			if freshErr == nil {
+				freshTree.Lock()
+				state, err = BuildState(freshTree, entry.ObjectID, entry.ObjectType)
+				freshTree.Unlock()
+			}
+			if err != nil {
+				log.Printf("[ObjectTree] Warning: failed to build state for %s: %v",
+					entry.ObjectID, err)
+				continue
+			}
 		}
 
 		objects = append(objects, stateToPayload(state, entry.TreeID))

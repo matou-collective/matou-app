@@ -30,14 +30,19 @@ type EventBroadcaster interface {
 	Broadcast(event SSEEvent)
 }
 
+// FreshTreeReader builds a fresh (uncached) tree from storage for reading.
+// Used as a fallback when the cached tree instance has stale decryption keys.
+type FreshTreeReader func(treeId string) (objecttree.ObjectTree, error)
+
 // TreeUpdateListener implements updatelistener.UpdateListener.
 // It persists CRDT tree changes to a store and emits SSE events.
 type TreeUpdateListener struct {
-	mu        sync.Mutex
-	persister ChatPersister
-	broker    EventBroadcaster
-	seeded    bool
-	known     map[string]int // objectID → version
+	mu              sync.Mutex
+	persister       ChatPersister
+	broker          EventBroadcaster
+	freshTreeReader FreshTreeReader
+	seeded          bool
+	known           map[string]int // objectID → version
 }
 
 // NewTreeUpdateListener creates a new TreeUpdateListener.
@@ -49,9 +54,16 @@ func NewTreeUpdateListener(persister ChatPersister, broker EventBroadcaster) *Tr
 	}
 }
 
+// SetFreshTreeReader sets the callback for building fresh trees when the
+// cached instance can't decrypt content (stale keys from ACL timing).
+func (l *TreeUpdateListener) SetFreshTreeReader(reader FreshTreeReader) {
+	l.freshTreeReader = reader
+}
+
 // Update is called when the tree receives new changes from peers.
 // The tree lock is already held by the caller — safe to call IterateRoot.
 func (l *TreeUpdateListener) Update(tree objecttree.ObjectTree) error {
+	log.Printf("[TreeUpdateListener] Update called for tree %s", tree.Id())
 	return l.processChanges(tree)
 }
 
@@ -105,9 +117,33 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	// Build the full state from the tree (tree lock is held by caller)
 	state, err := BuildState(tree, objectID, objectType)
 	if err != nil {
-		log.Printf("[TreeUpdateListener] BuildState failed for %s: %v", objectID, err)
-		l.seeded = true
-		return nil
+		log.Printf("[TreeUpdateListener] BuildState failed for %s: %v (treeId=%s, len=%d), trying fresh tree",
+			objectID, err, tree.Id(), tree.Len())
+
+		// The cached tree may have been built before the ACL fully synced,
+		// leaving ot.keys empty (readKeysFromAclState Guard 2 failed because
+		// HadReadPermissions was false). Build a fresh tree from storage which
+		// re-runs readKeysFromAclState with the current ACL state.
+		if l.freshTreeReader != nil {
+			freshTree, freshErr := l.freshTreeReader(tree.Id())
+			if freshErr != nil {
+				log.Printf("[TreeUpdateListener] FreshTreeReader failed for %s: %v", tree.Id(), freshErr)
+				l.seeded = true
+				return nil
+			}
+			freshTree.Lock()
+			state, err = BuildState(freshTree, objectID, objectType)
+			freshTree.Unlock()
+			if err != nil {
+				log.Printf("[TreeUpdateListener] BuildState on fresh tree also failed for %s: %v", objectID, err)
+				l.seeded = true
+				return nil
+			}
+			log.Printf("[TreeUpdateListener] Fresh tree succeeded for %s (version=%d)", objectID, state.Version)
+		} else {
+			l.seeded = true
+			return nil
+		}
 	}
 
 	// Check if this is new/changed
@@ -170,6 +206,7 @@ func (l *TreeUpdateListener) extractRootHeader(tree objecttree.ObjectTree) (obje
 
 // emitSSE broadcasts an SSE event for a changed object.
 func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
+	log.Printf("[TreeUpdateListener] emitSSE type=%s id=%s existed=%v", p.Type, p.ID, existed)
 	switch p.Type {
 	case "ChatChannel":
 		eventType := "chat:channel:new"

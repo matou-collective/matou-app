@@ -1780,8 +1780,24 @@ func (h *ChatHandler) getUserRole() string {
 }
 
 func (h *ChatHandler) getSenderName(aid string) string {
-	// TODO: Look up the user's SharedProfile to get their display name
-	// For now, return a truncated AID
+	// Look up the user's SharedProfile in the community space
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	if communitySpaceID != "" {
+		objectID := fmt.Sprintf("SharedProfile-%s", aid)
+		obj, err := h.spaceManager.ObjectTreeManager().ReadObject(context.Background(), communitySpaceID, objectID)
+		if err == nil && obj != nil {
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(obj.Data, &fields) == nil {
+				if raw, ok := fields["displayName"]; ok {
+					var name string
+					if json.Unmarshal(raw, &name) == nil && name != "" {
+						return name
+					}
+				}
+			}
+		}
+	}
+	// Fallback to truncated AID
 	if len(aid) > 12 {
 		return aid[:12] + "..."
 	}

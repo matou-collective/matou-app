@@ -107,6 +107,11 @@ export const useChatStore = defineStore('chat', () => {
   async function selectChannel(channelId: string | null): Promise<void> {
     currentChannelId.value = channelId;
     if (channelId) {
+      localStorage.setItem('matou:lastChannelId', channelId);
+    } else {
+      localStorage.removeItem('matou:lastChannelId');
+    }
+    if (channelId) {
       // Snapshot the cursor BEFORE loading/marking so the "new messages" divider persists
       channelEntryReadAt.value = readCursors.value[channelId] ?? undefined;
       await loadMessages(channelId);
@@ -170,9 +175,13 @@ export const useChatStore = defineStore('chat', () => {
         return false;
       }
 
-      // Optimistically add message (will be confirmed via SSE)
-      // For now, just reload messages
+      // Advance the cursor BEFORE reloading so the sender's own message never
+      // appears as unread (which would flash the badge and trigger scroll-to-divider).
+      readCursors.value = { ...readCursors.value, [currentChannelId.value]: new Date().toISOString() };
+      channelEntryReadAt.value = undefined;
       await loadMessages(currentChannelId.value);
+      // Persist the server-side cursor based on the actual loaded messages.
+      await markChannelRead(currentChannelId.value);
       return true;
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to send message';
@@ -418,6 +427,14 @@ export const useChatStore = defineStore('chat', () => {
     // Check if message already exists
     if (channelMessages.some(m => m.id === data.messageId)) return;
 
+    // If this is the active channel, advance the cursor BEFORE inserting the
+    // message so Vue never sees the new message with a stale cursor (which
+    // would flash the unread badge and insert a divider).
+    if (data.channelId === currentChannelId.value) {
+      readCursors.value = { ...readCursors.value, [data.channelId]: data.sentAt };
+      channelEntryReadAt.value = undefined;
+    }
+
     // Replace the Map entry with a new array to trigger Vue reactivity.
     // In-place mutations (unshift) on an array retrieved from a reactive Map
     // don't reliably re-evaluate computed properties that depend on Map.get().
@@ -434,14 +451,9 @@ export const useChatStore = defineStore('chat', () => {
       ...channelMessages,
     ]);
 
-    // If this is the active channel, auto-mark as read and clear the entry divider
-    // so new messages don't trigger the "X new messages" line while viewing
+    // Persist the read cursor server-side (fire-and-forget)
     if (data.channelId === currentChannelId.value) {
-      console.log(`[ChatStore] New message in active channel, auto-marking read`);
-      channelEntryReadAt.value = undefined;
       markChannelRead(data.channelId);
-    } else {
-      console.log(`[ChatStore] New message in non-active channel ${data.channelId}, unread will increment`);
     }
   }
 
