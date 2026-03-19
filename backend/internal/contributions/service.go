@@ -931,8 +931,12 @@ func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, use
 
 // SubmitEvidenceRequest carries evidence data for a contribution completion.
 type SubmitEvidenceRequest struct {
-	CompletionNotes string   `json:"completion_notes"`
-	EvidenceURLs    []string `json:"evidence_urls,omitempty"`
+	CompletionNotes string    `json:"completion_notes"`
+	EvidenceURLs    []string  `json:"evidence_urls,omitempty"`
+	AcceptanceNotes []string  `json:"acceptance_notes,omitempty"`
+	ActualDuration  int       `json:"actual_duration,omitempty"`
+	TimeReportFile  *FileRef  `json:"time_report_file,omitempty"`
+	AttachmentFiles []FileRef `json:"attachment_files,omitempty"`
 }
 
 // ReviewRequest carries a review decision and supporting details.
@@ -942,19 +946,28 @@ type ReviewRequest struct {
 	QualityRating int    `json:"quality_rating,omitempty"`
 }
 
-// ConfirmContribution transitions a contribution from created → confirmed.
+// ConfirmContribution transitions a contribution:
+//   - created → confirmed
+//   - changed → assigned (re-confirmation after lead edit, contribution already has an assignee)
 func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contributionID string) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
 	}
-	if c.Status != ContribCreated {
-		return nil, fmt.Errorf("contribution must be in created status to confirm, current: %s", c.Status)
+	switch c.Status {
+	case ContribCreated:
+		if err := ValidateContributionTransition(c.Status, ContribConfirmed); err != nil {
+			return nil, err
+		}
+		c.Status = ContribConfirmed
+	case ContribChanged:
+		if err := ValidateContributionTransition(c.Status, ContribAssigned); err != nil {
+			return nil, err
+		}
+		c.Status = ContribAssigned
+	default:
+		return nil, fmt.Errorf("contribution must be in created or changed status to confirm, current: %s", c.Status)
 	}
-	if err := ValidateContributionTransition(c.Status, ContribConfirmed); err != nil {
-		return nil, err
-	}
-	c.Status = ContribConfirmed
 	c.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
@@ -997,6 +1010,7 @@ func (s *Service) OfferContribution(ctx context.Context, spaceID, contributionID
 	c.OfferedTo = offeredTo
 	c.OfferedToName = offeredToName
 	c.OfferedAt = &now
+	c.AssignedContributorName = offeredToName
 	c.Status = ContribOffered
 	c.UpdatedAt = now
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
@@ -1027,6 +1041,10 @@ func (s *Service) AcceptOffer(ctx context.Context, spaceID, contributionID, user
 		return nil, err
 	}
 	c.AssignedContributorID = userID
+	// Carry forward the offered-to name, or keep existing name
+	if c.AssignedContributorName == "" && c.OfferedToName != "" {
+		c.AssignedContributorName = c.OfferedToName
+	}
 	c.Status = ContribAssigned
 	c.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
@@ -1069,6 +1087,18 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID st
 	c.CompletionNotes = req.CompletionNotes
 	if req.EvidenceURLs != nil {
 		c.EvidenceURLs = req.EvidenceURLs
+	}
+	if req.AcceptanceNotes != nil {
+		c.AcceptanceNotes = req.AcceptanceNotes
+	}
+	if req.ActualDuration > 0 {
+		c.ActualDuration = req.ActualDuration
+	}
+	if req.TimeReportFile != nil {
+		c.TimeReportFile = req.TimeReportFile
+	}
+	if req.AttachmentFiles != nil {
+		c.AttachmentFiles = req.AttachmentFiles
 	}
 	c.Status = ContribNeedsReview
 	c.UpdatedAt = time.Now()
@@ -1229,6 +1259,7 @@ func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID strin
 	plan.SignedOff = true
 	plan.SignedOffBy = userID
 	plan.SignedOffAt = &now
+	plan.CurrentStatus = "active"
 	plan.UpdatedAt = now
 	if err := s.store.Save(spaceID, plan.ID, "implementation_plan", plan); err != nil {
 		return nil, fmt.Errorf("saving plan: %w", err)

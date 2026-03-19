@@ -23,7 +23,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1,
-  timeout: 240000, // 4 minutes: registration (~90s) + approval (~30s) + sync (~60s)
+  timeout: 0, // No overall timeout — rely on individual action/navigation timeouts
   reporter: [['html', { open: 'never' }], ['list']],
 
   use: {

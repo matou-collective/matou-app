@@ -42,20 +42,20 @@
           autogrow
         />
 
-        <!-- Type selector (2x2 grid) — read-only in edit mode -->
+        <!-- Contribution Type -->
         <div v-if="!editing">
           <div class="text-subtitle2 q-mb-sm">Contribution Type *</div>
-          <div class="type-grid">
+          <div class="type-card-grid">
             <button
               v-for="t in typeOptions"
               :key="t.value"
-              class="type-btn"
+              class="type-card"
               :class="{ active: form.contribution_type === t.value }"
               @click="form.contribution_type = t.value"
               type="button"
             >
-              <component :is="t.icon" class="type-btn-icon" />
-              <span>{{ t.label }}</span>
+              <component :is="t.icon" class="type-card-icon" />
+              <span class="type-card-label">{{ t.label }}</span>
             </button>
           </div>
         </div>
@@ -65,42 +65,38 @@
           <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
         </div>
 
-        <!-- Priority selector (2x2 grid) -->
-        <div>
-          <div class="text-subtitle2 q-mb-sm">Priority *</div>
-          <div class="priority-grid">
-            <button
-              v-for="p in priorityOptions"
-              :key="p.value"
-              class="priority-btn"
-              :class="[p.value, { active: form.priority === p.value }]"
-              @click="form.priority = p.value"
-              type="button"
-            >
-              {{ p.label }}
-            </button>
-          </div>
-        </div>
-
         <!-- Duration & Deadline -->
-        <div class="row q-col-gutter-md">
-          <div class="col-6">
-            <q-input
-              v-model.number="form.estimated_hours"
-              label="Estimated Hours"
-              type="number"
-              outlined
-              min="0"
-            />
-          </div>
-          <div class="col-6">
-            <q-input
-              v-model="form.deadline"
-              label="Deadline"
-              type="date"
-              outlined
-            />
-          </div>
+        <div class="inline-row">
+          <q-input
+            v-model.number="form.estimated_hours"
+            label="Estimated Hours"
+            type="number"
+            outlined
+            min="0"
+          />
+          <q-input
+            v-model="form.deadline"
+            label="Due Date"
+            outlined
+            mask="##-##-####"
+            placeholder="dd-mm-yyyy"
+          >
+            <template #append>
+              <q-icon name="event" class="cursor-pointer">
+                <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                  <q-date
+                    :model-value="toQDateFormat(form.deadline)"
+                    @update:model-value="form.deadline = fromQDateFormat($event)"
+                    mask="YYYY/MM/DD"
+                  >
+                    <div class="row items-center justify-end">
+                      <q-btn v-close-popup label="Close" color="primary" flat />
+                    </div>
+                  </q-date>
+                </q-popup-proxy>
+              </q-icon>
+            </template>
+          </q-input>
         </div>
 
         <!-- Budget -->
@@ -265,15 +261,16 @@
       </q-card-section>
 
       <div class="dialog-footer">
-        <q-btn flat no-caps label="Cancel" v-close-popup @click="resetForm" />
         <q-btn
           no-caps
           :label="editing ? 'Submit Change' : parentContributionId ? 'Create Sub-Contribution' : 'Create Contribution'"
           color="primary"
+          class="dialog-footer-btn"
           :loading="isSubmitting"
           :disable="!isValid"
           @click="handleSubmit"
         />
+        <q-btn outline no-caps label="Cancel" color="primary" class="dialog-footer-btn" v-close-popup @click="resetForm" />
       </div>
     </q-card>
   </q-dialog>
@@ -281,7 +278,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { PlusCircle, Scale, Code2, Landmark, Users } from 'lucide-vue-next';
+import { PlusCircle, Search, Settings, Palette, MessageCircle, Code2, Landmark } from 'lucide-vue-next';
 import type { CreateContributionRequest } from 'src/lib/api/contributions';
 import type { Contribution } from 'src/types/projects';
 
@@ -313,7 +310,6 @@ interface ContributionForm {
   title: string;
   description: string;
   contribution_type: string;
-  priority: string;
   estimated_hours: number | undefined;
   deadline: string;
   budget: string;
@@ -324,25 +320,40 @@ interface ContributionForm {
 }
 
 const typeOptions = [
-  { value: 'governance', label: 'Governance', icon: Scale },
-  { value: 'technical', label: 'Technical', icon: Code2 },
-  { value: 'cultural', label: 'Cultural', icon: Landmark },
-  { value: 'community', label: 'Community', icon: Users },
+  { value: 'research_knowledge', label: 'Research', icon: Search },
+  { value: 'coordination_operations', label: 'Ops', icon: Settings },
+  { value: 'art_design', label: 'Design', icon: Palette },
+  { value: 'discussion_community_input', label: 'Community', icon: MessageCircle },
+  { value: 'coding_technical_dev', label: 'Technical', icon: Code2 },
+  { value: 'cultural_oversight', label: 'Cultural', icon: Landmark },
 ];
 
-const priorityOptions = [
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'critical', label: 'Critical' },
-];
+// Convert dd-mm-yyyy to YYYY/MM/DD for q-date
+function toQDateFormat(ddmmyyyy: string): string {
+  if (!ddmmyyyy || ddmmyyyy.length !== 10) return '';
+  const [dd, mm, yyyy] = ddmmyyyy.split('-');
+  return `${yyyy}/${mm}/${dd}`;
+}
+
+// Convert YYYY/MM/DD from q-date to dd-mm-yyyy for display
+function fromQDateFormat(qdate: string): string {
+  if (!qdate) return '';
+  const [yyyy, mm, dd] = qdate.split('/');
+  return `${dd}-${mm}-${yyyy}`;
+}
+
+// Convert dd-mm-yyyy to yyyy-mm-dd (ISO) for backend
+function toISODate(ddmmyyyy: string): string {
+  if (!ddmmyyyy || ddmmyyyy.length !== 10) return '';
+  const [dd, mm, yyyy] = ddmmyyyy.split('-');
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 function makeDefault(): ContributionForm {
   return {
     title: '',
     description: '',
-    contribution_type: 'technical',
-    priority: 'medium',
+    contribution_type: 'coding_technical_dev',
     estimated_hours: undefined,
     deadline: '',
     budget: '',
@@ -372,10 +383,10 @@ watch(
       const c = props.contribution;
       form.value.title = c.title || '';
       form.value.description = c.description || '';
-      form.value.contribution_type = c.contribution_type || 'technical';
-      form.value.priority = c.priority || 'medium';
+      form.value.contribution_type = c.contribution_type || 'coding_technical_dev';
       form.value.estimated_hours = c.estimated_hours ?? undefined;
-      form.value.deadline = c.deadline || '';
+      // Convert ISO yyyy-mm-dd to dd-mm-yyyy for display
+      form.value.deadline = c.deadline ? c.deadline.split('-').reverse().join('-') : '';
       form.value.budget = c.budget || '';
       form.value.objectives = c.objectives?.length ? [...c.objectives] : [''];
       form.value.deliverables = c.deliverables?.length ? [...c.deliverables] : [''];
@@ -402,7 +413,6 @@ function handleSubmit() {
       updates: {
         title: form.value.title.trim(),
         description: form.value.description.trim(),
-        priority: form.value.priority,
         objectives: form.value.objectives.filter((o) => o.trim()),
         deliverables: form.value.deliverables.filter((d) => d.trim()),
         acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
@@ -422,7 +432,7 @@ function handleSubmit() {
     title: form.value.title.trim(),
     description: form.value.description.trim(),
     contribution_type: form.value.contribution_type,
-    priority: form.value.priority as 'low' | 'medium' | 'high' | 'critical',
+    priority: 'medium',
     objectives: form.value.objectives.filter((o) => o.trim()),
     deliverables: form.value.deliverables.filter((d) => d.trim()),
     acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
@@ -472,96 +482,64 @@ function handleSubmit() {
 
 .dialog-footer {
   display: flex;
-  justify-content: flex-end;
   gap: 8px;
   padding: 12px 20px 16px;
   border-top: 1px solid var(--matou-border);
 }
 
-// Type grid (2x2)
-.type-grid {
+.dialog-footer-btn {
+  flex: 1;
+  border-radius: 10px;
+}
+
+// Contribution type cards (3 columns)
+.type-card-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
 }
 
-.type-btn {
+.type-card {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 10px;
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius-sm);
-  background: transparent;
+  background: var(--matou-card);
   cursor: pointer;
-  font-size: 0.875rem;
-  color: var(--matou-muted-foreground);
   transition: all 0.12s ease;
-  text-align: left;
 
   &:hover {
     border-color: var(--matou-accent);
-    color: var(--matou-foreground);
+    background: var(--matou-secondary);
   }
 
   &.active {
     border-color: var(--matou-primary);
     background: rgba(30, 95, 116, 0.06);
+  }
+}
+
+.type-card-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--matou-muted-foreground);
+  flex-shrink: 0;
+
+  .type-card.active & {
     color: var(--matou-primary);
   }
 }
 
-.type-btn-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
-// Priority grid (2x2)
-.priority-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.priority-btn {
-  padding: 8px 14px;
-  border: 1px solid var(--matou-border);
-  border-radius: var(--matou-radius-sm);
-  background: transparent;
-  cursor: pointer;
-  font-size: 0.875rem;
+.type-card-label {
+  font-size: 0.85rem;
   font-weight: 500;
   color: var(--matou-muted-foreground);
-  transition: all 0.12s ease;
-  text-transform: capitalize;
 
-  &:hover {
-    opacity: 0.85;
-  }
-
-  &.low.active {
-    background: var(--matou-muted);
-    color: var(--matou-muted-foreground);
-    border-color: var(--matou-muted-foreground);
-  }
-
-  &.medium.active {
-    background: rgba(74, 157, 156, 0.12);
-    color: var(--matou-chart-2, #4a9d9c);
-    border-color: var(--matou-chart-2, #4a9d9c);
-  }
-
-  &.high.active {
-    background: rgba(30, 95, 116, 0.1);
-    color: var(--matou-chart-1, #1e5f74);
-    border-color: var(--matou-chart-1, #1e5f74);
-  }
-
-  &.critical.active {
-    background: rgba(200, 70, 58, 0.1);
-    color: var(--matou-destructive, #c8463a);
-    border-color: var(--matou-destructive, #c8463a);
+  .type-card.active & {
+    color: var(--matou-primary);
   }
 }
 
@@ -580,5 +558,14 @@ function handleSubmit() {
 
 .list-input {
   flex: 1;
+}
+
+.inline-row {
+  display: flex;
+  gap: 16px;
+
+  > * {
+    flex: 1;
+  }
 }
 </style>

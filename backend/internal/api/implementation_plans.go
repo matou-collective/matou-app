@@ -147,6 +147,10 @@ func (h *ImplementationPlansHandler) HandleAddMilestone(w http.ResponseWriter, r
 func (h *ImplementationPlansHandler) HandleSignOff(w http.ResponseWriter, r *http.Request, id string) {
 	userID := GetUserAID(r)
 	if userID == "" {
+		// Fall back to reading X-User-AID header directly (no RBAC middleware on this route)
+		userID = r.Header.Get("X-User-AID")
+	}
+	if userID == "" {
 		// Allow caller to pass user_id in body when running without RBAC middleware
 		var body struct {
 			UserID string `json:"user_id"`
@@ -185,6 +189,14 @@ func (h *ImplementationPlansHandler) HandleSignOff(w http.ResponseWriter, r *htt
 	}
 
 	log.Printf("[ImplementationPlans] plan %s signed off by %s", id, userID)
+	h.service.HydratePlan(r.Context(), spaceID, plan)
+
+	// Refresh project status (signed-off plan → active)
+	if plan.ProjectID != "" {
+		if _, err := h.service.RefreshProjectStatus(r.Context(), spaceID, plan.ProjectID); err != nil {
+			log.Printf("[ImplementationPlans] failed to refresh project status for %s: %v", plan.ProjectID, err)
+		}
+	}
 
 	if h.broker != nil {
 		h.broker.Broadcast(SSEEvent{

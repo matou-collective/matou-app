@@ -4,58 +4,74 @@
     :class="{ clickable: clickable }"
     @click="clickable ? $emit('click') : undefined"
   >
-    <!-- Status stripe -->
-    <div class="status-stripe" :class="project.status" />
-
     <div class="card-body">
       <div class="card-header">
         <div class="card-title-row">
-          <h3 class="card-title">{{ project.title }}</h3>
           <span class="status-badge" :class="project.status">
             {{ formatStatus(project.status) }}
           </span>
+          <div v-if="linkedProposalCount > 0" class="meta-item meta-proposals">
+            From {{ linkedProposalCount }} proposal{{ linkedProposalCount !== 1 ? 's' : '' }}
+          </div>
         </div>
+        <h3 class="card-title">{{ project.title }}</h3>
         <p class="card-description">{{ project.description }}</p>
       </div>
 
       <div class="card-meta">
         <div v-if="project.project_lead_id" class="meta-item">
           <User class="meta-icon" />
-          <span>Lead: {{ project.project_lead_id }}</span>
+          <span>Lead: {{ leadName }}</span>
         </div>
         <div v-if="project.project_steward_id" class="meta-item">
           <Shield class="meta-icon" />
-          <span>Steward: {{ project.project_steward_id }}</span>
-        </div>
-        <div v-if="linkedProposalCount > 0" class="meta-item">
-          <Vote class="meta-icon" />
-          <span>{{ linkedProposalCount }} proposal{{ linkedProposalCount !== 1 ? 's' : '' }}</span>
-        </div>
-        <div class="meta-item meta-date">
-          <Calendar class="meta-icon" />
-          <span>{{ formatDate(project.created_at) }}</span>
+          <span>Steward: {{ stewardName }}</span>
         </div>
       </div>
-    </div>
 
-    <div v-if="clickable" class="card-arrow">
-      <ChevronRight class="arrow-icon" />
+      <!-- Available contributions -->
+      <div v-if="sharedContributions.length > 0" class="contributions-section">
+        <div class="contributions-header">
+          <span class="contributions-label">AVAILABLE CONTRIBUTIONS</span>
+          <span class="contributions-count">{{ sharedContributions.length }} shared</span>
+        </div>
+        <div
+          v-for="c in visibleContributions"
+          :key="c.id"
+          class="contribution-row"
+        >
+          <div class="contribution-row-body">
+            <div class="contribution-row-title">{{ c.title }}</div>
+            <div v-if="c.description" class="contribution-row-desc">{{ c.description }}</div>
+          </div>
+          <ContributionTypeBadge :type="c.contribution_type" />
+        </div>
+        <div v-if="sharedContributions.length > 3" class="contributions-more">
+          +{{ sharedContributions.length - 3 }} more contributions
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { User, Shield, Vote, Calendar, ChevronRight } from 'lucide-vue-next';
+import { User, Shield } from 'lucide-vue-next';
 import type { Project } from 'src/lib/api/projects';
+import type { Contribution } from 'src/lib/api/contributions';
+import ContributionTypeBadge from './ContributionTypeBadge.vue';
 
 interface Props {
   project: Project;
   clickable?: boolean;
+  nameMap?: Record<string, string>;
+  contributions?: Contribution[];
 }
 
 const props = withDefaults(defineProps<Props>(), {
   clickable: true,
+  nameMap: () => ({}),
+  contributions: () => [],
 });
 
 defineEmits<{
@@ -64,16 +80,28 @@ defineEmits<{
 
 const linkedProposalCount = computed(() => props.project.proposal_ids?.length ?? 0);
 
+const leadName = computed(() => {
+  const aid = props.project.project_lead_id;
+  if (!aid) return '';
+  return props.nameMap[aid] || props.project.project_lead_name || aid.slice(0, 12) + '...';
+});
+
+const stewardName = computed(() => {
+  const aid = props.project.project_steward_id;
+  if (!aid) return '';
+  return props.nameMap[aid] || props.project.project_steward_name || aid.slice(0, 12) + '...';
+});
+
+const sharedContributions = computed(() =>
+  props.contributions.filter(c => c.is_shared),
+);
+
+const visibleContributions = computed(() =>
+  sharedContributions.value.slice(0, 3),
+);
+
 function formatStatus(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
 }
 </script>
 
@@ -98,17 +126,6 @@ function formatDate(iso: string): string {
   }
 }
 
-.status-stripe {
-  width: 4px;
-  flex-shrink: 0;
-  background: var(--matou-muted);
-
-  &.active { background: #059669; }
-  &.created { background: var(--matou-primary); }
-  &.completed { background: #2563eb; }
-  &.archived { background: #9ca3af; }
-}
-
 .card-body {
   flex: 1;
   padding: 16px 18px;
@@ -124,15 +141,14 @@ function formatDate(iso: string): string {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 6px;
-  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 
 .card-title {
   font-size: 1rem;
   font-weight: 600;
   color: var(--matou-foreground);
-  margin: 0;
+  margin: 0 0 6px;
   line-height: 1.3;
 }
 
@@ -164,6 +180,11 @@ function formatDate(iso: string): string {
   }
 }
 
+.meta-proposals {
+  font-size: 0.78rem;
+  color: var(--matou-muted-foreground);
+}
+
 .card-description {
   font-size: 0.875rem;
   color: var(--matou-muted-foreground);
@@ -187,10 +208,6 @@ function formatDate(iso: string): string {
   gap: 4px;
   font-size: 0.78rem;
   color: var(--matou-muted-foreground);
-
-  &.meta-date {
-    margin-left: auto;
-  }
 }
 
 .meta-icon {
@@ -199,16 +216,72 @@ function formatDate(iso: string): string {
   flex-shrink: 0;
 }
 
-.card-arrow {
-  display: flex;
-  align-items: center;
-  padding: 0 12px 0 4px;
-  color: var(--matou-muted-foreground);
-  flex-shrink: 0;
+// ── Contributions section ────────────────────────────────────────────────────
+
+.contributions-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--matou-border);
 }
 
-.arrow-icon {
-  width: 16px;
-  height: 16px;
+.contributions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.contributions-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--matou-muted-foreground);
+  letter-spacing: 0.04em;
+}
+
+.contributions-count {
+  font-size: 0.75rem;
+  color: var(--matou-accent);
+  font-weight: 500;
+}
+
+.contribution-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(30, 95, 116, 0.03);
+  border: 1px solid rgba(30, 95, 116, 0.12);
+  border-radius: var(--matou-radius-sm, 6px);
+  margin-bottom: 6px;
+}
+
+.contribution-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.contribution-row-title {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--matou-foreground);
+  line-height: 1.3;
+}
+
+.contribution-row-desc {
+  font-size: 0.75rem;
+  color: var(--matou-muted-foreground);
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.contributions-more {
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--matou-muted-foreground);
+  padding: 6px 0 2px;
 }
 </style>

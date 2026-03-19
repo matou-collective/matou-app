@@ -51,12 +51,12 @@ func ValidateProposalTransition(from, to ProposalStatus) error {
 // --- Contribution transitions ---
 
 var contributionTransitions = map[ContributionStatus][]ContributionStatus{
-	ContribCreated:     {ContribConfirmed},
+	ContribCreated:     {ContribConfirmed, ContribAssigned},
 	ContribConfirmed:   {ContribShared, ContribOffered, ContribAssigned, ContribArchived},
 	ContribShared:      {ContribOffered, ContribAssigned, ContribArchived},
 	ContribOffered:     {ContribAssigned, ContribArchived},
 	ContribAssigned:    {ContribChanged, ContribNeedsReview},
-	ContribChanged:     {ContribConfirmed},
+	ContribChanged:     {ContribConfirmed, ContribAssigned},
 	ContribNeedsReview: {ContribApproved, ContribIncomplete, ContribDeclined},
 	ContribIncomplete:  {ContribAssigned},
 	ContribApproved:    {ContribSignedOff},

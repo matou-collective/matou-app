@@ -64,13 +64,17 @@ export async function createProject(req: CreateProjectRequest): Promise<Project>
 }
 
 export async function listProjects(): Promise<{ projects: Project[]; total: number }> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/projects`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Failed to list projects');
   return response.json();
 }
 
 export async function getProject(id: string): Promise<Project> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Project not found');
   return response.json();
 }
@@ -86,7 +90,10 @@ export async function updateProject(id: string, req: UpdateProjectRequest): Prom
 }
 
 export async function deleteProject(id: string): Promise<void> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}`, { method: 'DELETE' });
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(err.error || 'Failed to delete project');
@@ -122,7 +129,9 @@ export async function assignProjectRole(
 }
 
 export async function listProjectContributions(projectId: string): Promise<{ contributions: import('src/lib/api/contributions').Contribution[] }> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/contributions`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/contributions`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Failed to list project contributions');
   return response.json();
 }

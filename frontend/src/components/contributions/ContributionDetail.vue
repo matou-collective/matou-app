@@ -5,9 +5,6 @@
       <div class="badges-row">
         <ContributionStatusBadge :status="contribution.status" />
         <span class="type-badge">{{ contribution.contribution_type }}</span>
-        <span class="priority-badge" :class="contribution.priority">
-          {{ contribution.priority }}
-        </span>
       </div>
       <h1 class="detail-title">{{ contribution.title }}</h1>
       <p class="detail-meta">

@@ -17,19 +17,19 @@ export function useContributionWorkflow() {
   }
 
   /**
-   * Admin or steward can confirm a contribution that is in `created` status,
-   * but only while the plan is NOT yet signed off.
+   * Admin or steward can confirm a contribution:
+   * - created → confirmed (only before plan sign-off)
+   * - changed → assigned (allowed even after plan sign-off, re-confirmation after lead edit)
    */
   function canConfirm(
     contribution: Contribution,
     isPlanSignedOff: boolean,
     role: ProjectRole | string,
   ): boolean {
-    if (isPlanSignedOff) return false;
-    return (
-      (contribution.status === 'created' || contribution.status === 'changed') &&
-      _isRole(role, CONFIRM_ROLES)
-    );
+    if (!_isRole(role, CONFIRM_ROLES)) return false;
+    if (contribution.status === 'changed') return true;
+    if (contribution.status === 'created' && !isPlanSignedOff) return true;
+    return false;
   }
 
   /**
@@ -67,7 +67,10 @@ export function useContributionWorkflow() {
     if (contribution.status !== 'shared') return false;
     const assignedId =
       contribution.assigned_contributor ?? contribution.assigned_contributor_id;
-    return assignedId !== currentUserId;
+    if (assignedId === currentUserId) return false;
+    // Already registered interest
+    if (contribution.interested_contributors?.some(ic => ic.user_id === currentUserId)) return false;
+    return true;
   }
 
   /**
@@ -80,24 +83,23 @@ export function useContributionWorkflow() {
   }
 
   /**
-   * The assigned contributor can submit evidence when:
-   * - status is `assigned` or `changed`
+   * Can submit evidence when:
+   * - status is `assigned`
+   * - user is the assigned contributor, or is lead/steward/admin
    * - all child contributions are signed off / rewarded / archived
    */
   function canSubmitEvidence(
     contribution: Contribution,
     currentUserId: string,
     allChildrenSignedOff: boolean,
+    role?: ProjectRole | string,
   ): boolean {
+    if (contribution.status !== 'assigned') return false;
     const assignedId =
       contribution.assigned_contributor ?? contribution.assigned_contributor_id;
-    if (assignedId !== currentUserId) return false;
-    if (
-      contribution.status !== 'assigned' &&
-      contribution.status !== 'changed'
-    ) {
-      return false;
-    }
+    const isAssigned = assignedId === currentUserId;
+    const isPrivileged = role ? _isRole(role, SHARE_OFFER_ROLES) : false;
+    if (!isAssigned && !isPrivileged) return false;
     return allChildrenSignedOff;
   }
 
@@ -119,9 +121,9 @@ export function useContributionWorkflow() {
   }
 
   /**
-   * The assigned contributor (or lead/admin) can add a sub-contribution when:
-   * - the parent is assigned
-   * - the parent is not itself a sub-contribution (flat hierarchy only)
+   * Project lead, steward, admin, or assigned member can add sub-contributions
+   * at any stage except completed (signed_off, rewarded, archived).
+   * No nested subs (flat hierarchy only).
    */
   function canAddSubContribution(
     contribution: Contribution,
@@ -129,11 +131,12 @@ export function useContributionWorkflow() {
     role: ProjectRole | string,
   ): boolean {
     if (contribution.parent_contribution) return false; // no nested subs
-    if (contribution.status !== 'assigned') return false;
+    const completedStatuses = ['signed_off', 'rewarded', 'archived'];
+    if (completedStatuses.includes(contribution.status)) return false;
     const assignedId =
       contribution.assigned_contributor ?? contribution.assigned_contributor_id;
     if (assignedId === currentUserId) return true;
-    return _isRole(role, LEAD_ROLES);
+    return _isRole(role, SHARE_OFFER_ROLES);
   }
 
   /**
@@ -148,8 +151,9 @@ export function useContributionWorkflow() {
   }
 
   /**
-   * Assigned contributor or lead/admin can request a change to an assigned contribution.
-   * The contribution must be in 'assigned' status.
+   * Lead, steward, or admin can edit an assigned contribution.
+   * - Project lead edits require re-confirmation (status → changed)
+   * - Steward/admin edits stay assigned
    */
   function canChange(
     contribution: Contribution,
@@ -157,10 +161,7 @@ export function useContributionWorkflow() {
     role: ProjectRole | string,
   ): boolean {
     if (contribution.status !== 'assigned') return false;
-    const assignedId =
-      contribution.assigned_contributor ?? contribution.assigned_contributor_id;
-    if (assignedId === currentUserId) return true;
-    return _isRole(role, LEAD_ROLES);
+    return _isRole(role, SHARE_OFFER_ROLES);
   }
 
   /**

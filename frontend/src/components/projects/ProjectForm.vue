@@ -74,17 +74,18 @@
         <span>{{ submitError }}</span>
       </q-card-section>
 
-      <q-card-actions align="right" class="q-pt-none q-px-md q-pb-md">
-        <q-btn flat no-caps label="Cancel" v-close-popup @click="resetForm" />
+      <div class="project-form-actions q-px-md q-pb-md">
         <q-btn
           no-caps
           :label="isEdit ? 'Save Changes' : 'Create Project'"
           color="primary"
+          class="project-form-btn"
           :loading="isSubmitting"
           :disable="!isFormValid"
           @click="handleSubmit"
         />
-      </q-card-actions>
+        <q-btn outline no-caps label="Cancel" color="primary" class="project-form-btn" v-close-popup @click="resetForm" />
+      </div>
     </q-card>
   </q-dialog>
 </template>
@@ -221,5 +222,15 @@ function handleLinkProposal() {
   height: 14px;
   color: var(--matou-primary);
   flex-shrink: 0;
+}
+
+.project-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.project-form-btn {
+  flex: 1;
+  border-radius: 10px;
 }
 </style>

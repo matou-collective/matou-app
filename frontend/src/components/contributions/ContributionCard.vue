@@ -5,9 +5,6 @@
         <span class="contribution-type">{{ contribution.contribution_type }}</span>
         <ContributionStatusBadge :status="contribution.status" />
       </div>
-      <span class="priority-badge" :class="contribution.priority">
-        {{ contribution.priority }}
-      </span>
     </div>
 
     <h3 class="card-title">{{ contribution.title }}</h3>

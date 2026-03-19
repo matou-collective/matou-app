@@ -20,7 +20,6 @@ export interface CreateContributionRequest {
   title: string;
   description: string;
   contribution_type: string;
-  priority: 'low' | 'medium' | 'high' | 'critical';
   objectives: string[];
   deliverables: string[];
   acceptance_criteria: string[];
@@ -54,7 +53,6 @@ export interface Contribution {
 export interface UpdateContributionRequest {
   title?: string;
   description?: string;
-  priority?: string;
   objectives?: string[];
   deliverables?: string[];
   acceptance_criteria?: string[];
@@ -82,13 +80,17 @@ export async function listContributions(params?: { project_id?: string; status?:
   if (params?.project_id) query.set('project_id', params.project_id);
   if (params?.status) query.set('status', params.status);
   const qs = query.toString();
-  const response = await fetch(`${BACKEND_URL}/api/v1/contributions${qs ? '?' + qs : ''}`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions${qs ? '?' + qs : ''}`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Failed to list contributions');
   return response.json();
 }
 
 export async function getContribution(id: string): Promise<Contribution> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Contribution not found');
   return response.json();
 }
@@ -258,7 +260,7 @@ export async function createChildContribution(
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ ...req, parent_contribution_id: parentId }),
+    body: JSON.stringify({ ...req, parent_contribution: parentId }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
@@ -266,7 +268,9 @@ export async function createChildContribution(
   }
   const child = await (response.json() as Promise<Contribution>);
   // Fetch updated parent
-  const parentResp = await fetch(`${BACKEND_URL}/api/v1/contributions/${parentId}`);
+  const parentResp = await fetch(`${BACKEND_URL}/api/v1/contributions/${parentId}`, {
+    headers: authHeaders(),
+  });
   const parent = parentResp.ok
     ? await (parentResp.json() as Promise<Contribution>)
     : ({ id: parentId } as Contribution);

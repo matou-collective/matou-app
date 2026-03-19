@@ -1,31 +1,15 @@
 <template>
   <div class="contribution-compact" @click="$emit('view-detail', contribution)">
-    <!-- Confirm button: top-right corner with border -->
-    <q-btn
-      v-if="canConfirm && (contribution.status === 'created' || contribution.status === 'changed')"
-      outline
-      dense
-      no-caps
-      size="sm"
-      label="Confirm"
-      color="primary"
-      class="confirm-btn-corner"
-      @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
-    />
-
     <!-- Top row: title left, status + assignment right -->
     <div class="compact-header">
       <div class="compact-title">{{ contribution.title }}</div>
       <div class="compact-badges-right">
         <ContributionStatusBadge :status="contribution.status" />
-        <span v-if="assignedName" class="assigned-chip">
-          <UserCheck class="chip-icon" />
-          {{ assignedName }}
-        </span>
-        <span v-else class="unassigned-chip">
-          <UserPlus class="chip-icon" />
-          Unassigned
-        </span>
+        <div v-if="assignedAid" class="compact-avatar">
+          <q-tooltip>Assigned to {{ assignedName }}</q-tooltip>
+          <img v-if="assignedAvatar" :src="assignedAvatar" class="compact-avatar-img" />
+          <span v-else class="compact-avatar-initials">{{ assignedInitials }}</span>
+        </div>
       </div>
     </div>
 
@@ -34,35 +18,39 @@
       {{ contribution.description }}
     </div>
 
-    <!-- Metadata row: type + priority + hours + ID -->
-    <div class="compact-meta">
-      <ContributionTypeBadge :type="contribution.contribution_type" />
-      <ContributionPriorityBadge :priority="contribution.priority" />
-      <span v-if="contribution.estimated_hours" class="meta-item">
-        <q-icon name="schedule" size="14px" /> {{ contribution.estimated_hours }}h
-      </span>
-      <span class="meta-item meta-id">ID: {{ contribution.id.slice(0, 12) }}</span>
-    </div>
+    <!-- Bottom row: metadata left, actions right -->
+    <div class="compact-footer">
+      <div class="compact-meta">
+        <ContributionTypeBadge :type="contribution.contribution_type" />
+        <span v-if="contribution.estimated_hours" class="meta-item">
+          <q-icon name="schedule" size="14px" /> {{ contribution.estimated_hours }}h
+        </span>
+        <span class="meta-item meta-id">ID: {{ contribution.id.slice(0, 12) }}</span>
+      </div>
 
-    <div class="compact-right">
+      <div class="compact-actions">
+        <!-- Assign action (lead only, after plan sign-off, if confirmed/shared but not yet assigned) -->
+        <q-btn
+          v-if="isPlanSignedOff && isLead && canAssign"
+          outline
+          no-caps
+          label="Assign"
+          icon="person_add"
+          color="primary"
+          class="action-btn"
+          @click.stop="emit('assign', contribution)"
+        />
 
-      <q-btn
-        v-if="canAddChild"
-        flat
-        dense
-        no-caps
-        size="sm"
-        icon="add"
-        color="accent"
-        @click.stop="$emit('create-child', contribution.id)"
-      />
-
-      <!-- Share/Offer quick actions (lead only, after plan sign-off, if confirmed) -->
-      <template v-if="isPlanSignedOff && isLead && isConfirmed">
-        <q-btn flat dense size="sm" label="Share" icon="share" @click.stop="emit('share', contribution)" />
-        <q-btn flat dense size="sm" label="Offer" icon="person_add" @click.stop="emit('offer', contribution)" />
-      </template>
-
+        <q-btn
+          v-if="canConfirm && (contribution.status === 'created' || contribution.status === 'changed')"
+          outline
+          no-caps
+          label="Confirm"
+          color="primary"
+          class="confirm-btn"
+          @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
+        />
+      </div>
     </div>
 
     <!-- Sub-contribution preview -->
@@ -89,12 +77,11 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { UserCheck, UserPlus } from 'lucide-vue-next';
 import type { Contribution, ProjectRole } from 'src/types/projects';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionTypeBadge from './ContributionTypeBadge.vue';
-import ContributionPriorityBadge from './ContributionPriorityBadge.vue';
-import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
+import { useProfilesStore } from 'stores/profiles';
+import { getFileUrl } from 'src/lib/api/client';
 
 interface Props {
   contribution: Contribution;
@@ -116,37 +103,41 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'view-detail', contribution: Contribution): void;
   (e: 'update', contribution: Contribution & { _action?: string }): void;
-  (e: 'create-child', parentId: string): void;
-  (e: 'share', contribution: Contribution): void;
-  (e: 'offer', contribution: Contribution): void;
+  (e: 'assign', contribution: Contribution): void;
 }>();
 
-const { canAddSubContribution } = useContributionWorkflow();
+const profilesStore = useProfilesStore();
 
-const assignedName = computed(
-  () =>
-    props.contribution.assigned_contributor_name ??
-    props.contribution.assigned_contributor ??
-    props.contribution.assigned_contributor_id ??
-    null,
+const assignedAid = computed(() =>
+  props.contribution.assigned_contributor_id ?? props.contribution.assigned_contributor ?? null,
 );
+const assignedProfile = computed(() =>
+  assignedAid.value ? profilesStore.profilesByAid[assignedAid.value] : null,
+);
+const assignedName = computed(() => {
+  if (!assignedAid.value) return null;
+  return assignedProfile.value?.displayName
+    ?? props.contribution.assigned_contributor_name
+    ?? assignedAid.value.slice(0, 12) + '...';
+});
+const assignedAvatar = computed(() => {
+  const avatar = assignedProfile.value?.avatar;
+  if (!avatar) return null;
+  return avatar.startsWith('http') ? avatar : getFileUrl(avatar);
+});
+const assignedInitials = computed(() => {
+  const name = assignedName.value;
+  if (!name) return '?';
+  return name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+});
 
-const canAddChild = computed(
-  () =>
-    !props.isPlanSignedOff &&
-    canAddSubContribution(
-      props.contribution,
-      props.currentUserId,
-      props.userRole as ProjectRole,
-    ),
-);
 
 const isLead = computed(() =>
   ['community_admin', 'project_lead'].includes(props.userRole ?? ''),
 );
 
-const isConfirmed = computed(() =>
-  !['created', 'pending_approval'].includes(props.contribution.status),
+const canAssign = computed(() =>
+  ['confirmed', 'shared'].includes(props.contribution.status),
 );
 
 const childContributions = computed(() => {
@@ -202,43 +193,30 @@ const childContributions = computed(() => {
   white-space: nowrap;
 }
 
-.compact-right {
+
+.compact-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--matou-primary);
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+  justify-content: center;
 }
 
-.assigned-chip,
-.unassigned-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.75rem;
-  padding: 2px 8px;
-  border-radius: 10px;
-  white-space: nowrap;
+.compact-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
-.assigned-chip {
-  background: rgba(74, 157, 156, 0.1);
-  color: var(--matou-accent);
-}
-
-.unassigned-chip {
-  background: var(--matou-muted);
-  color: var(--matou-muted-foreground);
-}
-
-.chip-icon {
-  width: 12px;
-  height: 12px;
-}
-
-.nav-icon {
-  width: 16px;
-  height: 16px;
-  color: var(--matou-muted-foreground);
+.compact-avatar-initials {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: white;
+  letter-spacing: 0.03em;
 }
 
 .compact-description {
@@ -252,24 +230,40 @@ const childContributions = computed(() => {
   width: 100%;
 }
 
+.compact-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 4px;
+}
+
 .compact-meta {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   font-size: 0.75rem;
   color: $grey-6;
-  margin: 0.25rem 0;
-  width: 100%;
 
   .meta-item {
     display: flex;
     align-items: center;
     gap: 0.25rem;
   }
+}
 
-  .meta-id {
-    margin-left: auto;
-  }
+.compact-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.confirm-btn,
+.action-btn {
+  padding: 4px 20px;
+  border-radius: var(--matou-radius-sm, 8px);
+  font-size: 0.85rem;
 }
 
 .sub-preview {
@@ -318,10 +312,4 @@ const childContributions = computed(() => {
   }
 }
 
-.confirm-btn-corner {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 1;
-}
 </style>

@@ -20,9 +20,13 @@ export type ContributionStatus =
   | 'rewarded'
   | 'archived';
 
-export type ContributionType = 'governance' | 'technical' | 'cultural' | 'community';
-
-export type Priority = 'low' | 'medium' | 'high' | 'critical';
+export type ContributionType =
+  | 'research_knowledge'
+  | 'coordination_operations'
+  | 'art_design'
+  | 'discussion_community_input'
+  | 'coding_technical_dev'
+  | 'cultural_oversight';
 
 export type MilestoneStatus = 'planned' | 'in_progress' | 'completed' | 'delayed';
 
@@ -41,6 +45,7 @@ export interface AttachedFile {
   name: string;
   url: string;
   type: string;
+  file_ref?: string;
 }
 
 export interface InterestedContributor {
@@ -48,6 +53,12 @@ export interface InterestedContributor {
   user_name: string;
   registered_at: string;
   interest_note: string;
+}
+
+export interface ContributionDiff {
+  field: string;
+  old_value: string;
+  new_value: string;
 }
 
 // ── Core types ───────────────────────────────────────────────────────────────
@@ -60,7 +71,7 @@ export interface Contribution {
   title: string;
   description: string;
   contribution_type: ContributionType | string;
-  priority: Priority | string;
+  priority?: string;
   status: ContributionStatus | string;
   version?: string;
   created_at: string;
@@ -93,6 +104,11 @@ export interface Contribution {
   offered_to_name?: string;
   offered_at?: string;
   interested_contributors?: InterestedContributor[];
+  // Change tracking
+  change_reason?: string;
+  changed_by?: string;
+  changed_at?: string;
+  changes_diff?: ContributionDiff[];
   // Evidence
   completion_notes?: string;
   acceptance_notes?: string[];
@@ -188,6 +204,7 @@ export interface OfferContributionRequest {
 
 export interface RegisterInterestRequest {
   interest_note: string;
+  user_name?: string;
 }
 
 export interface SubmitEvidenceRequest {
@@ -201,8 +218,8 @@ export interface SubmitEvidenceRequest {
 }
 
 export interface SubmitReviewRequest {
-  outcome: 'approved' | 'incomplete' | 'declined';
-  feedback?: string;
+  decision: 'approved' | 'incomplete' | 'declined';
+  review_notes?: string;
   quality_rating?: number;
 }
 

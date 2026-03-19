@@ -69,13 +69,17 @@ export async function createImplementationPlan(req: CreateImplementationPlanRequ
 }
 
 export async function listImplementationPlans(): Promise<{ implementation_plans: ImplementationPlan[]; total: number }> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/implementation-plans`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/implementation-plans`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Failed to list implementation plans');
   return response.json();
 }
 
 export async function getImplementationPlan(id: string): Promise<ImplementationPlan> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/implementation-plans/${id}`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/implementation-plans/${id}`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Implementation plan not found');
   return response.json();
 }

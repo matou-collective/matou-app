@@ -44,7 +44,7 @@
           v-for="contribution in contributions"
           :key="contribution.id"
           :contribution="contribution"
-          :can-confirm="canConfirm && !isPlanSignedOff"
+          :can-confirm="canConfirm"
           :is-plan-signed-off="isPlanSignedOff"
           :user-role="userRole"
           :current-user-id="currentUserId"
@@ -52,8 +52,7 @@
           @update="$emit('update-contribution', $event)"
           @view-detail="$emit('view-contribution', $event)"
           @create-child="$emit('create-child-contribution', $event)"
-          @share="(c: Contribution) => emit('share-contribution', c)"
-          @offer="(c: Contribution) => emit('offer-contribution', c)"
+          @assign="(c: Contribution) => emit('assign-contribution', c)"
         />
       </div>
 
@@ -101,8 +100,7 @@ const emit = defineEmits<{
   (e: 'update-contribution', contribution: Contribution): void;
   (e: 'view-contribution', contribution: Contribution): void;
   (e: 'create-child-contribution', parentId: string): void;
-  (e: 'share-contribution', contribution: Contribution): void;
-  (e: 'offer-contribution', contribution: Contribution): void;
+  (e: 'assign-contribution', contribution: Contribution): void;
 }>();
 
 const isExpanded = ref(true);
@@ -336,6 +334,10 @@ function formatDate(iso: string): string {
 .milestone-meta-count {
   font-size: 0.75rem;
   color: $grey-7;
+
+  .signed-off & {
+    color: var(--matou-primary-foreground) !important;
+  }
 }
 
 .milestone-progress {

@@ -54,5 +54,6 @@ func (l *ProfileRoleLookup) GetUserRoles(aid string) ([]Role, error) {
 			}
 		}
 	}
-	return []Role{}, nil
+	// Any authenticated user with a valid AID defaults to member role
+	return []Role{RoleMember}, nil
 }

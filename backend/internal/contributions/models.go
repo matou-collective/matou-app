@@ -376,12 +376,25 @@ type Contribution struct {
 	// Contributor name denormalisation
 	AssignedContributorName string `json:"assigned_contributor_name,omitempty"`
 
+	// Change tracking (populated when status is "changed")
+	ChangeReason string              `json:"change_reason,omitempty"`
+	ChangedBy    string              `json:"changed_by,omitempty"`
+	ChangedAt    *time.Time          `json:"changed_at,omitempty"`
+	ChangesDiff  []ContributionDiff  `json:"changes_diff,omitempty"`
+
 	// Evidence & completion (extended)
 	AcceptanceNotes   []string  `json:"acceptance_notes,omitempty"`
 	EvidenceURLs      []string  `json:"evidence_urls,omitempty"`
 	EvidenceFiles     []FileRef `json:"evidence_files,omitempty"`
 	TimeReportFile    *FileRef  `json:"time_report_file,omitempty"`
 	AttachmentFiles   []FileRef `json:"attachment_files,omitempty"`
+}
+
+// ContributionDiff records a single field change for change tracking.
+type ContributionDiff struct {
+	Field    string `json:"field"`
+	OldValue string `json:"old_value"`
+	NewValue string `json:"new_value"`
 }
 
 // --- Contribution Registration ---

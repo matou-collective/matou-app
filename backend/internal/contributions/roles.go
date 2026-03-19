@@ -43,7 +43,7 @@ func MapKERIRole(keriRole string) []Role {
 	case "Cultural Steward":
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward}
 	default:
-		return nil
+		return []Role{RoleMember}
 	}
 }
 
@@ -75,39 +75,33 @@ const (
 // actionPermissions maps each action to the roles that can perform it.
 // 5-role model: Community Admin (OperationsSteward/FoundingMember), Project Steward,
 // Project Lead, Contributor, Member.
+// allRoles is the full set of contribution-system roles.
+// Backend RBAC verifies the user is authenticated; project-level permission
+// checks (lead, steward, admin) are enforced on the frontend.
+var allRoles = []Role{
+	RoleMember, RoleContributor, RoleProjectLead, RoleProjectSteward,
+	RoleCommunitySteward, RoleTechSteward, RoleTreasurySteward,
+	RoleOperationsSteward, RoleFoundingMember, RoleElderCouncil,
+}
+
 var actionPermissions = map[Action][]Role{
-	// Project management
-	ActionCreateProject: {RoleOperationsSteward, RoleFoundingMember},
-	ActionEditProject:   {RoleOperationsSteward, RoleFoundingMember, RoleProjectLead},
-	ActionDeleteProject: {RoleOperationsSteward, RoleFoundingMember},
-
-	// Contribution lifecycle
-	ActionCreateContribution:  {RoleOperationsSteward, RoleFoundingMember, RoleProjectLead},
-	ActionConfirmContribution: {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-	ActionAssignContribution:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
-	ActionApproveContribution: {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+	ActionCreateProject:       allRoles,
+	ActionEditProject:         allRoles,
+	ActionDeleteProject:       allRoles,
+	ActionCreateContribution:  allRoles,
+	ActionConfirmContribution: allRoles,
+	ActionAssignContribution:  allRoles,
+	ActionApproveContribution: allRoles,
 	ActionSignOffContribution: {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-
-	// Sharing & offering — lead, steward, admin
-	ActionShareContribution: {RoleProjectLead, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-	ActionOfferContribution: {RoleProjectLead, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-
-	// Contributor self-service
-	ActionAcceptOffer:    {RoleMember, RoleContributor, RoleProjectLead},
-	ActionSubmitEvidence: {RoleContributor, RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
-
-	// Review — lead and admin
-	ActionReviewContribution: {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
-
-	// Plan sign-off — steward and admin
-	ActionSignOffPlan: {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-
-	// Sub-contributions
-	ActionCreateSubContrib:   {RoleContributor, RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
-	ActionApproveSubContrib:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
-
-	// Interest registration — all community members
-	ActionRegisterInterest: {RoleMember, RoleContributor, RoleProjectLead, RoleTechSteward, RoleCommunitySteward, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+	ActionShareContribution:   allRoles,
+	ActionOfferContribution:   allRoles,
+	ActionAcceptOffer:         allRoles,
+	ActionSubmitEvidence:      allRoles,
+	ActionReviewContribution:  allRoles,
+	ActionSignOffPlan:         {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+	ActionCreateSubContrib:    allRoles,
+	ActionApproveSubContrib:   allRoles,
+	ActionRegisterInterest:    allRoles,
 }
 
 // HasRole checks if a role list contains the given role.

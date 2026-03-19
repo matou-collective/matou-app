@@ -55,6 +55,8 @@ export const useProjectsStore = defineStore('projects', () => {
   }
 
   async function fetchProject(id: string) {
+    // Immediately swap to cached data or clear stale project from a previous navigation
+    currentProject.value = projects.value.find(p => p.id === id) ?? null;
     isLoading.value = true;
     error.value = null;
     try {

@@ -43,6 +43,16 @@ export type BackendEventType =
   | 'contribution:approved'
   | 'contribution:declined'
   | 'contribution:registered'
+  | 'contribution:reviewed'
+  | 'contribution:shared'
+  | 'contribution:confirmed'
+  | 'contribution:accepted'
+  | 'contribution:signed_off'
+  | 'contribution:updated'
+  | 'contribution_updated'
+  | 'plan_updated'
+  | 'project_updated'
+  | 'milestone_updated'
   | 'decision_plan:submitted'
   | 'decision_plan:signed_off'
   | 'governance_action:completed'
@@ -300,6 +310,16 @@ function connect() {
     'contribution:approved',
     'contribution:declined',
     'contribution:registered',
+    'contribution:reviewed',
+    'contribution:shared',
+    'contribution:confirmed',
+    'contribution:accepted',
+    'contribution:signed_off',
+    'contribution:updated',
+    'contribution_updated',
+    'plan_updated',
+    'project_updated',
+    'milestone_updated',
     'decision_plan:submitted',
     'decision_plan:signed_off',
   ];

@@ -5,7 +5,7 @@
         <h2 class="projects-title">Projects</h2>
         <p class="projects-subtitle">Community projects and contributions</p>
       </div>
-      <button class="create-btn" @click="showCreateDialog = true">
+      <button v-if="isAdmin" class="create-btn" @click="showCreateDialog = true">
         + New Project
       </button>
     </div>
@@ -24,7 +24,7 @@
     </div>
 
     <div class="feed-container">
-      <div v-if="projectsStore.isLoading" class="loading-state">
+      <div v-if="!loaded" class="loading-state">
         <q-spinner-dots size="40px" color="primary" />
       </div>
       <div v-else-if="filteredProjects.length === 0" class="empty-state">
@@ -37,6 +37,8 @@
           v-for="project in filteredProjects"
           :key="project.id"
           :project="project"
+          :name-map="nameMap"
+          :contributions="projectsStore.projectContributions[project.id] || []"
           @click="router.push({ name: 'project-detail', params: { id: project.id } })"
         />
       </div>
@@ -59,6 +61,7 @@ import { Target } from 'lucide-vue-next';
 import { useQuasar } from 'quasar';
 import { useProjectsStore } from 'stores/projects';
 import { useOnboardingStore } from 'stores/onboarding';
+import { useAdminAccess } from 'src/composables/useAdminAccess';
 import ProjectCard from 'src/components/projects/ProjectCard.vue';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 
@@ -66,11 +69,14 @@ const router = useRouter();
 const $q = useQuasar();
 const projectsStore = useProjectsStore();
 const onboardingStore = useOnboardingStore();
+const { isAdmin, checkAdminStatus } = useAdminAccess();
 
 const showCreateDialog = ref(false);
 const creating = ref(false);
 const createError = ref<string | null>(null);
 const activeFilter = ref('all');
+const nameMap = ref<Record<string, string>>({});
+const loaded = ref(false);
 
 const filters = [
   { label: 'All', value: 'all' },
@@ -81,25 +87,54 @@ const filters = [
 ];
 
 const filteredProjects = computed(() => {
-  if (activeFilter.value === 'all') return projectsStore.projects;
-  return projectsStore.projects.filter(p => p.status === activeFilter.value);
+  const list = activeFilter.value === 'all'
+    ? projectsStore.projects
+    : projectsStore.projects.filter(p => p.status === activeFilter.value);
+  return [...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 });
 
-onMounted(() => {
-  projectsStore.fetchProjects();
+onMounted(async () => {
+  await checkAdminStatus();
+  await projectsStore.fetchProjects();
+  loaded.value = true;
+  loadNameMap();
+  // Fetch contributions for each project (for shared contributions display)
+  for (const p of projectsStore.projects) {
+    projectsStore.fetchProjectContributions(p.id);
+  }
 });
+
+async function loadNameMap() {
+  try {
+    const { BACKEND_URL, authHeaders } = await import('src/lib/api/client');
+    const resp = await fetch(`${BACKEND_URL}/api/v1/profiles/SharedProfile`, {
+      headers: authHeaders(),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const map: Record<string, string> = {};
+    for (const p of (data.profiles ?? []) as { id: string; data: Record<string, string> }[]) {
+      const aid = p.data?.aid || p.id.replace('SharedProfile-', '');
+      if (aid && p.data?.displayName) map[aid] = p.data.displayName;
+    }
+    nameMap.value = map;
+  } catch {
+    // silently fail — cards will show truncated AIDs
+  }
+}
 
 async function handleCreateSubmit(data: { title: string; description: string }) {
   creating.value = true;
   createError.value = null;
   try {
-    await projectsStore.create({
+    const project = await projectsStore.create({
       title: data.title,
       description: data.description,
       created_by: onboardingStore.profile.name || 'current-user',
     });
     showCreateDialog.value = false;
     $q.notify({ type: 'positive', message: 'Project created!' });
+    router.push({ name: 'project-detail', params: { id: project.id } });
   } catch (e) {
     createError.value = e instanceof Error ? e.message : 'Failed to create project';
     $q.notify({ type: 'negative', message: 'Failed to create project' });
@@ -112,7 +147,7 @@ async function handleCreateSubmit(data: { title: string; description: string }) 
 <style scoped lang="scss">
 .projects-page {
   padding: 24px;
-  max-width: 900px;
+  max-width: 1080px;
   margin: 0 auto;
 }
 
@@ -201,8 +236,8 @@ async function handleCreateSubmit(data: { title: string; description: string }) 
 }
 
 .projects-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
 }
 </style>

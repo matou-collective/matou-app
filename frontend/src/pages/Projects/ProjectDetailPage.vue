@@ -1,7 +1,7 @@
 <template>
   <div class="project-detail-page">
     <!-- Loading -->
-    <div v-if="projectsStore.isLoading && !project" class="loading-state">
+    <div v-if="!project && !projectsStore.error" class="loading-state">
       <q-spinner-dots size="40px" color="primary" />
     </div>
 
@@ -189,6 +189,7 @@
               @update-contribution="handleContributionUpdate"
               @view-contribution="handleViewContribution"
               @create-child-contribution="handleCreateChildContribution"
+              @assign-contribution="handleAssignContribution"
             />
           </div>
         </template>
@@ -276,16 +277,128 @@
       :contribution="viewingContribution"
       :user-role="currentUserRole"
       :current-user-id="currentUserId"
+      :current-user-name="currentUserName"
       :all-contributions="planContributions"
       :is-plan-signed-off="implementationPlan?.signed_off ?? false"
       @update="handleContributionUpdate"
       @create-child-contribution="handleCreateChildContribution"
     />
+
+    <!-- Assign contribution dialog -->
+    <q-dialog v-model="showAssignDialog">
+      <q-card class="assign-dialog">
+        <q-card-section class="row items-center q-pb-none">
+          <div class="text-h6">Assign Contribution</div>
+          <q-space />
+          <q-btn icon="close" flat round dense v-close-popup />
+        </q-card-section>
+
+        <q-card-section v-if="assignTarget" class="assign-body">
+          <!-- Registered interest members -->
+          <div v-if="assignTarget.interested_contributors?.length" class="assign-section">
+            <div class="assign-section-label">Registered Interest</div>
+            <div
+              v-for="ic in assignTarget.interested_contributors"
+              :key="ic.user_id"
+              class="assign-member-row"
+              :class="{ selected: assignSelectedMember === ic.user_id }"
+              @click="selectMember(ic.user_id, ic.user_name)"
+            >
+              <div>
+                <div class="assign-member-name">{{ ic.user_name || ic.user_id.slice(0, 12) + '...' }}</div>
+                <div v-if="ic.interest_note" class="assign-member-note">{{ ic.interest_note }}</div>
+              </div>
+              <q-icon v-if="assignSelectedMember === ic.user_id" name="check_circle" color="primary" size="18px" />
+            </div>
+          </div>
+
+          <!-- Mode selection: Group or Member -->
+          <div class="assign-section">
+            <div class="assign-section-label">Assign to</div>
+            <div class="assign-mode-row">
+              <button
+                class="assign-mode-card"
+                :class="{ active: assignMode === 'group' }"
+                @click="assignMode = 'group'; assignSelectedMember = null; assignSelectedMemberName = null"
+              >
+                <q-icon name="groups" size="20px" />
+                <span>Group</span>
+              </button>
+              <button
+                class="assign-mode-card"
+                :class="{ active: assignMode === 'member' }"
+                @click="assignMode = 'member'; assignSelectedGroup = null"
+              >
+                <q-icon name="person" size="20px" />
+                <span>Member</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Group list -->
+          <div v-if="assignMode === 'group'" class="assign-section">
+            <div
+              v-for="g in assignGroupOptions"
+              :key="g.value"
+              class="assign-member-row"
+              :class="{ selected: assignSelectedGroup === g.value }"
+              @click="assignSelectedGroup = g.value"
+            >
+              <div class="assign-member-name">{{ g.label }}</div>
+              <q-icon v-if="assignSelectedGroup === g.value" name="check_circle" color="primary" size="18px" />
+            </div>
+          </div>
+
+          <!-- Member search + list -->
+          <div v-if="assignMode === 'member'" class="assign-section">
+            <q-input
+              v-model="assignMemberSearch"
+              outlined
+              dense
+              placeholder="Search members..."
+              class="q-mb-sm"
+            >
+              <template #prepend>
+                <q-icon name="search" />
+              </template>
+            </q-input>
+            <div class="assign-member-list">
+              <div
+                v-for="m in filteredAssignMembers"
+                :key="m.id"
+                class="assign-member-row"
+                :class="{ selected: assignSelectedMember === m.id }"
+                @click="selectMember(m.id, m.name)"
+              >
+                <div class="assign-member-name">{{ m.name }}</div>
+                <q-icon v-if="assignSelectedMember === m.id" name="check_circle" color="primary" size="18px" />
+              </div>
+              <div v-if="filteredAssignMembers.length === 0" class="assign-empty">
+                No members found
+              </div>
+            </div>
+          </div>
+        </q-card-section>
+
+        <div class="assign-actions q-px-md q-pb-md">
+          <q-btn outline no-caps label="Cancel" color="primary" class="assign-action-btn" v-close-popup />
+          <q-btn
+            no-caps
+            label="Assign"
+            color="primary"
+            class="assign-action-btn"
+            :disable="!canSubmitAssign"
+            :loading="assigningContribution"
+            @click="submitAssign"
+          />
+        </div>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
 import {
@@ -308,6 +421,7 @@ import type { CreateMilestoneRequest } from 'src/types/projects';
 import { useProjectPermissions } from 'src/composables/useProjectPermissions';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useBackendEvents } from 'src/composables/useBackendEvents';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import MilestoneCard from 'src/components/projects/MilestoneCard.vue';
 import AddMilestoneDialog from 'src/components/projects/AddMilestoneDialog.vue';
@@ -324,10 +438,17 @@ const identityStore = useIdentityStore();
 const contributionsStore = useContributionsStore();
 const workflow = useContributionWorkflow();
 const { isAdmin: isKeriAdmin, checkAdminStatus } = useAdminAccess();
+const { lastEvent } = useBackendEvents();
 
 // ── Current user context ─────────────────────────────────────────────────────
 
 const currentUserId = computed(() => identityStore.aidPrefix ?? '');
+const currentUserName = computed(() => {
+  const id = currentUserId.value;
+  if (!id) return '';
+  const member = communityMembersList.value.find(m => m.id === id);
+  return member?.name || '';
+});
 const currentUserRole = computed(() => {
   // KERI-verified admin (founding member, steward, etc.) gets full admin role
   if (isKeriAdmin.value) return 'community_admin';
@@ -370,6 +491,33 @@ const assignRoleTarget = ref<'lead' | 'steward'>('lead');
 const createContributionMilestoneId = ref<string | undefined>(undefined);
 const createSubParentId = ref<string | undefined>(undefined);
 const viewingContribution = ref<Contribution | null>(null);
+
+const showAssignDialog = ref(false);
+const assignTarget = ref<Contribution | null>(null);
+const assignMode = ref<'group' | 'member' | null>(null);
+const assignSelectedGroup = ref<string | null>(null);
+const assignSelectedMember = ref<string | null>(null);
+const assignSelectedMemberName = ref<string | null>(null);
+const assignMemberSearch = ref('');
+const assigningContribution = ref(false);
+
+const assignGroupOptions = [
+  { label: 'Stewards', value: 'steward' },
+  { label: 'Members', value: 'all' },
+];
+
+const filteredAssignMembers = computed(() => {
+  const q = assignMemberSearch.value.toLowerCase().trim();
+  if (!q) return communityMembersList.value;
+  return communityMembersList.value.filter(m => m.name.toLowerCase().includes(q));
+});
+
+const canSubmitAssign = computed(() => {
+  if (assignMode.value === 'group') return !!assignSelectedGroup.value;
+  if (assignMode.value === 'member') return !!assignSelectedMember.value;
+  // Also allow submit if a registered member was selected directly
+  return !!assignSelectedMember.value;
+});
 
 const newPlan = ref({ total_budget: '', project_lead: '', project_steward_id: '' });
 
@@ -484,6 +632,10 @@ onMounted(async () => {
   void loadCommunityMembers();
 });
 
+onBeforeUnmount(() => {
+  projectsStore.currentProject = null;
+});
+
 watch(
   () => route.params.id,
   (newId) => {
@@ -491,16 +643,65 @@ watch(
   },
 );
 
+// Refresh implementation plan when contribution events arrive via SSE
+// Includes both local API events (colon-separated) and P2P sync events (underscore-separated)
+watch(lastEvent, (event) => {
+  if (!event || !project.value) return;
+  const refreshEvents = [
+    // Local API SSE events
+    'contribution:registered',
+    'contribution:shared',
+    'contribution:confirmed',
+    'contribution:assigned',
+    'contribution:needs_review',
+    'contribution:approved',
+    'contribution:declined',
+    'contribution:accepted',
+    'contribution:reviewed',
+    'contribution:signed_off',
+    'contribution:updated',
+    'implementation_plan:signed_off',
+    // P2P sync events from tree listener
+    'contribution_updated',
+    'plan_updated',
+    'project_updated',
+    'milestone_updated',
+  ];
+  if (refreshEvents.includes(event.type)) {
+    projectsStore.fetchImplementationPlan(project.value.id).then(() => {
+      // Refresh viewingContribution from the updated plan data
+      if (viewingContribution.value) {
+        const fresh = planContributions.value.find(c => c.id === viewingContribution.value?.id);
+        if (fresh) {
+          viewingContribution.value = { ...fresh };
+        }
+      }
+    });
+    // If the dialog is open, re-fetch the viewing contribution to pick up child updates
+    if (viewingContribution.value && (event.type === 'contribution_updated' || event.type === 'contribution:updated')) {
+      import('src/lib/api/contributions').then(({ getContribution }) => {
+        getContribution(viewingContribution.value!.id).then((fresh) => {
+          viewingContribution.value = { ...viewingContribution.value!, ...fresh };
+        }).catch(() => {});
+      });
+    }
+    // Also refresh the project itself for status changes
+    if (event.type === 'project_updated' || event.type === 'implementation_plan:signed_off') {
+      projectsStore.fetchProject(project.value.id);
+    }
+  }
+});
+
 // ── Data loading ─────────────────────────────────────────────────────────────
 
 async function loadProject(id: string) {
-  await projectsStore.fetchProject(id);
-  if (projectsStore.currentProject) {
-    await Promise.all([
-      proposalsStore.fetchProposals(),
-      projectsStore.fetchImplementationPlan(id),
-    ]);
-  }
+  // Fetch project, proposals, and implementation plan in parallel.
+  // fetchProject uses cached data from the projects list for instant display.
+  await Promise.all([
+    projectsStore.fetchProject(id),
+    proposalsStore.fetchProposals(),
+    projectsStore.fetchImplementationPlan(id),
+  ]);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -593,6 +794,8 @@ async function handleSignOffPlan() {
   signingOffPlan.value = true;
   try {
     await projectsStore.signOffPlan(implementationPlan.value.id, project.value.id);
+    // Re-fetch project to pick up updated status (e.g. created → active)
+    await projectsStore.fetchProject(project.value.id);
     $q.notify({ type: 'positive', message: 'Implementation plan signed off!' });
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to sign off' });
@@ -648,9 +851,13 @@ async function handleCreateSubContributionSubmit(req: CreateContributionRequest)
   if (!createSubParentId.value) return;
   creatingContribution.value = true;
   try {
-    await contributionsStore.createChild(createSubParentId.value, req);
+    const { parent } = await contributionsStore.createChild(createSubParentId.value, req);
     showCreateSubDialog.value = false;
     $q.notify({ type: 'positive', message: 'Sub-contribution created!' });
+    // Update the viewing contribution with the refreshed parent (includes new child_contributions)
+    if (viewingContribution.value?.id === createSubParentId.value && parent) {
+      viewingContribution.value = { ...viewingContribution.value, ...parent } as Contribution;
+    }
     if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to create sub-contribution' });
@@ -675,9 +882,58 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
     }
   }
 
+  // Update the viewing contribution if it's the same one (keeps dialog in sync)
+  if (viewingContribution.value?.id === updated.id) {
+    viewingContribution.value = { ...viewingContribution.value, ...updated };
+  }
+
   // Refresh the implementation plan to get latest contributions state
   if (project.value) {
     await projectsStore.fetchImplementationPlan(project.value.id);
+  }
+}
+
+function handleAssignContribution(contribution: Contribution) {
+  assignTarget.value = contribution;
+  assignMode.value = null;
+  assignSelectedGroup.value = null;
+  assignSelectedMember.value = null;
+  assignSelectedMemberName.value = null;
+  assignMemberSearch.value = '';
+  showAssignDialog.value = true;
+}
+
+function selectMember(id: string, name: string) {
+  assignSelectedMember.value = id;
+  assignSelectedMemberName.value = name;
+  assignMode.value = 'member';
+  assignSelectedGroup.value = null;
+}
+
+async function submitAssign() {
+  if (!assignTarget.value) return;
+  assigningContribution.value = true;
+  try {
+    if (assignMode.value === 'group' && assignSelectedGroup.value) {
+      // Share with group → status becomes "shared"
+      await contributionsStore.share(assignTarget.value.id, {
+        shared_with_roles: [assignSelectedGroup.value],
+      });
+      $q.notify({ type: 'positive', message: 'Contribution shared with group!' });
+    } else if (assignSelectedMember.value) {
+      // Offer to member → status becomes "assigned"
+      await contributionsStore.offer(assignTarget.value.id, {
+        offered_to: assignSelectedMember.value,
+        offered_to_name: assignSelectedMemberName.value || assignSelectedMember.value,
+      });
+      $q.notify({ type: 'positive', message: 'Contribution assigned to member!' });
+    }
+    showAssignDialog.value = false;
+    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to assign' });
+  } finally {
+    assigningContribution.value = false;
   }
 }
 </script>
@@ -962,8 +1218,8 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: rgba(74, 157, 156, 0.06);
-  border: 1px solid var(--matou-accent);
+  background: rgba(234, 179, 8, 0.08);
+  border: 1px solid #eab308;
   border-radius: var(--matou-radius-sm);
   margin-bottom: 16px;
 }
@@ -971,7 +1227,7 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
 .banner-icon {
   width: 20px;
   height: 20px;
-  color: var(--matou-accent);
+  color: #ca8a04;
   flex-shrink: 0;
 }
 
@@ -985,5 +1241,122 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+// ── Assign dialog ────────────────────────────────────────────────────────────
+
+.assign-dialog {
+  min-width: 460px;
+  max-width: 540px;
+}
+
+.assign-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.assign-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assign-section-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--matou-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.assign-mode-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.assign-mode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 12px;
+  border: 1px solid var(--matou-border);
+  border-radius: var(--matou-radius-sm, 8px);
+  background: var(--matou-card);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--matou-muted-foreground);
+  transition: all 0.12s ease;
+
+  &:hover {
+    border-color: var(--matou-accent);
+    background: var(--matou-secondary);
+  }
+
+  &.active {
+    border-color: var(--matou-primary);
+    background: rgba(30, 95, 116, 0.06);
+    color: var(--matou-primary);
+  }
+}
+
+.assign-member-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.assign-member-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--matou-border);
+  border-radius: var(--matou-radius-sm, 8px);
+  cursor: pointer;
+  transition: all 0.12s ease;
+
+  &:hover {
+    border-color: var(--matou-accent);
+    background: var(--matou-secondary);
+  }
+
+  &.selected {
+    border-color: var(--matou-primary);
+    background: rgba(30, 95, 116, 0.06);
+  }
+}
+
+.assign-member-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--matou-foreground);
+}
+
+.assign-member-note {
+  font-size: 0.75rem;
+  color: var(--matou-muted-foreground);
+  margin-top: 2px;
+}
+
+.assign-empty {
+  text-align: center;
+  padding: 16px;
+  color: var(--matou-muted-foreground);
+  font-size: 0.85rem;
+}
+
+.assign-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.assign-action-btn {
+  flex: 1;
 }
 </style>

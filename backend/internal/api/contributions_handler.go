@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/contributions"
@@ -245,6 +246,16 @@ func (h *ContributionsHandler) HandleTransition(w http.ResponseWriter, r *http.R
 	}
 	log.Printf("[Contributions] contribution %s transitioned to %s", id, req.Status)
 
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:updated",
+			Data: map[string]string{
+				"contribution_id": id,
+				"status":          req.Status,
+			},
+		})
+	}
+
 	// Notify relevant parties based on the new status
 	if h.notifier != nil {
 		var notifType, recipientID, title, message string
@@ -302,14 +313,37 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "contribution not found"})
 		return
 	}
-	// Apply updates from request
+
+	// Apply core field updates
+	if v, ok := req["title"].(string); ok {
+		contrib.Title = v
+	}
+	if v, ok := req["description"].(string); ok {
+		contrib.Description = v
+	}
+	if v, ok := req["objectives"]; ok {
+		contrib.Objectives = toStringSlice(v)
+	}
+	if v, ok := req["deliverables"]; ok {
+		contrib.Deliverables = toStringSlice(v)
+	}
+	if v, ok := req["acceptance_criteria"]; ok {
+		contrib.AcceptanceCriteria = toStringSlice(v)
+	}
+	if v, ok := req["skill_requirements"]; ok {
+		contrib.SkillRequirements = toStringSlice(v)
+	}
+	if v, ok := req["estimated_hours"].(float64); ok {
+		contrib.EstimatedDuration = int(v)
+	}
+	if v, ok := req["budget"].(string); ok {
+		// stored as part of the contribution but no dedicated field — use tags or description
+		_ = v
+	}
+
+	// Evidence/review fields
 	if v, ok := req["evidence_submitted"]; ok {
-		if evidence, ok := v.([]interface{}); ok {
-			contrib.EvidenceSubmitted = make([]string, len(evidence))
-			for i, e := range evidence {
-				contrib.EvidenceSubmitted[i], _ = e.(string)
-			}
-		}
+		contrib.EvidenceSubmitted = toStringSlice(v)
 	}
 	if v, ok := req["completion_notes"].(string); ok {
 		contrib.CompletionNotes = v
@@ -320,11 +354,41 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 	if v, ok := req["quality_rating"].(float64); ok {
 		contrib.QualityRating = int(v)
 	}
+
+	// Change tracking fields
+	if v, ok := req["change_reason"].(string); ok {
+		contrib.ChangeReason = v
+	}
+	if v, ok := req["changed_by"].(string); ok {
+		contrib.ChangedBy = v
+	}
+	if v, ok := req["changed_at"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			contrib.ChangedAt = &t
+		}
+	}
+	if v, ok := req["changes_diff"]; ok {
+		if diffRaw, err := json.Marshal(v); err == nil {
+			var diffs []contributions.ContributionDiff
+			if json.Unmarshal(diffRaw, &diffs) == nil {
+				contrib.ChangesDiff = diffs
+			}
+		}
+	}
+
 	if err := h.service.SaveContribution(r.Context(), spaceID, contrib); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	log.Printf("[Contributions] contribution updated: %s", id)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:updated",
+			Data: map[string]string{
+				"contribution_id": id,
+			},
+		})
+	}
 	writeJSON(w, http.StatusOK, contrib)
 }
 
@@ -332,16 +396,26 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 // Registers a contributor's interest in a contribution and notifies relevant parties.
 func (h *ContributionsHandler) HandleRegister(w http.ResponseWriter, r *http.Request, contribID string) {
 	var req struct {
-		UserID    string `json:"user_id"`
-		Statement string `json:"statement"`
+		UserID       string `json:"user_id"`
+		UserName     string `json:"user_name"`
+		Statement    string `json:"statement"`
+		InterestNote string `json:"interest_note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	// Resolve user ID: body field → X-User-AID header
+	if req.UserID == "" {
+		req.UserID = r.Header.Get("X-User-AID")
+	}
 	if req.UserID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
 		return
+	}
+	// Accept interest_note as alias for statement
+	if req.Statement == "" && req.InterestNote != "" {
+		req.Statement = req.InterestNote
 	}
 
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
@@ -362,6 +436,26 @@ func (h *ContributionsHandler) HandleRegister(w http.ResponseWriter, r *http.Req
 
 	log.Printf("[Contributions] %s registered interest in contribution %s", req.UserID, contribID)
 
+	// Also append to the contribution's interested_contributors for inline display
+	contrib.InterestedContributors = append(contrib.InterestedContributors, contributions.InterestedContributor{
+		UserID:       req.UserID,
+		UserName:     req.UserName,
+		InterestNote: req.Statement,
+		RegisteredAt: reg.RegisteredAt.Format(time.RFC3339),
+	})
+	contrib.UpdatedAt = reg.RegisteredAt
+	_ = h.service.SaveContribution(r.Context(), spaceID, contrib)
+
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:registered",
+			Data: map[string]string{
+				"contribution_id": contribID,
+				"user_id":         req.UserID,
+			},
+		})
+	}
+
 	// Notify project lead if a notifier is configured
 	if h.notifier != nil && contrib.CreatedBy != "" {
 		h.notifier.Notify(&ContribNotification{
@@ -374,7 +468,7 @@ func (h *ContributionsHandler) HandleRegister(w http.ResponseWriter, r *http.Req
 		})
 	}
 
-	writeJSON(w, http.StatusCreated, reg)
+	writeJSON(w, http.StatusCreated, contrib)
 }
 
 // HandleListRegistrations handles GET /api/v1/contributions/{id}/registrations
@@ -517,6 +611,15 @@ func (h *ContributionsHandler) HandleOffer(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	log.Printf("[Contributions] contribution %s offered to %s", id, req.OfferedTo)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:assigned",
+			Data: map[string]string{
+				"contribution_id": id,
+				"offered_to":      req.OfferedTo,
+			},
+		})
+	}
 	if h.notifier != nil {
 		h.notifier.Notify(&ContribNotification{
 			Type:        "contribution:offered",
@@ -730,6 +833,21 @@ func (h *ContributionsHandler) HandleApproveSub(w http.ResponseWriter, r *http.R
 	}
 	log.Printf("[Contributions] sub-contribution %s approved", id)
 	writeJSON(w, http.StatusOK, contrib)
+}
+
+// toStringSlice converts an interface{} (typically []interface{} from JSON) to []string.
+func toStringSlice(v interface{}) []string {
+	arr, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // extractContribID parses the contribution ID from the URL path.

@@ -81,13 +81,17 @@ export async function createProposal(req: CreateProposalRequest): Promise<Propos
 }
 
 export async function listProposals(): Promise<{ proposals: Proposal[]; total: number }> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/proposals`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Failed to list proposals');
   return response.json();
 }
 
 export async function getProposal(id: string): Promise<Proposal> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Proposal not found');
   return response.json();
 }
@@ -126,7 +130,9 @@ export async function updateProposal(
 export async function getProposalHistory(
   id: string,
 ): Promise<{ history: ProposalHistoryEntry[]; total: number }> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}/history`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}/history`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Failed to fetch history');
   return response.json();
 }
@@ -151,7 +157,9 @@ export async function addEndorsement(
 export async function listEndorsements(
   proposalId: string,
 ): Promise<{ endorsements: Endorsement[]; total: number }> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/endorsements`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/endorsements`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Failed to list endorsements');
   return response.json();
 }

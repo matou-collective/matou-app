@@ -37,23 +37,53 @@
           :rules="[(v) => !!v.trim() || 'Duration is required']"
         />
 
-        <div class="row q-col-gutter-md">
-          <div class="col-6">
-            <q-input
-              v-model="form.start_date"
-              label="Start Date"
-              type="date"
-              outlined
-            />
-          </div>
-          <div class="col-6">
-            <q-input
-              v-model="form.end_date"
-              label="End Date"
-              type="date"
-              outlined
-            />
-          </div>
+        <div class="date-row">
+          <q-input
+            v-model="form.start_date"
+            label="Start Date"
+            outlined
+            mask="##-##-####"
+            placeholder="dd-mm-yyyy"
+          >
+            <template #append>
+              <q-icon name="event" class="cursor-pointer">
+                <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                  <q-date
+                    :model-value="toQDateFormat(form.start_date)"
+                    @update:model-value="form.start_date = fromQDateFormat($event)"
+                    mask="YYYY/MM/DD"
+                  >
+                    <div class="row items-center justify-end">
+                      <q-btn v-close-popup label="Close" color="primary" flat />
+                    </div>
+                  </q-date>
+                </q-popup-proxy>
+              </q-icon>
+            </template>
+          </q-input>
+          <q-input
+            v-model="form.end_date"
+            label="End Date"
+            outlined
+            mask="##-##-####"
+            placeholder="dd-mm-yyyy"
+          >
+            <template #append>
+              <q-icon name="event" class="cursor-pointer">
+                <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                  <q-date
+                    :model-value="toQDateFormat(form.end_date)"
+                    @update:model-value="form.end_date = fromQDateFormat($event)"
+                    mask="YYYY/MM/DD"
+                  >
+                    <div class="row items-center justify-end">
+                      <q-btn v-close-popup label="Close" color="primary" flat />
+                    </div>
+                  </q-date>
+                </q-popup-proxy>
+              </q-icon>
+            </template>
+          </q-input>
         </div>
 
         <!-- Success criteria -->
@@ -95,17 +125,18 @@
         </div>
       </q-card-section>
 
-      <q-card-actions align="right" class="q-px-md q-pb-md">
-        <q-btn flat no-caps label="Cancel" v-close-popup @click="resetForm" />
+      <div class="milestone-actions q-px-md q-pb-md">
         <q-btn
           no-caps
           label="Add Milestone"
           color="primary"
+          class="milestone-action-btn"
           :loading="isSubmitting"
           :disable="!isValid"
           @click="handleSubmit"
         />
-      </q-card-actions>
+        <q-btn outline no-caps label="Cancel" color="primary" class="milestone-action-btn" v-close-popup @click="resetForm" />
+      </div>
     </q-card>
   </q-dialog>
 </template>
@@ -163,6 +194,27 @@ watch(
   },
 );
 
+// Convert dd-mm-yyyy to YYYY/MM/DD for q-date
+function toQDateFormat(ddmmyyyy: string): string {
+  if (!ddmmyyyy || ddmmyyyy.length !== 10) return '';
+  const [dd, mm, yyyy] = ddmmyyyy.split('-');
+  return `${yyyy}/${mm}/${dd}`;
+}
+
+// Convert YYYY/MM/DD from q-date to dd-mm-yyyy for display
+function fromQDateFormat(qdate: string): string {
+  if (!qdate) return '';
+  const [yyyy, mm, dd] = qdate.split('/');
+  return `${dd}-${mm}-${yyyy}`;
+}
+
+// Convert dd-mm-yyyy to yyyy-mm-dd (ISO) for backend
+function toISODate(ddmmyyyy: string): string {
+  if (!ddmmyyyy || ddmmyyyy.length !== 10) return '';
+  const [dd, mm, yyyy] = ddmmyyyy.split('-');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function resetForm() {
   form.value = makeDefault();
 }
@@ -173,8 +225,8 @@ function handleSubmit() {
     title: form.value.title.trim(),
     description: form.value.description.trim() || undefined,
     duration: form.value.duration.trim(),
-    start_date: form.value.start_date || undefined,
-    end_date: form.value.end_date || undefined,
+    start_date: toISODate(form.value.start_date) || undefined,
+    end_date: toISODate(form.value.end_date) || undefined,
     success_criteria: form.value.success_criteria.filter((c) => c.trim()),
   };
   emit('submit', req);
@@ -190,5 +242,24 @@ function handleSubmit() {
 .form-body {
   max-height: 65vh;
   overflow-y: auto;
+}
+
+.milestone-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.milestone-action-btn {
+  flex: 1;
+  border-radius: 10px;
+}
+
+.date-row {
+  display: flex;
+  gap: 16px;
+
+  > * {
+    flex: 1;
+  }
 }
 </style>
