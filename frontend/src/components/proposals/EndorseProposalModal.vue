@@ -26,16 +26,10 @@
         />
       </q-card-section>
 
-      <q-card-actions align="right">
-        <q-btn flat label="Cancel" v-close-popup />
-        <q-btn
-          flat
-          label="Endorse"
-          color="pink"
-          @click="handleEndorse"
-          :loading="loading"
-        />
-      </q-card-actions>
+      <div class="dialog-footer">
+        <q-btn no-caps label="Endorse" color="pink" class="dialog-footer-btn" @click="handleEndorse" :loading="loading" />
+        <q-btn outline no-caps label="Cancel" color="primary" class="dialog-footer-btn" v-close-popup />
+      </div>
     </q-card>
   </q-dialog>
 </template>
@@ -63,6 +57,18 @@ function handleEndorse() {
 </script>
 
 <style scoped lang="scss">
+.dialog-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--matou-border);
+}
+
+.dialog-footer-btn {
+  flex: 1;
+  border-radius: 10px;
+}
+
 .endorse-proposal-box {
   background: var(--matou-teal-light, #f0f9ff);
   border-radius: 8px;

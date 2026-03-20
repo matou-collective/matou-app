@@ -145,8 +145,24 @@ func (h *ProjectsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleList handles GET /api/v1/projects
+// Supports optional ?proposal_id= filter to find the project linked to a specific proposal.
 func (h *ProjectsHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+
+	if proposalID := r.URL.Query().Get("proposal_id"); proposalID != "" {
+		project, err := h.service.GetProjectByProposalID(r.Context(), spaceID, proposalID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if project != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{"projects": []*contributions.Project{project}, "total": 1})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]interface{}{"projects": []*contributions.Project{}, "total": 0})
+		}
+		return
+	}
+
 	projects, err := h.service.ListProjects(r.Context(), spaceID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

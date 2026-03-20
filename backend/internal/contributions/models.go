@@ -235,6 +235,17 @@ type GovernanceAction struct {
 	UpdatedAt       time.Time              `json:"updated_at"`
 }
 
+// --- Proposal Comments ---
+
+type ProposalComment struct {
+	ID         string    `json:"id"`
+	ProposalID string    `json:"proposal_id"`
+	UserID     string    `json:"user_id"`
+	UserName   string    `json:"user_name"`
+	Text       string    `json:"text"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 // --- Implementation Plan ---
 
 // PlanStatus represents the lifecycle state of an implementation plan.

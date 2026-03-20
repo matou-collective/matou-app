@@ -108,16 +108,10 @@
         </div>
       </q-card-section>
 
-      <q-card-actions align="right" class="q-px-md q-pb-md">
-        <q-btn flat no-caps label="Cancel" v-close-popup />
-        <q-btn
-          flat
-          no-caps
-          label="Add Action"
-          color="primary"
-          @click="handleAdd"
-        />
-      </q-card-actions>
+      <div class="dialog-footer">
+        <q-btn no-caps label="Add Action" color="primary" class="dialog-footer-btn" @click="handleAdd" />
+        <q-btn outline no-caps label="Cancel" color="primary" class="dialog-footer-btn" v-close-popup />
+      </div>
     </q-card>
   </q-dialog>
 </template>
@@ -255,6 +249,18 @@ function handleAdd() {
 </script>
 
 <style scoped lang="scss">
+.dialog-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--matou-border);
+}
+
+.dialog-footer-btn {
+  flex: 1;
+  border-radius: 10px;
+}
+
 .preview-card {
   background: var(--matou-secondary);
   border: 1px solid var(--matou-border);

@@ -172,16 +172,20 @@ async function handleCreateSubmit(data: { title: string; description: string }) 
 }
 
 .create-btn {
-  background: var(--matou-primary);
-  color: white;
-  border: none;
+  background: transparent;
+  color: var(--matou-teal, #0d9488);
+  border: 2px solid var(--matou-teal, #0d9488);
   border-radius: 8px;
   padding: 8px 16px;
   font-weight: 500;
   cursor: pointer;
-  font-size: 0.875rem;
-  transition: opacity 0.15s;
-  &:hover { opacity: 0.88; }
+  white-space: nowrap;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--matou-teal, #0d9488);
+    color: white;
+  }
 }
 
 .filter-row {

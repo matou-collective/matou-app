@@ -4,8 +4,15 @@
  */
 import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
+import { useIdentityStore } from 'stores/identity';
 
 const log = createLogger('ProposalsAPI');
+
+function authHeaders(): Record<string, string> {
+  const identityStore = useIdentityStore();
+  const aid = identityStore.currentAID?.prefix;
+  return aid ? { 'X-User-AID': aid } : {};
+}
 
 export interface CreateProposalRequest {
   proposer_id: string;
@@ -51,6 +58,15 @@ export interface Endorsement {
   comment?: string;
 }
 
+export interface ProposalComment {
+  id: string;
+  proposal_id: string;
+  user_id: string;
+  user_name: string;
+  text: string;
+  created_at: string;
+}
+
 export interface ProposalHistoryEntry {
   id: string;
   proposal_id: string;
@@ -70,7 +86,7 @@ export async function createProposal(req: CreateProposalRequest): Promise<Propos
   log.info('Creating proposal: %s', req.title);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals`, {
     method: 'POST',
-    headers: authHeaders(),
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(req),
   });
   if (!response.ok) {
@@ -100,7 +116,7 @@ export async function transitionProposal(id: string, status: string): Promise<Pr
   log.info('Transitioning proposal %s to %s', id, status);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}/transition`, {
     method: 'POST',
-    headers: authHeaders(),
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ status }),
   });
   if (!response.ok) {
@@ -115,9 +131,15 @@ export async function updateProposal(
   fields: Partial<Omit<Proposal, 'id' | 'status' | 'created_at' | 'updated_at'>>,
 ): Promise<Proposal> {
   log.info('Updating proposal %s', id);
+  const identityStore = useIdentityStore();
+  const userName = identityStore.currentAID?.name;
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}`, {
     method: 'PATCH',
-    headers: authHeaders(),
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(userName ? { 'X-User-Name': userName } : {}),
+    },
     body: JSON.stringify(fields),
   });
   if (!response.ok) {
@@ -161,5 +183,32 @@ export async function listEndorsements(
     headers: authHeaders(),
   });
   if (!response.ok) throw new Error('Failed to list endorsements');
+  return response.json();
+}
+
+export async function addProposalComment(
+  proposalId: string,
+  userId: string,
+  userName: string,
+  text: string,
+): Promise<ProposalComment> {
+  log.info('Adding comment to proposal %s', proposalId);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, user_name: userName, text }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to add comment');
+  }
+  return response.json();
+}
+
+export async function listProposalComments(
+  proposalId: string,
+): Promise<{ comments: ProposalComment[]; total: number }> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`);
+  if (!response.ok) throw new Error('Failed to list comments');
   return response.json();
 }

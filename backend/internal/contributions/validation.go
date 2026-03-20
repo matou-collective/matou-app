@@ -134,9 +134,6 @@ func ValidateProposal(p *Proposal) []string {
 	if len(p.Types) == 0 {
 		errs = append(errs, "at least one type is required")
 	}
-	if p.Priority == "" {
-		errs = append(errs, "priority is required")
-	}
 	if p.Description == "" {
 		errs = append(errs, "description is required")
 	}

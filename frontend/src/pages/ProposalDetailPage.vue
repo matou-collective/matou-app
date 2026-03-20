@@ -71,6 +71,7 @@
           <!-- In Review -->
           <template v-if="proposal.status === 'in_review'">
             <q-btn
+              v-if="isSteward"
               color="positive"
               no-caps
               icon="check"
@@ -79,13 +80,18 @@
               :loading="transitioning"
             />
             <q-btn
+              v-if="isSteward"
               color="negative"
               no-caps
               icon="block"
               label="Reject Proposal"
               @click="showRejectDialog = true"
             />
-            <q-btn flat no-caps icon="edit" label="Edit Proposal" @click="showEditDialog = true" />
+            <q-btn v-if="isSteward || isProposer" flat no-caps icon="edit" label="Edit Proposal" @click="showEditDialog = true" />
+            <div v-if="!isSteward && !isProposer" class="review-info-banner">
+              <q-icon name="info" color="primary" size="20px" />
+              <span>Proposal is currently in review.</span>
+            </div>
           </template>
 
           <!-- Signed Off — create plan when none exists -->
@@ -101,9 +107,18 @@
             />
           </template>
 
-          <!-- Approved — create project -->
+          <!-- Approved — create or view project -->
           <template v-if="proposal.status === 'approved'">
             <q-btn
+              v-if="linkedProject"
+              color="primary"
+              no-caps
+              icon="open_in_new"
+              label="View Project"
+              :to="{ name: 'projects' }"
+            />
+            <q-btn
+              v-else
               color="positive"
               no-caps
               icon="rocket_launch"
@@ -123,7 +138,7 @@
             </div>
             <span :class="endorsementProgress >= 100 ? 'text-positive' : 'text-grey-6'">
               {{ proposalsStore.endorsements.length }} /
-              {{ proposal.endorsement_threshold || 100 }}
+              {{ proposal.endorsement_threshold || 1 }}
             </span>
           </div>
           <q-linear-progress
@@ -261,7 +276,7 @@
             <p class="info-card-value">{{ proposal.estimated_budget }}</p>
           </div>
           <div class="info-card">
-            <h4 class="info-card-label">Timeline</h4>
+            <h4 class="info-card-label">Timeline (months)</h4>
             <p class="info-card-value">{{ proposal.timeline }}</p>
           </div>
         </div>
@@ -299,21 +314,21 @@
         <div class="content-section">
           <h3 class="section-title row items-center q-gutter-sm">
             <q-icon name="chat" size="20px" />
-            <span>Discussion ({{ comments.length }})</span>
+            <span>Discussion ({{ proposalsStore.comments.length }})</span>
           </h3>
-          <div v-if="comments.length === 0" class="empty-discussion">
+          <div v-if="proposalsStore.comments.length === 0" class="empty-discussion">
             No comments yet. Be the first to share your thoughts!
           </div>
           <div v-else class="comments-list">
-            <div v-for="(c, i) in comments" :key="i" class="comment-card">
+            <div v-for="c in proposalsStore.comments" :key="c.id" class="comment-card">
               <div class="comment-header">
                 <div class="comment-avatar">
                   <q-icon name="person" size="14px" />
                 </div>
-                <span class="comment-author">{{ c.author }}</span>
-                <span class="comment-time">&middot; {{ c.timestamp }}</span>
+                <span class="comment-author">{{ c.user_name }}</span>
+                <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
               </div>
-              <p class="comment-text">{{ c.comment }}</p>
+              <p class="comment-text">{{ c.text }}</p>
             </div>
           </div>
           <div class="comment-input-row">
@@ -386,6 +401,7 @@
       v-model="showGovernanceAction"
       :action="selectedAction"
       :all-actions="decisionPlansStore.currentPlan?.governance_actions ?? []"
+      :proposal-status="proposal?.status"
       @complete="handleCompleteAction"
     />
 
@@ -426,6 +442,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
 import { BACKEND_URL } from 'src/lib/api/client';
+import { getProjectForProposal, type Project } from 'src/lib/api/projects';
 import { useProposalsStore } from 'stores/proposals';
 import { useDecisionPlansStore } from 'stores/decisionPlans';
 import type { GovernanceAction } from 'src/lib/api/decisionPlans';
@@ -439,6 +456,8 @@ import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.
 import CreateDecisionPlanDialog from 'src/components/proposals/CreateDecisionPlanDialog.vue';
 import AddGovernanceActionDialog from 'src/components/proposals/AddGovernanceActionDialog.vue';
 import GovernanceActionModal from 'src/components/proposals/GovernanceActionModal.vue';
+import { useIdentityStore } from 'stores/identity';
+import { useAdminAccess } from 'src/composables/useAdminAccess';
 
 // ── Router / store setup ──────────────────────────────────────────────────────
 
@@ -447,12 +466,15 @@ const router = useRouter();
 const $q = useQuasar();
 const proposalsStore = useProposalsStore();
 const decisionPlansStore = useDecisionPlansStore();
+const identityStore = useIdentityStore();
+const { isSteward, checkAdminStatus } = useAdminAccess();
 
 // ── Local state ───────────────────────────────────────────────────────────────
 
 const transitioning = ref(false);
 const endorsing = ref(false);
 const creatingProject = ref(false);
+const linkedProject = ref<Project | null>(null);
 
 const showEndorseModal = ref(false);
 const showHistory = ref(false);
@@ -464,7 +486,6 @@ const showRejectDialog = ref(false);
 
 const rejectReason = ref('');
 const newComment = ref('');
-const comments = ref<{ author: string; comment: string; timestamp: string }[]>([]);
 const selectedAction = ref<GovernanceAction | null>(null);
 
 // ── Derived state ─────────────────────────────────────────────────────────────
@@ -472,7 +493,7 @@ const selectedAction = ref<GovernanceAction | null>(null);
 const proposal = computed(() => proposalsStore.currentProposal);
 
 const endorsementProgress = computed(() => {
-  const threshold = proposal.value?.endorsement_threshold || 100;
+  const threshold = proposal.value?.endorsement_threshold || 1;
   return (proposalsStore.endorsements.length / threshold) * 100;
 });
 
@@ -481,9 +502,18 @@ const showRoleAssignments = computed(() => {
   return s === 'in_review' || s === 'signed_off' || s === 'voting_process';
 });
 
+const isProposer = computed(() => {
+  const p = proposal.value;
+  if (!p) return false;
+  const aid = identityStore.currentAID;
+  if (!aid) return false;
+  return p.proposer_id === aid.name || p.proposer_id === aid.prefix;
+});
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(() => {
+  void checkAdminStatus();
   const id = route.params.id as string;
   void loadProposal(id);
 });
@@ -502,7 +532,11 @@ async function loadProposal(id: string) {
   if (proposalsStore.currentProposal) {
     void proposalsStore.fetchEndorsements(id);
     void proposalsStore.fetchHistory(id);
+    void proposalsStore.fetchComments(id);
     void decisionPlansStore.fetchForProposal(id);
+    if (proposalsStore.currentProposal.status === 'approved') {
+      linkedProject.value = await getProjectForProposal(id);
+    }
   }
 }
 
@@ -533,8 +567,9 @@ async function signOff() {
   try {
     await proposalsStore.transition(proposal.value.id, 'signed_off');
     $q.notify({ type: 'positive', message: 'Proposal signed off!' });
-  } catch {
-    $q.notify({ type: 'negative', message: 'Sign off failed' });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Sign off failed';
+    $q.notify({ type: 'negative', message: msg });
   } finally {
     transitioning.value = false;
   }
@@ -548,7 +583,10 @@ async function confirmReject() {
       `${BACKEND_URL}/api/v1/proposals/${proposal.value.id}/transition`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(identityStore.currentAID?.prefix ? { 'X-User-AID': identityStore.currentAID.prefix } : {}),
+        },
         body: JSON.stringify({ status: 'rejected', reason: rejectReason.value.trim() }),
       },
     );
@@ -572,7 +610,7 @@ async function confirmEndorse(comment: string) {
   endorsing.value = true;
   try {
     const result = await proposalsStore.endorse(proposal.value.id, {
-      endorser_id: 'current-user',
+      endorser_id: identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown',
       endorsed_at: new Date().toISOString(),
       comment: comment || undefined,
     });
@@ -606,10 +644,11 @@ function copyLink() {
 async function claimRole(role: 'lead' | 'steward') {
   if (!proposal.value) return;
   try {
+    const userId = identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown';
     const fields =
       role === 'lead'
-        ? { proposal_lead_id: 'current-user' }
-        : { proposal_steward_id: 'current-user' };
+        ? { proposal_lead_id: userId }
+        : { proposal_steward_id: userId };
     await proposalsStore.update(proposal.value.id, fields);
     $q.notify({
       type: 'positive',
@@ -743,15 +782,17 @@ async function createProject() {
 
 // ── Discussion ────────────────────────────────────────────────────────────────
 
-function addComment() {
-  if (!newComment.value.trim()) return;
-  comments.value.push({
-    author: 'Current User',
-    comment: newComment.value.trim(),
-    timestamp: 'Just now',
-  });
-  newComment.value = '';
-  $q.notify({ type: 'positive', message: 'Comment added!' });
+async function addComment() {
+  if (!newComment.value.trim() || !proposal.value) return;
+  const userId = identityStore.currentAID?.prefix || 'unknown';
+  const userName = identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown';
+  try {
+    await proposalsStore.addComment(proposal.value.id, userId, userName, newComment.value.trim());
+    newComment.value = '';
+    $q.notify({ type: 'positive', message: 'Comment added!' });
+  } catch {
+    $q.notify({ type: 'negative', message: 'Failed to add comment' });
+  }
 }
 </script>
 
@@ -884,6 +925,18 @@ function addComment() {
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius);
   padding: 16px;
+}
+
+.review-info-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--matou-radius-sm);
+  color: var(--matou-foreground);
+  font-size: 0.9rem;
 }
 
 .roles-notice {

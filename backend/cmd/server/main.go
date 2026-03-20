@@ -495,7 +495,11 @@ func main() {
 	notifEmailAdapter := notifications.NewEmailAdapter(emailSender)
 	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
 	contribNotifier := &contribNotifierAdapter{svc: notifService}
-	roleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
+	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
+	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
+	credentialRoleLookup := api.NewCredentialRoleLookup(store)
+	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
+	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
 
 	// Grant community_admin role to all configured org admins.
 	// Also register a callback so admin AIDs are updated whenever org config changes
@@ -507,7 +511,7 @@ func main() {
 				adminAIDs = append(adminAIDs, a.AID)
 			}
 		}
-		roleLookup.SetAdminAIDs(adminAIDs)
+		profileRoleLookup.SetAdminAIDs(adminAIDs)
 		log.Printf("[RBAC] Updated admin AIDs: %v", adminAIDs)
 	}
 	if orgConfigHandler.IsConfigured() {

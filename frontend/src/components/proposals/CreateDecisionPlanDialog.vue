@@ -67,17 +67,10 @@
         </div>
       </q-card-section>
 
-      <q-card-actions align="right" class="q-px-md q-pb-md">
-        <q-btn flat no-caps label="Cancel" v-close-popup />
-        <q-btn
-          flat
-          no-caps
-          label="Create Plan"
-          color="primary"
-          :loading="loading"
-          @click="handleCreate"
-        />
-      </q-card-actions>
+      <div class="dialog-footer">
+        <q-btn no-caps label="Create Plan" color="primary" class="dialog-footer-btn" :loading="loading" @click="handleCreate" />
+        <q-btn outline no-caps label="Cancel" color="primary" class="dialog-footer-btn" v-close-popup />
+      </div>
     </q-card>
   </q-dialog>
 </template>
@@ -203,6 +196,18 @@ function handleCreate() {
 </script>
 
 <style scoped lang="scss">
+.dialog-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--matou-border);
+}
+
+.dialog-footer-btn {
+  flex: 1;
+  border-radius: 10px;
+}
+
 .house-config {
   background: var(--matou-card);
   border: 1px solid var(--matou-border);

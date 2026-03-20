@@ -153,6 +153,65 @@ func TestService_AutoCreateProjectOnApproval(t *testing.T) {
 	}
 }
 
+func TestService_LinkProposalToProject_RejectsDuplicate(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	// Create two projects
+	proj1, _ := svc.CreateProject(ctx, "space-1", &CreateProjectRequest{
+		Title: "Project A", Description: "First", CreatedBy: "admin-1",
+	})
+	proj2, _ := svc.CreateProject(ctx, "space-1", &CreateProjectRequest{
+		Title: "Project B", Description: "Second", CreatedBy: "admin-1",
+	})
+
+	// Link proposal to first project — should succeed
+	_, err := svc.LinkProposalToProject(ctx, "space-1", proj1.ID, "proposal-1")
+	if err != nil {
+		t.Fatalf("first link should succeed: %v", err)
+	}
+
+	// Try linking same proposal to second project — should fail
+	_, err = svc.LinkProposalToProject(ctx, "space-1", proj2.ID, "proposal-1")
+	if err == nil {
+		t.Fatal("expected error when linking proposal to a second project")
+	}
+
+	// Re-linking to the same project should be idempotent (no error)
+	_, err = svc.LinkProposalToProject(ctx, "space-1", proj1.ID, "proposal-1")
+	if err != nil {
+		t.Fatalf("re-link to same project should be idempotent: %v", err)
+	}
+}
+
+func TestService_GetProjectByProposalID(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	proj, _ := svc.CreateProject(ctx, "space-1", &CreateProjectRequest{
+		Title: "Project", Description: "Test", CreatedBy: "admin-1",
+	})
+	svc.LinkProposalToProject(ctx, "space-1", proj.ID, "proposal-1")
+
+	// Should find the linked project
+	found, err := svc.GetProjectByProposalID(ctx, "space-1", "proposal-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found == nil || found.ID != proj.ID {
+		t.Errorf("expected project %s, got %v", proj.ID, found)
+	}
+
+	// Should return nil for unlinked proposal
+	found, err = svc.GetProjectByProposalID(ctx, "space-1", "proposal-999")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found != nil {
+		t.Errorf("expected nil for unlinked proposal, got %v", found)
+	}
+}
+
 func TestService_UpdateProject(t *testing.T) {
 	svc := NewService(NewMockStore())
 	ctx := context.Background()
@@ -268,12 +327,45 @@ func TestService_AddGovernanceAction(t *testing.T) {
 	}
 }
 
+func transitionToVotingProcess(t *testing.T, svc *Service, ctx context.Context, spaceID string, prop *Proposal) {
+	t.Helper()
+	svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalSubmitted)
+	svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalEndorsing)
+	svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalInReview)
+	// Assign lead+steward (required for sign-off)
+	lead := "lead-1"
+	steward := "steward-1"
+	svc.UpdateProposal(ctx, spaceID, prop.ID, &UpdateProposalRequest{
+		ProposalLeadID: &lead, ProposalStewardID: &steward,
+	})
+	if _, err := svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalSignedOff); err != nil {
+		t.Fatalf("transition to signed_off failed: %v", err)
+	}
+	if _, err := svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalVotingProcess); err != nil {
+		t.Fatalf("transition to voting_process failed: %v", err)
+	}
+}
+
 func TestService_CompleteGovernanceAction(t *testing.T) {
 	svc := NewService(NewMockStore())
 	ctx := context.Background()
 
+	// Create full chain: proposal (voting_process) → decision plan → action
+	prop, _ := svc.CreateProposal(ctx, "space-1", &CreateProposalRequest{
+		ProposerID: "user-1", Title: "T", Types: []ProposalType{ProposalTypeTechnical},
+		Priority: PriorityLow, Description: "d", ProblemStatement: "p",
+		Solution: "s", ExpectedOutcomes: []string{"o"}, EstimatedBudget: "$1", Timeline: "1w",
+	})
+	transitionToVotingProcess(t, svc, ctx, "space-1", prop)
+
+	dp, _ := svc.CreateDecisionPlan(ctx, "space-1", &CreateDecisionPlanRequest{
+		ProposalID: prop.ID, Title: "Test", Description: "d",
+		Objectives: []string{"o"}, ExpectedOutcomes: []string{"o"},
+		ProposalLeadID: "lead-1", ProposalStewardID: "steward-1",
+	})
+
 	action, _ := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
-		DecisionPlanID: "dp-1",
+		DecisionPlanID: dp.ID,
 		House:          HouseElderCouncil,
 		ActionType:     ActionDecision,
 		Description:    "Elder veto check",
@@ -288,6 +380,60 @@ func TestService_CompleteGovernanceAction(t *testing.T) {
 	}
 	if updated.Outcome != OutcomeNoVeto {
 		t.Errorf("expected no_veto, got %s", updated.Outcome)
+	}
+}
+
+func TestService_CompleteGovernanceAction_BlockedBeforeVotingProcess(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+
+	// Create proposal in signed_off status (before voting_process)
+	prop, _ := svc.CreateProposal(ctx, "space-1", &CreateProposalRequest{
+		ProposerID: "user-1", Title: "T", Types: []ProposalType{ProposalTypeTechnical},
+		Priority: PriorityLow, Description: "d", ProblemStatement: "p",
+		Solution: "s", ExpectedOutcomes: []string{"o"}, EstimatedBudget: "$1", Timeline: "1w",
+	})
+	svc.TransitionProposal(ctx, "space-1", prop.ID, ProposalSubmitted)
+	svc.TransitionProposal(ctx, "space-1", prop.ID, ProposalEndorsing)
+	svc.TransitionProposal(ctx, "space-1", prop.ID, ProposalInReview)
+	lead := "lead-1"
+	steward := "steward-1"
+	svc.UpdateProposal(ctx, "space-1", prop.ID, &UpdateProposalRequest{
+		ProposalLeadID: &lead, ProposalStewardID: &steward,
+	})
+	svc.TransitionProposal(ctx, "space-1", prop.ID, ProposalSignedOff)
+
+	dp, _ := svc.CreateDecisionPlan(ctx, "space-1", &CreateDecisionPlanRequest{
+		ProposalID: prop.ID, Title: "Test", Description: "d",
+		Objectives: []string{"o"}, ExpectedOutcomes: []string{"o"},
+		ProposalLeadID: "lead-1", ProposalStewardID: "steward-1",
+	})
+
+	// Decision action should be blocked
+	decisionAction, _ := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
+		DecisionPlanID: dp.ID,
+		House:          HouseElderCouncil,
+		ActionType:     ActionDecision,
+		Description:    "Elder veto check",
+	})
+	_, err := svc.CompleteGovernanceAction(ctx, "space-1", decisionAction.ID, OutcomeNoVeto)
+	if err == nil {
+		t.Fatal("expected error: decision voting should be blocked before voting_process")
+	}
+
+	// Meeting action should still be allowed
+	meetingAction, _ := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
+		DecisionPlanID: dp.ID,
+		House:          HouseElderCouncil,
+		ActionType:     ActionMeeting,
+		Description:    "Elder meeting",
+	})
+	completed, err := svc.CompleteGovernanceAction(ctx, "space-1", meetingAction.ID, "")
+	if err != nil {
+		t.Fatalf("meeting completion should be allowed before voting_process: %v", err)
+	}
+	if completed.Status != GovActionCompleted {
+		t.Errorf("expected completed, got %s", completed.Status)
 	}
 }
 

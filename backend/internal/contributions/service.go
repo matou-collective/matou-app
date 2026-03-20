@@ -120,6 +120,15 @@ func (s *Service) TransitionProposal(ctx context.Context, spaceID, proposalID st
 	if err := ValidateProposalTransition(p.Status, newStatus); err != nil {
 		return nil, err
 	}
+	// Require Lead and Steward roles before sign-off
+	if p.Status == ProposalInReview && newStatus == ProposalSignedOff {
+		if p.ProposalLeadID == "" {
+			return nil, fmt.Errorf("proposal lead must be assigned before sign-off")
+		}
+		if p.ProposalStewardID == "" {
+			return nil, fmt.Errorf("proposal steward must be assigned before sign-off")
+		}
+	}
 	p.Status = newStatus
 	p.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, p.ID, "proposal", p); err != nil {
@@ -238,7 +247,7 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 	if err == nil {
 		threshold := p.EndorsementThreshold
 		if threshold <= 0 {
-			threshold = 100
+			threshold = 1
 		}
 		if len(endorsements) >= threshold {
 			result.ThresholdMet = true
@@ -260,6 +269,34 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 	}
 
 	return result, nil
+}
+
+// --- Proposal Comments ---
+
+func (s *Service) AddProposalComment(ctx context.Context, spaceID string, comment *ProposalComment) (*ProposalComment, error) {
+	comment.ID = generateID("pcmt")
+	comment.CreatedAt = time.Now()
+	if err := s.store.Save(spaceID, comment.ID, "proposal_comment", comment); err != nil {
+		return nil, err
+	}
+	return comment, nil
+}
+
+func (s *Service) ListProposalComments(ctx context.Context, spaceID, proposalID string) ([]*ProposalComment, error) {
+	raw, err := s.store.List(spaceID, "proposal_comment")
+	if err != nil {
+		return nil, err
+	}
+	var comments []*ProposalComment
+	for _, r := range raw {
+		var c ProposalComment
+		if err := json.Unmarshal(r, &c); err == nil {
+			if c.ProposalID == proposalID {
+				comments = append(comments, &c)
+			}
+		}
+	}
+	return comments, nil
 }
 
 func (s *Service) CreateRoleContributions(ctx context.Context, spaceID string, proposal *Proposal) {
@@ -433,14 +470,39 @@ func (s *Service) DeleteProject(ctx context.Context, spaceID, projectID string) 
 	return s.store.Delete(spaceID, projectID)
 }
 
+// GetProjectByProposalID returns the project linked to the given proposal, or nil if none exists.
+func (s *Service) GetProjectByProposalID(ctx context.Context, spaceID, proposalID string) (*Project, error) {
+	projects, err := s.ListProjects(ctx, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range projects {
+		for _, pid := range p.ProposalIDs {
+			if pid == proposalID {
+				return p, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
 func (s *Service) LinkProposalToProject(ctx context.Context, spaceID, projectID, proposalID string) (*Project, error) {
+	// Prevent a proposal from being linked to multiple projects.
+	existing, err := s.GetProjectByProposalID(ctx, spaceID, proposalID)
+	if err != nil {
+		return nil, fmt.Errorf("checking existing project: %w", err)
+	}
+	if existing != nil && existing.ID != projectID {
+		return nil, fmt.Errorf("proposal %s already has a project (%s)", proposalID, existing.ID)
+	}
+
 	p, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
 	}
 	for _, id := range p.ProposalIDs {
 		if id == proposalID {
-			return p, nil // already linked
+			return p, nil // already linked to this project
 		}
 	}
 	p.ProposalIDs = append(p.ProposalIDs, proposalID)
@@ -505,6 +567,7 @@ func (s *Service) GetDecisionPlan(ctx context.Context, spaceID, dpID string) (*D
 	if err := s.store.Get(spaceID, dpID, &dp); err != nil {
 		return nil, err
 	}
+	s.hydrateDecisionPlanActions(spaceID, &dp)
 	return &dp, nil
 }
 
@@ -517,10 +580,28 @@ func (s *Service) ListDecisionPlans(ctx context.Context, spaceID string) ([]*Dec
 	for _, r := range raw {
 		var dp DecisionPlan
 		if err := json.Unmarshal(r, &dp); err == nil {
+			s.hydrateDecisionPlanActions(spaceID, &dp)
 			plans = append(plans, &dp)
 		}
 	}
 	return plans, nil
+}
+
+func (s *Service) hydrateDecisionPlanActions(spaceID string, dp *DecisionPlan) {
+	raw, err := s.store.List(spaceID, "governance_action")
+	if err != nil {
+		return
+	}
+	var actions []GovernanceAction
+	for _, r := range raw {
+		var a GovernanceAction
+		if err := json.Unmarshal(r, &a); err == nil {
+			if a.DecisionPlanID == dp.ID {
+				actions = append(actions, a)
+			}
+		}
+	}
+	dp.GovernanceActions = actions
 }
 
 func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID string, newStatus DecisionPlanStatus) (*DecisionPlan, error) {
@@ -608,6 +689,25 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 	if err := ValidateGovernanceActionTransition(action.Status, GovActionCompleted); err != nil {
 		return nil, err
 	}
+
+	// Decision actions (votes) can only be completed during the voting process.
+	// Meetings and discussions can be completed earlier as preparatory steps.
+	if action.ActionType == ActionDecision {
+		dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
+		if err != nil {
+			return nil, fmt.Errorf("finding decision plan: %w", err)
+		}
+		if dp.ProposalID != "" {
+			prop, err := s.GetProposal(ctx, spaceID, dp.ProposalID)
+			if err != nil {
+				return nil, fmt.Errorf("finding proposal: %w", err)
+			}
+			if prop.Status != ProposalVotingProcess {
+				return nil, fmt.Errorf("voting is only allowed when the proposal is in voting process (current status: %s)", prop.Status)
+			}
+		}
+	}
+
 	action.Status = GovActionCompleted
 	action.Outcome = outcome
 	action.UpdatedAt = time.Now()
@@ -617,7 +717,6 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 
 	// If this was a decision action, check if all decisions are now complete
 	if action.ActionType == ActionDecision {
-		// Find the proposal ID through the decision plan
 		dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
 		if err == nil && dp.ProposalID != "" {
 			s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)

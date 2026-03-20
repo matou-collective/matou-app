@@ -39,7 +39,33 @@
           :proposal="proposal"
           :endorsement-count="getEndorsementCount(proposal.id)"
           @click="router.push({ name: 'proposal-detail', params: { id: proposal.id } })"
-        />
+        >
+          <div class="proposal-card-header">
+            <h3>{{ proposal.title }}</h3>
+            <span class="status-badge" :class="proposal.status">{{ formatStatus(proposal.status) }}</span>
+          </div>
+          <p class="proposal-description">{{ proposal.description }}</p>
+
+          <!-- Endorsement progress bar for submitted proposals -->
+          <div v-if="proposal.status === 'submitted'" class="endorsement-bar">
+            <div class="endorsement-bar-header">
+              <span class="endorsement-label">Endorsements</span>
+              <span class="endorsement-count">{{ getEndorsementCount(proposal.id) }} / {{ proposal.endorsement_threshold || 1 }}</span>
+            </div>
+            <q-linear-progress
+              :value="getEndorsementProgress(proposal.id, proposal.endorsement_threshold)"
+              color="pink"
+              rounded
+              size="6px"
+            />
+          </div>
+
+          <div class="proposal-meta">
+            <span class="proposal-type">{{ proposal.type?.join(', ') }}</span>
+            <span class="proposal-priority" :class="proposal.priority">{{ proposal.priority }}</span>
+            <span>{{ new Date(proposal.created_at).toLocaleDateString() }}</span>
+          </div>
+        </ProposalCard>
       </div>
     </div>
 
@@ -57,12 +83,15 @@ import { useRouter } from 'vue-router';
 import { Vote } from 'lucide-vue-next';
 import { useQuasar } from 'quasar';
 import { useProposalsStore } from 'stores/proposals';
+import { useIdentityStore } from 'stores/identity';
+import { listEndorsements } from 'src/lib/api/proposals';
 import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.vue';
 import ProposalCard from 'src/components/proposals/ProposalCard.vue';
 
 const router = useRouter();
 const $q = useQuasar();
 const proposalsStore = useProposalsStore();
+const identityStore = useIdentityStore();
 const showCreateDialog = ref(false);
 const activeFilter = ref('all');
 
@@ -88,12 +117,30 @@ const filteredProposals = computed(() => {
   return all.filter(p => p.status === activeFilter.value);
 });
 
-onMounted(() => {
-  proposalsStore.fetchProposals();
+async function fetchEndorsementCounts() {
+  for (const p of proposalsStore.proposals) {
+    try {
+      const result = await listEndorsements(p.id);
+      endorsementCounts.value[p.id] = result.total || result.endorsements?.length || 0;
+    } catch {
+      endorsementCounts.value[p.id] = 0;
+    }
+  }
+}
+
+onMounted(async () => {
+  await proposalsStore.fetchProposals();
+  fetchEndorsementCounts();
 });
 
 function getEndorsementCount(proposalId: string): number {
   return endorsementCounts.value[proposalId] || 0;
+}
+
+function getEndorsementProgress(proposalId: string, threshold?: number): number {
+  const count = getEndorsementCount(proposalId);
+  const t = threshold || 1;
+  return Math.min(count / t, 1);
 }
 
 async function handleCreateSubmit(form: {
@@ -110,7 +157,7 @@ async function handleCreateSubmit(form: {
 }) {
   try {
     await proposalsStore.create({
-      proposer_id: 'current-user',
+      proposer_id: identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown',
       title: form.title,
       type: form.type,
       priority: form.priority as 'low' | 'medium' | 'high' | 'critical',
@@ -157,9 +204,9 @@ async function handleCreateSubmit(form: {
 }
 
 .create-btn {
-  background: var(--matou-primary);
-  color: var(--matou-primary-foreground);
-  border: none;
+  background: transparent;
+  color: var(--matou-teal, #0d9488);
+  border: 2px solid var(--matou-teal, #0d9488);
   border-radius: 8px;
   padding: 8px 16px;
   font-weight: 500;
@@ -168,7 +215,8 @@ async function handleCreateSubmit(form: {
   flex-shrink: 0;
 
   &:hover {
-    opacity: 0.9;
+    background: var(--matou-teal, #0d9488);
+    color: white;
   }
 }
 
@@ -190,9 +238,9 @@ async function handleCreateSubmit(form: {
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 
   &.active {
-    background: var(--matou-primary);
-    color: var(--matou-primary-foreground);
-    border-color: var(--matou-primary);
+    background: var(--matou-teal, #0d9488);
+    color: white;
+    border-color: var(--matou-teal, #0d9488);
   }
 
   &:hover:not(.active) {

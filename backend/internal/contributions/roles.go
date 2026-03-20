@@ -70,6 +70,11 @@ const (
 	ActionReviewContribution Action = "review_contribution"
 	ActionSignOffPlan        Action = "sign_off_plan"
 	ActionApproveSubContrib  Action = "approve_sub_contribution"
+
+	// Proposal actions
+	ActionSignOffProposal Action = "sign_off_proposal"
+	ActionRejectProposal  Action = "reject_proposal"
+	ActionEditProposal    Action = "edit_proposal"
 )
 
 // actionPermissions maps each action to the roles that can perform it.
@@ -102,6 +107,9 @@ var actionPermissions = map[Action][]Role{
 	ActionCreateSubContrib:    allRoles,
 	ActionApproveSubContrib:   allRoles,
 	ActionRegisterInterest:    allRoles,
+	ActionSignOffProposal:     {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionRejectProposal:      {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionEditProposal:        {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
 }
 
 // HasRole checks if a role list contains the given role.
