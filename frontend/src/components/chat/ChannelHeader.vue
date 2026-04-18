@@ -21,10 +21,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed } from 'vue';
 import { Settings } from 'lucide-vue-next';
 import type { Channel } from 'src/lib/api/chat';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useIdentityStore } from 'stores/identity';
 
 defineProps<{
   channel: Channel;
@@ -34,12 +34,8 @@ defineEmits<{
   (e: 'settings'): void;
 }>();
 
-const { isSteward, checkAdminStatus } = useAdminAccess();
-const isAdmin = computed(() => isSteward.value);
-
-onMounted(() => {
-  checkAdminStatus();
-});
+const identityStore = useIdentityStore();
+const isAdmin = computed(() => identityStore.isSteward);
 </script>
 
 <style lang="scss" scoped>

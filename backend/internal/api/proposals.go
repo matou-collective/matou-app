@@ -133,6 +133,14 @@ func (h *ProposalsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) 
 
 	log.Printf("[Proposals] proposal created: %s by %s", proposal.ID, proposal.ProposerID)
 
+	// Broadcast SSE event for real-time UI updates
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "proposal:created",
+			Data: map[string]string{"proposal_id": proposal.ID, "title": proposal.Title},
+		})
+	}
+
 	// Notify proposer that their proposal was submitted
 	if h.notifier != nil && proposal.ProposerID != "" {
 		h.notifier.Notify(&ContribNotification{
@@ -364,6 +372,15 @@ func (h *ProposalsHandler) HandleUpdate(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Broadcast SSE event for real-time UI updates
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "proposal:updated",
+			Data: map[string]string{"proposal_id": id},
+		})
+	}
+
 	log.Printf("[Proposals] proposal %s updated", id)
 	writeJSON(w, http.StatusOK, proposal)
 }
@@ -409,6 +426,15 @@ func (h *ProposalsHandler) HandleAddComment(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Broadcast SSE event for real-time UI updates
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "proposal:comment_added",
+			Data: map[string]string{"proposal_id": id, "comment_id": created.ID},
+		})
+	}
+
 	writeJSON(w, http.StatusCreated, created)
 }
 

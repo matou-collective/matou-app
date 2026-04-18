@@ -1,8 +1,14 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { KERIClient, useKERIClient, type AIDInfo } from 'src/lib/keri/client';
+import { KERIClient, useKERIClient, type AIDInfo, type CredentialInfo } from 'src/lib/keri/client';
 import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinCommunity as apiJoinCommunity } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { fetchOrgConfig } from 'src/api/config';
+
+export interface AdminCredentialInfo extends CredentialInfo {
+  role?: string;
+  communityName?: string;
+}
 
 export interface RestoreResult {
   success: boolean;
@@ -29,6 +35,22 @@ export const useIdentityStore = defineStore('identity', () => {
   const spacesLoaded = ref(false);
   const communityAccessVerified = ref(false);
   const communityAccessChecking = ref(false);
+
+  // Admin state (checked once, shared across all pages)
+  const isAdmin = ref(false);
+  const adminCredential = ref<AdminCredentialInfo | null>(null);
+  const adminChecked = ref(false);
+
+  // Admin computed
+  const isSteward = computed(() => {
+    const role = (adminCredential.value?.role || '').toLowerCase();
+    return role.includes('steward') || role.includes('founding member');
+  });
+
+  const canManageMembers = computed(() => {
+    const role = (adminCredential.value?.role || '').toLowerCase();
+    return role.includes('operations steward') || role.includes('founding member');
+  });
 
   // Computed
   const hasIdentity = computed(() => currentAID.value !== null);
@@ -124,10 +146,137 @@ export const useIdentityStore = defineStore('identity', () => {
     initError.value = err;
   }
 
+  /**
+   * Check admin status via KERI credentials, org group membership, and config.
+   * Called once after login — result is cached for all pages.
+   */
+  async function checkAdminStatus(): Promise<boolean> {
+    // Return cached result if already checked
+    if (adminChecked.value) return isAdmin.value;
+
+    const client = keriClient.getSignifyClient();
+    if (!client || !currentAID.value) return false;
+
+    try {
+      await keriClient.ensureSession();
+
+      // Method 1: Check credentials in wallet
+      const credentials = await client.credentials().list();
+      console.log('[AdminAccess] Checking credentials:', credentials.length);
+
+      for (const cred of credentials) {
+        const credAny = cred as Record<string, unknown>;
+        const sad = credAny.sad as Record<string, unknown> | undefined;
+        const credData = (sad?.a || sad?.d || {}) as Record<string, unknown>;
+        const schemaId = typeof credAny.schema === 'string' ? credAny.schema : (sad?.s as string) || '';
+        const statusObj = credAny.status as Record<string, unknown> | undefined;
+
+        const issuee = (credData.i as string) || '';
+        if (issuee && issuee !== currentAID.value!.prefix) continue;
+
+        const role = ((credData.role as string) || '').toLowerCase();
+        if (role.includes('steward') || role.includes('admin') || role.includes('founding')) {
+          console.log('[AdminAccess] Found admin role in credential:', role);
+          isAdmin.value = true;
+          adminCredential.value = {
+            said: (sad?.d as string) || '',
+            schema: schemaId,
+            issuer: (sad?.i as string) || '',
+            issuee: (credData.i as string) || currentAID.value!.prefix,
+            status: (statusObj?.s as string) || 'issued',
+            role: credData.role as string | undefined,
+            communityName: credData.communityName as string | undefined,
+          };
+          adminChecked.value = true;
+          return true;
+        }
+      }
+
+      // Method 1b: Check org group AID membership
+      try {
+        const configResult2 = await fetchOrgConfig();
+        const orgConfig = configResult2.status === 'configured'
+          ? configResult2.config
+          : configResult2.status === 'server_unreachable'
+            ? configResult2.cached
+            : null;
+
+        if (orgConfig?.organization?.aid) {
+          const aids = await client.identifiers().list();
+          const orgGroupAid = aids.aids?.find(
+            (a: { prefix: string }) => a.prefix === orgConfig.organization.aid
+          );
+          if (orgGroupAid) {
+            console.log('[AdminAccess] User is a member of the org group AID');
+            isAdmin.value = true;
+            adminCredential.value = {
+              said: '',
+              schema: '',
+              issuer: orgConfig.organization.aid,
+              issuee: currentAID.value!.prefix,
+              status: 'group_member',
+              role: 'Community Steward',
+            };
+            adminChecked.value = true;
+            return true;
+          }
+        }
+      } catch (groupErr) {
+        console.warn('[AdminAccess] Failed to check org group membership:', groupErr);
+      }
+
+      // Method 2: Check config admins list
+      const configResult = await fetchOrgConfig();
+      if (configResult.status === 'configured' || configResult.status === 'server_unreachable') {
+        const config = configResult.status === 'configured'
+          ? configResult.config
+          : configResult.cached;
+
+        if (config?.admins) {
+          const isConfigAdmin = config.admins.some(admin => admin.aid === currentAID.value!.prefix);
+          if (isConfigAdmin) {
+            console.log('[AdminAccess] User AID found in config admins list');
+            isAdmin.value = true;
+            adminCredential.value = {
+              said: '',
+              schema: '',
+              issuer: '',
+              issuee: currentAID.value!.prefix,
+              status: 'config',
+              role: 'Founding Member',
+            };
+            adminChecked.value = true;
+            return true;
+          }
+        }
+      }
+
+      console.log('[AdminAccess] User is not an admin');
+      isAdmin.value = false;
+      adminCredential.value = null;
+      adminChecked.value = true;
+      return false;
+    } catch (err) {
+      console.error('[AdminAccess] Error checking admin status:', err);
+      isAdmin.value = false;
+      adminChecked.value = true;
+      return false;
+    }
+  }
+
+  /** Force re-check admin status (e.g., after multisig join) */
+  async function recheckAdminStatus(): Promise<boolean> {
+    adminChecked.value = false;
+    return checkAdminStatus();
+  }
+
   async function disconnect() {
     currentAID.value = null;
     passcode.value = null;
     isConnected.value = false;
+    isAdmin.value = false;
+    adminCredential.value = null;
+    adminChecked.value = false;
     await secureStorage.removeItem('matou_passcode');
     await secureStorage.removeItem('matou_mnemonic');
   }
@@ -222,6 +371,13 @@ export const useIdentityStore = defineStore('identity', () => {
     communityAccessVerified,
     communityAccessChecking,
 
+    // Admin state
+    isAdmin,
+    adminCredential,
+    adminChecked,
+    isSteward,
+    canManageMembers,
+
     // Computed
     hasIdentity,
     aidPrefix,
@@ -238,5 +394,7 @@ export const useIdentityStore = defineStore('identity', () => {
     fetchUserSpaces,
     verifyCommunityAccess,
     joinCommunitySpace,
+    checkAdminStatus,
+    recheckAdminStatus,
   };
 });

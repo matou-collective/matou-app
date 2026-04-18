@@ -342,15 +342,13 @@ import type { Contribution } from 'src/types/projects';
 import ContributionDetail from 'src/components/contributions/ContributionDetail.vue';
 import ContributionForm from 'src/components/contributions/ContributionForm.vue';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
-
 const route = useRoute();
 const router = useRouter();
 const $q = useQuasar();
 const store = useContributionsStore();
 const identityStore = useIdentityStore();
 const workflow = useContributionWorkflow();
-const { isAdmin: isKeriAdmin, checkAdminStatus } = useAdminAccess();
+const isKeriAdmin = computed(() => identityStore.isAdmin);
 
 // ── Local state ───────────────────────────────────────────────────────────────
 
@@ -410,8 +408,7 @@ const allChildrenSignedOff = computed(() => {
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-onMounted(async () => {
-  await checkAdminStatus();
+onMounted(() => {
   void store.fetchContribution(route.params.id as string);
 });
 

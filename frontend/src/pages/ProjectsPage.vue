@@ -61,7 +61,7 @@ import { Target } from 'lucide-vue-next';
 import { useQuasar } from 'quasar';
 import { useProjectsStore } from 'stores/projects';
 import { useOnboardingStore } from 'stores/onboarding';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useIdentityStore } from 'stores/identity';
 import ProjectCard from 'src/components/projects/ProjectCard.vue';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 
@@ -69,7 +69,8 @@ const router = useRouter();
 const $q = useQuasar();
 const projectsStore = useProjectsStore();
 const onboardingStore = useOnboardingStore();
-const { isAdmin, checkAdminStatus } = useAdminAccess();
+const identityStore = useIdentityStore();
+const isAdmin = computed(() => identityStore.isAdmin);
 
 const showCreateDialog = ref(false);
 const creating = ref(false);
@@ -94,14 +95,13 @@ const filteredProjects = computed(() => {
 });
 
 onMounted(async () => {
-  await checkAdminStatus();
   await projectsStore.fetchProjects();
   loaded.value = true;
   loadNameMap();
-  // Fetch contributions for each project (for shared contributions display)
-  for (const p of projectsStore.projects) {
-    projectsStore.fetchProjectContributions(p.id);
-  }
+  // Fetch contributions for each project in parallel
+  await Promise.all(
+    projectsStore.projects.map(p => projectsStore.fetchProjectContributions(p.id)),
+  );
 });
 
 async function loadNameMap() {

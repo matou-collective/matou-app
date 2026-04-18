@@ -105,7 +105,6 @@ import type { Notice } from 'src/lib/api/client';
 import { getFileUrl } from 'src/lib/api/client';
 import { useActivityStore } from 'stores/activity';
 import { useProfilesStore } from 'stores/profiles';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
 import SaveButton from './SaveButton.vue';
 import RSVPButton from './RSVPButton.vue';
 import AckButton from './AckButton.vue';

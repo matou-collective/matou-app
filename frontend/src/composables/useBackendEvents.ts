@@ -33,10 +33,16 @@ export type BackendEventType =
   | 'chat:channel:new'
   | 'chat:channel:update'
   | 'proposal:submitted'
+  | 'proposal:created'
+  | 'proposal:updated'
+  | 'proposal:comment_added'
   | 'proposal:endorsed'
   | 'proposal:approved'
   | 'proposal:rejected'
   | 'proposal:status_changed'
+  | 'proposal_updated'
+  | 'decision_plan_updated'
+  | 'governance_action_updated'
   | 'project:created'
   | 'contribution:assigned'
   | 'contribution:needs_review'
@@ -302,6 +308,9 @@ function connect() {
   // --- Other contribution system events (generic handler) ---
   const contribEventTypes: BackendEventType[] = [
     'proposal:submitted',
+    'proposal:created',
+    'proposal:updated',
+    'proposal:comment_added',
     'proposal:approved',
     'proposal:rejected',
     'project:created',
@@ -322,6 +331,9 @@ function connect() {
     'milestone_updated',
     'decision_plan:submitted',
     'decision_plan:signed_off',
+    'proposal_updated',
+    'decision_plan_updated',
+    'governance_action_updated',
   ];
 
   for (const eventType of contribEventTypes) {

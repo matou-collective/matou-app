@@ -8,12 +8,6 @@ import { useIdentityStore } from 'stores/identity';
 
 const log = createLogger('ProposalsAPI');
 
-function authHeaders(): Record<string, string> {
-  const identityStore = useIdentityStore();
-  const aid = identityStore.currentAID?.prefix;
-  return aid ? { 'X-User-AID': aid } : {};
-}
-
 export interface CreateProposalRequest {
   proposer_id: string;
   title: string;
@@ -195,7 +189,7 @@ export async function addProposalComment(
   log.info('Adding comment to proposal %s', proposalId);
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ user_id: userId, user_name: userName, text }),
   });
   if (!response.ok) {
@@ -208,7 +202,9 @@ export async function addProposalComment(
 export async function listProposalComments(
   proposalId: string,
 ): Promise<{ comments: ProposalComment[]; total: number }> {
-  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`);
+  const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${proposalId}/comments`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) throw new Error('Failed to list comments');
   return response.json();
 }

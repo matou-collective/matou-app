@@ -61,11 +61,11 @@
     <div class="dp-actions">
       <q-btn
         v-if="canEdit"
-        flat
         no-caps
         icon="add"
         label="Add Governance Action"
         color="primary"
+        class="add-action-btn"
         @click="$emit('addAction')"
       />
       <q-btn
@@ -78,10 +78,10 @@
       />
       <q-btn
         v-if="canSignOff"
-        flat
         no-caps
-        label="Sign Off"
+        label="Sign Off Decision Plan"
         color="positive"
+        class="sign-off-btn"
         @click="$emit('signOff')"
       />
     </div>
@@ -330,9 +330,20 @@ function outcomeClass(outcome: GovernanceAction['outcome']): string {
 
 .dp-actions {
   display: flex;
-  gap: 4px;
-  padding: 10px 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
   border-top: 1px solid var(--matou-border);
   background: var(--matou-card);
+}
+
+.add-action-btn {
+  width: 100%;
+  border-radius: 10px;
+}
+
+.sign-off-btn {
+  width: 100%;
+  border-radius: 10px;
 }
 </style>

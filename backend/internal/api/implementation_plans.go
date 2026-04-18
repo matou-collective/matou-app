@@ -95,9 +95,7 @@ func (h *ImplementationPlansHandler) HandleList(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	for _, p := range plans {
-		h.service.HydratePlan(r.Context(), spaceID, p)
-	}
+	// Skip hydration on list — only hydrate on detail view
 	writeJSON(w, http.StatusOK, map[string]interface{}{"implementation_plans": plans, "total": len(plans)})
 }
 

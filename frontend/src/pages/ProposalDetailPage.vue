@@ -46,11 +46,12 @@
         <div class="action-buttons">
           <!-- Draft -->
           <q-btn
-            v-if="proposal.status === 'draft'"
+            v-if="proposal.status === 'draft' && isProposer"
             color="primary"
             no-caps
             icon="send"
             label="Submit for Endorsement"
+            class="action-btn-rounded"
             @click="submitForEndorsement"
             :loading="transitioning"
           />
@@ -62,10 +63,11 @@
               no-caps
               icon="favorite"
               label="Endorse Proposal"
+              class="action-btn-rounded"
               @click="showEndorseModal = true"
               :loading="endorsing"
             />
-            <q-btn flat no-caps icon="link" label="Copy Proposal Link" @click="copyLink" />
+            <q-btn flat no-caps icon="link" label="Copy Proposal Link" class="action-btn-rounded" @click="copyLink" />
           </template>
 
           <!-- In Review -->
@@ -76,34 +78,42 @@
               no-caps
               icon="check"
               label="Sign Off Proposal"
+              class="action-btn-rounded"
               @click="signOff"
               :loading="transitioning"
             />
             <q-btn
               v-if="isSteward"
+              outline
               color="negative"
               no-caps
               icon="block"
               label="Reject Proposal"
+              class="action-btn-rounded"
               @click="showRejectDialog = true"
             />
-            <q-btn v-if="isSteward || isProposer" flat no-caps icon="edit" label="Edit Proposal" @click="showEditDialog = true" />
+            <q-btn v-if="isSteward || isProposer" flat no-caps icon="edit" label="Edit Proposal" class="action-btn-rounded" @click="showEditDialog = true" />
             <div v-if="!isSteward && !isProposer" class="review-info-banner">
               <q-icon name="info" color="primary" size="20px" />
               <span>Proposal is currently in review.</span>
             </div>
           </template>
 
-          <!-- Signed Off — create plan when none exists -->
+          <!-- Signed Off / Voting — add governance action (auto-creates plan if needed) -->
           <template
-            v-if="proposal.status === 'signed_off' && !decisionPlansStore.currentPlan"
+            v-if="
+              canManageDecisionPlan &&
+              (proposal.status === 'signed_off' || proposal.status === 'voting_process') &&
+              (!decisionPlansStore.currentPlan || ['drafted', 'submitted', 'signed_off'].includes(decisionPlansStore.currentPlan.status))
+            "
           >
             <q-btn
               color="primary"
               no-caps
               icon="add"
-              label="Create Decision Plan"
-              @click="showCreateDecisionPlan = true"
+              label="Add Governance Action"
+              class="action-btn-rounded"
+              @click="showAddGovernanceAction = true"
             />
           </template>
 
@@ -186,11 +196,12 @@
               <span class="role-assigned">{{ proposal.proposal_lead_id }}</span>
             </template>
             <q-btn
-              v-else-if="proposal.lead_contribution_id"
+              v-else-if="proposal.lead_contribution_id && isSteward"
               size="sm"
               no-caps
               label="Claim Role"
               color="primary"
+              class="action-btn-rounded"
               @click="claimRole('lead')"
             />
             <span v-else class="role-unassigned">Unassigned</span>
@@ -206,11 +217,12 @@
               <span class="role-assigned">{{ proposal.proposal_steward_id }}</span>
             </template>
             <q-btn
-              v-else-if="proposal.steward_contribution_id"
+              v-else-if="proposal.steward_contribution_id && isSteward"
               size="sm"
               no-caps
               label="Claim Role"
               color="teal"
+              class="action-btn-rounded"
               @click="claimRole('steward')"
             />
             <span v-else class="role-unassigned">Unassigned</span>
@@ -222,16 +234,19 @@
           v-if="decisionPlansStore.currentPlan"
           :decision-plan="decisionPlansStore.currentPlan"
           :can-edit="
-            proposal.status === 'signed_off' &&
-            decisionPlansStore.currentPlan.status === 'drafted'
+            canManageDecisionPlan &&
+            ['signed_off', 'voting_process'].includes(proposal.status) &&
+            ['drafted', 'submitted', 'signed_off'].includes(decisionPlansStore.currentPlan.status)
           "
           :can-submit="
-            proposal.status === 'signed_off' &&
+            canManageDecisionPlan &&
+            ['signed_off', 'voting_process'].includes(proposal.status) &&
             decisionPlansStore.currentPlan.status === 'drafted' &&
             (decisionPlansStore.currentPlan.governance_actions?.length ?? 0) > 0
           "
           :can-sign-off="
-            proposal.status === 'signed_off' &&
+            canManageDecisionPlan &&
+            ['signed_off', 'voting_process'].includes(proposal.status) &&
             decisionPlansStore.currentPlan.status === 'submitted'
           "
           @action-click="openGovernanceAction"
@@ -320,15 +335,22 @@
             No comments yet. Be the first to share your thoughts!
           </div>
           <div v-else class="comments-list">
-            <div v-for="c in proposalsStore.comments" :key="c.id" class="comment-card">
-              <div class="comment-header">
-                <div class="comment-avatar">
-                  <q-icon name="person" size="14px" />
+            <div
+              v-for="c in proposalsStore.comments"
+              :key="c.id"
+              class="comment-row"
+              :class="{ 'comment-row--mine': c.user_id === identityStore.currentAID?.prefix }"
+            >
+              <div class="comment-card" :class="{ 'comment-card--mine': c.user_id === identityStore.currentAID?.prefix }">
+                <div class="comment-header">
+                  <div class="comment-avatar">
+                    <q-icon name="person" size="14px" />
+                  </div>
+                  <span class="comment-author">{{ c.user_name }}</span>
+                  <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
                 </div>
-                <span class="comment-author">{{ c.user_name }}</span>
-                <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
+                <p class="comment-text">{{ c.text }}</p>
               </div>
-              <p class="comment-text">{{ c.text }}</p>
             </div>
           </div>
           <div class="comment-input-row">
@@ -383,16 +405,10 @@
       @submit="handleEditSubmit"
     />
 
-    <CreateDecisionPlanDialog
-      v-model="showCreateDecisionPlan"
-      :proposal-id="proposal?.id ?? ''"
-      :proposal-title="proposal?.title ?? ''"
-      @created="handleDecisionPlanCreated"
-    />
-
     <AddGovernanceActionDialog
       v-model="showAddGovernanceAction"
       :existing-actions="decisionPlansStore.currentPlan?.governance_actions ?? []"
+      :proposal-title="proposal?.title"
       @add="handleAddGovernanceAction"
     />
 
@@ -402,7 +418,11 @@
       :action="selectedAction"
       :all-actions="decisionPlansStore.currentPlan?.governance_actions ?? []"
       :proposal-status="proposal?.status"
+      :can-manage="canManageDecisionPlan"
       @complete="handleCompleteAction"
+      @archive="handleArchiveAction"
+      @vote="handleCastVote"
+      @resolve="handleResolveDecision"
     />
 
     <!-- Reject reason dialog -->
@@ -445,19 +465,18 @@ import { BACKEND_URL } from 'src/lib/api/client';
 import { getProjectForProposal, type Project } from 'src/lib/api/projects';
 import { useProposalsStore } from 'stores/proposals';
 import { useDecisionPlansStore } from 'stores/decisionPlans';
-import type { GovernanceAction } from 'src/lib/api/decisionPlans';
+import type { GovernanceAction, CompleteActionRequest } from 'src/lib/api/decisionPlans';
+import { transitionDecisionPlan } from 'src/lib/api/decisionPlans';
 import type { Proposal } from 'src/lib/api/proposals';
-import type { HouseAction } from 'src/components/proposals/CreateDecisionPlanDialog.vue';
 import type { NewGovernanceAction } from 'src/components/proposals/AddGovernanceActionDialog.vue';
 import DecisionPlanView from 'src/components/proposals/DecisionPlanView.vue';
 import EndorseProposalModal from 'src/components/proposals/EndorseProposalModal.vue';
 import ProposalHistoryModal from 'src/components/proposals/ProposalHistoryModal.vue';
 import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.vue';
-import CreateDecisionPlanDialog from 'src/components/proposals/CreateDecisionPlanDialog.vue';
 import AddGovernanceActionDialog from 'src/components/proposals/AddGovernanceActionDialog.vue';
 import GovernanceActionModal from 'src/components/proposals/GovernanceActionModal.vue';
 import { useIdentityStore } from 'stores/identity';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useBackendEvents } from 'src/composables/useBackendEvents';
 
 // ── Router / store setup ──────────────────────────────────────────────────────
 
@@ -467,7 +486,40 @@ const $q = useQuasar();
 const proposalsStore = useProposalsStore();
 const decisionPlansStore = useDecisionPlansStore();
 const identityStore = useIdentityStore();
-const { isSteward, checkAdminStatus } = useAdminAccess();
+const isAdmin = computed(() => identityStore.isAdmin);
+const isSteward = computed(() => identityStore.isSteward);
+const { lastEvent } = useBackendEvents();
+
+// ── Real-time updates ─────────────────────────────────────────────────────────
+
+watch(lastEvent, (event) => {
+  if (!event || !proposal.value) return;
+  const refreshEvents = [
+    'proposal:status_changed',
+    'proposal:endorsed',
+    'proposal:updated',
+    'proposal:created',
+    'proposal:comment_added',
+    'proposal:approved',
+    'proposal:rejected',
+    'proposal_updated',
+    'decision_plan_updated',
+    'decision_plan:submitted',
+    'decision_plan:signed_off',
+    'governance_action_updated',
+    'governance_action:completed',
+  ];
+  if (refreshEvents.includes(event.type)) {
+    void proposalsStore.fetchProposal(route.params.id as string);
+    void proposalsStore.fetchEndorsements(route.params.id as string);
+    if (event.type === 'proposal:comment_added') {
+      void proposalsStore.fetchComments(route.params.id as string);
+    }
+    if (['decision_plan_updated', 'governance_action_updated', 'decision_plan:submitted', 'decision_plan:signed_off', 'governance_action:completed'].includes(event.type)) {
+      void decisionPlansStore.fetchForProposal(route.params.id as string);
+    }
+  }
+});
 
 // ── Local state ───────────────────────────────────────────────────────────────
 
@@ -479,7 +531,6 @@ const linkedProject = ref<Project | null>(null);
 const showEndorseModal = ref(false);
 const showHistory = ref(false);
 const showEditDialog = ref(false);
-const showCreateDecisionPlan = ref(false);
 const showAddGovernanceAction = ref(false);
 const showGovernanceAction = ref(false);
 const showRejectDialog = ref(false);
@@ -502,6 +553,18 @@ const showRoleAssignments = computed(() => {
   return s === 'in_review' || s === 'signed_off' || s === 'voting_process';
 });
 
+const isProposalLead = computed(() => {
+  const p = proposal.value;
+  if (!p?.proposal_lead_id) return false;
+  const aid = identityStore.currentAID;
+  if (!aid) return false;
+  return p.proposal_lead_id === aid.prefix;
+});
+
+const canManageDecisionPlan = computed(() =>
+  isAdmin.value || isSteward.value || isProposalLead.value,
+);
+
 const isProposer = computed(() => {
   const p = proposal.value;
   if (!p) return false;
@@ -513,7 +576,6 @@ const isProposer = computed(() => {
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(() => {
-  void checkAdminStatus();
   const id = route.params.id as string;
   void loadProposal(id);
 });
@@ -674,29 +736,6 @@ async function handleEditSubmit(form: Partial<Omit<Proposal, 'id' | 'status' | '
 
 // ── Decision plan ─────────────────────────────────────────────────────────────
 
-async function handleDecisionPlanCreated(actions: HouseAction[]) {
-  if (!proposal.value) return;
-  try {
-    const plan = await decisionPlansStore.create({
-      proposal_id: proposal.value.id,
-      title: `Decision Plan for ${proposal.value.title}`,
-      description: `Governance decision plan for proposal: ${proposal.value.title}`,
-      objectives: ['Complete governance review process'],
-      expected_outcomes: ['Governance decision on proposal'],
-      proposal_lead_id: proposal.value.proposal_lead_id ?? '',
-      proposal_steward_id: proposal.value.proposal_steward_id ?? '',
-    });
-    for (const action of actions) {
-      await decisionPlansStore.addAction(plan.id, action);
-    }
-    showCreateDecisionPlan.value = false;
-    $q.notify({ type: 'positive', message: 'Decision plan created!' });
-    await decisionPlansStore.fetchForProposal(proposal.value.id);
-  } catch {
-    $q.notify({ type: 'negative', message: 'Failed to create decision plan' });
-  }
-}
-
 async function submitDecisionPlanForReview() {
   if (!decisionPlansStore.currentPlan) return;
   try {
@@ -721,13 +760,34 @@ async function signOffDecisionPlan() {
 // ── Governance actions ────────────────────────────────────────────────────────
 
 async function handleAddGovernanceAction(action: NewGovernanceAction) {
-  if (!decisionPlansStore.currentPlan) return;
+  if (!proposal.value) return;
   try {
-    await decisionPlansStore.addAction(decisionPlansStore.currentPlan.id, action);
+    let planId = decisionPlansStore.currentPlan?.id;
+
+    // Auto-create a decision plan if one does not yet exist
+    if (!planId) {
+      const plan = await decisionPlansStore.create({
+        proposal_id: proposal.value.id,
+        title: `Decision Plan for ${proposal.value.title}`,
+        description: 'Governance decision plan',
+        proposal_lead_id: proposal.value.proposal_lead_id ?? '',
+        proposal_steward_id: proposal.value.proposal_steward_id ?? '',
+      });
+      planId = plan.id;
+    }
+
+    await decisionPlansStore.addAction(planId, action);
+
+    // If plan was signed off, revert to submitted so it goes through review again
+    if (decisionPlansStore.currentPlan?.status === 'signed_off') {
+      await transitionDecisionPlan(planId, 'submitted');
+      await decisionPlansStore.fetchForProposal(proposal.value.id);
+    }
+
     showAddGovernanceAction.value = false;
     $q.notify({ type: 'positive', message: 'Governance action added!' });
   } catch {
-    $q.notify({ type: 'negative', message: 'Failed to add action' });
+    $q.notify({ type: 'negative', message: 'Failed to add governance action' });
   }
 }
 
@@ -737,15 +797,79 @@ function openGovernanceAction(actionId: string) {
   if (selectedAction.value) showGovernanceAction.value = true;
 }
 
-async function handleCompleteAction(actionId: string, outcome?: string) {
+async function handleCompleteAction(actionId: string, data: { outcome?: string; completion_notes: string; completion_files?: unknown[]; completion_links?: string[] }) {
   try {
-    await decisionPlansStore.completeAction(actionId, outcome ?? 'no_veto');
+    await decisionPlansStore.completeAction(actionId, {
+      outcome: data.outcome,
+      completion_notes: data.completion_notes,
+      completion_files: data.completion_files as CompleteActionRequest['completion_files'],
+      completion_links: data.completion_links,
+      voter_name: identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown',
+    });
     showGovernanceAction.value = false;
     selectedAction.value = null;
     $q.notify({ type: 'positive', message: 'Action completed!' });
-    if (proposal.value) await loadProposal(proposal.value.id);
+    // Re-fetch both proposal and decision plan to get updated action statuses
+    if (proposal.value) {
+      await Promise.all([
+        loadProposal(proposal.value.id),
+        decisionPlansStore.fetchForProposal(proposal.value.id),
+      ]);
+    }
   } catch {
     $q.notify({ type: 'negative', message: 'Failed to complete action' });
+  }
+}
+
+async function handleArchiveAction(actionId: string, data: { completion_notes: string; completion_files?: unknown[]; completion_links?: string[] }) {
+  try {
+    await decisionPlansStore.archiveAction(actionId, {
+      completion_notes: data.completion_notes,
+      completion_files: data.completion_files as CompleteActionRequest['completion_files'],
+      completion_links: data.completion_links,
+    });
+    showGovernanceAction.value = false;
+    selectedAction.value = null;
+    $q.notify({ type: 'positive', message: 'Action archived!' });
+    if (proposal.value) {
+      await decisionPlansStore.fetchForProposal(proposal.value.id);
+    }
+  } catch {
+    $q.notify({ type: 'negative', message: 'Failed to archive action' });
+  }
+}
+
+async function handleCastVote(actionId: string, decision: string, comment: string) {
+  try {
+    const voterName = identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown';
+    await decisionPlansStore.vote(actionId, decision, comment, voterName);
+    $q.notify({ type: 'positive', message: 'Vote cast!' });
+    // Re-fetch to update action state (don't close modal — user may want to see results)
+    if (proposal.value) {
+      await decisionPlansStore.fetchForProposal(proposal.value.id);
+      // Update selectedAction with fresh data
+      const actions = decisionPlansStore.currentPlan?.governance_actions ?? [];
+      selectedAction.value = actions.find((a) => a.id === actionId) ?? null;
+    }
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to cast vote' });
+  }
+}
+
+async function handleResolveDecision(actionId: string) {
+  try {
+    await decisionPlansStore.resolve(actionId);
+    $q.notify({ type: 'positive', message: 'Voting closed — decision resolved!' });
+    if (proposal.value) {
+      await Promise.all([
+        loadProposal(proposal.value.id),
+        decisionPlansStore.fetchForProposal(proposal.value.id),
+      ]);
+    }
+    showGovernanceAction.value = false;
+    selectedAction.value = null;
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to resolve decision' });
   }
 }
 
@@ -800,6 +924,11 @@ async function addComment() {
 .proposal-detail-page {
   padding: 24px;
   max-width: 900px;
+  margin: 0 auto;
+}
+
+.action-btn-rounded {
+  border-radius: 10px;
 }
 
 // ── Loading / empty states ────────────────────────────────────────────────────
@@ -1127,17 +1256,31 @@ async function addComment() {
 
 .comments-list {
   margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comment-row {
+  display: flex;
+  justify-content: flex-start;
+
+  &--mine {
+    justify-content: flex-end;
+  }
 }
 
 .comment-card {
   background: var(--matou-secondary);
   border: 1px solid var(--matou-border);
-  border-radius: var(--matou-radius-sm);
+  border-radius: 12px 12px 12px 4px;
   padding: 12px;
-  margin-bottom: 8px;
+  max-width: 80%;
 
-  &:last-child {
-    margin-bottom: 0;
+  &--mine {
+    background: var(--matou-primary-light, rgba(37, 99, 235, 0.08));
+    border-color: rgba(37, 99, 235, 0.15);
+    border-radius: 12px 12px 4px 12px;
   }
 }
 
@@ -1157,6 +1300,10 @@ async function addComment() {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+.comment-card--mine .comment-avatar {
+  background: rgba(37, 99, 235, 0.15);
 }
 
 .comment-author {

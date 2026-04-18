@@ -266,7 +266,7 @@ test.describe.serial('Organization Setup', () => {
 
       // Verify dashboard sections rendered
       await expect(page.getByText('Community Activity').first()).toBeVisible({ timeout: TIMEOUT.short });
-      await expect(page.getByText('New Members').first()).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText('Members').first()).toBeVisible({ timeout: TIMEOUT.short });
       console.log('[Test] Dashboard sections rendered');
 
       // Verify admin-specific section (Invite Member button)

@@ -109,7 +109,9 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	switch objectType {
 	case "ChatChannel", "ChatMessage", "MessageReaction":
 		// proceed
-	case TypeProject, TypeImplementationPlan, TypeContribution, TypeMilestone:
+	case TypeProject, TypeImplementationPlan, TypeContribution, TypeMilestone,
+		TypeProposal, TypeDecisionPlan, TypeGovernanceAction, TypeEndorsement,
+		"proposal_comment":
 		// proceed
 	default:
 		l.seeded = true
@@ -372,6 +374,84 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 				"status":       data.Status,
 				"change":       changeLabel(existed),
 				"source":       "p2p",
+			},
+		})
+
+	case TypeProposal:
+		var data struct {
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "proposal_updated",
+			Data: map[string]interface{}{
+				"treeId":      p.TreeID,
+				"proposal_id": p.ID,
+				"title":       data.Title,
+				"status":      data.Status,
+				"change":      changeLabel(existed),
+				"source":      "p2p",
+			},
+		})
+
+	case TypeDecisionPlan:
+		var data struct {
+			ProposalID string `json:"proposal_id"`
+			Status     string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "decision_plan_updated",
+			Data: map[string]interface{}{
+				"treeId":      p.TreeID,
+				"plan_id":     p.ID,
+				"proposal_id": data.ProposalID,
+				"status":      data.Status,
+				"change":      changeLabel(existed),
+				"source":      "p2p",
+			},
+		})
+
+	case TypeGovernanceAction:
+		l.broker.Broadcast(SSEEvent{
+			Type: "governance_action_updated",
+			Data: map[string]interface{}{
+				"treeId":    p.TreeID,
+				"action_id": p.ID,
+				"change":    changeLabel(existed),
+				"source":    "p2p",
+			},
+		})
+
+	case TypeEndorsement:
+		var data struct {
+			ProposalID string `json:"proposal_id"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "proposal:endorsed",
+			Data: map[string]interface{}{
+				"treeId":      p.TreeID,
+				"proposal_id": data.ProposalID,
+				"change":      changeLabel(existed),
+				"source":      "p2p",
+			},
+		})
+
+	case "proposal_comment":
+		var data struct {
+			ProposalID string `json:"proposal_id"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "proposal:comment_added",
+			Data: map[string]interface{}{
+				"treeId":      p.TreeID,
+				"proposal_id": data.ProposalID,
+				"comment_id":  p.ID,
+				"change":      changeLabel(existed),
+				"source":      "p2p",
 			},
 		})
 	}

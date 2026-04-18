@@ -223,16 +223,31 @@ type GovernanceAction struct {
 	DecisionPlanID  string                 `json:"decision_plan_id"`
 	House           HouseType              `json:"house"`
 	ActionType      ActionType             `json:"action_type"`
+	Title           string                 `json:"title"`
 	Description     string                 `json:"description"`
 	MeetingDate     string                 `json:"meeting_date,omitempty"`
 	MeetingTime     string                 `json:"meeting_time,omitempty"`
 	MeetingLocation string                 `json:"meeting_location,omitempty"`
 	LinkedActionID  string                 `json:"linked_action_id,omitempty"`
+	VotingEndDate   string                 `json:"voting_end_date,omitempty"`
+	VotingEndTime   string                 `json:"voting_end_time,omitempty"`
 	Status          GovernanceActionStatus `json:"status"`
 	Outcome         OutcomeType            `json:"outcome,omitempty"`
-	VoteData        map[string]interface{} `json:"vote_data,omitempty"`
+	Votes           []Vote                 `json:"votes,omitempty"`
+	CompletionNotes string                 `json:"completion_notes,omitempty"`
+	CompletionFiles []FileRef              `json:"completion_files,omitempty"`
+	CompletionLinks []string               `json:"completion_links,omitempty"`
+	CompletedBy     string                 `json:"completed_by,omitempty"`
 	CreatedAt       time.Time              `json:"created_at"`
 	UpdatedAt       time.Time              `json:"updated_at"`
+}
+
+type Vote struct {
+	VoterID   string      `json:"voter_id"`
+	VoterName string      `json:"voter_name"`
+	Decision  OutcomeType `json:"decision"`
+	Comment   string      `json:"comment,omitempty"`
+	VotedAt   time.Time   `json:"voted_at"`
 }
 
 // --- Proposal Comments ---

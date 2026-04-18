@@ -78,6 +78,18 @@ func (h *DecisionPlansHandler) RegisterRoutes(mux *http.ServeMux) {
 			h.HandleCompleteAction(w, r, id)
 			return
 		}
+		if len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodPost {
+			h.HandleArchiveAction(w, r, id)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "vote" && r.Method == http.MethodPost {
+			h.HandleCastVote(w, r, id)
+			return
+		}
+		if len(parts) == 2 && parts[1] == "resolve" && r.Method == http.MethodPost {
+			h.HandleResolveDecision(w, r, id)
+			return
+		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}))
 }
@@ -195,14 +207,72 @@ func (h *DecisionPlansHandler) HandleAddAction(w http.ResponseWriter, r *http.Re
 // HandleCompleteAction handles POST /api/v1/governance-actions/{id}/complete
 func (h *DecisionPlansHandler) HandleCompleteAction(w http.ResponseWriter, r *http.Request, actionID string) {
 	var req struct {
-		Outcome string `json:"outcome"`
+		Outcome         string                   `json:"outcome"`
+		CompletionNotes string                   `json:"completion_notes"`
+		CompletionFiles []contributions.FileRef   `json:"completion_files,omitempty"`
+		CompletionLinks []string                  `json:"completion_links,omitempty"`
+		VoterName       string                   `json:"voter_name,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	userAID := r.Header.Get("X-User-AID")
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	action, err := h.service.CompleteGovernanceAction(r.Context(), spaceID, actionID, contributions.OutcomeType(req.Outcome))
+	action, err := h.service.CompleteGovernanceAction(r.Context(), spaceID, actionID, contributions.OutcomeType(req.Outcome), req.CompletionNotes, req.CompletionFiles, req.CompletionLinks, userAID, req.VoterName)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, action)
+}
+
+// HandleArchiveAction handles POST /api/v1/governance-actions/{id}/archive
+func (h *DecisionPlansHandler) HandleArchiveAction(w http.ResponseWriter, r *http.Request, actionID string) {
+	var req struct {
+		CompletionNotes string                  `json:"completion_notes"`
+		CompletionFiles []contributions.FileRef `json:"completion_files,omitempty"`
+		CompletionLinks []string                `json:"completion_links,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	userAID := r.Header.Get("X-User-AID")
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	action, err := h.service.ArchiveGovernanceAction(r.Context(), spaceID, actionID, req.CompletionNotes, req.CompletionFiles, req.CompletionLinks, userAID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, action)
+}
+
+// HandleCastVote handles POST /api/v1/governance-actions/{id}/vote
+func (h *DecisionPlansHandler) HandleCastVote(w http.ResponseWriter, r *http.Request, actionID string) {
+	var req struct {
+		Decision  string `json:"decision"`
+		Comment   string `json:"comment"`
+		VoterName string `json:"voter_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	userAID := r.Header.Get("X-User-AID")
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	action, err := h.service.CastVote(r.Context(), spaceID, actionID, userAID, req.VoterName, contributions.OutcomeType(req.Decision), req.Comment)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, action)
+}
+
+// HandleResolveDecision handles POST /api/v1/governance-actions/{id}/resolve
+func (h *DecisionPlansHandler) HandleResolveDecision(w http.ResponseWriter, r *http.Request, actionID string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	action, err := h.service.ResolveDecision(r.Context(), spaceID, actionID)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

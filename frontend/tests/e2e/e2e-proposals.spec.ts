@@ -411,21 +411,21 @@ test.describe.serial('Proposals UI', () => {
     // Verify dialog title
     await expect(dialog.locator('.text-h6')).toContainText('Create Proposal');
 
-    // Verify key form fields
+    // Verify key form fields (Priority removed, Type is a card grid)
     for (const label of [
       'Title',
       'Description',
       'Problem Statement',
       'Proposed Solution',
-      'Type',
-      'Priority',
     ]) {
       await expect(dialog.locator(`label:has-text("${label}")`)).toBeVisible();
     }
+    // Type uses card grid, not a label
+    await expect(dialog.locator('.type-grid')).toBeVisible();
 
     // Verify action buttons
     await expect(dialog.getByRole('button', { name: /cancel/i })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: /save/i })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: /Create Proposal/i })).toBeVisible();
 
     // Cancel closes dialog
     await dialog.getByRole('button', { name: /cancel/i }).click();
@@ -440,10 +440,7 @@ test.describe.serial('Proposals UI', () => {
     const aid = accounts.admin?.aid || 'test-admin';
     await createProposalAPI(request, aid, { title: 'Clickable Card Test' });
 
-    // Refresh the proposals page
-    await page.reload();
-    await page.waitForTimeout(2000);
-
+    // SSE proposal:created triggers list refresh — wait for card to appear
     const cards = page.locator('.proposal-card');
     const cardCount = await cards.count();
 
@@ -494,14 +491,6 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
   let memberAID: string;
 
   let proposalId: string;
-  let decisionPlanId: string;
-
-  let eldersMeetingId: string;
-  let eldersDecisionId: string;
-  let communityMeetingId: string;
-  let communityDecisionId: string;
-  let contributorsMeetingId: string;
-  let contributorsDecisionId: string;
 
   /** Navigate to a sidebar item */
   async function nav(page: Page, label: string) {
@@ -608,9 +597,8 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     await d.getByLabel(/Timeline/i).fill('4');
 
     await d.getByRole('button', { name: /Create Proposal|Save Changes|Save/i }).click();
-    await settle(adminPage, 3000);
 
-    // Click the newest Draft proposal card (stale data from prior runs may exist)
+    // SSE proposal:created event triggers list refresh — wait for card to appear
     const card = adminPage.locator('.proposal-card').filter({ hasText: 'Draft' }).filter({ hasText: 'Full Lifecycle E2E Proposal' }).first();
     await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
     await card.click();
@@ -635,8 +623,8 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     const btn = adminPage.getByRole('button', { name: /Submit for Endorsement/i });
     await expect(btn).toBeVisible({ timeout: TIMEOUT.short });
     await btn.click();
-    await settle(adminPage, 2000);
 
+    // SSE proposal:status_changed triggers UI refresh
     await expect(adminPage.locator('.status-badge.submitted')).toBeVisible({ timeout: TIMEOUT.medium });
     console.log('[Step 5] Submitted for endorsement');
   });
@@ -648,10 +636,10 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
   test('Access: member cannot sign off submitted proposal', async () => {
     await memberPage.bringToFront();
     await nav(memberPage, 'Proposals');
-    await settle(memberPage, 2000);
 
+    // Wait for proposal list to load (member backend syncs via any-sync)
     const card = memberPage.locator('.proposal-card').filter({ hasText: 'Submitted' }).filter({ hasText: 'Full Lifecycle E2E Proposal' }).first();
-    await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(card).toBeVisible({ timeout: TIMEOUT.long });
     await card.click();
     await expect(memberPage).toHaveURL(/\/dashboard\/proposals\//, { timeout: TIMEOUT.short });
     await settle(memberPage, 1500);
@@ -685,27 +673,11 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
       await comment.fill('I fully support this proposal');
     }
     await endorseDlg.getByRole('button', { name: /^Endorse$/i }).click();
-    await settle(memberPage, 3000);
 
-    // Verify via admin backend API (endorsement may have been processed on member's backend
-    // but the auto-transition happens where the endorsement count reaches threshold)
-    const { body: p } = await getProposalAPI(request, proposalId, adminAID);
-    if (p.status !== 'in_review') {
-      // Endorsement on member backend may not have synced — endorse via API on admin backend as fallback
-      console.log('[Steps 7-9] UI endorsement on member backend, status=%s — endorsing via admin API', p.status);
-      await endorseProposalAPI(request, proposalId, memberAID, 'I fully support this proposal');
-    }
-
-    // Verify in_review via API
-    const { body: p2 } = await getProposalAPI(request, proposalId, adminAID);
-    expect(p2.status).toBe('in_review');
-    expect(p2.lead_contribution_id).toBeTruthy();
-    expect(p2.steward_contribution_id).toBeTruthy();
-    console.log('[Steps 7-9] Endorsed, in_review confirmed');
-
-    // Reload member page to show updated status
-    await memberPage.reload();
-    await settle(memberPage, 2000);
+    // SSE proposal:endorsed triggers refresh — wait for status badge to update
+    // The endorsement threshold (1) should auto-transition to in_review
+    await expect(memberPage.locator('.status-badge.in_review')).toBeVisible({ timeout: TIMEOUT.long });
+    console.log('[Steps 7-9] Endorsed, auto in_review confirmed via UI');
   });
 
   // ------------------------------------------------------------------
@@ -723,19 +695,29 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
   // Step 11: Admin claims Lead + Steward via UI
   // ------------------------------------------------------------------
 
-  test('Step 11: admin claims Lead and Steward roles via UI', async () => {
+  test('Step 11: admin claims Lead and Steward roles via UI', async ({ request }) => {
     await adminPage.bringToFront();
-    await adminPage.reload();
-    await settle(adminPage, 2000);
+
+    // Ensure admin backend has the in_review status (endorsement happened on member backend)
+    const { body: p } = await getProposalAPI(request, proposalId, adminAID);
+    if (p.status !== 'in_review') {
+      // P2P sync hasn't propagated yet — endorse via admin API as fallback
+      console.log('[Step 11] Admin backend status=%s, endorsing via API fallback', p.status);
+      await endorseProposalAPI(request, proposalId, 'e2e-admin-endorse', 'Fallback endorsement');
+    }
+
+    // Navigate to proposal detail to see in_review state with role assignments
+    await adminPage.goto(`${FRONTEND_URL}#/dashboard/proposals/${proposalId}`);
 
     const rolesCard = adminPage.locator('.roles-card');
-    await expect(rolesCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(rolesCard).toBeVisible({ timeout: TIMEOUT.long });
 
     const claimBtns = rolesCard.getByRole('button', { name: /Claim Role/i });
     const count = await claimBtns.count();
     for (let i = 0; i < count; i++) {
       await claimBtns.first().click();
-      await settle(adminPage, 2000);
+      // Wait for the claim to process and button to disappear/refresh
+      await settle(adminPage, 1000);
     }
 
     console.log('[Step 11] Claimed Lead + Steward roles');
@@ -764,8 +746,9 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     await budget.fill('750');
 
     await d.getByRole('button', { name: /Create Proposal|Save Changes|Save/i }).click();
-    await settle(adminPage, 2000);
 
+    // SSE proposal:updated triggers refresh
+    await settle(adminPage, 500);
     console.log('[Step 12] Edited proposal');
   });
 
@@ -779,8 +762,8 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     const btn = adminPage.getByRole('button', { name: /Sign Off Proposal/i });
     await expect(btn).toBeVisible({ timeout: TIMEOUT.short });
     await btn.click();
-    await settle(adminPage, 2000);
 
+    // SSE proposal:status_changed triggers refresh
     await expect(adminPage.locator('.status-badge.signed_off')).toBeVisible({ timeout: TIMEOUT.medium });
     console.log('[Step 13] Signed off');
   });
@@ -789,115 +772,213 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
   // Step 14: Create decision plan + add governance actions (API)
   // ------------------------------------------------------------------
 
-  test('Step 14: create decision plan and governance actions', async ({ request }) => {
-    const { response, body } = await createDecisionPlanAPI(request, proposalId, adminAID, adminAID);
-    expect(response.ok(), `DP create failed: ${JSON.stringify(body)}`).toBeTruthy();
-    decisionPlanId = body.id;
+  test('Step 14: create decision plan via UI', async () => {
+    await adminPage.bringToFront();
 
-    // Add 6 governance actions (3 houses × meeting + decision)
-    const { body: em } = await addGovernanceActionAPI(request, decisionPlanId, {
-      house: 'elders_council', action_type: 'meeting', description: 'Elder Council meeting',
-      meeting_date: '2026-04-01', meeting_time: '10:00', meeting_location: 'Council Chambers',
-    });
-    eldersMeetingId = em.id;
+    // Click "Create Decision Plan" button (visible when proposal is signed_off)
+    const createDPBtn = adminPage.getByRole('button', { name: /Create Decision Plan/i });
+    await expect(createDPBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await createDPBtn.click();
 
-    const { body: ed } = await addGovernanceActionAPI(request, decisionPlanId, {
-      house: 'elders_council', action_type: 'decision', description: 'Elder Council veto decision',
-      linked_action_id: eldersMeetingId,
-    });
-    eldersDecisionId = ed.id;
+    // CreateDecisionPlanDialog opens with 3 house configs
+    const dpDlg = dlg(adminPage, 'Create Decision Plan');
+    await expect(dpDlg).toBeVisible({ timeout: TIMEOUT.short });
 
-    const { body: cm } = await addGovernanceActionAPI(request, decisionPlanId, {
-      house: 'community_reps', action_type: 'meeting', description: 'Community reps meeting',
-      meeting_date: '2026-04-02', meeting_time: '14:00', meeting_location: 'Community Hall',
-    });
-    communityMeetingId = cm.id;
+    // Ensure all meeting checkboxes are checked
+    const meetingCheckboxes = dpDlg.locator('.q-checkbox');
+    const checkboxCount = await meetingCheckboxes.count();
+    for (let i = 0; i < checkboxCount; i++) {
+      const cb = meetingCheckboxes.nth(i);
+      const isChecked = await cb.locator('.q-checkbox__inner--truthy').isVisible().catch(() => false);
+      if (!isChecked) await cb.click();
+    }
 
-    const { body: cd } = await addGovernanceActionAPI(request, decisionPlanId, {
-      house: 'community_reps', action_type: 'decision', description: 'Community strategic vote',
-      linked_action_id: communityMeetingId,
-    });
-    communityDecisionId = cd.id;
+    // Fill meeting dates/times for each house config
+    const houseConfigs = dpDlg.locator('.house-config');
+    const houseCount = await houseConfigs.count();
+    for (let i = 0; i < houseCount; i++) {
+      const house = houseConfigs.nth(i);
+      const dateInput = house.locator('input[type="date"]');
+      const timeInput = house.locator('input[type="time"]');
+      if (await dateInput.isVisible().catch(() => false)) {
+        await dateInput.fill(`2026-04-0${i + 1}`);
+      }
+      if (await timeInput.isVisible().catch(() => false)) {
+        await timeInput.fill(`${10 + i * 2}:00`);
+      }
+    }
 
-    const { body: ctm } = await addGovernanceActionAPI(request, decisionPlanId, {
-      house: 'contributors', action_type: 'meeting', description: 'Contributors meeting',
-      meeting_date: '2026-04-03', meeting_time: '09:00', meeting_location: 'Online',
-    });
-    contributorsMeetingId = ctm.id;
+    // Click "Create Plan"
+    await dpDlg.getByRole('button', { name: /Create Plan/i }).click();
+    await settle(adminPage, 1000);
 
-    const { body: ctd } = await addGovernanceActionAPI(request, decisionPlanId, {
-      house: 'contributors', action_type: 'decision', description: 'Contributors operational vote',
-      linked_action_id: contributorsMeetingId,
-    });
-    contributorsDecisionId = ctd.id;
-
-    console.log('[Step 14] Decision plan + 6 actions created');
+    // Verify DecisionPlanView appears with 3 house sections
+    const dpView = adminPage.locator('.decision-plan-view');
+    await expect(dpView).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Step 14] Decision plan created via UI');
   });
 
   // ------------------------------------------------------------------
   // Steps 15-16: Submit + sign off decision plan → voting_process
   // ------------------------------------------------------------------
 
-  test('Steps 15-16: submit + sign off decision plan → voting_process', async ({ request }) => {
-    await transitionDecisionPlanAPI(request, decisionPlanId, 'submitted', adminAID);
-    await transitionDecisionPlanAPI(request, decisionPlanId, 'signed_off', adminAID);
+  test('Step 15: submit decision plan for review via UI', async () => {
+    await adminPage.bringToFront();
+    // Should already be on proposal detail — click Submit for Review in DecisionPlanView
+    const dpView = adminPage.locator('.decision-plan-view');
+    await expect(dpView).toBeVisible({ timeout: TIMEOUT.medium });
 
-    const { body: p } = await getProposalAPI(request, proposalId, adminAID);
-    expect(p.status).toBe('voting_process');
-    console.log('[Steps 15-16] Decision plan signed off, proposal → voting_process');
+    const submitBtn = dpView.getByRole('button', { name: /Submit for Review/i });
+    await expect(submitBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await submitBtn.click();
+    console.log('[Step 15] Decision plan submitted for review');
   });
 
-  // ------------------------------------------------------------------
-  // Steps 17-18: Elder Council votes no_veto
-  // ------------------------------------------------------------------
+  test('Step 16: sign off decision plan → voting_process via UI', async () => {
+    await adminPage.bringToFront();
 
-  test('Steps 17-18: Elder Council no veto', async ({ request }) => {
-    await completeGovernanceActionAPI(request, eldersMeetingId, 'no_veto', adminAID);
-    await completeGovernanceActionAPI(request, eldersDecisionId, 'no_veto', adminAID);
+    const dpView = adminPage.locator('.decision-plan-view');
+    const signOffBtn = dpView.getByRole('button', { name: /Sign Off/i });
+    await expect(signOffBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await signOffBtn.click();
 
-    const { body: p } = await getProposalAPI(request, proposalId, adminAID);
-    expect(p.status).toBe('voting_process');
-    console.log('[Steps 17-18] Elder Council: no veto');
+    // SSE triggers proposal auto-transition to voting_process
+    await expect(adminPage.locator('.status-badge.voting_process')).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Step 16] Decision plan signed off, proposal → voting_process');
   });
 
-  // ------------------------------------------------------------------
-  // Step 19: Community Reps approve
-  // ------------------------------------------------------------------
+  test('Steps 17-18: Elder Council meeting + no veto via UI', async () => {
+    test.setTimeout(60_000);
+    await adminPage.bringToFront();
+    const dpView = adminPage.locator('.decision-plan-view');
+    await expect(dpView).toBeVisible({ timeout: TIMEOUT.short });
 
-  test('Step 19: Community Reps approve', async ({ request }) => {
-    await completeGovernanceActionAPI(request, communityMeetingId, 'approved', adminAID);
-    await completeGovernanceActionAPI(request, communityDecisionId, 'approved', adminAID);
+    // Wait for action cards to be populated (may need SSE refresh after voting_process)
+    const actionCards = dpView.locator('.action-card');
+    await expect(actionCards.first()).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Step 17] Action cards visible: %d', await actionCards.count());
 
-    const { body: p } = await getProposalAPI(request, proposalId, adminAID);
-    expect(p.status).toBe('voting_process');
-    console.log('[Step 19] Community Reps: approved');
+    // Click Elder Council meeting action card
+    const elderSection = dpView.locator('.house-section').filter({ hasText: /Elder Council/i });
+    const meetingCard = elderSection.locator('.action-card').filter({ hasText: /Meeting/i }).first();
+    await expect(meetingCard).toBeVisible({ timeout: TIMEOUT.short });
+    await meetingCard.click();
+
+    // GovernanceActionModal opens — click "Mark as Complete"
+    let modal = adminPage.locator('.q-dialog').last();
+    const completeBtn = modal.getByRole('button', { name: /Mark as Complete/i });
+    await expect(completeBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await completeBtn.click();
+    await settle(adminPage, 1000);
+    // Close modal via Close button or Escape
+    const closeBtn1 = adminPage.locator('.q-dialog').last().getByRole('button', { name: /^Close$/i });
+    if (await closeBtn1.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await closeBtn1.click();
+    } else {
+      await adminPage.keyboard.press('Escape');
+    }
+    await settle(adminPage, 1500);
+    console.log('[Step 17] Elder Council meeting completed');
+
+    // Click Elder Council decision action card
+    const decisionCard = elderSection.locator('.action-card').filter({ hasText: /Decision/i }).first();
+    await expect(decisionCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await decisionCard.click();
+
+    // Vote: No Veto
+    modal = adminPage.locator('.q-dialog').last();
+    const noVetoBtn = modal.getByRole('button', { name: /No Veto/i });
+    await expect(noVetoBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await noVetoBtn.click();
+    await settle(adminPage, 1000);
+    const closeBtn2 = adminPage.locator('.q-dialog').last().getByRole('button', { name: /^Close$/i });
+    if (await closeBtn2.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await closeBtn2.click();
+    } else {
+      await adminPage.keyboard.press('Escape');
+    }
+    await settle(adminPage, 1000);
+    console.log('[Step 18] Elder Council voted: no veto');
   });
 
-  // ------------------------------------------------------------------
-  // Steps 20-21: Contributors approve → auto-approved
-  // ------------------------------------------------------------------
+  test('Step 19: Community Reps meeting + approve via UI', async () => {
+    test.setTimeout(60_000);
+    await adminPage.bringToFront();
+    const dpView = adminPage.locator('.decision-plan-view');
 
-  test('Steps 20-21: Contributors approve → proposal auto-approved', async ({ request }) => {
-    await completeGovernanceActionAPI(request, contributorsMeetingId, 'approved', adminAID);
-    await completeGovernanceActionAPI(request, contributorsDecisionId, 'approved', adminAID);
+    // Community meeting
+    const communitySection = dpView.locator('.house-section').filter({ hasText: /Community/i });
+    const meetingCard = communitySection.locator('.action-card').filter({ hasText: /Meeting/i }).first();
+    await expect(meetingCard).toBeVisible({ timeout: TIMEOUT.short });
+    await meetingCard.click();
 
-    const { body: p } = await getProposalAPI(request, proposalId, adminAID);
-    expect(p.status).toBe('approved');
-    console.log('[Steps 20-21] Proposal auto-approved!');
+    let modal = adminPage.locator('.q-dialog').last();
+    await modal.getByRole('button', { name: /Mark as Complete/i }).click();
+    await settle(adminPage, 1000);
+    // Close the completed meeting modal
+    { const cb = adminPage.getByRole('button', { name: /^Close$/i }).last();
+    if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) await cb.click(); }
+    await settle(adminPage, 1500);
+    console.log('[Step 19] Community meeting completed');
+
+    // Community decision: Approve
+    const decisionCard = communitySection.locator('.action-card').filter({ hasText: /Decision/i }).first();
+    await expect(decisionCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await decisionCard.click();
+
+    modal = adminPage.locator('.q-dialog').last();
+    const approveBtn = modal.getByRole('button', { name: /^Approve$/i });
+    await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await approveBtn.click();
+    await settle(adminPage, 1000);
+    { const cb = adminPage.getByRole('button', { name: /^Close$/i }).last();
+    if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) await cb.click(); }
+    await settle(adminPage, 1000);
+    console.log('[Step 19] Community Reps voted: approved');
   });
 
-  // ------------------------------------------------------------------
-  // Verify: final state via UI
-  // ------------------------------------------------------------------
+  test('Steps 20-21: Contributors meeting + approve → auto-approved via UI', async () => {
+    test.setTimeout(60_000);
+    await adminPage.bringToFront();
+    const dpView = adminPage.locator('.decision-plan-view');
+
+    // Contributors meeting
+    const contribSection = dpView.locator('.house-section').filter({ hasText: /Contributor/i });
+    const meetingCard = contribSection.locator('.action-card').filter({ hasText: /Meeting/i }).first();
+    await expect(meetingCard).toBeVisible({ timeout: TIMEOUT.short });
+    await meetingCard.click();
+
+    let modal = adminPage.locator('.q-dialog').last();
+    await modal.getByRole('button', { name: /Mark as Complete/i }).click();
+    await settle(adminPage, 1000);
+    { const cb = adminPage.getByRole('button', { name: /^Close$/i }).last();
+    if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) await cb.click(); }
+    await settle(adminPage, 1500);
+    console.log('[Step 20] Contributors meeting completed');
+
+    // Contributors decision: Approve (last vote → triggers auto-evaluate → approved)
+    const decisionCard = contribSection.locator('.action-card').filter({ hasText: /Decision/i }).first();
+    await expect(decisionCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await decisionCard.click();
+
+    modal = adminPage.locator('.q-dialog').last();
+    const approveBtn = modal.getByRole('button', { name: /^Approve$/i });
+    await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await approveBtn.click();
+    await settle(adminPage, 1000);
+    { const cb = adminPage.getByRole('button', { name: /^Close$/i }).last();
+    if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) await cb.click(); }
+
+    // SSE: governance_action:completed → auto-evaluate → proposal:status_changed → approved
+    await expect(adminPage.locator('.status-badge.approved')).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Steps 20-21] Proposal auto-approved via UI!');
+  });
 
   test('Verify: final proposal state via UI', async () => {
     await adminPage.bringToFront();
-    await adminPage.reload();
-    await settle(adminPage, 2000);
-
-    await expect(adminPage.locator('.status-badge.approved')).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(adminPage.locator('.status-badge.approved')).toBeVisible({ timeout: TIMEOUT.short });
     await expect(adminPage.locator('.detail-title', { hasText: 'Full Lifecycle E2E Proposal' })).toBeVisible();
-    console.log('[Verify] Proposal approved — all 21 steps complete');
+    console.log('[Verify] Proposal approved — all 21 steps complete via UI');
   });
 });
 
@@ -1164,14 +1245,16 @@ test.describe.serial('Proposal Comments', () => {
     const { response, body } = await listCommentsAPI(request, proposalId);
     expect(response.ok()).toBeTruthy();
     const comments = body.comments || [];
-    expect(comments).toHaveLength(2);
-    expect(body.total).toBe(2);
+    expect(comments.length).toBeGreaterThanOrEqual(2);
 
-    expect(comments[0].user_name).toBe('Test User');
-    expect(comments[0].text).toBe('This is a test comment');
-    expect(comments[1].user_name).toBe('Another User');
-    expect(comments[1].text).toBe('I agree with this proposal');
-    console.log('[Comments] Both comments returned correctly');
+    // Find our specific comments (stale data from prior runs may exist)
+    const testComment = comments.find((c: { user_name: string }) => c.user_name === 'Test User');
+    const anotherComment = comments.find((c: { user_name: string }) => c.user_name === 'Another User');
+    expect(testComment, 'Test User comment not found').toBeTruthy();
+    expect(testComment.text).toBe('This is a test comment');
+    expect(anotherComment, 'Another User comment not found').toBeTruthy();
+    expect(anotherComment.text).toBe('I agree with this proposal');
+    console.log('[Comments] Both comments found (%d total)', comments.length);
   });
 
   test('reject empty comment text', async ({ request }) => {

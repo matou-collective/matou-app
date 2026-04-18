@@ -83,6 +83,7 @@ func ValidateContributionTransition(from, to ContributionStatus) error {
 var decisionPlanTransitions = map[DecisionPlanStatus][]DecisionPlanStatus{
 	DecisionPlanDrafted:   {DecisionPlanSubmitted},
 	DecisionPlanSubmitted: {DecisionPlanSignedOff},
+	DecisionPlanSignedOff: {DecisionPlanSubmitted},
 }
 
 func ValidateDecisionPlanTransition(from, to DecisionPlanStatus) error {

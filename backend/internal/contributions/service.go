@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -296,6 +297,9 @@ func (s *Service) ListProposalComments(ctx context.Context, spaceID, proposalID 
 			}
 		}
 	}
+	sort.Slice(comments, func(i, j int) bool {
+		return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+	})
 	return comments, nil
 }
 
@@ -649,6 +653,8 @@ type CreateGovernanceActionRequest struct {
 	MeetingTime     string     `json:"meeting_time,omitempty"`
 	MeetingLocation string     `json:"meeting_location,omitempty"`
 	LinkedActionID  string     `json:"linked_action_id,omitempty"`
+	VotingEndDate   string     `json:"voting_end_date,omitempty"`
+	VotingEndTime   string     `json:"voting_end_time,omitempty"`
 }
 
 func (s *Service) AddGovernanceAction(ctx context.Context, spaceID string, req *CreateGovernanceActionRequest) (*GovernanceAction, error) {
@@ -663,6 +669,8 @@ func (s *Service) AddGovernanceAction(ctx context.Context, spaceID string, req *
 		MeetingTime:     req.MeetingTime,
 		MeetingLocation: req.MeetingLocation,
 		LinkedActionID:  req.LinkedActionID,
+		VotingEndDate:   req.VotingEndDate,
+		VotingEndTime:   req.VotingEndTime,
 		Status:          GovActionPlanned,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -681,7 +689,7 @@ func (s *Service) GetGovernanceAction(ctx context.Context, spaceID, actionID str
 	return &action, nil
 }
 
-func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionID string, outcome OutcomeType) (*GovernanceAction, error) {
+func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionID string, outcome OutcomeType, completionNotes string, completionFiles []FileRef, completionLinks []string, completedBy string, voterName string) (*GovernanceAction, error) {
 	action, err := s.GetGovernanceAction(ctx, spaceID, actionID)
 	if err != nil {
 		return nil, err
@@ -708,8 +716,23 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 		}
 	}
 
+	// For decisions, record the vote
+	if action.ActionType == ActionDecision && outcome != "" {
+		action.Votes = append(action.Votes, Vote{
+			VoterID:   completedBy,
+			VoterName: voterName,
+			Decision:  outcome,
+			Comment:   completionNotes,
+			VotedAt:   time.Now(),
+		})
+	}
+
 	action.Status = GovActionCompleted
 	action.Outcome = outcome
+	action.CompletionNotes = completionNotes
+	action.CompletionFiles = completionFiles
+	action.CompletionLinks = completionLinks
+	action.CompletedBy = completedBy
 	action.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, action.ID, "governance_action", action); err != nil {
 		return nil, err
@@ -721,6 +744,138 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 		if err == nil && dp.ProposalID != "" {
 			s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
 		}
+	}
+
+	return action, nil
+}
+
+func (s *Service) ArchiveGovernanceAction(ctx context.Context, spaceID, actionID string, completionNotes string, completionFiles []FileRef, completionLinks []string, completedBy string) (*GovernanceAction, error) {
+	action, err := s.GetGovernanceAction(ctx, spaceID, actionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateGovernanceActionTransition(action.Status, GovActionArchived); err != nil {
+		return nil, err
+	}
+
+	action.Status = GovActionArchived
+	action.CompletionNotes = completionNotes
+	action.CompletionFiles = completionFiles
+	action.CompletionLinks = completionLinks
+	action.CompletedBy = completedBy
+	action.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, action.ID, "governance_action", action); err != nil {
+		return nil, err
+	}
+	return action, nil
+}
+
+func (s *Service) CastVote(ctx context.Context, spaceID, actionID string, voterID, voterName string, decision OutcomeType, comment string) (*GovernanceAction, error) {
+	action, err := s.GetGovernanceAction(ctx, spaceID, actionID)
+	if err != nil {
+		return nil, err
+	}
+	if action.ActionType != ActionDecision {
+		return nil, fmt.Errorf("can only cast votes on decision actions")
+	}
+	if action.Status != GovActionPlanned {
+		return nil, fmt.Errorf("voting is closed for this action")
+	}
+
+	// Check proposal is in voting process
+	dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
+	if err != nil {
+		return nil, fmt.Errorf("finding decision plan: %w", err)
+	}
+	if dp.ProposalID != "" {
+		prop, err := s.GetProposal(ctx, spaceID, dp.ProposalID)
+		if err != nil {
+			return nil, fmt.Errorf("finding proposal: %w", err)
+		}
+		if prop.Status != ProposalVotingProcess {
+			return nil, fmt.Errorf("voting is only allowed when the proposal is in voting process (current status: %s)", prop.Status)
+		}
+	}
+
+	// Check if voter has already voted
+	for _, v := range action.Votes {
+		if v.VoterID == voterID {
+			return nil, fmt.Errorf("you have already voted on this action")
+		}
+	}
+
+	action.Votes = append(action.Votes, Vote{
+		VoterID:   voterID,
+		VoterName: voterName,
+		Decision:  decision,
+		Comment:   comment,
+		VotedAt:   time.Now(),
+	})
+	action.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, action.ID, "governance_action", action); err != nil {
+		return nil, err
+	}
+	return action, nil
+}
+
+func (s *Service) ResolveDecision(ctx context.Context, spaceID, actionID string) (*GovernanceAction, error) {
+	action, err := s.GetGovernanceAction(ctx, spaceID, actionID)
+	if err != nil {
+		return nil, err
+	}
+	if action.ActionType != ActionDecision {
+		return nil, fmt.Errorf("can only resolve decision actions")
+	}
+	if action.Status != GovActionPlanned {
+		return nil, fmt.Errorf("action is already resolved")
+	}
+	if len(action.Votes) == 0 {
+		return nil, fmt.Errorf("no votes have been cast")
+	}
+
+	// Tally votes
+	approvedCount := 0
+	rejectedCount := 0
+	for _, v := range action.Votes {
+		if v.Decision == OutcomeApproved || v.Decision == OutcomeNoVeto {
+			approvedCount++
+		} else {
+			rejectedCount++
+		}
+	}
+
+	// For elders council, any veto means veto
+	if action.House == HouseElderCouncil {
+		hasVeto := false
+		for _, v := range action.Votes {
+			if v.Decision == OutcomeVeto {
+				hasVeto = true
+				break
+			}
+		}
+		if hasVeto {
+			action.Outcome = OutcomeVeto
+		} else {
+			action.Outcome = OutcomeNoVeto
+		}
+	} else {
+		if approvedCount >= rejectedCount {
+			action.Outcome = OutcomeApproved
+		} else {
+			action.Outcome = OutcomeRejected
+		}
+	}
+
+	action.Status = GovActionCompleted
+	action.UpdatedAt = time.Now()
+	if err := s.store.Save(spaceID, action.ID, "governance_action", action); err != nil {
+		return nil, err
+	}
+
+	// Check if all decisions are now complete
+	dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
+	if err == nil && dp.ProposalID != "" {
+		s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
 	}
 
 	return action, nil

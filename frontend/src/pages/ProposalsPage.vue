@@ -78,7 +78,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { Vote } from 'lucide-vue-next';
 import { useQuasar } from 'quasar';
@@ -87,6 +87,7 @@ import { useIdentityStore } from 'stores/identity';
 import { listEndorsements } from 'src/lib/api/proposals';
 import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.vue';
 import ProposalCard from 'src/components/proposals/ProposalCard.vue';
+import { useBackendEvents } from 'src/composables/useBackendEvents';
 
 const router = useRouter();
 const $q = useQuasar();
@@ -94,6 +95,23 @@ const proposalsStore = useProposalsStore();
 const identityStore = useIdentityStore();
 const showCreateDialog = ref(false);
 const activeFilter = ref('all');
+const { lastEvent } = useBackendEvents();
+
+watch(lastEvent, (event) => {
+  if (!event) return;
+  const refreshEvents = [
+    'proposal:status_changed',
+    'proposal:endorsed',
+    'proposal:updated',
+    'proposal:created',
+    'proposal:approved',
+    'proposal:rejected',
+    'proposal_updated',
+  ];
+  if (refreshEvents.includes(event.type)) {
+    void proposalsStore.fetchProposals();
+  }
+});
 
 // Track endorsement counts per proposal
 const endorsementCounts = ref<Record<string, number>>({});

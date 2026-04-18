@@ -7,8 +7,12 @@ import {
   transitionDecisionPlan,
   addGovernanceAction,
   completeGovernanceAction,
+  archiveGovernanceAction,
+  castVote,
+  resolveDecision,
   type DecisionPlan,
   type GovernanceAction,
+  type CompleteActionRequest,
 } from 'src/lib/api/decisionPlans';
 import { createLogger } from 'src/lib/logging';
 
@@ -97,10 +101,10 @@ export const useDecisionPlansStore = defineStore('decisionPlans', () => {
     }
   }
 
-  async function completeAction(actionId: string, outcome: string): Promise<GovernanceAction> {
+  async function completeAction(actionId: string, req: CompleteActionRequest): Promise<GovernanceAction> {
     error.value = null;
     try {
-      const updated = await completeGovernanceAction(actionId, outcome);
+      const updated = await completeGovernanceAction(actionId, req);
       if (currentPlan.value) {
         const actions = currentPlan.value.governance_actions || [];
         const idx = actions.findIndex(a => a.id === actionId);
@@ -109,10 +113,67 @@ export const useDecisionPlansStore = defineStore('decisionPlans', () => {
           currentPlan.value = { ...currentPlan.value, governance_actions: [...actions] };
         }
       }
-      log.info('Governance action %s completed with outcome: %s', actionId, outcome);
+      log.info('Governance action %s completed', actionId);
       return updated;
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to complete action';
+      throw e;
+    }
+  }
+
+  async function archiveAction(actionId: string, req: Omit<CompleteActionRequest, 'outcome'>): Promise<GovernanceAction> {
+    error.value = null;
+    try {
+      const updated = await archiveGovernanceAction(actionId, req);
+      if (currentPlan.value) {
+        const actions = currentPlan.value.governance_actions || [];
+        const idx = actions.findIndex(a => a.id === actionId);
+        if (idx >= 0) {
+          actions[idx] = updated;
+          currentPlan.value = { ...currentPlan.value, governance_actions: [...actions] };
+        }
+      }
+      log.info('Governance action %s archived', actionId);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to archive action';
+      throw e;
+    }
+  }
+
+  function updateActionInPlan(actionId: string, updated: GovernanceAction) {
+    if (currentPlan.value) {
+      const actions = currentPlan.value.governance_actions || [];
+      const idx = actions.findIndex(a => a.id === actionId);
+      if (idx >= 0) {
+        actions[idx] = updated;
+        currentPlan.value = { ...currentPlan.value, governance_actions: [...actions] };
+      }
+    }
+  }
+
+  async function vote(actionId: string, decision: string, comment: string, voterName: string): Promise<GovernanceAction> {
+    error.value = null;
+    try {
+      const updated = await castVote(actionId, decision, comment, voterName);
+      updateActionInPlan(actionId, updated);
+      log.info('Vote cast on %s: %s', actionId, decision);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to cast vote';
+      throw e;
+    }
+  }
+
+  async function resolve(actionId: string): Promise<GovernanceAction> {
+    error.value = null;
+    try {
+      const updated = await resolveDecision(actionId);
+      updateActionInPlan(actionId, updated);
+      log.info('Decision %s resolved: %s', actionId, updated.outcome);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to resolve decision';
       throw e;
     }
   }
@@ -128,5 +189,8 @@ export const useDecisionPlansStore = defineStore('decisionPlans', () => {
     transition,
     addAction,
     completeAction,
+    archiveAction,
+    vote,
+    resolve,
   };
 });

@@ -420,7 +420,6 @@ import type { CreateContributionRequest } from 'src/lib/api/contributions';
 import type { CreateMilestoneRequest } from 'src/types/projects';
 import { useProjectPermissions } from 'src/composables/useProjectPermissions';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import MilestoneCard from 'src/components/projects/MilestoneCard.vue';
@@ -437,7 +436,7 @@ const proposalsStore = useProposalsStore();
 const identityStore = useIdentityStore();
 const contributionsStore = useContributionsStore();
 const workflow = useContributionWorkflow();
-const { isAdmin: isKeriAdmin, checkAdminStatus } = useAdminAccess();
+const isKeriAdmin = computed(() => identityStore.isAdmin);
 const { lastEvent } = useBackendEvents();
 
 // ── Current user context ─────────────────────────────────────────────────────
@@ -627,7 +626,6 @@ async function loadCommunityMembers() {
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
 onMounted(async () => {
-  await checkAdminStatus();
   void loadProject(route.params.id as string);
   void loadCommunityMembers();
 });

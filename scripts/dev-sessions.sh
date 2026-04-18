@@ -223,7 +223,10 @@ stop_sessions() {
             local pid=$(cat "$pid_file")
             local session=$(basename "$pid_file" | sed 's/frontend-\([0-9]*\)\.pid/\1/')
             if kill -0 "$pid" 2>/dev/null; then
-                kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+                # Kill the frontend process tree but NOT the process group
+                # (process group kill can close the user's browser)
+                pkill -P "$pid" 2>/dev/null || true
+                kill "$pid" 2>/dev/null || true
                 log_success "Stopped frontend session $session (PID: $pid)"
             fi
             rm -f "$pid_file"
