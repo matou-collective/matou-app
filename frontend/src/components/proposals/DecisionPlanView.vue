@@ -10,16 +10,16 @@
       </div>
     </div>
 
-    <div v-for="house in HOUSES" :key="house.value" class="house-section">
+    <p v-if="housesWithActions.length === 0" class="no-actions no-actions--overall">
+      No governance actions yet
+    </p>
+
+    <div v-for="house in housesWithActions" :key="house.value" class="house-section">
       <div class="house-header" :style="{ borderLeftColor: house.color }">
         <q-icon :name="house.icon" size="20px" :style="{ color: house.color }" />
         <span class="house-name">{{ house.label }}</span>
         <span class="house-count">({{ getHouseActions(house.value).length }})</span>
       </div>
-
-      <p v-if="getHouseActions(house.value).length === 0" class="no-actions">
-        No governance actions for this house
-      </p>
 
       <div
         v-for="action in getHouseActions(house.value)"
@@ -89,6 +89,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { DecisionPlan, GovernanceAction } from 'src/lib/api/decisionPlans';
 
 interface House {
@@ -121,6 +122,10 @@ defineEmits<{
 function getHouseActions(house: string): GovernanceAction[] {
   return (props.decisionPlan.governance_actions ?? []).filter((a) => a.house === house);
 }
+
+const housesWithActions = computed(() =>
+  HOUSES.filter((h) => getHouseActions(h.value).length > 0),
+);
 
 function getActionIcon(type: GovernanceAction['action_type']): string {
   switch (type) {
@@ -220,6 +225,11 @@ function outcomeClass(outcome: GovernanceAction['outcome']): string {
   font-size: 0.85rem;
   padding: 6px 0;
   margin: 0;
+}
+
+.no-actions--overall {
+  padding: 24px 20px;
+  text-align: center;
 }
 
 // ── Action card ──────────────────────────────────────────────────────────────

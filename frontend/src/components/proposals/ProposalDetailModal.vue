@@ -44,7 +44,7 @@
           <!-- Actions -->
           <div class="action-buttons">
             <q-btn
-              v-if="proposal.status === 'submitted'"
+              v-if="proposal.status === 'submitted' && !isProposer"
               color="pink"
               no-caps
               icon="favorite"
@@ -68,7 +68,7 @@
                 <span class="text-weight-medium">Endorsement Progress</span>
               </div>
               <span :class="endorsementProgress >= 100 ? 'text-positive' : 'text-grey-6'">
-                {{ endorsements.length }} / {{ proposal.endorsement_threshold || 1 }}
+                {{ endorsements.length }} / {{ proposal.endorsement_threshold || 2 }}
               </span>
             </div>
             <q-linear-progress
@@ -223,8 +223,15 @@ const error = ref<string | null>(null);
 const showEndorseModal = ref(false);
 
 const endorsementProgress = computed(() => {
-  const threshold = proposal.value?.endorsement_threshold || 1;
+  const threshold = proposal.value?.endorsement_threshold || 2;
   return (endorsements.value.length / threshold) * 100;
+});
+
+const isProposer = computed(() => {
+  const aid = identityStore.currentAID;
+  const p = proposal.value;
+  if (!aid || !p) return false;
+  return p.proposer_id === aid.name || p.proposer_id === aid.prefix;
 });
 
 watch(

@@ -32,7 +32,7 @@
       <div class="card-footer">
         <div v-if="endorsementCount !== null" class="endorsement-info">
           <q-icon name="favorite" size="14px" color="pink" />
-          <span>{{ endorsementCount }} / {{ proposal.endorsement_threshold || 1 }} endorsements</span>
+          <span>{{ endorsementCount }} / {{ proposal.endorsement_threshold || 2 }} endorsements</span>
         </div>
         <span class="view-action">View Proposal</span>
       </div>

@@ -51,6 +51,15 @@
 
           <!-- Completion form (shown for managers on open actions) -->
           <template v-else-if="canManage">
+            <div v-if="!canCompleteAction" class="voting-locked q-mt-md">
+              <q-icon name="lock" size="20px" />
+              <div>
+                <div class="text-weight-bold">Plan Sign-Off Required</div>
+                <div class="text-caption">
+                  The decision plan must be signed off before this action can be completed.
+                </div>
+              </div>
+            </div>
             <div class="completion-fields q-mt-md">
               <div class="completion-field">
                 <div class="completion-field-label">Notes *</div>
@@ -216,10 +225,6 @@
                 <q-icon name="thumb_down" size="16px" />
                 <span>{{ rejectedCount }} Declined</span>
               </div>
-              <div v-if="pendingHouses.length" class="voting-total voting-total--pending">
-                <q-icon name="schedule" size="16px" />
-                <span>{{ pendingHouses.length }} Pending</span>
-              </div>
             </div>
 
             <!-- House results -->
@@ -270,7 +275,7 @@
             color="positive"
             icon="check_circle"
             class="dialog-footer-btn"
-            :disable="!notes.trim()"
+            :disable="!notes.trim() || !canCompleteAction"
             :loading="submitting"
             @click="submitComplete()"
           />
@@ -341,7 +346,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, h as createVNode } from 'vue';
+import { computed, ref, watch, h as createVNode } from 'vue';
 import { useQuasar } from 'quasar';
 import type { GovernanceAction } from 'src/lib/api/decisionPlans';
 import { uploadFile, getFileUrl } from 'src/lib/api/client';
@@ -402,6 +407,7 @@ const props = defineProps<{
   action: GovernanceAction;
   allActions: GovernanceAction[];
   proposalStatus?: string;
+  decisionPlanStatus?: string;
   canManage?: boolean;
 }>();
 
@@ -420,6 +426,15 @@ const identityStore = useIdentityStore();
 const showForm = ref(false);
 const formMode = ref<'complete' | 'archive'>('complete');
 const submitting = ref(false);
+
+// Reset loading state when the parent swaps in a refreshed action object after
+// vote/complete/archive/resolve completes.
+watch(
+  () => props.action,
+  () => {
+    submitting.value = false;
+  },
+);
 const notes = ref('');
 const newLink = ref('');
 const links = ref<string[]>([]);
@@ -455,6 +470,7 @@ const outcomePositive = computed<boolean>(() => {
 
 const isActionOpen = computed(() => props.action.status === 'planned');
 const isDecision = computed(() => props.action.action_type === 'decision' && !votingNotOpen.value && !votingLocked.value);
+const canCompleteAction = computed(() => props.decisionPlanStatus === 'signed_off');
 
 const currentAID = computed(() => identityStore.currentAID?.prefix ?? '');
 const hasVoted = computed(() => (props.action.votes ?? []).some((v) => v.voter_id === currentAID.value));
@@ -466,7 +482,17 @@ const isVotingExpired = computed(() => {
   return new Date(endStr) < new Date();
 });
 
-const ALL_HOUSES = ['elders_council', 'community_reps', 'contributors'];
+type HouseValue = GovernanceAction['house'];
+const HOUSE_ORDER: HouseValue[] = ['elders_council', 'community_reps', 'contributors'];
+
+const housesInPlan = computed<HouseValue[]>(() => {
+  const set = new Set<HouseValue>(
+    props.allActions
+      .filter((a) => a.action_type === 'decision')
+      .map((a) => a.house),
+  );
+  return HOUSE_ORDER.filter((h) => set.has(h));
+});
 
 const completedDecisions = computed(() =>
   props.allActions.filter((a) => a.action_type === 'decision' && a.status === 'completed'),
@@ -474,15 +500,21 @@ const completedDecisions = computed(() =>
 
 const pendingHouses = computed(() => {
   const decided = new Set(completedDecisions.value.map((a) => a.house));
-  return ALL_HOUSES.filter((h) => !decided.has(h));
+  return housesInPlan.value.filter((h) => !decided.has(h));
 });
 
-const approvedCount = computed(() =>
-  completedDecisions.value.filter((d) => d.outcome === 'approved' || d.outcome === 'no_veto').length,
+const approvedCount = computed(
+  () =>
+    (props.action.votes ?? []).filter(
+      (v) => v.decision === 'approved' || v.decision === 'no_veto',
+    ).length,
 );
 
-const rejectedCount = computed(() =>
-  completedDecisions.value.filter((d) => d.outcome === 'rejected' || d.outcome === 'veto').length,
+const rejectedCount = computed(
+  () =>
+    (props.action.votes ?? []).filter(
+      (v) => v.decision === 'rejected' || v.decision === 'veto',
+    ).length,
 );
 
 const allVotes = computed(() =>

@@ -52,6 +52,16 @@ export interface Endorsement {
   comment?: string;
 }
 
+export interface CommentAttachment {
+  file_ref: string;
+  file_name: string;
+  content_type: string;
+  size?: number;
+  category?: string;
+  uploaded_by?: string;
+  uploaded_at?: string;
+}
+
 export interface ProposalComment {
   id: string;
   proposal_id: string;
@@ -59,6 +69,11 @@ export interface ProposalComment {
   user_name: string;
   text: string;
   created_at: string;
+  kind?: 'user' | 'endorsement' | 'completion' | 'vote';
+  subtitle?: string;
+  outcome?: string;
+  attachments?: CommentAttachment[];
+  links?: string[];
 }
 
 export interface ProposalHistoryEntry {

@@ -100,14 +100,18 @@ export async function addMilestone(planId: string, req: AddMilestoneRequest): Pr
 
 /**
  * Fetch the implementation plan for a given project.
- * The backend returns a list; we filter by project_id and return the first match.
+ * The list endpoint returns skinny plans (no hydrated contributions), so we
+ * find the plan id via list and then fetch the detail endpoint to get the
+ * milestone.contributions populated.
  */
 export async function getImplementationPlanForProject(
   projectId: string,
 ): Promise<ImplementationPlan | null> {
   const result = await listImplementationPlans();
   const plans = result.implementation_plans || [];
-  return plans.find(p => p.project_id === projectId) ?? null;
+  const skinny = plans.find(p => p.project_id === projectId);
+  if (!skinny) return null;
+  return getImplementationPlan(skinny.id);
 }
 
 export async function signOffImplementationPlan(planId: string): Promise<ImplementationPlan> {

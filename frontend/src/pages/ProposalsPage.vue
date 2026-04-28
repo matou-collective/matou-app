@@ -50,7 +50,7 @@
           <div v-if="proposal.status === 'submitted'" class="endorsement-bar">
             <div class="endorsement-bar-header">
               <span class="endorsement-label">Endorsements</span>
-              <span class="endorsement-count">{{ getEndorsementCount(proposal.id) }} / {{ proposal.endorsement_threshold || 1 }}</span>
+              <span class="endorsement-count">{{ getEndorsementCount(proposal.id) }} / {{ proposal.endorsement_threshold || 2 }}</span>
             </div>
             <q-linear-progress
               :value="getEndorsementProgress(proposal.id, proposal.endorsement_threshold)"
@@ -157,7 +157,7 @@ function getEndorsementCount(proposalId: string): number {
 
 function getEndorsementProgress(proposalId: string, threshold?: number): number {
   const count = getEndorsementCount(proposalId);
-  const t = threshold || 1;
+  const t = threshold || 2;
   return Math.min(count / t, 1);
 }
 

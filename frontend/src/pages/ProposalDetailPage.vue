@@ -45,20 +45,30 @@
         <!-- Action Buttons -->
         <div class="action-buttons">
           <!-- Draft -->
-          <q-btn
-            v-if="proposal.status === 'draft' && isProposer"
-            color="primary"
-            no-caps
-            icon="send"
-            label="Submit for Endorsement"
-            class="action-btn-rounded"
-            @click="submitForEndorsement"
-            :loading="transitioning"
-          />
+          <template v-if="proposal.status === 'draft' && isProposer">
+            <q-btn
+              color="primary"
+              no-caps
+              icon="send"
+              label="Submit for Endorsement"
+              class="action-btn-rounded"
+              @click="submitForEndorsement"
+              :loading="transitioning"
+            />
+            <q-btn
+              flat
+              no-caps
+              icon="edit"
+              label="Edit Proposal"
+              class="action-btn-rounded"
+              @click="showEditDialog = true"
+            />
+          </template>
 
           <!-- Submitted -->
           <template v-if="proposal.status === 'submitted'">
             <q-btn
+              v-if="!isProposer"
               color="pink"
               no-caps
               icon="favorite"
@@ -128,7 +138,7 @@
               :to="{ name: 'projects' }"
             />
             <q-btn
-              v-else
+              v-else-if="isProposalLead || isProposalSteward || isAdmin"
               color="positive"
               no-caps
               icon="rocket_launch"
@@ -148,7 +158,7 @@
             </div>
             <span :class="endorsementProgress >= 100 ? 'text-positive' : 'text-grey-6'">
               {{ proposalsStore.endorsements.length }} /
-              {{ proposal.endorsement_threshold || 1 }}
+              {{ proposal.endorsement_threshold || 2 }}
             </span>
           </div>
           <q-linear-progress
@@ -341,15 +351,52 @@
               class="comment-row"
               :class="{ 'comment-row--mine': c.user_id === identityStore.currentAID?.prefix }"
             >
-              <div class="comment-card" :class="{ 'comment-card--mine': c.user_id === identityStore.currentAID?.prefix }">
+              <div
+                class="comment-card"
+                :class="[
+                  { 'comment-card--mine': c.user_id === identityStore.currentAID?.prefix },
+                  c.kind && c.kind !== 'user' ? `comment-card--${c.kind}` : '',
+                ]"
+              >
                 <div class="comment-header">
                   <div class="comment-avatar">
-                    <q-icon name="person" size="14px" />
+                    <q-icon :name="commentKindIcon(c.kind)" size="14px" />
                   </div>
-                  <span class="comment-author">{{ c.user_name }}</span>
+                  <span class="comment-author">{{ commentDisplayName(c) }}</span>
+                  <span
+                    v-if="c.subtitle"
+                    class="comment-subtitle"
+                    :class="commentSubtitleClass(c)"
+                  >
+                    {{ c.subtitle }}
+                  </span>
                   <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
                 </div>
-                <p class="comment-text">{{ c.text }}</p>
+                <p v-if="c.text" class="comment-text">{{ c.text }}</p>
+                <div v-if="(c.attachments?.length ?? 0) > 0 || (c.links?.length ?? 0) > 0" class="comment-attachments">
+                  <a
+                    v-for="att in c.attachments"
+                    :key="att.file_ref"
+                    class="comment-chip"
+                    :href="getFileUrl(att.file_ref)"
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    <q-icon name="attach_file" size="12px" />
+                    <span>{{ att.file_name }}</span>
+                  </a>
+                  <a
+                    v-for="link in c.links"
+                    :key="link"
+                    class="comment-chip"
+                    :href="link"
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    <q-icon name="link" size="12px" />
+                    <span>{{ link }}</span>
+                  </a>
+                </div>
               </div>
             </div>
           </div>
@@ -418,6 +465,7 @@
       :action="selectedAction"
       :all-actions="decisionPlansStore.currentPlan?.governance_actions ?? []"
       :proposal-status="proposal?.status"
+      :decision-plan-status="decisionPlansStore.currentPlan?.status"
       :can-manage="canManageDecisionPlan"
       @complete="handleCompleteAction"
       @archive="handleArchiveAction"
@@ -461,7 +509,7 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
-import { BACKEND_URL } from 'src/lib/api/client';
+import { BACKEND_URL, getFileUrl } from 'src/lib/api/client';
 import { getProjectForProposal, type Project } from 'src/lib/api/projects';
 import { useProposalsStore } from 'stores/proposals';
 import { useDecisionPlansStore } from 'stores/decisionPlans';
@@ -512,7 +560,15 @@ watch(lastEvent, (event) => {
   if (refreshEvents.includes(event.type)) {
     void proposalsStore.fetchProposal(route.params.id as string);
     void proposalsStore.fetchEndorsements(route.params.id as string);
-    if (event.type === 'proposal:comment_added') {
+    // Refetch comments on events that synthesize chat entries (endorsements, vote/completion comments)
+    if (
+      [
+        'proposal:comment_added',
+        'proposal:endorsed',
+        'governance_action_updated',
+        'governance_action:completed',
+      ].includes(event.type)
+    ) {
       void proposalsStore.fetchComments(route.params.id as string);
     }
     if (['decision_plan_updated', 'governance_action_updated', 'decision_plan:submitted', 'decision_plan:signed_off', 'governance_action:completed'].includes(event.type)) {
@@ -544,7 +600,7 @@ const selectedAction = ref<GovernanceAction | null>(null);
 const proposal = computed(() => proposalsStore.currentProposal);
 
 const endorsementProgress = computed(() => {
-  const threshold = proposal.value?.endorsement_threshold || 1;
+  const threshold = proposal.value?.endorsement_threshold || 2;
   return (proposalsStore.endorsements.length / threshold) * 100;
 });
 
@@ -561,6 +617,14 @@ const isProposalLead = computed(() => {
   return p.proposal_lead_id === aid.prefix;
 });
 
+const isProposalSteward = computed(() => {
+  const p = proposal.value;
+  if (!p?.proposal_steward_id) return false;
+  const aid = identityStore.currentAID;
+  if (!aid) return false;
+  return p.proposal_steward_id === aid.prefix;
+});
+
 const canManageDecisionPlan = computed(() =>
   isAdmin.value || isSteward.value || isProposalLead.value,
 );
@@ -575,9 +639,30 @@ const isProposer = computed(() => {
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
+// Map of AID prefix → SharedProfile.displayName, used to resolve admin/legacy
+// comments where stored user_name is the prefix.
+const memberNames = ref<Record<string, string>>({});
+
+async function loadMemberNames() {
+  try {
+    const resp = await fetch(`${BACKEND_URL}/api/v1/profiles/SharedProfile`);
+    if (!resp.ok) return;
+    const data = (await resp.json()) as { profiles?: { id: string; data: Record<string, string> }[] };
+    const map: Record<string, string> = {};
+    for (const p of data.profiles ?? []) {
+      const aid = p.data?.aid || p.id?.replace('SharedProfile-', '');
+      if (aid && p.data?.displayName) map[aid] = p.data.displayName;
+    }
+    memberNames.value = map;
+  } catch {
+    /* keep previous map on error */
+  }
+}
+
 onMounted(() => {
   const id = route.params.id as string;
   void loadProposal(id);
+  void loadMemberNames();
 });
 
 watch(
@@ -603,6 +688,29 @@ async function loadProposal(id: string) {
 }
 
 // ── Formatters ────────────────────────────────────────────────────────────────
+
+function commentDisplayName(c: { user_id: string; user_name: string }): string {
+  return memberNames.value[c.user_id] || c.user_name || c.user_id;
+}
+
+function commentKindIcon(kind?: string): string {
+  switch (kind) {
+    case 'endorsement': return 'favorite';
+    case 'completion': return 'check_circle';
+    case 'vote': return 'how_to_vote';
+    default: return 'person';
+  }
+}
+
+function commentSubtitleClass(c: { kind?: string; outcome?: string }): string {
+  if (c.kind === 'endorsement') return 'comment-subtitle--endorsement';
+  if (c.kind === 'completion') return 'comment-subtitle--completion';
+  if (c.kind === 'vote') {
+    if (c.outcome === 'approved' || c.outcome === 'no_veto') return 'comment-subtitle--vote-positive';
+    return 'comment-subtitle--vote-negative';
+  }
+  return '';
+}
 
 function formatStatus(status: string) {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
@@ -685,7 +793,10 @@ async function confirmEndorse(comment: string) {
       await loadProposal(proposal.value.id);
     } else {
       $q.notify({ type: 'positive', message: 'Proposal endorsed!' });
-      await proposalsStore.fetchEndorsements(proposal.value.id);
+      await Promise.all([
+        proposalsStore.fetchEndorsements(proposal.value.id),
+        proposalsStore.fetchComments(proposal.value.id),
+      ]);
     }
   } catch {
     $q.notify({ type: 'negative', message: 'Endorsement failed' });
@@ -846,7 +957,10 @@ async function handleCastVote(actionId: string, decision: string, comment: strin
     $q.notify({ type: 'positive', message: 'Vote cast!' });
     // Re-fetch to update action state (don't close modal — user may want to see results)
     if (proposal.value) {
-      await decisionPlansStore.fetchForProposal(proposal.value.id);
+      await Promise.all([
+        decisionPlansStore.fetchForProposal(proposal.value.id),
+        proposalsStore.fetchComments(proposal.value.id),
+      ]);
       // Update selectedAction with fresh data
       const actions = decisionPlansStore.currentPlan?.governance_actions ?? [];
       selectedAction.value = actions.find((a) => a.id === actionId) ?? null;
@@ -1328,5 +1442,76 @@ async function addComment() {
   gap: 8px;
   align-items: flex-end;
   margin-top: 12px;
+}
+
+// ── Synthesized comment kinds ────────────────────────────────────────────────
+
+.comment-card--endorsement {
+  border-left: 3px solid #ec4899;
+}
+.comment-card--completion {
+  border-left: 3px solid #059669;
+}
+.comment-card--vote {
+  border-left: 3px solid #2563eb;
+}
+
+.comment-subtitle {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--matou-muted);
+  color: var(--matou-muted-foreground);
+
+  &--endorsement {
+    background: #fce7f3;
+    color: #be185d;
+  }
+  &--completion {
+    background: #d1fae5;
+    color: #047857;
+  }
+  &--vote-positive {
+    background: #d1fae5;
+    color: #047857;
+  }
+  &--vote-negative {
+    background: #fee2e2;
+    color: #b91c1c;
+  }
+}
+
+.comment-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.comment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: var(--matou-card);
+  border: 1px solid var(--matou-border);
+  font-size: 0.75rem;
+  color: var(--matou-foreground);
+  text-decoration: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--matou-muted);
+  }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 </style>

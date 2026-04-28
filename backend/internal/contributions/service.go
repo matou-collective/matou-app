@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -59,6 +60,10 @@ type CreateProposalRequest struct {
 
 func (s *Service) CreateProposal(ctx context.Context, spaceID string, req *CreateProposalRequest) (*Proposal, error) {
 	now := time.Now()
+	threshold := req.EndorsementThreshold
+	if threshold <= 0 {
+		threshold = 2
+	}
 	p := &Proposal{
 		ID:                   generateID("prop"),
 		ProposerID:           req.ProposerID,
@@ -73,7 +78,7 @@ func (s *Service) CreateProposal(ctx context.Context, spaceID string, req *Creat
 		Timeline:             req.Timeline,
 		ProjectPlan:          req.ProjectPlan,
 		Attachments:          req.Attachments,
-		EndorsementThreshold: req.EndorsementThreshold,
+		EndorsementThreshold: threshold,
 		Status:               ProposalDraft,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -236,6 +241,10 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 	if p.Status != ProposalSubmitted && p.Status != ProposalEndorsing {
 		return nil, fmt.Errorf("proposal must be in submitted or endorsing status, currently: %s", p.Status)
 	}
+	if e.EndorserID == p.ProposerID {
+		return nil, fmt.Errorf("proposers cannot endorse their own proposal")
+	}
+	e.ProposalID = proposalID
 	key := endorsementKey(proposalID, e.EndorserID)
 	if err := s.store.Save(spaceID, key, "endorsement", e); err != nil {
 		return nil, err
@@ -248,7 +257,7 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 	if err == nil {
 		threshold := p.EndorsementThreshold
 		if threshold <= 0 {
-			threshold = 1
+			threshold = 2
 		}
 		if len(endorsements) >= threshold {
 			result.ThresholdMet = true
@@ -293,14 +302,105 @@ func (s *Service) ListProposalComments(ctx context.Context, spaceID, proposalID 
 		var c ProposalComment
 		if err := json.Unmarshal(r, &c); err == nil {
 			if c.ProposalID == proposalID {
+				if c.Kind == "" {
+					c.Kind = "user"
+				}
 				comments = append(comments, &c)
 			}
 		}
 	}
+
+	// Synthesize entries from endorsements, governance action completions, and votes.
+	if endorsements, err := s.GetEndorsements(ctx, spaceID, proposalID); err == nil {
+		for _, e := range endorsements {
+			if e.Comment == "" {
+				continue
+			}
+			comments = append(comments, &ProposalComment{
+				ID:         "endorse-" + e.EndorserID,
+				ProposalID: proposalID,
+				UserID:     e.EndorserID,
+				UserName:   e.EndorserID,
+				Text:       e.Comment,
+				CreatedAt:  e.EndorsedAt,
+				Kind:       "endorsement",
+				Subtitle:   "Endorsed proposal",
+			})
+		}
+	}
+
+	// Find decision plan for this proposal, then iterate its governance actions.
+	if plans, err := s.ListDecisionPlans(ctx, spaceID); err == nil {
+		for _, dp := range plans {
+			if dp.ProposalID != proposalID {
+				continue
+			}
+			for _, a := range dp.GovernanceActions {
+				// Completion entry (notes, files, links) for completed actions
+				if a.Status == GovActionCompleted && (a.CompletionNotes != "" || len(a.CompletionFiles) > 0 || len(a.CompletionLinks) > 0) {
+					comments = append(comments, &ProposalComment{
+						ID:          "complete-" + a.ID,
+						ProposalID:  proposalID,
+						UserID:      a.CompletedBy,
+						UserName:    a.CompletedBy,
+						Text:        a.CompletionNotes,
+						CreatedAt:   a.UpdatedAt,
+						Kind:        "completion",
+						Subtitle:    formatCompletionSubtitle(a),
+						Outcome:     string(a.Outcome),
+						Attachments: a.CompletionFiles,
+						Links:       a.CompletionLinks,
+					})
+				}
+				// Vote comments
+				for i, v := range a.Votes {
+					if v.Comment == "" {
+						continue
+					}
+					comments = append(comments, &ProposalComment{
+						ID:         fmt.Sprintf("vote-%s-%d", a.ID, i),
+						ProposalID: proposalID,
+						UserID:     v.VoterID,
+						UserName:   v.VoterName,
+						Text:       v.Comment,
+						CreatedAt:  v.VotedAt,
+						Kind:       "vote",
+						Subtitle:   "Voted " + formatOutcomeTitle(v.Decision),
+						Outcome:    string(v.Decision),
+					})
+				}
+			}
+		}
+	}
+
 	sort.Slice(comments, func(i, j int) bool {
 		return comments[i].CreatedAt.Before(comments[j].CreatedAt)
 	})
 	return comments, nil
+}
+
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	parts := strings.Split(s, " ")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatCompletionSubtitle(a GovernanceAction) string {
+	house := titleCase(strings.ReplaceAll(string(a.House), "_", " "))
+	atype := titleCase(string(a.ActionType))
+	return house + " " + atype + " completed"
+}
+
+func formatOutcomeTitle(o OutcomeType) string {
+	return titleCase(strings.ReplaceAll(string(o), "_", " "))
 }
 
 func (s *Service) CreateRoleContributions(ctx context.Context, spaceID string, proposal *Proposal) {
@@ -371,7 +471,9 @@ func (s *Service) GetEndorsements(ctx context.Context, spaceID, proposalID strin
 	for _, r := range raw {
 		var e Endorsement
 		if err := json.Unmarshal(r, &e); err == nil {
-			endorsements = append(endorsements, &e)
+			if e.ProposalID == proposalID {
+				endorsements = append(endorsements, &e)
+			}
 		}
 	}
 	return endorsements, nil
@@ -658,6 +760,9 @@ type CreateGovernanceActionRequest struct {
 }
 
 func (s *Service) AddGovernanceAction(ctx context.Context, spaceID string, req *CreateGovernanceActionRequest) (*GovernanceAction, error) {
+	if req.ActionType == ActionDecision && req.LinkedActionID == "" {
+		return nil, fmt.Errorf("decision actions must be linked to a meeting or discussion")
+	}
 	now := time.Now()
 	action := &GovernanceAction{
 		ID:              generateID("ga"),
@@ -698,22 +803,15 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 		return nil, err
 	}
 
-	// Decision actions (votes) can only be completed during the voting process.
-	// Meetings and discussions can be completed earlier as preparatory steps.
-	if action.ActionType == ActionDecision {
-		dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
-		if err != nil {
-			return nil, fmt.Errorf("finding decision plan: %w", err)
-		}
-		if dp.ProposalID != "" {
-			prop, err := s.GetProposal(ctx, spaceID, dp.ProposalID)
-			if err != nil {
-				return nil, fmt.Errorf("finding proposal: %w", err)
-			}
-			if prop.Status != ProposalVotingProcess {
-				return nil, fmt.Errorf("voting is only allowed when the proposal is in voting process (current status: %s)", prop.Status)
-			}
-		}
+	// All governance actions require the decision plan to be signed off before
+	// they can be completed. Plan sign-off auto-transitions the proposal to
+	// voting_process, so this also gates decision voting.
+	dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
+	if err != nil {
+		return nil, fmt.Errorf("finding decision plan: %w", err)
+	}
+	if dp.Status != DecisionPlanSignedOff {
+		return nil, fmt.Errorf("decision plan must be signed off before actions can be completed (current plan status: %s)", dp.Status)
 	}
 
 	// For decisions, record the vote
@@ -739,11 +837,8 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 	}
 
 	// If this was a decision action, check if all decisions are now complete
-	if action.ActionType == ActionDecision {
-		dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
-		if err == nil && dp.ProposalID != "" {
-			s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
-		}
+	if action.ActionType == ActionDecision && dp.ProposalID != "" {
+		s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
 	}
 
 	return action, nil

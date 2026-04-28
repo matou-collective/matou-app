@@ -465,6 +465,11 @@ function handleAdd() {
     return;
   }
 
+  if (form.value.actionType === 'decision' && !form.value.linkedActionId) {
+    $q.notify({ type: 'negative', message: 'A decision must be linked to a meeting or discussion' });
+    return;
+  }
+
   if (form.value.actionType === 'decision' && !form.value.endDate) {
     $q.notify({ type: 'negative', message: 'Voting end date is required for decisions' });
     return;

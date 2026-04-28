@@ -109,6 +109,7 @@ type FieldChange struct {
 // --- Endorsement ---
 
 type Endorsement struct {
+	ProposalID string    `json:"proposal_id"`
 	EndorserID string    `json:"endorser_id"`
 	EndorsedAt time.Time `json:"endorsed_at"`
 	Comment    string    `json:"comment,omitempty"`
@@ -259,6 +260,13 @@ type ProposalComment struct {
 	UserName   string    `json:"user_name"`
 	Text       string    `json:"text"`
 	CreatedAt  time.Time `json:"created_at"`
+
+	// Synthesized fields (omitempty). Plain user comments leave these unset.
+	Kind        string    `json:"kind,omitempty"`        // user | endorsement | completion | vote
+	Subtitle    string    `json:"subtitle,omitempty"`    // e.g. "Endorsed proposal" or "Voted Approved"
+	Outcome     string    `json:"outcome,omitempty"`     // for vote/completion: approved | rejected | no_veto | veto
+	Attachments []FileRef `json:"attachments,omitempty"`
+	Links       []string  `json:"links,omitempty"`
 }
 
 // --- Implementation Plan ---

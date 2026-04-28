@@ -30,7 +30,7 @@
       <div class="endorsement-bar-header">
         <span class="endorsement-label">Endorsements</span>
         <span class="endorsement-count">
-          {{ endorsementCount }} / {{ proposal.endorsement_threshold || 100 }}
+          {{ endorsementCount }} / {{ proposal.endorsement_threshold || 2 }}
         </span>
       </div>
       <q-linear-progress
@@ -63,7 +63,7 @@ defineEmits<{
 
 const endorsementProgress = computed(() => {
   const count = props.endorsementCount ?? 0;
-  const threshold = props.proposal.endorsement_threshold || 100;
+  const threshold = props.proposal.endorsement_threshold || 2;
   return Math.min(count / threshold, 1);
 });
 
