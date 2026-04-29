@@ -235,7 +235,7 @@
     </q-dialog>
 
     <!-- Add milestone dialog -->
-    <AddMilestoneDialog
+    <MilestoneFormDialog
       v-model="showAddMilestoneDialog"
       :project-id="project?.id ?? ''"
       :implementation-plan-id="implementationPlan?.id ?? ''"
@@ -423,7 +423,7 @@ import { useContributionWorkflow } from 'src/composables/useContributionWorkflow
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import MilestoneCard from 'src/components/projects/MilestoneCard.vue';
-import AddMilestoneDialog from 'src/components/projects/AddMilestoneDialog.vue';
+import MilestoneFormDialog from 'src/components/projects/MilestoneFormDialog.vue';
 import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';

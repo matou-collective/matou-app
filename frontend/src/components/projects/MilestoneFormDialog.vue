@@ -6,7 +6,7 @@
   >
     <q-card class="milestone-dialog">
       <q-card-section class="row items-center q-pb-none">
-        <div class="text-h6">Add Milestone</div>
+        <div class="text-h6">{{ isEdit ? 'Edit Milestone' : 'Add Milestone' }}</div>
         <q-space />
         <q-btn icon="close" flat round dense v-close-popup @click="resetForm" />
       </q-card-section>
@@ -128,7 +128,7 @@
       <div class="milestone-actions q-px-md q-pb-md">
         <q-btn
           no-caps
-          label="Add Milestone"
+          :label="isEdit ? 'Save Changes' : 'Add Milestone'"
           color="primary"
           class="milestone-action-btn"
           :loading="isSubmitting"
@@ -143,23 +143,28 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import type { CreateMilestoneRequest } from 'src/types/projects';
+import type { Milestone, CreateMilestoneRequest } from 'src/types/projects';
+import type { UpdateMilestoneRequest } from 'src/lib/api/implementationPlans';
 
 interface Props {
   modelValue: boolean;
   projectId: string;
   implementationPlanId: string;
   isSubmitting?: boolean;
+  milestone?: Milestone | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isSubmitting: false,
+  milestone: null,
 });
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
-  (e: 'submit', req: CreateMilestoneRequest): void;
+  (e: 'submit', req: CreateMilestoneRequest | UpdateMilestoneRequest): void;
 }>();
+
+const isEdit = computed(() => !!props.milestone);
 
 interface MilestoneForm {
   title: string;
@@ -188,11 +193,34 @@ const isValid = computed(
 );
 
 watch(
-  () => props.modelValue,
-  (open) => {
-    if (!open) resetForm();
+  () => [props.modelValue, props.milestone] as const,
+  ([open, ms]) => {
+    if (!open) {
+      resetForm();
+      return;
+    }
+    if (ms) {
+      form.value = {
+        title: ms.title,
+        description: ms.description ?? '',
+        duration: ms.duration,
+        start_date: ms.start_date ? fromISODate(ms.start_date) : '',
+        end_date: ms.end_date ? fromISODate(ms.end_date) : '',
+        success_criteria: ms.success_criteria?.length ? [...ms.success_criteria] : [''],
+      };
+    } else {
+      form.value = makeDefault();
+    }
   },
+  { immediate: true },
 );
+
+// ISO yyyy-mm-dd → dd-mm-yyyy for the input mask
+function fromISODate(iso: string): string {
+  if (!iso || iso.length < 10) return '';
+  const [yyyy, mm, dd] = iso.slice(0, 10).split('-');
+  return `${dd}-${mm}-${yyyy}`;
+}
 
 // Convert dd-mm-yyyy to YYYY/MM/DD for q-date
 function toQDateFormat(ddmmyyyy: string): string {
