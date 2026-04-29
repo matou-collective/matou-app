@@ -1637,6 +1637,72 @@ func (s *Service) SaveContribution(ctx context.Context, spaceID string, c *Contr
 	return s.store.Save(spaceID, c.ID, "contribution", c)
 }
 
+// SaveImplementationPlan persists an implementation plan after external updates.
+func (s *Service) SaveImplementationPlan(ctx context.Context, spaceID string, ip *ImplementationPlan) error {
+	return s.store.Save(spaceID, ip.ID, "implementation_plan", ip)
+}
+
+// ArchiveProject archives a project and all related entities.
+// Cascade: project → plans → milestones → contributions → sub-contributions.
+// Best-effort: per-entity save failures are captured but the cascade continues;
+// the first error is returned.
+func (s *Service) ArchiveProject(ctx context.Context, spaceID, projectID string) error {
+	proj, err := s.GetProject(ctx, spaceID, projectID)
+	if err != nil {
+		return fmt.Errorf("get project: %w", err)
+	}
+
+	var firstErr error
+	captureErr := func(e error) {
+		if firstErr == nil && e != nil {
+			firstErr = e
+		}
+	}
+
+	// 1. Archive plans (and milestones inside each plan).
+	// Use ListImplementationPlans filtered by ProjectID rather than
+	// proj.ImplementationPlanIDs, which may not be populated in all code paths.
+	allPlans, err := s.ListImplementationPlans(ctx, spaceID)
+	if err != nil {
+		captureErr(fmt.Errorf("list implementation plans: %w", err))
+	}
+	for _, plan := range allPlans {
+		if plan.ProjectID != projectID {
+			continue
+		}
+		plan.Status = PlanArchived
+		for i := range plan.Milestones {
+			plan.Milestones[i].Status = MilestoneArchived
+		}
+		plan.UpdatedAt = time.Now()
+		if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
+			captureErr(fmt.Errorf("save plan %s: %w", plan.ID, err))
+		}
+	}
+
+	// 2. Archive every contribution belonging to the project (covers sub-contributions)
+	contribs, err := s.ListContributionsByProject(ctx, spaceID, projectID)
+	if err != nil {
+		captureErr(fmt.Errorf("list contributions: %w", err))
+	}
+	for _, c := range contribs {
+		c.Status = ContribArchived
+		c.UpdatedAt = time.Now()
+		if err := s.SaveContribution(ctx, spaceID, c); err != nil {
+			captureErr(fmt.Errorf("save contribution %s: %w", c.ID, err))
+		}
+	}
+
+	// 3. Archive the project itself
+	proj.Status = ProjectArchived
+	proj.UpdatedAt = time.Now()
+	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
+		captureErr(fmt.Errorf("save project: %w", err))
+	}
+
+	return firstErr
+}
+
 // --- Project Status Derivation ---
 
 // DeriveProjectStatus computes the project status from its implementation plans.

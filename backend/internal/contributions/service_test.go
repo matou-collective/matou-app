@@ -694,3 +694,91 @@ func TestService_DeriveProjectStatus(t *testing.T) {
 		t.Errorf("expected active with one plan, got %s", status)
 	}
 }
+
+func TestArchiveProject_CascadesAllChildren(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "test-space"
+
+	// Set up: project + plan + milestone + contribution + sub-contribution
+	proj, err := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "Test", Description: "d", CreatedBy: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{
+		ProjectID: proj.ID, ProjectLeadID: "u",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ms, err := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+		ImplementationPlanID: plan.ID,
+		Title:                "M1",
+		Duration:             "1w",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msID := ms.MilestoneID
+
+	contrib, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          proj.ID,
+		MilestoneID:        msID,
+		Title:              "C1",
+		Description:        "d",
+		ContributionType:   "development",
+		CreatedBy:          "u",
+		Objectives:         []string{"obj1"},
+		Deliverables:       []string{"del1"},
+		AcceptanceCriteria: []string{"ac1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sub, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:            proj.ID,
+		Title:                "Sub",
+		Description:          "d",
+		ContributionType:     "development",
+		CreatedBy:            "u",
+		ParentContributionID: contrib.ID,
+		Objectives:           []string{"obj1"},
+		Deliverables:         []string{"del1"},
+		AcceptanceCriteria:   []string{"ac1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Act
+	if err := svc.ArchiveProject(ctx, spaceID, proj.ID); err != nil {
+		t.Fatalf("ArchiveProject: %v", err)
+	}
+
+	// Assert all entities are archived
+	gotProj, _ := svc.GetProject(ctx, spaceID, proj.ID)
+	if gotProj.Status != ProjectArchived {
+		t.Errorf("project status = %s, want archived", gotProj.Status)
+	}
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if gotPlan.Status != PlanArchived {
+		t.Errorf("plan status = %s, want archived", gotPlan.Status)
+	}
+	for _, m := range gotPlan.Milestones {
+		if m.Status != MilestoneArchived {
+			t.Errorf("milestone %s status = %s, want archived", m.MilestoneID, m.Status)
+		}
+	}
+	gotContrib, _ := svc.GetContribution(ctx, spaceID, contrib.ID)
+	if gotContrib.Status != ContribArchived {
+		t.Errorf("contribution status = %s, want archived", gotContrib.Status)
+	}
+	gotSub, _ := svc.GetContribution(ctx, spaceID, sub.ID)
+	if gotSub.Status != ContribArchived {
+		t.Errorf("sub-contribution status = %s, want archived", gotSub.Status)
+	}
+}
