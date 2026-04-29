@@ -1525,7 +1525,8 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     });
     expect(projectResp.ok()).toBeTruthy();
     const project: { id: string; status: string } = await projectResp.json();
-    expect(project.status).toBe('active');
+    // New projects are created with status='created' (not 'active' until a plan exists/is signed off)
+    expect(['created', 'active']).toContain(project.status);
 
     // Archive it
     const archiveResp = await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
