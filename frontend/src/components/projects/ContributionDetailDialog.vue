@@ -293,6 +293,23 @@
                 :loading="actionLoading === `approve-sub-${child.id}`"
                 @click.stop="handleApproveSub(child.id)"
               />
+              <template v-if="canApproveSub">
+                <q-btn
+                  flat round dense size="sm"
+                  icon="edit"
+                  @click.stop="emit('edit-sub-contribution', child)"
+                >
+                  <q-tooltip>Edit Sub-Contribution</q-tooltip>
+                </q-btn>
+                <q-btn
+                  flat round dense size="sm"
+                  icon="delete"
+                  color="negative"
+                  @click.stop="emit('archive-sub-contribution', child)"
+                >
+                  <q-tooltip>Delete Sub-Contribution</q-tooltip>
+                </q-btn>
+              </template>
             </div>
           </div>
 
@@ -989,6 +1006,8 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
   (e: 'update', contribution: Contribution): void;
   (e: 'create-child-contribution', parentId: string): void;
+  (e: 'edit-sub-contribution', contribution: Contribution): void;
+  (e: 'archive-sub-contribution', contribution: Contribution): void;
 }>();
 
 const $q = useQuasar();

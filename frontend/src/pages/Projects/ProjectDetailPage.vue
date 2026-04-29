@@ -190,6 +190,10 @@
               @view-contribution="handleViewContribution"
               @create-child-contribution="handleCreateChildContribution"
               @assign-contribution="handleAssignContribution"
+              @edit-milestone="openEditMilestone"
+              @archive-milestone="confirmArchiveMilestone"
+              @edit-contribution="openEditContribution"
+              @archive-contribution="confirmArchiveContribution"
             />
           </div>
         </template>
@@ -210,8 +214,20 @@
       :submit-error="submitError"
       :available-proposals="proposalsStore.proposals"
       :linking="linking"
+      :can-delete="perms.canArchiveProject.value"
       @submit="handleEditSubmit"
       @link-proposal="handleLinkProposal"
+      @delete="onDeleteRequested"
+    />
+
+    <!-- Destroy project confirm -->
+    <ConfirmDestroyDialog
+      v-model="showDestroy"
+      title="Delete Project"
+      :entity-label="project?.title ?? ''"
+      :cascade-summary="cascadeSummary"
+      :loading="archivingProject"
+      @confirm="confirmDestroy"
     />
 
     <!-- Create plan dialog -->
@@ -234,13 +250,23 @@
       </q-card>
     </q-dialog>
 
-    <!-- Add milestone dialog -->
+    <!-- Add / Edit milestone dialog -->
     <MilestoneFormDialog
       v-model="showAddMilestoneDialog"
       :project-id="project?.id ?? ''"
       :implementation-plan-id="implementationPlan?.id ?? ''"
+      :milestone="editingMilestone"
       :is-submitting="addingMilestone"
       @submit="handleAddMilestone"
+    />
+
+    <!-- Archive milestone confirm -->
+    <ConfirmArchiveDialog
+      v-model="showArchiveMilestone"
+      title="Archive Milestone"
+      :message="milestoneArchiveMessage"
+      :loading="archivingMilestoneLoading"
+      @confirm="doArchiveMilestone"
     />
 
     <!-- Assign role dialog -->
@@ -282,6 +308,8 @@
       :is-plan-signed-off="implementationPlan?.signed_off ?? false"
       @update="handleContributionUpdate"
       @create-child-contribution="handleCreateChildContribution"
+      @edit-sub-contribution="openEditContribution"
+      @archive-sub-contribution="confirmArchiveContribution"
     />
 
     <!-- Assign contribution dialog -->
@@ -394,6 +422,36 @@
         </div>
       </q-card>
     </q-dialog>
+
+    <!-- Edit contribution dialog -->
+    <!-- eslint-disable-next-line @typescript-eslint/no-explicit-any -->
+    <ContributionForm
+      v-model="showContribForm"
+      :contribution="(editingContribution as any)"
+      :can-unassign="perms.canUnassignContributor.value"
+      @submit="onContributionSave"
+      @unassign="onUnassignRequested"
+    />
+
+    <!-- Archive contribution confirm -->
+    <ConfirmArchiveDialog
+      v-model="showArchiveContrib"
+      title="Archive Contribution"
+      :message="contribArchiveMessage"
+      :loading="archivingContribLoading"
+      @confirm="doArchiveContribution"
+    />
+
+    <!-- Unassign contributor confirm -->
+    <ConfirmArchiveDialog
+      v-model="showUnassignConfirm"
+      title="Unassign Contributor"
+      message="This will set the contribution back to 'confirmed' and clear the assigned contributor."
+      confirm-label="Unassign"
+      icon="person_remove"
+      :loading="unassigning"
+      @confirm="doUnassign"
+    />
   </div>
 </template>
 
@@ -415,9 +473,9 @@ import { useProjectsStore } from 'stores/projects';
 import { useProposalsStore } from 'stores/proposals';
 import { useIdentityStore } from 'stores/identity';
 import { useContributionsStore } from 'stores/contributions';
-import type { Contribution } from 'src/types/projects';
-import type { CreateContributionRequest } from 'src/lib/api/contributions';
-import type { CreateMilestoneRequest } from 'src/types/projects';
+import type { Contribution, Milestone, CreateMilestoneRequest } from 'src/types/projects';
+import type { CreateContributionRequest, UpdateContributionRequest } from 'src/lib/api/contributions';
+import type { UpdateMilestoneRequest } from 'src/lib/api/implementationPlans';
 import { useProjectPermissions } from 'src/composables/useProjectPermissions';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
@@ -427,6 +485,9 @@ import MilestoneFormDialog from 'src/components/projects/MilestoneFormDialog.vue
 import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
+import ContributionForm from 'src/components/contributions/ContributionForm.vue';
+import ConfirmDestroyDialog from 'src/components/common/ConfirmDestroyDialog.vue';
+import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -490,6 +551,162 @@ const assignRoleTarget = ref<'lead' | 'steward'>('lead');
 const createContributionMilestoneId = ref<string | undefined>(undefined);
 const createSubParentId = ref<string | undefined>(undefined);
 const viewingContribution = ref<Contribution | null>(null);
+
+// ── Project destroy state ────────────────────────────────────────────────────
+
+const showDestroy = ref(false);
+const archivingProject = ref(false);
+
+const cascadeSummary = computed<string[]>(() => {
+  if (!project.value) return [];
+  const plan = projectsStore.implementationPlans[project.value.id] ?? null;
+  const contribs = planContributions.value;
+  const milestoneCount = milestones.value.length;
+  const subCount = contribs.filter(c => !!c.parent_contribution).length;
+  const topCount = contribs.length - subCount;
+  return [
+    plan ? '1 implementation plan' : '0 implementation plans',
+    `${milestoneCount} milestone${milestoneCount === 1 ? '' : 's'}`,
+    `${topCount} contribution${topCount === 1 ? '' : 's'}`,
+    `${subCount} sub-contribution${subCount === 1 ? '' : 's'}`,
+  ];
+});
+
+function onDeleteRequested() {
+  showEditDialog.value = false;
+  showDestroy.value = true;
+}
+
+async function confirmDestroy() {
+  if (!project.value) return;
+  archivingProject.value = true;
+  try {
+    await projectsStore.archive(project.value.id);
+    showDestroy.value = false;
+    await router.push({ name: 'projects' });
+  } finally {
+    archivingProject.value = false;
+  }
+}
+
+// ── Milestone edit/archive state ─────────────────────────────────────────────
+
+const editingMilestone = ref<Milestone | null>(null);
+const showArchiveMilestone = ref(false);
+const archivingMilestone = ref<Milestone | null>(null);
+const archivingMilestoneLoading = ref(false);
+
+const milestoneArchiveMessage = computed(() => {
+  const ms = archivingMilestone.value;
+  if (!ms || !project.value) return '';
+  const childContribs = planContributions.value.filter(c => c.milestone_id === ms.milestone_id);
+  const subs = childContribs.filter(c => !!c.parent_contribution).length;
+  const tops = childContribs.length - subs;
+  return `Archiving "${ms.title}" will also archive ${tops} contribution${tops === 1 ? '' : 's'} and ${subs} sub-contribution${subs === 1 ? '' : 's'}. This cannot be undone from the UI.`;
+});
+
+function openEditMilestone(ms: Milestone) {
+  editingMilestone.value = ms;
+  showAddMilestoneDialog.value = true;
+}
+
+function confirmArchiveMilestone(ms: Milestone) {
+  archivingMilestone.value = ms;
+  showArchiveMilestone.value = true;
+}
+
+async function doArchiveMilestone() {
+  if (!archivingMilestone.value || !project.value) return;
+  archivingMilestoneLoading.value = true;
+  try {
+    await projectsStore.archiveMilestone(project.value.id, archivingMilestone.value.milestone_id);
+    showArchiveMilestone.value = false;
+    archivingMilestone.value = null;
+    $q.notify({ type: 'positive', message: 'Milestone archived.' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to archive milestone' });
+  } finally {
+    archivingMilestoneLoading.value = false;
+  }
+}
+
+// ── Contribution edit/archive state ──────────────────────────────────────────
+
+const editingContribution = ref<Contribution | null>(null);
+const showContribForm = ref(false);
+const showArchiveContrib = ref(false);
+const archivingContribution = ref<Contribution | null>(null);
+const archivingContribLoading = ref(false);
+const showUnassignConfirm = ref(false);
+const unassigning = ref(false);
+
+const contribArchiveMessage = computed(() => {
+  const c = archivingContribution.value;
+  if (!c || !project.value) return '';
+  const subs = planContributions.value.filter(x => x.parent_contribution === c.id).length;
+  const subText = subs > 0 ? ` and its ${subs} sub-contribution${subs === 1 ? '' : 's'}` : '';
+  return `Archiving "${c.title}"${subText} cannot be undone from the UI.`;
+});
+
+function openEditContribution(c: Contribution) {
+  editingContribution.value = c;
+  showContribForm.value = true;
+}
+
+function confirmArchiveContribution(c: Contribution) {
+  archivingContribution.value = c;
+  showArchiveContrib.value = true;
+}
+
+async function doArchiveContribution() {
+  if (!archivingContribution.value || !project.value) return;
+  archivingContribLoading.value = true;
+  try {
+    await contributionsStore.archive(archivingContribution.value.id);
+    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
+    showArchiveContrib.value = false;
+    archivingContribution.value = null;
+    $q.notify({ type: 'positive', message: 'Contribution archived.' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to archive contribution' });
+  } finally {
+    archivingContribLoading.value = false;
+  }
+}
+
+async function onContributionSave(req: UpdateContributionRequest) {
+  if (!editingContribution.value || !project.value) return;
+  try {
+    await contributionsStore.update(editingContribution.value.id, req);
+    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
+    showContribForm.value = false;
+    editingContribution.value = null;
+    $q.notify({ type: 'positive', message: 'Contribution updated!' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to update contribution' });
+  }
+}
+
+function onUnassignRequested() {
+  showUnassignConfirm.value = true;
+}
+
+async function doUnassign() {
+  if (!editingContribution.value || !project.value) return;
+  unassigning.value = true;
+  try {
+    await contributionsStore.unassign(editingContribution.value.id);
+    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
+    showUnassignConfirm.value = false;
+    showContribForm.value = false;
+    editingContribution.value = null;
+    $q.notify({ type: 'positive', message: 'Contributor unassigned.' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to unassign' });
+  } finally {
+    unassigning.value = false;
+  }
+}
 
 const showAssignDialog = ref(false);
 const assignTarget = ref<Contribution | null>(null);
@@ -641,6 +858,11 @@ watch(
   },
 );
 
+// Reset editingMilestone when the milestone dialog closes without submitting
+watch(showAddMilestoneDialog, (open) => {
+  if (!open) editingMilestone.value = null;
+});
+
 // Refresh implementation plan when contribution events arrive via SSE
 // Includes both local API events (colon-separated) and P2P sync events (underscore-separated)
 watch(lastEvent, (event) => {
@@ -758,30 +980,37 @@ async function handleCreatePlan() {
   }
 }
 
-async function handleAddMilestone(req: CreateMilestoneRequest) {
+async function handleAddMilestone(req: CreateMilestoneRequest | UpdateMilestoneRequest) {
   if (!project.value) return;
   addingMilestone.value = true;
   try {
-    // Auto-create implementation plan if it doesn't exist yet
-    let planId = implementationPlan.value?.id;
-    if (!planId) {
-      const plan = await projectsStore.createPlan(project.value.id, {
-        project_id: project.value.id,
-        total_budget: 'TBD',
-        project_lead: 'TBD',
-        project_steward_id: 'TBD',
+    if (editingMilestone.value) {
+      // Edit existing milestone
+      await projectsStore.updateMilestone(project.value.id, editingMilestone.value.milestone_id, req as UpdateMilestoneRequest);
+      $q.notify({ type: 'positive', message: 'Milestone updated!' });
+    } else {
+      // Auto-create implementation plan if it doesn't exist yet
+      let planId = implementationPlan.value?.id;
+      if (!planId) {
+        const plan = await projectsStore.createPlan(project.value.id, {
+          project_id: project.value.id,
+          total_budget: 'TBD',
+          project_lead: 'TBD',
+          project_steward_id: 'TBD',
+        });
+        planId = plan.id;
+      }
+      await projectsStore.addMilestone(planId, project.value.id, {
+        title: (req as CreateMilestoneRequest).title,
+        duration: req.duration,
+        contribution_ids: [],
       });
-      planId = plan.id;
+      $q.notify({ type: 'positive', message: 'Milestone added successfully!' });
     }
-    await projectsStore.addMilestone(planId, project.value.id, {
-      title: req.title,
-      duration: req.duration,
-      contribution_ids: [],
-    });
     showAddMilestoneDialog.value = false;
-    $q.notify({ type: 'positive', message: 'Milestone added successfully!' });
+    editingMilestone.value = null;
   } catch (e) {
-    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to add milestone' });
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to save milestone' });
   } finally {
     addingMilestone.value = false;
   }

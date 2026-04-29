@@ -50,6 +50,24 @@
           class="confirm-btn"
           @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
         />
+
+        <template v-if="canEdit && !isPlanSignedOff">
+          <q-btn
+            flat round dense size="sm"
+            icon="edit"
+            @click.stop="emit('edit', contribution)"
+          >
+            <q-tooltip>Edit Contribution</q-tooltip>
+          </q-btn>
+          <q-btn
+            flat round dense size="sm"
+            icon="delete"
+            color="negative"
+            @click.stop="emit('archive', contribution)"
+          >
+            <q-tooltip>Delete Contribution</q-tooltip>
+          </q-btn>
+        </template>
       </div>
     </div>
 
@@ -86,6 +104,7 @@ import { getFileUrl } from 'src/lib/api/client';
 interface Props {
   contribution: Contribution;
   canConfirm?: boolean;
+  canEdit?: boolean;
   isPlanSignedOff?: boolean;
   userRole?: string;
   currentUserId?: string;
@@ -94,6 +113,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   canConfirm: false,
+  canEdit: false,
   isPlanSignedOff: false,
   userRole: 'member',
   currentUserId: '',
@@ -104,6 +124,8 @@ const emit = defineEmits<{
   (e: 'view-detail', contribution: Contribution): void;
   (e: 'update', contribution: Contribution & { _action?: string }): void;
   (e: 'assign', contribution: Contribution): void;
+  (e: 'edit', contribution: Contribution): void;
+  (e: 'archive', contribution: Contribution): void;
 }>();
 
 const profilesStore = useProfilesStore();

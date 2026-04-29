@@ -24,6 +24,23 @@
           <CheckCircle class="badge-icon" />
           All Confirmed
         </span>
+        <div v-if="canEdit && !isPlanSignedOff" class="milestone-row-actions" @click.stop>
+          <q-btn
+            flat round dense size="sm"
+            icon="edit"
+            @click="emit('edit-milestone', milestone)"
+          >
+            <q-tooltip>Edit Milestone</q-tooltip>
+          </q-btn>
+          <q-btn
+            flat round dense size="sm"
+            icon="delete"
+            color="negative"
+            @click="emit('archive-milestone', milestone)"
+          >
+            <q-tooltip>Delete Milestone</q-tooltip>
+          </q-btn>
+        </div>
         <div class="expand-btn">
           <ChevronDown class="expand-icon" :class="{ rotated: isExpanded }" />
         </div>
@@ -45,6 +62,7 @@
           :key="contribution.id"
           :contribution="contribution"
           :can-confirm="canConfirm"
+          :can-edit="canEdit"
           :is-plan-signed-off="isPlanSignedOff"
           :user-role="userRole"
           :current-user-id="currentUserId"
@@ -53,6 +71,8 @@
           @view-detail="$emit('view-contribution', $event)"
           @create-child="$emit('create-child-contribution', $event)"
           @assign="(c: Contribution) => emit('assign-contribution', c)"
+          @edit="(c: Contribution) => emit('edit-contribution', c)"
+          @archive="(c: Contribution) => emit('archive-contribution', c)"
         />
       </div>
 
@@ -101,6 +121,10 @@ const emit = defineEmits<{
   (e: 'view-contribution', contribution: Contribution): void;
   (e: 'create-child-contribution', parentId: string): void;
   (e: 'assign-contribution', contribution: Contribution): void;
+  (e: 'edit-milestone', milestone: Milestone): void;
+  (e: 'archive-milestone', milestone: Milestone): void;
+  (e: 'edit-contribution', contribution: Contribution): void;
+  (e: 'archive-contribution', contribution: Contribution): void;
 }>();
 
 const isExpanded = ref(true);
@@ -348,5 +372,11 @@ function formatDate(iso: string): string {
   font-size: 0.7rem;
   color: $grey-6;
   padding: 0.25rem 1rem;
+}
+
+.milestone-row-actions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
 }
 </style>
