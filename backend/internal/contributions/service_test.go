@@ -940,3 +940,122 @@ func TestUpdateMilestone_PatchesFields(t *testing.T) {
 		t.Errorf("duration = %q, want 2w", got.Duration)
 	}
 }
+
+func TestSubmitProjectCompletion_RequiresAllSignedOff(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	proj.Status = ProjectActive
+	_ = svc.SaveProject(ctx, spaceID, proj)
+
+	c1, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C1", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+
+	// Not signed off — should fail
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead"); err == nil {
+		t.Error("expected error when not all contributions signed off")
+	}
+
+	// Sign it off
+	c1.Status = ContribSignedOff
+	_ = svc.SaveContribution(ctx, spaceID, c1)
+
+	got, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead")
+	if err != nil {
+		t.Fatalf("SubmitProjectCompletion: %v", err)
+	}
+	if got.Status != ProjectPendingCompletion {
+		t.Errorf("status = %s, want pending_completion", got.Status)
+	}
+}
+
+func TestSubmitProjectCompletion_RejectsNonActiveStatus(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	proj.Status = ProjectCompleted
+	_ = svc.SaveProject(ctx, spaceID, proj)
+
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead"); err == nil {
+		t.Error("expected error when project status is not active")
+	}
+}
+
+func TestApproveProjectCompletion_FillsCompletedFields(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	proj.Status = ProjectPendingCompletion
+	_ = svc.SaveProject(ctx, spaceID, proj)
+
+	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1")
+	if err != nil {
+		t.Fatalf("ApproveProjectCompletion: %v", err)
+	}
+	if got.Status != ProjectCompleted {
+		t.Errorf("status = %s, want completed", got.Status)
+	}
+	if got.CompletedBy != "steward-1" {
+		t.Errorf("completed_by = %q, want steward-1", got.CompletedBy)
+	}
+	if got.CompletedAt == nil {
+		t.Error("completed_at should be set")
+	}
+}
+
+func TestRejectProjectCompletion_RevertsToActive(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	proj.Status = ProjectPendingCompletion
+	_ = svc.SaveProject(ctx, spaceID, proj)
+
+	got, err := svc.RejectProjectCompletion(ctx, spaceID, proj.ID, "needs more work")
+	if err != nil {
+		t.Fatalf("RejectProjectCompletion: %v", err)
+	}
+	if got.Status != ProjectActive {
+		t.Errorf("status = %s, want active", got.Status)
+	}
+	if got.RejectionReason != "needs more work" {
+		t.Errorf("rejection_reason = %q, want needs more work", got.RejectionReason)
+	}
+}
+
+func TestSubmitProjectCompletion_ClearsPriorRejection(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	proj.Status = ProjectActive
+	proj.RejectionReason = "previous reason"
+	_ = svc.SaveProject(ctx, spaceID, proj)
+
+	c1, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	c1.Status = ContribSignedOff
+	_ = svc.SaveContribution(ctx, spaceID, c1)
+
+	got, _ := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead")
+	if got.RejectionReason != "" {
+		t.Errorf("rejection_reason = %q, want empty", got.RejectionReason)
+	}
+}

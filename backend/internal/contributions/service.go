@@ -2036,3 +2036,76 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID stri
 	}
 	return updated, nil
 }
+
+// SubmitProjectCompletion transitions an active project to pending_completion
+// after verifying every contribution is signed off (or archived).
+// Clears any prior rejection_reason.
+func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectID, leadID string) (*Project, error) {
+	proj, err := s.GetProject(ctx, spaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	if proj.Status != ProjectActive {
+		return nil, fmt.Errorf("project must be active to submit completion (current: %s)", proj.Status)
+	}
+
+	contribs, err := s.ListContributionsByProject(ctx, spaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if len(contribs) == 0 {
+		return nil, fmt.Errorf("project has no contributions")
+	}
+	for _, c := range contribs {
+		if c.Status != ContribSignedOff && c.Status != ContribArchived {
+			return nil, fmt.Errorf("contribution %s is %s, must be signed_off", c.ID, c.Status)
+		}
+	}
+
+	proj.Status = ProjectPendingCompletion
+	proj.RejectionReason = ""
+	proj.UpdatedAt = time.Now()
+	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
+		return nil, err
+	}
+	return proj, nil
+}
+
+// ApproveProjectCompletion marks the project completed.
+func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string) (*Project, error) {
+	proj, err := s.GetProject(ctx, spaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if proj.Status != ProjectPendingCompletion {
+		return nil, fmt.Errorf("project must be pending_completion (current: %s)", proj.Status)
+	}
+	now := time.Now()
+	proj.Status = ProjectCompleted
+	proj.CompletedBy = stewardID
+	proj.CompletedAt = &now
+	proj.UpdatedAt = now
+	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
+		return nil, err
+	}
+	return proj, nil
+}
+
+// RejectProjectCompletion sends the project back to active with a reason.
+func (s *Service) RejectProjectCompletion(ctx context.Context, spaceID, projectID, reason string) (*Project, error) {
+	proj, err := s.GetProject(ctx, spaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if proj.Status != ProjectPendingCompletion {
+		return nil, fmt.Errorf("project must be pending_completion (current: %s)", proj.Status)
+	}
+	proj.Status = ProjectActive
+	proj.RejectionReason = reason
+	proj.UpdatedAt = time.Now()
+	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
+		return nil, err
+	}
+	return proj, nil
+}
