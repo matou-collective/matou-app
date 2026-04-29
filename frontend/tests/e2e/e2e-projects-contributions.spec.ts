@@ -984,99 +984,130 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
-  // Phase 11: Milestone edit — UI gated by plan sign-off, verified via API
-  // After Phase 3 the plan is signed off, so the MilestoneCard edit/archive
-  // buttons are hidden (v-if="canEdit && !isPlanSignedOff"). We verify this
-  // gate is enforced in the DOM, then confirm the API itself still works.
+  // Phase 11: Edit milestone via pencil icon
+  // The .milestone-row-actions wrapper is gated only by canEdit (lead/steward/admin),
+  // so the edit pencil is reachable on the existing signed-off plan.
   // ------------------------------------------------------------------
 
-  test('Phase 11: milestone edit buttons hidden in UI (plan signed off) and API patch succeeds', async ({ request }) => {
+  test('Phase 11: admin edits milestone description via pencil icon', async () => {
     await adminPage.bringToFront();
 
-    // Confirm the plan is signed off: edit/archive buttons must be absent from the milestone header
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage);
 
     const milestoneCard = adminPage.locator('.milestone-card').first();
     await expect(milestoneCard).toBeVisible({ timeout: TIMEOUT.medium });
 
-    // .milestone-row-actions contains the edit + delete q-btns — gated by !isPlanSignedOff
-    await expect(milestoneCard.locator('.milestone-row-actions')).toHaveCount(0, { timeout: TIMEOUT.short });
-    console.log('[Phase 11] Confirmed: milestone edit/archive buttons absent (plan is signed off)');
+    // .milestone-row-actions contains the edit + delete q-btns
+    const actions = milestoneCard.locator('.milestone-row-actions');
+    await expect(actions).toBeVisible({ timeout: TIMEOUT.short });
 
-    // Verify the API still allows patching a milestone directly
-    const health = await request.get(`${BACKEND_URL}/health`);
-    const { admin: adminAIDFromHealth } = await health.json();
-    expect(adminAIDFromHealth).toBeTruthy();
+    // First button is edit (icon=edit), second is delete (icon=delete)
+    const editBtn = actions.locator('button').first();
+    await editBtn.click();
 
-    // Fetch all contributions to find the milestone_id via the plan endpoint
-    const contribsResp = await request.get(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'X-User-AID': adminAIDFromHealth },
-    });
-    // Find any contribution that has a milestone_id
-    const contribs: Array<{ milestone_id?: string }> = await contribsResp.json().catch(() => []);
-    const milestoneId = Array.isArray(contribs)
-      ? contribs.find((c) => c.milestone_id)?.milestone_id
-      : undefined;
+    // MilestoneFormDialog opens in edit mode
+    const formDlg = dialog(adminPage, /Edit Milestone/i);
+    await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
 
-    if (milestoneId) {
-      const patchResp = await request.put(`${BACKEND_URL}/api/v1/milestones/${milestoneId}`, {
-        headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAIDFromHealth },
-        data: { description: 'Updated via API in Phase 11 E2E test' },
-      });
-      expect(patchResp.status()).toBe(200);
-      const body = await patchResp.json();
-      expect(body.milestone_id ?? body.id).toBeTruthy();
-      console.log('[Phase 11] Milestone PATCH via API succeeded: %s', milestoneId);
-    } else {
-      console.log('[Phase 11] No milestone_id found in contributions — skipping API patch (org may not have contributions yet)');
-    }
+    // The title field should be prefilled
+    await expect(formDlg.getByLabel(/Milestone Title/i)).toHaveValue(MILESTONE_TITLE, { timeout: TIMEOUT.short });
+
+    // Edit description
+    const descInput = formDlg.getByLabel(/Description/i);
+    await descInput.clear();
+    await descInput.fill('Updated via E2E Phase 11');
+
+    // Save Changes button
+    const saveBtn = formDlg.getByRole('button', { name: /Save Changes/i });
+    await expect(saveBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await saveBtn.click();
+    await waitForSettle(adminPage, 2000);
+
+    // Re-open the dialog to verify the change persisted
+    await editBtn.click();
+    const reDlg = dialog(adminPage, /Edit Milestone/i);
+    await expect(reDlg).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(reDlg.getByLabel(/Description/i)).toHaveValue('Updated via E2E Phase 11', { timeout: TIMEOUT.short });
+    await reDlg.locator('button').filter({ hasText: /Cancel/i }).first().click();
+    console.log('[Phase 11] Milestone edited via pencil icon and verified');
   });
 
   // ------------------------------------------------------------------
-  // Phase 12: Unassign contributor from contribution 2 via API
-  // The ContributionCardCompact edit icon is gated by !isPlanSignedOff,
-  // so the UI path for opening ContributionForm is blocked after Phase 3.
-  // We call POST /contributions/:id/unassign directly and verify status
-  // reverts to 'confirmed'.
+  // Phase 12: Unassign contributor from contribution 2 via UI
+  // Click the edit pencil on contribution 2's compact card (now reachable
+  // after the !isPlanSignedOff gate was lifted), then click "Unassign
+  // Contributor" inside the ContributionForm dialog.
   // ------------------------------------------------------------------
 
-  test('Phase 12: admin unassigns member from contribution 2 via API', async ({ request }) => {
+  test('Phase 12: admin unassigns member from contribution 2 via pencil icon', async () => {
     await adminPage.bringToFront();
 
-    const health = await request.get(`${BACKEND_URL}/health`);
-    const { admin: adminAIDFromHealth } = await health.json();
-    expect(adminAIDFromHealth).toBeTruthy();
-
-    // Find contribution 2 by title
-    const contribsResp = await request.get(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'X-User-AID': adminAIDFromHealth },
-    });
-    expect(contribsResp.ok()).toBeTruthy();
-    const contribs: Array<{ id: string; title: string; status: string }> = await contribsResp.json();
-    const contrib2 = Array.isArray(contribs)
-      ? contribs.find((c) => c.title === CONTRIBUTION_2_TITLE)
-      : undefined;
-    expect(contrib2, `Contribution "${CONTRIBUTION_2_TITLE}" not found via API`).toBeTruthy();
-    expect(contrib2!.status).toBe('assigned');
-    console.log('[Phase 12] Found contribution 2 in assigned status: %s', contrib2!.id);
-
-    const unassignResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib2!.id}/unassign`, {
-      headers: { 'X-User-AID': adminAIDFromHealth },
-    });
-    expect(unassignResp.status()).toBe(200);
-    const updated: { status: string } = await unassignResp.json();
-    expect(updated.status).toBe('confirmed');
-    console.log('[Phase 12] Contribution 2 unassigned — status now: %s', updated.status);
-
-    // Refresh the page and confirm no assignee avatar is shown on the card
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage);
+
+    // Locate contribution 2 card
     const contrib2Card = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
     await expect(contrib2Card).toBeVisible({ timeout: TIMEOUT.medium });
-    // Status badge should NOT show 'assigned' — card should not have an avatar
-    await expect(contrib2Card.locator('.compact-avatar')).toHaveCount(0, { timeout: TIMEOUT.short });
-    console.log('[Phase 12] UI confirms no assignee on contribution 2');
+
+    // Confirm assignee avatar is present (member accepted offer in Phase 10)
+    await expect(contrib2Card.locator('.compact-avatar')).toBeVisible({ timeout: TIMEOUT.short });
+
+    // .compact-actions has the edit pencil — click it
+    // The first button matching the edit icon (skipping any Confirm button which is rendered conditionally)
+    const editPencil = contrib2Card.locator('.compact-actions button').filter({
+      has: adminPage.locator('.q-icon').filter({ hasText: /^edit$/ }),
+    }).first();
+    // Fallback: find by tooltip text
+    const editFallback = contrib2Card.locator('.compact-actions button').filter({ hasText: '' }).nth(0);
+    if (await editPencil.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await editPencil.click();
+    } else {
+      // The compact-actions has flat round buttons; the first non-Confirm button is edit
+      const allBtns = contrib2Card.locator('.compact-actions button');
+      const btnCount = await allBtns.count();
+      // Skip Confirm/Assign buttons — find an icon-only flat round button
+      let clicked = false;
+      for (let i = 0; i < btnCount; i++) {
+        const btn = allBtns.nth(i);
+        const text = (await btn.textContent() ?? '').trim();
+        if (text === '' || text.length < 2) {
+          await btn.click();
+          clicked = true;
+          break;
+        }
+      }
+      if (!clicked) {
+        await editFallback.click();
+      }
+    }
+
+    // ContributionForm dialog opens in edit mode
+    const formDlg = adminPage.locator('.q-dialog').filter({ hasText: /Edit Contribution/i }).first();
+    await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    // The unassign block (.unassign-block) contains the "Unassign Contributor" button
+    const unassignBtn = formDlg.getByRole('button', { name: /Unassign Contributor/i });
+    await expect(unassignBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await unassignBtn.click();
+
+    // ConfirmArchiveDialog (reused with confirmLabel="Unassign", icon="person_remove",
+    // title="Unassign Contributor")
+    const confirmDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Unassign Contributor' }).last();
+    await expect(confirmDlg).toBeVisible({ timeout: TIMEOUT.short });
+    await confirmDlg.getByRole('button', { name: 'Unassign' }).click();
+    await waitForSettle(adminPage, 2000);
+
+    // ContributionForm should close; refresh and verify
+    await adminPage.keyboard.press('Escape').catch(() => {});
+    await waitForSettle(adminPage);
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage);
+
+    const refreshedCard = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
+    await expect(refreshedCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(refreshedCard.locator('.compact-avatar')).toHaveCount(0, { timeout: TIMEOUT.short });
+    console.log('[Phase 12] UI confirms contribution 2 unassigned (no avatar visible)');
   });
 
   // ------------------------------------------------------------------
@@ -1135,52 +1166,47 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
-  // Phase 14: Archive contribution 2 via API
-  // The ContributionCardCompact trash icon is gated by !isPlanSignedOff
-  // (same as edit, line 54 in ContributionCardCompact.vue). Since the plan
-  // is signed off we cannot use the compact card actions.
-  // We call POST /contributions/:id/archive directly. After this, contrib 2
-  // status becomes 'archived', which together with contrib 1 'signed_off'
-  // satisfies the submit-completion precondition.
+  // Phase 14: Archive contribution 2 via UI trash icon
+  // Now reachable on the compact card after the !isPlanSignedOff gate
+  // was lifted. After archive the card is hidden from the milestone view.
   // ------------------------------------------------------------------
 
-  test('Phase 14: admin archives contribution 2 via API', async ({ request }) => {
+  test('Phase 14: admin archives contribution 2 via trash icon', async () => {
     await adminPage.bringToFront();
 
-    const health = await request.get(`${BACKEND_URL}/health`);
-    const { admin: adminAIDFromHealth } = await health.json();
-    expect(adminAIDFromHealth).toBeTruthy();
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage);
 
-    const contribsResp = await request.get(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'X-User-AID': adminAIDFromHealth },
-    });
-    expect(contribsResp.ok()).toBeTruthy();
-    const contribs: Array<{ id: string; title: string; status: string }> = await contribsResp.json();
-    const contrib2 = Array.isArray(contribs)
-      ? contribs.find((c) => c.title === CONTRIBUTION_2_TITLE)
-      : undefined;
-    expect(contrib2, `Contribution "${CONTRIBUTION_2_TITLE}" not found via API`).toBeTruthy();
-    console.log('[Phase 14] Archiving contribution 2 (status=%s): %s', contrib2!.status, contrib2!.id);
+    const contrib2Card = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
+    await expect(contrib2Card).toBeVisible({ timeout: TIMEOUT.medium });
 
-    const archiveResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib2!.id}/archive`, {
-      headers: { 'X-User-AID': adminAIDFromHealth },
-    });
-    expect(archiveResp.status()).toBe(200);
-    const archived: { status: string } = await archiveResp.json();
-    expect(archived.status).toBe('archived');
-    console.log('[Phase 14] Contribution 2 archived via API');
-
-    // Refresh and confirm the card is no longer visible as an active contribution
-    // (archived contributions may still render with a badge but the card remains).
-    // Verify via API that status is archived.
-    const verifyResp = await request.get(`${BACKEND_URL}/api/v1/contributions/${contrib2!.id}`, {
-      headers: { 'X-User-AID': adminAIDFromHealth },
-    });
-    if (verifyResp.ok()) {
-      const verified: { status: string } = await verifyResp.json();
-      expect(verified.status).toBe('archived');
+    // Click the trash icon — second flat round button in .compact-actions (after edit pencil)
+    const actionBtns = contrib2Card.locator('.compact-actions button');
+    const btnCount = await actionBtns.count();
+    let trashClicked = false;
+    // Iterate from the end to find icon-only buttons; trash is the last icon-only button
+    for (let i = btnCount - 1; i >= 0; i--) {
+      const btn = actionBtns.nth(i);
+      const text = (await btn.textContent() ?? '').trim();
+      if (text === '' || text.length < 2) {
+        // Click the LAST icon-only button (trash, not edit)
+        await btn.click();
+        trashClicked = true;
+        break;
+      }
     }
-    console.log('[Phase 14] Contribution 2 archive confirmed');
+    expect(trashClicked, 'Trash button not found in compact-actions').toBe(true);
+
+    // ConfirmArchiveDialog opens with title "Archive Contribution"
+    const archiveDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Archive Contribution' }).last();
+    await expect(archiveDlg).toBeVisible({ timeout: TIMEOUT.short });
+    await archiveDlg.getByRole('button', { name: 'Archive' }).click();
+    await waitForSettle(adminPage, 2500);
+
+    // Card should disappear from the milestone view (archived contributions
+    // are filtered out of the active list)
+    await expect(adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE })).toHaveCount(0, { timeout: TIMEOUT.medium });
+    console.log('[Phase 14] Contribution 2 archived via UI trash icon');
   });
 
   // ------------------------------------------------------------------
