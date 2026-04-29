@@ -47,6 +47,15 @@ export function useProjectPermissions(
 
   const canConfirmContribution = computed(() => isAdmin.value || isSteward.value);
 
+  const canArchiveProject = computed(() => isAdmin.value || isLead.value || isSteward.value);
+  const canArchiveMilestone = computed(() => isAdmin.value || isLead.value || isSteward.value);
+  const canArchiveContribution = computed(() => isAdmin.value || isLead.value || isSteward.value);
+  const canUnassignContributor = computed(() => isAdmin.value || isLead.value || isSteward.value);
+  const canEditMilestone = computed(() => isAdmin.value || isLead.value || isSteward.value);
+  const canSubmitProjectCompletion = computed(() => isAdmin.value || isLead.value);
+  const canApproveProjectCompletion = computed(() => isAdmin.value || isSteward.value);
+  const canRejectProjectCompletion = computed(() => isAdmin.value || isSteward.value);
+
   const canReviewContribution = computed(() => isAdmin.value || isLead.value);
 
   const canSignOffContribution = computed(() => isAdmin.value || isSteward.value);
@@ -71,6 +80,14 @@ export function useProjectPermissions(
     canSignOffPlan,
     canCreateContribution,
     canConfirmContribution,
+    canArchiveProject,
+    canArchiveMilestone,
+    canArchiveContribution,
+    canUnassignContributor,
+    canEditMilestone,
+    canSubmitProjectCompletion,
+    canApproveProjectCompletion,
+    canRejectProjectCompletion,
     canReviewContribution,
     canSignOffContribution,
     canShareContribution,
