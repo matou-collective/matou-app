@@ -20,7 +20,7 @@ export interface Project {
   id: string;
   title: string;
   description: string;
-  status: 'created' | 'active' | 'completed' | 'archived';
+  status: 'created' | 'active' | 'pending_completion' | 'completed' | 'archived';
   images?: ProjectImage[];
   proposal_ids?: string[];
   implementation_plan_ids?: string[];
@@ -34,6 +34,9 @@ export interface Project {
   created_by: string;
   created_at: string;
   updated_at: string;
+  completed_by?: string;
+  completed_at?: string;
+  rejection_reason?: string;
 }
 
 export interface CreateProjectRequest {

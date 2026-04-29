@@ -3,7 +3,7 @@
  * Canonical definitions — import these everywhere; do not duplicate in API clients.
  */
 
-export type ProjectStatus = 'created' | 'active' | 'completed' | 'archived';
+export type ProjectStatus = 'created' | 'active' | 'pending_completion' | 'completed' | 'archived';
 
 export type ContributionStatus =
   | 'created'
@@ -28,7 +28,7 @@ export type ContributionType =
   | 'coding_technical_dev'
   | 'cultural_oversight';
 
-export type MilestoneStatus = 'planned' | 'in_progress' | 'completed' | 'delayed';
+export type MilestoneStatus = 'planned' | 'in_progress' | 'completed' | 'delayed' | 'archived';
 
 export type PlanStatus = 'draft' | 'active' | 'archived';
 
@@ -188,6 +188,9 @@ export interface Project {
   created_by: string;
   created_at: string;
   updated_at: string;
+  completed_by?: string;
+  completed_at?: string;
+  rejection_reason?: string;
 }
 
 // ── Request types ─────────────────────────────────────────────────────────────
