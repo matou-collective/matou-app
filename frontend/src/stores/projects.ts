@@ -9,6 +9,10 @@ import {
   linkProposalToProject as apiLink,
   assignProjectRole as apiAssignRole,
   listProjectContributions as apiListProjectContributions,
+  archiveProject as apiArchive,
+  submitProjectCompletion as apiSubmitCompletion,
+  approveProjectCompletion as apiApproveCompletion,
+  rejectProjectCompletion as apiRejectCompletion,
   type Project,
   type CreateProjectRequest,
   type UpdateProjectRequest,
@@ -18,9 +22,12 @@ import {
   signOffImplementationPlan,
   addMilestone as apiAddMilestone,
   createImplementationPlan as apiCreatePlan,
+  archiveMilestone as apiArchiveMilestone,
+  updateMilestone as apiUpdateMilestone,
   type ImplementationPlan,
   type AddMilestoneRequest,
   type CreateImplementationPlanRequest,
+  type UpdateMilestoneRequest,
 } from 'src/lib/api/implementationPlans';
 import type { Contribution } from 'src/lib/api/contributions';
 import { createLogger } from 'src/lib/logging';
@@ -90,6 +97,85 @@ export const useProjectsStore = defineStore('projects', () => {
       return updated;
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Update failed';
+      throw e;
+    }
+  }
+
+  function _patchProject(updated: Project) {
+    const idx = projects.value.findIndex(p => p.id === updated.id);
+    if (idx >= 0) projects.value[idx] = updated;
+    if (currentProject.value?.id === updated.id) currentProject.value = updated;
+  }
+
+  async function archive(id: string) {
+    error.value = null;
+    try {
+      await apiArchive(id);
+      const idx = projects.value.findIndex(p => p.id === id);
+      if (idx >= 0) projects.value[idx] = { ...projects.value[idx], status: 'archived' };
+      if (currentProject.value?.id === id) {
+        currentProject.value = { ...currentProject.value, status: 'archived' };
+      }
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Archive failed';
+      throw e;
+    }
+  }
+
+  async function submitCompletion(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiSubmitCompletion(id);
+      _patchProject(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Submit completion failed';
+      throw e;
+    }
+  }
+
+  async function approveCompletion(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiApproveCompletion(id);
+      _patchProject(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Approve completion failed';
+      throw e;
+    }
+  }
+
+  async function rejectCompletion(id: string, reason: string) {
+    error.value = null;
+    try {
+      const updated = await apiRejectCompletion(id, reason);
+      _patchProject(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Reject completion failed';
+      throw e;
+    }
+  }
+
+  async function archiveMilestoneAction(projectId: string, milestoneId: string) {
+    error.value = null;
+    try {
+      await apiArchiveMilestone(milestoneId);
+      await fetchImplementationPlan(projectId);
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Archive milestone failed';
+      throw e;
+    }
+  }
+
+  async function updateMilestoneAction(projectId: string, milestoneId: string, req: UpdateMilestoneRequest) {
+    error.value = null;
+    try {
+      await apiUpdateMilestone(milestoneId, req);
+      await fetchImplementationPlan(projectId);
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Update milestone failed';
       throw e;
     }
   }
@@ -220,5 +306,11 @@ export const useProjectsStore = defineStore('projects', () => {
     signOffPlan,
     assignRole,
     fetchProjectContributions,
+    archive,
+    submitCompletion,
+    approveCompletion,
+    rejectCompletion,
+    archiveMilestone: archiveMilestoneAction,
+    updateMilestone: updateMilestoneAction,
   };
 });

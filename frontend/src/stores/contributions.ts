@@ -16,6 +16,8 @@ import {
   signOffContribution as apiSignOff,
   createChildContribution as apiCreateChild,
   approveSub as apiApproveSub,
+  archiveContribution as apiArchiveContrib,
+  unassignContribution as apiUnassign,
   type Contribution,
   type CreateContributionRequest,
   type UpdateContributionRequest,
@@ -244,6 +246,33 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  async function archive(id: string) {
+    error.value = null;
+    try {
+      await apiArchiveContrib(id);
+      const idx = contributions.value.findIndex(c => c.id === id);
+      if (idx >= 0) contributions.value[idx] = { ...contributions.value[idx], status: 'archived' };
+      if (currentContribution.value?.id === id) {
+        currentContribution.value = { ...currentContribution.value, status: 'archived' };
+      }
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Archive failed';
+      throw e;
+    }
+  }
+
+  async function unassign(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiUnassign(id);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Unassign failed';
+      throw e;
+    }
+  }
+
   return {
     contributions,
     currentContribution,
@@ -266,5 +295,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     signOff,
     createChild,
     approveSub,
+    archive,
+    unassign,
   };
 });
