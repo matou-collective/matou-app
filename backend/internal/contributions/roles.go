@@ -75,6 +75,18 @@ const (
 	ActionSignOffProposal Action = "sign_off_proposal"
 	ActionRejectProposal  Action = "reject_proposal"
 	ActionEditProposal    Action = "edit_proposal"
+
+	// Archive & lifecycle actions
+	ActionArchiveProject       Action = "archive_project"
+	ActionArchiveMilestone     Action = "archive_milestone"
+	ActionArchiveContribution  Action = "archive_contribution"
+	ActionUnassignContribution Action = "unassign_contribution"
+	ActionEditMilestone        Action = "edit_milestone"
+
+	// Project completion workflow
+	ActionSubmitProjectCompletion  Action = "submit_project_completion"
+	ActionApproveProjectCompletion Action = "approve_project_completion"
+	ActionRejectProjectCompletion  Action = "reject_project_completion"
 )
 
 // actionPermissions maps each action to the roles that can perform it.
@@ -87,6 +99,14 @@ var allRoles = []Role{
 	RoleMember, RoleContributor, RoleProjectLead, RoleProjectSteward,
 	RoleCommunitySteward, RoleTechSteward, RoleTreasurySteward,
 	RoleOperationsSteward, RoleFoundingMember, RoleElderCouncil,
+}
+
+var stewardScope = []Role{
+	RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember,
+}
+
+var leadStewardScope = []Role{
+	RoleProjectLead, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember,
 }
 
 var actionPermissions = map[Action][]Role{
@@ -110,6 +130,14 @@ var actionPermissions = map[Action][]Role{
 	ActionSignOffProposal:     {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
 	ActionRejectProposal:      {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
 	ActionEditProposal:        {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionArchiveProject:           leadStewardScope,
+	ActionArchiveMilestone:         leadStewardScope,
+	ActionArchiveContribution:      leadStewardScope,
+	ActionUnassignContribution:     leadStewardScope,
+	ActionEditMilestone:            leadStewardScope,
+	ActionSubmitProjectCompletion:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
+	ActionApproveProjectCompletion: stewardScope,
+	ActionRejectProjectCompletion:  stewardScope,
 }
 
 // HasRole checks if a role list contains the given role.

@@ -184,3 +184,44 @@ func TestCanPerformAction_RegisterInterest(t *testing.T) {
 		t.Error("member should register interest")
 	}
 }
+
+func TestActionArchiveProject_AllowedRoles(t *testing.T) {
+	cases := []struct {
+		role    Role
+		allowed bool
+	}{
+		{RoleProjectLead, true},
+		{RoleProjectSteward, true},
+		{RoleFoundingMember, true},
+		{RoleOperationsSteward, true},
+		{RoleMember, false},
+		{RoleContributor, false},
+	}
+	for _, c := range cases {
+		got := CanPerformAction([]Role{c.role}, ActionArchiveProject)
+		if got != c.allowed {
+			t.Errorf("ActionArchiveProject for %s: got %v, want %v", c.role, got, c.allowed)
+		}
+	}
+}
+
+func TestActionSubmitProjectCompletion_LeadOnly(t *testing.T) {
+	if !CanPerformAction([]Role{RoleProjectLead}, ActionSubmitProjectCompletion) {
+		t.Error("project lead should be able to submit completion")
+	}
+	if CanPerformAction([]Role{RoleProjectSteward}, ActionSubmitProjectCompletion) {
+		t.Error("pure project steward should not be able to submit completion")
+	}
+	if !CanPerformAction([]Role{RoleFoundingMember}, ActionSubmitProjectCompletion) {
+		t.Error("founding member should be able to submit completion")
+	}
+}
+
+func TestActionApproveProjectCompletion_StewardScope(t *testing.T) {
+	if !CanPerformAction([]Role{RoleProjectSteward}, ActionApproveProjectCompletion) {
+		t.Error("project steward should be able to approve completion")
+	}
+	if CanPerformAction([]Role{RoleProjectLead}, ActionApproveProjectCompletion) {
+		t.Error("project lead should NOT be able to approve completion")
+	}
+}
