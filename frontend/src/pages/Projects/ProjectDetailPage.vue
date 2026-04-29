@@ -161,8 +161,32 @@
             />
           </div>
 
+          <!-- Plan-modified banner (was signed off, then a milestone or contribution was edited/archived) -->
+          <div v-if="planWasModified" class="plan-modified-banner">
+            <AlertCircle class="banner-icon" />
+            <div>
+              <div class="banner-title">Plan modified — re-signoff required</div>
+              <div class="banner-subtitle">
+                A milestone or contribution was changed since the plan was last signed off.
+                Contributions cannot be signed off until the plan is re-signed.
+                <span v-if="implementationPlan.signed_off_by">
+                  Last signed off by {{ implementationPlan.signed_off_by }}<span v-if="implementationPlan.signed_off_at"> on {{ formatDate(implementationPlan.signed_off_at) }}</span>.
+                </span>
+              </div>
+            </div>
+            <q-btn
+              v-if="perms.canSignOffPlan.value"
+              no-caps
+              color="primary"
+              label="Re-Sign Off Plan"
+              class="q-ml-auto"
+              :loading="signingOffPlan"
+              @click="handleSignOffPlan"
+            />
+          </div>
+
           <!-- Sign-off banner (all confirmed, not yet signed off) -->
-          <div v-if="allContributionsConfirmed && !implementationPlan.signed_off" class="sign-off-banner">
+          <div v-else-if="allContributionsConfirmed && !implementationPlan.signed_off" class="sign-off-banner">
             <CheckCircle class="banner-icon" />
             <div>
               <div class="banner-title">All contributions confirmed — plan is ready for sign-off</div>
@@ -480,6 +504,7 @@ import {
   ClipboardList,
   CheckCircle,
   Clock,
+  AlertCircle,
 } from 'lucide-vue-next';
 import { useProjectsStore } from 'stores/projects';
 import { useProposalsStore } from 'stores/proposals';
@@ -793,6 +818,21 @@ const allContributionsConfirmed = computed(
 const canSignOffPlan = computed(
   () => allContributionsConfirmed.value && milestones.value.every((m) => (m.contribution_ids?.length ?? 0) > 0),
 );
+
+// Plan was previously signed off (signed_off_at is set as historical record)
+// but is no longer signed off — meaning a milestone or contribution was edited
+// or archived since the last signoff and re-signoff is required.
+const planWasModified = computed(
+  () =>
+    !!implementationPlan.value
+    && !implementationPlan.value.signed_off
+    && !!implementationPlan.value.signed_off_at,
+);
+
+function formatDate(iso: string): string {
+  if (!iso) return '';
+  return new Date(iso).toLocaleDateString();
+}
 
 const linkedProposals = computed(() => {
   const p = project.value;
@@ -1495,6 +1535,19 @@ async function submitAssign() {
   margin-bottom: 16px;
 }
 
+.plan-modified-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid #ef4444;
+  border-radius: var(--matou-radius-sm);
+  margin-bottom: 16px;
+
+  .banner-icon { color: #b91c1c; }
+}
+
 .banner-icon {
   width: 20px;
   height: 20px;
@@ -1506,6 +1559,14 @@ async function submitAssign() {
   font-size: 0.9rem;
   font-weight: 600;
   color: var(--matou-foreground);
+}
+
+.banner-subtitle {
+  font-size: 0.8rem;
+  color: var(--matou-foreground);
+  opacity: 0.8;
+  margin-top: 4px;
+  line-height: 1.4;
 }
 
 .milestones-list {

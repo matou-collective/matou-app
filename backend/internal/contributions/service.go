@@ -1880,9 +1880,10 @@ func (s *Service) UnsignPlanForProject(ctx context.Context, spaceID, projectID s
 		if !p.SignedOff {
 			continue
 		}
+		// Keep SignedOffBy / SignedOffAt as a historical record of the last
+		// signoff so the UI can show "Last signed off by X on Y, then modified."
+		// Only flip the boolean to require re-signoff.
 		p.SignedOff = false
-		p.SignedOffBy = ""
-		p.SignedOffAt = nil
 		p.UpdatedAt = time.Now()
 		if err := s.SaveImplementationPlan(ctx, spaceID, p); err != nil {
 			return fmt.Errorf("save plan %s: %w", p.ID, err)
@@ -1907,6 +1908,7 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID str
 	}
 
 	// Archive the milestone inside the plan and invalidate plan signoff.
+	// Keep SignedOffBy/SignedOffAt as historical record of last signoff.
 	for i := range plan.Milestones {
 		if plan.Milestones[i].MilestoneID == milestoneID {
 			plan.Milestones[i].Status = MilestoneArchived
@@ -1914,8 +1916,6 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID str
 	}
 	if plan.SignedOff {
 		plan.SignedOff = false
-		plan.SignedOffBy = ""
-		plan.SignedOffAt = nil
 	}
 	plan.UpdatedAt = time.Now()
 	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
@@ -2085,10 +2085,9 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID stri
 		return nil, fmt.Errorf("milestone %s not found", milestoneID)
 	}
 	// Editing a milestone invalidates the plan signoff — re-signoff is required.
+	// Keep SignedOffBy/SignedOffAt as historical record of last signoff.
 	if plan.SignedOff {
 		plan.SignedOff = false
-		plan.SignedOffBy = ""
-		plan.SignedOffAt = nil
 	}
 	plan.UpdatedAt = time.Now()
 	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {

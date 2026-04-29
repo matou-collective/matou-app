@@ -1091,8 +1091,13 @@ func TestUpdateMilestone_UnsignsPlan(t *testing.T) {
 	if gotPlan.SignedOff {
 		t.Error("plan should be unsigned after milestone edit")
 	}
-	if gotPlan.SignedOffBy != "" {
-		t.Errorf("signed_off_by = %q, want empty", gotPlan.SignedOffBy)
+	// Historical signoff record (signed_off_by / signed_off_at) is preserved
+	// so the UI can show "Last signed off by X on Y, then modified."
+	if gotPlan.SignedOffBy != "steward" {
+		t.Errorf("signed_off_by = %q, want steward (historical record preserved)", gotPlan.SignedOffBy)
+	}
+	if gotPlan.SignedOffAt == nil {
+		t.Error("signed_off_at should be preserved as historical record")
 	}
 }
 
