@@ -86,6 +86,18 @@
         </div>
       </div>
 
+      <!-- ── Project Completion ────────────────────────── -->
+      <ProjectCompletionSection
+        v-if="project.status === 'active' || project.status === 'pending_completion' || project.status === 'completed'"
+        :project="project"
+        :contributions="allProjectContributions"
+        :can-submit="perms.canSubmitProjectCompletion.value"
+        :can-approve="perms.canApproveProjectCompletion.value"
+        @submit="onSubmitCompletion"
+        @approve="onApproveCompletion"
+        @reject="onRejectCompletion"
+      />
+
       <!-- ── Implementation Plan ───────────────────────── -->
       <div class="content-section">
         <div class="section-header">
@@ -488,6 +500,7 @@ import ContributionDetailDialog from 'src/components/projects/ContributionDetail
 import ContributionForm from 'src/components/contributions/ContributionForm.vue';
 import ConfirmDestroyDialog from 'src/components/common/ConfirmDestroyDialog.vue';
 import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue';
+import ProjectCompletionSection from 'src/components/projects/ProjectCompletionSection.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -1031,6 +1044,36 @@ async function handleSignOffPlan() {
   }
 }
 
+async function onSubmitCompletion() {
+  if (!project.value) return;
+  try {
+    await projectsStore.submitCompletion(project.value.id);
+    $q.notify({ type: 'positive', message: 'Project submitted for steward review!' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to submit completion' });
+  }
+}
+
+async function onApproveCompletion() {
+  if (!project.value) return;
+  try {
+    await projectsStore.approveCompletion(project.value.id);
+    $q.notify({ type: 'positive', message: 'Project marked as completed!' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to approve completion' });
+  }
+}
+
+async function onRejectCompletion(reason: string) {
+  if (!project.value) return;
+  try {
+    await projectsStore.rejectCompletion(project.value.id, reason);
+    $q.notify({ type: 'positive', message: 'Project sent back for revision.' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to send back' });
+  }
+}
+
 function openAssignRole(role: 'lead' | 'steward') {
   assignRoleTarget.value = role;
   showAssignRoleDialog.value = true;
@@ -1227,6 +1270,7 @@ async function submitAssign() {
 
   &.created { background: #e0e7ff; color: #4338ca; }
   &.active { background: rgba(74, 157, 156, 0.12); color: var(--matou-accent); }
+  &.pending_completion { background: #ffedd5; color: #c2410c; }
   &.completed { background: #dbeafe; color: #2563eb; }
   &.archived { background: #f3f4f6; color: #6b7280; }
 }
