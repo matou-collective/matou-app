@@ -233,7 +233,7 @@
             <template #avatar>
               <q-icon name="person" color="warning" />
             </template>
-            Currently assigned to <strong>{{ contribution?.assigned_contributor_id }}</strong>
+            Currently assigned to <strong>{{ contribution?.assigned_contributor_id ?? (contribution as { assigned_contributor?: string })?.assigned_contributor }}</strong>
           </q-banner>
           <q-btn
             outline
@@ -319,7 +319,10 @@ const canShowUnassign = computed(() => {
   if (!props.canUnassign) return false;
   if (!props.contribution) return false;
   const c = props.contribution;
-  if (!c.assigned_contributor_id) return false;
+  // Backend serialises assignee as `assigned_contributor` (json tag);
+  // some clients also send `assigned_contributor_id`. Accept either.
+  const assignee = c.assigned_contributor_id ?? (c as { assigned_contributor?: string }).assigned_contributor;
+  if (!assignee) return false;
   return c.status === 'assigned';
 });
 

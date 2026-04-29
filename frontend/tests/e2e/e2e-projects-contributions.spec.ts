@@ -1572,14 +1572,16 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     }
     const plan: { id: string } = await planResp.json();
 
-    // Add a milestone
-    const msResp = await request.post(`${BACKEND_URL}/api/v1/milestones`, {
+    // Add a milestone via the plan-scoped endpoint
+    const msResp = await request.post(`${BACKEND_URL}/api/v1/implementation-plans/${plan.id}/milestones`, {
       headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
-      data: { implementation_plan_id: plan.id, title: 'Test Milestone', duration: '1 week' },
+      data: { title: 'Test Milestone', duration: '1 week' },
     });
     expect(msResp.ok()).toBeTruthy();
-    const ms: { milestone_id?: string; id?: string } = await msResp.json();
-    const milestoneId = ms.milestone_id ?? ms.id;
+    // The endpoint returns the updated plan; pull the latest milestone from its array.
+    const planAfter: { milestones?: Array<{ milestone_id?: string; id?: string }> } = await msResp.json();
+    const lastMs = planAfter.milestones?.[planAfter.milestones.length - 1];
+    const milestoneId = lastMs?.milestone_id ?? lastMs?.id;
     expect(milestoneId).toBeTruthy();
 
     // PATCH the milestone description
