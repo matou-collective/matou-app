@@ -113,8 +113,9 @@
             <q-input
               v-model="form.objectives[i]"
               :label="`Objective ${i + 1}`"
+              type="textarea"
+              autogrow
               outlined
-              dense
               class="list-input"
             />
             <q-btn
@@ -149,8 +150,9 @@
             <q-input
               v-model="form.deliverables[i]"
               :label="`Deliverable ${i + 1}`"
+              type="textarea"
+              autogrow
               outlined
-              dense
               class="list-input"
             />
             <q-btn
@@ -185,8 +187,9 @@
             <q-input
               v-model="form.acceptance_criteria[i]"
               :label="`Criterion ${i + 1}`"
+              type="textarea"
+              autogrow
               outlined
-              dense
               class="list-input"
             />
             <q-btn
