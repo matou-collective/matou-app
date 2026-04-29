@@ -165,6 +165,20 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "archive":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionArchiveContribution, h.HandleArchive)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "unassign":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionUnassignContribution, h.HandleUnassign)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			}
 		}
 
@@ -832,6 +846,55 @@ func (h *ContributionsHandler) HandleApproveSub(w http.ResponseWriter, r *http.R
 		return
 	}
 	log.Printf("[Contributions] sub-contribution %s approved", id)
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleArchive handles POST /api/v1/contributions/{id}/archive
+// RBAC: ActionArchiveContribution (lead/steward/admin).
+func (h *ContributionsHandler) HandleArchive(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/archive")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	if err := h.service.ArchiveContribution(r.Context(), spaceID, id); err != nil {
+		log.Printf("[Contributions] archive failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s archived", id)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:archived",
+			Data: map[string]string{"contribution_id": id},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"success": "true"})
+}
+
+// HandleUnassign handles POST /api/v1/contributions/{id}/unassign
+// RBAC: ActionUnassignContribution (lead/steward/admin).
+func (h *ContributionsHandler) HandleUnassign(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/unassign")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.UnassignContribution(r.Context(), spaceID, id)
+	if err != nil {
+		log.Printf("[Contributions] unassign failed for %s: %v", id, err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s unassigned", id)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:unassigned",
+			Data: map[string]string{"contribution_id": id},
+		})
+	}
 	writeJSON(w, http.StatusOK, contrib)
 }
 
