@@ -24,7 +24,7 @@
           <CheckCircle class="badge-icon" />
           All Confirmed
         </span>
-        <div v-if="canEdit && !isPlanSignedOff" class="milestone-row-actions" @click.stop>
+        <div v-if="canEdit" class="milestone-row-actions" @click.stop>
           <q-btn
             flat round dense size="sm"
             icon="edit"

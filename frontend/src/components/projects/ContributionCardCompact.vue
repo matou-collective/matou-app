@@ -51,7 +51,7 @@
           @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
         />
 
-        <template v-if="canEdit && !isPlanSignedOff">
+        <template v-if="canEdit">
           <q-btn
             flat round dense size="sm"
             icon="edit"
