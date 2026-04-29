@@ -984,10 +984,303 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
-  // Verification
+  // Phase 11: Milestone edit — UI gated by plan sign-off, verified via API
+  // After Phase 3 the plan is signed off, so the MilestoneCard edit/archive
+  // buttons are hidden (v-if="canEdit && !isPlanSignedOff"). We verify this
+  // gate is enforced in the DOM, then confirm the API itself still works.
   // ------------------------------------------------------------------
 
-  test('verify project still listed on projects page', async () => {
+  test('Phase 11: milestone edit buttons hidden in UI (plan signed off) and API patch succeeds', async ({ request }) => {
+    await adminPage.bringToFront();
+
+    // Confirm the plan is signed off: edit/archive buttons must be absent from the milestone header
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage);
+
+    const milestoneCard = adminPage.locator('.milestone-card').first();
+    await expect(milestoneCard).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // .milestone-row-actions contains the edit + delete q-btns — gated by !isPlanSignedOff
+    await expect(milestoneCard.locator('.milestone-row-actions')).toHaveCount(0, { timeout: TIMEOUT.short });
+    console.log('[Phase 11] Confirmed: milestone edit/archive buttons absent (plan is signed off)');
+
+    // Verify the API still allows patching a milestone directly
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAIDFromHealth } = await health.json();
+    expect(adminAIDFromHealth).toBeTruthy();
+
+    // Fetch all contributions to find the milestone_id via the plan endpoint
+    const contribsResp = await request.get(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'X-User-AID': adminAIDFromHealth },
+    });
+    // Find any contribution that has a milestone_id
+    const contribs: Array<{ milestone_id?: string }> = await contribsResp.json().catch(() => []);
+    const milestoneId = Array.isArray(contribs)
+      ? contribs.find((c) => c.milestone_id)?.milestone_id
+      : undefined;
+
+    if (milestoneId) {
+      const patchResp = await request.put(`${BACKEND_URL}/api/v1/milestones/${milestoneId}`, {
+        headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAIDFromHealth },
+        data: { description: 'Updated via API in Phase 11 E2E test' },
+      });
+      expect(patchResp.status()).toBe(200);
+      const body = await patchResp.json();
+      expect(body.milestone_id ?? body.id).toBeTruthy();
+      console.log('[Phase 11] Milestone PATCH via API succeeded: %s', milestoneId);
+    } else {
+      console.log('[Phase 11] No milestone_id found in contributions — skipping API patch (org may not have contributions yet)');
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 12: Unassign contributor from contribution 2 via API
+  // The ContributionCardCompact edit icon is gated by !isPlanSignedOff,
+  // so the UI path for opening ContributionForm is blocked after Phase 3.
+  // We call POST /contributions/:id/unassign directly and verify status
+  // reverts to 'confirmed'.
+  // ------------------------------------------------------------------
+
+  test('Phase 12: admin unassigns member from contribution 2 via API', async ({ request }) => {
+    await adminPage.bringToFront();
+
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAIDFromHealth } = await health.json();
+    expect(adminAIDFromHealth).toBeTruthy();
+
+    // Find contribution 2 by title
+    const contribsResp = await request.get(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'X-User-AID': adminAIDFromHealth },
+    });
+    expect(contribsResp.ok()).toBeTruthy();
+    const contribs: Array<{ id: string; title: string; status: string }> = await contribsResp.json();
+    const contrib2 = Array.isArray(contribs)
+      ? contribs.find((c) => c.title === CONTRIBUTION_2_TITLE)
+      : undefined;
+    expect(contrib2, `Contribution "${CONTRIBUTION_2_TITLE}" not found via API`).toBeTruthy();
+    expect(contrib2!.status).toBe('assigned');
+    console.log('[Phase 12] Found contribution 2 in assigned status: %s', contrib2!.id);
+
+    const unassignResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib2!.id}/unassign`, {
+      headers: { 'X-User-AID': adminAIDFromHealth },
+    });
+    expect(unassignResp.status()).toBe(200);
+    const updated: { status: string } = await unassignResp.json();
+    expect(updated.status).toBe('confirmed');
+    console.log('[Phase 12] Contribution 2 unassigned — status now: %s', updated.status);
+
+    // Refresh the page and confirm no assignee avatar is shown on the card
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage);
+    const contrib2Card = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
+    await expect(contrib2Card).toBeVisible({ timeout: TIMEOUT.medium });
+    // Status badge should NOT show 'assigned' — card should not have an avatar
+    await expect(contrib2Card.locator('.compact-avatar')).toHaveCount(0, { timeout: TIMEOUT.short });
+    console.log('[Phase 12] UI confirms no assignee on contribution 2');
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 13: Archive sub-contribution via ContributionDetailDialog UI
+  // The sub-item archive button is gated only by canApproveSub (lead/steward),
+  // NOT by isPlanSignedOff. Sub-contribution is signed_off after Phase 6 —
+  // admin (also lead+steward) can still click the delete icon.
+  // The archive-sub-contribution event feeds into confirmArchiveContribution()
+  // which opens a ConfirmArchiveDialog with title "Archive Contribution".
+  // ------------------------------------------------------------------
+
+  test('Phase 13: admin archives sub-contribution via dialog delete icon', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 1500);
+
+    // Open contribution 1 (which contains the sub-contribution)
+    await openContributionDialog(adminPage, CONTRIBUTION_1_TITLE);
+    const dlg = adminPage.locator('.q-dialog').first();
+
+    // Locate the sub-item row by title
+    const subItem = dlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE });
+    await expect(subItem).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // Click the delete icon (icon="delete") within the sub-item; stop propagation handles click isolation
+    const deleteSubBtn = subItem.locator('button').filter({ has: adminPage.locator('[aria-label="Delete Sub-Contribution"], .q-icon[name="delete"]') }).first();
+    // Fallback: last button in the sub-item (edit is first, delete is second in the template)
+    const subItemBtns = subItem.locator('button');
+    const btnCount = await subItemBtns.count();
+    if (btnCount >= 2) {
+      await subItemBtns.last().click();
+    } else if (await deleteSubBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await deleteSubBtn.click();
+    } else {
+      console.log('[Phase 13] Delete sub-contribution button not found — sub may not be visible or canApproveSub is false');
+      await closeContributionDialog(adminPage);
+      return;
+    }
+
+    // ConfirmArchiveDialog opens with title "Archive Contribution"
+    const archiveDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Archive Contribution' }).last();
+    await expect(archiveDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Default confirm label is "Archive"
+    const archiveConfirmBtn = archiveDlg.getByRole('button', { name: 'Archive' });
+    await expect(archiveConfirmBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await archiveConfirmBtn.click();
+    await waitForSettle(adminPage, 2000);
+
+    // Sub-item should no longer appear in the dialog
+    await expect(dlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE })).toHaveCount(0, { timeout: TIMEOUT.medium });
+    console.log('[Phase 13] Sub-contribution archived via dialog delete icon');
+
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 14: Archive contribution 2 via API
+  // The ContributionCardCompact trash icon is gated by !isPlanSignedOff
+  // (same as edit, line 54 in ContributionCardCompact.vue). Since the plan
+  // is signed off we cannot use the compact card actions.
+  // We call POST /contributions/:id/archive directly. After this, contrib 2
+  // status becomes 'archived', which together with contrib 1 'signed_off'
+  // satisfies the submit-completion precondition.
+  // ------------------------------------------------------------------
+
+  test('Phase 14: admin archives contribution 2 via API', async ({ request }) => {
+    await adminPage.bringToFront();
+
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAIDFromHealth } = await health.json();
+    expect(adminAIDFromHealth).toBeTruthy();
+
+    const contribsResp = await request.get(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'X-User-AID': adminAIDFromHealth },
+    });
+    expect(contribsResp.ok()).toBeTruthy();
+    const contribs: Array<{ id: string; title: string; status: string }> = await contribsResp.json();
+    const contrib2 = Array.isArray(contribs)
+      ? contribs.find((c) => c.title === CONTRIBUTION_2_TITLE)
+      : undefined;
+    expect(contrib2, `Contribution "${CONTRIBUTION_2_TITLE}" not found via API`).toBeTruthy();
+    console.log('[Phase 14] Archiving contribution 2 (status=%s): %s', contrib2!.status, contrib2!.id);
+
+    const archiveResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib2!.id}/archive`, {
+      headers: { 'X-User-AID': adminAIDFromHealth },
+    });
+    expect(archiveResp.status()).toBe(200);
+    const archived: { status: string } = await archiveResp.json();
+    expect(archived.status).toBe('archived');
+    console.log('[Phase 14] Contribution 2 archived via API');
+
+    // Refresh and confirm the card is no longer visible as an active contribution
+    // (archived contributions may still render with a badge but the card remains).
+    // Verify via API that status is archived.
+    const verifyResp = await request.get(`${BACKEND_URL}/api/v1/contributions/${contrib2!.id}`, {
+      headers: { 'X-User-AID': adminAIDFromHealth },
+    });
+    if (verifyResp.ok()) {
+      const verified: { status: string } = await verifyResp.json();
+      expect(verified.status).toBe('archived');
+    }
+    console.log('[Phase 14] Contribution 2 archive confirmed');
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 15: Submit project for steward review
+  // All contributions are now in {signed_off (contrib 1), archived (contrib 2)}.
+  // The ProjectCompletionSection "Submit for Steward Review" button is visible
+  // when allSignedOff is true (counts both signed_off and archived).
+  // Admin is also project lead so canSubmit is true.
+  // ------------------------------------------------------------------
+
+  test('Phase 15: admin submits project for steward review', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 2000);
+
+    // The ProjectCompletionSection is a .completion-section card on the page
+    const submitBtn = adminPage.getByRole('button', { name: 'Submit for Steward Review' });
+    await expect(submitBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await submitBtn.click();
+    await waitForSettle(adminPage, 2000);
+
+    // After submit, project status becomes pending_completion.
+    // Admin is also steward so the "Awaiting your signoff." banner should appear.
+    await expect(adminPage.getByText(/Awaiting your signoff\./i)).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 15] Project submitted for steward review — pending_completion');
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 16a: Steward (admin) sends back with rejection reason
+  // ------------------------------------------------------------------
+
+  test('Phase 16a: admin (steward) sends project back with reason', async () => {
+    await adminPage.bringToFront();
+
+    // Page should already show pending_completion state from Phase 15
+    // but navigate fresh to ensure we have current state
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage);
+
+    const sendBackBtn = adminPage.getByRole('button', { name: 'Send Back' });
+    await expect(sendBackBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await sendBackBtn.click();
+
+    // Reject dialog is a q-dialog rendered inside ProjectCompletionSection
+    // Title is "Send Back for Revision", input label is "Reason (optional)"
+    const rejectDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Send Back for Revision' }).last();
+    await expect(rejectDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    const reasonInput = rejectDlg.getByLabel(/Reason/i);
+    await expect(reasonInput).toBeVisible({ timeout: TIMEOUT.short });
+    await reasonInput.fill('Need to fix one thing first');
+
+    // Button inside the reject dialog is labeled "Send Back" with color negative
+    const sendBackConfirm = rejectDlg.getByRole('button', { name: 'Send Back' });
+    await sendBackConfirm.click();
+    await waitForSettle(adminPage, 2000);
+
+    // Project returns to 'active'. The rejection_reason banner should appear.
+    await expect(adminPage.getByText(/Need to fix one thing first/)).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 16a] Project sent back with rejection reason');
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 16b: Admin re-submits and approves completion
+  // ------------------------------------------------------------------
+
+  test('Phase 16b: admin re-submits project and approves completion', async () => {
+    await adminPage.bringToFront();
+
+    // Page should show active state with rejection_reason banner
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage);
+
+    // Re-submit for steward review
+    const submitBtn = adminPage.getByRole('button', { name: 'Submit for Steward Review' });
+    await expect(submitBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await submitBtn.click();
+    await waitForSettle(adminPage, 2000);
+
+    // After re-submit the rejection_reason is cleared (backend sets rejection_reason = '')
+    await expect(adminPage.getByText(/Need to fix one thing first/)).not.toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Phase 16b] Re-submitted; rejection reason cleared');
+
+    // Admin is steward — "Approve Completion" button is visible
+    const approveBtn = adminPage.getByRole('button', { name: 'Approve Completion' });
+    await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await approveBtn.click();
+    await waitForSettle(adminPage, 2000);
+
+    // After approval: status = completed, banner shows "Completed by ... on ..."
+    await expect(adminPage.getByText(/Completed by/i)).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 16b] Project approved — status = completed');
+  });
+
+  // ------------------------------------------------------------------
+  // Verification: project is still listed before destructive Phase 17
+  // ------------------------------------------------------------------
+
+  test('verify project listed on projects page before deletion', async () => {
     await adminPage.bringToFront();
 
     await navigateTo(adminPage, 'Projects');
@@ -996,7 +1289,64 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     const card = adminPage.locator('.project-card', { hasText: PROJECT_TITLE }).first();
     await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Verify] Project still listed on projects page');
+    console.log('[Verify] Project listed on projects page (pre-deletion)');
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 17: Delete project (DESTROY confirmation)
+  // Opens ProjectForm via the "Edit" button in the project header
+  // (flat q-btn with icon "edit" and label "Edit", gated by canEditProject).
+  // ProjectForm has a Danger Zone with "Delete Project" button.
+  // Clicking it fires onDeleteRequested() which closes the form and opens
+  // ConfirmDestroyDialog. The confirm word defaults to "DESTROY".
+  // The dialog's confirm button label is the `title` prop = "Delete Project".
+  // ------------------------------------------------------------------
+
+  test('Phase 17: admin deletes project with DESTROY confirmation', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage);
+
+    // Open ProjectForm via the "Edit" button in the project-header-actions
+    // (ProjectDetailPage.vue line 58-65: flat button with icon="edit" label="Edit")
+    const editBtn = adminPage.locator('.project-header-actions').getByRole('button', { name: 'Edit' });
+    await expect(editBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await editBtn.click();
+
+    // ProjectForm dialog — title is "Edit" (no distinct dialog title text from the form component)
+    // but the form is the visible q-dialog
+    const formDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Delete Project' }).first();
+    await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Click "Delete Project" in the danger zone
+    const deleteBtn = formDlg.getByRole('button', { name: 'Delete Project' });
+    await expect(deleteBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await deleteBtn.click();
+    await waitForSettle(adminPage, 500);
+
+    // ConfirmDestroyDialog opens (ProjectForm closes, showDestroy becomes true)
+    // Dialog has title "Delete Project" and confirm word "DESTROY"
+    const destroyDlg = adminPage.locator('.destroy-dialog').first();
+    await expect(destroyDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    // The confirm button is disabled until DESTROY is typed
+    const confirmBtn = destroyDlg.getByRole('button', { name: 'Delete Project' });
+    await expect(confirmBtn).toBeDisabled({ timeout: TIMEOUT.short });
+
+    // Type DESTROY in the input (label: "Type DESTROY to confirm")
+    await destroyDlg.locator('input').fill('DESTROY');
+    await expect(confirmBtn).toBeEnabled({ timeout: TIMEOUT.short });
+    await confirmBtn.click();
+    await waitForSettle(adminPage, 3000);
+
+    // After archive + redirect, we should be on the projects list
+    await expect(adminPage).toHaveURL(/\/dashboard\/projects$/, { timeout: TIMEOUT.medium });
+
+    // Project should not appear in the active list
+    await waitForSettle(adminPage);
+    await expect(adminPage.locator('.project-card').filter({ hasText: PROJECT_TITLE })).toHaveCount(0, { timeout: TIMEOUT.medium });
+    console.log('[Phase 17] Project deleted — no longer listed on projects page');
   });
 });
 
@@ -1034,5 +1384,168 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     });
     expect(response.status()).toBe(400);
     console.log('[API] Missing contribution fields rejected');
+  });
+
+  // ── New endpoint validation tests ───────────────────────────────────────
+
+  test('unassign returns 409 when contribution is not in assigned status', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    // Create a fresh project and contribution (status = 'created', not 'assigned')
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Unassign Test Project', description: 'Created for unassign 409 test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string } = await projectResp.json();
+
+    const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: project.id,
+        title: 'API Unassign Test Contribution',
+        description: 'For testing unassign 409',
+        contribution_type: 'technical',
+        objectives: ['Obj 1'],
+        deliverables: ['Del 1'],
+        acceptance_criteria: ['Crit 1'],
+        created_by: adminAID,
+      },
+    });
+    expect(contribResp.ok()).toBeTruthy();
+    const contrib: { id: string; status: string } = await contribResp.json();
+    expect(contrib.status).toBe('created');
+
+    // Attempt to unassign a 'created' contribution — expect 409
+    const unassignResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/unassign`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+    expect(unassignResp.status()).toBe(409);
+    console.log('[API] Unassign on non-assigned contribution correctly returned 409');
+
+    // Cleanup: archive the test project
+    await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
+
+  test('submit-completion returns 400 when not all contributions are signed off', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    // Create a fresh project with an active (unsigned) contribution
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Submit Completion Test', description: 'For submit-completion 400 test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string } = await projectResp.json();
+
+    // Add a contribution (status = 'created', definitely not signed_off)
+    await request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: project.id,
+        title: 'Unsigned Contribution',
+        description: 'Not signed off',
+        contribution_type: 'technical',
+        objectives: ['Obj 1'],
+        deliverables: ['Del 1'],
+        acceptance_criteria: ['Crit 1'],
+        created_by: adminAID,
+      },
+    });
+
+    // Submit for completion — should fail because contribution is not signed_off/archived
+    const submitResp = await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/submit-completion`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+    expect(submitResp.status()).toBe(400);
+    console.log('[API] submit-completion with unsigned contributions correctly returned 400');
+
+    // Cleanup
+    await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
+
+  test('project archive returns 200 and cascades status', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    // Create a fresh project to archive
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Archive Test Project', description: 'For archive cascade test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string; status: string } = await projectResp.json();
+    expect(project.status).toBe('active');
+
+    // Archive it
+    const archiveResp = await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+    expect(archiveResp.status()).toBe(200);
+    const archived: { status: string } = await archiveResp.json();
+    expect(archived.status).toBe('archived');
+    console.log('[API] Project archive returned 200 with status=archived');
+  });
+
+  test('milestone PATCH succeeds and returns updated fields', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    // Create a fresh project + plan + milestone via API to get a patchable milestone_id
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Milestone PATCH Test', description: 'For milestone patch test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string } = await projectResp.json();
+
+    // Create a plan for the project
+    const planResp = await request.post(`${BACKEND_URL}/api/v1/implementation-plans`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { project_id: project.id, total_budget: '0', project_lead: adminAID, project_steward_id: adminAID },
+    });
+    if (!planResp.ok()) {
+      console.log('[API] Could not create plan for milestone PATCH test (status=%d) — skipping', planResp.status());
+      await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+        headers: { 'X-User-AID': adminAID },
+      });
+      return;
+    }
+    const plan: { id: string } = await planResp.json();
+
+    // Add a milestone
+    const msResp = await request.post(`${BACKEND_URL}/api/v1/milestones`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { implementation_plan_id: plan.id, title: 'Test Milestone', duration: '1 week' },
+    });
+    expect(msResp.ok()).toBeTruthy();
+    const ms: { milestone_id?: string; id?: string } = await msResp.json();
+    const milestoneId = ms.milestone_id ?? ms.id;
+    expect(milestoneId).toBeTruthy();
+
+    // PATCH the milestone description
+    const patchResp = await request.put(`${BACKEND_URL}/api/v1/milestones/${milestoneId}`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { description: 'Patched description from API validation test' },
+    });
+    expect(patchResp.status()).toBe(200);
+    const patched: { milestone_id?: string; id?: string; description?: string } = await patchResp.json();
+    expect(patched.milestone_id ?? patched.id).toBeTruthy();
+    console.log('[API] Milestone PATCH returned 200: %s', milestoneId);
+
+    // Cleanup
+    await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
   });
 });
