@@ -69,8 +69,9 @@
               <q-input
                 v-model="form.objectives[i]"
                 :label="`Objective ${i + 1}`"
+                type="textarea"
+                autogrow
                 outlined
-                dense
               />
             </div>
             <div class="col-auto">
@@ -106,8 +107,9 @@
               <q-input
                 v-model="form.deliverables[i]"
                 :label="`Deliverable ${i + 1}`"
+                type="textarea"
+                autogrow
                 outlined
-                dense
               />
             </div>
             <div class="col-auto">
@@ -143,8 +145,9 @@
               <q-input
                 v-model="form.acceptance_criteria[i]"
                 :label="`Criterion ${i + 1}`"
+                type="textarea"
+                autogrow
                 outlined
-                dense
               />
             </div>
             <div class="col-auto">
@@ -220,6 +223,27 @@
             <q-input v-model="form.budget" label="Budget" outlined />
           </div>
         </div>
+
+        <!-- Unassign (edit mode + has assignee + status allowed + permission) -->
+        <div
+          v-if="canShowUnassign"
+          class="unassign-block q-mt-sm"
+        >
+          <q-banner class="bg-yellow-1 q-mb-sm">
+            <template #avatar>
+              <q-icon name="person" color="warning" />
+            </template>
+            Currently assigned to <strong>{{ contribution?.assigned_contributor_id }}</strong>
+          </q-banner>
+          <q-btn
+            outline
+            no-caps
+            color="negative"
+            icon="person_remove"
+            label="Unassign Contributor"
+            @click="$emit('unassign')"
+          />
+        </div>
       </q-card-section>
 
       <q-card-actions align="right" class="q-px-md q-pb-md">
@@ -237,7 +261,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import type { Contribution, CreateContributionRequest, UpdateContributionRequest } from 'src/lib/api/contributions';
 
@@ -261,11 +285,13 @@ const props = defineProps<{
   modelValue: boolean;
   contribution?: Contribution | null;
   defaultProjectId?: string;
+  canUnassign?: boolean;
 }>();
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
   submit: [form: CreateContributionRequest | UpdateContributionRequest];
+  unassign: [];
 }>();
 
 const typeOptions = [
@@ -288,6 +314,14 @@ const priorityOptions = [
 
 const isEdit = ref(false);
 const submitting = ref(false);
+
+const canShowUnassign = computed(() => {
+  if (!props.canUnassign) return false;
+  if (!props.contribution) return false;
+  const c = props.contribution;
+  if (!c.assigned_contributor_id) return false;
+  return c.status === 'assigned';
+});
 
 function makeDefaultForm(): ContributionFormData {
   return {
