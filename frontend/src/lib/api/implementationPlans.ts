@@ -130,3 +130,37 @@ export async function signOffImplementationPlan(planId: string): Promise<Impleme
   }
   return response.json();
 }
+
+export interface UpdateMilestoneRequest {
+  title?: string;
+  description?: string;
+  duration?: string;
+  start_date?: string;
+  end_date?: string;
+  success_criteria?: string[];
+  status?: string;
+}
+
+export async function updateMilestone(id: string, req: UpdateMilestoneRequest): Promise<Milestone> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/milestones/${id}`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(req),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to update milestone');
+  }
+  return response.json();
+}
+
+export async function archiveMilestone(id: string): Promise<void> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/milestones/${id}/archive`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to archive milestone');
+  }
+}

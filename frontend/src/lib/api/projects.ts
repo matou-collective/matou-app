@@ -145,3 +145,51 @@ export async function listProjectContributions(projectId: string): Promise<{ con
   if (!response.ok) throw new Error('Failed to list project contributions');
   return response.json();
 }
+
+export async function archiveProject(id: string): Promise<void> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}/archive`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to archive project');
+  }
+}
+
+export async function submitProjectCompletion(id: string): Promise<Project> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}/submit-completion`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to submit project completion');
+  }
+  return response.json();
+}
+
+export async function approveProjectCompletion(id: string): Promise<Project> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}/approve-completion`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to approve project completion');
+  }
+  return response.json();
+}
+
+export async function rejectProjectCompletion(id: string, reason: string): Promise<Project> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}/reject-completion`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ reason }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to reject project completion');
+  }
+  return response.json();
+}

@@ -290,3 +290,28 @@ export async function approveSub(id: string): Promise<Contribution> {
   }
   return response.json();
 }
+
+export async function archiveContribution(id: string): Promise<void> {
+  log.info('Archiving contribution %s', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/archive`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to archive contribution');
+  }
+}
+
+export async function unassignContribution(id: string): Promise<Contribution> {
+  log.info('Unassigning contribution %s', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/unassign`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to unassign contribution');
+  }
+  return response.json();
+}
