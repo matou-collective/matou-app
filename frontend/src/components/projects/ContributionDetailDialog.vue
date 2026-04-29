@@ -1103,10 +1103,12 @@ const localChildren = ref<Contribution[]>([]);
 const childContributions = computed<Contribution[]>(() => {
   const ids = props.contribution.child_contributions ?? [];
   if (!ids.length) return [];
-  // localChildren takes precedence over allContributions (has latest state)
+  // Prefer allContributions (refreshed from API on archive/update). Fall back
+  // to localChildren only when a child id is missing from allContributions
+  // (e.g. just-created sub not yet in the parent fetch).
   const localMap = new Map((localChildren.value || []).map(c => [c.id, c]));
   return ids
-    .map(id => localMap.get(id) ?? props.allContributions.find(c => c.id === id))
+    .map(id => props.allContributions.find(c => c.id === id) ?? localMap.get(id))
     .filter((c): c is Contribution => !!c)
     // Hide archived sub-contributions from the active sub-list.
     .filter(c => c.status !== 'archived');
