@@ -523,6 +523,7 @@ func main() {
 	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)
 	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager, contribNotifier)
 	implPlansHandler := api.NewImplementationPlansHandler(contribService, spaceManager)
+	milestonesHandler := api.NewMilestonesHandler(contribService, spaceManager)
 	contributionsHandler := api.NewContributionsHandler(contribService, spaceManager, contribNotifier)
 
 	// Wire event broker to contribution and plan handlers for SSE broadcasts
@@ -582,6 +583,7 @@ func main() {
 	projectsHandler.RegisterRoutes(mux, roleLookup)
 	decisionPlansHandler.RegisterRoutes(mux)
 	implPlansHandler.RegisterRoutes(mux)
+	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
 	orgConfigHandler.RegisterRoutes(mux)
 
