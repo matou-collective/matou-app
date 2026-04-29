@@ -1511,6 +1511,23 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	if err := ValidateContributionTransition(c.Status, ContribSignedOff); err != nil {
 		return nil, err
 	}
+
+	// Implementation plan must be signed off before any contribution can be signed off.
+	plans, err := s.ListImplementationPlans(ctx, spaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list plans: %w", err)
+	}
+	var planSignedOff bool
+	for _, p := range plans {
+		if p.ProjectID == c.ProjectID && p.SignedOff {
+			planSignedOff = true
+			break
+		}
+	}
+	if !planSignedOff {
+		return nil, fmt.Errorf("implementation plan must be signed off before contributions can be signed off")
+	}
+
 	now := time.Now()
 	c.SignedOffBy = userID
 	c.SignedOffAt = &now
@@ -1848,6 +1865,32 @@ func (s *Service) findMilestone(ctx context.Context, spaceID, milestoneID string
 	return nil, nil, fmt.Errorf("milestone %s not found", milestoneID)
 }
 
+// UnsignPlanForProject finds all implementation plans for the given project and
+// clears their signoff state. No-op if no plan exists or the plan is already not
+// signed off. Returns the first error encountered.
+func (s *Service) UnsignPlanForProject(ctx context.Context, spaceID, projectID string) error {
+	plans, err := s.ListImplementationPlans(ctx, spaceID)
+	if err != nil {
+		return fmt.Errorf("list plans: %w", err)
+	}
+	for _, p := range plans {
+		if p.ProjectID != projectID {
+			continue
+		}
+		if !p.SignedOff {
+			continue
+		}
+		p.SignedOff = false
+		p.SignedOffBy = ""
+		p.SignedOffAt = nil
+		p.UpdatedAt = time.Now()
+		if err := s.SaveImplementationPlan(ctx, spaceID, p); err != nil {
+			return fmt.Errorf("save plan %s: %w", p.ID, err)
+		}
+	}
+	return nil
+}
+
 // ArchiveMilestone archives a single milestone and cascades to all contributions
 // associated with it, including any sub-contributions (recursive).
 func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID string) error {
@@ -1863,11 +1906,16 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID str
 		}
 	}
 
-	// Archive the milestone inside the plan.
+	// Archive the milestone inside the plan and invalidate plan signoff.
 	for i := range plan.Milestones {
 		if plan.Milestones[i].MilestoneID == milestoneID {
 			plan.Milestones[i].Status = MilestoneArchived
 		}
+	}
+	if plan.SignedOff {
+		plan.SignedOff = false
+		plan.SignedOffBy = ""
+		plan.SignedOffAt = nil
 	}
 	plan.UpdatedAt = time.Now()
 	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
@@ -1954,6 +2002,12 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID st
 		}
 	}
 	archive(contribID)
+
+	// Archiving a contribution invalidates the plan signoff — re-signoff is required.
+	if err := s.UnsignPlanForProject(ctx, spaceID, contrib.ProjectID); err != nil {
+		capture(fmt.Errorf("unsign plan: %w", err))
+	}
+
 	return firstErr
 }
 
@@ -2029,6 +2083,12 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID stri
 	}
 	if updated == nil {
 		return nil, fmt.Errorf("milestone %s not found", milestoneID)
+	}
+	// Editing a milestone invalidates the plan signoff — re-signoff is required.
+	if plan.SignedOff {
+		plan.SignedOff = false
+		plan.SignedOffBy = ""
+		plan.SignedOffAt = nil
 	}
 	plan.UpdatedAt = time.Now()
 	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {

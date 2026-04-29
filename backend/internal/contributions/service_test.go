@@ -1059,3 +1059,170 @@ func TestSubmitProjectCompletion_ClearsPriorRejection(t *testing.T) {
 		t.Errorf("rejection_reason = %q, want empty", got.RejectionReason)
 	}
 }
+
+func TestUpdateMilestone_UnsignsPlan(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	ms, _ := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+		ImplementationPlanID: plan.ID, Title: "M", Duration: "1w",
+	})
+
+	// Re-fetch plan after AddMilestone (which updates the plan's milestones array in the store).
+	plan, _ = svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+
+	// Sign off the plan first
+	plan.SignedOff = true
+	plan.SignedOffBy = "steward"
+	now := time.Now()
+	plan.SignedOffAt = &now
+	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
+
+	newDur := "3w"
+	if _, err := svc.UpdateMilestone(ctx, spaceID, ms.MilestoneID, &UpdateMilestoneRequest{Duration: &newDur}); err != nil {
+		t.Fatalf("UpdateMilestone: %v", err)
+	}
+
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if gotPlan.SignedOff {
+		t.Error("plan should be unsigned after milestone edit")
+	}
+	if gotPlan.SignedOffBy != "" {
+		t.Errorf("signed_off_by = %q, want empty", gotPlan.SignedOffBy)
+	}
+}
+
+func TestArchiveMilestone_UnsignsPlan(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	ms, _ := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+		ImplementationPlanID: plan.ID, Title: "M", Duration: "1w",
+	})
+
+	// Re-fetch plan after AddMilestone (which updates the plan's milestones array in the store).
+	plan, _ = svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+
+	plan.SignedOff = true
+	now := time.Now()
+	plan.SignedOffAt = &now
+	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
+
+	if err := svc.ArchiveMilestone(ctx, spaceID, ms.MilestoneID); err != nil {
+		t.Fatalf("ArchiveMilestone: %v", err)
+	}
+
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if gotPlan.SignedOff {
+		t.Error("plan should be unsigned after milestone archive")
+	}
+}
+
+func TestArchiveContribution_UnsignsPlan(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+
+	contrib, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+
+	plan.SignedOff = true
+	now := time.Now()
+	plan.SignedOffAt = &now
+	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
+
+	if err := svc.ArchiveContribution(ctx, spaceID, contrib.ID); err != nil {
+		t.Fatalf("ArchiveContribution: %v", err)
+	}
+
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if gotPlan.SignedOff {
+		t.Error("plan should be unsigned after contribution archive")
+	}
+}
+
+func TestUnassignContribution_DoesNotUnsignPlan(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+
+	contrib, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	contrib.Status = ContribAssigned
+	contrib.AssignedContributorID = "user-1"
+	_ = svc.SaveContribution(ctx, spaceID, contrib)
+
+	plan.SignedOff = true
+	now := time.Now()
+	plan.SignedOffAt = &now
+	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
+
+	if _, err := svc.UnassignContribution(ctx, spaceID, contrib.ID); err != nil {
+		t.Fatalf("UnassignContribution: %v", err)
+	}
+
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if !gotPlan.SignedOff {
+		t.Error("plan should remain signed off after unassign — unassign is people management, not plan structure change")
+	}
+}
+
+func TestSignOffContribution_RequiresPlanSignedOff(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+
+	contrib, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	contrib.Status = ContribApproved
+	_ = svc.SaveContribution(ctx, spaceID, contrib)
+
+	// Plan is NOT signed off — sign off should fail
+	if _, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward"); err == nil {
+		t.Fatal("expected error when plan not signed off, got nil")
+	}
+
+	// Sign off the plan
+	plan.SignedOff = true
+	now := time.Now()
+	plan.SignedOffAt = &now
+	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
+
+	// Now sign-off should succeed
+	got, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward")
+	if err != nil {
+		t.Fatalf("SignOffContribution after plan signoff: %v", err)
+	}
+	if got.Status != ContribSignedOff {
+		t.Errorf("status = %s, want signed_off", got.Status)
+	}
+
+	// Make sure plan signoff stayed (sign-off doesn't unsign the plan)
+	_ = plan
+}

@@ -394,6 +394,11 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// Editing a contribution invalidates plan signoff — re-signoff is required
+	// before contributions can be signed off again.
+	if err := h.service.UnsignPlanForProject(r.Context(), spaceID, contrib.ProjectID); err != nil {
+		log.Printf("[Contributions] failed to unsign plan after contribution update: %v", err)
+	}
 	log.Printf("[Contributions] contribution updated: %s", id)
 	if h.broker != nil {
 		h.broker.Broadcast(SSEEvent{
@@ -814,7 +819,11 @@ func (h *ContributionsHandler) HandleSignOff(w http.ResponseWriter, r *http.Requ
 	contrib, err := h.service.SignOffContribution(r.Context(), spaceID, id, userID)
 	if err != nil {
 		log.Printf("[Contributions] SignOffContribution failed for %s: %v", id, err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "plan must be signed off") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 	log.Printf("[Contributions] contribution %s signed off by %s", id, userID)
