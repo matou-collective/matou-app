@@ -1828,3 +1828,211 @@ func (s *Service) EvaluateGovernanceOutcome(ctx context.Context, spaceID, propos
 
 	return nil
 }
+
+// --- Milestone and Contribution archive/update helpers ---
+
+// findMilestone locates a milestone by ID by scanning all implementation plans
+// in the space. Returns the parent plan and a pointer to the milestone element.
+func (s *Service) findMilestone(ctx context.Context, spaceID, milestoneID string) (*ImplementationPlan, *Milestone, error) {
+	plans, err := s.ListImplementationPlans(ctx, spaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, p := range plans {
+		for i := range p.Milestones {
+			if p.Milestones[i].MilestoneID == milestoneID {
+				return p, &p.Milestones[i], nil
+			}
+		}
+	}
+	return nil, nil, fmt.Errorf("milestone %s not found", milestoneID)
+}
+
+// ArchiveMilestone archives a single milestone and cascades to all contributions
+// associated with it, including any sub-contributions (recursive).
+func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID string) error {
+	plan, _, err := s.findMilestone(ctx, spaceID, milestoneID)
+	if err != nil {
+		return err
+	}
+
+	var firstErr error
+	capture := func(e error) {
+		if firstErr == nil && e != nil {
+			firstErr = e
+		}
+	}
+
+	// Archive the milestone inside the plan.
+	for i := range plan.Milestones {
+		if plan.Milestones[i].MilestoneID == milestoneID {
+			plan.Milestones[i].Status = MilestoneArchived
+		}
+	}
+	plan.UpdatedAt = time.Now()
+	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
+		capture(fmt.Errorf("save plan: %w", err))
+	}
+
+	// Use the plan's ProjectID since AddMilestone does not populate Milestone.ProjectID.
+	contribs, err := s.ListContributionsByProject(ctx, spaceID, plan.ProjectID)
+	if err != nil {
+		return err
+	}
+
+	// Build a child map and walk recursively to collect all IDs to archive:
+	// direct milestone contributions and their sub-contributions.
+	byParent := map[string][]*Contribution{}
+	for _, c := range contribs {
+		byParent[c.ParentContributionID] = append(byParent[c.ParentContributionID], c)
+	}
+	toArchive := map[string]bool{}
+	var walk func(id string)
+	walk = func(id string) {
+		toArchive[id] = true
+		for _, child := range byParent[id] {
+			walk(child.ID)
+		}
+	}
+	for _, c := range contribs {
+		if c.MilestoneID == milestoneID {
+			walk(c.ID)
+		}
+	}
+
+	for _, c := range contribs {
+		if !toArchive[c.ID] {
+			continue
+		}
+		c.Status = ContribArchived
+		if err := s.SaveContribution(ctx, spaceID, c); err != nil {
+			capture(fmt.Errorf("save contribution %s: %w", c.ID, err))
+		}
+	}
+
+	return firstErr
+}
+
+// ArchiveContribution archives a single contribution and cascades to all of its
+// sub-contributions (recursive).
+func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID string) error {
+	contrib, err := s.GetContribution(ctx, spaceID, contribID)
+	if err != nil {
+		return err
+	}
+
+	all, err := s.ListContributionsByProject(ctx, spaceID, contrib.ProjectID)
+	if err != nil {
+		return err
+	}
+
+	byParent := map[string][]*Contribution{}
+	for _, c := range all {
+		byParent[c.ParentContributionID] = append(byParent[c.ParentContributionID], c)
+	}
+
+	var firstErr error
+	capture := func(e error) {
+		if firstErr == nil && e != nil {
+			firstErr = e
+		}
+	}
+
+	var archive func(id string)
+	archive = func(id string) {
+		c, err := s.GetContribution(ctx, spaceID, id)
+		if err != nil {
+			capture(err)
+			return
+		}
+		c.Status = ContribArchived
+		if err := s.SaveContribution(ctx, spaceID, c); err != nil {
+			capture(err)
+		}
+		for _, child := range byParent[id] {
+			archive(child.ID)
+		}
+	}
+	archive(contribID)
+	return firstErr
+}
+
+// UnassignContribution clears the assignee and reverts the contribution status to
+// confirmed. Only allowed when the current status is "assigned".
+func (s *Service) UnassignContribution(ctx context.Context, spaceID, contribID string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contribID)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.Status != ContribAssigned {
+		return nil, fmt.Errorf("cannot unassign from status %q (must be assigned)", c.Status)
+	}
+
+	c.AssignedContributorID = ""
+	c.AssignedContributorName = ""
+	c.Status = ContribConfirmed
+	if err := s.SaveContribution(ctx, spaceID, c); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// UpdateMilestoneRequest captures patch-style milestone field updates.
+// Pointer fields are applied only when non-nil (partial update semantics).
+type UpdateMilestoneRequest struct {
+	Title           *string  `json:"title,omitempty"`
+	Description     *string  `json:"description,omitempty"`
+	Duration        *string  `json:"duration,omitempty"`
+	StartDate       *string  `json:"start_date,omitempty"`
+	EndDate         *string  `json:"end_date,omitempty"`
+	SuccessCriteria []string `json:"success_criteria,omitempty"`
+	Status          *string  `json:"status,omitempty"`
+}
+
+// UpdateMilestone applies patch-style updates to a milestone and saves its parent plan.
+func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID string, req *UpdateMilestoneRequest) (*Milestone, error) {
+	plan, _, err := s.findMilestone(ctx, spaceID, milestoneID)
+	if err != nil {
+		return nil, err
+	}
+
+	var updated *Milestone
+	for i := range plan.Milestones {
+		if plan.Milestones[i].MilestoneID != milestoneID {
+			continue
+		}
+		m := &plan.Milestones[i]
+		if req.Title != nil {
+			m.Title = *req.Title
+		}
+		if req.Description != nil {
+			m.Description = *req.Description
+		}
+		if req.Duration != nil {
+			m.Duration = *req.Duration
+		}
+		if req.StartDate != nil {
+			m.StartDate = *req.StartDate
+		}
+		if req.EndDate != nil {
+			m.EndDate = *req.EndDate
+		}
+		if req.SuccessCriteria != nil {
+			m.SuccessCriteria = req.SuccessCriteria
+		}
+		if req.Status != nil {
+			m.Status = MilestoneStatus(*req.Status)
+		}
+		updated = m
+		break
+	}
+	if updated == nil {
+		return nil, fmt.Errorf("milestone %s not found", milestoneID)
+	}
+	plan.UpdatedAt = time.Now()
+	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}

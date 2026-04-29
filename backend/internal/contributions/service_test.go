@@ -782,3 +782,161 @@ func TestArchiveProject_CascadesAllChildren(t *testing.T) {
 		t.Errorf("sub-contribution status = %s, want archived", gotSub.Status)
 	}
 }
+
+func TestArchiveMilestone_CascadesContributions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	ms, _ := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+		ImplementationPlanID: plan.ID, Title: "M", Duration: "1w",
+	})
+
+	contrib, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, MilestoneID: ms.MilestoneID, Title: "C", Description: "d",
+		ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	sub, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "Sub", Description: "d",
+		ContributionType: "development", CreatedBy: "u",
+		ParentContributionID: contrib.ID,
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+
+	if err := svc.ArchiveMilestone(ctx, spaceID, ms.MilestoneID); err != nil {
+		t.Fatalf("ArchiveMilestone: %v", err)
+	}
+
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if gotPlan.Milestones[0].Status != MilestoneArchived {
+		t.Errorf("milestone status = %s, want archived", gotPlan.Milestones[0].Status)
+	}
+	gotContrib, _ := svc.GetContribution(ctx, spaceID, contrib.ID)
+	if gotContrib.Status != ContribArchived {
+		t.Errorf("contribution status = %s, want archived", gotContrib.Status)
+	}
+	gotSub, _ := svc.GetContribution(ctx, spaceID, sub.ID)
+	if gotSub.Status != ContribArchived {
+		t.Errorf("sub status = %s, want archived", gotSub.Status)
+	}
+}
+
+func TestArchiveContribution_CascadesSubContributions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	parent, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "P", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	sub, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "S", Description: "d", ContributionType: "development", CreatedBy: "u",
+		ParentContributionID: parent.ID,
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+
+	if err := svc.ArchiveContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("ArchiveContribution: %v", err)
+	}
+
+	gotParent, _ := svc.GetContribution(ctx, spaceID, parent.ID)
+	if gotParent.Status != ContribArchived {
+		t.Errorf("parent status = %s, want archived", gotParent.Status)
+	}
+	gotSub, _ := svc.GetContribution(ctx, spaceID, sub.ID)
+	if gotSub.Status != ContribArchived {
+		t.Errorf("sub status = %s, want archived", gotSub.Status)
+	}
+}
+
+func TestUnassignContribution_AllowedFromAssigned(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	contrib, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	contrib.Status = ContribAssigned
+	contrib.AssignedContributorID = "user-1"
+	_ = svc.SaveContribution(ctx, spaceID, contrib)
+
+	got, err := svc.UnassignContribution(ctx, spaceID, contrib.ID)
+	if err != nil {
+		t.Fatalf("UnassignContribution: %v", err)
+	}
+	if got.Status != ContribConfirmed {
+		t.Errorf("status = %s, want confirmed", got.Status)
+	}
+	if got.AssignedContributorID != "" {
+		t.Errorf("assigned_contributor_id = %q, want empty", got.AssignedContributorID)
+	}
+}
+
+func TestUnassignContribution_RejectsTerminalStatuses(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	contrib, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+
+	for _, badStatus := range []ContributionStatus{ContribSignedOff, ContribApproved, ContribNeedsReview, ContribCreated} {
+		contrib.Status = badStatus
+		contrib.AssignedContributorID = "user-1"
+		_ = svc.SaveContribution(ctx, spaceID, contrib)
+
+		_, err := svc.UnassignContribution(ctx, spaceID, contrib.ID)
+		if err == nil {
+			t.Errorf("UnassignContribution from %s should fail, got nil", badStatus)
+		}
+	}
+}
+
+func TestUpdateMilestone_PatchesFields(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	ms, _ := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+		ImplementationPlanID: plan.ID, Title: "Old", Duration: "1w",
+	})
+
+	newTitle := "New title"
+	newDesc := "desc"
+	newDur := "2w"
+	got, err := svc.UpdateMilestone(ctx, spaceID, ms.MilestoneID, &UpdateMilestoneRequest{
+		Title:       &newTitle,
+		Description: &newDesc,
+		Duration:    &newDur,
+	})
+	if err != nil {
+		t.Fatalf("UpdateMilestone: %v", err)
+	}
+	if got.Title != "New title" {
+		t.Errorf("title = %q, want New title", got.Title)
+	}
+	if got.Description != "desc" {
+		t.Errorf("description = %q, want desc", got.Description)
+	}
+	if got.Duration != "2w" {
+		t.Errorf("duration = %q, want 2w", got.Duration)
+	}
+}
