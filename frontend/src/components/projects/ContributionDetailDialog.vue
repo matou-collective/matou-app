@@ -1107,7 +1107,9 @@ const childContributions = computed<Contribution[]>(() => {
   const localMap = new Map((localChildren.value || []).map(c => [c.id, c]));
   return ids
     .map(id => localMap.get(id) ?? props.allContributions.find(c => c.id === id))
-    .filter((c): c is Contribution => !!c);
+    .filter((c): c is Contribution => !!c)
+    // Hide archived sub-contributions from the active sub-list.
+    .filter(c => c.status !== 'archived');
 });
 
 // Fetch children that aren't in allContributions
