@@ -120,10 +120,11 @@ type Endorsement struct {
 type ProjectStatus string
 
 const (
-	ProjectCreated   ProjectStatus = "created"
-	ProjectActive    ProjectStatus = "active"
-	ProjectCompleted ProjectStatus = "completed"
-	ProjectArchived  ProjectStatus = "archived"
+	ProjectCreated           ProjectStatus = "created"
+	ProjectActive            ProjectStatus = "active"
+	ProjectPendingCompletion ProjectStatus = "pending_completion"
+	ProjectCompleted         ProjectStatus = "completed"
+	ProjectArchived          ProjectStatus = "archived"
 )
 
 type ProjectImageType string
@@ -157,6 +158,9 @@ type Project struct {
 	CreatedBy             string         `json:"created_by"`
 	CreatedAt             time.Time      `json:"created_at"`
 	UpdatedAt             time.Time      `json:"updated_at"`
+	CompletedBy           string         `json:"completed_by,omitempty"`
+	CompletedAt           *time.Time     `json:"completed_at,omitempty"`
+	RejectionReason       string         `json:"rejection_reason,omitempty"`
 }
 
 // --- Decision Plan ---
@@ -310,6 +314,7 @@ const (
 	MilestoneInProgress MilestoneStatus = "in_progress"
 	MilestoneCompleted  MilestoneStatus = "completed"
 	MilestoneDelayed    MilestoneStatus = "delayed"
+	MilestoneArchived   MilestoneStatus = "archived"
 )
 
 type Milestone struct {
