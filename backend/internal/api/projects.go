@@ -85,6 +85,58 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "archive":
+				if r.Method == http.MethodPost {
+					if roleLookup != nil {
+						RBACMiddleware(roleLookup, RequireAction(contributions.ActionArchiveProject, func(w http.ResponseWriter, r *http.Request) {
+							h.HandleArchive(w, r, id)
+						}))(w, r)
+					} else {
+						h.HandleArchive(w, r, id)
+					}
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "submit-completion":
+				if r.Method == http.MethodPost {
+					if roleLookup != nil {
+						RBACMiddleware(roleLookup, RequireAction(contributions.ActionSubmitProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
+							h.HandleSubmitCompletion(w, r, id)
+						}))(w, r)
+					} else {
+						h.HandleSubmitCompletion(w, r, id)
+					}
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "approve-completion":
+				if r.Method == http.MethodPost {
+					if roleLookup != nil {
+						RBACMiddleware(roleLookup, RequireAction(contributions.ActionApproveProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
+							h.HandleApproveCompletion(w, r, id)
+						}))(w, r)
+					} else {
+						h.HandleApproveCompletion(w, r, id)
+					}
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "reject-completion":
+				if r.Method == http.MethodPost {
+					if roleLookup != nil {
+						RBACMiddleware(roleLookup, RequireAction(contributions.ActionRejectProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
+							h.HandleRejectCompletion(w, r, id)
+						}))(w, r)
+					} else {
+						h.HandleRejectCompletion(w, r, id)
+					}
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			}
 		}
 
@@ -289,6 +341,67 @@ func (h *ProjectsHandler) HandleLinkProposal(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, project)
+}
+
+// HandleArchive handles POST /api/v1/projects/{id}/archive
+func (h *ProjectsHandler) HandleArchive(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	if err := h.service.ArchiveProject(r.Context(), spaceID, id); err != nil {
+		log.Printf("[Projects] archive failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Projects] project archived: %s", id)
+	writeJSON(w, http.StatusOK, map[string]string{"success": "true"})
+}
+
+// HandleSubmitCompletion handles POST /api/v1/projects/{id}/submit-completion
+func (h *ProjectsHandler) HandleSubmitCompletion(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	leadID := GetUserAID(r)
+	proj, err := h.service.SubmitProjectCompletion(r.Context(), spaceID, id, leadID)
+	if err != nil {
+		log.Printf("[Projects] submit-completion failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Projects] project %s submitted for completion", id)
+	writeJSON(w, http.StatusOK, proj)
+}
+
+// HandleApproveCompletion handles POST /api/v1/projects/{id}/approve-completion
+func (h *ProjectsHandler) HandleApproveCompletion(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	stewardID := GetUserAID(r)
+	if stewardID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+		return
+	}
+	proj, err := h.service.ApproveProjectCompletion(r.Context(), spaceID, id, stewardID)
+	if err != nil {
+		log.Printf("[Projects] approve-completion failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Projects] project %s completion approved by %s", id, stewardID)
+	writeJSON(w, http.StatusOK, proj)
+}
+
+// HandleRejectCompletion handles POST /api/v1/projects/{id}/reject-completion
+func (h *ProjectsHandler) HandleRejectCompletion(w http.ResponseWriter, r *http.Request, id string) {
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	proj, err := h.service.RejectProjectCompletion(r.Context(), spaceID, id, req.Reason)
+	if err != nil {
+		log.Printf("[Projects] reject-completion failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Projects] project %s completion rejected", id)
+	writeJSON(w, http.StatusOK, proj)
 }
 
 // setupTestProjectsHandler creates a handler with mock store for testing.
