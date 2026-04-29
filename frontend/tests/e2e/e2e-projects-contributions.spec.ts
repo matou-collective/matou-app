@@ -1030,7 +1030,22 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(reDlg).toBeVisible({ timeout: TIMEOUT.short });
     await expect(reDlg.getByLabel(/Description/i)).toHaveValue('Updated via E2E Phase 11', { timeout: TIMEOUT.short });
     await reDlg.locator('button').filter({ hasText: /Cancel/i }).first().click();
-    console.log('[Phase 11] Milestone edited via pencil icon and verified');
+
+    // Verify the plan-modified banner now appears (plan was signed off in Phase 3,
+    // edit invalidated the signoff). The banner has class .plan-modified-banner
+    // and shows "Plan modified — re-signoff required".
+    await expect(adminPage.locator('.plan-modified-banner')).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(adminPage.getByText(/re-signoff required/i)).toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Phase 11] Plan-modified banner visible after milestone edit');
+
+    // Re-sign off the plan so subsequent phases (which need contribution sign-off)
+    // continue to work. The Re-Sign Off Plan button is in the modified banner.
+    const reSignBtn = adminPage.getByRole('button', { name: /Re-Sign Off Plan/i });
+    await expect(reSignBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await reSignBtn.click();
+    await waitForSettle(adminPage, 2000);
+    await expect(adminPage.locator('.plan-modified-banner')).toHaveCount(0, { timeout: TIMEOUT.medium });
+    console.log('[Phase 11] Plan re-signed off after edit');
   });
 
   // ------------------------------------------------------------------
@@ -1568,6 +1583,69 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     const patched: { milestone_id?: string; id?: string; description?: string } = await patchResp.json();
     expect(patched.milestone_id ?? patched.id).toBeTruthy();
     console.log('[API] Milestone PATCH returned 200: %s', milestoneId);
+
+    // Cleanup
+    await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
+
+  test('contribution sign-off returns 409 when implementation plan is not signed off', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    // Create a project + plan + contribution; do NOT sign off the plan.
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Plan-Signoff Guard Test', description: 'For sign-off 409 test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string } = await projectResp.json();
+
+    const planResp = await request.post(`${BACKEND_URL}/api/v1/implementation-plans`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { project_id: project.id, total_budget: '0', project_lead: adminAID, project_steward_id: adminAID },
+    });
+    if (!planResp.ok()) {
+      console.log('[API] Could not create plan for sign-off guard test (status=%d) — skipping', planResp.status());
+      await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+        headers: { 'X-User-AID': adminAID },
+      });
+      return;
+    }
+
+    const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: project.id,
+        title: 'Approved but plan not signed',
+        description: 'Should reject signoff',
+        contribution_type: 'technical',
+        objectives: ['Obj 1'],
+        deliverables: ['Del 1'],
+        acceptance_criteria: ['Crit 1'],
+        created_by: adminAID,
+      },
+    });
+    expect(contribResp.ok()).toBeTruthy();
+    const contrib: { id: string } = await contribResp.json();
+
+    // Force the contribution into 'approved' status via the transition endpoint —
+    // the only state from which sign-off can be attempted.
+    await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/transition`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { status: 'approved' },
+    });
+
+    // Attempt sign-off — must fail with 409 because plan.signed_off=false.
+    const signOffResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/sign-off`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+    expect(signOffResp.status()).toBe(409);
+    const errBody: { error?: string } = await signOffResp.json().catch(() => ({}));
+    expect(errBody.error ?? '').toMatch(/plan must be signed off/i);
+    console.log('[API] Sign-off correctly returned 409 when plan not signed off');
 
     // Cleanup
     await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
