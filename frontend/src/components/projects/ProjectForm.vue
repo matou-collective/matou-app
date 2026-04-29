@@ -67,6 +67,19 @@
             </div>
           </div>
         </div>
+
+        <!-- Danger Zone (edit mode only) -->
+        <div v-if="isEdit && canDelete" class="danger-zone q-mt-md">
+          <div class="text-subtitle2 danger-title q-mb-sm">Danger Zone</div>
+          <q-btn
+            no-caps
+            outline
+            color="negative"
+            icon="delete_forever"
+            label="Delete Project"
+            @click="$emit('delete')"
+          />
+        </div>
       </q-card-section>
 
       <q-card-section class="form-error" v-if="submitError">
@@ -103,6 +116,7 @@ interface Props {
   submitError?: string | null;
   availableProposals?: Proposal[];
   linking?: boolean;
+  canDelete?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -111,12 +125,14 @@ const props = withDefaults(defineProps<Props>(), {
   submitError: null,
   availableProposals: () => [],
   linking: false,
+  canDelete: false,
 });
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
   (e: 'submit', data: { title: string; description: string }): void;
   (e: 'link-proposal', proposalId: string): void;
+  (e: 'delete'): void;
 }>();
 
 const isEdit = computed(() => !!props.project);
@@ -232,5 +248,16 @@ function handleLinkProposal() {
 .project-form-btn {
   flex: 1;
   border-radius: 10px;
+}
+
+.danger-zone {
+  border-top: 1px solid var(--matou-border);
+  padding-top: 16px;
+  margin-top: 16px;
+}
+
+.danger-title {
+  color: var(--matou-destructive);
+  font-weight: 600;
 }
 </style>
