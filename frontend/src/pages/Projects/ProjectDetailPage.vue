@@ -340,7 +340,7 @@
       :user-role="currentUserRole"
       :current-user-id="currentUserId"
       :current-user-name="currentUserName"
-      :all-contributions="planContributions"
+      :all-contributions="allProjectContributions"
       :is-plan-signed-off="implementationPlan?.signed_off ?? false"
       @update="handleContributionUpdate"
       @create-child-contribution="handleCreateChildContribution"
