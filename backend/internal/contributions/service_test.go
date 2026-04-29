@@ -350,7 +350,7 @@ func TestService_CompleteGovernanceAction(t *testing.T) {
 	svc := NewService(NewMockStore())
 	ctx := context.Background()
 
-	// Create full chain: proposal (voting_process) → decision plan → action
+	// Create full chain: proposal (voting_process) → decision plan → meeting → linked decision action
 	prop, _ := svc.CreateProposal(ctx, "space-1", &CreateProposalRequest{
 		ProposerID: "user-1", Title: "T", Types: []ProposalType{ProposalTypeTechnical},
 		Priority: PriorityLow, Description: "d", ProblemStatement: "p",
@@ -364,14 +364,37 @@ func TestService_CompleteGovernanceAction(t *testing.T) {
 		ProposalLeadID: "lead-1", ProposalStewardID: "steward-1",
 	})
 
-	action, _ := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
+	// Decision actions must be linked to a meeting (or discussion).
+	meeting, err := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
+		DecisionPlanID: dp.ID,
+		House:          HouseElderCouncil,
+		ActionType:     ActionMeeting,
+		Description:    "Elder meeting",
+	})
+	if err != nil {
+		t.Fatalf("AddGovernanceAction (meeting) failed: %v", err)
+	}
+
+	action, err := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
 		DecisionPlanID: dp.ID,
 		House:          HouseElderCouncil,
 		ActionType:     ActionDecision,
 		Description:    "Elder veto check",
+		LinkedActionID: meeting.ID,
 	})
+	if err != nil {
+		t.Fatalf("AddGovernanceAction (decision) failed: %v", err)
+	}
 
-	updated, err := svc.CompleteGovernanceAction(ctx, "space-1", action.ID, OutcomeNoVeto)
+	// Plan signoff is required before any action can be completed.
+	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted); err != nil {
+		t.Fatalf("TransitionDecisionPlan (submitted) failed: %v", err)
+	}
+	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSignedOff); err != nil {
+		t.Fatalf("TransitionDecisionPlan (signed_off) failed: %v", err)
+	}
+
+	updated, err := svc.CompleteGovernanceAction(ctx, "space-1", action.ID, OutcomeNoVeto, "", nil, nil, "user-1", "User One")
 	if err != nil {
 		t.Fatalf("CompleteGovernanceAction failed: %v", err)
 	}
@@ -383,25 +406,18 @@ func TestService_CompleteGovernanceAction(t *testing.T) {
 	}
 }
 
-func TestService_CompleteGovernanceAction_BlockedBeforeVotingProcess(t *testing.T) {
+func TestService_CompleteGovernanceAction_BlockedBeforeDecisionPlanSignoff(t *testing.T) {
 	svc := NewService(NewMockStore())
 	ctx := context.Background()
 
-	// Create proposal in signed_off status (before voting_process)
+	// Set up proposal in voting_process so the gate under test is the decision plan
+	// status (not the proposal status).
 	prop, _ := svc.CreateProposal(ctx, "space-1", &CreateProposalRequest{
 		ProposerID: "user-1", Title: "T", Types: []ProposalType{ProposalTypeTechnical},
 		Priority: PriorityLow, Description: "d", ProblemStatement: "p",
 		Solution: "s", ExpectedOutcomes: []string{"o"}, EstimatedBudget: "$1", Timeline: "1w",
 	})
-	svc.TransitionProposal(ctx, "space-1", prop.ID, ProposalSubmitted)
-	svc.TransitionProposal(ctx, "space-1", prop.ID, ProposalEndorsing)
-	svc.TransitionProposal(ctx, "space-1", prop.ID, ProposalInReview)
-	lead := "lead-1"
-	steward := "steward-1"
-	svc.UpdateProposal(ctx, "space-1", prop.ID, &UpdateProposalRequest{
-		ProposalLeadID: &lead, ProposalStewardID: &steward,
-	})
-	svc.TransitionProposal(ctx, "space-1", prop.ID, ProposalSignedOff)
+	transitionToVotingProcess(t, svc, ctx, "space-1", prop)
 
 	dp, _ := svc.CreateDecisionPlan(ctx, "space-1", &CreateDecisionPlanRequest{
 		ProposalID: prop.ID, Title: "Test", Description: "d",
@@ -409,31 +425,32 @@ func TestService_CompleteGovernanceAction_BlockedBeforeVotingProcess(t *testing.
 		ProposalLeadID: "lead-1", ProposalStewardID: "steward-1",
 	})
 
-	// Decision action should be blocked
-	decisionAction, _ := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
-		DecisionPlanID: dp.ID,
-		House:          HouseElderCouncil,
-		ActionType:     ActionDecision,
-		Description:    "Elder veto check",
-	})
-	_, err := svc.CompleteGovernanceAction(ctx, "space-1", decisionAction.ID, OutcomeNoVeto)
-	if err == nil {
-		t.Fatal("expected error: decision voting should be blocked before voting_process")
-	}
-
-	// Meeting action should still be allowed
-	meetingAction, _ := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
+	meeting, err := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
 		DecisionPlanID: dp.ID,
 		House:          HouseElderCouncil,
 		ActionType:     ActionMeeting,
 		Description:    "Elder meeting",
 	})
-	completed, err := svc.CompleteGovernanceAction(ctx, "space-1", meetingAction.ID, "")
 	if err != nil {
-		t.Fatalf("meeting completion should be allowed before voting_process: %v", err)
+		t.Fatalf("AddGovernanceAction (meeting) failed: %v", err)
 	}
-	if completed.Status != GovActionCompleted {
-		t.Errorf("expected completed, got %s", completed.Status)
+	decisionAction, err := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
+		DecisionPlanID: dp.ID,
+		House:          HouseElderCouncil,
+		ActionType:     ActionDecision,
+		Description:    "Elder veto check",
+		LinkedActionID: meeting.ID,
+	})
+	if err != nil {
+		t.Fatalf("AddGovernanceAction (decision) failed: %v", err)
+	}
+
+	// Both decision and meeting completions must fail before the decision plan is signed off.
+	if _, err := svc.CompleteGovernanceAction(ctx, "space-1", decisionAction.ID, OutcomeNoVeto, "", nil, nil, "user-1", "User One"); err == nil {
+		t.Error("expected error: decision completion should be blocked before plan signoff")
+	}
+	if _, err := svc.CompleteGovernanceAction(ctx, "space-1", meeting.ID, "", "", nil, nil, "user-1", "User One"); err == nil {
+		t.Error("expected error: meeting completion should be blocked before plan signoff")
 	}
 }
 
