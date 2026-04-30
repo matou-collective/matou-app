@@ -37,7 +37,13 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const PROJECT_TITLE = 'E2E Community Garden';
+const PROJECT_TITLE_BASE = 'E2E Community Garden';
+// PROJECT_TITLE is computed at the start of each test run by counting how many
+// existing projects start with PROJECT_TITLE_BASE and appending #N. This
+// ensures the test's project has a unique title even when prior runs left
+// stale projects behind, so locators like `hasText: PROJECT_TITLE` always
+// match exactly one card.
+let PROJECT_TITLE = PROJECT_TITLE_BASE;
 const PROJECT_DESC = 'A community garden project for E2E testing';
 const MILESTONE_TITLE = 'Phase 1: Design';
 const MILESTONE_DURATION = '2 weeks';
@@ -195,6 +201,21 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     }
     if (!adminAID) throw new Error('Could not resolve admin AID');
     console.log('[Setup] Admin AID: %s', adminAID);
+
+    // Compute a unique project title for this run by counting existing
+    // projects whose title starts with PROJECT_TITLE_BASE. This avoids
+    // collisions with stale projects left by previous failed test runs.
+    try {
+      const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/projects`);
+      if (listResp.ok()) {
+        const data = await listResp.json() as { projects?: Array<{ title?: string }> };
+        const matching = (data.projects ?? []).filter(p => (p.title ?? '').startsWith(PROJECT_TITLE_BASE));
+        PROJECT_TITLE = `${PROJECT_TITLE_BASE} #${matching.length + 1}`;
+      }
+    } catch (e) {
+      console.log('[Setup] Could not compute unique project title, using base:', e);
+    }
+    console.log('[Setup] PROJECT_TITLE for this run: %s', PROJECT_TITLE);
 
     // --- Member backend ---
     memberBackend = await backends.start('member-contrib');
