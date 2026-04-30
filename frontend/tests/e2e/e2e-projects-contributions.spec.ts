@@ -487,15 +487,19 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     const acceptBtn = detailDlg.getByRole('button', { name: /Accept Offer|Accept/i }).first();
     await expect(acceptBtn).toBeVisible({ timeout: TIMEOUT.short });
     await acceptBtn.click();
-    await waitForSettle(memberPage);
+    await waitForSettle(memberPage, 2000);
 
-    // Verify assigned status
-    await waitForSettle(memberPage);
-    await expect(detailDlg.getByText(/assigned/i).first()).toBeVisible({ timeout: TIMEOUT.short });
+    // The dialog auto-closes on accept. Verify the assigned status by looking
+    // at the contribution card on the project page (not in the dialog).
+    const contribCardAfter = memberPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_1_TITLE });
+    await expect(contribCardAfter.getByText(/assigned/i).first()).toBeVisible({ timeout: TIMEOUT.medium });
     console.log('[Phase 5] Member accepted offer — contribution assigned');
 
-    await memberPage.keyboard.press('Escape');
-    await memberPage.waitForTimeout(500);
+    // If the dialog didn't auto-close, dismiss it.
+    if (await memberPage.locator('.q-dialog').first().isVisible({ timeout: 500 }).catch(() => false)) {
+      await memberPage.keyboard.press('Escape');
+      await memberPage.waitForTimeout(500);
+    }
   });
 
   // ------------------------------------------------------------------
