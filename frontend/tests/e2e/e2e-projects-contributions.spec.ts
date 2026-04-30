@@ -697,31 +697,20 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       }
     }
 
-    // After review submit, the nested dialog closes. Re-open sub to sign off.
+    // After review submit, the nested dialog stays open and the Sign Off panel
+    // appears (canSignOffNow becomes true once status flips to 'approved').
+    // Sign off in the same nested dialog — no need to re-open.
     await adminPage.waitForTimeout(1000);
+    const signOffNested = adminPage.locator('.q-dialog').last();
+    const signOffBtn = signOffNested.getByRole('button', { name: /^Sign Off$/i }).first();
+    await expect(signOffBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await signOffBtn.click();
+    await waitForSettle(adminPage, 2000);
+    console.log('[Phase 6] Admin signed off sub-contribution');
 
-    // The parent dialog should still be open — re-click the sub-item
-    const parentDlg = adminPage.locator('.q-dialog').first();
-    const subItemAgain = parentDlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE });
-    const subStillVisible = await subItemAgain.isVisible({ timeout: 5000 }).catch(() => false);
-    if (subStillVisible) {
-      await subItemAgain.click();
-      await adminPage.waitForTimeout(500);
-
-      const nestedDlg2 = adminPage.locator('.q-dialog').last();
-      const signOffBtn = nestedDlg2.getByRole('button', { name: /Sign Off/i }).first();
-      const signOffVisible = await signOffBtn.isVisible({ timeout: 5000 }).catch(() => false);
-      if (signOffVisible) {
-        await signOffBtn.click();
-        await waitForSettle(adminPage);
-        console.log('[Phase 6] Admin signed off sub-contribution');
-      } else {
-        console.log('[Phase 6] Sign Off button not visible — sub may not be in approved status yet');
-      }
-      await adminPage.keyboard.press('Escape');
-      await adminPage.waitForTimeout(300);
-    }
-
+    // Close any remaining dialogs
+    await adminPage.keyboard.press('Escape').catch(() => {});
+    await adminPage.waitForTimeout(300);
     await closeContributionDialog(adminPage);
   });
 
