@@ -93,9 +93,18 @@ async function closeContributionDialog(page: Page) {
 async function navigateToProjectDetail(page: Page, projectTitle: string) {
   await navigateTo(page, 'Projects');
   await waitForSettle(page);
-  const card = page.locator('.project-card', { hasText: projectTitle }).first();
-  await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
-  await card.click();
+  // Prefer the My Projects section (it's at the top, hides archived by default,
+  // so we always pick the freshest active project owned by the test user).
+  // Fall back to any project card if My Projects is not on the page (older
+  // builds, or the card is in All Projects only).
+  const myCard = page.locator('.my-projects-section .project-card', { hasText: projectTitle }).first();
+  if (await myCard.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await myCard.click();
+  } else {
+    const anyCard = page.locator('.project-card', { hasText: projectTitle }).first();
+    await expect(anyCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await anyCard.click();
+  }
   await expect(page).toHaveURL(/\/dashboard\/projects\//, { timeout: TIMEOUT.short });
   await waitForSettle(page);
 }
@@ -1303,9 +1312,10 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(adminPage).toHaveURL(/\/dashboard\/projects/, { timeout: TIMEOUT.short });
     await waitForSettle(adminPage);
 
-    const card = adminPage.locator('.project-card', { hasText: PROJECT_TITLE }).first();
+    // Active project should appear in My Projects section (admin is the creator).
+    const card = adminPage.locator('.my-projects-section .project-card', { hasText: PROJECT_TITLE }).first();
     await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Verify] Project listed on projects page (pre-deletion)');
+    console.log('[Verify] Project listed in My Projects (pre-deletion)');
   });
 
   // ------------------------------------------------------------------
@@ -1359,10 +1369,14 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     // After archive + redirect, we should be on the projects list
     await expect(adminPage).toHaveURL(/\/dashboard\/projects$/, { timeout: TIMEOUT.medium });
 
-    // Project should not appear in the active list
+    // Project should not appear in My Projects (archived hidden by default).
+    // We don't assert against the All Projects section because previous test
+    // runs may have left other projects with the same title in the org.
     await waitForSettle(adminPage);
-    await expect(adminPage.locator('.project-card').filter({ hasText: PROJECT_TITLE })).toHaveCount(0, { timeout: TIMEOUT.medium });
-    console.log('[Phase 17] Project deleted — no longer listed on projects page');
+    await expect(
+      adminPage.locator('.my-projects-section .project-card').filter({ hasText: PROJECT_TITLE }),
+    ).toHaveCount(0, { timeout: TIMEOUT.medium });
+    console.log('[Phase 17] Project deleted — no longer listed in My Projects');
   });
 });
 
