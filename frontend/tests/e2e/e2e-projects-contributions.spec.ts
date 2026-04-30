@@ -89,22 +89,19 @@ async function closeContributionDialog(page: Page) {
   await page.waitForTimeout(500);
 }
 
-/** Navigate to the project detail page from the projects list */
+/** Navigate to the project detail page from the projects list.
+ * Uses the first matching card. Both My Projects and All Projects sort by
+ * created_at DESC, so the first match is the freshest project with the title
+ * — which is what we just created in Phase 1. (We can't scope to My Projects
+ * because the member doesn't own the freshly-created project until Phase 5
+ * Accept Offer; at navigation time, member's My Projects might still contain
+ * stale "E2E Community Garden" cards from previous test runs.) */
 async function navigateToProjectDetail(page: Page, projectTitle: string) {
   await navigateTo(page, 'Projects');
   await waitForSettle(page);
-  // Prefer the My Projects section (it's at the top, hides archived by default,
-  // so we always pick the freshest active project owned by the test user).
-  // Fall back to any project card if My Projects is not on the page (older
-  // builds, or the card is in All Projects only).
-  const myCard = page.locator('.my-projects-section .project-card', { hasText: projectTitle }).first();
-  if (await myCard.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await myCard.click();
-  } else {
-    const anyCard = page.locator('.project-card', { hasText: projectTitle }).first();
-    await expect(anyCard).toBeVisible({ timeout: TIMEOUT.medium });
-    await anyCard.click();
-  }
+  const card = page.locator('.project-card', { hasText: projectTitle }).first();
+  await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+  await card.click();
   await expect(page).toHaveURL(/\/dashboard\/projects\//, { timeout: TIMEOUT.short });
   await waitForSettle(page);
 }
@@ -127,6 +124,10 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
   let memberContext: BrowserContext;
   let memberPage: Page;
   let memberAID: string;
+  // Captured in Phase 1; used by Phase 17 to verify the FRESHLY-created
+  // project is gone (rather than relying on title match, which collides with
+  // stale "E2E Community Garden" projects from prior failed test runs).
+  let createdProjectId: string;
 
   // ------------------------------------------------------------------
   // Setup: admin login + member login/registration
@@ -261,7 +262,12 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     // Verify on project detail page
     const title = adminPage.locator('h1, h2').filter({ hasText: PROJECT_TITLE });
     await expect(title.first()).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Phase 1] Project created and opened: %s', PROJECT_TITLE);
+
+    // Capture the project ID from the URL so later phases can target this
+    // exact project (avoids collisions with stale projects of the same title).
+    const urlMatch = adminPage.url().match(/\/projects\/([^/?#]+)/);
+    if (urlMatch?.[1]) createdProjectId = urlMatch[1];
+    console.log('[Phase 1] Project created and opened: %s (id=%s)', PROJECT_TITLE, createdProjectId);
   });
 
   // ------------------------------------------------------------------
@@ -1368,15 +1374,18 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     // After archive + redirect, we should be on the projects list
     await expect(adminPage).toHaveURL(/\/dashboard\/projects$/, { timeout: TIMEOUT.medium });
-
-    // Project should not appear in My Projects (archived hidden by default).
-    // We don't assert against the All Projects section because previous test
-    // runs may have left other projects with the same title in the org.
     await waitForSettle(adminPage);
-    await expect(
-      adminPage.locator('.my-projects-section .project-card').filter({ hasText: PROJECT_TITLE }),
-    ).toHaveCount(0, { timeout: TIMEOUT.medium });
-    console.log('[Phase 17] Project deleted — no longer listed in My Projects');
+
+    // Verify via API that THIS project (by id) is now archived. We use the
+    // captured project id rather than a title-based UI count because prior
+    // failed runs may have left other "E2E Community Garden" cards visible.
+    const apiResp = await adminPage.request.get(
+      `${BACKEND_URL}/api/v1/projects/${createdProjectId}`,
+    );
+    expect(apiResp.ok()).toBeTruthy();
+    const archived: { status?: string } = await apiResp.json();
+    expect(archived.status).toBe('archived');
+    console.log('[Phase 17] Project %s archived via DESTROY confirmation', createdProjectId);
   });
 });
 
