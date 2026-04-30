@@ -701,7 +701,23 @@ async function doArchiveContribution() {
   archivingContribLoading.value = true;
   try {
     await contributionsStore.archive(archivingContribution.value.id);
-    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
+    // Refresh BOTH the implementation plan (top-level contributions hydrated
+    // in milestones) AND the project contributions list (which includes
+    // sub-contributions). The dialog's allContributions prop reads from the
+    // latter; without this, archived subs stay visible in the sub-list.
+    if (project.value) {
+      await Promise.all([
+        projectsStore.fetchImplementationPlan(project.value.id),
+        projectsStore.fetchProjectContributions(project.value.id),
+      ]);
+    }
+    // Close the contribution detail dialog if it's showing the archived
+    // contribution (so user isn't left looking at a stale view of an
+    // archived item).
+    if (viewingContribution.value?.id === archivingContribution.value.id) {
+      showContributionDetail.value = false;
+      viewingContribution.value = null;
+    }
     showArchiveContrib.value = false;
     archivingContribution.value = null;
     $q.notify({ type: 'positive', message: 'Contribution archived.' });

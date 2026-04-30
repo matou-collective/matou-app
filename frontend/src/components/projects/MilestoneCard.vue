@@ -130,7 +130,8 @@ const emit = defineEmits<{
 const isExpanded = ref(true);
 
 const contributions = computed<Contribution[]>(
-  () => (props.milestone.contributions ?? []) as Contribution[],
+  () => ((props.milestone.contributions ?? []) as Contribution[])
+    .filter(c => c.status !== 'archived'),
 );
 
 const allConfirmed = computed(
