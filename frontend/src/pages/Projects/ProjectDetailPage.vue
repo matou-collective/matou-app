@@ -293,7 +293,9 @@
       :implementation-plan-id="implementationPlan?.id ?? ''"
       :milestone="editingMilestone"
       :is-submitting="addingMilestone"
+      :can-delete="perms.canArchiveMilestone.value"
       @submit="handleAddMilestone"
+      @delete="onDeleteMilestoneFromForm"
     />
 
     <!-- Archive milestone confirm -->
@@ -465,8 +467,10 @@
       v-model="showContribForm"
       :contribution="(editingContribution as any)"
       :can-unassign="perms.canUnassignContributor.value"
+      :can-delete="perms.canArchiveContribution.value"
       @submit="onContributionSave"
       @unassign="onUnassignRequested"
+      @delete="onDeleteContributionFromForm"
     />
 
     <!-- Archive contribution confirm -->
@@ -653,6 +657,17 @@ function confirmArchiveMilestone(ms: Milestone) {
   showArchiveMilestone.value = true;
 }
 
+// Triggered from inside the milestone edit form's Danger Zone.
+// Closes the edit dialog and opens the archive confirmation.
+function onDeleteMilestoneFromForm() {
+  if (editingMilestone.value) {
+    archivingMilestone.value = editingMilestone.value;
+    showAddMilestoneDialog.value = false;
+    editingMilestone.value = null;
+    showArchiveMilestone.value = true;
+  }
+}
+
 async function doArchiveMilestone() {
   if (!archivingMilestone.value || !project.value) return;
   archivingMilestoneLoading.value = true;
@@ -694,6 +709,17 @@ function openEditContribution(c: Contribution) {
 function confirmArchiveContribution(c: Contribution) {
   archivingContribution.value = c;
   showArchiveContrib.value = true;
+}
+
+// Triggered from inside the contribution edit form's Danger Zone.
+// Closes the edit dialog and opens the archive confirmation.
+function onDeleteContributionFromForm() {
+  if (editingContribution.value) {
+    archivingContribution.value = editingContribution.value as Contribution;
+    showContribForm.value = false;
+    editingContribution.value = null;
+    showArchiveContrib.value = true;
+  }
 }
 
 async function doArchiveContribution() {

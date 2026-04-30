@@ -1136,49 +1136,39 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await openContributionDialog(adminPage, CONTRIBUTION_1_TITLE);
     const dlg = adminPage.locator('.q-dialog').first();
 
-    // Locate the sub-item row by title
+    // Locate the sub-item row, click its edit pencil to open the form
     const subItem = dlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE });
     await expect(subItem).toBeVisible({ timeout: TIMEOUT.medium });
+    // The only icon button in the sub-item now is the edit pencil
+    await subItem.locator('button').first().click();
 
-    // Click the delete icon (icon="delete") within the sub-item; stop propagation handles click isolation
-    const deleteSubBtn = subItem.locator('button').filter({ has: adminPage.locator('[aria-label="Delete Sub-Contribution"], .q-icon[name="delete"]') }).first();
-    // Fallback: last button in the sub-item (edit is first, delete is second in the template)
-    const subItemBtns = subItem.locator('button');
-    const btnCount = await subItemBtns.count();
-    if (btnCount >= 2) {
-      await subItemBtns.last().click();
-    } else if (await deleteSubBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await deleteSubBtn.click();
-    } else {
-      console.log('[Phase 13] Delete sub-contribution button not found — sub may not be visible or canApproveSub is false');
-      await closeContributionDialog(adminPage);
-      return;
-    }
+    // ContributionForm opens in edit mode with a Danger Zone "Delete Contribution" button
+    const formDlg = adminPage.locator('.q-dialog').filter({ hasText: /Edit Contribution/i }).last();
+    await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
+    const deleteBtn = formDlg.getByRole('button', { name: /Delete Contribution/i });
+    await expect(deleteBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await deleteBtn.click();
 
     // ConfirmArchiveDialog opens with title "Archive Contribution"
     const archiveDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Archive Contribution' }).last();
     await expect(archiveDlg).toBeVisible({ timeout: TIMEOUT.short });
-
-    // Default confirm label is "Archive"
-    const archiveConfirmBtn = archiveDlg.getByRole('button', { name: 'Archive' });
-    await expect(archiveConfirmBtn).toBeVisible({ timeout: TIMEOUT.short });
-    await archiveConfirmBtn.click();
+    await archiveDlg.getByRole('button', { name: 'Archive' }).click();
     await waitForSettle(adminPage, 2000);
 
-    // Sub-item should no longer appear in the dialog
+    // Sub-item should no longer appear in the parent dialog
     await expect(dlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE })).toHaveCount(0, { timeout: TIMEOUT.medium });
-    console.log('[Phase 13] Sub-contribution archived via dialog delete icon');
+    console.log('[Phase 13] Sub-contribution archived via edit form Delete button');
 
     await closeContributionDialog(adminPage);
   });
 
   // ------------------------------------------------------------------
-  // Phase 14: Archive contribution 2 via UI trash icon
-  // Now reachable on the compact card after the !isPlanSignedOff gate
-  // was lifted. After archive the card is hidden from the milestone view.
+  // Phase 14: Archive contribution 2 via edit form Danger Zone
+  // Open the edit form via the pencil icon, then click "Delete Contribution"
+  // in the Danger Zone. After archive the card is hidden from the milestone view.
   // ------------------------------------------------------------------
 
-  test('Phase 14: admin archives contribution 2 via trash icon', async () => {
+  test('Phase 14: admin archives contribution 2 via edit form Delete button', async () => {
     await adminPage.bringToFront();
 
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
@@ -1187,22 +1177,15 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     const contrib2Card = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
     await expect(contrib2Card).toBeVisible({ timeout: TIMEOUT.medium });
 
-    // Click the trash icon — second flat round button in .compact-actions (after edit pencil)
-    const actionBtns = contrib2Card.locator('.compact-actions button');
-    const btnCount = await actionBtns.count();
-    let trashClicked = false;
-    // Iterate from the end to find icon-only buttons; trash is the last icon-only button
-    for (let i = btnCount - 1; i >= 0; i--) {
-      const btn = actionBtns.nth(i);
-      const text = (await btn.textContent() ?? '').trim();
-      if (text === '' || text.length < 2) {
-        // Click the LAST icon-only button (trash, not edit)
-        await btn.click();
-        trashClicked = true;
-        break;
-      }
-    }
-    expect(trashClicked, 'Trash button not found in compact-actions').toBe(true);
+    // Click the edit pencil — only icon button in .compact-actions now
+    await contrib2Card.locator('.compact-actions button').first().click();
+
+    // ContributionForm opens in edit mode with the Danger Zone "Delete Contribution" button
+    const formDlg = adminPage.locator('.q-dialog').filter({ hasText: /Edit Contribution/i }).last();
+    await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
+    const deleteBtn = formDlg.getByRole('button', { name: /Delete Contribution/i });
+    await expect(deleteBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await deleteBtn.click();
 
     // ConfirmArchiveDialog opens with title "Archive Contribution"
     const archiveDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Archive Contribution' }).last();

@@ -125,6 +125,19 @@
         </div>
       </q-card-section>
 
+      <!-- Danger Zone (edit mode only) -->
+      <div v-if="isEdit && canDelete" class="danger-zone q-mx-md">
+        <div class="text-subtitle2 danger-title q-mb-sm">Danger Zone</div>
+        <q-btn
+          no-caps
+          outline
+          color="negative"
+          icon="delete_forever"
+          label="Delete Milestone"
+          @click="$emit('delete')"
+        />
+      </div>
+
       <div class="milestone-actions q-px-md q-pb-md">
         <q-btn
           no-caps
@@ -152,16 +165,19 @@ interface Props {
   implementationPlanId: string;
   isSubmitting?: boolean;
   milestone?: Milestone | null;
+  canDelete?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isSubmitting: false,
   milestone: null,
+  canDelete: false,
 });
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
   (e: 'submit', req: CreateMilestoneRequest | UpdateMilestoneRequest): void;
+  (e: 'delete'): void;
 }>();
 
 const isEdit = computed(() => !!props.milestone);
@@ -275,6 +291,18 @@ function handleSubmit() {
 .milestone-actions {
   display: flex;
   gap: 8px;
+}
+
+.danger-zone {
+  border-top: 1px solid var(--matou-border);
+  padding-top: 16px;
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+
+.danger-title {
+  color: var(--matou-destructive);
+  font-weight: 600;
 }
 
 .milestone-action-btn {

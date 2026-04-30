@@ -246,6 +246,19 @@
         </div>
       </q-card-section>
 
+      <!-- Danger Zone (edit mode only) -->
+      <div v-if="isEdit && canDelete" class="danger-zone q-mx-md">
+        <div class="text-subtitle2 danger-title q-mb-sm">Danger Zone</div>
+        <q-btn
+          no-caps
+          outline
+          color="negative"
+          icon="delete_forever"
+          label="Delete Contribution"
+          @click="$emit('delete')"
+        />
+      </div>
+
       <q-card-actions align="right" class="q-px-md q-pb-md">
         <q-btn flat label="Cancel" v-close-popup />
         <q-btn
@@ -286,12 +299,14 @@ const props = defineProps<{
   contribution?: Contribution | null;
   defaultProjectId?: string;
   canUnassign?: boolean;
+  canDelete?: boolean;
 }>();
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
   submit: [form: CreateContributionRequest | UpdateContributionRequest];
   unassign: [];
+  delete: [];
 }>();
 
 const typeOptions = [
@@ -429,3 +444,16 @@ function handleSubmit() {
   }
 }
 </script>
+
+<style scoped lang="scss">
+.danger-zone {
+  border-top: 1px solid var(--matou-border);
+  padding-top: 16px;
+  margin-top: 16px;
+}
+
+.danger-title {
+  color: var(--matou-destructive);
+  font-weight: 600;
+}
+</style>

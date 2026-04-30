@@ -32,14 +32,6 @@
           >
             <q-tooltip>Edit Milestone</q-tooltip>
           </q-btn>
-          <q-btn
-            flat round dense size="sm"
-            icon="delete"
-            color="negative"
-            @click="emit('archive-milestone', milestone)"
-          >
-            <q-tooltip>Delete Milestone</q-tooltip>
-          </q-btn>
         </div>
         <div class="expand-btn">
           <ChevronDown class="expand-icon" :class="{ rotated: isExpanded }" />

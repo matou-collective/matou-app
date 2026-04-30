@@ -301,14 +301,6 @@
                 >
                   <q-tooltip>Edit Sub-Contribution</q-tooltip>
                 </q-btn>
-                <q-btn
-                  flat round dense size="sm"
-                  icon="delete"
-                  color="negative"
-                  @click.stop="emit('archive-sub-contribution', child)"
-                >
-                  <q-tooltip>Delete Sub-Contribution</q-tooltip>
-                </q-btn>
               </template>
             </div>
           </div>

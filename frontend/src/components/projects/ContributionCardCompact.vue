@@ -59,14 +59,6 @@
           >
             <q-tooltip>Edit Contribution</q-tooltip>
           </q-btn>
-          <q-btn
-            flat round dense size="sm"
-            icon="delete"
-            color="negative"
-            @click.stop="emit('archive', contribution)"
-          >
-            <q-tooltip>Delete Contribution</q-tooltip>
-          </q-btn>
         </template>
       </div>
     </div>
