@@ -1527,7 +1527,13 @@ function updateLocalChild(updated: Contribution) {
 function handleChildUpdate(updated: Contribution) {
   updateLocalChild(updated);
   emit('update', updated);
-  selectedChildContribution.value = null;
+  // Re-bind selectedChildContribution to the updated reference so the nested
+  // dialog re-renders with the new status (review → approved → sign-off panel
+  // appears, etc.). Keep the dialog open so multi-step workflows like
+  // review-then-signoff can run in the same dialog.
+  if (selectedChildContribution.value?.id === updated.id) {
+    selectedChildContribution.value = updated;
+  }
 }
 
 async function handleApproveSub(subId: string) {
