@@ -65,6 +65,27 @@
           <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
         </div>
 
+        <!-- Contributor picker (sub-create mode only) -->
+        <div v-if="parentContributionId && !editing">
+          <div class="text-subtitle2 q-mb-sm">Assigned Contributor *</div>
+          <q-select
+            v-model="form.assigned_contributor_id"
+            :options="contributorOptions"
+            option-label="label"
+            option-value="value"
+            emit-value
+            map-options
+            outlined
+            use-input
+            input-debounce="120"
+            @filter="filterContributors"
+            placeholder="Search community members"
+          />
+          <div class="text-caption text-grey-6 q-mt-xs">
+            Defaults to the parent's contributor. Pick someone else to ask for help on this piece.
+          </div>
+        </div>
+
         <!-- Duration & Deadline -->
         <div class="inline-row">
           <q-input
@@ -284,12 +305,14 @@ import { ref, computed, watch } from 'vue';
 import { PlusCircle, Search, Settings, Palette, MessageCircle, Code2, Landmark } from 'lucide-vue-next';
 import type { CreateContributionRequest } from 'src/lib/api/contributions';
 import type { Contribution } from 'src/types/projects';
+import { useProfilesStore } from 'stores/profiles';
 
 interface Props {
   modelValue: boolean;
   projectId: string;
   milestoneId?: string;
   parentContributionId?: string;
+  parentAssignedContributorId?: string;
   isSubmitting?: boolean;
   editing?: boolean;
   contribution?: Contribution | null;
@@ -298,6 +321,7 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   milestoneId: undefined,
   parentContributionId: undefined,
+  parentAssignedContributorId: undefined,
   isSubmitting: false,
   editing: false,
   contribution: null,
@@ -308,6 +332,45 @@ const emit = defineEmits<{
   (e: 'submit', req: CreateContributionRequest): void;
   (e: 'change', data: { updates: Record<string, unknown>; reason: string }): void;
 }>();
+
+const profilesStore = useProfilesStore();
+
+interface ContributorOption {
+  label: string;
+  value: string;
+}
+
+const allContributorOptions = computed<ContributorOption[]>(() =>
+  profilesStore.communityProfiles
+    .map((p) => {
+      const aid = (p.data?.aid as string) ?? '';
+      const name = (p.data?.displayName as string) ?? aid.slice(0, 12) + '...';
+      return { label: name, value: aid };
+    })
+    .filter((o) => o.value),
+);
+
+const contributorOptions = ref<ContributorOption[]>([]);
+
+function filterContributors(needle: string, update: (cb: () => void) => void) {
+  update(() => {
+    const q = needle.trim().toLowerCase();
+    contributorOptions.value = q
+      ? allContributorOptions.value.filter((o) => o.label.toLowerCase().includes(q))
+      : allContributorOptions.value;
+  });
+}
+
+// Ensure community profiles are loaded so the picker has options
+watch(
+  () => props.modelValue,
+  (open) => {
+    if (open && props.parentContributionId && profilesStore.communityProfiles.length === 0) {
+      void profilesStore.loadCommunityProfiles();
+    }
+  },
+  { immediate: true },
+);
 
 interface ContributionForm {
   title: string;
@@ -320,6 +383,7 @@ interface ContributionForm {
   deliverables: string[];
   acceptance_criteria: string[];
   skill_requirements: string[];
+  assigned_contributor_id: string;
 }
 
 const typeOptions = [
@@ -364,20 +428,26 @@ function makeDefault(): ContributionForm {
     deliverables: [''],
     acceptance_criteria: [''],
     skill_requirements: [''],
+    assigned_contributor_id: '',
   };
 }
 
 const form = ref<ContributionForm>(makeDefault());
 const changeReason = ref('');
 
-const isValid = computed(
-  () =>
+const isValid = computed(() => {
+  const baseValid =
     form.value.title.trim().length > 0 &&
     form.value.description.trim().length > 0 &&
     !!form.value.contribution_type &&
     form.value.objectives.some((o) => o.trim()) &&
-    form.value.deliverables.some((d) => d.trim()),
-);
+    form.value.deliverables.some((d) => d.trim());
+  if (!baseValid) return false;
+  if (props.parentContributionId && !props.editing) {
+    return !!form.value.assigned_contributor_id;
+  }
+  return true;
+});
 
 watch(
   () => props.modelValue,
@@ -395,7 +465,12 @@ watch(
       form.value.deliverables = c.deliverables?.length ? [...c.deliverables] : [''];
       form.value.acceptance_criteria = c.acceptance_criteria?.length ? [...c.acceptance_criteria] : [''];
       form.value.skill_requirements = c.skill_requirements?.length ? [...c.skill_requirements] : [''];
+      form.value.assigned_contributor_id = c.assigned_contributor_id ?? '';
       changeReason.value = '';
+    } else if (open && props.parentContributionId) {
+      // Sub-create mode: pre-fill the picker with the parent's contributor
+      resetForm();
+      form.value.assigned_contributor_id = props.parentAssignedContributorId ?? '';
     } else if (!open) {
       resetForm();
       changeReason.value = '';
@@ -443,6 +518,7 @@ function handleSubmit() {
     estimated_hours: form.value.estimated_hours,
     budget: form.value.budget.trim() || undefined,
     created_by: 'current-user',
+    ...(form.value.assigned_contributor_id ? { assigned_contributor_id: form.value.assigned_contributor_id } : {}),
   };
   emit('submit', req);
 }

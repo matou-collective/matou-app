@@ -20,6 +20,7 @@ export interface CreateContributionRequest {
   title: string;
   description: string;
   contribution_type: string;
+  priority?: string;
   objectives: string[];
   deliverables: string[];
   acceptance_criteria: string[];
