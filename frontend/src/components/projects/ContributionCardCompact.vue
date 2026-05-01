@@ -42,13 +42,23 @@
         />
 
         <q-btn
-          v-if="canConfirm && (contribution.status === 'created' || contribution.status === 'changed')"
+          v-if="!isSubContribution && canConfirm && (contribution.status === 'created' || contribution.status === 'changed')"
           outline
           no-caps
           label="Confirm"
           color="primary"
           class="confirm-btn"
           @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
+        />
+
+        <q-btn
+          v-if="isSubContribution && isLead && contribution.status === 'created'"
+          outline
+          no-caps
+          label="Approve"
+          color="primary"
+          class="confirm-btn"
+          @click.stop="emit('update', { ...contribution, _action: 'approve-sub' })"
         />
 
         <template v-if="canEdit">
@@ -63,35 +73,49 @@
       </div>
     </div>
 
-    <!-- Sub-contribution preview -->
-    <div v-if="childContributions.length > 0" class="sub-preview">
-      <div class="sub-preview-header">
-        <q-icon name="warning" size="14px" color="warning" />
-        Sub-Contributions ({{ childContributions.length }})
-      </div>
-      <div
-        v-for="child in childContributions.slice(0, 3)"
-        :key="child.id"
-        class="sub-preview-item"
-        @click.stop="emit('view-detail', child)"
+    <!-- Sub-contributions collapsible section -->
+    <div v-if="childContributions.length > 0" class="sub-section" @click.stop>
+      <button
+        type="button"
+        class="sub-toggle"
+        :aria-expanded="isSubExpanded"
+        @click="isSubExpanded = !isSubExpanded"
       >
-        <span class="sub-preview-title">{{ child.title }}</span>
-        <ContributionStatusBadge :status="child.status" size="sm" />
-      </div>
-      <div v-if="childContributions.length > 3" class="sub-preview-more">
-        + {{ childContributions.length - 3 }} more
+        <ChevronDown class="sub-toggle-icon" :class="{ rotated: isSubExpanded }" />
+        <span>Sub-Contributions ({{ childContributions.length }})</span>
+      </button>
+      <div v-if="isSubExpanded" class="sub-list">
+        <ContributionCardCompact
+          v-for="child in childContributions"
+          :key="child.id"
+          :contribution="child"
+          :can-confirm="canConfirm"
+          :can-edit="canEdit"
+          :is-plan-signed-off="isPlanSignedOff"
+          :user-role="userRole"
+          :current-user-id="currentUserId"
+          :all-contributions="allContributions"
+          @view-detail="emit('view-detail', $event)"
+          @update="emit('update', $event)"
+          @assign="emit('assign', $event)"
+          @edit="emit('edit', $event)"
+          @archive="emit('archive', $event)"
+        />
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
+import { ChevronDown } from 'lucide-vue-next';
 import type { Contribution, ProjectRole } from 'src/types/projects';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionTypeBadge from './ContributionTypeBadge.vue';
 import { useProfilesStore } from 'stores/profiles';
 import { getFileUrl } from 'src/lib/api/client';
+
+defineOptions({ name: 'ContributionCardCompact' });
 
 interface Props {
   contribution: Contribution;
@@ -150,6 +174,8 @@ const isLead = computed(() =>
   ['community_admin', 'project_lead'].includes(props.userRole ?? ''),
 );
 
+const isSubContribution = computed(() => !!props.contribution.parent_contribution);
+
 const canAssign = computed(() =>
   ['confirmed', 'shared'].includes(props.contribution.status),
 );
@@ -157,8 +183,10 @@ const canAssign = computed(() =>
 const childContributions = computed(() => {
   const childIds = props.contribution.child_contributions ?? [];
   if (!childIds.length || !props.allContributions?.length) return [];
-  return props.allContributions.filter(c => childIds.includes(c.id));
+  return props.allContributions.filter(c => childIds.includes(c.id) && c.status !== 'archived');
 });
+
+const isSubExpanded = ref(false);
 </script>
 
 <style scoped lang="scss">
@@ -280,50 +308,49 @@ const childContributions = computed(() => {
   font-size: 0.85rem;
 }
 
-.sub-preview {
+.sub-section {
   border-top: 1px solid $separator-color;
   padding-top: 0.5rem;
   margin-top: 0.5rem;
   width: 100%;
+}
 
-  .sub-preview-header {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    margin-bottom: 0.25rem;
+.sub-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  margin-left: -4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--matou-foreground);
+  cursor: pointer;
+  border-radius: 4px;
+
+  &:hover {
+    color: var(--matou-primary);
   }
+}
 
-  .sub-preview-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.25rem 0.5rem;
-    background: rgba(0, 0, 0, 0.02);
-    border-radius: 4px;
-    margin-bottom: 0.25rem;
-    font-size: 0.75rem;
-    cursor: pointer;
+.sub-toggle-icon {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.2s ease;
 
-    &:hover {
-      background: rgba(0, 0, 0, 0.05);
-    }
+  &.rotated {
+    transform: rotate(180deg);
   }
+}
 
-  .sub-preview-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-    margin-right: 0.5rem;
-  }
-
-  .sub-preview-more {
-    font-size: 0.7rem;
-    color: $grey-6;
-    padding-left: 0.5rem;
-  }
+.sub-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--matou-border);
 }
 
 </style>

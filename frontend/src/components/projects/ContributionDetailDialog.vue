@@ -242,8 +242,8 @@
           </div>
         </div>
 
-        <!-- Sub-contributions section -->
-        <div class="sub-contributions-section">
+        <!-- Sub-contributions section (hidden on sub-contributions themselves — flat hierarchy only) -->
+        <div v-if="!isSubContribution" class="sub-contributions-section">
           <div class="section-header">
             <h3 class="section-title">Sub-Contributions ({{ childContributions.length }})</h3>
             <q-btn
@@ -1088,6 +1088,7 @@ const interestNote = ref('');
 const role = computed(() => props.userRole as ProjectRole);
 const isSteward = computed(() => ['community_admin', 'project_steward'].includes(props.userRole));
 const isLead = computed(() => ['community_admin', 'project_lead'].includes(props.userRole));
+const isSubContribution = computed(() => !!props.contribution.parent_contribution);
 
 // Child contributions — from allContributions prop + locally fetched children
 const localChildren = ref<Contribution[]>([]);

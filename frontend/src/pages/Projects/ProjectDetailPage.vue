@@ -220,7 +220,7 @@
               :is-plan-signed-off="implementationPlan.signed_off"
               :user-role="currentUserRole"
               :current-user-id="currentUserId"
-              :all-contributions="planContributions"
+              :all-contributions="allProjectContributions"
               @create-contribution="handleCreateContribution"
               @update-contribution="handleContributionUpdate"
               @view-contribution="handleViewContribution"
@@ -1012,10 +1012,13 @@ watch(lastEvent, (event) => {
 async function loadProject(id: string) {
   // Fetch project, proposals, and implementation plan in parallel.
   // fetchProject uses cached data from the projects list for instant display.
+  // fetchProjectContributions populates the full contribution list (including
+  // sub-contributions) used by the milestone cards' sub-contribution lookup.
   await Promise.all([
     projectsStore.fetchProject(id),
     proposalsStore.fetchProposals(),
     projectsStore.fetchImplementationPlan(id),
+    projectsStore.fetchProjectContributions(id),
   ]);
 }
 
@@ -1224,13 +1227,20 @@ function handleViewContribution(contribution: Contribution) {
 }
 
 async function handleContributionUpdate(updated: Contribution & { _action?: string }) {
-  // Dispatch the action if specified (e.g. confirm from ContributionCardCompact)
+  // Dispatch the action if specified (e.g. confirm/approve-sub from ContributionCardCompact)
   if (updated._action === 'confirm') {
     try {
       await contributionsStore.confirm(updated.id);
       $q.notify({ type: 'positive', message: 'Contribution confirmed!' });
     } catch (e) {
       $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to confirm' });
+    }
+  } else if (updated._action === 'approve-sub') {
+    try {
+      await contributionsStore.approveSub(updated.id);
+      $q.notify({ type: 'positive', message: 'Sub-contribution approved!' });
+    } catch (e) {
+      $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to approve' });
     }
   }
 
@@ -1239,9 +1249,14 @@ async function handleContributionUpdate(updated: Contribution & { _action?: stri
     viewingContribution.value = { ...viewingContribution.value, ...updated };
   }
 
-  // Refresh the implementation plan to get latest contributions state
+  // Refresh both the implementation plan AND project contributions so the
+  // milestone view (top-level) and collapsible sub-contributions list both
+  // pick up the new status.
   if (project.value) {
-    await projectsStore.fetchImplementationPlan(project.value.id);
+    await Promise.all([
+      projectsStore.fetchImplementationPlan(project.value.id),
+      projectsStore.fetchProjectContributions(project.value.id),
+    ]);
   }
 }
 

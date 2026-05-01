@@ -24,7 +24,7 @@
             :class="{ active: myShowArchived }"
             @click="myShowArchived = !myShowArchived"
           >
-            {{ myShowArchived ? 'Hide Archived' : 'Show Archived' }}
+            Archived
           </button>
         </div>
         <p class="section-hint">
@@ -219,7 +219,7 @@ async function handleCreateSubmit(data: { title: string; description: string }) 
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 16px;
+  margin-bottom: 40px;
 }
 
 .projects-title {
@@ -259,8 +259,8 @@ async function handleCreateSubmit(data: { title: string; description: string }) 
 
 .section-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 4px;
 }
 
