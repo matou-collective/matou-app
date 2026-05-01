@@ -1333,6 +1333,7 @@ func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contribution
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
 	}
+	var propagateChildren bool
 	switch c.Status {
 	case ContribCreated:
 		if err := ValidateContributionTransition(c.Status, ContribConfirmed); err != nil {
@@ -1344,15 +1345,15 @@ func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contribution
 			return nil, err
 		}
 		c.Status = ContribAssigned
+		propagateChildren = true
 	default:
 		return nil, fmt.Errorf("contribution must be in created or changed status to confirm, current: %s", c.Status)
 	}
-	wasChanged := c.Status == ContribAssigned // true only when we entered via case ContribChanged
 	c.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
-	if wasChanged {
+	if propagateChildren {
 		if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
 			return nil, err
 		}

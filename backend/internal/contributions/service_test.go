@@ -1603,3 +1603,114 @@ func TestAcceptOffer_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 		t.Errorf("expected status created, got %s", reloaded.Status)
 	}
 }
+
+func TestConfirmContribution_PropagatesAssigneeOnChangedToAssigned(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	// Create and confirm the parent, then assign it so it reaches ContribAssigned.
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "parent task",
+		Description:        "parent description",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("confirm parent: %v", err)
+	}
+	if _, err := svc.AssignContributor(ctx, spaceID, parent.ID, "parent-assignee"); err != nil {
+		t.Fatalf("assign parent: %v", err)
+	}
+
+	// Transition parent to changed (assigned → changed is a valid transition).
+	if _, err := svc.TransitionContribution(ctx, spaceID, parent.ID, ContribChanged); err != nil {
+		t.Fatalf("transition parent to changed: %v", err)
+	}
+
+	// Create the child AFTER the parent is in changed state — this is the realistic scenario
+	// where a lead breaks down work after editing the parent. The child has no assignee yet.
+	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	if child.AssignedContributorID != "" {
+		t.Fatalf("precondition: child should have no assignee, got %q", child.AssignedContributorID)
+	}
+
+	// Re-confirm the parent: changed → assigned. This is the path that should propagate.
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("ConfirmContribution (changed→assigned): %v", err)
+	}
+
+	// The child should now carry the parent's assignee and remain in ContribCreated.
+	reloaded, err := svc.GetContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("reload child: %v", err)
+	}
+	if reloaded.AssignedContributorID != "parent-assignee" {
+		t.Errorf("expected AssignedContributorID=parent-assignee, got %q", reloaded.AssignedContributorID)
+	}
+	if reloaded.Status != ContribCreated {
+		t.Errorf("expected child status ContribCreated, got %s", reloaded.Status)
+	}
+}
+
+func TestConfirmContribution_DoesNotPropagateOnCreatedToConfirmed(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	// Create the parent in ContribCreated (default) with no assignee.
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "parent task",
+		Description:        "parent description",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	// Create a child with no assignee.
+	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+
+	// Confirm the parent: created → confirmed. No propagation should occur.
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("ConfirmContribution (created→confirmed): %v", err)
+	}
+
+	// Parent should be confirmed with no assignee.
+	reloadedParent, err := svc.GetContribution(ctx, spaceID, parent.ID)
+	if err != nil {
+		t.Fatalf("reload parent: %v", err)
+	}
+	if reloadedParent.Status != ContribConfirmed {
+		t.Errorf("expected parent status ContribConfirmed, got %s", reloadedParent.Status)
+	}
+	if reloadedParent.AssignedContributorID != "" {
+		t.Errorf("expected parent AssignedContributorID empty, got %q", reloadedParent.AssignedContributorID)
+	}
+
+	// Child must be untouched: still created, still no assignee.
+	reloadedChild, err := svc.GetContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("reload child: %v", err)
+	}
+	if reloadedChild.Status != ContribCreated {
+		t.Errorf("expected child status ContribCreated, got %s", reloadedChild.Status)
+	}
+	if reloadedChild.AssignedContributorID != "" {
+		t.Errorf("expected child AssignedContributorID empty, got %q", reloadedChild.AssignedContributorID)
+	}
+}
