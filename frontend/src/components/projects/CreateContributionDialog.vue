@@ -67,7 +67,7 @@
 
         <!-- Contributor picker (sub-create mode only) -->
         <div v-if="parentContributionId && !editing">
-          <div class="text-subtitle2 q-mb-sm">Assigned Contributor *</div>
+          <div class="text-subtitle2 q-mb-sm">Assigned Contributor</div>
           <q-select
             v-model="form.assigned_contributor_id"
             :options="contributorOptions"
@@ -82,7 +82,7 @@
             placeholder="Search community members"
           />
           <div class="text-caption text-grey-6 q-mt-xs">
-            Defaults to the parent's contributor. Pick someone else to ask for help on this piece.
+            Defaults to the parent's contributor when known. Leave blank to assign later.
           </div>
         </div>
 
@@ -438,9 +438,6 @@ const isValid = computed(() => {
     form.value.objectives.some((o) => o.trim()) &&
     form.value.deliverables.some((d) => d.trim());
   if (!baseValid) return false;
-  if (props.parentContributionId && !props.editing) {
-    return !!form.value.assigned_contributor_id;
-  }
   return true;
 });
 
