@@ -369,6 +369,11 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 		contrib.QualityRating = int(v)
 	}
 
+	// Assignee update (sub-contribution reassignment)
+	if v, ok := req["assigned_contributor_id"].(string); ok {
+		contrib.AssignedContributorID = v
+	}
+
 	// Change tracking fields
 	if v, ok := req["change_reason"].(string); ok {
 		contrib.ChangeReason = v
