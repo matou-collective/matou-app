@@ -1083,43 +1083,45 @@ func (s *Service) HydratePlan(ctx context.Context, spaceID string, plan *Impleme
 // --- Contributions ---
 
 type CreateContributionRequest struct {
-	ProjectID            string       `json:"project_id"`
-	Title                string       `json:"title"`
-	Description          string       `json:"description"`
-	ContributionType     ProposalType `json:"contribution_type"`
-	Priority             Priority     `json:"priority"`
-	CreatedBy            string       `json:"created_by"`
-	Objectives           []string     `json:"objectives"`
-	Deliverables         []string     `json:"deliverables"`
-	AcceptanceCriteria   []string     `json:"acceptance_criteria"`
-	SkillRequirements    []string     `json:"skill_requirements"`
-	MilestoneID          string       `json:"milestone_id,omitempty"`
-	ParentContributionID string       `json:"parent_contribution,omitempty"`
-	EstimatedDuration    int          `json:"estimated_duration,omitempty"`
-	Tags                 []string     `json:"tags,omitempty"`
+	ProjectID             string       `json:"project_id"`
+	Title                 string       `json:"title"`
+	Description           string       `json:"description"`
+	ContributionType      ProposalType `json:"contribution_type"`
+	Priority              Priority     `json:"priority"`
+	CreatedBy             string       `json:"created_by"`
+	Objectives            []string     `json:"objectives"`
+	Deliverables          []string     `json:"deliverables"`
+	AcceptanceCriteria    []string     `json:"acceptance_criteria"`
+	SkillRequirements     []string     `json:"skill_requirements"`
+	MilestoneID           string       `json:"milestone_id,omitempty"`
+	ParentContributionID  string       `json:"parent_contribution,omitempty"`
+	AssignedContributorID string       `json:"assigned_contributor_id,omitempty"`
+	EstimatedDuration     int          `json:"estimated_duration,omitempty"`
+	Tags                  []string     `json:"tags,omitempty"`
 }
 
 func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *CreateContributionRequest) (*Contribution, error) {
 	now := time.Now()
 	c := &Contribution{
-		ID:                   generateID("ctr"),
-		ProjectID:            req.ProjectID,
-		Title:                req.Title,
-		Description:          req.Description,
-		ContributionType:     req.ContributionType,
-		Priority:             req.Priority,
-		CreatedBy:            req.CreatedBy,
-		Objectives:           req.Objectives,
-		Deliverables:         req.Deliverables,
-		AcceptanceCriteria:   req.AcceptanceCriteria,
-		SkillRequirements:    req.SkillRequirements,
-		MilestoneID:          req.MilestoneID,
-		ParentContributionID: req.ParentContributionID,
-		EstimatedDuration:    req.EstimatedDuration,
-		Tags:                 req.Tags,
-		Status:               ContribCreated,
-		CreatedAt:            now,
-		UpdatedAt:            now,
+		ID:                    generateID("ctr"),
+		ProjectID:             req.ProjectID,
+		Title:                 req.Title,
+		Description:           req.Description,
+		ContributionType:      req.ContributionType,
+		Priority:              req.Priority,
+		CreatedBy:             req.CreatedBy,
+		Objectives:            req.Objectives,
+		Deliverables:          req.Deliverables,
+		AcceptanceCriteria:    req.AcceptanceCriteria,
+		SkillRequirements:     req.SkillRequirements,
+		MilestoneID:           req.MilestoneID,
+		ParentContributionID:  req.ParentContributionID,
+		AssignedContributorID: req.AssignedContributorID,
+		EstimatedDuration:     req.EstimatedDuration,
+		Tags:                  req.Tags,
+		Status:                ContribCreated,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 	errs := ValidateContribution(c)
 	if len(errs) > 0 {

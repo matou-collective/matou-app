@@ -1231,3 +1231,33 @@ func TestSignOffContribution_RequiresPlanSignedOff(t *testing.T) {
 	// Make sure plan signoff stayed (sign-off doesn't unsign the plan)
 	_ = plan
 }
+
+func TestCreateContribution_StoresAssignedContributorID(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "test-space"
+
+	req := &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "test",
+		Description:           "desc",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator-aid",
+		Objectives:            []string{"o1"},
+		Deliverables:          []string{"d1"},
+		AcceptanceCriteria:    []string{"ac1"},
+		AssignedContributorID: "assignee-aid",
+	}
+
+	c, err := svc.CreateContribution(ctx, spaceID, req)
+	if err != nil {
+		t.Fatalf("CreateContribution failed: %v", err)
+	}
+	if c.AssignedContributorID != "assignee-aid" {
+		t.Errorf("expected assignee-aid, got %q", c.AssignedContributorID)
+	}
+	if c.Status != ContribCreated {
+		t.Errorf("expected status created, got %s", c.Status)
+	}
+}
