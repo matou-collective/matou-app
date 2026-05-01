@@ -361,16 +361,11 @@ function filterContributors(needle: string, update: (cb: () => void) => void) {
   });
 }
 
-// Ensure community profiles are loaded so the picker has options
-watch(
-  () => props.modelValue,
-  (open) => {
-    if (open && props.parentContributionId && profilesStore.communityProfiles.length === 0) {
-      void profilesStore.loadCommunityProfiles();
-    }
-  },
-  { immediate: true },
-);
+// Keep contributorOptions populated whenever the community profile list updates,
+// so the dropdown shows all options on first focus without requiring a search keystroke.
+watch(allContributorOptions, (next) => {
+  contributorOptions.value = next;
+}, { immediate: true });
 
 interface ContributionForm {
   title: string;
@@ -449,9 +444,18 @@ const isValid = computed(() => {
   return true;
 });
 
+// Single merged watcher for modelValue:
+// - loads community profiles in sub-create mode if the store is empty
+// - seeds the form when opening in edit mode
+// - pre-fills the contributor picker when opening in sub-create mode
+// - resets form and changeReason on close
 watch(
   () => props.modelValue,
   (open) => {
+    if (open && props.parentContributionId && profilesStore.communityProfiles.length === 0) {
+      void profilesStore.loadCommunityProfiles();
+    }
+
     if (open && props.editing && props.contribution) {
       const c = props.contribution;
       form.value.title = c.title || '';
@@ -465,7 +469,6 @@ watch(
       form.value.deliverables = c.deliverables?.length ? [...c.deliverables] : [''];
       form.value.acceptance_criteria = c.acceptance_criteria?.length ? [...c.acceptance_criteria] : [''];
       form.value.skill_requirements = c.skill_requirements?.length ? [...c.skill_requirements] : [''];
-      form.value.assigned_contributor_id = c.assigned_contributor_id ?? '';
       changeReason.value = '';
     } else if (open && props.parentContributionId) {
       // Sub-create mode: pre-fill the picker with the parent's contributor
@@ -476,6 +479,7 @@ watch(
       changeReason.value = '';
     }
   },
+  { immediate: true },
 );
 
 function resetForm() {
