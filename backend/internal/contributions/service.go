@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -1263,6 +1264,30 @@ func (s *Service) ListRegistrations(ctx context.Context, spaceID, contribID stri
 	return regs, nil
 }
 
+// propagateAssigneeToChildren walks the parent's ChildContributionIDs and sets
+// AssignedContributorID = parent.AssignedContributorID on any child that is in
+// ContribCreated status with an empty assignee. Children with an explicit assignee
+// or in any other status are left untouched. Load failures are logged and skipped
+// (best-effort); save failures are returned immediately.
+func (s *Service) propagateAssigneeToChildren(ctx context.Context, spaceID string, parent *Contribution) error {
+	for _, childID := range parent.ChildContributionIDs {
+		child, err := s.GetContribution(ctx, spaceID, childID)
+		if err != nil {
+			log.Printf("propagateAssigneeToChildren: skipping child %s (load error: %v)", childID, err)
+			continue
+		}
+		if child.Status != ContribCreated || child.AssignedContributorID != "" {
+			continue
+		}
+		child.AssignedContributorID = parent.AssignedContributorID
+		child.UpdatedAt = time.Now()
+		if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
+			return fmt.Errorf("propagateAssigneeToChildren: saving child %s: %w", child.ID, err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, userID string) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contribID)
 	if err != nil {
@@ -1275,6 +1300,9 @@ func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, use
 	c.Status = ContribAssigned
 	c.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, err
+	}
+	if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -1319,9 +1347,15 @@ func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contribution
 	default:
 		return nil, fmt.Errorf("contribution must be in created or changed status to confirm, current: %s", c.Status)
 	}
+	wasChanged := c.Status == ContribAssigned // true only when we entered via case ContribChanged
 	c.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	if wasChanged {
+		if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
+			return nil, err
+		}
 	}
 	return c, nil
 }
@@ -1400,6 +1434,9 @@ func (s *Service) AcceptOffer(ctx context.Context, spaceID, contributionID, user
 	c.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
+		return nil, err
 	}
 	return c, nil
 }

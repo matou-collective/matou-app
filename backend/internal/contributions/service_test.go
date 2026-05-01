@@ -1417,3 +1417,189 @@ func TestApproveSubContribution_AllowsReApprovalFromChanged(t *testing.T) {
 		t.Errorf("expected child-assignee preserved through re-approval, got %q", approved.AssignedContributorID)
 	}
 }
+
+// createUnassignedChild is a test helper that creates a child contribution with no
+// assignee and returns it. Callers must check the error themselves.
+func createUnassignedChild(t *testing.T, svc *Service, ctx context.Context, spaceID, parentID string) *Contribution {
+	t.Helper()
+	c, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:            "proj-1",
+		Title:                "child task",
+		Description:          "child description",
+		ContributionType:     ProposalTypeTechnical,
+		Priority:             PriorityMedium,
+		CreatedBy:            "lead-1",
+		Objectives:           []string{"o"},
+		Deliverables:         []string{"d"},
+		AcceptanceCriteria:   []string{"ac1"},
+		ParentContributionID: parentID,
+	})
+	if err != nil {
+		t.Fatalf("createUnassignedChild: %v", err)
+	}
+	return c
+}
+
+func TestAssignContributor_PropagatesAssigneeToCreatedChildren(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	// Create the parent (top-level, no parent of its own).
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "parent task",
+		Description:        "parent description",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	// Confirm the parent so it is eligible for assignment.
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("confirm parent: %v", err)
+	}
+
+	// Create two children with no assignee (both start in ContribCreated).
+	child1 := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	child2 := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+
+	// Assign the parent.
+	if _, err := svc.AssignContributor(ctx, spaceID, parent.ID, "parent-assignee"); err != nil {
+		t.Fatalf("AssignContributor: %v", err)
+	}
+
+	// Both children should now carry the parent's assignee but remain in ContribCreated.
+	reloaded1, err := svc.GetContribution(ctx, spaceID, child1.ID)
+	if err != nil {
+		t.Fatalf("reload child1: %v", err)
+	}
+	reloaded2, err := svc.GetContribution(ctx, spaceID, child2.ID)
+	if err != nil {
+		t.Fatalf("reload child2: %v", err)
+	}
+
+	if reloaded1.AssignedContributorID != "parent-assignee" {
+		t.Errorf("child1: expected AssignedContributorID=parent-assignee, got %q", reloaded1.AssignedContributorID)
+	}
+	if reloaded1.Status != ContribCreated {
+		t.Errorf("child1: expected status created, got %s", reloaded1.Status)
+	}
+	if reloaded2.AssignedContributorID != "parent-assignee" {
+		t.Errorf("child2: expected AssignedContributorID=parent-assignee, got %q", reloaded2.AssignedContributorID)
+	}
+	if reloaded2.Status != ContribCreated {
+		t.Errorf("child2: expected status created, got %s", reloaded2.Status)
+	}
+}
+
+func TestAssignContributor_DoesNotOverwriteExistingChildAssignee(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	// Create and confirm the parent.
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "parent task",
+		Description:        "parent description",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("confirm parent: %v", err)
+	}
+
+	// Create a child that already has an explicit assignee.
+	child, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "child task",
+		Description:           "child description",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "lead-1",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac1"},
+		ParentContributionID:  parent.ID,
+		AssignedContributorID: "child-explicit",
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	// Assign the parent with a different assignee.
+	if _, err := svc.AssignContributor(ctx, spaceID, parent.ID, "parent-assignee"); err != nil {
+		t.Fatalf("AssignContributor: %v", err)
+	}
+
+	// The child's explicit assignee must not be overwritten.
+	reloaded, err := svc.GetContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("reload child: %v", err)
+	}
+	if reloaded.AssignedContributorID != "child-explicit" {
+		t.Errorf("expected AssignedContributorID=child-explicit, got %q", reloaded.AssignedContributorID)
+	}
+}
+
+func TestAcceptOffer_PropagatesAssigneeToCreatedChildren(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	// Create and confirm the parent.
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "parent task",
+		Description:        "parent description",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("confirm parent: %v", err)
+	}
+
+	// Create a child with no assignee.
+	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+
+	// Offer the parent to "user-A" then accept.
+	if _, err := svc.OfferContribution(ctx, spaceID, parent.ID, "user-A", "User A"); err != nil {
+		t.Fatalf("OfferContribution: %v", err)
+	}
+	if _, err := svc.AcceptOffer(ctx, spaceID, parent.ID, "user-A"); err != nil {
+		t.Fatalf("AcceptOffer: %v", err)
+	}
+
+	// The child should inherit "user-A" and stay in ContribCreated.
+	reloaded, err := svc.GetContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("reload child: %v", err)
+	}
+	if reloaded.AssignedContributorID != "user-A" {
+		t.Errorf("expected AssignedContributorID=user-A, got %q", reloaded.AssignedContributorID)
+	}
+	if reloaded.Status != ContribCreated {
+		t.Errorf("expected status created, got %s", reloaded.Status)
+	}
+}
