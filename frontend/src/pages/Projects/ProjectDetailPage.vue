@@ -330,6 +330,7 @@
       v-model="showCreateSubDialog"
       :project-id="project?.id ?? ''"
       :parent-contribution-id="createSubParentId"
+      :parent-assigned-contributor-id="createSubParentContributor"
       :is-submitting="creatingContribution"
       @submit="handleCreateSubContributionSubmit"
     />
@@ -592,6 +593,12 @@ const showContributionDetail = ref(false);
 const assignRoleTarget = ref<'lead' | 'steward'>('lead');
 const createContributionMilestoneId = ref<string | undefined>(undefined);
 const createSubParentId = ref<string | undefined>(undefined);
+const createSubParentContributor = computed<string | undefined>(() => {
+  const pid = createSubParentId.value;
+  if (!pid) return undefined;
+  const parent = allProjectContributions.value.find(c => c.id === pid);
+  return parent?.assigned_contributor_id ?? undefined;
+});
 const viewingContribution = ref<Contribution | null>(null);
 
 // ── Project destroy state ────────────────────────────────────────────────────
