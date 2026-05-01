@@ -3,6 +3,7 @@ package contributions
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1259,5 +1260,157 @@ func TestCreateContribution_StoresAssignedContributorID(t *testing.T) {
 	}
 	if c.Status != ContribCreated {
 		t.Errorf("expected status created, got %s", c.Status)
+	}
+}
+
+func TestApproveSubContribution_UsesChildOwnAssignee(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "test-space"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "parent",
+		Description:           "p",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac1"},
+		AssignedContributorID: "parent-assignee",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	child, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "child",
+		Description:           "c",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac1"},
+		ParentContributionID:  parent.ID,
+		AssignedContributorID: "different-assignee",
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	approved, err := svc.ApproveSubContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if approved.Status != ContribAssigned {
+		t.Errorf("expected status assigned, got %s", approved.Status)
+	}
+	if approved.AssignedContributorID != "different-assignee" {
+		t.Errorf("expected child's own assignee 'different-assignee', got %q", approved.AssignedContributorID)
+	}
+}
+
+func TestApproveSubContribution_NoAssigneeReturnsError(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "test-space"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "parent",
+		Description:           "p",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac1"},
+		AssignedContributorID: "parent-assignee",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	child, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:            "proj-1",
+		Title:                "child",
+		Description:          "c",
+		ContributionType:     ProposalTypeTechnical,
+		Priority:             PriorityMedium,
+		CreatedBy:            "creator",
+		Objectives:           []string{"o"},
+		Deliverables:         []string{"d"},
+		AcceptanceCriteria:   []string{"ac1"},
+		ParentContributionID: parent.ID,
+		// AssignedContributorID intentionally omitted
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	_, err = svc.ApproveSubContribution(ctx, spaceID, child.ID)
+	if err == nil {
+		t.Fatal("expected error when sub has no assignee, got nil")
+	}
+	if !strings.Contains(err.Error(), "assigned contributor") {
+		t.Errorf("error should mention assigned contributor, got: %v", err)
+	}
+}
+
+func TestApproveSubContribution_AllowsReApprovalFromChanged(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "test-space"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "parent",
+		Description:           "p",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac1"},
+		AssignedContributorID: "parent-assignee",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	child, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "child",
+		Description:           "c",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac1"},
+		ParentContributionID:  parent.ID,
+		AssignedContributorID: "child-assignee",
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if _, err := svc.ApproveSubContribution(ctx, spaceID, child.ID); err != nil {
+		t.Fatalf("first approve: %v", err)
+	}
+	// Simulate a lead-edit putting the contribution into 'changed' via the
+	// existing transition method (assigned → changed is a valid transition).
+	if _, err := svc.TransitionContribution(ctx, spaceID, child.ID, ContribChanged); err != nil {
+		t.Fatalf("transition to changed: %v", err)
+	}
+
+	approved, err := svc.ApproveSubContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("re-approve: %v", err)
+	}
+	if approved.Status != ContribAssigned {
+		t.Errorf("expected status assigned, got %s", approved.Status)
 	}
 }

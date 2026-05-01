@@ -1541,8 +1541,9 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	return c, nil
 }
 
-// ApproveSubContribution approves a child contribution by assigning the parent's contributor and
-// transitioning the child from created → assigned.
+// ApproveSubContribution transitions a sub-contribution from created/changed to assigned.
+// Requires the child to already have an explicit assigned_contributor_id (set at creation
+// or during a pre-approval edit). The parent-fallback behavior has been removed.
 func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contributionID string) (*Contribution, error) {
 	child, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
@@ -1551,25 +1552,15 @@ func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contribut
 	if child.ParentContributionID == "" {
 		return nil, fmt.Errorf("contribution %s is not a sub-contribution (no parent)", contributionID)
 	}
-	if child.Status != ContribCreated {
-		return nil, fmt.Errorf("sub-contribution must be in created status to approve, current: %s", child.Status)
+	if child.Status != ContribCreated && child.Status != ContribChanged {
+		return nil, fmt.Errorf("sub-contribution must be in created or changed status to approve, current: %s", child.Status)
 	}
-
-	parent, err := s.GetContribution(ctx, spaceID, child.ParentContributionID)
-	if err != nil {
-		return nil, fmt.Errorf("parent contribution not found: %w", err)
+	if child.AssignedContributorID == "" {
+		return nil, fmt.Errorf("sub-contribution must have an assigned contributor before approval")
 	}
-
-	// The sub-contribution inherits the parent's assigned contributor
-	if parent.AssignedContributorID == "" {
-		return nil, fmt.Errorf("parent contribution %s has no assigned contributor", parent.ID)
-	}
-
 	if err := ValidateContributionTransition(child.Status, ContribAssigned); err != nil {
 		return nil, err
 	}
-
-	child.AssignedContributorID = parent.AssignedContributorID
 	child.Status = ContribAssigned
 	child.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
