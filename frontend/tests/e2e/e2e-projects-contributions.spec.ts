@@ -53,6 +53,8 @@ const CONTRIBUTION_2_TITLE = 'Outreach Coordination';
 const CONTRIBUTION_2_DESC = 'Coordinate community outreach and engagement';
 const SUB_CONTRIBUTION_TITLE = 'Sub: Design Review';
 const SUB_CONTRIBUTION_DESC = 'Review and validate the design deliverables';
+const SUB_2_TITLE = 'Sub: Outreach Logistics';
+const SUB_2_DESC = 'Coordinate logistics for outreach events';
 
 const MEMBER_NAME = 'Test Member Contrib';
 
@@ -403,6 +405,63 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
+  // Phase 2.5: Create unassigned sub-contribution under contribution 2.
+  // The new behavior (commit be2ea51) lets sub-contributions be created
+  // without an assignee. The auto-inherit logic later (Phase 10.5) will
+  // populate this sub's assignee from the parent.
+  // ------------------------------------------------------------------
+
+  test('Phase 2.5: admin creates unassigned sub-contribution under contribution 2 (pre-plan-signoff)', async () => {
+    await adminPage.bringToFront();
+
+    // Already on project detail page from Phase 2
+    const title = adminPage.locator('h1, h2').filter({ hasText: PROJECT_TITLE });
+    await expect(title.first()).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // Open contribution 2 detail dialog
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const detailDlg = adminPage.locator('.q-dialog');
+
+    // Click Add Sub-Contribution
+    const addSubBtn = detailDlg.getByRole('button', { name: /Add Sub-Contribution/i });
+    await expect(addSubBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await addSubBtn.click();
+
+    // The sub-create dialog uses .contribution-dialog (CreateContributionDialog)
+    const subDlg = adminPage.locator('.contribution-dialog');
+    await expect(subDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    await subDlg.getByLabel(/Title/i).first().fill(SUB_2_TITLE);
+    await subDlg.getByLabel(/Description/i).first().fill(SUB_2_DESC);
+    await subDlg.getByRole('button', { name: 'Community' }).click();
+
+    await subDlg.getByLabel('Objective 1').fill('Plan event venues');
+    await subDlg.getByLabel('Deliverable 1').fill('Logistics plan');
+    await subDlg.getByLabel('Criterion 1').fill('Venues confirmed');
+
+    // Intentionally do NOT set the assigned contributor — verifying the
+    // form is submittable without one (commit be2ea51 relaxed isValid).
+    const createSubBtn = subDlg.getByRole('button', { name: /Create Sub-Contribution/i });
+    await expect(createSubBtn).toBeEnabled({ timeout: TIMEOUT.short });
+    await createSubBtn.scrollIntoViewIfNeeded();
+    await createSubBtn.click();
+    await waitForSettle(adminPage, 2000);
+    console.log('[Phase 2.5] Unassigned sub-contribution created: %s', SUB_2_TITLE);
+
+    // The sub may appear in the parent dialog's sub-list OR the dialog may
+    // have closed. Re-open if needed and verify SUB_2_TITLE is visible.
+    const subText = adminPage.locator('.q-dialog').getByText(SUB_2_TITLE);
+    if (!await subText.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await adminPage.keyboard.press('Escape').catch(() => {});
+      await adminPage.waitForTimeout(500);
+      await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    }
+    await expect(adminPage.locator('.q-dialog').getByText(SUB_2_TITLE).first()).toBeVisible({ timeout: TIMEOUT.medium });
+
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
   // Phase 3: Confirm Contributions & Sign Off Plan (UX Table 3.1–3.6)
   // ------------------------------------------------------------------
 
@@ -442,6 +501,15 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     const lockedBadge = adminPage.locator('.milestone-card').first().locator('text=Locked');
     await expect(lockedBadge).toBeVisible({ timeout: TIMEOUT.short });
     console.log('[Phase 3] Plan signed off, milestones locked');
+
+    // Augmentation for the new sub-contribution-without-assignee feature:
+    // verify Phase 2.5's unassigned sub did NOT block plan sign-off. Re-open
+    // contribution 2 and confirm SUB_2 is still visible in its sub-list.
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    await expect(adminPage.locator('.q-dialog').getByText(SUB_2_TITLE).first())
+      .toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 3] Unassigned sub-contribution survived plan sign-off');
+    await closeContributionDialog(adminPage);
   });
 
   // ------------------------------------------------------------------
@@ -952,6 +1020,267 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     await memberPage.keyboard.press('Escape');
     await memberPage.waitForTimeout(500);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 10.5: After Phase 10's offer-accept on contribution 2 (which
+  // calls AcceptOffer → propagateAssigneeToChildren), SUB_2 (created in
+  // Phase 2.5 without an assignee, status=created) should now show the
+  // member as its auto-inherited assignee. We verify via the
+  // .sub-item-assignee chip and fall back to the API if profiles
+  // haven't synced.
+  // ------------------------------------------------------------------
+
+  test('Phase 10.5: verify sub-contribution auto-inherited member as assignee', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 2000);
+
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const dlg = adminPage.locator('.q-dialog');
+
+    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+
+    const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
+    const assigneeChip = sub2Row.locator('.sub-item-assignee');
+
+    // Primary assertion: chip rendered with member's name (or AID prefix).
+    const chipVisible = await assigneeChip.isVisible({ timeout: 5000 }).catch(() => false);
+    if (chipVisible) {
+      const chipText = await assigneeChip.textContent();
+      const memberAidPrefix = (memberAID || '').slice(0, 12);
+      const matched = (chipText ?? '').includes(memberNameToUse) ||
+                      (memberAidPrefix && (chipText ?? '').includes(memberAidPrefix));
+      if (!matched) {
+        // Fall back to API verification — the chip text might be a partial
+        // representation if the profile hasn't synced yet.
+        const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+        const data: { contributions?: Array<{ id: string; parent_contribution?: string; title?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
+        const sub = (data.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+        const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
+        expect(subAssignee).toBe(memberAID);
+      }
+    } else {
+      // Chip not rendered (profile load delay): fall back to API.
+      const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+      const data: { contributions?: Array<{ id: string; parent_contribution?: string; title?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
+      const sub = (data.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+      expect(sub).toBeTruthy();
+      const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
+      expect(subAssignee).toBe(memberAID);
+    }
+    console.log('[Phase 10.5] SUB_2 assignee auto-inherited from parent (member)');
+
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 10.6: Admin clicks Approve on the auto-inherited SUB_2 row.
+  // The Approve button is gated by canApproveSub && status in
+  // (created|changed) AND :disable=!childAssignee. Since auto-inherit
+  // populated the assignee, the button should be enabled.
+  // ------------------------------------------------------------------
+
+  test('Phase 10.6: admin approves auto-inherited sub-contribution', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 1500);
+
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const dlg = adminPage.locator('.q-dialog');
+
+    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+
+    const approveBtn = sub2Row.locator('.approve-sub-btn');
+    await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(approveBtn).toBeEnabled({ timeout: TIMEOUT.short });
+    await approveBtn.click();
+    await waitForSettle(adminPage, 2000);
+
+    // After approval, SUB_2 should transition out of 'created'. The badge
+    // for 'assigned' status reads "Assigned" (per ContributionStatusBadge).
+    // The Approve button (gated by status in created|changed) should be gone.
+    await expect(sub2Row.locator('.approve-sub-btn')).toHaveCount(0, { timeout: TIMEOUT.medium });
+    console.log('[Phase 10.6] SUB_2 approved (auto-inherited assignee)');
+
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 10.7: Reassign SUB_2 to admin, transitioning it back to
+  // 'changed' so it must be re-approved. The current UI does not expose
+  // an assignee-change control on assigned subs (the change dialog hides
+  // its contributor picker in editing mode and the ContributionForm.vue
+  // edit dialog has no picker at all). We exercise the back-end behavior
+  // directly via the transition + update endpoints; the UI assertion
+  // afterward verifies the badge reflects the new state.
+  // ------------------------------------------------------------------
+
+  test('Phase 10.7: admin changes sub-contribution assignee to admin (re-approval required)', async () => {
+    await adminPage.bringToFront();
+
+    // Look up SUB_2's id from the API (test doesn't capture it during creation).
+    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+    expect(listResp.ok()).toBeTruthy();
+    const list: { contributions?: Array<{ id: string; title?: string; assigned_contributor?: string; assigned_contributor_id?: string; status?: string }> } = await listResp.json();
+    const sub = (list.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+    expect(sub, `SUB_2 (${SUB_2_TITLE}) not found via API`).toBeTruthy();
+    expect(sub!.status).toBe('assigned');
+
+    // 1) Update the assigned_contributor (and a change reason) — note: the
+    //    HandleUpdate endpoint accepts assigned_contributor as a top-level
+    //    field. We fall back to PUT update with the change tracking fields
+    //    matching what the change dialog would send.
+    const updateResp = await adminPage.request.put(`${BACKEND_URL}/api/v1/contributions/${sub!.id}`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        assigned_contributor: adminAID,
+        change_reason: 'Reassigning to admin for testing the re-approval flow.',
+        changed_by: adminAID,
+        changed_at: new Date().toISOString(),
+      },
+    });
+    expect(updateResp.ok(), `update failed: ${updateResp.status()} ${await updateResp.text()}`).toBeTruthy();
+
+    // 2) Transition the sub from 'assigned' to 'changed' — the documented
+    //    re-approval gate.
+    const transitionResp = await adminPage.request.post(`${BACKEND_URL}/api/v1/contributions/${sub!.id}/transition`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { status: 'changed' },
+    });
+    expect(transitionResp.ok(), `transition failed: ${transitionResp.status()} ${await transitionResp.text()}`).toBeTruthy();
+
+    // Re-open contribution 2 in the UI and verify the SUB_2 row badge
+    // reflects "Changes Requested" (label for ContribChanged).
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 2000);
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const dlg = adminPage.locator('.q-dialog');
+    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(sub2Row.locator('.status-badge.changed')).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 10.7] SUB_2 reassigned to admin and transitioned to changed');
+
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 10.8: Re-approve SUB_2 from the 'changed' state. The Approve
+  // button gate widened to (created|changed) so it should reappear.
+  // ------------------------------------------------------------------
+
+  test('Phase 10.8: admin re-approves the sub-contribution', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 1500);
+
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const dlg = adminPage.locator('.q-dialog');
+
+    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+
+    const approveBtn = sub2Row.locator('.approve-sub-btn');
+    await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(approveBtn).toBeEnabled({ timeout: TIMEOUT.short });
+    await approveBtn.click();
+    await waitForSettle(adminPage, 2000);
+
+    // After re-approval the badge should be 'assigned' again.
+    await expect(sub2Row.locator('.status-badge.assigned')).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 10.8] SUB_2 re-approved → assigned');
+
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 10.9: Admin (now SUB_2's assignee) submits evidence on the
+  // sub-contribution. Mirrors the existing Phase 6 evidence flow but
+  // targets the second sub on contribution 2.
+  // ------------------------------------------------------------------
+
+  test('Phase 10.9: admin (now sub assignee) submits evidence on the sub-contribution', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 1500);
+
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const detailDlg = adminPage.locator('.q-dialog');
+
+    const sub2Row = detailDlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+    await sub2Row.click();
+    await adminPage.waitForTimeout(500);
+
+    const nestedDlg = adminPage.locator('.q-dialog').last();
+
+    // Toggle evidence form
+    const submitEvidenceBtn = nestedDlg.getByRole('button', { name: /Submit Evidence & Complete/i });
+    await expect(submitEvidenceBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await submitEvidenceBtn.click();
+    await adminPage.waitForTimeout(500);
+
+    const notesInput = nestedDlg.getByPlaceholder(/Describe how you completed/i).or(
+      nestedDlg.locator('.submit-completion-form textarea').first(),
+    );
+    await expect(notesInput).toBeVisible({ timeout: TIMEOUT.medium });
+    await notesInput.fill('Logistics plan completed.');
+
+    // Fill all acceptance criteria responses
+    const criteriaInputs = nestedDlg.locator('.submit-completion-form .criterion-block input');
+    const criteriaCount = await criteriaInputs.count();
+    for (let i = 0; i < criteriaCount; i++) {
+      await criteriaInputs.nth(i).fill('Logistics plan delivered.');
+    }
+
+    const submitBtn = nestedDlg.getByRole('button', { name: /Submit for Review/i });
+    await expect(submitBtn).toBeEnabled({ timeout: TIMEOUT.short });
+    await submitBtn.click();
+    await waitForSettle(adminPage, 2000);
+    console.log('[Phase 10.9] Admin submitted evidence on SUB_2');
+
+    // Close nested dialog
+    await adminPage.keyboard.press('Escape').catch(() => {});
+    await adminPage.waitForTimeout(300);
+
+    // Verify SUB_2 row shows needs_review (label "Needs Review", class .needs_review)
+    await expect(detailDlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE }).locator('.status-badge.needs_review'))
+      .toBeVisible({ timeout: TIMEOUT.medium });
+
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 10.10: Verify admin cannot submit evidence on parent
+  // contribution 2. The parent's assignee is the member, not the admin.
+  // (The current canSubmitEvidence gate also bails out when not all
+  // children are signed off — SUB_2 is now in needs_review — so the
+  // button is hidden either way; this test asserts the user-facing
+  // outcome rather than the exact gating mechanism.)
+  // ------------------------------------------------------------------
+
+  test('Phase 10.10: admin cannot submit evidence on parent contribution 2', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 1500);
+
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const dlg = adminPage.locator('.q-dialog');
+
+    // The Submit Evidence button on the PARENT dialog (not nested) should
+    // not be visible to admin. Use a strict not-visible check.
+    const submitEvidenceBtn = dlg.getByRole('button', { name: /Submit Evidence & Complete/i });
+    await expect(submitEvidenceBtn).toBeHidden({ timeout: TIMEOUT.medium });
+    console.log('[Phase 10.10] Admin correctly blocked from submitting parent evidence');
+
+    await closeContributionDialog(adminPage);
   });
 
   test('Phase 10: admin edits contribution 2 via header pencil icon', async () => {
