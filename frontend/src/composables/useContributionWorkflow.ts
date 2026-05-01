@@ -140,14 +140,15 @@ export function useContributionWorkflow() {
   }
 
   /**
-   * Lead or admin can approve a sub-contribution that is in `created` status.
+   * Lead or admin can approve a sub-contribution that is in `created` or `changed`
+   * status, but only when an assigned_contributor_id is set on the sub.
    */
   function canApproveSub(contribution: Contribution, role: ProjectRole | string): boolean {
-    return (
-      !!contribution.parent_contribution &&
-      contribution.status === 'created' &&
-      _isRole(role, LEAD_ROLES)
-    );
+    if (!contribution.parent_contribution) return false;
+    if (contribution.status !== 'created' && contribution.status !== 'changed') return false;
+    const assignee = contribution.assigned_contributor_id ?? contribution.assigned_contributor;
+    if (!assignee) return false;
+    return _isRole(role, LEAD_ROLES);
   }
 
   /**
