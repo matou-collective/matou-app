@@ -27,6 +27,7 @@ export interface CreateContributionRequest {
   estimated_hours?: number;
   budget?: string;
   created_by: string;
+  assigned_contributor_id?: string;
 }
 
 export interface Contribution {
