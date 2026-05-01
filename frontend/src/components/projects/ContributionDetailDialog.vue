@@ -283,7 +283,7 @@
                 <ContributionStatusBadge :status="child.status" />
               </div>
               <span class="sub-item-title">{{ child.title }}</span>
-              <span v-if="child.assigned_contributor_id" class="sub-item-assignee" @click.stop>
+              <span v-if="childAssignee(child)" class="sub-item-assignee" @click.stop>
                 <q-tooltip>Will be assigned to {{ assigneeName(child) }}</q-tooltip>
                 <span class="sub-item-assignee-name">{{ assigneeName(child) }}</span>
               </span>
@@ -294,11 +294,11 @@
                 label="Approve"
                 color="primary"
                 class="approve-sub-btn"
-                :disable="!child.assigned_contributor_id"
+                :disable="!childAssignee(child)"
                 :loading="actionLoading === `approve-sub-${child.id}`"
                 @click.stop="handleApproveSub(child.id)"
               >
-                <q-tooltip v-if="!child.assigned_contributor_id">
+                <q-tooltip v-if="!childAssignee(child)">
                   Assign a contributor first
                 </q-tooltip>
               </q-btn>
@@ -1198,6 +1198,10 @@ function assigneeName(c: Contribution): string {
   if (!aid) return '';
   const profile = profilesStore.profilesByAid[aid];
   return profile?.displayName || aid.slice(0, 12) + '…';
+}
+
+function childAssignee(c: Contribution): string | undefined {
+  return c.assigned_contributor_id ?? c.assigned_contributor ?? undefined;
 }
 
 // Evidence form validation

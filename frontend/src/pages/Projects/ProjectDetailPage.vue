@@ -597,7 +597,7 @@ const createSubParentContributor = computed<string | undefined>(() => {
   const pid = createSubParentId.value;
   if (!pid) return undefined;
   const parent = allProjectContributions.value.find(c => c.id === pid);
-  return parent?.assigned_contributor_id ?? undefined;
+  return parent?.assigned_contributor_id ?? parent?.assigned_contributor ?? undefined;
 });
 const viewingContribution = ref<Contribution | null>(null);
 

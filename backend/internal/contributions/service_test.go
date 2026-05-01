@@ -1413,4 +1413,7 @@ func TestApproveSubContribution_AllowsReApprovalFromChanged(t *testing.T) {
 	if approved.Status != ContribAssigned {
 		t.Errorf("expected status assigned, got %s", approved.Status)
 	}
+	if approved.AssignedContributorID != "child-assignee" {
+		t.Errorf("expected child-assignee preserved through re-approval, got %q", approved.AssignedContributorID)
+	}
 }
