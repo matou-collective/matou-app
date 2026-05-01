@@ -52,14 +52,19 @@
         />
 
         <q-btn
-          v-if="isSubContribution && isLead && contribution.status === 'created'"
+          v-if="isSubContribution && isLead && (contribution.status === 'created' || contribution.status === 'changed')"
           outline
           no-caps
           label="Approve"
           color="primary"
           class="confirm-btn"
+          :disable="!contribution.assigned_contributor_id"
           @click.stop="emit('update', { ...contribution, _action: 'approve-sub' })"
-        />
+        >
+          <q-tooltip v-if="!contribution.assigned_contributor_id">
+            Assign a contributor first
+          </q-tooltip>
+        </q-btn>
 
         <template v-if="canEdit">
           <q-btn

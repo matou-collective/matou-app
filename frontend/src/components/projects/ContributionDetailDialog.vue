@@ -283,16 +283,25 @@
                 <ContributionStatusBadge :status="child.status" />
               </div>
               <span class="sub-item-title">{{ child.title }}</span>
+              <span v-if="child.assigned_contributor_id" class="sub-item-assignee" @click.stop>
+                <q-tooltip>Will be assigned to {{ assigneeName(child) }}</q-tooltip>
+                <span class="sub-item-assignee-name">{{ assigneeName(child) }}</span>
+              </span>
               <q-btn
-                v-if="canApproveSub && child.status === 'created'"
+                v-if="canApproveSub && (child.status === 'created' || child.status === 'changed')"
                 outline
                 no-caps
                 label="Approve"
                 color="primary"
                 class="approve-sub-btn"
+                :disable="!child.assigned_contributor_id"
                 :loading="actionLoading === `approve-sub-${child.id}`"
                 @click.stop="handleApproveSub(child.id)"
-              />
+              >
+                <q-tooltip v-if="!child.assigned_contributor_id">
+                  Assign a contributor first
+                </q-tooltip>
+              </q-btn>
               <template v-if="canApproveSub">
                 <q-btn
                   flat round dense size="sm"
@@ -1183,6 +1192,13 @@ const assignedInitials = computed(() => {
   if (!name) return '?';
   return name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
 });
+
+function assigneeName(c: Contribution): string {
+  const aid = c.assigned_contributor_id ?? c.assigned_contributor;
+  if (!aid) return '';
+  const profile = profilesStore.profilesByAid[aid];
+  return profile?.displayName || aid.slice(0, 12) + '…';
+}
 
 // Evidence form validation
 const canSubmitEvidence = computed(() => {
@@ -2354,6 +2370,20 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   padding: 4px 20px;
   border-radius: 10px;
   font-size: 0.85rem;
+}
+
+.sub-item-assignee {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--matou-muted-foreground);
+  padding: 2px 6px;
+  background: var(--matou-secondary);
+  border-radius: 8px;
+}
+
+.sub-item-assignee-name {
+  white-space: nowrap;
 }
 
 .add-sub-btn {
