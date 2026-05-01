@@ -65,8 +65,8 @@
           <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
         </div>
 
-        <!-- Contributor picker (sub-create mode only) -->
-        <div v-if="parentContributionId && !editing">
+        <!-- Contributor picker (sub-create mode and sub-edit mode) -->
+        <div v-if="parentContributionId || (editing && contribution?.parent_contribution)">
           <div class="text-subtitle2 q-mb-sm">Assigned Contributor</div>
           <q-select
             v-model="form.assigned_contributor_id"
@@ -453,6 +453,11 @@ watch(
       void profilesStore.loadCommunityProfiles();
     }
 
+    // Also load community profiles in sub-edit mode so the picker is populated
+    if (open && props.editing && props.contribution?.parent_contribution && profilesStore.communityProfiles.length === 0) {
+      void profilesStore.loadCommunityProfiles();
+    }
+
     if (open && props.editing && props.contribution) {
       const c = props.contribution;
       form.value.title = c.title || '';
@@ -466,6 +471,7 @@ watch(
       form.value.deliverables = c.deliverables?.length ? [...c.deliverables] : [''];
       form.value.acceptance_criteria = c.acceptance_criteria?.length ? [...c.acceptance_criteria] : [''];
       form.value.skill_requirements = c.skill_requirements?.length ? [...c.skill_requirements] : [''];
+      form.value.assigned_contributor_id = c.assigned_contributor_id ?? c.assigned_contributor ?? '';
       changeReason.value = '';
     } else if (open && props.parentContributionId) {
       // Sub-create mode: pre-fill the picker with the parent's contributor
@@ -488,6 +494,7 @@ function handleSubmit() {
 
   if (props.editing && props.contribution) {
     if (!changeReason.value.trim()) return;
+    const isSub = !!props.contribution.parent_contribution;
     emit('change', {
       updates: {
         title: form.value.title.trim(),
@@ -498,6 +505,9 @@ function handleSubmit() {
         skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
         estimated_hours: form.value.estimated_hours,
         budget: form.value.budget?.trim() || undefined,
+        ...(isSub && form.value.assigned_contributor_id
+          ? { assigned_contributor_id: form.value.assigned_contributor_id }
+          : {}),
       },
       reason: changeReason.value.trim(),
     });

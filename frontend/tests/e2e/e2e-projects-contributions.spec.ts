@@ -1111,59 +1111,85 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
-  // Phase 10.7: Reassign SUB_2 to admin, transitioning it back to
-  // 'changed' so it must be re-approved. The current UI does not expose
-  // an assignee-change control on assigned subs (the change dialog hides
-  // its contributor picker in editing mode and the ContributionForm.vue
-  // edit dialog has no picker at all). We exercise the back-end behavior
-  // directly via the transition + update endpoints; the UI assertion
-  // afterward verifies the badge reflects the new state.
+  // Phase 10.7: Reassign SUB_2 to admin via the UI contributor picker.
+  // The change dialog (CreateContributionDialog in editing mode) now shows
+  // the contributor picker when the contribution being edited is a sub
+  // (has parent_contribution set). Submitting a change with a new assignee
+  // transitions the sub to 'changed' requiring re-approval.
   // ------------------------------------------------------------------
 
   test('Phase 10.7: admin changes sub-contribution assignee to admin (re-approval required)', async () => {
     await adminPage.bringToFront();
 
-    // Look up SUB_2's id from the API (test doesn't capture it during creation).
-    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-    expect(listResp.ok()).toBeTruthy();
-    const list: { contributions?: Array<{ id: string; title?: string; assigned_contributor?: string; assigned_contributor_id?: string; status?: string }> } = await listResp.json();
-    const sub = (list.contributions ?? []).find(c => c.title === SUB_2_TITLE);
-    expect(sub, `SUB_2 (${SUB_2_TITLE}) not found via API`).toBeTruthy();
-    expect(sub!.status).toBe('assigned');
-
-    // 1) Update the assigned_contributor (and a change reason) — note: the
-    //    HandleUpdate endpoint accepts assigned_contributor as a top-level
-    //    field. We fall back to PUT update with the change tracking fields
-    //    matching what the change dialog would send.
-    const updateResp = await adminPage.request.put(`${BACKEND_URL}/api/v1/contributions/${sub!.id}`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
-      data: {
-        assigned_contributor: adminAID,
-        change_reason: 'Reassigning to admin for testing the re-approval flow.',
-        changed_by: adminAID,
-        changed_at: new Date().toISOString(),
-      },
-    });
-    expect(updateResp.ok(), `update failed: ${updateResp.status()} ${await updateResp.text()}`).toBeTruthy();
-
-    // 2) Transition the sub from 'assigned' to 'changed' — the documented
-    //    re-approval gate.
-    const transitionResp = await adminPage.request.post(`${BACKEND_URL}/api/v1/contributions/${sub!.id}/transition`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
-      data: { status: 'changed' },
-    });
-    expect(transitionResp.ok(), `transition failed: ${transitionResp.status()} ${await transitionResp.text()}`).toBeTruthy();
-
-    // Re-open contribution 2 in the UI and verify the SUB_2 row badge
-    // reflects "Changes Requested" (label for ContribChanged).
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
-    await waitForSettle(adminPage, 2000);
+    await waitForSettle(adminPage, 1500);
+
+    // Open the contribution 2 detail dialog.
     await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
-    const dlg = adminPage.locator('.q-dialog');
-    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    const contrib2Dlg = adminPage.locator('.q-dialog').first();
+
+    // Click the SUB_2 row to open the nested ContributionDetailDialog.
+    const sub2Row = contrib2Dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
     await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
-    await expect(sub2Row.locator('.status-badge.changed')).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Phase 10.7] SUB_2 reassigned to admin and transitioned to changed');
+    await sub2Row.click();
+    await waitForSettle(adminPage, 500);
+
+    // The nested dialog is the last q-dialog on the page.
+    const nestedDlg = adminPage.locator('.q-dialog').last();
+    await expect(nestedDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Click the edit-btn pencil in the nested dialog header to open the
+    // change dialog (CreateContributionDialog with editing=true).
+    const editBtn = nestedDlg.locator('.edit-btn');
+    await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await editBtn.click();
+
+    // The change dialog is now the topmost q-dialog.
+    const changeDlg = dialog(adminPage, /Change Contribution|Submit Change/i);
+    await expect(changeDlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    // The contributor picker should be visible (sub edit mode).
+    const picker = changeDlg.locator('.q-select').filter({ hasText: /Assigned Contributor/i }).or(
+      changeDlg.locator('.q-field').filter({ hasText: /Assigned Contributor/i }),
+    );
+    await expect(picker).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Type the admin's name into the picker search to filter options.
+    const adminName = accounts.admin?.name ?? '';
+    await picker.locator('input').fill(adminName.slice(0, 4));
+    await waitForSettle(adminPage, 400);
+
+    // Select the admin option from the dropdown.
+    const adminOption = adminPage.locator('.q-menu .q-item').filter({ hasText: adminName }).first();
+    await expect(adminOption).toBeVisible({ timeout: TIMEOUT.medium });
+    await adminOption.click();
+    await waitForSettle(adminPage, 300);
+
+    // Fill the reason for change.
+    const reasonInput = changeDlg.getByLabel(/Reason for Change/i).or(
+      changeDlg.getByPlaceholder(/reason|why/i),
+    );
+    await expect(reasonInput).toBeVisible({ timeout: TIMEOUT.short });
+    await reasonInput.fill('Reassigning to admin for testing the re-approval flow.');
+
+    // Submit the change.
+    await changeDlg.getByRole('button', { name: /Submit Change/i }).click();
+    await waitForSettle(adminPage, 2000);
+    console.log('[Phase 10.7] Submitted assignee change via UI');
+
+    // Close nested and parent dialogs and re-navigate to verify badge.
+    await adminPage.keyboard.press('Escape');
+    await waitForSettle(adminPage, 500);
+    await closeContributionDialog(adminPage);
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 1500);
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const dlg = adminPage.locator('.q-dialog').first();
+    const sub2RowRefreshed = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2RowRefreshed).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(sub2RowRefreshed.locator('.status-badge.changed')).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 10.7] SUB_2 reassigned to admin via UI and transitioned to changed');
 
     await closeContributionDialog(adminPage);
   });

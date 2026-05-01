@@ -61,6 +61,7 @@ export interface UpdateContributionRequest {
   skill_requirements?: string[];
   estimated_hours?: number;
   budget?: string;
+  assigned_contributor_id?: string;
 }
 
 export async function createContribution(req: CreateContributionRequest): Promise<Contribution> {

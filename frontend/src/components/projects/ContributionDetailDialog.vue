@@ -1604,15 +1604,18 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
     };
 
     const updated = await store.update(props.contribution.id, updatesWithTracking as any);
-    // Project lead edits require re-confirmation; steward/admin edits stay assigned
-    if (role.value === 'project_lead') {
+    // Changing the assignee on an assigned contribution always requires re-approval.
+    // Project lead edits also require re-confirmation.
+    const assigneeChanged = !!data.updates.assigned_contributor_id;
+    if (role.value === 'project_lead' || assigneeChanged) {
       const transitioned = await store.transition(props.contribution.id, 'changed');
       emit('update', transitioned);
     } else {
       emit('update', updated);
     }
     showChangeDialog.value = false;
-    $q.notify({ type: 'positive', message: role.value === 'project_lead' ? 'Contribution updated — needs re-confirmation' : 'Contribution updated' });
+    const needsReconfirm = role.value === 'project_lead' || assigneeChanged;
+    $q.notify({ type: 'positive', message: needsReconfirm ? 'Contribution updated — needs re-confirmation' : 'Contribution updated' });
   } catch (err) {
     console.error('[ContribDetail] change failed:', err);
     $q.notify({ type: 'negative', message: 'Failed to update contribution' });
