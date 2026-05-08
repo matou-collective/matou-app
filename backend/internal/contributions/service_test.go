@@ -3,7 +3,6 @@ package contributions
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 )
@@ -1263,6 +1262,93 @@ func TestCreateContribution_StoresAssignedContributorID(t *testing.T) {
 	}
 }
 
+func TestCreateContribution_SubInheritsParentAssigneeWhenUnset(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "test-space"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "parent",
+		Description:           "p",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac"},
+		AssignedContributorID: "parent-assignee",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	child, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:            "proj-1",
+		Title:                "child",
+		Description:          "c",
+		ContributionType:     ProposalTypeTechnical,
+		Priority:             PriorityMedium,
+		CreatedBy:            "creator",
+		Objectives:           []string{"o"},
+		Deliverables:         []string{"d"},
+		AcceptanceCriteria:   []string{"ac"},
+		ParentContributionID: parent.ID,
+		// AssignedContributorID intentionally omitted — should inherit from parent
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if child.AssignedContributorID != "parent-assignee" {
+		t.Errorf("expected child to inherit parent-assignee, got %q", child.AssignedContributorID)
+	}
+	if child.Status != ContribCreated {
+		t.Errorf("expected child status created, got %s", child.Status)
+	}
+}
+
+func TestCreateContribution_SubKeepsExplicitAssigneeOverParent(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "test-space"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "parent",
+		Description:           "p",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac"},
+		AssignedContributorID: "parent-assignee",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	child, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:             "proj-1",
+		Title:                 "child",
+		Description:           "c",
+		ContributionType:      ProposalTypeTechnical,
+		Priority:              PriorityMedium,
+		CreatedBy:             "creator",
+		Objectives:            []string{"o"},
+		Deliverables:          []string{"d"},
+		AcceptanceCriteria:    []string{"ac"},
+		ParentContributionID:  parent.ID,
+		AssignedContributorID: "explicit-assignee",
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if child.AssignedContributorID != "explicit-assignee" {
+		t.Errorf("explicit assignee should win over parent fallback, got %q", child.AssignedContributorID)
+	}
+}
+
 func TestApproveSubContribution_UsesChildOwnAssignee(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMockStore())
@@ -1313,22 +1399,22 @@ func TestApproveSubContribution_UsesChildOwnAssignee(t *testing.T) {
 	}
 }
 
-func TestApproveSubContribution_NoAssigneeReturnsError(t *testing.T) {
+func TestApproveSubContribution_AllowsApprovalWithoutAssignee(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMockStore())
 	spaceID := "test-space"
 
+	// Parent left unassigned so the auto-inherit at child creation does not seed an assignee.
 	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
-		ProjectID:             "proj-1",
-		Title:                 "parent",
-		Description:           "p",
-		ContributionType:      ProposalTypeTechnical,
-		Priority:              PriorityMedium,
-		CreatedBy:             "creator",
-		Objectives:            []string{"o"},
-		Deliverables:          []string{"d"},
-		AcceptanceCriteria:    []string{"ac1"},
-		AssignedContributorID: "parent-assignee",
+		ProjectID:          "proj-1",
+		Title:              "parent",
+		Description:        "p",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "creator",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"ac1"},
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -1345,18 +1431,23 @@ func TestApproveSubContribution_NoAssigneeReturnsError(t *testing.T) {
 		Deliverables:         []string{"d"},
 		AcceptanceCriteria:   []string{"ac1"},
 		ParentContributionID: parent.ID,
-		// AssignedContributorID intentionally omitted
 	})
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}
-
-	_, err = svc.ApproveSubContribution(ctx, spaceID, child.ID)
-	if err == nil {
-		t.Fatal("expected error when sub has no assignee, got nil")
+	if child.AssignedContributorID != "" {
+		t.Fatalf("expected child to have no assignee (parent unassigned), got %q", child.AssignedContributorID)
 	}
-	if !strings.Contains(err.Error(), "assigned contributor") {
-		t.Errorf("error should mention assigned contributor, got: %v", err)
+
+	approved, err := svc.ApproveSubContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("expected approval to succeed without assignee, got: %v", err)
+	}
+	if approved.Status != ContribAssigned {
+		t.Errorf("expected status %s, got %s", ContribAssigned, approved.Status)
+	}
+	if approved.AssignedContributorID != "" {
+		t.Errorf("expected assignee to remain empty, got %q", approved.AssignedContributorID)
 	}
 }
 
@@ -1636,11 +1727,14 @@ func TestConfirmContribution_PropagatesAssigneeOnChangedToAssigned(t *testing.T)
 		t.Fatalf("transition parent to changed: %v", err)
 	}
 
-	// Create the child AFTER the parent is in changed state — this is the realistic scenario
-	// where a lead breaks down work after editing the parent. The child has no assignee yet.
+	// Create the child AFTER the parent is in changed state. With auto-inherit at create time,
+	// the child picks up the parent's assignee. Clear it directly to simulate the edge case
+	// where the child is unassigned at the moment the parent re-confirms (e.g., assignee
+	// cleared via an update before re-confirmation).
 	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
-	if child.AssignedContributorID != "" {
-		t.Fatalf("precondition: child should have no assignee, got %q", child.AssignedContributorID)
+	child.AssignedContributorID = ""
+	if err := svc.store.Save(spaceID, child.ID, "contribution", child); err != nil {
+		t.Fatalf("clear child assignee: %v", err)
 	}
 
 	// Re-confirm the parent: changed → assigned. This is the path that should propagate.

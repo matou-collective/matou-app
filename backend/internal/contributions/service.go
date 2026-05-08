@@ -1103,6 +1103,24 @@ type CreateContributionRequest struct {
 
 func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *CreateContributionRequest) (*Contribution, error) {
 	now := time.Now()
+
+	// For sub-contributions, inherit the parent's assignee when the request
+	// doesn't supply one. Mirrors the propagateAssigneeToChildren path that
+	// fires when the parent transitions to assigned, but applies at sub
+	// creation time so subs created after the parent is already assigned
+	// (the common case) also get an assignee without manual picking.
+	assignedContributorID := req.AssignedContributorID
+	var parentForLink *Contribution
+	if req.ParentContributionID != "" {
+		parent, err := s.GetContribution(ctx, spaceID, req.ParentContributionID)
+		if err == nil {
+			parentForLink = parent
+			if assignedContributorID == "" && parent.AssignedContributorID != "" {
+				assignedContributorID = parent.AssignedContributorID
+			}
+		}
+	}
+
 	c := &Contribution{
 		ID:                    generateID("ctr"),
 		ProjectID:             req.ProjectID,
@@ -1117,7 +1135,7 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 		SkillRequirements:     req.SkillRequirements,
 		MilestoneID:           req.MilestoneID,
 		ParentContributionID:  req.ParentContributionID,
-		AssignedContributorID: req.AssignedContributorID,
+		AssignedContributorID: assignedContributorID,
 		EstimatedDuration:     req.EstimatedDuration,
 		Tags:                  req.Tags,
 		Status:                ContribCreated,
@@ -1133,13 +1151,10 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 	}
 
 	// Update parent's ChildContributionIDs if this is a sub-contribution
-	if c.ParentContributionID != "" {
-		parent, err := s.GetContribution(ctx, spaceID, c.ParentContributionID)
-		if err == nil {
-			parent.ChildContributionIDs = append(parent.ChildContributionIDs, c.ID)
-			parent.UpdatedAt = now
-			_ = s.store.Save(spaceID, parent.ID, "contribution", parent)
-		}
+	if parentForLink != nil {
+		parentForLink.ChildContributionIDs = append(parentForLink.ChildContributionIDs, c.ID)
+		parentForLink.UpdatedAt = now
+		_ = s.store.Save(spaceID, parentForLink.ID, "contribution", parentForLink)
 	}
 
 	// Update milestone's ContributionIDs and refresh the plan's inline milestones
@@ -1276,7 +1291,10 @@ func (s *Service) propagateAssigneeToChildren(ctx context.Context, spaceID strin
 			log.Printf("propagateAssigneeToChildren: skipping child %s (load error: %v)", childID, err)
 			continue
 		}
-		if child.Status != ContribCreated || child.AssignedContributorID != "" {
+		if child.AssignedContributorID != "" {
+			continue
+		}
+		if child.Status != ContribCreated && child.Status != ContribAssigned {
 			continue
 		}
 		child.AssignedContributorID = parent.AssignedContributorID
@@ -1580,8 +1598,9 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 }
 
 // ApproveSubContribution transitions a sub-contribution from created/changed to assigned.
-// Requires the child to already have an explicit assigned_contributor_id (set at creation
-// or during a pre-approval edit). The parent-fallback behavior has been removed.
+// An assigned contributor is not required; the sub may be approved while unassigned and
+// later inherit the parent's assignee (via propagateAssigneeToChildren) or be assigned
+// directly via the contribution update endpoint.
 func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contributionID string) (*Contribution, error) {
 	child, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
@@ -1592,9 +1611,6 @@ func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contribut
 	}
 	if child.Status != ContribCreated && child.Status != ContribChanged {
 		return nil, fmt.Errorf("sub-contribution must be in created or changed status to approve, current: %s", child.Status)
-	}
-	if child.AssignedContributorID == "" {
-		return nil, fmt.Errorf("sub-contribution must have an assigned contributor before approval")
 	}
 	if err := ValidateContributionTransition(child.Status, ContribAssigned); err != nil {
 		return nil, err
