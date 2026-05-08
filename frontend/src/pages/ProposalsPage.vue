@@ -10,6 +10,48 @@
       </button>
     </div>
 
+    <!-- My Proposals section -->
+    <section v-if="myProposals.length > 0" class="my-proposals-section">
+      <h3 class="section-heading">My Proposals</h3>
+      <div class="proposals-list">
+        <ProposalCard
+          v-for="proposal in myProposals"
+          :key="`mine-${proposal.id}`"
+          :proposal="proposal"
+          :endorsement-count="getEndorsementCount(proposal.id)"
+          @click="router.push({ name: 'proposal-detail', params: { id: proposal.id } })"
+        >
+          <div class="proposal-card-header">
+            <h3>{{ proposal.title }}</h3>
+            <span class="status-badge" :class="proposal.status">{{ formatStatus(proposal.status) }}</span>
+          </div>
+          <p class="proposal-description">{{ proposal.description }}</p>
+
+          <div v-if="proposal.status === 'submitted'" class="endorsement-bar">
+            <div class="endorsement-bar-header">
+              <span class="endorsement-label">Endorsements</span>
+              <span class="endorsement-count">{{ getEndorsementCount(proposal.id) }} / {{ proposal.endorsement_threshold || 2 }}</span>
+            </div>
+            <q-linear-progress
+              :value="getEndorsementProgress(proposal.id, proposal.endorsement_threshold)"
+              color="pink"
+              rounded
+              size="6px"
+            />
+          </div>
+
+          <div class="proposal-meta">
+            <span class="proposal-type">{{ proposal.type?.join(', ') }}</span>
+            <span class="proposal-priority" :class="proposal.priority">{{ proposal.priority }}</span>
+            <span>{{ new Date(proposal.created_at).toLocaleDateString() }}</span>
+          </div>
+        </ProposalCard>
+      </div>
+    </section>
+
+    <!-- All proposals heading -->
+    <h3 v-if="myProposals.length > 0" class="section-heading">All Proposals</h3>
+
     <!-- Filter pills -->
     <div class="filter-row">
       <button
@@ -135,6 +177,14 @@ const filteredProposals = computed(() => {
   return all.filter(p => p.status === activeFilter.value);
 });
 
+const myProposals = computed(() => {
+  const aid = identityStore.currentAID;
+  if (!aid) return [];
+  const ids = [aid.name, aid.prefix].filter(Boolean) as string[];
+  if (ids.length === 0) return [];
+  return proposalsStore.proposals.filter(p => ids.includes(p.proposer_id));
+});
+
 async function fetchEndorsementCounts() {
   for (const p of proposalsStore.proposals) {
     try {
@@ -153,6 +203,10 @@ onMounted(async () => {
 
 function getEndorsementCount(proposalId: string): number {
   return endorsementCounts.value[proposalId] || 0;
+}
+
+function formatStatus(status: string): string {
+  return status.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 }
 
 function getEndorsementProgress(proposalId: string, threshold?: number): number {
@@ -284,5 +338,17 @@ async function handleCreateSubmit(form: {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.my-proposals-section {
+  margin-bottom: 28px;
+}
+
+.section-heading {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--matou-foreground);
+  margin: 0 0 12px;
+  letter-spacing: 0.01em;
 }
 </style>
