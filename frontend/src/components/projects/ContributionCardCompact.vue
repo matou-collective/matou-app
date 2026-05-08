@@ -58,13 +58,8 @@
           label="Approve"
           color="primary"
           class="confirm-btn"
-          :disable="!assignedAid"
           @click.stop="emit('update', { ...contribution, _action: 'approve-sub' })"
-        >
-          <q-tooltip v-if="!assignedAid">
-            Assign a contributor first
-          </q-tooltip>
-        </q-btn>
+        />
 
         <template v-if="canEdit">
           <q-btn

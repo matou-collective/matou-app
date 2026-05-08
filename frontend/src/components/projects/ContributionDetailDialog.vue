@@ -43,6 +43,31 @@
       <!-- Scrollable body -->
       <div class="dialog-body">
 
+        <!-- Sub-contribution assignment panel (leads/admins on active subs) -->
+        <div
+          v-if="canManageSubAssignment"
+          class="status-panel sub-assign-panel"
+        >
+          <UserPlus class="panel-icon" />
+          <div>
+            <div class="panel-title">
+              {{ assignedAid ? `Assigned to ${assignedName}` : 'No contributor assigned' }}
+            </div>
+            <div class="panel-sub">
+              {{ assignedAid ? 'Change the contributor for this sub-contribution.' : 'Pick a member to assign to this sub-contribution.' }}
+            </div>
+          </div>
+          <q-btn
+            no-caps
+            outline
+            color="primary"
+            class="q-ml-auto"
+            :icon="assignedAid ? 'edit' : 'person_add'"
+            :label="assignedAid ? 'Change' : 'Assign'"
+            @click="openSubAssignDialog"
+          />
+        </div>
+
         <!-- ── Status panels ─────────────────────────────── -->
 
         <!-- Offered panel -->
@@ -294,14 +319,9 @@
                 label="Approve"
                 color="primary"
                 class="approve-sub-btn"
-                :disable="!childAssignee(child)"
                 :loading="actionLoading === `approve-sub-${child.id}`"
                 @click.stop="handleApproveSub(child.id)"
-              >
-                <q-tooltip v-if="!childAssignee(child)">
-                  Assign a contributor first
-                </q-tooltip>
-              </q-btn>
+              />
               <template v-if="canApproveSub">
                 <q-btn
                   flat round dense size="sm"
@@ -775,14 +795,14 @@
   <q-dialog v-model="showAssignDialog">
     <q-card class="assign-dialog">
       <q-card-section class="row items-center q-pb-none">
-        <div class="text-h6">Assign Contribution</div>
+        <div class="text-h6">{{ isSubAssignMode ? 'Assign Contributor' : 'Assign Contribution' }}</div>
         <q-space />
         <q-btn icon="close" flat round dense v-close-popup />
       </q-card-section>
 
       <q-card-section class="assign-body">
         <!-- Registered interest members -->
-        <div v-if="contribution.interested_contributors?.length" class="assign-section">
+        <div v-if="!isSubAssignMode && contribution.interested_contributors?.length" class="assign-section">
           <div class="assign-section-label">Registered Interest</div>
           <div
             v-for="ic in contribution.interested_contributors"
@@ -799,8 +819,8 @@
           </div>
         </div>
 
-        <!-- Mode selection -->
-        <div class="assign-section">
+        <!-- Mode selection (hidden in sub-assign mode — member-only picker) -->
+        <div v-if="!isSubAssignMode" class="assign-section">
           <div class="assign-section-label">Assign to</div>
           <div class="assign-mode-row">
             <button
@@ -1025,6 +1045,7 @@ const assignSelectedMember = ref<string | null>(null);
 const assignSelectedMemberName = ref<string | null>(null);
 const assignMemberSearch = ref('');
 const assigningContribution = ref(false);
+const isSubAssignMode = ref(false);
 
 const assignGroupOptions = [
   { label: 'Stewards', value: 'steward' },
@@ -1245,6 +1266,11 @@ const canAddSub = computed(() =>
   workflow.canAddSubContribution(props.contribution, props.currentUserId, role.value),
 );
 const canApproveSub = computed(() => isLead.value || isSteward.value);
+const canManageSubAssignment = computed(() => {
+  if (!isSubContribution.value) return false;
+  if (!(isLead.value || isSteward.value)) return false;
+  return !['signed_off', 'rewarded', 'archived'].includes(props.contribution.status);
+});
 const canChangeNow = computed(() =>
   workflow.canChange(props.contribution, props.currentUserId, role.value),
 );
@@ -1317,10 +1343,21 @@ async function handleAccept() {
 }
 
 function openAssignDialog() {
+  isSubAssignMode.value = false;
   assignMode.value = null;
   assignSelectedGroup.value = null;
   assignSelectedMember.value = null;
   assignSelectedMemberName.value = null;
+  assignMemberSearch.value = '';
+  showAssignDialog.value = true;
+}
+
+function openSubAssignDialog() {
+  isSubAssignMode.value = true;
+  assignMode.value = 'member';
+  assignSelectedGroup.value = null;
+  assignSelectedMember.value = assignedAid.value;
+  assignSelectedMemberName.value = assignedAid.value ? (assignedName.value ?? null) : null;
   assignMemberSearch.value = '';
   showAssignDialog.value = true;
 }
@@ -1332,7 +1369,40 @@ function selectAssignMember(id: string, name: string) {
   assignSelectedGroup.value = null;
 }
 
+async function submitSubAssign() {
+  if (!assignSelectedMember.value) return;
+  // No-op when picking the already-assigned member.
+  if (assignSelectedMember.value === assignedAid.value) {
+    showAssignDialog.value = false;
+    return;
+  }
+  assigningContribution.value = true;
+  try {
+    const updated = await store.update(props.contribution.id, {
+      assigned_contributor_id: assignSelectedMember.value,
+    } as any);
+    // Changing the contributor on an already-approved sub triggers re-approval.
+    if (props.contribution.status === 'assigned') {
+      const transitioned = await store.transition(props.contribution.id, 'changed');
+      emit('update', transitioned as unknown as Contribution);
+    } else {
+      emit('update', updated as unknown as Contribution);
+    }
+    showAssignDialog.value = false;
+    isSubAssignMode.value = false;
+    $q.notify({ type: 'positive', message: 'Contributor assigned!' });
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to assign contributor' });
+  } finally {
+    assigningContribution.value = false;
+  }
+}
+
 async function submitAssign() {
+  if (isSubAssignMode.value) {
+    await submitSubAssign();
+    return;
+  }
   assigningContribution.value = true;
   try {
     if (assignMode.value === 'group' && assignSelectedGroup.value) {
@@ -1760,6 +1830,10 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 .shared-panel {
   background: rgba(74, 157, 156, 0.06);
   border-color: var(--matou-accent);
+}
+
+.sub-assign-panel {
+  background: rgba(30, 95, 116, 0.04);
 }
 
 .panel-icon {
