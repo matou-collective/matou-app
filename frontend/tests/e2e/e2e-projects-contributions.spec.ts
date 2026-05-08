@@ -1148,10 +1148,12 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     const changeDlg = dialog(adminPage, /Change Contribution|Submit Change/i);
     await expect(changeDlg).toBeVisible({ timeout: TIMEOUT.short });
 
-    // The contributor picker should be visible (sub edit mode).
-    const picker = changeDlg.locator('.q-select').filter({ hasText: /Assigned Contributor/i }).or(
-      changeDlg.locator('.q-field').filter({ hasText: /Assigned Contributor/i }),
-    );
+    // The contributor picker should be visible (sub edit mode). The picker
+    // is a q-select sibling of a "Assigned Contributor" subtitle div, both
+    // wrapped in a parent <div>.
+    const pickerLabel = changeDlg.locator('div.text-subtitle2', { hasText: /Assigned Contributor/i });
+    await expect(pickerLabel).toBeVisible({ timeout: TIMEOUT.short });
+    const picker = pickerLabel.locator('xpath=following-sibling::*[contains(@class, "q-select")][1]');
     await expect(picker).toBeVisible({ timeout: TIMEOUT.short });
 
     // Type the admin's name into the picker search to filter options.
