@@ -751,6 +751,7 @@ type CreateGovernanceActionRequest struct {
 	DecisionPlanID  string     `json:"decision_plan_id"`
 	House           HouseType  `json:"house"`
 	ActionType      ActionType `json:"action_type"`
+	Title           string     `json:"title,omitempty"`
 	Description     string     `json:"description"`
 	MeetingDate     string     `json:"meeting_date,omitempty"`
 	MeetingTime     string     `json:"meeting_time,omitempty"`
@@ -770,6 +771,7 @@ func (s *Service) AddGovernanceAction(ctx context.Context, spaceID string, req *
 		DecisionPlanID:  req.DecisionPlanID,
 		House:           req.House,
 		ActionType:      req.ActionType,
+		Title:           req.Title,
 		Description:     req.Description,
 		MeetingDate:     req.MeetingDate,
 		MeetingTime:     req.MeetingTime,

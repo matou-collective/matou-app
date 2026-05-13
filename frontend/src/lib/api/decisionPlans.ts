@@ -86,11 +86,14 @@ export async function addGovernanceAction(
   action: {
     house: string;
     action_type: string;
+    title?: string;
     description: string;
     meeting_date?: string;
     meeting_time?: string;
     meeting_location?: string;
     linked_action_id?: string;
+    voting_end_date?: string;
+    voting_end_time?: string;
   },
 ): Promise<GovernanceAction> {
   const response = await fetch(`${BACKEND_URL}/api/v1/decision-plans/${dpId}/actions`, {
