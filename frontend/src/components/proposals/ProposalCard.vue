@@ -1,5 +1,5 @@
 <template>
-  <div class="proposal-card" @click="$emit('click')">
+  <div class="proposal-card" :data-proposal-id="proposal.id" @click="$emit('click')">
     <div class="proposal-card-header">
       <div class="proposal-card-title-row">
         <h3 class="proposal-title">{{ proposal.title }}</h3>
