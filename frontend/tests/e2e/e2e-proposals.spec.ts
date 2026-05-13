@@ -16,7 +16,7 @@
  *
  * Run: npx playwright test --project=proposals
  */
-import { test, expect, Page, BrowserContext, APIRequestContext } from '@playwright/test';
+import { test, expect, Page, BrowserContext, APIRequestContext, Locator } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
 import { BackendManager, BackendInstance } from './utils/backend-manager';
@@ -490,6 +490,11 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
   let memberPage: Page;
   let memberAID: string;
 
+  let member2Backend: BackendInstance;
+  let member2Context: BrowserContext;
+  let member2Page: Page;
+  let member2AID: string;
+
   let proposalId: string;
 
   /** Navigate to a sidebar item */
@@ -503,6 +508,118 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
 
   function dlg(page: Page, title: string | RegExp) {
     return page.locator('.q-dialog').filter({ hasText: title });
+  }
+
+  /**
+   * Find an action-card within a house section, filtered by its action-type
+   * label. Filtering the card by `hasText: /Meeting/i` is unreliable —
+   * the decision card's description "...after the review meeting" also
+   * matches, and backend `hydrateDecisionPlanActions` doesn't sort, so
+   * `.first()` is non-deterministic.
+   *
+   * We use native CSS `:has()` with Playwright's `:text-is()` pseudo to
+   * exact-match the `.action-type-label` span. Passing a chained
+   * `section.locator(...)` to `filter({has})` doesn't work — Playwright
+   * carries the full ancestor chain (.house-section/...) into the `has`
+   * lookup, which then can't resolve within an .action-card descendant.
+   */
+  function actionCard(section: Locator, type: 'Meeting' | 'Decision'): Locator {
+    return section.locator(`.action-card:has(.action-type-label:text-is("${type}"))`);
+  }
+
+  /**
+   * Dismiss the top-most open dialog via Escape. Necessary for the
+   * GovernanceActionModal after the admin votes on a decision — the only
+   * footer action available to the manager is "Close Voting", which would
+   * resolve the vote prematurely. q-dialog closes on Escape by default
+   * (not persistent).
+   */
+  async function dismissTopDialog(page: Page) {
+    const top = page.locator('.q-dialog').last();
+    if (!(await top.isVisible().catch(() => false))) return;
+    await page.keyboard.press('Escape');
+    await expect(top).not.toBeVisible({ timeout: 5_000 }).catch(async () => {
+      // Some Quasar dialogs require focus inside the dialog for Escape to fire.
+      await top.click({ position: { x: 5, y: 5 } }).catch(() => {});
+      await page.keyboard.press('Escape');
+    });
+  }
+
+  /**
+   * Add a governance action through AddGovernanceActionDialog.
+   *
+   * Expects the proposal detail page to be open and the proposal in
+   * signed_off | voting_process status with canManageDecisionPlan = true so
+   * the "Add Governance Action" trigger button is rendered. The dialog
+   * auto-closes on successful add (parent sets showAddGovernanceAction=false).
+   *
+   * For decisions, the linked meeting must already exist for the same house.
+   */
+  type GovHouse = 'elders_council' | 'community_reps' | 'contributors';
+  type GovType = 'meeting' | 'decision' | 'discussion';
+  const HOUSE_DIALOG_LABEL: Record<GovHouse, string> = {
+    elders_council: 'Elders Council',
+    community_reps: 'Community Representatives',
+    contributors: 'Contributors',
+  };
+  const TYPE_DIALOG_LABEL: Record<GovType, string> = {
+    meeting: 'Meeting',
+    decision: 'Decision',
+    discussion: 'Discussion',
+  };
+
+  async function addGovernanceActionUI(opts: {
+    house: GovHouse;
+    type: GovType;
+    description: string;
+    meetingDate?: string; // dd-mm-yyyy
+    meetingTime?: string; // HH:mm
+    location?: string;
+    linkedTo?: RegExp; // partial match against linked-card text
+    votingEndDate?: string; // dd-mm-yyyy
+    votingEndTime?: string; // HH:mm
+  }) {
+    // Open the dialog. There may be two "Add Governance Action" buttons —
+    // one on ProposalDetailPage and one on DecisionPlanView once the plan
+    // exists. Either works; .first() picks deterministically.
+    const trigger = adminPage.getByRole('button', { name: /Add Governance Action/i }).first();
+    await expect(trigger).toBeVisible({ timeout: TIMEOUT.short });
+    await trigger.click();
+
+    const d = dlg(adminPage, /Add Governance Action/i);
+    await expect(d).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Pick house and action type. Use getByRole for the accessible name —
+    // the .form-section / .select-card chain was timing out for 3 min on the
+    // very first click (likely SSE-driven re-renders of the dialog from
+    // existing-actions / proposal-title props detaching the element).
+    await d.getByRole('button', { name: HOUSE_DIALOG_LABEL[opts.house], exact: true }).click();
+    await d.getByRole('button', { name: TYPE_DIALOG_LABEL[opts.type], exact: true }).click();
+
+    if (opts.type === 'meeting' || opts.type === 'discussion') {
+      // Date / Time / Location inputs are addressed by placeholder — unique
+      // in the dialog and immune to the .form-section filter flakiness.
+      await d.getByPlaceholder('dd-mm-yyyy').fill(opts.meetingDate ?? '');
+      await d.getByPlaceholder('HH:mm').fill(opts.meetingTime ?? '');
+      await d.getByPlaceholder(/Virtual.*Zoom|Community Center/).fill(opts.location ?? '');
+    } else {
+      // Decision: pick the linked meeting/discussion card
+      const linkedCard = d.locator('.linked-card').filter({ hasText: opts.linkedTo ?? /.*/ }).first();
+      await expect(linkedCard).toBeVisible({ timeout: TIMEOUT.short });
+      await linkedCard.click();
+      await d.getByPlaceholder('dd-mm-yyyy').fill(opts.votingEndDate ?? '');
+      await d.getByPlaceholder('HH:mm').fill(opts.votingEndTime ?? '');
+    }
+
+    // Description — the only textarea in the dialog, so no need for the
+    // form-section filter chain (which timed out for 3 min on this field).
+    await d.locator('textarea').fill(opts.description);
+
+    // Submit. Dialog closes when the parent's handleAddGovernanceAction
+    // resolves, which awaits decisionPlansStore.addAction.
+    await d.getByRole('button', { name: /^Add Action$/i }).click();
+    await expect(d).not.toBeVisible({ timeout: TIMEOUT.medium });
+    await settle(adminPage, 800);
   }
 
   // ------------------------------------------------------------------
@@ -558,10 +675,26 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     await loginWithMnemonic(memberPage, accounts.member.mnemonic);
     memberAID = accounts.member.aid ?? '';
     console.log('[Setup] Member AID: %s', memberAID);
+
+    // Member2 context — needed to reach endorsement threshold (default = 2).
+    // Proposer cannot self-endorse, so we need two distinct members.
+    if (!accounts.member2?.mnemonic || accounts.member2.mnemonic.length !== 12) {
+      throw new Error('No member2 account — run e2e-registration test 2 first');
+    }
+    member2Backend = await backends.start('member2-proposals');
+    member2Context = await browser.newContext();
+    await setupTestConfig(member2Context);
+    await setupBackendRouting(member2Context, member2Backend.port);
+    member2Page = await member2Context.newPage();
+    setupPageLogging(member2Page, 'Member2-P');
+    await loginWithMnemonic(member2Page, accounts.member2.mnemonic);
+    member2AID = accounts.member2.aid ?? '';
+    console.log('[Setup] Member2 AID: %s', member2AID);
   });
 
   test.afterAll(async () => {
     await backends.stopAll();
+    await member2Context?.close();
     await memberContext?.close();
     await adminContext?.close();
   });
@@ -637,11 +770,14 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     await memberPage.bringToFront();
     await nav(memberPage, 'Proposals');
 
-    // Wait for proposal list to load (member backend syncs via any-sync)
-    const card = memberPage.locator('.proposal-card').filter({ hasText: 'Submitted' }).filter({ hasText: 'Full Lifecycle E2E Proposal' }).first();
+    // Filter cards by data-proposal-id (not title) — stale proposals from prior
+    // runs can share the same title, and .first() would pick the wrong one.
+    // page.goto() is also a no-go: it triggers a full reload that wipes Pinia
+    // state and forces a 30s+ KERIA re-auth.
+    const card = memberPage.locator(`.proposal-card[data-proposal-id="${proposalId}"]`);
     await expect(card).toBeVisible({ timeout: TIMEOUT.long });
     await card.click();
-    await expect(memberPage).toHaveURL(/\/dashboard\/proposals\//, { timeout: TIMEOUT.short });
+    await expect(memberPage).toHaveURL(new RegExp(`/dashboard/proposals/${proposalId}`), { timeout: TIMEOUT.short });
     await settle(memberPage, 1500);
 
     // Member should NOT see sign-off button
@@ -655,10 +791,16 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
-  // Steps 7-9: Member endorses → threshold → auto in_review
+  // Steps 7-9: Two members endorse → threshold (2) → auto in_review
+  //
+  // Backend default threshold is 2 and proposers cannot self-endorse, so
+  // we need two distinct members. Member endorses first (1/2 — no transition
+  // yet), then Member2 endorses (2/2 — auto-transition to in_review fires
+  // on member2's backend and propagates via any-sync P2P to memberPage).
   // ------------------------------------------------------------------
 
-  test('Steps 7-9: member endorses via UI, auto in_review', async ({ request }) => {
+  test('Steps 7-9: members endorse via UI, threshold met → auto in_review', async () => {
+    // --- Endorsement 1: memberPage ---
     await memberPage.bringToFront();
 
     const endorseBtn = memberPage.getByRole('button', { name: /Endorse Proposal/i });
@@ -673,11 +815,65 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
       await comment.fill('I fully support this proposal');
     }
     await endorseDlg.getByRole('button', { name: /^Endorse$/i }).click();
+    await expect(endorseDlg).not.toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Steps 7-9] Member endorsed (1/2)');
 
-    // SSE proposal:endorsed triggers refresh — wait for status badge to update
-    // The endorsement threshold (1) should auto-transition to in_review
+    // Status should still be `submitted` after a single endorsement.
+    await expect(memberPage.locator('.status-badge.submitted')).toBeVisible({ timeout: TIMEOUT.short });
+
+    // --- Endorsement 2: member2Page (triggers threshold) ---
+    await member2Page.bringToFront();
+    await nav(member2Page, 'Proposals');
+    await expect(member2Page).toHaveURL(/\/dashboard\/proposals/, { timeout: TIMEOUT.short });
+
+    // Filter by data-proposal-id (not title) — same reason as memberPage above.
+    const card = member2Page.locator(`.proposal-card[data-proposal-id="${proposalId}"]`);
+    await expect(card).toBeVisible({ timeout: TIMEOUT.long });
+    await card.click();
+    await expect(member2Page).toHaveURL(new RegExp(`/dashboard/proposals/${proposalId}`), { timeout: TIMEOUT.short });
+    await settle(member2Page, 1500);
+
+    // Wait until member's endorsement has propagated to member2's backend
+    // (P2P HeadSync runs every 5s). Otherwise member2's local count stays
+    // at 1 and the threshold-met auto-transition won't fire.
+    await expect
+      .poll(
+        async () => {
+          const resp = await member2Page.request.get(
+            `http://localhost:${member2Backend.port}/api/v1/proposals/${proposalId}/endorsements`,
+          );
+          const data = await resp.json();
+          return data.total ?? data.endorsements?.length ?? 0;
+        },
+        { timeout: TIMEOUT.long, message: "member's endorsement did not sync to member2 backend" },
+      )
+      .toBeGreaterThanOrEqual(1);
+    console.log('[Steps 7-9] Member endorsement synced to member2 backend');
+
+    const endorse2Btn = member2Page.getByRole('button', { name: /Endorse Proposal/i });
+    await expect(endorse2Btn).toBeVisible({ timeout: TIMEOUT.long });
+    await endorse2Btn.click();
+
+    const endorse2Dlg = dlg(member2Page, 'Endorse Proposal');
+    await expect(endorse2Dlg).toBeVisible({ timeout: TIMEOUT.short });
+
+    const comment2 = endorse2Dlg.locator('textarea');
+    if (await comment2.isVisible().catch(() => false)) {
+      await comment2.fill('Strongly support this proposal');
+    }
+    await endorse2Dlg.getByRole('button', { name: /^Endorse$/i }).click();
+    await expect(endorse2Dlg).not.toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Steps 7-9] Member2 endorsed (2/2 — threshold met)');
+
+    // Threshold met → member2 backend auto-transitions to in_review.
+    // confirmEndorse explicitly reloads the proposal on threshold_met=true,
+    // so member2Page reflects the new status immediately.
+    await expect(member2Page.locator('.status-badge.in_review')).toBeVisible({ timeout: TIMEOUT.long });
+
+    // memberPage receives the new status via any-sync P2P sync → SSE.
+    await memberPage.bringToFront();
     await expect(memberPage.locator('.status-badge.in_review')).toBeVisible({ timeout: TIMEOUT.long });
-    console.log('[Steps 7-9] Endorsed, auto in_review confirmed via UI');
+    console.log('[Steps 7-9] in_review confirmed on memberPage (via P2P)');
   });
 
   // ------------------------------------------------------------------
@@ -769,53 +965,78 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
-  // Step 14: Create decision plan + add governance actions (API)
+  // Step 14: Create decision plan + add governance actions via UI.
+  //
+  // The old "Create Decision Plan" dialog is gone — the plan now auto-creates
+  // when the first governance action is added through AddGovernanceActionDialog.
+  // We add 6 actions (meeting + decision per house), in the order Steps 17–21
+  // need them. Each call opens the dialog, fills the form, and waits for the
+  // dialog to close.
   // ------------------------------------------------------------------
 
   test('Step 14: create decision plan via UI', async () => {
+    test.setTimeout(180_000);
     await adminPage.bringToFront();
 
-    // Click "Create Decision Plan" button (visible when proposal is signed_off)
-    const createDPBtn = adminPage.getByRole('button', { name: /Create Decision Plan/i });
-    await expect(createDPBtn).toBeVisible({ timeout: TIMEOUT.short });
-    await createDPBtn.click();
+    // Elder Council
+    await addGovernanceActionUI({
+      house: 'elders_council',
+      type: 'meeting',
+      description: 'Elder Council review meeting for the proposal',
+      meetingDate: '01-04-2026',
+      meetingTime: '10:00',
+      location: 'Virtual — Zoom',
+    });
+    await addGovernanceActionUI({
+      house: 'elders_council',
+      type: 'decision',
+      description: 'Elder Council veto decision after the review meeting',
+      linkedTo: /Elders Council Meeting/i,
+      votingEndDate: '03-04-2026',
+      votingEndTime: '17:00',
+    });
 
-    // CreateDecisionPlanDialog opens with 3 house configs
-    const dpDlg = dlg(adminPage, 'Create Decision Plan');
-    await expect(dpDlg).toBeVisible({ timeout: TIMEOUT.short });
+    // Community Representatives
+    await addGovernanceActionUI({
+      house: 'community_reps',
+      type: 'meeting',
+      description: 'Community Representatives deliberation meeting',
+      meetingDate: '02-04-2026',
+      meetingTime: '12:00',
+      location: 'Virtual — Zoom',
+    });
+    await addGovernanceActionUI({
+      house: 'community_reps',
+      type: 'decision',
+      description: 'Community Representatives approval decision',
+      linkedTo: /Community Representatives Meeting/i,
+      votingEndDate: '04-04-2026',
+      votingEndTime: '17:00',
+    });
 
-    // Ensure all meeting checkboxes are checked
-    const meetingCheckboxes = dpDlg.locator('.q-checkbox');
-    const checkboxCount = await meetingCheckboxes.count();
-    for (let i = 0; i < checkboxCount; i++) {
-      const cb = meetingCheckboxes.nth(i);
-      const isChecked = await cb.locator('.q-checkbox__inner--truthy').isVisible().catch(() => false);
-      if (!isChecked) await cb.click();
-    }
-
-    // Fill meeting dates/times for each house config
-    const houseConfigs = dpDlg.locator('.house-config');
-    const houseCount = await houseConfigs.count();
-    for (let i = 0; i < houseCount; i++) {
-      const house = houseConfigs.nth(i);
-      const dateInput = house.locator('input[type="date"]');
-      const timeInput = house.locator('input[type="time"]');
-      if (await dateInput.isVisible().catch(() => false)) {
-        await dateInput.fill(`2026-04-0${i + 1}`);
-      }
-      if (await timeInput.isVisible().catch(() => false)) {
-        await timeInput.fill(`${10 + i * 2}:00`);
-      }
-    }
-
-    // Click "Create Plan"
-    await dpDlg.getByRole('button', { name: /Create Plan/i }).click();
-    await settle(adminPage, 1000);
+    // Contributors
+    await addGovernanceActionUI({
+      house: 'contributors',
+      type: 'meeting',
+      description: 'Contributors planning meeting',
+      meetingDate: '03-04-2026',
+      meetingTime: '14:00',
+      location: 'Virtual — Zoom',
+    });
+    await addGovernanceActionUI({
+      house: 'contributors',
+      type: 'decision',
+      description: 'Contributors approval decision',
+      linkedTo: /Contributors Meeting/i,
+      votingEndDate: '05-04-2026',
+      votingEndTime: '17:00',
+    });
 
     // Verify DecisionPlanView appears with 3 house sections
     const dpView = adminPage.locator('.decision-plan-view');
     await expect(dpView).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Step 14] Decision plan created via UI');
+    await expect(dpView.locator('.house-section')).toHaveCount(3, { timeout: TIMEOUT.medium });
+    console.log('[Step 14] Decision plan created via UI with 6 actions');
   });
 
   // ------------------------------------------------------------------
@@ -838,7 +1059,9 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     await adminPage.bringToFront();
 
     const dpView = adminPage.locator('.decision-plan-view');
-    const signOffBtn = dpView.getByRole('button', { name: /Sign Off/i });
+    // Button label is "Sign Off Decision Plan" — distinct from the proposal-level
+    // "Sign Off Proposal" action (which is no longer rendered at this stage).
+    const signOffBtn = dpView.getByRole('button', { name: /Sign Off Decision Plan/i });
     await expect(signOffBtn).toBeVisible({ timeout: TIMEOUT.medium });
     await signOffBtn.click();
 
@@ -860,12 +1083,13 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
 
     // Click Elder Council meeting action card
     const elderSection = dpView.locator('.house-section').filter({ hasText: /Elder Council/i });
-    const meetingCard = elderSection.locator('.action-card').filter({ hasText: /Meeting/i }).first();
+    const meetingCard = actionCard(elderSection, 'Meeting');
     await expect(meetingCard).toBeVisible({ timeout: TIMEOUT.short });
     await meetingCard.click();
 
-    // GovernanceActionModal opens — click "Mark as Complete"
+    // GovernanceActionModal opens — fill required Notes then click "Mark as Complete"
     let modal = adminPage.locator('.q-dialog').last();
+    await modal.locator('textarea').first().fill('Elder Council met and reviewed the proposal. No veto raised.');
     const completeBtn = modal.getByRole('button', { name: /Mark as Complete/i });
     await expect(completeBtn).toBeVisible({ timeout: TIMEOUT.short });
     await completeBtn.click();
@@ -878,27 +1102,35 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
       await adminPage.keyboard.press('Escape');
     }
     await settle(adminPage, 1500);
+
+    // Wait for the meeting card to actually reflect completed status before
+    // opening the decision — otherwise the decision modal's votingLocked
+    // computed is true (linkedAction.status !== 'completed') and the body
+    // renders "Voting Locked" instead of the vote form.
+    await expect(actionCard(elderSection, 'Meeting').locator('.status-badge--completed'))
+      .toBeVisible({ timeout: TIMEOUT.medium });
     console.log('[Step 17] Elder Council meeting completed');
 
     // Click Elder Council decision action card
-    const decisionCard = elderSection.locator('.action-card').filter({ hasText: /Decision/i }).first();
+    const decisionCard = actionCard(elderSection, 'Decision');
     await expect(decisionCard).toBeVisible({ timeout: TIMEOUT.medium });
     await decisionCard.click();
 
-    // Vote: No Veto
+    // Vote: No Veto, then Close Voting to resolve. ResolveDecision is what
+    // transitions the action to Completed; without it the proposal's
+    // EvaluateGovernanceOutcome won't run when Contributors votes last.
     modal = adminPage.locator('.q-dialog').last();
     const noVetoBtn = modal.getByRole('button', { name: /No Veto/i });
     await expect(noVetoBtn).toBeVisible({ timeout: TIMEOUT.short });
     await noVetoBtn.click();
     await settle(adminPage, 1000);
-    const closeBtn2 = adminPage.locator('.q-dialog').last().getByRole('button', { name: /^Close$/i });
-    if (await closeBtn2.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await closeBtn2.click();
-    } else {
-      await adminPage.keyboard.press('Escape');
-    }
+    const closeVotingBtn1 = adminPage.locator('.q-dialog').last().getByRole('button', { name: /Close Voting/i });
+    await expect(closeVotingBtn1).toBeVisible({ timeout: TIMEOUT.short });
+    await closeVotingBtn1.click();
     await settle(adminPage, 1000);
-    console.log('[Step 18] Elder Council voted: no veto');
+    await dismissTopDialog(adminPage);
+    await settle(adminPage, 1000);
+    console.log('[Step 18] Elder Council voted: no veto + resolved');
   });
 
   test('Step 19: Community Reps meeting + approve via UI', async () => {
@@ -908,21 +1140,25 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
 
     // Community meeting
     const communitySection = dpView.locator('.house-section').filter({ hasText: /Community/i });
-    const meetingCard = communitySection.locator('.action-card').filter({ hasText: /Meeting/i }).first();
+    const meetingCard = actionCard(communitySection, 'Meeting');
     await expect(meetingCard).toBeVisible({ timeout: TIMEOUT.short });
     await meetingCard.click();
 
     let modal = adminPage.locator('.q-dialog').last();
+    await modal.locator('textarea').first().fill('Community Representatives discussed the proposal and recommended approval.');
     await modal.getByRole('button', { name: /Mark as Complete/i }).click();
     await settle(adminPage, 1000);
-    // Close the completed meeting modal
-    { const cb = adminPage.getByRole('button', { name: /^Close$/i }).last();
-    if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) await cb.click(); }
+    await dismissTopDialog(adminPage);
     await settle(adminPage, 1500);
+
+    // Wait for meeting → completed before opening the decision (avoids
+    // votingLocked branch in GovernanceActionModal).
+    await expect(actionCard(communitySection, 'Meeting').locator('.status-badge--completed'))
+      .toBeVisible({ timeout: TIMEOUT.medium });
     console.log('[Step 19] Community meeting completed');
 
-    // Community decision: Approve
-    const decisionCard = communitySection.locator('.action-card').filter({ hasText: /Decision/i }).first();
+    // Community decision: Approve, then Close Voting to resolve.
+    const decisionCard = actionCard(communitySection, 'Decision');
     await expect(decisionCard).toBeVisible({ timeout: TIMEOUT.medium });
     await decisionCard.click();
 
@@ -931,10 +1167,13 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.short });
     await approveBtn.click();
     await settle(adminPage, 1000);
-    { const cb = adminPage.getByRole('button', { name: /^Close$/i }).last();
-    if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) await cb.click(); }
+    const closeVotingBtn = adminPage.locator('.q-dialog').last().getByRole('button', { name: /Close Voting/i });
+    await expect(closeVotingBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await closeVotingBtn.click();
     await settle(adminPage, 1000);
-    console.log('[Step 19] Community Reps voted: approved');
+    await dismissTopDialog(adminPage);
+    await settle(adminPage, 1000);
+    console.log('[Step 19] Community Reps voted: approved + resolved');
   });
 
   test('Steps 20-21: Contributors meeting + approve → auto-approved via UI', async () => {
@@ -944,20 +1183,27 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
 
     // Contributors meeting
     const contribSection = dpView.locator('.house-section').filter({ hasText: /Contributor/i });
-    const meetingCard = contribSection.locator('.action-card').filter({ hasText: /Meeting/i }).first();
+    const meetingCard = actionCard(contribSection, 'Meeting');
     await expect(meetingCard).toBeVisible({ timeout: TIMEOUT.short });
     await meetingCard.click();
 
     let modal = adminPage.locator('.q-dialog').last();
+    await modal.locator('textarea').first().fill('Contributors completed planning and aligned on next steps.');
     await modal.getByRole('button', { name: /Mark as Complete/i }).click();
     await settle(adminPage, 1000);
-    { const cb = adminPage.getByRole('button', { name: /^Close$/i }).last();
-    if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) await cb.click(); }
+    await dismissTopDialog(adminPage);
     await settle(adminPage, 1500);
+
+    // Wait for meeting → completed before opening the decision (avoids
+    // votingLocked branch in GovernanceActionModal).
+    await expect(actionCard(contribSection, 'Meeting').locator('.status-badge--completed'))
+      .toBeVisible({ timeout: TIMEOUT.medium });
     console.log('[Step 20] Contributors meeting completed');
 
-    // Contributors decision: Approve (last vote → triggers auto-evaluate → approved)
-    const decisionCard = contribSection.locator('.action-card').filter({ hasText: /Decision/i }).first();
+    // Contributors decision: Approve + Close Voting. ResolveDecision on the
+    // last decision triggers EvaluateGovernanceOutcome → all decisions are
+    // now Completed and favorable → proposal auto-transitions to approved.
+    const decisionCard = actionCard(contribSection, 'Decision');
     await expect(decisionCard).toBeVisible({ timeout: TIMEOUT.medium });
     await decisionCard.click();
 
@@ -966,8 +1212,11 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.short });
     await approveBtn.click();
     await settle(adminPage, 1000);
-    { const cb = adminPage.getByRole('button', { name: /^Close$/i }).last();
-    if (await cb.isVisible({ timeout: 2000 }).catch(() => false)) await cb.click(); }
+    const closeVotingBtn = adminPage.locator('.q-dialog').last().getByRole('button', { name: /Close Voting/i });
+    await expect(closeVotingBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await closeVotingBtn.click();
+    await settle(adminPage, 1000);
+    await dismissTopDialog(adminPage);
 
     // SSE: governance_action:completed → auto-evaluate → proposal:status_changed → approved
     await expect(adminPage.locator('.status-badge.approved')).toBeVisible({ timeout: TIMEOUT.medium });
