@@ -155,6 +155,7 @@ onMounted(async () => {
   &.approved { background: #d1fae5; color: #059669; }
   &.rejected { background: #fee2e2; color: #dc2626; }
   &.completed { background: #d1fae5; color: #059669; }
+  &.withdrawn { background: #f3f4f6; color: #6b7280; }
 }
 
 .type-tag {

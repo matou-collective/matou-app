@@ -2,9 +2,6 @@
   <q-dialog
     :model-value="modelValue"
     @update:model-value="$emit('update:modelValue', $event)"
-    maximized
-    transition-show="slide-up"
-    transition-hide="slide-down"
   >
     <q-card class="proposal-detail-modal">
       <!-- Toolbar -->
@@ -44,13 +41,20 @@
           <!-- Actions -->
           <div class="action-buttons">
             <q-btn
-              v-if="proposal.status === 'submitted' && !isProposer"
+              v-if="proposal.status === 'submitted' && !isProposer && !hasEndorsed"
               color="pink"
               no-caps
               icon="favorite"
               label="Endorse Proposal"
               @click="showEndorseModal = true"
             />
+            <div
+              v-else-if="proposal.status === 'submitted' && !isProposer && hasEndorsed"
+              class="endorsed-badge"
+            >
+              <q-icon name="favorite" size="18px" />
+              <span>Endorsed</span>
+            </div>
             <q-btn
               flat
               no-caps
@@ -171,6 +175,26 @@
                 <p class="comment-text">{{ c.text }}</p>
               </div>
             </div>
+            <div class="comment-input-row">
+              <q-input
+                v-model="newComment"
+                placeholder="Add your comment..."
+                type="textarea"
+                outlined
+                autogrow
+                dense
+                class="col"
+              />
+              <q-btn
+                flat
+                round
+                icon="send"
+                color="primary"
+                :disable="!newComment.trim() || submittingComment"
+                :loading="submittingComment"
+                @click="submitComment"
+              />
+            </div>
           </div>
         </template>
       </q-card-section>
@@ -199,6 +223,7 @@ import {
   type ProposalComment,
 } from 'src/lib/api/proposals';
 import { useIdentityStore } from 'stores/identity';
+import { useProposalsStore } from 'stores/proposals';
 import EndorseProposalModal from './EndorseProposalModal.vue';
 
 const props = defineProps<{
@@ -214,6 +239,7 @@ const emit = defineEmits<{
 const router = useRouter();
 const $q = useQuasar();
 const identityStore = useIdentityStore();
+const proposalsStore = useProposalsStore();
 
 const proposal = ref<Proposal | null>(null);
 const endorsements = ref<Endorsement[]>([]);
@@ -221,6 +247,8 @@ const comments = ref<ProposalComment[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const showEndorseModal = ref(false);
+const newComment = ref('');
+const submittingComment = ref(false);
 
 const endorsementProgress = computed(() => {
   const threshold = proposal.value?.endorsement_threshold || 2;
@@ -233,6 +261,14 @@ const isProposer = computed(() => {
   if (!aid || !p) return false;
   return p.proposer_id === aid.name || p.proposer_id === aid.prefix;
 });
+
+const hasEndorsed = computed(() => {
+  const aid = identityStore.currentAID;
+  if (!aid) return false;
+  const ids = [aid.name, aid.prefix].filter(Boolean) as string[];
+  return endorsements.value.some(e => ids.includes(e.endorser_id));
+});
+
 
 watch(
   () => props.modelValue,
@@ -270,6 +306,28 @@ function navigateToPage() {
   router.push({ path: `/dashboard/proposals/${props.proposalId}` });
 }
 
+async function submitComment() {
+  if (!newComment.value.trim() || !proposal.value) return;
+  const userId = identityStore.currentAID?.prefix || 'unknown';
+  const userName = identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown';
+  submittingComment.value = true;
+  try {
+    const comment = await proposalsStore.addComment(
+      proposal.value.id,
+      userId,
+      userName,
+      newComment.value.trim(),
+    );
+    comments.value.push(comment);
+    newComment.value = '';
+    $q.notify({ type: 'positive', message: 'Comment added!' });
+  } catch {
+    $q.notify({ type: 'negative', message: 'Failed to add comment' });
+  } finally {
+    submittingComment.value = false;
+  }
+}
+
 async function confirmEndorse(comment: string) {
   if (!proposal.value) return;
   try {
@@ -292,7 +350,9 @@ async function confirmEndorse(comment: string) {
 .proposal-detail-modal {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  width: 720px;
+  max-width: 90vw;
+  max-height: 85vh;
 }
 
 .modal-toolbar {
@@ -350,6 +410,7 @@ async function confirmEndorse(comment: string) {
   &.approved { background: #d1fae5; color: #059669; }
   &.rejected { background: #fee2e2; color: #dc2626; }
   &.completed { background: #d1fae5; color: #059669; }
+  &.withdrawn { background: #f3f4f6; color: #6b7280; }
 }
 
 .category-badge {
@@ -381,6 +442,19 @@ async function confirmEndorse(comment: string) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+
+.endorsed-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: #fce7f3;
+  color: #db2777;
+  font-size: 0.85rem;
+  font-weight: 500;
 }
 
 // ── Endorsement card ──────────────────────────────────────────────────────────
@@ -568,5 +642,12 @@ async function confirmEndorse(comment: string) {
   color: var(--matou-muted-foreground);
   margin: 0;
   line-height: 1.5;
+}
+
+.comment-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 12px;
 }
 </style>

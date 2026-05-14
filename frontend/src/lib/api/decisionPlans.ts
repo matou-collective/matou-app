@@ -4,6 +4,7 @@
  */
 import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
+import { useIdentityStore } from 'stores/identity';
 
 const log = createLogger('DecisionPlansAPI');
 
@@ -72,12 +73,21 @@ export async function getDecisionPlan(id: string): Promise<DecisionPlan> {
 }
 
 export async function transitionDecisionPlan(id: string, status: string): Promise<DecisionPlan> {
+  const identityStore = useIdentityStore();
+  const userName = identityStore.currentAID?.name;
   const response = await fetch(`${BACKEND_URL}/api/v1/decision-plans/${id}/transition`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(userName ? { 'X-User-Name': userName } : {}),
+    },
     body: JSON.stringify({ status }),
   });
-  if (!response.ok) throw new Error('Transition failed');
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Transition failed');
+  }
   return response.json();
 }
 

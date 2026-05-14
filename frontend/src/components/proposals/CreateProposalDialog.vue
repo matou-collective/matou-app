@@ -155,6 +155,17 @@
             />
           </div>
         </div>
+
+        <q-btn
+          v-if="canWithdraw"
+          outline
+          no-caps
+          icon="undo"
+          color="negative"
+          label="Withdraw Proposal"
+          class="full-width q-mt-md"
+          @click="$emit('withdraw')"
+        />
       </q-card-section>
 
       <div class="dialog-footer">
@@ -173,12 +184,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import type { Proposal } from 'src/lib/api/proposals';
 import { uploadFile, getFileUrl } from 'src/lib/api/client';
+import { useIdentityStore } from 'stores/identity';
 
 const $q = useQuasar();
+const identityStore = useIdentityStore();
 
 interface ProposalFormData {
   title: string;
@@ -200,7 +213,18 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: boolean];
   submit: [form: ProposalFormData];
+  withdraw: [];
 }>();
+
+const WITHDRAWABLE_STATUSES = ['draft', 'submitted', 'endorsing', 'in_review'];
+const canWithdraw = computed(() => {
+  const p = props.proposal;
+  if (!p) return false;
+  if (!WITHDRAWABLE_STATUSES.includes(p.status)) return false;
+  const aid = identityStore.currentAID;
+  const isProposer = !!aid && (p.proposer_id === aid.name || p.proposer_id === aid.prefix);
+  return isProposer || identityStore.isAdmin;
+});
 
 const typeOptions = [
   { label: 'Technical', value: 'technical', icon: 'code' },

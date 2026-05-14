@@ -76,11 +76,13 @@ interface Props {
   role: 'lead' | 'steward';
   members?: Member[];
   isSubmitting?: boolean;
+  entity?: 'project' | 'proposal';
 }
 
 const props = withDefaults(defineProps<Props>(), {
   members: () => [],
   isSubmitting: false,
+  entity: 'project',
 });
 
 const emit = defineEmits<{
@@ -91,7 +93,10 @@ const emit = defineEmits<{
 const search = ref('');
 const selectedId = ref<string | null>(null);
 
-const roleLabel = computed(() => (props.role === 'lead' ? 'Project Lead' : 'Project Steward'));
+const roleLabel = computed(() => {
+  const prefix = props.entity === 'proposal' ? 'Proposal' : 'Project';
+  return props.role === 'lead' ? `${prefix} Lead` : `${prefix} Steward`;
+});
 
 const roleIcon = computed(() => (props.role === 'lead' ? Shield : Users));
 

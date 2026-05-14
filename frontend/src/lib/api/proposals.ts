@@ -123,9 +123,15 @@ export async function getProposal(id: string): Promise<Proposal> {
 
 export async function transitionProposal(id: string, status: string): Promise<Proposal> {
   log.info('Transitioning proposal %s to %s', id, status);
+  const identityStore = useIdentityStore();
+  const userName = identityStore.currentAID?.name;
   const response = await fetch(`${BACKEND_URL}/api/v1/proposals/${id}/transition`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(userName ? { 'X-User-Name': userName } : {}),
+    },
     body: JSON.stringify({ status }),
   });
   if (!response.ok) {

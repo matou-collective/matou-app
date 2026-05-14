@@ -198,23 +198,16 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Sign-off and rejection require admin (steward/founding) role
+	// Rejection requires admin (steward/founding) role
 	targetStatus := contributions.ProposalStatus(req.Status)
-	var requiredAction contributions.Action
-	switch targetStatus {
-	case contributions.ProposalSignedOff:
-		requiredAction = contributions.ActionSignOffProposal
-	case contributions.ProposalRejected:
-		requiredAction = contributions.ActionRejectProposal
-	}
-	if requiredAction != "" {
+	if targetStatus == contributions.ProposalRejected {
 		aid := r.Header.Get("X-User-AID")
 		if aid == "" {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 			return
 		}
 		roles := GetUserRoles(r)
-		if !contributions.CanPerformAction(roles, requiredAction) {
+		if !contributions.CanPerformAction(roles, contributions.ActionRejectProposal) {
 			log.Printf("[Proposals] %s denied for proposal %s: aid=%s roles=%v", req.Status, id, aid, roles)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: admin role required"})
 			return
@@ -222,6 +215,56 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 	}
 
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+
+	// Sign-off: community admin role OR the proposal's assigned steward.
+	if targetStatus == contributions.ProposalSignedOff {
+		aid := r.Header.Get("X-User-AID")
+		if aid == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+			return
+		}
+		roles := GetUserRoles(r)
+		isAdmin := contributions.CanPerformAction(roles, contributions.ActionSignOffProposal)
+		isAssignedSteward := false
+		if !isAdmin {
+			existing, err := h.service.GetProposal(r.Context(), spaceID, id)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "proposal not found"})
+				return
+			}
+			userName := r.Header.Get("X-User-Name")
+			isAssignedSteward = existing.ProposalStewardID != "" &&
+				(existing.ProposalStewardID == aid || (userName != "" && existing.ProposalStewardID == userName))
+		}
+		if !isAdmin && !isAssignedSteward {
+			log.Printf("[Proposals] sign-off denied for proposal %s: aid=%s roles=%v", id, aid, roles)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: admin role or assigned proposal steward required"})
+			return
+		}
+	}
+
+	// Withdrawal: only the proposer or a community admin may withdraw
+	if targetStatus == contributions.ProposalWithdrawn {
+		aid := r.Header.Get("X-User-AID")
+		if aid == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+			return
+		}
+		existing, err := h.service.GetProposal(r.Context(), spaceID, id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "proposal not found"})
+			return
+		}
+		userName := r.Header.Get("X-User-Name")
+		isProposer := aid == existing.ProposerID || (userName != "" && userName == existing.ProposerID)
+		roles := GetUserRoles(r)
+		isAdmin := contributions.CanPerformAction(roles, contributions.ActionWithdrawProposal)
+		if !isProposer && !isAdmin {
+			log.Printf("[Proposals] withdraw denied for proposal %s: aid=%s userName=%s roles=%v", id, aid, userName, roles)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: proposer or admin required"})
+			return
+		}
+	}
 
 	proposal, err := h.service.TransitionProposal(r.Context(), spaceID, id, contributions.ProposalStatus(req.Status))
 	if err != nil {

@@ -36,6 +36,7 @@ const (
 	ProposalApproved      ProposalStatus = "approved"
 	ProposalRejected      ProposalStatus = "rejected"
 	ProposalCompleted     ProposalStatus = "completed"
+	ProposalWithdrawn     ProposalStatus = "withdrawn"
 )
 
 type ProposalType string

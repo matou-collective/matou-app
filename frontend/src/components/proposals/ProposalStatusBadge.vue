@@ -19,6 +19,7 @@ const STATUS_LABELS: Record<string, string> = {
   approved: 'Approved',
   rejected: 'Rejected',
   completed: 'Completed',
+  withdrawn: 'Withdrawn',
 };
 
 const label = computed(() => {
@@ -86,6 +87,11 @@ const label = computed(() => {
   &.completed {
     background: #d1fae5;
     color: #059669;
+  }
+
+  &.withdrawn {
+    background: #f3f4f6;
+    color: #6b7280;
   }
 }
 </style>

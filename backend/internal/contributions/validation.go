@@ -26,10 +26,10 @@ func (e *BlockingChildrenError) Error() string {
 // --- Proposal transitions ---
 
 var proposalTransitions = map[ProposalStatus][]ProposalStatus{
-	ProposalDraft:         {ProposalSubmitted},
-	ProposalSubmitted:     {ProposalEndorsing, ProposalInReview},
-	ProposalEndorsing:     {ProposalInReview},
-	ProposalInReview:      {ProposalSignedOff, ProposalRejected, ProposalDraft},
+	ProposalDraft:         {ProposalSubmitted, ProposalWithdrawn},
+	ProposalSubmitted:     {ProposalEndorsing, ProposalInReview, ProposalWithdrawn},
+	ProposalEndorsing:     {ProposalInReview, ProposalWithdrawn},
+	ProposalInReview:      {ProposalSignedOff, ProposalRejected, ProposalDraft, ProposalWithdrawn},
 	ProposalSignedOff:     {ProposalVotingProcess},
 	ProposalVotingProcess: {ProposalApproved, ProposalRejected},
 	ProposalApproved:      {ProposalCompleted},

@@ -24,8 +24,8 @@ func NewDecisionPlansHandler(service *contributions.Service, spaceManager *anysy
 }
 
 // RegisterRoutes registers decision plan and governance action routes on the mux.
-func (h *DecisionPlansHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/v1/decision-plans", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
+func (h *DecisionPlansHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	mux.HandleFunc("/api/v1/decision-plans", CORSHandler(OptionalRBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			h.HandleList(w, r)
@@ -34,9 +34,9 @@ func (h *DecisionPlansHandler) RegisterRoutes(mux *http.ServeMux) {
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
-	}))
+	})))
 
-	mux.HandleFunc("/api/v1/decision-plans/", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/decision-plans/", CORSHandler(OptionalRBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/decision-plans/")
 		parts := strings.SplitN(path, "/", 2)
 		id := parts[0]
@@ -63,7 +63,7 @@ func (h *DecisionPlansHandler) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-	}))
+	})))
 
 	mux.HandleFunc("/api/v1/governance-actions/", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/governance-actions/")
@@ -145,6 +145,34 @@ func (h *DecisionPlansHandler) HandleTransition(w http.ResponseWriter, r *http.R
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+
+	// Sign-off: community admin role OR the plan's assigned proposal steward.
+	if contributions.DecisionPlanStatus(req.Status) == contributions.DecisionPlanSignedOff {
+		aid := r.Header.Get("X-User-AID")
+		if aid == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+			return
+		}
+		roles := GetUserRoles(r)
+		isAdmin := contributions.CanPerformAction(roles, contributions.ActionSignOffPlan)
+		isAssignedSteward := false
+		if !isAdmin {
+			existing, err := h.service.GetDecisionPlan(r.Context(), spaceID, id)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "decision plan not found"})
+				return
+			}
+			userName := r.Header.Get("X-User-Name")
+			isAssignedSteward = existing.ProposalStewardID != "" &&
+				(existing.ProposalStewardID == aid || (userName != "" && existing.ProposalStewardID == userName))
+		}
+		if !isAdmin && !isAssignedSteward {
+			log.Printf("[DecisionPlans] sign-off denied for plan %s: aid=%s roles=%v", id, aid, roles)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: admin role or assigned proposal steward required"})
+			return
+		}
+	}
+
 	dp, err := h.service.TransitionDecisionPlan(r.Context(), spaceID, id, contributions.DecisionPlanStatus(req.Status))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

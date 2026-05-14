@@ -372,9 +372,9 @@ test.describe.serial('Proposals UI', () => {
       ).toBeVisible();
     }
 
-    // "All" should be active by default
+    // "Active" should be active by default
     await expect(
-      page.locator('.filter-pill.active', { hasText: 'All' }),
+      page.locator('.filter-pill.active', { hasText: 'Active' }),
     ).toBeVisible();
 
     console.log('[Test] Filter pills rendered');
@@ -902,21 +902,42 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
       await endorseProposalAPI(request, proposalId, 'e2e-admin-endorse', 'Fallback endorsement');
     }
 
-    // Navigate to proposal detail to see in_review state with role assignments
+    // Navigate to proposal detail to see in_review state with team chips
     await adminPage.goto(`${FRONTEND_URL}#/dashboard/proposals/${proposalId}`);
 
-    const rolesCard = adminPage.locator('.roles-card');
-    await expect(rolesCard).toBeVisible({ timeout: TIMEOUT.long });
+    // Team chips render in the detail header. Unassigned roles show as
+    // `.assign-chip` buttons that open AssignRoleDialog.
+    const teamRow = adminPage.locator('.team-row');
+    await expect(teamRow).toBeVisible({ timeout: TIMEOUT.long });
 
-    const claimBtns = rolesCard.getByRole('button', { name: /Claim Role/i });
-    const count = await claimBtns.count();
-    for (let i = 0; i < count; i++) {
-      await claimBtns.first().click();
-      // Wait for the claim to process and button to disappear/refresh
-      await settle(adminPage, 1000);
+    // Helper: open assign dialog for a role, pick first member, confirm.
+    async function assignViaDialog(roleLabel: 'Lead' | 'Steward') {
+      const assignBtn = teamRow.getByRole('button', { name: new RegExp(`Assign ${roleLabel}`, 'i') });
+      // If already assigned (e.g. from a re-run), skip.
+      if (!(await assignBtn.isVisible({ timeout: 2000 }).catch(() => false))) {
+        console.log('[Step 11] %s already assigned, skipping', roleLabel);
+        return;
+      }
+      await assignBtn.click();
+      const dialog = adminPage.locator('.assign-role-dialog');
+      await expect(dialog).toBeVisible({ timeout: TIMEOUT.short });
+      const firstMember = dialog.locator('.member-item').first();
+      await expect(firstMember).toBeVisible({ timeout: TIMEOUT.short });
+      await firstMember.click();
+      await dialog.getByRole('button', { name: new RegExp(`Assign Proposal ${roleLabel}`, 'i') }).click();
+      // Dialog closes on success
+      await expect(dialog).toBeHidden({ timeout: TIMEOUT.medium });
+      await settle(adminPage, 500);
     }
 
-    console.log('[Step 11] Claimed Lead + Steward roles');
+    await assignViaDialog('Lead');
+    await assignViaDialog('Steward');
+
+    // Both filled chips should now be visible.
+    await expect(teamRow.locator('.team-chip.lead')).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(teamRow.locator('.team-chip.steward')).toBeVisible({ timeout: TIMEOUT.medium });
+
+    console.log('[Step 11] Assigned Lead + Steward via team chips');
   });
 
   // ------------------------------------------------------------------
@@ -978,6 +999,10 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     test.setTimeout(180_000);
     await adminPage.bringToFront();
 
+    // Elder Council and Community Representatives governance actions are
+    // disabled for now — see AddGovernanceActionDialog HOUSE_OPTIONS. These
+    // blocks are intentionally commented out until those houses are re-enabled.
+    /*
     // Elder Council
     await addGovernanceActionUI({
       house: 'elders_council',
@@ -1013,6 +1038,7 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
       votingEndDate: '04-04-2026',
       votingEndTime: '17:00',
     });
+    */
 
     // Contributors
     await addGovernanceActionUI({
@@ -1032,11 +1058,12 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
       votingEndTime: '17:00',
     });
 
-    // Verify DecisionPlanView appears with 3 house sections
+    // Verify DecisionPlanView appears with 1 house section (Contributors only —
+    // Elder Council and Community Reps are temporarily disabled).
     const dpView = adminPage.locator('.decision-plan-view');
     await expect(dpView).toBeVisible({ timeout: TIMEOUT.medium });
-    await expect(dpView.locator('.house-section')).toHaveCount(3, { timeout: TIMEOUT.medium });
-    console.log('[Step 14] Decision plan created via UI with 6 actions');
+    await expect(dpView.locator('.house-section')).toHaveCount(1, { timeout: TIMEOUT.medium });
+    console.log('[Step 14] Decision plan created via UI with 2 actions (Contributors only)');
   });
 
   // ------------------------------------------------------------------
@@ -1070,6 +1097,9 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     console.log('[Step 16] Decision plan signed off, proposal → voting_process');
   });
 
+  // Steps 17-18 (Elder Council) and Step 19 (Community Reps) are commented out
+  // while those houses' governance actions are disabled.
+  /*
   test('Steps 17-18: Elder Council meeting + no veto via UI', async () => {
     test.setTimeout(60_000);
     await adminPage.bringToFront();
@@ -1175,6 +1205,7 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     await settle(adminPage, 1000);
     console.log('[Step 19] Community Reps voted: approved + resolved');
   });
+  */
 
   test('Steps 20-21: Contributors meeting + approve → auto-approved via UI', async () => {
     test.setTimeout(60_000);
@@ -1323,8 +1354,10 @@ test.describe.serial('Proposals Rejection Flow', () => {
 
 // ===========================================================================
 // Group 5: Veto Flow — Elder Council vetoes
+// Commented out while Elder Council governance actions are disabled.
 // ===========================================================================
 
+/*
 test.describe.serial('Proposals Veto Flow', () => {
   let adminAID = 'e2e-veto-admin';
   const memberAID = 'e2e-veto-member';
@@ -1337,7 +1370,7 @@ test.describe.serial('Proposals Veto Flow', () => {
       const health = await request.get(`${BACKEND_URL}/health`);
       const data = await health.json();
       if (data.admin) adminAID = data.admin;
-    } catch { /* keep default */ }
+    } catch { /_ keep default _/ }
     const { response } = await createProposalAPI(request, adminAID, {
       title: 'Veto Probe',
     });
@@ -1421,6 +1454,7 @@ test.describe.serial('Proposals Veto Flow', () => {
     console.log('[Veto] Veto rejection recorded in history');
   });
 });
+*/
 
 // ===========================================================================
 // Group 6: Proposal Comments

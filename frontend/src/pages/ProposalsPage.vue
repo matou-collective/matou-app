@@ -136,7 +136,7 @@ const $q = useQuasar();
 const proposalsStore = useProposalsStore();
 const identityStore = useIdentityStore();
 const showCreateDialog = ref(false);
-const activeFilter = ref('all');
+const activeFilter = ref('active');
 const { lastEvent } = useBackendEvents();
 
 watch(lastEvent, (event) => {
@@ -172,7 +172,7 @@ const filteredProposals = computed(() => {
     return all.filter(p => ['submitted', 'in_review', 'signed_off', 'voting_process'].includes(p.status));
   }
   if (activeFilter.value === 'closed') {
-    return all.filter(p => ['approved', 'rejected', 'completed'].includes(p.status));
+    return all.filter(p => ['approved', 'rejected', 'completed', 'withdrawn'].includes(p.status));
   }
   return all.filter(p => p.status === activeFilter.value);
 });

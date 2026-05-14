@@ -25,12 +25,15 @@
               v-for="h in HOUSE_OPTIONS"
               :key="h.value"
               class="select-card"
-              :class="{ active: form.house === h.value }"
-              @click="form.house = h.value; form.linkedActionId = ''"
+              :class="{ active: form.house === h.value, disabled: h.disabled }"
+              :disabled="h.disabled"
+              :title="h.disabled ? 'Coming soon' : ''"
+              @click="!h.disabled && (form.house = h.value, form.linkedActionId = '')"
               type="button"
             >
               <q-icon :name="h.icon" size="22px" />
               <span>{{ h.label }}</span>
+              <span v-if="h.disabled" class="coming-soon">Coming soon</span>
             </button>
           </div>
         </div>
@@ -274,9 +277,9 @@ export interface NewGovernanceAction {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const HOUSE_OPTIONS = [
-  { label: 'Elders Council', value: 'elders_council', icon: 'shield' },
-  { label: 'Community Representatives', value: 'community_reps', icon: 'groups' },
-  { label: 'Contributors', value: 'contributors', icon: 'engineering' },
+  { label: 'Elders Council', value: 'elders_council', icon: 'shield', disabled: true },
+  { label: 'Community Representatives', value: 'community_reps', icon: 'groups', disabled: true },
+  { label: 'Contributors', value: 'contributors', icon: 'engineering', disabled: false },
 ];
 
 const ACTION_TYPE_OPTIONS = [
@@ -367,9 +370,9 @@ function generateTitle(house: string, actionType: string, meetingDate?: string):
 
 function makeDefaultForm(): FormState {
   return {
-    house: 'elders_council',
+    house: 'contributors',
     actionType: 'discussion',
-    title: generateTitle('elders_council', 'discussion', ''),
+    title: generateTitle('contributors', 'discussion', ''),
     meetingDate: '',
     meetingTime: '',
     meetingLocation: '',
@@ -383,7 +386,7 @@ function makeDefaultForm(): FormState {
 const form = ref<FormState>(makeDefaultForm());
 
 // Track previous auto-generated title so we know when to auto-update
-let lastAutoTitle = generateTitle('elders_council', 'discussion', '');
+let lastAutoTitle = generateTitle('contributors', 'discussion', '');
 
 // Update title when house, action type, or meeting date changes
 watch(
@@ -403,7 +406,7 @@ watch(
   (open) => {
     if (open) {
       form.value = makeDefaultForm();
-      lastAutoTitle = generateTitle('elders_council', 'discussion', '');
+      lastAutoTitle = generateTitle('contributors', 'discussion', '');
     }
   },
 );
@@ -567,6 +570,25 @@ function handleAdd() {
     background: rgba(30, 95, 116, 0.06);
     color: var(--matou-primary);
   }
+
+  &.disabled,
+  &[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+
+    &:hover {
+      border-color: var(--matou-border);
+      color: var(--matou-muted-foreground);
+    }
+  }
+}
+
+.coming-soon {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--matou-muted-foreground);
+  margin-top: 2px;
 }
 
 .select-card--compact {

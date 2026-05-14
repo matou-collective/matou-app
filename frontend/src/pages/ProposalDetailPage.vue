@@ -23,12 +23,40 @@
             <span v-if="proposal.type?.length" class="category-badge">
               {{ proposal.type.join(', ') }}
             </span>
-            <span v-if="proposal.proposal_lead_id" class="lead-badge">
-              Lead: {{ proposal.proposal_lead_id }}
-            </span>
           </div>
           <h1 class="detail-title">{{ proposal.title }}</h1>
           <p class="detail-proposer">Proposed by {{ proposal.proposer_id }}</p>
+
+          <!-- Team chips -->
+          <div class="team-row">
+            <div class="team-chip lead" v-if="proposal.proposal_lead_id">
+              <Shield class="team-icon" />
+              <span>Proposal Lead</span>
+              <strong>{{ resolvedLeadName }}</strong>
+            </div>
+            <button
+              v-else-if="canAssignRoles"
+              class="assign-chip"
+              @click="openAssignRole('lead')"
+            >
+              <UserPlus class="team-icon" />
+              Assign Lead
+            </button>
+
+            <div class="team-chip steward" v-if="proposal.proposal_steward_id">
+              <Users class="team-icon" />
+              <span>Proposal Steward</span>
+              <strong>{{ resolvedStewardName }}</strong>
+            </div>
+            <button
+              v-else-if="canAssignRoles"
+              class="assign-chip"
+              @click="openAssignRole('steward')"
+            >
+              <UserPlus class="team-icon" />
+              Assign Steward
+            </button>
+          </div>
         </div>
         <q-btn
           flat
@@ -78,12 +106,34 @@
               :loading="endorsing"
             />
             <q-btn flat no-caps icon="link" label="Copy Proposal Link" class="action-btn-rounded" @click="copyLink" />
+            <q-btn
+              v-if="isProposer || isAdmin"
+              flat
+              no-caps
+              icon="edit"
+              label="Edit Proposal"
+              class="action-btn-rounded"
+              @click="showEditDialog = true"
+            />
+          </template>
+
+          <!-- Endorsing -->
+          <template v-if="proposal.status === 'endorsing'">
+            <q-btn
+              v-if="isProposer || isAdmin"
+              flat
+              no-caps
+              icon="edit"
+              label="Edit Proposal"
+              class="action-btn-rounded"
+              @click="showEditDialog = true"
+            />
           </template>
 
           <!-- In Review -->
           <template v-if="proposal.status === 'in_review'">
             <q-btn
-              v-if="isSteward"
+              v-if="isSteward || isProposalSteward"
               color="positive"
               no-caps
               icon="check"
@@ -103,7 +153,7 @@
               @click="showRejectDialog = true"
             />
             <q-btn v-if="isSteward || isProposer" flat no-caps icon="edit" label="Edit Proposal" class="action-btn-rounded" @click="showEditDialog = true" />
-            <div v-if="!isSteward && !isProposer" class="review-info-banner">
+            <div v-if="!isSteward && !isProposer && !isProposalSteward" class="review-info-banner">
               <q-icon name="info" color="primary" size="20px" />
               <span>Proposal is currently in review.</span>
             </div>
@@ -147,6 +197,7 @@
               :loading="creatingProject"
             />
           </template>
+
         </div>
 
         <!-- Endorsement Progress -->
@@ -177,68 +228,6 @@
           </div>
         </div>
 
-        <!-- Role Assignments -->
-        <div v-if="showRoleAssignments" class="roles-card">
-          <h3 class="section-title row items-center q-gutter-sm">
-            <q-icon name="groups" size="20px" />
-            <span>Assigned Roles</span>
-          </h3>
-          <div
-            v-if="proposal.lead_contribution_id || proposal.steward_contribution_id"
-            class="roles-notice q-mb-md"
-          >
-            <q-icon name="info" color="primary" size="16px" />
-            <div>
-              <div class="text-weight-medium" style="color: var(--matou-primary)">
-                Role assignment contributions available
-              </div>
-              <div class="text-caption">Assign team members to lead and steward roles.</div>
-            </div>
-          </div>
-
-          <!-- Lead row -->
-          <div class="role-row">
-            <div class="role-info">
-              <div class="text-weight-medium">Proposal Lead</div>
-              <div class="text-caption text-grey">Reviews and signs off proposal</div>
-            </div>
-            <template v-if="proposal.proposal_lead_id">
-              <span class="role-assigned">{{ proposal.proposal_lead_id }}</span>
-            </template>
-            <q-btn
-              v-else-if="proposal.lead_contribution_id && isSteward"
-              size="sm"
-              no-caps
-              label="Claim Role"
-              color="primary"
-              class="action-btn-rounded"
-              @click="claimRole('lead')"
-            />
-            <span v-else class="role-unassigned">Unassigned</span>
-          </div>
-
-          <!-- Steward row -->
-          <div class="role-row">
-            <div class="role-info">
-              <div class="text-weight-medium">Proposal Steward</div>
-              <div class="text-caption text-grey">Reviews and signs off decision plan</div>
-            </div>
-            <template v-if="proposal.proposal_steward_id">
-              <span class="role-assigned">{{ proposal.proposal_steward_id }}</span>
-            </template>
-            <q-btn
-              v-else-if="proposal.steward_contribution_id && isSteward"
-              size="sm"
-              no-caps
-              label="Claim Role"
-              color="teal"
-              class="action-btn-rounded"
-              @click="claimRole('steward')"
-            />
-            <span v-else class="role-unassigned">Unassigned</span>
-          </div>
-        </div>
-
         <!-- Decision Plan -->
         <DecisionPlanView
           v-if="decisionPlansStore.currentPlan"
@@ -255,7 +244,7 @@
             (decisionPlansStore.currentPlan.governance_actions?.length ?? 0) > 0
           "
           :can-sign-off="
-            canManageDecisionPlan &&
+            canSignOffDecisionPlan &&
             ['signed_off', 'voting_process'].includes(proposal.status) &&
             decisionPlansStore.currentPlan.status === 'submitted'
           "
@@ -450,6 +439,16 @@
       v-model="showEditDialog"
       :proposal="proposal"
       @submit="handleEditSubmit"
+      @withdraw="confirmWithdraw"
+    />
+
+    <AssignRoleDialog
+      v-model="showAssignRoleDialog"
+      :role="assignRoleTarget"
+      :members="communityMembers"
+      :is-submitting="assigningRole"
+      entity="proposal"
+      @assign="handleAssignRole"
     />
 
     <AddGovernanceActionDialog
@@ -472,6 +471,22 @@
       @vote="handleCastVote"
       @resolve="handleResolveDecision"
     />
+
+    <!-- Withdraw confirmation dialog -->
+    <q-dialog v-model="showWithdrawDialog">
+      <q-card style="min-width: 360px">
+        <q-card-section>
+          <div class="text-h6">Withdraw proposal?</div>
+        </q-card-section>
+        <q-card-section class="q-pt-none">
+          This will mark the proposal as withdrawn. This cannot be undone.
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat no-caps label="Cancel" v-close-popup />
+          <q-btn flat no-caps label="Withdraw" color="negative" @click="withdrawProposal" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <!-- Reject reason dialog -->
     <q-dialog v-model="showRejectDialog">
@@ -523,6 +538,8 @@ import ProposalHistoryModal from 'src/components/proposals/ProposalHistoryModal.
 import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.vue';
 import AddGovernanceActionDialog from 'src/components/proposals/AddGovernanceActionDialog.vue';
 import GovernanceActionModal from 'src/components/proposals/GovernanceActionModal.vue';
+import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
+import { Shield, Users, UserPlus } from 'lucide-vue-next';
 import { useIdentityStore } from 'stores/identity';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 
@@ -590,6 +607,12 @@ const showEditDialog = ref(false);
 const showAddGovernanceAction = ref(false);
 const showGovernanceAction = ref(false);
 const showRejectDialog = ref(false);
+const showWithdrawDialog = ref(false);
+const showAssignRoleDialog = ref(false);
+const assignRoleTarget = ref<'lead' | 'steward'>('lead');
+const assigningRole = ref(false);
+const communityMembersList = ref<{ id: string; name: string; role: string }[]>([]);
+const communityMembers = computed(() => communityMembersList.value);
 
 const rejectReason = ref('');
 const newComment = ref('');
@@ -604,9 +627,20 @@ const endorsementProgress = computed(() => {
   return (proposalsStore.endorsements.length / threshold) * 100;
 });
 
-const showRoleAssignments = computed(() => {
-  const s = proposal.value?.status;
-  return s === 'in_review' || s === 'signed_off' || s === 'voting_process';
+const canAssignRoles = computed(() => isAdmin.value || isSteward.value);
+
+const resolvedLeadName = computed(() => {
+  const id = proposal.value?.proposal_lead_id;
+  if (!id) return '';
+  const member = communityMembersList.value.find(m => m.id === id);
+  return member?.name || id.slice(0, 12) + '...';
+});
+
+const resolvedStewardName = computed(() => {
+  const id = proposal.value?.proposal_steward_id;
+  if (!id) return '';
+  const member = communityMembersList.value.find(m => m.id === id);
+  return member?.name || id.slice(0, 12) + '...';
 });
 
 const isProposalLead = computed(() => {
@@ -629,6 +663,10 @@ const canManageDecisionPlan = computed(() =>
   isAdmin.value || isSteward.value || isProposalLead.value,
 );
 
+const canSignOffDecisionPlan = computed(() =>
+  isAdmin.value || isSteward.value || isProposalSteward.value,
+);
+
 const isProposer = computed(() => {
   const p = proposal.value;
   if (!p) return false;
@@ -636,6 +674,7 @@ const isProposer = computed(() => {
   if (!aid) return false;
   return p.proposer_id === aid.name || p.proposer_id === aid.prefix;
 });
+
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -663,6 +702,7 @@ onMounted(() => {
   const id = route.params.id as string;
   void loadProposal(id);
   void loadMemberNames();
+  void loadCommunityMembers();
 });
 
 watch(
@@ -745,6 +785,24 @@ async function signOff() {
   }
 }
 
+function confirmWithdraw() {
+  if (!proposal.value) return;
+  showWithdrawDialog.value = true;
+}
+
+async function withdrawProposal() {
+  if (!proposal.value) return;
+  try {
+    await proposalsStore.transition(proposal.value.id, 'withdrawn');
+    showWithdrawDialog.value = false;
+    showEditDialog.value = false;
+    $q.notify({ type: 'positive', message: 'Proposal withdrawn' });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Failed to withdraw proposal';
+    $q.notify({ type: 'negative', message: msg });
+  }
+}
+
 async function confirmReject() {
   if (!proposal.value || !rejectReason.value.trim()) return;
   transitioning.value = true;
@@ -812,23 +870,64 @@ function copyLink() {
   $q.notify({ type: 'positive', message: 'Proposal link copied!' });
 }
 
-// ── Role claims ───────────────────────────────────────────────────────────────
+// ── Role assignment ───────────────────────────────────────────────────────────
 
-async function claimRole(role: 'lead' | 'steward') {
+function openAssignRole(role: 'lead' | 'steward') {
+  assignRoleTarget.value = role;
+  showAssignRoleDialog.value = true;
+}
+
+async function handleAssignRole(userId: string) {
   if (!proposal.value) return;
+  assigningRole.value = true;
   try {
-    const userId = identityStore.currentAID?.name || identityStore.currentAID?.prefix || 'unknown';
     const fields =
-      role === 'lead'
+      assignRoleTarget.value === 'lead'
         ? { proposal_lead_id: userId }
         : { proposal_steward_id: userId };
     await proposalsStore.update(proposal.value.id, fields);
+    showAssignRoleDialog.value = false;
     $q.notify({
       type: 'positive',
-      message: `You have been assigned as Proposal ${role === 'lead' ? 'Lead' : 'Steward'}`,
+      message: `Proposal ${assignRoleTarget.value === 'lead' ? 'Lead' : 'Steward'} assigned!`,
     });
+  } catch (e) {
+    $q.notify({
+      type: 'negative',
+      message: e instanceof Error ? e.message : 'Failed to assign role',
+    });
+  } finally {
+    assigningRole.value = false;
+  }
+}
+
+async function loadCommunityMembers() {
+  try {
+    const [sharedResp, communityResp] = await Promise.all([
+      fetch(`${BACKEND_URL}/api/v1/profiles/SharedProfile`),
+      fetch(`${BACKEND_URL}/api/v1/profiles/CommunityProfile`),
+    ]);
+    const shared = sharedResp.ok ? await sharedResp.json() : { profiles: [] };
+    const community = communityResp.ok ? await communityResp.json() : { profiles: [] };
+
+    const roleMap = new Map<string, string>();
+    for (const p of (community.profiles ?? []) as { data: Record<string, string> }[]) {
+      const aid = p.data?.userAID;
+      if (aid) roleMap.set(aid, p.data?.role ?? 'Member');
+    }
+
+    communityMembersList.value = ((shared.profiles ?? []) as { id: string; data: Record<string, string> }[])
+      .filter(p => p.data?.displayName && p.data?.status !== 'pending')
+      .map(p => {
+        const aid = p.data?.aid || p.id.replace('SharedProfile-', '');
+        return {
+          id: aid,
+          name: p.data.displayName,
+          role: roleMap.get(aid) ?? 'Member',
+        };
+      });
   } catch {
-    $q.notify({ type: 'negative', message: 'Failed to claim role' });
+    communityMembersList.value = [];
   }
 }
 
@@ -1095,6 +1194,7 @@ async function addComment() {
   &.approved { background: #d1fae5; color: #059669; }
   &.rejected { background: #fee2e2; color: #dc2626; }
   &.completed { background: #d1fae5; color: #059669; }
+  &.withdrawn { background: #f3f4f6; color: #6b7280; }
 }
 
 .category-badge {
@@ -1106,12 +1206,56 @@ async function addComment() {
   text-transform: capitalize;
 }
 
-.lead-badge {
-  font-size: 0.75rem;
-  padding: 3px 10px;
+.team-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.team-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
   border-radius: 12px;
-  background: #dbeafe;
-  color: #2563eb;
+  font-size: 0.82rem;
+  font-weight: 500;
+
+  &.lead {
+    background: rgba(74, 157, 156, 0.12);
+    color: var(--matou-chart-2, #4a9d9c);
+  }
+
+  &.steward {
+    background: rgba(30, 95, 116, 0.1);
+    color: var(--matou-accent, #4a9d9c);
+  }
+}
+
+.assign-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 12px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  background: transparent;
+  border: 1px dashed var(--matou-border);
+  color: var(--matou-muted-foreground);
+  cursor: pointer;
+  transition: all 0.12s ease;
+
+  &:hover {
+    border-color: var(--matou-primary);
+    color: var(--matou-primary);
+  }
+}
+
+.team-icon {
+  width: 14px;
+  height: 14px;
 }
 
 .detail-title {

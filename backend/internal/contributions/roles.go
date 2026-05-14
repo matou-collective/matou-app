@@ -72,9 +72,10 @@ const (
 	ActionApproveSubContrib  Action = "approve_sub_contribution"
 
 	// Proposal actions
-	ActionSignOffProposal Action = "sign_off_proposal"
-	ActionRejectProposal  Action = "reject_proposal"
-	ActionEditProposal    Action = "edit_proposal"
+	ActionSignOffProposal  Action = "sign_off_proposal"
+	ActionRejectProposal   Action = "reject_proposal"
+	ActionEditProposal     Action = "edit_proposal"
+	ActionWithdrawProposal Action = "withdraw_proposal"
 
 	// Archive & lifecycle actions
 	ActionArchiveProject       Action = "archive_project"
@@ -130,6 +131,7 @@ var actionPermissions = map[Action][]Role{
 	ActionSignOffProposal:     {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
 	ActionRejectProposal:      {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
 	ActionEditProposal:        {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionWithdrawProposal:    {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
 	ActionArchiveProject:           leadStewardScope,
 	ActionArchiveMilestone:         leadStewardScope,
 	ActionArchiveContribution:      leadStewardScope,

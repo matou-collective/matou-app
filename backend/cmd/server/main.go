@@ -581,7 +581,7 @@ func main() {
 	notificationsHandler.RegisterRoutes(mux)
 	proposalsHandler.RegisterRoutes(mux, roleLookup)
 	projectsHandler.RegisterRoutes(mux, roleLookup)
-	decisionPlansHandler.RegisterRoutes(mux)
+	decisionPlansHandler.RegisterRoutes(mux, roleLookup)
 	implPlansHandler.RegisterRoutes(mux)
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)

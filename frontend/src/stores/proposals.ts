@@ -41,7 +41,9 @@ export const useProposalsStore = defineStore('proposals', () => {
     error.value = null;
     try {
       const result = await apiList();
-      proposals.value = result.proposals || [];
+      proposals.value = (result.proposals || []).slice().sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      );
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to fetch proposals';
       log.error('fetchProposals failed: %s', error.value);
@@ -67,7 +69,7 @@ export const useProposalsStore = defineStore('proposals', () => {
     error.value = null;
     try {
       const proposal = await apiCreate(req);
-      proposals.value.push(proposal);
+      proposals.value.unshift(proposal);
       log.info('Proposal created: %s', proposal.id);
       return proposal;
     } catch (e) {
