@@ -68,15 +68,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useActivityStore } from 'stores/activity';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useIdentityStore } from 'stores/identity';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import FeedCard from 'src/components/activity/FeedCard.vue';
 import CreateNoticeDialog from 'src/components/activity/CreateNoticeDialog.vue';
 
 const activityStore = useActivityStore();
-const { isSteward, checkAdminStatus } = useAdminAccess();
+const identityStore = useIdentityStore();
+const isSteward = computed(() => identityStore.isSteward);
 const { lastEvent } = useBackendEvents();
 
 const showCreateDialog = ref(false);
@@ -95,7 +96,6 @@ watch(lastEvent, (event) => {
 });
 
 onMounted(async () => {
-  await checkAdminStatus();
   activityStore.refreshAll();
   activityStore.startPolling(15_000);
 });

@@ -34,13 +34,17 @@
           <Bell class="nav-icon" />
           <span>Notices</span>
         </button>
-        <button class="nav-item disabled" disabled>
+        <button class="nav-item" :class="{ active: route.name === 'projects' }" @click="router.push({ name: 'projects' })">
           <Target class="nav-icon" />
-          <span>Projects<q-tooltip anchor="center right" self="center left">Coming soon</q-tooltip></span>
+          <span>Projects</span>
         </button>
-        <button class="nav-item disabled" disabled>
+        <button class="nav-item" :class="{ active: route.name === 'proposals' }" @click="router.push({ name: 'proposals' })">
           <Vote class="nav-icon" />
-          <span>Proposals<q-tooltip anchor="center right" self="center left">Coming soon</q-tooltip></span>
+          <span>Proposals</span>
+        </button>
+        <button class="nav-item" :class="{ active: route.name === 'contributions' || route.name === 'contribution-detail' }" @click="router.push({ name: 'contributions' })">
+          <Hammer class="nav-icon" />
+          <span>Contributions</span>
         </button>
       </nav>
 
@@ -75,6 +79,7 @@ import {
   Target,
   Vote,
   MessageSquare,
+  Hammer,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';

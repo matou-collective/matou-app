@@ -105,9 +105,13 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 		return nil
 	}
 
-	// Only process chat types — profiles/credentials are handled elsewhere
+	// Only process chat and contribution system types — profiles/credentials are handled elsewhere
 	switch objectType {
 	case "ChatChannel", "ChatMessage", "MessageReaction":
+		// proceed
+	case TypeProject, TypeImplementationPlan, TypeContribution, TypeMilestone,
+		TypeProposal, TypeDecisionPlan, TypeGovernanceAction, TypeEndorsement,
+		"proposal_comment":
 		// proceed
 	default:
 		l.seeded = true
@@ -283,5 +287,181 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 				"source":    "p2p",
 			},
 		})
+
+	case TypeProject:
+		var data struct {
+			Name   string `json:"name"`
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+
+		// Prefer "name" field; fall back to "title" for backward compatibility.
+		name := data.Name
+		if name == "" {
+			name = data.Title
+		}
+
+		l.broker.Broadcast(SSEEvent{
+			Type: "project_updated",
+			Data: map[string]interface{}{
+				"treeId":     p.TreeID,
+				"project_id": p.ID,
+				"name":       name,
+				"status":     data.Status,
+				"change":     changeLabel(existed),
+				"source":     "p2p",
+			},
+		})
+
+	case TypeImplementationPlan:
+		var data struct {
+			ProjectID string `json:"project_id"`
+			Status    string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+
+		l.broker.Broadcast(SSEEvent{
+			Type: "plan_updated",
+			Data: map[string]interface{}{
+				"treeId":     p.TreeID,
+				"plan_id":    p.ID,
+				"project_id": data.ProjectID,
+				"status":     data.Status,
+				"change":     changeLabel(existed),
+				"source":     "p2p",
+			},
+		})
+
+	case TypeContribution:
+		var data struct {
+			ProjectID string `json:"project_id"`
+			Title     string `json:"title"`
+			Status    string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+
+		l.broker.Broadcast(SSEEvent{
+			Type: "contribution_updated",
+			Data: map[string]interface{}{
+				"treeId":          p.TreeID,
+				"contribution_id": p.ID,
+				"project_id":      data.ProjectID,
+				"title":           data.Title,
+				"status":          data.Status,
+				"change":          changeLabel(existed),
+				"source":          "p2p",
+			},
+		})
+
+	case TypeMilestone:
+		var data struct {
+			ProjectID            string `json:"project_id"`
+			ImplementationPlanID string `json:"implementation_plan_id"`
+			Title                string `json:"title"`
+			Status               string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+
+		l.broker.Broadcast(SSEEvent{
+			Type: "milestone_updated",
+			Data: map[string]interface{}{
+				"treeId":       p.TreeID,
+				"milestone_id": p.ID,
+				"project_id":   data.ProjectID,
+				"plan_id":      data.ImplementationPlanID,
+				"title":        data.Title,
+				"status":       data.Status,
+				"change":       changeLabel(existed),
+				"source":       "p2p",
+			},
+		})
+
+	case TypeProposal:
+		var data struct {
+			Title  string `json:"title"`
+			Status string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "proposal_updated",
+			Data: map[string]interface{}{
+				"treeId":      p.TreeID,
+				"proposal_id": p.ID,
+				"title":       data.Title,
+				"status":      data.Status,
+				"change":      changeLabel(existed),
+				"source":      "p2p",
+			},
+		})
+
+	case TypeDecisionPlan:
+		var data struct {
+			ProposalID string `json:"proposal_id"`
+			Status     string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "decision_plan_updated",
+			Data: map[string]interface{}{
+				"treeId":      p.TreeID,
+				"plan_id":     p.ID,
+				"proposal_id": data.ProposalID,
+				"status":      data.Status,
+				"change":      changeLabel(existed),
+				"source":      "p2p",
+			},
+		})
+
+	case TypeGovernanceAction:
+		l.broker.Broadcast(SSEEvent{
+			Type: "governance_action_updated",
+			Data: map[string]interface{}{
+				"treeId":    p.TreeID,
+				"action_id": p.ID,
+				"change":    changeLabel(existed),
+				"source":    "p2p",
+			},
+		})
+
+	case TypeEndorsement:
+		var data struct {
+			ProposalID string `json:"proposal_id"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "proposal:endorsed",
+			Data: map[string]interface{}{
+				"treeId":      p.TreeID,
+				"proposal_id": data.ProposalID,
+				"change":      changeLabel(existed),
+				"source":      "p2p",
+			},
+		})
+
+	case "proposal_comment":
+		var data struct {
+			ProposalID string `json:"proposal_id"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "proposal:comment_added",
+			Data: map[string]interface{}{
+				"treeId":      p.TreeID,
+				"proposal_id": data.ProposalID,
+				"comment_id":  p.ID,
+				"change":      changeLabel(existed),
+				"source":      "p2p",
+			},
+		})
 	}
+}
+
+// changeLabel returns "created" when existed is false, "updated" otherwise.
+// Used to label SSE events emitted for contribution system object types.
+func changeLabel(existed bool) string {
+	if existed {
+		return "updated"
+	}
+	return "created"
 }

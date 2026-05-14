@@ -1,3 +1,6 @@
+# Superpowers brainstorm artifacts
+.superpowers/
+
 # Production config (infrastructure-specific)
 config/
 
@@ -121,3 +124,4 @@ frontend/config/client-production.yml
 .claude/settings.local.json
 .claude/agent-memory/
 .claude/worktrees/
+.claude/*.lock

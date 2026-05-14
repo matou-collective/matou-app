@@ -19,9 +19,11 @@ import (
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/api"
 	"github.com/matou-dao/backend/internal/config"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/email"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/keri"
+	"github.com/matou-dao/backend/internal/notifications"
 	bgSync "github.com/matou-dao/backend/internal/sync"
 	matouTypes "github.com/matou-dao/backend/internal/types"
 )
@@ -154,6 +156,23 @@ func (a *chatPersisterAdapter) PersistChatObject(ctx context.Context, p *anysync
 		})
 	}
 	return nil
+}
+
+// contribNotifierAdapter bridges api.ContribNotifier to notifications.Service.
+type contribNotifierAdapter struct {
+	svc *notifications.Service
+}
+
+func (a *contribNotifierAdapter) Notify(n *api.ContribNotification) error {
+	return a.svc.Notify(&notifications.Notification{
+		Type:        notifications.NotificationType(n.Type),
+		RecipientID: n.RecipientID,
+		Title:       n.Title,
+		Message:     n.Message,
+		EntityID:    n.EntityID,
+		EntityType:  n.EntityType,
+		Channel:     notifications.ChannelInApp,
+	})
 }
 
 func main() {
@@ -455,7 +474,7 @@ func main() {
 	credHandler := api.NewCredentialsHandler(keriClient, store)
 	syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore, userIdentity)
 	trustHandler := api.NewTrustHandler(store, orgConfigHandler.GetOrgAID(), spaceManager)
-	healthHandler := api.NewHealthHandler(store, spaceStore, orgConfigHandler.GetOrgAID(), orgConfigHandler.GetAdminAID())
+	healthHandler := api.NewHealthHandler(store, spaceStore, orgConfigHandler.GetOrgAID, orgConfigHandler.GetAdminAID)
 	spacesHandler := api.NewSpacesHandler(spaceManager, store, userIdentity, spaceManager.FileManager())
 	emailSender := email.NewSender(cfg.SMTP)
 	invitesHandler := api.NewInvitesHandler(emailSender)
@@ -467,6 +486,51 @@ func main() {
 	noticesHandler := api.NewNoticesHandler(spaceManager, userIdentity, eventBroker)
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
 	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store, chatListener)
+
+	// Initialize contributions system
+	fmt.Println("Initializing contributions system...")
+	contribStoreAdapter := anysync.NewObjectStoreAdapter(spaceManager.ObjectTreeManager(), sdkClient, userIdentity)
+	contribService := contributions.NewService(contribStoreAdapter)
+	notifBroadcaster := notifications.NewSSEBrokerAdapter(eventBroker)
+	notifEmailAdapter := notifications.NewEmailAdapter(emailSender)
+	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
+	contribNotifier := &contribNotifierAdapter{svc: notifService}
+	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
+	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
+	credentialRoleLookup := api.NewCredentialRoleLookup(store)
+	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
+	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
+
+	// Grant community_admin role to all configured org admins.
+	// Also register a callback so admin AIDs are updated whenever org config changes
+	// (e.g. when org setup runs after server start).
+	setAdminAIDsFromConfig := func(orgData *api.OrgConfigData) {
+		adminAIDs := make([]string, 0, len(orgData.Admins))
+		for _, a := range orgData.Admins {
+			if a.AID != "" {
+				adminAIDs = append(adminAIDs, a.AID)
+			}
+		}
+		profileRoleLookup.SetAdminAIDs(adminAIDs)
+		log.Printf("[RBAC] Updated admin AIDs: %v", adminAIDs)
+	}
+	if orgConfigHandler.IsConfigured() {
+		setAdminAIDsFromConfig(orgConfigHandler.GetConfig())
+	}
+	orgConfigHandler.AddOnUpdate(setAdminAIDsFromConfig)
+
+	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
+	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)
+	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager, contribNotifier)
+	implPlansHandler := api.NewImplementationPlansHandler(contribService, spaceManager)
+	milestonesHandler := api.NewMilestonesHandler(contribService, spaceManager)
+	contributionsHandler := api.NewContributionsHandler(contribService, spaceManager, contribNotifier)
+
+	// Wire event broker to contribution and plan handlers for SSE broadcasts
+	contributionsHandler.SetBroker(eventBroker)
+	implPlansHandler.SetBroker(eventBroker)
+	fmt.Println("  Contributions system initialized")
+	fmt.Println()
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -515,6 +579,12 @@ func main() {
 	filesHandler.RegisterRoutes(mux)
 	chatHandler.RegisterRoutes(mux)
 	notificationsHandler.RegisterRoutes(mux)
+	proposalsHandler.RegisterRoutes(mux, roleLookup)
+	projectsHandler.RegisterRoutes(mux, roleLookup)
+	decisionPlansHandler.RegisterRoutes(mux, roleLookup)
+	implPlansHandler.RegisterRoutes(mux)
+	milestonesHandler.RegisterRoutes(mux, roleLookup)
+	contributionsHandler.RegisterRoutes(mux, roleLookup)
 	orgConfigHandler.RegisterRoutes(mux)
 
 	// Start server
@@ -610,6 +680,47 @@ func main() {
 	fmt.Println("  DELETE /api/v1/chat/messages/{id}/reactions/{emoji} - Remove reaction")
 	fmt.Println("  GET  /api/v1/chat/read-cursors      - Get read cursors")
 	fmt.Println("  PUT  /api/v1/chat/read-cursors      - Update read cursor")
+	fmt.Println()
+	fmt.Println("  Contributions System:")
+	fmt.Println("  GET  /api/v1/proposals                    - List proposals")
+	fmt.Println("  POST /api/v1/proposals                    - Create proposal")
+	fmt.Println("  GET  /api/v1/proposals/{id}               - Get proposal")
+	fmt.Println("  POST /api/v1/proposals/{id}/transition    - Transition proposal status")
+	fmt.Println("  POST /api/v1/proposals/{id}/endorse       - Endorse proposal")
+	fmt.Println("  GET  /api/v1/proposals/{id}/endorsements  - List endorsements")
+	fmt.Println("  GET  /api/v1/projects                     - List projects")
+	fmt.Println("  POST /api/v1/projects                     - Create project")
+	fmt.Println("  GET  /api/v1/projects/{id}                - Get project")
+	fmt.Println("  PUT  /api/v1/projects/{id}                - Update project")
+	fmt.Println("  DELETE /api/v1/projects/{id}              - Delete project")
+	fmt.Println("  POST /api/v1/projects/{id}/link-proposal  - Link proposal to project")
+	fmt.Println("  GET  /api/v1/decision-plans               - List decision plans")
+	fmt.Println("  POST /api/v1/decision-plans               - Create decision plan")
+	fmt.Println("  GET  /api/v1/decision-plans/{id}          - Get decision plan")
+	fmt.Println("  POST /api/v1/decision-plans/{id}/transition - Transition decision plan")
+	fmt.Println("  POST /api/v1/decision-plans/{id}/actions  - Add governance action")
+	fmt.Println("  GET  /api/v1/implementation-plans         - List implementation plans")
+	fmt.Println("  POST /api/v1/implementation-plans         - Create implementation plan")
+	fmt.Println("  GET  /api/v1/implementation-plans/{id}    - Get implementation plan")
+	fmt.Println("  POST /api/v1/implementation-plans/{id}/milestones - Add milestone")
+	fmt.Println("  GET  /api/v1/contributions                - List contributions")
+	fmt.Println("  POST /api/v1/contributions                - Create contribution")
+	fmt.Println("  GET  /api/v1/contributions/{id}           - Get contribution")
+	fmt.Println("  PUT  /api/v1/contributions/{id}           - Update contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/transition - Transition contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/register  - Register interest")
+	fmt.Println("  GET  /api/v1/contributions/{id}/registrations - List registrations")
+	fmt.Println("  POST /api/v1/contributions/{id}/assign    - Assign contributor")
+	fmt.Println("  POST /api/v1/contributions/{id}/confirm   - Confirm contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/share     - Share contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/offer     - Offer contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/accept-offer - Accept offered contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/submit-evidence - Submit evidence")
+	fmt.Println("  POST /api/v1/contributions/{id}/review    - Review contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/sign-off  - Sign off contribution")
+	fmt.Println("  POST /api/v1/contributions/{id}/approve-sub - Approve sub-contribution")
+	fmt.Println("  POST /api/v1/implementation-plans/{id}/sign-off - Sign off plan")
+	fmt.Println("  GET  /api/v1/projects/{id}/contributions  - List project contributions")
 	fmt.Println()
 	fmt.Println("  Org Config:")
 	fmt.Println("  GET  /api/v1/org/config               - Get org configuration")

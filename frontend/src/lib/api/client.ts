@@ -4,6 +4,7 @@
  */
 
 import { getBackendUrl, getBackendUrlSync } from '../platform';
+import { useIdentityStore } from 'stores/identity';
 
 /**
  * Resolved backend URL. Call initBackendUrl() once at boot to populate.
@@ -17,6 +18,26 @@ export let BACKEND_URL = getBackendUrlSync();
  */
 export async function initBackendUrl(): Promise<void> {
   BACKEND_URL = await getBackendUrl();
+}
+
+/**
+ * Build request headers with JSON content type and the current user's AID
+ * for RBAC-protected endpoints. Falls back gracefully if no identity is set.
+ */
+export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...extra,
+  };
+  try {
+    const identity = useIdentityStore();
+    if (identity.aidPrefix) {
+      headers['X-User-AID'] = identity.aidPrefix;
+    }
+  } catch {
+    // Pinia not yet initialized — skip auth header
+  }
+  return headers;
 }
 
 export interface SyncCredentialsRequest {

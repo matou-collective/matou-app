@@ -35,7 +35,7 @@ func setupHealthTestHandler(t *testing.T) (*HealthHandler, *anystore.LocalStore,
 		os.RemoveAll(tmpDir)
 	}
 
-	handler := NewHealthHandler(store, spaceStore, "EOrg123456789", "EAdmin123456789")
+	handler := NewHealthHandler(store, spaceStore, func() string { return "EOrg123456789" }, func() string { return "EAdmin123456789" })
 	return handler, store, spaceStore, cleanup
 }
 
@@ -50,11 +50,11 @@ func TestNewHealthHandler(t *testing.T) {
 	if handler == nil {
 		t.Fatal("expected non-nil handler")
 	}
-	if handler.orgAID != "EOrg123456789" {
-		t.Errorf("expected orgAID EOrg123456789, got %s", handler.orgAID)
+	if handler.getOrgAID() != "EOrg123456789" {
+		t.Errorf("expected orgAID EOrg123456789, got %s", handler.getOrgAID())
 	}
-	if handler.adminAID != "EAdmin123456789" {
-		t.Errorf("expected adminAID EAdmin123456789, got %s", handler.adminAID)
+	if handler.getAdminAID() != "EAdmin123456789" {
+		t.Errorf("expected adminAID EAdmin123456789, got %s", handler.getAdminAID())
 	}
 }
 
