@@ -193,8 +193,7 @@
               no-caps
               icon="rocket_launch"
               label="Create Project"
-              @click="createProject"
-              :loading="creatingProject"
+              @click="showCreateProjectDialog = true"
             />
           </template>
 
@@ -451,6 +450,17 @@
       @assign="handleAssignRole"
     />
 
+    <ProjectForm
+      v-model="showCreateProjectDialog"
+      :is-submitting="creatingProject"
+      :submit-error="createProjectError"
+      :prefill="{
+        title: proposal?.title ?? '',
+        description: proposal?.description ?? '',
+      }"
+      @submit="handleCreateProjectSubmit"
+    />
+
     <AddGovernanceActionDialog
       v-model="showAddGovernanceAction"
       :existing-actions="decisionPlansStore.currentPlan?.governance_actions ?? []"
@@ -539,8 +549,11 @@ import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.
 import AddGovernanceActionDialog from 'src/components/proposals/AddGovernanceActionDialog.vue';
 import GovernanceActionModal from 'src/components/proposals/GovernanceActionModal.vue';
 import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
+import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import { Shield, Users, UserPlus } from 'lucide-vue-next';
 import { useIdentityStore } from 'stores/identity';
+import { useProjectsStore } from 'stores/projects';
+import { useOnboardingStore } from 'stores/onboarding';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 
 // ── Router / store setup ──────────────────────────────────────────────────────
@@ -550,6 +563,8 @@ const router = useRouter();
 const $q = useQuasar();
 const proposalsStore = useProposalsStore();
 const decisionPlansStore = useDecisionPlansStore();
+const projectsStore = useProjectsStore();
+const onboardingStore = useOnboardingStore();
 const identityStore = useIdentityStore();
 const isAdmin = computed(() => identityStore.isAdmin);
 const isSteward = computed(() => identityStore.isSteward);
@@ -611,6 +626,8 @@ const showWithdrawDialog = ref(false);
 const showAssignRoleDialog = ref(false);
 const assignRoleTarget = ref<'lead' | 'steward'>('lead');
 const assigningRole = ref(false);
+const showCreateProjectDialog = ref(false);
+const createProjectError = ref<string | null>(null);
 const communityMembersList = ref<{ id: string; name: string; role: string }[]>([]);
 const communityMembers = computed(() => communityMembersList.value);
 
@@ -1088,30 +1105,27 @@ async function handleResolveDecision(actionId: string) {
 
 // ── Project creation ──────────────────────────────────────────────────────────
 
-async function createProject() {
+async function handleCreateProjectSubmit(data: { title: string; description: string }) {
   if (!proposal.value) return;
   creatingProject.value = true;
+  createProjectError.value = null;
   try {
-    const response = await fetch(`${BACKEND_URL}/api/v1/projects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: proposal.value.title,
-        description: proposal.value.description,
-        created_by: 'current-user',
-      }),
+    const project = await projectsStore.create({
+      title: data.title,
+      description: data.description,
+      created_by: onboardingStore.profile.name
+        || identityStore.currentAID?.name
+        || identityStore.currentAID?.prefix
+        || 'current-user',
     });
-    if (!response.ok) throw new Error('Failed to create project');
-    const project = (await response.json()) as { id: string };
-    await fetch(`${BACKEND_URL}/api/v1/projects/${project.id}/link-proposal`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ proposal_id: proposal.value.id }),
-    });
+    await projectsStore.linkProposal(project.id, proposal.value.id);
+    linkedProject.value = project as unknown as Project;
+    showCreateProjectDialog.value = false;
     $q.notify({ type: 'positive', message: 'Project created from proposal!' });
-    void router.push({ name: 'projects' });
-  } catch {
-    $q.notify({ type: 'negative', message: 'Failed to create project' });
+    void router.push({ name: 'project-detail', params: { id: project.id } });
+  } catch (e) {
+    createProjectError.value = e instanceof Error ? e.message : 'Failed to create project';
+    $q.notify({ type: 'negative', message: createProjectError.value });
   } finally {
     creatingProject.value = false;
   }

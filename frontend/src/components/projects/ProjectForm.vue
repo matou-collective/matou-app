@@ -117,6 +117,7 @@ interface Props {
   availableProposals?: Proposal[];
   linking?: boolean;
   canDelete?: boolean;
+  prefill?: { title?: string; description?: string } | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -126,6 +127,7 @@ const props = withDefaults(defineProps<Props>(), {
   availableProposals: () => [],
   linking: false,
   canDelete: false,
+  prefill: null,
 });
 
 const emit = defineEmits<{
@@ -170,10 +172,16 @@ watch(
   { immediate: true },
 );
 
-// Reset when dialog closes
+// Reset when dialog closes; apply prefill (create mode) when it opens
 watch(
   () => props.modelValue,
   (open) => {
+    if (open && !props.project && props.prefill) {
+      form.value = {
+        title: props.prefill.title ?? '',
+        description: props.prefill.description ?? '',
+      };
+    }
     if (!open) resetForm();
   },
 );

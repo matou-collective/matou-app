@@ -86,43 +86,6 @@
           </q-input>
         </div>
 
-        <!-- Success criteria -->
-        <div>
-          <div class="text-subtitle2 q-mb-sm">Success Criteria</div>
-          <div
-            v-for="(_, i) in form.success_criteria"
-            :key="i"
-            class="row q-col-gutter-sm q-mb-sm"
-          >
-            <div class="col">
-              <q-input
-                v-model="form.success_criteria[i]"
-                :label="`Criterion ${i + 1}`"
-                outlined
-                dense
-              />
-            </div>
-            <div class="col-auto">
-              <q-btn
-                flat
-                round
-                icon="remove_circle_outline"
-                color="negative"
-                @click="form.success_criteria.splice(i, 1)"
-                :disable="form.success_criteria.length <= 1"
-              />
-            </div>
-          </div>
-          <q-btn
-            flat
-            size="sm"
-            icon="add"
-            no-caps
-            label="Add Criterion"
-            color="primary"
-            @click="form.success_criteria.push('')"
-          />
-        </div>
       </q-card-section>
 
       <!-- Danger Zone (edit mode only) -->
