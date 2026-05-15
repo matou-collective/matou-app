@@ -88,6 +88,7 @@ import { useTypesStore } from 'stores/types';
 import { useChatStore } from 'stores/chat';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useKERINotificationService } from 'src/composables/useKERINotificationService';
+import { initNotifications, registerNotificationClickHandler } from 'src/lib/notifications';
 import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
 
@@ -129,6 +130,15 @@ const userAvatarUrl = computed(() => {
 onMounted(() => {
   console.log('[DashboardLayout] mounted, route:', route.name);
   connectBackendEvents();
+
+  // Register click router first, then init so Electron's IPC bridge picks it up.
+  registerNotificationClickHandler((data) => {
+    if (data.route === 'chat' && data.channelId) {
+      router.push({ name: 'chat' }).catch(() => {});
+      chatStore.selectChannel(data.channelId);
+    }
+  });
+  initNotifications();
 
   // Fetch org config once at startup (cached for entire session)
   fetchOrgConfig().catch(err => console.warn('[DashboardLayout] Org config fetch failed:', err));

@@ -1,9 +1,12 @@
 /// <reference types="vite/client" />
 
 interface ElectronAPI {
+  isElectron: true;
   secureStorageGet(key: string): Promise<string | null>;
   secureStorageSet(key: string, value: string): Promise<void>;
   secureStorageRemove(key: string): Promise<void>;
+  notify(payload: { title: string; body: string; data?: Record<string, string> }): void;
+  onNotificationClicked(callback: (data: Record<string, string>) => void): void;
 }
 
 interface Window {

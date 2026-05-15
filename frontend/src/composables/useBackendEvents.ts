@@ -10,6 +10,7 @@ import { ref } from 'vue';
 import { Notify } from 'quasar';
 import { useRouter } from 'vue-router';
 import { BACKEND_URL } from 'src/lib/api/client';
+import { maybeNotify } from 'src/lib/notifications';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { useChatStore } from 'stores/chat';
@@ -207,6 +208,14 @@ function connect() {
       const profilesStore = useProfilesStore();
       const profile = profilesStore.profilesByAid[data.senderAid as string];
       const displayName = profile?.displayName || data.senderName;
+
+      // OS-level notification when window is unfocused; in-app toast otherwise.
+      maybeNotify({
+        title: `${displayName} in #${channelName}`,
+        body: contentPreview,
+        data: { route: 'chat', channelId: data.channelId as string },
+      });
+
       Notify.create({
         html: true,
         message: `<strong>${displayName}</strong><br>${contentPreview}`,
