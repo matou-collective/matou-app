@@ -409,6 +409,81 @@ func TestInitChange_RoundTrip_WithDiffState(t *testing.T) {
 	}
 }
 
+// TestUpsertFieldsSemantics verifies the invariant ObjectTreeManager.UpsertFields
+// relies on: when a partial update is overlaid on the current state and the
+// merged map is passed to DiffState, no unset ops are emitted for fields that
+// were already present. This is the contract that prevents the wipe bug — where
+// HandleRemoveMember and HandleUpdateMemberRole previously passed only the
+// fields they wanted to change, causing DiffState to unset everything else.
+func TestUpsertFieldsSemantics(t *testing.T) {
+	// Simulate a SharedProfile before removal.
+	currentFields := map[string]json.RawMessage{
+		"displayName": json.RawMessage(`"Engie"`),
+		"avatar":      json.RawMessage(`"bafy123"`),
+		"bio":         json.RawMessage(`"founding member"`),
+		"status":      json.RawMessage(`"approved"`),
+	}
+
+	// What HandleRemoveMember wants to change.
+	partial := map[string]json.RawMessage{
+		"status":    json.RawMessage(`"removed"`),
+		"removedAt": json.RawMessage(`"2026-05-14T00:00:00Z"`),
+	}
+
+	// Buggy path: pass partial directly. DiffState unsets every preserved field.
+	buggyDiff := DiffState(&ObjectState{Fields: currentFields}, partial)
+	unsetCount := 0
+	for _, op := range buggyDiff.Ops {
+		if op.Op == "unset" {
+			unsetCount++
+		}
+	}
+	if unsetCount != 3 {
+		t.Errorf("expected 3 unset ops (displayName, avatar, bio) from the buggy path, got %d", unsetCount)
+	}
+
+	// Fixed path (mirrors UpsertFields): overlay partial on current, then diff.
+	merged := make(map[string]json.RawMessage, len(currentFields)+len(partial))
+	for k, v := range currentFields {
+		merged[k] = v
+	}
+	for k, v := range partial {
+		merged[k] = v
+	}
+	fixedDiff := DiffState(&ObjectState{Fields: currentFields}, merged)
+	if fixedDiff == nil {
+		t.Fatal("expected non-nil diff (status changed)")
+	}
+	for _, op := range fixedDiff.Ops {
+		if op.Op == "unset" {
+			t.Errorf("UpsertFields invariant violated: unset op for field %q", op.Field)
+		}
+	}
+
+	// Only changed/new fields should appear as set ops.
+	setOps := map[string]string{}
+	for _, op := range fixedDiff.Ops {
+		if op.Op == "set" {
+			setOps[op.Field] = string(op.Value)
+		}
+	}
+	if got := setOps["status"]; got != `"removed"` {
+		t.Errorf("status: expected %q, got %q", `"removed"`, got)
+	}
+	if got := setOps["removedAt"]; got != `"2026-05-14T00:00:00Z"` {
+		t.Errorf("removedAt: expected timestamp, got %q", got)
+	}
+	if _, ok := setOps["displayName"]; ok {
+		t.Errorf("displayName must not be in diff ops (unchanged)")
+	}
+	if _, ok := setOps["avatar"]; ok {
+		t.Errorf("avatar must not be in diff ops (unchanged)")
+	}
+	if _, ok := setOps["bio"]; ok {
+		t.Errorf("bio must not be in diff ops (unchanged)")
+	}
+}
+
 func TestObjectState_ToJSON_RoundTrip(t *testing.T) {
 	// Build state from fields
 	fields := map[string]json.RawMessage{

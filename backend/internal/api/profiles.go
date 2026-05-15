@@ -750,7 +750,7 @@ func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if _, err := objMgr.UpdateObject(ctx, roSpaceID, targetObj.ID, newFields, keys.SigningKey); err != nil {
+	if _, err := objMgr.UpsertFields(ctx, roSpaceID, targetObj.ID, newFields, keys.SigningKey); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to update profile: %v", err),
 		})
@@ -845,7 +845,7 @@ func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Requ
 	}
 
 	communityProfileID := fmt.Sprintf("CommunityProfile-%s", memberAID)
-	if _, err := objMgr.UpdateObject(ctx, roSpaceID, communityProfileID, roFields, roKeys.SigningKey); err != nil {
+	if _, err := objMgr.UpsertFields(ctx, roSpaceID, communityProfileID, roFields, roKeys.SigningKey); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to update CommunityProfile: %v", err),
 		})
@@ -867,7 +867,7 @@ func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Requ
 	}
 
 	sharedProfileID := fmt.Sprintf("SharedProfile-%s", memberAID)
-	if _, err := objMgr.UpdateObject(ctx, communitySpaceID, sharedProfileID, communityFields, communityKeys.SigningKey); err != nil {
+	if _, err := objMgr.UpsertFields(ctx, communitySpaceID, sharedProfileID, communityFields, communityKeys.SigningKey); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to update SharedProfile: %v", err),
 		})

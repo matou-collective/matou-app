@@ -181,6 +181,26 @@ func (m *ObjectTreeManager) UpdateObject(
 	return result.Heads[0], nil
 }
 
+// UpsertFields reads an object's latest state and writes a change that sets only
+// the provided fields, leaving every other existing field untouched. Use this
+// for partial updates (status flips, role changes, single-field edits) where
+// UpdateObject's full-replace semantics — driven by DiffState emitting "unset"
+// ops for any current field not in newFields — would otherwise wipe data.
+func (m *ObjectTreeManager) UpsertFields(ctx context.Context, spaceID, objectID string, partial map[string]json.RawMessage, signingKey crypto.PrivKey) (string, error) {
+	existing, err := m.ReadObject(ctx, spaceID, objectID)
+	if err != nil {
+		return "", fmt.Errorf("reading %s for upsert: %w", objectID, err)
+	}
+	merged, err := FieldsFromJSON(existing.Data)
+	if err != nil {
+		return "", fmt.Errorf("parsing %s state for upsert: %w", objectID, err)
+	}
+	for k, v := range partial {
+		merged[k] = v
+	}
+	return m.UpdateObject(ctx, spaceID, objectID, merged, signingKey)
+}
+
 // AddObject adds an object using the legacy ObjectPayload format.
 // For new objects, it creates a tree. For existing objects, it updates.
 // This provides backward compatibility with existing API handlers.
