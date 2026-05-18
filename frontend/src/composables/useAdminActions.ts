@@ -477,6 +477,57 @@ export function useAdminActions() {
     }
   }
 
+  /**
+   * Adopt witnesses on the current org's group AID. Used to migrate orgs
+   * created before the witness-fix landed (`toad: 0, wits: []`) into a
+   * witness-backed shape so the multisig member-promotion flow can run.
+   *
+   * Idempotent: a no-op for orgs that already have witnesses.
+   */
+  async function runAdoptWitnesses(
+    onStep?: (step: string) => void,
+  ): Promise<'migrated' | 'already-migrated' | 'failed'> {
+    const client = keriClient.getSignifyClient();
+    if (!client) {
+      console.error('[AdminActions] No SignifyClient for adopt-witnesses');
+      return 'failed';
+    }
+    if (isProcessing.value) {
+      console.warn('[AdminActions] Already processing — refusing concurrent adopt-witnesses');
+      return 'failed';
+    }
+    isProcessing.value = true;
+    processingStep.value = 'Adopting witnesses...';
+    onStep?.('Adopting witnesses...');
+    error.value = null;
+
+    try {
+      const orgAidPrefix = await getOrgAidName();
+      const aids = await client.identifiers().list();
+      const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === orgAidPrefix);
+      const orgName = orgAid?.name;
+      if (!orgName) throw new Error('Could not find org AID name');
+
+      const personalAid = aids.aids?.find((a: { prefix: string; name: string }) =>
+        a.prefix !== orgAidPrefix && !a.name?.includes('org')
+      );
+      if (!personalAid) throw new Error('Could not find admin personal AID');
+
+      const result = await keriClient.adoptOrgWitnesses(orgName, personalAid.name);
+      onStep?.('Complete');
+      console.log(`[AdminActions] adopt-witnesses result: ${result}`);
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[AdminActions] Adopt witnesses failed:', err);
+      error.value = msg;
+      return 'failed';
+    } finally {
+      isProcessing.value = false;
+      processingStep.value = '';
+    }
+  }
+
   /** @deprecated Use upgradeMemberToSteward instead */
   async function addStewardToOrgMultisig(stewardAid: string): Promise<boolean> {
     return upgradeMemberToSteward(stewardAid, 'Community Steward');
@@ -758,6 +809,7 @@ export function useAdminActions() {
     approveRegistration,
     addStewardToOrgMultisig,
     upgradeMemberToSteward,
+    runAdoptWitnesses,
     declineRegistration,
     sendMessageToApplicant,
     removeMember,
