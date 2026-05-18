@@ -65,3 +65,10 @@ code {
 
 // Custom component styles that use design tokens
 // These are component-specific and don't conflict with Tailwind utilities
+
+// ── Buttons ──────────────────────────────────────────────────────────────────
+// App-wide button shape: moderate rounded corners (10px).
+// Quasar q-btn: applies to everything except round/fab variants (which stay circular)
+.q-btn:not(.q-btn--round):not(.q-btn--fab) {
+  border-radius: 10px;
+}

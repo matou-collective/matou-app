@@ -497,6 +497,20 @@ func (u *UnifiedTreeManager) SpaceForTree(treeId string) string {
 	return spaceId
 }
 
+// KnownSpaceIDs returns all space IDs that have an entry in the space index.
+// Useful when a freshly-synced tree isn't indexed yet and the caller wants to
+// probe every known space to locate it.
+func (u *UnifiedTreeManager) KnownSpaceIDs() []string {
+	out := make([]string, 0)
+	u.spaceIndex.Range(func(key, _ any) bool {
+		if k, ok := key.(string); ok {
+			out = append(out, k)
+		}
+		return true
+	})
+	return out
+}
+
 // BuildFreshTree builds a fresh (uncached) tree from storage for reading.
 // This bypasses the tree cache so that readKeysFromAclState runs against the
 // current ACL state, fixing the timing race where the cached tree was built

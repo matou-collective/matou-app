@@ -41,6 +41,22 @@ func generateID(prefix string) string {
 	return fmt.Sprintf("%s_%x", prefix, b)
 }
 
+// ParseDeadline accepts ISO date ("2026-05-15") or RFC3339 timestamps and
+// returns a *time.Time. Empty strings and unparseable input return nil so
+// callers can leave Deadline unset.
+func ParseDeadline(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return &t
+		}
+	}
+	return nil
+}
+
 // --- Proposals ---
 
 type CreateProposalRequest struct {
@@ -282,6 +298,76 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 	return result, nil
 }
 
+// --- Contribution Comments ---
+
+func (s *Service) AddContributionComment(ctx context.Context, spaceID string, comment *ContributionComment) (*ContributionComment, error) {
+	comment.ID = generateID("ccmt")
+	comment.CreatedAt = time.Now()
+	if err := s.store.Save(spaceID, comment.ID, "contribution_comment", comment); err != nil {
+		return nil, err
+	}
+	if contrib, err := s.GetContribution(ctx, spaceID, comment.ContributionID); err == nil && contrib != nil {
+		contrib.CommentCount++
+		_ = s.SaveContribution(ctx, spaceID, contrib)
+	}
+	return comment, nil
+}
+
+func (s *Service) ListContributionComments(ctx context.Context, spaceID, contributionID string) ([]*ContributionComment, error) {
+	raw, err := s.store.List(spaceID, "contribution_comment")
+	if err != nil {
+		return nil, err
+	}
+	var comments []*ContributionComment
+	for _, r := range raw {
+		var c ContributionComment
+		if err := json.Unmarshal(r, &c); err == nil {
+			if c.ContributionID == contributionID {
+				comments = append(comments, &c)
+			}
+		}
+	}
+	sort.Slice(comments, func(i, j int) bool {
+		return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+	})
+	return comments, nil
+}
+
+// --- Project Comments ---
+
+func (s *Service) AddProjectComment(ctx context.Context, spaceID string, comment *ProjectComment) (*ProjectComment, error) {
+	comment.ID = generateID("prjcmt")
+	comment.CreatedAt = time.Now()
+	if err := s.store.Save(spaceID, comment.ID, "project_comment", comment); err != nil {
+		return nil, err
+	}
+	if proj, err := s.GetProject(ctx, spaceID, comment.ProjectID); err == nil && proj != nil {
+		proj.CommentCount++
+		_ = s.SaveProject(ctx, spaceID, proj)
+	}
+	return comment, nil
+}
+
+func (s *Service) ListProjectComments(ctx context.Context, spaceID, projectID string) ([]*ProjectComment, error) {
+	raw, err := s.store.List(spaceID, "project_comment")
+	if err != nil {
+		return nil, err
+	}
+	var comments []*ProjectComment
+	for _, r := range raw {
+		var c ProjectComment
+		if err := json.Unmarshal(r, &c); err == nil {
+			if c.ProjectID == projectID {
+				comments = append(comments, &c)
+			}
+		}
+	}
+	sort.Slice(comments, func(i, j int) bool {
+		return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+	})
+	return comments, nil
+}
+
 // --- Proposal Comments ---
 
 func (s *Service) AddProposalComment(ctx context.Context, spaceID string, comment *ProposalComment) (*ProposalComment, error) {
@@ -486,6 +572,10 @@ type CreateProjectRequest struct {
 	Title       string         `json:"title"`
 	Description string         `json:"description"`
 	Images      []ProjectImage `json:"images,omitempty"`
+	Budget      string         `json:"budget,omitempty"`
+	Duration    string         `json:"duration,omitempty"`
+	StartDate   string         `json:"start_date,omitempty"`
+	EndDate     string         `json:"end_date,omitempty"`
 	CreatedBy   string         `json:"created_by"`
 }
 
@@ -493,6 +583,10 @@ type UpdateProjectRequest struct {
 	Title       string         `json:"title,omitempty"`
 	Description string         `json:"description,omitempty"`
 	Images      []ProjectImage `json:"images,omitempty"`
+	Budget      *string        `json:"budget,omitempty"`
+	Duration    *string        `json:"duration,omitempty"`
+	StartDate   *string        `json:"start_date,omitempty"`
+	EndDate     *string        `json:"end_date,omitempty"`
 }
 
 func (s *Service) CreateProject(ctx context.Context, spaceID string, req *CreateProjectRequest) (*Project, error) {
@@ -503,6 +597,10 @@ func (s *Service) CreateProject(ctx context.Context, spaceID string, req *Create
 		Description: req.Description,
 		Status:      ProjectCreated,
 		Images:      req.Images,
+		Budget:      req.Budget,
+		Duration:    req.Duration,
+		StartDate:   req.StartDate,
+		EndDate:     req.EndDate,
 		CreatedBy:   req.CreatedBy,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -553,6 +651,18 @@ func (s *Service) UpdateProject(ctx context.Context, spaceID, projectID string, 
 	}
 	if req.Images != nil {
 		p.Images = req.Images
+	}
+	if req.Budget != nil {
+		p.Budget = *req.Budget
+	}
+	if req.Duration != nil {
+		p.Duration = *req.Duration
+	}
+	if req.StartDate != nil {
+		p.StartDate = *req.StartDate
+	}
+	if req.EndDate != nil {
+		p.EndDate = *req.EndDate
 	}
 	p.UpdatedAt = time.Now()
 	if err := s.store.Save(spaceID, p.ID, "project", p); err != nil {
@@ -1035,6 +1145,7 @@ type CreateMilestoneRequest struct {
 	ImplementationPlanID string   `json:"implementation_plan_id"`
 	Title                string   `json:"title"`
 	Duration             string   `json:"duration"`
+	BudgetAllocation     float64  `json:"budget_allocation,omitempty"`
 	ContributionIDs      []string `json:"contribution_ids,omitempty"`
 }
 
@@ -1044,6 +1155,7 @@ func (s *Service) AddMilestone(ctx context.Context, spaceID string, req *CreateM
 		ImplementationPlanID: req.ImplementationPlanID,
 		Title:                req.Title,
 		Duration:             req.Duration,
+		BudgetAllocation:     req.BudgetAllocation,
 		ContributionIDs:      req.ContributionIDs,
 	}
 	if err := s.store.Save(spaceID, ms.MilestoneID, "milestone", ms); err != nil {
@@ -1100,11 +1212,15 @@ type CreateContributionRequest struct {
 	ParentContributionID  string       `json:"parent_contribution,omitempty"`
 	AssignedContributorID string       `json:"assigned_contributor_id,omitempty"`
 	EstimatedDuration     int          `json:"estimated_duration,omitempty"`
+	Deadline              string       `json:"deadline,omitempty"`
+	Budget                string       `json:"budget,omitempty"`
 	Tags                  []string     `json:"tags,omitempty"`
 }
 
 func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *CreateContributionRequest) (*Contribution, error) {
 	now := time.Now()
+
+	deadline := ParseDeadline(req.Deadline)
 
 	// For sub-contributions, inherit the parent's assignee when the request
 	// doesn't supply one. Mirrors the propagateAssigneeToChildren path that
@@ -1139,6 +1255,8 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 		ParentContributionID:  req.ParentContributionID,
 		AssignedContributorID: assignedContributorID,
 		EstimatedDuration:     req.EstimatedDuration,
+		Deadline:              deadline,
+		Budget:                req.Budget,
 		Tags:                  req.Tags,
 		Status:                ContribCreated,
 		CreatedAt:             now,
@@ -1175,6 +1293,13 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 							plan.Milestones[i] = *ms
 							break
 						}
+					}
+					// Adding a new contribution after the plan has been signed off
+					// invalidates the signoff so re-signoff is required before
+					// the new contribution can be assigned. Historical
+					// SignedOffBy/SignedOffAt are preserved as audit trail.
+					if plan.SignedOff {
+						plan.SignedOff = false
 					}
 					plan.UpdatedAt = now
 					_ = s.store.Save(spaceID, plan.ID, "implementation_plan", plan)
@@ -1971,6 +2096,15 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID str
 		capture(fmt.Errorf("save plan: %w", err))
 	}
 
+	// Also persist the standalone milestone record with the archived status so
+	// downstream consumers (sign-off validation, listings) see the new status.
+	if standalone, getErr := s.GetMilestone(ctx, spaceID, milestoneID); getErr == nil {
+		standalone.Status = MilestoneArchived
+		if err := s.store.Save(spaceID, standalone.MilestoneID, "milestone", standalone); err != nil {
+			capture(fmt.Errorf("save milestone: %w", err))
+		}
+	}
+
 	// Use the plan's ProjectID since AddMilestone does not populate Milestone.ProjectID.
 	contribs, err := s.ListContributionsByProject(ctx, spaceID, plan.ProjectID)
 	if err != nil {
@@ -2084,13 +2218,14 @@ func (s *Service) UnassignContribution(ctx context.Context, spaceID, contribID s
 // UpdateMilestoneRequest captures patch-style milestone field updates.
 // Pointer fields are applied only when non-nil (partial update semantics).
 type UpdateMilestoneRequest struct {
-	Title           *string  `json:"title,omitempty"`
-	Description     *string  `json:"description,omitempty"`
-	Duration        *string  `json:"duration,omitempty"`
-	StartDate       *string  `json:"start_date,omitempty"`
-	EndDate         *string  `json:"end_date,omitempty"`
-	SuccessCriteria []string `json:"success_criteria,omitempty"`
-	Status          *string  `json:"status,omitempty"`
+	Title            *string  `json:"title,omitempty"`
+	Description      *string  `json:"description,omitempty"`
+	Duration         *string  `json:"duration,omitempty"`
+	StartDate        *string  `json:"start_date,omitempty"`
+	EndDate          *string  `json:"end_date,omitempty"`
+	BudgetAllocation *float64 `json:"budget_allocation,omitempty"`
+	SuccessCriteria  []string `json:"success_criteria,omitempty"`
+	Status           *string  `json:"status,omitempty"`
 }
 
 // UpdateMilestone applies patch-style updates to a milestone and saves its parent plan.
@@ -2120,6 +2255,9 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID stri
 		}
 		if req.EndDate != nil {
 			m.EndDate = *req.EndDate
+		}
+		if req.BudgetAllocation != nil {
+			m.BudgetAllocation = *req.BudgetAllocation
 		}
 		if req.SuccessCriteria != nil {
 			m.SuccessCriteria = req.SuccessCriteria

@@ -25,7 +25,8 @@ export interface CreateContributionRequest {
   deliverables: string[];
   acceptance_criteria: string[];
   skill_requirements: string[];
-  estimated_hours?: number;
+  estimated_duration?: number;
+  deadline?: string;
   budget?: string;
   created_by: string;
   assigned_contributor_id?: string;
@@ -44,12 +45,14 @@ export interface Contribution {
   deliverables: string[];
   acceptance_criteria: string[];
   skill_requirements: string[];
-  estimated_hours?: number;
+  estimated_duration?: number;
+  deadline?: string;
   budget?: string;
   assigned_contributor_id?: string;
   created_by: string;
   created_at: string;
   updated_at: string;
+  comment_count?: number;
 }
 
 export interface UpdateContributionRequest {
@@ -59,7 +62,8 @@ export interface UpdateContributionRequest {
   deliverables?: string[];
   acceptance_criteria?: string[];
   skill_requirements?: string[];
-  estimated_hours?: number;
+  estimated_duration?: number;
+  deadline?: string;
   budget?: string;
   assigned_contributor_id?: string;
 }
@@ -316,5 +320,42 @@ export async function unassignContribution(id: string): Promise<Contribution> {
     const err = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(err.error || 'Failed to unassign contribution');
   }
+  return response.json();
+}
+
+export interface ContributionComment {
+  id: string;
+  contribution_id: string;
+  user_id: string;
+  user_name: string;
+  text: string;
+  created_at: string;
+}
+
+export async function addContributionComment(
+  contributionId: string,
+  userId: string,
+  userName: string,
+  text: string,
+): Promise<ContributionComment> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${contributionId}/comments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ user_id: userId, user_name: userName, text }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to add comment');
+  }
+  return response.json();
+}
+
+export async function listContributionComments(
+  contributionId: string,
+): Promise<{ comments: ContributionComment[]; total: number }> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${contributionId}/comments`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) throw new Error('Failed to list comments');
   return response.json();
 }

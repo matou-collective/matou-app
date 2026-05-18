@@ -43,7 +43,9 @@ export function useProjectPermissions(
 
   const canSignOffPlan = computed(() => isAdmin.value || isSteward.value);
 
-  const canCreateContribution = computed(() => isAdmin.value || isLead.value);
+  const canCreateContribution = computed(
+    () => isAdmin.value || isLead.value || isSteward.value,
+  );
 
   const canConfirmContribution = computed(() => isAdmin.value || isSteward.value);
 

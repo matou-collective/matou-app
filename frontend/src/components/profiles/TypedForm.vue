@@ -283,7 +283,7 @@ onMounted(() => {
 .field-select {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--matou-border, #d1d5db);
-  border-radius: 0.375rem;
+  border-radius: 10px;
   font-size: 0.875rem;
   background: var(--matou-surface, #fff);
   color: var(--matou-text, #1f2937);
@@ -383,7 +383,7 @@ onMounted(() => {
 .tag-input {
   padding: 0.375rem 0.5rem;
   border: 1px solid var(--matou-border, #d1d5db);
-  border-radius: 0.375rem;
+  border-radius: 10px;
   font-size: 0.75rem;
 }
 
@@ -444,7 +444,7 @@ onMounted(() => {
   background: var(--matou-primary, #6366f1);
   color: white;
   border: none;
-  border-radius: 0.375rem;
+  border-radius: 10px;
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;

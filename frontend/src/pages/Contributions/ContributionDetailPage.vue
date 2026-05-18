@@ -12,147 +12,17 @@
         <span class="breadcrumb">Contributions</span>
       </div>
 
-      <!-- Use the full ContributionDetailDialog mounted inline (not as a dialog) -->
-      <ContributionDetail :contribution="contribution">
-        <!-- Status transition actions -->
-        <template #actions>
-          <!-- Confirm (admin/steward) -->
-          <q-btn
-            v-if="workflow.canConfirm(contribution, false, currentUserRole)"
-            color="primary"
-            no-caps
-            icon="verified"
-            label="Confirm"
-            :loading="transitioning === 'confirm'"
-            @click="handleConfirm"
-          />
-
-          <!-- Share (lead/steward/admin) -->
-          <q-btn
-            v-if="workflow.canShare(contribution, currentUserRole)"
-            flat
-            no-caps
-            label="Share"
-            color="primary"
-            :loading="transitioning === 'share'"
-            @click="showShareDialog = true"
-          />
-
-          <!-- Offer (lead/steward/admin) -->
-          <q-btn
-            v-if="workflow.canOffer(contribution, currentUserRole)"
-            flat
-            no-caps
-            label="Offer"
-            color="primary"
-            :loading="transitioning === 'offer'"
-            @click="showOfferDialog = true"
-          />
-
-          <!-- Register Interest (contributor/member on shared) -->
-          <q-btn
-            v-if="workflow.canRegisterInterest(contribution, currentUserRole, currentUserId)"
-            outlined
-            no-caps
-            label="Register Interest"
-            color="primary"
-            :loading="transitioning === 'register'"
-            @click="showInterestDialog = true"
-          />
-
-          <!-- Accept offer (offered-to user) -->
-          <q-btn
-            v-if="workflow.canAccept(contribution, currentUserId)"
-            color="primary"
-            no-caps
-            label="Accept Offer"
-            :loading="transitioning === 'accept'"
-            @click="handleAccept"
-          />
-
-          <!-- Submit for review (assigned, no blocking children) -->
-          <q-btn
-            v-if="workflow.canSubmitEvidence(contribution, currentUserId, allChildrenSignedOff)"
-            color="primary"
-            no-caps
-            label="Submit for Review"
-            :loading="transitioning === 'submit-evidence'"
-            @click="showEvidenceDialog = true"
-          />
-
-          <!-- Review (lead/admin on needs_review) -->
-          <q-btn
-            v-if="workflow.canReview(contribution, currentUserRole)"
-            color="positive"
-            no-caps
-            label="Review"
-            :loading="transitioning === 'review'"
-            @click="showReviewDialog = true"
-          />
-
-          <!-- Sign off (steward/admin on approved) -->
-          <q-btn
-            v-if="workflow.canSignOff(contribution, currentUserRole)"
-            color="positive"
-            no-caps
-            icon="check_circle"
-            label="Sign Off"
-            :loading="transitioning === 'sign-off'"
-            @click="handleSignOff"
-          />
-
-          <!-- Edit -->
-          <q-btn
-            v-if="!TERMINAL_STATUSES.includes(contribution.status)"
-            flat
-            no-caps
-            icon="edit"
-            label="Edit"
-            @click="showEditDialog = true"
-          />
-        </template>
-
-        <!-- Evidence section -->
-        <template #evidence>
-          <div v-if="contribution.completion_notes" class="evidence-notes">
-            <p>{{ contribution.completion_notes }}</p>
-          </div>
-          <div v-if="(contribution.evidence_urls?.length ?? 0) === 0 && !contribution.completion_notes" class="empty-evidence">
-            No evidence submitted yet.
-          </div>
-          <div v-if="contribution.evidence_urls?.length" class="evidence-list">
-            <div v-for="(url, i) in contribution.evidence_urls" :key="i" class="evidence-item">
-              <q-icon name="link" size="16px" color="primary" />
-              <a :href="url" target="_blank" class="evidence-link">{{ url }}</a>
-            </div>
-          </div>
-        </template>
-
-        <!-- Review feedback section -->
-        <template #feedback>
-          <div v-if="!contribution.review_feedback" class="empty-feedback">
-            No review feedback yet.
-          </div>
-          <div v-else class="feedback-item">
-            <div class="feedback-outcome" :class="contribution.review_outcome">
-              {{ formatOutcome(contribution.review_outcome) }}
-            </div>
-            <p class="feedback-text">{{ contribution.review_feedback }}</p>
-            <div v-if="contribution.quality_rating" class="quality-rating">
-              <div class="star-rating">
-                <q-icon
-                  v-for="i in 10"
-                  :key="i"
-                  :name="i <= contribution.quality_rating ? 'star' : 'star_border'"
-                  :color="i <= contribution.quality_rating ? 'amber' : 'grey-4'"
-                  size="18px"
-                />
-                <span class="rating-label">{{ contribution.quality_rating }} / 10</span>
-              </div>
-            </div>
-          </div>
-        </template>
-      </ContributionDetail>
+      <!-- Use ContributionDetailBody inline so the page matches the dialog layout -->
+      <ContributionDetailBody
+        inline
+        :contribution="contribution"
+        :user-role="currentUserRole"
+        :current-user-id="currentUserId"
+        :all-contributions="(store.contributions as Contribution[])"
+        :is-plan-signed-off="isPlanSignedOff"
+        :can-archive="canEditContribution"
+        @edit-contribution="showEditDialog = true"
+      />
     </template>
 
     <!-- Not found -->
@@ -161,11 +31,15 @@
       <q-btn flat no-caps label="Back to Contributions" @click="router.push({ name: 'contributions' })" />
     </div>
 
-    <!-- Edit dialog -->
-    <ContributionForm
+    <!-- Edit dialog (same form as Create) -->
+    <!-- eslint-disable-next-line @typescript-eslint/no-explicit-any -->
+    <CreateContributionDialog
       v-model="showEditDialog"
-      :contribution="contribution ?? undefined"
-      @submit="handleEditSubmit"
+      :project-id="contribution?.project_id ?? ''"
+      :milestone-id="contribution?.milestone_id"
+      :editing="true"
+      :contribution="(contribution as any)"
+      @update="handleEditSubmit"
     />
 
     <!-- Share dialog -->
@@ -337,16 +211,18 @@ import { useRoute, useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
 import { useContributionsStore } from 'stores/contributions';
 import { useIdentityStore } from 'stores/identity';
+import { useProjectsStore } from 'stores/projects';
 import type { CreateContributionRequest, UpdateContributionRequest } from 'src/lib/api/contributions';
 import type { Contribution } from 'src/types/projects';
-import ContributionDetail from 'src/components/contributions/ContributionDetail.vue';
-import ContributionForm from 'src/components/contributions/ContributionForm.vue';
+import ContributionDetailBody from 'src/components/contributions/ContributionDetailBody.vue';
+import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
 const route = useRoute();
 const router = useRouter();
 const $q = useQuasar();
 const store = useContributionsStore();
 const identityStore = useIdentityStore();
+const projectsStore = useProjectsStore();
 const workflow = useContributionWorkflow();
 const isKeriAdmin = computed(() => identityStore.isAdmin);
 
@@ -390,7 +266,41 @@ const outcomeOptions = [
 
 const contribution = computed(() => store.currentContribution as Contribution | null);
 const currentUserId = computed(() => identityStore.aidPrefix ?? '');
-const currentUserRole = computed(() => isKeriAdmin.value ? 'community_admin' : 'member');
+const currentUserRole = computed(() => {
+  if (isKeriAdmin.value) return 'community_admin';
+  if (isProjectLead.value) return 'project_lead';
+  if (isProjectSteward.value) return 'project_steward';
+  return 'member';
+});
+
+const isPlanSignedOff = computed(() => {
+  const projectId = contribution.value?.project_id;
+  if (!projectId) return false;
+  return projectsStore.implementationPlans[projectId]?.signed_off ?? false;
+});
+
+const project = computed(() => {
+  const projectId = contribution.value?.project_id;
+  if (!projectId) return null;
+  return projectsStore.projects.find((p) => p.id === projectId) ?? null;
+});
+
+const isProjectLead = computed(() => {
+  const lead = project.value?.project_lead_id;
+  return !!lead && lead === currentUserId.value;
+});
+
+const isProjectSteward = computed(() => {
+  const steward = project.value?.project_steward_id;
+  return !!steward && steward === currentUserId.value;
+});
+
+const canEditContribution = computed(() => {
+  const c = contribution.value;
+  if (!c) return false;
+  if (TERMINAL_STATUSES.includes(c.status as string)) return false;
+  return isKeriAdmin.value || isProjectLead.value || isProjectSteward.value;
+});
 
 const TERMINAL_STATUSES = ['signed_off', 'rewarded', 'archived', 'declined', 'cancelled', 'rejected'];
 
@@ -410,7 +320,19 @@ const allChildrenSignedOff = computed(() => {
 
 onMounted(() => {
   void store.fetchContribution(route.params.id as string);
+  // Load projects so we can resolve project_lead_id for permission checks.
+  if (projectsStore.projects.length === 0) void projectsStore.fetchProjects();
 });
+
+// When the contribution loads (or changes), fetch its parent project's plan
+// so isPlanSignedOff resolves correctly for the assignment gating.
+watch(
+  () => contribution.value?.project_id,
+  (pid) => {
+    if (pid) void projectsStore.fetchImplementationPlan(pid);
+  },
+  { immediate: true },
+);
 
 watch(
   () => route.params.id,
@@ -574,6 +496,7 @@ async function handleEditSubmit(form: CreateContributionRequest | UpdateContribu
 .contribution-detail-page {
   padding: 24px;
   max-width: 900px;
+  margin: 0 auto;
 }
 
 .loading-state,

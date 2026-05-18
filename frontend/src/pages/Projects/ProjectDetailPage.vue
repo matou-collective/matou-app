@@ -23,35 +23,74 @@
           <h1 class="project-title">{{ project.title }}</h1>
           <p class="project-description">{{ project.description }}</p>
 
-          <!-- Team chips -->
-          <div class="team-row">
-            <div class="team-chip lead" v-if="project.project_lead_id">
-              <Shield class="team-icon" />
-              <span>Project Lead</span>
-              <strong>{{ resolvedLeadName }}</strong>
+          <!-- Meta facts (left) + Team chips (right) -->
+          <div class="project-meta-row">
+            <div class="project-meta-facts">
+              <span v-if="project.budget" class="meta-fact">
+                <DollarSign class="meta-fact-icon" />
+                {{ project.budget }}
+              </span>
+              <span v-if="project.duration" class="meta-fact">
+                <Clock class="meta-fact-icon" />
+                {{ project.duration }}
+              </span>
+              <span v-if="project.start_date" class="meta-fact">
+                <Calendar class="meta-fact-icon" />
+                Start {{ formatDate(project.start_date) }}
+              </span>
+              <span v-if="project.end_date" class="meta-fact">
+                <Calendar class="meta-fact-icon" />
+                End {{ formatDate(project.end_date) }}
+              </span>
             </div>
-            <button
-              v-else-if="perms.canAssignRoles.value"
-              class="assign-chip"
-              @click="openAssignRole('lead')"
-            >
-              <UserPlus class="team-icon" />
-              Assign Lead
-            </button>
 
-            <div class="team-chip steward" v-if="project.project_steward_id">
-              <Users class="team-icon" />
-              <span>Project Steward</span>
-              <strong>{{ resolvedStewardName }}</strong>
+            <div class="team-row">
+              <component
+                :is="perms.canAssignRoles.value ? 'button' : 'div'"
+                v-if="project.project_lead_id"
+                class="team-chip lead"
+                :class="{ clickable: perms.canAssignRoles.value }"
+                :type="perms.canAssignRoles.value ? 'button' : undefined"
+                @click="perms.canAssignRoles.value && openAssignRole('lead')"
+              >
+                <Shield class="team-icon" />
+                <span>Project Lead</span>
+                <strong>{{ resolvedLeadName }}</strong>
+                <Pencil v-if="perms.canAssignRoles.value" class="team-edit-icon" />
+                <q-tooltip v-if="perms.canAssignRoles.value">Change project lead</q-tooltip>
+              </component>
+              <button
+                v-else-if="perms.canAssignRoles.value"
+                class="assign-chip"
+                @click="openAssignRole('lead')"
+              >
+                <UserPlus class="team-icon" />
+                Assign Lead
+              </button>
+
+              <component
+                :is="perms.canAssignRoles.value ? 'button' : 'div'"
+                v-if="project.project_steward_id"
+                class="team-chip steward"
+                :class="{ clickable: perms.canAssignRoles.value }"
+                :type="perms.canAssignRoles.value ? 'button' : undefined"
+                @click="perms.canAssignRoles.value && openAssignRole('steward')"
+              >
+                <Users class="team-icon" />
+                <span>Project Steward</span>
+                <strong>{{ resolvedStewardName }}</strong>
+                <Pencil v-if="perms.canAssignRoles.value" class="team-edit-icon" />
+                <q-tooltip v-if="perms.canAssignRoles.value">Change project steward</q-tooltip>
+              </component>
+              <button
+                v-else-if="perms.canAssignRoles.value"
+                class="assign-chip"
+                @click="openAssignRole('steward')"
+              >
+                <UserPlus class="team-icon" />
+                Assign Steward
+              </button>
             </div>
-            <button
-              v-else-if="perms.canAssignRoles.value"
-              class="assign-chip"
-              @click="openAssignRole('steward')"
-            >
-              <UserPlus class="team-icon" />
-              Assign Steward
-            </button>
           </div>
         </div>
         <div class="project-header-actions">
@@ -149,15 +188,32 @@
 
         <!-- Has milestones -->
         <template v-if="implementationPlan">
-          <!-- Confirmation progress bar -->
-          <div v-if="!implementationPlan.signed_off && planContributions.length > 0" class="progress-section">
-            <div class="progress-label">
-              Confirmation Progress — {{ confirmedCount }}/{{ planContributions.length }} confirmed
+          <!-- Confirmation progress + sign-off (visible whenever plan has contributions and isn't signed off) -->
+          <div
+            v-if="!implementationPlan.signed_off && planContributions.length > 0"
+            class="sign-off-banner"
+            :class="{ ready: allContributionsConfirmed }"
+          >
+            <CheckCircle class="banner-icon" />
+            <div class="banner-body">
+              <div class="banner-title">
+                <span v-if="allContributionsConfirmed">All contributions confirmed — plan is ready for sign-off</span>
+                <span v-else>Confirmation Progress — {{ confirmedCount }}/{{ planContributions.length }} confirmed</span>
+              </div>
+              <q-linear-progress
+                :value="confirmationProgress"
+                color="primary"
+                class="progress-bar"
+              />
             </div>
-            <q-linear-progress
-              :value="confirmationProgress"
+            <q-btn
+              v-if="perms.canSignOffPlan.value"
+              no-caps
               color="primary"
-              class="progress-bar"
+              label="Sign Off Plan"
+              class="q-ml-auto"
+              :loading="signingOffPlan"
+              @click="handleSignOffPlan"
             />
           </div>
 
@@ -179,23 +235,6 @@
               no-caps
               color="primary"
               label="Re-Sign Off Plan"
-              class="q-ml-auto"
-              :loading="signingOffPlan"
-              @click="handleSignOffPlan"
-            />
-          </div>
-
-          <!-- Sign-off banner (all confirmed, not yet signed off) -->
-          <div v-else-if="allContributionsConfirmed && !implementationPlan.signed_off" class="sign-off-banner">
-            <CheckCircle class="banner-icon" />
-            <div>
-              <div class="banner-title">All contributions confirmed — plan is ready for sign-off</div>
-            </div>
-            <q-btn
-              v-if="perms.canSignOffPlan.value"
-              no-caps
-              color="primary"
-              label="Sign Off Plan"
               class="q-ml-auto"
               :loading="signingOffPlan"
               @click="handleSignOffPlan"
@@ -233,6 +272,60 @@
             />
           </div>
         </template>
+      </div>
+
+      <!-- ── Discussion ─────────────────────────────────── -->
+      <div class="content-section">
+        <h3 class="section-title row items-center q-gutter-sm">
+          <q-icon name="chat" size="20px" />
+          <span>Discussion ({{ projectComments.length }})</span>
+        </h3>
+        <div v-if="projectComments.length === 0" class="empty-discussion">
+          No comments yet. Be the first to share your thoughts!
+        </div>
+        <div v-else class="comments-list">
+          <div
+            v-for="c in projectComments"
+            :key="c.id"
+            class="comment-row"
+            :class="{ 'comment-row--mine': c.user_id === currentUserId }"
+          >
+            <div
+              class="comment-card"
+              :class="{ 'comment-card--mine': c.user_id === currentUserId }"
+            >
+              <div class="comment-header">
+                <div class="comment-avatar">
+                  <q-icon name="person" size="14px" />
+                </div>
+                <span class="comment-author">{{ commentDisplayName(c) }}</span>
+                <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
+              </div>
+              <p class="comment-text">{{ c.text }}</p>
+            </div>
+          </div>
+        </div>
+        <div class="comment-input-row">
+          <q-input
+            v-model="newComment"
+            placeholder="Add your comment..."
+            type="textarea"
+            outlined
+            autogrow
+            dense
+            class="col"
+            @keydown.ctrl.enter.prevent="submitComment"
+            @keydown.meta.enter.prevent="submitComment"
+          />
+          <q-btn
+            flat
+            round
+            icon="send"
+            color="primary"
+            :disable="!newComment.trim() || sendingComment"
+            @click="submitComment"
+          />
+        </div>
       </div>
     </template>
 
@@ -279,10 +372,10 @@
           <q-input v-model="newPlan.project_lead" label="Project Lead ID" outlined placeholder="Lead AID" />
           <q-input v-model="newPlan.project_steward_id" label="Project Steward ID" outlined placeholder="Steward AID" />
         </q-card-section>
-        <q-card-actions align="right" class="q-px-md q-pb-md">
-          <q-btn flat no-caps label="Cancel" v-close-popup />
-          <q-btn no-caps label="Create Plan" color="primary" :loading="creatingPlan" @click="handleCreatePlan" />
-        </q-card-actions>
+        <div class="create-plan-actions q-px-md q-pb-md">
+          <q-btn no-caps label="Create Plan" color="primary" class="create-plan-btn" :loading="creatingPlan" @click="handleCreatePlan" />
+          <q-btn outline no-caps label="Cancel" color="primary" class="create-plan-btn" v-close-popup />
+        </div>
       </q-card>
     </q-dialog>
 
@@ -345,9 +438,12 @@
       :current-user-name="currentUserName"
       :all-contributions="allProjectContributions"
       :is-plan-signed-off="implementationPlan?.signed_off ?? false"
+      :can-archive="perms.canArchiveContribution.value"
       @update="handleContributionUpdate"
       @create-child-contribution="handleCreateChildContribution"
+      @edit-contribution="onEditContributionFromDialog"
       @edit-sub-contribution="openEditContribution"
+      @archive-contribution="onArchiveContributionFromDialog"
       @archive-sub-contribution="confirmArchiveContribution"
     />
 
@@ -448,7 +544,6 @@
         </q-card-section>
 
         <div class="assign-actions q-px-md q-pb-md">
-          <q-btn outline no-caps label="Cancel" color="primary" class="assign-action-btn" v-close-popup />
           <q-btn
             no-caps
             label="Assign"
@@ -458,20 +553,20 @@
             :loading="assigningContribution"
             @click="submitAssign"
           />
+          <q-btn outline no-caps label="Cancel" color="primary" class="assign-action-btn" v-close-popup />
         </div>
       </q-card>
     </q-dialog>
 
-    <!-- Edit contribution dialog -->
+    <!-- Edit contribution dialog (same form as Create) -->
     <!-- eslint-disable-next-line @typescript-eslint/no-explicit-any -->
-    <ContributionForm
+    <CreateContributionDialog
       v-model="showContribForm"
+      :project-id="editingContribution?.project_id ?? project?.id ?? ''"
+      :milestone-id="editingContribution?.milestone_id"
+      :editing="true"
       :contribution="(editingContribution as any)"
-      :can-unassign="perms.canUnassignContributor.value"
-      :can-delete="perms.canArchiveContribution.value"
-      @submit="onContributionSave"
-      @unassign="onUnassignRequested"
-      @delete="onDeleteContributionFromForm"
+      @update="onContributionSave"
     />
 
     <!-- Archive contribution confirm -->
@@ -493,6 +588,35 @@
       :loading="unassigning"
       @confirm="doUnassign"
     />
+
+    <!-- Sign-off plan confirm (only shown when unconfirmed contributions exist) -->
+    <q-dialog v-model="showSignOffConfirm">
+      <q-card style="min-width: 420px; max-width: 520px">
+        <q-card-section class="row items-center q-pb-none">
+          <div class="text-h6">Sign off with unconfirmed contributions?</div>
+        </q-card-section>
+        <q-card-section>
+          <p class="text-body2" style="margin: 0">
+            {{ signOffUnconfirmedCount }} of {{ planContributions.length }} contribution{{ planContributions.length === 1 ? '' : 's' }}
+            {{ signOffUnconfirmedCount === 1 ? 'is' : 'are' }} not yet confirmed.
+          </p>
+          <p class="text-body2 q-mt-sm" style="margin: 8px 0 0">
+            Sign-off unlocks assignment, but each contribution will still need to be confirmed by a project lead or steward before it can be assigned and completed.
+          </p>
+        </q-card-section>
+        <div class="row q-gutter-sm q-px-md q-pb-md">
+          <q-btn outline no-caps label="Cancel" color="primary" class="col" v-close-popup />
+          <q-btn
+            no-caps
+            color="primary"
+            label="Sign Off"
+            class="col"
+            :loading="signingOffPlan"
+            @click="doSignOffPlan"
+          />
+        </div>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
@@ -510,11 +634,16 @@ import {
   CheckCircle,
   Clock,
   AlertCircle,
+  Calendar,
+  DollarSign,
+  Pencil,
 } from 'lucide-vue-next';
 import { useProjectsStore } from 'stores/projects';
+import { useCommentCursorsStore } from 'stores/commentCursors';
 import { useProposalsStore } from 'stores/proposals';
 import { useIdentityStore } from 'stores/identity';
 import { useContributionsStore } from 'stores/contributions';
+import { useProfilesStore } from 'stores/profiles';
 import type { Contribution, Milestone, CreateMilestoneRequest } from 'src/types/projects';
 import type { CreateContributionRequest, UpdateContributionRequest } from 'src/lib/api/contributions';
 import type { UpdateMilestoneRequest } from 'src/lib/api/implementationPlans';
@@ -527,7 +656,6 @@ import MilestoneFormDialog from 'src/components/projects/MilestoneFormDialog.vue
 import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
-import ContributionForm from 'src/components/contributions/ContributionForm.vue';
 import ConfirmDestroyDialog from 'src/components/common/ConfirmDestroyDialog.vue';
 import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue';
 import ProjectCompletionSection from 'src/components/projects/ProjectCompletionSection.vue';
@@ -536,9 +664,11 @@ const route = useRoute();
 const router = useRouter();
 const $q = useQuasar();
 const projectsStore = useProjectsStore();
+const commentCursorsStore = useCommentCursorsStore();
 const proposalsStore = useProposalsStore();
 const identityStore = useIdentityStore();
 const contributionsStore = useContributionsStore();
+const profilesStore = useProfilesStore();
 const workflow = useContributionWorkflow();
 const isKeriAdmin = computed(() => identityStore.isAdmin);
 const { lastEvent } = useBackendEvents();
@@ -605,6 +735,10 @@ const viewingContribution = ref<Contribution | null>(null);
 
 const showDestroy = ref(false);
 const archivingProject = ref(false);
+
+// Sign-off confirm dialog state (used when plan has unconfirmed contributions)
+const showSignOffConfirm = ref(false);
+const signOffUnconfirmedCount = ref(0);
 
 const cascadeSummary = computed<string[]>(() => {
   if (!project.value) return [];
@@ -713,6 +847,19 @@ function openEditContribution(c: Contribution) {
   showContribForm.value = true;
 }
 
+function onEditContributionFromDialog(c: Contribution) {
+  // Close the detail dialog, then open the edit form on the next tick so the
+  // two dialogs don't stack visually.
+  showContributionDetail.value = false;
+  setTimeout(() => openEditContribution(c), 0);
+}
+
+function onArchiveContributionFromDialog(c: Contribution) {
+  // Close the detail dialog, then open the archive-confirm dialog on next tick.
+  showContributionDetail.value = false;
+  setTimeout(() => confirmArchiveContribution(c), 0);
+}
+
 function confirmArchiveContribution(c: Contribution) {
   archivingContribution.value = c;
   showArchiveContrib.value = true;
@@ -761,8 +908,12 @@ async function doArchiveContribution() {
   }
 }
 
-async function onContributionSave(req: UpdateContributionRequest) {
+async function onContributionSave(payload: Record<string, unknown>) {
   if (!editingContribution.value || !project.value) return;
+  // contribution_type isn't in UpdateContributionRequest — strip it before sending.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { contribution_type, ...rest } = payload as { contribution_type?: string } & UpdateContributionRequest;
+  const req = rest as UpdateContributionRequest;
   try {
     await contributionsStore.update(editingContribution.value.id, req);
     if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
@@ -832,7 +983,9 @@ const implementationPlan = computed(() => {
   return projectsStore.implementationPlans[id] ?? null;
 });
 
-const milestones = computed(() => implementationPlan.value?.milestones ?? []);
+const milestones = computed(() =>
+  (implementationPlan.value?.milestones ?? []).filter((m) => m.status !== 'archived'),
+);
 
 const allProjectContributions = computed<Contribution[]>(() => {
   const id = project.value?.id;
@@ -843,10 +996,15 @@ const allProjectContributions = computed<Contribution[]>(() => {
 const planContributions = computed<Contribution[]>(() => {
   // Use hydrated contributions from milestones (populated by HydratePlan in the backend)
   const hydrated = milestones.value.flatMap((m) => (m.contributions ?? []) as Contribution[]);
-  if (hydrated.length > 0) return hydrated;
-  // Fallback: join contribution_ids with separately-fetched project contributions
-  const contribIds = new Set(milestones.value.flatMap((m) => m.contribution_ids ?? []));
-  return allProjectContributions.value.filter((c) => contribIds.has(c.contribution_id ?? c.id));
+  const list = hydrated.length > 0
+    ? hydrated
+    // Fallback: join contribution_ids with separately-fetched project contributions
+    : (() => {
+        const contribIds = new Set(milestones.value.flatMap((m) => m.contribution_ids ?? []));
+        return allProjectContributions.value.filter((c) => contribIds.has(c.contribution_id ?? c.id));
+      })();
+  // Exclude archived contributions from progress / counts / sign-off readiness.
+  return list.filter((c) => c.status !== 'archived');
 });
 
 const confirmedCount = computed(
@@ -865,7 +1023,10 @@ const allContributionsConfirmed = computed(
 );
 
 const canSignOffPlan = computed(
-  () => allContributionsConfirmed.value && milestones.value.every((m) => (m.contribution_ids?.length ?? 0) > 0),
+  // Allow sign-off when every milestone has at least one contribution. If not
+  // all contributions are confirmed, the user is asked to confirm in a dialog
+  // before sign-off proceeds (handled in handleSignOffPlan).
+  () => milestones.value.length > 0 && milestones.value.every((m) => (m.contribution_ids?.length ?? 0) > 0),
 );
 
 // Plan was previously signed off (signed_off_at is set as historical record)
@@ -942,6 +1103,42 @@ async function loadCommunityMembers() {
   }
 }
 
+// ── Comments ─────────────────────────────────────────────────────────────────
+
+const projectComments = computed(
+  () => (project.value ? projectsStore.commentsByProject[project.value.id] ?? [] : []),
+);
+const newComment = ref('');
+const sendingComment = ref(false);
+
+function commentDisplayName(c: { user_id: string; user_name: string }): string {
+  return profilesStore.profilesByAid[c.user_id]?.displayName
+    ?? c.user_name
+    ?? c.user_id.slice(0, 12) + '...';
+}
+
+async function submitComment() {
+  const text = newComment.value.trim();
+  if (!text || sendingComment.value || !project.value) return;
+  if (!currentUserId.value) return;
+  sendingComment.value = true;
+  try {
+    await projectsStore.addComment(
+      project.value.id,
+      currentUserId.value,
+      currentUserName.value || currentUserId.value,
+      text,
+    );
+    newComment.value = '';
+    const newCount = projectsStore.commentsByProject[project.value.id]?.length ?? 0;
+    void commentCursorsStore.markRead('project', project.value.id, newCount);
+  } catch (err) {
+    $q.notify({ type: 'negative', message: err instanceof Error ? err.message : 'Failed to add comment' });
+  } finally {
+    sendingComment.value = false;
+  }
+}
+
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
 onMounted(async () => {
@@ -989,6 +1186,17 @@ watch(lastEvent, (event) => {
     'project_updated',
     'milestone_updated',
   ];
+  if (event.type === 'project:comment_added') {
+    const data = event.data as { project_id?: string } | undefined;
+    if (data?.project_id === project.value.id) {
+      void projectsStore.fetchComments(project.value.id).then(() => {
+        if (!project.value) return;
+        const count = projectsStore.commentsByProject[project.value.id]?.length ?? 0;
+        void commentCursorsStore.markRead('project', project.value.id, count);
+      });
+    }
+    return;
+  }
   if (refreshEvents.includes(event.type)) {
     projectsStore.fetchImplementationPlan(project.value.id).then(() => {
       // Refresh viewingContribution from the updated plan data
@@ -1026,7 +1234,11 @@ async function loadProject(id: string) {
     proposalsStore.fetchProposals(),
     projectsStore.fetchImplementationPlan(id),
     projectsStore.fetchProjectContributions(id),
+    projectsStore.fetchComments(id),
   ]);
+  // Mark this project's comments as read for the current user.
+  const count = projectsStore.commentsByProject[id]?.length ?? 0;
+  void commentCursorsStore.markRead('project', id, count);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1037,7 +1249,15 @@ function formatStatus(status: string): string {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-async function handleEditSubmit(data: { title: string; description: string }) {
+async function handleEditSubmit(data: {
+  title: string;
+  description: string;
+  budget?: string;
+  duration?: string;
+  start_date?: string;
+  end_date?: string;
+  images?: import('src/lib/api/projects').ProjectImage[];
+}) {
   if (!project.value) return;
   isSubmitting.value = true;
   submitError.value = null;
@@ -1121,8 +1341,20 @@ async function handleAddMilestone(req: CreateMilestoneRequest | UpdateMilestoneR
   }
 }
 
-async function handleSignOffPlan() {
+function handleSignOffPlan() {
   if (!project.value || !implementationPlan.value) return;
+  const unconfirmed = planContributions.value.filter((c) => c.status !== 'confirmed').length;
+  if (unconfirmed > 0) {
+    signOffUnconfirmedCount.value = unconfirmed;
+    showSignOffConfirm.value = true;
+    return;
+  }
+  void doSignOffPlan();
+}
+
+async function doSignOffPlan() {
+  if (!project.value || !implementationPlan.value) return;
+  showSignOffConfirm.value = false;
   signingOffPlan.value = true;
   try {
     await projectsStore.signOffPlan(implementationPlan.value.id, project.value.id);
@@ -1394,6 +1626,34 @@ async function submitAssign() {
   line-height: 1.6;
 }
 
+.project-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.project-meta-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 0.85rem;
+  color: var(--matou-muted-foreground);
+}
+
+.meta-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meta-fact-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 .team-row {
   display: flex;
   flex-wrap: wrap;
@@ -1408,6 +1668,8 @@ async function submitAssign() {
   border-radius: 12px;
   font-size: 0.82rem;
   font-weight: 500;
+  border: none;
+  font-family: inherit;
 
   &.lead {
     background: rgba(74, 157, 156, 0.12);
@@ -1418,6 +1680,26 @@ async function submitAssign() {
     background: rgba(30, 95, 116, 0.1);
     color: var(--matou-accent, #4a9d9c);
   }
+
+  &.clickable {
+    cursor: pointer;
+    transition: filter 0.12s ease, transform 0.12s ease;
+
+    &:hover {
+      filter: brightness(0.95);
+    }
+    &:active {
+      transform: translateY(1px);
+    }
+  }
+}
+
+.team-edit-icon {
+  width: 12px;
+  height: 12px;
+  opacity: 0.7;
+  margin-left: 2px;
+  flex-shrink: 0;
 }
 
 .assign-chip {
@@ -1573,19 +1855,10 @@ async function submitAssign() {
   opacity: 0.4;
 }
 
-.progress-section {
-  margin-bottom: 14px;
-}
-
-.progress-label {
-  font-size: 0.8rem;
-  color: var(--matou-muted-foreground);
-  margin-bottom: 6px;
-}
-
 .progress-bar {
   height: 6px;
   border-radius: 3px;
+  margin-top: 8px;
 }
 
 .sign-off-banner {
@@ -1593,10 +1866,20 @@ async function submitAssign() {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: rgba(234, 179, 8, 0.08);
-  border: 1px solid #eab308;
+  background: rgba(30, 95, 116, 0.05);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius-sm);
   margin-bottom: 16px;
+
+  &.ready {
+    background: rgba(234, 179, 8, 0.08);
+    border-color: #eab308;
+  }
+}
+
+.banner-body {
+  flex: 1;
+  min-width: 0;
 }
 
 .plan-modified-banner {
@@ -1754,5 +2037,103 @@ async function submitAssign() {
 
 .assign-action-btn {
   flex: 1;
+}
+
+.create-plan-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.create-plan-btn {
+  flex: 1;
+}
+
+// ── Discussion / comments ──────────────────────────────────────────────────
+.empty-discussion {
+  text-align: center;
+  padding: 20px;
+  background: var(--matou-secondary);
+  border-radius: var(--matou-radius-sm);
+  color: var(--matou-muted-foreground);
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+}
+
+.comments-list {
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comment-row {
+  display: flex;
+  justify-content: flex-start;
+
+  &--mine {
+    justify-content: flex-end;
+  }
+}
+
+.comment-card {
+  background: var(--matou-secondary);
+  border: 1px solid var(--matou-border);
+  border-radius: 12px 12px 12px 4px;
+  padding: 12px;
+  max-width: 80%;
+
+  &--mine {
+    background: var(--matou-primary-light, rgba(37, 99, 235, 0.08));
+    border-color: rgba(37, 99, 235, 0.15);
+    border-radius: 12px 12px 4px 12px;
+  }
+}
+
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.comment-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #dbeafe;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.comment-card--mine .comment-avatar {
+  background: rgba(37, 99, 235, 0.15);
+}
+
+.comment-author {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.comment-time {
+  font-size: 0.75rem;
+  color: var(--matou-muted-foreground);
+}
+
+.comment-text {
+  font-size: 0.9rem;
+  color: var(--matou-muted-foreground);
+  margin: 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.comment-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 12px;
 }
 </style>

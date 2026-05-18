@@ -214,7 +214,7 @@ const onRetry = () => {
   background-color: #ffffff !important;
   color: var(--matou-primary) !important;
   height: 3.5rem !important;
-  border-radius: var(--matou-radius-2xl) !important;
+  border-radius: 10px !important;
 
   &:hover {
     background-color: rgba(255, 255, 255, 0.9) !important;
@@ -226,7 +226,7 @@ const onRetry = () => {
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.3) !important;
   height: 3.5rem !important;
-  border-radius: var(--matou-radius-2xl) !important;
+  border-radius: 10px !important;
 
   &:hover {
     background-color: rgba(255, 255, 255, 0.2) !important;
@@ -237,7 +237,7 @@ const onRetry = () => {
   background-color: #ffffff !important;
   color: var(--matou-primary) !important;
   height: 3.5rem !important;
-  border-radius: var(--matou-radius-2xl) !important;
+  border-radius: 10px !important;
 
   &:hover {
     background-color: rgba(255, 255, 255, 0.9) !important;

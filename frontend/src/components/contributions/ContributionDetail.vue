@@ -6,7 +6,10 @@
         <ContributionStatusBadge :status="contribution.status" />
         <span class="type-badge">{{ contribution.contribution_type }}</span>
       </div>
-      <h1 class="detail-title">{{ contribution.title }}</h1>
+      <h1 class="detail-title">
+        <span>{{ contribution.title }}</span>
+        <slot name="title-actions" />
+      </h1>
       <p class="detail-meta">
         Created by {{ contribution.created_by }}
         &middot;
@@ -79,9 +82,9 @@
 
     <!-- Estimates -->
     <div class="grid-2">
-      <div v-if="contribution.estimated_hours" class="info-card">
+      <div v-if="contribution.estimated_duration" class="info-card">
         <div class="info-card-label">Estimated Hours</div>
-        <div class="info-card-value">{{ contribution.estimated_hours }}h</div>
+        <div class="info-card-value">{{ contribution.estimated_duration }}h</div>
       </div>
       <div v-if="contribution.budget" class="info-card">
         <div class="info-card-label">Budget</div>
@@ -171,6 +174,9 @@ defineProps<{
   margin: 0 0 6px;
   color: var(--matou-foreground);
   line-height: 1.2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .detail-meta {

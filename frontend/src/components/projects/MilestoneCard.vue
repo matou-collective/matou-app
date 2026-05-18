@@ -15,6 +15,23 @@
         </div>
       </div>
       <div class="milestone-header-right">
+        <span v-if="hasBudget" class="budget-pill">
+          Budget: {{ formatCurrency(milestone.budget_allocation ?? 0) }}
+          <q-tooltip>
+            The budget allocated to this milestone at planning time. Set when creating or editing the milestone.
+          </q-tooltip>
+        </span>
+        <span
+          v-if="hasBudget || actualCost > 0"
+          class="budget-pill actual-pill"
+          :class="{ 'over-budget': isOverBudget }"
+        >
+          Actual: {{ formatCurrency(actualCost) }}
+          <q-tooltip>
+            The running cost of this milestone, summed from the budget of each non-archived contribution.
+            For completed contributions this reflects the final agreed cost; for in-progress contributions it reflects the latest estimate.
+          </q-tooltip>
+        </span>
         <span class="milestone-meta-count">{{ totalCount }} contributions</span>
         <span v-if="isPlanSignedOff" class="badge-locked">
           <Lock class="badge-icon" />
@@ -35,6 +52,17 @@
         </div>
         <div class="expand-btn">
           <ChevronDown class="expand-icon" :class="{ rotated: isExpanded }" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Over-budget warning -->
+    <div v-if="isOverBudget" class="over-budget-banner">
+      <AlertTriangle class="banner-icon" />
+      <div>
+        <div class="banner-title">Over budget</div>
+        <div class="banner-sub">
+          Actual ({{ formatCurrency(actualCost) }}) exceeds the allocated budget ({{ formatCurrency(milestone.budget_allocation ?? 0) }}) by {{ formatCurrency(actualCost - (milestone.budget_allocation ?? 0)) }}.
         </div>
       </div>
     </div>
@@ -68,8 +96,9 @@
         />
       </div>
 
-      <!-- Add contribution -->
-      <div v-if="canEdit && !isPlanSignedOff" class="add-contribution-row">
+      <!-- Add contribution (always available to those with edit perms; adding a
+           contribution post-signoff invalidates the plan and requires re-signoff). -->
+      <div v-if="canEdit" class="add-contribution-row">
         <button class="add-contribution-btn" @click="$emit('create-contribution', milestone.milestone_id)">
           <Plus class="add-icon" />
           Add Contribution
@@ -81,7 +110,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { ChevronDown, CheckCircle, Lock, AlertCircle, Plus } from 'lucide-vue-next';
+import { ChevronDown, CheckCircle, Lock, AlertCircle, AlertTriangle, Plus } from 'lucide-vue-next';
 import type { Milestone, Contribution } from 'src/types/projects';
 import ContributionCardCompact from './ContributionCardCompact.vue';
 
@@ -142,6 +171,34 @@ const progressPercent = computed(() =>
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Parse a free-form budget string ("$1,234.50", "1234", "USD 500") to a number.
+// Returns 0 when nothing parseable is found.
+function parseBudget(s: string | undefined): number {
+  if (!s) return 0;
+  const cleaned = s.replace(/[^0-9.\-]/g, '');
+  if (!cleaned) return 0;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
+
+const actualCost = computed(() =>
+  contributions.value.reduce((sum, c) => sum + parseBudget(c.budget), 0),
+);
+
+const hasBudget = computed(() => (props.milestone.budget_allocation ?? 0) > 0);
+
+const isOverBudget = computed(
+  () => hasBudget.value && actualCost.value > (props.milestone.budget_allocation ?? 0),
+);
+
+function formatCurrency(n: number): string {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(n);
 }
 </script>
 
@@ -371,5 +428,70 @@ function formatDate(iso: string): string {
   display: flex;
   gap: 2px;
   align-items: center;
+}
+
+.budget-pill {
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: rgba(74, 157, 156, 0.12);
+  color: var(--matou-accent, #4a9d9c);
+  font-weight: 500;
+  white-space: nowrap;
+
+  .signed-off & {
+    background: rgba(255, 255, 255, 0.18);
+    color: var(--matou-primary-foreground, white);
+  }
+}
+
+.actual-pill {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--matou-muted-foreground);
+
+  &.over-budget {
+    background: rgba(245, 158, 11, 0.15);
+    color: #b45309; // amber-700
+  }
+
+  .signed-off & {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--matou-primary-foreground, white);
+
+    &.over-budget {
+      background: rgba(245, 158, 11, 0.35);
+      color: #fef3c7; // amber-100 on dark
+    }
+  }
+}
+
+.over-budget-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 18px;
+  background: rgba(245, 158, 11, 0.12);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.25);
+  color: #92400e; // amber-800
+
+  .banner-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    color: #d97706; // amber-600
+    margin-top: 2px;
+  }
+
+  .banner-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  .banner-sub {
+    font-size: 0.78rem;
+    color: #b45309;
+    line-height: 1.3;
+    margin-top: 2px;
+  }
 }
 </style>

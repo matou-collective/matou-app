@@ -179,6 +179,16 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "comments":
+				switch r.Method {
+				case http.MethodGet:
+					h.HandleListComments(w, r, id)
+				case http.MethodPost:
+					h.HandleAddComment(w, r, id)
+				default:
+					writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				}
+				return
 			}
 		}
 
@@ -347,12 +357,14 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 	if v, ok := req["skill_requirements"]; ok {
 		contrib.SkillRequirements = toStringSlice(v)
 	}
-	if v, ok := req["estimated_hours"].(float64); ok {
+	if v, ok := req["estimated_duration"].(float64); ok {
 		contrib.EstimatedDuration = int(v)
 	}
+	if v, ok := req["deadline"].(string); ok {
+		contrib.Deadline = contributions.ParseDeadline(v)
+	}
 	if v, ok := req["budget"].(string); ok {
-		// stored as part of the contribution but no dedicated field — use tags or description
-		_ = v
+		contrib.Budget = v
 	}
 
 	// Evidence/review fields
@@ -941,4 +953,54 @@ func setupTestContributionsHandler() *ContributionsHandler {
 	store := contributions.NewMockStore()
 	svc := contributions.NewService(store)
 	return NewContributionsHandler(svc, nil, nil)
+}
+
+// HandleAddComment handles POST /api/v1/contributions/{id}/comments
+func (h *ContributionsHandler) HandleAddComment(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	var req struct {
+		UserID   string `json:"user_id"`
+		UserName string `json:"user_name"`
+		Text     string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		return
+	}
+	comment := &contributions.ContributionComment{
+		ContributionID: id,
+		UserID:         req.UserID,
+		UserName:       req.UserName,
+		Text:           req.Text,
+	}
+	created, err := h.service.AddContributionComment(r.Context(), spaceID, comment)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:comment_added",
+			Data: map[string]string{"contribution_id": id, "comment_id": created.ID},
+		})
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// HandleListComments handles GET /api/v1/contributions/{id}/comments
+func (h *ContributionsHandler) HandleListComments(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	comments, err := h.service.ListContributionComments(r.Context(), spaceID, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"comments": comments,
+		"total":    len(comments),
+	})
 }

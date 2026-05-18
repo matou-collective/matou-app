@@ -29,6 +29,7 @@ export interface Project {
   project_lead_id?: string;
   project_lead_name?: string;
   budget?: string;
+  duration?: string;
   start_date?: string;
   end_date?: string;
   created_by: string;
@@ -37,12 +38,17 @@ export interface Project {
   completed_by?: string;
   completed_at?: string;
   rejection_reason?: string;
+  comment_count?: number;
 }
 
 export interface CreateProjectRequest {
   title: string;
   description: string;
   images?: ProjectImage[];
+  budget?: string;
+  duration?: string;
+  start_date?: string;
+  end_date?: string;
   created_by: string;
 }
 
@@ -50,6 +56,10 @@ export interface UpdateProjectRequest {
   title?: string;
   description?: string;
   images?: ProjectImage[];
+  budget?: string;
+  duration?: string;
+  start_date?: string;
+  end_date?: string;
 }
 
 export async function createProject(req: CreateProjectRequest): Promise<Project> {
@@ -191,5 +201,42 @@ export async function rejectProjectCompletion(id: string, reason: string): Promi
     const err = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(err.error || 'Failed to reject project completion');
   }
+  return response.json();
+}
+
+export interface ProjectComment {
+  id: string;
+  project_id: string;
+  user_id: string;
+  user_name: string;
+  text: string;
+  created_at: string;
+}
+
+export async function addProjectComment(
+  projectId: string,
+  userId: string,
+  userName: string,
+  text: string,
+): Promise<ProjectComment> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/comments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ user_id: userId, user_name: userName, text }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to add comment');
+  }
+  return response.json();
+}
+
+export async function listProjectComments(
+  projectId: string,
+): Promise<{ comments: ProjectComment[]; total: number }> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/projects/${projectId}/comments`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) throw new Error('Failed to list comments');
   return response.json();
 }

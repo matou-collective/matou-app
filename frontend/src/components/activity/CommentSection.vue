@@ -46,11 +46,13 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { ChevronDown, Send } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
 import { useProfilesStore } from 'stores/profiles';
+import { useCommentCursorsStore } from 'stores/commentCursors';
 import { getFileUrl } from 'src/lib/api/client';
 
 const props = defineProps<{ noticeId: string }>();
 const activityStore = useActivityStore();
 const profilesStore = useProfilesStore();
+const commentCursorsStore = useCommentCursorsStore();
 
 const expanded = ref(false);
 const newComment = ref('');
@@ -59,13 +61,21 @@ const sending = ref(false);
 const comments = computed(() => activityStore.commentsByNotice[props.noticeId] ?? []);
 const commentCount = computed(() => activityStore.getCommentCount(props.noticeId));
 
+watch(commentCount, (n) => {
+  commentCursorsStore.setNoticeCount(props.noticeId, n);
+});
+
 // Load comments on mount so the count is visible immediately
-onMounted(() => {
-  activityStore.loadComments(props.noticeId);
+onMounted(async () => {
+  await activityStore.loadComments(props.noticeId);
+  commentCursorsStore.setNoticeCount(props.noticeId, commentCount.value);
 });
 
 function toggleExpanded() {
   expanded.value = !expanded.value;
+  if (expanded.value) {
+    void commentCursorsStore.markRead('notice', props.noticeId, commentCount.value);
+  }
 }
 
 async function submitComment() {
@@ -75,6 +85,7 @@ async function submitComment() {
   await activityStore.handleAddComment(props.noticeId, text);
   newComment.value = '';
   sending.value = false;
+  void commentCursorsStore.markRead('notice', props.noticeId, commentCount.value);
 }
 
 // --- Comment author: match userId (AID) to SharedProfile for image and name ---

@@ -215,7 +215,7 @@ defineExpose({ focus });
   justify-content: center;
   width: 36px;
   height: 36px;
-  border-radius: var(--matou-radius);
+  border-radius: 10px;
   background-color: var(--matou-primary);
   border: none;
   cursor: pointer;

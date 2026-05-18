@@ -16,6 +16,7 @@ type ProjectsHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
 	notifier     ContribNotifier
+	broker       *EventBroker
 }
 
 // NewProjectsHandler creates a new projects handler.
@@ -26,6 +27,11 @@ func NewProjectsHandler(service *contributions.Service, spaceManager *anysync.Sp
 		spaceManager: spaceManager,
 		notifier:     notifier,
 	}
+}
+
+// SetBroker sets the event broker for SSE broadcasting.
+func (h *ProjectsHandler) SetBroker(broker *EventBroker) {
+	h.broker = broker
 }
 
 // RegisterRoutes registers project routes on the mux.
@@ -136,6 +142,16 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "comments":
+				switch r.Method {
+				case http.MethodGet:
+					h.HandleListComments(w, r, id)
+				case http.MethodPost:
+					h.HandleAddComment(w, r, id)
+				default:
+					writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				}
 				return
 			}
 		}
@@ -410,4 +426,54 @@ func setupTestProjectsHandler() *ProjectsHandler {
 	store := contributions.NewMockStore()
 	svc := contributions.NewService(store)
 	return NewProjectsHandler(svc, nil, nil)
+}
+
+// HandleAddComment handles POST /api/v1/projects/{id}/comments
+func (h *ProjectsHandler) HandleAddComment(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	var req struct {
+		UserID   string `json:"user_id"`
+		UserName string `json:"user_name"`
+		Text     string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		return
+	}
+	comment := &contributions.ProjectComment{
+		ProjectID: id,
+		UserID:    req.UserID,
+		UserName:  req.UserName,
+		Text:      req.Text,
+	}
+	created, err := h.service.AddProjectComment(r.Context(), spaceID, comment)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "project:comment_added",
+			Data: map[string]string{"project_id": id, "comment_id": created.ID},
+		})
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// HandleListComments handles GET /api/v1/projects/{id}/comments
+func (h *ProjectsHandler) HandleListComments(w http.ResponseWriter, r *http.Request, id string) {
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	comments, err := h.service.ListProjectComments(r.Context(), spaceID, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"comments": comments,
+		"total":    len(comments),
+	})
 }

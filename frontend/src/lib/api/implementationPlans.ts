@@ -15,7 +15,7 @@ export interface Milestone {
   duration: string;
   start_date?: string;
   end_date?: string;
-  status?: 'planned' | 'in_progress' | 'completed' | 'delayed';
+  status?: 'planned' | 'in_progress' | 'completed' | 'delayed' | 'archived';
   success_criteria?: string[];
   dependencies?: string[];
   budget_allocation?: number;
@@ -137,6 +137,7 @@ export interface UpdateMilestoneRequest {
   duration?: string;
   start_date?: string;
   end_date?: string;
+  budget_allocation?: number;
   success_criteria?: string[];
   status?: string;
 }

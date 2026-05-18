@@ -18,7 +18,10 @@ import {
   approveSub as apiApproveSub,
   archiveContribution as apiArchiveContrib,
   unassignContribution as apiUnassign,
+  addContributionComment as apiAddComment,
+  listContributionComments as apiListComments,
   type Contribution,
+  type ContributionComment,
   type CreateContributionRequest,
   type UpdateContributionRequest,
 } from 'src/lib/api/contributions';
@@ -273,6 +276,58 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  const commentsByContribution = ref<Record<string, ContributionComment[]>>({});
+
+  async function fetchComments(contributionId: string) {
+    try {
+      const result = await apiListComments(contributionId);
+      commentsByContribution.value[contributionId] = result.comments || [];
+    } catch (e) {
+      log.error('fetchComments failed: %s', e);
+    }
+  }
+
+  async function addComment(contributionId: string, userId: string, userName: string, text: string) {
+    const comment = await apiAddComment(contributionId, userId, userName, text);
+    const existing = commentsByContribution.value[contributionId] ?? [];
+    commentsByContribution.value[contributionId] = [...existing, comment];
+    bumpCommentCount(contributionId);
+    return comment;
+  }
+
+  function bumpCommentCount(contributionId: string, by = 1) {
+    const idx = contributions.value.findIndex((c) => c.id === contributionId);
+    if (idx >= 0) {
+      const current = contributions.value[idx]!.comment_count ?? 0;
+      contributions.value[idx] = { ...contributions.value[idx]!, comment_count: current + by };
+    }
+    if (currentContribution.value?.id === contributionId) {
+      const current = currentContribution.value.comment_count ?? 0;
+      currentContribution.value = { ...currentContribution.value, comment_count: current + by };
+    }
+  }
+
+  function setCommentCount(contributionId: string, count: number) {
+    const idx = contributions.value.findIndex((c) => c.id === contributionId);
+    if (idx >= 0) {
+      contributions.value[idx] = { ...contributions.value[idx]!, comment_count: count };
+    }
+    if (currentContribution.value?.id === contributionId) {
+      currentContribution.value = { ...currentContribution.value, comment_count: count };
+    }
+  }
+
+  // Live read so cards that received a stale-copy of a Contribution (e.g.
+  // hydrated milestone.contributions) can render the up-to-date count.
+  function liveCommentCount(contributionId: string, fallback = 0): number {
+    const c = contributions.value.find((x) => x.id === contributionId);
+    if (c && typeof c.comment_count === 'number') return c.comment_count;
+    if (currentContribution.value?.id === contributionId && typeof currentContribution.value.comment_count === 'number') {
+      return currentContribution.value.comment_count;
+    }
+    return fallback;
+  }
+
   return {
     contributions,
     currentContribution,
@@ -297,5 +352,11 @@ export const useContributionsStore = defineStore('contributions', () => {
     approveSub,
     archive,
     unassign,
+    commentsByContribution,
+    fetchComments,
+    addComment,
+    bumpCommentCount,
+    setCommentCount,
+    liveCommentCount,
   };
 });

@@ -232,24 +232,42 @@ func ValidateNoCyclicDependency(contribID, depID string, deps map[string][]strin
 }
 
 // ValidatePlanSignOff validates that an implementation plan is ready to be signed off.
-// Requirements: at least one milestone, each milestone has contributions, all contributions are confirmed.
+// Requirements: at least one non-archived milestone, and each non-archived milestone
+// has at least one non-archived contribution.
+//
+// Unconfirmed contributions are NOT a hard failure here: sign-off unlocks the
+// assignment flow but every individual contribution still has to be confirmed
+// before it can be assigned and completed. The frontend prompts the user to
+// confirm when signing off with unconfirmed contributions present.
 func ValidatePlanSignOff(plan *ImplementationPlan, milestones []Milestone, contributions []Contribution) error {
-	if len(milestones) == 0 {
+	active := make([]Milestone, 0, len(milestones))
+	for _, m := range milestones {
+		if m.Status != MilestoneArchived {
+			active = append(active, m)
+		}
+	}
+	if len(active) == 0 {
 		return fmt.Errorf("plan must have at least one milestone")
 	}
-	for _, m := range milestones {
-		if len(m.ContributionIDs) == 0 {
+	// Build a set of non-archived contribution IDs so we don't credit a
+	// milestone whose only contributions have been archived.
+	activeContribIDs := map[string]struct{}{}
+	for _, c := range contributions {
+		if c.Status != ContribArchived {
+			activeContribIDs[c.ID] = struct{}{}
+		}
+	}
+	for _, m := range active {
+		hasActive := false
+		for _, cid := range m.ContributionIDs {
+			if _, ok := activeContribIDs[cid]; ok {
+				hasActive = true
+				break
+			}
+		}
+		if !hasActive {
 			return fmt.Errorf("milestone %q has no contributions", m.Title)
 		}
-	}
-	var unconfirmed []string
-	for _, c := range contributions {
-		if c.Status != ContribConfirmed {
-			unconfirmed = append(unconfirmed, c.ID)
-		}
-	}
-	if len(unconfirmed) > 0 {
-		return &UnconfirmedContributionsError{IDs: unconfirmed}
 	}
 	return nil
 }
