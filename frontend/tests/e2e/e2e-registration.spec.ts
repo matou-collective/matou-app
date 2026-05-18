@@ -169,6 +169,17 @@ test.describe.serial('Registration Approval Flow', () => {
       await loginWithMnemonic(adminPage, accounts.admin.mnemonic);
       console.log('[Test] Admin logged in and on dashboard');
     }
+
+    // Migrate pre-existing orgs that were created without witnesses
+    // (idempotent — no-op when the banner isn't rendered).
+    const banner = adminPage.locator('[data-test="witness-adoption-banner"]');
+    const bannerVisible = await banner.isVisible().catch(() => false);
+    if (bannerVisible) {
+      console.log('[Test] Pre-existing org has no witnesses — adopting via banner...');
+      await banner.getByRole('button', { name: /adopt witnesses/i }).click();
+      await expect(banner).not.toBeVisible({ timeout: 90_000 });
+      console.log('[Test] Org witnesses adopted');
+    }
   });
 
   test.afterAll(async () => {
