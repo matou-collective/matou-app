@@ -400,10 +400,20 @@ export function useAdminActions() {
       const stewardOOBI = `${cesrUrl}/oobi/${stewardAid}`;
       await keriClient.resolveOOBI(stewardOOBI, undefined, 30000);
 
-      // --- Step 2: Key rotation ---
-      processingStep.value = 'Performing key rotation...';
-      onStep?.('Performing key rotation...');
-      await keriClient.addMemberToGroup(orgName, stewardAid, personalAid.name);
+      // --- Step 2a: Round 1 — admin pre-rotates, group rotation adds member to rstates ---
+      processingStep.value = 'Inviting steward (round 1)...';
+      onStep?.('Inviting steward (round 1)...');
+      await keriClient.addMemberRound1(orgName, stewardAid, personalAid.name);
+
+      // --- Step 2b: Wait for the steward's frontend to accept and rotate ---
+      processingStep.value = 'Waiting for steward to accept...';
+      onStep?.('Waiting for steward to accept...');
+      await keriClient.waitForMemberRotation(stewardAid, '1', { timeoutMs: 5 * 60_000 });
+
+      // --- Step 2c: Round 2 — admin pre-rotates again, member becomes signer ---
+      processingStep.value = 'Promoting steward to signer (round 2)...';
+      onStep?.('Promoting steward to signer (round 2)...');
+      await keriClient.addMemberRound2(orgName, stewardAid, personalAid.name);
       console.log('[AdminActions] Steward added to org multisig');
 
       // --- Step 3: Revoke old credential ---
