@@ -31,61 +31,87 @@
       <h3 class="section-title">All Contributions</h3>
     </div>
 
-    <!-- Filters -->
-    <div class="filter-row">
-      <div class="filter-group">
-        <button
-          v-for="f in statusFilters"
-          :key="f.value"
-          class="filter-pill"
-          :class="{ active: activeStatusFilter === f.value }"
-          @click="activeStatusFilter = f.value"
-        >
-          {{ f.label }}
-        </button>
-      </div>
-
-      <div class="filter-group">
-        <button
-          v-for="f in typeFilters"
-          :key="f.value"
-          class="filter-pill type-pill"
-          :class="{ active: activeTypeFilter === f.value }"
-          @click="activeTypeFilter = f.value"
-        >
-          {{ f.label }}
-        </button>
-      </div>
+    <!-- View mode toggle -->
+    <div class="view-mode-row">
+      <q-btn-toggle
+        v-model="viewMode"
+        no-caps
+        spread
+        toggle-color="primary"
+        color="white"
+        text-color="primary"
+        :options="[
+          { label: 'List', value: 'list', icon: 'view_list' },
+          { label: 'Timeline', value: 'timeline', icon: 'view_timeline' },
+        ]"
+        class="view-mode-toggle"
+      />
     </div>
 
-    <!-- Content -->
-    <div class="feed-container">
-      <div v-if="store.isLoading" class="loading-state">
-        <q-spinner-dots size="40px" color="primary" />
+    <template v-if="viewMode === 'list'">
+      <!-- Filters -->
+      <div class="filter-row">
+        <div class="filter-group">
+          <button
+            v-for="f in statusFilters"
+            :key="f.value"
+            class="filter-pill"
+            :class="{ active: activeStatusFilter === f.value }"
+            @click="activeStatusFilter = f.value"
+          >
+            {{ f.label }}
+          </button>
+        </div>
+
+        <div class="filter-group">
+          <button
+            v-for="f in typeFilters"
+            :key="f.value"
+            class="filter-pill type-pill"
+            :class="{ active: activeTypeFilter === f.value }"
+            @click="activeTypeFilter = f.value"
+          >
+            {{ f.label }}
+          </button>
+        </div>
       </div>
 
-      <div v-else-if="store.error" class="empty-state">
-        <q-icon name="error_outline" size="48px" class="empty-icon" color="negative" />
-        <h3>Failed to load contributions</h3>
-        <p>{{ store.error }}</p>
-        <q-btn flat no-caps label="Retry" color="primary" @click="loadContributions" />
-      </div>
+      <!-- Content -->
+      <div class="feed-container">
+        <div v-if="store.isLoading" class="loading-state">
+          <q-spinner-dots size="40px" color="primary" />
+        </div>
 
-      <div v-else-if="filteredContributions.length === 0" class="empty-state">
-        <Hammer :size="48" class="empty-icon" />
-        <h3>No contributions found</h3>
-        <p>Try adjusting your filters.</p>
-      </div>
+        <div v-else-if="store.error" class="empty-state">
+          <q-icon name="error_outline" size="48px" class="empty-icon" color="negative" />
+          <h3>Failed to load contributions</h3>
+          <p>{{ store.error }}</p>
+          <q-btn flat no-caps label="Retry" color="primary" @click="loadContributions" />
+        </div>
 
-      <div v-else class="contributions-list">
-        <ContributionCard
-          v-for="contribution in filteredContributions"
-          :key="contribution.id"
-          :contribution="contribution"
-          @click="router.push({ name: 'contribution-detail', params: { id: contribution.id } })"
-        />
+        <div v-else-if="filteredContributions.length === 0" class="empty-state">
+          <Hammer :size="48" class="empty-icon" />
+          <h3>No contributions found</h3>
+          <p>Try adjusting your filters.</p>
+        </div>
+
+        <div v-else class="contributions-list">
+          <ContributionCard
+            v-for="contribution in filteredContributions"
+            :key="contribution.id"
+            :contribution="contribution"
+            @click="router.push({ name: 'contribution-detail', params: { id: contribution.id } })"
+          />
+        </div>
       </div>
-    </div>
+    </template>
+
+    <template v-else>
+      <ContributionsTimelineView
+        :contributions="timelineContributions"
+        @view-contribution="handleViewContribution"
+      />
+    </template>
 
     <!-- Create Contribution Dialog -->
     <CreateContributionDialog
@@ -98,7 +124,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { Hammer } from 'lucide-vue-next';
 import { useQuasar } from 'quasar';
@@ -106,9 +132,10 @@ import { useContributionsStore } from 'stores/contributions';
 import { useContributions } from 'src/composables/useContributions';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useIdentityStore } from 'stores/identity';
-import type { CreateContributionRequest } from 'src/lib/api/contributions';
+import type { Contribution, CreateContributionRequest } from 'src/lib/api/contributions';
 import ContributionCard from 'src/components/contributions/ContributionCard.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
+import ContributionsTimelineView from 'src/pages/Contributions/ContributionsTimelineView.vue';
 
 const router = useRouter();
 const $q = useQuasar();
@@ -145,6 +172,15 @@ const myContributions = computed(() => {
 const showCreateDialog = ref(false);
 const activeStatusFilter = ref('open');
 const activeTypeFilter = ref('all');
+
+const VIEW_MODE_STORAGE_KEY = 'matou:contributions:view';
+const viewMode = ref<'list' | 'timeline'>(
+  (localStorage.getItem(VIEW_MODE_STORAGE_KEY) as 'list' | 'timeline') ?? 'list',
+);
+
+watch(viewMode, (v) => {
+  localStorage.setItem(VIEW_MODE_STORAGE_KEY, v);
+});
 
 const statusFilters = [
   { label: 'Open', value: 'open' },
@@ -197,6 +233,17 @@ const filteredContributions = computed(() => {
     return ca - cb;
   });
 });
+
+// Timeline uses Mine/All scope but no status/type filters.
+// Since this page has no Mine/All toggle (Mine always shows at top), we
+// pass all non-archived contributions so the timeline reflects everyone's work.
+const timelineContributions = computed(() =>
+  store.contributions.filter((c) => c.status !== 'archived'),
+);
+
+function handleViewContribution(c: Contribution) {
+  void router.push({ name: 'contribution-detail', params: { id: c.id } });
+}
 
 function loadContributions() {
   void store.fetchContributions();
@@ -361,5 +408,17 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
 
 .section-divider {
   margin: 8px 0 12px;
+}
+
+.view-mode-row {
+  display: flex;
+  justify-content: flex-start;
+  margin: 0 0 16px;
+}
+
+.view-mode-toggle {
+  border: 1px solid var(--matou-border);
+  border-radius: 8px;
+  overflow: hidden;
 }
 </style>
