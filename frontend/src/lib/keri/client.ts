@@ -219,31 +219,21 @@ export class KERIClient {
   async createAID(name: string, options?: { useWitnesses?: boolean }): Promise<AIDInfo> {
     if (!this.client) throw new Error('Not initialized');
 
-    // Witness AIDs (from witness-demo image):
-    // - BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha (wan, port 5642)
-    // Using only 1 witness with toad=1 to match signify-ts test pattern
-    const WITNESS_AID = 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha';
-
-    let result;
-    if (options?.useWitnesses) {
-      // Create AID with witness backing
-      // Using 1 witness with toad=1 (matching signify-ts test pattern)
-      console.log('[KERIClient] Creating AID with witness backing (1 witness, toad=1)...');
-      result = await this.client.identifiers().create(name, {
-        wits: [WITNESS_AID],
-        toad: 1, // Threshold: need 1 witness to acknowledge
-      });
-    } else {
-      // Create without witnesses (faster for development)
-      console.log('[KERIClient] Creating AID (without witnesses for faster dev)...');
-      result = await this.client.identifiers().create(name);
-    }
+    const { assignWitnesses } = await import('./witnessAssignment');
+    const { personal, toad } = await assignWitnesses();
+    console.log(
+      `[KERIClient] Creating AID "${name}" with ${personal.length} personal witnesses (toad=${toad})`,
+    );
+    const result = await this.client.identifiers().create(name, {
+      wits: personal,
+      toad,
+    });
 
     console.log('[KERIClient] Waiting for AID operation to complete...');
     const op = await result.op();
     console.log('[KERIClient] Operation:', JSON.stringify(op));
     // Witness-backed AIDs need longer timeout (3 minutes) for witness acknowledgments
-    const timeout = options?.useWitnesses ? 180000 : 60000;
+    const timeout = 180000;
     try {
       await this.client.operations().wait(op, { signal: AbortSignal.timeout(timeout) });
       console.log('[KERIClient] AID operation completed');
