@@ -893,6 +893,81 @@ export class KERIClient {
   }
 
   /**
+   * Adopt witnesses on a pre-existing group AID that was created with
+   * `toad: 0, wits: []` (pre-multisig-fix build). Executes a single
+   * witness-only KERI rotation (no key changes) that adds the org-subset
+   * of witnesses returned by `assignWitnesses()`.
+   *
+   * Idempotent: if the org already has any witnesses, returns
+   * `'already-migrated'` without sending a rotation.
+   *
+   * @param orgName - Local alias of the group AID
+   * @param masterAidName - Local alias of the admin's personal AID (sole signer)
+   * @returns `'migrated'` on success, `'already-migrated'` if the org already has witnesses
+   * @throws if the rotation completes but witnesses are not visible after re-query
+   */
+  async adoptOrgWitnesses(
+    orgName: string,
+    masterAidName: string,
+  ): Promise<'migrated' | 'already-migrated'> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+
+    const orgBefore = await this.client.identifiers().get(orgName);
+    const witsBefore = (orgBefore.state as { b?: string[] })?.b ?? [];
+    if (witsBefore.length > 0) {
+      console.log(
+        `[KERIClient] adoptOrgWitnesses: ${orgName} already has ${witsBefore.length} witnesses — no-op`,
+      );
+      return 'already-migrated';
+    }
+
+    const { assignWitnesses } = await import('./witnessAssignment');
+    const { org: targetWits, toad } = await assignWitnesses();
+    console.log(
+      `[KERIClient] adoptOrgWitnesses: rotating ${orgName} to adopt ${targetWits.length} witnesses (toad=${toad})`,
+    );
+
+    // Refresh master state — same pattern as addMemberRound1/Round2.
+    const masterAid = await this.client.identifiers().get(masterAidName);
+    const masterQ = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
+    const masterRes = await this.client.operations().wait(masterQ, { signal: AbortSignal.timeout(30000) });
+    const masterState = masterRes.response as Record<string, unknown>;
+
+    const rot = await this.client.identifiers().rotate(orgName, {
+      states: [masterState],
+      rstates: [masterState],
+      adds: targetWits,
+      toad,
+    });
+    const rotOp = await rot.op();
+    if (!rotOp?.done) {
+      let done = false;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const s = await this.client.operations().get(rotOp.name);
+        if (s?.done) { done = true; break; }
+      }
+      if (!done) {
+        console.warn('[KERIClient] adoptOrgWitnesses: rotation op not done after 30s — verifying state anyway');
+      }
+    }
+
+    // Verify by re-querying — fail loudly if witnesses didn't actually land.
+    const orgAfter = await this.client.identifiers().get(orgName);
+    const witsAfter = (orgAfter.state as { b?: string[] })?.b ?? [];
+    if (witsAfter.length !== targetWits.length) {
+      throw new Error(
+        `adoptOrgWitnesses: expected ${targetWits.length} witnesses after rotation, got ${witsAfter.length}. ` +
+        `Org may be in an inconsistent state — check KERIA logs.`,
+      );
+    }
+
+    console.log(`[KERIClient] adoptOrgWitnesses: complete, b=${JSON.stringify(witsAfter)}`);
+    return 'migrated';
+  }
+
+  /**
    * Send a /multisig/rot EXN for the given rotation result.
    *
    * CRITICAL: re-fetches the master hab inside this method. The hab object
