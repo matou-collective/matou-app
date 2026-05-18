@@ -183,7 +183,7 @@
       :isEndorsing="isEndorsing"
       :hasMarkedAttended="selectedMemberHasAttended"
       :isMarkingAttended="isMarkingAttended"
-      :canChangeRole="false /* TODO: disabled pending multisig rotation fix — see docs/multisig-rotation-report.md */"
+      :canChangeRole="isSteward && !!selectedMemberSharedProfile && (selectedMemberSharedProfile.aid as string) !== (identityStore.currentAID?.prefix || '')"
       :canRemoveMember="isSteward && !!selectedMemberSharedProfile && (selectedMemberSharedProfile.aid as string) !== (identityStore.currentAID?.prefix || '')"
       :isRemoving="isRemoving"
       @close="handleCloseModal"

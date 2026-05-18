@@ -952,7 +952,72 @@ test.describe.serial('Registration Approval Flow', () => {
       saveAccounts(accounts);
       console.log(`[Test] Saved member2 account: ${user2Name} (${member2Aid.slice(0, 12)}...)`);
 
-      console.log('[Test] PASS - User2 registered and approved, account saved');
+      // ================================================================
+      // I. Promote User1 to Community Steward via the multisig upgrade flow
+      //    (was previously skipped pending ChangeRoleModal investigation)
+      // ================================================================
+      console.log('[Test] --- Promoting User1 to Community Steward ---');
+
+      // Admin navigates to dashboard and opens User1's profile
+      await adminPage.reload();
+      const allMembersCard = adminPage.locator('.members-card');
+      await expect(allMembersCard).toBeVisible({ timeout: TIMEOUT.medium });
+      const user1Name = accounts.member!.name;
+      const user1CardOnAdmin = allMembersCard.locator('.profile-card').filter({ hasText: user1Name });
+      await expect(user1CardOnAdmin).toBeVisible({ timeout: TIMEOUT.medium });
+      await user1CardOnAdmin.click();
+
+      const upgradeModal = adminPage.locator('.modal-content');
+      await expect(upgradeModal).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(upgradeModal.locator('h4').first()).toContainText(user1Name, { timeout: TIMEOUT.short });
+
+      // Click the role badge (shows current role e.g. "Member") to open ChangeRoleModal.
+      // canChangeRole is true for stewards viewing another member.
+      const roleBadge = upgradeModal.locator('span').filter({ hasText: /^Member$/ }).first();
+      await expect(roleBadge).toBeVisible({ timeout: TIMEOUT.short });
+      await roleBadge.click();
+
+      // ChangeRoleModal should now be open — locate by its "Change Role" header
+      const changeRoleModal = adminPage.locator('.modal-content', {
+        has: adminPage.locator('h3', { hasText: 'Change Role' }),
+      });
+      await expect(changeRoleModal.getByText('Change Role')).toBeVisible({ timeout: TIMEOUT.short });
+      await changeRoleModal.locator('label').filter({ hasText: 'Community Steward' }).click();
+
+      // Confirm the upgrade
+      await changeRoleModal.getByRole('button', { name: /^Confirm$/i }).click();
+      console.log('[Test] Clicked Confirm — multisig upgrade starting');
+
+      // Wait for progress steps to advance
+      // Round 1: admin invites User1 to the multisig group
+      await expect(adminPage.locator('text=Inviting steward (round 1)')).toBeVisible({ timeout: TIMEOUT.aidCreation });
+      console.log('[Test] Step: Inviting steward (round 1) visible');
+
+      // User1's frontend is still running (user1Page); useMultisigJoin handles the join
+      // automatically when the KERI event arrives.
+      await expect(adminPage.locator('text=Waiting for steward to accept')).toBeVisible({ timeout: TIMEOUT.aidCreation });
+      console.log('[Test] Step: Waiting for steward to accept visible');
+
+      // Round 2: admin promotes User1 after rotation confirmed
+      await expect(adminPage.locator('text=Promoting steward to signer (round 2)')).toBeVisible({ timeout: 5 * 60_000 });
+      console.log('[Test] Step: Promoting steward to signer (round 2) visible');
+
+      // Final: Done button appears when upgrade is complete
+      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 2 * 60_000 });
+      console.log('[Test] User1 upgrade to Community Steward complete');
+
+      // Dismiss ChangeRoleModal (Done closes ChangeRoleModal, ProfileModal stays open)
+      await changeRoleModal.getByRole('button', { name: /^Done$/i }).click();
+      await expect(changeRoleModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // Close the ProfileModal (click the X icon button in the modal header)
+      await upgradeModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
+      await expect(upgradeModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // Re-save accounts so the JSON file reflects a post-upgrade state;
+      // the mnemonic/aid/name are unchanged — the steward role lives in the backend.
+      saveAccounts(accounts);
+      console.log('[Test] PASS - User2 registered and approved, User1 promoted to steward');
     } finally {
       await user2Context?.close();
       await user1Context?.close();
@@ -1152,6 +1217,183 @@ test.describe.serial('Registration Approval Flow', () => {
     } finally {
       await userContext.close();
       await backends.stop('user-booking');
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Test 5: Upgraded steward can approve a new registration
+  //
+  // Verifies that User1, having been promoted to Community Steward via
+  // the multisig upgrade flow in Test 2, can now independently approve
+  // a fresh registration — proving the steward credential took effect.
+  // ------------------------------------------------------------------
+  test('upgraded steward can approve a new registration', async ({ browser }) => {
+    test.setTimeout(360_000);
+
+    // Reload accounts persisted by earlier tests
+    accounts = loadAccounts();
+    if (!accounts.member?.mnemonic) {
+      test.skip(true, 'Test 2 must run first to create the upgraded steward account');
+      return;
+    }
+
+    // Spin up a fresh registrant (User3)
+    const user3Backend = await backends.start('user3-by-steward');
+    const user3Context = await browser.newContext();
+    await setupTestConfig(user3Context);
+    await setupBackendRouting(user3Context, user3Backend.port);
+    const user3Page = await user3Context.newPage();
+    setupPageLogging(user3Page, 'User3');
+
+    // Spin up User1 (the now-upgraded steward) using their saved mnemonic
+    const user1Backend = await backends.start('user1-as-steward');
+    const user1Context = await browser.newContext();
+    await setupTestConfig(user1Context);
+    await setupBackendRouting(user1Context, user1Backend.port);
+    const user1Page = await user1Context.newPage();
+    setupPageLogging(user1Page, 'User1');
+
+    const user3Name = `User3_${uniqueSuffix()}`;
+
+    try {
+      // ================================================================
+      // A. Register User3 (new applicant)
+      // ================================================================
+      console.log(`[Test] Registering User3: ${user3Name}`);
+      const { mnemonic: user3Mnemonic } = await registerUser(user3Page, user3Name);
+
+      // ================================================================
+      // B. Log in User1 (the upgraded steward from Test 2)
+      // ================================================================
+      console.log('[Test] Logging in User1 (upgraded steward) with saved mnemonic...');
+      await loginWithMnemonic(user1Page, accounts.member!.mnemonic);
+      console.log('[Test] User1 (steward) on dashboard');
+
+      // ================================================================
+      // C. Wait for User3 to appear in admin's members list
+      // ================================================================
+      console.log('[Test] Waiting for User3 to appear in admin New Members...');
+      const adminMembersCard = adminPage.locator('.members-card');
+      const user3CardName = adminMembersCard.locator('.card-name', { hasText: user3Name });
+      await expect(user3CardName).toBeVisible({ timeout: TIMEOUT.medium });
+      console.log('[Test] User3 visible in admin members card');
+
+      // ================================================================
+      // D. Admin endorses User3 (steward endorsement — satisfies Confirmation)
+      // ================================================================
+      console.log('[Test] --- Admin endorsing User3 ---');
+      const user3CardForEndorse = adminMembersCard.locator('.profile-card').filter({ hasText: user3Name });
+      await user3CardForEndorse.click();
+
+      const adminModal = adminPage.locator('.modal-content');
+      await expect(adminModal).toBeVisible({ timeout: TIMEOUT.short });
+
+      const adminEndorseBtn = adminModal.getByRole('button', { name: /^Endorse$/i });
+      await expect(adminEndorseBtn).toBeVisible({ timeout: TIMEOUT.short });
+      await adminEndorseBtn.click();
+
+      const adminEndorseTextarea = adminModal.locator('textarea[placeholder="Why do you endorse this person?"]');
+      await expect(adminEndorseTextarea).toBeVisible({ timeout: TIMEOUT.short });
+      await adminEndorseTextarea.fill('Steward endorsement from admin for User3');
+
+      const adminConfirmEndorse = adminModal.getByRole('button', { name: /confirm endorsement/i });
+      await expect(adminConfirmEndorse).toBeEnabled({ timeout: TIMEOUT.short });
+      await adminConfirmEndorse.click();
+      console.log('[Test] Admin clicked Confirm Endorsement for User3...');
+
+      const adminEndorsedBtn = adminModal.getByRole('button', { name: /^Endorsed$/i });
+      await expect(adminEndorsedBtn).toBeVisible({ timeout: TIMEOUT.aidCreation });
+      console.log('[Test] Admin endorsement for User3 succeeded');
+
+      // Close modal
+      await adminModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
+      await expect(adminModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // ================================================================
+      // E. Admin marks User3 attendance (Whakawhanaunga requirement)
+      // ================================================================
+      console.log('[Test] --- Admin marking User3 attendance ---');
+      const user3CardForAttendance = adminMembersCard.locator('.profile-card').filter({ hasText: user3Name });
+      await user3CardForAttendance.click();
+
+      const attendanceModal = adminPage.locator('.modal-content');
+      await expect(attendanceModal).toBeVisible({ timeout: TIMEOUT.short });
+
+      const onboardedBtn = attendanceModal.getByRole('button', { name: /onboarded/i });
+      await expect(onboardedBtn).toBeVisible({ timeout: TIMEOUT.short });
+      await onboardedBtn.click();
+      console.log('[Test] Admin clicked Onboarded for User3...');
+
+      const onboardedDoneBtn = attendanceModal.locator('button:disabled', { hasText: /onboarded/i });
+      await expect(onboardedDoneBtn).toBeVisible({ timeout: TIMEOUT.aidCreation });
+      console.log('[Test] Attendance for User3 marked');
+
+      // Close modal
+      await attendanceModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
+      await expect(attendanceModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // ================================================================
+      // F. User1 (upgraded steward) opens User3's profile and approves
+      // ================================================================
+      console.log('[Test] --- User1 (steward) waiting for User3 to appear in their members list ---');
+      const user1MembersCard = user1Page.locator('.members-card');
+      const user3OnUser1 = user1MembersCard.locator('.card-name', { hasText: user3Name });
+      await expect(user3OnUser1).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+      console.log('[Test] User3 visible in User1 members card');
+
+      const user3CardOnUser1 = user1MembersCard.locator('.profile-card').filter({ hasText: user3Name });
+      await user3CardOnUser1.click();
+
+      const user1Modal = user1Page.locator('.modal-content');
+      await expect(user1Modal).toBeVisible({ timeout: TIMEOUT.short });
+
+      // User1 (now a steward) should see the Approve button once requirements are met
+      const approveBtn = user1Modal.getByRole('button', { name: /^Approve$/i });
+      await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.long });
+      console.log('[Test] Approve button visible for User1 (upgraded steward) — steward role confirmed');
+
+      // Set up response listeners before clicking Approve
+      const inviteResponse = user1Page.waitForResponse(
+        resp => resp.url().includes('/api/v1/spaces/community/invite') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.long },
+      );
+      const joinResponse = user3Page.waitForResponse(
+        resp => resp.url().includes('/api/v1/spaces/community/join') && resp.request().method() === 'POST',
+        { timeout: TIMEOUT.aidCreation },
+      );
+
+      await approveBtn.click();
+      console.log('[Test] User1 (steward) clicked Approve for User3');
+
+      // Verify invite sent and User3 joins
+      const invResp = await inviteResponse;
+      expect(invResp.status()).toBe(200);
+      console.log('[Test] Community invite sent by steward User1');
+
+      const joinResp = await joinResponse;
+      expect(joinResp.status()).toBe(200);
+      console.log('[Test] User3 joined community space');
+
+      // ================================================================
+      // G. User3 receives credential and enters community
+      // ================================================================
+      console.log('[Test] Waiting for User3 to receive credential...');
+      await expect(user3Page.locator('.welcome-overlay')).toBeVisible({ timeout: TIMEOUT.long });
+      console.log('[Test] User3 received credential!');
+
+      const enterButton = user3Page.getByRole('button', { name: /enter community/i });
+      await expect(enterButton).toBeEnabled({ timeout: TIMEOUT.long + 30_000 });
+      await enterButton.click();
+      await expect(user3Page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.short });
+      console.log('[Test] User3 on dashboard — approved by upgraded steward User1');
+
+      console.log('[Test] PASS - Upgraded steward (User1) can approve new registrations');
+      void user3Mnemonic; // registered but not persisted — not needed for downstream tests
+    } finally {
+      await backends.stop('user3-by-steward').catch(() => {});
+      await backends.stop('user1-as-steward').catch(() => {});
+      await user3Context.close().catch(() => {});
+      await user1Context.close().catch(() => {});
     }
   });
 
