@@ -4,6 +4,8 @@ import path from 'path';
 export default defineConfig({
   resolve: {
     alias: {
+      // Resolve 'src/*' imports (mirrors tsconfig paths)
+      src: path.join(__dirname, 'src'),
       // Force CommonJS version to avoid missing libsodium-sumo.mjs ESM issue
       // (same workaround as quasar.config.ts)
       'libsodium-wrappers-sumo': path.join(
