@@ -1047,7 +1047,7 @@ export class KERIClient {
     if (groupWits.length === 0) {
       throw new Error(
         `Group "${groupName}" was created without witnesses (toad=0) and cannot be upgraded. ` +
-        `Re-create the org with the current build to enable member promotions.`,
+        `Click the "Adopt witnesses" banner on the admin dashboard, or re-create the org.`,
       );
     }
 
