@@ -111,7 +111,7 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 		// proceed
 	case TypeProject, TypeImplementationPlan, TypeContribution, TypeMilestone,
 		TypeProposal, TypeDecisionPlan, TypeGovernanceAction, TypeEndorsement,
-		"proposal_comment":
+		"proposal_comment", "contribution_comment", "project_comment":
 		// proceed
 	default:
 		l.seeded = true
@@ -452,6 +452,38 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 				"comment_id":  p.ID,
 				"change":      changeLabel(existed),
 				"source":      "p2p",
+			},
+		})
+
+	case "contribution_comment":
+		var data struct {
+			ContributionID string `json:"contribution_id"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "contribution:comment_added",
+			Data: map[string]interface{}{
+				"treeId":          p.TreeID,
+				"contribution_id": data.ContributionID,
+				"comment_id":      p.ID,
+				"change":          changeLabel(existed),
+				"source":          "p2p",
+			},
+		})
+
+	case "project_comment":
+		var data struct {
+			ProjectID string `json:"project_id"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "project:comment_added",
+			Data: map[string]interface{}{
+				"treeId":     p.TreeID,
+				"project_id": data.ProjectID,
+				"comment_id": p.ID,
+				"change":     changeLabel(existed),
+				"source":     "p2p",
 			},
 		})
 	}

@@ -6,9 +6,29 @@
         <h2 class="page-title">Contributions</h2>
         <p class="page-subtitle">Track and manage community contribution work</p>
       </div>
-      <button class="create-btn" @click="showCreateDialog = true">
+      <button v-if="isAdmin" class="create-btn" @click="showCreateDialog = true">
         + New Contribution
       </button>
+    </div>
+
+    <!-- ── My Contributions ───────────────────────────────────── -->
+    <section v-if="myContributions.length > 0" class="my-contributions-section">
+      <div class="section-header">
+        <h3 class="section-title">My Contributions</h3>
+        <span class="section-count">{{ myContributions.length }}</span>
+      </div>
+      <div class="contributions-list">
+        <ContributionCard
+          v-for="contribution in myContributions"
+          :key="contribution.id"
+          :contribution="contribution"
+          @click="router.push({ name: 'contribution-detail', params: { id: contribution.id } })"
+        />
+      </div>
+    </section>
+
+    <div v-if="myContributions.length > 0" class="section-divider">
+      <h3 class="section-title">All Contributions</h3>
     </div>
 
     <!-- Filters -->
@@ -54,10 +74,7 @@
       <div v-else-if="filteredContributions.length === 0" class="empty-state">
         <Hammer :size="48" class="empty-icon" />
         <h3>No contributions found</h3>
-        <p v-if="activeStatusFilter !== 'all' || activeTypeFilter !== 'all'">
-          Try adjusting your filters.
-        </p>
-        <p v-else>Create a contribution to start tracking work.</p>
+        <p>Try adjusting your filters.</p>
       </div>
 
       <div v-else class="contributions-list">
@@ -71,8 +88,10 @@
     </div>
 
     <!-- Create Contribution Dialog -->
-    <ContributionForm
+    <CreateContributionDialog
       v-model="showCreateDialog"
+      standalone
+      :is-submitting="isSubmitting"
       @submit="handleCreateSubmit"
     />
   </div>
@@ -85,24 +104,40 @@ import { Hammer } from 'lucide-vue-next';
 import { useQuasar } from 'quasar';
 import { useContributionsStore } from 'stores/contributions';
 import { useContributions } from 'src/composables/useContributions';
-import type { CreateContributionRequest, UpdateContributionRequest } from 'src/lib/api/contributions';
+import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useIdentityStore } from 'stores/identity';
+import type { CreateContributionRequest } from 'src/lib/api/contributions';
 import ContributionCard from 'src/components/contributions/ContributionCard.vue';
-import ContributionForm from 'src/components/contributions/ContributionForm.vue';
+import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 
 const router = useRouter();
 const $q = useQuasar();
 const store = useContributionsStore();
+const identityStore = useIdentityStore();
 const { createContribution, isSubmitting } = useContributions();
+const { isAdmin } = useAdminAccess();
+
+const currentUserId = computed(() => identityStore.aidPrefix ?? '');
+
+// "Mine" = contribution is offered to me OR assigned to me. Excludes archived.
+const myContributions = computed(() => {
+  const me = currentUserId.value;
+  if (!me) return [];
+  return store.contributions.filter((raw) => {
+    const c = raw as typeof raw & { assigned_contributor?: string; offered_to?: string };
+    if (c.status === 'archived') return false;
+    const assigned = c.assigned_contributor_id ?? c.assigned_contributor;
+    if (assigned === me) return true;
+    if (c.offered_to === me) return true;
+    return false;
+  });
+});
 
 const showCreateDialog = ref(false);
-const activeStatusFilter = ref('all');
+const activeStatusFilter = ref('open');
 const activeTypeFilter = ref('all');
 
-// Suppress unused warning — isSubmitting is used in ContributionForm via composable
-void isSubmitting;
-
 const statusFilters = [
-  { label: 'All', value: 'all' },
   { label: 'Open', value: 'open' },
   { label: 'Assigned', value: 'in_progress' },
   { label: 'Needs Review', value: 'needs_review' },
@@ -117,7 +152,7 @@ const typeFilters = [
   { label: 'Community', value: 'community' },
 ];
 
-const OPEN_STATUSES = ['created', 'confirmed', 'shared', 'offered'];
+const OPEN_STATUSES = ['shared'];
 const IN_PROGRESS_STATUSES = ['assigned', 'changed', 'in_progress'];
 const NEEDS_REVIEW_STATUSES = ['needs_review'];
 const COMPLETED_STATUSES = ['approved', 'signed_off', 'rewarded', 'completed'];
@@ -152,11 +187,9 @@ onMounted(() => {
   loadContributions();
 });
 
-async function handleCreateSubmit(form: CreateContributionRequest | UpdateContributionRequest) {
-  // On the list page we only ever open the form in create mode (no :contribution prop passed),
-  // so the emitted form will always be a CreateContributionRequest.
+async function handleCreateSubmit(form: CreateContributionRequest) {
   try {
-    await createContribution(form as CreateContributionRequest);
+    await createContribution(form);
     showCreateDialog.value = false;
     $q.notify({ type: 'positive', message: 'Contribution created!' });
   } catch {
@@ -168,7 +201,7 @@ async function handleCreateSubmit(form: CreateContributionRequest | UpdateContri
 <style scoped lang="scss">
 .contributions-page {
   padding: 24px;
-  max-width: 900px;
+  max-width: 1200px;
   margin: 0 auto;
 }
 
@@ -191,16 +224,20 @@ async function handleCreateSubmit(form: CreateContributionRequest | UpdateContri
 }
 
 .create-btn {
-  background: var(--matou-teal, #0d9488);
-  color: white;
-  border: none;
-  border-radius: 8px;
+  background: transparent;
+  color: var(--matou-teal, #0d9488);
+  border: 2px solid var(--matou-teal, #0d9488);
+  border-radius: 10px;
   padding: 8px 16px;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  &:hover { opacity: 0.9; }
+
+  &:hover {
+    background: var(--matou-teal, #0d9488);
+    color: white;
+  }
 }
 
 .filter-row {
@@ -256,6 +293,54 @@ async function handleCreateSubmit(form: CreateContributionRequest | UpdateContri
 }
 
 .contributions-list {
-  // No extra styles needed — ContributionCard handles its own margin
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+
+  :deep(.contribution-card) {
+    margin-bottom: 0;
+  }
+}
+
+@media (max-width: 1000px) {
+  .contributions-list {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .contributions-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+.my-contributions-section {
+  margin-bottom: 24px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.section-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--matou-foreground);
+}
+
+.section-count {
+  font-size: 0.8rem;
+  color: var(--matou-muted-foreground);
+  background: var(--matou-secondary);
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+
+.section-divider {
+  margin: 8px 0 12px;
 }
 </style>

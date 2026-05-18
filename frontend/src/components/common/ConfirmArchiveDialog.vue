@@ -16,16 +16,25 @@
         <p>{{ message }}</p>
       </q-card-section>
 
-      <q-card-actions align="right" class="q-px-md q-pb-md">
-        <q-btn flat label="Cancel" v-close-popup />
+      <div class="dialog-footer">
         <q-btn
           color="negative"
+          no-caps
           unelevated
           :label="confirmLabel"
+          class="dialog-footer-btn"
           :loading="loading"
           @click="$emit('confirm')"
         />
-      </q-card-actions>
+        <q-btn
+          outline
+          no-caps
+          color="primary"
+          label="Cancel"
+          class="dialog-footer-btn"
+          v-close-popup
+        />
+      </div>
     </q-card>
   </q-dialog>
 </template>
@@ -58,5 +67,16 @@ defineEmits<{
 .archive-dialog {
   min-width: 380px;
   max-width: 480px;
+}
+
+.dialog-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--matou-border);
+}
+
+.dialog-footer-btn {
+  flex: 1;
 }
 </style>

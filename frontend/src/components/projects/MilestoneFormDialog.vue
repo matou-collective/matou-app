@@ -37,6 +37,17 @@
           :rules="[(v) => !!v.trim() || 'Duration is required']"
         />
 
+        <q-input
+          v-model.number="form.budget_allocation"
+          label="Budget Allocation"
+          type="number"
+          min="0"
+          step="0.01"
+          outlined
+          placeholder="e.g. 5000"
+          hint="Estimated total budget for this milestone"
+        />
+
         <div class="date-row">
           <q-input
             v-model="form.start_date"
@@ -90,13 +101,13 @@
 
       <!-- Danger Zone (edit mode only) -->
       <div v-if="isEdit && canDelete" class="danger-zone q-mx-md">
-        <div class="text-subtitle2 danger-title q-mb-sm">Danger Zone</div>
         <q-btn
           no-caps
           outline
           color="negative"
           icon="delete_forever"
           label="Delete Milestone"
+          class="full-width"
           @click="$emit('delete')"
         />
       </div>
@@ -151,6 +162,7 @@ interface MilestoneForm {
   duration: string;
   start_date: string;
   end_date: string;
+  budget_allocation: number | undefined;
   success_criteria: string[];
 }
 
@@ -161,6 +173,7 @@ function makeDefault(): MilestoneForm {
     duration: '',
     start_date: '',
     end_date: '',
+    budget_allocation: undefined,
     success_criteria: [''],
   };
 }
@@ -185,6 +198,7 @@ watch(
         duration: ms.duration,
         start_date: ms.start_date ? fromISODate(ms.start_date) : '',
         end_date: ms.end_date ? fromISODate(ms.end_date) : '',
+        budget_allocation: ms.budget_allocation ?? undefined,
         success_criteria: ms.success_criteria?.length ? [...ms.success_criteria] : [''],
       };
     } else {
@@ -228,12 +242,16 @@ function resetForm() {
 
 function handleSubmit() {
   if (!isValid.value) return;
+  const budget = typeof form.value.budget_allocation === 'number' && !Number.isNaN(form.value.budget_allocation)
+    ? form.value.budget_allocation
+    : undefined;
   const req: CreateMilestoneRequest = {
     title: form.value.title.trim(),
     description: form.value.description.trim() || undefined,
     duration: form.value.duration.trim(),
     start_date: toISODate(form.value.start_date) || undefined,
     end_date: toISODate(form.value.end_date) || undefined,
+    budget_allocation: budget,
     success_criteria: form.value.success_criteria.filter((c) => c.trim()),
   };
   emit('submit', req);
@@ -270,7 +288,6 @@ function handleSubmit() {
 
 .milestone-action-btn {
   flex: 1;
-  border-radius: 10px;
 }
 
 .date-row {

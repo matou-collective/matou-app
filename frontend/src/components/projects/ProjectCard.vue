@@ -28,29 +28,18 @@
           <span>Steward: {{ stewardName }}</span>
         </div>
       </div>
-
-      <!-- Available contributions -->
-      <div v-if="sharedContributions.length > 0" class="contributions-section">
-        <div class="contributions-header">
-          <span class="contributions-label">AVAILABLE CONTRIBUTIONS</span>
-          <span class="contributions-count">{{ sharedContributions.length }} shared</span>
-        </div>
-        <div
-          v-for="c in visibleContributions"
-          :key="c.id"
-          class="contribution-row"
-        >
-          <div class="contribution-row-body">
-            <div class="contribution-row-title">{{ c.title }}</div>
-            <div v-if="c.description" class="contribution-row-desc">{{ c.description }}</div>
-          </div>
-          <ContributionTypeBadge :type="c.contribution_type" />
-        </div>
-        <div v-if="sharedContributions.length > 3" class="contributions-more">
-          +{{ sharedContributions.length - 3 }} more contributions
-        </div>
-      </div>
     </div>
+
+    <span
+      v-if="sharedContributions.length > 0"
+      class="available-contributions-tag"
+    >
+      {{ sharedContributions.length }} available contribution{{ sharedContributions.length !== 1 ? 's' : '' }}
+    </span>
+
+    <span v-if="unread > 0" class="unread-badge" :title="`${unread} unread comment${unread !== 1 ? 's' : ''}`">
+      {{ unread > 99 ? '99+' : unread }}
+    </span>
   </div>
 </template>
 
@@ -59,7 +48,9 @@ import { computed } from 'vue';
 import { User, Shield } from 'lucide-vue-next';
 import type { Project } from 'src/lib/api/projects';
 import type { Contribution } from 'src/lib/api/contributions';
-import ContributionTypeBadge from './ContributionTypeBadge.vue';
+import { useCommentScope } from 'src/composables/useCommentScope';
+import { useContributionsStore } from 'stores/contributions';
+import { useProjectsStore } from 'stores/projects';
 
 interface Props {
   project: Project;
@@ -93,12 +84,27 @@ const stewardName = computed(() => {
 });
 
 const sharedContributions = computed(() =>
-  props.contributions.filter(c => c.is_shared),
+  props.contributions.filter(c => c.status === 'shared'),
 );
 
-const visibleContributions = computed(() =>
-  sharedContributions.value.slice(0, 3),
+const scope = useCommentScope();
+const contributionsStore = useContributionsStore();
+const projectsStoreInternal = useProjectsStore();
+
+// Always prefer the live contributions list — props.contributions is a
+// per-project cache (projectsStore.projectContributions[id]) that doesn't
+// reactively pick up bumpCommentCount events from peers.
+const projectContributions = computed(() =>
+  contributionsStore.contributions.filter((c) => c.project_id === props.project.id),
 );
+const liveProject = computed(() => ({
+  ...props.project,
+  comment_count: projectsStoreInternal.liveCommentCount(
+    props.project.id,
+    props.project.comment_count ?? 0,
+  ),
+}));
+const unread = computed(() => scope.projectRollupUnread(liveProject.value, projectContributions.value));
 
 function formatStatus(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
@@ -216,72 +222,34 @@ function formatStatus(status: string): string {
   flex-shrink: 0;
 }
 
-// ── Contributions section ────────────────────────────────────────────────────
-
-.contributions-section {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--matou-border);
+.available-contributions-tag {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: rgba(74, 157, 156, 0.12);
+  color: var(--matou-accent, #4a9d9c);
+  white-space: nowrap;
 }
 
-.contributions-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.contributions-label {
+.unread-badge {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--matou-destructive, #dc2626);
+  color: white;
   font-size: 0.7rem;
   font-weight: 600;
-  color: var(--matou-muted-foreground);
-  letter-spacing: 0.04em;
-}
-
-.contributions-count {
-  font-size: 0.75rem;
-  color: var(--matou-accent);
-  font-weight: 500;
-}
-
-.contribution-row {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  background: rgba(30, 95, 116, 0.03);
-  border: 1px solid rgba(30, 95, 116, 0.12);
-  border-radius: var(--matou-radius-sm, 6px);
-  margin-bottom: 6px;
-}
-
-.contribution-row-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.contribution-row-title {
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--matou-foreground);
-  line-height: 1.3;
-}
-
-.contribution-row-desc {
-  font-size: 0.75rem;
-  color: var(--matou-muted-foreground);
-  margin-top: 2px;
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.contributions-more {
-  text-align: center;
-  font-size: 0.78rem;
-  color: var(--matou-muted-foreground);
-  padding: 6px 0 2px;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 </style>

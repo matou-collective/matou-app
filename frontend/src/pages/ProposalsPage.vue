@@ -11,8 +11,18 @@
     </div>
 
     <!-- My Proposals section -->
-    <section v-if="myProposals.length > 0" class="my-proposals-section">
-      <h3 class="section-heading">My Proposals</h3>
+    <section v-if="myProposalsAll.length > 0" class="my-proposals-section">
+      <div class="section-heading-row">
+        <h3 class="section-heading">My Proposals</h3>
+        <button
+          v-if="myProposalsWithdrawn.length > 0"
+          class="show-withdrawn-btn"
+          :class="{ active: showWithdrawn }"
+          @click="showWithdrawn = !showWithdrawn"
+        >
+          {{ showWithdrawn ? 'Hide withdrawn' : `Show withdrawn (${myProposalsWithdrawn.length})` }}
+        </button>
+      </div>
       <div class="proposals-list">
         <ProposalCard
           v-for="proposal in myProposals"
@@ -50,7 +60,7 @@
     </section>
 
     <!-- All proposals heading -->
-    <h3 v-if="myProposals.length > 0" class="section-heading">All Proposals</h3>
+    <h3 v-if="myProposalsAll.length > 0" class="section-heading">All Proposals</h3>
 
     <!-- Filter pills -->
     <div class="filter-row">
@@ -177,13 +187,25 @@ const filteredProposals = computed(() => {
   return all.filter(p => p.status === activeFilter.value);
 });
 
-const myProposals = computed(() => {
+const showWithdrawn = ref(false);
+
+const myProposalsAll = computed(() => {
   const aid = identityStore.currentAID;
   if (!aid) return [];
   const ids = [aid.name, aid.prefix].filter(Boolean) as string[];
   if (ids.length === 0) return [];
   return proposalsStore.proposals.filter(p => ids.includes(p.proposer_id));
 });
+
+const myProposalsWithdrawn = computed(() =>
+  myProposalsAll.value.filter(p => p.status === 'withdrawn'),
+);
+
+const myProposals = computed(() =>
+  showWithdrawn.value
+    ? myProposalsAll.value
+    : myProposalsAll.value.filter(p => p.status !== 'withdrawn'),
+);
 
 async function fetchEndorsementCounts() {
   for (const p of proposalsStore.proposals) {
@@ -252,7 +274,7 @@ async function handleCreateSubmit(form: {
 <style scoped lang="scss">
 .proposals-page {
   padding: 24px;
-  max-width: 900px;
+  max-width: 1200px;
   margin: 0 auto;
 }
 
@@ -279,7 +301,7 @@ async function handleCreateSubmit(form: {
   background: transparent;
   color: var(--matou-teal, #0d9488);
   border: 2px solid var(--matou-teal, #0d9488);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 8px 16px;
   font-weight: 500;
   cursor: pointer;
@@ -335,9 +357,21 @@ async function handleCreateSubmit(form: {
 }
 
 .proposals-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 1000px) {
+  .proposals-list {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .proposals-list {
+    grid-template-columns: 1fr;
+  }
 }
 
 .my-proposals-section {
@@ -350,5 +384,38 @@ async function handleCreateSubmit(form: {
   color: var(--matou-foreground);
   margin: 0 0 12px;
   letter-spacing: 0.01em;
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+
+  .section-heading {
+    margin: 0;
+  }
+}
+
+.show-withdrawn-btn {
+  background: transparent;
+  border: 1px solid var(--matou-border);
+  border-radius: 14px;
+  padding: 3px 10px;
+  font-size: 0.75rem;
+  color: var(--matou-muted-foreground);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+
+  &:hover {
+    border-color: var(--matou-accent);
+    color: var(--matou-foreground);
+  }
+
+  &.active {
+    background: var(--matou-secondary);
+    color: var(--matou-foreground);
+    border-color: var(--matou-accent);
+  }
 }
 </style>

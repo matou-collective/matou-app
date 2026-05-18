@@ -5,6 +5,9 @@
         <span class="contribution-type">{{ contribution.contribution_type }}</span>
         <ContributionStatusBadge :status="contribution.status" />
       </div>
+      <span v-if="unread > 0" class="unread-badge" :title="`${unread} unread comment${unread !== 1 ? 's' : ''}`">
+        {{ unread > 99 ? '99+' : unread }}
+      </span>
     </div>
 
     <h3 class="card-title">{{ contribution.title }}</h3>
@@ -12,9 +15,9 @@
     <p class="card-description">{{ contribution.description }}</p>
 
     <div class="card-footer">
-      <span v-if="contribution.assigned_contributor_id" class="assigned-label">
+      <span v-if="assignedAid" class="assigned-label">
         <q-icon name="person" size="14px" />
-        {{ contribution.assigned_contributor_id }}
+        {{ assignedName }}
       </span>
       <span v-else class="unassigned-label">
         <q-icon name="person_outline" size="14px" />
@@ -26,6 +29,11 @@
         {{ projectName }}
       </span>
 
+      <span v-if="contribution.estimated_duration" class="hours-label">
+        <q-icon name="schedule" size="14px" />
+        {{ contribution.estimated_duration }}h
+      </span>
+
       <span class="date-label">
         {{ new Date(contribution.created_at).toLocaleDateString() }}
       </span>
@@ -34,7 +42,13 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { Contribution } from 'src/lib/api/contributions';
+import type { Project } from 'src/lib/api/projects';
+import { useProfilesStore } from 'stores/profiles';
+import { useProjectsStore } from 'stores/projects';
+import { useContributionsStore } from 'stores/contributions';
+import { useCommentScope } from 'src/composables/useCommentScope';
 import ContributionStatusBadge from './ContributionStatusBadge.vue';
 
 const props = withDefaults(
@@ -51,8 +65,41 @@ defineEmits<{
   (e: 'click'): void;
 }>();
 
-// props is used via template, suppress unused warning
-void props;
+const profilesStore = useProfilesStore();
+const projectsStore = useProjectsStore();
+const contributionsStore = useContributionsStore();
+const scope = useCommentScope();
+
+const parentProject = computed<Project | null>(() =>
+  projectsStore.projects.find((p) => p.id === props.contribution.project_id) ?? null,
+);
+const liveContribution = computed(() => ({
+  ...props.contribution,
+  comment_count: contributionsStore.liveCommentCount(
+    props.contribution.id,
+    props.contribution.comment_count ?? 0,
+  ),
+}));
+const unread = computed(() => scope.contributionUnread(liveContribution.value, parentProject.value));
+
+const assignedAid = computed(() => {
+  const c = props.contribution as typeof props.contribution & {
+    assigned_contributor?: string;
+  };
+  return c.assigned_contributor_id ?? c.assigned_contributor ?? null;
+});
+
+const assignedName = computed(() => {
+  if (!assignedAid.value) return null;
+  const c = props.contribution as typeof props.contribution & {
+    assigned_contributor_name?: string;
+  };
+  return (
+    profilesStore.profilesByAid[assignedAid.value]?.displayName
+    ?? c.assigned_contributor_name
+    ?? assignedAid.value.slice(0, 12) + '...'
+  );
+});
 </script>
 
 <style scoped lang="scss">
@@ -140,6 +187,7 @@ void props;
 .assigned-label,
 .unassigned-label,
 .project-label,
+.hours-label,
 .date-label {
   display: flex;
   align-items: center;
@@ -150,5 +198,25 @@ void props;
 .unassigned-label {
   color: var(--matou-muted-foreground);
   opacity: 0.7;
+}
+
+.card-header {
+  position: relative;
+}
+
+.unread-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--matou-destructive, #dc2626);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 </style>

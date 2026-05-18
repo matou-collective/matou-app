@@ -45,7 +45,9 @@ export type BackendEventType =
   | 'decision_plan_updated'
   | 'governance_action_updated'
   | 'project:created'
+  | 'project:comment_added'
   | 'contribution:assigned'
+  | 'contribution:comment_added'
   | 'contribution:needs_review'
   | 'contribution:approved'
   | 'contribution:declined'
@@ -323,7 +325,9 @@ function connect() {
     'proposal:approved',
     'proposal:rejected',
     'project:created',
+    'project:comment_added',
     'contribution:assigned',
+    'contribution:comment_added',
     'contribution:needs_review',
     'contribution:approved',
     'contribution:declined',

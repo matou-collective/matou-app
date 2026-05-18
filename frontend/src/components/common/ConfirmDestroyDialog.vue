@@ -35,17 +35,27 @@
         />
       </q-card-section>
 
-      <q-card-actions align="right" class="q-px-md q-pb-md">
-        <q-btn flat label="Cancel" v-close-popup @click="reset" />
+      <div class="dialog-footer">
         <q-btn
           color="negative"
+          no-caps
           unelevated
           :label="title"
+          class="dialog-footer-btn"
           :disable="!matches"
           :loading="loading"
           @click="onConfirm"
         />
-      </q-card-actions>
+        <q-btn
+          outline
+          no-caps
+          color="primary"
+          label="Cancel"
+          class="dialog-footer-btn"
+          v-close-popup
+          @click="reset"
+        />
+      </div>
     </q-card>
   </q-dialog>
 </template>
@@ -114,5 +124,16 @@ watch(
 .text-warning {
   color: var(--matou-destructive);
   font-size: 0.9rem;
+}
+
+.dialog-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--matou-border);
+}
+
+.dialog-footer-btn {
+  flex: 1;
 }
 </style>

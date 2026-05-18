@@ -10,7 +10,7 @@
           <PlusCircle class="header-icon" />
           <div>
             <div class="text-h6">
-              {{ editing ? 'Change Contribution' : parentContributionId ? 'Add Sub-Contribution' : 'Create Contribution' }}
+              {{ changeRequest ? 'Change Contribution' : editing ? 'Edit Contribution' : parentContributionId ? 'Add Sub-Contribution' : 'Create Contribution' }}
             </div>
             <div v-if="parentContributionId" class="text-caption text-muted">
               Sub-task of parent contribution
@@ -21,14 +21,28 @@
       </div>
 
       <q-card-section class="form-body q-gutter-md">
-        <!-- Re-confirmation warning (edit mode only) -->
-        <q-banner v-if="editing" class="change-warning q-mb-md" rounded>
+        <!-- Re-confirmation warning (change-request mode only) -->
+        <q-banner v-if="changeRequest" class="change-warning q-mb-md" rounded>
           <template #avatar>
             <q-icon name="warning" color="warning" />
           </template>
           <div class="text-subtitle2">This change requires re-confirmation</div>
           <div class="text-caption">After submitting, the contribution will need to be re-confirmed by a steward before work can continue.</div>
         </q-banner>
+
+        <!-- Project picker (standalone create mode only) -->
+        <q-select
+          v-if="standalone && !editing"
+          v-model="form.project_id"
+          :options="projectOptions"
+          option-label="label"
+          option-value="value"
+          emit-value
+          map-options
+          outlined
+          label="Project *"
+          hint="The project this contribution belongs to"
+        />
 
         <!-- Title -->
         <q-input v-model="form.title" label="Title *" outlined />
@@ -43,7 +57,7 @@
         />
 
         <!-- Contribution Type -->
-        <div v-if="!editing">
+        <div v-if="!changeRequest">
           <div class="text-subtitle2 q-mb-sm">Contribution Type *</div>
           <div class="type-card-grid">
             <button
@@ -59,7 +73,7 @@
             </button>
           </div>
         </div>
-        <div v-if="editing" class="q-mb-md">
+        <div v-else class="q-mb-md">
           <div class="field-label">Contribution Type</div>
           <q-badge :label="form.contribution_type" color="primary" />
           <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
@@ -86,14 +100,20 @@
           </div>
         </div>
 
-        <!-- Duration & Deadline -->
+        <!-- Estimated Hours, Budget & Due Date -->
         <div class="inline-row">
           <q-input
-            v-model.number="form.estimated_hours"
+            v-model.number="form.estimated_duration"
             label="Estimated Hours"
             type="number"
             outlined
             min="0"
+          />
+          <q-input
+            v-model="form.budget"
+            label="Budget"
+            outlined
+            placeholder="e.g. $500"
           />
           <q-input
             v-model="form.deadline"
@@ -119,9 +139,6 @@
             </template>
           </q-input>
         </div>
-
-        <!-- Budget -->
-        <q-input v-model="form.budget" label="Budget" outlined placeholder="e.g. $500" />
 
         <!-- Objectives -->
         <div>
@@ -269,8 +286,8 @@
             @click="form.skill_requirements.push('')"
           />
         </div>
-        <!-- Reason for change (edit mode only) -->
-        <div v-if="editing" class="q-mb-md">
+        <!-- Reason for change (change-request mode only) -->
+        <div v-if="changeRequest" class="q-mb-md">
           <div class="field-label">Reason for Change *</div>
           <q-input
             v-model="changeReason"
@@ -287,7 +304,7 @@
       <div class="dialog-footer">
         <q-btn
           no-caps
-          :label="editing ? 'Submit Change' : parentContributionId ? 'Create Sub-Contribution' : 'Create Contribution'"
+          :label="changeRequest ? 'Submit Change' : editing ? 'Save Changes' : parentContributionId ? 'Create Sub-Contribution' : 'Create Contribution'"
           color="primary"
           class="dialog-footer-btn"
           :loading="isSubmitting"
@@ -306,34 +323,54 @@ import { PlusCircle, Search, Settings, Palette, MessageCircle, Code2, Landmark }
 import type { CreateContributionRequest } from 'src/lib/api/contributions';
 import type { Contribution } from 'src/types/projects';
 import { useProfilesStore } from 'stores/profiles';
+import { useProjectsStore } from 'stores/projects';
 
 interface Props {
   modelValue: boolean;
-  projectId: string;
+  projectId?: string;
   milestoneId?: string;
   parentContributionId?: string;
   parentAssignedContributorId?: string;
   isSubmitting?: boolean;
   editing?: boolean;
+  /**
+   * When true, the form runs the "request changes" workflow: shows a re-confirmation
+   * warning, requires a Reason for Change, locks the contribution type, and emits
+   * `change` with reason + updates. When false (default), `editing` behaves as a plain
+   * edit that mirrors the Create UI and emits `submit` with an update payload.
+   */
+  changeRequest?: boolean;
   contribution?: Contribution | null;
+  standalone?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  projectId: '',
   milestoneId: undefined,
   parentContributionId: undefined,
   parentAssignedContributorId: undefined,
   isSubmitting: false,
   editing: false,
+  changeRequest: false,
   contribution: null,
+  standalone: false,
 });
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void;
   (e: 'submit', req: CreateContributionRequest): void;
+  (e: 'update', updates: Record<string, unknown>): void;
   (e: 'change', data: { updates: Record<string, unknown>; reason: string }): void;
 }>();
 
 const profilesStore = useProfilesStore();
+const projectsStore = useProjectsStore();
+
+const projectOptions = computed(() =>
+  projectsStore.projects
+    .filter((p) => p.status !== 'archived')
+    .map((p) => ({ label: p.title, value: p.id })),
+);
 
 interface ContributorOption {
   label: string;
@@ -368,10 +405,11 @@ watch(allContributorOptions, (next) => {
 }, { immediate: true });
 
 interface ContributionForm {
+  project_id: string;
   title: string;
   description: string;
   contribution_type: string;
-  estimated_hours: number | undefined;
+  estimated_duration: number | undefined;
   deadline: string;
   budget: string;
   objectives: string[];
@@ -411,12 +449,23 @@ function toISODate(ddmmyyyy: string): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+// Convert RFC3339 (e.g. "2026-12-01T00:00:00Z") or ISO date back to dd-mm-yyyy
+function fromISOToDDMMYYYY(iso: string | undefined | null): string {
+  if (!iso) return '';
+  // Take just the yyyy-mm-dd portion
+  const datePart = iso.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return '';
+  const [yyyy, mm, dd] = datePart.split('-');
+  return `${dd}-${mm}-${yyyy}`;
+}
+
 function makeDefault(): ContributionForm {
   return {
+    project_id: props.projectId ?? '',
     title: '',
     description: '',
     contribution_type: 'coding_technical_dev',
-    estimated_hours: undefined,
+    estimated_duration: undefined,
     deadline: '',
     budget: '',
     objectives: [''],
@@ -438,6 +487,7 @@ const isValid = computed(() => {
     form.value.objectives.some((o) => o.trim()) &&
     form.value.deliverables.some((d) => d.trim());
   if (!baseValid) return false;
+  if (props.standalone && !props.editing && !form.value.project_id) return false;
   return true;
 });
 
@@ -458,14 +508,19 @@ watch(
       void profilesStore.loadCommunityProfiles();
     }
 
+    // Standalone mode: ensure projects are loaded so the picker has options
+    if (open && props.standalone && projectsStore.projects.length === 0) {
+      void projectsStore.fetchProjects();
+    }
+
     if (open && props.editing && props.contribution) {
       const c = props.contribution;
       form.value.title = c.title || '';
       form.value.description = c.description || '';
       form.value.contribution_type = c.contribution_type || 'coding_technical_dev';
-      form.value.estimated_hours = c.estimated_hours ?? undefined;
-      // Convert ISO yyyy-mm-dd to dd-mm-yyyy for display
-      form.value.deadline = c.deadline ? c.deadline.split('-').reverse().join('-') : '';
+      form.value.estimated_duration = c.estimated_duration ?? undefined;
+      // Convert ISO timestamp (RFC3339 like "2026-12-01T00:00:00Z" or yyyy-mm-dd) to dd-mm-yyyy for display
+      form.value.deadline = fromISOToDDMMYYYY(c.deadline);
       form.value.budget = c.budget || '';
       form.value.objectives = c.objectives?.length ? [...c.objectives] : [''];
       form.value.deliverables = c.deliverables?.length ? [...c.deliverables] : [''];
@@ -492,7 +547,8 @@ function resetForm() {
 function handleSubmit() {
   if (!isValid.value) return;
 
-  if (props.editing && props.contribution) {
+  // "Change request" workflow — emit `change` with reason + updates
+  if (props.editing && props.changeRequest && props.contribution) {
     if (!changeReason.value.trim()) return;
     const isSub = !!props.contribution.parent_contribution;
     emit('change', {
@@ -503,7 +559,8 @@ function handleSubmit() {
         deliverables: form.value.deliverables.filter((d) => d.trim()),
         acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
         skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
-        estimated_hours: form.value.estimated_hours,
+        estimated_duration: form.value.estimated_duration,
+        deadline: toISODate(form.value.deadline) || undefined,
         budget: form.value.budget?.trim() || undefined,
         ...(isSub && form.value.assigned_contributor_id
           ? { assigned_contributor_id: form.value.assigned_contributor_id }
@@ -515,8 +572,29 @@ function handleSubmit() {
     return;
   }
 
+  // Plain edit — emit `update` with the update payload.
+  if (props.editing && props.contribution) {
+    emit('update', {
+      title: form.value.title.trim(),
+      description: form.value.description.trim(),
+      contribution_type: form.value.contribution_type,
+      objectives: form.value.objectives.filter((o) => o.trim()),
+      deliverables: form.value.deliverables.filter((d) => d.trim()),
+      acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
+      skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
+      estimated_duration: form.value.estimated_duration,
+      deadline: toISODate(form.value.deadline) || undefined,
+      budget: form.value.budget?.trim() || undefined,
+      ...(form.value.assigned_contributor_id
+        ? { assigned_contributor_id: form.value.assigned_contributor_id }
+        : {}),
+    });
+    emit('update:modelValue', false);
+    return;
+  }
+
   const req: CreateContributionRequest = {
-    project_id: props.projectId,
+    project_id: props.projectId || form.value.project_id,
     milestone_id: props.milestoneId,
     title: form.value.title.trim(),
     description: form.value.description.trim(),
@@ -526,7 +604,8 @@ function handleSubmit() {
     deliverables: form.value.deliverables.filter((d) => d.trim()),
     acceptance_criteria: form.value.acceptance_criteria.filter((a) => a.trim()),
     skill_requirements: form.value.skill_requirements.filter((s) => s.trim()),
-    estimated_hours: form.value.estimated_hours,
+    estimated_duration: form.value.estimated_duration,
+    deadline: toISODate(form.value.deadline) || undefined,
     budget: form.value.budget.trim() || undefined,
     created_by: 'current-user',
     ...(form.value.assigned_contributor_id ? { assigned_contributor_id: form.value.assigned_contributor_id } : {}),
@@ -579,7 +658,6 @@ function handleSubmit() {
 
 .dialog-footer-btn {
   flex: 1;
-  border-radius: 10px;
 }
 
 // Contribution type cards (3 columns)

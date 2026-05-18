@@ -212,7 +212,7 @@
         <div class="row q-col-gutter-md">
           <div class="col-6">
             <q-input
-              v-model.number="form.estimated_hours"
+              v-model.number="form.estimated_duration"
               label="Estimated Hours"
               type="number"
               outlined
@@ -248,7 +248,6 @@
 
       <!-- Danger Zone (edit mode only) -->
       <div v-if="isEdit && canDelete" class="danger-zone q-mx-md">
-        <div class="text-subtitle2 danger-title q-mb-sm">Danger Zone</div>
         <q-btn
           no-caps
           outline
@@ -290,7 +289,7 @@ interface ContributionFormData {
   deliverables: string[];
   acceptance_criteria: string[];
   skill_requirements: string[];
-  estimated_hours: number | undefined;
+  estimated_duration: number | undefined;
   budget: string;
 }
 
@@ -352,7 +351,7 @@ function makeDefaultForm(): ContributionFormData {
     deliverables: [''],
     acceptance_criteria: [''],
     skill_requirements: [''],
-    estimated_hours: undefined,
+    estimated_duration: undefined,
     budget: '',
   };
 }
@@ -377,7 +376,7 @@ watch(
         deliverables: c.deliverables?.length ? [...c.deliverables] : [''],
         acceptance_criteria: c.acceptance_criteria?.length ? [...c.acceptance_criteria] : [''],
         skill_requirements: c.skill_requirements?.length ? [...c.skill_requirements] : [''],
-        estimated_hours: c.estimated_hours,
+        estimated_duration: c.estimated_duration,
         budget: c.budget ?? '',
       };
     } else {
@@ -421,7 +420,7 @@ function handleSubmit() {
       deliverables,
       acceptance_criteria,
       skill_requirements,
-      estimated_hours: f.estimated_hours,
+      estimated_duration: f.estimated_duration,
       budget: f.budget.trim() || undefined,
     };
     emit('submit', req);
@@ -436,7 +435,7 @@ function handleSubmit() {
       deliverables,
       acceptance_criteria,
       skill_requirements,
-      estimated_hours: f.estimated_hours,
+      estimated_duration: f.estimated_duration,
       budget: f.budget.trim() || undefined,
       created_by: 'current-user',
     };

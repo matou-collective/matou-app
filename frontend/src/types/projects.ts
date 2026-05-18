@@ -77,9 +77,7 @@ export interface Contribution {
   created_at: string;
   updated_at: string;
   created_by: string;
-  estimated_hours?: number;
   estimated_duration?: number;
-  actual_hours?: number;
   actual_duration?: number;
   budget?: string;
   deadline?: string;
@@ -125,6 +123,8 @@ export interface Contribution {
   // Sign-off
   signed_off_by?: string;
   signed_off_at?: string;
+  // Comments
+  comment_count?: number;
 }
 
 export interface Milestone {
@@ -191,6 +191,7 @@ export interface Project {
   completed_by?: string;
   completed_at?: string;
   rejection_reason?: string;
+  comment_count?: number;
 }
 
 // ── Request types ─────────────────────────────────────────────────────────────
@@ -232,6 +233,7 @@ export interface CreateMilestoneRequest {
   duration: string;
   start_date?: string;
   end_date?: string;
+  budget_allocation?: number;
   success_criteria?: string[];
 }
 

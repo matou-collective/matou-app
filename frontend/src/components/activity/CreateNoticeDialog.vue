@@ -291,7 +291,7 @@ async function handleSubmit() {
   flex: 1;
   padding: 0.5rem;
   border: 1px solid var(--matou-border, #e5e7eb);
-  border-radius: var(--matou-radius, 6px);
+  border-radius: 10px;
   background: transparent;
   cursor: pointer;
   font-size: 0.85rem;
@@ -383,7 +383,7 @@ async function handleSubmit() {
 .form-btn {
   padding: 0.5rem 1rem;
   border: none;
-  border-radius: var(--matou-radius, 6px);
+  border-radius: 10px;
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;

@@ -1,9 +1,31 @@
 <template>
   <div class="contribution-compact" @click="$emit('view-detail', contribution)">
-    <!-- Top row: title left, status + assignment right -->
+    <!-- Top row: title (+ inline meta) left, status + assignment right -->
     <div class="compact-header">
-      <div class="compact-title">{{ contribution.title }}</div>
+      <div class="compact-title-wrap">
+        <div class="compact-title">{{ contribution.title }}</div>
+        <div
+          v-if="contribution.estimated_duration || contribution.budget || contribution.deadline"
+          class="compact-title-meta"
+        >
+          <span v-if="contribution.estimated_duration" class="meta-item">
+            <q-icon name="schedule" size="14px" />
+            {{ contribution.estimated_duration }}h
+          </span>
+          <span v-if="contribution.budget" class="meta-item">
+            <q-icon name="attach_money" size="14px" />
+            {{ contribution.budget }}
+          </span>
+          <span v-if="contribution.deadline" class="meta-item">
+            <q-icon name="event" size="14px" />
+            Due {{ formatDeadline(contribution.deadline) }}
+          </span>
+        </div>
+      </div>
       <div class="compact-badges-right">
+        <span v-if="unread > 0" class="compact-unread-badge" :title="`${unread} unread comment${unread !== 1 ? 's' : ''}`">
+          {{ unread > 99 ? '99+' : unread }}
+        </span>
         <ContributionStatusBadge :status="contribution.status" />
         <div v-if="assignedAid" class="compact-avatar">
           <q-tooltip>Assigned to {{ assignedName }}</q-tooltip>
@@ -22,9 +44,6 @@
     <div class="compact-footer">
       <div class="compact-meta">
         <ContributionTypeBadge :type="contribution.contribution_type" />
-        <span v-if="contribution.estimated_hours" class="meta-item">
-          <q-icon name="schedule" size="14px" /> {{ contribution.estimated_hours }}h
-        </span>
         <span class="meta-item meta-id">ID: {{ contribution.id.slice(0, 12) }}</span>
       </div>
 
@@ -61,15 +80,6 @@
           @click.stop="emit('update', { ...contribution, _action: 'approve-sub' })"
         />
 
-        <template v-if="canEdit">
-          <q-btn
-            flat round dense size="sm"
-            icon="edit"
-            @click.stop="emit('edit', contribution)"
-          >
-            <q-tooltip>Edit Contribution</q-tooltip>
-          </q-btn>
-        </template>
       </div>
     </div>
 
@@ -113,6 +123,9 @@ import type { Contribution, ProjectRole } from 'src/types/projects';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionTypeBadge from './ContributionTypeBadge.vue';
 import { useProfilesStore } from 'stores/profiles';
+import { useProjectsStore } from 'stores/projects';
+import { useContributionsStore } from 'stores/contributions';
+import { useCommentScope } from 'src/composables/useCommentScope';
 import { getFileUrl } from 'src/lib/api/client';
 
 defineOptions({ name: 'ContributionCardCompact' });
@@ -145,6 +158,23 @@ const emit = defineEmits<{
 }>();
 
 const profilesStore = useProfilesStore();
+const projectsStore = useProjectsStore();
+const contributionsStore = useContributionsStore();
+const scope = useCommentScope();
+
+const parentProject = computed(() =>
+  projectsStore.projects.find((p) => p.id === props.contribution.project_id) ?? null,
+);
+// Use the live count from the contributions store — the prop may be a
+// hydrated milestone copy that doesn't pick up bumpCommentCount updates.
+const liveContribution = computed(() => ({
+  ...props.contribution,
+  comment_count: contributionsStore.liveCommentCount(
+    props.contribution.id,
+    props.contribution.comment_count ?? 0,
+  ),
+}));
+const unread = computed(() => scope.contributionUnread(liveContribution.value, parentProject.value));
 
 const assignedAid = computed(() =>
   props.contribution.assigned_contributor_id ?? props.contribution.assigned_contributor ?? null,
@@ -187,6 +217,12 @@ const childContributions = computed(() => {
 });
 
 const isSubExpanded = ref(false);
+
+function formatDeadline(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat(undefined, { day: '2-digit', month: 'short', year: 'numeric' }).format(d);
+}
 </script>
 
 <style scoped lang="scss">
@@ -224,15 +260,55 @@ const isSubExpanded = ref(false);
   flex-shrink: 0;
 }
 
-.compact-title {
+.compact-unread-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--matou-destructive, #dc2626);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.compact-title-wrap {
   flex: 1;
+  min-width: 120px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.compact-title {
   font-size: 0.9rem;
   font-weight: 500;
   color: var(--matou-foreground);
-  min-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.compact-title-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: $grey-6;
+  flex-shrink: 0;
+  white-space: nowrap;
+
+  .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
 }
 
 
@@ -304,7 +380,6 @@ const isSubExpanded = ref(false);
 .confirm-btn,
 .action-btn {
   padding: 4px 20px;
-  border-radius: var(--matou-radius-sm, 8px);
   font-size: 0.85rem;
 }
 

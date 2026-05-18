@@ -187,13 +187,26 @@ async function loadNameMap() {
   }
 }
 
-async function handleCreateSubmit(data: { title: string; description: string }) {
+async function handleCreateSubmit(data: {
+  title: string;
+  description: string;
+  budget?: string;
+  duration?: string;
+  start_date?: string;
+  end_date?: string;
+  images?: import('src/lib/api/projects').ProjectImage[];
+}) {
   creating.value = true;
   createError.value = null;
   try {
     const project = await projectsStore.create({
       title: data.title,
       description: data.description,
+      budget: data.budget,
+      duration: data.duration,
+      start_date: data.start_date,
+      end_date: data.end_date,
+      images: data.images,
       created_by: onboardingStore.profile.name || 'current-user',
     });
     showCreateDialog.value = false;
@@ -239,7 +252,7 @@ async function handleCreateSubmit(data: { title: string; description: string }) 
   background: transparent;
   color: var(--matou-teal, #0d9488);
   border: 2px solid var(--matou-teal, #0d9488);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 8px 16px;
   font-weight: 500;
   cursor: pointer;

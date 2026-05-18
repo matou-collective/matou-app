@@ -129,10 +129,12 @@ const rejecting = ref(false);
 const showRejectDialog = ref(false);
 const rejectReason = ref('');
 
-const totalContributions = computed(() => props.contributions.length);
+const activeContributions = computed(() =>
+  props.contributions.filter((c) => c.status !== 'archived'),
+);
+const totalContributions = computed(() => activeContributions.value.length);
 const signedOffCount = computed(
-  () =>
-    props.contributions.filter((c) => c.status === 'signed_off' || c.status === 'archived').length,
+  () => activeContributions.value.filter((c) => c.status === 'signed_off').length,
 );
 const allSignedOff = computed(
   () => totalContributions.value > 0 && signedOffCount.value === totalContributions.value,

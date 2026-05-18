@@ -463,11 +463,28 @@ func main() {
 	// when the cached tree was built before the joiner's InviteJoin was applied.
 	chatListener.SetFreshTreeReader(func(treeId string) (objecttree.ObjectTree, error) {
 		utm := spaceManager.TreeManager()
-		spaceId := utm.SpaceForTree(treeId)
-		if spaceId == "" {
-			return nil, fmt.Errorf("no space found for tree %s", treeId)
+		ctx := context.Background()
+
+		// Fast path: tree is already indexed.
+		if spaceId := utm.SpaceForTree(treeId); spaceId != "" {
+			return utm.BuildFreshTree(ctx, spaceId, treeId)
 		}
-		return utm.BuildFreshTree(context.Background(), spaceId, treeId)
+
+		// Slow path: tree arrived via P2P sync between BuildSpaceIndex runs, so
+		// the index doesn't know about it. Re-index every known space, then
+		// look up again. If still missing, try each known space directly.
+		for _, sid := range utm.KnownSpaceIDs() {
+			_ = utm.BuildSpaceIndex(ctx, sid)
+		}
+		if spaceId := utm.SpaceForTree(treeId); spaceId != "" {
+			return utm.BuildFreshTree(ctx, spaceId, treeId)
+		}
+		for _, sid := range utm.KnownSpaceIDs() {
+			if tree, err := utm.BuildFreshTree(ctx, sid, treeId); err == nil {
+				return tree, nil
+			}
+		}
+		return nil, fmt.Errorf("no space found for tree %s (probed %d spaces)", treeId, len(utm.KnownSpaceIDs()))
 	})
 
 	// Create API handlers
@@ -486,6 +503,7 @@ func main() {
 	noticesHandler := api.NewNoticesHandler(spaceManager, userIdentity, eventBroker)
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
 	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store, chatListener)
+	commentCursorsHandler := api.NewCommentCursorsHandler(spaceManager, userIdentity)
 
 	// Initialize contributions system
 	fmt.Println("Initializing contributions system...")
@@ -526,8 +544,9 @@ func main() {
 	milestonesHandler := api.NewMilestonesHandler(contribService, spaceManager)
 	contributionsHandler := api.NewContributionsHandler(contribService, spaceManager, contribNotifier)
 
-	// Wire event broker to contribution and plan handlers for SSE broadcasts
+	// Wire event broker to contribution, project, and plan handlers for SSE broadcasts
 	contributionsHandler.SetBroker(eventBroker)
+	projectsHandler.SetBroker(eventBroker)
 	implPlansHandler.SetBroker(eventBroker)
 	fmt.Println("  Contributions system initialized")
 	fmt.Println()
@@ -578,6 +597,7 @@ func main() {
 	noticesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
 	chatHandler.RegisterRoutes(mux)
+	commentCursorsHandler.Routes(mux)
 	notificationsHandler.RegisterRoutes(mux)
 	proposalsHandler.RegisterRoutes(mux, roleLookup)
 	projectsHandler.RegisterRoutes(mux, roleLookup)

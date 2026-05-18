@@ -152,6 +152,10 @@ type Project struct {
 	Description           string         `json:"description"`
 	Status                ProjectStatus  `json:"status"`
 	Images                []ProjectImage `json:"images,omitempty"`
+	Budget                string         `json:"budget,omitempty"`
+	Duration              string         `json:"duration,omitempty"`
+	StartDate             string         `json:"start_date,omitempty"`
+	EndDate               string         `json:"end_date,omitempty"`
 	ProposalIDs           []string       `json:"proposal_ids,omitempty"`
 	ImplementationPlanIDs []string       `json:"implementation_plan_ids,omitempty"`
 	ProjectStewardID      string         `json:"project_steward_id,omitempty"`
@@ -162,6 +166,7 @@ type Project struct {
 	CompletedBy           string         `json:"completed_by,omitempty"`
 	CompletedAt           *time.Time     `json:"completed_at,omitempty"`
 	RejectionReason       string         `json:"rejection_reason,omitempty"`
+	CommentCount          int            `json:"comment_count,omitempty"`
 }
 
 // --- Decision Plan ---
@@ -254,6 +259,28 @@ type Vote struct {
 	Decision  OutcomeType `json:"decision"`
 	Comment   string      `json:"comment,omitempty"`
 	VotedAt   time.Time   `json:"voted_at"`
+}
+
+// --- Contribution Comments ---
+
+type ContributionComment struct {
+	ID             string    `json:"id"`
+	ContributionID string    `json:"contribution_id"`
+	UserID         string    `json:"user_id"`
+	UserName       string    `json:"user_name"`
+	Text           string    `json:"text"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// --- Project Comments ---
+
+type ProjectComment struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	UserID    string    `json:"user_id"`
+	UserName  string    `json:"user_name"`
+	Text      string    `json:"text"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // --- Proposal Comments ---
@@ -367,6 +394,7 @@ type Contribution struct {
 	Priority               Priority           `json:"priority"`
 	EstimatedDuration      int                `json:"estimated_duration"`
 	ActualDuration         int                `json:"actual_duration,omitempty"`
+	Budget                 string             `json:"budget,omitempty"`
 	Deadline               *time.Time         `json:"deadline,omitempty"`
 	CreatedAt              time.Time          `json:"created_at"`
 	CreatedBy              string             `json:"created_by"`
@@ -428,6 +456,8 @@ type Contribution struct {
 	EvidenceFiles     []FileRef `json:"evidence_files,omitempty"`
 	TimeReportFile    *FileRef  `json:"time_report_file,omitempty"`
 	AttachmentFiles   []FileRef `json:"attachment_files,omitempty"`
+
+	CommentCount      int       `json:"comment_count,omitempty"`
 }
 
 // ContributionDiff records a single field change for change tracking.

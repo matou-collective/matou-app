@@ -383,7 +383,7 @@ async function handleSubmit() {
   background-color: #ffffff !important;
   color: var(--matou-primary) !important;
   height: 3.5rem !important;
-  border-radius: var(--matou-radius-2xl) !important;
+  border-radius: 10px !important;
 
   &:hover:not(:disabled) {
     background-color: rgba(255, 255, 255, 0.9) !important;

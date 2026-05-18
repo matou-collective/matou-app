@@ -13,7 +13,10 @@ import {
   submitProjectCompletion as apiSubmitCompletion,
   approveProjectCompletion as apiApproveCompletion,
   rejectProjectCompletion as apiRejectCompletion,
+  addProjectComment as apiAddComment,
+  listProjectComments as apiListComments,
   type Project,
+  type ProjectComment,
   type CreateProjectRequest,
   type UpdateProjectRequest,
 } from 'src/lib/api/projects';
@@ -286,6 +289,56 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
+  const commentsByProject = ref<Record<string, ProjectComment[]>>({});
+
+  async function fetchComments(projectId: string) {
+    try {
+      const result = await apiListComments(projectId);
+      commentsByProject.value[projectId] = result.comments || [];
+    } catch (e) {
+      log.error('fetchComments failed: %s', e);
+    }
+  }
+
+  async function addComment(projectId: string, userId: string, userName: string, text: string) {
+    const comment = await apiAddComment(projectId, userId, userName, text);
+    const existing = commentsByProject.value[projectId] ?? [];
+    commentsByProject.value[projectId] = [...existing, comment];
+    bumpCommentCount(projectId);
+    return comment;
+  }
+
+  function bumpCommentCount(projectId: string, by = 1) {
+    const idx = projects.value.findIndex((p) => p.id === projectId);
+    if (idx >= 0) {
+      const current = projects.value[idx]!.comment_count ?? 0;
+      projects.value[idx] = { ...projects.value[idx]!, comment_count: current + by };
+    }
+    if (currentProject.value?.id === projectId) {
+      const current = currentProject.value.comment_count ?? 0;
+      currentProject.value = { ...currentProject.value, comment_count: current + by };
+    }
+  }
+
+  function setCommentCount(projectId: string, count: number) {
+    const idx = projects.value.findIndex((p) => p.id === projectId);
+    if (idx >= 0) {
+      projects.value[idx] = { ...projects.value[idx]!, comment_count: count };
+    }
+    if (currentProject.value?.id === projectId) {
+      currentProject.value = { ...currentProject.value, comment_count: count };
+    }
+  }
+
+  function liveCommentCount(projectId: string, fallback = 0): number {
+    const p = projects.value.find((x) => x.id === projectId);
+    if (p && typeof p.comment_count === 'number') return p.comment_count;
+    if (currentProject.value?.id === projectId && typeof currentProject.value.comment_count === 'number') {
+      return currentProject.value.comment_count;
+    }
+    return fallback;
+  }
+
   return {
     projects,
     currentProject,
@@ -312,5 +365,11 @@ export const useProjectsStore = defineStore('projects', () => {
     rejectCompletion,
     archiveMilestone: archiveMilestoneAction,
     updateMilestone: updateMilestoneAction,
+    commentsByProject,
+    fetchComments,
+    addComment,
+    bumpCommentCount,
+    setCommentCount,
+    liveCommentCount,
   };
 });

@@ -34,8 +34,14 @@ export function useContributionWorkflow() {
 
   /**
    * Lead/steward/admin can share a confirmed or previously-shared contribution.
+   * Requires plan sign-off — contributions cannot be assigned/shared before then.
    */
-  function canShare(contribution: Contribution, role: ProjectRole | string): boolean {
+  function canShare(
+    contribution: Contribution,
+    role: ProjectRole | string,
+    isPlanSignedOff = true,
+  ): boolean {
+    if (!isPlanSignedOff) return false;
     return (
       (contribution.status === 'confirmed' || contribution.status === 'shared') &&
       _isRole(role, SHARE_OFFER_ROLES)
@@ -44,8 +50,14 @@ export function useContributionWorkflow() {
 
   /**
    * Lead/steward/admin can offer a confirmed or shared contribution.
+   * Requires plan sign-off — contributions cannot be assigned/offered before then.
    */
-  function canOffer(contribution: Contribution, role: ProjectRole | string): boolean {
+  function canOffer(
+    contribution: Contribution,
+    role: ProjectRole | string,
+    isPlanSignedOff = true,
+  ): boolean {
+    if (!isPlanSignedOff) return false;
     return (
       (contribution.status === 'confirmed' ||
         contribution.status === 'shared') &&
@@ -151,9 +163,10 @@ export function useContributionWorkflow() {
   }
 
   /**
-   * Lead, steward, or admin can edit an assigned contribution.
-   * - Project lead edits require re-confirmation (status → changed)
+   * Lead, steward, admin, or the assigned contributor can request a change
+   * on an assigned contribution.
    * - Steward/admin edits stay assigned
+   * - Project lead or assigned-contributor edits require re-confirmation (→ changed)
    */
   function canChange(
     contribution: Contribution,
@@ -161,7 +174,10 @@ export function useContributionWorkflow() {
     role: ProjectRole | string,
   ): boolean {
     if (contribution.status !== 'assigned') return false;
-    return _isRole(role, SHARE_OFFER_ROLES);
+    if (_isRole(role, SHARE_OFFER_ROLES)) return true;
+    const assignedId =
+      contribution.assigned_contributor_id ?? contribution.assigned_contributor ?? null;
+    return !!currentUserId && assignedId === currentUserId;
   }
 
   /**
