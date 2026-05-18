@@ -168,7 +168,9 @@ const error = ref<string | null>(null);
 const upgradeSteps = reactive<UpgradeStep[]>([
   { id: 'role', label: 'Updating role', status: 'pending' },
   { id: 'resolve', label: 'Resolving steward identity', status: 'pending' },
-  { id: 'rotation', label: 'Performing key rotation', status: 'pending' },
+  { id: 'invite', label: 'Inviting steward (round 1)', status: 'pending' },
+  { id: 'wait', label: 'Waiting for steward to accept', status: 'pending' },
+  { id: 'promote', label: 'Promoting steward to signer (round 2)', status: 'pending' },
   { id: 'revoke', label: 'Revoking old credential', status: 'pending' },
   { id: 'issue', label: 'Issuing new credential', status: 'pending' },
 ]);
@@ -190,7 +192,9 @@ function resetSteps() {
 
 const stepMap: Record<string, string> = {
   'Resolving steward identity...': 'resolve',
-  'Performing key rotation...': 'rotation',
+  'Inviting steward (round 1)...': 'invite',
+  'Waiting for steward to accept...': 'wait',
+  'Promoting steward to signer (round 2)...': 'promote',
   'Revoking old credential...': 'revoke',
   'Issuing new credential...': 'issue',
   'Complete': 'done',
