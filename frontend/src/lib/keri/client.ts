@@ -1207,7 +1207,23 @@ export class KERIClient {
       ? rotEvent
       : new signify.Serder(rotEvent);
 
-    const sigs = keeper.sign(signify.b(serder.raw));
+    // GROUP-level index: KERIA verifies sig.index against rot.k[index].
+    // Defaulting to 0 verifies member's sig against admin's key -> fails.
+    const memberIdx = smids.indexOf(personalAid.prefix);
+    if (memberIdx < 0) {
+      throw new Error(
+        `Member ${personalAid.prefix.slice(0, 12)}... not in smids ${JSON.stringify(smids)} — ` +
+        `this notification is not a round-2 EXN addressed to us.`,
+      );
+    }
+    // keeper.sign is async in signify-ts 0.3.x. Without await, sigs is a Promise
+    // that serializes to {} -> KERIA returns "No verified signatures for evt."
+    const sigs = await keeper.sign(
+      signify.b(serder.raw),
+      true,
+      [memberIdx],
+      [memberIdx],
+    );
 
     // 5. Join the group
     console.log('[KERIClient] Calling groups().join()...');
