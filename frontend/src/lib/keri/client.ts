@@ -1019,6 +1019,79 @@ export class KERIClient {
   }
 
   /**
+   * Round 2 of the member-to-admin upgrade.
+   *
+   * Called AFTER `waitForMemberRotation` confirms the member's personal hab
+   * has advanced to sn=1 (their acceptance step). Pre-rotates master again
+   * so admin signs round 2 with the key already committed in round 1's nks,
+   * then rotates the group to promote the member into `states`.
+   */
+  async addMemberRound2(
+    groupName: string,
+    newMemberAidPrefix: string,
+    masterAidName: string,
+  ): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+    console.log(`[KERIClient] addMemberRound2: ${newMemberAidPrefix.slice(0, 12)} -> ${groupName}`);
+
+    // (a) Pre-rotate master again.
+    await this.rotatePersonalAid(masterAidName);
+
+    // (b) Query both refreshed states.
+    const masterAid = await this.client.identifiers().get(masterAidName);
+    const masterQ = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
+    const masterRes = await this.client.operations().wait(masterQ, { signal: AbortSignal.timeout(30000) });
+    const masterState = masterRes.response as Record<string, unknown>;
+
+    const memberQ = await this.client.keyStates().query(newMemberAidPrefix, undefined, undefined);
+    const memberRes = await this.client.operations().wait(memberQ, { signal: AbortSignal.timeout(30000) });
+    const memberState = memberRes.response as Record<string, unknown>;
+
+    // (c) Group rotation R2: both parties in states + rstates.
+    const rot2 = await this.client.identifiers().rotate(groupName, {
+      states: [masterState, memberState],
+      rstates: [masterState, memberState],
+    });
+    const rot2Op = await rot2.op();
+    if (!rot2Op?.done) {
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const s = await this.client.operations().get(rot2Op.name);
+        if (s?.done) break;
+      }
+    }
+
+    // (d) Send /multisig/rot EXN with FRESH master hab.
+    const groupAid = await this.client.identifiers().get(groupName);
+    const smids = [masterState.i as string, memberState.i as string];
+    const rmids = [masterState.i as string, memberState.i as string];
+    await this.sendMultisigRotExn(
+      masterAidName,
+      groupName,
+      groupAid.prefix,
+      { serder: rot2.serder, sigs: rot2.sigs },
+      smids,
+      rmids,
+      [newMemberAidPrefix],
+    );
+
+    // (e) Refresh agent end role (group prefix can roll forward).
+    const agentId = this.client.agent?.pre;
+    if (agentId) {
+      try {
+        const r = await this.client.identifiers().addEndRole(groupAid.prefix, 'agent', agentId);
+        const op = await r.op();
+        await this.client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+      } catch (err) {
+        console.warn('[KERIClient] addMemberRound2: end-role refresh failed:', err);
+      }
+    }
+
+    console.log('[KERIClient] addMemberRound2 complete');
+  }
+
+  /**
    * Join an existing group AID after receiving a /multisig/rot notification.
    * Called by a new member being added to the group.
    *
