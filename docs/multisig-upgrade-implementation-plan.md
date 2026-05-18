@@ -39,49 +39,112 @@ orchestration scaffolding is there; the gap is correctness inside
 Listed in dependency order. Each item is small in isolation; the danger is
 landing one without the others (which produces silent failures).
 
-### 1. `createGroupAID` — give the org witnesses
+### 1. `createGroupAID` — give the org witnesses (sourced dynamically)
 
 **File:** `frontend/src/lib/keri/client.ts:748`
 
-**Change:** Replace `toad: 0, wits: []` with a witness set that is
-*disjoint* from the personal AID's witness set, plus `toad >= 2`.
+**Change:** Replace `toad: 0, wits: []` with a witness subset selected at
+runtime from the network's witness pool — and *disjoint* from the witness
+set used by the founding admin's personal AID, with `toad >= 2`.
+
+**Why this can't be hardcoded:** witness AIDs vary per environment.
+- dev: 6 demo witnesses on ports 1001–1006 (one set of AID prefixes)
+- test: 6 demo witnesses on ports 2001–2006 (a different set of AID prefixes)
+- prod: witnesses run on `awa.matou.nz` with yet a third set of prefixes
+
+The config server already provides the active pool. `fetchClientConfig()`
+returns `witnesses: { urls, aids: Record<alias, prefix>, oobis }`, and the
+KERI client resolves every OOBI in that list on `connect()`
+(`client.ts:184–206`), so all witnesses in the pool are usable by the
+moment any AID is created. The wiring is in place — we just need to read
+from it instead of hardcoding.
 
 ```ts
-// Top of file or constants module
-export const PERSONAL_WITNESSES = [
-  'BLskRTInXnMxWaGqcpSyMgo0nYbalW99cGZESrz3zapM',
-  'BM35JN8XeJSEfpxopjn5jr7tAHCE5749f0OobhMLCorE',
-  'BF2rZTW79z4IXocYRQnjjsOuvFUQv-ptCf8Yltd7PfsM',
-];
-export const ORG_WITNESSES = [
-  'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha',
-  'BIKKuvBwpmDVA4Ds-EpL5bt9OqPzWPja2LigFYZN2YfX',
-  'BIj15u5V11bkbtAxMA7gcNJZcax-7TgaBMLsQnMHpYHP',
-];
+// frontend/src/lib/keri/witnessAssignment.ts (new)
+import { fetchClientConfig } from '../clientConfig';
 
-// Inside createGroupAID
+export interface WitnessAssignment {
+  personal: string[];   // AID prefixes for the personal AID
+  org: string[];        // AID prefixes for the org/group AID — disjoint from personal
+  toad: number;         // threshold to use for both
+}
+
+/**
+ * Pick disjoint witness subsets for an admin's personal AID and the org
+ * AID they're about to create. Deterministic: sorts pool by prefix so two
+ * frontends that read the same config server produce the same split.
+ *
+ * Pool size requirements:
+ *   <  2 witnesses : abort — multisig upgrade can never work
+ *   2–3 witnesses  : personal = first half, org = second half, toad = 1
+ *   >= 4 witnesses : personal = first half, org = second half, toad = 2
+ */
+export async function assignWitnesses(): Promise<WitnessAssignment> {
+  const config = await fetchClientConfig();
+  const pool = Object.values(config.witnesses.aids).sort();
+  if (pool.length < 2) {
+    throw new Error(
+      `Witness pool has ${pool.length} entries; need ≥2 for disjoint personal/org sets. ` +
+      `Check config server at ${config.config_server_url}.`,
+    );
+  }
+  const mid = Math.floor(pool.length / 2);
+  const personal = pool.slice(0, mid);
+  const org = pool.slice(mid);
+  const toad = pool.length >= 4 ? 2 : 1;
+  return { personal, org, toad };
+}
+```
+
+```ts
+// Inside createGroupAID — uses the assignment helper
+const { org: orgWits, toad } = await assignWitnesses();
 const result = await this.client.identifiers().create(name, {
   algo: 'group',
   isith: '1',
   nsith: '1',
-  toad: 2,
-  wits: ORG_WITNESSES,   // was: wits: []
+  toad,
+  wits: orgWits,   // was: wits: []
   mhab: masterAid,
   states: [masterAid.state],
   rstates: [masterAid.state],
 });
 ```
 
-**Why:** Without witnesses, the org's KEL only exists in the founding
-admin's local KERIA. When we later try to add a new member, that member's
-agent has no way to fetch the org's prior history → joining is impossible.
-Witnesses act as the public history book.
+And in `createAID` (admin's personal AID, `client.ts:219`):
+
+```ts
+const { personal: personalWits, toad } = await assignWitnesses();
+result = await this.client.identifiers().create(name, {
+  wits: personalWits,
+  toad,
+});
+```
+
+**Why each org's witnesses don't need to be agreed across peers:** the org
+records its witness set in its own KEL (`b` field of the inception event).
+Any member who later resolves the org's OOBI pulls that set automatically.
+The deterministic split rule only needs to be deterministic on the
+*creating admin's* side — once the org is incepted, the choice is frozen
+in its KEL.
+
+**Why witnesses at all:** Without them, the org's KEL only exists in the
+founding admin's local KERIA. When we later try to add a new member, that
+member's agent has no way to fetch the org's prior history → joining is
+impossible. Witnesses act as the public history book.
 
 **Why disjoint witnesses:** If the org uses the same witnesses *and* the
 same threshold as the founding admin's personal AID, the org's inception
 event ends up byte-identical to the admin's personal inception event (same
 `k`, `n`, `b`, `bt`, `kt`, `nt`). KERIA rejects with `Already incepted
 pre=<admin>`. Two disjoint sets sidestep this.
+
+**Existing AIDs with `useWitnesses: false`:** today `createAID` defaults
+to no witnesses for dev speed. Any admin whose personal AID was created
+that way also can't be upgraded (the disjoint-witness collision argument
+doesn't apply, but the personal AID's KEL is also unreachable to others
+beyond a direct OOBI). Treat `assignWitnesses()` as mandatory for any
+admin who might ever create or join an org.
 
 **Backward-compat note:** Existing orgs in deployed databases were created
 with `toad: 0`. Upgrade for those orgs is permanently blocked at the
@@ -115,11 +178,12 @@ async addMemberToGroup(
     masterAid.prefix, masterAid.state.s, undefined,
   )).response;
 
-  // (b) [Tests only — production has no in-process member.]
-  // Member's agent must learn admin's new key state before the EXN arrives,
-  // or member rejects the EXN as "sender not in kevers."
-  // In production this is solved by the member's frontend re-resolving
-  // admin's OOBI as part of the upgrade-acceptance flow.
+  // (b) Production note: member's KERIA learns admin's new key state lazily.
+  // The /multisig/rot EXN is delivered via mailbox regardless of whether
+  // member's KEL view of admin is current. Member's notification handler
+  // (useMultisigJoin) re-resolves admin's OOBI before acting on the EXN,
+  // so verification at sign-time succeeds. No explicit pre-EXN sync is
+  // required in production.
 
   // (c) Query member's current key state.
   const memberState = (await this.client.keyStates().query(
@@ -343,6 +407,109 @@ agent doesn't auto-sync admin's existing registry/TEL). Two approaches:
 Recommend the first approach: re-use the existing registry, ensure
 `org-config.yaml` has `registry.id`, and have member's
 `issueCredential` use it.
+
+## End-to-end sequence
+
+The diagram below collapses the four phases (org bootstrap → round 1 →
+member rotation → round 2 → credential re-issue) into one picture so the
+section-level changes above can be located in the flow. Actors:
+
+- **Admin user / frontend / KERIA** — the founding admin promoting someone
+- **Member user / frontend / KERIA** — the member being upgraded
+- **Config server** — serves the witness pool (and any-sync config)
+- **Org witnesses** — the disjoint subset chosen for the org AID
+- **Personal witnesses** — the disjoint subset chosen for the admin's
+  personal AID (member uses its own disjoint subset the same way)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AU as Admin user
+    participant AF as Admin frontend
+    participant AK as Admin KERIA
+    participant CS as Config server
+    participant OW as Org witnesses
+    participant PW as Personal witnesses
+    participant MK as Member KERIA
+    participant MF as Member frontend
+    participant MU as Member user
+
+    Note over AU,MU: Bootstrap (founding admin, one-time)
+    AF->>CS: GET /api/client-config
+    CS-->>AF: witness pool { aids, oobis }
+    AF->>AK: connect (resolves all witness OOBIs)
+    AF->>AF: assignWitnesses splits pool into personal vs org
+    AF->>AK: createAID(adminName, wits=personal, toad)
+    AK->>PW: icp + receipts
+    AF->>AK: createGroupAID(orgName, mhab=admin, wits=org, toad)
+    AK->>OW: group icp + receipts
+    AK-->>AF: org AID prefix
+
+    Note over AU,MU: Round 1 -- admin commits member as next-key holder
+    AU->>AF: Click "Promote to steward"
+    AF->>AK: resolveOOBI(memberPrefix)
+    AF->>AK: rotatePersonalAid(adminName)
+    AK->>PW: admin personal rot (sn+1) + receipts
+    AF->>AK: keyStates query for admin and member
+    AF->>AK: identifiers.rotate(orgName, states=[admin], rstates=[admin, member])
+    AK->>OW: group rot R1 + receipts
+    AF->>AK: exchanges.send /multisig/rot (recipients=[memberPrefix], fresh hab)
+    AK-->>MK: EXN (mailbox poll)
+
+    Note over AU,MU: Member acceptance -- round-1 handler in useMultisigJoin
+    MK-->>MF: /multisig/rot notification
+    MF->>MF: parse EXN; member in rmids only -> round 1
+    MF->>MU: "Accept promotion to steward?"
+    MU->>MF: Click accept
+    MF->>MK: resolveOOBI(adminPrefix)
+    MF->>MK: rotatePersonalAid(memberName)
+    MK->>PW: member personal rot (sn+1) + receipts
+    MF->>MK: markNotificationRead (do NOT call joinGroup yet)
+
+    Note over AU,MU: Round 2 -- admin promotes member to signer
+    AF->>AK: waitForMemberRotation(memberPrefix, sn=1, timeout=5m)
+    AK->>MK: HeadSync / mailbox pulls member new KEL
+    AK-->>AF: keyState sn=1 visible
+    AF->>AK: rotatePersonalAid(adminName)
+    AK->>PW: admin personal rot (sn+2) + receipts
+    AF->>AK: identifiers.rotate(orgName, states=[admin, member], rstates=[admin, member])
+    AK->>OW: group rot R2 + receipts (admin sig only)
+    AF->>AK: exchanges.send /multisig/rot (recipients=[memberPrefix], fresh hab)
+    AK-->>MK: EXN (mailbox poll)
+
+    Note over AU,MU: Member joins -- round-2 handler completes the rotation
+    MK-->>MF: /multisig/rot notification
+    MF->>MF: member in smids -> round 2
+    MF->>MK: resolveOOBI(adminPrefix) for admin sn+2 state
+    MF->>MK: joinGroup(orgName, exnSaid)
+    Note right of MF: await keeper.sign(serder, idx=smids.indexOf(me))
+    MK->>OW: group rot R2 with member sig
+    OW-->>AK: receipts (group KEL has both signers)
+    OW-->>MK: receipts
+
+    Note over AU,MU: Credential update + member can now issue
+    AF->>AK: revokeCredential(orgPrefix, oldMemberCred)
+    AF->>AK: issueCredential(orgPrefix, registryId, recipient=memberPrefix, role=steward)
+    AK->>OW: TEL anchor (vrt/iss)
+    AK-->>MK: IPEX grant -- new credential
+    MK-->>MF: credential received
+    Note over MU,MF: Member can now approve registrations
+    MU->>MF: Approve pending registration
+    MF->>MK: issueCredential(orgPrefix, registryId, ...)
+    MK->>OW: TEL anchor
+```
+
+Where each section-level fix lands on the diagram:
+
+| Section | Diagram step(s) |
+|---|---|
+| §1 `createGroupAID` + witnesses | Bootstrap rect — `assignWitnesses` → `createAID` → `createGroupAID` |
+| §2 `addMemberToGroup` round 1 | Round‑1 rect — admin pre-rotate, group rot R1, EXN |
+| §2 `addMemberToGroup` round 2 | Round‑2 rect — admin pre-rotate again, group rot R2, EXN with FRESH hab |
+| §3 `joinGroup` await + idx fix | Member-joins rect — `keeper.sign(serder, idx=smids.indexOf(me))` |
+| §4 round‑1 vs round‑2 handling | Member-acceptance rect (rotate-only) vs member-joins rect (joinGroup) |
+| §5 `waitForMemberRotation` | Round‑2 rect — between rounds |
+| §6 credential issuance | Final rect — revoke + re-issue + member issues |
 
 ## Phased rollout
 
