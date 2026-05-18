@@ -11,25 +11,27 @@
       </button>
     </div>
 
-    <!-- ── My Contributions ───────────────────────────────────── -->
-    <section v-if="myContributions.length > 0" class="my-contributions-section">
-      <div class="section-header">
-        <h3 class="section-title">My Contributions</h3>
-        <span class="section-count">{{ myContributions.length }}</span>
-      </div>
-      <div class="contributions-list">
-        <ContributionCard
-          v-for="contribution in myContributions"
-          :key="contribution.id"
-          :contribution="contribution"
-          @click="router.push({ name: 'contribution-detail', params: { id: contribution.id } })"
-        />
-      </div>
-    </section>
+    <template v-if="viewMode === 'list'">
+      <!-- ── My Contributions ───────────────────────────────────── -->
+      <section v-if="myContributions.length > 0" class="my-contributions-section">
+        <div class="section-header">
+          <h3 class="section-title">My Contributions</h3>
+          <span class="section-count">{{ myContributions.length }}</span>
+        </div>
+        <div class="contributions-list">
+          <ContributionCard
+            v-for="contribution in myContributions"
+            :key="contribution.id"
+            :contribution="contribution"
+            @click="router.push({ name: 'contribution-detail', params: { id: contribution.id } })"
+          />
+        </div>
+      </section>
 
-    <div v-if="myContributions.length > 0" class="section-divider">
-      <h3 class="section-title">All Contributions</h3>
-    </div>
+      <div v-if="myContributions.length > 0" class="section-divider">
+        <h3 class="section-title">All Contributions</h3>
+      </div>
+    </template>
 
     <!-- View mode toggle -->
     <div class="view-mode-row">
@@ -174,8 +176,9 @@ const activeStatusFilter = ref('open');
 const activeTypeFilter = ref('all');
 
 const VIEW_MODE_STORAGE_KEY = 'matou:contributions:view';
+const storedViewMode = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
 const viewMode = ref<'list' | 'timeline'>(
-  (localStorage.getItem(VIEW_MODE_STORAGE_KEY) as 'list' | 'timeline') ?? 'list',
+  storedViewMode === 'timeline' ? 'timeline' : 'list',
 );
 
 watch(viewMode, (v) => {
