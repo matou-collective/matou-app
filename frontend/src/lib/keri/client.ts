@@ -759,15 +759,20 @@ export class KERIClient {
     // states/rstates contain the key state of participating members
     // algo MUST be 'group' — otherwise signify-ts defaults to 'salty' and creates
     // a single-party identifier that ignores states/rstates during rotation.
+    const { assignWitnesses } = await import('./witnessAssignment');
+    const { org: orgWits, toad } = await assignWitnesses();
+    console.log(
+      `[KERIClient] Creating group AID "${name}" with ${orgWits.length} org witnesses (toad=${toad})`,
+    );
     const result = await this.client.identifiers().create(name, {
-      algo: 'group' as never, // GroupIdentifierManager — required for multisig rotation
-      isith: '1', // Signing threshold of 1
-      nsith: '1', // Next signing threshold of 1
-      toad: 0, // No witnesses for now (faster for dev)
-      wits: [],
-      mhab: masterAid, // Master AID controls this group
-      states: [masterAid.state], // Include master's key state
-      rstates: [masterAid.state], // Include master's rotation state
+      algo: 'group' as never,
+      isith: '1',
+      nsith: '1',
+      toad,
+      wits: orgWits,
+      mhab: masterAid,
+      states: [masterAid.state],
+      rstates: [masterAid.state],
     });
 
     console.log('[KERIClient] Waiting for group AID operation...');
