@@ -306,6 +306,34 @@ export class KERIClient {
   }
 
   /**
+   * Rotate a personal (non-group) AID by one step.
+   *
+   * Used during the multisig upgrade flow:
+   *  - admin rotates between round 1 and round 2 so the next-key the
+   *    group rotation commits to becomes the current signing key
+   *  - member rotates after round 1 so admin can include member's new
+   *    key state in the round-2 group rotation
+   *
+   * @param aidName - Local alias of the AID to rotate (NOT a group AID)
+   * @returns The new sequence number after rotation
+   */
+  async rotatePersonalAid(aidName: string): Promise<string> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+    const before = await this.client.identifiers().get(aidName);
+    console.log(`[KERIClient] Rotating ${aidName} (sn=${before.state?.s})...`);
+
+    const rot = await this.client.identifiers().rotate(aidName);
+    const op = await rot.op();
+    await this.client.operations().wait(op, { signal: AbortSignal.timeout(60000) });
+
+    const after = await this.client.identifiers().get(aidName);
+    const newSn = after.state?.s as string;
+    console.log(`[KERIClient] Rotated ${aidName}: sn=${before.state?.s} -> sn=${newSn}`);
+    return newSn;
+  }
+
+  /**
    * Get an existing AID by name
    * @param name - The AID name to retrieve
    * @returns AID info or null if not found
