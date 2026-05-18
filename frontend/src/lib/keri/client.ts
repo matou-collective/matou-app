@@ -893,6 +893,58 @@ export class KERIClient {
   }
 
   /**
+   * Send a /multisig/rot EXN for the given rotation result.
+   *
+   * CRITICAL: re-fetches the master hab inside this method. The hab object
+   * returned at the top of a longer flow is stale by the time the EXN is
+   * sent (master may have rotated in between), and a stale hab signs the
+   * EXN with the old key — KERIA then rejects with "Not enough signatures".
+   *
+   * @param masterAidName - Local alias of the admin's personal AID
+   * @param groupName - Local alias of the group AID
+   * @param groupPrefix - Prefix of the group AID
+   * @param rot - Result of `identifiers().rotate(groupName, ...)`
+   * @param smids - signing-member ids (admin's prefix, plus member if round 2)
+   * @param rmids - rotating-member ids (always [admin, member])
+   * @param recipients - prefixes to deliver the EXN to (usually [memberPrefix])
+   */
+  private async sendMultisigRotExn(
+    masterAidName: string,
+    groupName: string,
+    groupPrefix: string,
+    rot: { serder: unknown; sigs: string[] },
+    smids: string[],
+    rmids: string[],
+    recipients: string[],
+  ): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+    const signify = await import('signify-ts');
+
+    // Re-fetch master hab so signing uses the current key state, not a stale snapshot.
+    const masterFresh = await this.client.identifiers().get(masterAidName);
+
+    const serder = rot.serder as { raw: Uint8Array; size: number };
+    const sigers = rot.sigs.map(s => new signify.Siger({ qb64: s }));
+    const ims = signify.d(signify.messagize(serder as never, sigers));
+    const atc = ims.substring(serder.size);
+
+    console.log(
+      `[KERIClient] sendMultisigRotExn: gid=${groupPrefix.slice(0, 12)}, smids=${smids.length}, rmids=${rmids.length}, recipients=${recipients.length}`,
+    );
+
+    await this.client.exchanges().send(
+      masterAidName,
+      groupName,
+      masterFresh,
+      '/multisig/rot',
+      { gid: groupPrefix, smids, rmids },
+      { rot: [serder, atc] },
+      recipients,
+    );
+  }
+
+  /**
    * Add a member's AID to an existing group AID via two-rotation protocol.
    * Rotation 1: adds member to rstates (next keys)
    * Rotation 2: promotes member to states (signing keys)
