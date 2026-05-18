@@ -20,8 +20,29 @@ export function useContributionWorkflow() {
    * Admin or steward can confirm a contribution:
    * - created → confirmed (only before plan sign-off)
    * - changed → assigned (allowed even after plan sign-off, re-confirmation after lead edit)
+   *
+   * In all cases the contribution must have a due date set — confirming
+   * locks the contribution into the plan and a deadline is required for
+   * downstream tracking.
    */
   function canConfirm(
+    contribution: Contribution,
+    isPlanSignedOff: boolean,
+    role: ProjectRole | string,
+  ): boolean {
+    if (!_isRole(role, CONFIRM_ROLES)) return false;
+    if (!contribution.deadline) return false;
+    if (contribution.status === 'changed') return true;
+    if (contribution.status === 'created' && !isPlanSignedOff) return true;
+    return false;
+  }
+
+  /**
+   * Same predicate as canConfirm but ignores the deadline requirement.
+   * Use to show a disabled Confirm button with a "set a due date first"
+   * hint instead of silently hiding it.
+   */
+  function canConfirmIfDeadlineSet(
     contribution: Contribution,
     isPlanSignedOff: boolean,
     role: ProjectRole | string,
@@ -196,6 +217,7 @@ export function useContributionWorkflow() {
 
   return {
     canConfirm,
+    canConfirmIfDeadlineSet,
     canShare,
     canOffer,
     canRegisterInterest,

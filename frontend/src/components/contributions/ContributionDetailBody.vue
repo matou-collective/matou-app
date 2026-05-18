@@ -225,7 +225,7 @@
             <div class="stat-label">Actual</div>
             <div class="stat-value">{{ contribution.actual_duration }}h</div>
           </div>
-          <div class="stat-card">
+          <div v-if="canSeeBudgetForThis" class="stat-card">
             <div class="stat-label">Budget</div>
             <div class="stat-value">{{ contribution.budget || '—' }}</div>
           </div>
@@ -838,16 +838,21 @@
             @click="handleAccept"
           />
           <q-btn
-            v-if="canConfirmNow"
+            v-if="canConfirmNow || canConfirmPendingDeadline"
             unelevated
             no-caps
             color="primary"
             :label="contribution.status === 'changed' ? 'Confirm Changes' : 'Confirm'"
             icon="check_circle"
             class="footer-action-btn"
+            :disable="!canConfirmNow"
             :loading="actionLoading === 'confirm'"
             @click="handleConfirm"
-          />
+          >
+            <q-tooltip v-if="!canConfirmNow && canConfirmPendingDeadline">
+              Set a due date on the contribution before confirming.
+            </q-tooltip>
+          </q-btn>
           <q-btn
             v-if="canSubmitEvidenceNow && !showEvidenceForm"
             unelevated
@@ -1082,6 +1087,7 @@ import ContributionStatusBadge from 'src/components/contributions/ContributionSt
 import ContributionTypeBadge from 'src/components/projects/ContributionTypeBadge.vue';
 import { useContributionsStore } from 'stores/contributions';
 import { useCommentCursorsStore } from 'stores/commentCursors';
+import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
 import { useProfilesStore } from 'stores/profiles';
 import { uploadFile, getFileUrl } from 'src/lib/api/client';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
@@ -1125,6 +1131,8 @@ const emit = defineEmits<{
 const $q = useQuasar();
 const store = useContributionsStore();
 const commentCursorsStore = useCommentCursorsStore();
+const budgetAccess = useContributionBudgetAccess();
+const canSeeBudgetForThis = computed(() => budgetAccess.canSeeBudget(props.contribution));
 const workflow = useContributionWorkflow();
 
 const actionLoading = ref<string | null>(null);
@@ -1395,6 +1403,9 @@ const canSubmitEvidence = computed(() => {
 // Permission checks
 const canConfirmNow = computed(() =>
   workflow.canConfirm(props.contribution, props.isPlanSignedOff, role.value),
+);
+const canConfirmPendingDeadline = computed(() =>
+  workflow.canConfirmIfDeadlineSet(props.contribution, props.isPlanSignedOff, role.value),
 );
 const canShareNow = computed(() => workflow.canShare(props.contribution, role.value, props.isPlanSignedOff));
 const canOfferNow = computed(() => workflow.canOffer(props.contribution, role.value, props.isPlanSignedOff));

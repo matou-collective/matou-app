@@ -70,6 +70,12 @@ export function useProjectPermissions(
     () => isAdmin.value || isSteward.value || isLead.value,
   );
 
+  // Budget on a contribution is finance-sensitive — restrict to the
+  // project's lead/steward and to community admins.
+  const canSeeContributionBudget = computed(
+    () => isAdmin.value || isLead.value || isSteward.value,
+  );
+
   return {
     isAdmin,
     isSteward,
@@ -94,5 +100,6 @@ export function useProjectPermissions(
     canSignOffContribution,
     canShareContribution,
     canOfferContribution,
+    canSeeContributionBudget,
   };
 }

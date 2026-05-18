@@ -120,16 +120,25 @@ const { isAdmin } = useAdminAccess();
 const currentUserId = computed(() => identityStore.aidPrefix ?? '');
 
 // "Mine" = contribution is offered to me OR assigned to me. Excludes archived.
+// Sorted by due date (earliest first; missing deadlines last).
 const myContributions = computed(() => {
   const me = currentUserId.value;
   if (!me) return [];
-  return store.contributions.filter((raw) => {
+  const mine = store.contributions.filter((raw) => {
     const c = raw as typeof raw & { assigned_contributor?: string; offered_to?: string };
     if (c.status === 'archived') return false;
     const assigned = c.assigned_contributor_id ?? c.assigned_contributor;
     if (assigned === me) return true;
     if (c.offered_to === me) return true;
     return false;
+  });
+  return [...mine].sort((a, b) => {
+    const da = a.deadline ? new Date(a.deadline).getTime() : Number.POSITIVE_INFINITY;
+    const db = b.deadline ? new Date(b.deadline).getTime() : Number.POSITIVE_INFINITY;
+    if (da !== db) return da - db;
+    const ca = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const cb = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return ca - cb;
   });
 });
 
@@ -176,7 +185,17 @@ const filteredContributions = computed(() => {
     list = list.filter(c => c.contribution_type === activeTypeFilter.value);
   }
 
-  return list;
+  // Default sort: earliest due date first; contributions without a deadline
+  // fall to the bottom. Stable tie-breaker on created_at so repeated renders
+  // don't shuffle.
+  return [...list].sort((a, b) => {
+    const da = a.deadline ? new Date(a.deadline).getTime() : Number.POSITIVE_INFINITY;
+    const db = b.deadline ? new Date(b.deadline).getTime() : Number.POSITIVE_INFINITY;
+    if (da !== db) return da - db;
+    const ca = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const cb = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return ca - cb;
+  });
 });
 
 function loadContributions() {

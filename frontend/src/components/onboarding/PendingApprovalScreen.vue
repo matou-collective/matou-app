@@ -491,8 +491,8 @@ async function loadBookingState() {
     }
 
     // Reconstruct the slot
-    const dayLabel = bookingDate.toLocaleDateString('en-US', { weekday: 'long' });
-    const dateLabel = bookingDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const dayLabel = bookingDate.toLocaleDateString(undefined, { weekday: 'long' });
+    const dateLabel = bookingDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     const timeLabel = bookingDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 
     // Extract NZT hour from the slot ID (format: YYYYMMDD-HH)
@@ -671,8 +671,8 @@ const availableSlots = computed<TimeSlot[]>(() => {
       if (dateUTC < minBookingDate) continue;
 
       // Format labels in user's local time
-      const dayLabel = dateUTC.toLocaleDateString('en-US', { weekday: 'long' });
-      const dateLabel = dateUTC.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const dayLabel = dateUTC.toLocaleDateString(undefined, { weekday: 'long' });
+      const dateLabel = dateUTC.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
       const timeLabel = dateUTC.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 
       // Format NZT time label
@@ -720,7 +720,7 @@ const requirements = computed(() => [
 
 // Format selected slot for display
 function formatSlotDisplay(slot: TimeSlot): string {
-  const fullDate = slot.dateLocal.toLocaleDateString('en-US', {
+  const fullDate = slot.dateLocal.toLocaleDateString(undefined, {
     weekday: 'long',
     month: 'long',
     day: 'numeric',

@@ -110,6 +110,7 @@
             min="0"
           />
           <q-input
+            v-if="canSeeBudgetForThis"
             v-model="form.budget"
             label="Budget"
             outlined
@@ -324,6 +325,7 @@ import type { CreateContributionRequest } from 'src/lib/api/contributions';
 import type { Contribution } from 'src/types/projects';
 import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
+import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
 
 interface Props {
   modelValue: boolean;
@@ -365,6 +367,7 @@ const emit = defineEmits<{
 
 const profilesStore = useProfilesStore();
 const projectsStore = useProjectsStore();
+const budgetAccess = useContributionBudgetAccess();
 
 const projectOptions = computed(() =>
   projectsStore.projects
@@ -478,6 +481,10 @@ function makeDefault(): ContributionForm {
 
 const form = ref<ContributionForm>(makeDefault());
 const changeReason = ref('');
+
+const canSeeBudgetForThis = computed(() =>
+  budgetAccess.canSeeBudget({ project_id: props.projectId || form.value.project_id }),
+);
 
 const isValid = computed(() => {
   const baseValid =

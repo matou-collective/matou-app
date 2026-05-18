@@ -157,7 +157,7 @@ const errorMessage = ref('');
 const syncResult = ref<SyncCredentialsResponse | null>(null);
 
 const formattedDate = computed(() => {
-  return new Date().toLocaleDateString('en-US', {
+  return new Date().toLocaleDateString(undefined, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

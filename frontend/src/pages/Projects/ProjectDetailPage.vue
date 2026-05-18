@@ -640,6 +640,7 @@ import {
 } from 'lucide-vue-next';
 import { useProjectsStore } from 'stores/projects';
 import { useCommentCursorsStore } from 'stores/commentCursors';
+import { formatDate, formatDateTime } from 'src/lib/formatDate';
 import { useProposalsStore } from 'stores/proposals';
 import { useIdentityStore } from 'stores/identity';
 import { useContributionsStore } from 'stores/contributions';
@@ -1038,11 +1039,6 @@ const planWasModified = computed(
     && !implementationPlan.value.signed_off
     && !!implementationPlan.value.signed_off_at,
 );
-
-function formatDate(iso: string): string {
-  if (!iso) return '';
-  return new Date(iso).toLocaleDateString();
-}
 
 const linkedProposals = computed(() => {
   const p = project.value;

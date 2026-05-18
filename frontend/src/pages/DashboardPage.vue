@@ -466,7 +466,7 @@ async function fetchMoonPhase() {
 // Format date for display
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
-  return date.toLocaleDateString('en-NZ', {
+  return date.toLocaleDateString(undefined, {
     day: 'numeric',
     month: 'long',
     year: 'numeric'

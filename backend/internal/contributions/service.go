@@ -1478,6 +1478,9 @@ func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contribution
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
 	}
+	if c.Deadline == nil {
+		return nil, fmt.Errorf("contribution must have a due date before it can be confirmed")
+	}
 	var propagateChildren bool
 	switch c.Status {
 	case ContribCreated:

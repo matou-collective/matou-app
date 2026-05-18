@@ -77,6 +77,27 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  // Lightweight per-entity refresh — upserts the list + currentContribution
+  // in place without touching loading/error state. Used by global SSE
+  // watchers that need to reflect a remote status change (offered, accepted,
+  // etc.) on cards and the side menu badge.
+  async function refreshContribution(id: string) {
+    try {
+      const fresh = await apiGet(id);
+      const idx = contributions.value.findIndex((c) => c.id === id);
+      if (idx >= 0) {
+        contributions.value[idx] = fresh;
+      } else {
+        contributions.value = [...contributions.value, fresh];
+      }
+      if (currentContribution.value?.id === id) currentContribution.value = fresh;
+      return fresh;
+    } catch (e) {
+      log.error('refreshContribution failed: %s', e);
+      return null;
+    }
+  }
+
   async function create(req: CreateContributionRequest) {
     error.value = null;
     try {
@@ -337,6 +358,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     assignedContributions,
     fetchContributions,
     fetchContribution,
+    refreshContribution,
     create,
     transition,
     update,

@@ -73,14 +73,15 @@ const scope = useCommentScope();
 const parentProject = computed<Project | null>(() =>
   projectsStore.projects.find((p) => p.id === props.contribution.project_id) ?? null,
 );
-const liveContribution = computed(() => ({
-  ...props.contribution,
-  comment_count: contributionsStore.liveCommentCount(
-    props.contribution.id,
-    props.contribution.comment_count ?? 0,
-  ),
-}));
-const unread = computed(() => scope.contributionUnread(liveContribution.value, parentProject.value));
+const liveContribution = computed(() => {
+  const live = contributionsStore.contributions.find((c) => c.id === props.contribution.id);
+  return live ? { ...props.contribution, ...live } : props.contribution;
+});
+const unread = computed(
+  () =>
+    scope.contributionUnread(liveContribution.value, parentProject.value)
+    + scope.contributionOfferedCount(liveContribution.value),
+);
 
 const assignedAid = computed(() => {
   const c = props.contribution as typeof props.contribution & {

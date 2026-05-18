@@ -37,16 +37,16 @@
             {{ noticesUnreadTotal > 99 ? '99+' : noticesUnreadTotal }}
           </span>
         </button>
+        <button class="nav-item" :class="{ active: route.name === 'proposals' }" @click="router.push({ name: 'proposals' })">
+          <Vote class="nav-icon" />
+          <span>Proposals</span>
+        </button>
         <button class="nav-item" :class="{ active: route.name === 'projects' }" @click="router.push({ name: 'projects' })">
           <Target class="nav-icon" />
           <span>Projects</span>
           <span v-if="projectsUnreadTotal > 0" class="nav-badge">
             {{ projectsUnreadTotal > 99 ? '99+' : projectsUnreadTotal }}
           </span>
-        </button>
-        <button class="nav-item" :class="{ active: route.name === 'proposals' }" @click="router.push({ name: 'proposals' })">
-          <Vote class="nav-icon" />
-          <span>Proposals</span>
         </button>
         <button class="nav-item" :class="{ active: route.name === 'contributions' || route.name === 'contribution-detail' }" @click="router.push({ name: 'contributions' })">
           <Hammer class="nav-icon" />
@@ -130,10 +130,11 @@ const projectsUnreadTotal = computed(() => {
 });
 
 const contributionsUnreadTotal = computed(() => {
-  // Only contributions assigned to me — leads/stewards are surfaced via the
-  // Projects badge instead.
+  // Comment unread on contributions assigned to me + any pending offers
+  // extended to me (drops back as soon as I accept the offer).
+  // Leads/stewards' comment unread is surfaced via the Projects badge instead.
   return contributionsStore.contributions.reduce(
-    (sum, c) => sum + scope.contributionUnreadAsAssignee(c),
+    (sum, c) => sum + scope.contributionUnreadAsAssignee(c) + scope.contributionOfferedCount(c),
     0,
   );
 });
@@ -148,12 +149,33 @@ const { connect: connectBackendEvents, lastEvent } = useBackendEvents();
 
 // Keep entity comment_count and notice counts in sync with peer comments so
 // badges live-update everywhere — not just on the open detail page.
-// Only react to p2p-source events: local posts already bump optimistically
-// in the store's addComment, so reacting to the local POST handler's SSE
-// would double-count.
+// Only react to p2p-source events for the *_comment_added events: local
+// posts already bump optimistically in the store's addComment, so reacting
+// to the local POST handler's SSE would double-count.
 watch(lastEvent, (event) => {
   if (!event) return;
-  const data = event.data as { source?: string; project_id?: string; contribution_id?: string; noticeId?: string } | undefined;
+  const data = event.data as {
+    source?: string;
+    project_id?: string;
+    contribution_id?: string;
+    noticeId?: string;
+  } | undefined;
+
+  // Lifecycle changes that may flip a contribution's status or offered_to —
+  // refresh the single contribution so the offered badge + side-menu rollup
+  // update in real time. Handles both local broadcasts (status:assigned,
+  // accepted) and p2p-synced contribution_updated.
+  if (
+    (event.type === 'contribution:assigned'
+      || event.type === 'contribution:accepted'
+      || event.type === 'contribution:declined'
+      || event.type === 'contribution_updated')
+    && data?.contribution_id
+  ) {
+    void contributionsStore.refreshContribution(data.contribution_id);
+    return;
+  }
+
   if (data?.source !== 'p2p') return;
   if (event.type === 'project:comment_added' && data.project_id) {
     projectsStore.bumpCommentCount(data.project_id);

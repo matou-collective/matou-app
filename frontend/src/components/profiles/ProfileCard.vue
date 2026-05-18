@@ -134,7 +134,7 @@ function formatDate(dateStr: string, verb: string): string {
   if (diffDays === 1) return `${verb} yesterday`;
   if (diffDays < 7) return `${verb} ${diffDays} days ago`;
   if (diffDays < 30) return `${verb} ${Math.floor(diffDays / 7)} weeks ago`;
-  return `${verb} ${date.toLocaleDateString('en-NZ', { month: 'short', year: 'numeric' })}`;
+  return `${verb} ${date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`;
 }
 </script>
 

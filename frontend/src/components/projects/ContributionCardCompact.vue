@@ -5,14 +5,14 @@
       <div class="compact-title-wrap">
         <div class="compact-title">{{ contribution.title }}</div>
         <div
-          v-if="contribution.estimated_duration || contribution.budget || contribution.deadline"
+          v-if="contribution.estimated_duration || (contribution.budget && canSeeBudgetForThis) || contribution.deadline"
           class="compact-title-meta"
         >
           <span v-if="contribution.estimated_duration" class="meta-item">
             <q-icon name="schedule" size="14px" />
             {{ contribution.estimated_duration }}h
           </span>
-          <span v-if="contribution.budget" class="meta-item">
+          <span v-if="contribution.budget && canSeeBudgetForThis" class="meta-item">
             <q-icon name="attach_money" size="14px" />
             {{ contribution.budget }}
           </span>
@@ -67,8 +67,11 @@
           label="Confirm"
           color="primary"
           class="confirm-btn"
+          :disable="!liveContribution.deadline"
           @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
-        />
+        >
+          <q-tooltip v-if="!liveContribution.deadline">Set a due date on this contribution first.</q-tooltip>
+        </q-btn>
 
         <q-btn
           v-if="isSubContribution && isLead && (contribution.status === 'created' || contribution.status === 'changed')"
@@ -126,6 +129,7 @@ import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useCommentScope } from 'src/composables/useCommentScope';
+import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
 import { getFileUrl } from 'src/lib/api/client';
 
 defineOptions({ name: 'ContributionCardCompact' });
@@ -165,16 +169,21 @@ const scope = useCommentScope();
 const parentProject = computed(() =>
   projectsStore.projects.find((p) => p.id === props.contribution.project_id) ?? null,
 );
-// Use the live count from the contributions store — the prop may be a
-// hydrated milestone copy that doesn't pick up bumpCommentCount updates.
-const liveContribution = computed(() => ({
-  ...props.contribution,
-  comment_count: contributionsStore.liveCommentCount(
-    props.contribution.id,
-    props.contribution.comment_count ?? 0,
-  ),
-}));
-const unread = computed(() => scope.contributionUnread(liveContribution.value, parentProject.value));
+// Always overlay the live contribution from the store — the prop may be a
+// hydrated milestone copy that doesn't react to bumpCommentCount nor to
+// status changes (offered → assigned, etc.).
+const liveContribution = computed(() => {
+  const live = contributionsStore.contributions.find((c) => c.id === props.contribution.id);
+  return live ? { ...props.contribution, ...live } : props.contribution;
+});
+const unread = computed(
+  () =>
+    scope.contributionUnread(liveContribution.value, parentProject.value)
+    + scope.contributionOfferedCount(liveContribution.value),
+);
+
+const budgetAccess = useContributionBudgetAccess();
+const canSeeBudgetForThis = computed(() => budgetAccess.canSeeBudget(props.contribution));
 
 const assignedAid = computed(() =>
   props.contribution.assigned_contributor_id ?? props.contribution.assigned_contributor ?? null,
