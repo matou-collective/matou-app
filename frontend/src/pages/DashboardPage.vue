@@ -124,6 +124,12 @@
 
         <!-- Right Column -->
         <div class="right-column">
+          <WitnessAdoptionBanner
+            v-if="isSteward && orgHasWitnesses === false"
+            :loading="isAdoptingWitnesses"
+            :error-message="adoptError ?? undefined"
+            @adopt="adoptWitnesses"
+          />
           <div ref="membersCardRef" class="card members-card">
             <div class="members-header">
               <h3 class="card-title" v-if="pendingMembers.length > 0">Pending</h3>
@@ -232,6 +238,8 @@ import {
 } from 'lucide-vue-next';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useOrgWitnessState } from 'src/composables/useOrgWitnessState';
+import WitnessAdoptionBanner from 'src/components/dashboard/WitnessAdoptionBanner.vue';
 import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
@@ -262,7 +270,29 @@ const {
   declineRegistration,
   removeMember,
   clearError,
+  runAdoptWitnesses,
 } = useAdminActions();
+
+const { hasWitnesses: orgHasWitnesses, refresh: refreshOrgWitnesses } = useOrgWitnessState();
+const isAdoptingWitnesses = ref(false);
+const adoptError = ref<string | null>(null);
+
+async function adoptWitnesses() {
+  isAdoptingWitnesses.value = true;
+  adoptError.value = null;
+  try {
+    const result = await runAdoptWitnesses();
+    if (result === 'failed') {
+      adoptError.value = 'Witness adoption failed. See console for details.';
+      return;
+    }
+    await refreshOrgWitnesses();
+  } catch (err) {
+    adoptError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    isAdoptingWitnesses.value = false;
+  }
+}
 
 const {
   hasJoined: hasJoinedMultisig,
@@ -481,6 +511,9 @@ onMounted(async () => {
 
   // Check if user is admin/steward
   await checkAdminStatus();
+
+  // Query the org's witness state for the migration banner
+  await refreshOrgWitnesses();
 
   // Poll for multisig rotation notifications (e.g., after being promoted to steward)
   startMultisigPolling(5000);
