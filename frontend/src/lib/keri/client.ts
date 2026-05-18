@@ -334,6 +334,51 @@ export class KERIClient {
   }
 
   /**
+   * Poll until the given AID's KEL on this agent reaches a target sequence number.
+   * Used by admin to wait for the promoted member's personal-hab rotation to
+   * propagate before constructing round 2 of the multisig add.
+   *
+   * @param aidPrefix - Prefix of the AID to watch
+   * @param targetSn - Sequence number to wait for (as a hex string, e.g. '1')
+   * @param opts.timeoutMs - Total timeout (default 5 minutes)
+   * @param opts.intervalMs - Poll interval (default 3 seconds)
+   * @throws if timeout elapses before target sn is reached
+   */
+  async waitForMemberRotation(
+    aidPrefix: string,
+    targetSn: string,
+    opts: { timeoutMs?: number; intervalMs?: number } = {},
+  ): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+    const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
+    const intervalMs = opts.intervalMs ?? 3000;
+    const targetSnInt = parseInt(targetSn, 16);
+    const deadline = Date.now() + timeoutMs;
+    let lastSeen: string | undefined;
+
+    while (Date.now() < deadline) {
+      try {
+        await this.ensureConnected();
+        const op = await this.client.keyStates().query(aidPrefix, targetSn, undefined);
+        const res = await this.client.operations().wait(op, { signal: AbortSignal.timeout(intervalMs * 2) });
+        const ks = res.response as { s?: string } | undefined;
+        lastSeen = ks?.s;
+        if (ks?.s !== undefined && parseInt(ks.s, 16) >= targetSnInt) {
+          console.log(`[KERIClient] waitForMemberRotation: ${aidPrefix.slice(0, 12)}... reached sn=${ks.s}`);
+          return;
+        }
+      } catch (err) {
+        // keyStates().query throws while the KEL hasn't caught up yet — that's expected
+        console.log(`[KERIClient] waitForMemberRotation: not yet (lastSeen=${lastSeen}, err=${err instanceof Error ? err.message : err})`);
+      }
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
+    throw new Error(
+      `Timed out waiting for ${aidPrefix.slice(0, 12)}... to reach sn=${targetSn} (last seen: ${lastSeen ?? 'none'})`,
+    );
+  }
+
+  /**
    * Get an existing AID by name
    * @param name - The AID name to retrieve
    * @returns AID info or null if not found
