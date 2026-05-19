@@ -62,8 +62,16 @@ const MEMBER_NAME = 'Test Member Contrib';
 // UI Helpers
 // ---------------------------------------------------------------------------
 
-/** Navigate to a sidebar item by label (sidebar nav items are buttons) */
+/** Navigate to a sidebar item by label (sidebar nav items are buttons).
+ * Defensively waits for any visible q-dialog backdrop to disappear first.
+ * A leftover backdrop from a previously-closed dialog intercepts pointer
+ * events on the sidebar and silently retries the click until the test
+ * timeout, which manifests as an inexplicable stall at the top of the
+ * next phase. */
 async function navigateTo(page: Page, label: string) {
+  await expect(page.locator('.q-dialog__backdrop:visible')).toHaveCount(0, {
+    timeout: TIMEOUT.short,
+  });
   await page.getByRole('button', { name: label }).click();
 }
 
@@ -86,15 +94,30 @@ async function openContributionDialog(page: Page, title: string) {
   await waitForSettle(page, 500);
 }
 
-/** Close the currently open contribution detail dialog */
+/** Close the currently open contribution detail dialog. Loops to dismiss
+ * stacked dialogs (nested sub-contribution → parent) and waits for every
+ * q-dialog backdrop to detach, otherwise a stray backdrop can still
+ * intercept sidebar clicks in the next test. */
 async function closeContributionDialog(page: Page) {
-  const closeBtn = page.locator('.q-dialog .close-btn');
-  if (await closeBtn.isVisible().catch(() => false)) {
-    await closeBtn.click();
-  } else {
-    await page.keyboard.press('Escape');
+  for (let i = 0; i < 4; i++) {
+    const visibleDialogs = await page.locator('.q-dialog:visible').count();
+    if (visibleDialogs === 0) break;
+    const closeBtn = page.locator('.q-dialog:visible .close-btn').last();
+    if (await closeBtn.isVisible().catch(() => false)) {
+      await closeBtn.click().catch(() => {});
+    } else {
+      await page.keyboard.press('Escape');
+    }
+    await page.waitForTimeout(400);
   }
-  await page.waitForTimeout(500);
+  // Assert no visible backdrop remains — Quasar can leave a backdrop element
+  // in the DOM briefly after the dialog hides, and that backdrop still
+  // captures pointer events. waitFor({ state: 'detached' }) only checks the
+  // first match and was being silently swallowed by the catch, which is how
+  // a leftover backdrop kept making the *next* phase's sidebar click stall.
+  await expect(page.locator('.q-dialog__backdrop:visible')).toHaveCount(0, {
+    timeout: TIMEOUT.short,
+  });
 }
 
 /** Navigate to the project detail page from the projects list.
@@ -143,29 +166,40 @@ async function fillDueDateViaPopup(
   const qdate = page.locator('.q-date').last();
   await expect(qdate).toBeVisible({ timeout: TIMEOUT.short });
 
-  // Navigate to target month via the calendar's prev/next arrows. The
-  // navigation header shows e.g. "Jun 2026" or "June 2026" depending on
-  // locale; parse it to compute direction.
+  // Navigate to target month via the calendar's prev/next arrows. Newer
+  // Quasar splits the header into separate month + year sections, each with
+  // its own prev/next chevrons — innerText looks like:
+  //   "chevron_left\nMay\nchevron_right\nchevron_left\n2026\nchevron_right"
+  // So pull the month label and the 4-digit year independently rather than
+  // matching them as one "Mon YYYY" run.
   const monthAbbrev = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   for (let i = 0; i < 36; i++) {
     const navText = (await qdate.locator('.q-date__navigation').innerText()).trim();
-    const m = navText.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i);
-    if (!m) throw new Error(`Cannot parse q-date navigation header: ${JSON.stringify(navText)}`);
-    const curMonth = monthAbbrev.findIndex((a) => m[1]!.toLowerCase().startsWith(a.toLowerCase())) + 1;
-    const curYear = parseInt(m[2]!, 10);
+    const monthMatch = navText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i);
+    const yearMatch = navText.match(/\b(\d{4})\b/);
+    if (!monthMatch || !yearMatch) throw new Error(`Cannot parse q-date navigation header: ${JSON.stringify(navText)}`);
+    const curMonth = monthAbbrev.findIndex((a) => monthMatch[1]!.toLowerCase().startsWith(a.toLowerCase())) + 1;
+    const curYear = parseInt(yearMatch[1]!, 10);
     if (curMonth === targetMonth && curYear === targetYear) break;
     const forward =
       targetYear > curYear || (targetYear === curYear && targetMonth > curMonth);
+    // First two .q-date__arrow nodes are month prev/next; year arrows (if
+    // present) come after. nth(0)=month prev, nth(1)=month next still works.
     await qdate.locator('.q-date__arrow').nth(forward ? 1 : 0).click();
     await page.waitForTimeout(80); // let month-slide animation finish
   }
 
   // Click the day cell, restricted to the current displayed month (`--in`
   // marks in-month cells; filler cells from prev/next month don't have it).
-  await qdate
+  // During month-slide transitions Quasar briefly mounts both the outgoing
+  // and incoming grids, so the day-N cell can momentarily match twice —
+  // wait for the transient duplicate to collapse, then click the active one.
+  const dayCell = qdate
     .locator('.q-date__calendar-item--in')
     .getByRole('button', { name: String(day), exact: true })
-    .click();
+    .first();
+  await expect(dayCell).toBeVisible({ timeout: TIMEOUT.short });
+  await dayCell.click();
 
   // Dismiss the popup via the Close button rendered by the dialog template.
   await qdate.getByRole('button', { name: 'Close' }).click();
@@ -1071,9 +1105,13 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await rewardBtn.click();
     await waitForSettle(adminPage);
 
-    // Post-click: the Rewarded confirmation panel replaces the button.
-    await expect(dlg.locator('.signed-off-panel').filter({ hasText: /^\s*Rewarded\s*$/i }).first())
-      .toBeVisible({ timeout: TIMEOUT.medium });
+    // Post-click: the Rewarded confirmation panel replaces the button. The
+    // panel reuses .signed-off-panel and renders a .sign-off-title="Rewarded"
+    // plus a .sign-off-sub line ("by … on …"), so anchor the assertion on
+    // the title element rather than trying to match the full panel text.
+    await expect(
+      dlg.locator('.signed-off-panel .sign-off-title', { hasText: /^Rewarded$/i }).first(),
+    ).toBeVisible({ timeout: TIMEOUT.medium });
     console.log('[Phase 9.5] Contribution 1 marked as rewarded');
 
     await closeContributionDialog(adminPage);
@@ -1261,11 +1299,13 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     const nestedDlg = adminPage.locator('.q-dialog').last();
     await expect(nestedDlg).toBeVisible({ timeout: TIMEOUT.short });
 
-    // Click the edit-btn pencil in the nested dialog header to open the
-    // change dialog (CreateContributionDialog with editing=true).
-    const editBtn = nestedDlg.locator('.edit-btn');
-    await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
-    await editBtn.click();
+    // Click the change-btn (rule icon) in the nested dialog header to open
+    // the change dialog (CreateContributionDialog with change-request=true).
+    // The header now exposes two icon buttons: .title-edit-btn (edit fields)
+    // and .title-change-btn (request changes / reassign). Use the latter.
+    const changeBtn = nestedDlg.locator('.title-change-btn');
+    await expect(changeBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await changeBtn.click();
 
     // The change dialog is now the topmost q-dialog.
     const changeDlg = dialog(adminPage, /Change Contribution|Submit Change/i);
@@ -1591,41 +1631,16 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage);
 
-    // Locate contribution 2 card
-    const contrib2Card = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
-    await expect(contrib2Card).toBeVisible({ timeout: TIMEOUT.medium });
-
-    // Confirm assignee avatar is present (member accepted offer in Phase 10)
-    await expect(contrib2Card.locator('.compact-avatar')).toBeVisible({ timeout: TIMEOUT.short });
-
-    // .compact-actions has the edit pencil — click it
-    // The first button matching the edit icon (skipping any Confirm button which is rendered conditionally)
-    const editPencil = contrib2Card.locator('.compact-actions button').filter({
-      has: adminPage.locator('.q-icon').filter({ hasText: /^edit$/ }),
-    }).first();
-    // Fallback: find by tooltip text
-    const editFallback = contrib2Card.locator('.compact-actions button').filter({ hasText: '' }).nth(0);
-    if (await editPencil.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await editPencil.click();
-    } else {
-      // The compact-actions has flat round buttons; the first non-Confirm button is edit
-      const allBtns = contrib2Card.locator('.compact-actions button');
-      const btnCount = await allBtns.count();
-      // Skip Confirm/Assign buttons — find an icon-only flat round button
-      let clicked = false;
-      for (let i = 0; i < btnCount; i++) {
-        const btn = allBtns.nth(i);
-        const text = (await btn.textContent() ?? '').trim();
-        if (text === '' || text.length < 2) {
-          await btn.click();
-          clicked = true;
-          break;
-        }
-      }
-      if (!clicked) {
-        await editFallback.click();
-      }
-    }
+    // Compact card does not expose an edit pencil (it only carries
+    // Assign/Confirm/Approve buttons, and contribution 2 is already assigned,
+    // so .compact-actions is empty). The edit pencil lives in the contribution
+    // detail dialog header (.title-edit-btn) — open the dialog and click it,
+    // mirroring Phase 10's edit flow.
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const detailDlg = adminPage.locator('.q-dialog').first();
+    const editBtn = detailDlg.locator('.title-edit-btn');
+    await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await editBtn.click();
 
     // ContributionForm dialog opens in edit mode
     const formDlg = adminPage.locator('.q-dialog').filter({ hasText: /Edit Contribution/i }).first();
@@ -1712,13 +1727,15 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage);
 
-    const contrib2Card = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
-    await expect(contrib2Card).toBeVisible({ timeout: TIMEOUT.medium });
+    // .compact-actions on this card has no edit pencil (Assign/Confirm/Approve
+    // only). Open the detail dialog and use its header .title-edit-btn.
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const detailDlg = adminPage.locator('.q-dialog').first();
+    const editBtn = detailDlg.locator('.title-edit-btn');
+    await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await editBtn.click();
 
-    // Click the edit pencil — only icon button in .compact-actions now
-    await contrib2Card.locator('.compact-actions button').first().click();
-
-    // ContributionForm opens in edit mode with the Danger Zone "Delete Contribution" button
+    // CreateContributionDialog opens in edit mode with the Danger Zone "Delete Contribution" button
     const formDlg = adminPage.locator('.q-dialog').filter({ hasText: /Edit Contribution/i }).last();
     await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
     const deleteBtn = formDlg.getByRole('button', { name: /Delete Contribution/i });

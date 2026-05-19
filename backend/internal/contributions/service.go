@@ -2368,7 +2368,7 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 		return nil, fmt.Errorf("project has no contributions")
 	}
 	for _, c := range contribs {
-		if c.Status != ContribSignedOff && c.Status != ContribArchived {
+		if c.Status != ContribSignedOff && c.Status != ContribRewarded && c.Status != ContribArchived {
 			return nil, fmt.Errorf("contribution %s is %s, must be signed_off", c.ID, c.Status)
 		}
 	}

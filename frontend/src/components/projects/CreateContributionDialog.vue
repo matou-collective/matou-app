@@ -307,6 +307,32 @@
             :rules="[val => !!val?.trim() || 'Reason is required']"
           />
         </div>
+
+        <div
+          v-if="showUnassignBlock"
+          class="unassign-block q-mt-sm"
+        >
+          <q-btn
+            outline
+            no-caps
+            color="negative"
+            icon="person_remove"
+            label="Unassign Contributor"
+            @click="$emit('unassign')"
+          />
+        </div>
+
+        <div v-if="editing && canDelete" class="danger-zone q-mt-md">
+          <div class="danger-zone-title">Danger Zone</div>
+          <q-btn
+            outline
+            no-caps
+            color="negative"
+            icon="delete"
+            label="Delete Contribution"
+            @click="$emit('archive')"
+          />
+        </div>
       </q-card-section>
 
       <div class="dialog-footer">
@@ -358,6 +384,8 @@ interface Props {
    * + status gate.
    */
   canReassign?: boolean;
+  canUnassign?: boolean;
+  canDelete?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -371,6 +399,8 @@ const props = withDefaults(defineProps<Props>(), {
   contribution: null,
   standalone: false,
   canReassign: false,
+  canUnassign: false,
+  canDelete: false,
 });
 
 const emit = defineEmits<{
@@ -378,6 +408,8 @@ const emit = defineEmits<{
   (e: 'submit', req: CreateContributionRequest): void;
   (e: 'update', updates: Record<string, unknown>): void;
   (e: 'change', data: { updates: Record<string, unknown>; reason: string }): void;
+  (e: 'unassign'): void;
+  (e: 'archive'): void;
 }>();
 
 const profilesStore = useProfilesStore();
@@ -512,6 +544,16 @@ const showReassignPicker = computed(() => {
   if (c.parent_contribution) return false;
   if (!['assigned', 'changed'].includes(c.status)) return false;
   const currentAid = c.assigned_contributor_id ?? c.assigned_contributor;
+  return !!currentAid;
+});
+
+const showUnassignBlock = computed(() => {
+  if (!props.editing) return false;
+  if (!props.canUnassign) return false;
+  const c = props.contribution;
+  if (!c) return false;
+  if (c.status !== 'assigned') return false;
+  const currentAid = c.assigned_contributor_id ?? (c as { assigned_contributor?: string }).assigned_contributor;
   return !!currentAid;
 });
 
