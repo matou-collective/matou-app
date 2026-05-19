@@ -23,7 +23,14 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1,
-  timeout: 0, // No overall timeout — rely on individual action/navigation timeouts
+  // Per-test budget — a single cap rather than a stack of per-action timeouts.
+  // When this fires Playwright cancels *all* pending waits in the test, so a
+  // stuck phase aborts immediately instead of crawling through compounded
+  // action timeouts. Individual test()s that legitimately need more (org
+  // setup, AID creation, steward upgrade) override via test.setTimeout(N).
+  // 3 min covers most cross-session sync phases; beforeAll hooks that run
+  // full org setup + member registration already call test.setTimeout(360_000).
+  timeout: 180_000,
   reporter: [['html', { open: 'never' }], ['list']],
 
   use: {

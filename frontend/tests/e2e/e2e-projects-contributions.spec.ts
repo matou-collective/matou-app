@@ -114,6 +114,64 @@ async function navigateToProjectDetail(page: Page, projectTitle: string) {
   await waitForSettle(page);
 }
 
+/**
+ * Fill the Due Date field inside a Create/Edit Contribution dialog by opening
+ * the q-date popup and navigating to the target month, then clicking the day.
+ *
+ * Why not pressSequentially() on the masked input? The mask (`##-##-####`)
+ * processes keystrokes asynchronously and sometimes drops digits when typed
+ * fast — leaving the form's `deadline` empty and the Confirm button disabled.
+ * Driving the q-date popup writes through `fromQDateFormat()` directly and
+ * is what a real user would do.
+ */
+async function fillDueDateViaPopup(
+  page: Page,
+  dlg: ReturnType<typeof dialog>,
+  targetYear: number,
+  targetMonth: number,
+  day: number,
+): Promise<void> {
+  // The Due Date input has a calendar icon in its append slot; clicking it
+  // opens the q-popup-proxy containing a <q-date>.
+  await dlg
+    .locator('label.q-field')
+    .filter({ hasText: 'Due Date' })
+    .locator('i.q-icon.cursor-pointer')
+    .click();
+
+  // Popup teleports to document.body, so scope at page level (not dialog).
+  const qdate = page.locator('.q-date').last();
+  await expect(qdate).toBeVisible({ timeout: TIMEOUT.short });
+
+  // Navigate to target month via the calendar's prev/next arrows. The
+  // navigation header shows e.g. "Jun 2026" or "June 2026" depending on
+  // locale; parse it to compute direction.
+  const monthAbbrev = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  for (let i = 0; i < 36; i++) {
+    const navText = (await qdate.locator('.q-date__navigation').innerText()).trim();
+    const m = navText.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})/i);
+    if (!m) throw new Error(`Cannot parse q-date navigation header: ${JSON.stringify(navText)}`);
+    const curMonth = monthAbbrev.findIndex((a) => m[1]!.toLowerCase().startsWith(a.toLowerCase())) + 1;
+    const curYear = parseInt(m[2]!, 10);
+    if (curMonth === targetMonth && curYear === targetYear) break;
+    const forward =
+      targetYear > curYear || (targetYear === curYear && targetMonth > curMonth);
+    await qdate.locator('.q-date__arrow').nth(forward ? 1 : 0).click();
+    await page.waitForTimeout(80); // let month-slide animation finish
+  }
+
+  // Click the day cell, restricted to the current displayed month (`--in`
+  // marks in-month cells; filler cells from prev/next month don't have it).
+  await qdate
+    .locator('.q-date__calendar-item--in')
+    .getByRole('button', { name: String(day), exact: true })
+    .click();
+
+  // Dismiss the popup via the Close button rendered by the dialog template.
+  await qdate.getByRole('button', { name: 'Close' }).click();
+  await expect(qdate).not.toBeVisible({ timeout: TIMEOUT.short });
+}
+
 // ===========================================================================
 // Group 1: Full UI Lifecycle (Phases 1–10)
 // ===========================================================================
@@ -164,20 +222,28 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
         .then(() => false),
     ]);
 
-    if (needsSetup) {
-      console.log('[Setup] No org config — running org setup...');
+    // Detect a "stale config server + clean backend" mismatch: the config
+    // server might still return an org from a previous run while the backend
+    // data was reset (clean-test.sh removes data-test but doesn't touch the
+    // KERI config server). In that case test-accounts.json is also gone, so
+    // recovering an identity is impossible — fall through to performOrgSetup
+    // which calls clearTestConfig internally before running fresh setup.
+    let accountsFileExists = true;
+    let staleAccounts: TestAccounts | null = null;
+    try {
+      staleAccounts = loadAccounts();
+    } catch {
+      accountsFileExists = false;
+    }
+
+    if (needsSetup || !accountsFileExists || !staleAccounts?.admin?.mnemonic) {
+      console.log('[Setup] Running org setup (fresh state or missing accounts)');
       accounts = await performOrgSetup(adminPage, request);
       console.log('[Setup] Org setup complete, admin on dashboard');
     } else {
       console.log('[Setup] Recovering admin identity...');
-      accounts = loadAccounts();
-      if (!accounts.admin?.mnemonic) {
-        throw new Error(
-          'Org configured but no admin mnemonic in test-accounts.json. ' +
-          'Run org-setup first or clean test state and re-run.',
-        );
-      }
-      await loginWithMnemonic(adminPage, accounts.admin.mnemonic);
+      accounts = staleAccounts;
+      await loginWithMnemonic(adminPage, accounts.admin!.mnemonic);
       console.log('[Setup] Admin logged in and on dashboard');
     }
 
@@ -374,6 +440,11 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await contribDlg.getByLabel('Deliverable 1').fill('Wireframe document');
     await contribDlg.getByLabel('Criterion 1').fill('Wireframes reviewed by team');
 
+    // Due date is required before a contribution can be confirmed (added in
+    // commit 9694143). Use the q-date popup — driving the masked input via
+    // typed digits is racy and sometimes leaves the form's deadline empty.
+    await fillDueDateViaPopup(adminPage, contribDlg, 2026, 6, 1);
+
     await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
     await waitForSettle(adminPage);
     console.log('[Phase 2] Contribution 1 created: %s', CONTRIBUTION_1_TITLE);
@@ -390,6 +461,8 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await contribDlg.getByLabel('Objective 1').fill('Engage community members');
     await contribDlg.getByLabel('Deliverable 1').fill('Outreach report');
     await contribDlg.getByLabel('Criterion 1').fill('Community engagement report submitted');
+
+    await fillDueDateViaPopup(adminPage, contribDlg, 2026, 6, 15);
 
     await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
     await waitForSettle(adminPage);
@@ -860,12 +933,21 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(notesInput).toBeVisible({ timeout: TIMEOUT.medium });
     await notesInput.fill('Wireframes completed. All design objectives met. Sub-contributions signed off. Ready for review.');
 
-    // 7.7 Enter actual hours
-    const hoursInput = detailDlg.locator('.submit-completion-form').getByLabel(/Actual Hours/i).or(
-      detailDlg.locator('.submit-completion-form input[type="number"]'),
-    );
-    if (await hoursInput.isVisible().catch(() => false)) {
-      await hoursInput.fill('32');
+    // 7.7 Enter actual hours and actual cost (side-by-side .actuals-row).
+    // First numeric input = hours; second = cost ($ prefixed).
+    const actualsInputs = detailDlg.locator('.actuals-row input[type="number"]');
+    if (await actualsInputs.first().isVisible({ timeout: 2000 }).catch(() => false)) {
+      await actualsInputs.nth(0).fill('32');
+      await actualsInputs.nth(1).fill('800');
+      console.log('[Phase 7] Filled actual hours=32 and actual cost=800');
+    } else {
+      // Fallback for older form layout where only hours existed.
+      const hoursInput = detailDlg.locator('.submit-completion-form').getByLabel(/Actual Hours/i).or(
+        detailDlg.locator('.submit-completion-form input[type="number"]'),
+      );
+      if (await hoursInput.isVisible().catch(() => false)) {
+        await hoursInput.fill('32');
+      }
     }
 
     // Fill acceptance criteria if present
@@ -898,6 +980,16 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     await openContributionDialog(adminPage, CONTRIBUTION_1_TITLE);
     const dlg = adminPage.locator('.q-dialog');
+
+    // Verify the Actual Cost stat card is visible to admin (gated by
+    // canSeeBudgetForThis — lead/steward/community admin only). The card was
+    // populated in Phase 7 when the member submitted evidence with actual
+    // cost=800. Optional: only assert when the actuals-row was used in P7.
+    const actualCostCard = dlg.locator('.stat-card', { hasText: /Actual Cost/i });
+    if (await actualCostCard.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await expect(actualCostCard).toContainText('$800');
+      console.log('[Phase 8] Actual Cost stat card visible with submitted value');
+    }
 
     // Toggle review form
     const reviewBtn = dlg.getByRole('button', { name: /Review Submission/i });
@@ -952,6 +1044,37 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     // 9.4 Verify signed-off state
     await expect(dlg.getByText(/Signed Off/i).first()).toBeVisible({ timeout: TIMEOUT.short });
     console.log('[Phase 9] Contribution 1 signed off');
+
+    await closeContributionDialog(adminPage);
+
+    // 9.5 Verify the compact card shows the signed_off status badge with the
+    // solid-accent style (class presence — CSS rule is ground truth).
+    const signedOffCard = adminPage.locator('.contribution-compact')
+      .filter({ hasText: CONTRIBUTION_1_TITLE });
+    await expect(signedOffCard.locator('.status-badge.signed_off')).toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Phase 9] Signed-off chip rendered on compact card');
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 9.5: Community admin marks signed-off contribution as Rewarded
+  // ------------------------------------------------------------------
+
+  test('Phase 9.5: admin marks signed-off contribution as Rewarded', async () => {
+    await adminPage.bringToFront();
+
+    await openContributionDialog(adminPage, CONTRIBUTION_1_TITLE);
+    const dlg = adminPage.locator('.q-dialog');
+
+    // Button is only visible to community admins on signed-off contributions.
+    const rewardBtn = dlg.getByRole('button', { name: 'Mark as Rewarded' });
+    await expect(rewardBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await rewardBtn.click();
+    await waitForSettle(adminPage);
+
+    // Post-click: the Rewarded confirmation panel replaces the button.
+    await expect(dlg.locator('.signed-off-panel').filter({ hasText: /^\s*Rewarded\s*$/i }).first())
+      .toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 9.5] Contribution 1 marked as rewarded');
 
     await closeContributionDialog(adminPage);
   });
@@ -1320,8 +1443,11 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
     const dlg = adminPage.locator('.q-dialog');
 
-    // 10.1 Click edit pencil icon in dialog header
-    const editBtn = dlg.locator('.edit-btn');
+    // 10.1 Click "Request changes" icon in dialog header (rule icon).
+    // The class was previously `.edit-btn` (absolute-positioned bottom-right);
+    // it was moved inline next to the title's edit-pencil and renamed to
+    // `.title-change-btn` so it doesn't overlap the assigned-avatar.
+    const editBtn = dlg.locator('.title-change-btn');
     await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
     await editBtn.click();
 
@@ -1340,6 +1466,20 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     );
     await expect(reasonInput).toBeVisible({ timeout: TIMEOUT.short });
     await reasonInput.fill('Scope expanded to include additional community partners following initial planning');
+
+    // 10.5.1 Verify the Reassign Contributor picker appears (top-level
+    // assigned contribution + lead/steward viewer + canReassign prop forwarded
+    // through). Pick the admin as the new contributor — currently assigned
+    // to the member.
+    const reassignLabel = changeDlg.locator('.text-subtitle2', { hasText: /Reassign Contributor/i });
+    await expect(reassignLabel).toBeVisible({ timeout: TIMEOUT.short });
+    const reassignInput = changeDlg.getByPlaceholder(/Search community members/i);
+    await reassignInput.click();
+    await reassignInput.fill('Admin');
+    const adminOption = adminPage.locator('.q-menu .q-item', { hasText: /Admin User/i }).first();
+    await expect(adminOption).toBeVisible({ timeout: TIMEOUT.short });
+    await adminOption.click();
+    console.log('[Phase 10] Reassign Contributor picker selected: Admin User');
 
     // 10.6 Submit change
     await changeDlg.getByRole('button', { name: /Submit Change/i }).click();
@@ -1424,7 +1564,12 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(adminPage.locator('.plan-modified-banner')).toBeVisible({ timeout: TIMEOUT.short });
     await expect(adminPage.getByText(/re-signoff required/i)).toBeVisible({ timeout: TIMEOUT.short });
     await expect(adminPage.getByRole('button', { name: /Re-Sign Off Plan/i })).toBeVisible({ timeout: TIMEOUT.short });
-    console.log('[Phase 11] Plan-modified banner visible after milestone edit');
+
+    // The first-time .sign-off-banner must NOT be visible — re-sign-off has
+    // its own banner so the two don't double up (fix in commit on main).
+    await expect(adminPage.locator('.sign-off-banner')).toHaveCount(0);
+
+    console.log('[Phase 11] Plan-modified banner visible after milestone edit (first-time banner hidden)');
 
     // Note: we don't click Re-Sign Off Plan here. The existing SignOffPlan
     // validator requires all contributions to be in 'confirmed' state, which
@@ -1765,6 +1910,100 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     expect(archived.status).toBe('archived');
     console.log('[Phase 17] Project %s archived via DESTROY confirmation', createdProjectId);
   });
+
+  // -----------------------------------------------------------------------
+  // Phase 18: Contributions page — view toggle, scope filters, sections
+  // -----------------------------------------------------------------------
+
+  test('Phase 18: contributions page renders Timeline view by default + flat filter row', async () => {
+    await adminPage.bringToFront();
+
+    // Seed two contributions via API: one with a past deadline so the
+    // Overdue section appears, one with no deadline so the Due Date TBC
+    // section appears. Reuses the existing adminAID.
+    const projResp = await adminPage.request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'E2E Timeline Seed', description: 'Seed for contributions page tests', created_by: adminAID },
+    });
+    expect(projResp.ok()).toBeTruthy();
+    const seedProject: { id: string } = await projResp.json();
+
+    await adminPage.request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: seedProject.id,
+        title: 'E2E Overdue Seed',
+        description: 'Past deadline — should land in Overdue',
+        contribution_type: 'technical',
+        objectives: ['Obj'], deliverables: ['Del'], acceptance_criteria: ['Crit'],
+        created_by: adminAID,
+        deadline: '2025-01-01',
+      },
+    });
+    await adminPage.request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: seedProject.id,
+        title: 'E2E TBC Seed',
+        description: 'No deadline — should land in Due Date TBC',
+        contribution_type: 'technical',
+        objectives: ['Obj'], deliverables: ['Del'], acceptance_criteria: ['Crit'],
+        created_by: adminAID,
+      },
+    });
+    console.log('[Phase 18] Seeded overdue + no-deadline contributions');
+
+    await navigateTo(adminPage, 'Contributions');
+    await waitForSettle(adminPage, 1500);
+
+    // View toggle visible, Timeline is the default selected option.
+    const toggle = adminPage.locator('.view-mode-toggle');
+    await expect(toggle).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // Timeline-mode body present, list-mode body absent.
+    await expect(adminPage.locator('.timeline-view')).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(adminPage.locator('.feed-container')).toHaveCount(0);
+
+    // Flat scope filter row — all 7 pills present.
+    const expectedScopes = ['All', 'Mine', 'Open', 'Assigned', 'In Review', 'Signed Off', 'Archived'];
+    for (const label of expectedScopes) {
+      await expect(adminPage.locator('.filter-pill', { hasText: new RegExp(`^${label}$`, 'i') })).toBeVisible();
+    }
+
+    // Old "My Contributions" section must NOT exist (was removed).
+    await expect(adminPage.locator('.my-contributions-section')).toHaveCount(0);
+
+    // Overdue + TBC sections render thanks to the seeded contributions.
+    await expect(adminPage.locator('.overdue-section')).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(adminPage.locator('.tbc-section')).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 18] Overdue + TBC sections rendered');
+
+    // Toggle to List view.
+    await toggle.getByText('List', { exact: true }).click();
+    await waitForSettle(adminPage, 500);
+    await expect(adminPage.locator('.feed-container')).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(adminPage.locator('.timeline-view')).toHaveCount(0);
+    console.log('[Phase 18] List view active after toggle');
+
+    // Toggle back to Timeline.
+    await toggle.getByText('Timeline', { exact: true }).click();
+    await waitForSettle(adminPage, 500);
+    await expect(adminPage.locator('.timeline-view')).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Mine narrows the view; clicking it should not error out.
+    await adminPage.locator('.filter-pill', { hasText: /^Mine$/i }).click();
+    await waitForSettle(adminPage, 500);
+    await expect(adminPage.locator('.filter-pill.active', { hasText: /^Mine$/i })).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Restore All.
+    await adminPage.locator('.filter-pill', { hasText: /^All$/i }).click();
+    await waitForSettle(adminPage, 500);
+
+    // Cleanup: archive the seed project.
+    await adminPage.request.post(`${BACKEND_URL}/api/v1/projects/${seedProject.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
 });
 
 // ===========================================================================
@@ -1804,6 +2043,86 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
   });
 
   // ── New endpoint validation tests ───────────────────────────────────────
+
+  test('confirm returns 400 when contribution has no deadline', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Deadline Gate Test', description: 'Confirm without deadline test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string } = await projectResp.json();
+
+    const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: project.id,
+        title: 'Needs deadline',
+        description: 'No deadline set — confirm should be rejected',
+        contribution_type: 'technical',
+        objectives: ['Obj'], deliverables: ['Del'], acceptance_criteria: ['Crit'],
+        created_by: adminAID,
+      },
+    });
+    expect(contribResp.ok()).toBeTruthy();
+    const contrib: { id: string } = await contribResp.json();
+
+    const confirmResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/confirm`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+    expect(confirmResp.status()).toBe(400);
+    const body = await confirmResp.json();
+    expect(body.error).toMatch(/due date|deadline/i);
+    console.log('[API] confirm without deadline correctly returned 400');
+
+    // Cleanup
+    await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
+
+  test('reward returns 400 when contribution is not signed off', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Reward Test', description: 'Reward on wrong status test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string } = await projectResp.json();
+
+    const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: project.id,
+        title: 'Not signed off',
+        description: 'Reward should fail on created status',
+        contribution_type: 'technical',
+        objectives: ['Obj'], deliverables: ['Del'], acceptance_criteria: ['Crit'],
+        created_by: adminAID,
+      },
+    });
+    expect(contribResp.ok()).toBeTruthy();
+    const contrib: { id: string } = await contribResp.json();
+
+    const rewardResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/reward`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+    // Status 400 from the service ("must be signed off ..."), the route is
+    // RBAC-gated (403 only if AID lacks the community-admin role).
+    expect([400, 403]).toContain(rewardResp.status());
+    console.log('[API] reward on non-signed-off contribution correctly returned %s', rewardResp.status());
+
+    // Cleanup
+    await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
 
   test('unassign returns 409 when contribution is not in assigned status', async ({ request }) => {
     const health = await request.get(`${BACKEND_URL}/health`);

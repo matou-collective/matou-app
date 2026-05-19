@@ -1459,6 +1459,7 @@ type SubmitEvidenceRequest struct {
 	EvidenceURLs    []string  `json:"evidence_urls,omitempty"`
 	AcceptanceNotes []string  `json:"acceptance_notes,omitempty"`
 	ActualDuration  int       `json:"actual_duration,omitempty"`
+	ActualCost      float64   `json:"actual_cost,omitempty"`
 	TimeReportFile  *FileRef  `json:"time_report_file,omitempty"`
 	AttachmentFiles []FileRef `json:"attachment_files,omitempty"`
 }
@@ -1631,6 +1632,9 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID st
 	if req.ActualDuration > 0 {
 		c.ActualDuration = req.ActualDuration
 	}
+	if req.ActualCost > 0 {
+		c.ActualCost = req.ActualCost
+	}
 	if req.TimeReportFile != nil {
 		c.TimeReportFile = req.TimeReportFile
 	}
@@ -1642,7 +1646,39 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID st
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
+	// Re-aggregate the parent milestone's actual cost so reporting stays in
+	// sync with the contributions inside it.
+	if c.MilestoneID != "" {
+		if err := s.recomputeMilestoneActualCost(ctx, spaceID, c.MilestoneID); err != nil {
+			log.Printf("[Contributions] recomputeMilestoneActualCost %s: %v", c.MilestoneID, err)
+		}
+	}
 	return c, nil
+}
+
+// recomputeMilestoneActualCost sums ActualCost across all non-archived
+// contributions in the milestone and writes it back to the milestone record.
+func (s *Service) recomputeMilestoneActualCost(ctx context.Context, spaceID, milestoneID string) error {
+	ms, err := s.GetMilestone(ctx, spaceID, milestoneID)
+	if err != nil {
+		return fmt.Errorf("loading milestone: %w", err)
+	}
+	var total float64
+	for _, cid := range ms.ContributionIDs {
+		child, err := s.GetContribution(ctx, spaceID, cid)
+		if err != nil || child == nil {
+			continue
+		}
+		if child.Status == ContribArchived {
+			continue
+		}
+		total += child.ActualCost
+	}
+	if ms.ActualCost == total {
+		return nil
+	}
+	ms.ActualCost = total
+	return s.store.Save(spaceID, ms.MilestoneID, "milestone", ms)
 }
 
 // ReviewContribution records a review decision and transitions the contribution accordingly.
@@ -1720,6 +1756,31 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	c.SignedOffBy = userID
 	c.SignedOffAt = &now
 	c.Status = ContribSignedOff
+	c.UpdatedAt = now
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
+// RewardContribution transitions a signed-off contribution to rewarded.
+// Community-admin only — the role check happens at the HTTP layer via
+// ActionRewardContribution.
+func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionID, userID string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribSignedOff {
+		return nil, fmt.Errorf("contribution must be signed off to mark as rewarded, current: %s", c.Status)
+	}
+	if err := ValidateContributionTransition(c.Status, ContribRewarded); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	c.RewardedBy = userID
+	c.RewardedAt = &now
+	c.Status = ContribRewarded
 	c.UpdatedAt = now
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)

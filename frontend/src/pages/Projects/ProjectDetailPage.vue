@@ -188,9 +188,10 @@
 
         <!-- Has milestones -->
         <template v-if="implementationPlan">
-          <!-- Confirmation progress + sign-off (visible whenever plan has contributions and isn't signed off) -->
+          <!-- Confirmation progress + first-time sign-off (hidden once the plan
+               has been signed off before — re-sign-off uses its own banner). -->
           <div
-            v-if="!implementationPlan.signed_off && planContributions.length > 0"
+            v-if="!implementationPlan.signed_off && !planWasModified && planContributions.length > 0"
             class="sign-off-banner"
             :class="{ ready: allContributionsConfirmed }"
           >
@@ -566,6 +567,7 @@
       :milestone-id="editingContribution?.milestone_id"
       :editing="true"
       :contribution="(editingContribution as any)"
+      :can-reassign="perms.canAssignRoles.value || perms.isLead.value || perms.isSteward.value"
       @update="onContributionSave"
     />
 

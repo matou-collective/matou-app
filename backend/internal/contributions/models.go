@@ -395,6 +395,7 @@ type Contribution struct {
 	EstimatedDuration      int                `json:"estimated_duration"`
 	ActualDuration         int                `json:"actual_duration,omitempty"`
 	Budget                 string             `json:"budget,omitempty"`
+	ActualCost             float64            `json:"actual_cost,omitempty"`
 	Deadline               *time.Time         `json:"deadline,omitempty"`
 	CreatedAt              time.Time          `json:"created_at"`
 	CreatedBy              string             `json:"created_by"`
@@ -429,6 +430,8 @@ type Contribution struct {
 	QualityRating          int                `json:"quality_rating,omitempty"`
 	SignedOffBy            string             `json:"signed_off_by,omitempty"`
 	SignedOffAt            *time.Time         `json:"signed_off_at,omitempty"`
+	RewardedBy             string             `json:"rewarded_by,omitempty"`
+	RewardedAt             *time.Time         `json:"rewarded_at,omitempty"`
 
 	// Sharing & offering
 	IsShared              bool                    `json:"is_shared,omitempty"`

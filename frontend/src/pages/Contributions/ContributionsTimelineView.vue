@@ -1,8 +1,8 @@
 <template>
   <div class="timeline-view">
     <!-- Empty state -->
-    <div v-if="!hasAnyDeadlines && overdue.length === 0" class="timeline-empty">
-      No timeline yet — add due dates to your contributions to see them here.
+    <div v-if="!hasAnyDeadlines && overdue.length === 0 && tbc.length === 0" class="timeline-empty">
+      No contributions to show — try a different filter, or add due dates so they appear on the timeline.
     </div>
 
     <template v-else>
@@ -88,6 +88,32 @@
           </div>
         </div>
       </section>
+
+      <!-- Due Date TBC section -->
+      <section v-if="tbc.length > 0" class="tbc-section">
+        <div class="tbc-header">
+          <h3 class="tbc-title">
+            <q-icon name="event_busy" size="20px" />
+            Due Date TBC ({{ tbc.length }})
+          </h3>
+          <button
+            v-if="tbc.length > 6"
+            type="button"
+            class="tbc-toggle"
+            @click="tbcExpanded = !tbcExpanded"
+          >
+            {{ tbcExpanded ? 'Hide' : 'Show' }}
+          </button>
+        </div>
+        <div v-if="tbcExpanded || tbc.length <= 6" class="tbc-grid">
+          <ContributionSlimCard
+            v-for="c in tbc"
+            :key="c.id"
+            :contribution="c"
+            @click="$emit('view-contribution', c)"
+          />
+        </div>
+      </section>
     </template>
   </div>
 </template>
@@ -107,6 +133,7 @@ const props = defineProps<Props>();
 defineEmits<{ (e: 'view-contribution', c: Contribution): void }>();
 
 const overdueExpanded = ref(false);
+const tbcExpanded = ref(false);
 
 const COMPLETED_STATUSES = new Set([
   'signed_off',
@@ -120,6 +147,9 @@ const startOfToday = (): Date => {
   return new Date(t.getFullYear(), t.getMonth(), t.getDate(), 0, 0, 0, 0);
 };
 
+// Overdue = active work with a past deadline. Signed-off / rewarded /
+// archived items aren't "overdue" even if their deadline has passed, so
+// keep the status filter here.
 const overdue = computed(() => {
   const today = startOfToday().getTime();
   return [...props.contributions]
@@ -131,16 +161,34 @@ const overdue = computed(() => {
     .sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime());
 });
 
+// Strip: trust the parent's scope filter. The only thing we route out is
+// active past-deadline items, which land in the Overdue section above.
+// Past-deadline completed items (signed-off etc.) keep their natural week
+// position so the user can scroll Prev to see them.
 const onTimelineContributions = computed(() =>
   props.contributions.filter((c) => {
     if (!c.deadline) return false;
-    if (COMPLETED_STATUSES.has(c.status)) return false;
-    // Overdue contributions live in the overdue section, not the strip.
-    return new Date(c.deadline).getTime() >= startOfToday().getTime();
+    const past = new Date(c.deadline).getTime() < startOfToday().getTime();
+    const stillActive = !COMPLETED_STATUSES.has(c.status);
+    if (past && stillActive) return false;
+    return true;
   }),
 );
 
 const hasAnyDeadlines = computed(() => onTimelineContributions.value.length > 0);
+
+// Due Date TBC = contributions matching the active filter that have no
+// deadline. Trust the parent's scope filter for status — if the user picked
+// "Archived" or "Signed Off", they should land here too.
+const tbc = computed(() =>
+  [...props.contributions]
+    .filter((c) => !c.deadline)
+    .sort((a, b) => {
+      const ca = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const cb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return ca - cb;
+    }),
+);
 
 const bucketed = computed(() => {
   const map = new Map<string, Contribution[]>();
@@ -255,6 +303,55 @@ function formatWeekRange(start: Date): string {
 }
 
 .overdue-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+
+  @media (max-width: 999px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  @media (max-width: 639px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tbc-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tbc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tbc-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--matou-muted-foreground);
+  margin: 0;
+}
+
+.tbc-toggle {
+  background: transparent;
+  border: 1px solid var(--matou-border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  color: var(--matou-foreground);
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--matou-accent);
+  }
+}
+
+.tbc-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;

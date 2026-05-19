@@ -11,28 +11,6 @@
       </button>
     </div>
 
-    <template v-if="viewMode === 'list'">
-      <!-- ── My Contributions ───────────────────────────────────── -->
-      <section v-if="myContributions.length > 0" class="my-contributions-section">
-        <div class="section-header">
-          <h3 class="section-title">My Contributions</h3>
-          <span class="section-count">{{ myContributions.length }}</span>
-        </div>
-        <div class="contributions-list">
-          <ContributionCard
-            v-for="contribution in myContributions"
-            :key="contribution.id"
-            :contribution="contribution"
-            @click="router.push({ name: 'contribution-detail', params: { id: contribution.id } })"
-          />
-        </div>
-      </section>
-
-      <div v-if="myContributions.length > 0" class="section-divider">
-        <h3 class="section-title">All Contributions</h3>
-      </div>
-    </template>
-
     <!-- View mode toggle -->
     <div class="view-mode-row">
       <q-btn-toggle
@@ -43,41 +21,41 @@
         color="white"
         text-color="primary"
         :options="[
-          { label: 'List', value: 'list', icon: 'view_list' },
           { label: 'Timeline', value: 'timeline', icon: 'view_timeline' },
+          { label: 'List', value: 'list', icon: 'view_list' },
         ]"
         class="view-mode-toggle"
       />
     </div>
 
-    <template v-if="viewMode === 'list'">
-      <!-- Filters -->
-      <div class="filter-row">
-        <div class="filter-group">
-          <button
-            v-for="f in statusFilters"
-            :key="f.value"
-            class="filter-pill"
-            :class="{ active: activeStatusFilter === f.value }"
-            @click="activeStatusFilter = f.value"
-          >
-            {{ f.label }}
-          </button>
-        </div>
-
-        <div class="filter-group">
-          <button
-            v-for="f in typeFilters"
-            :key="f.value"
-            class="filter-pill type-pill"
-            :class="{ active: activeTypeFilter === f.value }"
-            @click="activeTypeFilter = f.value"
-          >
-            {{ f.label }}
-          </button>
-        </div>
+    <!-- Filters (apply to both list and timeline) -->
+    <div class="filter-row">
+      <div class="filter-group">
+        <button
+          v-for="f in scopeFilters"
+          :key="f.value"
+          class="filter-pill"
+          :class="{ active: activeScopeFilter === f.value }"
+          @click="activeScopeFilter = f.value"
+        >
+          {{ f.label }}
+        </button>
       </div>
 
+      <div class="filter-group">
+        <button
+          v-for="f in typeFilters"
+          :key="f.value"
+          class="filter-pill type-pill"
+          :class="{ active: activeTypeFilter === f.value }"
+          @click="activeTypeFilter = f.value"
+        >
+          {{ f.label }}
+        </button>
+      </div>
+    </div>
+
+    <template v-if="viewMode === 'list'">
       <!-- Content -->
       <div class="feed-container">
         <div v-if="store.isLoading" class="loading-state">
@@ -110,7 +88,7 @@
 
     <template v-else>
       <ContributionsTimelineView
-        :contributions="timelineContributions"
+        :contributions="filteredContributions"
         @view-contribution="handleViewContribution"
       />
     </template>
@@ -148,48 +126,38 @@ const { isAdmin } = useAdminAccess();
 
 const currentUserId = computed(() => identityStore.aidPrefix ?? '');
 
-// "Mine" = contribution is offered to me OR assigned to me. Excludes archived.
-// Sorted by due date (earliest first; missing deadlines last).
-const myContributions = computed(() => {
-  const me = currentUserId.value;
-  if (!me) return [];
-  const mine = store.contributions.filter((raw) => {
-    const c = raw as typeof raw & { assigned_contributor?: string; offered_to?: string };
-    if (c.status === 'archived') return false;
-    const assigned = c.assigned_contributor_id ?? c.assigned_contributor;
-    if (assigned === me) return true;
-    if (c.offered_to === me) return true;
-    return false;
-  });
-  return [...mine].sort((a, b) => {
-    const da = a.deadline ? new Date(a.deadline).getTime() : Number.POSITIVE_INFINITY;
-    const db = b.deadline ? new Date(b.deadline).getTime() : Number.POSITIVE_INFINITY;
-    if (da !== db) return da - db;
-    const ca = a.created_at ? new Date(a.created_at).getTime() : 0;
-    const cb = b.created_at ? new Date(b.created_at).getTime() : 0;
-    return ca - cb;
-  });
-});
-
 const showCreateDialog = ref(false);
-const activeStatusFilter = ref('open');
 const activeTypeFilter = ref('all');
 
 const VIEW_MODE_STORAGE_KEY = 'matou:contributions:view';
 const storedViewMode = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
 const viewMode = ref<'list' | 'timeline'>(
-  storedViewMode === 'timeline' ? 'timeline' : 'list',
+  storedViewMode === 'list' ? 'list' : 'timeline',
 );
 
 watch(viewMode, (v) => {
   localStorage.setItem(VIEW_MODE_STORAGE_KEY, v);
 });
 
-const statusFilters = [
+const SCOPE_STORAGE_KEY = 'matou:contributions:scope';
+type ScopeFilter = 'all' | 'mine' | 'open' | 'assigned' | 'in_review' | 'signed_off' | 'archived';
+const storedScope = localStorage.getItem(SCOPE_STORAGE_KEY) as ScopeFilter | null;
+const validScopes: ScopeFilter[] = ['all', 'mine', 'open', 'assigned', 'in_review', 'signed_off', 'archived'];
+const activeScopeFilter = ref<ScopeFilter>(
+  storedScope && validScopes.includes(storedScope) ? storedScope : 'all',
+);
+watch(activeScopeFilter, (v) => {
+  localStorage.setItem(SCOPE_STORAGE_KEY, v);
+});
+
+const scopeFilters: { label: string; value: ScopeFilter }[] = [
+  { label: 'All', value: 'all' },
+  { label: 'Mine', value: 'mine' },
   { label: 'Open', value: 'open' },
-  { label: 'Assigned', value: 'in_progress' },
-  { label: 'Needs Review', value: 'needs_review' },
-  { label: 'Completed', value: 'completed' },
+  { label: 'Assigned', value: 'assigned' },
+  { label: 'In Review', value: 'in_review' },
+  { label: 'Signed Off', value: 'signed_off' },
+  { label: 'Archived', value: 'archived' },
 ];
 
 const typeFilters = [
@@ -200,33 +168,61 @@ const typeFilters = [
   { label: 'Community', value: 'community' },
 ];
 
-const OPEN_STATUSES = ['shared'];
-const IN_PROGRESS_STATUSES = ['assigned', 'changed', 'in_progress'];
-const NEEDS_REVIEW_STATUSES = ['needs_review'];
-const COMPLETED_STATUSES = ['approved', 'signed_off', 'rewarded', 'completed'];
+const ASSIGNED_STATUSES = new Set(['assigned', 'changed', 'in_progress']);
+const SIGNED_OFF_STATUSES = new Set(['signed_off', 'rewarded']);
+
+function isMineContribution(c: Contribution, me: string): boolean {
+  const raw = c as typeof c & { assigned_contributor?: string; offered_to?: string };
+  const assigned = raw.assigned_contributor_id ?? raw.assigned_contributor;
+  if (assigned === me) return true;
+  if (raw.offered_to === me) return true;
+  return false;
+}
 
 const filteredContributions = computed(() => {
-  let list = store.contributions;
+  const me = currentUserId.value;
+  let list: Contribution[] = store.contributions;
 
-  // Status filter
-  if (activeStatusFilter.value === 'open') {
-    list = list.filter(c => OPEN_STATUSES.includes(c.status));
-  } else if (activeStatusFilter.value === 'in_progress') {
-    list = list.filter(c => IN_PROGRESS_STATUSES.includes(c.status));
-  } else if (activeStatusFilter.value === 'needs_review') {
-    list = list.filter(c => NEEDS_REVIEW_STATUSES.includes(c.status));
-  } else if (activeStatusFilter.value === 'completed') {
-    list = list.filter(c => COMPLETED_STATUSES.includes(c.status));
+  switch (activeScopeFilter.value) {
+    case 'mine':
+      // Assigned to me OR offered to me. Excludes archived.
+      list = list.filter((c) => c.status !== 'archived' && me && isMineContribution(c, me));
+      break;
+    case 'all': {
+      // Hide planning ('confirmed'), hide private offers to other users,
+      // and hide archived (archived has its own chip).
+      list = list.filter((c) => {
+        if (c.status === 'archived') return false;
+        if (c.status === 'confirmed') return false;
+        const raw = c as typeof c & { offered_to?: string };
+        if (c.status === 'offered' && raw.offered_to && raw.offered_to !== me) return false;
+        return true;
+      });
+      break;
+    }
+    case 'open':
+      list = list.filter((c) => c.status === 'shared');
+      break;
+    case 'assigned':
+      list = list.filter((c) => ASSIGNED_STATUSES.has(c.status));
+      break;
+    case 'in_review':
+      list = list.filter((c) => c.status === 'needs_review');
+      break;
+    case 'signed_off':
+      list = list.filter((c) => SIGNED_OFF_STATUSES.has(c.status));
+      break;
+    case 'archived':
+      list = list.filter((c) => c.status === 'archived');
+      break;
   }
 
-  // Type filter
   if (activeTypeFilter.value !== 'all') {
-    list = list.filter(c => c.contribution_type === activeTypeFilter.value);
+    list = list.filter((c) => c.contribution_type === activeTypeFilter.value);
   }
 
-  // Default sort: earliest due date first; contributions without a deadline
-  // fall to the bottom. Stable tie-breaker on created_at so repeated renders
-  // don't shuffle.
+  // Default sort: earliest due date first; missing deadlines fall to the
+  // bottom. Stable tie-breaker on created_at.
   return [...list].sort((a, b) => {
     const da = a.deadline ? new Date(a.deadline).getTime() : Number.POSITIVE_INFINITY;
     const db = b.deadline ? new Date(b.deadline).getTime() : Number.POSITIVE_INFINITY;
@@ -236,13 +232,6 @@ const filteredContributions = computed(() => {
     return ca - cb;
   });
 });
-
-// Timeline uses Mine/All scope but no status/type filters.
-// Since this page has no Mine/All toggle (Mine always shows at top), we
-// pass all non-archived contributions so the timeline reflects everyone's work.
-const timelineContributions = computed(() =>
-  store.contributions.filter((c) => c.status !== 'archived'),
-);
 
 function handleViewContribution(c: Contribution) {
   void router.push({ name: 'contribution-detail', params: { id: c.id } });
@@ -423,5 +412,10 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
   border: 1px solid var(--matou-border);
   border-radius: 8px;
   overflow: hidden;
+
+  :deep(.q-btn) {
+    min-width: 140px;
+    padding: 8px 24px;
+  }
 }
 </style>

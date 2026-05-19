@@ -14,6 +14,7 @@ import {
   submitEvidence as apiSubmitEvidence,
   submitReview as apiSubmitReview,
   signOffContribution as apiSignOff,
+  rewardContribution as apiReward,
   createChildContribution as apiCreateChild,
   approveSub as apiApproveSub,
   archiveContribution as apiArchiveContrib,
@@ -245,6 +246,18 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  async function reward(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiReward(id);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Mark as rewarded failed';
+      throw e;
+    }
+  }
+
   async function createChild(parentId: string, req: CreateContributionRequest) {
     error.value = null;
     try {
@@ -370,6 +383,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     submitEvidence,
     review,
     signOff,
+    reward,
     createChild,
     approveSub,
     archive,

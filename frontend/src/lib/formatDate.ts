@@ -10,10 +10,14 @@ function toDate(input: DateInput): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** Short date in the user's locale (e.g. en-US: "5/18/2026", en-GB: "18/05/2026"). */
+/**
+ * Locale-friendly medium date (e.g. en-US: "May 18, 2026",
+ * en-GB: "18 May 2026"). Uses month names rather than numbers so it
+ * reads unambiguously regardless of host locale.
+ */
 export function formatDate(input: DateInput): string {
   const d = toDate(input);
-  return d ? d.toLocaleDateString() : '';
+  return d ? d.toLocaleDateString(undefined, { dateStyle: 'medium' }) : '';
 }
 
 /** Date + time in the user's locale. */

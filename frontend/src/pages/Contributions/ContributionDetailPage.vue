@@ -39,6 +39,7 @@
       :milestone-id="contribution?.milestone_id"
       :editing="true"
       :contribution="(contribution as any)"
+      :can-reassign="isKeriAdmin || isProjectLead || isProjectSteward"
       @update="handleEditSubmit"
     />
 

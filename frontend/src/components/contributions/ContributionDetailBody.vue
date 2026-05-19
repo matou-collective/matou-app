@@ -83,6 +83,7 @@
           />
         </div>
 
+
         <!-- ── Status panels ─────────────────────────────── -->
 
         <!-- Offered panel -->
@@ -228,6 +229,10 @@
           <div v-if="canSeeBudgetForThis" class="stat-card">
             <div class="stat-label">Budget</div>
             <div class="stat-value">{{ contribution.budget || '—' }}</div>
+          </div>
+          <div v-if="canSeeBudgetForThis && contribution.actual_cost" class="stat-card">
+            <div class="stat-label">Actual Cost</div>
+            <div class="stat-value">${{ contribution.actual_cost }}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Due Date</div>
@@ -496,16 +501,31 @@
             </div>
           </div>
 
-          <!-- Actual Hours Worked -->
+          <!-- Actual Hours Worked + Actual Cost -->
           <div class="completion-field">
-            <div class="completion-field-label">Actual Hours Worked</div>
-            <q-input
-              v-model.number="evidenceForm.actual_duration"
-              type="number"
-              outlined
-              dense
-              min="0"
-            />
+            <div class="actuals-row">
+              <div class="actuals-col">
+                <div class="completion-field-label">Actual Hours Worked</div>
+                <q-input
+                  v-model.number="evidenceForm.actual_duration"
+                  type="number"
+                  outlined
+                  dense
+                  min="0"
+                />
+              </div>
+              <div class="actuals-col">
+                <div class="completion-field-label">Actual Cost</div>
+                <q-input
+                  v-model.number="evidenceForm.actual_cost"
+                  type="number"
+                  outlined
+                  dense
+                  min="0"
+                  prefix="$"
+                />
+              </div>
+            </div>
           </div>
 
           <!-- Submit / Cancel -->
@@ -728,6 +748,28 @@
             <div v-if="contribution.signed_off_by" class="sign-off-sub">
               by {{ profilesStore.profilesByAid[contribution.signed_off_by]?.displayName ?? contribution.signed_off_by?.slice(0, 12) + '...' }}
               <span v-if="contribution.signed_off_at">on {{ formatDate(contribution.signed_off_at) }}</span>
+            </div>
+          </div>
+          <q-btn
+            v-if="canRewardNow"
+            no-caps
+            color="primary"
+            label="Mark as Rewarded"
+            icon="redeem"
+            class="q-ml-auto"
+            :loading="actionLoading === 'reward'"
+            @click="handleReward"
+          />
+        </div>
+
+        <!-- Rewarded confirmation -->
+        <div v-if="contribution.status === 'rewarded'" class="content-section signed-off-panel">
+          <Award class="sign-off-icon" />
+          <div>
+            <div class="sign-off-title">Rewarded</div>
+            <div v-if="contribution.rewarded_by" class="sign-off-sub">
+              by {{ profilesStore.profilesByAid[contribution.rewarded_by]?.displayName ?? contribution.rewarded_by?.slice(0, 12) + '...' }}
+              <span v-if="contribution.rewarded_at">on {{ formatDate(contribution.rewarded_at) }}</span>
             </div>
           </div>
         </div>
@@ -1055,6 +1097,7 @@
     :editing="true"
     :change-request="true"
     :contribution="contribution"
+    :can-reassign="canReassignContribution"
     @change="handleChange"
   />
 </template>
@@ -1189,6 +1232,7 @@ const evidenceForm = ref({
   completion_notes: '',
   evidence_urls: [''],
   actual_duration: undefined as number | undefined,
+  actual_cost: undefined as number | undefined,
   acceptance_notes: [] as string[],
   time_report_files: [] as AttachedFile[],
   attachment_files: [] as AttachedFile[],
@@ -1428,6 +1472,10 @@ const canSubmitEvidenceNow = computed(() =>
 );
 const canReviewNow = computed(() => workflow.canReview(props.contribution, role.value));
 const canSignOffNow = computed(() => workflow.canSignOff(props.contribution, role.value));
+// Reward = community-admin only, on a signed-off contribution.
+const canRewardNow = computed(
+  () => props.contribution.status === 'signed_off' && role.value === 'community_admin',
+);
 const canAddSub = computed(() =>
   workflow.canAddSubContribution(props.contribution, props.currentUserId, role.value),
 );
@@ -1436,6 +1484,17 @@ const canManageSubAssignment = computed(() => {
   if (!isSubContribution.value) return false;
   if (!(isLead.value || isSteward.value)) return false;
   return !['signed_off', 'rewarded', 'archived'].includes(props.contribution.status);
+});
+
+// Reassign on a top-level assigned contribution is exposed inside the edit
+// dialog (CreateContributionDialog) rather than as a standalone panel. This
+// flag is forwarded as `canReassign` to the dialog so the Assigned Contributor
+// picker becomes visible when appropriate.
+const canReassignContribution = computed(() => {
+  if (isSubContribution.value) return false;
+  if (!(isLead.value || isSteward.value)) return false;
+  if (!assignedAid.value) return false;
+  return ['assigned', 'changed'].includes(props.contribution.status);
 });
 const canChangeNow = computed(() =>
   workflow.canChange(props.contribution, props.currentUserId, role.value),
@@ -1725,13 +1784,14 @@ async function handleSubmitEvidence() {
       completion_notes: evidenceForm.value.completion_notes.trim(),
       evidence_urls: evidenceForm.value.evidence_urls.filter((u) => u.trim()),
       actual_duration: evidenceForm.value.actual_duration,
+      actual_cost: evidenceForm.value.actual_cost,
       acceptance_notes: evidenceForm.value.acceptance_notes.filter((n) => n.trim()),
       time_report_file: evidenceForm.value.time_report_files[0] ? toBackendFileRef(evidenceForm.value.time_report_files[0]) as any : undefined,
       attachment_files: evidenceForm.value.attachment_files.length ? evidenceForm.value.attachment_files.map(f => toBackendFileRef(f)) as any : undefined,
     });
     $q.notify({ type: 'positive', message: 'Submitted for review!' });
     showEvidenceForm.value = false;
-    evidenceForm.value = { completion_notes: '', evidence_urls: [''], actual_duration: undefined, acceptance_notes: [], time_report_files: [], attachment_files: [] };
+    evidenceForm.value = { completion_notes: '', evidence_urls: [''], actual_duration: undefined, actual_cost: undefined, acceptance_notes: [], time_report_files: [], attachment_files: [] };
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Submission failed' });
@@ -1768,6 +1828,19 @@ async function handleSignOff() {
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Sign off failed' });
+  } finally {
+    actionLoading.value = null;
+  }
+}
+
+async function handleReward() {
+  actionLoading.value = 'reward';
+  try {
+    const updated = await store.reward(props.contribution.id);
+    $q.notify({ type: 'positive', message: 'Contribution marked as rewarded.' });
+    emit('update', updated as unknown as Contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to mark as rewarded' });
   } finally {
     actionLoading.value = null;
   }
@@ -2714,6 +2787,17 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   font-weight: 600;
   color: var(--matou-foreground);
   margin-bottom: 6px;
+}
+
+.actuals-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.actuals-col {
+  display: flex;
+  flex-direction: column;
 }
 
 .criterion-block {

@@ -79,9 +79,14 @@
           <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
         </div>
 
-        <!-- Contributor picker (sub-create mode and sub-edit mode) -->
-        <div v-if="parentContributionId || (editing && contribution?.parent_contribution)">
-          <div class="text-subtitle2 q-mb-sm">Assigned Contributor</div>
+        <!-- Contributor picker (sub-create mode, sub-edit mode, and
+             top-level reassign when the contribution is already assigned). -->
+        <div
+          v-if="parentContributionId || (editing && contribution?.parent_contribution) || showReassignPicker"
+        >
+          <div class="text-subtitle2 q-mb-sm">
+            {{ showReassignPicker ? 'Reassign Contributor' : 'Assigned Contributor' }}
+          </div>
           <q-select
             v-model="form.assigned_contributor_id"
             :options="contributorOptions"
@@ -96,7 +101,9 @@
             placeholder="Search community members"
           />
           <div class="text-caption text-grey-6 q-mt-xs">
-            Defaults to the parent's contributor when known. Leave blank to assign later.
+            {{ showReassignPicker
+              ? 'Pick a different community member. The contribution will move back to "changed" so they can re-confirm.'
+              : 'Defaults to the parent\'s contributor when known. Leave blank to assign later.' }}
           </div>
         </div>
 
@@ -344,6 +351,13 @@ interface Props {
   changeRequest?: boolean;
   contribution?: Contribution | null;
   standalone?: boolean;
+  /**
+   * When true and editing a top-level contribution that already has an
+   * assignee, the Assigned Contributor picker becomes editable so a
+   * lead/steward can reassign. Parent is responsible for the lead/steward
+   * + status gate.
+   */
+  canReassign?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -356,6 +370,7 @@ const props = withDefaults(defineProps<Props>(), {
   changeRequest: false,
   contribution: null,
   standalone: false,
+  canReassign: false,
 });
 
 const emit = defineEmits<{
@@ -485,6 +500,20 @@ const changeReason = ref('');
 const canSeeBudgetForThis = computed(() =>
   budgetAccess.canSeeBudget({ project_id: props.projectId || form.value.project_id }),
 );
+
+// Show the Reassign picker only when editing a top-level contribution that
+// (a) the parent says is reassignable AND (b) is in a status where a swap
+// is meaningful AND (c) already has an assignee.
+const showReassignPicker = computed(() => {
+  if (!props.editing) return false;
+  if (!props.canReassign) return false;
+  const c = props.contribution;
+  if (!c) return false;
+  if (c.parent_contribution) return false;
+  if (!['assigned', 'changed'].includes(c.status)) return false;
+  const currentAid = c.assigned_contributor_id ?? c.assigned_contributor;
+  return !!currentAid;
+});
 
 const isValid = computed(() => {
   const baseValid =
