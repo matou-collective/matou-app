@@ -928,7 +928,14 @@ export class KERIClient {
       `[KERIClient] adoptOrgWitnesses: rotating ${orgName} to adopt ${targetWits.length} witnesses (toad=${toad})`,
     );
 
-    // Refresh master state — same pattern as addMemberRound1/Round2.
+    // Pre-rotate master so the next-key it committed to at group inception
+    // becomes the current signing key. Without this, the group rotation we
+    // submit below has k=old-k which fails to satisfy the group's prior n
+    // commitment ("MissingSignatureError: Failure satisfying prior nsith=1").
+    // Same pattern as addMemberRound1/Round2.
+    await this.rotatePersonalAid(masterAidName);
+
+    // Refresh master state after the pre-rotation.
     const masterAid = await this.client.identifiers().get(masterAidName);
     const masterQ = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
     const masterRes = await this.client.operations().wait(masterQ, { signal: AbortSignal.timeout(30000) });
