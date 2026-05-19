@@ -172,12 +172,22 @@ test.describe.serial('Registration Approval Flow', () => {
 
     // Migrate pre-existing orgs that were created without witnesses
     // (idempotent — no-op when the banner isn't rendered).
+    //
+    // Wait up to 15s for the banner to appear: the dashboard's onMounted
+    // runs refreshOrgWitnesses asynchronously after loginWithMnemonic
+    // returns, so an immediate isVisible() check fires before the KERIA
+    // query has populated witnessCount. Fresh orgs (no migration needed)
+    // pay the 15s wait once per test run — acceptable.
     const banner = adminPage.locator('[data-test="witness-adoption-banner"]');
-    const bannerVisible = await banner.isVisible().catch(() => false);
+    const bannerVisible = await banner
+      .waitFor({ state: 'visible', timeout: 15_000 })
+      .then(() => true)
+      .catch(() => false);
     if (bannerVisible) {
       console.log('[Test] Pre-existing org has no witnesses — adopting via banner...');
       await banner.getByRole('button', { name: /adopt witnesses/i }).click();
-      await expect(banner).not.toBeVisible({ timeout: 90_000 });
+      // Bump from 90s to 120s — witness receipts on slow networks can take >60s.
+      await expect(banner).not.toBeVisible({ timeout: 120_000 });
       console.log('[Test] Org witnesses adopted');
     }
   });
