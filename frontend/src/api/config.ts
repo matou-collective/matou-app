@@ -97,6 +97,13 @@ export type ConfigResult =
  * - { status: 'not_configured' } - Server says no org set up yet
  * - { status: 'server_unreachable', cached } - Can't reach server, returns cached config if available
  */
+// A config is only usable for credential operations if it has a registry id.
+// We treat configs missing this field as invalid so the next source is tried —
+// this is what protected against a corrupted local org-config.yaml in prod.
+function isUsableConfig(config: OrgConfig | null | undefined): config is OrgConfig {
+  return !!config?.organization?.aid && !!config?.registry?.id;
+}
+
 export async function fetchOrgConfig(): Promise<ConfigResult> {
   // Try backend first (new unified endpoint)
   try {
@@ -109,16 +116,16 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     if (response.ok) {
       const rawConfig = await response.json() as OrgConfig;
       const config = normalizeOrgConfig(rawConfig);
-      orgConfigCache = config;
-      orgConfigFetchedAt = Date.now();
-      await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
-      console.log('[Config] Fetched config from backend for:', config.organization.name);
-      return { status: 'configured', config };
-    }
-
-    if (response.status === 404) {
+      if (isUsableConfig(config)) {
+        orgConfigCache = config;
+        orgConfigFetchedAt = Date.now();
+        await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
+        console.log('[Config] Fetched config from backend for:', config.organization.name);
+        return { status: 'configured', config };
+      }
+      console.warn('[Config] Backend returned incomplete config (missing registry); falling through to config server');
+    } else if (response.status === 404) {
       console.log('[Config] Backend not configured, trying config server...');
-      // Don't return yet - fall through to try config server
     }
   } catch (err) {
     console.warn('[Config] Backend unreachable, trying config server:', err);
@@ -134,6 +141,10 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
     if (response.ok) {
       const rawConfig = await response.json() as OrgConfig;
       const config = normalizeOrgConfig(rawConfig);
+      if (!isUsableConfig(config)) {
+        console.warn('[Config] Config server returned incomplete config (missing registry)');
+        return { status: 'not_configured' };
+      }
       orgConfigCache = config;
       orgConfigFetchedAt = Date.now();
       await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));

@@ -6,7 +6,7 @@ import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
-import { createOrUpdateProfile } from 'src/lib/api/client';
+import { createOrUpdateProfile, getProfileById } from 'src/lib/api/client';
 import { ENDORSEMENT_SCHEMA_SAID, MEMBERSHIP_SCHEMA_SAID } from './useAdminActions';
 import { getOrCreatePersonalRegistry } from 'src/lib/keri/registry';
 
@@ -144,15 +144,15 @@ export function useEndorsements() {
           message: message || undefined,
         };
 
+        // Read from backend, not the frontend cache — createOrUpdateProfile
+        // is full-replace + required-field-validating, so a stale or unloaded
+        // cache would silently drop the endorsement on validation failure.
         const profileId = `SharedProfile-${applicantAid}`;
-        const currentProfile = profilesStore.communityProfiles.find(p => {
-          const data = (p.data as Record<string, unknown>) || {};
-          return data.aid === applicantAid || (p.id as string)?.includes(applicantAid);
-        });
-        const currentData = (currentProfile?.data as Record<string, unknown>) || {};
+        const existing = await getProfileById('SharedProfile', profileId);
+        const currentData = (existing?.data || {}) as Record<string, unknown>;
         const existingEndorsements = (currentData.endorsements as EndorsementRecord[]) || [];
 
-        await createOrUpdateProfile(
+        const result = await createOrUpdateProfile(
           'SharedProfile',
           {
             ...currentData,
@@ -160,6 +160,9 @@ export function useEndorsements() {
           },
           { id: profileId },
         );
+        if (!result.success) {
+          console.warn('[Endorsements] SharedProfile update returned error:', result.error);
+        }
 
         // 7. Refresh profiles
         await profilesStore.loadCommunityProfiles();
