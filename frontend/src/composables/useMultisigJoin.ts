@@ -10,6 +10,14 @@ import { secureStorage } from 'src/lib/secureStorage';
 import { useKERINotificationService } from './useKERINotificationService';
 
 const MULTISIG_ROT_ROUTE = '/multisig/rot';
+// When admin pre-rotates between rounds and immediately sends a /multisig/rot,
+// the receiver's KERIA doesn't yet have admin's new key state and rejects the
+// EXN as "sender not in kevers". The keria-patches `exchanger_patch.py` adds
+// /multisig/rot to its pending-notify list so the partial-signed escrow creates
+// a notification we can react to here — by resolving admin's OOBI to push the
+// new KEL into kevers. KERIA's escrow processor then retries the EXN and the
+// normal /multisig/rot notification fires.
+const MULTISIG_ROT_PENDING_ROUTE = '/exn/multisig/rot/pending';
 
 export function useMultisigJoin() {
   const keriClient = useKERIClient();
@@ -99,20 +107,54 @@ export function useMultisigJoin() {
     }
   }
 
+  /**
+   * Resolve the sender's OOBI for any pending /multisig/rot notifications.
+   * This pushes the sender's latest KEL into KERIA's kevers, allowing KERIA's
+   * escrow processor to retry the EXN and convert it into a normal
+   * /multisig/rot notification on the next cycle.
+   */
+  async function resolvePendingMultisigSenders(): Promise<void> {
+    const client = keriClient.getSignifyClient();
+    if (!client) return;
+
+    const allNotifications = notificationService.notifications.value;
+    const pending = allNotifications.filter(
+      n => n.a?.r === MULTISIG_ROT_PENDING_ROUTE && !n.r,
+    );
+    if (pending.length === 0) return;
+    console.log(`[MultisigJoin] Resolving ${pending.length} pending /multisig/rot sender(s)`);
+
+    const cesrUrl = keriClient.getCesrUrl();
+    for (const notification of pending) {
+      const senderAid = notification.a?.i as string | undefined;
+      if (!senderAid) continue;
+      try {
+        await keriClient.resolveOOBI(`${cesrUrl}/oobi/${senderAid}`, undefined, 30000);
+        console.log(`[MultisigJoin] Resolved sender ${senderAid.slice(0, 12)} for pending /multisig/rot`);
+        await keriClient.markNotificationRead(notification.i);
+      } catch (err) {
+        console.warn(`[MultisigJoin] Failed to resolve pending sender ${senderAid.slice(0, 12)}:`, err);
+      }
+    }
+  }
+
   function startPolling(interval?: number): void {
     if (stopWatcher) return;
 
     console.log('[MultisigJoin] Starting watch for /multisig/rot...');
 
     // Check immediately
-    checkAndJoinMultisig().then(joined => {
+    (async () => {
+      await resolvePendingMultisigSenders();
+      const joined = await checkAndJoinMultisig();
       if (joined) stopPolling();
-    });
+    })();
 
     // React to service fetches
     stopWatcher = watch(
       () => notificationService.lastFetchTime.value,
       async () => {
+        await resolvePendingMultisigSenders();
         const joined = await checkAndJoinMultisig();
         if (joined) stopPolling();
       },

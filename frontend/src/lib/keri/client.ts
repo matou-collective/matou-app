@@ -948,6 +948,10 @@ export class KERIClient {
       toad,
     });
     const rotOp = await rot.op();
+    // KERIA reports done=false for the lifetime of witness-receipt gathering
+    // (verified empirically — receipts can take >30s on slow infra). The
+    // rotation event itself lands locally well before then, so we poll
+    // briefly then fall through to a direct state check below.
     if (!rotOp?.done) {
       let done = false;
       for (let i = 0; i < 10; i++) {
@@ -1119,6 +1123,16 @@ export class KERIClient {
 
     // (a) Pre-rotate master again.
     await this.rotatePersonalAid(masterAidName);
+
+    // (a.5) Give admin's witnesses time to publish the new key state. When the
+    // member's KERIA receives the multisig EXN (signed with admin's new sn)
+    // it queues a query of admin's witnesses to fill in the missing KEL. If
+    // we POST the EXN immediately, that query races with witness publication
+    // and lands the EXN in partial-signed escrow indefinitely (documented in
+    // MULTISIG-POC-FINDINGS.md item #4). 8s is empirically enough for the
+    // local witness-demo network.
+    console.log('[KERIClient] addMemberRound2: waiting 8s for admin witness publication...');
+    await new Promise(r => setTimeout(r, 8_000));
 
     // (b) Query both refreshed states.
     const masterAid = await this.client.identifiers().get(masterAidName);

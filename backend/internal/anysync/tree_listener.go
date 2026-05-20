@@ -105,14 +105,25 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 		return nil
 	}
 
-	// Only process chat and contribution system types — profiles/credentials are handled elsewhere
+	// Profile types are processed but DO NOT use the FreshTreeReader fallback —
+	// they fire frequently during initial sync (before the receiver's ACL has
+	// caught up and the read key is available), and the fallback's extra tree
+	// lock would contend with the JoinCommunity → WaitForSync path. Best-effort
+	// state-build only; if it fails, skip silently and let the next listener
+	// fire after the keyring catches up.
+	isProfileType := objectType == "SharedProfile" || objectType == "CommunityProfile"
+
+	// Only process chat, contribution, and profile types — credentials are handled elsewhere
 	switch objectType {
 	case "ChatChannel", "ChatMessage", "MessageReaction":
-		// proceed
+		// proceed with full handling (incl. FreshTreeReader fallback)
 	case TypeProject, TypeImplementationPlan, TypeContribution, TypeMilestone,
 		TypeProposal, TypeDecisionPlan, TypeGovernanceAction, TypeEndorsement,
 		"proposal_comment", "contribution_comment", "project_comment":
-		// proceed
+		// proceed with full handling
+	case "SharedProfile", "CommunityProfile":
+		// proceed — peers need SSE for new registrations + role changes so the
+		// UI live-updates without depending on a periodic poll. Best-effort only.
 	default:
 		l.seeded = true
 		return nil
@@ -121,6 +132,13 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	// Build the full state from the tree (tree lock is held by caller)
 	state, err := BuildState(tree, objectID, objectType)
 	if err != nil {
+		if isProfileType {
+			// Best-effort for profiles: just skip and let a later listener fire
+			// once the ACL has propagated and the read key is available.
+			l.seeded = true
+			return nil
+		}
+
 		log.Printf("[TreeUpdateListener] BuildState failed for %s: %v (treeId=%s, len=%d), trying fresh tree",
 			objectID, err, tree.Id(), tree.Len())
 
@@ -163,8 +181,8 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	// Convert state to payload
 	p := stateToPayload(state, tree.Id())
 
-	// Persist to store
-	if l.persister != nil {
+	// Persist to store — skip for profile types (persister is ChatPersister).
+	if l.persister != nil && !isProfileType {
 		if err := l.persister.PersistChatObject(ctx, p); err != nil {
 			fmt.Printf("[TreeUpdateListener] persist failed for %s: %v\n", p.ID, err)
 		}
@@ -435,6 +453,25 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 				"treeId":      p.TreeID,
 				"proposal_id": data.ProposalID,
 				"change":      changeLabel(existed),
+				"source":      "p2p",
+			},
+		})
+
+	case "SharedProfile", "CommunityProfile":
+		var data struct {
+			AID         string `json:"aid"`
+			DisplayName string `json:"displayName"`
+			Status      string `json:"status"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "profile:updated",
+			Data: map[string]interface{}{
+				"profileId":   p.ID,
+				"profileType": p.Type,
+				"memberAid":   data.AID,
+				"displayName": data.DisplayName,
+				"status":      data.Status,
 				"source":      "p2p",
 			},
 		})

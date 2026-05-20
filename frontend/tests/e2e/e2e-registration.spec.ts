@@ -910,8 +910,16 @@ test.describe.serial('Registration Approval Flow', () => {
 
       // Admin navigates to dashboard and opens User1's profile
       await adminPage.reload();
+      // After reload, race between the dashboard rendering or the splash's
+      // Enter Community button appearing (splash can take 10–20s to load).
+      const enterCommunityBtn = adminPage.getByRole('button', { name: /enter community/i });
       const allMembersCard = adminPage.locator('.members-card');
-      await expect(allMembersCard).toBeVisible({ timeout: TIMEOUT.medium });
+      await Promise.race([
+        allMembersCard.waitFor({ state: 'visible', timeout: TIMEOUT.long }),
+        enterCommunityBtn.waitFor({ state: 'visible', timeout: TIMEOUT.long })
+          .then(() => enterCommunityBtn.click()),
+      ]);
+      await expect(allMembersCard).toBeVisible({ timeout: TIMEOUT.long });
       const user1Name = accounts.member!.name;
       const user1CardOnAdmin = allMembersCard.locator('.profile-card').filter({ hasText: user1Name });
       await expect(user1CardOnAdmin).toBeVisible({ timeout: TIMEOUT.medium });
@@ -923,15 +931,20 @@ test.describe.serial('Registration Approval Flow', () => {
 
       // Click the role badge (shows current role e.g. "Member") to open ChangeRoleModal.
       // canChangeRole is true for stewards viewing another member.
-      const roleBadge = upgradeModal.locator('span').filter({ hasText: /^Member$/ }).first();
+      // Match by the cursor-pointer class — the badge is the only clickable span
+      // inside the modal with that styling, and we don't have to worry about
+      // whitespace in the inner text or matching other text-bearing spans.
+      const roleBadge = upgradeModal.locator('span.cursor-pointer').first();
       await expect(roleBadge).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(roleBadge).toContainText('Member', { timeout: TIMEOUT.short });
       await roleBadge.click();
 
-      // ChangeRoleModal should now be open — locate by its "Change Role" header
+      // ChangeRoleModal should now be open — locate by its "Change Role" header.
+      // Wait a tick for Vue to render the new modal before asserting.
       const changeRoleModal = adminPage.locator('.modal-content', {
         has: adminPage.locator('h3', { hasText: 'Change Role' }),
       });
-      await expect(changeRoleModal.getByText('Change Role')).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(changeRoleModal.getByText('Change Role')).toBeVisible({ timeout: TIMEOUT.medium });
       await changeRoleModal.locator('label').filter({ hasText: 'Community Steward' }).click();
 
       // Confirm the upgrade
@@ -968,7 +981,14 @@ test.describe.serial('Registration Approval Flow', () => {
       // and recognises the new Community Steward credential.
       console.log('[Test] Reloading User1 page to pick up new steward credential...');
       await user1Page.reload();
-      await expect(user1Page.locator('.members-card')).toBeVisible({ timeout: TIMEOUT.medium });
+      const user1EnterBtn = user1Page.getByRole('button', { name: /enter community/i });
+      const user1MembersCardLoc = user1Page.locator('.members-card');
+      await Promise.race([
+        user1MembersCardLoc.waitFor({ state: 'visible', timeout: TIMEOUT.long }),
+        user1EnterBtn.waitFor({ state: 'visible', timeout: TIMEOUT.long })
+          .then(() => user1EnterBtn.click()),
+      ]);
+      await expect(user1MembersCardLoc).toBeVisible({ timeout: TIMEOUT.long });
       console.log('[Test] User1 dashboard reloaded');
 
       // ================================================================
