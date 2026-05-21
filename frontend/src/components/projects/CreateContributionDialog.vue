@@ -80,45 +80,18 @@
         </div>
 
         <!-- Contributor picker (sub-create mode, sub-edit mode, and
-             top-level reassign when the contribution is already assigned).
-             Card-list style — matches the Offer Contribution picker. -->
+             top-level reassign when the contribution is already assigned). -->
         <div
           v-if="parentContributionId || (editing && contribution?.parent_contribution) || showReassignPicker"
         >
           <div class="text-subtitle2 q-mb-sm">
             {{ showReassignPicker ? 'Reassign Contributor' : 'Assigned Contributor' }}
           </div>
-          <q-input
-            v-model="contributorSearch"
-            outlined
-            dense
-            placeholder="Search members..."
-            class="q-mb-sm"
-          >
-            <template #prepend>
-              <q-icon name="search" />
-            </template>
-          </q-input>
-          <div class="contributor-list">
-            <div
-              v-for="m in filteredContributors"
-              :key="m.value"
-              class="contributor-row"
-              :class="{ selected: form.assigned_contributor_id === m.value }"
-              @click="selectContributor(m.value)"
-            >
-              <div class="contributor-name">{{ m.label }}</div>
-              <q-icon
-                v-if="form.assigned_contributor_id === m.value"
-                name="check_circle"
-                color="primary"
-                size="18px"
-              />
-            </div>
-            <div v-if="filteredContributors.length === 0" class="contributor-empty">
-              No members found
-            </div>
-          </div>
+          <MemberPicker
+            v-model="form.assigned_contributor_id"
+            :members="contributorMembers"
+            allow-toggle
+          />
           <div class="text-caption text-grey-6 q-mt-xs">
             {{ showReassignPicker
               ? 'Pick a different community member. The contribution will move back to "changed" so they can re-confirm.'
@@ -378,6 +351,8 @@ import type { Contribution } from 'src/types/projects';
 import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
+import MemberPicker from 'src/components/common/MemberPicker.vue';
+import type { MemberOption } from 'src/components/common/MemberPicker.vue';
 
 interface Props {
   modelValue: boolean;
@@ -441,35 +416,17 @@ const projectOptions = computed(() =>
     .map((p) => ({ label: p.title, value: p.id })),
 );
 
-interface ContributorOption {
-  label: string;
-  value: string;
-}
-
-const allContributorOptions = computed<ContributorOption[]>(() =>
+const contributorMembers = computed<MemberOption[]>(() =>
   profilesStore.communityProfiles
     .map((p) => {
-      const aid = (p.data?.aid as string) ?? '';
-      const name = (p.data?.displayName as string) ?? aid.slice(0, 12) + '...';
+      const id = (p.data?.aid as string) ?? '';
+      const name = (p.data?.displayName as string) ?? id.slice(0, 12) + '...';
       const status = (p.data?.status as string) ?? '';
-      return { label: name, value: aid, status };
+      return { id, name, status };
     })
-    .filter((o) => o.value && o.status !== 'removed' && o.status !== 'pending')
-    .map(({ label, value }) => ({ label, value })),
+    .filter((m) => m.id && m.status !== 'removed' && m.status !== 'pending')
+    .map(({ id, name }) => ({ id, name })),
 );
-
-const contributorSearch = ref('');
-
-const filteredContributors = computed<ContributorOption[]>(() => {
-  const q = contributorSearch.value.trim().toLowerCase();
-  if (!q) return allContributorOptions.value;
-  return allContributorOptions.value.filter((o) => o.label.toLowerCase().includes(q));
-});
-
-function selectContributor(aid: string) {
-  // Re-clicking the selected row clears the selection (matches "no contributor assigned").
-  form.value.assigned_contributor_id = form.value.assigned_contributor_id === aid ? '' : aid;
-}
 
 interface ContributionForm {
   project_id: string;
@@ -832,43 +789,4 @@ function handleSubmit() {
   }
 }
 
-.contributor-list {
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-.contributor-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border: 1px solid var(--matou-border);
-  border-radius: var(--matou-radius-sm, 8px);
-  cursor: pointer;
-  transition: all 0.12s ease;
-  margin-bottom: 4px;
-
-  &:hover {
-    border-color: var(--matou-accent);
-    background: var(--matou-secondary);
-  }
-
-  &.selected {
-    border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
-  }
-}
-
-.contributor-name {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--matou-foreground);
-}
-
-.contributor-empty {
-  text-align: center;
-  padding: 16px;
-  color: var(--matou-muted-foreground);
-  font-size: 0.85rem;
-}
 </style>

@@ -986,32 +986,12 @@
 
         <!-- Member search + list -->
         <div v-if="assignMode === 'member'" class="assign-section">
-          <q-input
-            v-model="assignMemberSearch"
-            outlined
-            dense
-            placeholder="Search members..."
-            class="q-mb-sm"
-          >
-            <template #prepend>
-              <q-icon name="search" />
-            </template>
-          </q-input>
-          <div class="assign-member-list">
-            <div
-              v-for="m in filteredAssignMembers"
-              :key="m.id"
-              class="assign-member-row"
-              :class="{ selected: assignSelectedMember === m.id }"
-              @click="selectAssignMember(m.id, m.name)"
-            >
-              <div class="assign-member-name">{{ m.name }}</div>
-              <q-icon v-if="assignSelectedMember === m.id" name="check_circle" color="primary" size="18px" />
-            </div>
-            <div v-if="filteredAssignMembers.length === 0" class="assign-empty">
-              No members found
-            </div>
-          </div>
+          <MemberPicker
+            :model-value="assignSelectedMember ?? ''"
+            :members="communityMembersList"
+            @update:model-value="(id) => { assignSelectedMember = id || null; }"
+            @select="(m) => { assignSelectedMemberName = m.name; }"
+          />
         </div>
       </q-card-section>
 
@@ -1128,6 +1108,7 @@ import {
 import type { Contribution, ProjectRole, InterestedContributor, AttachedFile } from 'src/types/projects';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionTypeBadge from 'src/components/projects/ContributionTypeBadge.vue';
+import MemberPicker from 'src/components/common/MemberPicker.vue';
 import { useContributionsStore } from 'stores/contributions';
 import { useCommentCursorsStore } from 'stores/commentCursors';
 import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
@@ -1186,7 +1167,6 @@ const assignMode = ref<'group' | 'member' | null>(null);
 const assignSelectedGroup = ref<string | null>(null);
 const assignSelectedMember = ref<string | null>(null);
 const assignSelectedMemberName = ref<string | null>(null);
-const assignMemberSearch = ref('');
 const assigningContribution = ref(false);
 const isSubAssignMode = ref(false);
 
@@ -1203,12 +1183,6 @@ const communityMembersList = computed(() => {
       id: aid,
       name: p.displayName || aid.slice(0, 12) + '...',
     }));
-});
-
-const filteredAssignMembers = computed(() => {
-  const q = assignMemberSearch.value.toLowerCase().trim();
-  if (!q) return communityMembersList.value;
-  return communityMembersList.value.filter(m => m.name.toLowerCase().includes(q));
 });
 
 const canSubmitAssign = computed(() => {
@@ -1580,7 +1554,6 @@ function openAssignDialog() {
   assignSelectedGroup.value = null;
   assignSelectedMember.value = null;
   assignSelectedMemberName.value = null;
-  assignMemberSearch.value = '';
   showAssignDialog.value = true;
 }
 
@@ -1590,7 +1563,6 @@ function openSubAssignDialog() {
   assignSelectedGroup.value = null;
   assignSelectedMember.value = assignedAid.value;
   assignSelectedMemberName.value = assignedAid.value ? (assignedName.value ?? null) : null;
-  assignMemberSearch.value = '';
   showAssignDialog.value = true;
 }
 
