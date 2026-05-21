@@ -387,7 +387,7 @@ func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -520,7 +520,7 @@ func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -628,7 +628,7 @@ func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Reques
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -797,7 +797,7 @@ func (h *ChatHandler) HandleSendMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -968,7 +968,7 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -1117,7 +1117,7 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -1371,7 +1371,7 @@ func (h *ChatHandler) HandleAddReaction(w http.ResponseWriter, r *http.Request) 
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -1526,7 +1526,7 @@ func (h *ChatHandler) HandleRemoveReaction(w http.ResponseWriter, r *http.Reques
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -1695,7 +1695,7 @@ func (h *ChatHandler) HandleUpdateReadCursor(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), privateSpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), privateSpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),

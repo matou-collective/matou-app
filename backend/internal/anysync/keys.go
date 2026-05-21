@@ -6,6 +6,7 @@ package anysync
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -166,6 +167,42 @@ func PersistSpaceKeySet(dataDir, spaceID string, keys *SpaceKeySet) error {
 	}
 
 	return nil
+}
+
+// LoadOrCreateSpaceKeySet returns the persisted SpaceKeySet for the given
+// space, or generates and persists a fresh one if the key file is missing.
+//
+// A missing key file happens when JoinCommunity returned before
+// PersistSpaceKeySet ran (e.g. WaitForSync stalled). The user is still a
+// valid Writer in the ACL, so we can self-heal by minting a new local key
+// bundle whose SigningKey is bound to the peer key the ACL already knows.
+//
+// Callers should pass client.GetSigningKey() as signingKey — the same peer
+// key that was registered when joining the space.
+func LoadOrCreateSpaceKeySet(dataDir, spaceID string, signingKey crypto.PrivKey) (*SpaceKeySet, error) {
+	keys, err := LoadSpaceKeySet(dataDir, spaceID)
+	if err == nil {
+		return keys, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	if signingKey == nil {
+		return nil, fmt.Errorf("space keys missing for %s and no signing key available to recreate", spaceID)
+	}
+
+	fresh, err := GenerateSpaceKeySet()
+	if err != nil {
+		return nil, fmt.Errorf("generating recovery key set for %s: %w", spaceID, err)
+	}
+	fresh.SigningKey = signingKey
+
+	if err := PersistSpaceKeySet(dataDir, spaceID, fresh); err != nil {
+		return nil, fmt.Errorf("persisting recovery key set for %s: %w", spaceID, err)
+	}
+
+	return fresh, nil
 }
 
 // LoadSpaceKeySet reads and unmarshals a SpaceKeySet from

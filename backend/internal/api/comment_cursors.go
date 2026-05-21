@@ -122,7 +122,7 @@ func (h *CommentCursorsHandler) handlePut(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), privateSpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), privateSpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),

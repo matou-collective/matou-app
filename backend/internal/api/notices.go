@@ -217,7 +217,7 @@ func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -452,7 +452,7 @@ func (h *NoticesHandler) transitionNotice(w http.ResponseWriter, r *http.Request
 
 	// Get signing key
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -523,7 +523,7 @@ func (h *NoticesHandler) HandleCreateRSVP(w http.ResponseWriter, r *http.Request
 	}
 
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -607,7 +607,7 @@ func (h *NoticesHandler) HandleCreateAck(w http.ResponseWriter, r *http.Request,
 	}
 
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -692,7 +692,7 @@ func (h *NoticesHandler) HandleToggleSave(w http.ResponseWriter, r *http.Request
 	}
 
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), privateSpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), privateSpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -817,7 +817,7 @@ func (h *NoticesHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	}
 
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -929,7 +929,7 @@ func (h *NoticesHandler) HandleToggleReaction(w http.ResponseWriter, r *http.Req
 	}
 
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -1047,7 +1047,7 @@ func (h *NoticesHandler) HandleTogglePin(w http.ResponseWriter, r *http.Request,
 	newPinned := !notice.Pinned
 
 	client := h.spaceManager.GetClient()
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
