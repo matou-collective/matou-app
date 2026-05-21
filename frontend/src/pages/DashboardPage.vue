@@ -244,6 +244,7 @@ import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useMultisigJoin } from 'src/composables/useMultisigJoin';
+import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSignal';
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
@@ -299,6 +300,11 @@ const {
   startPolling: startMultisigPolling,
   stopPolling: stopMultisigPolling,
 } = useMultisigJoin();
+
+const {
+  start: startRotationSignalWatcher,
+  stop: stopRotationSignalWatcher,
+} = useMultisigRotationSignal();
 
 const {
   isEndorsing,
@@ -518,6 +524,12 @@ onMounted(async () => {
   // Poll for multisig rotation notifications (e.g., after being promoted to steward)
   startMultisigPolling(5000);
 
+  // Watch for rotation signals from admin so we can pre-emptively query
+  // admin's KEL before the /multisig/rot EXN arrives.  No-op if we never
+  // receive one (admin's flow falls back to the existing escrow path).
+  const myAidPrefix = identityStore.currentAID?.prefix;
+  if (myAidPrefix) startRotationSignalWatcher(myAidPrefix);
+
   // Fetch admin AIDs for endorsement badge distinction
   try {
     const configResult = await fetchOrgConfig();
@@ -548,6 +560,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopPolling();
   stopMultisigPolling();
+  stopRotationSignalWatcher();
 });
 
 watch(hasJoinedMultisig, async (joined) => {

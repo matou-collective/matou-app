@@ -6,6 +6,8 @@ import { SignifyClient, Tier, randomPasscode, ready, Salter } from 'signify-ts';
 import { mnemonicToSeedSync, mnemonicToEntropy, entropyToMnemonic, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { fetchClientConfig, type ClientConfig } from '../clientConfig';
+import { waitForEvent } from 'src/composables/useBackendEvents';
+import { BACKEND_URL, authHeaders } from 'src/lib/api/client';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -990,10 +992,76 @@ export class KERIClient {
    * @param groupName - Local alias of the group AID
    * @param groupPrefix - Prefix of the group AID
    * @param rot - Result of `identifiers().rotate(groupName, ...)`
-   * @param smids - signing-member ids (admin's prefix, plus member if round 2)
-   * @param rmids - rotating-member ids (always [admin, member])
-   * @param recipients - prefixes to deliver the EXN to (usually [memberPrefix])
+   * Publish a MultisigRotationSignal to the community space and wait for
+   * the target member's ack via SSE. Recreates the POC's
+   * `memberQueryAdminAt` cross-client call (test-multisig.ts:402) over
+   * any-sync — see MULTISIG-POC-FINDINGS.md item #4. The member's
+   * useMultisigRotationSignal composable handles the signal and replies
+   * with an ack once their KERIA has admin's new key state in its kevers.
+   *
+   * On timeout, returns false — caller proceeds anyway. The EXN can still
+   * recover via the existing escrow→pending-notification fallback, but
+   * the fast path is preferred.
    */
+  private async publishRotationSignalAndWait(opts: {
+    adminAid: string;
+    adminSn: string;
+    targetMemberAid: string;
+    round: 'round-1' | 'round-2';
+    groupAid: string;
+    timeoutMs?: number;
+  }): Promise<boolean> {
+    const timeoutMs = opts.timeoutMs ?? 30_000;
+
+    // Arm the ack listener BEFORE posting the signal so we don't miss a
+    // fast ack on the same event loop tick.
+    const ackPromise = waitForEvent<{
+      adminAid: string;
+      adminSn: string;
+      ackBy: string;
+    }>(
+      'multisig:rotation-ack',
+      (d) =>
+        d.adminAid === opts.adminAid
+        && d.adminSn === opts.adminSn
+        && d.ackBy === opts.targetMemberAid,
+      timeoutMs,
+    );
+
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/v1/multisig/rotation-signal`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          adminAid: opts.adminAid,
+          adminSn: opts.adminSn,
+          targetMemberAid: opts.targetMemberAid,
+          round: opts.round,
+          groupAid: opts.groupAid,
+        }),
+      });
+      if (!resp.ok) {
+        console.warn(`[KERIClient] rotation-signal POST returned ${resp.status} — falling back`);
+        return false;
+      }
+    } catch (err) {
+      console.warn('[KERIClient] rotation-signal POST failed — falling back:', err);
+      return false;
+    }
+
+    try {
+      await ackPromise;
+      console.log(
+        `[KERIClient] rotation acked by ${opts.targetMemberAid.slice(0, 12)} at admin sn=${opts.adminSn}`,
+      );
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[KERIClient] rotation ack ${msg} — falling back to escrow path`);
+      return false;
+    }
+  }
+
   private async sendMultisigRotExn(
     masterAidName: string,
     groupName: string,
@@ -1065,8 +1133,20 @@ export class KERIClient {
     // (a) Pre-rotate master so next-key becomes current.
     await this.rotatePersonalAid(masterAidName);
 
-    // (b) Query refreshed states for both parties.
+    // (a.5) Signal the member to query us at the new sn. Recreates the POC's
+    // memberQueryAdminAt step (see MULTISIG-POC-FINDINGS.md item #4) over
+    // any-sync SSE. Falls through on timeout — the EXN escrow path is the
+    // backstop.
     const masterAid = await this.client.identifiers().get(masterAidName);
+    await this.publishRotationSignalAndWait({
+      adminAid: masterAid.prefix,
+      adminSn: masterAid.state.s as string,
+      targetMemberAid: newMemberAidPrefix,
+      round: 'round-1',
+      groupAid: groupBefore.prefix,
+    });
+
+    // (b) Query refreshed states for both parties.
     const masterQ = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
     const masterRes = await this.client.operations().wait(masterQ, { signal: AbortSignal.timeout(30000) });
     const masterState = masterRes.response as Record<string, unknown>;
@@ -1124,18 +1204,21 @@ export class KERIClient {
     // (a) Pre-rotate master again.
     await this.rotatePersonalAid(masterAidName);
 
-    // (a.5) Give admin's witnesses time to publish the new key state. When the
-    // member's KERIA receives the multisig EXN (signed with admin's new sn)
-    // it queues a query of admin's witnesses to fill in the missing KEL. If
-    // we POST the EXN immediately, that query races with witness publication
-    // and lands the EXN in partial-signed escrow indefinitely (documented in
-    // MULTISIG-POC-FINDINGS.md item #4). 8s is empirically enough for the
-    // local witness-demo network.
-    console.log('[KERIClient] addMemberRound2: waiting 8s for admin witness publication...');
-    await new Promise(r => setTimeout(r, 8_000));
+    // (a.5) Signal the member to query us at the new sn before we send the
+    // EXN. Replaces the prior 8s fixed sleep — see MULTISIG-POC-FINDINGS.md
+    // item #4 for why the cross-client coordination is required and
+    // useMultisigRotationSignal.ts for the member-side handler.
+    const masterAid = await this.client.identifiers().get(masterAidName);
+    const groupAidPre = await this.client.identifiers().get(groupName);
+    await this.publishRotationSignalAndWait({
+      adminAid: masterAid.prefix,
+      adminSn: masterAid.state.s as string,
+      targetMemberAid: newMemberAidPrefix,
+      round: 'round-2',
+      groupAid: groupAidPre.prefix,
+    });
 
     // (b) Query both refreshed states.
-    const masterAid = await this.client.identifiers().get(masterAidName);
     const masterQ = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
     const masterRes = await this.client.operations().wait(masterQ, { signal: AbortSignal.timeout(30000) });
     const masterState = masterRes.response as Record<string, unknown>;
@@ -1265,10 +1348,8 @@ export class KERIClient {
 
     console.log(`[KERIClient] Group ID: ${gid.slice(0, 12)}..., smids: ${smids?.length}, rmids: ${rmids?.length}`);
 
-    // 2. Resolve member OOBIs so KERIA knows all smids/rmids as kevers.
-    //    Without this, KERIA returns 500 because it doesn't know the members.
-    //    NOTE: Do NOT resolve the group AID's OOBI — that creates a local hab
-    //    which conflicts with groups().join() trying to create the same alias.
+    // 2a. Resolve member OOBIs so KERIA knows all smids/rmids as kevers.
+    //     Without this, KERIA returns 500 because it doesn't know the members.
     await this.ensureConnected();
     const cesrUrl = this.getCesrUrl();
 
@@ -1285,6 +1366,25 @@ export class KERIClient {
       } catch (err) {
         console.warn(`[KERIClient] joinGroup: member OOBI resolution failed for ${mid.slice(0, 12)}:`, err);
       }
+    }
+
+    // 2b. Resolve the group AID's BARE KEL OOBI so member's KERIA has the
+    //     group's prior history. Without this, groups().join() trips
+    //     keri.kering.OutOfOrderError when processing the round-2 rotation
+    //     because the prior group events aren't in the local kevers yet.
+    //     POC reference: matou-infrastructure/keri/test-multisig.ts:569
+    //     (memberResolveGroupOOBI). The /agent/{agentPre} suffix is stripped
+    //     to expose the bare KEL OOBI; resolving that pulls the KEL without
+    //     conflicting with groups().join() creating the local alias.
+    try {
+      const groupOOBI = `${cesrUrl}/oobi/${gid}`;
+      await this.resolveOOBI(groupOOBI, groupName, 30000);
+      console.log(`[KERIClient] joinGroup: resolved group OOBI for ${gid.slice(0, 12)} (alias=${groupName})`);
+    } catch (err) {
+      // Continue — groups().join() will surface a clearer error if the KEL
+      // really is missing.  This step is best-effort because some KERIA
+      // versions may reject re-resolution if the alias is already known.
+      console.warn(`[KERIClient] joinGroup: group OOBI resolution failed:`, err);
     }
 
     // 3. Refresh session and get our personal AID to sign the rotation

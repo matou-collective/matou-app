@@ -105,15 +105,17 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 		return nil
 	}
 
-	// Profile types are processed but DO NOT use the FreshTreeReader fallback —
-	// they fire frequently during initial sync (before the receiver's ACL has
-	// caught up and the read key is available), and the fallback's extra tree
-	// lock would contend with the JoinCommunity → WaitForSync path. Best-effort
-	// state-build only; if it fails, skip silently and let the next listener
-	// fire after the keyring catches up.
+	// Profile and multisig-coordination types are processed but DO NOT use the
+	// FreshTreeReader fallback — they fire frequently during initial sync
+	// (before the receiver's ACL has caught up and the read key is available),
+	// and the fallback's extra tree lock would contend with the JoinCommunity
+	// → WaitForSync path. Best-effort state-build only; if it fails, skip
+	// silently and let the next listener fire after the keyring catches up.
 	isProfileType := objectType == "SharedProfile" || objectType == "CommunityProfile"
+	isMultisigCoordType := objectType == "MultisigRotationSignal" || objectType == "MultisigRotationAck"
 
-	// Only process chat, contribution, and profile types — credentials are handled elsewhere
+	// Only process chat, contribution, profile, and multisig-coord types
+	// — credentials are handled elsewhere
 	switch objectType {
 	case "ChatChannel", "ChatMessage", "MessageReaction":
 		// proceed with full handling (incl. FreshTreeReader fallback)
@@ -124,6 +126,10 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	case "SharedProfile", "CommunityProfile":
 		// proceed — peers need SSE for new registrations + role changes so the
 		// UI live-updates without depending on a periodic poll. Best-effort only.
+	case "MultisigRotationSignal", "MultisigRotationAck":
+		// proceed — cross-client coordination for member-to-admin upgrade flow.
+		// See MULTISIG-POC-FINDINGS.md item #4. Treated like profile types:
+		// SSE-only, no persister, no FreshTreeReader fallback.
 	default:
 		l.seeded = true
 		return nil
@@ -132,9 +138,10 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	// Build the full state from the tree (tree lock is held by caller)
 	state, err := BuildState(tree, objectID, objectType)
 	if err != nil {
-		if isProfileType {
-			// Best-effort for profiles: just skip and let a later listener fire
-			// once the ACL has propagated and the read key is available.
+		if isProfileType || isMultisigCoordType {
+			// Best-effort for profile + coord types: just skip and let a later
+			// listener fire once the ACL has propagated and the read key is
+			// available.
 			l.seeded = true
 			return nil
 		}
@@ -181,8 +188,9 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	// Convert state to payload
 	p := stateToPayload(state, tree.Id())
 
-	// Persist to store — skip for profile types (persister is ChatPersister).
-	if l.persister != nil && !isProfileType {
+	// Persist to store — skip for profile types and multisig-coord types
+	// (persister is ChatPersister; these types are SSE-only).
+	if l.persister != nil && !isProfileType && !isMultisigCoordType {
 		if err := l.persister.PersistChatObject(ctx, p); err != nil {
 			fmt.Printf("[TreeUpdateListener] persist failed for %s: %v\n", p.ID, err)
 		}
@@ -473,6 +481,46 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 				"displayName": data.DisplayName,
 				"status":      data.Status,
 				"source":      "p2p",
+			},
+		})
+
+	case "MultisigRotationSignal":
+		var data struct {
+			AdminAid        string `json:"adminAid"`
+			AdminSn         string `json:"adminSn"`
+			TargetMemberAid string `json:"targetMemberAid"`
+			Round           string `json:"round"`
+			GroupAid        string `json:"groupAid"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "multisig:rotation-signal",
+			Data: map[string]interface{}{
+				"signalId":        p.ID,
+				"adminAid":        data.AdminAid,
+				"adminSn":         data.AdminSn,
+				"targetMemberAid": data.TargetMemberAid,
+				"round":           data.Round,
+				"groupAid":        data.GroupAid,
+			},
+		})
+
+	case "MultisigRotationAck":
+		var data struct {
+			SignalID string `json:"signalId"`
+			AdminAid string `json:"adminAid"`
+			AdminSn  string `json:"adminSn"`
+			AckBy    string `json:"ackBy"`
+		}
+		json.Unmarshal(p.Data, &data)
+		l.broker.Broadcast(SSEEvent{
+			Type: "multisig:rotation-ack",
+			Data: map[string]interface{}{
+				"objectId": p.ID,
+				"signalId": data.SignalID,
+				"adminAid": data.AdminAid,
+				"adminSn":  data.AdminSn,
+				"ackBy":    data.AckBy,
 			},
 		})
 
