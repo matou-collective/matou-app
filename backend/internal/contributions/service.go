@@ -1532,14 +1532,16 @@ func (s *Service) ShareContribution(ctx context.Context, spaceID, contributionID
 	return c, nil
 }
 
-// OfferContribution transitions a confirmed contribution to offered, directing it at a specific user.
+// OfferContribution transitions a confirmed/shared contribution to offered,
+// or re-targets an already-offered contribution at a different user.
+// Re-offering replaces the previous offer recipient.
 func (s *Service) OfferContribution(ctx context.Context, spaceID, contributionID, offeredTo, offeredToName string) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
 	}
-	if c.Status != ContribConfirmed && c.Status != ContribShared {
-		return nil, fmt.Errorf("contribution must be confirmed or shared to offer, current: %s", c.Status)
+	if c.Status != ContribConfirmed && c.Status != ContribShared && c.Status != ContribOffered {
+		return nil, fmt.Errorf("contribution must be confirmed, shared, or offered to (re-)offer, current: %s", c.Status)
 	}
 	now := time.Now()
 	c.OfferedTo = offeredTo

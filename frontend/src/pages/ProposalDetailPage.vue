@@ -934,7 +934,7 @@ async function loadCommunityMembers() {
     }
 
     communityMembersList.value = ((shared.profiles ?? []) as { id: string; data: Record<string, string> }[])
-      .filter(p => p.data?.displayName && p.data?.status !== 'pending')
+      .filter(p => p.data?.displayName && p.data?.status !== 'pending' && p.data?.status !== 'removed')
       .map(p => {
         const aid = p.data?.aid || p.id.replace('SharedProfile-', '');
         return {

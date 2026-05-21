@@ -70,7 +70,9 @@ export function useContributionWorkflow() {
   }
 
   /**
-   * Lead/steward/admin can offer a confirmed or shared contribution.
+   * Lead/steward/admin can offer a confirmed or shared contribution, or
+   * re-direct an already-offered contribution at a different member
+   * (replaces the previous offer recipient).
    * Requires plan sign-off — contributions cannot be assigned/offered before then.
    */
   function canOffer(
@@ -81,7 +83,8 @@ export function useContributionWorkflow() {
     if (!isPlanSignedOff) return false;
     return (
       (contribution.status === 'confirmed' ||
-        contribution.status === 'shared') &&
+        contribution.status === 'shared' ||
+        contribution.status === 'offered') &&
       _isRole(role, SHARE_OFFER_ROLES)
     );
   }

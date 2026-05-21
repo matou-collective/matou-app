@@ -1197,10 +1197,12 @@ const assignGroupOptions = [
 
 const communityMembersList = computed(() => {
   const map = profilesStore.profilesByAid;
-  return Object.entries(map).map(([aid, p]) => ({
-    id: aid,
-    name: p.displayName || aid.slice(0, 12) + '...',
-  }));
+  return Object.entries(map)
+    .filter(([, p]) => p.status !== 'removed' && p.status !== 'pending')
+    .map(([aid, p]) => ({
+      id: aid,
+      name: p.displayName || aid.slice(0, 12) + '...',
+    }));
 });
 
 const filteredAssignMembers = computed(() => {

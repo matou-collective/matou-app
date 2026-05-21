@@ -1089,9 +1089,9 @@ async function loadCommunityMembers() {
       if (aid) roleMap.set(aid, p.data?.role ?? 'Member');
     }
 
-    // Map SharedProfiles to member list, excluding pending
+    // Map SharedProfiles to member list, excluding pending and removed
     communityMembersList.value = ((shared.profiles ?? []) as { id: string; data: Record<string, string> }[])
-      .filter(p => p.data?.displayName && p.data?.status !== 'pending')
+      .filter(p => p.data?.displayName && p.data?.status !== 'pending' && p.data?.status !== 'removed')
       .map(p => {
         const aid = p.data?.aid || p.id.replace('SharedProfile-', '');
         return {
