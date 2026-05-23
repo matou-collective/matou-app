@@ -547,11 +547,11 @@
       :milestone-id="editingContribution?.milestone_id"
       :editing="true"
       :contribution="(editingContribution as any)"
-      :can-reassign="perms.canAssignRoles.value || perms.isLead.value || perms.isSteward.value"
-      :can-unassign="perms.canAssignRoles.value || perms.isLead.value || perms.isSteward.value"
+      :can-offer="perms.isLead.value || perms.isSteward.value"
+      :can-unassign="perms.isLead.value || perms.isSteward.value"
       :can-delete="perms.canArchiveContribution.value"
       @update="onContributionSave"
-      @unassign="onUnassignRequested"
+      @assignment-changed="handleContributionUpdate"
       @archive="onDeleteContributionFromForm"
     />
 

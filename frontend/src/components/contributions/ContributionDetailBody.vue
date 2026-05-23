@@ -939,7 +939,6 @@
     :editing="true"
     :change-request="true"
     :contribution="contribution"
-    :can-reassign="canReassignContribution"
     @change="handleChange"
   />
 </template>

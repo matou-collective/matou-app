@@ -79,23 +79,18 @@
           <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
         </div>
 
-        <!-- Contributor picker (sub-create mode, sub-edit mode, and
-             top-level reassign when the contribution is already assigned). -->
+        <!-- Contributor picker (sub-create mode and sub-edit mode only) -->
         <div
-          v-if="parentContributionId || (editing && contribution?.parent_contribution) || showReassignPicker"
+          v-if="parentContributionId || (editing && contribution?.parent_contribution)"
         >
-          <div class="text-subtitle2 q-mb-sm">
-            {{ showReassignPicker ? 'Reassign Contributor' : 'Assigned Contributor' }}
-          </div>
+          <div class="text-subtitle2 q-mb-sm">Assigned Contributor</div>
           <MemberPicker
             v-model="form.assigned_contributor_id"
             :members="contributorMembers"
             allow-toggle
           />
           <div class="text-caption text-grey-6 q-mt-xs">
-            {{ showReassignPicker
-              ? 'Pick a different community member. The contribution will move back to "changed" so they can re-confirm.'
-              : 'Defaults to the parent\'s contributor when known. Leave blank to assign later.' }}
+            Defaults to the parent's contributor when known. Leave blank to assign later.
           </div>
         </div>
 
@@ -300,19 +295,14 @@
           />
         </div>
 
-        <div
-          v-if="showUnassignBlock"
-          class="unassign-block q-mt-sm"
-        >
-          <q-btn
-            outline
-            no-caps
-            color="negative"
-            icon="person_remove"
-            label="Unassign Contributor"
-            @click="$emit('unassign')"
-          />
-        </div>
+        <AssignmentCard
+          v-if="editing && contribution"
+          :contribution="contribution"
+          :can-offer="canOffer"
+          :can-unassign="canUnassign"
+          @offered="onAssignmentChanged"
+          @unassigned="onAssignmentChanged"
+        />
 
         <div v-if="editing && canDelete" class="danger-zone q-mt-md">
           <div class="danger-zone-title">Danger Zone</div>
@@ -351,6 +341,7 @@ import type { Contribution } from 'src/types/projects';
 import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
+import AssignmentCard from 'src/components/contributions/AssignmentCard.vue';
 import MemberPicker from 'src/components/common/MemberPicker.vue';
 import type { MemberOption } from 'src/components/common/MemberPicker.vue';
 
@@ -371,13 +362,7 @@ interface Props {
   changeRequest?: boolean;
   contribution?: Contribution | null;
   standalone?: boolean;
-  /**
-   * When true and editing a top-level contribution that already has an
-   * assignee, the Assigned Contributor picker becomes editable so a
-   * lead/steward can reassign. Parent is responsible for the lead/steward
-   * + status gate.
-   */
-  canReassign?: boolean;
+  canOffer?: boolean;
   canUnassign?: boolean;
   canDelete?: boolean;
 }
@@ -392,7 +377,7 @@ const props = withDefaults(defineProps<Props>(), {
   changeRequest: false,
   contribution: null,
   standalone: false,
-  canReassign: false,
+  canOffer: false,
   canUnassign: false,
   canDelete: false,
 });
@@ -402,7 +387,7 @@ const emit = defineEmits<{
   (e: 'submit', req: CreateContributionRequest): void;
   (e: 'update', updates: Record<string, unknown>): void;
   (e: 'change', data: { updates: Record<string, unknown>; reason: string }): void;
-  (e: 'unassign'): void;
+  (e: 'assignment-changed', contribution: Contribution): void;
   (e: 'archive'): void;
 }>();
 
@@ -507,29 +492,9 @@ const canSeeBudgetForThis = computed(() =>
   budgetAccess.canSeeBudget({ project_id: props.projectId || form.value.project_id }),
 );
 
-// Show the Reassign picker only when editing a top-level contribution that
-// (a) the parent says is reassignable AND (b) is in a status where a swap
-// is meaningful AND (c) already has an assignee.
-const showReassignPicker = computed(() => {
-  if (!props.editing) return false;
-  if (!props.canReassign) return false;
-  const c = props.contribution;
-  if (!c) return false;
-  if (c.parent_contribution) return false;
-  if (!['assigned', 'changed'].includes(c.status)) return false;
-  const currentAid = c.assigned_contributor_id ?? c.assigned_contributor;
-  return !!currentAid;
-});
-
-const showUnassignBlock = computed(() => {
-  if (!props.editing) return false;
-  if (!props.canUnassign) return false;
-  const c = props.contribution;
-  if (!c) return false;
-  if (c.status !== 'assigned') return false;
-  const currentAid = c.assigned_contributor_id ?? (c as { assigned_contributor?: string }).assigned_contributor;
-  return !!currentAid;
-});
+function onAssignmentChanged(updated: Contribution) {
+  emit('assignment-changed', updated);
+}
 
 const isValid = computed(() => {
   const baseValid =
