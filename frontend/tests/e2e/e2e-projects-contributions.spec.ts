@@ -1526,19 +1526,8 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(reasonInput).toBeVisible({ timeout: TIMEOUT.short });
     await reasonInput.fill('Scope expanded to include additional community partners following initial planning');
 
-    // 10.5.1 Verify the Reassign Contributor picker appears (top-level
-    // assigned contribution + lead/steward viewer + canReassign prop forwarded
-    // through). Pick the admin as the new contributor — currently assigned
-    // to the member.
-    const reassignLabel = changeDlg.locator('.text-subtitle2', { hasText: /Reassign Contributor/i });
-    await expect(reassignLabel).toBeVisible({ timeout: TIMEOUT.short });
-    const reassignInput = changeDlg.getByPlaceholder(/Search community members/i);
-    await reassignInput.click();
-    await reassignInput.fill('Admin');
-    const adminOption = adminPage.locator('.q-menu .q-item', { hasText: /Admin User/i }).first();
-    await expect(adminOption).toBeVisible({ timeout: TIMEOUT.short });
-    await adminOption.click();
-    console.log('[Phase 10] Reassign Contributor picker selected: Admin User');
+    // (Reassignment is no longer part of the change-dialog — it's owned by the
+    // AssignmentCard's Unassign + inline-picker flow. Covered in Phase 10.7.)
 
     // 10.6 Submit change
     await changeDlg.getByRole('button', { name: /Submit Change/i }).click();
