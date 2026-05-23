@@ -785,6 +785,23 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       await approveBtn.click();
       await waitForSettle(adminPage);
       console.log('[Phase 6] Admin approved sub-contribution');
+
+      // Poll the MEMBER backend until SUB_1 reports status=assigned so the
+      // next phase (member submits evidence) sees the Submit Evidence button.
+      const deadline = Date.now() + 30_000;
+      let observedStatus = '';
+      while (Date.now() < deadline) {
+        const r = await memberPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+        const data: { contributions?: Array<{ title?: string; status?: string }> } = await r.json();
+        const sub = (data.contributions ?? []).find(c => c.title === SUB_CONTRIBUTION_TITLE);
+        observedStatus = sub?.status ?? '';
+        if (observedStatus === 'assigned') break;
+        await adminPage.waitForTimeout(500);
+      }
+      if (observedStatus !== 'assigned') {
+        throw new Error(`SUB_1 never reached assigned on member backend within 30s (last: ${observedStatus})`);
+      }
+      console.log('[Phase 6] SUB_1 member backend status confirmed: assigned');
     } else {
       console.log('[Phase 6] No Approve button — sub-contribution may already be approved');
     }
