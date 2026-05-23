@@ -1,7 +1,28 @@
 <template>
   <div class="assignment-card" :class="`state-${state}`">
+    <!-- Inline re-offer picker — active after Unassign, takes precedence over
+         the state-based panels so the picker stays visible across the
+         assigned→confirmed transition. -->
+    <div v-if="showInlinePicker" class="inline-picker">
+      <div class="label">Offer to a member</div>
+      <MemberPicker
+        v-model="inlineSelectedId"
+        :members="pickerMembers"
+        placeholder="Search members..."
+        @select="onInlineMemberSelected"
+      />
+      <div class="row q-mt-sm">
+        <q-btn
+          no-caps
+          flat
+          label="Cancel"
+          @click="closeInlinePicker"
+        />
+      </div>
+    </div>
+
     <!-- Unassigned state -->
-    <div v-if="state === 'unassigned'" class="row-between">
+    <div v-else-if="state === 'unassigned'" class="row-between">
       <div>
         <div class="card-title">No contributor assigned</div>
         <div class="card-sub">Offer this contribution to a member.</div>
@@ -37,41 +58,21 @@
       />
     </div>
 
-    <!-- Assigned state (and inline re-offer mode after unassign) -->
-    <div v-else-if="state === 'assigned'">
-      <div class="row-between">
-        <div>
-          <div class="card-title">Assigned to {{ assignedName }}</div>
-        </div>
-        <q-btn
-          v-if="canUnassign && !showInlinePicker"
-          no-caps
-          outline
-          color="negative"
-          icon="person_remove"
-          label="Unassign"
-          :loading="unassigning"
-          @click="handleUnassign"
-        />
+    <!-- Assigned state -->
+    <div v-else-if="state === 'assigned'" class="row-between">
+      <div>
+        <div class="card-title">Assigned to {{ assignedName }}</div>
       </div>
-
-      <div v-if="showInlinePicker" class="inline-picker q-mt-md">
-        <div class="label">Offer to a member</div>
-        <MemberPicker
-          v-model="inlineSelectedId"
-          :members="pickerMembers"
-          placeholder="Search members..."
-          @select="onInlineMemberSelected"
-        />
-        <div class="row q-mt-sm">
-          <q-btn
-            no-caps
-            flat
-            label="Cancel"
-            @click="closeInlinePicker"
-          />
-        </div>
-      </div>
+      <q-btn
+        v-if="canUnassign"
+        no-caps
+        outline
+        color="negative"
+        icon="person_remove"
+        label="Unassign"
+        :loading="unassigning"
+        @click="handleUnassign"
+      />
     </div>
 
     <!-- Terminal-status read-only view -->
