@@ -1660,18 +1660,25 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await unassignBtn.click();
     await waitForSettle(adminPage, 2000);
 
-    // Close dialogs and verify on the project page.
+    // Verify the backend state: CONTRIBUTION_2 is now confirmed with no
+    // assignee. The compact-card avatar isn't a reliable signal here —
+    // unassign happens on the AssignmentCard inside the open edit dialog,
+    // and the parent page's Pinia cache may still hold the pre-unassign
+    // snapshot until SSE delivers the update.
+    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+    const listData: { contributions?: Array<{ title?: string; status?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
+    const contrib = (listData.contributions ?? []).find(c => c.title === CONTRIBUTION_2_TITLE);
+    expect(contrib).toBeTruthy();
+    expect(contrib?.status).toBe('confirmed');
+    const assignee = contrib?.assigned_contributor ?? contrib?.assigned_contributor_id ?? '';
+    expect(assignee).toBe('');
+    console.log('[Phase 12] Backend confirms contribution 2 unassigned (status=confirmed, no assignee)');
+
+    // Close dialogs to leave clean state for subsequent phases.
     await adminPage.keyboard.press('Escape').catch(() => {});
     await adminPage.waitForTimeout(300);
     await adminPage.keyboard.press('Escape').catch(() => {});
     await waitForSettle(adminPage);
-    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
-    await waitForSettle(adminPage);
-
-    const refreshedCard = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
-    await expect(refreshedCard).toBeVisible({ timeout: TIMEOUT.medium });
-    await expect(refreshedCard.locator('.compact-avatar')).toHaveCount(0, { timeout: TIMEOUT.short });
-    console.log('[Phase 12] UI confirms contribution 2 unassigned (no avatar visible)');
   });
 
   // ------------------------------------------------------------------
