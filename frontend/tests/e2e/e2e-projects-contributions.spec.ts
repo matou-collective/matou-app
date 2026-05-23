@@ -634,41 +634,37 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await openContributionDialog(adminPage, CONTRIBUTION_1_TITLE);
     const dlg = adminPage.locator('.q-dialog');
 
-    // 4.1 Click "Assign Contribution" in dialog footer
-    const assignBtn = dlg.getByRole('button', { name: /Assign Contribution/i }).first();
+    // 4.1 Click "Assign" in the AssignmentCard (unassigned state).
+    const card = dlg.locator('.assignment-card');
+    await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+    const assignBtn = card.getByRole('button', { name: /Assign/i }).first();
     await expect(assignBtn).toBeVisible({ timeout: TIMEOUT.short });
     await assignBtn.click();
 
-    // 4.2 Assign dialog opens (use .assign-dialog class to avoid matching parent dialog)
-    const assignDlg = adminPage.locator('.assign-dialog');
-    await expect(assignDlg).toBeVisible({ timeout: TIMEOUT.short });
+    // 4.2 Modal picker opens.
+    const assignModal = adminPage.locator('.assignment-modal');
+    await expect(assignModal).toBeVisible({ timeout: TIMEOUT.short });
 
-    // 4.3 Select "Member" mode
-    const memberModeCard = assignDlg.locator('.assign-mode-card').filter({ hasText: 'Member' });
-    await memberModeCard.click();
-    await waitForSettle(adminPage, 500);
-
-    // 4.4 Search and select the member
+    // 4.3 Search and select the member via MemberPicker.
     const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
-    const searchInput = assignDlg.locator('input[placeholder*="Search"]');
+    const searchInput = assignModal.locator('input[placeholder*="Search"]');
     if (await searchInput.isVisible().catch(() => false)) {
       await searchInput.fill(memberNameToUse.substring(0, 5));
       await waitForSettle(adminPage, 500);
     }
 
-    const memberRow = assignDlg.locator('.assign-member-row').filter({ hasText: new RegExp(memberNameToUse, 'i') }).first();
+    const memberRow = assignModal.locator('.member-picker-row').filter({ hasText: new RegExp(memberNameToUse, 'i') }).first();
     if (await memberRow.isVisible({ timeout: 3000 }).catch(() => false)) {
       await memberRow.click();
     } else {
-      // Fallback: click first member in list
-      const firstMember = assignDlg.locator('.assign-member-row').first();
+      const firstMember = assignModal.locator('.member-picker-row').first();
       await firstMember.click();
     }
 
-    // 4.5 Click Assign
-    await assignDlg.getByRole('button', { name: 'Assign' }).click();
+    // 4.4 Click "Send Offer".
+    await assignModal.getByRole('button', { name: /Send Offer/i }).click();
     await waitForSettle(adminPage);
-    console.log('[Phase 4] Contribution 1 assigned to member');
+    console.log('[Phase 4] Contribution 1 offered to member');
 
     await closeContributionDialog(adminPage);
   });
@@ -1127,39 +1123,35 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
     const dlg = adminPage.locator('.q-dialog');
 
-    // Use merged Assign dialog
-    const assignBtn = dlg.getByRole('button', { name: /Assign Contribution/i }).first();
+    // Click "Assign" in AssignmentCard.
+    const card = dlg.locator('.assignment-card');
+    await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+    const assignBtn = card.getByRole('button', { name: /Assign/i }).first();
     await expect(assignBtn).toBeVisible({ timeout: TIMEOUT.short });
     await assignBtn.click();
 
-    const assignDlg = adminPage.locator('.assign-dialog');
-    await expect(assignDlg).toBeVisible({ timeout: TIMEOUT.short });
-
-    // Select Member mode and pick the correct member (not the admin)
-    const memberModeCard = assignDlg.locator('.assign-mode-card').filter({ hasText: 'Member' });
-    await memberModeCard.click();
-    await waitForSettle(adminPage, 500);
+    const assignModal = adminPage.locator('.assignment-modal');
+    await expect(assignModal).toBeVisible({ timeout: TIMEOUT.short });
 
     const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
-    const searchInput = assignDlg.locator('input[placeholder*="Search"]');
+    const searchInput = assignModal.locator('input[placeholder*="Search"]');
     if (await searchInput.isVisible().catch(() => false)) {
       await searchInput.fill(memberNameToUse.substring(0, 5));
       await waitForSettle(adminPage, 500);
     }
 
-    const memberRow = assignDlg.locator('.assign-member-row').filter({ hasText: new RegExp(memberNameToUse, 'i') }).first();
+    const memberRow = assignModal.locator('.member-picker-row').filter({ hasText: new RegExp(memberNameToUse, 'i') }).first();
     if (await memberRow.isVisible({ timeout: 3000 }).catch(() => false)) {
       await memberRow.click();
     } else {
-      // Fallback: pick the last member (admin is usually first)
-      const rows = assignDlg.locator('.assign-member-row');
+      const rows = assignModal.locator('.member-picker-row');
       const count = await rows.count();
       await rows.nth(count - 1).click();
     }
 
-    await assignDlg.getByRole('button', { name: 'Assign' }).click();
+    await assignModal.getByRole('button', { name: /Send Offer/i }).click();
     await waitForSettle(adminPage);
-    console.log('[Phase 10] Contribution 2 assigned to member');
+    console.log('[Phase 10] Contribution 2 offered to member');
 
     await closeContributionDialog(adminPage);
   });
