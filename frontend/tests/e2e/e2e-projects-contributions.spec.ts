@@ -838,6 +838,25 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       await submitBtn.click();
       await waitForSettle(memberPage);
       console.log('[Phase 6] Member submitted evidence for sub-contribution');
+
+      // Poll the ADMIN backend until SUB_1 reports status=needs_review so the
+      // next phase (admin reviews + signs off) doesn't read a stale 'assigned'
+      // replica. The member's local backend transitioned immediately; we wait
+      // for any-sync to propagate the change to the admin's backend.
+      const deadline = Date.now() + 30_000;
+      let observedStatus = '';
+      while (Date.now() < deadline) {
+        const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+        const listData: { contributions?: Array<{ title?: string; status?: string }> } = await listResp.json();
+        const sub = (listData.contributions ?? []).find(c => c.title === SUB_CONTRIBUTION_TITLE);
+        observedStatus = sub?.status ?? '';
+        if (observedStatus === 'needs_review') break;
+        await memberPage.waitForTimeout(500);
+      }
+      if (observedStatus !== 'needs_review') {
+        throw new Error(`SUB_1 did not reach needs_review on admin backend within 30s (last observed: ${observedStatus})`);
+      }
+      console.log('[Phase 6] SUB_1 admin backend status confirmed: needs_review');
     } else {
       console.log('[Phase 6] Sub-contribution evidence form not visible — may need approval first');
     }
