@@ -1639,34 +1639,30 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage);
 
-    // Compact card does not expose an edit pencil (it only carries
-    // Assign/Confirm/Approve buttons, and contribution 2 is already assigned,
-    // so .compact-actions is empty). The edit pencil lives in the contribution
-    // detail dialog header (.title-edit-btn) — open the dialog and click it,
-    // mirroring Phase 10's edit flow.
+    // Open the contribution detail dialog (the AssignmentCard lives both here
+    // and inside the edit dialog — Task 6 of unified-assignment-card). Use
+    // the edit dialog path to preserve the "via pencil icon" semantics.
     await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
     const detailDlg = adminPage.locator('.q-dialog').first();
     const editBtn = detailDlg.locator('.title-edit-btn');
     await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
     await editBtn.click();
 
-    // ContributionForm dialog opens in edit mode
+    // Edit dialog opens; AssignmentCard inside it shows "Assigned to <member>"
+    // with an Unassign button. Click Unassign — the card transitions to
+    // showing the inline picker for re-offer, but we don't need to re-offer
+    // here; the test only verifies that the unassign succeeded.
     const formDlg = adminPage.locator('.q-dialog').filter({ hasText: /Edit Contribution/i }).first();
     await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
-
-    // The unassign block (.unassign-block) contains the "Unassign Contributor" button
-    const unassignBtn = formDlg.getByRole('button', { name: /Unassign Contributor/i });
+    const card = formDlg.locator('.assignment-card');
+    const unassignBtn = card.getByRole('button', { name: /^Unassign$/i }).first();
     await expect(unassignBtn).toBeVisible({ timeout: TIMEOUT.short });
     await unassignBtn.click();
-
-    // ConfirmArchiveDialog (reused with confirmLabel="Unassign", icon="person_remove",
-    // title="Unassign Contributor")
-    const confirmDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Unassign Contributor' }).last();
-    await expect(confirmDlg).toBeVisible({ timeout: TIMEOUT.short });
-    await confirmDlg.getByRole('button', { name: 'Unassign' }).click();
     await waitForSettle(adminPage, 2000);
 
-    // ContributionForm should close; refresh and verify
+    // Close dialogs and verify on the project page.
+    await adminPage.keyboard.press('Escape').catch(() => {});
+    await adminPage.waitForTimeout(300);
     await adminPage.keyboard.press('Escape').catch(() => {});
     await waitForSettle(adminPage);
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
