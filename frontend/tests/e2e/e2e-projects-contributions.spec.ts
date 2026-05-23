@@ -1490,6 +1490,117 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await closeContributionDialog(adminPage);
   });
 
+  // ------------------------------------------------------------------
+  // Phase 11: sub-contribution flows through offer/accept (new behavior).
+  // After parent acceptance, children get auto-offered (not direct-assigned).
+  // Test that the AssignmentCard renders "Offered to {member}" on a child
+  // sub-contribution and the offer can be accepted by the offered-to user.
+  // ------------------------------------------------------------------
+
+  test('Phase 11: sub-contribution offered to parent contributor after acceptance', async () => {
+    await adminPage.bringToFront();
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 2000);
+
+    // Open contribution 2 (parent of SUB_2) detail.
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const dlg = adminPage.locator('.q-dialog').first();
+
+    // SUB_2 should exist (created in Phase 2.5).
+    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // Click the sub to open its detail.
+    await sub2Row.click();
+    await waitForSettle(adminPage, 500);
+    const subDlg = adminPage.locator('.q-dialog').last();
+
+    // Look up SUB_2's status via API; after parent acceptance, it should
+    // be 'offered' to the member.
+    const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
+    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+    const listData: { contributions?: Array<{ id: string; parent_contribution?: string; title?: string; status?: string; offered_to?: string }> } = await listResp.json();
+    const sub = (listData.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+    expect(sub).toBeTruthy();
+    expect(sub?.status).toBe('offered');
+    expect(sub?.offered_to).toBe(memberAID);
+    console.log('[Phase 11] SUB_2 backend state: offered to member');
+
+    // The AssignmentCard should show "Offered to <member>".
+    await expect(subDlg.locator('.assignment-card')).toContainText(memberNameToUse, { timeout: TIMEOUT.medium }).catch(async () => {
+      // Fall back to AID prefix if profile name isn't rendered.
+      const aidPrefix = (memberAID || '').slice(0, 8);
+      await expect(subDlg.locator('.assignment-card')).toContainText(aidPrefix, { timeout: TIMEOUT.medium });
+    });
+    await expect(subDlg.locator('.assignment-card')).toContainText(/Offered to/i);
+    console.log('[Phase 11] AssignmentCard shows Offered state');
+
+    // Close dialogs.
+    await adminPage.keyboard.press('Escape');
+    await waitForSettle(adminPage, 300);
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 12: unassign + re-offer clears stale assignee.
+  // Bug fix: after unassigning a contribution and re-offering it to a
+  // different member, the UI should not show "Assigned to <original>"
+  // anywhere on the page.
+  // ------------------------------------------------------------------
+
+  test('Phase 12: unassign + re-offer leaves no stale assignee', async () => {
+    await adminPage.bringToFront();
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 1500);
+
+    // CONTRIBUTION_1 was assigned to the member in Phase 5 and signed off by Phase 10.
+    // To exercise unassign + re-offer we need a contribution currently in 'assigned'.
+    // CONTRIBUTION_2 should be assigned to member as of Phase 10/10.1 ... locate the
+    // first 'assigned' contribution dynamically.
+    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+    const listData: { contributions?: Array<{ id: string; title?: string; status?: string; parent_contribution?: string }> } = await listResp.json();
+    const targetCandidate = (listData.contributions ?? []).find(c =>
+      !c.parent_contribution && c.status === 'assigned' && c.title === CONTRIBUTION_2_TITLE,
+    );
+    if (!targetCandidate) {
+      test.skip(true, 'No top-level assigned contribution available for Phase 12');
+      return;
+    }
+    const targetTitle = targetCandidate.title!;
+
+    await openContributionDialog(adminPage, targetTitle);
+    const dlg = adminPage.locator('.q-dialog').first();
+
+    // The AssignmentCard should be in 'assigned' state with an Unassign button.
+    const unassignBtn = dlg.locator('.assignment-card button:has-text("Unassign")');
+    await expect(unassignBtn).toBeVisible({ timeout: TIMEOUT.medium });
+
+    const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
+    await expect(dlg.locator('.assignment-card')).toContainText(memberNameToUse, { timeout: TIMEOUT.medium });
+
+    // Click Unassign.
+    await unassignBtn.click();
+    await waitForSettle(adminPage, 1500);
+
+    // Inline picker should appear. Pick admin (the user themselves) to re-offer.
+    const adminName = accounts.admin?.name ?? '';
+    const inlinePicker = dlg.locator('.assignment-card .inline-picker');
+    await expect(inlinePicker).toBeVisible({ timeout: TIMEOUT.medium });
+
+    const memberPickerRow = inlinePicker.locator('.member-picker-row').filter({ hasText: adminName }).first();
+    await expect(memberPickerRow).toBeVisible({ timeout: TIMEOUT.medium });
+    await memberPickerRow.click();
+    await waitForSettle(adminPage, 1500);
+
+    // Card should now show Offered to admin and NOT show "Assigned to <member>".
+    await expect(dlg.locator('.assignment-card')).toContainText(/Offered to/i, { timeout: TIMEOUT.medium });
+    await expect(dlg.locator('.assignment-card')).toContainText(adminName, { timeout: TIMEOUT.medium });
+    await expect(dlg.locator('.assignment-card')).not.toContainText(`Assigned to ${memberNameToUse}`);
+    console.log('[Phase 12] No stale assignee text after unassign + re-offer');
+
+    await closeContributionDialog(adminPage);
+  });
+
   test('Phase 10: admin edits contribution 2 via header pencil icon', async () => {
     await adminPage.bringToFront();
 
@@ -2036,117 +2147,6 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await adminPage.request.post(`${BACKEND_URL}/api/v1/projects/${seedProject.id}/archive`, {
       headers: { 'X-User-AID': adminAID },
     });
-  });
-
-  // ------------------------------------------------------------------
-  // Phase 11: sub-contribution flows through offer/accept (new behavior).
-  // After parent acceptance, children get auto-offered (not direct-assigned).
-  // Test that the AssignmentCard renders "Offered to {member}" on a child
-  // sub-contribution and the offer can be accepted by the offered-to user.
-  // ------------------------------------------------------------------
-
-  test('Phase 11: sub-contribution offered to parent contributor after acceptance', async () => {
-    await adminPage.bringToFront();
-    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
-    await waitForSettle(adminPage, 2000);
-
-    // Open contribution 2 (parent of SUB_2) detail.
-    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
-    const dlg = adminPage.locator('.q-dialog').first();
-
-    // SUB_2 should exist (created in Phase 2.5).
-    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
-    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
-
-    // Click the sub to open its detail.
-    await sub2Row.click();
-    await waitForSettle(adminPage, 500);
-    const subDlg = adminPage.locator('.q-dialog').last();
-
-    // Look up SUB_2's status via API; after parent acceptance, it should
-    // be 'offered' to the member.
-    const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
-    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-    const listData: { contributions?: Array<{ id: string; parent_contribution?: string; title?: string; status?: string; offered_to?: string }> } = await listResp.json();
-    const sub = (listData.contributions ?? []).find(c => c.title === SUB_2_TITLE);
-    expect(sub).toBeTruthy();
-    expect(sub?.status).toBe('offered');
-    expect(sub?.offered_to).toBe(memberAID);
-    console.log('[Phase 11] SUB_2 backend state: offered to member');
-
-    // The AssignmentCard should show "Offered to <member>".
-    await expect(subDlg.locator('.assignment-card')).toContainText(memberNameToUse, { timeout: TIMEOUT.medium }).catch(async () => {
-      // Fall back to AID prefix if profile name isn't rendered.
-      const aidPrefix = (memberAID || '').slice(0, 8);
-      await expect(subDlg.locator('.assignment-card')).toContainText(aidPrefix, { timeout: TIMEOUT.medium });
-    });
-    await expect(subDlg.locator('.assignment-card')).toContainText(/Offered to/i);
-    console.log('[Phase 11] AssignmentCard shows Offered state');
-
-    // Close dialogs.
-    await adminPage.keyboard.press('Escape');
-    await waitForSettle(adminPage, 300);
-    await closeContributionDialog(adminPage);
-  });
-
-  // ------------------------------------------------------------------
-  // Phase 12: unassign + re-offer clears stale assignee.
-  // Bug fix: after unassigning a contribution and re-offering it to a
-  // different member, the UI should not show "Assigned to <original>"
-  // anywhere on the page.
-  // ------------------------------------------------------------------
-
-  test('Phase 12: unassign + re-offer leaves no stale assignee', async () => {
-    await adminPage.bringToFront();
-    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
-    await waitForSettle(adminPage, 1500);
-
-    // CONTRIBUTION_1 was assigned to the member in Phase 5 and signed off by Phase 10.
-    // To exercise unassign + re-offer we need a contribution currently in 'assigned'.
-    // CONTRIBUTION_2 should be assigned to member as of Phase 10/10.1 ... locate the
-    // first 'assigned' contribution dynamically.
-    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-    const listData: { contributions?: Array<{ id: string; title?: string; status?: string; parent_contribution?: string }> } = await listResp.json();
-    const targetCandidate = (listData.contributions ?? []).find(c =>
-      !c.parent_contribution && c.status === 'assigned' && c.title === CONTRIBUTION_2_TITLE,
-    );
-    if (!targetCandidate) {
-      test.skip(true, 'No top-level assigned contribution available for Phase 12');
-      return;
-    }
-    const targetTitle = targetCandidate.title!;
-
-    await openContributionDialog(adminPage, targetTitle);
-    const dlg = adminPage.locator('.q-dialog').first();
-
-    // The AssignmentCard should be in 'assigned' state with an Unassign button.
-    const unassignBtn = dlg.locator('.assignment-card button:has-text("Unassign")');
-    await expect(unassignBtn).toBeVisible({ timeout: TIMEOUT.medium });
-
-    const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
-    await expect(dlg.locator('.assignment-card')).toContainText(memberNameToUse, { timeout: TIMEOUT.medium });
-
-    // Click Unassign.
-    await unassignBtn.click();
-    await waitForSettle(adminPage, 1500);
-
-    // Inline picker should appear. Pick admin (the user themselves) to re-offer.
-    const adminName = accounts.admin?.name ?? '';
-    const inlinePicker = dlg.locator('.assignment-card .inline-picker');
-    await expect(inlinePicker).toBeVisible({ timeout: TIMEOUT.medium });
-
-    const memberPickerRow = inlinePicker.locator('.member-picker-row').filter({ hasText: adminName }).first();
-    await expect(memberPickerRow).toBeVisible({ timeout: TIMEOUT.medium });
-    await memberPickerRow.click();
-    await waitForSettle(adminPage, 1500);
-
-    // Card should now show Offered to admin and NOT show "Assigned to <member>".
-    await expect(dlg.locator('.assignment-card')).toContainText(/Offered to/i, { timeout: TIMEOUT.medium });
-    await expect(dlg.locator('.assignment-card')).toContainText(adminName, { timeout: TIMEOUT.medium });
-    await expect(dlg.locator('.assignment-card')).not.toContainText(`Assigned to ${memberNameToUse}`);
-    console.log('[Phase 12] No stale assignee text after unassign + re-offer');
-
-    await closeContributionDialog(adminPage);
   });
 });
 
