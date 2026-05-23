@@ -1808,3 +1808,51 @@ func TestConfirmContribution_DoesNotPropagateOnCreatedToConfirmed(t *testing.T) 
 		t.Errorf("expected child AssignedContributorID empty, got %q", reloadedChild.AssignedContributorID)
 	}
 }
+
+func TestOfferContribution_ClearsAssignedContributorID(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	// Create + confirm a contribution.
+	c, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID:          "proj-1",
+		Title:              "task",
+		Description:        "d",
+		ContributionType:   ProposalTypeTechnical,
+		Priority:           PriorityMedium,
+		CreatedBy:          "lead-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"a"},
+		Deadline:           "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("CreateContribution: %v", err)
+	}
+	confirmed, err := svc.ConfirmContribution(ctx, spaceID, c.ID)
+	if err != nil {
+		t.Fatalf("ConfirmContribution: %v", err)
+	}
+
+	// Force a stale AssignedContributorID into the stored contribution.
+	confirmed.AssignedContributorID = "stale-user"
+	if err := svc.SaveContribution(ctx, spaceID, confirmed); err != nil {
+		t.Fatalf("SaveContribution: %v", err)
+	}
+
+	// Offer should clear it.
+	out, err := svc.OfferContribution(ctx, spaceID, c.ID, "new-user", "New User")
+	if err != nil {
+		t.Fatalf("OfferContribution: %v", err)
+	}
+	if out.AssignedContributorID != "" {
+		t.Errorf("AssignedContributorID = %q, want empty", out.AssignedContributorID)
+	}
+	if out.OfferedTo != "new-user" {
+		t.Errorf("OfferedTo = %q, want new-user", out.OfferedTo)
+	}
+	if out.Status != ContribOffered {
+		t.Errorf("Status = %s, want offered", out.Status)
+	}
+}

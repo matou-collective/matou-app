@@ -1544,6 +1544,7 @@ func (s *Service) OfferContribution(ctx context.Context, spaceID, contributionID
 		return nil, fmt.Errorf("contribution must be confirmed, shared, or offered to (re-)offer, current: %s", c.Status)
 	}
 	now := time.Now()
+	c.AssignedContributorID = ""
 	c.OfferedTo = offeredTo
 	c.OfferedToName = offeredToName
 	c.OfferedAt = &now
