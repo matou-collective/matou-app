@@ -1524,6 +1524,7 @@ func createUnassignedChild(t *testing.T, svc *Service, ctx context.Context, spac
 		Deliverables:         []string{"d"},
 		AcceptanceCriteria:   []string{"ac1"},
 		ParentContributionID: parentID,
+		Deadline:             "2026-12-31",
 	})
 	if err != nil {
 		t.Fatalf("createUnassignedChild: %v", err)
@@ -1547,6 +1548,7 @@ func TestAssignContributor_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 		Objectives:         []string{"o"},
 		Deliverables:       []string{"d"},
 		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -1557,36 +1559,27 @@ func TestAssignContributor_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 		t.Fatalf("confirm parent: %v", err)
 	}
 
-	// Create two children with no assignee (both start in ContribCreated).
-	child1 := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
-	child2 := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	// Create a child with no assignee (starts in ContribCreated).
+	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
 
 	// Assign the parent.
-	if _, err := svc.AssignContributor(ctx, spaceID, parent.ID, "parent-assignee"); err != nil {
+	if _, err := svc.AssignContributor(ctx, spaceID, parent.ID, "user-A"); err != nil {
 		t.Fatalf("AssignContributor: %v", err)
 	}
 
-	// Both children should now carry the parent's assignee but remain in ContribCreated.
-	reloaded1, err := svc.GetContribution(ctx, spaceID, child1.ID)
+	// The child should now be offered to "user-A" and in ContribOffered status.
+	reloaded, err := svc.GetContribution(ctx, spaceID, child.ID)
 	if err != nil {
-		t.Fatalf("reload child1: %v", err)
+		t.Fatalf("reload child: %v", err)
 	}
-	reloaded2, err := svc.GetContribution(ctx, spaceID, child2.ID)
-	if err != nil {
-		t.Fatalf("reload child2: %v", err)
+	if reloaded.OfferedTo != "user-A" {
+		t.Errorf("expected OfferedTo=user-A, got %q", reloaded.OfferedTo)
 	}
-
-	if reloaded1.AssignedContributorID != "parent-assignee" {
-		t.Errorf("child1: expected AssignedContributorID=parent-assignee, got %q", reloaded1.AssignedContributorID)
+	if reloaded.AssignedContributorID != "" {
+		t.Errorf("expected AssignedContributorID empty, got %q", reloaded.AssignedContributorID)
 	}
-	if reloaded1.Status != ContribCreated {
-		t.Errorf("child1: expected status created, got %s", reloaded1.Status)
-	}
-	if reloaded2.AssignedContributorID != "parent-assignee" {
-		t.Errorf("child2: expected AssignedContributorID=parent-assignee, got %q", reloaded2.AssignedContributorID)
-	}
-	if reloaded2.Status != ContribCreated {
-		t.Errorf("child2: expected status created, got %s", reloaded2.Status)
+	if reloaded.Status != ContribOffered {
+		t.Errorf("expected status offered, got %s", reloaded.Status)
 	}
 }
 
@@ -1606,6 +1599,7 @@ func TestAssignContributor_DoesNotOverwriteExistingChildAssignee(t *testing.T) {
 		Objectives:         []string{"o"},
 		Deliverables:       []string{"d"},
 		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -1627,6 +1621,7 @@ func TestAssignContributor_DoesNotOverwriteExistingChildAssignee(t *testing.T) {
 		AcceptanceCriteria:    []string{"ac1"},
 		ParentContributionID:  parent.ID,
 		AssignedContributorID: "child-explicit",
+		Deadline:              "2026-12-31",
 	})
 	if err != nil {
 		t.Fatalf("create child: %v", err)
@@ -1663,6 +1658,7 @@ func TestAcceptOffer_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 		Objectives:         []string{"o"},
 		Deliverables:       []string{"d"},
 		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -1682,16 +1678,19 @@ func TestAcceptOffer_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 		t.Fatalf("AcceptOffer: %v", err)
 	}
 
-	// The child should inherit "user-A" and stay in ContribCreated.
+	// The child should now be offered to "user-A" and in ContribOffered status.
 	reloaded, err := svc.GetContribution(ctx, spaceID, child.ID)
 	if err != nil {
 		t.Fatalf("reload child: %v", err)
 	}
-	if reloaded.AssignedContributorID != "user-A" {
-		t.Errorf("expected AssignedContributorID=user-A, got %q", reloaded.AssignedContributorID)
+	if reloaded.OfferedTo != "user-A" {
+		t.Errorf("expected OfferedTo=user-A, got %q", reloaded.OfferedTo)
 	}
-	if reloaded.Status != ContribCreated {
-		t.Errorf("expected status created, got %s", reloaded.Status)
+	if reloaded.AssignedContributorID != "" {
+		t.Errorf("expected AssignedContributorID empty, got %q", reloaded.AssignedContributorID)
+	}
+	if reloaded.Status != ContribOffered {
+		t.Errorf("expected status offered, got %s", reloaded.Status)
 	}
 }
 
@@ -1711,6 +1710,7 @@ func TestConfirmContribution_PropagatesAssigneeOnChangedToAssigned(t *testing.T)
 		Objectives:         []string{"o"},
 		Deliverables:       []string{"d"},
 		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -1733,6 +1733,7 @@ func TestConfirmContribution_PropagatesAssigneeOnChangedToAssigned(t *testing.T)
 	// cleared via an update before re-confirmation).
 	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
 	child.AssignedContributorID = ""
+	child.OfferedTo = ""
 	if err := svc.store.Save(spaceID, child.ID, "contribution", child); err != nil {
 		t.Fatalf("clear child assignee: %v", err)
 	}
@@ -1742,16 +1743,19 @@ func TestConfirmContribution_PropagatesAssigneeOnChangedToAssigned(t *testing.T)
 		t.Fatalf("ConfirmContribution (changed→assigned): %v", err)
 	}
 
-	// The child should now carry the parent's assignee and remain in ContribCreated.
+	// The child should now be offered to "parent-assignee" and in ContribOffered status.
 	reloaded, err := svc.GetContribution(ctx, spaceID, child.ID)
 	if err != nil {
 		t.Fatalf("reload child: %v", err)
 	}
-	if reloaded.AssignedContributorID != "parent-assignee" {
-		t.Errorf("expected AssignedContributorID=parent-assignee, got %q", reloaded.AssignedContributorID)
+	if reloaded.OfferedTo != "parent-assignee" {
+		t.Errorf("expected OfferedTo=parent-assignee, got %q", reloaded.OfferedTo)
 	}
-	if reloaded.Status != ContribCreated {
-		t.Errorf("expected child status ContribCreated, got %s", reloaded.Status)
+	if reloaded.AssignedContributorID != "" {
+		t.Errorf("expected AssignedContributorID empty, got %q", reloaded.AssignedContributorID)
+	}
+	if reloaded.Status != ContribOffered {
+		t.Errorf("expected status offered, got %s", reloaded.Status)
 	}
 }
 
@@ -1771,6 +1775,7 @@ func TestConfirmContribution_DoesNotPropagateOnCreatedToConfirmed(t *testing.T) 
 		Objectives:         []string{"o"},
 		Deliverables:       []string{"d"},
 		AcceptanceCriteria: []string{"ac1"},
+		Deadline:           "2026-12-31",
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -1854,5 +1859,96 @@ func TestOfferContribution_ClearsAssignedContributorID(t *testing.T) {
 	}
 	if out.Status != ContribOffered {
 		t.Errorf("Status = %s, want offered", out.Status)
+	}
+}
+
+func TestPropagateOfferToChildren_SkipsAlreadyAssignedChild(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "parent", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium, CreatedBy: "lead-1",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		Deadline: "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("confirm parent: %v", err)
+	}
+
+	// Child already assigned to someone else; force the state.
+	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	child.Status = ContribAssigned
+	child.AssignedContributorID = "other-user"
+	if err := svc.SaveContribution(ctx, spaceID, child); err != nil {
+		t.Fatalf("save child: %v", err)
+	}
+
+	// Offer + accept parent.
+	if _, err := svc.OfferContribution(ctx, spaceID, parent.ID, "parent-user", "Parent User"); err != nil {
+		t.Fatalf("offer parent: %v", err)
+	}
+	if _, err := svc.AcceptOffer(ctx, spaceID, parent.ID, "parent-user"); err != nil {
+		t.Fatalf("accept parent: %v", err)
+	}
+
+	got, err := svc.GetContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("reload child: %v", err)
+	}
+	if got.AssignedContributorID != "other-user" {
+		t.Errorf("AssignedContributorID = %q, want other-user", got.AssignedContributorID)
+	}
+	if got.OfferedTo != "" {
+		t.Errorf("OfferedTo = %q, want empty", got.OfferedTo)
+	}
+	if got.Status != ContribAssigned {
+		t.Errorf("Status = %s, want assigned", got.Status)
+	}
+}
+
+func TestPropagateOfferToChildren_SkipsAlreadyOfferedChild(t *testing.T) {
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	spaceID := "space-1"
+
+	parent, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "parent", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityMedium, CreatedBy: "lead-1",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		Deadline: "2026-12-31",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("confirm parent: %v", err)
+	}
+
+	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	if _, err := svc.ConfirmContribution(ctx, spaceID, child.ID); err != nil {
+		t.Fatalf("confirm child: %v", err)
+	}
+	if _, err := svc.OfferContribution(ctx, spaceID, child.ID, "early-offer-user", "Early Offer"); err != nil {
+		t.Fatalf("offer child: %v", err)
+	}
+
+	if _, err := svc.OfferContribution(ctx, spaceID, parent.ID, "parent-user", "Parent User"); err != nil {
+		t.Fatalf("offer parent: %v", err)
+	}
+	if _, err := svc.AcceptOffer(ctx, spaceID, parent.ID, "parent-user"); err != nil {
+		t.Fatalf("accept parent: %v", err)
+	}
+
+	got, err := svc.GetContribution(ctx, spaceID, child.ID)
+	if err != nil {
+		t.Fatalf("reload child: %v", err)
+	}
+	if got.OfferedTo != "early-offer-user" {
+		t.Errorf("OfferedTo = %q, want early-offer-user", got.OfferedTo)
 	}
 }
