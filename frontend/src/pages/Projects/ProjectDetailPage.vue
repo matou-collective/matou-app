@@ -564,17 +564,6 @@
       @confirm="doArchiveContribution"
     />
 
-    <!-- Unassign contributor confirm -->
-    <ConfirmArchiveDialog
-      v-model="showUnassignConfirm"
-      title="Unassign Contributor"
-      message="This will set the contribution back to 'confirmed' and clear the assigned contributor."
-      confirm-label="Unassign"
-      icon="person_remove"
-      :loading="unassigning"
-      @confirm="doUnassign"
-    />
-
     <!-- Sign-off plan confirm (only shown when unconfirmed contributions exist) -->
     <q-dialog v-model="showSignOffConfirm">
       <q-card style="min-width: 420px; max-width: 520px">
@@ -819,8 +808,6 @@ const showContribForm = ref(false);
 const showArchiveContrib = ref(false);
 const archivingContribution = ref<Contribution | null>(null);
 const archivingContribLoading = ref(false);
-const showUnassignConfirm = ref(false);
-const unassigning = ref(false);
 
 const contribArchiveMessage = computed(() => {
   const c = archivingContribution.value;
@@ -910,27 +897,6 @@ async function onContributionSave(payload: Record<string, unknown>) {
     $q.notify({ type: 'positive', message: 'Contribution updated!' });
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to update contribution' });
-  }
-}
-
-function onUnassignRequested() {
-  showUnassignConfirm.value = true;
-}
-
-async function doUnassign() {
-  if (!editingContribution.value || !project.value) return;
-  unassigning.value = true;
-  try {
-    await contributionsStore.unassign(editingContribution.value.id);
-    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
-    showUnassignConfirm.value = false;
-    showContribForm.value = false;
-    editingContribution.value = null;
-    $q.notify({ type: 'positive', message: 'Contributor unassigned.' });
-  } catch (e) {
-    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to unassign' });
-  } finally {
-    unassigning.value = false;
   }
 }
 
