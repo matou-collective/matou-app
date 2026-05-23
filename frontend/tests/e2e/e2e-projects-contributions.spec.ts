@@ -1270,15 +1270,24 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await waitForSettle(memberPage, 2000);
     console.log('[Phase 10.6] Member accepted SUB_2 offer');
 
-    // Verify backend state.
-    const listResp = await memberPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-    const listData: { contributions?: Array<{ id: string; title?: string; status?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
-    const sub = (listData.contributions ?? []).find(c => c.title === SUB_2_TITLE);
-    expect(sub).toBeTruthy();
-    expect(sub?.status).toBe('assigned');
-    const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
-    expect(subAssignee).toBe(memberAID);
-    console.log('[Phase 10.6] SUB_2 backend state: assigned to member');
+    // Poll the ADMIN backend until it sees SUB_2 as assigned to member —
+    // the next phase opens the dialog on adminPage and would race any-sync.
+    const deadline = Date.now() + 30_000;
+    let observedStatus = '';
+    let observedAssignee = '';
+    while (Date.now() < deadline) {
+      const r = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
+      const data: { contributions?: Array<{ title?: string; status?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await r.json();
+      const s = (data.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+      observedStatus = s?.status ?? '';
+      observedAssignee = s?.assigned_contributor ?? s?.assigned_contributor_id ?? '';
+      if (observedStatus === 'assigned' && observedAssignee === memberAID) break;
+      await memberPage.waitForTimeout(500);
+    }
+    if (observedStatus !== 'assigned' || observedAssignee !== memberAID) {
+      throw new Error(`SUB_2 admin backend never reached assigned-to-member within 30s (last: status=${observedStatus}, assignee=${observedAssignee})`);
+    }
+    console.log('[Phase 10.6] SUB_2 admin backend state: assigned to member');
 
     await memberPage.keyboard.press('Escape');
     await waitForSettle(memberPage, 300);
