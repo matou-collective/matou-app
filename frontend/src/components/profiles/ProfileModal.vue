@@ -562,7 +562,7 @@ function formatEndorsementDate(dateStr: string): string {
   if (diffHours < 24) return `${diffHours}h ago`;
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function handleEndorse() {
@@ -645,7 +645,7 @@ const avatarClass = computed(() => {
 const formattedDate = computed(() => {
   if (props.registration) {
     const date = new Date(props.registration.profile.submittedAt);
-    return 'Submitted ' + date.toLocaleDateString('en-US', {
+    return 'Submitted ' + date.toLocaleDateString(undefined, {
       month: 'short', day: 'numeric', year: 'numeric',
       hour: 'numeric', minute: '2-digit',
     });
@@ -655,14 +655,14 @@ const formattedDate = computed(() => {
   const memberSince = communityData.memberSince as string;
   if (memberSince) {
     const date = new Date(memberSince);
-    return 'Joined ' + date.toLocaleDateString('en-US', {
+    return 'Joined ' + date.toLocaleDateString(undefined, {
       month: 'short', day: 'numeric', year: 'numeric',
     });
   }
   const createdAt = (props.sharedProfile?.createdAt as string) || '';
   if (createdAt) {
     const date = new Date(createdAt);
-    return 'Applied ' + date.toLocaleDateString('en-US', {
+    return 'Applied ' + date.toLocaleDateString(undefined, {
       month: 'short', day: 'numeric', year: 'numeric',
     });
   }

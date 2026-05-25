@@ -105,7 +105,6 @@ import type { Notice } from 'src/lib/api/client';
 import { getFileUrl } from 'src/lib/api/client';
 import { useActivityStore } from 'stores/activity';
 import { useProfilesStore } from 'stores/profiles';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
 import SaveButton from './SaveButton.vue';
 import RSVPButton from './RSVPButton.vue';
 import AckButton from './AckButton.vue';
@@ -402,7 +401,7 @@ async function handlePin() {
 .admin-btn {
   padding: 0.375rem 0.75rem;
   border: none;
-  border-radius: var(--matou-radius, 6px);
+  border-radius: 10px;
   font-size: 0.9rem;
   font-weight: 500;
   cursor: pointer;

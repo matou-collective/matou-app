@@ -268,6 +268,16 @@ func (s *Sender) SendApprovalNotification(req SendApprovalNotificationRequest) e
 	return nil
 }
 
+// SendGeneric sends an HTML email using the existing relay or direct SMTP infrastructure.
+func (s *Sender) SendGeneric(to, subject, htmlBody string) error {
+	if s.relayURL != "" {
+		return s.sendViaRelay(to, subject, htmlBody)
+	}
+	msg := s.buildMIMEMessage(to, subject, htmlBody)
+	addr := fmt.Sprintf("%s:%d", s.host, s.port)
+	return s.sendMail(addr, to, []byte(msg))
+}
+
 // sendMailFromMulti connects to the SMTP server and sends a single message to multiple recipients
 func (s *Sender) sendMailFromMulti(addr, from string, recipients []string, msg []byte) error {
 	conn, err := net.Dial("tcp", addr)

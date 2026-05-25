@@ -3,7 +3,7 @@
  * Spawns the Go backend as a child process, waits for it to become healthy,
  * then creates the BrowserWindow pointing at the Quasar frontend.
  */
-import { app, BrowserWindow, ipcMain, safeStorage, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, nativeImage, Notification } from 'electron';
 import electronUpdater from 'electron-updater';
 
 import log from 'electron-log';
@@ -29,6 +29,12 @@ process.stderr?.on('error', () => {});
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('class', 'matou');
   app.setDesktopName('matou.desktop');
+}
+
+// Windows requires AUMID to be set before any Notification is shown, otherwise
+// toasts appear under "electron.app" in the Action Center.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('org.matou.app');
 }
 
 // Auto-Updater setup
@@ -334,6 +340,38 @@ ipcMain.handle('secure-storage-remove', (_event, key: string): void => {
 ipcMain.handle('install-update', () => {
   log.info('[Updater] User requested install, quitting and installing...');
   autoUpdater.quitAndInstall();
+});
+
+// --- Notification IPC ---
+interface NotifyPayload {
+  title: string;
+  body: string;
+  data?: Record<string, string>;
+}
+
+ipcMain.on('notify', (_event, payload: NotifyPayload) => {
+  if (!Notification.isSupported()) return;
+
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icons', '256x256.png')
+    : path.join(__dirname, '..', '..', '..', 'src-electron', 'icons', '256x256.png');
+
+  const notification = new Notification({
+    title: payload.title,
+    body: payload.body,
+    icon: iconPath,
+  });
+
+  notification.on('click', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.webContents.send('notification-clicked', payload.data ?? {});
+    }
+  });
+
+  notification.show();
 });
 
 function setupAutoUpdater(): void {

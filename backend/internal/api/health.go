@@ -12,24 +12,26 @@ import (
 
 // HealthHandler handles health check related HTTP requests
 type HealthHandler struct {
-	store      *anystore.LocalStore
-	spaceStore anysync.SpaceStore
-	orgAID     string
-	adminAID   string
+	store       *anystore.LocalStore
+	spaceStore  anysync.SpaceStore
+	getOrgAID   func() string
+	getAdminAID func() string
 }
 
-// NewHealthHandler creates a new health handler
+// NewHealthHandler creates a new health handler.
+// orgAID and adminAID are getter functions so the health response
+// always reflects the current org config (not a startup snapshot).
 func NewHealthHandler(
 	store *anystore.LocalStore,
 	spaceStore anysync.SpaceStore,
-	orgAID string,
-	adminAID string,
+	getOrgAID func() string,
+	getAdminAID func() string,
 ) *HealthHandler {
 	return &HealthHandler{
-		store:      store,
-		spaceStore: spaceStore,
-		orgAID:     orgAID,
-		adminAID:   adminAID,
+		store:       store,
+		spaceStore:  spaceStore,
+		getOrgAID:   getOrgAID,
+		getAdminAID: getAdminAID,
 	}
 }
 
@@ -68,11 +70,11 @@ func (h *HealthHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// Basic health response
+	// Basic health response (read live values at request time)
 	response := HealthResponse{
 		Status:       "healthy",
-		Organization: h.orgAID,
-		Admin:        h.adminAID,
+		Organization: h.getOrgAID(),
+		Admin:        h.getAdminAID(),
 	}
 
 	// Get sync status (best-effort, don't block health check)
@@ -119,7 +121,7 @@ func (h *HealthHandler) getSyncStatus(ctx context.Context) *SyncStatus {
 
 // getTrustStatus calculates trust graph statistics
 func (h *HealthHandler) getTrustStatus(ctx context.Context) *TrustStatus {
-	builder := trust.NewBuilder(h.store, h.orgAID)
+	builder := trust.NewBuilder(h.store, h.getOrgAID())
 	graph, err := builder.Build(ctx)
 	if err != nil {
 		return nil

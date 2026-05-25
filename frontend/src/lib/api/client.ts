@@ -4,6 +4,7 @@
  */
 
 import { getBackendUrl, getBackendUrlSync } from '../platform';
+import { useIdentityStore } from 'stores/identity';
 
 /**
  * Resolved backend URL. Call initBackendUrl() once at boot to populate.
@@ -17,6 +18,26 @@ export let BACKEND_URL = getBackendUrlSync();
  */
 export async function initBackendUrl(): Promise<void> {
   BACKEND_URL = await getBackendUrl();
+}
+
+/**
+ * Build request headers with JSON content type and the current user's AID
+ * for RBAC-protected endpoints. Falls back gracefully if no identity is set.
+ */
+export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...extra,
+  };
+  try {
+    const identity = useIdentityStore();
+    if (identity.aidPrefix) {
+      headers['X-User-AID'] = identity.aidPrefix;
+    }
+  } catch {
+    // Pinia not yet initialized — skip auth header
+  }
+  return headers;
 }
 
 export interface SyncCredentialsRequest {
@@ -363,6 +384,23 @@ export async function getProfiles(typeName: string): Promise<ObjectPayload[]> {
     return data.profiles ?? [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * Get a single profile by type and id. Returns null when missing or unreachable.
+ * Use this before a partial update: read existing data, merge your changes,
+ * then POST the full payload via createOrUpdateProfile (which is full-replace).
+ */
+export async function getProfileById(typeName: string, id: string): Promise<ObjectPayload | null> {
+  try {
+    const response = await fetch(
+      `${BACKEND_URL}/api/v1/profiles/${encodeURIComponent(typeName)}/${encodeURIComponent(id)}`,
+    );
+    if (!response.ok) return null;
+    return await response.json() as ObjectPayload;
+  } catch {
+    return null;
   }
 }
 

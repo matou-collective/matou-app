@@ -68,15 +68,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useActivityStore } from 'stores/activity';
-import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useIdentityStore } from 'stores/identity';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import FeedCard from 'src/components/activity/FeedCard.vue';
 import CreateNoticeDialog from 'src/components/activity/CreateNoticeDialog.vue';
 
 const activityStore = useActivityStore();
-const { isSteward, checkAdminStatus } = useAdminAccess();
+const identityStore = useIdentityStore();
+const isSteward = computed(() => identityStore.isSteward);
 const { lastEvent } = useBackendEvents();
 
 const showCreateDialog = ref(false);
@@ -95,7 +96,6 @@ watch(lastEvent, (event) => {
 });
 
 onMounted(async () => {
-  await checkAdminStatus();
   activityStore.refreshAll();
   activityStore.startPolling(15_000);
 });
@@ -140,19 +140,20 @@ onUnmounted(() => {
 
 .create-btn {
   padding: 0.5rem 1rem;
-  background: var(--matou-primary);
-  color: white;
-  border: none;
-  border-radius: var(--matou-radius, 6px);
+  background: transparent;
+  color: var(--matou-teal, #0d9488);
+  border: 2px solid var(--matou-teal, #0d9488);
+  border-radius: 10px;
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
-  transition: opacity 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
 .create-btn:hover {
-  opacity: 0.9;
+  background: var(--matou-teal, #0d9488);
+  color: white;
 }
 
 .filter-row {

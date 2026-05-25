@@ -139,8 +139,8 @@ function formatRelativeDate(dateStr: string): string {
   if (diffDays === 1) return 'Yesterday';
   if (diffDays < 7) return `${diffDays} days ago`;
   if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
-  if (diffDays < 365) return date.toLocaleDateString('en-NZ', { month: 'short', year: 'numeric' });
-  return date.toLocaleDateString('en-NZ', { month: 'short', year: 'numeric' });
+  if (diffDays < 365) return date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+  return date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 }
 </script>
 

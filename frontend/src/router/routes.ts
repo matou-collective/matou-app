@@ -41,6 +41,36 @@ const routes: RouteRecordRaw[] = [
         name: 'activity',
         component: () => import('pages/ActivityPage.vue'),
       },
+      {
+        path: 'projects',
+        name: 'projects',
+        component: () => import('pages/ProjectsPage.vue'),
+      },
+      {
+        path: 'proposals',
+        name: 'proposals',
+        component: () => import('pages/ProposalsPage.vue'),
+      },
+      {
+        path: 'projects/:id',
+        name: 'project-detail',
+        component: () => import('pages/Projects/ProjectDetailPage.vue'),
+      },
+      {
+        path: 'proposals/:id',
+        name: 'proposal-detail',
+        component: () => import('pages/ProposalDetailPage.vue'),
+      },
+      {
+        path: 'contributions',
+        name: 'contributions',
+        component: () => import('pages/Contributions/ContributionsPage.vue'),
+      },
+      {
+        path: 'contributions/:id',
+        name: 'contribution-detail',
+        component: () => import('pages/Contributions/ContributionDetailPage.vue'),
+      },
     ],
   },
   {

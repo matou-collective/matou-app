@@ -33,14 +33,27 @@
         <button class="nav-item" :class="{ active: route.name === 'activity' }" @click="router.push({ name: 'activity' })">
           <Bell class="nav-icon" />
           <span>Notices</span>
+          <span v-if="noticesUnreadTotal > 0" class="nav-badge">
+            {{ noticesUnreadTotal > 99 ? '99+' : noticesUnreadTotal }}
+          </span>
         </button>
-        <button class="nav-item disabled" disabled>
-          <Target class="nav-icon" />
-          <span>Projects<q-tooltip anchor="center right" self="center left">Coming soon</q-tooltip></span>
-        </button>
-        <button class="nav-item disabled" disabled>
+        <button class="nav-item" :class="{ active: route.name === 'proposals' }" @click="router.push({ name: 'proposals' })">
           <Vote class="nav-icon" />
-          <span>Proposals<q-tooltip anchor="center right" self="center left">Coming soon</q-tooltip></span>
+          <span>Proposals</span>
+        </button>
+        <button class="nav-item" :class="{ active: route.name === 'projects' }" @click="router.push({ name: 'projects' })">
+          <Target class="nav-icon" />
+          <span>Projects</span>
+          <span v-if="projectsUnreadTotal > 0" class="nav-badge">
+            {{ projectsUnreadTotal > 99 ? '99+' : projectsUnreadTotal }}
+          </span>
+        </button>
+        <button class="nav-item" :class="{ active: route.name === 'contributions' || route.name === 'contribution-detail' }" @click="router.push({ name: 'contributions' })">
+          <Hammer class="nav-icon" />
+          <span>Contributions</span>
+          <span v-if="contributionsUnreadTotal > 0" class="nav-badge">
+            {{ contributionsUnreadTotal > 99 ? '99+' : contributionsUnreadTotal }}
+          </span>
         </button>
       </nav>
 
@@ -67,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount } from 'vue';
+import { computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import {
   Home,
   Wallet,
@@ -75,14 +88,21 @@ import {
   Target,
   Vote,
   MessageSquare,
+  Hammer,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
 import { useChatStore } from 'stores/chat';
+import { useCommentCursorsStore } from 'stores/commentCursors';
+import { useProjectsStore } from 'stores/projects';
+import { useContributionsStore } from 'stores/contributions';
+import { useActivityStore } from 'stores/activity';
+import { useCommentScope } from 'src/composables/useCommentScope';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useKERINotificationService } from 'src/composables/useKERINotificationService';
+import { initNotifications, registerNotificationClickHandler } from 'src/lib/notifications';
 import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
 
@@ -92,7 +112,80 @@ const store = useOnboardingStore();
 const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const chatStore = useChatStore();
-const { connect: connectBackendEvents } = useBackendEvents();
+const commentCursorsStore = useCommentCursorsStore();
+const projectsStore = useProjectsStore();
+const contributionsStore = useContributionsStore();
+const activityStore = useActivityStore();
+const scope = useCommentScope();
+
+const projectsUnreadTotal = computed(() => {
+  // Project rollup: own project comments + contribution comments for each
+  // project I lead/steward.
+  return projectsStore.projects.reduce((sum, p) => {
+    const projectContribs = contributionsStore.contributions.filter(
+      (c) => c.project_id === p.id,
+    );
+    return sum + scope.projectRollupUnread(p, projectContribs);
+  }, 0);
+});
+
+const contributionsUnreadTotal = computed(() => {
+  // Comment unread on contributions assigned to me + any pending offers
+  // extended to me (drops back as soon as I accept the offer).
+  // Leads/stewards' comment unread is surfaced via the Projects badge instead.
+  return contributionsStore.contributions.reduce(
+    (sum, c) => sum + scope.contributionUnreadAsAssignee(c) + scope.contributionOfferedCount(c),
+    0,
+  );
+});
+
+const noticesUnreadTotal = computed(() => {
+  const list = activityStore.notices ?? [];
+  return list.reduce((sum: number, n: { id: string; created_by?: string; createdBy?: string }) => {
+    return sum + scope.noticeUnread(n);
+  }, 0);
+});
+const { connect: connectBackendEvents, lastEvent } = useBackendEvents();
+
+// Keep entity comment_count and notice counts in sync with peer comments so
+// badges live-update everywhere — not just on the open detail page.
+// Only react to p2p-source events for the *_comment_added events: local
+// posts already bump optimistically in the store's addComment, so reacting
+// to the local POST handler's SSE would double-count.
+watch(lastEvent, (event) => {
+  if (!event) return;
+  const data = event.data as {
+    source?: string;
+    project_id?: string;
+    contribution_id?: string;
+    noticeId?: string;
+  } | undefined;
+
+  // Lifecycle changes that may flip a contribution's status or offered_to —
+  // refresh the single contribution so the offered badge + side-menu rollup
+  // update in real time. Handles both local broadcasts (status:assigned,
+  // accepted) and p2p-synced contribution_updated.
+  if (
+    (event.type === 'contribution:assigned'
+      || event.type === 'contribution:accepted'
+      || event.type === 'contribution:declined'
+      || event.type === 'contribution_updated')
+    && data?.contribution_id
+  ) {
+    void contributionsStore.refreshContribution(data.contribution_id);
+    return;
+  }
+
+  if (data?.source !== 'p2p') return;
+  if (event.type === 'project:comment_added' && data.project_id) {
+    projectsStore.bumpCommentCount(data.project_id);
+  } else if (event.type === 'contribution:comment_added' && data.contribution_id) {
+    contributionsStore.bumpCommentCount(data.contribution_id);
+  } else if (event.type === 'notice_comment' && data.noticeId) {
+    const current = commentCursorsStore.getNoticeCount(data.noticeId);
+    commentCursorsStore.setNoticeCount(data.noticeId, current + 1);
+  }
+});
 const notificationService = useKERINotificationService();
 
 // User info — prefer SharedProfile from community space, fallback to onboarding store
@@ -125,6 +218,15 @@ onMounted(() => {
   console.log('[DashboardLayout] mounted, route:', route.name);
   connectBackendEvents();
 
+  // Register click router first, then init so Electron's IPC bridge picks it up.
+  registerNotificationClickHandler((data) => {
+    if (data.route === 'chat' && data.channelId) {
+      router.push({ name: 'chat' }).catch(() => {});
+      chatStore.selectChannel(data.channelId);
+    }
+  });
+  initNotifications();
+
   // Fetch org config once at startup (cached for entire session)
   fetchOrgConfig().catch(err => console.warn('[DashboardLayout] Org config fetch failed:', err));
 
@@ -134,6 +236,13 @@ onMounted(() => {
   profilesStore.loadMyProfiles();
   profilesStore.loadCommunityProfiles();
   profilesStore.loadCommunityReadOnlyProfiles();
+  commentCursorsStore.fetch().catch(() => {});
+
+  // Pre-fetch projects, contributions, notices so unread badges render
+  // before the user navigates into those sections.
+  projectsStore.fetchProjects().catch(() => {});
+  contributionsStore.fetchContributions().catch(() => {});
+  activityStore.loadNotices().catch(() => {});
 
   // Load chat data so the unread badge shows on all dashboard pages.
   // Fire-and-forget: don't await, so child routes mount immediately.

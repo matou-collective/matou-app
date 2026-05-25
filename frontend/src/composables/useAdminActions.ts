@@ -7,7 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
-import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
+import { BACKEND_URL, createOrUpdateProfile, getProfileById, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -291,23 +291,34 @@ export function useAdminActions() {
       console.log('[AdminActions] Credential issued:', credResult.said);
       credentialSaid = credResult.said;
 
-      // 6b. Update CommunityProfile with real credential SAID
-      processingStep.value = 'Updating community profile...';
-      //     (profiles were created in step 4 with credentialSaid='pending')
+      // 6b. Update CommunityProfile with real credential SAID.
+      //     Profiles were created in step 4 by initMemberProfiles with
+      //     credentialSaid='pending' AND ~15 display fields (displayName, avatar,
+      //     bio, joinReason, social URLs, etc.). createOrUpdateProfile is
+      //     full-replace, so we must read existing data and merge — otherwise
+      //     those display fields are wiped from the read-only space.
       //     Note: personal endorsement registries are created lazily by each member
       //     via useEndorsements when they first try to endorse someone.
       try {
         const profileId = `CommunityProfile-${registration.applicantAid}`;
+        const existing = await getProfileById('CommunityProfile', profileId);
+        const existingData = (existing?.data || {}) as Record<string, unknown>;
         const now = new Date().toISOString();
-        await createOrUpdateProfile('CommunityProfile', {
+        const merged = {
+          ...existingData,
           userAID: registration.applicantAid,
           credential: credentialSaid,
           role: 'Member',
           credentials: [credentialSaid],
-          memberSince: now,
+          memberSince: (existingData.memberSince as string) || now,
           lastActiveAt: now,
-        }, { id: profileId });
-        console.log('[AdminActions] Updated CommunityProfile with credential SAID:', credentialSaid);
+        };
+        const result = await createOrUpdateProfile('CommunityProfile', merged, { id: profileId });
+        if (result.success) {
+          console.log('[AdminActions] Updated CommunityProfile with credential SAID:', credentialSaid);
+        } else {
+          console.warn('[AdminActions] Failed to update CommunityProfile with credential SAID:', result.error);
+        }
       } catch (updateErr) {
         console.warn('[AdminActions] Failed to update CommunityProfile with credential SAID:', updateErr);
       }
@@ -443,17 +454,24 @@ export function useAdminActions() {
       );
       console.log('[AdminActions] New credential issued:', credResult.said);
 
-      // Update CommunityProfile with new credential SAID
+      // Update CommunityProfile with new credential SAID.
+      // createOrUpdateProfile is full-replace; read existing first so we
+      // preserve display fields (displayName/avatar/bio/joinReason/etc.) and
+      // the original memberSince — they'd otherwise be wiped on every upgrade.
       const profileId = `CommunityProfile-${stewardAid}`;
+      const existing = await getProfileById('CommunityProfile', profileId);
+      const existingData = (existing?.data || {}) as Record<string, unknown>;
       const now = new Date().toISOString();
-      await createOrUpdateProfile('CommunityProfile', {
+      const merged = {
+        ...existingData,
         userAID: stewardAid,
         credential: credResult.said,
         role: newRole,
         credentials: oldCred ? [oldCred.sad.d, credResult.said] : [credResult.said],
-        memberSince: now,
+        memberSince: (existingData.memberSince as string) || now,
         lastActiveAt: now,
-      }, { id: profileId });
+      };
+      await createOrUpdateProfile('CommunityProfile', merged, { id: profileId });
 
       onStep?.('Complete');
       console.log('[AdminActions] Steward upgrade complete');
@@ -532,11 +550,25 @@ export function useAdminActions() {
       // (handles both IPEX and custom EXN notifications)
       await markAllApplicantNotificationsRead(registration.applicantAid);
 
-      // 4. Update SharedProfile status to declined
+      // 4. Update SharedProfile status to declined.
+      // createOrUpdateProfile is full-replace + validates required fields,
+      // so we must read the existing profile and merge — sending only
+      // { status: 'declined' } fails validation silently and the entry
+      // keeps showing as pending.
       const profileId = `SharedProfile-${registration.applicantAid}`;
       try {
-        await createOrUpdateProfile('SharedProfile', { status: 'declined' }, { id: profileId });
-        console.log('[AdminActions] Updated SharedProfile status to declined for:', registration.applicantAid);
+        const existing = await getProfileById('SharedProfile', profileId);
+        if (!existing) {
+          console.warn('[AdminActions] No existing SharedProfile to mark declined:', profileId);
+        } else {
+          const merged = { ...(existing.data || {}), status: 'declined' };
+          const result = await createOrUpdateProfile('SharedProfile', merged, { id: profileId });
+          if (result.success) {
+            console.log('[AdminActions] Updated SharedProfile status to declined for:', registration.applicantAid);
+          } else {
+            console.warn('[AdminActions] Failed to update SharedProfile status to declined:', result.error);
+          }
+        }
       } catch (profileErr) {
         console.warn('[AdminActions] Failed to update SharedProfile status to declined:', profileErr);
       }

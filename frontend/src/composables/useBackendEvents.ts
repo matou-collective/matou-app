@@ -10,6 +10,7 @@ import { ref } from 'vue';
 import { Notify } from 'quasar';
 import { useRouter } from 'vue-router';
 import { BACKEND_URL } from 'src/lib/api/client';
+import { maybeNotify } from 'src/lib/notifications';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { useChatStore } from 'stores/chat';
@@ -32,6 +33,39 @@ export type BackendEventType =
   | 'chat:reaction:remove'
   | 'chat:channel:new'
   | 'chat:channel:update'
+  | 'proposal:submitted'
+  | 'proposal:created'
+  | 'proposal:updated'
+  | 'proposal:comment_added'
+  | 'proposal:endorsed'
+  | 'proposal:approved'
+  | 'proposal:rejected'
+  | 'proposal:status_changed'
+  | 'proposal_updated'
+  | 'decision_plan_updated'
+  | 'governance_action_updated'
+  | 'project:created'
+  | 'project:comment_added'
+  | 'contribution:assigned'
+  | 'contribution:comment_added'
+  | 'contribution:needs_review'
+  | 'contribution:approved'
+  | 'contribution:declined'
+  | 'contribution:registered'
+  | 'contribution:reviewed'
+  | 'contribution:shared'
+  | 'contribution:confirmed'
+  | 'contribution:accepted'
+  | 'contribution:signed_off'
+  | 'contribution:rewarded'
+  | 'contribution:updated'
+  | 'contribution_updated'
+  | 'plan_updated'
+  | 'project_updated'
+  | 'milestone_updated'
+  | 'decision_plan:submitted'
+  | 'decision_plan:signed_off'
+  | 'governance_action:completed'
   | 'connected';
 
 export interface BackendEvent {
@@ -177,6 +211,14 @@ function connect() {
       const profilesStore = useProfilesStore();
       const profile = profilesStore.profilesByAid[data.senderAid as string];
       const displayName = profile?.displayName || data.senderName;
+
+      // OS-level notification when window is unfocused; in-app toast otherwise.
+      maybeNotify({
+        title: `${displayName} in #${channelName}`,
+        body: contentPreview,
+        data: { route: 'chat', channelId: data.channelId as string },
+      });
+
       Notify.create({
         html: true,
         message: `<strong>${displayName}</strong><br>${contentPreview}`,
@@ -244,6 +286,79 @@ function connect() {
     lastEvent.value = { type: 'chat:channel:update', data };
     chatStore.handleUpdateChannel(data);
   });
+
+  // --- Proposal events with reactive handling ---
+  eventSource.addEventListener('proposal:endorsed', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'proposal:endorsed', data };
+    console.log('[BackendEvents] proposal:endorsed:', data);
+    if (data.threshold_met === 'true') {
+      Notify.create({
+        message: 'Endorsement threshold met! Proposal moved to In Review.',
+        color: 'positive',
+        position: 'top-right',
+        timeout: 5000,
+      });
+    }
+  });
+
+  eventSource.addEventListener('proposal:status_changed', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'proposal:status_changed', data };
+    console.log('[BackendEvents] proposal:status_changed:', data);
+  });
+
+  eventSource.addEventListener('governance_action:completed', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'governance_action:completed', data };
+    console.log('[BackendEvents] governance_action:completed:', data);
+  });
+
+  // --- Other contribution system events (generic handler) ---
+  const contribEventTypes: BackendEventType[] = [
+    'proposal:submitted',
+    'proposal:created',
+    'proposal:updated',
+    'proposal:comment_added',
+    'proposal:approved',
+    'proposal:rejected',
+    'project:created',
+    'project:comment_added',
+    'contribution:assigned',
+    'contribution:comment_added',
+    'contribution:needs_review',
+    'contribution:approved',
+    'contribution:declined',
+    'contribution:registered',
+    'contribution:reviewed',
+    'contribution:shared',
+    'contribution:confirmed',
+    'contribution:accepted',
+    'contribution:signed_off',
+    'contribution:rewarded',
+    'contribution:updated',
+    'contribution_updated',
+    'plan_updated',
+    'project_updated',
+    'milestone_updated',
+    'decision_plan:submitted',
+    'decision_plan:signed_off',
+    'proposal_updated',
+    'decision_plan_updated',
+    'governance_action_updated',
+  ];
+
+  for (const eventType of contribEventTypes) {
+    eventSource.addEventListener(eventType, (event) => {
+      const data = safeParse(event);
+      if (!data) return;
+      lastEvent.value = { type: eventType, data };
+      console.log(`[BackendEvents] ${eventType}:`, data);
+    });
+  }
 
   eventSource.onerror = () => {
     connected.value = false;

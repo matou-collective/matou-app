@@ -247,7 +247,7 @@ import ProfileCard from 'src/components/profiles/ProfileCard.vue';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
-const { isSteward, canManageMembers, checkAdminStatus } = useAdminAccess();
+const { isSteward, canManageMembers, checkAdminStatus, recheckAdminStatus } = useAdminAccess();
 const {
   pendingRegistrations,
   startPolling,
@@ -466,7 +466,7 @@ async function fetchMoonPhase() {
 // Format date for display
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
-  return date.toLocaleDateString('en-NZ', {
+  return date.toLocaleDateString(undefined, {
     day: 'numeric',
     month: 'long',
     year: 'numeric'
@@ -520,7 +520,7 @@ onUnmounted(() => {
 watch(hasJoinedMultisig, async (joined) => {
   if (joined) {
     console.log('[Dashboard] Joined org multisig, re-checking admin status...');
-    await checkAdminStatus();
+    await recheckAdminStatus();
     if (isSteward.value) {
       startPolling();
     }

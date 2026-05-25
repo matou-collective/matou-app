@@ -20,4 +20,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.once('update-downloaded', () => callback());
   },
   installUpdate: () => ipcRenderer.invoke('install-update'),
+  notify: (payload: { title: string; body: string; data?: Record<string, string> }) =>
+    ipcRenderer.send('notify', payload),
+  onNotificationClicked: (callback: (data: Record<string, string>) => void) => {
+    ipcRenderer.on('notification-clicked', (_event, data: Record<string, string>) => callback(data));
+  },
 });

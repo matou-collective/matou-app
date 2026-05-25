@@ -39,6 +39,14 @@
               :attachment="attachment"
             />
           </div>
+
+          <!-- Proposal Link Cards -->
+          <ProposalLinkCard
+            v-for="id in proposalIds"
+            :key="id"
+            :proposal-id="id"
+            @open="openProposalDetail"
+          />
         </template>
 
         <!-- Inline timestamp -->
@@ -79,6 +87,13 @@
         @select="handleEmojiSelect"
         @close="showEmojiPicker = false"
       />
+
+      <!-- Proposal Detail Modal -->
+      <ProposalDetailModal
+        v-if="proposalIds.length"
+        v-model="showProposalDetail"
+        :proposal-id="selectedProposalId"
+      />
     </div>
   </div>
 </template>
@@ -93,6 +108,8 @@ import DOMPurify from 'dompurify';
 import MessageReactions from './MessageReactions.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import AttachmentPreview from './AttachmentPreview.vue';
+import ProposalLinkCard from './ProposalLinkCard.vue';
+import ProposalDetailModal from '../proposals/ProposalDetailModal.vue';
 
 const props = defineProps<{
   message: ChatMessage;
@@ -142,6 +159,24 @@ const renderedContent = computed(() => {
   const html = marked.parse(props.message.content, { breaks: true });
   return DOMPurify.sanitize(html as string);
 });
+
+const proposalIds = computed(() => {
+  const regex = /\/dashboard\/proposals\/(prop_[a-f0-9]+)/g;
+  const ids = new Set<string>();
+  let match;
+  while ((match = regex.exec(props.message.content)) !== null) {
+    ids.add(match[1]);
+  }
+  return [...ids];
+});
+
+const selectedProposalId = ref('');
+const showProposalDetail = ref(false);
+
+function openProposalDetail(id: string) {
+  selectedProposalId.value = id;
+  showProposalDetail.value = true;
+}
 
 function formatTime(dateStr: string): string {
   const date = new Date(dateStr);

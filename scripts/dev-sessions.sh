@@ -202,13 +202,15 @@ stop_sessions() {
     echo "========================================"
     echo ""
 
-    # Stop all backend sessions
+    # Stop all backend sessions (kill entire process group to catch go run children)
     for pid_file in "$LOG_DIR"/backend-*.pid; do
         if [ -f "$pid_file" ]; then
             local pid=$(cat "$pid_file")
             local session=$(basename "$pid_file" | sed 's/backend-\([0-9]*\)\.pid/\1/')
             if kill -0 "$pid" 2>/dev/null; then
-                kill "$pid" 2>/dev/null || true
+                # Kill the entire process group to catch child processes
+                # (go run spawns a child server binary that survives parent kill)
+                kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
                 log_success "Stopped backend session $session (PID: $pid)"
             fi
             rm -f "$pid_file"
@@ -221,6 +223,9 @@ stop_sessions() {
             local pid=$(cat "$pid_file")
             local session=$(basename "$pid_file" | sed 's/frontend-\([0-9]*\)\.pid/\1/')
             if kill -0 "$pid" 2>/dev/null; then
+                # Kill the frontend process tree but NOT the process group
+                # (process group kill can close the user's browser)
+                pkill -P "$pid" 2>/dev/null || true
                 kill "$pid" 2>/dev/null || true
                 log_success "Stopped frontend session $session (PID: $pid)"
             fi
@@ -230,18 +235,18 @@ stop_sessions() {
 
     # Also kill any orphaned processes on known ports
     for port in $(seq $BACKEND_BASE_PORT $((BACKEND_BASE_PORT + 9))); do
-        local pid=$(lsof -ti:$port 2>/dev/null || true)
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null || true
-            log_info "Killed process on port $port (PID: $pid)"
+        local pids=$(lsof -ti:$port 2>/dev/null || true)
+        if [ -n "$pids" ]; then
+            echo "$pids" | xargs kill 2>/dev/null || true
+            log_info "Killed process on port $port (PID: $pids)"
         fi
     done
 
     for port in $(seq $FRONTEND_BASE_PORT $((FRONTEND_BASE_PORT + 9))); do
-        local pid=$(lsof -ti:$port 2>/dev/null || true)
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null || true
-            log_info "Killed process on port $port (PID: $pid)"
+        local pids=$(lsof -ti:$port 2>/dev/null || true)
+        if [ -n "$pids" ]; then
+            echo "$pids" | xargs kill 2>/dev/null || true
+            log_info "Killed process on port $port (PID: $pids)"
         fi
     done
 

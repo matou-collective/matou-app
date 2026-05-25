@@ -84,7 +84,7 @@ export default configure(() => {
 
     framework: {
       config: {},
-      plugins: ['Notify'],
+      plugins: ['Notify', 'Dialog'],
     },
 
     animations: [],

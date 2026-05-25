@@ -74,7 +74,7 @@ const buttonClasses = computed(() => {
 .m-btn {
   font-weight: 500;
   transition: all 0.2s ease;
-  border-radius: var(--matou-radius-xl);
+  border-radius: 10px;
 
   :deep(.q-btn__content) {
     gap: 0.5rem;

@@ -6,9 +6,9 @@ const TEST_SERVER_PORT = 9003;
 // Shared browser config
 const browserConfig = {
   ...devices['Desktop Chrome'],
-  headless: false, // Show browser for debugging
+  headless: !process.env.HEADED,
   launchOptions: {
-    slowMo: 100, // Slow down for visibility
+    slowMo: process.env.HEADED ? 100 : 0,
     args: [
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
@@ -23,7 +23,14 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1,
-  timeout: 240000, // 4 minutes: registration (~90s) + approval (~30s) + sync (~60s)
+  // Per-test budget — a single cap rather than a stack of per-action timeouts.
+  // When this fires Playwright cancels *all* pending waits in the test, so a
+  // stuck phase aborts immediately instead of crawling through compounded
+  // action timeouts. Individual test()s that legitimately need more (org
+  // setup, AID creation, steward upgrade) override via test.setTimeout(N).
+  // 3 min covers most cross-session sync phases; beforeAll hooks that run
+  // full org setup + member registration already call test.setTimeout(360_000).
+  timeout: 180_000,
   reporter: [['html', { open: 'never' }], ['list']],
 
   use: {
@@ -111,6 +118,27 @@ export default defineConfig({
       testMatch: /e2e-member-removal\.spec\.ts/,
       use: browserConfig,
     },
+    // Proposals — proposal lifecycle (API + UI)
+    // Requires test-accounts.json from org-setup
+    {
+      name: 'proposals',
+      testMatch: /e2e-proposals\.spec\.ts/,
+      use: browserConfig,
+    },
+    // Projects & Contributions — full lifecycle (API + UI)
+    // Requires test-accounts.json from org-setup
+    {
+      name: 'projects-contributions',
+      testMatch: /e2e-projects-contributions\.spec\.ts/,
+      use: browserConfig,
+    },
+    // Proposal link cards in chat — rich preview cards + detail modal
+    // Requires test-accounts.json from org-setup
+    {
+      name: 'proposal-link-cards',
+      testMatch: /e2e-proposal-link-cards\.spec\.ts/,
+      use: browserConfig,
+    },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above
     {
@@ -129,6 +157,9 @@ export default defineConfig({
         /e2e-chat\.spec\.ts/,
         /e2e-credential-chain\.spec\.ts/,
         /e2e-member-removal\.spec\.ts/,
+        /e2e-proposals\.spec\.ts/,
+        /e2e-projects-contributions\.spec\.ts/,
+        /e2e-proposal-link-cards\.spec\.ts/,
       ],
     },
   ],

@@ -20,6 +20,20 @@ import (
 // ObjectChangeType is the DataType used for generic object changes in ObjectTrees.
 const ObjectChangeType = "matou.object.v1"
 
+// Object type identifiers for contributions system entities.
+// These are stored in ObjectPayload.Type to distinguish entity types within the same tree.
+const (
+	TypeProposal           = "proposal"
+	TypeEndorsement        = "endorsement"
+	TypeProject            = "project"
+	TypeDecisionPlan       = "decision_plan"
+	TypeGovernanceAction   = "governance_action"
+	TypeImplementationPlan = "implementation_plan"
+	TypeMilestone          = "milestone"
+	TypeContribution       = "contribution"
+	TypeNotification       = "notification"
+)
+
 // ObjectPayload is the API-level representation of an object.
 // It provides backward compatibility with existing API responses.
 // Internally, data is stored as incremental ChangeOps in the tree.
@@ -167,6 +181,26 @@ func (m *ObjectTreeManager) UpdateObject(
 	return result.Heads[0], nil
 }
 
+// UpsertFields reads an object's latest state and writes a change that sets only
+// the provided fields, leaving every other existing field untouched. Use this
+// for partial updates (status flips, role changes, single-field edits) where
+// UpdateObject's full-replace semantics — driven by DiffState emitting "unset"
+// ops for any current field not in newFields — would otherwise wipe data.
+func (m *ObjectTreeManager) UpsertFields(ctx context.Context, spaceID, objectID string, partial map[string]json.RawMessage, signingKey crypto.PrivKey) (string, error) {
+	existing, err := m.ReadObject(ctx, spaceID, objectID)
+	if err != nil {
+		return "", fmt.Errorf("reading %s for upsert: %w", objectID, err)
+	}
+	merged, err := FieldsFromJSON(existing.Data)
+	if err != nil {
+		return "", fmt.Errorf("parsing %s state for upsert: %w", objectID, err)
+	}
+	for k, v := range partial {
+		merged[k] = v
+	}
+	return m.UpdateObject(ctx, spaceID, objectID, merged, signingKey)
+}
+
 // AddObject adds an object using the legacy ObjectPayload format.
 // For new objects, it creates a tree. For existing objects, it updates.
 // This provides backward compatibility with existing API handlers.
@@ -308,6 +342,13 @@ func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]
 // ReadLatestByID reads the latest version of a specific object by ID.
 // Backward-compatible with the old API.
 func (m *ObjectTreeManager) ReadLatestByID(ctx context.Context, spaceID, objectID string) (*ObjectPayload, error) {
+	return m.ReadObject(ctx, spaceID, objectID)
+}
+
+// ReadObjectByID reads a single object by its ID from a space's tree.
+// Uses UnifiedTreeManager.GetTreeForObject for O(1) index lookup.
+// This is the preferred read path for the contributions system.
+func (m *ObjectTreeManager) ReadObjectByID(ctx context.Context, spaceID, objectID string) (*ObjectPayload, error) {
 	return m.ReadObject(ctx, spaceID, objectID)
 }
 

@@ -1090,14 +1090,14 @@ test.describe.serial('Registration Approval Flow', () => {
       ).toBeVisible({ timeout: TIMEOUT.long });
       console.log('[Test] User on pending approval screen');
 
-      // 3. Wait for time slots grid to be visible
+      // 3. Wait for time slot buttons to appear.
+      // PendingApprovalScreen renders booking as per-date `.slot-date-row`
+      // groups (no single grid wrapper), so we anchor on the buttons directly.
       console.log('[Test] Looking for booking time slots...');
-      const timeSlotsGrid = userPage.locator('.time-slots-grid');
-      await expect(timeSlotsGrid).toBeVisible({ timeout: TIMEOUT.medium });
+      const timeSlotBtn = userPage.locator('.time-slot-btn').first();
+      await expect(timeSlotBtn).toBeVisible({ timeout: TIMEOUT.medium });
 
       // 4. Click the first available time slot
-      const timeSlotBtn = timeSlotsGrid.locator('.time-slot-btn').first();
-      await expect(timeSlotBtn).toBeVisible({ timeout: TIMEOUT.short });
       await timeSlotBtn.click();
       console.log('[Test] Selected time slot');
 

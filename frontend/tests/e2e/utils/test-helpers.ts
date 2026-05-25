@@ -333,17 +333,23 @@ export async function loginWithMnemonic(
 
   // Retry recovery up to 3 times — KERIA can be temporarily unreachable
   // under load (e.g. when running the full test suite sequentially).
+  // Use aidCreation timeout (90s) because recovery involves KERIA connect +
+  // 6 witness OOBI resolutions which can be slow under load.
   for (let attempt = 1; attempt <= 3; attempt++) {
+    // Wait for button to be enabled (not mid-recovery from a previous attempt)
+    await expect(
+      page.getByRole('button', { name: /recover identity/i }),
+    ).toBeEnabled({ timeout: TIMEOUT.medium });
     await page.getByRole('button', { name: /recover identity/i }).click();
 
     try {
       await expect(
         page.getByText(/identity recovered/i),
-      ).toBeVisible({ timeout: TIMEOUT.long });
+      ).toBeVisible({ timeout: TIMEOUT.aidCreation });
       break; // success
     } catch {
       const errorVisible = await page
-        .getByText(/failed to fetch|connection error|failed/i)
+        .getByText(/failed to fetch|connection error|failed|no identity found/i)
         .first()
         .isVisible()
         .catch(() => false);

@@ -98,7 +98,7 @@ onMounted(() => {
   font-size: 0.85rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--matou-border, #e5e7eb);
-  border-radius: var(--matou-radius, 6px);
+  border-radius: 10px;
   background: transparent;
   cursor: pointer;
   color: var(--matou-muted-foreground);

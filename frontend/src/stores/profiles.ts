@@ -66,13 +66,14 @@ export const useProfilesStore = defineStore('profiles', () => {
   }
 
   const profilesByAid = computed(() => {
-    const map: Record<string, { displayName: string; avatar: string }> = {};
+    const map: Record<string, { displayName: string; avatar: string; status: string }> = {};
     for (const p of communityProfiles.value) {
       const aid = p.data.aid as string;
       if (aid) {
         map[aid] = {
           displayName: (p.data.displayName as string) || '',
           avatar: (p.data.avatar as string) || '',
+          status: (p.data.status as string) || '',
         };
       }
     }

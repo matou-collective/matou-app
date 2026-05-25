@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/anyproto/any-sync/util/crypto"
 )
 
 func TestGenerateSpaceKeySet(t *testing.T) {
@@ -196,6 +198,54 @@ func TestLoadSpaceKeySet_NotFound(t *testing.T) {
 	_, err = LoadSpaceKeySet(tmpDir, "nonexistent-space")
 	if err == nil {
 		t.Error("expected error for non-existent key file")
+	}
+}
+
+// TestLoadOrCreateSpaceKeySet_SelfHeal verifies the recovery path used by
+// joiners whose JoinCommunity returned before PersistSpaceKeySet ran. When
+// the key file is missing, a fresh bundle must be generated, persisted, and
+// have its SigningKey bound to the caller-supplied peer key.
+func TestLoadOrCreateSpaceKeySet_SelfHeal(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "selfheal_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	peerPriv, _, err := crypto.GenerateRandomEd25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating peer key: %v", err)
+	}
+
+	spaceID := "self-heal-space"
+	keys, err := LoadOrCreateSpaceKeySet(tmpDir, spaceID, peerPriv)
+	if err != nil {
+		t.Fatalf("LoadOrCreateSpaceKeySet self-heal failed: %v", err)
+	}
+	if keys.SigningKey == nil || !keys.SigningKey.Equals(peerPriv) {
+		t.Fatal("recovered SigningKey must equal supplied peer key")
+	}
+
+	// File now exists — second call should load same bundle (same signing key).
+	keys2, err := LoadOrCreateSpaceKeySet(tmpDir, spaceID, peerPriv)
+	if err != nil {
+		t.Fatalf("second LoadOrCreateSpaceKeySet failed: %v", err)
+	}
+	if !keys.SigningKey.Equals(keys2.SigningKey) {
+		t.Fatal("loaded signing key must equal originally persisted key")
+	}
+}
+
+func TestLoadOrCreateSpaceKeySet_NoPeerKey(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "selfheal_nokey_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	_, err = LoadOrCreateSpaceKeySet(tmpDir, "any-space", nil)
+	if err == nil {
+		t.Fatal("expected error when key file is missing and no peer key provided")
 	}
 }
 

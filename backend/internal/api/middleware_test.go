@@ -335,12 +335,48 @@ func TestCORSMiddleware_AllowedHeaders(t *testing.T) {
 	wrapped.ServeHTTP(w, req)
 
 	headers := w.Header().Get("Access-Control-Allow-Headers")
-	expectedHeaders := []string{"Accept", "Content-Type", "Authorization"}
+	expectedHeaders := []string{"Accept", "Content-Type", "Authorization", "X-User-AID", "X-User-Name"}
 
 	for _, header := range expectedHeaders {
 		if !containsMethod(headers, header) {
 			t.Errorf("expected %s in allowed headers", header)
 		}
+	}
+}
+
+// TestCORSPreflight_CustomHeaders verifies that a browser preflight for a PATCH
+// request with X-User-AID and X-User-Name headers is allowed. This prevents a
+// regression where missing headers in the allow-list silently block requests
+// (the browser never sends the actual request, so no backend error is logged).
+func TestCORSPreflight_CustomHeaders(t *testing.T) {
+	handler := CORSHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Simulate the preflight OPTIONS request a browser sends before
+	// PATCH /api/v1/proposals/{id} with custom headers.
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/proposals/prop_123", nil)
+	req.Header.Set("Origin", "http://localhost:5100")
+	req.Header.Set("Access-Control-Request-Method", "PATCH")
+	req.Header.Set("Access-Control-Request-Headers", "content-type,x-user-aid,x-user-name")
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("preflight should return 200, got %d", w.Code)
+	}
+
+	allowHeaders := w.Header().Get("Access-Control-Allow-Headers")
+	for _, h := range []string{"X-User-AID", "X-User-Name", "Content-Type"} {
+		if !containsMethod(allowHeaders, h) {
+			t.Errorf("Access-Control-Allow-Headers missing %s; got %q", h, allowHeaders)
+		}
+	}
+
+	allowMethods := w.Header().Get("Access-Control-Allow-Methods")
+	if !containsMethod(allowMethods, "PATCH") {
+		t.Errorf("Access-Control-Allow-Methods missing PATCH; got %q", allowMethods)
 	}
 }
 
