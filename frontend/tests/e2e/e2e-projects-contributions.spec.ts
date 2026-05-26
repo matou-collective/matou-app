@@ -1717,15 +1717,21 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     expect(assignee).toBe('');
     console.log('[Phase 12] Backend confirms contribution 2 unassigned (status=confirmed, no assignee)');
 
-    // After Unassign the card reveals its inline re-offer picker, whose search
-    // input takes focus — that swallows Escape, so closeContributionDialog's
-    // Escape fallback can't dismiss the dialog. Click the picker's own Cancel
-    // first to collapse it, then close the (now plain) dialog.
-    const pickerCancel = card.locator('.inline-picker').getByRole('button', { name: /^Cancel$/i }).first();
+    // CreateContributionDialog is a *persistent* Quasar dialog — it ignores
+    // Escape and backdrop clicks, so closeContributionDialog's Escape fallback
+    // can't dismiss it. Close it via its footer Cancel button (v-close-popup).
+    // First collapse the inline picker (revealed by Unassign) if present, so
+    // the only remaining "Cancel" is the dialog footer's.
+    const pickerCancel = formDlg.locator('.inline-picker').getByRole('button', { name: /^Cancel$/i }).first();
     if (await pickerCancel.isVisible().catch(() => false)) {
       await pickerCancel.click().catch(() => {});
       await adminPage.waitForTimeout(300);
     }
+    const footerCancel = formDlg.locator('.dialog-footer-btn').filter({ hasText: /^Cancel$/ }).first();
+    await expect(footerCancel).toBeVisible({ timeout: TIMEOUT.short });
+    await footerCancel.click();
+    await adminPage.waitForTimeout(500);
+    // Close any remaining (non-persistent) detail dialog underneath.
     await closeContributionDialog(adminPage);
   });
 
