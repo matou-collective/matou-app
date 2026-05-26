@@ -22,9 +22,9 @@ Think of the KEL like a git commit history for your identity. Each event is sign
 
 ```mermaid
 graph LR
-    ICP["🌱 Inception\ncreate identity\ncurrent keys: K0\nnext keys committed: H(K1)"]
-    ROT["🔄 Rotation\nreveal K1 — matches H(K1) ✓\nnext keys committed: H(K2)"]
-    INT["📋 Interaction\nanchor a credential issuance\nor other event"]
+    ICP["🌱 Inception<br>create identity<br>current keys: K0<br>next keys committed: H(K1)"]
+    ROT["🔄 Rotation<br>reveal K1 — matches H(K1) ✓<br>next keys committed: H(K2)"]
+    INT["📋 Interaction<br>anchor a credential issuance<br>or other event"]
 
     ICP -->|"signed + witnessed"| ROT -->|"signed + witnessed"| INT
 
@@ -45,11 +45,11 @@ The number of witness receipts required before a key event is considered establi
 
 ```mermaid
 graph TD
-    CTRL["🔑 You\n(controller)"]
-    W1["Witness A\n✓ independent server\nsigns + stores receipt"]
-    W2["Witness B\n✓ independent server\nsigns + stores receipt"]
-    W3["Witness C\n✓ independent server\nsigns + stores receipt"]
-    KEL_OK["Key event established\n2 of 3 receipts = toad met ✅"]
+    CTRL["🔑 You<br>(controller)"]
+    W1["Witness A<br>✓ independent server<br>signs + stores receipt"]
+    W2["Witness B<br>✓ independent server<br>signs + stores receipt"]
+    W3["Witness C<br>✓ independent server<br>signs + stores receipt"]
+    KEL_OK["Key event established<br>2 of 3 receipts = toad met ✅"]
 
     CTRL -->|"push key event"| W1
     CTRL -->|"push key event"| W2
@@ -93,14 +93,14 @@ Think of the split like this: signify-ts (running inside the Matou app on your d
 ```mermaid
 graph LR
     subgraph Device["📱 Your device — Matou app"]
-        PHRASE["12-word phrase\n→ passcode → keys"]
-        SIGN["Signs every request\nbefore sending"]
+        PHRASE["12-word phrase<br>→ passcode → keys"]
+        SIGN["Signs every request<br>before sending"]
     end
 
     subgraph KERIA_box["☁️ KERIA server"]
-        INBOX["Your inbox\nmessages · grants · notifications"]
-        KEL_S["KEL storage\nkey event history + receipts"]
-        ROUTE["Message routing\ndelivers to other members"]
+        INBOX["Your inbox<br>messages · grants · notifications"]
+        KEL_S["KEL storage<br>key event history + receipts"]
+        ROUTE["Message routing<br>delivers to other members"]
     end
 
     PHRASE --> SIGN
@@ -130,20 +130,20 @@ Matou runs four services as a Docker Compose stack:
 ```mermaid
 graph TD
     subgraph App["Matou App"]
-        FE["frontend\nsignify-ts — all crypto ops\nAID · credentials · messages"]
-        BE["backend (Go)\nvalidates credentials\ndefines roles — no direct KERIA calls"]
+        FE["frontend<br>signify-ts — all crypto ops<br>AID · credentials · messages"]
+        BE["backend (Go)<br>validates credentials<br>defines roles — no direct KERIA calls"]
     end
 
     subgraph Stack["matou-infrastructure/keri"]
-        KERIA2["KERIA :3901–3903\ncloud agent for all members\n+ registration patch"]
-        WITNESS["Witnesses :5642–5647\n6 witnesses (dev: 1 container)\nreceipt + store key events"]
-        SCHEMA["schema-server :7723\nserves credential schemas"]
-        CONFIG["config-server :3904\nKERIA URLs · org config · admin list"]
+        KERIA2["KERIA :3901–3903<br>cloud agent for all members<br>+ registration patch"]
+        WITNESS["Witnesses :5642–5647<br>6 witnesses (dev: 1 container)<br>receipt + store key events"]
+        SCHEMA["schema-server :7723<br>serves credential schemas"]
+        CONFIG["config-server :3904<br>KERIA URLs · org config · admin list"]
     end
 
     FE -->|"Admin API"| KERIA2
     FE -->|"fetch config"| CONFIG
-    KERIA2 <-->|"push events\ncollect receipts"| WITNESS
+    KERIA2 <-->|"push events<br>collect receipts"| WITNESS
     KERIA2 -->|"resolve schemas"| SCHEMA
     FE -.->|"sync credentials"| BE
 
