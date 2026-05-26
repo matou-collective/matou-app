@@ -1709,11 +1709,13 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     expect(assignee).toBe('');
     console.log('[Phase 12] Backend confirms contribution 2 unassigned (status=confirmed, no assignee)');
 
-    // Cancel the edit dialog (we mutated assignment via the card, not the
-    // form's Save), then close all dialogs so the next phase starts clean.
-    const cancelBtn = formDlg.getByRole('button', { name: /^Cancel$/i }).first();
-    if (await cancelBtn.isVisible().catch(() => false)) {
-      await cancelBtn.click().catch(() => {});
+    // After Unassign the card reveals its inline re-offer picker, whose search
+    // input takes focus — that swallows Escape, so closeContributionDialog's
+    // Escape fallback can't dismiss the dialog. Click the picker's own Cancel
+    // first to collapse it, then close the (now plain) dialog.
+    const pickerCancel = card.locator('.inline-picker').getByRole('button', { name: /^Cancel$/i }).first();
+    if (await pickerCancel.isVisible().catch(() => false)) {
+      await pickerCancel.click().catch(() => {});
       await adminPage.waitForTimeout(300);
     }
     await closeContributionDialog(adminPage);
