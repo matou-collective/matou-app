@@ -1263,10 +1263,18 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
   test('Phase 10.5: SUB_2 auto-offered to member after parent acceptance', async () => {
     await adminPage.bringToFront();
 
-    // Backend: SUB_2 should be in 'offered' status with offered_to = memberAID.
-    // Scope the lookup to the current project so a stale SUB_2 from a prior
-    // (un-cleaned) run doesn't shadow this one.
-    const sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
+    // Backend: SUB_2 should become 'offered' to memberAID once the member's
+    // acceptance of CONTRIBUTION_2 (prev phase) triggers propagateOfferToChildren
+    // and that offer syncs to the admin's backend. Poll until it propagates —
+    // checking once races any-sync. Scope to the current project so a stale
+    // SUB_2 from a prior (un-cleaned) run doesn't shadow this one.
+    const deadline = Date.now() + 30_000;
+    let sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
+    while (Date.now() < deadline) {
+      sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
+      if (sub?.status === 'offered' && sub?.offered_to === memberAID) break;
+      await adminPage.waitForTimeout(500);
+    }
     expect(sub).toBeTruthy();
     expect(sub?.status).toBe('offered');
     expect(sub?.offered_to).toBe(memberAID);
