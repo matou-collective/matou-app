@@ -1674,11 +1674,14 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     expect(assignee).toBe('');
     console.log('[Phase 12] Backend confirms contribution 2 unassigned (status=confirmed, no assignee)');
 
-    // Close dialogs to leave clean state for subsequent phases.
-    await adminPage.keyboard.press('Escape').catch(() => {});
-    await adminPage.waitForTimeout(300);
-    await adminPage.keyboard.press('Escape').catch(() => {});
-    await waitForSettle(adminPage);
+    // Cancel the edit dialog (we mutated assignment via the card, not the
+    // form's Save), then close all dialogs so the next phase starts clean.
+    const cancelBtn = formDlg.getByRole('button', { name: /^Cancel$/i }).first();
+    if (await cancelBtn.isVisible().catch(() => false)) {
+      await cancelBtn.click().catch(() => {});
+      await adminPage.waitForTimeout(300);
+    }
+    await closeContributionDialog(adminPage);
   });
 
   // ------------------------------------------------------------------
