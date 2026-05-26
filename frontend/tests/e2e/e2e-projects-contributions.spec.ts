@@ -849,65 +849,76 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await navigateToProjectDetail(memberPage, PROJECT_TITLE);
     await waitForSettle(memberPage, 1500);
 
-    await openContributionDialog(memberPage, CONTRIBUTION_1_TITLE);
-    const detailDlg = memberPage.locator('.q-dialog');
-
-    // 6.6 Click sub-item to open recursive dialog
-    const subItem = detailDlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE });
-    await expect(subItem).toBeVisible({ timeout: TIMEOUT.medium });
-    await subItem.click();
-    await memberPage.waitForTimeout(500);
-
-    // A nested dialog opens with the sub-contribution
-    const nestedDlg = memberPage.locator('.q-dialog').last();
-
-    // Toggle evidence form first
-    const submitEvidenceBtn = nestedDlg.getByRole('button', { name: /Submit Evidence & Complete/i });
-    if (await submitEvidenceBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await submitEvidenceBtn.click();
+    // Open the parent dialog, click into the sub, and wait for the member's
+    // "Submit Evidence & Complete" button. The backend already reports SUB_1
+    // as assigned-to-member (confirmed by the poll in the approve phase), but
+    // the member's frontend may still be showing a stale snapshot of the sub
+    // when the dialog first opens. Retry the navigate→open cycle until the
+    // button appears rather than silently skipping evidence submission.
+    let nestedDlg = memberPage.locator('.q-dialog').last();
+    let submitEvidenceBtn = nestedDlg.getByRole('button', { name: /Submit Evidence & Complete/i });
+    let evidenceFormOpened = false;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await openContributionDialog(memberPage, CONTRIBUTION_1_TITLE);
+      const detailDlg = memberPage.locator('.q-dialog');
+      const subItem = detailDlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE });
+      await expect(subItem).toBeVisible({ timeout: TIMEOUT.medium });
+      await subItem.click();
       await memberPage.waitForTimeout(500);
-    }
 
-    // Fill completion notes and acceptance criteria, then submit
+      nestedDlg = memberPage.locator('.q-dialog').last();
+      submitEvidenceBtn = nestedDlg.getByRole('button', { name: /Submit Evidence & Complete/i });
+      if (await submitEvidenceBtn.isVisible({ timeout: 4000 }).catch(() => false)) {
+        await submitEvidenceBtn.click();
+        await memberPage.waitForTimeout(500);
+        evidenceFormOpened = true;
+        break;
+      }
+      // Button not visible — close everything, re-navigate, and retry.
+      console.log(`[Phase 6] Submit Evidence button not visible yet (attempt ${attempt + 1}/4) — refreshing`);
+      await closeContributionDialog(memberPage);
+      await navigateToProjectDetail(memberPage, PROJECT_TITLE);
+      await waitForSettle(memberPage, 1500);
+    }
+    expect(evidenceFormOpened, 'Submit Evidence form should open for the member-assigned sub').toBe(true);
+
+    // Fill completion notes and acceptance criteria, then submit. The form
+    // is open (asserted above), so the notes field must be present.
     const notesInput = nestedDlg.getByPlaceholder(/Describe how you completed/i).or(
       nestedDlg.locator('.submit-completion-form textarea').first(),
     );
-    const notesVisible = await notesInput.isVisible({ timeout: 5000 }).catch(() => false);
-    if (notesVisible) {
-      await notesInput.fill('Design review completed. All documents reviewed and feedback provided.');
+    await expect(notesInput).toBeVisible({ timeout: TIMEOUT.medium });
+    await notesInput.fill('Design review completed. All documents reviewed and feedback provided.');
 
-      // Fill acceptance criteria responses (required)
-      const criteriaInputs = nestedDlg.locator('.submit-completion-form .criterion-block input');
-      const criteriaCount = await criteriaInputs.count();
-      for (let i = 0; i < criteriaCount; i++) {
-        await criteriaInputs.nth(i).fill('Criterion met through thorough review');
-      }
-
-      const submitBtn = nestedDlg.getByRole('button', { name: /Submit for Review/i });
-      await expect(submitBtn).toBeEnabled({ timeout: TIMEOUT.short });
-      await submitBtn.click();
-      await waitForSettle(memberPage);
-      console.log('[Phase 6] Member submitted evidence for sub-contribution');
-
-      // Poll the ADMIN backend until SUB_1 reports status=needs_review so the
-      // next phase (admin reviews + signs off) doesn't read a stale 'assigned'
-      // replica. The member's local backend transitioned immediately; we wait
-      // for any-sync to propagate the change to the admin's backend.
-      const deadline = Date.now() + 30_000;
-      let observedStatus = '';
-      while (Date.now() < deadline) {
-        const sub = await findContribInCurrentProject(adminPage, SUB_CONTRIBUTION_TITLE);
-        observedStatus = sub?.status ?? '';
-        if (observedStatus === 'needs_review') break;
-        await memberPage.waitForTimeout(500);
-      }
-      if (observedStatus !== 'needs_review') {
-        throw new Error(`SUB_1 did not reach needs_review on admin backend within 30s (last observed: ${observedStatus})`);
-      }
-      console.log('[Phase 6] SUB_1 admin backend status confirmed: needs_review');
-    } else {
-      console.log('[Phase 6] Sub-contribution evidence form not visible — may need approval first');
+    // Fill acceptance criteria responses (required)
+    const criteriaInputs = nestedDlg.locator('.submit-completion-form .criterion-block input');
+    const criteriaCount = await criteriaInputs.count();
+    for (let i = 0; i < criteriaCount; i++) {
+      await criteriaInputs.nth(i).fill('Criterion met through thorough review');
     }
+
+    const submitBtn = nestedDlg.getByRole('button', { name: /Submit for Review/i });
+    await expect(submitBtn).toBeEnabled({ timeout: TIMEOUT.short });
+    await submitBtn.click();
+    await waitForSettle(memberPage);
+    console.log('[Phase 6] Member submitted evidence for sub-contribution');
+
+    // Poll the ADMIN backend until SUB_1 reports status=needs_review so the
+    // next phase (admin reviews + signs off) doesn't read a stale 'assigned'
+    // replica. The member's local backend transitioned immediately; we wait
+    // for any-sync to propagate the change to the admin's backend.
+    const deadline = Date.now() + 30_000;
+    let observedStatus = '';
+    while (Date.now() < deadline) {
+      const sub = await findContribInCurrentProject(adminPage, SUB_CONTRIBUTION_TITLE);
+      observedStatus = sub?.status ?? '';
+      if (observedStatus === 'needs_review') break;
+      await memberPage.waitForTimeout(500);
+    }
+    if (observedStatus !== 'needs_review') {
+      throw new Error(`SUB_1 did not reach needs_review on admin backend within 30s (last observed: ${observedStatus})`);
+    }
+    console.log('[Phase 6] SUB_1 admin backend status confirmed: needs_review');
 
     // Close nested dialog
     await memberPage.keyboard.press('Escape');
