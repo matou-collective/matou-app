@@ -120,6 +120,40 @@ async function closeContributionDialog(page: Page) {
   });
 }
 
+/** Shape of a contribution as returned by the backend list endpoints. */
+interface ContribLite {
+  id: string;
+  title?: string;
+  status?: string;
+  offered_to?: string;
+  assigned_contributor?: string;
+  assigned_contributor_id?: string;
+  parent_contribution?: string;
+  project_id?: string;
+}
+
+/** Find a contribution by title scoped to the CURRENT run's project.
+ *
+ * The lifecycle suite reuses the constant SUB_2_TITLE / CONTRIBUTION_*_TITLE
+ * across runs, and the backend is not cleaned between runs, so a global
+ * find-by-title can match a stale contribution from a previous run's project.
+ * Resolve the current project by its unique (per-run, #N-suffixed) title and
+ * filter contributions to that project_id. Returns undefined if not found. */
+async function findContribInCurrentProject(
+  page: Page,
+  title: string,
+): Promise<ContribLite | undefined> {
+  const projResp = await page.request.get(`${BACKEND_URL}/api/v1/projects`);
+  const projData: { projects?: Array<{ id: string; title?: string }> } = await projResp.json();
+  const proj = (projData.projects ?? []).find((p) => p.title === PROJECT_TITLE);
+  if (!proj) return undefined;
+  const listResp = await page.request.get(`${BACKEND_URL}/api/v1/contributions`);
+  const listData: { contributions?: ContribLite[] } = await listResp.json();
+  return (listData.contributions ?? []).find(
+    (c) => c.title === title && c.project_id === proj.id,
+  );
+}
+
 /** Navigate to the project detail page from the projects list.
  * Uses the first matching card. Both My Projects and All Projects sort by
  * created_at DESC, so the first match is the freshest project with the title
@@ -786,14 +820,13 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       await waitForSettle(adminPage);
       console.log('[Phase 6] Admin approved sub-contribution');
 
-      // Poll the MEMBER backend until SUB_1 reports status=assigned so the
-      // next phase (member submits evidence) sees the Submit Evidence button.
+      // Poll the MEMBER backend until SUB_1 (in the current project) reports
+      // status=assigned so the next phase (member submits evidence) sees the
+      // Submit Evidence button.
       const deadline = Date.now() + 30_000;
       let observedStatus = '';
       while (Date.now() < deadline) {
-        const r = await memberPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-        const data: { contributions?: Array<{ title?: string; status?: string }> } = await r.json();
-        const sub = (data.contributions ?? []).find(c => c.title === SUB_CONTRIBUTION_TITLE);
+        const sub = await findContribInCurrentProject(memberPage, SUB_CONTRIBUTION_TITLE);
         observedStatus = sub?.status ?? '';
         if (observedStatus === 'assigned') break;
         await adminPage.waitForTimeout(500);
@@ -863,9 +896,7 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       const deadline = Date.now() + 30_000;
       let observedStatus = '';
       while (Date.now() < deadline) {
-        const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-        const listData: { contributions?: Array<{ title?: string; status?: string }> } = await listResp.json();
-        const sub = (listData.contributions ?? []).find(c => c.title === SUB_CONTRIBUTION_TITLE);
+        const sub = await findContribInCurrentProject(adminPage, SUB_CONTRIBUTION_TITLE);
         observedStatus = sub?.status ?? '';
         if (observedStatus === 'needs_review') break;
         await memberPage.waitForTimeout(500);
@@ -1222,9 +1253,9 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await adminPage.bringToFront();
 
     // Backend: SUB_2 should be in 'offered' status with offered_to = memberAID.
-    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-    const listData: { contributions?: Array<{ id: string; title?: string; status?: string; offered_to?: string; parent_contribution?: string }> } = await listResp.json();
-    const sub = (listData.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+    // Scope the lookup to the current project so a stale SUB_2 from a prior
+    // (un-cleaned) run doesn't shadow this one.
+    const sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
     expect(sub).toBeTruthy();
     expect(sub?.status).toBe('offered');
     expect(sub?.offered_to).toBe(memberAID);
@@ -1287,15 +1318,14 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await waitForSettle(memberPage, 2000);
     console.log('[Phase 10.6] Member accepted SUB_2 offer');
 
-    // Poll the ADMIN backend until it sees SUB_2 as assigned to member —
-    // the next phase opens the dialog on adminPage and would race any-sync.
+    // Poll the ADMIN backend until it sees SUB_2 (in the current project) as
+    // assigned to member — the next phase opens the dialog on adminPage and
+    // would race any-sync.
     const deadline = Date.now() + 30_000;
     let observedStatus = '';
     let observedAssignee = '';
     while (Date.now() < deadline) {
-      const r = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-      const data: { contributions?: Array<{ title?: string; status?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await r.json();
-      const s = (data.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+      const s = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
       observedStatus = s?.status ?? '';
       observedAssignee = s?.assigned_contributor ?? s?.assigned_contributor_id ?? '';
       if (observedStatus === 'assigned' && observedAssignee === memberAID) break;
@@ -1360,10 +1390,8 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(card).not.toContainText(`Assigned to ${memberNameToUse}`);
     console.log('[Phase 10.7] SUB_2 re-offered to admin via card; no stale assignee text');
 
-    // Backend cross-check.
-    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-    const listData: { contributions?: Array<{ id: string; title?: string; status?: string; offered_to?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
-    const sub = (listData.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+    // Backend cross-check (scoped to the current project).
+    const sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
     expect(sub?.status).toBe('offered');
     expect(sub?.offered_to).toBe(adminAID);
     const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
@@ -1400,9 +1428,7 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await waitForSettle(adminPage, 2000);
     console.log('[Phase 10.8] Admin accepted own SUB_2 offer');
 
-    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-    const listData: { contributions?: Array<{ id: string; title?: string; status?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
-    const sub = (listData.contributions ?? []).find(c => c.title === SUB_2_TITLE);
+    const sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
     expect(sub?.status).toBe('assigned');
     const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
     expect(subAssignee).toBe(adminAID);
@@ -1665,9 +1691,7 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     // unassign happens on the AssignmentCard inside the open edit dialog,
     // and the parent page's Pinia cache may still hold the pre-unassign
     // snapshot until SSE delivers the update.
-    const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-    const listData: { contributions?: Array<{ title?: string; status?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
-    const contrib = (listData.contributions ?? []).find(c => c.title === CONTRIBUTION_2_TITLE);
+    const contrib = await findContribInCurrentProject(adminPage, CONTRIBUTION_2_TITLE);
     expect(contrib).toBeTruthy();
     expect(contrib?.status).toBe('confirmed');
     const assignee = contrib?.assigned_contributor ?? contrib?.assigned_contributor_id ?? '';
