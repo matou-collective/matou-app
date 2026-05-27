@@ -475,6 +475,8 @@
                   outlined
                   dense
                   min="0"
+                  step="0.01"
+                  @blur="evidenceForm.actual_duration = round2(evidenceForm.actual_duration)"
                 />
               </div>
               <div class="actuals-col">
@@ -485,7 +487,9 @@
                   outlined
                   dense
                   min="0"
+                  step="0.01"
                   prefix="$"
+                  @blur="evidenceForm.actual_cost = round2(evidenceForm.actual_cost)"
                 />
               </div>
             </div>
@@ -791,18 +795,6 @@
           </div>
         </div>
 
-        <!-- Archive action -->
-        <div v-if="canArchive && contribution.status !== 'archived'" class="archive-action">
-          <q-btn
-            no-caps
-            outline
-            color="negative"
-            icon="archive"
-            label="Archive Contribution"
-            class="full-width"
-            @click="emit('archive-contribution', contribution)"
-          />
-        </div>
 
       </div>
 
@@ -1498,6 +1490,14 @@ function removeAttachment(idx: number) {
   evidenceForm.value.attachment_files.splice(idx, 1);
 }
 
+// Round to at most 2 decimal places (hours/cost). Backend stores these as
+// float64; we cap precision so values like an auto-prefilled 6.0158 become
+// 6.02 rather than being sent raw.
+function round2(v: number | undefined): number | undefined {
+  if (v === undefined || v === null || Number.isNaN(v)) return undefined;
+  return Math.round(v * 100) / 100;
+}
+
 async function handleSubmitEvidence() {
   if (!canSubmitEvidence.value) return;
   actionLoading.value = 'submit-evidence';
@@ -1505,8 +1505,8 @@ async function handleSubmitEvidence() {
     const updated = await store.submitEvidence(props.contribution.id, {
       completion_notes: evidenceForm.value.completion_notes.trim(),
       evidence_urls: evidenceForm.value.evidence_urls.filter((u) => u.trim()),
-      actual_duration: evidenceForm.value.actual_duration,
-      actual_cost: evidenceForm.value.actual_cost,
+      actual_duration: round2(evidenceForm.value.actual_duration),
+      actual_cost: round2(evidenceForm.value.actual_cost),
       acceptance_notes: evidenceForm.value.acceptance_notes.filter((n) => n.trim()),
       time_report_file: evidenceForm.value.time_report_files[0] ? toBackendFileRef(evidenceForm.value.time_report_files[0]) as any : undefined,
       attachment_files: evidenceForm.value.attachment_files.length ? evidenceForm.value.attachment_files.map(f => toBackendFileRef(f)) as any : undefined,
@@ -2262,10 +2262,6 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 .signed-off-panel {
   border-color: var(--matou-accent);
   background: rgba(74, 157, 156, 0.08);
-}
-
-.archive-action {
-  margin-top: 16px;
 }
 
 .sign-off-icon {

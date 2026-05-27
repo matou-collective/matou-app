@@ -312,6 +312,7 @@
             color="negative"
             icon="delete"
             label="Delete Contribution"
+            class="full-width"
             @click="$emit('archive')"
           />
         </div>

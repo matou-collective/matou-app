@@ -1465,7 +1465,7 @@ type SubmitEvidenceRequest struct {
 	CompletionNotes string    `json:"completion_notes"`
 	EvidenceURLs    []string  `json:"evidence_urls,omitempty"`
 	AcceptanceNotes []string  `json:"acceptance_notes,omitempty"`
-	ActualDuration  int       `json:"actual_duration,omitempty"`
+	ActualDuration  float64   `json:"actual_duration,omitempty"`
 	ActualCost      float64   `json:"actual_cost,omitempty"`
 	TimeReportFile  *FileRef  `json:"time_report_file,omitempty"`
 	AttachmentFiles []FileRef `json:"attachment_files,omitempty"`

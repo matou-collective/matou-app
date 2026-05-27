@@ -393,7 +393,7 @@ type Contribution struct {
 	ContributionType       ProposalType       `json:"contribution_type"`
 	Priority               Priority           `json:"priority"`
 	EstimatedDuration      int                `json:"estimated_duration"`
-	ActualDuration         int                `json:"actual_duration,omitempty"`
+	ActualDuration         float64            `json:"actual_duration,omitempty"`
 	Budget                 string             `json:"budget,omitempty"`
 	ActualCost             float64            `json:"actual_cost,omitempty"`
 	Deadline               *time.Time         `json:"deadline,omitempty"`
