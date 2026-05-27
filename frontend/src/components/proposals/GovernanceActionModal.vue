@@ -247,9 +247,7 @@
               <div class="vote-comments-header">Comments</div>
               <div v-for="(v, i) in allVotes" :key="i" class="vote-comment">
                 <div class="vote-comment-header">
-                  <div class="vote-comment-avatar">
-                    <q-icon name="person" size="14px" />
-                  </div>
+                  <UserAvatar :aid="v.voter_id" :name="(v.voter_name || v.voter_id) ?? undefined" :size="22" />
                   <span class="vote-comment-name">{{ v.voter_name || v.voter_id }}</span>
                   <span
                     class="voting-result-badge"
@@ -351,6 +349,7 @@ import { useQuasar } from 'quasar';
 import type { GovernanceAction } from 'src/lib/api/decisionPlans';
 import { uploadFile, getFileUrl } from 'src/lib/api/client';
 import { useIdentityStore } from 'stores/identity';
+import UserAvatar from 'components/profiles/UserAvatar.vue';
 
 // ── CompletionDetails sub-component ──────────────────────────────────────────
 
@@ -1024,17 +1023,6 @@ function submitResolve() {
   align-items: center;
   gap: 8px;
   margin-bottom: 4px;
-}
-
-.vote-comment-avatar {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #dbeafe;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
 }
 
 .vote-comment-name {
