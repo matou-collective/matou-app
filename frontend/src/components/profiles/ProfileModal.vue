@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="$emit('close')">
+      <div v-if="show" class="modal-overlay fixed inset-0 flex items-center justify-center p-4" @click.self="$emit('close')">
         <div class="modal-content bg-card border border-border rounded-2xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-hidden">
           <!-- Header -->
           <div class="modal-header bg-primary p-4 border-b border-white/20 flex items-center justify-between">
@@ -710,6 +710,10 @@ function handleRemove() {
 
 <style lang="scss" scoped>
 .modal-overlay {
+  /* Above Quasar q-dialog (z-index 6000) so the profile viewer sits on top
+     when opened from an avatar inside an open dialog; below Quasar's .z-top
+     (7000, used for loading). The Tailwind z-50 on the element is too low. */
+  z-index: 6500;
   background-color: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
 }
