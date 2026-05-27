@@ -41,8 +41,9 @@
     <!-- Offered state -->
     <div v-else-if="state === 'offered'" class="row-between">
       <div>
-        <div class="card-title">
-          Offered to {{ recipientName }} — awaiting acceptance
+        <div class="card-title title-with-avatar">
+          <UserAvatar :aid="contribution.offered_to" :name="recipientName" :size="20" />
+          <span>Offered to {{ recipientName }} — awaiting acceptance</span>
         </div>
         <div v-if="contribution.offered_at" class="card-sub">
           Offered {{ formatDate(contribution.offered_at) }}
@@ -61,7 +62,10 @@
     <!-- Assigned state -->
     <div v-else-if="state === 'assigned'" class="row-between">
       <div>
-        <div class="card-title">Assigned to {{ assignedName }}</div>
+        <div class="card-title title-with-avatar">
+          <UserAvatar :aid="assignedAid" :name="assignedName" :size="20" />
+          <span>Assigned to {{ assignedName }}</span>
+        </div>
       </div>
       <q-btn
         v-if="canUnassign"
@@ -78,8 +82,9 @@
     <!-- Terminal-status read-only view -->
     <div v-else-if="state === 'readonly'" class="row-between">
       <div>
-        <div class="card-title">
-          {{ assignedName ? `Was assigned to ${assignedName}` : 'No contributor' }}
+        <div class="card-title title-with-avatar">
+          <UserAvatar v-if="assignedAid" :aid="assignedAid" :name="assignedName" :size="20" />
+          <span>{{ assignedName ? `Was assigned to ${assignedName}` : 'No contributor' }}</span>
         </div>
       </div>
     </div>
@@ -122,6 +127,7 @@ import { useQuasar } from 'quasar';
 import { useProfilesStore } from 'stores/profiles';
 import { useContributionsStore } from 'stores/contributions';
 import MemberPicker, { type MemberOption } from 'src/components/common/MemberPicker.vue';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 import type { Contribution } from 'src/types/projects';
 
 interface Props {
@@ -298,5 +304,11 @@ function closeInlinePicker() {
 
 .state-hidden {
   display: none;
+}
+
+.title-with-avatar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>
