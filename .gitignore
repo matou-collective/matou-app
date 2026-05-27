@@ -125,3 +125,4 @@ frontend/config/client-production.yml
 .claude/agent-memory/
 .claude/worktrees/
 .claude/*.lock
+frontend/tests/e2e/test-accounts.json.bak
