@@ -6,15 +6,7 @@
           <ContributionStatusBadge :status="contribution.status" />
           <ContributionTypeBadge :type="contribution.contribution_type" />
         </div>
-        <div v-if="assignedAid" class="assigned-avatar">
-          <q-tooltip>Assigned to {{ assignedName }}</q-tooltip>
-          <img
-            v-if="assignedAvatar"
-            :src="assignedAvatar"
-            class="avatar-img"
-          />
-          <span v-else class="avatar-initials">{{ assignedInitials }}</span>
-        </div>
+        <UserAvatar v-if="assignedAid" :aid="assignedAid" :name="assignedName ?? undefined" :size="36" class="assigned-avatar" />
         <h2 class="header-title">
           <span>{{ contribution.title }}</span>
           <q-btn
@@ -970,6 +962,7 @@ import { uploadFile, getFileUrl } from 'src/lib/api/client';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 defineOptions({ name: 'ContributionDetailBody' });
 
@@ -1210,17 +1203,6 @@ const assignedName = computed(() => {
     ?? props.contribution.assigned_contributor_name
     ?? assignedAid.value.slice(0, 12) + '...';
 });
-const assignedAvatar = computed(() => {
-  const avatar = assignedProfile.value?.avatar;
-  if (!avatar) return null;
-  return avatar.startsWith('http') ? avatar : getFileUrl(avatar);
-});
-const assignedInitials = computed(() => {
-  const name = assignedName.value;
-  if (!name) return '?';
-  return name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-});
-
 function assigneeName(c: Contribution): string {
   const aid = c.assigned_contributor_id ?? c.assigned_contributor;
   if (!aid) return '';
@@ -1717,19 +1699,6 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.avatar-initials {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: white;
-  letter-spacing: 0.03em;
 }
 
 .header-title {
