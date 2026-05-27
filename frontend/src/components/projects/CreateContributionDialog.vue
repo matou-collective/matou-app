@@ -295,14 +295,18 @@
           />
         </div>
 
-        <AssignmentCard
-          v-if="editing && contribution"
-          :contribution="contribution"
-          :can-offer="canOffer"
-          :can-unassign="canUnassign"
-          @offered="onAssignmentChanged"
-          @unassigned="onAssignmentChanged"
-        />
+        <!-- Wrapper takes the q-gutter-md left margin so the card aligns with
+             the other fields; AssignmentCard's own scoped margin would
+             otherwise override the gutter's margin-left and shift it left. -->
+        <div v-if="editing && contribution">
+          <AssignmentCard
+            :contribution="contribution"
+            :can-offer="canOffer"
+            :can-unassign="canUnassign"
+            @offered="onAssignmentChanged"
+            @unassigned="onAssignmentChanged"
+          />
+        </div>
 
         <div v-if="editing && canDelete" class="danger-zone q-mt-md">
           <div class="danger-zone-title">Danger Zone</div>
@@ -646,7 +650,14 @@ function handleSubmit() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px 0;
+  padding: 16px 20px 12px;
+  /* Pin the header above the scrolling form body: opaque background + border
+     so scrolled content is visually separated and can't bleed under it. */
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  background: var(--matou-card);
+  border-bottom: 1px solid var(--matou-border);
 }
 
 .dialog-header-left {
