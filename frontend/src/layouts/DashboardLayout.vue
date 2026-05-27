@@ -76,6 +76,14 @@
     <main class="main-content">
       <router-view />
     </main>
+
+    <!-- App-wide read-only profile viewer, driven by clicks on any UserAvatar -->
+    <ProfileModal
+      :show="profileViewer.isOpen"
+      :shared-profile="profileViewer.sharedProfile"
+      :community-profile="profileViewer.communityProfile"
+      @close="profileViewer.close()"
+    />
   </div>
 </template>
 
@@ -105,6 +113,8 @@ import { useKERINotificationService } from 'src/composables/useKERINotificationS
 import { initNotifications, registerNotificationClickHandler } from 'src/lib/notifications';
 import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
+import ProfileModal from 'src/components/profiles/ProfileModal.vue';
+import { useProfileViewer } from 'stores/profileViewer';
 
 const router = useRouter();
 const route = useRoute();
@@ -117,6 +127,7 @@ const projectsStore = useProjectsStore();
 const contributionsStore = useContributionsStore();
 const activityStore = useActivityStore();
 const scope = useCommentScope();
+const profileViewer = useProfileViewer();
 
 const projectsUnreadTotal = computed(() => {
   // Project rollup: own project comments + contribution comments for each
