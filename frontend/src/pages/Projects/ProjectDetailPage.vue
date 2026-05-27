@@ -296,9 +296,7 @@
               :class="{ 'comment-card--mine': c.user_id === currentUserId }"
             >
               <div class="comment-header">
-                <div class="comment-avatar">
-                  <q-icon name="person" size="14px" />
-                </div>
+                <UserAvatar :aid="c.user_id" :name="commentDisplayName(c) ?? undefined" :size="24" />
                 <span class="comment-author">{{ commentDisplayName(c) }}</span>
                 <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
               </div>
@@ -636,6 +634,7 @@ import ConfirmDestroyDialog from 'src/components/common/ConfirmDestroyDialog.vue
 import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue';
 import MemberPicker from 'src/components/common/MemberPicker.vue';
 import ProjectCompletionSection from 'src/components/projects/ProjectCompletionSection.vue';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -2036,21 +2035,6 @@ async function submitAssign() {
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
-}
-
-.comment-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #dbeafe;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.comment-card--mine .comment-avatar {
-  background: rgba(37, 99, 235, 0.15);
 }
 
 .comment-author {
