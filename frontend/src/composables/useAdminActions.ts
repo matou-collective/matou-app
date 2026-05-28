@@ -7,7 +7,8 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
-import { BACKEND_URL, createOrUpdateProfile, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
+import { BACKEND_URL, createOrUpdateProfile, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
+import { getOrCreateOrgRegistry } from 'src/lib/keri/registry';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -279,9 +280,14 @@ export function useAdminActions() {
       };
 
       console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
+      // Resolve the registry on the org group AID for THIS backend. KERIA does
+      // not sync TEL/registry events between group-AID members, so each
+      // steward must use a registry that exists in their local KERIA. The
+      // admin already has one; upgraded stewards create their own here.
+      const orgRegistryId = await getOrCreateOrgRegistry(issuerAidName);
       const credResult = await keriClient.issueCredential(
         issuerAidName,
-        config.registry.id,
+        orgRegistryId,
         MEMBERSHIP_SCHEMA_SAID,
         registration.applicantAid,
         credentialData,
@@ -439,9 +445,10 @@ export function useAdminActions() {
       processingStep.value = 'Issuing new credential...';
       onStep?.('Issuing new credential...');
       const grantMessage = `Role updated to ${newRole}`;
+      const orgRegistryId = await getOrCreateOrgRegistry(orgName);
       const credResult = await keriClient.issueCredential(
         orgName,
-        config.registry.id,
+        orgRegistryId,
         MEMBERSHIP_SCHEMA_SAID,
         stewardAid,
         {
@@ -464,6 +471,19 @@ export function useAdminActions() {
         memberSince: now,
         lastActiveAt: now,
       }, { id: profileId });
+
+      // Elevate the new steward's any-sync permission to Admin on both community
+      // and community-readonly spaces. Writer alone is not enough: writing the
+      // CommunityProfile needs Writer on readonly, but creating new community/
+      // readonly invites for incoming members needs Admin (CanManageAccounts).
+      // Without this, the steward's init-member call returns 500 and the
+      // subsequent community/invite call returns "insufficient permissions".
+      const grantResult = await grantStewardAdmin(stewardAid);
+      if (!grantResult.success) {
+        console.warn('[AdminActions] grantStewardAdmin failed:', grantResult.error);
+      } else {
+        console.log('[AdminActions] Granted Admin permission to new steward on community + readonly spaces');
+      }
 
       onStep?.('Complete');
       console.log('[AdminActions] Steward upgrade complete');
