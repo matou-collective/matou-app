@@ -156,7 +156,7 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -512,7 +512,7 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		return
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), roSpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), roSpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -596,7 +596,7 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 			return
 		}
 
-		communityKeys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+		communityKeys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
 				"error": fmt.Sprintf("failed to load community space keys for SharedProfile: %v", err),
@@ -742,7 +742,7 @@ func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.
 		"lastActiveAt": nowBytes,
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), roSpaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), roSpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load space keys: %v", err),
@@ -836,7 +836,7 @@ func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Requ
 		roFields["removalReason"] = reasonBytes
 	}
 
-	roKeys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), roSpaceID)
+	roKeys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), roSpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load read-only space keys: %v", err),
@@ -858,7 +858,7 @@ func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Requ
 		"removedAt": nowBytes,
 	}
 
-	communityKeys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), communitySpaceID)
+	communityKeys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to load community space keys: %v", err),

@@ -188,9 +188,10 @@
 
         <!-- Has milestones -->
         <template v-if="implementationPlan">
-          <!-- Confirmation progress + sign-off (visible whenever plan has contributions and isn't signed off) -->
+          <!-- Confirmation progress + first-time sign-off (hidden once the plan
+               has been signed off before — re-sign-off uses its own banner). -->
           <div
-            v-if="!implementationPlan.signed_off && planContributions.length > 0"
+            v-if="!implementationPlan.signed_off && !planWasModified && planContributions.length > 0"
             class="sign-off-banner"
             :class="{ ready: allContributionsConfirmed }"
           >
@@ -295,9 +296,7 @@
               :class="{ 'comment-card--mine': c.user_id === currentUserId }"
             >
               <div class="comment-header">
-                <div class="comment-avatar">
-                  <q-icon name="person" size="14px" />
-                </div>
+                <UserAvatar :aid="c.user_id" :name="commentDisplayName(c) ?? undefined" :size="24" />
                 <span class="comment-author">{{ commentDisplayName(c) }}</span>
                 <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
               </div>
@@ -514,32 +513,12 @@
 
           <!-- Member search + list -->
           <div v-if="assignMode === 'member'" class="assign-section">
-            <q-input
-              v-model="assignMemberSearch"
-              outlined
-              dense
-              placeholder="Search members..."
-              class="q-mb-sm"
-            >
-              <template #prepend>
-                <q-icon name="search" />
-              </template>
-            </q-input>
-            <div class="assign-member-list">
-              <div
-                v-for="m in filteredAssignMembers"
-                :key="m.id"
-                class="assign-member-row"
-                :class="{ selected: assignSelectedMember === m.id }"
-                @click="selectMember(m.id, m.name)"
-              >
-                <div class="assign-member-name">{{ m.name }}</div>
-                <q-icon v-if="assignSelectedMember === m.id" name="check_circle" color="primary" size="18px" />
-              </div>
-              <div v-if="filteredAssignMembers.length === 0" class="assign-empty">
-                No members found
-              </div>
-            </div>
+            <MemberPicker
+              :model-value="assignSelectedMember ?? ''"
+              :members="communityMembers"
+              @update:model-value="(id: string) => { assignSelectedMember = id || null; }"
+              @select="(m: { id: string; name: string }) => { assignSelectedMemberName = m.name; }"
+            />
           </div>
         </q-card-section>
 
@@ -566,7 +545,12 @@
       :milestone-id="editingContribution?.milestone_id"
       :editing="true"
       :contribution="(editingContribution as any)"
+      :can-offer="perms.isLead.value || perms.isSteward.value"
+      :can-unassign="perms.isLead.value || perms.isSteward.value"
+      :can-delete="perms.canArchiveContribution.value"
       @update="onContributionSave"
+      @assignment-changed="handleContributionUpdate"
+      @archive="onDeleteContributionFromForm"
     />
 
     <!-- Archive contribution confirm -->
@@ -576,17 +560,6 @@
       :message="contribArchiveMessage"
       :loading="archivingContribLoading"
       @confirm="doArchiveContribution"
-    />
-
-    <!-- Unassign contributor confirm -->
-    <ConfirmArchiveDialog
-      v-model="showUnassignConfirm"
-      title="Unassign Contributor"
-      message="This will set the contribution back to 'confirmed' and clear the assigned contributor."
-      confirm-label="Unassign"
-      icon="person_remove"
-      :loading="unassigning"
-      @confirm="doUnassign"
     />
 
     <!-- Sign-off plan confirm (only shown when unconfirmed contributions exist) -->
@@ -640,6 +613,7 @@ import {
 } from 'lucide-vue-next';
 import { useProjectsStore } from 'stores/projects';
 import { useCommentCursorsStore } from 'stores/commentCursors';
+import { formatDate, formatDateTime } from 'src/lib/formatDate';
 import { useProposalsStore } from 'stores/proposals';
 import { useIdentityStore } from 'stores/identity';
 import { useContributionsStore } from 'stores/contributions';
@@ -658,7 +632,9 @@ import CreateContributionDialog from 'src/components/projects/CreateContribution
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import ConfirmDestroyDialog from 'src/components/common/ConfirmDestroyDialog.vue';
 import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue';
+import MemberPicker from 'src/components/common/MemberPicker.vue';
 import ProjectCompletionSection from 'src/components/projects/ProjectCompletionSection.vue';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -831,8 +807,6 @@ const showContribForm = ref(false);
 const showArchiveContrib = ref(false);
 const archivingContribution = ref<Contribution | null>(null);
 const archivingContribLoading = ref(false);
-const showUnassignConfirm = ref(false);
-const unassigning = ref(false);
 
 const contribArchiveMessage = computed(() => {
   const c = archivingContribution.value;
@@ -925,46 +899,18 @@ async function onContributionSave(payload: Record<string, unknown>) {
   }
 }
 
-function onUnassignRequested() {
-  showUnassignConfirm.value = true;
-}
-
-async function doUnassign() {
-  if (!editingContribution.value || !project.value) return;
-  unassigning.value = true;
-  try {
-    await contributionsStore.unassign(editingContribution.value.id);
-    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
-    showUnassignConfirm.value = false;
-    showContribForm.value = false;
-    editingContribution.value = null;
-    $q.notify({ type: 'positive', message: 'Contributor unassigned.' });
-  } catch (e) {
-    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to unassign' });
-  } finally {
-    unassigning.value = false;
-  }
-}
-
 const showAssignDialog = ref(false);
 const assignTarget = ref<Contribution | null>(null);
 const assignMode = ref<'group' | 'member' | null>(null);
 const assignSelectedGroup = ref<string | null>(null);
 const assignSelectedMember = ref<string | null>(null);
 const assignSelectedMemberName = ref<string | null>(null);
-const assignMemberSearch = ref('');
 const assigningContribution = ref(false);
 
 const assignGroupOptions = [
   { label: 'Stewards', value: 'steward' },
   { label: 'Members', value: 'all' },
 ];
-
-const filteredAssignMembers = computed(() => {
-  const q = assignMemberSearch.value.toLowerCase().trim();
-  if (!q) return communityMembersList.value;
-  return communityMembersList.value.filter(m => m.name.toLowerCase().includes(q));
-});
 
 const canSubmitAssign = computed(() => {
   if (assignMode.value === 'group') return !!assignSelectedGroup.value;
@@ -1039,11 +985,6 @@ const planWasModified = computed(
     && !!implementationPlan.value.signed_off_at,
 );
 
-function formatDate(iso: string): string {
-  if (!iso) return '';
-  return new Date(iso).toLocaleDateString();
-}
-
 const linkedProposals = computed(() => {
   const p = project.value;
   if (!p?.proposal_ids?.length) return [];
@@ -1087,9 +1028,9 @@ async function loadCommunityMembers() {
       if (aid) roleMap.set(aid, p.data?.role ?? 'Member');
     }
 
-    // Map SharedProfiles to member list, excluding pending
+    // Map SharedProfiles to member list, excluding pending and removed
     communityMembersList.value = ((shared.profiles ?? []) as { id: string; data: Record<string, string> }[])
-      .filter(p => p.data?.displayName && p.data?.status !== 'pending')
+      .filter(p => p.data?.displayName && p.data?.status !== 'pending' && p.data?.status !== 'removed')
       .map(p => {
         const aid = p.data?.aid || p.id.replace('SharedProfile-', '');
         return {
@@ -1505,7 +1446,6 @@ function handleAssignContribution(contribution: Contribution) {
   assignSelectedGroup.value = null;
   assignSelectedMember.value = null;
   assignSelectedMemberName.value = null;
-  assignMemberSearch.value = '';
   showAssignDialog.value = true;
 }
 
@@ -2095,21 +2035,6 @@ async function submitAssign() {
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
-}
-
-.comment-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #dbeafe;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.comment-card--mine .comment-avatar {
-  background: rgba(37, 99, 235, 0.15);
 }
 
 .comment-author {

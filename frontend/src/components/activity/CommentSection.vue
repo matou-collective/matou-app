@@ -7,10 +7,7 @@
 
     <div v-if="expanded" class="comment-list">
       <div v-for="comment in comments" :key="comment.id" class="comment-item">
-        <div class="comment-avatar" :class="getAvatarColor(getCommentAuthorName(comment))">
-          <img v-if="getCommentAvatarUrl(comment.userId)" :src="getCommentAvatarUrl(comment.userId)" alt="" class="comment-avatar-img" />
-          <span v-else>{{ getInitials(getCommentAuthorName(comment)) }}</span>
-        </div>
+        <UserAvatar :aid="comment.userId ?? undefined" :name="getCommentAuthorName(comment) ?? undefined" :size="32" />
         <div class="comment-body">
           <div class="comment-header">
             <span class="comment-author">{{ getCommentAuthorName(comment) }}</span>
@@ -47,7 +44,7 @@ import { ChevronDown, Send } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
 import { useProfilesStore } from 'stores/profiles';
 import { useCommentCursorsStore } from 'stores/commentCursors';
-import { getFileUrl } from 'src/lib/api/client';
+import UserAvatar from 'components/profiles/UserAvatar.vue';
 
 const props = defineProps<{ noticeId: string }>();
 const activityStore = useActivityStore();
@@ -102,15 +99,6 @@ function getCommentProfile(userId: string): { id: string; data: Record<string, u
   return profilesStore.communityProfiles.find((p) => profileMatchesAid(p, userId)) ?? null;
 }
 
-function getCommentAvatarUrl(userId: string): string {
-  const profile = getCommentProfile(userId);
-  if (!profile) return '';
-  const avatar = profile.data?.avatar as string | undefined;
-  if (!avatar) return '';
-  if (avatar.startsWith('http') || avatar.startsWith('data:')) return avatar;
-  return getFileUrl(avatar);
-}
-
 function getCommentAuthorName(comment: { userId: string; userDisplayName: string }): string {
   const profile = getCommentProfile(comment.userId);
   if (profile) {
@@ -118,23 +106,6 @@ function getCommentAuthorName(comment: { userId: string; userDisplayName: string
     if (name) return name;
   }
   return comment.userDisplayName || shortenId(comment.userId);
-}
-
-const avatarColors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
-function getAvatarColor(name: string): string {
-  if (!name) return avatarColors[0];
-  const hash = name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  return avatarColors[hash % avatarColors.length];
-}
-
-function getInitials(name: string): string {
-  if (!name) return '??';
-  return name
-    .split(' ')
-    .map(w => w[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
 }
 
 function shortenId(id: string): string {
@@ -197,32 +168,6 @@ function relativeTime(dateStr: string): string {
   display: flex;
   gap: 0.5rem;
 }
-
-.comment-avatar {
-  flex-shrink: 0;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 50%;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.7rem;
-  font-weight: 600;
-  overflow: hidden;
-}
-
-.comment-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: 50%;
-}
-
-.gradient-1 { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
-.gradient-2 { background: linear-gradient(135deg, #ec4899, #f43f5e); }
-.gradient-3 { background: linear-gradient(135deg, #14b8a6, #06b6d4); }
-.gradient-4 { background: linear-gradient(135deg, #f59e0b, #ef4444); }
 
 .comment-body {
   flex: 1;

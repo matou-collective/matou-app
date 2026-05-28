@@ -388,9 +388,83 @@ export async function loginWithMnemonic(
  * Waits for the activity sidebar title to confirm the page rendered.
  */
 export async function navigateToActivity(page: Page): Promise<void> {
-  await page.locator('.nav-item', { hasText: 'Activity' }).click();
+  await page.locator('.nav-item', { hasText: 'Notices' }).click();
   await expect(page).toHaveURL(/#\/dashboard\/activity/, { timeout: TIMEOUT.short });
-  await expect(page.locator('.activity-title')).toContainText('Activity Feed', { timeout: TIMEOUT.short });
+  await expect(page.locator('.activity-title')).toContainText('Notices', { timeout: TIMEOUT.short });
+}
+
+// ---------------------------------------------------------------------------
+// Member approval helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Satisfy the approval requirements gate for a pending member as the current
+ * steward: endorse them, then mark them onboarded. Only once both are done does
+ * the Approve button appear in the member's ProfileModal (see ProfileModal
+ * `requirementsMet`: at least one endorsement AND attendance).
+ *
+ * Assumes the page is on the dashboard and the member shows as a pending
+ * ProfileCard in the members card. Reopens the modal between steps because the
+ * dashboard re-binds the selected member's data on each open.
+ */
+export async function meetApprovalRequirements(page: Page, memberName: string): Promise<void> {
+  const membersCard = page.locator('.members-card');
+  await expect(
+    membersCard.locator('.card-name', { hasText: memberName }),
+  ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
+
+  // 1. Endorse
+  await membersCard.locator('.profile-card').filter({ hasText: memberName }).click();
+  let modal = page.locator('.modal-content');
+  await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+  await modal.getByRole('button', { name: /^Endorse$/i }).click();
+  await modal
+    .locator('textarea[placeholder="Why do you endorse this person?"]')
+    .fill('Approved via e2e test');
+  await modal.getByRole('button', { name: /confirm endorsement/i }).click();
+  await expect(modal.getByRole('button', { name: /^Endorsed$/i })).toBeVisible({
+    timeout: TIMEOUT.aidCreation,
+  });
+  await modal.locator('button').filter({ has: page.locator('svg') }).first().click();
+  await expect(modal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+  // 2. Mark onboarded (attendance)
+  await membersCard.locator('.profile-card').filter({ hasText: memberName }).click();
+  modal = page.locator('.modal-content');
+  await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+  await modal.getByRole('button', { name: /onboarded/i }).click();
+  await expect(modal.locator('button:disabled', { hasText: /onboarded/i })).toBeVisible({
+    timeout: TIMEOUT.aidCreation,
+  });
+  await modal.locator('button').filter({ has: page.locator('svg') }).first().click();
+  await expect(modal).not.toBeVisible({ timeout: TIMEOUT.short });
+}
+
+/**
+ * Open a pending member's ProfileModal and click Approve. Requirements must
+ * already be met (see meetApprovalRequirements). Set up any approve-triggered
+ * response listeners immediately before calling this — opening the modal is
+ * fast, so the click fires well within their timeout.
+ */
+export async function clickApproveInModal(page: Page, memberName: string): Promise<void> {
+  const membersCard = page.locator('.members-card');
+  await membersCard.locator('.profile-card').filter({ hasText: memberName }).click();
+  const modal = page.locator('.modal-content');
+  await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
+  const approveBtn = modal.getByRole('button', { name: /approve/i });
+  await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.short });
+  await approveBtn.click();
+}
+
+/**
+ * Full admin approval of a pending member: meet the requirements gate, then
+ * approve. Use when the caller doesn't need to observe approve-triggered API
+ * responses; otherwise call meetApprovalRequirements + clickApproveInModal with
+ * the response listeners set up between them.
+ */
+export async function approvePendingMember(page: Page, memberName: string): Promise<void> {
+  await meetApprovalRequirements(page, memberName);
+  await clickApproveInModal(page, memberName);
 }
 
 /**

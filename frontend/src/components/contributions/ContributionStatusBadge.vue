@@ -57,10 +57,15 @@ const label = computed(
   &.shared,
   &.assigned,
   &.approved,
-  &.signed_off,
   &.rewarded {
     background: rgba(74, 157, 156, 0.12);
     color: var(--matou-accent, #4a9d9c);
+  }
+
+  // signed off — solid accent so it reads as a clear terminal state
+  &.signed_off {
+    background: var(--matou-accent, #4a9d9c);
+    color: white;
   }
 
   // primary/10 + primary text

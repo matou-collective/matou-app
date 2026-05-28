@@ -53,7 +53,7 @@
           <div class="proposal-meta">
             <span class="proposal-type">{{ proposal.type?.join(', ') }}</span>
             <span class="proposal-priority" :class="proposal.priority">{{ proposal.priority }}</span>
-            <span>{{ new Date(proposal.created_at).toLocaleDateString() }}</span>
+            <span>{{ formatDate(proposal.created_at) }}</span>
           </div>
         </ProposalCard>
       </div>
@@ -115,7 +115,7 @@
           <div class="proposal-meta">
             <span class="proposal-type">{{ proposal.type?.join(', ') }}</span>
             <span class="proposal-priority" :class="proposal.priority">{{ proposal.priority }}</span>
-            <span>{{ new Date(proposal.created_at).toLocaleDateString() }}</span>
+            <span>{{ formatDate(proposal.created_at) }}</span>
           </div>
         </ProposalCard>
       </div>
@@ -137,6 +137,7 @@ import { useQuasar } from 'quasar';
 import { useProposalsStore } from 'stores/proposals';
 import { useIdentityStore } from 'stores/identity';
 import { listEndorsements } from 'src/lib/api/proposals';
+import { formatDate } from 'src/lib/formatDate';
 import CreateProposalDialog from 'src/components/proposals/CreateProposalDialog.vue';
 import ProposalCard from 'src/components/proposals/ProposalCard.vue';
 import { useBackendEvents } from 'src/composables/useBackendEvents';

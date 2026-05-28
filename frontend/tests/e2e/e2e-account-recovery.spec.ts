@@ -10,6 +10,8 @@ import {
   loadAccounts,
   registerUser,
   uniqueSuffix,
+  meetApprovalRequirements,
+  clickApproveInModal,
   TestAccounts,
 } from './utils/test-helpers';
 
@@ -231,7 +233,7 @@ test.describe.serial('Admin Account Recovery', () => {
     ).toBeVisible({ timeout: TIMEOUT.short });
 
     await expect(
-      recoveryPage.getByText('New Members').first(),
+      recoveryPage.locator('.members-card'),
     ).toBeVisible({ timeout: TIMEOUT.short });
 
     console.log('[Test] PASS - Dashboard accessible with community data visible');
@@ -241,7 +243,7 @@ test.describe.serial('Admin Account Recovery', () => {
   // Test 8: Admin can approve registrations after recovery
   // ------------------------------------------------------------------
   test('can approve registrations after recovery', async ({ browser }) => {
-    test.setTimeout(240_000); // 4 min: registration (~90s) + approval (~30s) + sync (~60s)
+    test.setTimeout(300_000); // 5 min: registration (~90s) + endorse/onboard/approve (~90s) + sync (~60s)
 
     // Spawn a dedicated backend for the registering user
     const userBackend = await backends.start('user-post-recovery');
@@ -265,7 +267,12 @@ test.describe.serial('Admin Account Recovery', () => {
       await expect(pendingMemberCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
       console.log('[Test] Registration card visible on recovered admin dashboard');
 
-      // 3. Set up listeners for approval API calls
+      // 3. Meet approval requirements (endorse + onboard) — slow, so do this
+      //    before arming the response listeners below.
+      await meetApprovalRequirements(recoveryPage, userName);
+
+      // 4. Arm listeners for approve-triggered API calls, then approve.
+      console.log('[Test] Recovered admin clicking approve...');
       const inviteResponse = recoveryPage.waitForResponse(
         resp => resp.url().includes('/api/v1/spaces/community/invite') && resp.request().method() === 'POST',
         { timeout: TIMEOUT.long },
@@ -274,16 +281,7 @@ test.describe.serial('Admin Account Recovery', () => {
         resp => resp.url().includes('/api/v1/profiles/init-member') && resp.request().method() === 'POST',
         { timeout: TIMEOUT.long },
       );
-
-      // 4. Admin approves via ProfileModal
-      console.log('[Test] Recovered admin clicking approve...');
-      const memberProfileCard = membersCard.locator('.profile-card').filter({ hasText: userName });
-      await memberProfileCard.click();
-      const profileModal = recoveryPage.locator('.modal-content');
-      await expect(profileModal).toBeVisible({ timeout: TIMEOUT.short });
-      const admitButton = profileModal.getByRole('button', { name: /approve/i });
-      await expect(admitButton).toBeVisible({ timeout: TIMEOUT.short });
-      await admitButton.click();
+      await clickApproveInModal(recoveryPage, userName);
 
       // 5. Verify community space invite succeeded
       const invResp = await inviteResponse;
@@ -342,8 +340,11 @@ test.describe.serial('Admin Account Recovery', () => {
     const modal = recoveryPage.locator('.invite-modal');
     await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
 
-    // 3. Fill invite form
+    // 3. Fill invite form — name, endorsement reason, and email are all required
+    //    to enable the Create Invitation button.
     await modal.locator('input[type="text"]').fill('Recovery Invitee');
+    await modal.locator('textarea').fill('Recovered admin endorses this invitee for the e2e test');
+    await modal.locator('input[type="email"]').fill('recovery.invitee@example.com');
     // Leave role as default "Member"
 
     // 4. Submit and wait for invitation creation (KERI operations)

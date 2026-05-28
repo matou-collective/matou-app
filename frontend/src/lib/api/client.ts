@@ -388,6 +388,23 @@ export async function getProfiles(typeName: string): Promise<ObjectPayload[]> {
 }
 
 /**
+ * Get a single profile by type and id. Returns null when missing or unreachable.
+ * Use this before a partial update: read existing data, merge your changes,
+ * then POST the full payload via createOrUpdateProfile (which is full-replace).
+ */
+export async function getProfileById(typeName: string, id: string): Promise<ObjectPayload | null> {
+  try {
+    const response = await fetch(
+      `${BACKEND_URL}/api/v1/profiles/${encodeURIComponent(typeName)}/${encodeURIComponent(id)}`,
+    );
+    if (!response.ok) return null;
+    return await response.json() as ObjectPayload;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get the current user's profiles (all types)
  */
 export async function getMyProfiles(): Promise<Record<string, ObjectPayload[]>> {

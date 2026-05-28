@@ -14,6 +14,7 @@ import {
   submitEvidence as apiSubmitEvidence,
   submitReview as apiSubmitReview,
   signOffContribution as apiSignOff,
+  rewardContribution as apiReward,
   createChildContribution as apiCreateChild,
   approveSub as apiApproveSub,
   archiveContribution as apiArchiveContrib,
@@ -74,6 +75,27 @@ export const useContributionsStore = defineStore('contributions', () => {
       log.error('fetchContribution: %s', error.value);
     } finally {
       isLoading.value = false;
+    }
+  }
+
+  // Lightweight per-entity refresh — upserts the list + currentContribution
+  // in place without touching loading/error state. Used by global SSE
+  // watchers that need to reflect a remote status change (offered, accepted,
+  // etc.) on cards and the side menu badge.
+  async function refreshContribution(id: string) {
+    try {
+      const fresh = await apiGet(id);
+      const idx = contributions.value.findIndex((c) => c.id === id);
+      if (idx >= 0) {
+        contributions.value[idx] = fresh;
+      } else {
+        contributions.value = [...contributions.value, fresh];
+      }
+      if (currentContribution.value?.id === id) currentContribution.value = fresh;
+      return fresh;
+    } catch (e) {
+      log.error('refreshContribution failed: %s', e);
+      return null;
     }
   }
 
@@ -224,6 +246,18 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  async function reward(id: string) {
+    error.value = null;
+    try {
+      const updated = await apiReward(id);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Mark as rewarded failed';
+      throw e;
+    }
+  }
+
   async function createChild(parentId: string, req: CreateContributionRequest) {
     error.value = null;
     try {
@@ -337,6 +371,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     assignedContributions,
     fetchContributions,
     fetchContribution,
+    refreshContribution,
     create,
     transition,
     update,
@@ -348,6 +383,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     submitEvidence,
     review,
     signOff,
+    reward,
     createChild,
     approveSub,
     archive,

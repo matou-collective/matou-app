@@ -22,6 +22,7 @@
         :is-plan-signed-off="isPlanSignedOff"
         :can-archive="canEditContribution"
         @edit-contribution="showEditDialog = true"
+        @create-child-contribution="handleCreateChildContribution"
       />
     </template>
 
@@ -39,7 +40,18 @@
       :milestone-id="contribution?.milestone_id"
       :editing="true"
       :contribution="(contribution as any)"
+      :can-reassign="isKeriAdmin || isProjectLead || isProjectSteward"
       @update="handleEditSubmit"
+    />
+
+    <!-- Create sub-contribution dialog -->
+    <CreateContributionDialog
+      v-model="showCreateSubDialog"
+      :project-id="contribution?.project_id ?? ''"
+      :parent-contribution-id="createSubParentId"
+      :parent-assigned-contributor-id="createSubParentContributor"
+      :is-submitting="creatingSub"
+      @submit="handleCreateSubContributionSubmit"
     />
 
     <!-- Share dialog -->
@@ -235,6 +247,16 @@ const showOfferDialog = ref(false);
 const showInterestDialog = ref(false);
 const showEvidenceDialog = ref(false);
 const showReviewDialog = ref(false);
+const showCreateSubDialog = ref(false);
+const createSubParentId = ref<string | undefined>(undefined);
+const creatingSub = ref(false);
+
+const createSubParentContributor = computed<string | undefined>(() => {
+  const pid = createSubParentId.value;
+  if (!pid) return undefined;
+  const parent = (store.contributions as Contribution[]).find((c) => c.id === pid);
+  return parent?.assigned_contributor_id ?? parent?.assigned_contributor ?? undefined;
+});
 
 // Form state
 const shareRoles = ref<string[]>([]);
@@ -488,6 +510,26 @@ async function handleEditSubmit(form: CreateContributionRequest | UpdateContribu
     $q.notify({ type: 'positive', message: 'Contribution updated!' });
   } catch {
     $q.notify({ type: 'negative', message: 'Update failed' });
+  }
+}
+
+function handleCreateChildContribution(parentId: string) {
+  createSubParentId.value = parentId;
+  showCreateSubDialog.value = true;
+}
+
+async function handleCreateSubContributionSubmit(req: CreateContributionRequest) {
+  if (!createSubParentId.value) return;
+  creatingSub.value = true;
+  try {
+    await store.createChild(createSubParentId.value, req);
+    showCreateSubDialog.value = false;
+    $q.notify({ type: 'positive', message: 'Sub-contribution created!' });
+    if (contribution.value?.id) await store.fetchContribution(contribution.value.id);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to create sub-contribution' });
+  } finally {
+    creatingSub.value = false;
   }
 }
 </script>

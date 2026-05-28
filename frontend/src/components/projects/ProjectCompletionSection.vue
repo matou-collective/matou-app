@@ -134,7 +134,7 @@ const activeContributions = computed(() =>
 );
 const totalContributions = computed(() => activeContributions.value.length);
 const signedOffCount = computed(
-  () => activeContributions.value.filter((c) => c.status === 'signed_off').length,
+  () => activeContributions.value.filter((c) => c.status === 'signed_off' || c.status === 'rewarded').length,
 );
 const allSignedOff = computed(
   () => totalContributions.value > 0 && signedOffCount.value === totalContributions.value,

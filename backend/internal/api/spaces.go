@@ -498,7 +498,7 @@ func (h *SpacesHandler) seedSpace(ctx context.Context, spaceID string, typeDef *
 		return nil, fmt.Errorf("any-sync client not available")
 	}
 
-	keys, err := anysync.LoadSpaceKeySet(client.GetDataDir(), spaceID)
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load space keys for %s: %w", spaceID, err)
 	}
@@ -939,17 +939,11 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Wait for initial sync to complete so member sees existing data
-	if treeMgr := h.spaceManager.TreeManager(); treeMgr != nil {
-		if err := treeMgr.WaitForSync(ctx, communitySpace.SpaceID, 1, 30*time.Second); err != nil {
-			log.Printf("[JoinCommunity] WaitForSync warning for space %s: %v\n", communitySpace.SpaceID, err)
-			// Don't fail — data will arrive via next HeadSync cycle
-		}
-	}
-
-	// Generate and persist space keys so this backend can write objects
-	// (e.g. SharedProfile) to the community space. Each member gets their
-	// own signing key; the ACL authorizes writes based on peer identity.
+	// Persist space keys IMMEDIATELY after JoinWithInvite succeeds, before
+	// WaitForSync. If WaitForSync stalls or the request is cancelled, the
+	// joiner is still authorized in the ACL but without the key file every
+	// subsequent write returns 500. Writing keys first guarantees the
+	// user can write the moment they're recognized.
 	dataDir := client.GetDataDir()
 	communityKeys, err := anysync.GenerateSpaceKeySet()
 	if err != nil {
@@ -971,6 +965,14 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 	}
 	log.Printf("[JoinCommunity] Generated and persisted space keys for community space %s\n", communitySpace.SpaceID)
 
+	// Wait for initial sync to complete so member sees existing data
+	if treeMgr := h.spaceManager.TreeManager(); treeMgr != nil {
+		if err := treeMgr.WaitForSync(ctx, communitySpace.SpaceID, 1, 30*time.Second); err != nil {
+			log.Printf("[JoinCommunity] WaitForSync warning for space %s: %v\n", communitySpace.SpaceID, err)
+			// Don't fail — data will arrive via next HeadSync cycle
+		}
+	}
+
 	// Also join community-readonly space if invite key is provided
 	log.Printf("[JoinCommunity] readOnly check: key=%v spaceID=%q", req.ReadOnlyInviteKey != "", req.ReadOnlySpaceID)
 	if req.ReadOnlyInviteKey != "" && req.ReadOnlySpaceID != "" {
@@ -988,6 +990,18 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 					h.spaceManager.SetCommunityReadOnlySpaceID(req.ReadOnlySpaceID)
 					log.Printf("[JoinCommunity] User %s joined community-readonly space %s", req.UserAID, req.ReadOnlySpaceID)
 
+					// Persist keys for the readonly space FIRST (before WaitForSync).
+					// Same reasoning as the community space above.
+					roKeys, roKeyGenErr := anysync.GenerateSpaceKeySet()
+					if roKeyGenErr == nil {
+						roKeys.SigningKey = client.GetSigningKey()
+						if roPersistErr := anysync.PersistSpaceKeySet(dataDir, req.ReadOnlySpaceID, roKeys); roPersistErr != nil {
+							log.Printf("[JoinCommunity] Warning: failed to persist readonly space keys: %v", roPersistErr)
+						} else {
+							log.Printf("[JoinCommunity] Generated and persisted space keys for readonly space %s", req.ReadOnlySpaceID)
+						}
+					}
+
 					// Wait for initial sync of readonly space (same as community space above)
 					if treeMgr := h.spaceManager.TreeManager(); treeMgr != nil {
 						log.Printf("[JoinCommunity] calling WaitForSync for readonly space %s", req.ReadOnlySpaceID)
@@ -998,17 +1012,6 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 						}
 					} else {
 						log.Printf("[JoinCommunity] TreeManager is nil — skipping WaitForSync for readonly space")
-					}
-
-					// Persist keys for the readonly space too
-					roKeys, roKeyGenErr := anysync.GenerateSpaceKeySet()
-					if roKeyGenErr == nil {
-						roKeys.SigningKey = client.GetSigningKey()
-						if roPersistErr := anysync.PersistSpaceKeySet(dataDir, req.ReadOnlySpaceID, roKeys); roPersistErr != nil {
-							log.Printf("[JoinCommunity] Warning: failed to persist readonly space keys: %v", roPersistErr)
-						} else {
-							log.Printf("[JoinCommunity] Generated and persisted space keys for readonly space %s", req.ReadOnlySpaceID)
-						}
 					}
 				}
 			}

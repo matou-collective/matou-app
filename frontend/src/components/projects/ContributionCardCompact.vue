@@ -5,14 +5,14 @@
       <div class="compact-title-wrap">
         <div class="compact-title">{{ contribution.title }}</div>
         <div
-          v-if="contribution.estimated_duration || contribution.budget || contribution.deadline"
+          v-if="contribution.estimated_duration || (contribution.budget && canSeeBudgetForThis) || contribution.deadline"
           class="compact-title-meta"
         >
           <span v-if="contribution.estimated_duration" class="meta-item">
             <q-icon name="schedule" size="14px" />
             {{ contribution.estimated_duration }}h
           </span>
-          <span v-if="contribution.budget" class="meta-item">
+          <span v-if="contribution.budget && canSeeBudgetForThis" class="meta-item">
             <q-icon name="attach_money" size="14px" />
             {{ contribution.budget }}
           </span>
@@ -27,11 +27,7 @@
           {{ unread > 99 ? '99+' : unread }}
         </span>
         <ContributionStatusBadge :status="contribution.status" />
-        <div v-if="assignedAid" class="compact-avatar">
-          <q-tooltip>Assigned to {{ assignedName }}</q-tooltip>
-          <img v-if="assignedAvatar" :src="assignedAvatar" class="compact-avatar-img" />
-          <span v-else class="compact-avatar-initials">{{ assignedInitials }}</span>
-        </div>
+        <UserAvatar v-if="assignedAid" :aid="assignedAid" :name="assignedName ?? undefined" :size="28" />
       </div>
     </div>
 
@@ -67,8 +63,11 @@
           label="Confirm"
           color="primary"
           class="confirm-btn"
+          :disable="!liveContribution.deadline"
           @click.stop="$emit('update', { ...contribution, _action: 'confirm' })"
-        />
+        >
+          <q-tooltip v-if="!liveContribution.deadline">Set a due date on this contribution first.</q-tooltip>
+        </q-btn>
 
         <q-btn
           v-if="isSubContribution && isLead && (contribution.status === 'created' || contribution.status === 'changed')"
@@ -126,7 +125,8 @@ import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useCommentScope } from 'src/composables/useCommentScope';
-import { getFileUrl } from 'src/lib/api/client';
+import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 defineOptions({ name: 'ContributionCardCompact' });
 
@@ -165,16 +165,21 @@ const scope = useCommentScope();
 const parentProject = computed(() =>
   projectsStore.projects.find((p) => p.id === props.contribution.project_id) ?? null,
 );
-// Use the live count from the contributions store — the prop may be a
-// hydrated milestone copy that doesn't pick up bumpCommentCount updates.
-const liveContribution = computed(() => ({
-  ...props.contribution,
-  comment_count: contributionsStore.liveCommentCount(
-    props.contribution.id,
-    props.contribution.comment_count ?? 0,
-  ),
-}));
-const unread = computed(() => scope.contributionUnread(liveContribution.value, parentProject.value));
+// Always overlay the live contribution from the store — the prop may be a
+// hydrated milestone copy that doesn't react to bumpCommentCount nor to
+// status changes (offered → assigned, etc.).
+const liveContribution = computed(() => {
+  const live = contributionsStore.contributions.find((c) => c.id === props.contribution.id);
+  return live ? { ...props.contribution, ...live } : props.contribution;
+});
+const unread = computed(
+  () =>
+    scope.contributionUnread(liveContribution.value, parentProject.value)
+    + scope.contributionOfferedCount(liveContribution.value),
+);
+
+const budgetAccess = useContributionBudgetAccess();
+const canSeeBudgetForThis = computed(() => budgetAccess.canSeeBudget(props.contribution));
 
 const assignedAid = computed(() =>
   props.contribution.assigned_contributor_id ?? props.contribution.assigned_contributor ?? null,
@@ -188,18 +193,6 @@ const assignedName = computed(() => {
     ?? props.contribution.assigned_contributor_name
     ?? assignedAid.value.slice(0, 12) + '...';
 });
-const assignedAvatar = computed(() => {
-  const avatar = assignedProfile.value?.avatar;
-  if (!avatar) return null;
-  return avatar.startsWith('http') ? avatar : getFileUrl(avatar);
-});
-const assignedInitials = computed(() => {
-  const name = assignedName.value;
-  if (!name) return '?';
-  return name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-});
-
-
 const isLead = computed(() =>
   ['community_admin', 'project_lead'].includes(props.userRole ?? ''),
 );
@@ -311,31 +304,6 @@ function formatDeadline(iso: string): string {
   }
 }
 
-
-.compact-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  overflow: hidden;
-  flex-shrink: 0;
-  background: var(--matou-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.compact-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.compact-avatar-initials {
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: white;
-  letter-spacing: 0.03em;
-}
 
 .compact-description {
   font-size: 0.8rem;

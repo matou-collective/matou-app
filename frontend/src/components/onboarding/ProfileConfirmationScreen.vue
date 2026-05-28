@@ -33,15 +33,12 @@
             <!-- Profile Section -->
             <div class="flex items-center gap-4 mb-4">
               <!-- Avatar -->
-              <div class="avatar-frame w-14 h-14 rounded-xl overflow-hidden border-2 border-white/30 bg-white/10 flex items-center justify-center shrink-0">
-                <img
-                  v-if="profile.avatarPreview"
-                  :src="profile.avatarPreview"
-                  alt="Profile"
-                  class="w-full h-full object-cover"
-                />
-                <User v-else class="w-7 h-7 text-white/60" />
-              </div>
+              <UserAvatar
+                :name="profile.name ?? undefined"
+                :src="profile.avatarPreview ?? undefined"
+                :size="56"
+                :clickable="false"
+              />
 
               <!-- Info -->
               <div class="flex-1 min-w-0">
@@ -144,7 +141,6 @@
 import { ref, computed } from 'vue';
 import {
   ArrowRight,
-  User,
   Key,
   Shield,
   CheckCircle2,
@@ -153,6 +149,7 @@ import {
 } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import OnboardingHeader from './OnboardingHeader.vue';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 import { useOnboardingStore } from 'stores/onboarding';
 
 const store = useOnboardingStore();
@@ -205,9 +202,6 @@ h1 {
   );
 }
 
-.avatar-frame {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
 
 .aid-section {
   backdrop-filter: blur(4px);

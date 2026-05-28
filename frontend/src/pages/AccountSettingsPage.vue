@@ -855,7 +855,7 @@ function formatDate(dateStr: string | undefined): string {
   if (!dateStr) return '—';
   const date = new Date(dateStr);
   if (isNaN(date.getTime())) return '—';
-  return date.toLocaleDateString('en-NZ', {
+  return date.toLocaleDateString(undefined, {
     day: 'numeric',
     month: 'long',
     year: 'numeric',

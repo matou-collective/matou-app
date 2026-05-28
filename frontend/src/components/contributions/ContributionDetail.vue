@@ -86,7 +86,7 @@
         <div class="info-card-label">Estimated Hours</div>
         <div class="info-card-value">{{ contribution.estimated_duration }}h</div>
       </div>
-      <div v-if="contribution.budget" class="info-card">
+      <div v-if="contribution.budget && canSeeBudgetForThis" class="info-card">
         <div class="info-card-label">Budget</div>
         <div class="info-card-value">{{ contribution.budget }}</div>
       </div>
@@ -113,12 +113,17 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { Contribution } from 'src/lib/api/contributions';
 import ContributionStatusBadge from './ContributionStatusBadge.vue';
+import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
 
-defineProps<{
+const props = defineProps<{
   contribution: Contribution;
 }>();
+
+const budgetAccess = useContributionBudgetAccess();
+const canSeeBudgetForThis = computed(() => budgetAccess.canSeeBudget(props.contribution));
 </script>
 
 <style scoped lang="scss">

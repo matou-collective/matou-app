@@ -158,6 +158,13 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "reward":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionRewardContribution, h.HandleReward)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "approve-sub":
 				if r.Method == http.MethodPost {
 					h.withRBAC(contributions.ActionApproveSubContrib, h.HandleApproveSub)(w, r)
@@ -850,6 +857,39 @@ func (h *ContributionsHandler) HandleSignOff(w http.ResponseWriter, r *http.Requ
 			Data: map[string]string{
 				"contribution_id": id,
 				"signed_off_by":   userID,
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleReward handles POST /api/v1/contributions/{id}/reward
+// RBAC: ActionRewardContribution (community admin only).
+func (h *ContributionsHandler) HandleReward(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/reward")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	userID := GetUserAID(r)
+	if userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.RewardContribution(r.Context(), spaceID, id, userID)
+	if err != nil {
+		log.Printf("[Contributions] RewardContribution failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] contribution %s rewarded by %s", id, userID)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:rewarded",
+			Data: map[string]string{
+				"contribution_id": id,
+				"rewarded_by":     userID,
 			},
 		})
 	}

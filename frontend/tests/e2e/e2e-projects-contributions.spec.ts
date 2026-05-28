@@ -62,8 +62,16 @@ const MEMBER_NAME = 'Test Member Contrib';
 // UI Helpers
 // ---------------------------------------------------------------------------
 
-/** Navigate to a sidebar item by label (sidebar nav items are buttons) */
+/** Navigate to a sidebar item by label (sidebar nav items are buttons).
+ * Defensively waits for any visible q-dialog backdrop to disappear first.
+ * A leftover backdrop from a previously-closed dialog intercepts pointer
+ * events on the sidebar and silently retries the click until the test
+ * timeout, which manifests as an inexplicable stall at the top of the
+ * next phase. */
 async function navigateTo(page: Page, label: string) {
+  await expect(page.locator('.q-dialog__backdrop:visible')).toHaveCount(0, {
+    timeout: TIMEOUT.short,
+  });
   await page.getByRole('button', { name: label }).click();
 }
 
@@ -86,15 +94,64 @@ async function openContributionDialog(page: Page, title: string) {
   await waitForSettle(page, 500);
 }
 
-/** Close the currently open contribution detail dialog */
+/** Close the currently open contribution detail dialog. Loops to dismiss
+ * stacked dialogs (nested sub-contribution → parent) and waits for every
+ * q-dialog backdrop to detach, otherwise a stray backdrop can still
+ * intercept sidebar clicks in the next test. */
 async function closeContributionDialog(page: Page) {
-  const closeBtn = page.locator('.q-dialog .close-btn');
-  if (await closeBtn.isVisible().catch(() => false)) {
-    await closeBtn.click();
-  } else {
-    await page.keyboard.press('Escape');
+  for (let i = 0; i < 4; i++) {
+    const visibleDialogs = await page.locator('.q-dialog:visible').count();
+    if (visibleDialogs === 0) break;
+    const closeBtn = page.locator('.q-dialog:visible .close-btn').last();
+    if (await closeBtn.isVisible().catch(() => false)) {
+      await closeBtn.click().catch(() => {});
+    } else {
+      await page.keyboard.press('Escape');
+    }
+    await page.waitForTimeout(400);
   }
-  await page.waitForTimeout(500);
+  // Assert no visible backdrop remains — Quasar can leave a backdrop element
+  // in the DOM briefly after the dialog hides, and that backdrop still
+  // captures pointer events. waitFor({ state: 'detached' }) only checks the
+  // first match and was being silently swallowed by the catch, which is how
+  // a leftover backdrop kept making the *next* phase's sidebar click stall.
+  await expect(page.locator('.q-dialog__backdrop:visible')).toHaveCount(0, {
+    timeout: TIMEOUT.short,
+  });
+}
+
+/** Shape of a contribution as returned by the backend list endpoints. */
+interface ContribLite {
+  id: string;
+  title?: string;
+  status?: string;
+  offered_to?: string;
+  assigned_contributor?: string;
+  assigned_contributor_id?: string;
+  parent_contribution?: string;
+  project_id?: string;
+}
+
+/** Find a contribution by title scoped to the CURRENT run's project.
+ *
+ * The lifecycle suite reuses the constant SUB_2_TITLE / CONTRIBUTION_*_TITLE
+ * across runs, and the backend is not cleaned between runs, so a global
+ * find-by-title can match a stale contribution from a previous run's project.
+ * Resolve the current project by its unique (per-run, #N-suffixed) title and
+ * filter contributions to that project_id. Returns undefined if not found. */
+async function findContribInCurrentProject(
+  page: Page,
+  title: string,
+): Promise<ContribLite | undefined> {
+  const projResp = await page.request.get(`${BACKEND_URL}/api/v1/projects`);
+  const projData: { projects?: Array<{ id: string; title?: string }> } = await projResp.json();
+  const proj = (projData.projects ?? []).find((p) => p.title === PROJECT_TITLE);
+  if (!proj) return undefined;
+  const listResp = await page.request.get(`${BACKEND_URL}/api/v1/contributions`);
+  const listData: { contributions?: ContribLite[] } = await listResp.json();
+  return (listData.contributions ?? []).find(
+    (c) => c.title === title && c.project_id === proj.id,
+  );
 }
 
 /** Navigate to the project detail page from the projects list.
@@ -112,6 +169,75 @@ async function navigateToProjectDetail(page: Page, projectTitle: string) {
   await card.click();
   await expect(page).toHaveURL(/\/dashboard\/projects\//, { timeout: TIMEOUT.short });
   await waitForSettle(page);
+}
+
+/**
+ * Fill the Due Date field inside a Create/Edit Contribution dialog by opening
+ * the q-date popup and navigating to the target month, then clicking the day.
+ *
+ * Why not pressSequentially() on the masked input? The mask (`##-##-####`)
+ * processes keystrokes asynchronously and sometimes drops digits when typed
+ * fast — leaving the form's `deadline` empty and the Confirm button disabled.
+ * Driving the q-date popup writes through `fromQDateFormat()` directly and
+ * is what a real user would do.
+ */
+async function fillDueDateViaPopup(
+  page: Page,
+  dlg: ReturnType<typeof dialog>,
+  targetYear: number,
+  targetMonth: number,
+  day: number,
+): Promise<void> {
+  // The Due Date input has a calendar icon in its append slot; clicking it
+  // opens the q-popup-proxy containing a <q-date>.
+  await dlg
+    .locator('label.q-field')
+    .filter({ hasText: 'Due Date' })
+    .locator('i.q-icon.cursor-pointer')
+    .click();
+
+  // Popup teleports to document.body, so scope at page level (not dialog).
+  const qdate = page.locator('.q-date').last();
+  await expect(qdate).toBeVisible({ timeout: TIMEOUT.short });
+
+  // Navigate to target month via the calendar's prev/next arrows. Newer
+  // Quasar splits the header into separate month + year sections, each with
+  // its own prev/next chevrons — innerText looks like:
+  //   "chevron_left\nMay\nchevron_right\nchevron_left\n2026\nchevron_right"
+  // So pull the month label and the 4-digit year independently rather than
+  // matching them as one "Mon YYYY" run.
+  const monthAbbrev = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  for (let i = 0; i < 36; i++) {
+    const navText = (await qdate.locator('.q-date__navigation').innerText()).trim();
+    const monthMatch = navText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i);
+    const yearMatch = navText.match(/\b(\d{4})\b/);
+    if (!monthMatch || !yearMatch) throw new Error(`Cannot parse q-date navigation header: ${JSON.stringify(navText)}`);
+    const curMonth = monthAbbrev.findIndex((a) => monthMatch[1]!.toLowerCase().startsWith(a.toLowerCase())) + 1;
+    const curYear = parseInt(yearMatch[1]!, 10);
+    if (curMonth === targetMonth && curYear === targetYear) break;
+    const forward =
+      targetYear > curYear || (targetYear === curYear && targetMonth > curMonth);
+    // First two .q-date__arrow nodes are month prev/next; year arrows (if
+    // present) come after. nth(0)=month prev, nth(1)=month next still works.
+    await qdate.locator('.q-date__arrow').nth(forward ? 1 : 0).click();
+    await page.waitForTimeout(80); // let month-slide animation finish
+  }
+
+  // Click the day cell, restricted to the current displayed month (`--in`
+  // marks in-month cells; filler cells from prev/next month don't have it).
+  // During month-slide transitions Quasar briefly mounts both the outgoing
+  // and incoming grids, so the day-N cell can momentarily match twice —
+  // wait for the transient duplicate to collapse, then click the active one.
+  const dayCell = qdate
+    .locator('.q-date__calendar-item--in')
+    .getByRole('button', { name: String(day), exact: true })
+    .first();
+  await expect(dayCell).toBeVisible({ timeout: TIMEOUT.short });
+  await dayCell.click();
+
+  // Dismiss the popup via the Close button rendered by the dialog template.
+  await qdate.getByRole('button', { name: 'Close' }).click();
+  await expect(qdate).not.toBeVisible({ timeout: TIMEOUT.short });
 }
 
 // ===========================================================================
@@ -164,20 +290,28 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
         .then(() => false),
     ]);
 
-    if (needsSetup) {
-      console.log('[Setup] No org config — running org setup...');
+    // Detect a "stale config server + clean backend" mismatch: the config
+    // server might still return an org from a previous run while the backend
+    // data was reset (clean-test.sh removes data-test but doesn't touch the
+    // KERI config server). In that case test-accounts.json is also gone, so
+    // recovering an identity is impossible — fall through to performOrgSetup
+    // which calls clearTestConfig internally before running fresh setup.
+    let accountsFileExists = true;
+    let staleAccounts: TestAccounts | null = null;
+    try {
+      staleAccounts = loadAccounts();
+    } catch {
+      accountsFileExists = false;
+    }
+
+    if (needsSetup || !accountsFileExists || !staleAccounts?.admin?.mnemonic) {
+      console.log('[Setup] Running org setup (fresh state or missing accounts)');
       accounts = await performOrgSetup(adminPage, request);
       console.log('[Setup] Org setup complete, admin on dashboard');
     } else {
       console.log('[Setup] Recovering admin identity...');
-      accounts = loadAccounts();
-      if (!accounts.admin?.mnemonic) {
-        throw new Error(
-          'Org configured but no admin mnemonic in test-accounts.json. ' +
-          'Run org-setup first or clean test state and re-run.',
-        );
-      }
-      await loginWithMnemonic(adminPage, accounts.admin.mnemonic);
+      accounts = staleAccounts;
+      await loginWithMnemonic(adminPage, accounts.admin!.mnemonic);
       console.log('[Setup] Admin logged in and on dashboard');
     }
 
@@ -374,6 +508,11 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await contribDlg.getByLabel('Deliverable 1').fill('Wireframe document');
     await contribDlg.getByLabel('Criterion 1').fill('Wireframes reviewed by team');
 
+    // Due date is required before a contribution can be confirmed (added in
+    // commit 9694143). Use the q-date popup — driving the masked input via
+    // typed digits is racy and sometimes leaves the form's deadline empty.
+    await fillDueDateViaPopup(adminPage, contribDlg, 2026, 6, 1);
+
     await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
     await waitForSettle(adminPage);
     console.log('[Phase 2] Contribution 1 created: %s', CONTRIBUTION_1_TITLE);
@@ -390,6 +529,8 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await contribDlg.getByLabel('Objective 1').fill('Engage community members');
     await contribDlg.getByLabel('Deliverable 1').fill('Outreach report');
     await contribDlg.getByLabel('Criterion 1').fill('Community engagement report submitted');
+
+    await fillDueDateViaPopup(adminPage, contribDlg, 2026, 6, 15);
 
     await contribDlg.getByRole('button', { name: /Create Contribution/i }).click();
     await waitForSettle(adminPage);
@@ -527,41 +668,37 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await openContributionDialog(adminPage, CONTRIBUTION_1_TITLE);
     const dlg = adminPage.locator('.q-dialog');
 
-    // 4.1 Click "Assign Contribution" in dialog footer
-    const assignBtn = dlg.getByRole('button', { name: /Assign Contribution/i }).first();
+    // 4.1 Click "Assign" in the AssignmentCard (unassigned state).
+    const card = dlg.locator('.assignment-card');
+    await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+    const assignBtn = card.getByRole('button', { name: /Assign/i }).first();
     await expect(assignBtn).toBeVisible({ timeout: TIMEOUT.short });
     await assignBtn.click();
 
-    // 4.2 Assign dialog opens (use .assign-dialog class to avoid matching parent dialog)
-    const assignDlg = adminPage.locator('.assign-dialog');
-    await expect(assignDlg).toBeVisible({ timeout: TIMEOUT.short });
+    // 4.2 Modal picker opens.
+    const assignModal = adminPage.locator('.assignment-modal');
+    await expect(assignModal).toBeVisible({ timeout: TIMEOUT.short });
 
-    // 4.3 Select "Member" mode
-    const memberModeCard = assignDlg.locator('.assign-mode-card').filter({ hasText: 'Member' });
-    await memberModeCard.click();
-    await waitForSettle(adminPage, 500);
-
-    // 4.4 Search and select the member
+    // 4.3 Search and select the member via MemberPicker.
     const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
-    const searchInput = assignDlg.locator('input[placeholder*="Search"]');
+    const searchInput = assignModal.locator('input[placeholder*="Search"]');
     if (await searchInput.isVisible().catch(() => false)) {
       await searchInput.fill(memberNameToUse.substring(0, 5));
       await waitForSettle(adminPage, 500);
     }
 
-    const memberRow = assignDlg.locator('.assign-member-row').filter({ hasText: new RegExp(memberNameToUse, 'i') }).first();
+    const memberRow = assignModal.locator('.member-picker-row').filter({ hasText: new RegExp(memberNameToUse, 'i') }).first();
     if (await memberRow.isVisible({ timeout: 3000 }).catch(() => false)) {
       await memberRow.click();
     } else {
-      // Fallback: click first member in list
-      const firstMember = assignDlg.locator('.assign-member-row').first();
+      const firstMember = assignModal.locator('.member-picker-row').first();
       await firstMember.click();
     }
 
-    // 4.5 Click Assign
-    await assignDlg.getByRole('button', { name: 'Assign' }).click();
+    // 4.4 Click "Send Offer".
+    await assignModal.getByRole('button', { name: /Send Offer/i }).click();
     await waitForSettle(adminPage);
-    console.log('[Phase 4] Contribution 1 assigned to member');
+    console.log('[Phase 4] Contribution 1 offered to member');
 
     await closeContributionDialog(adminPage);
   });
@@ -682,6 +819,22 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       await approveBtn.click();
       await waitForSettle(adminPage);
       console.log('[Phase 6] Admin approved sub-contribution');
+
+      // Poll the MEMBER backend until SUB_1 (in the current project) reports
+      // status=assigned so the next phase (member submits evidence) sees the
+      // Submit Evidence button.
+      const deadline = Date.now() + 30_000;
+      let observedStatus = '';
+      while (Date.now() < deadline) {
+        const sub = await findContribInCurrentProject(memberPage, SUB_CONTRIBUTION_TITLE);
+        observedStatus = sub?.status ?? '';
+        if (observedStatus === 'assigned') break;
+        await adminPage.waitForTimeout(500);
+      }
+      if (observedStatus !== 'assigned') {
+        throw new Error(`SUB_1 never reached assigned on member backend within 30s (last: ${observedStatus})`);
+      }
+      console.log('[Phase 6] SUB_1 member backend status confirmed: assigned');
     } else {
       console.log('[Phase 6] No Approve button — sub-contribution may already be approved');
     }
@@ -696,48 +849,76 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await navigateToProjectDetail(memberPage, PROJECT_TITLE);
     await waitForSettle(memberPage, 1500);
 
-    await openContributionDialog(memberPage, CONTRIBUTION_1_TITLE);
-    const detailDlg = memberPage.locator('.q-dialog');
-
-    // 6.6 Click sub-item to open recursive dialog
-    const subItem = detailDlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE });
-    await expect(subItem).toBeVisible({ timeout: TIMEOUT.medium });
-    await subItem.click();
-    await memberPage.waitForTimeout(500);
-
-    // A nested dialog opens with the sub-contribution
-    const nestedDlg = memberPage.locator('.q-dialog').last();
-
-    // Toggle evidence form first
-    const submitEvidenceBtn = nestedDlg.getByRole('button', { name: /Submit Evidence & Complete/i });
-    if (await submitEvidenceBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await submitEvidenceBtn.click();
+    // Open the parent dialog, click into the sub, and wait for the member's
+    // "Submit Evidence & Complete" button. The backend already reports SUB_1
+    // as assigned-to-member (confirmed by the poll in the approve phase), but
+    // the member's frontend may still be showing a stale snapshot of the sub
+    // when the dialog first opens. Retry the navigate→open cycle until the
+    // button appears rather than silently skipping evidence submission.
+    let nestedDlg = memberPage.locator('.q-dialog').last();
+    let submitEvidenceBtn = nestedDlg.getByRole('button', { name: /Submit Evidence & Complete/i });
+    let evidenceFormOpened = false;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await openContributionDialog(memberPage, CONTRIBUTION_1_TITLE);
+      const detailDlg = memberPage.locator('.q-dialog');
+      const subItem = detailDlg.locator('.sub-item').filter({ hasText: SUB_CONTRIBUTION_TITLE });
+      await expect(subItem).toBeVisible({ timeout: TIMEOUT.medium });
+      await subItem.click();
       await memberPage.waitForTimeout(500);
-    }
 
-    // Fill completion notes and acceptance criteria, then submit
+      nestedDlg = memberPage.locator('.q-dialog').last();
+      submitEvidenceBtn = nestedDlg.getByRole('button', { name: /Submit Evidence & Complete/i });
+      if (await submitEvidenceBtn.isVisible({ timeout: 4000 }).catch(() => false)) {
+        await submitEvidenceBtn.click();
+        await memberPage.waitForTimeout(500);
+        evidenceFormOpened = true;
+        break;
+      }
+      // Button not visible — close everything, re-navigate, and retry.
+      console.log(`[Phase 6] Submit Evidence button not visible yet (attempt ${attempt + 1}/4) — refreshing`);
+      await closeContributionDialog(memberPage);
+      await navigateToProjectDetail(memberPage, PROJECT_TITLE);
+      await waitForSettle(memberPage, 1500);
+    }
+    expect(evidenceFormOpened, 'Submit Evidence form should open for the member-assigned sub').toBe(true);
+
+    // Fill completion notes and acceptance criteria, then submit. The form
+    // is open (asserted above), so the notes field must be present.
     const notesInput = nestedDlg.getByPlaceholder(/Describe how you completed/i).or(
       nestedDlg.locator('.submit-completion-form textarea').first(),
     );
-    const notesVisible = await notesInput.isVisible({ timeout: 5000 }).catch(() => false);
-    if (notesVisible) {
-      await notesInput.fill('Design review completed. All documents reviewed and feedback provided.');
+    await expect(notesInput).toBeVisible({ timeout: TIMEOUT.medium });
+    await notesInput.fill('Design review completed. All documents reviewed and feedback provided.');
 
-      // Fill acceptance criteria responses (required)
-      const criteriaInputs = nestedDlg.locator('.submit-completion-form .criterion-block input');
-      const criteriaCount = await criteriaInputs.count();
-      for (let i = 0; i < criteriaCount; i++) {
-        await criteriaInputs.nth(i).fill('Criterion met through thorough review');
-      }
-
-      const submitBtn = nestedDlg.getByRole('button', { name: /Submit for Review/i });
-      await expect(submitBtn).toBeEnabled({ timeout: TIMEOUT.short });
-      await submitBtn.click();
-      await waitForSettle(memberPage);
-      console.log('[Phase 6] Member submitted evidence for sub-contribution');
-    } else {
-      console.log('[Phase 6] Sub-contribution evidence form not visible — may need approval first');
+    // Fill acceptance criteria responses (required)
+    const criteriaInputs = nestedDlg.locator('.submit-completion-form .criterion-block input');
+    const criteriaCount = await criteriaInputs.count();
+    for (let i = 0; i < criteriaCount; i++) {
+      await criteriaInputs.nth(i).fill('Criterion met through thorough review');
     }
+
+    const submitBtn = nestedDlg.getByRole('button', { name: /Submit for Review/i });
+    await expect(submitBtn).toBeEnabled({ timeout: TIMEOUT.short });
+    await submitBtn.click();
+    await waitForSettle(memberPage);
+    console.log('[Phase 6] Member submitted evidence for sub-contribution');
+
+    // Poll the ADMIN backend until SUB_1 reports status=needs_review so the
+    // next phase (admin reviews + signs off) doesn't read a stale 'assigned'
+    // replica. The member's local backend transitioned immediately; we wait
+    // for any-sync to propagate the change to the admin's backend.
+    const deadline = Date.now() + 30_000;
+    let observedStatus = '';
+    while (Date.now() < deadline) {
+      const sub = await findContribInCurrentProject(adminPage, SUB_CONTRIBUTION_TITLE);
+      observedStatus = sub?.status ?? '';
+      if (observedStatus === 'needs_review') break;
+      await memberPage.waitForTimeout(500);
+    }
+    if (observedStatus !== 'needs_review') {
+      throw new Error(`SUB_1 did not reach needs_review on admin backend within 30s (last observed: ${observedStatus})`);
+    }
+    console.log('[Phase 6] SUB_1 admin backend status confirmed: needs_review');
 
     // Close nested dialog
     await memberPage.keyboard.press('Escape');
@@ -860,12 +1041,21 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(notesInput).toBeVisible({ timeout: TIMEOUT.medium });
     await notesInput.fill('Wireframes completed. All design objectives met. Sub-contributions signed off. Ready for review.');
 
-    // 7.7 Enter actual hours
-    const hoursInput = detailDlg.locator('.submit-completion-form').getByLabel(/Actual Hours/i).or(
-      detailDlg.locator('.submit-completion-form input[type="number"]'),
-    );
-    if (await hoursInput.isVisible().catch(() => false)) {
-      await hoursInput.fill('32');
+    // 7.7 Enter actual hours and actual cost (side-by-side .actuals-row).
+    // First numeric input = hours; second = cost ($ prefixed).
+    const actualsInputs = detailDlg.locator('.actuals-row input[type="number"]');
+    if (await actualsInputs.first().isVisible({ timeout: 2000 }).catch(() => false)) {
+      await actualsInputs.nth(0).fill('32');
+      await actualsInputs.nth(1).fill('800');
+      console.log('[Phase 7] Filled actual hours=32 and actual cost=800');
+    } else {
+      // Fallback for older form layout where only hours existed.
+      const hoursInput = detailDlg.locator('.submit-completion-form').getByLabel(/Actual Hours/i).or(
+        detailDlg.locator('.submit-completion-form input[type="number"]'),
+      );
+      if (await hoursInput.isVisible().catch(() => false)) {
+        await hoursInput.fill('32');
+      }
     }
 
     // Fill acceptance criteria if present
@@ -898,6 +1088,16 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     await openContributionDialog(adminPage, CONTRIBUTION_1_TITLE);
     const dlg = adminPage.locator('.q-dialog');
+
+    // Verify the Actual Cost stat card is visible to admin (gated by
+    // canSeeBudgetForThis — lead/steward/community admin only). The card was
+    // populated in Phase 7 when the member submitted evidence with actual
+    // cost=800. Optional: only assert when the actuals-row was used in P7.
+    const actualCostCard = dlg.locator('.stat-card', { hasText: /Actual Cost/i });
+    if (await actualCostCard.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await expect(actualCostCard).toContainText('$800');
+      console.log('[Phase 8] Actual Cost stat card visible with submitted value');
+    }
 
     // Toggle review form
     const reviewBtn = dlg.getByRole('button', { name: /Review Submission/i });
@@ -954,6 +1154,41 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     console.log('[Phase 9] Contribution 1 signed off');
 
     await closeContributionDialog(adminPage);
+
+    // 9.5 Verify the compact card shows the signed_off status badge with the
+    // solid-accent style (class presence — CSS rule is ground truth).
+    const signedOffCard = adminPage.locator('.contribution-compact')
+      .filter({ hasText: CONTRIBUTION_1_TITLE });
+    await expect(signedOffCard.locator('.status-badge.signed_off')).toBeVisible({ timeout: TIMEOUT.short });
+    console.log('[Phase 9] Signed-off chip rendered on compact card');
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 9.5: Community admin marks signed-off contribution as Rewarded
+  // ------------------------------------------------------------------
+
+  test('Phase 9.5: admin marks signed-off contribution as Rewarded', async () => {
+    await adminPage.bringToFront();
+
+    await openContributionDialog(adminPage, CONTRIBUTION_1_TITLE);
+    const dlg = adminPage.locator('.q-dialog');
+
+    // Button is only visible to community admins on signed-off contributions.
+    const rewardBtn = dlg.getByRole('button', { name: 'Mark as Rewarded' });
+    await expect(rewardBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await rewardBtn.click();
+    await waitForSettle(adminPage);
+
+    // Post-click: the Rewarded confirmation panel replaces the button. The
+    // panel reuses .signed-off-panel and renders a .sign-off-title="Rewarded"
+    // plus a .sign-off-sub line ("by … on …"), so anchor the assertion on
+    // the title element rather than trying to match the full panel text.
+    await expect(
+      dlg.locator('.signed-off-panel .sign-off-title', { hasText: /^Rewarded$/i }).first(),
+    ).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 9.5] Contribution 1 marked as rewarded');
+
+    await closeContributionDialog(adminPage);
   });
 
   // ------------------------------------------------------------------
@@ -966,39 +1201,35 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
     const dlg = adminPage.locator('.q-dialog');
 
-    // Use merged Assign dialog
-    const assignBtn = dlg.getByRole('button', { name: /Assign Contribution/i }).first();
+    // Click "Assign" in AssignmentCard.
+    const card = dlg.locator('.assignment-card');
+    await expect(card).toBeVisible({ timeout: TIMEOUT.medium });
+    const assignBtn = card.getByRole('button', { name: /Assign/i }).first();
     await expect(assignBtn).toBeVisible({ timeout: TIMEOUT.short });
     await assignBtn.click();
 
-    const assignDlg = adminPage.locator('.assign-dialog');
-    await expect(assignDlg).toBeVisible({ timeout: TIMEOUT.short });
-
-    // Select Member mode and pick the correct member (not the admin)
-    const memberModeCard = assignDlg.locator('.assign-mode-card').filter({ hasText: 'Member' });
-    await memberModeCard.click();
-    await waitForSettle(adminPage, 500);
+    const assignModal = adminPage.locator('.assignment-modal');
+    await expect(assignModal).toBeVisible({ timeout: TIMEOUT.short });
 
     const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
-    const searchInput = assignDlg.locator('input[placeholder*="Search"]');
+    const searchInput = assignModal.locator('input[placeholder*="Search"]');
     if (await searchInput.isVisible().catch(() => false)) {
       await searchInput.fill(memberNameToUse.substring(0, 5));
       await waitForSettle(adminPage, 500);
     }
 
-    const memberRow = assignDlg.locator('.assign-member-row').filter({ hasText: new RegExp(memberNameToUse, 'i') }).first();
+    const memberRow = assignModal.locator('.member-picker-row').filter({ hasText: new RegExp(memberNameToUse, 'i') }).first();
     if (await memberRow.isVisible({ timeout: 3000 }).catch(() => false)) {
       await memberRow.click();
     } else {
-      // Fallback: pick the last member (admin is usually first)
-      const rows = assignDlg.locator('.assign-member-row');
+      const rows = assignModal.locator('.member-picker-row');
       const count = await rows.count();
       await rows.nth(count - 1).click();
     }
 
-    await assignDlg.getByRole('button', { name: 'Assign' }).click();
+    await assignModal.getByRole('button', { name: /Send Offer/i }).click();
     await waitForSettle(adminPage);
-    console.log('[Phase 10] Contribution 2 assigned to member');
+    console.log('[Phase 10] Contribution 2 offered to member');
 
     await closeContributionDialog(adminPage);
   });
@@ -1024,212 +1255,212 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
   // ------------------------------------------------------------------
   // Phase 10.5: After Phase 10's offer-accept on contribution 2 (which
-  // calls AcceptOffer → propagateAssigneeToChildren), SUB_2 (created in
-  // Phase 2.5 without an assignee, status=created) should now show the
-  // member as its auto-inherited assignee. We verify via the
-  // .sub-item-assignee chip and fall back to the API if profiles
-  // haven't synced.
+  // calls AcceptOffer → propagateOfferToChildren), SUB_2 (created in
+  // Phase 2.5 without an assignee, status=created) should now be
+  // OFFERED to the member. Verify via API + the AssignmentCard.
   // ------------------------------------------------------------------
 
-  test('Phase 10.5: verify sub-contribution auto-inherited member as assignee', async () => {
+  test('Phase 10.5: SUB_2 auto-offered to member after parent acceptance', async () => {
     await adminPage.bringToFront();
 
-    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
-    await waitForSettle(adminPage, 2000);
-
-    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
-    const dlg = adminPage.locator('.q-dialog');
-
-    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
-    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
-
-    const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
-    const assigneeChip = sub2Row.locator('.sub-item-assignee');
-
-    // Primary assertion: chip rendered with member's name (or AID prefix).
-    const chipVisible = await assigneeChip.isVisible({ timeout: 5000 }).catch(() => false);
-    if (chipVisible) {
-      const chipText = await assigneeChip.textContent();
-      const memberAidPrefix = (memberAID || '').slice(0, 12);
-      const matched = (chipText ?? '').includes(memberNameToUse) ||
-                      (memberAidPrefix && (chipText ?? '').includes(memberAidPrefix));
-      if (!matched) {
-        // Fall back to API verification — the chip text might be a partial
-        // representation if the profile hasn't synced yet.
-        const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-        const data: { contributions?: Array<{ id: string; parent_contribution?: string; title?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
-        const sub = (data.contributions ?? []).find(c => c.title === SUB_2_TITLE);
-        const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
-        expect(subAssignee).toBe(memberAID);
-      }
-    } else {
-      // Chip not rendered (profile load delay): fall back to API.
-      const listResp = await adminPage.request.get(`${BACKEND_URL}/api/v1/contributions`);
-      const data: { contributions?: Array<{ id: string; parent_contribution?: string; title?: string; assigned_contributor?: string; assigned_contributor_id?: string }> } = await listResp.json();
-      const sub = (data.contributions ?? []).find(c => c.title === SUB_2_TITLE);
-      expect(sub).toBeTruthy();
-      const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
-      expect(subAssignee).toBe(memberAID);
+    // Backend: SUB_2 should become 'offered' to memberAID once the member's
+    // acceptance of CONTRIBUTION_2 (prev phase) triggers propagateOfferToChildren
+    // and that offer syncs to the admin's backend. Poll until it propagates —
+    // checking once races any-sync. Scope to the current project so a stale
+    // SUB_2 from a prior (un-cleaned) run doesn't shadow this one.
+    const deadline = Date.now() + 30_000;
+    let sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
+    while (Date.now() < deadline) {
+      sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
+      if (sub?.status === 'offered' && sub?.offered_to === memberAID) break;
+      await adminPage.waitForTimeout(500);
     }
-    console.log('[Phase 10.5] SUB_2 assignee auto-inherited from parent (member)');
+    expect(sub).toBeTruthy();
+    expect(sub?.status).toBe('offered');
+    expect(sub?.offered_to).toBe(memberAID);
+    console.log('[Phase 10.5] SUB_2 backend state: offered to member');
 
-    await closeContributionDialog(adminPage);
-  });
-
-  // ------------------------------------------------------------------
-  // Phase 10.6: Admin clicks Approve on the auto-inherited SUB_2 row.
-  // The Approve button is gated by canApproveSub && status in
-  // (created|changed) AND :disable=!childAssignee. Since auto-inherit
-  // populated the assignee, the button should be enabled.
-  // ------------------------------------------------------------------
-
-  test('Phase 10.6: admin approves auto-inherited sub-contribution', async () => {
-    await adminPage.bringToFront();
-
+    // UI: open the parent CONTRIBUTION_2 dialog, click into SUB_2's nested
+    // dialog, and confirm the AssignmentCard shows "Offered to <member>".
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage, 1500);
 
     await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
-    const dlg = adminPage.locator('.q-dialog');
-
-    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
-    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
-
-    const approveBtn = sub2Row.locator('.approve-sub-btn');
-    await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.medium });
-    await expect(approveBtn).toBeEnabled({ timeout: TIMEOUT.short });
-    await approveBtn.click();
-    await waitForSettle(adminPage, 2000);
-
-    // After approval, SUB_2 should transition out of 'created'. The badge
-    // for 'assigned' status reads "Assigned" (per ContributionStatusBadge).
-    // The Approve button (gated by status in created|changed) should be gone.
-    await expect(sub2Row.locator('.approve-sub-btn')).toHaveCount(0, { timeout: TIMEOUT.medium });
-    console.log('[Phase 10.6] SUB_2 approved (auto-inherited assignee)');
-
-    await closeContributionDialog(adminPage);
-  });
-
-  // ------------------------------------------------------------------
-  // Phase 10.7: Reassign SUB_2 to admin via the UI contributor picker.
-  // The change dialog (CreateContributionDialog in editing mode) now shows
-  // the contributor picker when the contribution being edited is a sub
-  // (has parent_contribution set). Submitting a change with a new assignee
-  // transitions the sub to 'changed' requiring re-approval.
-  // ------------------------------------------------------------------
-
-  test('Phase 10.7: admin changes sub-contribution assignee to admin (re-approval required)', async () => {
-    await adminPage.bringToFront();
-
-    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
-    await waitForSettle(adminPage, 1500);
-
-    // Open the contribution 2 detail dialog.
-    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
-    const contrib2Dlg = adminPage.locator('.q-dialog').first();
-
-    // Click the SUB_2 row to open the nested ContributionDetailDialog.
-    const sub2Row = contrib2Dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    const parentDlg = adminPage.locator('.q-dialog').first();
+    const sub2Row = parentDlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
     await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
     await sub2Row.click();
     await waitForSettle(adminPage, 500);
 
-    // The nested dialog is the last q-dialog on the page.
-    const nestedDlg = adminPage.locator('.q-dialog').last();
-    await expect(nestedDlg).toBeVisible({ timeout: TIMEOUT.short });
+    const subDlg = adminPage.locator('.q-dialog').last();
+    await expect(subDlg.locator('.assignment-card')).toContainText(/Offered to/i, { timeout: TIMEOUT.medium });
 
-    // Click the edit-btn pencil in the nested dialog header to open the
-    // change dialog (CreateContributionDialog with editing=true).
-    const editBtn = nestedDlg.locator('.edit-btn');
-    await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
-    await editBtn.click();
+    const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
+    await expect(subDlg.locator('.assignment-card'))
+      .toContainText(memberNameToUse, { timeout: TIMEOUT.medium })
+      .catch(async () => {
+        const aidPrefix = (memberAID || '').slice(0, 8);
+        await expect(subDlg.locator('.assignment-card')).toContainText(aidPrefix, { timeout: TIMEOUT.medium });
+      });
+    console.log('[Phase 10.5] AssignmentCard shows Offered state for member');
 
-    // The change dialog is now the topmost q-dialog.
-    const changeDlg = dialog(adminPage, /Change Contribution|Submit Change/i);
-    await expect(changeDlg).toBeVisible({ timeout: TIMEOUT.short });
-
-    // The contributor picker should be visible (sub edit mode). The picker
-    // is a q-select sibling of a "Assigned Contributor" subtitle div, both
-    // wrapped in a parent <div>.
-    const pickerLabel = changeDlg.locator('div.text-subtitle2', { hasText: /Assigned Contributor/i });
-    await expect(pickerLabel).toBeVisible({ timeout: TIMEOUT.short });
-    const picker = pickerLabel.locator('xpath=following-sibling::*[contains(@class, "q-select")][1]');
-    await expect(picker).toBeVisible({ timeout: TIMEOUT.short });
-
-    // Type the admin's name into the picker search to filter options.
-    const adminName = accounts.admin?.name ?? '';
-    await picker.locator('input').fill(adminName.slice(0, 4));
-    await waitForSettle(adminPage, 400);
-
-    // Select the admin option from the dropdown.
-    const adminOption = adminPage.locator('.q-menu .q-item').filter({ hasText: adminName }).first();
-    await expect(adminOption).toBeVisible({ timeout: TIMEOUT.medium });
-    await adminOption.click();
-    await waitForSettle(adminPage, 300);
-
-    // Fill the reason for change.
-    const reasonInput = changeDlg.getByLabel(/Reason for Change/i).or(
-      changeDlg.getByPlaceholder(/reason|why/i),
-    );
-    await expect(reasonInput).toBeVisible({ timeout: TIMEOUT.short });
-    await reasonInput.fill('Reassigning to admin for testing the re-approval flow.');
-
-    // Submit the change.
-    await changeDlg.getByRole('button', { name: /Submit Change/i }).click();
-    await waitForSettle(adminPage, 2000);
-    console.log('[Phase 10.7] Submitted assignee change via UI');
-
-    // Close nested and parent dialogs and re-navigate to verify badge.
     await adminPage.keyboard.press('Escape');
-    await waitForSettle(adminPage, 500);
-    await closeContributionDialog(adminPage);
-
-    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
-    await waitForSettle(adminPage, 1500);
-    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
-    const dlg = adminPage.locator('.q-dialog').first();
-    const sub2RowRefreshed = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
-    await expect(sub2RowRefreshed).toBeVisible({ timeout: TIMEOUT.medium });
-    await expect(sub2RowRefreshed.locator('.status-badge.changed')).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Phase 10.7] SUB_2 reassigned to admin via UI and transitioned to changed');
-
+    await waitForSettle(adminPage, 300);
     await closeContributionDialog(adminPage);
   });
 
   // ------------------------------------------------------------------
-  // Phase 10.8: Re-approve SUB_2 from the 'changed' state. The Approve
-  // button gate widened to (created|changed) so it should reappear.
+  // Phase 10.6: Member accepts the auto-offered SUB_2. Status flips
+  // from 'offered' → 'assigned' with member as assigned_contributor.
   // ------------------------------------------------------------------
 
-  test('Phase 10.8: admin re-approves the sub-contribution', async () => {
+  test('Phase 10.6: member accepts offer on SUB_2', async () => {
+    await memberPage.bringToFront();
+
+    await navigateToProjectDetail(memberPage, PROJECT_TITLE);
+    await waitForSettle(memberPage, 1500);
+
+    await openContributionDialog(memberPage, CONTRIBUTION_2_TITLE);
+    const parentDlg = memberPage.locator('.q-dialog').first();
+    const sub2Row = parentDlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+    await sub2Row.click();
+    await waitForSettle(memberPage, 500);
+
+    const subDlg = memberPage.locator('.q-dialog').last();
+    // Accept Offer button is the member-side action — the AssignmentCard
+    // is read-only for members; the Accept Offer button lives elsewhere
+    // in the body (legacy element).
+    const acceptBtn = subDlg.getByRole('button', { name: /Accept Offer|Accept/i }).first();
+    await expect(acceptBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await acceptBtn.click();
+    await waitForSettle(memberPage, 2000);
+    console.log('[Phase 10.6] Member accepted SUB_2 offer');
+
+    // Poll the ADMIN backend until it sees SUB_2 (in the current project) as
+    // assigned to member — the next phase opens the dialog on adminPage and
+    // would race any-sync.
+    const deadline = Date.now() + 30_000;
+    let observedStatus = '';
+    let observedAssignee = '';
+    while (Date.now() < deadline) {
+      const s = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
+      observedStatus = s?.status ?? '';
+      observedAssignee = s?.assigned_contributor ?? s?.assigned_contributor_id ?? '';
+      if (observedStatus === 'assigned' && observedAssignee === memberAID) break;
+      await memberPage.waitForTimeout(500);
+    }
+    if (observedStatus !== 'assigned' || observedAssignee !== memberAID) {
+      throw new Error(`SUB_2 admin backend never reached assigned-to-member within 30s (last: status=${observedStatus}, assignee=${observedAssignee})`);
+    }
+    console.log('[Phase 10.6] SUB_2 admin backend state: assigned to member');
+
+    await memberPage.keyboard.press('Escape');
+    await waitForSettle(memberPage, 300);
+    await closeContributionDialog(memberPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 10.7: Admin uses the AssignmentCard's Unassign button on
+  // SUB_2 (currently assigned to member), then re-offers via the
+  // inline picker to admin. This exercises the unified-assignment-card
+  // unassign + re-offer flow and confirms the bug fix that NO stale
+  // "Assigned to <member>" text remains after re-offer.
+  // ------------------------------------------------------------------
+
+  test('Phase 10.7: admin re-directs SUB_2 to admin via AssignmentCard (no stale assignee)', async () => {
     await adminPage.bringToFront();
 
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage, 1500);
 
     await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
-    const dlg = adminPage.locator('.q-dialog');
-
-    const sub2Row = dlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    const parentDlg = adminPage.locator('.q-dialog').first();
+    const sub2Row = parentDlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
     await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+    await sub2Row.click();
+    await waitForSettle(adminPage, 500);
 
-    const approveBtn = sub2Row.locator('.approve-sub-btn');
-    await expect(approveBtn).toBeVisible({ timeout: TIMEOUT.medium });
-    await expect(approveBtn).toBeEnabled({ timeout: TIMEOUT.short });
-    await approveBtn.click();
+    const subDlg = adminPage.locator('.q-dialog').last();
+    const card = subDlg.locator('.assignment-card');
+
+    // Should be in 'assigned' state with the Unassign button visible.
+    const memberNameToUse = accounts.member?.name ?? MEMBER_NAME;
+    await expect(card).toContainText(memberNameToUse, { timeout: TIMEOUT.medium });
+    const unassignBtn = card.locator('button:has-text("Unassign")');
+    await expect(unassignBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await unassignBtn.click();
+    await waitForSettle(adminPage, 1500);
+
+    // Inline picker should reveal.
+    const inlinePicker = card.locator('.inline-picker');
+    await expect(inlinePicker).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // Pick admin to re-offer.
+    const adminName = accounts.admin?.name ?? '';
+    const adminRow = inlinePicker.locator('.member-picker-row').filter({ hasText: adminName }).first();
+    await expect(adminRow).toBeVisible({ timeout: TIMEOUT.medium });
+    await adminRow.click();
     await waitForSettle(adminPage, 2000);
 
-    // After re-approval the badge should be 'assigned' again.
-    await expect(sub2Row.locator('.status-badge.assigned')).toBeVisible({ timeout: TIMEOUT.medium });
-    console.log('[Phase 10.8] SUB_2 re-approved → assigned');
+    // Card should now show Offered to admin and not stale "Assigned to <member>".
+    await expect(card).toContainText(/Offered to/i, { timeout: TIMEOUT.medium });
+    await expect(card).toContainText(adminName, { timeout: TIMEOUT.medium });
+    await expect(card).not.toContainText(`Assigned to ${memberNameToUse}`);
+    console.log('[Phase 10.7] SUB_2 re-offered to admin via card; no stale assignee text');
 
+    // Backend cross-check (scoped to the current project).
+    const sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
+    expect(sub?.status).toBe('offered');
+    expect(sub?.offered_to).toBe(adminAID);
+    const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
+    expect(subAssignee).toBe('');
+    console.log('[Phase 10.7] SUB_2 backend state: offered to admin, no assigned id');
+
+    await adminPage.keyboard.press('Escape');
+    await waitForSettle(adminPage, 300);
     await closeContributionDialog(adminPage);
   });
 
   // ------------------------------------------------------------------
-  // Phase 10.9: Admin (now SUB_2's assignee) submits evidence on the
-  // sub-contribution. Mirrors the existing Phase 6 evidence flow but
-  // targets the second sub on contribution 2.
+  // Phase 10.8: Admin accepts the offer to themselves on SUB_2.
+  // Status: offered → assigned, with admin as assigned_contributor.
+  // ------------------------------------------------------------------
+
+  test('Phase 10.8: admin accepts own offer on SUB_2', async () => {
+    await adminPage.bringToFront();
+
+    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
+    await waitForSettle(adminPage, 1500);
+
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const parentDlg = adminPage.locator('.q-dialog').first();
+    const sub2Row = parentDlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE });
+    await expect(sub2Row).toBeVisible({ timeout: TIMEOUT.medium });
+    await sub2Row.click();
+    await waitForSettle(adminPage, 500);
+
+    const subDlg = adminPage.locator('.q-dialog').last();
+    const acceptBtn = subDlg.getByRole('button', { name: /Accept Offer|Accept/i }).first();
+    await expect(acceptBtn).toBeVisible({ timeout: TIMEOUT.medium });
+    await acceptBtn.click();
+    await waitForSettle(adminPage, 2000);
+    console.log('[Phase 10.8] Admin accepted own SUB_2 offer');
+
+    const sub = await findContribInCurrentProject(adminPage, SUB_2_TITLE);
+    expect(sub?.status).toBe('assigned');
+    const subAssignee = sub?.assigned_contributor ?? sub?.assigned_contributor_id ?? '';
+    expect(subAssignee).toBe(adminAID);
+    console.log('[Phase 10.8] SUB_2 backend state: assigned to admin');
+
+    await adminPage.keyboard.press('Escape');
+    await waitForSettle(adminPage, 300);
+    await closeContributionDialog(adminPage);
+  });
+
+  // ------------------------------------------------------------------
+  // Phase 10.9: Admin (now SUB_2's assignee from Phase 10.7-10.8)
+  // submits evidence on the sub-contribution.
   // ------------------------------------------------------------------
 
   test('Phase 10.9: admin (now sub assignee) submits evidence on the sub-contribution', async () => {
@@ -1248,7 +1479,6 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     const nestedDlg = adminPage.locator('.q-dialog').last();
 
-    // Toggle evidence form
     const submitEvidenceBtn = nestedDlg.getByRole('button', { name: /Submit Evidence & Complete/i });
     await expect(submitEvidenceBtn).toBeVisible({ timeout: TIMEOUT.medium });
     await submitEvidenceBtn.click();
@@ -1260,7 +1490,6 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(notesInput).toBeVisible({ timeout: TIMEOUT.medium });
     await notesInput.fill('Logistics plan completed.');
 
-    // Fill all acceptance criteria responses
     const criteriaInputs = nestedDlg.locator('.submit-completion-form .criterion-block input');
     const criteriaCount = await criteriaInputs.count();
     for (let i = 0; i < criteriaCount; i++) {
@@ -1273,11 +1502,9 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await waitForSettle(adminPage, 2000);
     console.log('[Phase 10.9] Admin submitted evidence on SUB_2');
 
-    // Close nested dialog
     await adminPage.keyboard.press('Escape').catch(() => {});
     await adminPage.waitForTimeout(300);
 
-    // Verify SUB_2 row shows needs_review (label "Needs Review", class .needs_review)
     await expect(detailDlg.locator('.sub-item').filter({ hasText: SUB_2_TITLE }).locator('.status-badge.needs_review'))
       .toBeVisible({ timeout: TIMEOUT.medium });
 
@@ -1320,8 +1547,11 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
     const dlg = adminPage.locator('.q-dialog');
 
-    // 10.1 Click edit pencil icon in dialog header
-    const editBtn = dlg.locator('.edit-btn');
+    // 10.1 Click "Request changes" icon in dialog header (rule icon).
+    // The class was previously `.edit-btn` (absolute-positioned bottom-right);
+    // it was moved inline next to the title's edit-pencil and renamed to
+    // `.title-change-btn` so it doesn't overlap the assigned-avatar.
+    const editBtn = dlg.locator('.title-change-btn');
     await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
     await editBtn.click();
 
@@ -1340,6 +1570,9 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     );
     await expect(reasonInput).toBeVisible({ timeout: TIMEOUT.short });
     await reasonInput.fill('Scope expanded to include additional community partners following initial planning');
+
+    // (Reassignment is no longer part of the change-dialog — it's owned by the
+    // AssignmentCard's Unassign + inline-picker flow. Covered in Phase 10.7.)
 
     // 10.6 Submit change
     await changeDlg.getByRole('button', { name: /Submit Change/i }).click();
@@ -1424,7 +1657,12 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await expect(adminPage.locator('.plan-modified-banner')).toBeVisible({ timeout: TIMEOUT.short });
     await expect(adminPage.getByText(/re-signoff required/i)).toBeVisible({ timeout: TIMEOUT.short });
     await expect(adminPage.getByRole('button', { name: /Re-Sign Off Plan/i })).toBeVisible({ timeout: TIMEOUT.short });
-    console.log('[Phase 11] Plan-modified banner visible after milestone edit');
+
+    // The first-time .sign-off-banner must NOT be visible — re-sign-off has
+    // its own banner so the two don't double up (fix in commit on main).
+    await expect(adminPage.locator('.sign-off-banner')).toHaveCount(0);
+
+    console.log('[Phase 11] Plan-modified banner visible after milestone edit (first-time banner hidden)');
 
     // Note: we don't click Re-Sign Off Plan here. The existing SignOffPlan
     // validator requires all contributions to be in 'confirmed' state, which
@@ -1446,68 +1684,55 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage);
 
-    // Locate contribution 2 card
-    const contrib2Card = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
-    await expect(contrib2Card).toBeVisible({ timeout: TIMEOUT.medium });
+    // Open the contribution detail dialog (the AssignmentCard lives both here
+    // and inside the edit dialog — Task 6 of unified-assignment-card). Use
+    // the edit dialog path to preserve the "via pencil icon" semantics.
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const detailDlg = adminPage.locator('.q-dialog').first();
+    const editBtn = detailDlg.locator('.title-edit-btn');
+    await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await editBtn.click();
 
-    // Confirm assignee avatar is present (member accepted offer in Phase 10)
-    await expect(contrib2Card.locator('.compact-avatar')).toBeVisible({ timeout: TIMEOUT.short });
-
-    // .compact-actions has the edit pencil — click it
-    // The first button matching the edit icon (skipping any Confirm button which is rendered conditionally)
-    const editPencil = contrib2Card.locator('.compact-actions button').filter({
-      has: adminPage.locator('.q-icon').filter({ hasText: /^edit$/ }),
-    }).first();
-    // Fallback: find by tooltip text
-    const editFallback = contrib2Card.locator('.compact-actions button').filter({ hasText: '' }).nth(0);
-    if (await editPencil.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await editPencil.click();
-    } else {
-      // The compact-actions has flat round buttons; the first non-Confirm button is edit
-      const allBtns = contrib2Card.locator('.compact-actions button');
-      const btnCount = await allBtns.count();
-      // Skip Confirm/Assign buttons — find an icon-only flat round button
-      let clicked = false;
-      for (let i = 0; i < btnCount; i++) {
-        const btn = allBtns.nth(i);
-        const text = (await btn.textContent() ?? '').trim();
-        if (text === '' || text.length < 2) {
-          await btn.click();
-          clicked = true;
-          break;
-        }
-      }
-      if (!clicked) {
-        await editFallback.click();
-      }
-    }
-
-    // ContributionForm dialog opens in edit mode
+    // Edit dialog opens; AssignmentCard inside it shows "Assigned to <member>"
+    // with an Unassign button. Click Unassign — the card transitions to
+    // showing the inline picker for re-offer, but we don't need to re-offer
+    // here; the test only verifies that the unassign succeeded.
     const formDlg = adminPage.locator('.q-dialog').filter({ hasText: /Edit Contribution/i }).first();
     await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
-
-    // The unassign block (.unassign-block) contains the "Unassign Contributor" button
-    const unassignBtn = formDlg.getByRole('button', { name: /Unassign Contributor/i });
+    const card = formDlg.locator('.assignment-card');
+    const unassignBtn = card.getByRole('button', { name: /^Unassign$/i }).first();
     await expect(unassignBtn).toBeVisible({ timeout: TIMEOUT.short });
     await unassignBtn.click();
-
-    // ConfirmArchiveDialog (reused with confirmLabel="Unassign", icon="person_remove",
-    // title="Unassign Contributor")
-    const confirmDlg = adminPage.locator('.q-dialog').filter({ hasText: 'Unassign Contributor' }).last();
-    await expect(confirmDlg).toBeVisible({ timeout: TIMEOUT.short });
-    await confirmDlg.getByRole('button', { name: 'Unassign' }).click();
     await waitForSettle(adminPage, 2000);
 
-    // ContributionForm should close; refresh and verify
-    await adminPage.keyboard.press('Escape').catch(() => {});
-    await waitForSettle(adminPage);
-    await navigateToProjectDetail(adminPage, PROJECT_TITLE);
-    await waitForSettle(adminPage);
+    // Verify the backend state: CONTRIBUTION_2 is now confirmed with no
+    // assignee. The compact-card avatar isn't a reliable signal here —
+    // unassign happens on the AssignmentCard inside the open edit dialog,
+    // and the parent page's Pinia cache may still hold the pre-unassign
+    // snapshot until SSE delivers the update.
+    const contrib = await findContribInCurrentProject(adminPage, CONTRIBUTION_2_TITLE);
+    expect(contrib).toBeTruthy();
+    expect(contrib?.status).toBe('confirmed');
+    const assignee = contrib?.assigned_contributor ?? contrib?.assigned_contributor_id ?? '';
+    expect(assignee).toBe('');
+    console.log('[Phase 12] Backend confirms contribution 2 unassigned (status=confirmed, no assignee)');
 
-    const refreshedCard = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
-    await expect(refreshedCard).toBeVisible({ timeout: TIMEOUT.medium });
-    await expect(refreshedCard.locator('.compact-avatar')).toHaveCount(0, { timeout: TIMEOUT.short });
-    console.log('[Phase 12] UI confirms contribution 2 unassigned (no avatar visible)');
+    // CreateContributionDialog is a *persistent* Quasar dialog — it ignores
+    // Escape and backdrop clicks, so closeContributionDialog's Escape fallback
+    // can't dismiss it. Close it via its footer Cancel button (v-close-popup).
+    // First collapse the inline picker (revealed by Unassign) if present, so
+    // the only remaining "Cancel" is the dialog footer's.
+    const pickerCancel = formDlg.locator('.inline-picker').getByRole('button', { name: /^Cancel$/i }).first();
+    if (await pickerCancel.isVisible().catch(() => false)) {
+      await pickerCancel.click().catch(() => {});
+      await adminPage.waitForTimeout(300);
+    }
+    const footerCancel = formDlg.locator('.dialog-footer-btn').filter({ hasText: /^Cancel$/ }).first();
+    await expect(footerCancel).toBeVisible({ timeout: TIMEOUT.short });
+    await footerCancel.click();
+    await adminPage.waitForTimeout(500);
+    // Close any remaining (non-persistent) detail dialog underneath.
+    await closeContributionDialog(adminPage);
   });
 
   // ------------------------------------------------------------------
@@ -1567,13 +1792,15 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     await navigateToProjectDetail(adminPage, PROJECT_TITLE);
     await waitForSettle(adminPage);
 
-    const contrib2Card = adminPage.locator('.contribution-compact').filter({ hasText: CONTRIBUTION_2_TITLE });
-    await expect(contrib2Card).toBeVisible({ timeout: TIMEOUT.medium });
+    // .compact-actions on this card has no edit pencil (Assign/Confirm/Approve
+    // only). Open the detail dialog and use its header .title-edit-btn.
+    await openContributionDialog(adminPage, CONTRIBUTION_2_TITLE);
+    const detailDlg = adminPage.locator('.q-dialog').first();
+    const editBtn = detailDlg.locator('.title-edit-btn');
+    await expect(editBtn).toBeVisible({ timeout: TIMEOUT.short });
+    await editBtn.click();
 
-    // Click the edit pencil — only icon button in .compact-actions now
-    await contrib2Card.locator('.compact-actions button').first().click();
-
-    // ContributionForm opens in edit mode with the Danger Zone "Delete Contribution" button
+    // CreateContributionDialog opens in edit mode with the Danger Zone "Delete Contribution" button
     const formDlg = adminPage.locator('.q-dialog').filter({ hasText: /Edit Contribution/i }).last();
     await expect(formDlg).toBeVisible({ timeout: TIMEOUT.short });
     const deleteBtn = formDlg.getByRole('button', { name: /Delete Contribution/i });
@@ -1765,6 +1992,100 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     expect(archived.status).toBe('archived');
     console.log('[Phase 17] Project %s archived via DESTROY confirmation', createdProjectId);
   });
+
+  // -----------------------------------------------------------------------
+  // Phase 18: Contributions page — view toggle, scope filters, sections
+  // -----------------------------------------------------------------------
+
+  test('Phase 18: contributions page renders Timeline view by default + flat filter row', async () => {
+    await adminPage.bringToFront();
+
+    // Seed two contributions via API: one with a past deadline so the
+    // Overdue section appears, one with no deadline so the Due Date TBC
+    // section appears. Reuses the existing adminAID.
+    const projResp = await adminPage.request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'E2E Timeline Seed', description: 'Seed for contributions page tests', created_by: adminAID },
+    });
+    expect(projResp.ok()).toBeTruthy();
+    const seedProject: { id: string } = await projResp.json();
+
+    await adminPage.request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: seedProject.id,
+        title: 'E2E Overdue Seed',
+        description: 'Past deadline — should land in Overdue',
+        contribution_type: 'technical',
+        objectives: ['Obj'], deliverables: ['Del'], acceptance_criteria: ['Crit'],
+        created_by: adminAID,
+        deadline: '2025-01-01',
+      },
+    });
+    await adminPage.request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: seedProject.id,
+        title: 'E2E TBC Seed',
+        description: 'No deadline — should land in Due Date TBC',
+        contribution_type: 'technical',
+        objectives: ['Obj'], deliverables: ['Del'], acceptance_criteria: ['Crit'],
+        created_by: adminAID,
+      },
+    });
+    console.log('[Phase 18] Seeded overdue + no-deadline contributions');
+
+    await navigateTo(adminPage, 'Contributions');
+    await waitForSettle(adminPage, 1500);
+
+    // View toggle visible, Timeline is the default selected option.
+    const toggle = adminPage.locator('.view-mode-toggle');
+    await expect(toggle).toBeVisible({ timeout: TIMEOUT.medium });
+
+    // Timeline-mode body present, list-mode body absent.
+    await expect(adminPage.locator('.timeline-view')).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(adminPage.locator('.feed-container')).toHaveCount(0);
+
+    // Flat scope filter row — all 7 pills present.
+    const expectedScopes = ['All', 'Mine', 'Open', 'Assigned', 'In Review', 'Signed Off', 'Archived'];
+    for (const label of expectedScopes) {
+      await expect(adminPage.locator('.filter-pill', { hasText: new RegExp(`^${label}$`, 'i') })).toBeVisible();
+    }
+
+    // Old "My Contributions" section must NOT exist (was removed).
+    await expect(adminPage.locator('.my-contributions-section')).toHaveCount(0);
+
+    // Overdue + TBC sections render thanks to the seeded contributions.
+    await expect(adminPage.locator('.overdue-section')).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(adminPage.locator('.tbc-section')).toBeVisible({ timeout: TIMEOUT.medium });
+    console.log('[Phase 18] Overdue + TBC sections rendered');
+
+    // Toggle to List view.
+    await toggle.getByText('List', { exact: true }).click();
+    await waitForSettle(adminPage, 500);
+    await expect(adminPage.locator('.feed-container')).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(adminPage.locator('.timeline-view')).toHaveCount(0);
+    console.log('[Phase 18] List view active after toggle');
+
+    // Toggle back to Timeline.
+    await toggle.getByText('Timeline', { exact: true }).click();
+    await waitForSettle(adminPage, 500);
+    await expect(adminPage.locator('.timeline-view')).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Mine narrows the view; clicking it should not error out.
+    await adminPage.locator('.filter-pill', { hasText: /^Mine$/i }).click();
+    await waitForSettle(adminPage, 500);
+    await expect(adminPage.locator('.filter-pill.active', { hasText: /^Mine$/i })).toBeVisible({ timeout: TIMEOUT.short });
+
+    // Restore All.
+    await adminPage.locator('.filter-pill', { hasText: /^All$/i }).click();
+    await waitForSettle(adminPage, 500);
+
+    // Cleanup: archive the seed project.
+    await adminPage.request.post(`${BACKEND_URL}/api/v1/projects/${seedProject.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
 });
 
 // ===========================================================================
@@ -1804,6 +2125,86 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
   });
 
   // ── New endpoint validation tests ───────────────────────────────────────
+
+  test('confirm returns 400 when contribution has no deadline', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Deadline Gate Test', description: 'Confirm without deadline test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string } = await projectResp.json();
+
+    const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: project.id,
+        title: 'Needs deadline',
+        description: 'No deadline set — confirm should be rejected',
+        contribution_type: 'technical',
+        objectives: ['Obj'], deliverables: ['Del'], acceptance_criteria: ['Crit'],
+        created_by: adminAID,
+      },
+    });
+    expect(contribResp.ok()).toBeTruthy();
+    const contrib: { id: string } = await contribResp.json();
+
+    const confirmResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/confirm`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+    expect(confirmResp.status()).toBe(400);
+    const body = await confirmResp.json();
+    expect(body.error).toMatch(/due date|deadline/i);
+    console.log('[API] confirm without deadline correctly returned 400');
+
+    // Cleanup
+    await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
+
+  test('reward returns 400 when contribution is not signed off', async ({ request }) => {
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: adminAID } = await health.json();
+    expect(adminAID).toBeTruthy();
+
+    const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: { title: 'API Reward Test', description: 'Reward on wrong status test', created_by: adminAID },
+    });
+    expect(projectResp.ok()).toBeTruthy();
+    const project: { id: string } = await projectResp.json();
+
+    const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
+      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      data: {
+        project_id: project.id,
+        title: 'Not signed off',
+        description: 'Reward should fail on created status',
+        contribution_type: 'technical',
+        objectives: ['Obj'], deliverables: ['Del'], acceptance_criteria: ['Crit'],
+        created_by: adminAID,
+      },
+    });
+    expect(contribResp.ok()).toBeTruthy();
+    const contrib: { id: string } = await contribResp.json();
+
+    const rewardResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/reward`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+    // Status 400 from the service ("must be signed off ..."), the route is
+    // RBAC-gated (403 only if AID lacks the community-admin role).
+    expect([400, 403]).toContain(rewardResp.status());
+    console.log('[API] reward on non-signed-off contribution correctly returned %s', rewardResp.status());
+
+    // Cleanup
+    await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
+      headers: { 'X-User-AID': adminAID },
+    });
+  });
 
   test('unassign returns 409 when contribution is not in assigned status', async ({ request }) => {
     const health = await request.get(`${BACKEND_URL}/health`);

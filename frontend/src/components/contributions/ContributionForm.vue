@@ -219,7 +219,7 @@
               min="0"
             />
           </div>
-          <div class="col-6">
+          <div v-if="canSeeBudgetForThis" class="col-6">
             <q-input v-model="form.budget" label="Budget" outlined />
           </div>
         </div>
@@ -276,8 +276,10 @@
 import { ref, computed, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import type { Contribution, CreateContributionRequest, UpdateContributionRequest } from 'src/lib/api/contributions';
+import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
 
 const $q = useQuasar();
+const budgetAccess = useContributionBudgetAccess();
 
 interface ContributionFormData {
   project_id: string;
@@ -357,6 +359,10 @@ function makeDefaultForm(): ContributionFormData {
 }
 
 const form = ref<ContributionFormData>(makeDefaultForm());
+
+const canSeeBudgetForThis = computed(() =>
+  budgetAccess.canSeeBudget({ project_id: form.value.project_id || props.defaultProjectId }),
+);
 
 watch(
   () => props.modelValue,

@@ -79,21 +79,15 @@
           <div class="text-caption text-grey-6">Type cannot be changed after creation</div>
         </div>
 
-        <!-- Contributor picker (sub-create mode and sub-edit mode) -->
-        <div v-if="parentContributionId || (editing && contribution?.parent_contribution)">
+        <!-- Contributor picker (sub-create mode and sub-edit mode only) -->
+        <div
+          v-if="parentContributionId || (editing && contribution?.parent_contribution)"
+        >
           <div class="text-subtitle2 q-mb-sm">Assigned Contributor</div>
-          <q-select
+          <MemberPicker
             v-model="form.assigned_contributor_id"
-            :options="contributorOptions"
-            option-label="label"
-            option-value="value"
-            emit-value
-            map-options
-            outlined
-            use-input
-            input-debounce="120"
-            @filter="filterContributors"
-            placeholder="Search community members"
+            :members="contributorMembers"
+            allow-toggle
           />
           <div class="text-caption text-grey-6 q-mt-xs">
             Defaults to the parent's contributor when known. Leave blank to assign later.
@@ -110,6 +104,7 @@
             min="0"
           />
           <q-input
+            v-if="canSeeBudgetForThis"
             v-model="form.budget"
             label="Budget"
             outlined
@@ -299,6 +294,32 @@
             :rules="[val => !!val?.trim() || 'Reason is required']"
           />
         </div>
+
+        <!-- Wrapper takes the q-gutter-md left margin so the card aligns with
+             the other fields; AssignmentCard's own scoped margin would
+             otherwise override the gutter's margin-left and shift it left. -->
+        <div v-if="editing && contribution">
+          <AssignmentCard
+            :contribution="contribution"
+            :can-offer="canOffer"
+            :can-unassign="canUnassign"
+            @offered="onAssignmentChanged"
+            @unassigned="onAssignmentChanged"
+          />
+        </div>
+
+        <div v-if="editing && canDelete" class="danger-zone q-mt-md">
+          <div class="danger-zone-title">Danger Zone</div>
+          <q-btn
+            outline
+            no-caps
+            color="negative"
+            icon="delete"
+            label="Delete Contribution"
+            class="full-width"
+            @click="$emit('archive')"
+          />
+        </div>
       </q-card-section>
 
       <div class="dialog-footer">
@@ -324,6 +345,10 @@ import type { CreateContributionRequest } from 'src/lib/api/contributions';
 import type { Contribution } from 'src/types/projects';
 import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
+import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
+import AssignmentCard from 'src/components/contributions/AssignmentCard.vue';
+import MemberPicker from 'src/components/common/MemberPicker.vue';
+import type { MemberOption } from 'src/components/common/MemberPicker.vue';
 
 interface Props {
   modelValue: boolean;
@@ -342,6 +367,9 @@ interface Props {
   changeRequest?: boolean;
   contribution?: Contribution | null;
   standalone?: boolean;
+  canOffer?: boolean;
+  canUnassign?: boolean;
+  canDelete?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -354,6 +382,9 @@ const props = withDefaults(defineProps<Props>(), {
   changeRequest: false,
   contribution: null,
   standalone: false,
+  canOffer: false,
+  canUnassign: false,
+  canDelete: false,
 });
 
 const emit = defineEmits<{
@@ -361,10 +392,13 @@ const emit = defineEmits<{
   (e: 'submit', req: CreateContributionRequest): void;
   (e: 'update', updates: Record<string, unknown>): void;
   (e: 'change', data: { updates: Record<string, unknown>; reason: string }): void;
+  (e: 'assignment-changed', contribution: Contribution): void;
+  (e: 'archive'): void;
 }>();
 
 const profilesStore = useProfilesStore();
 const projectsStore = useProjectsStore();
+const budgetAccess = useContributionBudgetAccess();
 
 const projectOptions = computed(() =>
   projectsStore.projects
@@ -372,37 +406,17 @@ const projectOptions = computed(() =>
     .map((p) => ({ label: p.title, value: p.id })),
 );
 
-interface ContributorOption {
-  label: string;
-  value: string;
-}
-
-const allContributorOptions = computed<ContributorOption[]>(() =>
+const contributorMembers = computed<MemberOption[]>(() =>
   profilesStore.communityProfiles
     .map((p) => {
-      const aid = (p.data?.aid as string) ?? '';
-      const name = (p.data?.displayName as string) ?? aid.slice(0, 12) + '...';
-      return { label: name, value: aid };
+      const id = (p.data?.aid as string) ?? '';
+      const name = (p.data?.displayName as string) ?? id.slice(0, 12) + '...';
+      const status = (p.data?.status as string) ?? '';
+      return { id, name, status };
     })
-    .filter((o) => o.value),
+    .filter((m) => m.id && m.status !== 'removed' && m.status !== 'pending')
+    .map(({ id, name }) => ({ id, name })),
 );
-
-const contributorOptions = ref<ContributorOption[]>([]);
-
-function filterContributors(needle: string, update: (cb: () => void) => void) {
-  update(() => {
-    const q = needle.trim().toLowerCase();
-    contributorOptions.value = q
-      ? allContributorOptions.value.filter((o) => o.label.toLowerCase().includes(q))
-      : allContributorOptions.value;
-  });
-}
-
-// Keep contributorOptions populated whenever the community profile list updates,
-// so the dropdown shows all options on first focus without requiring a search keystroke.
-watch(allContributorOptions, (next) => {
-  contributorOptions.value = next;
-}, { immediate: true });
 
 interface ContributionForm {
   project_id: string;
@@ -478,6 +492,14 @@ function makeDefault(): ContributionForm {
 
 const form = ref<ContributionForm>(makeDefault());
 const changeReason = ref('');
+
+const canSeeBudgetForThis = computed(() =>
+  budgetAccess.canSeeBudget({ project_id: props.projectId || form.value.project_id }),
+);
+
+function onAssignmentChanged(updated: Contribution) {
+  emit('assignment-changed', updated);
+}
 
 const isValid = computed(() => {
   const baseValid =
@@ -628,7 +650,14 @@ function handleSubmit() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px 0;
+  padding: 16px 20px 12px;
+  /* Pin the header above the scrolling form body: opaque background + border
+     so scrolled content is visually separated and can't bleed under it. */
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  background: var(--matou-card);
+  border-bottom: 1px solid var(--matou-border);
 }
 
 .dialog-header-left {
@@ -736,4 +765,5 @@ function handleSubmit() {
     flex: 1;
   }
 }
+
 </style>

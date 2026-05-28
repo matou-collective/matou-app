@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="modal-overlay fixed inset-0 z-[60] flex items-center justify-center p-4" @click.self="!isUpdating && $emit('close')">
+      <div v-if="show" class="modal-overlay fixed inset-0 flex items-center justify-center p-4" @click.self="!isUpdating && $emit('close')">
         <div class="modal-content bg-card border border-border rounded-2xl shadow-xl max-w-md w-full overflow-hidden">
           <!-- Header -->
           <div class="modal-header bg-primary p-4 border-b border-white/20 flex items-center justify-between">
@@ -289,6 +289,9 @@ function handleDone() {
 
 <style lang="scss" scoped>
 .modal-overlay {
+  /* Opens from within ProfileModal (z-index 6500), so it must sit above it;
+     still below Quasar's .z-top (7000). */
+  z-index: 6600;
   background-color: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
 }

@@ -1,17 +1,12 @@
 <template>
   <div class="profile-card" :class="status === 'pending' ? 'border-pending' : 'border-approved'" @click="$emit('click')">
-    <div class="card-avatar">
-      <img
-        v-if="avatarUrl && !avatarError"
-        :src="avatarUrl"
-        :alt="displayName"
-        class="avatar-img"
-        @error="avatarError = true"
-      />
-      <div v-else class="avatar-placeholder" :class="colorClass">
-        {{ initials }}
-      </div>
-    </div>
+    <UserAvatar
+      :aid="(profile?.aid as string) ?? undefined"
+      :name="displayName ?? undefined"
+      :src="avatarUrl ?? undefined"
+      :size="40"
+      :clickable="false"
+    />
     <div class="card-info">
       <span class="card-name">{{ displayName }}</span>
       <span v-if="role" class="card-role">{{ role }}</span>
@@ -55,8 +50,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed } from 'vue';
 import { getFileUrl } from 'src/lib/api/client';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 const props = defineProps<{
   profile: Record<string, unknown>;
@@ -70,28 +66,13 @@ defineEmits<{
 
 const displayName = computed(() => (props.profile?.displayName as string) || 'Unknown');
 
-const avatarError = ref(false);
-
-// Reset error state when profile data changes (e.g. avatar syncs in later)
-watch(() => [props.profile?.avatar, props.communityProfile?.avatar], () => {
-  avatarError.value = false;
-});
-
 const avatarUrl = computed(() => {
-  const ref = (props.profile?.avatar as string) || (props.communityProfile?.avatar as string);
-  if (!ref) return '';
-  if (ref.startsWith('http') || ref.startsWith('data:')) return ref;
-  return getFileUrl(ref);
+  const fileRef = (props.profile?.avatar as string) || (props.communityProfile?.avatar as string);
+  if (!fileRef) return '';
+  if (fileRef.startsWith('http') || fileRef.startsWith('data:')) return fileRef;
+  return getFileUrl(fileRef);
 });
 
-const initials = computed(() => {
-  const name = displayName.value;
-  const parts = name.split(' ');
-  if (parts.length >= 2) {
-    return `${parts[0].charAt(0)}${parts[1].charAt(0)}`.toUpperCase();
-  }
-  return name.substring(0, 2).toUpperCase();
-});
 
 const status = computed(() => (props.profile?.status as string) || '');
 
@@ -119,11 +100,6 @@ const hasCredential = computed(() => !!(props.communityProfile?.credential));
 
 const hasAttendance = computed(() => !!(props.profile?.attendanceRecord));
 
-const colorClass = computed(() => {
-  const colors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
-  const hash = displayName.value.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  return colors[hash % colors.length];
-});
 
 function formatDate(dateStr: string, verb: string): string {
   if (!dateStr) return '';
@@ -134,7 +110,7 @@ function formatDate(dateStr: string, verb: string): string {
   if (diffDays === 1) return `${verb} yesterday`;
   if (diffDays < 7) return `${verb} ${diffDays} days ago`;
   if (diffDays < 30) return `${verb} ${Math.floor(diffDays / 7)} weeks ago`;
-  return `${verb} ${date.toLocaleDateString('en-NZ', { month: 'short', year: 'numeric' })}`;
+  return `${verb} ${date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`;
 }
 </script>
 
@@ -166,33 +142,6 @@ function formatDate(dateStr: string, verb: string): string {
   background: rgba(74, 157, 156, 0.08);
 }
 
-.card-avatar {
-  flex-shrink: 0;
-}
-
-.avatar-img {
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 50%;
-  object-fit: cover;
-}
-
-.avatar-placeholder {
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  font-size: 0.75rem;
-  color: white;
-}
-
-.gradient-1 { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
-.gradient-2 { background: linear-gradient(135deg, #ec4899, #f43f5e); }
-.gradient-3 { background: linear-gradient(135deg, #14b8a6, #06b6d4); }
-.gradient-4 { background: linear-gradient(135deg, #f59e0b, #ef4444); }
 
 .card-info {
   display: flex;

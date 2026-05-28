@@ -1223,7 +1223,7 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 	deadline := ParseDeadline(req.Deadline)
 
 	// For sub-contributions, inherit the parent's assignee when the request
-	// doesn't supply one. Mirrors the propagateAssigneeToChildren path that
+	// doesn't supply one. Mirrors the propagateOfferToChildren path that
 	// fires when the parent transitions to assigned, but applies at sub
 	// creation time so subs created after the parent is already assigned
 	// (the common case) also get an assignee without manual picking.
@@ -1406,28 +1406,35 @@ func (s *Service) ListRegistrations(ctx context.Context, spaceID, contribID stri
 	return regs, nil
 }
 
-// propagateAssigneeToChildren walks the parent's ChildContributionIDs and sets
-// AssignedContributorID = parent.AssignedContributorID on any child that is in
-// ContribCreated status with an empty assignee. Children with an explicit assignee
-// or in any other status are left untouched. Load failures are logged and skipped
-// (best-effort); save failures are returned immediately.
-func (s *Service) propagateAssigneeToChildren(ctx context.Context, spaceID string, parent *Contribution) error {
+// propagateOfferToChildren walks the parent's ChildContributionIDs and, for each
+// child that is still in created/confirmed status with no assignee or pending offer,
+// offers the child to the parent's accepted contributor. Children already assigned,
+// already offered, or in any later lifecycle stage are left untouched.
+//
+// Children in ContribCreated are confirmed first so they satisfy OfferContribution's
+// status guard. Load failures are logged and skipped (best-effort); save and offer
+// failures abort.
+func (s *Service) propagateOfferToChildren(ctx context.Context, spaceID string, parent *Contribution) error {
 	for _, childID := range parent.ChildContributionIDs {
 		child, err := s.GetContribution(ctx, spaceID, childID)
 		if err != nil {
-			log.Printf("propagateAssigneeToChildren: skipping child %s (load error: %v)", childID, err)
+			log.Printf("propagateOfferToChildren: skipping child %s (load error: %v)", childID, err)
 			continue
 		}
-		if child.AssignedContributorID != "" {
+		if child.AssignedContributorID != "" || child.OfferedTo != "" {
 			continue
 		}
-		if child.Status != ContribCreated && child.Status != ContribAssigned {
+		if child.Status != ContribCreated && child.Status != ContribConfirmed {
 			continue
 		}
-		child.AssignedContributorID = parent.AssignedContributorID
-		child.UpdatedAt = time.Now()
-		if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
-			return fmt.Errorf("propagateAssigneeToChildren: saving child %s: %w", child.ID, err)
+		if child.Status == ContribCreated {
+			child.Status = ContribConfirmed
+			if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
+				return fmt.Errorf("propagateOfferToChildren: confirming child %s: %w", child.ID, err)
+			}
+		}
+		if _, err := s.OfferContribution(ctx, spaceID, child.ID, parent.AssignedContributorID, parent.AssignedContributorName); err != nil {
+			return fmt.Errorf("propagateOfferToChildren: offering child %s: %w", child.ID, err)
 		}
 	}
 	return nil
@@ -1447,7 +1454,7 @@ func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, use
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, err
 	}
-	if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
+	if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -1458,7 +1465,8 @@ type SubmitEvidenceRequest struct {
 	CompletionNotes string    `json:"completion_notes"`
 	EvidenceURLs    []string  `json:"evidence_urls,omitempty"`
 	AcceptanceNotes []string  `json:"acceptance_notes,omitempty"`
-	ActualDuration  int       `json:"actual_duration,omitempty"`
+	ActualDuration  float64   `json:"actual_duration,omitempty"`
+	ActualCost      float64   `json:"actual_cost,omitempty"`
 	TimeReportFile  *FileRef  `json:"time_report_file,omitempty"`
 	AttachmentFiles []FileRef `json:"attachment_files,omitempty"`
 }
@@ -1477,6 +1485,9 @@ func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contribution
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Deadline == nil {
+		return nil, fmt.Errorf("contribution must have a due date before it can be confirmed")
 	}
 	var propagateChildren bool
 	switch c.Status {
@@ -1499,7 +1510,7 @@ func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contribution
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
 	if propagateChildren {
-		if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
+		if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
 			return nil, err
 		}
 	}
@@ -1528,16 +1539,19 @@ func (s *Service) ShareContribution(ctx context.Context, spaceID, contributionID
 	return c, nil
 }
 
-// OfferContribution transitions a confirmed contribution to offered, directing it at a specific user.
+// OfferContribution transitions a confirmed/shared contribution to offered,
+// or re-targets an already-offered contribution at a different user.
+// Re-offering replaces the previous offer recipient.
 func (s *Service) OfferContribution(ctx context.Context, spaceID, contributionID, offeredTo, offeredToName string) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
 	}
-	if c.Status != ContribConfirmed && c.Status != ContribShared {
-		return nil, fmt.Errorf("contribution must be confirmed or shared to offer, current: %s", c.Status)
+	if c.Status != ContribConfirmed && c.Status != ContribShared && c.Status != ContribOffered {
+		return nil, fmt.Errorf("contribution must be confirmed, shared, or offered to (re-)offer, current: %s", c.Status)
 	}
 	now := time.Now()
+	c.AssignedContributorID = ""
 	c.OfferedTo = offeredTo
 	c.OfferedToName = offeredToName
 	c.OfferedAt = &now
@@ -1581,7 +1595,7 @@ func (s *Service) AcceptOffer(ctx context.Context, spaceID, contributionID, user
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
-	if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
+	if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -1628,6 +1642,9 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID st
 	if req.ActualDuration > 0 {
 		c.ActualDuration = req.ActualDuration
 	}
+	if req.ActualCost > 0 {
+		c.ActualCost = req.ActualCost
+	}
 	if req.TimeReportFile != nil {
 		c.TimeReportFile = req.TimeReportFile
 	}
@@ -1639,7 +1656,39 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID st
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
+	// Re-aggregate the parent milestone's actual cost so reporting stays in
+	// sync with the contributions inside it.
+	if c.MilestoneID != "" {
+		if err := s.recomputeMilestoneActualCost(ctx, spaceID, c.MilestoneID); err != nil {
+			log.Printf("[Contributions] recomputeMilestoneActualCost %s: %v", c.MilestoneID, err)
+		}
+	}
 	return c, nil
+}
+
+// recomputeMilestoneActualCost sums ActualCost across all non-archived
+// contributions in the milestone and writes it back to the milestone record.
+func (s *Service) recomputeMilestoneActualCost(ctx context.Context, spaceID, milestoneID string) error {
+	ms, err := s.GetMilestone(ctx, spaceID, milestoneID)
+	if err != nil {
+		return fmt.Errorf("loading milestone: %w", err)
+	}
+	var total float64
+	for _, cid := range ms.ContributionIDs {
+		child, err := s.GetContribution(ctx, spaceID, cid)
+		if err != nil || child == nil {
+			continue
+		}
+		if child.Status == ContribArchived {
+			continue
+		}
+		total += child.ActualCost
+	}
+	if ms.ActualCost == total {
+		return nil
+	}
+	ms.ActualCost = total
+	return s.store.Save(spaceID, ms.MilestoneID, "milestone", ms)
 }
 
 // ReviewContribution records a review decision and transitions the contribution accordingly.
@@ -1724,9 +1773,34 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	return c, nil
 }
 
+// RewardContribution transitions a signed-off contribution to rewarded.
+// Community-admin only — the role check happens at the HTTP layer via
+// ActionRewardContribution.
+func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionID, userID string) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribSignedOff {
+		return nil, fmt.Errorf("contribution must be signed off to mark as rewarded, current: %s", c.Status)
+	}
+	if err := ValidateContributionTransition(c.Status, ContribRewarded); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	c.RewardedBy = userID
+	c.RewardedAt = &now
+	c.Status = ContribRewarded
+	c.UpdatedAt = now
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	return c, nil
+}
+
 // ApproveSubContribution transitions a sub-contribution from created/changed to assigned.
 // An assigned contributor is not required; the sub may be approved while unassigned and
-// later inherit the parent's assignee (via propagateAssigneeToChildren) or be assigned
+// later inherit the parent's assignee (via propagateOfferToChildren) or be assigned
 // directly via the contribution update endpoint.
 func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contributionID string) (*Contribution, error) {
 	child, err := s.GetContribution(ctx, spaceID, contributionID)
@@ -2304,7 +2378,7 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 		return nil, fmt.Errorf("project has no contributions")
 	}
 	for _, c := range contribs {
-		if c.Status != ContribSignedOff && c.Status != ContribArchived {
+		if c.Status != ContribSignedOff && c.Status != ContribRewarded && c.Status != ContribArchived {
 			return nil, fmt.Errorf("contribution %s is %s, must be signed_off", c.ID, c.Status)
 		}
 	}

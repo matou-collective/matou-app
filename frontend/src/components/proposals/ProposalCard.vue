@@ -69,7 +69,7 @@ const endorsementProgress = computed(() => {
 
 function formatDate(dateStr: string): string {
   if (!dateStr) return '';
-  return new Date(dateStr).toLocaleDateString('en-NZ', {
+  return new Date(dateStr).toLocaleDateString(undefined, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

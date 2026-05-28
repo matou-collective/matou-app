@@ -13,6 +13,7 @@ import {
   uniqueSuffix,
   loadAccounts,
   performOrgSetup,
+  approvePendingMember,
   TestAccounts,
 } from './utils/test-helpers';
 
@@ -268,12 +269,8 @@ test.describe.serial('Credential Chain Verification (KERIA reger.saved isolation
       // Register user
       await registerUser(userPage, userName);
 
-      // Wait for admin to see registration
-      const registrationCard = adminPage.locator('.registration-card').filter({ hasText: userName });
-      await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
-
-      // Admin approves
-      await registrationCard.getByRole('button', { name: /approve/i }).click();
+      // Admin sees the pending registration and approves (endorse + onboard + approve)
+      await approvePendingMember(adminPage, userName);
 
       // User receives credential
       await expect(userPage.locator('.welcome-overlay')).toBeVisible({

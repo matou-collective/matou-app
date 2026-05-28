@@ -79,6 +79,7 @@ export interface Contribution {
   created_by: string;
   estimated_duration?: number;
   actual_duration?: number;
+  actual_cost?: number;
   budget?: string;
   deadline?: string;
   objectives: string[];
@@ -123,6 +124,9 @@ export interface Contribution {
   // Sign-off
   signed_off_by?: string;
   signed_off_at?: string;
+  // Rewarded
+  rewarded_by?: string;
+  rewarded_at?: string;
   // Comments
   comment_count?: number;
 }
@@ -219,6 +223,7 @@ export interface SubmitEvidenceRequest {
   time_report_file?: AttachedFile;
   attachment_files?: AttachedFile[];
   actual_duration?: number;
+  actual_cost?: number;
 }
 
 export interface SubmitReviewRequest {

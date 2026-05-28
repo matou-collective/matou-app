@@ -28,10 +28,7 @@
 
       <!-- Author (profile image + name, below title, above description) -->
       <div class="feed-card-author">
-        <div class="author-avatar" :class="avatarColorClass">
-          <img v-if="authorAvatarUrl" :src="authorAvatarUrl" alt="" class="author-avatar-img" />
-          <span v-else>{{ getInitials(authorDisplayName) }}</span>
-        </div>
+        <UserAvatar :aid="props.notice.issuerId ?? undefined" :name="authorDisplayName ?? undefined" :size="32" />
         <span class="author-name">{{ authorDisplayName }}</span>
       </div>
 
@@ -102,7 +99,6 @@
 import { computed } from 'vue';
 import { Calendar, Clock, MapPin, Pin, Megaphone, FileText } from 'lucide-vue-next';
 import type { Notice } from 'src/lib/api/client';
-import { getFileUrl } from 'src/lib/api/client';
 import { useActivityStore } from 'stores/activity';
 import { useProfilesStore } from 'stores/profiles';
 import SaveButton from './SaveButton.vue';
@@ -113,6 +109,7 @@ import CommentSection from './CommentSection.vue';
 import ImageGallery from './ImageGallery.vue';
 import LinkPreview from './LinkPreview.vue';
 import AttachmentList from './AttachmentList.vue';
+import UserAvatar from 'components/profiles/UserAvatar.vue';
 
 const props = defineProps<{ notice: Notice; isSteward: boolean }>();
 
@@ -146,16 +143,6 @@ const authorSharedProfile = computed(() => {
   );
 });
 
-const authorAvatarUrl = computed(() => {
-  const profile = authorSharedProfile.value;
-  if (!profile) return '';
-  const data = profile.data as Record<string, unknown>;
-  const avatar = data?.avatar as string | undefined;
-  if (!avatar) return '';
-  if (avatar.startsWith('http') || avatar.startsWith('data:')) return avatar;
-  return getFileUrl(avatar);
-});
-
 const authorDisplayName = computed(() => {
   const profile = authorSharedProfile.value;
   if (profile) {
@@ -164,22 +151,6 @@ const authorDisplayName = computed(() => {
   }
   return props.notice.issuerDisplayName || (props.notice.issuerId ? `${props.notice.issuerId.slice(0, 6)}…` : 'Author');
 });
-
-const avatarColors = ['gradient-1', 'gradient-2', 'gradient-3', 'gradient-4'];
-const avatarColorClass = computed(() => {
-  const name = authorDisplayName.value;
-  const hash = name.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  return avatarColors[hash % avatarColors.length];
-});
-
-function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .map(w => w[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
-}
 
 function relativeTime(dateStr: string): string {
   const now = Date.now();
@@ -335,31 +306,6 @@ async function handlePin() {
   align-items: center;
   gap: 0.5rem;
 }
-
-.author-avatar {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 50%;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.65rem;
-  font-weight: 600;
-  overflow: hidden;
-}
-
-.author-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: 50%;
-}
-
-.gradient-1 { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
-.gradient-2 { background: linear-gradient(135deg, #ec4899, #f43f5e); }
-.gradient-3 { background: linear-gradient(135deg, #14b8a6, #06b6d4); }
-.gradient-4 { background: linear-gradient(135deg, #f59e0b, #ef4444); }
 
 .author-name {
   font-size: 0.9rem;

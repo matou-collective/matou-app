@@ -14,6 +14,8 @@ type ContributionLike = {
   assigned_contributor_id?: string;
   assigned_contributor?: string;
   comment_count?: number;
+  status?: string;
+  offered_to?: string;
 };
 
 /**
@@ -68,6 +70,15 @@ export function useCommentScope() {
     return cursorsStore.unread('contribution', c.id, c.comment_count ?? 0);
   }
 
+  // Returns 1 when a contribution has been offered to the current user and
+  // hasn't been accepted yet, 0 otherwise. Once the user accepts, the
+  // contribution transitions out of "offered" status and this drops to 0
+  // automatically — no separate cursor to track.
+  function contributionOfferedCount(c: ContributionLike): number {
+    if (c.status !== 'offered') return 0;
+    return isMe(c.offered_to ?? null) ? 1 : 0;
+  }
+
   // Roll up project-level unread + every contribution unread inside the project,
   // but only when the current user is lead/steward of the project. The
   // contribution-side count is also visible on its own card, so this provides
@@ -96,6 +107,7 @@ export function useCommentScope() {
     projectUnread,
     contributionUnread,
     contributionUnreadAsAssignee,
+    contributionOfferedCount,
     projectRollupUnread,
     noticeUnread,
   };

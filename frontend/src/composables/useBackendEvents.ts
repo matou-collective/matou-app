@@ -59,6 +59,7 @@ export type BackendEventType =
   | 'contribution:confirmed'
   | 'contribution:accepted'
   | 'contribution:signed_off'
+  | 'contribution:rewarded'
   | 'contribution:updated'
   | 'contribution_updated'
   | 'plan_updated'
@@ -355,6 +356,7 @@ function connect() {
     'contribution:confirmed',
     'contribution:accepted',
     'contribution:signed_off',
+    'contribution:rewarded',
     'contribution:updated',
     'contribution_updated',
     'plan_updated',

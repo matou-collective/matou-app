@@ -46,9 +46,16 @@ export interface Contribution {
   acceptance_criteria: string[];
   skill_requirements: string[];
   estimated_duration?: number;
+  actual_duration?: number;
+  actual_cost?: number;
+  completion_notes?: string;
   deadline?: string;
   budget?: string;
   assigned_contributor_id?: string;
+  signed_off_by?: string;
+  signed_off_at?: string;
+  rewarded_by?: string;
+  rewarded_at?: string;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -253,6 +260,20 @@ export async function signOffContribution(id: string): Promise<Contribution> {
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(err.error || 'Failed to sign off contribution');
+  }
+  return response.json();
+}
+
+export async function rewardContribution(id: string): Promise<Contribution> {
+  log.info('Marking contribution %s as rewarded', id);
+  const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/reward`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to mark contribution as rewarded');
   }
   return response.json();
 }

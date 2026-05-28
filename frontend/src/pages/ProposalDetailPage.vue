@@ -347,9 +347,7 @@
                 ]"
               >
                 <div class="comment-header">
-                  <div class="comment-avatar">
-                    <q-icon :name="commentKindIcon(c.kind)" size="14px" />
-                  </div>
+                  <UserAvatar :aid="c.user_id" :name="commentDisplayName(c) ?? undefined" :size="24" />
                   <span class="comment-author">{{ commentDisplayName(c) }}</span>
                   <span
                     v-if="c.subtitle"
@@ -551,6 +549,7 @@ import GovernanceActionModal from 'src/components/proposals/GovernanceActionModa
 import AssignRoleDialog from 'src/components/projects/AssignRoleDialog.vue';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import { Shield, Users, UserPlus } from 'lucide-vue-next';
+import UserAvatar from 'components/profiles/UserAvatar.vue';
 import { useIdentityStore } from 'stores/identity';
 import { useProjectsStore } from 'stores/projects';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -750,15 +749,6 @@ function commentDisplayName(c: { user_id: string; user_name: string }): string {
   return memberNames.value[c.user_id] || c.user_name || c.user_id;
 }
 
-function commentKindIcon(kind?: string): string {
-  switch (kind) {
-    case 'endorsement': return 'favorite';
-    case 'completion': return 'check_circle';
-    case 'vote': return 'how_to_vote';
-    default: return 'person';
-  }
-}
-
 function commentSubtitleClass(c: { kind?: string; outcome?: string }): string {
   if (c.kind === 'endorsement') return 'comment-subtitle--endorsement';
   if (c.kind === 'completion') return 'comment-subtitle--completion';
@@ -934,7 +924,7 @@ async function loadCommunityMembers() {
     }
 
     communityMembersList.value = ((shared.profiles ?? []) as { id: string; data: Record<string, string> }[])
-      .filter(p => p.data?.displayName && p.data?.status !== 'pending')
+      .filter(p => p.data?.displayName && p.data?.status !== 'pending' && p.data?.status !== 'removed')
       .map(p => {
         const aid = p.data?.aid || p.id.replace('SharedProfile-', '');
         return {
@@ -1561,21 +1551,6 @@ async function addComment() {
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
-}
-
-.comment-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #dbeafe;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.comment-card--mine .comment-avatar {
-  background: rgba(37, 99, 235, 0.15);
 }
 
 .comment-author {
