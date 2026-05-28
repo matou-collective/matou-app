@@ -12,6 +12,7 @@ import {
   uniqueSuffix,
   loadAccounts,
   performOrgSetup,
+  approvePendingMember,
   TestAccounts,
 } from './utils/test-helpers';
 
@@ -33,7 +34,7 @@ import {
 
 const BATCH_SIZE = 5;
 const APPROVE_COUNT = 4; // per batch
-const BATCH_TIMEOUT = 600_000; // 10 minutes per batch
+const BATCH_TIMEOUT = 900_000; // 15 minutes per batch (4 approval ceremonies + decline + sync)
 const INTER_BATCH_COOLDOWN = 30_000; // 30s cooldown between batches for KERIA recovery
 
 interface UserSetup {
@@ -206,15 +207,16 @@ test.describe.serial('Registration Stress Test', () => {
 
       if (shouldApprove) {
         console.log(`[Stress] Approving ${user.name}...`);
-        await card.click();
-        const modal = adminPage.locator('.modal-content');
-        await expect(modal).toBeVisible({ timeout: TIMEOUT.short });
-        const admitBtn = modal.getByRole('button', { name: /approve/i });
-        await expect(admitBtn).toBeVisible({ timeout: TIMEOUT.short });
-        await admitBtn.click();
+        // Approval requires meeting the requirements gate (endorse + onboard)
+        // before the Approve button appears.
+        await approvePendingMember(adminPage, user.name);
 
-        // Wait for the card to disappear (admin-side processing complete)
-        await expect(card).not.toBeVisible({ timeout: TIMEOUT.long + 30_000 });
+        // On approval the member leaves the Pending list and moves to Members
+        // within the same card, so assert the pending entry is gone (not that
+        // the member vanishes entirely).
+        await expect(
+          membersCard.locator('.profile-card.border-pending').filter({ hasText: user.name }),
+        ).not.toBeVisible({ timeout: TIMEOUT.long + 30_000 });
         approved++;
         console.log(`[Stress] ${user.name}: admin approval processed`);
       } else {
