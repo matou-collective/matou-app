@@ -32,7 +32,7 @@ describe("addContribution", () => {
     });
     const body = JSON.parse(calls[0].init.body);
     expect(body.assigned_contributor_id).toBe("EENGIE");
-    expect(body.created_by).toBe("current-user");
+    expect(body.created_by).toBe("EBEN");
     expect(calls[0].init.headers["X-User-AID"]).toBe("EBEN");
   });
 

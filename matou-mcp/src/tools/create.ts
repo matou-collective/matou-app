@@ -32,7 +32,7 @@ export async function addContribution(ctx: ToolContext, args: AddContributionArg
     priority: args.priority ?? "medium",
     objectives: args.objectives,
     deliverables: args.deliverables,
-    created_by: "current-user",
+    created_by: ctx.config.actingAid,
   };
   if (args.milestone_id) payload.milestone_id = args.milestone_id;
   if (args.acceptance_criteria) payload.acceptance_criteria = args.acceptance_criteria;
@@ -64,7 +64,7 @@ export function registerCreateTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       const project = await ctx.client.post<{ id: string }>(
         "/api/v1/projects",
-        { title: args.title, description: args.description, created_by: "current-user" },
+        { title: args.title, description: args.description, created_by: ctx.config.actingAid },
         { rbac: true },
       );
       let plan: unknown = undefined;
