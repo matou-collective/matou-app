@@ -5,6 +5,7 @@ import { resolveActingAid } from "./identity.js";
 import { MemberDirectory } from "./members.js";
 import type { BackendConfig, ToolContext } from "./context.js";
 import { registerMetaTools } from "./tools/meta.js";
+import { registerReadTools } from "./tools/reads.js";
 
 async function buildContext(): Promise<ToolContext> {
   const { baseUrl, env } = await resolveBackend();
@@ -24,7 +25,8 @@ async function main(): Promise<void> {
   const ctx = await buildContext();
   const server = new McpServer({ name: "matou", version: "0.1.0" });
   registerMetaTools(server, ctx);
-  // Subsequent tasks add: registerReadTools, registerCreateTools,
+  registerReadTools(server, ctx);
+  // Subsequent tasks add: registerCreateTools,
   // registerWorkflowTools, registerChatTools, registerNoticeTools.
   const transport = new StdioServerTransport();
   await server.connect(transport);
