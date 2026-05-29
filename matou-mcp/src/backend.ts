@@ -46,6 +46,9 @@ export class MatouClient {
   put<T>(path: string, body: unknown, opts?: { rbac?: boolean }): Promise<T> {
     return this.request<T>("PUT", path, body, opts?.rbac);
   }
+  del<T>(path: string, opts?: { rbac?: boolean }): Promise<T> {
+    return this.request<T>("DELETE", path, undefined, opts?.rbac);
+  }
 
   private async request<T>(method: string, path: string, body?: unknown, rbac = false): Promise<T> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
