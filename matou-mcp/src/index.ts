@@ -7,6 +7,7 @@ import type { BackendConfig, ToolContext } from "./context.js";
 import { registerMetaTools } from "./tools/meta.js";
 import { registerReadTools } from "./tools/reads.js";
 import { registerCreateTools } from "./tools/create.js";
+import { registerWorkflowTools } from "./tools/workflow.js";
 
 async function buildContext(): Promise<ToolContext> {
   const { baseUrl, env } = await resolveBackend();
@@ -28,7 +29,8 @@ async function main(): Promise<void> {
   registerMetaTools(server, ctx);
   registerReadTools(server, ctx);
   registerCreateTools(server, ctx);
-  // Subsequent tasks add: registerWorkflowTools, registerChatTools, registerNoticeTools.
+  registerWorkflowTools(server, ctx);
+  // Subsequent tasks add: registerChatTools, registerNoticeTools.
   // registerWorkflowTools, registerChatTools, registerNoticeTools.
   const transport = new StdioServerTransport();
   await server.connect(transport);
