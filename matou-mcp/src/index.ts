@@ -34,7 +34,6 @@ async function main(): Promise<void> {
   registerWorkflowTools(server, ctx);
   registerChatTools(server, ctx);
   registerNoticeTools(server, ctx);
-  // registerWorkflowTools, registerChatTools, registerNoticeTools.
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
