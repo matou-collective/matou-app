@@ -9,6 +9,7 @@ import { registerReadTools } from "./tools/reads.js";
 import { registerCreateTools } from "./tools/create.js";
 import { registerWorkflowTools } from "./tools/workflow.js";
 import { registerChatTools } from "./tools/chat.js";
+import { registerNoticeTools } from "./tools/notices.js";
 
 async function buildContext(): Promise<ToolContext> {
   const { baseUrl, env } = await resolveBackend();
@@ -32,7 +33,7 @@ async function main(): Promise<void> {
   registerCreateTools(server, ctx);
   registerWorkflowTools(server, ctx);
   registerChatTools(server, ctx);
-  // Subsequent tasks add: registerNoticeTools.
+  registerNoticeTools(server, ctx);
   // registerWorkflowTools, registerChatTools, registerNoticeTools.
   const transport = new StdioServerTransport();
   await server.connect(transport);
