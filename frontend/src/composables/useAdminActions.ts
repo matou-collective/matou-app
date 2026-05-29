@@ -418,6 +418,19 @@ export function useAdminActions() {
       const stewardOOBI = `${cesrUrl}/oobi/${stewardAid}`;
       await keriClient.resolveOOBI(stewardOOBI, undefined, 30000);
 
+      // Capture the steward's current sn BEFORE round 1. The steward rotates
+      // their personal AID exactly once (in response to round 1), so the
+      // expected sn afterwards is current + 1. We must NOT hardcode '1': a
+      // steward who already rotated during onboarding starts at sn >= 1, so a
+      // fixed '1' makes waitForMemberRotation return immediately (the rotation
+      // hasn't actually happened yet) and round 2 then commits the stale
+      // pre-rotation key — the cause of the flaky "Invalid signing index = -1".
+      const snOp = await client.keyStates().query(stewardAid, undefined, undefined);
+      const snRes = await client.operations().wait(snOp, { signal: AbortSignal.timeout(30000) });
+      const stewardSn0 = parseInt(((snRes.response as { s?: string })?.s ?? '0'), 16);
+      const expectedStewardSn = (stewardSn0 + 1).toString(16);
+      console.log(`[AdminActions] steward at sn=${stewardSn0}; expecting sn=${expectedStewardSn} after round-1 rotation`);
+
       // --- Step 2a: Round 1 — admin pre-rotates, group rotation adds member to rstates ---
       processingStep.value = 'Inviting steward (round 1)...';
       onStep?.('Inviting steward (round 1)...');
@@ -426,12 +439,12 @@ export function useAdminActions() {
       // --- Step 2b: Wait for the steward's frontend to accept and rotate ---
       processingStep.value = 'Waiting for steward to accept...';
       onStep?.('Waiting for steward to accept...');
-      await keriClient.waitForMemberRotation(stewardAid, '1', { timeoutMs: 5 * 60_000 });
+      await keriClient.waitForMemberRotation(stewardAid, expectedStewardSn, { timeoutMs: 5 * 60_000 });
 
       // --- Step 2c: Round 2 — admin pre-rotates again, member becomes signer ---
       processingStep.value = 'Promoting steward to signer (round 2)...';
       onStep?.('Promoting steward to signer (round 2)...');
-      await keriClient.addMemberRound2(orgName, stewardAid, personalAid.name);
+      await keriClient.addMemberRound2(orgName, stewardAid, personalAid.name, expectedStewardSn);
       console.log('[AdminActions] Steward added to org multisig');
 
       // --- Step 3: Revoke old credential ---

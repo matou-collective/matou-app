@@ -1196,10 +1196,11 @@ export class KERIClient {
     groupName: string,
     newMemberAidPrefix: string,
     masterAidName: string,
+    expectedMemberSn?: string,
   ): Promise<void> {
     if (!this.client) throw new Error('Not initialized');
     await this.ensureConnected();
-    console.log(`[KERIClient] addMemberRound2: ${newMemberAidPrefix.slice(0, 12)} -> ${groupName}`);
+    console.log(`[KERIClient] addMemberRound2: ${newMemberAidPrefix.slice(0, 12)} -> ${groupName} (expectedMemberSn=${expectedMemberSn ?? 'latest'})`);
 
     // (a) Pre-rotate master again.
     await this.rotatePersonalAid(masterAidName);
@@ -1223,9 +1224,17 @@ export class KERIClient {
     const masterRes = await this.client.operations().wait(masterQ, { signal: AbortSignal.timeout(30000) });
     const masterState = masterRes.response as Record<string, unknown>;
 
-    const memberQ = await this.client.keyStates().query(newMemberAidPrefix, undefined, undefined);
+    // Query the member at their EXPECTED post-round-1 sn, not "latest". The
+    // member rotates their personal AID exactly once in round-1; round-2 must
+    // commit that rotated key. Passing the sn makes KERIA block until the
+    // member's KEL reaches it, so we never capture the stale pre-rotation key
+    // (which would make the member's key absent from the group's k[] and every
+    // later group-signing op fail with "Invalid signing index = -1"). Mirrors
+    // the POC's queryMemberStateAt(member, '1') (test-multisig.ts:482).
+    const memberQ = await this.client.keyStates().query(newMemberAidPrefix, expectedMemberSn, undefined);
     const memberRes = await this.client.operations().wait(memberQ, { signal: AbortSignal.timeout(30000) });
     const memberState = memberRes.response as Record<string, unknown>;
+    console.log(`[KERIClient] addMemberRound2: committing member key state s=${memberState.s as string} (expected ${expectedMemberSn ?? 'latest'})`);
 
     // (c) Group rotation R2: both parties in states + rstates.
     const rot2 = await this.client.identifiers().rotate(groupName, {
@@ -1278,6 +1287,68 @@ export class KERIClient {
    * @param notificationSaid - SAID from the /multisig/rot notification
    * @returns The group AID prefix
    */
+  /**
+   * Poll until this member is a usable signer of the group AID.
+   *
+   * After groups().join(), signify builds the group keeper from the freshly
+   * fetched identifier record and computes the member's signing index as
+   * `group.keys.indexOf(member.currentKey)` (see signify-ts keeping.js
+   * GroupKeeper.sign). If our KERIA has not yet processed the round-2 group
+   * rotation, the group's current keys do not include our key, the index is
+   * -1, and signing throws "Invalid signing index = -1, not whole number".
+   *
+   * We force our KERIA to fetch the group's KEL up to the round-2 sn, then
+   * confirm our current key is among the group's current keys, retrying until
+   * ready or timeout. Best-effort: on timeout it returns false rather than
+   * throwing, leaving behaviour no worse than before.
+   */
+  private async waitForGroupSignerReady(
+    groupName: string,
+    gid: string,
+    personalAidName: string,
+    expectedGroupSn?: string,
+    timeoutMs = 30000,
+  ): Promise<boolean> {
+    if (!this.client) throw new Error('Not initialized');
+    const deadline = Date.now() + timeoutMs;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+      attempt++;
+      // Force KERIA to fetch/process the group KEL (up to the round-2 sn).
+      try {
+        const q = await this.client.keyStates().query(gid, expectedGroupSn, undefined);
+        await this.client.operations().wait(q, { signal: AbortSignal.timeout(15000) });
+      } catch {
+        // KEL not caught up to expectedGroupSn yet — expected; retry.
+      }
+      try {
+        const group = await this.client.identifiers().get(groupName);
+        const personal = await this.client.identifiers().get(personalAidName);
+        // signify's GroupKeeper.sign uses aid.group.keys; aid.state.k is the
+        // live keystate. Either reflecting our key means signing will succeed.
+        const keeperKeys = (group as { group?: { keys?: string[] } }).group?.keys ?? [];
+        const stateKeys = (group.state as { k?: string[] } | undefined)?.k ?? [];
+        const myKey = ((personal.state as { k?: string[] } | undefined)?.k ?? [])[0];
+        if (myKey && (keeperKeys.includes(myKey) || stateKeys.includes(myKey))) {
+          console.log(
+            `[KERIClient] waitForGroupSignerReady: ready after ${attempt} attempt(s) — group signing index ${keeperKeys.indexOf(myKey)}`,
+          );
+          return true;
+        }
+        console.log(
+          `[KERIClient] waitForGroupSignerReady: attempt ${attempt} — member key not yet among ${keeperKeys.length} group key(s); retrying`,
+        );
+      } catch (err) {
+        console.warn(`[KERIClient] waitForGroupSignerReady: readiness check failed (attempt ${attempt}):`, err);
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    console.warn(
+      `[KERIClient] waitForGroupSignerReady: timed out after ${timeoutMs}ms — group signing may still fail with index -1`,
+    );
+    return false;
+  }
+
   async joinGroup(groupName: string, notificationSaid: string): Promise<string> {
     if (!this.client) throw new Error('Not initialized');
 
@@ -1434,6 +1505,17 @@ export class KERIClient {
 
     await this.client.operations().wait(joinOp, { signal: AbortSignal.timeout(60000) });
     console.log(`[KERIClient] Joined group "${groupName}" (${gid.slice(0, 12)}...)`);
+
+    // 5b. Wait until our KERIA has processed the round-2 group rotation so our
+    //     own key is a *current* group signer. groups().join() returns before
+    //     the group's new key state has necessarily propagated into our local
+    //     kevers; until it has, any group-signing op (the addEndRole below, and
+    //     later createRegistry / issueCredential when this upgraded steward
+    //     approves a member) throws signify's "Invalid signing index = -1"
+    //     because GroupKeeper computes group.keys.indexOf(ourCurrentKey) === -1.
+    //     This is a KEL-propagation race, so poll until ready.
+    const round2Sn = (serder as unknown as { sad?: { s?: string } }).sad?.s;
+    await this.waitForGroupSignerReady(groupName, gid, personalAid.name, round2Sn);
 
     // 6. Add agent end role for the joined group AID
     const agentId = this.client.agent?.pre;
