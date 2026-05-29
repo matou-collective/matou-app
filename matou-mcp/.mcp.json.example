@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "matou": {
+      "command": "node",
+      "args": ["./matou-mcp/dist/index.js"],
+      "env": {}
+    }
+  }
+}
