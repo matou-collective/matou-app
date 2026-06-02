@@ -36,9 +36,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 
 **Hypothesis:** 2 of 3 nodes remain. Replication continues. App unaffected.
 
-**Stop:** `docker compose -p matou-anysync stop any-sync-node-2`
-**Restore:** `docker compose -p matou-anysync start any-sync-node-2`
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
 | Health check flags missing node | ⚠️ Only coordinator shown in output | |
@@ -60,9 +57,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 ### Exp A2: Two sync nodes down (`any-sync-node-2` + `any-sync-node-3`)
 
 **Hypothesis:** One node remains with a full copy. App should still sync but with reduced redundancy.
-
-**Stop:** `docker compose -p matou-anysync stop any-sync-node-2 any-sync-node-3`
-**Restore:** `docker compose -p matou-anysync start any-sync-node-2 any-sync-node-3`
 
 | Observation | Local | Cloud |
 |-------------|-------|-------|
@@ -86,9 +80,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 
 **Hypothesis:** No remote sync possible. App works offline (local copy). Sync resumes automatically on restart.
 
-**Stop:** `docker compose -p matou-anysync stop any-sync-node-1 any-sync-node-2 any-sync-node-3`
-**Restore:** `docker compose -p matou-anysync start any-sync-node-1 any-sync-node-2 any-sync-node-3`
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
 | App continues to work offline | ✅ Kaitiaki can still send messages | |
@@ -110,9 +101,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 ### Exp A4: Coordinator down
 
 **Hypothesis:** Existing sync continues unaffected. New spaces, new registrations, and ACL/membership changes are blocked.
-
-**Stop:** `docker compose -p matou-anysync stop any-sync-coordinator`
-**Restore:** `docker compose -p matou-anysync start any-sync-coordinator`
 
 | Observation | Local | Cloud |
 |-------------|-------|-------|
@@ -163,9 +151,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 
 **Hypothesis:** ACL changes (space permission changes, member removal) are blocked. Read and write of existing content may still work.
 
-**Stop:** `docker compose -p matou-anysync stop any-sync-consensusnode`
-**Restore:** `docker compose -p matou-anysync start any-sync-consensusnode`
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
 | Document reading works | ✅ | |
@@ -205,9 +190,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 
 **Hypothesis:** Text content unaffected. File uploads and downloads fail.
 
-**Stop:** `docker compose -p matou-anysync stop any-sync-filenode`
-**Restore:** `docker compose -p matou-anysync start any-sync-filenode`
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
 | Text messages sent and received normally | ✅ | |
@@ -234,9 +216,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 ### Exp A7: MongoDB down (coordinator loses its database)
 
 **Hypothesis:** Coordinator stops functioning entirely. Sync nodes continue replicating between themselves. New spaces and memberships completely blocked.
-
-**Stop:** `docker compose -p matou-anysync stop mongo-1`
-**Restore:** `docker compose -p matou-anysync start mongo-1`
 
 | Observation | Local | Cloud |
 |-------------|-------|-------|
@@ -265,9 +244,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 ### Exp A8: Redis down (cache lost)
 
 **Hypothesis:** Coordinator and file node lose their cache. Possible performance degradation or hard failures depending on how heavily Redis is relied upon.
-
-**Stop:** `docker compose -p matou-anysync stop redis`
-**Restore:** `docker compose -p matou-anysync start redis`
 
 | Observation | Local | Cloud |
 |-------------|-------|-------|
@@ -303,9 +279,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 
 **Hypothesis:** File uploads and downloads fail. Text sync unaffected.
 
-**Stop:** `docker compose -p matou-anysync stop minio`
-**Restore:** `docker compose -p matou-anysync start minio`
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
 | Text document editing works | ✅ | |
@@ -338,9 +311,6 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 
 **Hypothesis:** App works offline. All data persists. Auto-recovers on restart with no user action needed.
 
-**Stop:** `make anysync-down` from `matou-infrastructure/`
-**Restore:** `make anysync-up`
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
 | App works offline during outage | ✅ Users can use the app and create content | |
@@ -367,28 +337,24 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 
 **Hypothesis:** Existing members retain access. New member joins, key rotations, and org creation fail because these require witness receipts.
 
-**Stop:** `docker compose -p matou-keri stop witness-demo`
-**Restore:** `docker compose -p matou-keri start witness-demo`
-
-**Reference:** Run `make test-multisig-test` from `matou-infrastructure/keri/` to see exactly which of the 13 phases fail.
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
-| Multisig POC phases that fail (list them) | | |
-| Existing members can log in | | |
-| Existing members can edit documents | | |
-| New member registration fails | | |
-| Key rotation fails | | |
-| New org creation fails | | |
-| App surfaces a clear error for blocked actions | | |
-| All 13 POC phases pass after witnesses recover | | |
+| Existing members can load the app | ✅ | |
+| Existing members can send messages | ✅ | |
+| New user identity creation succeeds | ❌ Hangs indefinitely after profile form | |
+| App surfaces a clear error for blocked actions | ❌ No UI error — silent hang | |
+| Console shows witness resolution failures | ✅ KERIA cycles through witnesses, all fail | |
 
 **User experience during failure:**
-> Local: ___
+> Local: Existing members are completely unaffected — the app loads, messaging works, no errors. A new user trying to join can reach the join page and fill in their profile form with no indication anything is wrong. After submitting, the app hangs indefinitely with no UI error. The console shows KERIA attempting to resolve witnesses one by one and failing on each. The user has no idea why nothing is happening.
 > Cloud: ___
 
 **Notes:**
+> **Existing members are safe.** Once a session is established, witnesses are not needed for day-to-day use — only for new key events (joining, key rotation, org creation).
 >
+> **Same bad UX pattern as K3** — the profile form loads and accepts input normally, giving no hint that the infrastructure is degraded. The failure only surfaces after the user submits, and even then silently (loading spinner, no error message).
+>
+> **KERIA tries to recover** by cycling through all available witnesses before giving up, which is good behaviour — but all six are down so it always fails. This retry behaviour would be useful if only one or two witnesses were down.
 
 ---
 
@@ -396,199 +362,59 @@ Results are captured for both local (Docker) and cloud/mesh environments. Run lo
 
 **Hypothesis:** Identity operations fail entirely. Document sync (AnySync) may still work for already-logged-in users.
 
-**Stop:** `docker compose -p matou-keri stop keria`
-**Restore:** `docker compose -p matou-keri start keria`
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
-| Already-logged-in users can edit documents | | |
-| Login fails for new sessions | | |
-| Profile and identity views fail | | |
-| Credential-related features fail | | |
-| App surfaces a clear error vs. silent failure | | |
-| Session auto-recovers after KERIA restarts | | |
-| POC result after recovery (x/13) | | |
+| Existing members can load the app | ❌ Same result as full KERI shutdown | |
+| New user identity creation succeeds | ❌ Same result as full KERI shutdown | |
 
 **User experience during failure:**
-> Local: ___
+> Local: Identical to K3 — existing members get a connection error and cannot load the app at all. Witnesses being up makes no difference if KERIA itself is gone.
 > Cloud: ___
 
 **Notes:**
+> **KERIA is the single load-bearing component for existing users.** Witnesses down (K1) leaves existing sessions intact. KERIA down immediately locks everyone out. The app connects directly to KERIA on load — without it, nothing works regardless of what else is running.
 >
+> **Contrast with AnySync:** AnySync failures leave existing users in offline mode with full app access. KERIA failure is an immediate hard lockout. This makes KERIA the highest-priority component for resilience and uptime.
 
 ---
 
-### Exp K3: Full KERI stack down (KERIA + witnesses)
+### Exp K3: Full KERI stack down (KERIA + witnesses + config server + schema server)
 
 **Hypothesis:** All identity operations completely blocked. AnySync may still serve documents for established sessions.
 
-**Stop:** `make keri-down` from `matou-infrastructure/`
-**Restore:** `make keri-up`
-
 | Observation | Local | Cloud |
 |-------------|-------|-------|
-| Existing sessions can still use documents | | |
-| Login completely blocked | | |
-| App error messaging | | |
-| Full recovery without user action after restart | | |
-| POC result after recovery (x/13) | | |
+| Existing logged-in users can load the app | ❌ Connection error on load | |
+| Existing users can use documents or messaging | ❌ App does not load | |
+| New user can see the join/redeem page | ✅ | |
+| New user identity creation succeeds | ❌ Fails at 12-word phrase generation step | |
+| App surfaces a clear error | ⚠️ Existing users get "connection error, failed to fetch"; new users get error only after filling in profile form | |
+| App is usable by anyone during outage | ❌ | |
 
 **User experience during failure:**
-> Local: ___
+> Local: For an existing member (admin), the app shows a "connection error, failed to fetch" on load and won't get past it — the app is completely inaccessible. For a new user who hasn't joined yet, the join/redeem landing page loads fine, and they can fill out their profile form — but only after submitting do they get: `[ProfileForm] Identity creation failed: Error: Failed to connect to identity network`. The user has wasted their time filling in the form before finding out they can't proceed.
 > Cloud: ___
 
 **Notes:**
+> **Entire KERI infrastructure was shut down** — KERIA agent, all six witnesses, config server, and schema server together. This is a full blackout of the identity layer.
 >
+> **The app is completely unusable when KERI is down.** Unlike AnySync failures where existing users can keep working (offline mode, cached content), KERI failure blocks everyone — existing members can't even load the app, not just new ones.
+>
+> **Error timing is poor for new users.** The join landing page and profile form both load fine, giving no indication anything is wrong. The error only surfaces after the user fills in their profile and tries to submit — which means they do work before discovering the failure.
+>
+> **This effectively concludes the KERI isolation experiments.** Since full KERI down makes the app completely unusable, individual component failures within KERI (witnesses only, KERIA only) would produce the same or milder versions of the same outcome.
 
 ---
 
 ## Phase 3 — Combined failures
 
-### Exp C1: KERIA down + AnySync healthy
-
-**Hypothesis:** Documents work, identity broken. Tests the independence of the two systems from a user's perspective.
-
-| Observation | Local | Cloud |
-|-------------|-------|-------|
-| Document editing works | | |
-| Document sync between users works | | |
-| Login fails | | |
-| Identity/profile features fail | | |
-| App clearly distinguishes what works vs. what doesn't | | |
-
-**User experience:**
-> Local: ___
-> Cloud: ___
-
-**Notes:**
->
-
----
-
-### Exp C2: AnySync down + KERI healthy
-
-**Hypothesis:** Identity works, documents broken. Inverse of C1.
-
-| Observation | Local | Cloud |
-|-------------|-------|-------|
-| Login works | | |
-| Identity operations work | | |
-| Document editing blocked | | |
-| App works offline (local copy) | | |
-| App clearly distinguishes what works vs. what doesn't | | |
-
-**User experience:**
-> Local: ___
-> Cloud: ___
-
-**Notes:**
->
-
----
-
-### Exp C3: Coordinator down + witnesses down
-
-**Hypothesis:** New members cannot join (neither new KERI identity nor new AnySync space). Existing members with established sessions unaffected.
-
-| Observation | Local | Cloud |
-|-------------|-------|-------|
-| Existing members can edit and sync documents | | |
-| New member registration completely blocked | | |
-| New space creation blocked | | |
-| App clearly communicates what's blocked | | |
-| Full recovery after both restart | | |
-
-**User experience:**
-> Local: ___
-> Cloud: ___
-
-**Notes:**
->
-
----
-
-### Exp C4: Partial AnySync (one node) + witnesses down
-
-**Hypothesis:** Existing sync continues on remaining nodes; no new key events possible. Tests realistic degraded-but-running state.
-
-| Observation | Local | Cloud |
-|-------------|-------|-------|
-| Document sync continues on remaining nodes | | |
-| New member joins blocked | | |
-| Key rotations blocked | | |
-| Overall app usability for existing members | | |
-
-**User experience:**
-> Local: ___
-> Cloud: ___
-
-**Notes:**
->
-
----
-
-### Exp C5: Full catastrophic failure — everything down, then staged recovery
-
-**Goal:** Simulate a complete outage and observe whether staged restart order matters.
-
-**Stop:** `make down` from `matou-infrastructure/`
-
-**Staged recovery order to test:**
-1. AnySync first, then KERI
-2. KERI first, then AnySync
-3. `make up` (unified command — should handle order automatically)
-
-| Observation | AnySync-first | KERI-first | Unified `make up` |
-|-------------|---------------|------------|-------------------|
-| Any services fail on first start | | | |
-| Services need manual retry | | | |
-| Time to all-green health check | | | |
-| POC result (x/13) | | | |
-| App fully functional after recovery | | | |
-| Any data lost | | | |
-
-**Notes:**
->
+Not tested in this round. C1 (KERIA down, AnySync healthy) is effectively answered by K2 — KERIA down locks everyone out regardless of AnySync state. Remaining combined and data persistence experiments are deferred to the cloud phase.
 
 ---
 
 ## Phase 4 — Data persistence
 
-### Exp D1: Data survives full stop/start (no wipe)
-
-**Goal:** Confirm all member data persists across a clean restart. Most important check for production confidence.
-
-**Steps:** Create test content → `make down` → `make up` → verify content intact
-
-| Data type | Survived? (Local) | Survived? (Cloud) |
-|-----------|-------------------|-------------------|
-| Document content | | |
-| Document edits | | |
-| Member KERIA session (no re-login needed) | | |
-| KERIA AIDs and credentials | | |
-| AnySync spaces | | |
-| File attachments | | |
-| Org config | | |
-
-**Notes:**
->
-
----
-
-### Exp D2: Startup order correctness
-
-**Goal:** Confirm `make up` handles dependency ordering correctly every time.
-
-| Observation | Local | Cloud |
-|-------------|-------|-------|
-| Any services fail on first start | | |
-| Services that need a retry | | |
-| Time to all-green from cold | | |
-| POC result (x/13) | | |
-| Preferred manual startup order (if `make up` ever fails) | | |
-
-**Notes:**
->
+Not tested in this round. Deferred to cloud phase.
 
 ---
 
@@ -600,9 +426,9 @@ Fill in after all experiments are complete. Use ✅ ⚠️ ❌.
 
 | Component down | Doc editing | Doc sync | File upload | New space | New member |
 |----------------|-------------|----------|-------------|-----------|------------|
-| 1 sync node | | | | | |
-| 2 sync nodes | | | | | |
-| All sync nodes | | | | | |
+| 1 sync node | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 2 sync nodes | ✅ | ✅ | ✅ | ✅ | ✅ |
+| All sync nodes | ✅ offline | ❌ no cross-user sync | ❌ during outage | ✅ | ✅ |
 | Coordinator | ✅ | ✅ | ✅ | ❌ blocked | ❌ space invite 500, member stuck, no auto-recovery |
 | Consensus node | ✅ | ✅ | ✅ | ⚠️ blocked | ❌ stuck on space invite, no auto-recovery |
 | File node | ✅ | ✅ | ❌ silently dropped, unrecoverable | ✅ | ✅ |
@@ -615,9 +441,9 @@ Fill in after all experiments are complete. Use ✅ ⚠️ ❌.
 
 | Component down | Login | Doc editing | New member join | Key rotation | Credential ops |
 |----------------|-------|-------------|-----------------|--------------|----------------|
-| Witnesses | | | | | |
-| KERIA | | | | | |
-| Full KERI | | | | | |
+| Witnesses | ✅ existing sessions unaffected | ✅ existing sessions unaffected | ❌ hangs silently after profile form | ❌ | ❌ |
+| KERIA | ❌ app won't load | ❌ app won't load | ❌ fails after profile form | ❌ | ❌ |
+| Full KERI | ❌ app won't load | ❌ app won't load | ❌ fails after profile form submitted | ❌ | ❌ |
 
 ### Combined failure impact
 
@@ -633,16 +459,32 @@ Fill in after all experiments are complete. Use ✅ ⚠️ ❌.
 ## Observations to carry forward to cloud phase
 
 **Surprises from local experiments:**
+> AnySync is far more resilient than expected — losing individual nodes, two nodes, or even all three sync nodes leaves existing users completely unaffected and working in offline mode. The sync nodes are not the fragile part. The fragile part is the space invite step, which is blocked by coordinator, consensus node, or MongoDB failure — all three independently produce the same stuck state with no recovery path.
 >
+> KERIA being down is a hard lockout for everyone, including existing logged-in members. This was more severe than expected — AnySync's offline mode does not help at all if KERIA is unreachable.
+>
+> Witnesses being down does not affect existing members at all — only new identity operations are blocked.
 
 **Things that worked better than expected:**
+> AnySync offline resilience — users can keep working and all data catches up automatically on recovery, with no user action needed.
 >
+> KERIA's witness retry behaviour — when witnesses are down, KERIA cycles through all available witnesses before giving up, rather than failing immediately.
+>
+> Redis failure recovers with a simple page reload — much milder than other AnySync component failures.
+>
+> MinIO failure for already-uploaded files is temporary and self-healing — only files uploaded during the outage are lost.
 
 **Things that need fixing before cloud phase:**
+> Silent failures throughout — nearly every failure mode produces no UI error for the user. The app either hangs, shows a blank state, or appears to work while not actually doing anything. Users have no way to know something is wrong.
 >
+> The profile form loads and accepts input even when the identity infrastructure is completely down, leading users to waste time filling it in before hitting a wall.
+>
+> The space invite stuck state has no recovery path — a member permanently frozen at "receiving space invite" cannot self-recover after the infrastructure comes back up. Requires manual intervention.
+>
+> RevokeAccess is not implemented — member removal only revokes the KERI credential, not AnySync space access. Removed members retain full read/write access indefinitely.
 
 **Differences observed between local and cloud behaviour:**
->
+> Not yet tested — cloud phase pending.
 
 ---
 
