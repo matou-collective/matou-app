@@ -4,10 +4,7 @@
     :class="{ 'own-message': isOwnMessage, deleted: message.deletedAt }"
   >
     <!-- Avatar (others only) -->
-    <div v-if="!isOwnMessage" class="message-avatar">
-      <img v-if="avatarUrl" :src="avatarUrl" class="avatar-img" :alt="displayName" />
-      <span v-else class="avatar-initials">{{ initials }}</span>
-    </div>
+    <UserAvatar v-if="!isOwnMessage" :aid="props.message.senderAid ?? undefined" :name="displayName ?? undefined" :size="32" />
 
     <!-- Content -->
     <div class="message-content">
@@ -102,7 +99,6 @@
 import { ref, computed } from 'vue';
 import { Smile, Reply, Pencil, Trash2 } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
-import { getFileUrl } from 'src/lib/api/client';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import MessageReactions from './MessageReactions.vue';
@@ -110,6 +106,7 @@ import EmojiPicker from './EmojiPicker.vue';
 import AttachmentPreview from './AttachmentPreview.vue';
 import ProposalLinkCard from './ProposalLinkCard.vue';
 import ProposalDetailModal from '../proposals/ProposalDetailModal.vue';
+import UserAvatar from 'components/profiles/UserAvatar.vue';
 
 const props = defineProps<{
   message: ChatMessage;
@@ -137,22 +134,6 @@ const replyToDisplayName = computed(() =>
 const replyToTruncated = computed(() => {
   const content = props.replyToMessage?.content || '';
   return content.length > 80 ? content.substring(0, 80) + '...' : content;
-});
-
-const avatarUrl = computed(() => {
-  const ref = props.senderProfile?.avatar;
-  if (!ref) return '';
-  if (ref.startsWith('http') || ref.startsWith('data:')) return ref;
-  return getFileUrl(ref);
-});
-
-const initials = computed(() => {
-  const name = displayName.value;
-  const parts = name.split(' ');
-  if (parts.length >= 2) {
-    return `${parts[0].charAt(0)}${parts[1].charAt(0)}`.toUpperCase();
-  }
-  return name.substring(0, 2).toUpperCase();
 });
 
 const renderedContent = computed(() => {
@@ -279,30 +260,6 @@ function handleEmojiSelect(emoji: string) {
       transform: translateX(-100%);
     }
   }
-}
-
-.message-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.avatar-img {
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  object-fit: cover;
-}
-
-.avatar-initials {
-  color: white;
-  font-size: 0.7rem;
-  font-weight: 600;
 }
 
 .message-content {

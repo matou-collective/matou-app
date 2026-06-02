@@ -6,15 +6,7 @@
           <ContributionStatusBadge :status="contribution.status" />
           <ContributionTypeBadge :type="contribution.contribution_type" />
         </div>
-        <div v-if="assignedAid" class="assigned-avatar">
-          <q-tooltip>Assigned to {{ assignedName }}</q-tooltip>
-          <img
-            v-if="assignedAvatar"
-            :src="assignedAvatar"
-            class="avatar-img"
-          />
-          <span v-else class="avatar-initials">{{ assignedInitials }}</span>
-        </div>
+        <UserAvatar v-if="assignedAid" :aid="assignedAid" :name="assignedName ?? undefined" :size="36" class="assigned-avatar" />
         <h2 class="header-title">
           <span>{{ contribution.title }}</span>
           <q-btn
@@ -58,53 +50,16 @@
       <!-- Scrollable body -->
       <div class="dialog-body">
 
-        <!-- Sub-contribution assignment panel (leads/admins on active subs) -->
-        <div
-          v-if="canManageSubAssignment"
-          class="status-panel sub-assign-panel"
-        >
-          <UserPlus class="panel-icon" />
-          <div>
-            <div class="panel-title">
-              {{ assignedAid ? `Assigned to ${assignedName}` : 'No contributor assigned' }}
-            </div>
-            <div class="panel-sub">
-              {{ assignedAid ? 'Change the contributor for this sub-contribution.' : 'Pick a member to assign to this sub-contribution.' }}
-            </div>
-          </div>
-          <q-btn
-            no-caps
-            outline
-            color="primary"
-            class="q-ml-auto"
-            :icon="assignedAid ? 'edit' : 'person_add'"
-            :label="assignedAid ? 'Change' : 'Assign'"
-            @click="openSubAssignDialog"
-          />
-        </div>
-
+        <!-- Unified assignment card -->
+        <AssignmentCard
+          :contribution="contribution"
+          :can-offer="canOfferNow"
+          :can-unassign="canUnassignNow"
+          @offered="(c) => emit('update', c)"
+          @unassigned="(c) => emit('update', c)"
+        />
 
         <!-- ── Status panels ─────────────────────────────── -->
-
-        <!-- Offered panel -->
-        <div v-if="contribution.status === 'offered'" class="status-panel offered-panel">
-          <Send class="panel-icon" />
-          <div>
-            <div class="panel-title">Offered to {{ profilesStore.profilesByAid[contribution.offered_to]?.displayName ?? contribution.offered_to_name ?? contribution.offered_to }}</div>
-            <div v-if="contribution.offered_at" class="panel-sub">
-              Offered {{ formatDate(contribution.offered_at) }}
-            </div>
-          </div>
-          <q-btn
-            v-if="canAcceptOffer"
-            no-caps
-            color="primary"
-            label="Accept"
-            class="q-ml-auto"
-            :loading="actionLoading === 'accept'"
-            @click="handleAccept"
-          />
-        </div>
 
         <!-- Changes proposed panel -->
         <div v-if="contribution.status === 'changed' && contribution.changes_diff?.length" class="changes-panel">
@@ -512,6 +467,8 @@
                   outlined
                   dense
                   min="0"
+                  step="0.01"
+                  @blur="evidenceForm.actual_duration = round2(evidenceForm.actual_duration)"
                 />
               </div>
               <div class="actuals-col">
@@ -522,7 +479,9 @@
                   outlined
                   dense
                   min="0"
+                  step="0.01"
                   prefix="$"
+                  @blur="evidenceForm.actual_cost = round2(evidenceForm.actual_cost)"
                 />
               </div>
             </div>
@@ -828,34 +787,12 @@
           </div>
         </div>
 
-        <!-- Archive action -->
-        <div v-if="canArchive && contribution.status !== 'archived'" class="archive-action">
-          <q-btn
-            no-caps
-            outline
-            color="negative"
-            icon="archive"
-            label="Archive Contribution"
-            class="full-width"
-            @click="emit('archive-contribution', contribution)"
-          />
-        </div>
 
       </div>
 
       <!-- Sticky footer actions -->
       <div class="dialog-sticky-footer">
         <div class="footer-actions">
-          <q-btn
-            v-if="canShareNow || canOfferNow"
-            unelevated
-            no-caps
-            label="Assign Contribution"
-            icon="person_add"
-            color="primary"
-            class="footer-action-btn"
-            @click="openAssignDialog"
-          />
           <q-btn
             v-if="canRegister"
             outlined
@@ -918,97 +855,6 @@
         </div>
       </div>
     </q-card>
-
-  <!-- Assign contribution dialog -->
-  <q-dialog v-model="showAssignDialog">
-    <q-card class="assign-dialog">
-      <q-card-section class="row items-center q-pb-none">
-        <div class="text-h6">{{ isSubAssignMode ? 'Assign Contributor' : 'Assign Contribution' }}</div>
-        <q-space />
-        <q-btn icon="close" flat round dense v-close-popup />
-      </q-card-section>
-
-      <q-card-section class="assign-body">
-        <!-- Registered interest members -->
-        <div v-if="!isSubAssignMode && contribution.interested_contributors?.length" class="assign-section">
-          <div class="assign-section-label">Registered Interest</div>
-          <div
-            v-for="ic in contribution.interested_contributors"
-            :key="ic.user_id"
-            class="assign-member-row"
-            :class="{ selected: assignSelectedMember === ic.user_id }"
-            @click="selectAssignMember(ic.user_id, ic.user_name)"
-          >
-            <div>
-              <div class="assign-member-name">{{ ic.user_name || ic.user_id.slice(0, 12) + '...' }}</div>
-              <div v-if="ic.interest_note" class="assign-member-note">{{ ic.interest_note }}</div>
-            </div>
-            <q-icon v-if="assignSelectedMember === ic.user_id" name="check_circle" color="primary" size="18px" />
-          </div>
-        </div>
-
-        <!-- Mode selection (hidden in sub-assign mode — member-only picker) -->
-        <div v-if="!isSubAssignMode" class="assign-section">
-          <div class="assign-section-label">Assign to</div>
-          <div class="assign-mode-row">
-            <button
-              class="assign-mode-card"
-              :class="{ active: assignMode === 'group' }"
-              @click="assignMode = 'group'; assignSelectedMember = null; assignSelectedMemberName = null"
-            >
-              <q-icon name="groups" size="20px" />
-              <span>Group</span>
-            </button>
-            <button
-              class="assign-mode-card"
-              :class="{ active: assignMode === 'member' }"
-              @click="assignMode = 'member'; assignSelectedGroup = null"
-            >
-              <q-icon name="person" size="20px" />
-              <span>Member</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Group list -->
-        <div v-if="assignMode === 'group'" class="assign-section">
-          <div
-            v-for="g in assignGroupOptions"
-            :key="g.value"
-            class="assign-member-row"
-            :class="{ selected: assignSelectedGroup === g.value }"
-            @click="assignSelectedGroup = g.value"
-          >
-            <div class="assign-member-name">{{ g.label }}</div>
-            <q-icon v-if="assignSelectedGroup === g.value" name="check_circle" color="primary" size="18px" />
-          </div>
-        </div>
-
-        <!-- Member search + list -->
-        <div v-if="assignMode === 'member'" class="assign-section">
-          <MemberPicker
-            :model-value="assignSelectedMember ?? ''"
-            :members="communityMembersList"
-            @update:model-value="(id) => { assignSelectedMember = id || null; }"
-            @select="(m) => { assignSelectedMemberName = m.name; }"
-          />
-        </div>
-      </q-card-section>
-
-      <div class="dialog-btn-row q-px-md q-pb-md">
-        <q-btn outline no-caps label="Cancel" color="primary" class="dialog-btn-half" v-close-popup />
-        <q-btn
-          no-caps
-          label="Assign"
-          color="primary"
-          class="dialog-btn-half"
-          :disable="!canSubmitAssign"
-          :loading="assigningContribution"
-          @click="submitAssign"
-        />
-      </div>
-    </q-card>
-  </q-dialog>
 
   <!-- Interest dialog -->
   <q-dialog v-model="showInterestDialog">
@@ -1077,7 +923,6 @@
     :editing="true"
     :change-request="true"
     :contribution="contribution"
-    :can-reassign="canReassignContribution"
     @change="handleChange"
   />
 </template>
@@ -1106,9 +951,9 @@ import {
   LinkIcon,
 } from 'lucide-vue-next';
 import type { Contribution, ProjectRole, InterestedContributor, AttachedFile } from 'src/types/projects';
+import AssignmentCard from 'src/components/contributions/AssignmentCard.vue';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
 import ContributionTypeBadge from 'src/components/projects/ContributionTypeBadge.vue';
-import MemberPicker from 'src/components/common/MemberPicker.vue';
 import { useContributionsStore } from 'stores/contributions';
 import { useCommentCursorsStore } from 'stores/commentCursors';
 import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
@@ -1117,6 +962,7 @@ import { uploadFile, getFileUrl } from 'src/lib/api/client';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 defineOptions({ name: 'ContributionDetailBody' });
 
@@ -1162,35 +1008,6 @@ const workflow = useContributionWorkflow();
 const actionLoading = ref<string | null>(null);
 
 // Dialogs
-const showAssignDialog = ref(false);
-const assignMode = ref<'group' | 'member' | null>(null);
-const assignSelectedGroup = ref<string | null>(null);
-const assignSelectedMember = ref<string | null>(null);
-const assignSelectedMemberName = ref<string | null>(null);
-const assigningContribution = ref(false);
-const isSubAssignMode = ref(false);
-
-const assignGroupOptions = [
-  { label: 'Stewards', value: 'steward' },
-  { label: 'Members', value: 'all' },
-];
-
-const communityMembersList = computed(() => {
-  const map = profilesStore.profilesByAid;
-  return Object.entries(map)
-    .filter(([, p]) => p.status !== 'removed' && p.status !== 'pending')
-    .map(([aid, p]) => ({
-      id: aid,
-      name: p.displayName || aid.slice(0, 12) + '...',
-    }));
-});
-
-const canSubmitAssign = computed(() => {
-  if (assignMode.value === 'group') return !!assignSelectedGroup.value;
-  if (assignMode.value === 'member') return !!assignSelectedMember.value;
-  return !!assignSelectedMember.value;
-});
-
 const showInterestDialog = ref(false);
 const showChangeDialog = ref(false);
 const showEvidenceForm = ref(false);
@@ -1386,17 +1203,6 @@ const assignedName = computed(() => {
     ?? props.contribution.assigned_contributor_name
     ?? assignedAid.value.slice(0, 12) + '...';
 });
-const assignedAvatar = computed(() => {
-  const avatar = assignedProfile.value?.avatar;
-  if (!avatar) return null;
-  return avatar.startsWith('http') ? avatar : getFileUrl(avatar);
-});
-const assignedInitials = computed(() => {
-  const name = assignedName.value;
-  if (!name) return '?';
-  return name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-});
-
 function assigneeName(c: Contribution): string {
   const aid = c.assigned_contributor_id ?? c.assigned_contributor;
   if (!aid) return '';
@@ -1456,11 +1262,6 @@ const canAddSub = computed(() =>
   workflow.canAddSubContribution(props.contribution, props.currentUserId, role.value),
 );
 const canApproveSub = computed(() => isLead.value || isSteward.value);
-const canManageSubAssignment = computed(() => {
-  if (!isSubContribution.value) return false;
-  if (!(isLead.value || isSteward.value)) return false;
-  return !['signed_off', 'rewarded', 'archived'].includes(props.contribution.status);
-});
 
 // Reassign on a top-level assigned contribution is exposed inside the edit
 // dialog (CreateContributionDialog) rather than as a standalone panel. This
@@ -1471,6 +1272,10 @@ const canReassignContribution = computed(() => {
   if (!(isLead.value || isSteward.value)) return false;
   if (!assignedAid.value) return false;
   return ['assigned', 'changed'].includes(props.contribution.status);
+});
+const canUnassignNow = computed(() => {
+  if (!(isLead.value || isSteward.value)) return false;
+  return props.contribution.status === 'assigned';
 });
 const canChangeNow = computed(() =>
   workflow.canChange(props.contribution, props.currentUserId, role.value),
@@ -1545,89 +1350,6 @@ async function handleAccept() {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to accept' });
   } finally {
     actionLoading.value = null;
-  }
-}
-
-function openAssignDialog() {
-  isSubAssignMode.value = false;
-  assignMode.value = null;
-  assignSelectedGroup.value = null;
-  assignSelectedMember.value = null;
-  assignSelectedMemberName.value = null;
-  showAssignDialog.value = true;
-}
-
-function openSubAssignDialog() {
-  isSubAssignMode.value = true;
-  assignMode.value = 'member';
-  assignSelectedGroup.value = null;
-  assignSelectedMember.value = assignedAid.value;
-  assignSelectedMemberName.value = assignedAid.value ? (assignedName.value ?? null) : null;
-  showAssignDialog.value = true;
-}
-
-function selectAssignMember(id: string, name: string) {
-  assignSelectedMember.value = id;
-  assignSelectedMemberName.value = name;
-  assignMode.value = 'member';
-  assignSelectedGroup.value = null;
-}
-
-async function submitSubAssign() {
-  if (!assignSelectedMember.value) return;
-  // No-op when picking the already-assigned member.
-  if (assignSelectedMember.value === assignedAid.value) {
-    showAssignDialog.value = false;
-    return;
-  }
-  assigningContribution.value = true;
-  try {
-    const updated = await store.update(props.contribution.id, {
-      assigned_contributor_id: assignSelectedMember.value,
-    } as any);
-    // Changing the contributor on an already-approved sub triggers re-approval.
-    if (props.contribution.status === 'assigned') {
-      const transitioned = await store.transition(props.contribution.id, 'changed');
-      emit('update', transitioned as unknown as Contribution);
-    } else {
-      emit('update', updated as unknown as Contribution);
-    }
-    showAssignDialog.value = false;
-    isSubAssignMode.value = false;
-    $q.notify({ type: 'positive', message: 'Contributor assigned!' });
-  } catch (e) {
-    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to assign contributor' });
-  } finally {
-    assigningContribution.value = false;
-  }
-}
-
-async function submitAssign() {
-  if (isSubAssignMode.value) {
-    await submitSubAssign();
-    return;
-  }
-  assigningContribution.value = true;
-  try {
-    if (assignMode.value === 'group' && assignSelectedGroup.value) {
-      const updated = await store.share(props.contribution.id, {
-        shared_with_roles: [assignSelectedGroup.value],
-      });
-      $q.notify({ type: 'positive', message: 'Contribution shared with group!' });
-      emit('update', updated as unknown as Contribution);
-    } else if (assignSelectedMember.value) {
-      const updated = await store.offer(props.contribution.id, {
-        offered_to: assignSelectedMember.value,
-        offered_to_name: assignSelectedMemberName.value || assignSelectedMember.value,
-      });
-      $q.notify({ type: 'positive', message: 'Contribution assigned to member!' });
-      emit('update', updated as unknown as Contribution);
-    }
-    showAssignDialog.value = false;
-  } catch (e) {
-    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to assign' });
-  } finally {
-    assigningContribution.value = false;
   }
 }
 
@@ -1750,6 +1472,14 @@ function removeAttachment(idx: number) {
   evidenceForm.value.attachment_files.splice(idx, 1);
 }
 
+// Round to at most 2 decimal places (hours/cost). Backend stores these as
+// float64; we cap precision so values like an auto-prefilled 6.0158 become
+// 6.02 rather than being sent raw.
+function round2(v: number | undefined): number | undefined {
+  if (v === undefined || v === null || Number.isNaN(v)) return undefined;
+  return Math.round(v * 100) / 100;
+}
+
 async function handleSubmitEvidence() {
   if (!canSubmitEvidence.value) return;
   actionLoading.value = 'submit-evidence';
@@ -1757,8 +1487,8 @@ async function handleSubmitEvidence() {
     const updated = await store.submitEvidence(props.contribution.id, {
       completion_notes: evidenceForm.value.completion_notes.trim(),
       evidence_urls: evidenceForm.value.evidence_urls.filter((u) => u.trim()),
-      actual_duration: evidenceForm.value.actual_duration,
-      actual_cost: evidenceForm.value.actual_cost,
+      actual_duration: round2(evidenceForm.value.actual_duration),
+      actual_cost: round2(evidenceForm.value.actual_cost),
       acceptance_notes: evidenceForm.value.acceptance_notes.filter((n) => n.trim()),
       time_report_file: evidenceForm.value.time_report_files[0] ? toBackendFileRef(evidenceForm.value.time_report_files[0]) as any : undefined,
       attachment_files: evidenceForm.value.attachment_files.length ? evidenceForm.value.attachment_files.map(f => toBackendFileRef(f)) as any : undefined,
@@ -1971,19 +1701,6 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   justify-content: center;
 }
 
-.avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.avatar-initials {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: white;
-  letter-spacing: 0.03em;
-}
-
 .header-title {
   font-size: 1.4rem;
   font-weight: 700;
@@ -2056,18 +1773,9 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   border: 1px solid var(--matou-border);
 }
 
-.offered-panel {
-  background: rgba(30, 95, 116, 0.05);
-  border-color: var(--matou-primary);
-}
-
 .shared-panel {
   background: rgba(74, 157, 156, 0.06);
   border-color: var(--matou-accent);
-}
-
-.sub-assign-panel {
-  background: rgba(30, 95, 116, 0.04);
 }
 
 .panel-icon {
@@ -2525,10 +2233,6 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   background: rgba(74, 157, 156, 0.08);
 }
 
-.archive-action {
-  margin-top: 16px;
-}
-
 .sign-off-icon {
   width: 24px;
   height: 24px;
@@ -2912,114 +2616,6 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 .decision-btn-icon {
   width: 16px;
   height: 16px;
-}
-
-// ── Assign dialog ─────────────────────────────────────────────────────────
-
-.assign-dialog {
-  min-width: 460px;
-  max-width: 540px;
-}
-
-.assign-body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-height: 60vh;
-  overflow-y: auto;
-}
-
-.assign-section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.assign-section-label {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--matou-muted-foreground);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.assign-mode-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.assign-mode-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 16px 12px;
-  border: 1px solid var(--matou-border);
-  border-radius: var(--matou-radius-sm, 8px);
-  background: var(--matou-card);
-  cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--matou-muted-foreground);
-  transition: all 0.12s ease;
-
-  &:hover {
-    border-color: var(--matou-accent);
-    background: var(--matou-secondary);
-  }
-
-  &.active {
-    border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
-    color: var(--matou-primary);
-  }
-}
-
-.assign-member-list {
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-.assign-member-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border: 1px solid var(--matou-border);
-  border-radius: var(--matou-radius-sm, 8px);
-  cursor: pointer;
-  transition: all 0.12s ease;
-  margin-bottom: 4px;
-
-  &:hover {
-    border-color: var(--matou-accent);
-    background: var(--matou-secondary);
-  }
-
-  &.selected {
-    border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
-  }
-}
-
-.assign-member-name {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--matou-foreground);
-}
-
-.assign-member-note {
-  font-size: 0.75rem;
-  color: var(--matou-muted-foreground);
-  margin-top: 2px;
-}
-
-.assign-empty {
-  text-align: center;
-  padding: 16px;
-  color: var(--matou-muted-foreground);
-  font-size: 0.85rem;
 }
 
 .evidence-url-item {

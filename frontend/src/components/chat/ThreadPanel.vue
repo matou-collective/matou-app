@@ -24,9 +24,7 @@
             :key="reply.id"
             class="reply-item"
           >
-            <div class="reply-avatar">
-              <span>{{ getInitials(reply.senderName) }}</span>
-            </div>
+            <UserAvatar :aid="reply.senderAid ?? undefined" :name="reply.senderName ?? undefined" :size="28" />
             <div class="reply-content">
               <div class="reply-header">
                 <span class="sender-name">{{ reply.senderName }}</span>
@@ -46,6 +44,7 @@ import { ref, onMounted, watch } from 'vue';
 import { X } from 'lucide-vue-next';
 import { useChatStore } from 'stores/chat';
 import type { ChatMessage } from 'src/lib/api/chat';
+import UserAvatar from 'components/profiles/UserAvatar.vue';
 
 const props = defineProps<{
   messageId: string;
@@ -66,14 +65,6 @@ async function loadReplies() {
   } finally {
     loading.value = false;
   }
-}
-
-function getInitials(name: string): string {
-  const parts = name.split(' ');
-  if (parts.length >= 2) {
-    return `${parts[0].charAt(0)}${parts[1].charAt(0)}`.toUpperCase();
-  }
-  return name.substring(0, 2).toUpperCase();
 }
 
 function formatTime(dateStr: string): string {
@@ -181,23 +172,6 @@ watch(() => props.messageId, () => {
 .reply-item {
   display: flex;
   gap: 0.5rem;
-}
-
-.reply-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-
-  span {
-    color: white;
-    font-size: 0.625rem;
-    font-weight: 600;
-  }
 }
 
 .reply-content {

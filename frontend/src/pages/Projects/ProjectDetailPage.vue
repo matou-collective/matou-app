@@ -296,9 +296,7 @@
               :class="{ 'comment-card--mine': c.user_id === currentUserId }"
             >
               <div class="comment-header">
-                <div class="comment-avatar">
-                  <q-icon name="person" size="14px" />
-                </div>
+                <UserAvatar :aid="c.user_id" :name="commentDisplayName(c) ?? undefined" :size="24" />
                 <span class="comment-author">{{ commentDisplayName(c) }}</span>
                 <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
               </div>
@@ -547,11 +545,11 @@
       :milestone-id="editingContribution?.milestone_id"
       :editing="true"
       :contribution="(editingContribution as any)"
-      :can-reassign="perms.canAssignRoles.value || perms.isLead.value || perms.isSteward.value"
-      :can-unassign="perms.canAssignRoles.value || perms.isLead.value || perms.isSteward.value"
+      :can-offer="perms.isLead.value || perms.isSteward.value"
+      :can-unassign="perms.isLead.value || perms.isSteward.value"
       :can-delete="perms.canArchiveContribution.value"
       @update="onContributionSave"
-      @unassign="onUnassignRequested"
+      @assignment-changed="handleContributionUpdate"
       @archive="onDeleteContributionFromForm"
     />
 
@@ -562,17 +560,6 @@
       :message="contribArchiveMessage"
       :loading="archivingContribLoading"
       @confirm="doArchiveContribution"
-    />
-
-    <!-- Unassign contributor confirm -->
-    <ConfirmArchiveDialog
-      v-model="showUnassignConfirm"
-      title="Unassign Contributor"
-      message="This will set the contribution back to 'confirmed' and clear the assigned contributor."
-      confirm-label="Unassign"
-      icon="person_remove"
-      :loading="unassigning"
-      @confirm="doUnassign"
     />
 
     <!-- Sign-off plan confirm (only shown when unconfirmed contributions exist) -->
@@ -647,6 +634,7 @@ import ConfirmDestroyDialog from 'src/components/common/ConfirmDestroyDialog.vue
 import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue';
 import MemberPicker from 'src/components/common/MemberPicker.vue';
 import ProjectCompletionSection from 'src/components/projects/ProjectCompletionSection.vue';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -819,8 +807,6 @@ const showContribForm = ref(false);
 const showArchiveContrib = ref(false);
 const archivingContribution = ref<Contribution | null>(null);
 const archivingContribLoading = ref(false);
-const showUnassignConfirm = ref(false);
-const unassigning = ref(false);
 
 const contribArchiveMessage = computed(() => {
   const c = archivingContribution.value;
@@ -910,27 +896,6 @@ async function onContributionSave(payload: Record<string, unknown>) {
     $q.notify({ type: 'positive', message: 'Contribution updated!' });
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to update contribution' });
-  }
-}
-
-function onUnassignRequested() {
-  showUnassignConfirm.value = true;
-}
-
-async function doUnassign() {
-  if (!editingContribution.value || !project.value) return;
-  unassigning.value = true;
-  try {
-    await contributionsStore.unassign(editingContribution.value.id);
-    if (project.value) await projectsStore.fetchImplementationPlan(project.value.id);
-    showUnassignConfirm.value = false;
-    showContribForm.value = false;
-    editingContribution.value = null;
-    $q.notify({ type: 'positive', message: 'Contributor unassigned.' });
-  } catch (e) {
-    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Failed to unassign' });
-  } finally {
-    unassigning.value = false;
   }
 }
 
@@ -2070,21 +2035,6 @@ async function submitAssign() {
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
-}
-
-.comment-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #dbeafe;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.comment-card--mine .comment-avatar {
-  background: rgba(37, 99, 235, 0.15);
 }
 
 .comment-author {

@@ -3,11 +3,7 @@
     <div class="slim-card-row top">
       <span class="slim-card-title">{{ contribution.title }}</span>
       <ContributionStatusBadge :status="contribution.status" />
-      <div v-if="assignedAid" class="slim-card-avatar">
-        <q-tooltip>Assigned to {{ assignedName }}</q-tooltip>
-        <img v-if="assignedAvatar" :src="assignedAvatar" class="slim-card-avatar-img" />
-        <span v-else class="slim-card-avatar-initials">{{ assignedInitials }}</span>
-      </div>
+      <UserAvatar v-if="assignedAid" :aid="assignedAid" :name="assignedName ?? undefined" :size="24" />
     </div>
     <div v-if="projectName" class="slim-card-project">{{ projectName }}</div>
     <div v-if="showOverdueLine && contribution.deadline" class="slim-card-overdue-line">
@@ -22,9 +18,9 @@ import { computed } from 'vue';
 import type { Contribution } from 'src/lib/api/contributions';
 import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
-import { getFileUrl } from 'src/lib/api/client';
 import { formatDate } from 'src/lib/formatDate';
 import ContributionStatusBadge from './ContributionStatusBadge.vue';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 interface Props {
   contribution: Contribution;
@@ -57,18 +53,6 @@ const assignedName = computed(() => {
     ?? c.assigned_contributor_name
     ?? assignedAid.value.slice(0, 12) + '...'
   );
-});
-
-const assignedAvatar = computed(() => {
-  const avatar = assignedProfile.value?.avatar;
-  if (!avatar) return null;
-  return avatar.startsWith('http') ? avatar : getFileUrl(avatar);
-});
-
-const assignedInitials = computed(() => {
-  const name = assignedName.value;
-  if (!name) return '?';
-  return name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
 });
 
 const projectName = computed(() => {
@@ -116,30 +100,6 @@ const projectName = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-}
-
-.slim-card-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  overflow: hidden;
-  flex-shrink: 0;
-  background: var(--matou-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.slim-card-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.slim-card-avatar-initials {
-  font-size: 0.65rem;
-  font-weight: 600;
-  color: white;
 }
 
 .slim-card-project {

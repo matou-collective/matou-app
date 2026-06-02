@@ -10,6 +10,7 @@ import {
   loginWithMnemonic,
   registerUser,
   navigateToActivity,
+  approvePendingMember,
   createNotice,
   uniqueSuffix,
   loadAccounts,
@@ -97,11 +98,11 @@ test.describe.serial('Activity Page', () => {
   // Test 1: Navigate to activity page via sidebar
   // ---------------------------------------------------------------
   test('navigate to activity via sidebar', async () => {
-    const activityNavItem = page.locator('.nav-item', { hasText: 'Activity' });
+    const activityNavItem = page.locator('.nav-item', { hasText: 'Notices' });
     await activityNavItem.click();
 
     await expect(page).toHaveURL(/#\/dashboard\/activity/, { timeout: TIMEOUT.short });
-    await expect(page.locator('.activity-title')).toContainText('Activity Feed', { timeout: TIMEOUT.short });
+    await expect(page.locator('.activity-title')).toContainText('Notices', { timeout: TIMEOUT.short });
     await expect(activityNavItem).toHaveClass(/active/);
   });
 
@@ -333,10 +334,10 @@ test.describe.serial('Activity Page', () => {
     await page.goto(`${FRONTEND_URL}/#/dashboard/activity`);
 
     // Activity page renders with title
-    await expect(page.locator('.activity-title')).toContainText('Activity Feed', { timeout: TIMEOUT.short });
+    await expect(page.locator('.activity-title')).toContainText('Notices', { timeout: TIMEOUT.short });
 
     // Activity active in main sidebar
-    await expect(page.locator('.nav-item', { hasText: 'Activity' })).toHaveClass(/active/);
+    await expect(page.locator('.nav-item', { hasText: 'Notices' })).toHaveClass(/active/);
 
     // All filter pills visible
     await expect(page.locator('.filter-pill', { hasText: 'All' })).toBeVisible();
@@ -385,15 +386,9 @@ test.describe.serial('Activity Page', () => {
     await expect(pendingMemberName).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
     console.log('[Test 11] Member registration card visible on admin dashboard');
 
-    // 3. Admin approves via ProfileModal
-    console.log('[Test 11] Admin clicking approve...');
-    const memberProfileCard = membersCard.locator('.profile-card').filter({ hasText: memberName });
-    await memberProfileCard.click();
-    const profileModal = page.locator('.modal-content');
-    await expect(profileModal).toBeVisible({ timeout: TIMEOUT.short });
-    const admitButton = profileModal.getByRole('button', { name: /approve/i });
-    await expect(admitButton).toBeVisible({ timeout: TIMEOUT.short });
-    await admitButton.click();
+    // 3. Admin meets approval requirements (endorse + onboard) then approves
+    console.log('[Test 11] Admin approving member...');
+    await approvePendingMember(page, memberName);
 
     // 4. Member sees welcome overlay and enters community
     await expect(memberPage.locator('.welcome-overlay')).toBeVisible({ timeout: TIMEOUT.long });
@@ -505,7 +500,7 @@ test.describe.serial('Activity Page', () => {
     await memberPage.goto(`${FRONTEND_URL}/#/dashboard/activity`);
 
     // Activity page renders with title
-    await expect(memberPage.locator('.activity-title')).toContainText('Activity Feed', { timeout: TIMEOUT.short });
+    await expect(memberPage.locator('.activity-title')).toContainText('Notices', { timeout: TIMEOUT.short });
 
     // All filter pills visible
     await expect(memberPage.locator('.filter-pill', { hasText: 'All' })).toBeVisible();

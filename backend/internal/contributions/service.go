@@ -1223,7 +1223,7 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 	deadline := ParseDeadline(req.Deadline)
 
 	// For sub-contributions, inherit the parent's assignee when the request
-	// doesn't supply one. Mirrors the propagateAssigneeToChildren path that
+	// doesn't supply one. Mirrors the propagateOfferToChildren path that
 	// fires when the parent transitions to assigned, but applies at sub
 	// creation time so subs created after the parent is already assigned
 	// (the common case) also get an assignee without manual picking.
@@ -1406,28 +1406,35 @@ func (s *Service) ListRegistrations(ctx context.Context, spaceID, contribID stri
 	return regs, nil
 }
 
-// propagateAssigneeToChildren walks the parent's ChildContributionIDs and sets
-// AssignedContributorID = parent.AssignedContributorID on any child that is in
-// ContribCreated status with an empty assignee. Children with an explicit assignee
-// or in any other status are left untouched. Load failures are logged and skipped
-// (best-effort); save failures are returned immediately.
-func (s *Service) propagateAssigneeToChildren(ctx context.Context, spaceID string, parent *Contribution) error {
+// propagateOfferToChildren walks the parent's ChildContributionIDs and, for each
+// child that is still in created/confirmed status with no assignee or pending offer,
+// offers the child to the parent's accepted contributor. Children already assigned,
+// already offered, or in any later lifecycle stage are left untouched.
+//
+// Children in ContribCreated are confirmed first so they satisfy OfferContribution's
+// status guard. Load failures are logged and skipped (best-effort); save and offer
+// failures abort.
+func (s *Service) propagateOfferToChildren(ctx context.Context, spaceID string, parent *Contribution) error {
 	for _, childID := range parent.ChildContributionIDs {
 		child, err := s.GetContribution(ctx, spaceID, childID)
 		if err != nil {
-			log.Printf("propagateAssigneeToChildren: skipping child %s (load error: %v)", childID, err)
+			log.Printf("propagateOfferToChildren: skipping child %s (load error: %v)", childID, err)
 			continue
 		}
-		if child.AssignedContributorID != "" {
+		if child.AssignedContributorID != "" || child.OfferedTo != "" {
 			continue
 		}
-		if child.Status != ContribCreated && child.Status != ContribAssigned {
+		if child.Status != ContribCreated && child.Status != ContribConfirmed {
 			continue
 		}
-		child.AssignedContributorID = parent.AssignedContributorID
-		child.UpdatedAt = time.Now()
-		if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
-			return fmt.Errorf("propagateAssigneeToChildren: saving child %s: %w", child.ID, err)
+		if child.Status == ContribCreated {
+			child.Status = ContribConfirmed
+			if err := s.store.Save(spaceID, child.ID, "contribution", child); err != nil {
+				return fmt.Errorf("propagateOfferToChildren: confirming child %s: %w", child.ID, err)
+			}
+		}
+		if _, err := s.OfferContribution(ctx, spaceID, child.ID, parent.AssignedContributorID, parent.AssignedContributorName); err != nil {
+			return fmt.Errorf("propagateOfferToChildren: offering child %s: %w", child.ID, err)
 		}
 	}
 	return nil
@@ -1447,7 +1454,7 @@ func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, use
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, err
 	}
-	if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
+	if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -1458,7 +1465,7 @@ type SubmitEvidenceRequest struct {
 	CompletionNotes string    `json:"completion_notes"`
 	EvidenceURLs    []string  `json:"evidence_urls,omitempty"`
 	AcceptanceNotes []string  `json:"acceptance_notes,omitempty"`
-	ActualDuration  int       `json:"actual_duration,omitempty"`
+	ActualDuration  float64   `json:"actual_duration,omitempty"`
 	ActualCost      float64   `json:"actual_cost,omitempty"`
 	TimeReportFile  *FileRef  `json:"time_report_file,omitempty"`
 	AttachmentFiles []FileRef `json:"attachment_files,omitempty"`
@@ -1503,7 +1510,7 @@ func (s *Service) ConfirmContribution(ctx context.Context, spaceID, contribution
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
 	if propagateChildren {
-		if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
+		if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
 			return nil, err
 		}
 	}
@@ -1544,6 +1551,7 @@ func (s *Service) OfferContribution(ctx context.Context, spaceID, contributionID
 		return nil, fmt.Errorf("contribution must be confirmed, shared, or offered to (re-)offer, current: %s", c.Status)
 	}
 	now := time.Now()
+	c.AssignedContributorID = ""
 	c.OfferedTo = offeredTo
 	c.OfferedToName = offeredToName
 	c.OfferedAt = &now
@@ -1587,7 +1595,7 @@ func (s *Service) AcceptOffer(ctx context.Context, spaceID, contributionID, user
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
-	if err := s.propagateAssigneeToChildren(ctx, spaceID, c); err != nil {
+	if err := s.propagateOfferToChildren(ctx, spaceID, c); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -1792,7 +1800,7 @@ func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionI
 
 // ApproveSubContribution transitions a sub-contribution from created/changed to assigned.
 // An assigned contributor is not required; the sub may be approved while unassigned and
-// later inherit the parent's assignee (via propagateAssigneeToChildren) or be assigned
+// later inherit the parent's assignee (via propagateOfferToChildren) or be assigned
 // directly via the contribution update endpoint.
 func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contributionID string) (*Contribution, error) {
 	child, err := s.GetContribution(ctx, spaceID, contributionID)

@@ -36,7 +36,7 @@
             :class="{ selected: selectedId === member.id }"
             @click="selectedId = member.id"
           >
-            <div class="member-avatar">{{ member.name.charAt(0).toUpperCase() }}</div>
+            <UserAvatar :name="member.name ?? undefined" :size="32" :clickable="false" />
             <div class="member-info">
               <div class="member-name">{{ member.name }}</div>
               <div class="member-role">{{ member.role }}</div>
@@ -72,6 +72,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { Shield, Users } from 'lucide-vue-next';
+import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 interface Member {
   id: string;
@@ -189,19 +190,6 @@ function handleAssign() {
   }
 }
 
-.member-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--matou-primary);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.875rem;
-  font-weight: 600;
-  flex-shrink: 0;
-}
 
 .member-info {
   flex: 1;

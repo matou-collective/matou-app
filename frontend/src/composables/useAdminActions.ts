@@ -4,6 +4,7 @@
  */
 import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
+import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
@@ -710,7 +711,11 @@ export function useAdminActions() {
       onStep?.('Revoking credential...');
       let saidToRevoke = credentialSaid;
 
-      if (!saidToRevoke) {
+      // A member's profile can carry a "pending" placeholder (written during
+      // approval, before the real SAID is issued/synced). Passing that to KERIA
+      // revoke triggers GET /credentials/pending → 500, so treat any non-SAID
+      // value as "unknown" and look the credential up by schema + subject AID.
+      if (!isLikelyCredentialSaid(saidToRevoke)) {
         // Search for the member's credential by schema + subject AID
         const creds = await client.credentials().list();
         const memberCred = creds.find(

@@ -12,6 +12,7 @@ import {
   loadAccounts,
   saveAccounts,
   uniqueSuffix,
+  approvePendingMember,
   type TestAccounts,
 } from './utils/test-helpers';
 
@@ -325,16 +326,10 @@ test.describe.serial('Chat', () => {
     memberMnemonic = result.mnemonic;
     console.log(`[ChatMember] Registered as ${memberName}`);
 
-    // 3. Admin navigates to dashboard to see registration card
+    // 3. Admin sees the pending registration and approves (endorse + onboard + approve)
     await adminPage.goto('/#/dashboard');
-    await expect(adminPage.locator('.admin-section')).toBeVisible({ timeout: TIMEOUT.medium });
-
-    const registrationCard = adminPage.locator('.registration-card').filter({ hasText: memberName });
-    await expect(registrationCard).toBeVisible({ timeout: TIMEOUT.long });
-    console.log('[ChatAdmin] Registration card visible, approving...');
-
-    // 4. Admin approves
-    await registrationCard.getByRole('button', { name: /approve/i }).click();
+    console.log('[ChatAdmin] Approving registration...');
+    await approvePendingMember(adminPage, memberName);
 
     // 5. Member receives credential and enters community
     await expect(memberPage.locator('.welcome-overlay')).toBeVisible({ timeout: TIMEOUT.long });

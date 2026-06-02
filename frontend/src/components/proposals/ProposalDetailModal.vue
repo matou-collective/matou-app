@@ -166,9 +166,7 @@
             <div v-else class="comments-list">
               <div v-for="c in comments" :key="c.id" class="comment-card">
                 <div class="comment-header">
-                  <div class="comment-avatar">
-                    <q-icon name="person" size="14px" />
-                  </div>
+                  <UserAvatar :aid="c.user_id" :name="c.user_name ?? undefined" :size="24" />
                   <span class="comment-author">{{ c.user_name }}</span>
                   <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
                 </div>
@@ -225,6 +223,7 @@ import {
 import { useIdentityStore } from 'stores/identity';
 import { useProposalsStore } from 'stores/proposals';
 import EndorseProposalModal from './EndorseProposalModal.vue';
+import UserAvatar from 'components/profiles/UserAvatar.vue';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -614,17 +613,6 @@ async function confirmEndorse(comment: string) {
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
-}
-
-.comment-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #dbeafe;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
 }
 
 .comment-author {
