@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { basename, extname } from "node:path";
 import { detectEnv, type MatouEnv } from "./identity.js";
 
 export interface FetchResponse {
@@ -7,6 +9,30 @@ export interface FetchResponse {
   text: () => Promise<string>;
 }
 export type FetchFn = (url: string, init?: Record<string, unknown>) => Promise<FetchResponse>;
+
+/** A reference to a file already uploaded to the backend (matches the Go FileRef). */
+export interface FileRef {
+  file_ref: string;
+  file_name: string;
+  content_type: string;
+  size: number;
+  category: string;
+  uploaded_by: string;
+  uploaded_at: string;
+}
+
+// Minimal extension -> MIME map for the common evidence/time-report formats.
+const MIME_BY_EXT: Record<string, string> = {
+  ".csv": "text/csv",
+  ".md": "text/markdown",
+  ".txt": "text/plain",
+  ".pdf": "application/pdf",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
 
 export class MatouApiError extends Error {
   constructor(message: string, readonly status: number, readonly body: unknown) {
@@ -48,6 +74,45 @@ export class MatouClient {
   }
   del<T>(path: string, opts?: { rbac?: boolean }): Promise<T> {
     return this.request<T>("DELETE", path, undefined, opts?.rbac);
+  }
+
+  /**
+   * Upload a local file to the backend (multipart POST /api/v1/files/upload) and
+   * return a FileRef ready to embed in a submit-evidence payload. `category` is a
+   * free-form tag, e.g. "time_report" or "attachment".
+   */
+  async uploadFile(filePath: string, category: string, now: string = new Date().toISOString()): Promise<FileRef> {
+    const data = readFileSync(filePath);
+    const fileName = basename(filePath);
+    const guessed = MIME_BY_EXT[extname(fileName).toLowerCase()] ?? "application/octet-stream";
+    const form = new FormData();
+    // Blob copy keeps types happy across the Buffer/ArrayBuffer boundary.
+    form.append("file", new Blob([new Uint8Array(data)], { type: guessed }), fileName);
+    // Note: no Content-Type header — fetch sets the multipart boundary itself.
+    const res = await this.fetchFn(`${this.baseUrl}/api/v1/files/upload`, {
+      method: "POST",
+      headers: { "X-User-AID": this.actingAid },
+      body: form,
+    });
+    const text = await res.text();
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    } catch {
+      parsed = {};
+    }
+    if (!res.ok || !parsed.fileRef) {
+      throw new MatouApiError(mapError(res.status, parsed), res.status, parsed);
+    }
+    return {
+      file_ref: String(parsed.fileRef),
+      file_name: fileName,
+      content_type: String(parsed.contentType ?? guessed),
+      size: Number(parsed.size ?? data.length),
+      category,
+      uploaded_by: this.actingAid,
+      uploaded_at: now,
+    };
   }
 
   private async request<T>(method: string, path: string, body?: unknown, rbac = false): Promise<T> {

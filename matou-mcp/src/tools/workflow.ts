@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../context.js";
 import { defineTool } from "../register.js";
-import { MatouApiError } from "../backend.js";
+import { MatouApiError, type FileRef } from "../backend.js";
 import { REVIEW_DECISIONS, validateEnum, buildDerivationNote } from "../rules.js";
 
 interface SubmitArgs {
@@ -12,6 +12,8 @@ interface SubmitArgs {
   actual_amount?: number;
   evidence_urls?: string[];
   acceptance_notes?: string[];
+  time_report_path?: string;
+  attachment_paths?: string[];
 }
 
 export async function submitForReview(ctx: ToolContext, args: SubmitArgs): Promise<unknown> {
@@ -21,6 +23,15 @@ export async function submitForReview(ctx: ToolContext, args: SubmitArgs): Promi
   if (args.acceptance_notes) payload.acceptance_notes = args.acceptance_notes;
   if (args.actual_amount !== undefined) payload.actual_cost = args.actual_amount;
   if (args.actual_hours !== undefined) payload.actual_duration = args.actual_hours;
+  // Upload any local files first and embed them as FileRefs.
+  if (args.time_report_path) {
+    payload.time_report_file = await ctx.client.uploadFile(args.time_report_path, "time_report");
+  }
+  if (args.attachment_paths && args.attachment_paths.length > 0) {
+    const refs: FileRef[] = [];
+    for (const p of args.attachment_paths) refs.push(await ctx.client.uploadFile(p, "attachment"));
+    payload.attachment_files = refs;
+  }
   try {
     return await ctx.client.post(path, payload, { rbac: true });
   } catch (err) {
@@ -77,15 +88,19 @@ export function registerWorkflowTools(server: McpServer, ctx: ToolContext): void
     ctx,
     {
       name: "assign_contribution",
-      description: "Assign a contribution directly to a member (name/AID).",
+      description:
+        "Assign a contribution directly to a member (name/AID). Works from status confirmed/shared. " +
+        "To re-open a needs_review/incomplete contribution back to assigned, use review_contribution " +
+        "(decision: incomplete) then the transition endpoint, not this tool.",
       schema: { contribution_id: z.string(), to: z.string() },
       mutating: true,
     },
     async (args) => {
       const aid = ctx.members.resolve(args.to as string);
+      // Backend HandleAssign expects `user_id` (NOT `assigned_contributor_id`).
       return ctx.client.post(
         `/api/v1/contributions/${args.contribution_id as string}/assign`,
-        { assigned_contributor_id: aid },
+        { user_id: aid },
         { rbac: true },
       );
     },
@@ -97,7 +112,15 @@ export function registerWorkflowTools(server: McpServer, ctx: ToolContext): void
     {
       name: "submit_for_review",
       description:
-        "Submit your assigned contribution for review with completion notes, evidence, acceptance notes, actual hours and actual amount. Auto-handles backends that only accept whole hours.",
+        "Submit an ASSIGNED contribution for review. Before calling, first `get_contribution` to read its " +
+        "`deliverables` and `acceptance_criteria`, then structure the submission to match them:\n" +
+        "• completion_notes — describe the work and explicitly name how each DELIVERABLE was produced.\n" +
+        "• acceptance_notes — one entry PER acceptance criterion, stating how it was met (same order as the criteria).\n" +
+        "• actual_hours / actual_amount — actual time and cost (amount = hours × rate).\n" +
+        "ALWAYS prompt the user to provide, for THIS contribution, (a) a time report and (b) any supporting " +
+        "attachments, then pass them as local file paths: `time_report_path` and `attachment_paths` (uploaded " +
+        "automatically). `evidence_urls` is for links (e.g. GitLab MRs/commits). " +
+        "Auto-handles backends that only accept whole hours.",
       schema: {
         contribution_id: z.string(),
         completion_notes: z.string(),
@@ -105,6 +128,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ToolContext): void
         actual_amount: z.number().optional(),
         evidence_urls: z.array(z.string()).optional(),
         acceptance_notes: z.array(z.string()).optional(),
+        time_report_path: z.string().optional(),
+        attachment_paths: z.array(z.string()).optional(),
       },
       mutating: true,
     },
