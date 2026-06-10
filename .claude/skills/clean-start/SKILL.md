@@ -126,8 +126,8 @@ make clean-all           # clean + clean-config + clean-docker
 
 # Test
 make generate-config-test  # Generate test network config
-make setup-test            # First-time test setup
-make up-test
+make setup-test            # generate-config-test + start + wait + auto-copy config to etc/ (Fixes 1+2)
+make up-test               # Start test services (auto-copies client-test.yml to etc/ in test mode)
 make down-test
 make health-test
 make clean-test            # Stop + remove test containers
@@ -188,12 +188,20 @@ cd matou-infrastructure/keri && make clean-test
 cd matou-infrastructure/any-sync && make clean-test
 
 # 3. Start test infrastructure
-#    Same rule: clean-test removes test config, so use setup-test.
+#    clean-test removes test config, so it must be regenerated. With the any-sync
+#    Makefile fixes in place, `make setup-test` does this correctly on its own:
+#    it runs generate-config-test (Fix 2) and auto-copies the client config into
+#    etc/ for the config server mount (Fix 1). No manual generate/copy needed.
 cd matou-infrastructure/keri && make up-test
 cd matou-infrastructure/any-sync && make setup-test
 
-# 4. Copy test client config to etc/ for config server volume mount (gotcha #2)
-cp matou-infrastructure/any-sync/etc-test/client-test.yml matou-infrastructure/any-sync/etc/client-test.yml
+# 4. Verify NetworkId is consistent across all three sources (drift check — gotcha #2).
+#    All three MUST match. If etc/ is stale, the Makefile Fix 1 is missing from your
+#    checkout — fall back to the manual copy, then restart the config server:
+#      cp matou-infrastructure/any-sync/etc-test/client-test.yml matou-infrastructure/any-sync/etc/client-test.yml
+cd matou-infrastructure/any-sync
+grep -i networkId etc/client-test.yml etc-test/client-test.yml etc-test/any-sync-consensusnode/config.yml
+cd -
 
 # 5. Verify health
 cd matou-infrastructure/keri && make health-test
@@ -274,10 +282,11 @@ cd matou-infrastructure/any-sync && make restart-test
 **Symptom**: `make up` fails with "Network configuration not found"
 **Fix**: Run `make generate-config` (dev) or `make generate-config-test` (test) first, or use `make setup` / `make setup-test` for first-time setup.
 
-### 2. any-sync client config not in config server volume
-**Symptom**: Backend can't connect to any-sync, config server returns empty any-sync config.
-**Cause**: KERI docker-compose mounts `../any-sync/etc:/etc/anysync:ro` but test configs are in `etc-test/`.
-**Fix**: Copy the config: `cp matou-infrastructure/any-sync/etc-test/client-test.yml matou-infrastructure/any-sync/etc/client-test.yml`
+### 2. any-sync client config not in config server volume (config drift → consensus `forbidden`)
+**Symptom**: Backend can't connect to any-sync / config server returns empty config. WORSE failure mode after a network regen: `etc/client-test.yml` still points at the OLD (dead) NetworkId, so the backend authenticates to the freshly-rebuilt network with dead credentials → the consensus node rejects every write with `forbidden` and `failed to push ACL to consensus node ... code: 504`. Symptoms: registration member→member sync fails, org-setup times out.
+**Cause**: KERI docker-compose mounts `../any-sync/etc:/etc/anysync:ro` but the generator writes test configs to `etc-test/`. Nothing kept the two in sync, so a regenerated network left `etc/client-test.yml` stale.
+**Fix**: The any-sync Makefile `start` recipe now auto-copies `etc-test/client-test.yml → etc/client-test.yml` in test mode (Fix 1), so `make up-test`/`make setup-test` keep them aligned. If your checkout predates that fix, copy manually: `cp matou-infrastructure/any-sync/etc-test/client-test.yml matou-infrastructure/any-sync/etc/client-test.yml`
+**Always verify** after any network regen that the NetworkId matches across `etc/client-test.yml`, `etc-test/client-test.yml`, and `etc-test/any-sync-consensusnode/config.yml`.
 **Note**: This only affects test env. Dev uses `etc/` directly which matches the mount.
 
 ### 3. Stale KERIA notifications after re-registration
@@ -329,6 +338,27 @@ done
 **Symptom**: After `make clean`, old data still appears.
 **Cause**: `make down` doesn't remove volumes; `make clean` does (`down -v`).
 **Fix**: Use `make clean` (not `make down`) when you want a fresh start.
+
+### 13. any-sync-tools image version mismatch (`up-test` fails to pull)
+**Symptom**: `make up-test` fails: `failed to resolve reference ghcr.io/anyproto/any-sync-tools:0.6.1: not found`.
+**Cause**: `config.env`/`.env.test` pinned `ANY_SYNC_TOOLS_VERSION=0.6.1`, but the published image tag is `v0.6.1` (every other any-sync version uses the `v` prefix). Dev uses `latest` so it's unaffected.
+**Fix**: Set `ANY_SYNC_TOOLS_VERSION=v0.6.1` in `config.env` (source) and `.env.test` (generated).
+
+### 14. `make setup-test` generated the DEV network (historical bug — now fixed)
+**Symptom**: `make setup-test` printed `Mode: dev`, found/created the dev network identity, then failed `check-config` because `storage-test/`/`etc-test/` were empty.
+**Cause**: `setup-test` chained into the dev `setup` target, which runs `generate-config` in dev mode.
+**Fix**: `setup-test` now depends on `generate-config-test` and runs `start wait ENV_FILE=.env.test` (Fix 2). If your checkout predates the fix, run `make generate-config-test` then `make up-test` manually.
+
+### 15. E2E consensus `forbidden`/504 storm = host CPU starvation, NOT a code bug
+**Symptom**: During E2E, backend logs a continuous `consensus stream read error: forbidden` and `failed to push ACL to consensus node ... 504` storm (persists past onboarding, even after the test process dies). Member→member sync misses its timeout; org-setup can stall.
+**Cause**: This host has **2 CPU cores**. The E2E suite (Playwright browsers + per-user `go run` backends + ~14 infra containers) drives load average to ~20+, which starves Docker's embedded DNS resolver (127.0.0.11). The any-sync **coordinator** then can't resolve `mongo-1`/`any-sync-consensusnode` (`lookup ... on 127.0.0.11:53: i/o timeout`) → ACL writes can't be validated → consensus returns `forbidden`/504. It is intermittent/load-sensitive — a single uncontended run on an aligned network passes (reached 32/32 green).
+**How to tell it apart from gotcha #2 drift**: container-to-container DNS timeouts in coordinator logs = starvation; a NetworkId mismatch across the three config files = drift. Check both.
+**Fix/avoid**: Before suspecting code, run `uptime` (load avg) and `nproc`. **NEVER run two E2E flows concurrently** on this host (e.g. overlapping subagents) — that's what tips it over. (Playwright already runs serially — `workers: 1`, `fullyParallel: false` — so a single invocation is fine; the danger is overlapping invocations.) Mitigations: pre-`go build` the backend binary so per-user backends skip `go run` recompiles (the biggest CPU sink); stop unneeded background Docker stacks; use a host with more cores.
+
+### 16. Booking E2E fails: no SMTP server on port 3525
+**Symptom**: `registration › user books a Whakawhānaunga session` returns 500: `booking.go: FAILED to send email ... dial tcp [::1]:3525: connect: connection refused`.
+**Cause**: The clean-start backend runs with `MATOU_SMTP_PORT=3525` but nothing listens there. The booking endpoint's only job is sending the confirmation email, so the 500 is correct behavior (unlike the invitation flow, which tolerates SMTP-absent). This is a test-infra gap, not a product bug.
+**Fix**: Run a mock SMTP server on 3525 for the test env (mailpit/smtp4dev, or a raw-socket SMTP sink), or relax the booking test to tolerate SMTP-absent.
 
 ## Execution
 
