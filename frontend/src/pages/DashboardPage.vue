@@ -124,6 +124,12 @@
 
         <!-- Right Column -->
         <div class="right-column">
+          <WitnessAdoptionBanner
+            v-if="isSteward && orgHasWitnesses === false"
+            :loading="isAdoptingWitnesses"
+            :error-message="adoptError ?? undefined"
+            @adopt="adoptWitnesses"
+          />
           <div ref="membersCardRef" class="card members-card">
             <div class="members-header">
               <h3 class="card-title" v-if="pendingMembers.length > 0">Pending</h3>
@@ -183,7 +189,7 @@
       :isEndorsing="isEndorsing"
       :hasMarkedAttended="selectedMemberHasAttended"
       :isMarkingAttended="isMarkingAttended"
-      :canChangeRole="false /* TODO: disabled pending multisig rotation fix — see docs/multisig-rotation-report.md */"
+      :canChangeRole="isSteward && !!selectedMemberSharedProfile && (selectedMemberSharedProfile.aid as string) !== (identityStore.currentAID?.prefix || '')"
       :canRemoveMember="isSteward && !!selectedMemberSharedProfile && (selectedMemberSharedProfile.aid as string) !== (identityStore.currentAID?.prefix || '')"
       :isRemoving="isRemoving"
       @close="handleCloseModal"
@@ -232,10 +238,13 @@ import {
 } from 'lucide-vue-next';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useOrgWitnessState } from 'src/composables/useOrgWitnessState';
+import WitnessAdoptionBanner from 'src/components/dashboard/WitnessAdoptionBanner.vue';
 import { fetchOrgConfig } from 'src/api/config';
 import { useRegistrationPolling, type PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useMultisigJoin } from 'src/composables/useMultisigJoin';
+import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSignal';
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
@@ -262,13 +271,40 @@ const {
   declineRegistration,
   removeMember,
   clearError,
+  runAdoptWitnesses,
 } = useAdminActions();
+
+const { hasWitnesses: orgHasWitnesses, refresh: refreshOrgWitnesses } = useOrgWitnessState();
+const isAdoptingWitnesses = ref(false);
+const adoptError = ref<string | null>(null);
+
+async function adoptWitnesses() {
+  isAdoptingWitnesses.value = true;
+  adoptError.value = null;
+  try {
+    const result = await runAdoptWitnesses();
+    if (result === 'failed') {
+      adoptError.value = 'Witness adoption failed. See console for details.';
+      return;
+    }
+    await refreshOrgWitnesses();
+  } catch (err) {
+    adoptError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    isAdoptingWitnesses.value = false;
+  }
+}
 
 const {
   hasJoined: hasJoinedMultisig,
   startPolling: startMultisigPolling,
   stopPolling: stopMultisigPolling,
 } = useMultisigJoin();
+
+const {
+  start: startRotationSignalWatcher,
+  stop: stopRotationSignalWatcher,
+} = useMultisigRotationSignal();
 
 const {
   isEndorsing,
@@ -482,8 +518,17 @@ onMounted(async () => {
   // Check if user is admin/steward
   await checkAdminStatus();
 
+  // Query the org's witness state for the migration banner
+  await refreshOrgWitnesses();
+
   // Poll for multisig rotation notifications (e.g., after being promoted to steward)
   startMultisigPolling(5000);
+
+  // Watch for rotation signals from admin so we can pre-emptively query
+  // admin's KEL before the /multisig/rot EXN arrives.  No-op if we never
+  // receive one (admin's flow falls back to the existing escrow path).
+  const myAidPrefix = identityStore.currentAID?.prefix;
+  if (myAidPrefix) startRotationSignalWatcher(myAidPrefix);
 
   // Fetch admin AIDs for endorsement badge distinction
   try {
@@ -515,6 +560,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopPolling();
   stopMultisigPolling();
+  stopRotationSignalWatcher();
 });
 
 watch(hasJoinedMultisig, async (joined) => {

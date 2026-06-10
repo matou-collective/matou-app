@@ -470,6 +470,25 @@ export async function updateMemberRole(
 }
 
 /**
+ * Grant the target steward Admin permission on both the community space and
+ * the community-readonly space. Called by admin after promoting a member to
+ * Community Steward so that the new steward's backend can:
+ *   - write CommunityProfile records when approving new members (needs Writer)
+ *   - create new invites for incoming members (needs Admin)
+ * Only admin (the space owner) can call this — the SDK enforces ownership.
+ */
+export async function grantStewardAdmin(
+  stewardAid: string,
+): Promise<{ success: boolean; error?: string }> {
+  const res = await fetch(`${BACKEND_URL}/api/v1/spaces/grant-steward-admin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stewardAid }),
+  });
+  return res.json();
+}
+
+/**
  * Upload a file and return a content-addressed fileRef
  */
 export async function uploadFile(file: File): Promise<{ fileRef?: string; error?: string }> {

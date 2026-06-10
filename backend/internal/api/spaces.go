@@ -1166,6 +1166,91 @@ func (h *SpacesHandler) HandleCommunityReadOnlyInvite(w http.ResponseWriter, r *
 	})
 }
 
+// GrantStewardAdminRequest is the body of POST /api/v1/spaces/grant-steward-admin.
+type GrantStewardAdminRequest struct {
+	StewardAID string `json:"stewardAid"`
+}
+
+// GrantStewardAdminResponse is the response envelope.
+type GrantStewardAdminResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// HandleGrantStewardAdmin handles POST /api/v1/spaces/grant-steward-admin.
+// Elevates the target steward's account permission to Admin on BOTH the community
+// space and the community-readonly space. Admin level is required because the
+// steward will:
+//   - Write CommunityProfile records into the readonly space (needs Writer)
+//   - Create new invites for incoming members on both spaces (needs Admin to
+//     build invite records — the SDK requires CanManageAccounts permission)
+//
+// Only the space owner can call this successfully — the SDK enforces it at the
+// consensus layer when building the PermissionChange record.
+func (h *SpacesHandler) HandleGrantStewardAdmin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, GrantStewardAdminResponse{
+			Success: false,
+			Error:   "Method not allowed",
+		})
+		return
+	}
+
+	var req GrantStewardAdminRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, GrantStewardAdminResponse{
+			Success: false,
+			Error:   fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+	if req.StewardAID == "" {
+		writeJSON(w, http.StatusBadRequest, GrantStewardAdminResponse{
+			Success: false,
+			Error:   "stewardAid is required",
+		})
+		return
+	}
+
+	ctx := r.Context()
+	aclMgr := h.spaceManager.ACLManager()
+
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
+	if communitySpaceID == "" || roSpaceID == "" {
+		writeJSON(w, http.StatusConflict, GrantStewardAdminResponse{
+			Success: false,
+			Error:   "community or community-readonly space not configured",
+		})
+		return
+	}
+
+	// Elevate the steward on each space independently. Each space tracks the
+	// joining account by its own pubkey, so we look up the matching account in
+	// each space's ACL via the AID stored in the join-request metadata.
+	for _, spaceID := range []string{communitySpaceID, roSpaceID} {
+		pubKey, err := aclMgr.FindAccountPubKeyByAID(ctx, spaceID, req.StewardAID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, GrantStewardAdminResponse{
+				Success: false,
+				Error:   fmt.Sprintf("steward not found in space %s ACL: %v", spaceID, err),
+			})
+			return
+		}
+		if err := aclMgr.ChangePermissions(ctx, spaceID, pubKey, list.AclPermissionsAdmin); err != nil {
+			writeJSON(w, http.StatusInternalServerError, GrantStewardAdminResponse{
+				Success: false,
+				Error:   fmt.Sprintf("failed to grant admin permission on %s: %v", spaceID, err),
+			})
+			return
+		}
+		log.Printf("[GrantStewardAdmin] granted Admin permission to %s on space %s",
+			req.StewardAID, spaceID)
+	}
+
+	writeJSON(w, http.StatusOK, GrantStewardAdminResponse{Success: true})
+}
+
 // SyncStatusResponse reports sync readiness for the user's spaces.
 type SyncStatusResponse struct {
 	Community SpaceSyncStatus `json:"community"`
@@ -1308,6 +1393,7 @@ func (h *SpacesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/spaces/community/join", h.HandleJoinCommunity)
 	mux.HandleFunc("/api/v1/spaces/community/verify-access", h.handleVerifyAccess)
 	mux.HandleFunc("/api/v1/spaces/community-readonly/invite", h.HandleCommunityReadOnlyInvite)
+	mux.HandleFunc("/api/v1/spaces/grant-steward-admin", h.HandleGrantStewardAdmin)
 	mux.HandleFunc("/api/v1/spaces/private", h.HandleCreatePrivate)
 	mux.HandleFunc("/api/v1/spaces/user", h.HandleGetUserSpaces)
 	mux.HandleFunc("/api/v1/spaces/sync-status", h.HandleSyncStatus)

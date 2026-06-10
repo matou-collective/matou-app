@@ -26,6 +26,8 @@ export type BackendEventType =
   | 'notice_comment'
   | 'notice_reaction'
   | 'profile:updated'
+  | 'multisig:rotation-signal'
+  | 'multisig:rotation-ack'
   | 'chat:message:new'
   | 'chat:message:edit'
   | 'chat:message:delete'
@@ -190,6 +192,22 @@ function connect() {
     if (!data) return;
     lastEvent.value = { type: 'profile:updated', data };
     debouncedProfileReload();
+  });
+
+  // Multisig cross-client coordination signals.  Member-side handler in
+  // useMultisigRotationSignal listens for 'multisig:rotation-signal' and
+  // calls keyStates().query(); admin-side flow in client.ts listens for
+  // 'multisig:rotation-ack' before sending the /multisig/rot EXN.
+  eventSource.addEventListener('multisig:rotation-signal', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'multisig:rotation-signal', data };
+  });
+
+  eventSource.addEventListener('multisig:rotation-ack', (event) => {
+    const data = safeParse(event);
+    if (!data) return;
+    lastEvent.value = { type: 'multisig:rotation-ack', data };
   });
 
   // --- Chat events ---
@@ -383,6 +401,47 @@ function disconnect() {
     eventSource = null;
   }
   connected.value = false;
+}
+
+/**
+ * Wait for the next SSE event of the given type whose payload matches the
+ * predicate.  Resolves with the event data once it arrives, rejects on
+ * timeout.  Caller is responsible for ensuring connect() has already been
+ * called — typically via DashboardLayout on mount.
+ *
+ * Used by flows that need an async ack from another client (e.g. admin's
+ * multisig upgrade waits for the steward's rotation-ack).
+ */
+export function waitForEvent<T = Record<string, string>>(
+  type: BackendEventType,
+  predicate: (data: T) => boolean,
+  timeoutMs: number,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (!eventSource) {
+      reject(new Error(`waitForEvent("${type}"): SSE not connected — call connect() first`));
+      return;
+    }
+    const es = eventSource;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const handler = (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as T;
+        if (predicate(data)) {
+          if (timer) clearTimeout(timer);
+          es.removeEventListener(type, handler as EventListener);
+          resolve(data);
+        }
+      } catch {
+        // Ignore malformed payloads — keep listening.
+      }
+    };
+    timer = setTimeout(() => {
+      es.removeEventListener(type, handler as EventListener);
+      reject(new Error(`waitForEvent("${type}") timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    es.addEventListener(type, handler as EventListener);
+  });
 }
 
 export function useBackendEvents() {

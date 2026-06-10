@@ -5,6 +5,7 @@
 package anysync
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -187,6 +188,91 @@ func (m *MatouACLManager) GetPermissions(ctx context.Context, spaceID string, id
 
 	perm := state.Permissions(identity)
 	return perm, nil
+}
+
+// ChangePermissions submits a PermissionChange record granting the target identity
+// the specified permissions on the space. Only the space owner / accounts with
+// CanManageAccounts permission can call this successfully — the SDK enforces this.
+// Retries on stale prev id, matching the CreateOpenInvite retry pattern.
+func (m *MatouACLManager) ChangePermissions(ctx context.Context, spaceID string, identity crypto.PubKey, permissions list.AclPermissions) error {
+	space, err := m.client.GetSpace(ctx, spaceID)
+	if err != nil {
+		return fmt.Errorf("getting space %s: %w", spaceID, err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= createOpenInviteMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt) * time.Second
+			log.Printf("[ACL] ChangePermissions retry %d/%d for space %s (waiting %v)",
+				attempt, createOpenInviteMaxRetries, spaceID, delay)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+			case <-time.After(delay):
+			}
+		}
+
+		acl := space.Acl()
+		acl.Lock()
+		builder := acl.RecordBuilder()
+		rec, buildErr := builder.BuildPermissionChanges(list.PermissionChangesPayload{
+			Changes: []list.PermissionChangePayload{{Identity: identity, Permissions: permissions}},
+		})
+		acl.Unlock()
+		if buildErr != nil {
+			return fmt.Errorf("building permission change: %w", buildErr)
+		}
+
+		aclClient := space.AclClient()
+		if err := aclClient.AddRecord(ctx, rec); err != nil {
+			if strings.Contains(err.Error(), "incorrect prev id") {
+				lastErr = err
+				continue
+			}
+			return fmt.Errorf("adding permission change record: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("adding permission change record after %d retries: %w", createOpenInviteMaxRetries, lastErr)
+}
+
+// FindAccountPubKeyByAID iterates a space's ACL accounts and returns the pubkey
+// of the account whose join-request metadata contains the given KERI AID.
+// Metadata is written by HandleJoinCommunity as `{"aid":"...","joinedAt":"..."}`.
+func (m *MatouACLManager) FindAccountPubKeyByAID(ctx context.Context, spaceID string, aid string) (crypto.PubKey, error) {
+	space, err := m.client.GetSpace(ctx, spaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting space %s: %w", spaceID, err)
+	}
+
+	acl := space.Acl()
+	acl.RLock()
+	defer acl.RUnlock()
+
+	state := acl.AclState()
+	if state == nil {
+		return nil, fmt.Errorf("ACL state not available for space %s", spaceID)
+	}
+
+	for _, account := range state.CurrentAccounts() {
+		if len(account.RequestMetadata) == 0 {
+			continue
+		}
+		// Metadata may be encrypted with the space metadata key. Try decrypting
+		// first; fall back to plaintext for compatibility with older join records.
+		raw := account.RequestMetadata
+		if mdKey, mdErr := state.FirstMetadataKey(); mdErr == nil && mdKey != nil {
+			if decrypted, decErr := mdKey.Decrypt(raw); decErr == nil {
+				raw = decrypted
+			}
+		}
+		if bytes.Contains(raw, []byte(`"aid":"`+aid+`"`)) {
+			return account.PubKey, nil
+		}
+	}
+	return nil, fmt.Errorf("no account found for AID %s in space %s", aid, spaceID)
 }
 
 // =============================================================================

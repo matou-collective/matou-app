@@ -8,7 +8,8 @@ import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
-import { BACKEND_URL, createOrUpdateProfile, getProfileById, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
+import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
+import { getOrCreateOrgRegistry } from 'src/lib/keri/registry';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -280,9 +281,14 @@ export function useAdminActions() {
       };
 
       console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
+      // Resolve the registry on the org group AID for THIS backend. KERIA does
+      // not sync TEL/registry events between group-AID members, so each
+      // steward must use a registry that exists in their local KERIA. The
+      // admin already has one; upgraded stewards create their own here.
+      const orgRegistryId = await getOrCreateOrgRegistry(issuerAidName);
       const credResult = await keriClient.issueCredential(
         issuerAidName,
-        config.registry.id,
+        orgRegistryId,
         MEMBERSHIP_SCHEMA_SAID,
         registration.applicantAid,
         credentialData,
@@ -412,10 +418,33 @@ export function useAdminActions() {
       const stewardOOBI = `${cesrUrl}/oobi/${stewardAid}`;
       await keriClient.resolveOOBI(stewardOOBI, undefined, 30000);
 
-      // --- Step 2: Key rotation ---
-      processingStep.value = 'Performing key rotation...';
-      onStep?.('Performing key rotation...');
-      await keriClient.addMemberToGroup(orgName, stewardAid, personalAid.name);
+      // Capture the steward's current sn BEFORE round 1. The steward rotates
+      // their personal AID exactly once (in response to round 1), so the
+      // expected sn afterwards is current + 1. We must NOT hardcode '1': a
+      // steward who already rotated during onboarding starts at sn >= 1, so a
+      // fixed '1' makes waitForMemberRotation return immediately (the rotation
+      // hasn't actually happened yet) and round 2 then commits the stale
+      // pre-rotation key — the cause of the flaky "Invalid signing index = -1".
+      const snOp = await client.keyStates().query(stewardAid, undefined, undefined);
+      const snRes = await client.operations().wait(snOp, { signal: AbortSignal.timeout(30000) });
+      const stewardSn0 = parseInt(((snRes.response as { s?: string })?.s ?? '0'), 16);
+      const expectedStewardSn = (stewardSn0 + 1).toString(16);
+      console.log(`[AdminActions] steward at sn=${stewardSn0}; expecting sn=${expectedStewardSn} after round-1 rotation`);
+
+      // --- Step 2a: Round 1 — admin pre-rotates, group rotation adds member to rstates ---
+      processingStep.value = 'Inviting steward (round 1)...';
+      onStep?.('Inviting steward (round 1)...');
+      await keriClient.addMemberRound1(orgName, stewardAid, personalAid.name);
+
+      // --- Step 2b: Wait for the steward's frontend to accept and rotate ---
+      processingStep.value = 'Waiting for steward to accept...';
+      onStep?.('Waiting for steward to accept...');
+      await keriClient.waitForMemberRotation(stewardAid, expectedStewardSn, { timeoutMs: 5 * 60_000 });
+
+      // --- Step 2c: Round 2 — admin pre-rotates again, member becomes signer ---
+      processingStep.value = 'Promoting steward to signer (round 2)...';
+      onStep?.('Promoting steward to signer (round 2)...');
+      await keriClient.addMemberRound2(orgName, stewardAid, personalAid.name, expectedStewardSn);
       console.log('[AdminActions] Steward added to org multisig');
 
       // --- Step 3: Revoke old credential ---
@@ -441,9 +470,10 @@ export function useAdminActions() {
       processingStep.value = 'Issuing new credential...';
       onStep?.('Issuing new credential...');
       const grantMessage = `Role updated to ${newRole}`;
+      const orgRegistryId = await getOrCreateOrgRegistry(orgName);
       const credResult = await keriClient.issueCredential(
         orgName,
-        config.registry.id,
+        orgRegistryId,
         MEMBERSHIP_SCHEMA_SAID,
         stewardAid,
         {
@@ -474,12 +504,76 @@ export function useAdminActions() {
       };
       await createOrUpdateProfile('CommunityProfile', merged, { id: profileId });
 
+      // Elevate the new steward's any-sync permission to Admin on both community
+      // and community-readonly spaces. Writer alone is not enough: writing the
+      // CommunityProfile needs Writer on readonly, but creating new community/
+      // readonly invites for incoming members needs Admin (CanManageAccounts).
+      // Without this, the steward's init-member call returns 500 and the
+      // subsequent community/invite call returns "insufficient permissions".
+      const grantResult = await grantStewardAdmin(stewardAid);
+      if (!grantResult.success) {
+        console.warn('[AdminActions] grantStewardAdmin failed:', grantResult.error);
+      } else {
+        console.log('[AdminActions] Granted Admin permission to new steward on community + readonly spaces');
+      }
+
       onStep?.('Complete');
       console.log('[AdminActions] Steward upgrade complete');
       return true;
     } catch (err) {
       console.error('[AdminActions] Failed to upgrade steward:', err);
       return false;
+    } finally {
+      isProcessing.value = false;
+      processingStep.value = '';
+    }
+  }
+
+  /**
+   * Adopt witnesses on the current org's group AID. Used to migrate orgs
+   * created before the witness-fix landed (`toad: 0, wits: []`) into a
+   * witness-backed shape so the multisig member-promotion flow can run.
+   *
+   * Idempotent: a no-op for orgs that already have witnesses.
+   */
+  async function runAdoptWitnesses(
+    onStep?: (step: string) => void,
+  ): Promise<'migrated' | 'already-migrated' | 'failed'> {
+    const client = keriClient.getSignifyClient();
+    if (!client) {
+      console.error('[AdminActions] No SignifyClient for adopt-witnesses');
+      return 'failed';
+    }
+    if (isProcessing.value) {
+      console.warn('[AdminActions] Already processing — refusing concurrent adopt-witnesses');
+      return 'failed';
+    }
+    isProcessing.value = true;
+    processingStep.value = 'Adopting witnesses...';
+    onStep?.('Adopting witnesses...');
+    error.value = null;
+
+    try {
+      const orgAidPrefix = await getOrgAidName();
+      const aids = await client.identifiers().list();
+      const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === orgAidPrefix);
+      const orgName = orgAid?.name;
+      if (!orgName) throw new Error('Could not find org AID name');
+
+      const personalAid = aids.aids?.find((a: { prefix: string; name: string }) =>
+        a.prefix !== orgAidPrefix && !a.name?.includes('org')
+      );
+      if (!personalAid) throw new Error('Could not find admin personal AID');
+
+      const result = await keriClient.adoptOrgWitnesses(orgName, personalAid.name);
+      onStep?.('Complete');
+      console.log(`[AdminActions] adopt-witnesses result: ${result}`);
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[AdminActions] Adopt witnesses failed:', err);
+      error.value = msg;
+      return 'failed';
     } finally {
       isProcessing.value = false;
       processingStep.value = '';
@@ -785,6 +879,7 @@ export function useAdminActions() {
     approveRegistration,
     addStewardToOrgMultisig,
     upgradeMemberToSteward,
+    runAdoptWitnesses,
     declineRegistration,
     sendMessageToApplicant,
     removeMember,

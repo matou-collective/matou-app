@@ -313,8 +313,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       // SharedProfiles from the backend API to fill the gap.
       if (registrations.length === 0) {
         try {
-          const profilesResp = await getProfiles('SharedProfile');
-          const sharedProfiles = (profilesResp.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
+          const sharedProfiles = await getProfiles('SharedProfile') as Array<{ id: string; data: Record<string, unknown> }>;
           const pendingProfiles = sharedProfiles.filter(
             p => (p.data?.status as string) === 'pending'
           );
