@@ -27,6 +27,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('pages/AccountSettingsPage.vue'),
       },
       {
+        path: 'infrastructure',
+        name: 'infrastructure',
+        component: () => import('pages/InfrastructurePage.vue'),
+      },
+      {
         path: 'chat',
         name: 'chat',
         component: () => import('pages/ChatPage.vue'),

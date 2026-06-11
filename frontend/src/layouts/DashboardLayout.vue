@@ -55,6 +55,10 @@
             {{ contributionsUnreadTotal > 99 ? '99+' : contributionsUnreadTotal }}
           </span>
         </button>
+        <button class="nav-item" :class="{ active: route.name === 'infrastructure' }" @click="router.push({ name: 'infrastructure' })">
+          <Network class="nav-icon" />
+          <span>Infrastructure</span>
+        </button>
       </nav>
 
       <!-- User Profile -->
@@ -97,6 +101,7 @@ import {
   Vote,
   MessageSquare,
   Hammer,
+  Network,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
