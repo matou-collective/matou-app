@@ -59,6 +59,18 @@ ALL of these must be running:
 cd frontend && npm run health:test
 ```
 
+## ⚠️ E2E on This Host — Capacity Constraints (READ FIRST)
+
+This dev host has **2 CPU cores**. The full E2E suite (Playwright browsers + per-user `go run` backends + ~14 infra containers) is heavy enough to starve it.
+
+- **NEVER run two E2E flows concurrently.** Overlapping runs (e.g. two subagents, or a re-run started before the previous finished) drive load average to ~20+, which starves Docker's embedded DNS resolver (127.0.0.11). The any-sync coordinator then can't resolve `mongo-1`/`any-sync-consensusnode`, ACL writes fail, and the consensus node returns `forbidden`/`504`. One run at a time.
+- **`consensus stream read error: forbidden` + `failed to push ACL to consensus node ... 504` storms are usually load, not a code bug.** Before reporting a real failure, run `uptime` (load avg) and `nproc`. The tell-tale of starvation is **container-to-container DNS timeouts** in the coordinator logs (`docker logs matou-anysync-test-any-sync-coordinator-1 | grep 'i/o timeout'`). This failure is intermittent/load-sensitive — a single uncontended run on an aligned network passes (the suite has reached 32/32 green).
+- **Distinguish from config drift.** A NetworkId mismatch across `etc/client-test.yml`, `etc-test/client-test.yml`, and the consensus node config ALSO produces `forbidden`/504 — but that's drift (clean-start gotcha #2), fixable by aligning the config. DNS timeouts = starvation; NetworkId mismatch = drift. Check both before concluding.
+- **Mitigations** (for the main agent to apply — you're read-only): pre-`go build` the backend binary so per-user backends skip `go run` recompiles (the biggest CPU sink); stop unneeded background Docker stacks; use a host with more cores. Note Playwright already runs serially (`workers: 1`), so there's no project parallelism to reduce — the issue is overlapping *invocations*, not one run.
+
+### Known E2E failure: booking/SMTP (port 3525)
+`registration › user books a Whakawhānaunga session` returns 500 (`dial tcp [::1]:3525: connect: connection refused`) when no SMTP server runs on 3525. The booking endpoint exists only to send the confirmation email, so the 500 is correct behavior — it's a **test-infra gap**, not a product bug. To get the suite fully green, a mock SMTP (mailpit/smtp4dev or a raw-socket sink) must listen on 3525, or the test must tolerate SMTP-absent.
+
 ## E2E Test Projects (Sequential Order)
 
 Tests MUST run in this order due to dependencies:
@@ -193,12 +205,16 @@ For quick test data cleanup without infra changes, run directly:
 | Stale test-accounts.json | `./scripts/clean-test.sh` |
 | Tests fail after infra restart | `/clean-start test all` |
 | Everything broken | `/clean-start test all` |
+| consensus `forbidden`/504 storm during E2E | FIRST `uptime`+`nproc` (2-core starvation) and check coordinator DNS timeouts — see capacity section. Only clean-start if NetworkId is mismatched across the 3 config files |
+| NetworkId mismatch (etc/ vs etc-test/ vs consensus node) | `/clean-start test infra` (Makefile auto-copies config in test mode; verify the 3 match after) |
 
 ## Important Notes
 
 - **stdout vs stderr**: Use `log.Printf` (stderr) not `fmt.Printf` (stdout) in backend - stdout is NOT captured by Playwright BackendManager
 - **Stale notifications**: Must `make clean-test` (KERI) + `scripts/clean-test.sh` (frontend) between full test runs to clear stale KERIA notifications
 - **Config isolation**: Tests use `X-Test-Config: true` HTTP header to isolate test config from dev config
+- **One E2E run at a time**: This 2-core host can't sustain concurrent E2E flows — overlapping runs cause Docker DNS starvation and false `forbidden`/504 "failures". See the capacity section above.
+- **`forbidden` is often load, not a bug**: Always check `uptime`/`nproc` and coordinator DNS timeouts before reporting a consensus failure as real.
 
 ## E2E Test Conventions (Reference)
 
