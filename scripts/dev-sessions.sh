@@ -91,6 +91,18 @@ start_backend() {
         return 0
     fi
 
+    # For sessions 2+, copy org-config from session 1 if available and not already present
+    if [ "$session" -gt 1 ]; then
+        local shared_config="$BACKEND_DIR/data/org-config.yaml"
+        local session_data_dir="$BACKEND_DIR/${data_dir#./}"
+        local session_config="$session_data_dir/org-config.yaml"
+        if [ -f "$shared_config" ] && [ ! -f "$session_config" ]; then
+            mkdir -p "$session_data_dir"
+            cp "$shared_config" "$session_config"
+            log_info "Copied org-config from session 1 to session $session"
+        fi
+    fi
+
     log_info "Starting backend session $session on port $port (data: $data_dir)"
 
     # Start Go backend in subshell with proper working directory
