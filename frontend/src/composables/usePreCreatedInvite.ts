@@ -28,8 +28,6 @@ const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 const SCHEMA_SERVER_URL = 'http://schema-server:7723';
 const SCHEMA_OOBI_URL = `${SCHEMA_SERVER_URL}/oobi/${ENDORSEMENT_SCHEMA_SAID}`;
 
-const WITNESS_AID = 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha';
-
 // KERIA CESR URL as seen from inside Docker (used for bare OOBI resolution).
 // Bare OOBIs (/oobi/{prefix}) serve the full KEL via hab.replay() and don't
 // require an agent end role, unlike /oobi/{prefix}/agent/{agentId} OOBIs.
@@ -66,9 +64,20 @@ export function usePreCreatedInvite() {
       // Step 3: Create AID in invitee's agent
       progress.value = 'Creating invitee identity...';
       const aidName = config.inviteeName.toLowerCase().replace(/\s+/g, '-');
-      console.log(`[PreCreatedInvite] Creating AID "${aidName}" with witness ${WITNESS_AID}...`);
+      // Get witness AIDs from KERIA config iurls (environment-agnostic)
+      const keriConfig = await inviteeClient.config().get();
+      const witnessAIDs: string[] = ((keriConfig.iurls as string[]) || [])
+        .map((iurl: string) => {
+          const match = iurl.match(/\/oobi\/([^/]+)/);
+          return match ? match[1] : '';
+        })
+        .filter(Boolean);
+      if (witnessAIDs.length === 0) {
+        throw new Error('[PreCreatedInvite] No witness AIDs configured in KERIA');
+      }
+      console.log(`[PreCreatedInvite] Creating AID "${aidName}" with witnesses: ${witnessAIDs.join(', ')}...`);
       const createResult = await inviteeClient.identifiers().create(aidName, {
-        wits: [WITNESS_AID],
+        wits: witnessAIDs,
         toad: 1,
       });
       console.log('[PreCreatedInvite] identifiers().create() returned, waiting for operation...');
