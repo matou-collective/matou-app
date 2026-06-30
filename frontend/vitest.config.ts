@@ -20,6 +20,7 @@ export default defineConfig({
   test: {
     // Test scripts live outside src/
     include: ['tests/scripts/**/*.ts'],
+    exclude: ['tests/scripts/health-check.ts'],
     testTimeout: 120000,
     server: {
       deps: {
