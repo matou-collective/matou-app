@@ -439,7 +439,30 @@ const selectedMemberCommunityProfile = computed(() => {
 const selectedMemberRegistration = computed(() => {
   const aid = selectedMember.value?.shared?.aid as string;
   if (!aid) return null;
-  return pendingRegistrations.value.find(r => r.applicantAid === aid) || null;
+  const found = pendingRegistrations.value.find(r => r.applicantAid === aid);
+  if (found) return found;
+  // If the SharedProfile is pending but the KERIA notification is gone,
+  // construct a minimal registration so the modal still shows action buttons.
+  const shared = selectedMember.value?.shared;
+  if (shared && (shared.status as string) === 'pending') {
+    return {
+      notificationId: `fallback-${aid}`,
+      applicantAid: aid,
+      isPending: true,
+      profile: {
+        name: (shared.displayName as string) || 'Unknown',
+        email: (shared.publicEmail as string) || '',
+        bio: (shared.bio as string) || '',
+        location: (shared.location as string) || '',
+        indigenousCommunity: (shared.indigenousCommunity as string) || '',
+        joinReason: (shared.joinReason as string) || '',
+        interests: (shared.participationInterests as string[]) || [],
+        customInterests: (shared.customInterests as string) || '',
+        submittedAt: (shared.createdAt as string) || new Date().toISOString(),
+      },
+    } as PendingRegistration;
+  }
+  return null;
 });
 
 const selectedMemberEndorsements = computed(() => {

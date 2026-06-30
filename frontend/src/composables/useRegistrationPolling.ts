@@ -521,10 +521,18 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       return;
     }
 
+    // Track whether any known profiles exist but may not be in the store yet
+    let needsStoreRefresh = false;
     let createdCount = 0;
     for (const reg of registrations) {
       if (!reg.applicantAid) continue;
-      if (existingAids.has(reg.applicantAid)) continue;
+      if (existingAids.has(reg.applicantAid)) {
+        // Profile already in any-sync — ensure it's in the store
+        if (!profilesStore.communityProfiles.some(p => (p.data?.aid as string) === reg.applicantAid)) {
+          needsStoreRefresh = true;
+        }
+        continue;
+      }
       if (createdPendingProfiles.has(reg.applicantAid)) continue;
 
       const profileId = `SharedProfile-${reg.applicantAid}`;
@@ -588,7 +596,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
     }
 
     // Refresh the profiles store so the dashboard shows the new pending members
-    if (createdCount > 0) {
+    if (createdCount > 0 || needsStoreRefresh) {
       await profilesStore.loadCommunityProfiles();
     }
   }
