@@ -25,9 +25,26 @@ async function fetchWitnessAIDs(): Promise<string[]> {
   const resp = await fetch(`${CONFIG_URL}/api/client-config`);
   if (!resp.ok) throw new Error(`client-config ${resp.status}: ${await resp.text()}`);
   const cfg = await resp.json();
+  const urls: string[] = cfg?.witnesses?.urls ?? [];
   const aids = Object.values(cfg?.witnesses?.aids ?? {}) as string[];
   if (aids.length === 0) throw new Error('no witness AIDs in /api/client-config');
-  return aids;
+  // Filter to witnesses that are actually reachable (KERIA only knows witnesses
+  // whose OOBIs it resolved on startup — unreachable witnesses cause 400s).
+  const live = await Promise.all(
+    aids.map(async (aid, i) => {
+      const url = urls[i];
+      if (!url) return aid;
+      try {
+        const r = await fetch(`${url}/oobi/${aid}/controller`, { signal: AbortSignal.timeout(3000) });
+        return r.ok ? aid : null;
+      } catch {
+        return null;
+      }
+    })
+  );
+  const liveAids = live.filter((a): a is string => a !== null);
+  if (liveAids.length === 0) throw new Error('no reachable witnesses found');
+  return liveAids;
 }
 
 async function waitOperation(client: SignifyClient, op: any, timeout = 60000): Promise<any> {
@@ -132,10 +149,10 @@ describe('OOBI Messaging Test', () => {
   test('user sends EXN message to admin', async () => {
     console.log(`[User] Sending EXN message to ${adminPrefix}...`);
 
-    const [exn] = await userClient.exchanges().send(
-      'user-test',
-      'test-topic',
-      { i: adminPrefix },
+    const userHab = await userClient.identifiers().get('user-test');
+    const exchanges = userClient.exchanges();
+    const [exn, sigs, atc] = await exchanges.createExchangeMessage(
+      userHab,
       '/matou/registration/apply',
       {
         type: 'registration',
@@ -145,11 +162,12 @@ describe('OOBI Messaging Test', () => {
         timestamp: new Date().toISOString(),
       },
       {},
-      [adminPrefix]
+      adminPrefix
     );
+    await exchanges.sendFromEvents('user-test', 'test-topic', exn, sigs, atc, [adminPrefix]);
 
-    console.log(`[User] EXN message sent. SAID: ${exn.d}`);
-    expect(exn.d).toBeTruthy();
+    console.log(`[User] EXN message sent. SAID: ${exn.sad.d}`);
+    expect(exn.sad.d).toBeTruthy();
   });
 
   test('admin checks notifications before resolving user OOBI', async () => {

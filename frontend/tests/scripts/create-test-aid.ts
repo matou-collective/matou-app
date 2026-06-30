@@ -27,9 +27,26 @@ async function fetchWitnessAIDs(): Promise<string[]> {
   const resp = await fetch(`${CONFIG_URL}/api/client-config`);
   if (!resp.ok) throw new Error(`client-config ${resp.status}: ${await resp.text()}`);
   const cfg = await resp.json();
+  const urls: string[] = cfg?.witnesses?.urls ?? [];
   const aids = Object.values(cfg?.witnesses?.aids ?? {}) as string[];
   if (aids.length === 0) throw new Error('no witness AIDs in /api/client-config');
-  return aids;
+  // Filter to witnesses that are actually reachable (KERIA only knows witnesses
+  // whose OOBIs it resolved on startup — unreachable witnesses cause 400s).
+  const live = await Promise.all(
+    aids.map(async (aid, i) => {
+      const url = urls[i];
+      if (!url) return aid;
+      try {
+        const r = await fetch(`${url}/oobi/${aid}/controller`, { signal: AbortSignal.timeout(3000) });
+        return r.ok ? aid : null;
+      } catch {
+        return null;
+      }
+    })
+  );
+  const liveAids = live.filter((a): a is string => a !== null);
+  if (liveAids.length === 0) throw new Error('no reachable witnesses found');
+  return liveAids;
 }
 
 async function waitOperation(client: SignifyClient, op: any, timeout = 60000): Promise<any> {
