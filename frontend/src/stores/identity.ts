@@ -79,8 +79,15 @@ export const useIdentityStore = defineStore('identity', () => {
         const aids = await keriClient.listAIDs();
         console.log(`[IdentityStore] Found ${aids.length} AID(s) in KERIA`);
         if (aids.length > 0) {
-          currentAID.value = aids[0];
-          console.log('[IdentityStore] Set currentAID to:', aids[0].prefix);
+          // Prefer the stored personal admin AID over the org group AID.
+          // After org setup there are two AIDs in KERIA (personal + org group);
+          // picking aids[0] could land on the org AID and break credential checks.
+          const savedAdminAid = await secureStorage.getItem('matou_admin_aid');
+          const personalAID = savedAdminAid
+            ? aids.find((a) => a.prefix === savedAdminAid) ?? aids[0]
+            : aids[0];
+          currentAID.value = personalAID;
+          console.log('[IdentityStore] Set currentAID to:', personalAID.prefix);
         } else {
           console.log('[IdentityStore] No AIDs found in KERIA for this agent');
         }
