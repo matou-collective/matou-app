@@ -538,10 +538,14 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		Version:   1,
 	}
 
-	ctx := r.Context()
+	// Use a 60s timeout for each AddObject call so we surface hangs as errors
+	// rather than blocking the HTTP handler indefinitely.
+	baseCtx := r.Context()
 	objMgr := h.spaceManager.ObjectTreeManager()
 
-	headID, err := objMgr.AddObject(ctx, roSpaceID, payload, keys.SigningKey)
+	addCtx, addCancel := context.WithTimeout(baseCtx, 60*time.Second)
+	headID, err := objMgr.AddObject(addCtx, roSpaceID, payload, keys.SigningKey)
+	addCancel()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": fmt.Sprintf("failed to write CommunityProfile: %v", err),
@@ -621,7 +625,9 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 			Version:   1,
 		}
 
-		sharedHeadID, err := objMgr.AddObject(ctx, communitySpaceID, sharedPayload, communityKeys.SigningKey)
+		sharedCtx, sharedCancel := context.WithTimeout(baseCtx, 60*time.Second)
+		sharedHeadID, err := objMgr.AddObject(sharedCtx, communitySpaceID, sharedPayload, communityKeys.SigningKey)
+		sharedCancel()
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
 				"error": fmt.Sprintf("failed to write SharedProfile to community space: %v", err),
@@ -633,7 +639,6 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		result["sharedProfileHeadId"] = sharedHeadID
 		result["sharedProfileTreeId"] = objMgr.GetTreeIDForObject(sharedObjectID)
 		result["sharedProfileSpaceId"] = communitySpaceID
-		fmt.Printf("[Profiles] Created SharedProfile %s in community space %s\n", sharedObjectID, communitySpaceID)
 
 		if h.eventBroker != nil {
 			h.eventBroker.Broadcast(SSEEvent{

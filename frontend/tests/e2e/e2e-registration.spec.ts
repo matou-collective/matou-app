@@ -345,7 +345,7 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log('[Test] Waiting for pending member to appear in New Members card...');
       const membersCard = adminPage.locator('.members-card');
       const pendingMemberCard = membersCard.locator('.card-name', { hasText: userName });
-      await expect(pendingMemberCard).toBeVisible({ timeout: TIMEOUT.medium });
+      await expect(pendingMemberCard).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
       console.log('[Test] Pending member visible in New Members card before approval');
 
       // Verify the profile has "pending" status via the admin backend API
@@ -478,14 +478,15 @@ test.describe.serial('Registration Approval Flow', () => {
 
       // B. Set up invite + sync + initMemberProfiles listeners before approval
       // initMemberProfiles creates SharedProfile + CommunityProfile on admin's backend
+      // Timeout: OOBI resolution can take up to 30s, then init-member + invite add another ~5s
       const initProfilesResponse = adminPage.waitForResponse(
         resp => resp.url().includes('/api/v1/profiles/init-member') && resp.request().method() === 'POST',
-        { timeout: TIMEOUT.long },
+        { timeout: TIMEOUT.aidCreation },
       );
       // Invite goes through admin's backend (port 9080)
       const inviteResponse = adminPage.waitForResponse(
         resp => resp.url().includes('/api/v1/spaces/community/invite') && resp.request().method() === 'POST',
-        { timeout: TIMEOUT.long },
+        { timeout: TIMEOUT.aidCreation },
       );
       // Community join goes through user's backend (routed port)
       // Longer timeout: admission involves credential issuance (~12s) + IPEX grant (~10s)
