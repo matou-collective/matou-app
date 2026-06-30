@@ -211,6 +211,24 @@ export class KERIClient {
     }
   }
 
+  private async getWitnessAIDsFromConfig(): Promise<string[]> {
+    if (!this.client) return [];
+    try {
+      const config = await this.client.config().get();
+      if (config.iurls && Array.isArray(config.iurls)) {
+        return (config.iurls as string[])
+          .map((iurl) => {
+            const match = iurl.match(/\/oobi\/([^/]+)/);
+            return match ? match[1] : '';
+          })
+          .filter(Boolean);
+      }
+    } catch (err) {
+      console.warn('[KERIClient] Could not get witness AIDs from config:', err);
+    }
+    return [];
+  }
+
   /**
    * Create a new AID (Autonomic Identifier)
    * @param name - Human-readable name for the AID
@@ -221,15 +239,21 @@ export class KERIClient {
   async createAID(name: string, options?: { useWitnesses?: boolean }): Promise<AIDInfo> {
     if (!this.client) throw new Error('Not initialized');
 
-    const { assignWitnesses } = await import('./witnessAssignment');
-    const { personal, toad } = await assignWitnesses();
-    console.log(
-      `[KERIClient] Creating AID "${name}" with ${personal.length} personal witnesses (toad=${toad})`,
-    );
-    const result = await this.client.identifiers().create(name, {
-      wits: personal,
-      toad,
-    });
+    let result;
+    if (options?.useWitnesses) {
+      // Get witness AIDs dynamically from KERIA config iurls
+      const wits = await this.getWitnessAIDsFromConfig();
+      if (wits.length === 0) {
+        throw new Error('[KERIClient] No witness AIDs found in KERIA config');
+      }
+      const toad = 1;
+      console.log(`[KERIClient] Creating AID with witness backing (${wits.length} witness(es), toad=${toad})...`);
+      result = await this.client.identifiers().create(name, { wits, toad });
+    } else {
+      // Create without witnesses (faster for development)
+      console.log('[KERIClient] Creating AID (without witnesses for faster dev)...');
+      result = await this.client.identifiers().create(name);
+    }
 
     console.log('[KERIClient] Waiting for AID operation to complete...');
     const op = await result.op();
