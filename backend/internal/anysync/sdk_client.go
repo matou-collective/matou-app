@@ -25,7 +25,6 @@ import (
 	"github.com/anyproto/any-sync/commonspace/spacestorage"
 	"github.com/anyproto/any-sync/commonspace/spacesyncproto"
 	"github.com/anyproto/any-sync/commonspace/sync/objectsync/objectmessages"
-	"github.com/anyproto/any-sync/consensus/consensusclient"
 	"github.com/anyproto/any-sync/consensus/consensusproto"
 	"github.com/anyproto/any-sync/coordinator/coordinatorclient"
 	"github.com/anyproto/any-sync/coordinator/coordinatorproto"
@@ -176,10 +175,12 @@ func (c *SDKClient) initFullSDK() error {
 	c.app.Register(streampool.New())
 	c.app.Register(syncqueues.New())
 
-	// Layer 5: Coordination, node client, consensus client, and ACL joining client
+	// Layer 5: Coordination, node client, and ACL joining client
+	// Note: consensusclient is intentionally omitted — the backend is not a registered
+	// network node, so the consensusnode rejects its stream connections. Sync nodes
+	// handle ACL log propagation to the consensusnode automatically.
 	c.app.Register(coordinatorclient.New())
 	c.app.Register(nodeclient.New())
-	c.app.Register(consensusclient.New())
 	c.app.Register(aclclient.NewAclJoiningClient())
 
 	// Layer 6: Space services (peer manager, tree manager, then space service)
@@ -288,24 +289,8 @@ func (c *SDKClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, sp
 	// Open and initialize the space via shared resolver so all components
 	// use the same Space instance
 	resolver := c.app.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
-	sp, err := resolver.GetSpace(ctx, spaceID)
-	if err != nil {
+	if _, err = resolver.GetSpace(ctx, spaceID); err != nil {
 		return nil, fmt.Errorf("opening newly created space: %w", err)
-	}
-
-	// Push the initial ACL record to the consensus node so that the filenode
-	// (and other nodes) can verify space ownership for file operations.
-	// SpaceService.CreateSpace only stores the ACL locally; the consensus node
-	// log must be created explicitly via AddLog.
-	acl := sp.Acl()
-	acl.RLock()
-	aclRoot := acl.Root()
-	aclId := acl.Id()
-	acl.RUnlock()
-
-	consClient := c.app.MustComponent(consensusclient.CName).(consensusclient.Service)
-	if err := consClient.AddLog(ctx, aclId, aclRoot); err != nil {
-		fmt.Printf("[any-sync SDK] Warning: failed to push ACL to consensus node: %v\n", err)
 	}
 
 	// Persist keys
