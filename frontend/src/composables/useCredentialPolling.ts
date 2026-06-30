@@ -171,7 +171,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       const schemaOOBI = config.schema?.oobi;
       if (schemaOOBI) {
         try {
-          await keriClient.resolveOOBI(schemaOOBI, undefined, 10000);
+          await keriClient.resolveOOBI(schemaOOBI, undefined, 30000);
           console.log('[CredentialPolling] Resolved schema OOBI:', schemaOOBI.slice(0, 50) + '...');
         } catch (err) {
           console.log('[CredentialPolling] Could not resolve schema OOBI:', err);
@@ -182,7 +182,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         const schemaServerUrl = 'http://schema-server:7723';
         const fallbackSchemaOOBI = `${schemaServerUrl}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
         try {
-          await keriClient.resolveOOBI(fallbackSchemaOOBI, undefined, 10000);
+          await keriClient.resolveOOBI(fallbackSchemaOOBI, undefined, 30000);
           console.log('[CredentialPolling] Resolved schema OOBI (fallback):', fallbackSchemaOOBI);
         } catch (err) {
           console.log('[CredentialPolling] Could not resolve schema OOBI:', err);
@@ -194,7 +194,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       const orgOOBI = config.organization?.oobi;
       if (orgOOBI) {
         try {
-          await keriClient.resolveOOBI(orgOOBI, undefined, 10000);
+          await keriClient.resolveOOBI(orgOOBI, undefined, 30000);
           console.log('[CredentialPolling] Resolved org OOBI:', orgOOBI.slice(0, 50) + '...');
         } catch (err) {
           console.log('[CredentialPolling] Could not resolve org OOBI:', err);
@@ -208,7 +208,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         for (const admin of config.admins) {
           if (admin.oobi) {
             try {
-              await keriClient.resolveOOBI(admin.oobi, undefined, 5000);
+              await keriClient.resolveOOBI(admin.oobi, undefined, 30000);
               console.log(`[CredentialPolling] Resolved admin OOBI: ${admin.aid?.slice(0, 12)}...`);
             } catch (err) {
               console.log(`[CredentialPolling] Could not resolve admin OOBI: ${err}`);

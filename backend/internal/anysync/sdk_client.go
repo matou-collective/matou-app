@@ -615,6 +615,19 @@ func (c *SDKClient) GetAclJoiningClient() aclclient.AclJoiningClient {
 	return c.app.MustComponent(aclclient.CName).(aclclient.AclJoiningClient)
 }
 
+// CoordAclGetRecords fetches ACL records directly from the coordinator/consensus
+// node, bypassing the sync-node's local replica. Use this to force-sync ACL state
+// after an "incorrect prev id" rejection — the coordinator always has the
+// authoritative head, even when the sync-node's replica is stale.
+func (c *SDKClient) CoordAclGetRecords(ctx context.Context, spaceId, aclHead string) ([]*consensusproto.RawRecordWithId, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.initialized {
+		return nil, fmt.Errorf("client not initialized")
+	}
+	return c.coordinator.AclGetRecords(ctx, spaceId, aclHead)
+}
+
 // GetSigningKey returns the client's signing key (used as the ACL identity).
 // This is the peer's Ed25519 private key, which signs ObjectTree changes.
 func (c *SDKClient) GetSigningKey() crypto.PrivKey {

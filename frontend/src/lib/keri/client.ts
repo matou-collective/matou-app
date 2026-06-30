@@ -668,7 +668,7 @@ export class KERIClient {
    * @param timeout - Timeout in milliseconds (default: 10000)
    * @returns true if successful
    */
-  async resolveOOBI(oobi: string, alias?: string, timeout = 10000): Promise<boolean> {
+  async resolveOOBI(oobi: string, alias?: string, timeout = 30000): Promise<boolean> {
     if (!this.client) throw new Error('Not initialized');
 
     // Ensure connection is fresh before OOBI resolution
@@ -2130,7 +2130,7 @@ export class KERIClient {
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
               const op = await this.client.oobis().resolve(internalOobi, alias);
-              await this.client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+              await this.client.operations().wait(op, { signal: AbortSignal.timeout(60000) });
               console.log(`[KERIClient] Admin contact created with alias: ${alias}`);
               oobiResolved = true;
               break;

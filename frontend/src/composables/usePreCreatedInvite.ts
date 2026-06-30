@@ -156,7 +156,7 @@ export function usePreCreatedInvite() {
           }
 
           const resolveOp = await inviteeClient.oobis().resolve(oobi, `admin-${aid.name}`);
-          await inviteeClient.operations().wait(resolveOp, { signal: AbortSignal.timeout(30000) });
+          await inviteeClient.operations().wait(resolveOp, { signal: AbortSignal.timeout(60000) });
           console.log(`[PreCreatedInvite] Invitee resolved admin OOBI for ${aid.name}`);
         } catch (oobiErr) {
           console.warn(`[PreCreatedInvite] Failed to resolve OOBI for ${aid.name}:`, oobiErr);
@@ -171,8 +171,8 @@ export function usePreCreatedInvite() {
       progress.value = 'Loading credential schemas...';
       const membershipSchemaOOBI = `${SCHEMA_SERVER_URL}/oobi/${MEMBERSHIP_SCHEMA_SAID}`;
 
-      await adminClient.resolveOOBI(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID);
-      await adminClient.resolveOOBI(membershipSchemaOOBI, MEMBERSHIP_SCHEMA_SAID);
+      await adminClient.resolveOOBI(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID, 60000);
+      await adminClient.resolveOOBI(membershipSchemaOOBI, MEMBERSHIP_SCHEMA_SAID, 60000);
       console.log('[PreCreatedInvite] Schema OOBIs resolved on admin agent');
 
       const endorseSchemaOp = await inviteeClient.oobis().resolve(SCHEMA_OOBI_URL, ENDORSEMENT_SCHEMA_SAID);

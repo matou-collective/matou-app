@@ -62,7 +62,7 @@ export function useEndorsements() {
 
       // 2. Resolve endorsement schema OOBI (KERIA needs it before issuing)
       endorsingStep.value = 'Resolving schema...';
-      await keriClient.resolveOOBI(ENDORSEMENT_SCHEMA_OOBI, ENDORSEMENT_SCHEMA_SAID, 15000);
+      await keriClient.resolveOOBI(ENDORSEMENT_SCHEMA_OOBI, ENDORSEMENT_SCHEMA_SAID, 60000);
 
       // 3. Resolve applicant OOBI
       endorsingStep.value = 'Resolving applicant identity...';

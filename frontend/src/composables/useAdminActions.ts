@@ -613,7 +613,7 @@ export function useAdminActions() {
       // 1. Resolve applicant OOBI if provided
       if (registration.applicantOOBI) {
         try {
-          await keriClient.resolveOOBI(registration.applicantOOBI, undefined, 10000);
+          await keriClient.resolveOOBI(registration.applicantOOBI, undefined, 60000);
           console.log('[AdminActions] Resolved applicant OOBI');
         } catch (oobiErr) {
           console.warn('[AdminActions] Could not resolve applicant OOBI:', oobiErr);
@@ -720,7 +720,7 @@ export function useAdminActions() {
       // 1. Resolve applicant OOBI if provided
       if (registration.applicantOOBI) {
         try {
-          await keriClient.resolveOOBI(registration.applicantOOBI, undefined, 10000);
+          await keriClient.resolveOOBI(registration.applicantOOBI, undefined, 60000);
           console.log('[AdminActions] Resolved applicant OOBI');
         } catch (oobiErr) {
           console.warn('[AdminActions] Could not resolve applicant OOBI:', oobiErr);

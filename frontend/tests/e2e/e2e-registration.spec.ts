@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { test, expect, Page, BrowserContext, request } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
-import { BackendManager } from './utils/backend-manager';
+import { BackendManager, ensureBinaryFresh } from './utils/backend-manager';
 import {
   FRONTEND_URL,
   TIMEOUT,
@@ -58,6 +58,10 @@ async function restartAdminBackend(): Promise<ChildProcess> {
 
   // Wait a moment for port to be released
   await new Promise(r => setTimeout(r, 1000));
+
+  // Rebuild the binary if any Go source file is newer than it so the restarted
+  // backend has the same code as the process that ran tests 1–N up to this point.
+  ensureBinaryFresh(backendDir);
 
   // Prefer pre-built binary
   const binaryPath = path.join(backendDir, 'bin', 'server');

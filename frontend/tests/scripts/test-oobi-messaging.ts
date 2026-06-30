@@ -19,12 +19,16 @@ import { SignifyClient, Tier, randomPasscode, ready } from 'signify-ts';
 
 const KERIA_URL = process.env.KERIA_URL || 'http://localhost:4901';
 const KERIA_BOOT_URL = process.env.KERIA_BOOT_URL || 'http://localhost:4903';
+const CONFIG_URL = process.env.MATOU_CONFIG_URL || 'http://localhost:4904';
 
-const WITNESS_AIDS = {
-  wan: 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha',
-  wil: 'BLskRTInXnMxWaGqcpSyMgo0nYbalW99cGZESrz3zapM',
-  wes: 'BIKKuvBwpmDVA4Ds-EpL5bt9OqPzWPja2LigFYZN2YfX',
-};
+async function fetchWitnessAIDs(): Promise<string[]> {
+  const resp = await fetch(`${CONFIG_URL}/api/client-config`);
+  if (!resp.ok) throw new Error(`client-config ${resp.status}: ${await resp.text()}`);
+  const cfg = await resp.json();
+  const aids = Object.values(cfg?.witnesses?.aids ?? {}) as string[];
+  if (aids.length === 0) throw new Error('no witness AIDs in /api/client-config');
+  return aids;
+}
 
 async function waitOperation(client: SignifyClient, op: any, timeout = 60000): Promise<any> {
   return client.operations().wait(op, { signal: AbortSignal.timeout(timeout) });
@@ -47,9 +51,10 @@ async function createClient(name: string): Promise<{ client: SignifyClient; bran
 }
 
 async function createAID(client: SignifyClient, name: string, alias: string): Promise<string> {
+  const wits = await fetchWitnessAIDs();
   const result = await client.identifiers().create(alias, {
-    toad: 2,
-    wits: [WITNESS_AIDS.wan, WITNESS_AIDS.wil, WITNESS_AIDS.wes],
+    toad: Math.min(2, wits.length),
+    wits,
   });
   let op = await result.op();
   op = await waitOperation(client, op);

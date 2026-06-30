@@ -83,6 +83,7 @@ func NewSpaceManager(client AnySyncClient, cfg *SpaceManagerConfig, utm ...*Unif
 	// discovers existing trees immediately.
 	if sdkClient, ok := client.(*SDKClient); ok {
 		aclMgr.SetJoiningClient(sdkClient.GetAclJoiningClient())
+		aclMgr.SetCoordAclGetter(sdkClient.CoordAclGetRecords)
 	}
 
 	return &SpaceManager{

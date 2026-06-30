@@ -15,9 +15,60 @@
  *   // user.port, user.url, user.dataDir
  *   await backends.stopAll();
  */
-import { ChildProcess, spawn } from 'child_process';
+import { ChildProcess, spawn, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+
+// Rebuilt at most once per test-process invocation so repeated backend.start()
+// calls don't each trigger a full `make build` check.
+let _binaryFreshnessEnsured = false;
+
+/**
+ * Check whether the pre-built server binary is older than any Go source file.
+ * If so, rebuild it with `make build` before the binary is used.
+ *
+ * This prevents the common failure mode where the binary was built before a
+ * code change (e.g. a new API route added to the source) and tests that restart
+ * the backend mid-run silently regress to the old behaviour.
+ *
+ * Called automatically by BackendManager.start() and by restartAdminBackend().
+ */
+export function ensureBinaryFresh(backendDir: string): void {
+  if (_binaryFreshnessEnsured) return;
+  _binaryFreshnessEnsured = true;
+
+  const binaryPath = path.join(backendDir, 'bin', 'server');
+  if (!fs.existsSync(binaryPath)) return; // no binary present; callers fall back to `go run`
+
+  const binaryMtime = fs.statSync(binaryPath).mtimeMs;
+
+  const skipDirs = new Set(['bin', 'vendor', 'node_modules']);
+
+  function hasNewerGoFile(dir: string): boolean {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        // Skip binary output, vendored deps, and data dirs (data-test*)
+        if (skipDirs.has(entry.name) || entry.name.startsWith('data')) continue;
+        if (hasNewerGoFile(path.join(dir, entry.name))) return true;
+      } else if (entry.isFile() && entry.name.endsWith('.go')) {
+        if (fs.statSync(path.join(dir, entry.name)).mtimeMs > binaryMtime) return true;
+      }
+    }
+    return false;
+  }
+
+  if (hasNewerGoFile(backendDir)) {
+    console.log('[BackendManager] Source is newer than binary — rebuilding backend (make build)...');
+    execSync('make build', { cwd: backendDir, stdio: 'inherit' });
+    console.log('[BackendManager] Binary rebuilt.');
+  }
+}
 
 export interface BackendInstance {
   name: string;
@@ -68,6 +119,10 @@ export class BackendManager {
       }
     }
     fs.mkdirSync(dataDir, { recursive: true });
+
+    // Rebuild the binary if any Go source file is newer than it so the
+    // binary never silently lags behind a code change across test runs.
+    ensureBinaryFresh(this.backendDir);
 
     // Prefer pre-built binary, fall back to `go run`
     const binaryPath = path.join(this.backendDir, 'bin', 'server');

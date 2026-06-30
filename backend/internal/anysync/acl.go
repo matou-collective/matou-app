@@ -14,6 +14,7 @@ import (
 
 	"github.com/anyproto/any-sync/commonspace/acl/aclclient"
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
+	"github.com/anyproto/any-sync/consensus/consensusproto"
 	"github.com/anyproto/any-sync/util/crypto"
 )
 
@@ -27,6 +28,9 @@ type MatouACLManager struct {
 	client        AnySyncClient
 	keyManager    *PeerKeyManager
 	joiningClient aclclient.AclJoiningClient // optional, for join-before-open flows
+	// coordAclGet fetches ACL records directly from the coordinator/consensus,
+	// bypassing the sync-node's local replica. Used to recover from stale prev id.
+	coordAclGet func(ctx context.Context, spaceId, aclHead string) ([]*consensusproto.RawRecordWithId, error)
 }
 
 // NewMatouACLManager creates a new MatouACLManager.
@@ -42,6 +46,13 @@ func NewMatouACLManager(client AnySyncClient, keyManager *PeerKeyManager) *Matou
 // BEFORE opening the space, ensuring the user is authorized when HeadSync starts.
 func (m *MatouACLManager) SetJoiningClient(jc aclclient.AclJoiningClient) {
 	m.joiningClient = jc
+}
+
+// SetCoordAclGetter sets the function used to fetch ACL records directly from the
+// coordinator. When set, retry loops can force-sync local ACL state from the
+// authoritative coordinator head after an "incorrect prev id" rejection.
+func (m *MatouACLManager) SetCoordAclGetter(fn func(ctx context.Context, spaceId, aclHead string) ([]*consensusproto.RawRecordWithId, error)) {
+	m.coordAclGet = fn
 }
 
 // createOpenInviteMaxRetries is the maximum number of retries when the
@@ -101,6 +112,21 @@ func (m *MatouACLManager) CreateOpenInvite(ctx context.Context, spaceID string, 
 				lastErr = err
 				log.Printf("[ACL] CreateOpenInvite: stale prev id for space %s (attempt %d), will retry",
 					spaceID, attempt+1)
+				// Force-sync local ACL state from the coordinator — the
+				// sync-node's replica can lag the consensus by minutes,
+				// causing every retry to fail with the same stale head.
+				if m.coordAclGet != nil {
+					acl := space.Acl()
+					acl.Lock()
+					localHead := acl.Head().Id
+					acl.Unlock()
+					if recs, fetchErr := m.coordAclGet(ctx, spaceID, localHead); fetchErr == nil && len(recs) > 0 {
+						acl.Lock()
+						_ = acl.AddRawRecords(recs)
+						acl.Unlock()
+						log.Printf("[ACL] CreateOpenInvite: synced %d ACL records from coordinator for space %s", len(recs), spaceID)
+					}
+				}
 				continue
 			}
 			return nil, fmt.Errorf("adding invite record: %w", err)
@@ -154,20 +180,61 @@ func (m *MatouACLManager) JoinWithInvite(ctx context.Context, spaceID string, in
 		return fmt.Errorf("getting space %s: %w", spaceID, err)
 	}
 
-	acl := space.Acl()
-	acl.Lock()
-	builder := acl.RecordBuilder()
-	joinRec, err := builder.BuildInviteJoinWithoutApprove(list.InviteJoinPayload{
-		InviteKey: inviteKey,
-		Metadata:  metadata,
-	})
-	acl.Unlock()
-	if err != nil {
-		return fmt.Errorf("building join record: %w", err)
+	var lastJoinErr error
+	for attempt := 0; attempt <= createOpenInviteMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt) * time.Second
+			log.Printf("[ACL] JoinWithInvite fallback retry %d/%d for space %s (waiting %v)",
+				attempt, createOpenInviteMaxRetries, spaceID, delay)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+			case <-time.After(delay):
+			}
+		}
+
+		// Force-sync local ACL from coordinator before each attempt so the
+		// join record is built with the authoritative head, not the stale
+		// sync-node replica.
+		if m.coordAclGet != nil {
+			acl := space.Acl()
+			acl.Lock()
+			localHead := acl.Head().Id
+			acl.Unlock()
+			if recs, fetchErr := m.coordAclGet(ctx, spaceID, localHead); fetchErr == nil && len(recs) > 0 {
+				acl.Lock()
+				_ = acl.AddRawRecords(recs)
+				acl.Unlock()
+				log.Printf("[ACL] JoinWithInvite fallback: synced %d ACL records from coordinator for space %s", len(recs), spaceID)
+			}
+		}
+
+		acl := space.Acl()
+		acl.Lock()
+		builder := acl.RecordBuilder()
+		joinRec, buildErr := builder.BuildInviteJoinWithoutApprove(list.InviteJoinPayload{
+			InviteKey: inviteKey,
+			Metadata:  metadata,
+		})
+		acl.Unlock()
+		if buildErr != nil {
+			return fmt.Errorf("building join record: %w", buildErr)
+		}
+
+		aclClient := space.AclClient()
+		if err := aclClient.AddRecord(ctx, joinRec); err != nil {
+			if strings.Contains(err.Error(), "incorrect prev id") {
+				lastJoinErr = err
+				log.Printf("[ACL] JoinWithInvite fallback: stale prev id for space %s (attempt %d), will retry",
+					spaceID, attempt+1)
+				continue
+			}
+			return fmt.Errorf("adding join record: %w", err)
+		}
+		return nil
 	}
 
-	aclClient := space.AclClient()
-	return aclClient.AddRecord(ctx, joinRec)
+	return fmt.Errorf("adding join record after %d retries: %w", createOpenInviteMaxRetries, lastJoinErr)
 }
 
 // GetPermissions returns a user's permissions in a space.

@@ -31,12 +31,6 @@ export const keriEndpoints = {
   configURL: 'http://localhost:4904',
   /** Schema server */
   schemaURL: 'http://localhost:8723',
-  /** Witness endpoints */
-  witnesses: [
-    'http://localhost:6643',
-    'http://localhost:6645',
-    'http://localhost:6647',
-  ],
 } as const;
 
 /** AnySync test network endpoint URLs */
@@ -49,13 +43,6 @@ export const anysyncEndpoints = {
 
 /** Backend test server */
 export const backendEndpoint = 'http://localhost:9080' as const;
-
-/** Witness AIDs from the witness-demo image */
-export const witnessAIDs = {
-  wan: 'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha',
-  wil: 'BLskRTInXnMxWaGqcpSyMgo0nYbalW99cGZESrz3zapM',
-  wes: 'BIKKuvBwpmDVA4Ds-EpL5bt9OqPzWPja2LigFYZN2YfX',
-} as const;
 
 /**
  * Resolve the absolute path to the KERI infrastructure directory.
