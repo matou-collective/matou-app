@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -567,40 +565,10 @@ func main() {
 	// (frontend/src/api/config.ts); it moved server-side because the admin
 	// token must not be exposed to the browser.
 	orgConfigHandler.AddOnUpdate(func(orgData *api.OrgConfigData) {
-		if configServerToken == "" {
-			return // already warned at startup
-		}
-		body, err := json.Marshal(orgData)
-		if err != nil {
-			log.Printf("[Config] Failed to marshal org config for config-server mirror: %v", err)
-			return
-		}
-		req, err := http.NewRequest(http.MethodPost, strings.TrimRight(configServerURL, "/")+"/api/config", bytes.NewReader(body))
-		if err != nil {
-			log.Printf("[Config] Failed to build config-server mirror request: %v", err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+configServerToken)
-		if isTest {
-			req.Header.Set("X-Test-Config", "true")
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
+		if err := api.MirrorToConfigServer(http.DefaultClient, configServerURL, configServerToken, isTest, orgData); err != nil {
 			log.Printf("[Config] Config-server mirror write failed (non-critical): %v", err)
-			return
-		}
-		defer resp.Body.Close()
-		switch resp.StatusCode {
-		case http.StatusOK:
+		} else if configServerToken != "" {
 			log.Printf("[Config] Mirrored org config to config server")
-		case http.StatusConflict:
-			// Config server already holds a config from before this backend
-			// existed - nothing to reconcile automatically.
-			log.Printf("[Config] Config server already configured; leaving its copy as-is")
-		default:
-			respBody, _ := io.ReadAll(resp.Body)
-			log.Printf("[Config] Config-server mirror write returned %d: %s", resp.StatusCode, respBody)
 		}
 	})
 
