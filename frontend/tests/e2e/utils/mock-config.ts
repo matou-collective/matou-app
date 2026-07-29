@@ -5,7 +5,7 @@
  * to all config server requests, making them use a separate test config file.
  */
 import { Page, BrowserContext, APIRequestContext } from '@playwright/test';
-import { keriEndpoints, backendEndpoint } from './keri-testnet';
+import { keriEndpoints, backendEndpoint, configAdminToken } from './keri-testnet';
 
 // The app reads VITE_CONFIG_SERVER_URL from env (.env.test sets it to port 4904).
 // We intercept browser requests to add X-Test-Config header so the config server
@@ -41,10 +41,14 @@ export async function setupTestConfig(target: Page | BrowserContext) {
  * @param request - Playwright APIRequestContext
  */
 export async function clearTestConfig(request: APIRequestContext) {
-  // Clear config server
+  // Clear config server (DELETE requires the admin token, same as POST/DELETE
+  // via the backend — see matou-collective/matou-app#1)
   try {
     await request.delete(`${CONFIG_SERVER_URL}/api/config`, {
-      headers: { 'X-Test-Config': 'true' },
+      headers: {
+        'X-Test-Config': 'true',
+        Authorization: `Bearer ${configAdminToken}`,
+      },
     });
     console.log('[TestConfig] Cleared config server');
   } catch {

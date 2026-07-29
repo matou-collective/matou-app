@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -182,6 +184,36 @@ func main() {
 	isTest := env == "test"
 	isProd := env == "production"
 
+	// Resolve the config server URL and its admin bearer token up front: both
+	// the any-sync config fetch (GET, unauthenticated) and the org config
+	// mirror-write / email relay (POST, authenticated) need them.
+	//
+	// The config server fails closed without a token (503 on writes), so a
+	// missing token here degrades to "mirror-write and relay don't work" rather
+	// than crashing the backend - the backend itself is the primary source of
+	// truth for org config (see OrgConfigHandler), and email relay is optional
+	// (falls back to direct SMTP unless MATOU_SMTP_RELAY_URL is set).
+	configServerURL := os.Getenv("MATOU_CONFIG_SERVER_URL")
+	if configServerURL == "" {
+		switch {
+		case isTest:
+			configServerURL = "http://localhost:4904"
+		case isProd:
+			log.Fatalf("MATOU_CONFIG_SERVER_URL is not set for production")
+		default:
+			configServerURL = "http://localhost:3904"
+		}
+	}
+	configServerToken := os.Getenv("MATOU_CONFIG_SERVER_TOKEN")
+	if configServerToken == "" && !isProd {
+		// Matches matou-infrastructure/keri's generate-env.sh dev/test placeholder.
+		configServerToken = "dev-insecure-local-only"
+	}
+	if configServerToken == "" {
+		log.Println("[Config] WARNING: MATOU_CONFIG_SERVER_TOKEN is not set - " +
+			"org config will not mirror to the config server, and email relay (if configured) will fail")
+	}
+
 	switch {
 	case isTest:
 		fmt.Println("MATOU DAO Backend Server (TEST)")
@@ -291,17 +323,6 @@ func main() {
 	// For dev/test, fetch only if the config file doesn't exist.
 	shouldFetch := isProd || os.IsNotExist(func() error { _, err := os.Stat(anysyncConfigPath); return err }())
 	if shouldFetch {
-		configServerURL := os.Getenv("MATOU_CONFIG_SERVER_URL")
-		if configServerURL == "" {
-			switch {
-			case isTest:
-				configServerURL = "http://localhost:4904"
-			case isProd:
-				log.Fatalf("MATOU_CONFIG_SERVER_URL is not set for production")
-			default:
-				configServerURL = "http://localhost:3904"
-			}
-		}
 		fmt.Printf("  Fetching any-sync config from config server %s...\n", configServerURL)
 		if err := fetchAndSaveAnySyncConfig(configServerURL, anysyncConfigPath); err != nil {
 			// In production, try using cached config if fetch fails
@@ -493,7 +514,7 @@ func main() {
 	trustHandler := api.NewTrustHandler(store, orgConfigHandler.GetOrgAID(), spaceManager)
 	healthHandler := api.NewHealthHandler(store, spaceStore, orgConfigHandler.GetOrgAID, orgConfigHandler.GetAdminAID)
 	spacesHandler := api.NewSpacesHandler(spaceManager, store, userIdentity, spaceManager.FileManager())
-	emailSender := email.NewSender(cfg.SMTP)
+	emailSender := email.NewSender(cfg.SMTP, configServerToken)
 	invitesHandler := api.NewInvitesHandler(emailSender)
 	bookingHandler := api.NewBookingHandler(emailSender)
 	notificationsHandler := api.NewNotificationsHandler(emailSender)
@@ -537,6 +558,51 @@ func main() {
 		setAdminAIDsFromConfig(orgConfigHandler.GetConfig())
 	}
 	orgConfigHandler.AddOnUpdate(setAdminAIDsFromConfig)
+
+	// Mirror org config writes to the legacy config server for backward
+	// compatibility (older clients / multi-session dev still read it). The
+	// backend is the primary source of truth (OrgConfigHandler above), so a
+	// failure here is logged and swallowed rather than surfaced to the caller.
+	// This used to be a direct unauthenticated POST from the browser
+	// (frontend/src/api/config.ts); it moved server-side because the admin
+	// token must not be exposed to the browser.
+	orgConfigHandler.AddOnUpdate(func(orgData *api.OrgConfigData) {
+		if configServerToken == "" {
+			return // already warned at startup
+		}
+		body, err := json.Marshal(orgData)
+		if err != nil {
+			log.Printf("[Config] Failed to marshal org config for config-server mirror: %v", err)
+			return
+		}
+		req, err := http.NewRequest(http.MethodPost, strings.TrimRight(configServerURL, "/")+"/api/config", bytes.NewReader(body))
+		if err != nil {
+			log.Printf("[Config] Failed to build config-server mirror request: %v", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+configServerToken)
+		if isTest {
+			req.Header.Set("X-Test-Config", "true")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("[Config] Config-server mirror write failed (non-critical): %v", err)
+			return
+		}
+		defer resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusOK:
+			log.Printf("[Config] Mirrored org config to config server")
+		case http.StatusConflict:
+			// Config server already holds a config from before this backend
+			// existed - nothing to reconcile automatically.
+			log.Printf("[Config] Config server already configured; leaving its copy as-is")
+		default:
+			respBody, _ := io.ReadAll(resp.Body)
+			log.Printf("[Config] Config-server mirror write returned %d: %s", resp.StatusCode, respBody)
+		}
+	})
 
 	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
 	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)

@@ -31,7 +31,7 @@ func TestSendInviteEmail(t *testing.T) {
 		FromName:    "MATOU",
 		LogoURL:     "https://i.imgur.com/zi01gTx.png",
 		TextLogoURL: "https://i.imgur.com/1D3iLWa.png",
-	})
+	}, "")
 
 	err := sender.SendInvite(SendInviteRequest{
 		To:          "jamin.tairea@gmail.com",
