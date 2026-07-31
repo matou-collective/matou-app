@@ -630,12 +630,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Consumes: `.sandcastle/run-triage.sh`, `run-swarm.sh`, `check-verifications.sh`, `heal.sh`, `Dockerfile` by path.
 - Produces: the complete automation surface. All use `runs-on: matou-workstation`, org secrets, the `/tmp/matou-swarm.lock` flock, and the dry-run healer failure hook.
 
-- [ ] **Step 1: Copy the three ported workflows**
+- [ ] **Step 1: Copy the four ported workflows**
 
 ```bash
 mkdir -p .forgejo/workflows
-cp $OC/.forgejo/workflows/triage.yml $OC/.forgejo/workflows/swarm.yml $OC/.forgejo/workflows/healer.yml .forgejo/workflows/
+cp $OC/.forgejo/workflows/triage.yml $OC/.forgejo/workflows/swarm.yml $OC/.forgejo/workflows/healer.yml $OC/.forgejo/workflows/resume-asks.yml .forgejo/workflows/
 ```
+
+`resume-asks.yml` runs `.sandcastle/resume-parked-asks.sh` (ported in Task 3) on its own cron — it is the "resume sweep" that ask-human.sh's timeout message promises (records late Mattermost replies on the issue and re-adds `ready-for-agent`). Check it for `ourcloud` literals like the others; it should be self-configuring.
 
 They contain no `ourcloud` literals (verified) — `${{ github.repository }}` self-configures. Trim ourcloud-incident comment paragraphs as noted above. Do not change crons (`5,35`/`15,45`/`0 * * * *`), the flock, the debounce-relevant `if:` guard on swarm's label events, or `HEAL_DRY_RUN: "1"`.
 
