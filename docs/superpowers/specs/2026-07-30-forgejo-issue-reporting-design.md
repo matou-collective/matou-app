@@ -134,12 +134,25 @@ New `do_POST` branch: `POST /api/v1/issues`.
 - No Playwright coverage — the flow terminates at an external service; not worth a
   mock harness for one dialog.
 
-## Deployment / one-time admin steps (user-owned)
+## Rollout order
+
+Everything is verified on local dev infra first; production is touched last.
+
+1. Implement frontend + config-server changes; unit tests pass.
+2. Run config-server.py **locally** (dev mode, port 3904) with a `FORGEJO_TOKEN`
+   set in its environment, and verify the full flow from the dev app: issue lands
+   in Forgejo with label + context block; 503 path with token unset; rate limit.
+   Test issues are closed/deleted afterwards.
+3. Only after local verification: push the config-server change to production
+   (awa.matou.nz) and set the production `FORGEJO_TOKEN` there.
+
+## One-time admin steps (user-owned)
 
 1. Create a bot user on git.matou.nz with access limited to `Matou/matou-app`,
-   and generate a token scoped to **issue: read-and-write** only.
+   and generate a token scoped to **issue: read-and-write** only (used for both
+   local testing and production).
 2. Set `FORGEJO_TOKEN` in the config-server environment on awa.matou.nz and
-   restart it.
+   restart it (step 3 of rollout, after local verification).
 3. Ensure `bug` and `enhancement` labels exist on the repo (defaults usually do).
 
 ## Out of scope (YAGNI)
