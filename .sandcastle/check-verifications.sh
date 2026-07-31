@@ -95,9 +95,13 @@ Reply **approve** (optionally followed by guidance for the agent) or **reject** 
 
     case "$word" in
       approve)
-        fapi -X DELETE "$FORGEJO_API/issues/$n/labels/$awaiting_id" >/dev/null
+        # POST the new label before DELETE-ing the old one — same
+        # crash-safety order resume-parked-asks.sh uses: a transient failure
+        # between the two calls must never leave the issue in neither label
+        # set (invisible to every future sweep).
         jq -nc --argjson id "$ready_id" '{labels: [$id]}' |
           fapi -X POST -H 'Content-Type: application/json' -d @- "$FORGEJO_API/issues/$n/labels" >/dev/null
+        fapi -X DELETE "$FORGEJO_API/issues/$n/labels/$awaiting_id" >/dev/null
         if [ -n "$remainder" ]; then
           jq -n --arg body "**Verification guidance:** $remainder" '{body: $body}' |
             fapi -X POST -H 'Content-Type: application/json' -d @- "$FORGEJO_API/issues/$n/comments" >/dev/null
@@ -107,9 +111,10 @@ Reply **approve** (optionally followed by guidance for the agent) or **reject** 
         break
         ;;
       reject)
-        fapi -X DELETE "$FORGEJO_API/issues/$n/labels/$awaiting_id" >/dev/null
+        # Same POST-before-DELETE ordering as the approve path.
         jq -nc --argjson id "$wontfix_id" '{labels: [$id]}' |
           fapi -X POST -H 'Content-Type: application/json' -d @- "$FORGEJO_API/issues/$n/labels" >/dev/null
+        fapi -X DELETE "$FORGEJO_API/issues/$n/labels/$awaiting_id" >/dev/null
         jq -nc '{state: "closed"}' |
           fapi -X PATCH -H 'Content-Type: application/json' -d @- "$FORGEJO_API/issues/$n" >/dev/null
         if [ -n "$remainder" ]; then

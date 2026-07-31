@@ -68,6 +68,11 @@ check "S1 removes awaiting label" "grep -q 'DELETE .*/issues/7/labels/50' \"\$FA
 check "S1 adds ready-for-agent label" "grep -q 'POST .*/issues/7/labels\$' \"\$FAKE_DIR/calls.log\" && grep -q '\"labels\": *\\[36\\]' \"\$FAKE_DIR/forgejo.log\""
 check "S1 no comment posted" "! grep -q 'issues/7/comments' \"\$FAKE_DIR/calls.log\""
 check "S1 thread reply has checkmark and reply id" "grep -q white_check_mark \"\$FAKE_DIR/posts.log\" && grep -q '\`R1\`' \"\$FAKE_DIR/posts.log\""
+# Crash-safety: the new label must land before the old one is dropped — a
+# transient failure between the two calls must never leave the issue
+# orphaned (in neither label set, invisible to every future sweep).
+check "S1 label swap is POST-before-DELETE" \
+  "[ \"\$(grep -n 'POST .*/issues/7/labels\$' \"\$FAKE_DIR/calls.log\" | cut -d: -f1 | head -1)\" -lt \"\$(grep -n 'DELETE .*/issues/7/labels/50' \"\$FAKE_DIR/calls.log\" | cut -d: -f1 | head -1)\" ]"
 
 # ---- S2: approve-with-guidance — reply carries extra text beyond the keyword
 setup
@@ -92,6 +97,8 @@ check "S3 removes awaiting label" "grep -q 'DELETE .*/issues/9/labels/50' \"\$FA
 check "S3 adds wontfix label" "grep -q 'POST .*/issues/9/labels\$' \"\$FAKE_DIR/calls.log\" && grep -q '\"labels\": *\\[44\\]' \"\$FAKE_DIR/forgejo.log\""
 check "S3 closes the issue" "grep -q 'PATCH .*/issues/9\$' \"\$FAKE_DIR/calls.log\" && grep -q '\"state\": *\"closed\"' \"\$FAKE_DIR/forgejo.log\""
 check "S3 rejected comment" "grep -q '\\*\\*Rejected:\\*\\* duplicate of #3' \"\$FAKE_DIR/forgejo.log\""
+check "S3 label swap is POST-before-DELETE" \
+  "[ \"\$(grep -n 'POST .*/issues/9/labels\$' \"\$FAKE_DIR/calls.log\" | cut -d: -f1 | head -1)\" -lt \"\$(grep -n 'DELETE .*/issues/9/labels/50' \"\$FAKE_DIR/calls.log\" | cut -d: -f1 | head -1)\" ]"
 
 # ---- S4: chatter-copied-once — reply already has a bot confirmation in-thread
 setup
