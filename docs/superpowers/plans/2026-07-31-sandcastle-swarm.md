@@ -728,7 +728,11 @@ jobs:
         run: |
           set -euo pipefail
           docker build -t matou-app-ci -f .sandcastle/Dockerfile .sandcastle
-          docker run --rm -v "$PWD":/work -w /work matou-app-ci bash -lc '
+          # --entrypoint bash is required: the image's ENTRYPOINT is
+          # ["sleep","infinity"], and args to `docker run` APPEND to an
+          # entrypoint rather than replace it — without the override the
+          # checks never execute.
+          docker run --rm --entrypoint bash -v "$PWD":/work -w /work matou-app-ci -lc '
             set -euo pipefail
             cd frontend && CI=true npm ci && npm run test:script && npm run lint && cd ..
             cd backend && go build ./... && make test
