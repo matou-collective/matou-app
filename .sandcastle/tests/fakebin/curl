@@ -53,6 +53,11 @@ case "$url" in
     printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
     echo '[]'
     ;;
+  */issues/[0-9]*)
+    # Single-issue write, e.g. PATCH .../issues/9 {"state":"closed"}.
+    printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
+    echo '{}'
+    ;;
   */issues\?*)
     cat "$FAKE_DIR/issues.json" 2>/dev/null || echo '[]'
     ;;
