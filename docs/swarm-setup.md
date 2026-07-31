@@ -34,12 +34,25 @@ steps below on git.matou.nz and Mattermost. Nothing here touches the
 
    Confirm `SWARM_FORGEJO_TOKEN`'s PAT scopes cover PR creation
    (`write:repository` includes it).
-5. Nothing to do on the workstation runner — it's registered at the org
-   level and already picks up any repo with Actions enabled.
+5. **Confirm the runner has the synced Claude skills.** The `/triage` skill
+   `triage.yml`'s headless `claude -p "/triage ..."` depends on does **not**
+   live in this repo — it lives at `~/.claude/skills/triage` on the
+   `matou-workstation` runner host, synced there from an operator's machine
+   by `ourcloud`'s `.forgejo/runner/sync-skills.sh` (`$HOME/.claude/skills/`
+   and `$HOME/.agents/skills/` → the runner, via `rsync --delete`). Confirm
+   it's present before relying on triage; re-sync after any skill change
+   with `bash .forgejo/runner/sync-skills.sh` run from an `ourcloud`
+   checkout. Without this, `triage.yml` runs but its `/triage` invocation
+   fails.
+6. Nothing else to do on the workstation runner — it's registered at the org
+   level and already picks up any repo with Actions enabled; step 5 above is
+   the only runner-side dependency this port adds.
 
 ## Live smoke test
 
-Run in order once the steps above are done:
+Run in order once the steps above are done, including step 5 (skill sync) —
+without it, `triage.yml` fires on the cron/issue-open trigger but its
+`/triage` call fails and step 2 below never happens:
 
 1. File a test issue from the app's in-app reporter (bug or enhancement).
 2. `triage.yml` should post an `awaiting-verification` Mattermost thread
