@@ -713,7 +713,7 @@ const slotsByDate = computed(() => {
 });
 
 const requirements = computed(() => [
-  { num: 1, title: 'Endorsement', description: 'From a community member', met: memberEndorsementVerified.value },
+  { num: 1, title: 'Endorsement', description: 'From a community member or steward', met: memberEndorsementVerified.value },
   { num: 2, title: 'Confirmation', description: 'From a community admin', met: stewardEndorsementVerified.value },
   { num: 3, title: 'Attendance', description: 'Whakawhanaunga session', met: sessionAttendanceVerified.value },
 ]);
@@ -869,17 +869,28 @@ watch(
       // Credential just received, invite not yet — advance step indicator
       processingStep.value = 'invite';
 
-      // Check if we already have community access (admin/space-owner case)
-      const hasAccess = await identityStore.verifyCommunityAccess();
-      if (hasAccess) {
-        console.log('[PendingApproval] Already have community access (space owner)');
-        joinInProgress = true;
-        processingStep.value = 'done';
-        emit('approved', credential.value);
-        emit('navigate-to-welcome');
+      // Check if we already have community access (admin/space-owner case).
+      // Bounded retry rather than one-shot: access can land moments after the
+      // credential does, and nothing else re-triggers this branch — a single
+      // failed check used to strand the member here indefinitely.
+      for (let attempt = 0; attempt < 12; attempt++) {
+        // Bail out if the invite arrived meanwhile — the [true, true] watcher
+        // run owns the join from here.
+        if (joinInProgress || spaceInviteReceived.value) return;
+        const hasAccess = await identityStore.verifyCommunityAccess();
+        if (hasAccess) {
+          console.log(`[PendingApproval] Community access verified (attempt ${attempt + 1})`);
+          joinInProgress = true;
+          processingStep.value = 'done';
+          emit('approved', credential.value);
+          emit('navigate-to-welcome');
+          return;
+        }
+        await new Promise(r => setTimeout(r, 10000));
       }
-      // Otherwise, wait — polling continues and will find the space invite,
-      // which triggers this watcher again with [true, true]
+      console.warn('[PendingApproval] No community access after 2 minutes at invite step — continuing to wait for space invite');
+      // Polling continues and will find the space invite, which triggers
+      // this watcher again with [true, true]
     }
   }
 );

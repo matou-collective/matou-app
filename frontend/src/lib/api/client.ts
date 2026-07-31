@@ -424,6 +424,7 @@ export async function initMemberProfiles(data: {
   memberAid: string;
   credentialSaid: string;
   role?: string;
+  status?: string;
   displayName?: string;
   email?: string;
   avatar?: string;

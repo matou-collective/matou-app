@@ -313,10 +313,14 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             }
           }
 
-          // At least one steward/founder endorsement
+          // Aligned with the steward-side approval gate (ProfileModal
+          // requirementsMet): ANY single endorsement — member or steward —
+          // satisfies the endorsement requirement. The old display rule
+          // demanded a separate member endorsement the gate never required,
+          // so applicants saw "unmet" on a requirement stewards could and
+          // did approve past.
           stewardEndorsementVerified.value = stewardCount >= 1;
-          // At least one separate member endorsement (or a second steward)
-          memberEndorsementVerified.value = memberCount >= 1 || stewardCount >= 2;
+          memberEndorsementVerified.value = memberCount >= 1 || stewardCount >= 1;
         }
       }
 

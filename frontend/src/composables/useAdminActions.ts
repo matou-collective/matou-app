@@ -3,6 +3,7 @@
  * Provides approve, decline, and message functionality
  */
 import { ref } from 'vue';
+import { Notify } from 'quasar';
 import { useKERIClient } from 'src/lib/keri/client';
 import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
@@ -27,6 +28,21 @@ export function useAdminActions() {
   const processingStep = ref('');
   const error = ref<string | null>(null);
   const lastAction = ref<{ type: string; success: boolean; registrationId: string } | null>(null);
+
+  /**
+   * Surface a non-fatal post-issuance problem to the steward. The approval
+   * itself succeeded (credential issued), so these must not fail the flow,
+   * but silently console.warn-ing them is how broken states go unnoticed.
+   */
+  function notifyApprovalWarning(message: string) {
+    console.warn('[AdminActions]', message);
+    Notify.create({
+      type: 'warning',
+      message,
+      timeout: 0,
+      actions: [{ label: 'Dismiss', color: 'white' }],
+    });
+  }
 
   /**
    * Mark all notifications for a given applicant as read
@@ -205,6 +221,9 @@ export function useAdminActions() {
         memberAid: registration.applicantAid,
         credentialSaid: credentialSaid,
         role: 'Member',
+        // Keep the member in the pending list until issuance succeeds (6c
+        // flips this to 'approved') so a failed approval can be retried.
+        status: 'pending',
         displayName: registration.profile?.name,
         email: registration.profile?.email,
         avatar: registration.profile?.avatarFileRef,
@@ -231,9 +250,15 @@ export function useAdminActions() {
       // 5. Generate space invite so we can embed the invite data in the
       processingStep.value = 'Generating community space invite...';
       //    IPEX grant's message field (reliable delivery).
+      // The invite is the member's only path into the community space, so a
+      // failure here aborts the approval BEFORE the credential is issued —
+      // otherwise the member ends up credentialed but stranded at the invite
+      // step of the pending screen. Nothing irreversible has happened yet;
+      // the steward can simply retry.
       let grantMessage = '';
+      let inviteResponse: Response;
       try {
-        const inviteResponse = await fetch(`${BACKEND_URL}/api/v1/spaces/community/invite`, {
+        inviteResponse = await fetch(`${BACKEND_URL}/api/v1/spaces/community/invite`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -243,33 +268,33 @@ export function useAdminActions() {
           }),
           signal: AbortSignal.timeout(30000),
         });
-
-        if (inviteResponse.ok) {
-          const inviteResult = await inviteResponse.json() as {
-            success: boolean;
-            communitySpaceId?: string;
-            inviteKey?: string;
-            readOnlyInviteKey?: string;
-            readOnlySpaceId?: string;
-          };
-          console.log('[AdminActions] Invite generated:', inviteResult);
-
-          if (inviteResult.inviteKey) {
-            // Embed invite data in the IPEX grant message for reliable delivery
-            grantMessage = JSON.stringify({
-              type: 'space_invite',
-              spaceId: inviteResult.communitySpaceId,
-              inviteKey: inviteResult.inviteKey,
-              readOnlyInviteKey: inviteResult.readOnlyInviteKey,
-              readOnlySpaceId: inviteResult.readOnlySpaceId,
-            });
-          }
-        } else {
-          console.warn('[AdminActions] Space invitation failed:', await inviteResponse.text());
-        }
       } catch (inviteErr) {
-        console.warn('[AdminActions] Space invitation deferred:', inviteErr);
+        const msg = inviteErr instanceof Error ? inviteErr.message : String(inviteErr);
+        throw new Error(`Community space invite failed (${msg}). Approval aborted before credential issuance — please retry.`);
       }
+      if (!inviteResponse.ok) {
+        const body = await inviteResponse.text();
+        throw new Error(`Community space invite failed (${inviteResponse.status}: ${body}). Approval aborted before credential issuance — please retry.`);
+      }
+      const inviteResult = await inviteResponse.json() as {
+        success: boolean;
+        communitySpaceId?: string;
+        inviteKey?: string;
+        readOnlyInviteKey?: string;
+        readOnlySpaceId?: string;
+      };
+      console.log('[AdminActions] Invite generated:', inviteResult);
+      if (!inviteResult.inviteKey) {
+        throw new Error('Community space invite response contained no invite key. Approval aborted before credential issuance — please retry.');
+      }
+      // Embed invite data in the IPEX grant message for reliable delivery
+      grantMessage = JSON.stringify({
+        type: 'space_invite',
+        spaceId: inviteResult.communitySpaceId,
+        inviteKey: inviteResult.inviteKey,
+        readOnlyInviteKey: inviteResult.readOnlyInviteKey,
+        readOnlySpaceId: inviteResult.readOnlySpaceId,
+      });
 
       // 6. Issue membership credential
       processingStep.value = 'Issuing membership credential...';
@@ -324,10 +349,33 @@ export function useAdminActions() {
         if (result.success) {
           console.log('[AdminActions] Updated CommunityProfile with credential SAID:', credentialSaid);
         } else {
-          console.warn('[AdminActions] Failed to update CommunityProfile with credential SAID:', result.error);
+          notifyApprovalWarning(`Member approved, but their profile still shows a placeholder credential (${result.error ?? 'unknown error'}).`);
         }
       } catch (updateErr) {
-        console.warn('[AdminActions] Failed to update CommunityProfile with credential SAID:', updateErr);
+        notifyApprovalWarning(`Member approved, but their profile still shows a placeholder credential (${updateErr instanceof Error ? updateErr.message : String(updateErr)}).`);
+      }
+
+      // 6c. Flip SharedProfile status pending -> approved. The profile was
+      //     written with status='pending' in step 4; only now that the
+      //     credential exists does the member leave the pending list.
+      //     createOrUpdateProfile is full-replace, so read-merge first.
+      try {
+        const sharedId = `SharedProfile-${registration.applicantAid}`;
+        const existingShared = await getProfileById('SharedProfile', sharedId);
+        const existingSharedData = (existingShared?.data || {}) as Record<string, unknown>;
+        const sharedResult = await createOrUpdateProfile('SharedProfile', {
+          ...existingSharedData,
+          aid: registration.applicantAid,
+          status: 'approved',
+          updatedAt: new Date().toISOString(),
+        }, { id: sharedId });
+        if (sharedResult.success) {
+          console.log('[AdminActions] SharedProfile status flipped to approved');
+        } else {
+          notifyApprovalWarning(`Member approved, but they may still appear in the pending list (${sharedResult.error ?? 'unknown error'}).`);
+        }
+      } catch (statusErr) {
+        notifyApprovalWarning(`Member approved, but they may still appear in the pending list (${statusErr instanceof Error ? statusErr.message : String(statusErr)}).`);
       }
 
       // 7. Email approval notification (non-blocking)

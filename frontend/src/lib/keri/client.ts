@@ -974,20 +974,23 @@ export class KERIClient {
       toad,
     });
     const rotOp = await rot.op();
-    // KERIA reports done=false for the lifetime of witness-receipt gathering
-    // (verified empirically — receipts can take >30s on slow infra). The
-    // rotation event itself lands locally well before then, so we poll
-    // briefly then fall through to a direct state check below.
-    if (!rotOp?.done) {
-      let done = false;
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 3000));
-        const s = await this.client.operations().get(rotOp.name);
-        if (s?.done) { done = true; break; }
-      }
-      if (!done) {
-        console.warn('[KERIClient] adoptOrgWitnesses: rotation op not done after 30s — verifying state anyway');
-      }
+    // The op completes only once the witness-receipt threshold is met. Local
+    // key state shows the new witnesses as soon as the rotation event lands,
+    // long before (or regardless of whether) witnesses ever receipt it — the
+    // June 2026 issuance freeze was this exact silent failure. So: wait for
+    // the real thing and fail loudly on timeout instead of "verifying" from
+    // local state.
+    let opDone = !!rotOp?.done;
+    for (let i = 0; !opDone && i < 24; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const s = await this.client.operations().get(rotOp.name);
+      opDone = !!s?.done;
+    }
+    if (!opDone) {
+      throw new Error(
+        'adoptOrgWitnesses: rotation not receipted by witnesses within 2 minutes. ' +
+        'The org KEL may not have reached the witnesses — check KERIA witness connectivity and retry adoption.',
+      );
     }
 
     // Verify by re-querying — fail loudly if witnesses didn't actually land.
@@ -1000,7 +1003,29 @@ export class KERIClient {
       );
     }
 
-    console.log(`[KERIClient] adoptOrgWitnesses: complete, b=${JSON.stringify(witsAfter)}`);
+    // Independent end-to-end check: each witness must actually serve the org
+    // KEL over HTTP. Resolving the witness's OOBI for the org prefix goes
+    // through KERIA to the witness itself, so it only succeeds if the witness
+    // holds the KEL — local state cannot fake this.
+    const { fetchClientConfig } = await import('src/lib/clientConfig');
+    const witnessOobis = (await fetchClientConfig()).witnesses?.oobis ?? [];
+    for (const wit of witsAfter) {
+      const witOobi = witnessOobis.find((u) => u.includes(wit));
+      if (!witOobi) {
+        console.warn(`[KERIClient] adoptOrgWitnesses: no OOBI URL configured for witness ${wit} — skipping KEL check`);
+        continue;
+      }
+      const base = witOobi.split('/oobi/')[0];
+      const served = await this.resolveOOBI(`${base}/oobi/${orgAfter.prefix}`, undefined, 15000);
+      if (!served) {
+        throw new Error(
+          `adoptOrgWitnesses: witness ${wit} does not serve the org KEL. ` +
+          'The rotation is not fully propagated — retry adoption before issuing credentials.',
+        );
+      }
+    }
+
+    console.log(`[KERIClient] adoptOrgWitnesses: complete and witness-verified, b=${JSON.stringify(witsAfter)}`);
     return 'migrated';
   }
 

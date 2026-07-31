@@ -248,6 +248,18 @@ function createWindow() {
     },
   });
 
+  // Forward renderer console output into main.log. Packaged builds have no
+  // devtools, so without this every renderer-side warning (e.g. a failed
+  // approval step) is invisible in the field.
+  mainWindow.webContents.on('console-message', (details) => {
+    const { level, message, lineNumber, sourceId } = details;
+    const src = sourceId ? `${sourceId.split('/').pop() ?? sourceId}:${lineNumber}` : '';
+    const text = `[renderer] ${src} ${message}`;
+    if (level === 'error') log.error(text);
+    else if (level === 'warning') log.warn(text);
+    else log.info(text);
+  });
+
   if (process.env.DEV) {
     mainWindow.loadURL(process.env.APP_URL!);
     mainWindow.webContents.openDevTools();
