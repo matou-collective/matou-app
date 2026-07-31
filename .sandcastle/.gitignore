@@ -1,0 +1,6 @@
+.env
+secrets/
+npm-cache/
+go-cache/
+logs/
+.state/
