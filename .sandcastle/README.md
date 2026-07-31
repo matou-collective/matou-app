@@ -181,7 +181,7 @@ A sixth workflow, `ci.yml`, runs on every PR and push to `main` (frontend
 aren't reviewed blind — it's part of code review, not the swarm loop.
 
 Secrets arrive as org-level Actions secrets (no `.env` on the runner;
-`run-swarm.sh`/`verify.yml` materialize `.sandcastle/secrets/*` from process
+`run-swarm.sh` materializes `.sandcastle/secrets/*` from process
 env at the start of every run). The Mattermost bot posts on every pickup,
 verification thread, and swarm summary. `triage.yml`/`swarm.yml`/`verify.yml`
 serialize under a shared `flock` (`/tmp/matou-swarm.lock`) so overlapping

@@ -24,6 +24,8 @@ steps below on git.matou.nz and Mattermost. Nothing here touches the
    - `no-triage`
    - `agent-blocked`
    - `awaiting-verification`
+
+   **Labels must be created at the repo level** (Matou/matou-app → Issues → Labels), not org-level — the poller and resume sweep resolve label IDs via the repo labels API (`/repos/.../labels`), which does not return org-level labels, so org-created labels would break the first approval.
 4. Confirm these five org Actions secrets exist (they do — shared with
    `ourcloud`, same channel and bot):
    - `SWARM_FORGEJO_TOKEN`

@@ -5,7 +5,6 @@
 # Env: FORGEJO_TOKEN, FORGEJO_API, MATTERMOST_URL/MATTERMOST_BOT_TOKEN/
 #      MATTERMOST_CHANNEL_ID (unset → log and exit 0).
 set -euo pipefail
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${FORGEJO_TOKEN:?}"
 : "${FORGEJO_API:=https://git.matou.nz/api/v1/repos/Matou/matou-app}"
 
