@@ -9,10 +9,11 @@ await run({
   name: "worker",
 
   // Secrets ride in as read-only files under /run/secrets, not env vars —
-  // env vars land in `docker inspect .Config.Env` (ourcloud's 2026-07-11
-  // breach vector). run-swarm.sh materializes .sandcastle/secrets/* before
-  // every run. CLAUDE_CODE_OAUTH_TOKEN stays an env var (the claude CLI has
-  // no file-based option) — documented residual exposure, rotate it.
+  // env vars land in `docker inspect .Config.Env`, readable by anyone with
+  // Docker API access (see docs/architecture/07-secrets-architecture.md).
+  // run-swarm.sh materializes .sandcastle/secrets/* before every run.
+  // CLAUDE_CODE_OAUTH_TOKEN stays an env var (the claude CLI has no
+  // file-based option) — documented residual exposure, rotate it.
   sandbox: docker({
     mounts: [
       { hostPath: ".sandcastle/secrets", sandboxPath: "/run/secrets", readonly: true },
@@ -23,8 +24,8 @@ await run({
   }),
 
   // opus balances capability against subscription quota for continuous use
-  // (ourcloud: fable exhausted the window in ~14h; the limit guard handles
-  // it, but opus stretches the window).
+  // (fable-class models exhaust the usage window fastest under sustained
+  // swarm load; the limit guard handles it, but opus stretches the window).
   agent: claudeCode("claude-opus-4-8"),
 
   promptFile: "./.sandcastle/prompt.md",
