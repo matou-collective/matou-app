@@ -139,18 +139,20 @@ const canSubmit = computed(
   () => title.value.trim().length > 0 && description.value.trim().length > 0 && !submitting.value,
 );
 
-// Fresh form each time the dialog is opened.
+// Clear stale transient state on open. Field values survive close/reopen so a
+// draft can be resumed — they only reset after a successful submit.
 watch(
   () => props.modelValue,
   (open) => {
-    if (open) {
+    if (!open) return;
+    if (result.value) {
       type.value = 'bug';
       title.value = '';
       description.value = '';
-      errorMessage.value = '';
       result.value = null;
-      submitting.value = false;
     }
+    errorMessage.value = '';
+    submitting.value = false;
   },
 );
 
@@ -187,8 +189,8 @@ async function onSubmit() {
 
 <style scoped lang="scss">
 .report-dialog {
-  min-width: 420px;
-  max-width: 520px;
+  min-width: 525px;
+  max-width: 650px;
 }
 
 .error-banner {

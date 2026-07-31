@@ -55,14 +55,14 @@
             {{ contributionsUnreadTotal > 99 ? '99+' : contributionsUnreadTotal }}
           </span>
         </button>
-      </nav>
-
-      <!-- Footer: report issue + user profile -->
-      <div class="sidebar-footer">
         <button class="nav-item report-issue-btn" @click="showReportDialog = true">
           <Bug class="nav-icon" />
           <span>Report an issue</span>
         </button>
+      </nav>
+
+      <!-- Footer: user profile -->
+      <div class="sidebar-footer">
         <div class="user-profile" @click="router.push({ name: 'account-settings' })" style="cursor: pointer;">
           <div class="user-avatar">
             <img v-if="userAvatarUrl" :src="userAvatarUrl" class="w-full h-full rounded-full object-cover" alt="Avatar" />
@@ -418,7 +418,7 @@ onBeforeUnmount(() => {
   font-size: 0.85rem;
   color: var(--matou-sidebar-foreground);
   opacity: 0.75;
-  margin-bottom: 0.75rem;
+  margin-top: auto;
   padding: 0.5rem 0.75rem;
   border-radius: 10px;
 
