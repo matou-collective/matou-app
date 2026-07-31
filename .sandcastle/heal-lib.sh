@@ -29,6 +29,23 @@ compute_signature() {
   printf '%s|%s' "$1" "$(normalize_error_line "$2")" | sha1sum | cut -c1-12
 }
 
+# seam_verdict_signal <verdict-file> — read a seam-verdict.txt artifact
+# (scripts/seam-smoke.sh writes it on failure to a well-known host path, #197)
+# and echo a single "<failing-stage> :: <first-error-line>" string for the
+# incident signature. This is how a `ci` failure — which has no readable log
+# API — carries the *actual* fault into compute_signature, so a moved fault
+# yields a new signature and re-triggers investigation instead of matching the
+# degraded workflow-name-only signature. Empty when the file is missing or
+# carries no stage/error (the caller degrades and says so — AC3).
+seam_verdict_signal() {
+  local f="$1" stage err
+  [ -f "$f" ] || return 0
+  stage="$(sed -n 's/^stage=//p' "$f" | head -1)"
+  err="$(sed -n '/^--- error lines ---$/,$p' "$f" | sed '1d' | grep -E '[^[:space:]]' | head -1)"
+  [ -z "$stage$err" ] && return 0
+  printf '%s :: %s' "$stage" "$err"
+}
+
 # The ledger: one file per signature, key=value lines. Keys: workflow,
 # first_seen, last_seen, attempts, repaired, thread_id.
 ledger_path() { echo "$HEALER_STATE/$1"; }

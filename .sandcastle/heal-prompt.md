@@ -9,7 +9,11 @@ headless on the runner host (`matou-workstation`) as user `dev`.
 
 - The evidence directory named in "This incident" below — read every file:
   `runs.json` (recent run outcomes), `worker-logs.txt` (Sandcastle worker
-  tails), `runner-journal.txt`, `workdir-git.txt`, `host.txt` (disk/mem),
+  tails, scoped to this run's window), `worker-logs-older.txt` (a small tail of
+  OLDER worker context — background only, never the current fault),
+  `run-verdict.txt` (the failing workflow's own stage/exit/error marker, when it
+  left one — the ground-truth fault the signature keyed on),
+  `runner-journal.txt`, `workdir-git.txt`, `host.txt` (disk/mem),
   `api-timing.txt` (Forgejo latency probe), `swarm-lock.txt`
   (`free`/`held` — whether a swarm run is active RIGHT NOW).
 - The swarm workdir `~/swarm/Matou/matou-app` — READ-ONLY unless
@@ -33,12 +37,12 @@ headless on the runner host (`matou-workstation`) as user `dev`.
 
 ## Allowed repairs (harness-infra only, ONE attempt)
 
-- Commit and push fixes to `.sandcastle/`, `.forgejo/`, `package-lock.json`,
-  `go.sum`, root config plumbing. Work in a FRESH clone:
+- Commit and push fixes to `.sandcastle/`, `.forgejo/`, `pnpm-lock.yaml`,
+  `flake.lock`/`flake.nix`, root config plumbing. Work in a FRESH clone:
   `git clone ~/swarm/Matou/matou-app /tmp/heal-fix && cd /tmp/heal-fix`,
   fix, rebase on origin/main, push to main. Never force-push, never revert
   a human's commit.
-- Regenerate lockfiles (`npm install --package-lock-only`, `go mod tidy`).
+- Regenerate lockfiles (`pnpm install --lockfile-only`, `nix flake lock`).
 - Clean stuck git state in the workdir (abort rebase, `reset --hard
   origin/main`) — ONLY if `swarm-lock.txt` says `free`.
 - Verify your fix: re-run the failing command, or
