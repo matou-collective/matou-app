@@ -16,7 +16,13 @@ jobs:
         run: |
           set -euo pipefail
           docker build -t matou-app-ci -f .sandcastle/Dockerfile .sandcastle
-          docker run --rm -v "$PWD":/work -w /work matou-app-ci bash -lc '
+          # --entrypoint bash is required: the image's ENTRYPOINT is
+          # ["sleep", "infinity"] (for sandcastle's own bind-mount/exec
+          # workflows), and without an override `docker run` appends the
+          # trailing command to that entrypoint's argv instead of replacing
+          # it — so this would silently run `sleep infinity bash -lc ...`
+          # and hang until timeout-minutes kills the job.
+          docker run --rm --entrypoint bash -v "$PWD":/work -w /work matou-app-ci -lc '
             set -euo pipefail
             cd frontend && CI=true npm ci && npm run test:script && npm run lint && cd ..
             cd backend && go build ./... && make test
