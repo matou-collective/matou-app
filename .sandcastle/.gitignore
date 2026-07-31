@@ -1,5 +1,6 @@
 .env
-secrets/
+secrets/*
+!secrets/README.md
 npm-cache/
 go-cache/
 logs/
