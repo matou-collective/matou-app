@@ -35,7 +35,9 @@ Resend).
 
 ### 1. Side nav button (`frontend/src/layouts/DashboardLayout.vue`)
 
-- New button inside `.sidebar-footer`, directly **above** the `.user-profile` div.
+- New button as the last child of `.sidebar-nav`, pushed to the bottom via
+  `margin-top: auto` so it sits just **above** the footer divider line
+  (user-tested preference; originally placed inside `.sidebar-footer`).
 - Lucide `Bug` icon + label **"Report an issue"**.
 - Styled like a `.nav-item` but visually subtler (muted color, slightly smaller),
   consistent with footer placement. No active-route state — it opens a dialog,
@@ -64,6 +66,9 @@ Quasar `QDialog` with:
   useful for stewards). Close button.
 - **Error state** — inline banner above the form (form stays filled so nothing is
   lost); messages per Error handling below.
+- **Draft persistence** — closing the dialog mid-edit keeps the draft; reopening
+  resumes it. The form only resets after a successful submit. Dialog width
+  525-650px. (Both user-tested refinements.)
 
 ### 3. Frontend API helper (`frontend/src/lib/api/issues.ts`)
 
