@@ -187,9 +187,16 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     ( cd "$WORKDIR" && timeout 900 claude -p --model claude-opus-4-8 \
         --dangerously-skip-permissions "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
   fi
-  # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard.
+  # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard. Mid-
+  # diagnosis the claude call can itself hit the limit (the 0-byte agent-out.log
+  # of the 2026-08-01 incident): PARK the host so every other caller yields on
+  # the same window (#253), record the deferral, and exit 0 BEFORE the ledger
+  # attempt below is consumed — a limit refusal is not a spent diagnosis.
   if claude_limit_hit "$EVIDENCE/agent-out.log"; then
-    echo "heal: Claude usage limit — skipping quietly"; exit 0
+    claude_limit_park
+    echo "deferred: limit window (claude refused mid-diagnosis)" > "$EVIDENCE/deferred-limit.txt"
+    echo "heal: deferred — Claude usage limit mid-diagnosis; parked the host, no ledger attempt consumed"
+    exit 0
   fi
   [ "$status" -eq 0 ] && [ -f "$EVIDENCE/diagnosis.md" ]
 }
@@ -253,6 +260,18 @@ $head_lines" "$thread")"
 }
 
 gather_evidence
+
+# Limit gate, BEFORE any claude call (#253): if the host-global marker says the
+# Claude subscription window is exhausted, the healer's own claude call would
+# just refuse — it goes BLIND exactly when it can't help, and a limit-caused red
+# is almost never a real incident. Defer the whole incident: record it in the
+# evidence dir and exit 0 WITHOUT consuming a ledger attempt (the ledger is only
+# touched further down, past this gate).
+if claude_limit_parked; then
+  echo "deferred: limit window ($(date -u '+%Y-%m-%dT%H:%M:%SZ') — global marker fresh)" > "$EVIDENCE/deferred-limit.txt"
+  echo "heal: deferred — Claude usage limit window (marker fresh); no ledger attempt consumed"
+  exit 0
+fi
 
 if [ "$MODE" = "hook" ]; then
   handle_incident "$WORKFLOW" "$(error_line "$WORKFLOW")"

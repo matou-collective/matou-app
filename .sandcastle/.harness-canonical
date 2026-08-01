@@ -1,0 +1,4 @@
+repo=https://git.matou.nz/Matou/ourcloud.git
+rev=a8e3e6033bba5312fb676d12fd5438a871f3630b
+slug=Matou/ourcloud
+target=Matou/matou-app

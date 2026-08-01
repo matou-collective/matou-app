@@ -17,10 +17,14 @@ HEAL_MAX_REPLIES="${HEAL_MAX_REPLIES:-3}"
 
 # normalize_error_line <line> — strip run-specific noise (hex hashes,
 # numbers, timestamps collapse via the number rule, whitespace runs) so the
-# same fault produces the same text run-to-run.
+# same fault produces the same text run-to-run. Worker names fold first: their
+# random suffix is 6 hex chars — below the 7-char hex rule — and letters in it
+# survive the number rule differently per run (`887403`→N, `c0375b`→cNb), which
+# minted a fresh signature for one recurring fault every run (the 2026-08-01
+# WorktreeError storm: dedup never engaged, one Mattermost post per run).
 normalize_error_line() {
   printf '%s' "$1" |
-    sed -E 's/[0-9a-f]{7,40}/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g' |
+    sed -E 's/sandcastle-worker-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}/sandcastle-worker-W/g; s/[0-9a-f]{7,40}/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g' |
     cut -c1-200
 }
 
