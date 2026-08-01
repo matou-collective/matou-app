@@ -11,7 +11,7 @@
       </button>
     </div>
 
-    <!-- View mode toggle -->
+    <!-- View mode toggle + sort / search toolbar -->
     <div class="view-mode-row">
       <q-btn-toggle
         v-model="viewMode"
@@ -26,6 +26,56 @@
         ]"
         class="view-mode-toggle"
       />
+
+      <div class="toolbar-controls">
+        <q-input
+          v-model="searchQuery"
+          dense
+          outlined
+          clearable
+          debounce="200"
+          placeholder="Search contributions"
+          class="search-input"
+        >
+          <template #prepend>
+            <q-icon name="search" />
+          </template>
+        </q-input>
+
+        <q-btn-dropdown
+          no-caps
+          outline
+          color="primary"
+          icon="sort"
+          :label="activeSortLabel"
+          class="sort-dropdown"
+        >
+          <q-list>
+            <q-item
+              v-for="s in sortFields"
+              :key="s.value"
+              v-close-popup
+              clickable
+              :active="sortField === s.value"
+              @click="sortField = s.value"
+            >
+              <q-item-section>{{ s.label }}</q-item-section>
+              <q-item-section v-if="sortField === s.value" side>
+                <q-icon name="check" color="primary" />
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </q-btn-dropdown>
+
+        <q-btn
+          outline
+          color="primary"
+          :icon="sortDirection === 'asc' ? 'arrow_upward' : 'arrow_downward'"
+          :title="sortDirection === 'asc' ? 'Ascending' : 'Descending'"
+          class="sort-direction-btn"
+          @click="toggleSortDirection"
+        />
+      </div>
     </div>
 
     <!-- Filters (apply to both list and timeline) -->
@@ -113,6 +163,15 @@ import { useContributions } from 'src/composables/useContributions';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useIdentityStore } from 'stores/identity';
 import type { Contribution, CreateContributionRequest } from 'src/lib/api/contributions';
+import {
+  applyContributionsView,
+  SCOPE_FILTERS,
+  TYPE_FILTERS,
+  SORT_FIELDS,
+  type ScopeFilter,
+  type SortField,
+  type SortDirection,
+} from 'src/lib/contributionsView';
 import ContributionCard from 'src/components/contributions/ContributionCard.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionsTimelineView from 'src/pages/Contributions/ContributionsTimelineView.vue';
@@ -140,9 +199,8 @@ watch(viewMode, (v) => {
 });
 
 const SCOPE_STORAGE_KEY = 'matou:contributions:scope';
-type ScopeFilter = 'all' | 'mine' | 'open' | 'assigned' | 'in_review' | 'signed_off' | 'archived';
 const storedScope = localStorage.getItem(SCOPE_STORAGE_KEY) as ScopeFilter | null;
-const validScopes: ScopeFilter[] = ['all', 'mine', 'open', 'assigned', 'in_review', 'signed_off', 'archived'];
+const validScopes: ScopeFilter[] = SCOPE_FILTERS.map((f) => f.value);
 const activeScopeFilter = ref<ScopeFilter>(
   storedScope && validScopes.includes(storedScope) ? storedScope : 'all',
 );
@@ -150,88 +208,44 @@ watch(activeScopeFilter, (v) => {
   localStorage.setItem(SCOPE_STORAGE_KEY, v);
 });
 
-const scopeFilters: { label: string; value: ScopeFilter }[] = [
-  { label: 'All', value: 'all' },
-  { label: 'Mine', value: 'mine' },
-  { label: 'Open', value: 'open' },
-  { label: 'Assigned', value: 'assigned' },
-  { label: 'In Review', value: 'in_review' },
-  { label: 'Signed Off', value: 'signed_off' },
-  { label: 'Archived', value: 'archived' },
-];
+const scopeFilters = SCOPE_FILTERS;
+const typeFilters = TYPE_FILTERS;
+const sortFields = SORT_FIELDS;
 
-const typeFilters = [
-  { label: 'Any Type', value: 'all' },
-  { label: 'Governance', value: 'governance' },
-  { label: 'Technical', value: 'technical' },
-  { label: 'Cultural', value: 'cultural' },
-  { label: 'Community', value: 'community' },
-];
+// Free-text search over title and description.
+const searchQuery = ref('');
 
-const ASSIGNED_STATUSES = new Set(['assigned', 'changed', 'in_progress']);
-const SIGNED_OFF_STATUSES = new Set(['signed_off', 'rewarded']);
+// User-selectable sort (field + direction), persisted like the other controls.
+const SORT_FIELD_STORAGE_KEY = 'matou:contributions:sortField';
+const SORT_DIR_STORAGE_KEY = 'matou:contributions:sortDir';
+const validSortFields: SortField[] = SORT_FIELDS.map((f) => f.value);
+const storedSortField = localStorage.getItem(SORT_FIELD_STORAGE_KEY) as SortField | null;
+const storedSortDir = localStorage.getItem(SORT_DIR_STORAGE_KEY) as SortDirection | null;
+const sortField = ref<SortField>(
+  storedSortField && validSortFields.includes(storedSortField) ? storedSortField : 'deadline',
+);
+const sortDirection = ref<SortDirection>(storedSortDir === 'desc' ? 'desc' : 'asc');
+watch(sortField, (v) => localStorage.setItem(SORT_FIELD_STORAGE_KEY, v));
+watch(sortDirection, (v) => localStorage.setItem(SORT_DIR_STORAGE_KEY, v));
 
-function isMineContribution(c: Contribution, me: string): boolean {
-  const raw = c as typeof c & { assigned_contributor?: string; offered_to?: string };
-  const assigned = raw.assigned_contributor_id ?? raw.assigned_contributor;
-  if (assigned === me) return true;
-  if (raw.offered_to === me) return true;
-  return false;
+const activeSortLabel = computed(
+  () => SORT_FIELDS.find((f) => f.value === sortField.value)?.label ?? 'Sort',
+);
+
+function toggleSortDirection() {
+  sortDirection.value = sortDirection.value === 'asc' ? 'desc' : 'asc';
 }
 
-const filteredContributions = computed(() => {
-  const me = currentUserId.value;
-  let list: Contribution[] = store.contributions;
-
-  switch (activeScopeFilter.value) {
-    case 'mine':
-      // Assigned to me OR offered to me. Excludes archived.
-      list = list.filter((c) => c.status !== 'archived' && me && isMineContribution(c, me));
-      break;
-    case 'all': {
-      // Hide planning ('confirmed'), hide private offers to other users,
-      // and hide archived (archived has its own chip).
-      list = list.filter((c) => {
-        if (c.status === 'archived') return false;
-        if (c.status === 'confirmed') return false;
-        const raw = c as typeof c & { offered_to?: string };
-        if (c.status === 'offered' && raw.offered_to && raw.offered_to !== me) return false;
-        return true;
-      });
-      break;
-    }
-    case 'open':
-      list = list.filter((c) => c.status === 'shared');
-      break;
-    case 'assigned':
-      list = list.filter((c) => ASSIGNED_STATUSES.has(c.status));
-      break;
-    case 'in_review':
-      list = list.filter((c) => c.status === 'needs_review');
-      break;
-    case 'signed_off':
-      list = list.filter((c) => SIGNED_OFF_STATUSES.has(c.status));
-      break;
-    case 'archived':
-      list = list.filter((c) => c.status === 'archived');
-      break;
-  }
-
-  if (activeTypeFilter.value !== 'all') {
-    list = list.filter((c) => c.contribution_type === activeTypeFilter.value);
-  }
-
-  // Default sort: earliest due date first; missing deadlines fall to the
-  // bottom. Stable tie-breaker on created_at.
-  return [...list].sort((a, b) => {
-    const da = a.deadline ? new Date(a.deadline).getTime() : Number.POSITIVE_INFINITY;
-    const db = b.deadline ? new Date(b.deadline).getTime() : Number.POSITIVE_INFINITY;
-    if (da !== db) return da - db;
-    const ca = a.created_at ? new Date(a.created_at).getTime() : 0;
-    const cb = b.created_at ? new Date(b.created_at).getTime() : 0;
-    return ca - cb;
-  });
-});
+const filteredContributions = computed(() =>
+  applyContributionsView(store.contributions, {
+    scope: activeScopeFilter.value,
+    type: activeTypeFilter.value,
+    search: searchQuery.value ?? '',
+    sortField: sortField.value,
+    sortDirection: sortDirection.value,
+    currentUserId: currentUserId.value,
+  }),
+);
 
 function handleViewContribution(c: Contribution) {
   void router.push({ name: 'contribution-detail', params: { id: c.id } });
@@ -404,7 +418,10 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
 
 .view-mode-row {
   display: flex;
-  justify-content: flex-start;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin: 0 0 16px;
 }
 
@@ -417,5 +434,21 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
     min-width: 140px;
     padding: 8px 24px;
   }
+}
+
+.toolbar-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.search-input {
+  min-width: 220px;
+}
+
+.sort-dropdown,
+.sort-direction-btn {
+  height: 40px;
 }
 </style>
