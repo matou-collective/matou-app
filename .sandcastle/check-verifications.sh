@@ -89,8 +89,22 @@ Reply **approve** (optionally followed by guidance for the agent) or **reject** 
     [ "$consumed" -gt 0 ] && continue
 
     msg="$(jq -r --arg rid "$rid" '.posts[$rid].message' <<<"$thread")"
-    word="$(awk '{print tolower($1)}' <<<"$msg")"
-    remainder="$(awk '{$1=""; print}' <<<"$msg" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    # Whole-word match anywhere in the reply, not just as the strict first
+    # token — natural phrasing ("I approve", "yes, approve that") counts the
+    # same as the bare keyword. A negation directly in front ("don't approve",
+    # "never reject") keeps the reply as chatter instead of firing the
+    # opposite of what the human meant. reject takes precedence if a reply
+    # somehow names both. Neither word present → falls through to chatter,
+    # same as before.
+    negation='(not|never|dont|don.t|wont|won.t|shouldnt|should.nt|cant|can.t)[[:space:]]+'
+    if grep -qiw reject <<<"$msg" && ! grep -Eqi "${negation}reject" <<<"$msg"; then
+      word=reject
+    elif grep -qiw approve <<<"$msg" && ! grep -Eqi "${negation}approve" <<<"$msg"; then
+      word=approve
+    else
+      word=other
+    fi
+    remainder="$(sed -E 's/.*\b(approve|reject)\b[,:]?[[:space:]]*//I' <<<"$msg")"
 
     case "$word" in
       approve)

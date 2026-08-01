@@ -124,6 +124,51 @@ check "S5 comment posted" "grep -q 'POST .*/issues/11/comments' \"\$FAKE_DIR/cal
 check "S5 thread reply posted" "grep -q speech_balloon \"\$FAKE_DIR/posts.log\" && grep -q '\`R1\`' \"\$FAKE_DIR/posts.log\""
 check "S5 no label ops" "! grep -q 'issues/11/labels' \"\$FAKE_DIR/calls.log\""
 
+# ---- S1b: natural-phrasing-approve — "I approve" (word not the first token)
+setup
+jq -n --argjson i "$(mkissue 12 "Natural phrasing bug")" '[$i]' >"$FAKE_DIR/issues.json"
+jq -n --argjson t "$(mkpost T12 "" BOTID "$(verify_msg 12 "Natural phrasing bug")")" '{posts:{T12:$t}}' >"$FAKE_DIR/channel.json"
+jq -n --argjson t "$(mkpost T12 "" BOTID "$(verify_msg 12 "Natural phrasing bug")")" \
+  --argjson r "$(mkpost R1 T12 HUMAN "I approve")" \
+  '{posts:{T12:$t, R1:$r}}' >"$FAKE_DIR/thread-T12.json"
+bash "$script" >/dev/null 2>&1
+check "S1b removes awaiting label" "grep -q 'DELETE .*/issues/12/labels/50' \"\$FAKE_DIR/calls.log\""
+check "S1b adds ready-for-agent label" "grep -q 'POST .*/issues/12/labels\$' \"\$FAKE_DIR/calls.log\" && grep -q '\"labels\": *\\[36\\]' \"\$FAKE_DIR/forgejo.log\""
+check "S1b no guidance comment (no remainder)" "! grep -q 'issues/12/comments' \"\$FAKE_DIR/calls.log\""
+
+# ---- S1c: natural-phrasing-approve-with-guidance
+setup
+jq -n --argjson i "$(mkissue 13 "Natural phrasing with guidance")" '[$i]' >"$FAKE_DIR/issues.json"
+jq -n --argjson t "$(mkpost T13 "" BOTID "$(verify_msg 13 "Natural phrasing with guidance")")" '{posts:{T13:$t}}' >"$FAKE_DIR/channel.json"
+jq -n --argjson t "$(mkpost T13 "" BOTID "$(verify_msg 13 "Natural phrasing with guidance")")" \
+  --argjson r "$(mkpost R1 T13 HUMAN "I approve, focus on the title field only")" \
+  '{posts:{T13:$t, R1:$r}}' >"$FAKE_DIR/thread-T13.json"
+bash "$script" >/dev/null 2>&1
+check "S1c label swap" "grep -q 'DELETE .*/issues/13/labels/50' \"\$FAKE_DIR/calls.log\" && grep -q '\"labels\": *\\[36\\]' \"\$FAKE_DIR/forgejo.log\""
+check "S1c guidance comment posted" "grep -q 'POST .*/issues/13/comments' \"\$FAKE_DIR/calls.log\" && grep -q '\\*\\*Verification guidance:\\*\\* focus on the title field only' \"\$FAKE_DIR/forgejo.log\""
+
+# ---- S1d: natural-phrasing-reject
+setup
+jq -n --argjson i "$(mkissue 14 "Natural phrasing reject")" '[$i]' >"$FAKE_DIR/issues.json"
+jq -n --argjson t "$(mkpost T14 "" BOTID "$(verify_msg 14 "Natural phrasing reject")")" '{posts:{T14:$t}}' >"$FAKE_DIR/channel.json"
+jq -n --argjson t "$(mkpost T14 "" BOTID "$(verify_msg 14 "Natural phrasing reject")")" \
+  --argjson r "$(mkpost R1 T14 HUMAN "I reject, duplicate of #3")" \
+  '{posts:{T14:$t, R1:$r}}' >"$FAKE_DIR/thread-T14.json"
+bash "$script" >/dev/null 2>&1
+check "S1d closes the issue" "grep -q 'PATCH .*/issues/14\$' \"\$FAKE_DIR/calls.log\" && grep -q '\"state\": *\"closed\"' \"\$FAKE_DIR/forgejo.log\""
+check "S1d rejected comment" "grep -q '\\*\\*Rejected:\\*\\* duplicate of #3' \"\$FAKE_DIR/forgejo.log\""
+
+# ---- S1e: negated-approve-stays-chatter — "don't approve" must not promote
+setup
+jq -n --argjson i "$(mkissue 15 "Negated approve")" '[$i]' >"$FAKE_DIR/issues.json"
+jq -n --argjson t "$(mkpost T15 "" BOTID "$(verify_msg 15 "Negated approve")")" '{posts:{T15:$t}}' >"$FAKE_DIR/channel.json"
+jq -n --argjson t "$(mkpost T15 "" BOTID "$(verify_msg 15 "Negated approve")")" \
+  --argjson r "$(mkpost R1 T15 HUMAN "please don't approve yet, needs more info")" \
+  '{posts:{T15:$t, R1:$r}}' >"$FAKE_DIR/thread-T15.json"
+bash "$script" >/dev/null 2>&1
+check "S1e no label ops" "! grep -q 'issues/15/labels' \"\$FAKE_DIR/calls.log\""
+check "S1e copied to issue as chatter" "grep -q 'POST .*/issues/15/comments' \"\$FAKE_DIR/calls.log\" && grep -q '\\*\\*From Mattermost:\\*\\*' \"\$FAKE_DIR/forgejo.log\""
+
 # ---- S6: no-thread-reposts — awaiting issue #9(different fixture), no ':mag:' post
 setup
 jq -n --argjson i "$(mkissue 9 "Fresh issue")" '[$i]' >"$FAKE_DIR/issues.json"
