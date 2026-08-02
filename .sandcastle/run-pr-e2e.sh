@@ -32,6 +32,7 @@ fi
 backend_pid=""
 teardown() {
   [ -n "$backend_pid" ] && kill "$backend_pid" 2>/dev/null || true
+  fuser -k 9003/tcp 2>/dev/null || true
   make -C "$INFRA/any-sync" down-test >/dev/null 2>&1 || true
   make -C "$INFRA/keri" down-test >/dev/null 2>&1 || true
 }
@@ -43,7 +44,7 @@ make -C "$INFRA/keri" clean-test start-and-wait-test
 make -C "$INFRA/any-sync" clean-test start-and-wait-test
 
 ( cd backend && make build )
-( cd backend && MATOU_ENV=test ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
+( cd backend && MATOU_ENV=test exec ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
 backend_pid=$!
 for _ in $(seq 1 60); do
   curl -sf http://localhost:9080/health >/dev/null && break
@@ -51,7 +52,7 @@ for _ in $(seq 1 60); do
 done
 curl -sf http://localhost:9080/health >/dev/null || { echo "backend never became healthy" >&2; exit 1; }
 
-( cd frontend && npm ci && npx playwright install --with-deps chromium )
+( cd frontend && npm ci && npx playwright install chromium )
 
 set +e
 ( cd frontend && npx playwright test --project=features "tests/e2e/features/issue-$n.spec.ts" ) \
@@ -64,10 +65,17 @@ shopt -s nullglob
 shots=(frontend/tests/e2e/results/snaps/issue-"$n"/*.png)
 shopt -u nullglob
 
+# Best-effort test count from Playwright's summary line (e.g. "3 passed (12s)").
+# Falls back to omitting the tests clause if the log format doesn't match.
+tests_clause=""
+if passed="$(grep -oE '[0-9]+ passed' /tmp/pr-e2e-playwright.log | head -1)"; then
+  tests_clause="${passed%% passed} tests, "
+fi
+
 if [ "$rc" -eq 0 ]; then
-  msg=":camera: **e2e PR #$PR_NUMBER** — ✅ passed (${#shots[@]} screenshots) $pr_url"
+  msg=":camera: **e2e PR #$PR_NUMBER** — ✅ passed (${tests_clause}${#shots[@]} screenshots) $pr_url"
 else
-  msg=":camera: **e2e PR #$PR_NUMBER** — ❌ FAILED (${#shots[@]} screenshots) $pr_url"
+  msg=":camera: **e2e PR #$PR_NUMBER** — ❌ FAILED (${tests_clause}${#shots[@]} screenshots) $pr_url"
   # include Playwright's failure screenshots alongside the curated snaps
   shopt -s nullglob globstar
   shots+=(frontend/tests/e2e/results/**/test-failed-*.png)
