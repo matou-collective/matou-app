@@ -1,7 +1,9 @@
 import { test as base, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { loginWithMnemonic } from '../utils/test-helpers';
+import { setupTestConfig } from '../utils/mock-config';
+import { BackendManager, BackendInstance } from '../utils/backend-manager';
+import { loginWithMnemonic, setupBackendRouting } from '../utils/test-helpers';
 
 // Accounts persisted by the org-setup / registration projects (declared as
 // project dependencies of `features`). Feature specs never register/login
@@ -33,6 +35,7 @@ export const test = base.extend<Fixtures>({
     const accounts = loadAccounts();
     if (!accounts.admin?.mnemonic) throw new Error('no admin in test-accounts.json');
     const ctx = await browser.newContext();
+    await setupTestConfig(ctx);
     const page = await ctx.newPage();
     await loginWithMnemonic(page, accounts.admin.mnemonic);
     await use(page);
@@ -41,11 +44,26 @@ export const test = base.extend<Fixtures>({
   memberPage: async ({ browser }, use) => {
     const accounts = loadAccounts();
     if (!accounts.member?.mnemonic) throw new Error('no member in test-accounts.json');
+
+    // Member gets its own backend + data dir, mirroring
+    // e2e-projects-contributions.spec.ts (~lines 356-361), so member writes
+    // never land in the admin backend's data.
+    const backends = new BackendManager();
+    let memberBackend: BackendInstance;
+    try {
+      memberBackend = await backends.start('features-member');
+    } catch (e) {
+      throw new Error(`fixtures: failed to start member backend: ${e}`);
+    }
+
     const ctx = await browser.newContext();
+    await setupTestConfig(ctx);
+    await setupBackendRouting(ctx, memberBackend.port);
     const page = await ctx.newPage();
     await loginWithMnemonic(page, accounts.member.mnemonic);
     await use(page);
     await ctx.close();
+    await backends.stopAll();
   },
   snap: async ({}, use, testInfo) => {
     const m = path.basename(testInfo.file).match(/issue-(\d+)/);
