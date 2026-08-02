@@ -47,9 +47,11 @@ slice_json() { # $1=start index — 10 ids from $ids as a JSON array
 }
 
 root="$(post "$msg" "$(slice_json 0)" "")"
-i=10
-while [ "$i" -lt "${#ids[@]}" ]; do
-  post "(more screenshots)" "$(slice_json "$i")" "$root" >/dev/null
-  i=$((i + 10))
-done
+if [ -n "$root" ]; then
+  i=10
+  while [ "$i" -lt "${#ids[@]}" ]; do
+    post "(more screenshots)" "$(slice_json "$i")" "$root" >/dev/null
+    i=$((i + 10))
+  done
+fi
 printf '%s' "$root"
