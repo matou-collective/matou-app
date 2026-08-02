@@ -25,7 +25,7 @@ fi
 spec="$(feature_spec_path "$n")"
 if [ -z "$spec" ]; then
   reason="$(skip_reason_from_body "$body")"
-  bash "$here/notify-mattermost.sh" ":camera: **e2e PR #$PR_NUMBER** — no feature spec provided. ${reason:-No skip reason given in the PR body.} $pr_url"
+  bash "$here/notify-mattermost.sh" ":camera: **e2e PR #$PR_NUMBER** — no feature spec provided. ${reason:-No skip reason given in the PR body.} $pr_url" || true
   exit 0
 fi
 
