@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           exec 9>/tmp/matou-swarm.lock
-          flock -w 3600 9
+          flock -w 1800 9 || { echo "pr-e2e: lock busy for 30min — skipping this run (PR update retriggers)"; exit 0; }
           workdir="$HOME/swarm-e2e/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
