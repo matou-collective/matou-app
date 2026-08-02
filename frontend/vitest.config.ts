@@ -28,6 +28,7 @@ export default defineConfig({
         ? [
             'tests/scripts/test-oobi-messaging.ts',
             'tests/scripts/witness-assignment.test.ts',
+            'tests/scripts/create-test-aid.ts',
           ]
         : []),
     ],
