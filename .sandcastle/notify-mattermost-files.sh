@@ -24,7 +24,7 @@ for f in "$@"; do
   [ -f "$f" ] || continue
   id="$(curl -sf --max-time 60 -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" \
     -F "files=@$f" -F "channel_id=$MATTERMOST_CHANNEL_ID" \
-    "$MATTERMOST_URL/api/v4/files" | jq -r '.file_infos[0].id // empty')"
+    "$MATTERMOST_URL/api/v4/files" 2>/dev/null | jq -r '.file_infos[0].id // empty' 2>/dev/null || echo '')"
   [ -n "$id" ] && ids+=("$id")
 done
 
@@ -34,8 +34,8 @@ post() { # $1=message $2=json-array-of-file-ids $3=root_id ("" for root)
     '{channel_id: $channel_id, message: $message, file_ids: $file_ids}
      + (if $root_id != "" then {root_id: $root_id} else {} end)' |
   curl -sf --max-time 30 -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" \
-    -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" |
-  jq -r '.id // empty'
+    -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" 2>/dev/null |
+  jq -r '.id // empty' 2>/dev/null || echo ''
 }
 
 slice_json() { # $1=start index — 10 ids from $ids as a JSON array
