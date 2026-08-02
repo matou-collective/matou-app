@@ -44,7 +44,7 @@ mounts instead of `.env` values.
   ANY of them is returned immediately (so late answers in whichever
   duplicate thread survive), otherwise it resumes the newest thread with an
   :eyes: note instead of posting a duplicate. On timeout the agent falls
-  back to the `ready-for-human` label swap (prompt.md rule 6). Requires the
+  back to the `ready-for-human` label swap (prompt.md rule 5). Requires the
   bot to be a member of the channel.
 - `resume-parked-asks.sh` — the other half of ask-human's parking promise: a
   cron sweep (`.forgejo/workflows/resume-asks.yml`, twice an hour) that scans
@@ -136,7 +136,7 @@ grant.
 ## PR landing
 
 Agents never push to `main` or close the issue they're fixing. Per
-`prompt.md` rule 5: branch `agent/issue-<n>`, push it, open a Forgejo PR with
+`prompt.md` rule 6: branch `agent/issue-<n>`, push it, open a Forgejo PR with
 `closes #<n>` in the body plus a summary of what was verified in-sandbox
 (unit tests + lint only — never e2e/integration, which need live
 KERI/any-sync infra) and what still needs live testing. A human reviews and
