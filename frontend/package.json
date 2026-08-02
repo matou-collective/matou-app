@@ -15,6 +15,7 @@
     "test:headed": "playwright test --headed",
     "test:serve": "VITE_ENV=test VITE_TEST_CONFIG_URL=http://localhost:4904 VITE_BACKEND_URL=http://localhost:9080 quasar dev -p 9003",
     "test:script": "vitest run --config vitest.config.ts",
+    "test:unit": "VITEST_SKIP_INFRA=1 vitest run --config vitest.config.ts",
     "dev": "quasar dev",
     "dev:sessions": "../scripts/dev-sessions.sh 1",
     "dev:sessions:2": "../scripts/dev-sessions.sh 2",

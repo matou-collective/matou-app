@@ -20,7 +20,17 @@ export default defineConfig({
   test: {
     // Test scripts live outside src/
     include: ['tests/scripts/**/*.ts'],
-    exclude: ['tests/scripts/health-check.ts'],
+    // VITEST_SKIP_INFRA=1 (CI / agent sandbox) drops tests that need live
+    // KERI infrastructure (KERIA on 4904 + config server).
+    exclude: [
+      'tests/scripts/health-check.ts',
+      ...(process.env.VITEST_SKIP_INFRA
+        ? [
+            'tests/scripts/test-oobi-messaging.ts',
+            'tests/scripts/witness-assignment.test.ts',
+          ]
+        : []),
+    ],
     testTimeout: 120000,
     server: {
       deps: {

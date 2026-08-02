@@ -43,7 +43,7 @@ To see a task in full:
    bug can't be reproduced without live infrastructure, say so in the PR
    body and reason from the code.
 3. **Verification inside this sandbox** — run what you changed:
-   - frontend: `cd frontend && npm run test:script && npm run lint`
+   - frontend: `cd frontend && npm run test:unit && npm run lint`
    - backend: `cd backend && go build ./... && make test`
    **Never** run e2e/Playwright/integration suites — they need live
    KERI/any-sync infrastructure this sandbox does not have. State in the PR
