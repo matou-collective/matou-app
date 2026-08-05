@@ -138,6 +138,13 @@ curl -s http://localhost:9000 > /dev/null && echo "Running" || echo "Not running
 | dev | 8080 | client-dev.yml (1001-1006) | 3901-3904 | ./data/org-config.yaml |
 | test | 9080 | client-test.yml (2001-2006) | 4901-4904 | ./data-test/org-config.yaml |
 | production | dynamic | client-production.yml (remote) | remote | {dataDir}/org-config.yaml |
+| matou-dev | dynamic | client-production.yml (remote, from `matou-distributed-servers-dev`) | remote | {dataDir}/org-config.yaml |
+
+`matou-dev` isn't a separate `MATOU_ENV` value — it reuses `MATOU_ENV=production`'s
+remote-config path, just pointed at the shared dev deployment instead of real
+production: `make run-matou-dev` (backend), `cp frontend/.env.matou-dev frontend/.env.local`
+(frontend). See `docs/matou-dev-scope.md` in `matou-distributed-servers-dev` for
+what that deployment runs.
 
 ## any-sync Configuration
 
@@ -158,6 +165,7 @@ Example config files are provided with `.example` suffix:
 ```
 frontend/.env.example                        # Dev environment variables
 frontend/.env.production.example             # Production environment variables
+frontend/.env.matou-dev                      # matou-dev environment (not a .example — ready to copy as-is)
 backend/config/client-production.yml.example # Production any-sync config template
 ```
 

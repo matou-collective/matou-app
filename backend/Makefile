@@ -33,6 +33,12 @@ run: build
 run-test:
 	MATOU_ENV=test MATOU_SMTP_PORT=3525 go run ./cmd/server
 
+# Run server pointed at the shared matou-dev deployment (matou-distributed-servers-dev)
+# instead of local Docker infra or real production. Same "production-shaped"
+# remote-config path as MATOU_ENV=production — just a different config server.
+run-matou-dev:
+	MATOU_ENV=production MATOU_CONFIG_SERVER_URL=https://config.dev.matou.nz go run ./cmd/server
+
 # =============================================================================
 # Testing
 # =============================================================================
