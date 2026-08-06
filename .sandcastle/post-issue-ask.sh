@@ -89,8 +89,18 @@ fi
 issue="$(fj "$FORGEJO_API/issues/$n")"
 title="$(jq -r .title <<<"$issue")"
 url="$(jq -r .html_url <<<"$issue")"
-excerpt="$(fj "$FORGEJO_API/issues/$n/comments" | jq -r 'last | .body // empty' | head -c 500)"
-[ -n "$excerpt" ] || excerpt="$(jq -r '.body // ""' <<<"$issue" | head -c 500)"
+# The full decision context: the newest comment (triage/agents write what
+# needs deciding there), else the issue body. Cap near Mattermost's 4000-char
+# post limit and SAY SO when cut — a silent 500-char excerpt hid the actual
+# question (2026-08-06).
+limit="${ASK_EXCERPT_LIMIT:-3000}"
+full="$(fj "$FORGEJO_API/issues/$n/comments" | jq -r 'last | .body // empty')"
+[ -n "$full" ] || full="$(jq -r '.body // ""' <<<"$issue")"
+excerpt="$(head -c "$limit" <<<"$full")"
+if [ "$(printf %s "$full" | wc -c)" -gt "$limit" ]; then
+  excerpt="$excerpt
+…(truncated — the full text is on the issue)"
+fi
 quoted="$(sed 's/^/> /' <<<"$excerpt")"
 
 body=":raising_hand: **Human decision needed** — reply **in this thread** to answer.

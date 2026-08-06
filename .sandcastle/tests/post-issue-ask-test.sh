@@ -104,6 +104,22 @@ jq -n --argjson q "$(mkpost Q306 "" BOTID "$(ask_msg 306)" "$old_ms")" '{posts:{
 bash "$script" 306 >/dev/null 2>&1
 check "P6 fresh root posted" "grep -q raising_hand \"\$FAKE_DIR/posts.log\" && ! grep -q root_id \"\$FAKE_DIR/posts.log\""
 
+# ---- P8: long comment (over the old 500-char cut) — quoted in full
+setup
+mkissue 308 "issue body text"
+long_comment="$(seq -s ' ' 1 300) which of these three storage layouts do you want END-OF-QUESTION-MARKER"
+jq -n --arg body "$long_comment" '[{body:$body}]' >"$FAKE_DIR/comments-308.json"
+bash "$script" 308 >/dev/null 2>&1
+check "P8 end of long comment present" "grep -q 'END-OF-QUESTION-MARKER' \"\$FAKE_DIR/posts.log\""
+check "P8 no truncation note" "! grep -q 'truncated — the full text' \"\$FAKE_DIR/posts.log\""
+
+# ---- P9: comment over the Mattermost-safe cap — cut, but SAYS so
+setup
+mkissue 309 "issue body text"
+jq -n --arg body "$(seq -s ' ' 1 900)" '[{body:$body}]' >"$FAKE_DIR/comments-309.json"
+bash "$script" 309 >/dev/null 2>&1
+check "P9 truncation note present" "grep -q 'truncated — the full text is on the issue' \"\$FAKE_DIR/posts.log\""
+
 # ---- P7: env unset — exit 2, nothing called
 setup
 env -u MATTERMOST_BOT_TOKEN bash "$script" 307 >/dev/null 2>&1
