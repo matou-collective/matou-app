@@ -432,10 +432,13 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(confirmationCard).toHaveClass(/requirement-met/, { timeout: TIMEOUT.long });
       console.log('[Test] Confirmation requirement card turned green after steward endorsement');
 
-      // Only steward endorsement — "Endorsement" card (req 1) should still be pending (needs a non-steward member)
+      // A single endorsement — member or steward — satisfies the endorsement
+      // requirement (aligned with the steward-side approval gate in 2c9273e;
+      // the old display rule demanded a separate member endorsement the gate
+      // never required).
       const memberEndorsementCard = requirementsGrid.locator('.requirement-card', { hasText: 'Endorsement' });
-      await expect(memberEndorsementCard).toHaveClass(/requirement-pending/);
-      console.log('[Test] Member endorsement card still pending (needs a member endorsement)');
+      await expect(memberEndorsementCard).toHaveClass(/requirement-met/);
+      console.log('[Test] Endorsement requirement card met by the steward endorsement');
 
       console.log('[Test] --- Endorsement flow complete ---');
 
@@ -544,17 +547,25 @@ test.describe.serial('Registration Approval Flow', () => {
         sharedProfileObjectId: initBody.sharedProfileObjectId,
       });
 
-      // 5b2. Query admin backend directly — verify the SharedProfile is readable and status is "approved"
-      const adminProfilesResp = await adminPage.request.get('http://localhost:9080/api/v1/profiles/SharedProfile');
-      const adminProfiles = await adminProfilesResp.json();
-      const adminProfileList = (adminProfiles.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
-      console.log(`[Test] Admin backend SharedProfiles (${adminProfileList.length}):`);
-      for (const p of adminProfileList) {
-        console.log(`  - ${p.id} aid=${p.data?.aid} name=${p.data?.displayName} status=${p.data?.status}`);
-      }
-      const userProfileOnAdmin = adminProfileList.find(p => p.id === initBody.sharedProfileObjectId);
-      expect(userProfileOnAdmin, `Admin should have SharedProfile ${initBody.sharedProfileObjectId}`).toBeTruthy();
-      expect(userProfileOnAdmin!.data.status, 'SharedProfile status should be "approved" after approval').toBe('approved');
+      // 5b2. Query admin backend directly — verify the SharedProfile is readable
+      // and flips to "approved". initMemberProfiles deliberately creates it as
+      // 'pending' (so a failed approval can be retried); the approve flow flips
+      // it only AFTER credential issuance (~15-30s), so poll instead of
+      // asserting instantly.
+      await expect
+        .poll(async () => {
+          const resp = await adminPage.request.get('http://localhost:9080/api/v1/profiles/SharedProfile');
+          const json = await resp.json();
+          const list = (json.profiles ?? []) as Array<{ id: string; data: Record<string, unknown> }>;
+          const profile = list.find(p => p.id === initBody.sharedProfileObjectId);
+          console.log(`[Test] SharedProfile ${initBody.sharedProfileObjectId}: status=${profile?.data?.status ?? 'NOT FOUND'}`);
+          return profile?.data?.status;
+        }, {
+          timeout: TIMEOUT.aidCreation,
+          message: `SharedProfile ${initBody.sharedProfileObjectId} should exist and flip to "approved" after approval`,
+        })
+        .toBe('approved');
+      console.log('[Test] SharedProfile status flipped to approved on admin backend');
 
       // 5b3. Verify member still appears in the New Members card after approval.
       // The member was already visible as "pending" (step 3b); after approval the

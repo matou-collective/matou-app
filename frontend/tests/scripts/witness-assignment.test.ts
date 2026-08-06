@@ -57,3 +57,25 @@ describe('assignWitnesses', () => {
     expect(a).toEqual(b);
   });
 });
+
+describe('extractWitnessAids', () => {
+  it('extracts witness AIDs from iurls and drops schema/data OOBIs', async () => {
+    const { extractWitnessAids } = await import('src/lib/keri/witnessAssignment');
+    const iurls = [
+      'http://witness-demo:5642/oobi/BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha/controller',
+      'http://witness-demo:5643/oobi/BLskRTInXnMxWaGqcpSyMgo0nYbalW99cGZESrz3zapM/controller',
+      // schema OOBIs also appear in iurls (infra 2c010fb) — SAIDs, not witnesses
+      'http://schema-server:7723/oobi/EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE',
+      'http://schema-server:7723/oobi/ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J',
+    ];
+    expect(extractWitnessAids(iurls)).toEqual([
+      'BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha',
+      'BLskRTInXnMxWaGqcpSyMgo0nYbalW99cGZESrz3zapM',
+    ]);
+  });
+
+  it('ignores URLs without an /oobi/ path', async () => {
+    const { extractWitnessAids } = await import('src/lib/keri/witnessAssignment');
+    expect(extractWitnessAids(['http://example.com/health', ''])).toEqual([]);
+  });
+});

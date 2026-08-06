@@ -8,6 +8,16 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { fetchClientConfig, type ClientConfig } from '../clientConfig';
 import { waitForEvent } from 'src/composables/useBackendEvents';
 import { BACKEND_URL, authHeaders } from 'src/lib/api/client';
+import { secureStorage } from 'src/lib/secureStorage';
+import {
+  AGENT_AID_STORAGE_KEY,
+  AGENT_REBOOT_MARKER_KEY,
+  classifyAgentConnect,
+  parseAgentRebootMarker,
+  type AgentRebootRecord,
+} from 'src/lib/agentLifecycle';
+import { extractWitnessAids } from 'src/lib/keri/witnessAssignment';
+import { parseCesrStream, filterKelMessages, mergeKelMessages } from 'src/lib/keri/cesr';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -56,6 +66,10 @@ export class KERIClient {
   private client: SignifyClient | null = null;
   private connected = false;
   private identifierCache = new Map<string, string>();
+  // Set when this device detects its agent was re-created (agent AID changed
+  // since last connect) — consumers surface it and repair via
+  // republishAgentEndRole(); persisted so a restart can't lose it.
+  private pendingAgentReboot: AgentRebootRecord | null = null;
 
   // KERIA endpoints - fetched from config server
   private get keriaUrl(): string {
@@ -93,10 +107,12 @@ export class KERIClient {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       if (errorMsg.includes('agent does not exist')) {
-        console.log('[KERIClient] Ephemeral agent not found, booting...');
+        // Booting creates a NEW agent AID for this bran — if this bran had an
+        // agent before, its previously shared agent-form OOBIs are now dead.
+        console.warn('[KERIClient] Ephemeral agent not found for this passcode — booting a NEW agent (new agent AID)...');
         await client.boot();
         await client.connect();
-        console.log('[KERIClient] Ephemeral agent booted and connected');
+        console.log(`[KERIClient] Ephemeral agent booted and connected (agent AID: ${client.agent?.pre ?? 'unknown'})`);
       } else {
         throw err;
       }
@@ -145,6 +161,7 @@ export class KERIClient {
     await ready();
     this.client = new SignifyClient(this.keriaUrl, bran, Tier.low, this.keriaBootUrl);
 
+    let booted = false;
     try {
       // Try to connect to existing agent
       console.log('[KERIClient] Attempting to connect to existing agent...');
@@ -155,7 +172,11 @@ export class KERIClient {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.log('[KERIClient] Connect error:', errorMsg);
       if (errorMsg.includes('agent does not exist')) {
-        console.log('[KERIClient] Agent not found, booting new agent...');
+        // Boot creates a NEW agent AID. For a first-ever connection that is
+        // normal onboarding; for an existing identity it means every
+        // previously shared agent-form OOBI just went stale (Andrew Weaver
+        // incident) — recordAgentLifecycle() below tells the two apart.
+        console.warn('[KERIClient] Agent not found for this passcode — booting a NEW agent (new agent AID)...');
         try {
           await this.client.boot();
           console.log('[KERIClient] Boot completed successfully');
@@ -163,6 +184,7 @@ export class KERIClient {
           console.error('[KERIClient] Boot failed:', bootErr);
           throw bootErr;
         }
+        booted = true;
         console.log('[KERIClient] Attempting to connect after boot...');
         await this.client.connect();
         console.log('[KERIClient] Booted and connected to new KERIA agent');
@@ -174,6 +196,13 @@ export class KERIClient {
     this.connected = true;
     this.patchClientFetch();
     console.log('[KERIClient] Connection established');
+
+    // Detect agent re-creation (never let bookkeeping break the connection)
+    try {
+      await this.recordAgentLifecycle(booted);
+    } catch (lifecycleErr) {
+      console.warn('[KERIClient] Agent lifecycle bookkeeping failed:', lifecycleErr);
+    }
 
     // Get KERIA config and resolve witness iurls if present
     try {
@@ -216,12 +245,10 @@ export class KERIClient {
     try {
       const config = await this.client.config().get();
       if (config.iurls && Array.isArray(config.iurls)) {
-        return (config.iurls as string[])
-          .map((iurl) => {
-            const match = iurl.match(/\/oobi\/([^/]+)/);
-            return match ? match[1] : '';
-          })
-          .filter(Boolean);
+        // iurls may also contain schema OOBIs — extractWitnessAids filters
+        // to real (non-transferable) witness AIDs, otherwise inception fails
+        // with "unknown witness <schema SAID>".
+        return extractWitnessAids(config.iurls as string[]);
       }
     } catch (err) {
       console.warn('[KERIClient] Could not get witness AIDs from config:', err);
@@ -292,8 +319,13 @@ export class KERIClient {
       // Cache the name→prefix mapping
       this.identifierCache.set(name, found.prefix);
 
-      // Add end role using the prefix
-      await this.addEndRoleForAID(found.prefix);
+      // Add end role using the prefix. Non-fatal here: the AID exists either
+      // way, but without the end role it cannot receive messages.
+      try {
+        await this.addEndRoleForAID(found.prefix);
+      } catch (endRoleErr) {
+        console.warn(`[KERIClient] End role failed for new AID ${found.prefix} — it cannot receive messages until re-published:`, endRoleErr);
+      }
 
       return {
         prefix: found.prefix,
@@ -321,8 +353,13 @@ export class KERIClient {
       aid = found;
     }
 
-    // Add end role using the prefix, not the name
-    await this.addEndRoleForAID(prefix);
+    // Add end role using the prefix, not the name. Non-fatal here: the AID
+    // exists either way, but without the end role it cannot receive messages.
+    try {
+      await this.addEndRoleForAID(prefix);
+    } catch (endRoleErr) {
+      console.warn(`[KERIClient] End role failed for new AID ${prefix} — it cannot receive messages until re-published:`, endRoleErr);
+    }
 
     return {
       prefix: aid.prefix,
@@ -402,6 +439,167 @@ export class KERIClient {
     throw new Error(
       `Timed out waiting for ${aidPrefix.slice(0, 12)}... to reach sn=${targetSn} (last seen: ${lastSeen ?? 'none'})`,
     );
+  }
+
+  /**
+   * Ask our agent to re-query an AID's key state from its witnesses.
+   * De-escrow trigger: a credential issued from a (group) AID whose latest
+   * anchoring event our agent hasn't seen sits in the Tevery/Verifier escrow
+   * — pulling fresh, witness-receipted KEL unblocks it. Never throws.
+   */
+  async refreshKeyState(aidPrefix: string, timeoutMs = 15000): Promise<boolean> {
+    if (!this.client) return false;
+    try {
+      const op = await this.client.keyStates().query(aidPrefix, undefined, undefined);
+      await this.client.operations().wait(op, { signal: AbortSignal.timeout(timeoutMs) });
+      console.log(`[KERIClient] Key state refreshed for ${aidPrefix.slice(0, 12)}...`);
+      return true;
+    } catch (err) {
+      console.warn(`[KERIClient] Key state refresh failed for ${aidPrefix.slice(0, 12)}...:`, err instanceof Error ? err.message : err);
+      return false;
+    }
+  }
+
+  /**
+   * Resolve an AID's KEL via each configured WITNESS's OOBI endpoint.
+   * Two properties the agent-hosted bare OOBI can't guarantee: witnesses
+   * always hold fully witness-receipted events (an unreceipted rot pushed
+   * into our escrow stays stuck without them), and a witness URL is a NEW
+   * OOBI record — KERIA's Oobiery dedupes re-resolution of an already-known
+   * URL, so re-resolving the agent OOBI after the KEL advanced is a no-op.
+   * Never throws; returns how many witnesses resolved.
+   */
+  async resolveViaWitnesses(aidPrefix: string, timeoutMs = 8000): Promise<number> {
+    let resolved = 0;
+    if (!this.client) return 0;
+    try {
+      // Witness URLs must come from KERIA's own config iurls: those are
+      // docker-internal (http://witness-demo:5642/…) and reachable by KERIA,
+      // which performs the fetch. The client-config witness URLs are
+      // host-form (http://localhost:6642/…) — KERIA cannot reach those, so
+      // resolving them fails with a connection error every time.
+      const keriaConfig = await this.client.config().get();
+      const iurls: string[] = Array.isArray(keriaConfig.iurls) ? keriaConfig.iurls : [];
+      const bases = [...new Set(iurls.map((u) => u.split('/oobi/')[0]).filter(Boolean))];
+      // Parallel: a serial pass at 15s/witness can take 90s — longer than
+      // every caller's polling window. One witness serving the KEL is enough.
+      const results = await Promise.all(
+        bases.map((base) => this.resolveOOBIWithReason(`${base}/oobi/${aidPrefix}`, undefined, timeoutMs)),
+      );
+      resolved = results.filter((r) => r.ok).length;
+      console.log(`[KERIClient] Witness KEL resolve for ${aidPrefix.slice(0, 12)}...: ${resolved}/${bases.length} witnesses served it`);
+    } catch (err) {
+      console.warn('[KERIClient] Witness KEL resolve failed:', err instanceof Error ? err.message : err);
+    }
+    return resolved;
+  }
+
+  /**
+   * Push an AID's KEL directly into another agent's parser via the CESR
+   * HTTP ingest, so the recipient never has to pull our OOBI to learn our
+   * key state (the pull that never happened in the Andrew Weaver incident).
+   *
+   * Fetches the KEL as served by our own bare OOBI, splits it into
+   * (event, attachment) pairs, and POSTs each KEL event to the CESR server
+   * with `CESR-DESTINATION: <recipient member AID>` (the managed hab AID —
+   * an agent AID 404s "unknown destination"). Best-effort: returns counts,
+   * never throws.
+   */
+  async pushKelToAgent(
+    aidPrefix: string,
+    destinationAid: string,
+  ): Promise<{ pushed: number; failed: number }> {
+    const base = this.cesrUrl.replace(/\/+$/, '');
+    let pushed = 0;
+    let failed = 0;
+    try {
+      // Two complementary sources, merged (dedup by event SAID):
+      // - The bare-OOBI CESR stream: fully witness-RECEIPTED events, but for
+      //   a group AID it may be served by another member's agent that lags
+      //   the freshest events.
+      // - Our own agent's /events endpoint (cloneEvtMsg): always current —
+      //   includes an ixn anchored seconds ago — but its attachments can
+      //   lack witness receipts for events another group member created,
+      //   and a receipt-less rot sticks in the recipient's escrow.
+      // KERI events serialize as compact JSON, so JSON.stringify(ked)
+      // reproduces the exact raw bytes the 'v' size field promises.
+      // Witness streams FIRST: for a group AID, the agent-served stream (and
+      // /events) may both come from THIS member's DB, which lacks witness
+      // receipts for events other members created — and a receipt-less rot
+      // sticks in the recipient's partial-witness escrow for minutes. The
+      // witnesses hold fully receipted copies and are browser-reachable
+      // (CORS *). Non-witnessing witnesses just 404 and are skipped.
+      const streamSources: string[] = [];
+      try {
+        const { fetchClientConfig } = await import('../clientConfig');
+        const witnessUrls = (await fetchClientConfig()).witnesses?.urls ?? [];
+        streamSources.push(...witnessUrls.map((u) => `${u.replace(/\/+$/, '')}/oobi/${aidPrefix}`));
+      } catch {
+        // No witness config — agent stream below still applies.
+      }
+      streamSources.push(`${base}/oobi/${aidPrefix}`);
+
+      const streams = await Promise.all(streamSources.map(async (url) => {
+        try {
+          const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          if (!resp.ok) return [];
+          return filterKelMessages(parseCesrStream(await resp.text()));
+        } catch {
+          return [];
+        }
+      }));
+      let streamMessages: Array<{ event: Record<string, any>; eventRaw: string; attachment: string }> = [];
+      for (const s of streams) {
+        streamMessages = mergeKelMessages(streamMessages, s);
+      }
+
+      let eventMessages: Array<{ event: Record<string, any>; eventRaw: string; attachment: string }> = [];
+      if (this.client) {
+        try {
+          const events = await this.client.keyEvents().get(aidPrefix) as Array<{ ked: Record<string, any>; atc: string }>;
+          eventMessages = events
+            .filter(e => e?.ked)
+            .map(e => ({ event: e.ked, eventRaw: JSON.stringify(e.ked), attachment: e.atc || '' }));
+        } catch (evErr) {
+          console.warn('[KERIClient] KEL push: /events fetch failed:', evErr instanceof Error ? evErr.message : evErr);
+        }
+      }
+
+      const kelMessages = mergeKelMessages(streamMessages, eventMessages);
+
+      if (kelMessages.length === 0) {
+        console.warn(`[KERIClient] KEL push: no KEL events found for ${aidPrefix.slice(0, 12)}...`);
+        return { pushed, failed };
+      }
+
+      for (const msg of kelMessages) {
+        try {
+          const postResp = await fetch(`${base}/`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/cesr+json',
+              'CESR-ATTACHMENT': msg.attachment.replace(/[\r\n]+/g, ''),
+              'CESR-DESTINATION': destinationAid,
+            },
+            body: msg.eventRaw,
+            signal: AbortSignal.timeout(10000),
+          });
+          if (postResp.ok) {
+            pushed++;
+          } else {
+            failed++;
+            console.warn(`[KERIClient] KEL push: event ${msg.event.t}#${msg.event.s ?? '?'} rejected (${postResp.status})`);
+          }
+        } catch (postErr) {
+          failed++;
+          console.warn('[KERIClient] KEL push: event POST failed:', postErr instanceof Error ? postErr.message : postErr);
+        }
+      }
+      console.log(`[KERIClient] KEL push ${aidPrefix.slice(0, 12)}... → ${destinationAid.slice(0, 12)}...: ${pushed} pushed, ${failed} failed`);
+    } catch (err) {
+      console.warn('[KERIClient] KEL push failed:', err instanceof Error ? err.message : err);
+    }
+    return { pushed, failed };
   }
 
   /**
@@ -498,8 +696,81 @@ export class KERIClient {
   }
 
   /**
+   * Track which agent AID this device is connected as, and detect agent
+   * re-creation. A re-boot of an existing identity (stored agent AID differs
+   * from the connected one) stales every previously shared agent-form OOBI,
+   * so it is logged loudly and persisted as a marker for the UI/repair flow
+   * (see getPendingAgentReboot / republishAgentEndRole).
+   */
+  private async recordAgentLifecycle(booted: boolean): Promise<void> {
+    const agentAid = this.client?.agent?.pre;
+    if (!agentAid) {
+      console.warn('[KERIClient] Connected but agent AID unavailable — skipping lifecycle bookkeeping');
+      return;
+    }
+
+    const storedAgentAid = await secureStorage.getItem(AGENT_AID_STORAGE_KEY);
+    const classification = classifyAgentConnect(storedAgentAid, agentAid);
+
+    if (classification === 'changed') {
+      const marker: AgentRebootRecord = {
+        previousAgentAid: storedAgentAid!,
+        newAgentAid: agentAid,
+        occurredAt: new Date().toISOString(),
+      };
+      console.error(
+        `[KERIClient] AGENT RE-CREATED (booted=${booted}): agent AID changed ` +
+        `${marker.previousAgentAid} → ${marker.newAgentAid}. Previously shared ` +
+        `agent-form OOBIs are now dead; contacts may need to re-resolve this identity.`
+      );
+      await secureStorage.setItem(AGENT_REBOOT_MARKER_KEY, JSON.stringify(marker));
+      this.pendingAgentReboot = marker;
+    } else if (classification === 'first') {
+      console.log(`[KERIClient] First connection on this device with agent AID ${agentAid}`);
+    }
+
+    if (classification !== 'unchanged') {
+      await secureStorage.setItem(AGENT_AID_STORAGE_KEY, agentAid);
+    }
+
+    // Pick up a marker from an earlier session whose repair/notice never ran
+    // (e.g. app closed before the user saw it).
+    if (!this.pendingAgentReboot) {
+      this.pendingAgentReboot = parseAgentRebootMarker(
+        await secureStorage.getItem(AGENT_REBOOT_MARKER_KEY)
+      );
+    }
+  }
+
+  /**
+   * The unacknowledged agent re-boot, if any. Non-null means this identity's
+   * agent was re-created at some point and the repair flow (end role
+   * re-publish + user notice) hasn't completed yet.
+   */
+  getPendingAgentReboot(): AgentRebootRecord | null {
+    return this.pendingAgentReboot;
+  }
+
+  /** Acknowledge the pending agent re-boot after the repair flow has run. */
+  async clearAgentRebootMarker(): Promise<void> {
+    this.pendingAgentReboot = null;
+    await secureStorage.removeItem(AGENT_REBOOT_MARKER_KEY);
+  }
+
+  /**
+   * Re-publish the agent end role for an AID after an agent re-boot, so the
+   * new agent is authorized as this AID's endpoint provider and fresh OOBIs
+   * resolve. Throws on failure — callers must surface it, not swallow it.
+   */
+  async republishAgentEndRole(aidPrefix: string): Promise<void> {
+    await this.addEndRoleForAID(aidPrefix);
+  }
+
+  /**
    * Add agent end role for an AID (helper method)
    * @param aidPrefix - The AID prefix (NOT display name)
+   * @throws when the end role cannot be published — without it the AID
+   *   cannot receive messages, so callers decide whether that is fatal.
    * @private
    */
   private async addEndRoleForAID(aidPrefix: string): Promise<void> {
@@ -507,23 +778,18 @@ export class KERIClient {
 
     console.log(`[KERIClient] Adding agent end role for AID: ${aidPrefix}`);
 
-    try {
-      // Get the agent's identifier (eid) - this is the agent AID that serves as endpoint provider
-      const agentId = this.client.agent?.pre;
-      if (!agentId) {
-        throw new Error('Agent identifier not available');
-      }
-      console.log(`[KERIClient] Agent EID: ${agentId}`);
-
-      // CRITICAL: Use AID prefix, not display name
-      const endRoleResult = await this.client.identifiers().addEndRole(aidPrefix, 'agent', agentId);
-      const endRoleOp = await endRoleResult.op();
-      await this.client.operations().wait(endRoleOp, { signal: AbortSignal.timeout(30000) });
-      console.log(`[KERIClient] Agent end role added successfully`);
-    } catch (endRoleErr) {
-      console.warn('[KERIClient] Failed to add agent end role:', endRoleErr);
-      // Continue - the AID is created, but may not receive messages
+    // Get the agent's identifier (eid) - this is the agent AID that serves as endpoint provider
+    const agentId = this.client.agent?.pre;
+    if (!agentId) {
+      throw new Error('Agent identifier not available');
     }
+    console.log(`[KERIClient] Agent EID: ${agentId}`);
+
+    // CRITICAL: Use AID prefix, not display name
+    const endRoleResult = await this.client.identifiers().addEndRole(aidPrefix, 'agent', agentId);
+    const endRoleOp = await endRoleResult.op();
+    await this.client.operations().wait(endRoleOp, { signal: AbortSignal.timeout(30000) });
+    console.log(`[KERIClient] Agent end role added successfully`);
   }
 
   /**
@@ -669,26 +935,39 @@ export class KERIClient {
    * @returns true if successful
    */
   async resolveOOBI(oobi: string, alias?: string, timeout = 30000): Promise<boolean> {
-    if (!this.client) throw new Error('Not initialized');
+    const result = await this.resolveOOBIWithReason(oobi, alias, timeout);
+    return result.ok;
+  }
 
-    // Ensure connection is fresh before OOBI resolution
-    await this.ensureConnected();
+  /**
+   * Like resolveOOBI, but reports why resolution failed so callers can
+   * surface it instead of guessing. Never throws.
+   */
+  async resolveOOBIWithReason(
+    oobi: string,
+    alias?: string,
+    timeout = 30000
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (!this.client) return { ok: false, reason: 'KERI client not initialized' };
 
     try {
+      // Ensure connection is fresh before OOBI resolution
+      await this.ensureConnected();
+
       const internalOobi = this.toInternalOobiUrl(oobi);
       console.log(`[KERIClient] Resolving OOBI: ${internalOobi}`);
       const op = await this.client.oobis().resolve(internalOobi, alias);
       await this.client.operations().wait(op, { signal: AbortSignal.timeout(timeout) });
       console.log(`[KERIClient] OOBI resolved successfully`);
-      return true;
+      return { ok: true };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       if (errorMsg.includes('aborted') || errorMsg.includes('timeout')) {
-        console.warn(`[KERIClient] OOBI resolution timed out after ${timeout}ms`);
-      } else {
-        console.error('[KERIClient] Failed to resolve OOBI:', err);
+        console.warn(`[KERIClient] OOBI resolution timed out after ${timeout}ms: ${oobi}`);
+        return { ok: false, reason: `timed out after ${timeout}ms` };
       }
-      return false;
+      console.error('[KERIClient] Failed to resolve OOBI:', err);
+      return { ok: false, reason: errorMsg };
     }
   }
 
@@ -1507,6 +1786,50 @@ export class KERIClient {
       console.warn(`[KERIClient] joinGroup: group OOBI resolution failed:`, err);
     }
 
+    // 2c. Gate: don't POST the join until our agent's copy of the group KEL
+    //     has actually reached the event immediately prior to this rotation.
+    //     A successful OOBI resolve does NOT guarantee arrival — the admin's
+    //     freshest rotation may still be collecting witness receipts, and the
+    //     serving agent won't stream an unreceipted event. Joining early makes
+    //     KERIA's hab.make throw OutOfOrderError (500) and can leave this
+    //     agent's group hab half-created (subsequent /identifiers calls 500).
+    //     Throwing here instead is safe: the notification stays unread and the
+    //     watcher retries on the next cycle.
+    const rotKed = ((rotEvent as { ked?: Record<string, unknown> }).ked ?? rotEvent) as Record<string, unknown>;
+    const rotSn = parseInt((rotKed.s as string) ?? '', 16);
+    if (Number.isFinite(rotSn) && rotSn > 0) {
+      const priorSn = rotSn - 1;
+      const deadline = Date.now() + 60000;
+      let localSn = -1;
+      for (;;) {
+        try {
+          const states = await this.client.keyStates().get(gid);
+          const st = (Array.isArray(states) ? states[0] : states) as { s?: string } | undefined;
+          localSn = st?.s !== undefined ? parseInt(st.s, 16) : -1;
+        } catch {
+          localSn = -1;
+        }
+        if (localSn >= priorSn || Date.now() >= deadline) break;
+        console.log(`[KERIClient] joinGroup: group KEL at sn=${localSn}, need sn>=${priorSn} — pulling KEL from witnesses and waiting...`);
+        // Witness route: re-resolving the agent-hosted group OOBI is a no-op
+        // once KERIA's Oobiery has a record for that URL, so a stale KEL
+        // never advances that way. The witnesses have the receipted rotation
+        // as soon as the admin's round completes.
+        const served = await this.resolveViaWitnesses(gid, 8000);
+        if (served === 0) {
+          await this.resolveOOBI(`${cesrUrl}/oobi/${gid}`, undefined, 15000);
+        }
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      if (localSn < priorSn) {
+        throw new Error(
+          `joinGroup: group KEL never reached sn=${priorSn} locally (at sn=${localSn}) — ` +
+          `the admin's rotation may not be fully witnessed yet; will retry on the next notification cycle.`,
+        );
+      }
+      console.log(`[KERIClient] joinGroup: group KEL caught up (sn=${localSn} >= ${priorSn}), safe to join`);
+    }
+
     // 3. Refresh session and get our personal AID to sign the rotation
     await this.ensureConnected();
     if (!aids?.aids?.length) {
@@ -2116,7 +2439,10 @@ export class KERIClient {
       avatarFileRef?: string;
       avatarData?: string;
       avatarMimeType?: string;
+      /** Bare-form OOBI (`…/oobi/<AID>`) — stable across agent re-boots. */
       senderOOBI: string;
+      /** Agent-form OOBI at submission time, for diagnostics only. */
+      senderAgentOobi?: string;
     },
     schemaSaid: string = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI'
   ): Promise<{ success: boolean; sent: string[]; failed: string[] }> {
@@ -2177,6 +2503,15 @@ export class KERIClient {
           continue;
         }
 
+        // Push our KEL straight into the admin's agent so verification never
+        // depends on the admin later pulling our OOBI (the pull that never
+        // happened in the Andrew Weaver incident). Best-effort: the admin
+        // app's auto-resolve remains the fallback if the push fails.
+        const kelPush = await this.pushKelToAgent(senderAid, admin.aid);
+        if (kelPush.pushed === 0) {
+          console.warn(`[KERIClient] Sender KEL push to admin ${admin.aid} delivered nothing — relying on admin-side OOBI pull`);
+        }
+
         // 1. Send custom EXN message first
         // Our KERIA patch creates pending notifications for escrowed custom EXN messages
         console.log(`[KERIClient] Sending registration EXN to ${admin.aid}...`);
@@ -2200,6 +2535,7 @@ export class KERIClient {
           avatarData: registrationData.avatarData || '',
           avatarMimeType: registrationData.avatarMimeType || '',
           senderOOBI: registrationData.senderOOBI,
+          senderAgentOobi: registrationData.senderAgentOobi || '',
           submittedAt: new Date().toISOString(),
         };
         // Send using the resolved sender AID prefix and admin AID prefix
@@ -2240,6 +2576,7 @@ export class KERIClient {
               avatarData: registrationData.avatarData || '',
               avatarMimeType: registrationData.avatarMimeType || '',
               senderOOBI: registrationData.senderOOBI,
+              senderAgentOobi: registrationData.senderAgentOobi || '',
               submittedAt: new Date().toISOString(),
             },
             datetime: new Date().toISOString(),
