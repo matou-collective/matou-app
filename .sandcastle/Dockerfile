@@ -12,6 +12,11 @@ RUN apt-get update && apt-get install -y \
 # too old — install the official tarball.
 RUN curl -sL https://go.dev/dl/go1.25.5.linux-amd64.tar.gz | tar -xz -C /usr/local
 ENV PATH="/usr/local/go/bin:$PATH"
+# The ENV above only covers non-login shells. Debian's /etc/profile
+# unconditionally overwrites PATH for login shells (used by ci.yml's
+# `docker run --entrypoint bash ... -lc`) before sourcing profile.d, dropping
+# /usr/local/go/bin. Re-add it there so login shells keep `go` on PATH too.
+RUN echo 'export PATH="/usr/local/go/bin:$PATH"' > /etc/profile.d/00-go.sh
 
 # Issue tracker: Forgejo (git.matou.nz/Matou/matou-app) — spoken to with
 # plain curl + jq; no tracker CLI to install.
