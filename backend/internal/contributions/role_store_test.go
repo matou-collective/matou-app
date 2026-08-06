@@ -34,7 +34,7 @@ func TestProfileRoleLookup_UnknownUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for unknown user, got: %v", err)
 	}
-	if len(roles) != 0 {
-		t.Errorf("expected empty roles for unknown user, got %v", roles)
+	if len(roles) != 1 || !HasRole(roles, RoleMember) {
+		t.Errorf("expected [member] fallback for unknown user, got %v", roles)
 	}
 }

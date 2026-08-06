@@ -441,7 +441,7 @@ func TestIntegration_TrustGraphUpdatesOnSync(t *testing.T) {
 				"schema": "EMatouMembershipSchemaV1",
 				"data": {
 					"communityName": "MATOU",
-					"role": "Verified Member",
+					"role": "Contributor",
 					"verificationStatus": "community_verified",
 					"permissions": ["read", "vote"],
 					"joinedAt": "2026-01-21T00:00:00Z"
@@ -650,7 +650,7 @@ func TestIntegration_FullSyncFlow(t *testing.T) {
 				"schema": "EMatouMembershipSchemaV1",
 				"data": {
 					"communityName": "MATOU",
-					"role": "Trusted Member",
+					"role": "Contributor",
 					"verificationStatus": "community_verified",
 					"permissions": ["read", "comment", "vote", "propose"],
 					"joinedAt": "2026-01-20T00:00:00Z"
@@ -731,13 +731,13 @@ func TestIntegration_FullSyncFlow(t *testing.T) {
 	var graphResp GraphResponse
 	json.NewDecoder(graphW.Body).Decode(&graphResp)
 
-	// Verify user is in graph with "Trusted Member" role
+	// Verify user is in graph with "Contributor" role
 	userNode := graphResp.Graph.GetNode("EUSER001")
 	if userNode == nil {
 		t.Fatal("expected user node in graph")
 	}
-	if userNode.Role != "Trusted Member" {
-		t.Errorf("expected role 'Trusted Member', got '%s'", userNode.Role)
+	if userNode.Role != "Contributor" {
+		t.Errorf("expected role 'Contributor', got '%s'", userNode.Role)
 	}
 
 	// Step 4: Verify community members
@@ -753,8 +753,8 @@ func TestIntegration_FullSyncFlow(t *testing.T) {
 		t.Errorf("expected 1 member, got %d", membersResp.Total)
 	}
 	if len(membersResp.Members) > 0 {
-		if membersResp.Members[0].Role != "Trusted Member" {
-			t.Errorf("expected member role 'Trusted Member', got '%s'", membersResp.Members[0].Role)
+		if membersResp.Members[0].Role != "Contributor" {
+			t.Errorf("expected member role 'Contributor', got '%s'", membersResp.Members[0].Role)
 		}
 	}
 }
@@ -982,7 +982,7 @@ func TestIntegration_MixedCredentialTypesRouting(t *testing.T) {
 
 	// Verify only community-visible types
 	for _, cred := range commResp.Credentials {
-		if cred.Schema != "EMatouMembershipSchemaV1" && cred.Schema != "EOperationsStewardSchemaV1" {
+		if cred.Schema != "EMatouMembershipSchemaV1" && cred.Schema != "EOperationsStewardSchemaV1" && cred.Schema != "ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI" {
 			t.Errorf("unexpected schema in community credentials: %s", cred.Schema)
 		}
 	}
@@ -1008,7 +1008,7 @@ func TestIntegration_TrustScoreCalculation(t *testing.T) {
 				"schema": "EMatouMembershipSchemaV1",
 				"data": {
 					"communityName": "MATOU",
-					"role": "Trusted Member",
+					"role": "Contributor",
 					"verificationStatus": "community_verified",
 					"permissions": ["read", "vote"],
 					"joinedAt": "2026-01-20T00:00:00Z"
@@ -1106,7 +1106,7 @@ func TestIntegration_ListAllCredentials(t *testing.T) {
 				"schema": "EMatouMembershipSchemaV1",
 				"data": {
 					"communityName": "MATOU",
-					"role": "Verified Member",
+					"role": "Contributor",
 					"verificationStatus": "community_verified",
 					"permissions": ["read", "vote"],
 					"joinedAt": "2026-01-22T00:00:00Z"
