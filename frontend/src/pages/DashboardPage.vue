@@ -130,6 +130,33 @@
             :error-message="adoptError ?? undefined"
             @adopt="adoptWitnesses"
           />
+          <div
+            v-if="isSteward && (pollingError || unreachableApplicants.length > 0 || expiredRegistrations.length > 0)"
+            class="card registration-alert"
+          >
+            <p v-if="pollingError" class="registration-alert-line">
+              {{ pollingError }}
+              <button class="registration-alert-retry" @click="retryPolling">Retry</button>
+            </p>
+            <p
+              v-for="reg in unreachableApplicants"
+              :key="'unreachable-' + reg.applicantAid"
+              class="registration-alert-line"
+            >
+              Can't verify applicant "{{ reg.profile.name }}" — their identity has been
+              unreachable for days. They may need to reopen their app or re-register.
+            </p>
+            <p
+              v-for="expired in expiredRegistrations"
+              :key="'expired-' + expired.applicantAid"
+              class="registration-alert-line"
+            >
+              The application from "{{ expired.applicantName || expired.applicantAid.slice(0, 12) + '…' }}"
+              expired — their identity was never reachable and the request has been
+              discarded. Ask them to re-apply.
+              <button class="registration-alert-retry" @click="dismissExpired(expired.notificationId)">Dismiss</button>
+            </p>
+          </div>
           <div ref="membersCardRef" class="card members-card">
             <div class="members-header">
               <h3 class="card-title" v-if="pendingMembers.length > 0">Pending</h3>
@@ -259,10 +286,21 @@ import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 const { isSteward, canManageMembers, checkAdminStatus, recheckAdminStatus } = useAdminAccess();
 const {
   pendingRegistrations,
+  expiredRegistrations,
   startPolling,
   stopPolling,
   removeRegistration,
-} = useRegistrationPolling({ pollingInterval: 10000 });
+  dismissExpired,
+  error: pollingError,
+  retry: retryPolling,
+} = useRegistrationPolling();
+
+// Applicants whose key state has been unresolvable for days (see
+// useRegistrationPolling's de-escrow loop) — surfaced so a steward knows
+// approve/decline/message cannot be delivered for them.
+const unreachableApplicants = computed(() =>
+  pendingRegistrations.value.filter(r => r.unreachable)
+);
 const {
   isProcessing,
   processingStep,
@@ -1363,6 +1401,28 @@ function handleRoleUpdated(newRole: string) {
     color: var(--matou-muted-foreground);
     margin: 0.125rem 0 0;
   }
+}
+
+// Registration health alert (polling failures / unreachable applicants)
+.registration-alert {
+  padding: 0.75rem 1.25rem;
+  border-left: 3px solid var(--q-warning, #f2c037);
+}
+
+.registration-alert-line {
+  margin: 0.25rem 0;
+  font-size: 0.85rem;
+}
+
+.registration-alert-retry {
+  margin-left: 0.5rem;
+  background: none;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: inherit;
 }
 
 // Members Card

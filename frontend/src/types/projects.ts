@@ -61,6 +61,32 @@ export interface ContributionDiff {
   new_value: string;
 }
 
+export interface PlanFieldChange {
+  field: string;
+  old_value: string;
+  new_value: string;
+}
+
+export type PlanChangeKind =
+  | 'milestone_added'
+  | 'milestone_edited'
+  | 'milestone_archived'
+  | 'contribution_added'
+  | 'contribution_edited'
+  | 'contribution_removed';
+
+export interface PlanChangeEntry {
+  id: string;
+  kind: PlanChangeKind;
+  milestone_id?: string;
+  milestone_title?: string;
+  contribution_id?: string;
+  contribution_title?: string;
+  changes?: PlanFieldChange[];
+  changed_by: string;
+  changed_at: string;
+}
+
 // ── Core types ───────────────────────────────────────────────────────────────
 
 export interface Contribution {
@@ -165,6 +191,7 @@ export interface ImplementationPlan {
   created_by?: string;
   created_at?: string;
   updated_at?: string;
+  change_log?: PlanChangeEntry[];
 }
 
 export interface ProjectImage {

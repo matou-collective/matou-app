@@ -9,6 +9,7 @@ import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
+import { buildOobiCandidates } from 'src/lib/registrationResolve';
 import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
 import { getOrCreateOrgRegistry } from 'src/lib/keri/registry';
 import { secureStorage } from 'src/lib/secureStorage';
@@ -42,6 +43,36 @@ export function useAdminActions() {
       timeout: 0,
       actions: [{ label: 'Dismiss', color: 'white' }],
     });
+  }
+
+  /**
+   * Resolve an applicant's key state, trying every OOBI form we can build
+   * (bare OOBI first — it survives agent re-boots — then the recorded
+   * senderOOBI). Returns the failure reasons when nothing resolves so the
+   * caller can surface WHY instead of a generic error.
+   */
+  async function resolveApplicant(
+    registration: PendingRegistration,
+    timeoutMs = 30000,
+  ): Promise<{ ok: boolean; detail: string }> {
+    const candidates = buildOobiCandidates({
+      applicantAid: registration.applicantAid,
+      recordedOobi: registration.applicantOOBI,
+      cesrUrl: keriClient.getCesrUrl(),
+    });
+    if (candidates.length === 0) {
+      return { ok: false, detail: 'no OOBI available — the applicant may need to re-register' };
+    }
+    const failures: string[] = [];
+    for (const oobi of candidates) {
+      const result = await keriClient.resolveOOBIWithReason(oobi, undefined, timeoutMs);
+      if (result.ok) {
+        console.log(`[AdminActions] Resolved applicant via ${oobi}`);
+        return { ok: true, detail: oobi };
+      }
+      failures.push(`${oobi} (${result.reason || 'unknown'})`);
+    }
+    return { ok: false, detail: `tried ${candidates.length} OOBI form(s): ${failures.join('; ')}` };
   }
 
   /**
@@ -188,24 +219,14 @@ export function useAdminActions() {
         throw new Error('No registry configured for credential issuance');
       }
 
-      // 2. Resolve applicant OOBI (required for IPEX grant delivery)
+      // 2. Resolve applicant OOBI (required for IPEX grant delivery).
+      // Tries bare OOBI first, then the recorded senderOOBI — the recorded
+      // agent-form OOBI goes stale when the applicant's agent is re-created.
       processingStep.value = 'Resolving applicant identity...';
-      let applicantOOBI = registration.applicantOOBI;
-      if (!applicantOOBI) {
-        // Fallback: construct OOBI from KERIA CESR URL + applicant AID
-        const cesrUrl = keriClient.getCesrUrl();
-        if (cesrUrl && registration.applicantAid) {
-          applicantOOBI = `${cesrUrl}/oobi/${registration.applicantAid}`;
-          console.log(`[AdminActions] Constructed fallback OOBI: ${applicantOOBI}`);
-        } else {
-          throw new Error('Cannot issue credential: applicant OOBI is missing and could not construct fallback. The applicant may need to re-register.');
-        }
+      const resolved = await resolveApplicant(registration);
+      if (!resolved.ok) {
+        throw new Error(`Could not resolve the applicant's identity — unable to deliver credential (${resolved.detail}).`);
       }
-      const oobiResolved = await keriClient.resolveOOBI(applicantOOBI, undefined, 30000);
-      if (!oobiResolved) {
-        throw new Error('Could not resolve applicant OOBI — unable to deliver credential. Please check that KERIA is running and try again.');
-      }
-      console.log('[AdminActions] Resolved applicant OOBI');
 
       // 3. Get the issuing AID name
       const issuerAidName = await getOrgAidName();
@@ -322,6 +343,15 @@ export function useAdminActions() {
 
       console.log('[AdminActions] Credential issued:', credResult.said);
       credentialSaid = credResult.said;
+
+      // Push the issuer's KEL (org group AID, incl. the ixn anchoring this
+      // credential's registry event) into the applicant's agent. Without it
+      // a credential issued by an upgraded steward sits in the applicant's
+      // Verifier/Tevery escrow ("Missing anchor") until group key state
+      // happens to arrive — observed at ~5.5 minutes, far past every poll
+      // window. Best-effort: the applicant also re-queries key state while
+      // polling.
+      await keriClient.pushKelToAgent(issuerAidName, registration.applicantAid);
 
       // 6b. Update CommunityProfile with real credential SAID.
       //     Profiles were created in step 4 by initMemberProfiles with
@@ -658,14 +688,14 @@ export function useAdminActions() {
         throw new Error('No identity found');
       }
 
-      // 1. Resolve applicant OOBI if provided
-      if (registration.applicantOOBI) {
-        try {
-          await keriClient.resolveOOBI(registration.applicantOOBI, undefined, 60000);
-          console.log('[AdminActions] Resolved applicant OOBI');
-        } catch (oobiErr) {
-          console.warn('[AdminActions] Could not resolve applicant OOBI:', oobiErr);
-        }
+      // 1. Resolve applicant identity (full fallback chain). The decline is
+      // still recorded locally if this fails, but the failure must be
+      // visible: an unreachable applicant will never receive the notice.
+      const resolved = await resolveApplicant(registration, 60000);
+      if (!resolved.ok) {
+        notifyApprovalWarning(
+          `Applicant could not be reached — the decline was recorded but they will not receive a notification (${resolved.detail}).`
+        );
       }
 
       // 2. Send rejection EXN
@@ -765,14 +795,12 @@ export function useAdminActions() {
         throw new Error('No identity found');
       }
 
-      // 1. Resolve applicant OOBI if provided
-      if (registration.applicantOOBI) {
-        try {
-          await keriClient.resolveOOBI(registration.applicantOOBI, undefined, 60000);
-          console.log('[AdminActions] Resolved applicant OOBI');
-        } catch (oobiErr) {
-          console.warn('[AdminActions] Could not resolve applicant OOBI:', oobiErr);
-        }
+      // 1. Resolve applicant identity (full fallback chain). A message has
+      // no local fallback — if the applicant is unreachable, fail loudly
+      // instead of pretending the message was sent.
+      const resolved = await resolveApplicant(registration, 60000);
+      if (!resolved.ok) {
+        throw new Error(`Could not reach the applicant — message not sent (${resolved.detail}).`);
       }
 
       // 2. Send message EXN

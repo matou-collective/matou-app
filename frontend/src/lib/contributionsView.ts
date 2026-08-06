@@ -14,6 +14,7 @@ export type ScopeFilter =
   | 'assigned'
   | 'in_review'
   | 'signed_off'
+  | 'rewarded'
   | 'archived';
 
 export type SortField = 'deadline' | 'created' | 'title' | 'priority';
@@ -26,6 +27,7 @@ export const SCOPE_FILTERS: { label: string; value: ScopeFilter }[] = [
   { label: 'Assigned', value: 'assigned' },
   { label: 'In Review', value: 'in_review' },
   { label: 'Signed Off', value: 'signed_off' },
+  { label: 'Rewarded', value: 'rewarded' },
   { label: 'Archived', value: 'archived' },
 ];
 
@@ -45,7 +47,8 @@ export const SORT_FIELDS: { label: string; value: SortField }[] = [
 ];
 
 const ASSIGNED_STATUSES = new Set(['assigned', 'changed', 'in_progress']);
-const SIGNED_OFF_STATUSES = new Set(['signed_off', 'rewarded']);
+// Terminal statuses hidden from the All and Mine views; each has its own chip.
+const HIDDEN_TERMINAL_STATUSES = new Set(['archived', 'rewarded']);
 
 // low → critical. Unknown priorities sort below 'low'.
 const PRIORITY_ORDER: Record<string, number> = {
@@ -71,13 +74,15 @@ export function filterByScope(
 ): Contribution[] {
   switch (scope) {
     case 'mine':
-      // Assigned to me OR offered to me. Excludes archived.
-      return list.filter((c) => c.status !== 'archived' && !!me && isMineContribution(c, me));
+      // Assigned to me OR offered to me. Excludes archived and rewarded.
+      return list.filter(
+        (c) => !HIDDEN_TERMINAL_STATUSES.has(c.status) && !!me && isMineContribution(c, me),
+      );
     case 'all':
       // Hide planning ('confirmed'), hide private offers to other users,
-      // and hide archived (archived has its own chip).
+      // and hide archived/rewarded (each has its own chip).
       return list.filter((c) => {
-        if (c.status === 'archived') return false;
+        if (HIDDEN_TERMINAL_STATUSES.has(c.status)) return false;
         if (c.status === 'confirmed') return false;
         const raw = c as typeof c & { offered_to?: string };
         if (c.status === 'offered' && raw.offered_to && raw.offered_to !== me) return false;
@@ -90,7 +95,9 @@ export function filterByScope(
     case 'in_review':
       return list.filter((c) => c.status === 'needs_review');
     case 'signed_off':
-      return list.filter((c) => SIGNED_OFF_STATUSES.has(c.status));
+      return list.filter((c) => c.status === 'signed_off');
+    case 'rewarded':
+      return list.filter((c) => c.status === 'rewarded');
     case 'archived':
       return list.filter((c) => c.status === 'archived');
     default:

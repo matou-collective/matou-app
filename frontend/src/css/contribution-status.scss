@@ -1,0 +1,110 @@
+// Shared colour palette + mixins for contribution status styling
+// ("whole-card wash" scheme, chosen over a badge-only or lifecycle-stripe
+// alternative). Single source of truth so the palette isn't repeated across
+// ContributionStatusBadge / ContributionCard / ContributionCardCompact /
+// ContributionSlimCard.
+//
+// Usage:
+//   - Badge (solid colour, white text): apply `.{status}` class to the badge
+//     element, then `@include contribution-status-badge;` in its selector.
+//   - Card wash (tinted background/border): apply `.contrib-status-{status}`
+//     to the card's own root element, then `@include contribution-status-wash;`
+//     in the card's own selector.
+//   - Overdue tag: `@include contribution-overdue-tag;` for the floating
+//     "Overdue" label markup.
+
+$contribution-status-colors: (
+  'created': #5a7b8a,
+  'confirmed': #2e7d32,
+  'shared': #0277bd,
+  'offered': #3949ab,
+  'assigned': #1565c0,
+  'changed': #e65100,
+  'in_progress': #e65100,
+  'needs_review': #c62828,
+  'approved': #1b5e20,
+  'incomplete': #f57f17,
+  'declined': #b71c1c,
+  'signed_off': #4527a0,
+  'rewarded': #90a4ae,
+  'archived': #546e7a,
+  // Legacy statuses no longer issued but still present in older data.
+  'cancelled': #546e7a,
+  'rejected': #b71c1c,
+);
+
+// Statuses whose badge + card are fully greyed out (done, out of play).
+$contribution-status-greyed: ('rewarded', 'archived', 'cancelled');
+
+// Statuses whose card stays clear/undyed so active work is easy to spot.
+$contribution-status-clear: ('assigned');
+
+$contribution-status-grey: #90a4ae;
+
+// Apply to the badge element's own selector (expects `.{status}` classes,
+// e.g. ContributionStatusBadge's `:class="status"`).
+@mixin contribution-status-badge {
+  @each $status, $color in $contribution-status-colors {
+    &.#{$status} {
+      background: $color;
+      color: white;
+    }
+  }
+
+  // Overrides above: rewarded/archived/cancelled always read as grey.
+  @each $status in $contribution-status-greyed {
+    &.#{$status} {
+      background: $contribution-status-grey;
+      color: white;
+    }
+  }
+}
+
+// Apply to the card's own selector (expects `.contrib-status-{status}`
+// classes on the same root element).
+@mixin contribution-status-wash {
+  @each $status, $color in $contribution-status-colors {
+    &.contrib-status-#{$status} {
+      background: rgba($color, 0.045);
+      border-color: rgba($color, 0.28);
+    }
+  }
+
+  // Overrides above: assigned stays a clear card so active work pops.
+  @each $status in $contribution-status-clear {
+    &.contrib-status-#{$status} {
+      background: var(--matou-card);
+      border-color: var(--matou-border);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07);
+    }
+  }
+
+  // Overrides above: rewarded/archived/cancelled are fully desaturated.
+  @each $status in $contribution-status-greyed {
+    &.contrib-status-#{$status} {
+      background: var(--matou-muted);
+      border-color: var(--matou-border);
+      filter: grayscale(0.9);
+      opacity: 0.72;
+    }
+  }
+}
+
+@mixin contribution-overdue-tag {
+  position: absolute;
+  top: -9px;
+  right: 12px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--matou-destructive);
+  color: white;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}

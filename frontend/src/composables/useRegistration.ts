@@ -7,6 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
 import { fetchOrgConfig } from 'src/api/config';
+import { buildSenderOobiFields } from 'src/lib/registrationResolve';
 import { setBackendIdentity, sendRegistrationSubmittedNotification } from 'src/lib/api/client';
 import { useAppStore } from 'stores/app';
 import { secureStorage } from 'src/lib/secureStorage';
@@ -88,18 +89,28 @@ export function useRegistration() {
       console.log(`[Registration] Found ${admins.length} admin(s) to notify`);
       console.log('[Registration] Admin details:', JSON.stringify(admins, null, 2));
 
-      // Step 2: Get sender's OOBI to include in registration (required for credential delivery)
-      let senderOOBI = '';
+      // Step 2: Record sender OOBIs (required for credential delivery).
+      // The bare form (`…/oobi/<AID>`) is what admins resolve — it survives
+      // agent re-boots, unlike the agent form whose agent AID goes stale
+      // whenever the client re-boots (Andrew Weaver incident). The agent form
+      // is recorded separately for diagnostics only, so failing to fetch it
+      // must not block registration.
+      let senderAgentOobi: string | undefined;
       try {
-        senderOOBI = await keriClient.getOOBI(currentAID.prefix);
-        console.log('[Registration] Got sender OOBI:', senderOOBI);
+        senderAgentOobi = await keriClient.getOOBI(currentAID.prefix);
+        console.log('[Registration] Got agent-form OOBI:', senderAgentOobi);
       } catch (oobiErr) {
-        console.error('[Registration] Could not get sender OOBI:', oobiErr);
+        console.warn('[Registration] Could not get agent-form OOBI (continuing with bare form):', oobiErr);
+      }
+      const senderOobis = buildSenderOobiFields({
+        prefix: currentAID.prefix,
+        cesrUrl: keriClient.getCesrUrl(),
+        agentOobi: senderAgentOobi,
+      });
+      if (!senderOobis) {
         throw new Error('Could not generate your OOBI — the admin needs this to deliver your credential. Please ensure KERIA is running and try again.');
       }
-      if (!senderOOBI) {
-        throw new Error('Generated OOBI is empty — cannot register without a valid OOBI for credential delivery.');
-      }
+      console.log('[Registration] Sender OOBI (bare):', senderOobis.senderOOBI);
 
       // Step 3: Resolve org OOBI (required for credential delivery)
       try {
@@ -136,7 +147,8 @@ export function useRegistration() {
           avatarFileRef: profile.avatarFileRef,
           avatarData: profile.avatarData,
           avatarMimeType: profile.avatarMimeType,
-          senderOOBI,
+          senderOOBI: senderOobis.senderOOBI,
+          senderAgentOobi: senderOobis.senderAgentOobi,
         }
       );
 

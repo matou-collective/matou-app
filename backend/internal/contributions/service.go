@@ -9,11 +9,112 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
 var ErrNotFound = errors.New("not found")
+
+// maxPlanChangeLogEntries caps ImplementationPlan.ChangeLog to avoid unbounded
+// growth; only the most recent entries are kept.
+const maxPlanChangeLogEntries = 200
+
+// appendPlanChange appends a change-log entry to the plan's ChangeLog, filling
+// in ID and ChangedAt, and caps the log at maxPlanChangeLogEntries most recent
+// entries. It only mutates the in-memory plan — callers are responsible for
+// persisting it (typically as part of the same save that performs the
+// underlying mutation, keeping the log entry atomic with the change).
+func appendPlanChange(plan *ImplementationPlan, entry PlanChangeEntry) {
+	entry.ID = generateID("chg")
+	entry.ChangedAt = time.Now()
+	plan.ChangeLog = append(plan.ChangeLog, entry)
+	if len(plan.ChangeLog) > maxPlanChangeLogEntries {
+		plan.ChangeLog = plan.ChangeLog[len(plan.ChangeLog)-maxPlanChangeLogEntries:]
+	}
+}
+
+// fieldChange returns a *FieldChange when oldV and newV differ, nil otherwise.
+// Used to build the Changes slice on a PlanChangeEntry from only the fields
+// that actually changed.
+func fieldChange(field, oldV, newV string) *FieldChange {
+	if oldV == newV {
+		return nil
+	}
+	return &FieldChange{Field: field, OldValue: oldV, NewValue: newV}
+}
+
+// diffMilestoneUpdate compares a milestone's pre-update state against an
+// UpdateMilestoneRequest and returns FieldChange entries for only the fields
+// the request touched and actually changed.
+func diffMilestoneUpdate(before Milestone, req *UpdateMilestoneRequest) []FieldChange {
+	var changes []FieldChange
+	add := func(fc *FieldChange) {
+		if fc != nil {
+			changes = append(changes, *fc)
+		}
+	}
+	if req.Title != nil {
+		add(fieldChange("title", before.Title, *req.Title))
+	}
+	if req.Description != nil {
+		add(fieldChange("description", before.Description, *req.Description))
+	}
+	if req.Duration != nil {
+		add(fieldChange("duration", before.Duration, *req.Duration))
+	}
+	if req.StartDate != nil {
+		add(fieldChange("start_date", before.StartDate, *req.StartDate))
+	}
+	if req.EndDate != nil {
+		add(fieldChange("end_date", before.EndDate, *req.EndDate))
+	}
+	if req.BudgetAllocation != nil {
+		add(fieldChange("budget_allocation",
+			strconv.FormatFloat(before.BudgetAllocation, 'f', -1, 64),
+			strconv.FormatFloat(*req.BudgetAllocation, 'f', -1, 64)))
+	}
+	if req.SuccessCriteria != nil {
+		add(fieldChange("success_criteria", strings.Join(before.SuccessCriteria, "; "), strings.Join(req.SuccessCriteria, "; ")))
+	}
+	if req.Status != nil {
+		add(fieldChange("status", string(before.Status), *req.Status))
+	}
+	return changes
+}
+
+// DiffContributionFields compares a contribution's before/after state and
+// returns FieldChange entries for every field that differs. Used to record a
+// server-side diff on the plan's change log for contribution edits.
+func DiffContributionFields(before, after *Contribution) []FieldChange {
+	var changes []FieldChange
+	add := func(fc *FieldChange) {
+		if fc != nil {
+			changes = append(changes, *fc)
+		}
+	}
+	formatDeadline := func(t *time.Time) string {
+		if t == nil {
+			return ""
+		}
+		return t.Format(time.RFC3339)
+	}
+	add(fieldChange("title", before.Title, after.Title))
+	add(fieldChange("description", before.Description, after.Description))
+	add(fieldChange("objectives", strings.Join(before.Objectives, "; "), strings.Join(after.Objectives, "; ")))
+	add(fieldChange("deliverables", strings.Join(before.Deliverables, "; "), strings.Join(after.Deliverables, "; ")))
+	add(fieldChange("acceptance_criteria", strings.Join(before.AcceptanceCriteria, "; "), strings.Join(after.AcceptanceCriteria, "; ")))
+	add(fieldChange("skill_requirements", strings.Join(before.SkillRequirements, "; "), strings.Join(after.SkillRequirements, "; ")))
+	add(fieldChange("estimated_duration", strconv.Itoa(before.EstimatedDuration), strconv.Itoa(after.EstimatedDuration)))
+	add(fieldChange("deadline", formatDeadline(before.Deadline), formatDeadline(after.Deadline)))
+	add(fieldChange("budget", before.Budget, after.Budget))
+	add(fieldChange("assigned_contributor", before.AssignedContributorID, after.AssignedContributorID))
+	add(fieldChange("evidence_submitted", strings.Join(before.EvidenceSubmitted, "; "), strings.Join(after.EvidenceSubmitted, "; ")))
+	add(fieldChange("completion_notes", before.CompletionNotes, after.CompletionNotes))
+	add(fieldChange("review_feedback", before.ReviewFeedback, after.ReviewFeedback))
+	add(fieldChange("quality_rating", strconv.Itoa(before.QualityRating), strconv.Itoa(after.QualityRating)))
+	return changes
+}
 
 // ObjectStore abstracts any-sync object tree operations for testability.
 type ObjectStore interface {
@@ -60,16 +161,16 @@ func ParseDeadline(s string) *time.Time {
 // --- Proposals ---
 
 type CreateProposalRequest struct {
-	ProposerID       string            `json:"proposer_id"`
-	Title            string            `json:"title"`
-	Types            []ProposalType    `json:"type"`
-	Priority         Priority          `json:"priority"`
-	Description      string            `json:"description"`
-	ProblemStatement string            `json:"problem_statement"`
-	Solution         string            `json:"solution"`
-	ExpectedOutcomes []string          `json:"expected_outcomes"`
-	EstimatedBudget  string            `json:"estimated_budget"`
-	Timeline         string            `json:"timeline"`
+	ProposerID           string            `json:"proposer_id"`
+	Title                string            `json:"title"`
+	Types                []ProposalType    `json:"type"`
+	Priority             Priority          `json:"priority"`
+	Description          string            `json:"description"`
+	ProblemStatement     string            `json:"problem_statement"`
+	Solution             string            `json:"solution"`
+	ExpectedOutcomes     []string          `json:"expected_outcomes"`
+	EstimatedBudget      string            `json:"estimated_budget"`
+	Timeline             string            `json:"timeline"`
 	ProjectPlan          []ProjectPlanItem `json:"project_plan,omitempty"`
 	Attachments          []Attachment      `json:"attachments,omitempty"`
 	EndorsementThreshold int               `json:"endorsement_threshold,omitempty"`
@@ -494,19 +595,19 @@ func (s *Service) CreateRoleContributions(ctx context.Context, spaceID string, p
 	// Create Proposal Lead contribution
 	leadID := generateID("ctr")
 	leadContrib := &Contribution{
-		ID:               leadID,
-		ProjectID:        "proposals",
-		Title:            fmt.Sprintf("Proposal Lead - %s", proposal.Title),
-		Description:      fmt.Sprintf("Lead reviewer for proposal: %s", proposal.Title),
-		ContributionType: ProposalTypeGovernance,
-		Priority:         proposal.Priority,
-		CreatedBy:        "system",
-		Objectives:       []string{"Review and sign off proposal"},
-		Deliverables:     []string{"Proposal review and sign-off"},
+		ID:                 leadID,
+		ProjectID:          "proposals",
+		Title:              fmt.Sprintf("Proposal Lead - %s", proposal.Title),
+		Description:        fmt.Sprintf("Lead reviewer for proposal: %s", proposal.Title),
+		ContributionType:   ProposalTypeGovernance,
+		Priority:           proposal.Priority,
+		CreatedBy:          "system",
+		Objectives:         []string{"Review and sign off proposal"},
+		Deliverables:       []string{"Proposal review and sign-off"},
 		AcceptanceCriteria: []string{"Proposal reviewed and decision made"},
-		Status:           ContribCreated,
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
+		Status:             ContribCreated,
+		CreatedAt:          time.Now(),
+		UpdatedAt:          time.Now(),
 	}
 	if err := s.store.Save(spaceID, leadID, "contribution", leadContrib); err == nil {
 		proposal.LeadContributionID = leadID
@@ -515,19 +616,19 @@ func (s *Service) CreateRoleContributions(ctx context.Context, spaceID string, p
 	// Create Proposal Steward contribution
 	stewardID := generateID("ctr")
 	stewardContrib := &Contribution{
-		ID:               stewardID,
-		ProjectID:        "proposals",
-		Title:            fmt.Sprintf("Proposal Steward - %s", proposal.Title),
-		Description:      fmt.Sprintf("Steward reviewer for proposal: %s", proposal.Title),
-		ContributionType: ProposalTypeGovernance,
-		Priority:         proposal.Priority,
-		CreatedBy:        "system",
-		Objectives:       []string{"Review and sign off decision plan"},
-		Deliverables:     []string{"Decision plan review and sign-off"},
+		ID:                 stewardID,
+		ProjectID:          "proposals",
+		Title:              fmt.Sprintf("Proposal Steward - %s", proposal.Title),
+		Description:        fmt.Sprintf("Steward reviewer for proposal: %s", proposal.Title),
+		ContributionType:   ProposalTypeGovernance,
+		Priority:           proposal.Priority,
+		CreatedBy:          "system",
+		Objectives:         []string{"Review and sign off decision plan"},
+		Deliverables:       []string{"Decision plan review and sign-off"},
 		AcceptanceCriteria: []string{"Decision plan reviewed and signed off"},
-		Status:           ContribCreated,
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
+		Status:             ContribCreated,
+		CreatedAt:          time.Now(),
+		UpdatedAt:          time.Now(),
 	}
 	if err := s.store.Save(spaceID, stewardID, "contribution", stewardContrib); err == nil {
 		proposal.StewardContributionID = stewardID
@@ -1149,7 +1250,10 @@ type CreateMilestoneRequest struct {
 	ContributionIDs      []string `json:"contribution_ids,omitempty"`
 }
 
-func (s *Service) AddMilestone(ctx context.Context, spaceID string, req *CreateMilestoneRequest) (*Milestone, error) {
+// AddMilestone creates a milestone and appends a "milestone_added" entry to
+// the parent plan's change log. actorID identifies who made the change and
+// may be empty when the caller has no authenticated actor available.
+func (s *Service) AddMilestone(ctx context.Context, spaceID, actorID string, req *CreateMilestoneRequest) (*Milestone, error) {
 	ms := &Milestone{
 		MilestoneID:          generateID("ms"),
 		ImplementationPlanID: req.ImplementationPlanID,
@@ -1166,6 +1270,12 @@ func (s *Service) AddMilestone(ctx context.Context, spaceID string, req *CreateM
 	plan, err := s.GetImplementationPlan(ctx, spaceID, req.ImplementationPlanID)
 	if err == nil {
 		plan.Milestones = append(plan.Milestones, *ms)
+		appendPlanChange(plan, PlanChangeEntry{
+			Kind:           "milestone_added",
+			MilestoneID:    ms.MilestoneID,
+			MilestoneTitle: ms.Title,
+			ChangedBy:      actorID,
+		})
 		plan.UpdatedAt = time.Now()
 		_ = s.store.Save(spaceID, plan.ID, "implementation_plan", plan)
 	}
@@ -1301,6 +1411,14 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 					if plan.SignedOff {
 						plan.SignedOff = false
 					}
+					appendPlanChange(plan, PlanChangeEntry{
+						Kind:              "contribution_added",
+						MilestoneID:       ms.MilestoneID,
+						MilestoneTitle:    ms.Title,
+						ContributionID:    c.ID,
+						ContributionTitle: c.Title,
+						ChangedBy:         c.CreatedBy,
+					})
 					plan.UpdatedAt = now
 					_ = s.store.Save(spaceID, plan.ID, "implementation_plan", plan)
 				}
@@ -1874,6 +1992,9 @@ func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID strin
 	plan.SignedOffBy = userID
 	plan.SignedOffAt = &now
 	plan.CurrentStatus = "active"
+	// Change log entries represent "changes since last sign-off" — clear them
+	// now that the plan has been (re-)signed off.
+	plan.ChangeLog = nil
 	plan.UpdatedAt = now
 	if err := s.store.Save(spaceID, plan.ID, "implementation_plan", plan); err != nil {
 		return nil, fmt.Errorf("saving plan: %w", err)
@@ -2115,8 +2236,14 @@ func (s *Service) findMilestone(ctx context.Context, spaceID, milestoneID string
 
 // UnsignPlanForProject finds all implementation plans for the given project and
 // clears their signoff state. No-op if no plan exists or the plan is already not
-// signed off. Returns the first error encountered.
-func (s *Service) UnsignPlanForProject(ctx context.Context, spaceID, projectID string) error {
+// signed off (unless entry is non-nil, in which case the change is still
+// recorded on the plan's change log). Returns the first error encountered.
+//
+// entry, if non-nil, is appended as a change-log entry to every matching plan;
+// ID and ChangedAt are filled in by appendPlanChange. Pass nil when the caller
+// has no change to record (e.g. a mutation that only needs to invalidate
+// sign-off without a corresponding change-log kind).
+func (s *Service) UnsignPlanForProject(ctx context.Context, spaceID, projectID string, entry *PlanChangeEntry) error {
 	plans, err := s.ListImplementationPlans(ctx, spaceID)
 	if err != nil {
 		return fmt.Errorf("list plans: %w", err)
@@ -2125,13 +2252,21 @@ func (s *Service) UnsignPlanForProject(ctx context.Context, spaceID, projectID s
 		if p.ProjectID != projectID {
 			continue
 		}
-		if !p.SignedOff {
+		changed := false
+		if p.SignedOff {
+			// Keep SignedOffBy / SignedOffAt as a historical record of the last
+			// signoff so the UI can show "Last signed off by X on Y, then modified."
+			// Only flip the boolean to require re-signoff.
+			p.SignedOff = false
+			changed = true
+		}
+		if entry != nil {
+			appendPlanChange(p, *entry)
+			changed = true
+		}
+		if !changed {
 			continue
 		}
-		// Keep SignedOffBy / SignedOffAt as a historical record of the last
-		// signoff so the UI can show "Last signed off by X on Y, then modified."
-		// Only flip the boolean to require re-signoff.
-		p.SignedOff = false
 		p.UpdatedAt = time.Now()
 		if err := s.SaveImplementationPlan(ctx, spaceID, p); err != nil {
 			return fmt.Errorf("save plan %s: %w", p.ID, err)
@@ -2141,8 +2276,10 @@ func (s *Service) UnsignPlanForProject(ctx context.Context, spaceID, projectID s
 }
 
 // ArchiveMilestone archives a single milestone and cascades to all contributions
-// associated with it, including any sub-contributions (recursive).
-func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID string) error {
+// associated with it, including any sub-contributions (recursive). actorID
+// identifies who made the change and may be empty when the caller has no
+// authenticated actor available.
+func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID, actorID string) error {
 	plan, _, err := s.findMilestone(ctx, spaceID, milestoneID)
 	if err != nil {
 		return err
@@ -2157,14 +2294,22 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID str
 
 	// Archive the milestone inside the plan and invalidate plan signoff.
 	// Keep SignedOffBy/SignedOffAt as historical record of last signoff.
+	var archivedTitle string
 	for i := range plan.Milestones {
 		if plan.Milestones[i].MilestoneID == milestoneID {
+			archivedTitle = plan.Milestones[i].Title
 			plan.Milestones[i].Status = MilestoneArchived
 		}
 	}
 	if plan.SignedOff {
 		plan.SignedOff = false
 	}
+	appendPlanChange(plan, PlanChangeEntry{
+		Kind:           "milestone_archived",
+		MilestoneID:    milestoneID,
+		MilestoneTitle: archivedTitle,
+		ChangedBy:      actorID,
+	})
 	plan.UpdatedAt = time.Now()
 	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
 		capture(fmt.Errorf("save plan: %w", err))
@@ -2219,8 +2364,9 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID str
 }
 
 // ArchiveContribution archives a single contribution and cascades to all of its
-// sub-contributions (recursive).
-func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID string) error {
+// sub-contributions (recursive). actorID identifies who made the change and
+// may be empty when the caller has no authenticated actor available.
+func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, actorID string) error {
 	contrib, err := s.GetContribution(ctx, spaceID, contribID)
 	if err != nil {
 		return err
@@ -2261,7 +2407,14 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID st
 	archive(contribID)
 
 	// Archiving a contribution invalidates the plan signoff — re-signoff is required.
-	if err := s.UnsignPlanForProject(ctx, spaceID, contrib.ProjectID); err != nil {
+	entry := &PlanChangeEntry{
+		Kind:              "contribution_removed",
+		MilestoneID:       contrib.MilestoneID,
+		ContributionID:    contrib.ID,
+		ContributionTitle: contrib.Title,
+		ChangedBy:         actorID,
+	}
+	if err := s.UnsignPlanForProject(ctx, spaceID, contrib.ProjectID, entry); err != nil {
 		capture(fmt.Errorf("unsign plan: %w", err))
 	}
 
@@ -2302,19 +2455,23 @@ type UpdateMilestoneRequest struct {
 	Status           *string  `json:"status,omitempty"`
 }
 
-// UpdateMilestone applies patch-style updates to a milestone and saves its parent plan.
-func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID string, req *UpdateMilestoneRequest) (*Milestone, error) {
+// UpdateMilestone applies patch-style updates to a milestone and saves its
+// parent plan. actorID identifies who made the change and may be empty when
+// the caller has no authenticated actor available.
+func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID, actorID string, req *UpdateMilestoneRequest) (*Milestone, error) {
 	plan, _, err := s.findMilestone(ctx, spaceID, milestoneID)
 	if err != nil {
 		return nil, err
 	}
 
 	var updated *Milestone
+	var changes []FieldChange
 	for i := range plan.Milestones {
 		if plan.Milestones[i].MilestoneID != milestoneID {
 			continue
 		}
 		m := &plan.Milestones[i]
+		before := *m
 		if req.Title != nil {
 			m.Title = *req.Title
 		}
@@ -2339,6 +2496,7 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID stri
 		if req.Status != nil {
 			m.Status = MilestoneStatus(*req.Status)
 		}
+		changes = diffMilestoneUpdate(before, req)
 		updated = m
 		break
 	}
@@ -2349,6 +2507,15 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID stri
 	// Keep SignedOffBy/SignedOffAt as historical record of last signoff.
 	if plan.SignedOff {
 		plan.SignedOff = false
+	}
+	if len(changes) > 0 {
+		appendPlanChange(plan, PlanChangeEntry{
+			Kind:           "milestone_edited",
+			MilestoneID:    updated.MilestoneID,
+			MilestoneTitle: updated.Title,
+			Changes:        changes,
+			ChangedBy:      actorID,
+		})
 	}
 	plan.UpdatedAt = time.Now()
 	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {

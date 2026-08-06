@@ -221,25 +221,35 @@
           <!-- Plan-modified banner (was signed off, then a milestone or contribution was edited/archived) -->
           <div v-if="planWasModified" class="plan-modified-banner">
             <AlertCircle class="banner-icon" />
-            <div>
+            <div class="banner-content">
               <div class="banner-title">Plan modified — re-signoff required</div>
               <div class="banner-subtitle">
                 A milestone or contribution was changed since the plan was last signed off.
                 Contributions cannot be signed off until the plan is re-signed.
                 <span v-if="implementationPlan.signed_off_by">
-                  Last signed off by {{ implementationPlan.signed_off_by }}<span v-if="implementationPlan.signed_off_at"> on {{ formatDate(implementationPlan.signed_off_at) }}</span>.
+                  Last signed off by {{ signedOffByLabel }}<span v-if="implementationPlan.signed_off_at"> on {{ formatDate(implementationPlan.signed_off_at) }}</span>.
                 </span>
               </div>
+              <div class="banner-actions">
+                <q-btn
+                  v-if="implementationPlan.change_log?.length"
+                  outline
+                  no-caps
+                  color="primary"
+                  icon="visibility"
+                  :label="showChangesActive ? 'Hide changes' : 'Show changes'"
+                  @click="showChangesActive = !showChangesActive"
+                />
+                <q-btn
+                  v-if="perms.canSignOffPlan.value"
+                  no-caps
+                  color="primary"
+                  label="Re-Sign Off Plan"
+                  :loading="signingOffPlan"
+                  @click="handleSignOffPlan"
+                />
+              </div>
             </div>
-            <q-btn
-              v-if="perms.canSignOffPlan.value"
-              no-caps
-              color="primary"
-              label="Re-Sign Off Plan"
-              class="q-ml-auto"
-              :loading="signingOffPlan"
-              @click="handleSignOffPlan"
-            />
           </div>
 
           <!-- Milestones -->
@@ -247,6 +257,12 @@
             <Clock class="empty-icon" />
             <span>No milestones yet.</span>
           </div>
+
+          <PlanChangesRedline
+            v-else-if="showChangesActive && implementationPlan.change_log?.length"
+            :milestones="milestones"
+            :change-log="implementationPlan.change_log"
+          />
 
           <div v-else class="milestones-list">
             <MilestoneCard
@@ -590,6 +606,7 @@
         </div>
       </q-card>
     </q-dialog>
+
   </div>
 </template>
 
@@ -618,6 +635,8 @@ import { useProposalsStore } from 'stores/proposals';
 import { useIdentityStore } from 'stores/identity';
 import { useContributionsStore } from 'stores/contributions';
 import { useProfilesStore } from 'stores/profiles';
+import { useAppStore } from 'stores/app';
+import { resolveAidDisplay } from 'src/lib/aidDisplay';
 import type { Contribution, Milestone, CreateMilestoneRequest } from 'src/types/projects';
 import type { CreateContributionRequest, UpdateContributionRequest } from 'src/lib/api/contributions';
 import type { UpdateMilestoneRequest } from 'src/lib/api/implementationPlans';
@@ -635,6 +654,7 @@ import ConfirmArchiveDialog from 'src/components/common/ConfirmArchiveDialog.vue
 import MemberPicker from 'src/components/common/MemberPicker.vue';
 import ProjectCompletionSection from 'src/components/projects/ProjectCompletionSection.vue';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
+import PlanChangesRedline from 'src/components/projects/PlanChangesRedline.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -983,6 +1003,18 @@ const planWasModified = computed(
     !!implementationPlan.value
     && !implementationPlan.value.signed_off
     && !!implementationPlan.value.signed_off_at,
+);
+
+// Toggles the "Show changes" redline view in place of the milestone list.
+const showChangesActive = ref(false);
+
+const appStore = useAppStore();
+
+const signedOffByLabel = computed(() =>
+  resolveAidDisplay(implementationPlan.value?.signed_off_by, profilesStore.profilesByAid, {
+    aid: appStore.orgAid,
+    name: appStore.orgName,
+  }),
 );
 
 const linkedProposals = computed(() => {
@@ -1833,6 +1865,22 @@ async function submitAssign() {
   margin-bottom: 16px;
 
   .banner-icon { color: #b91c1c; }
+}
+
+.banner-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.banner-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+
+  .q-btn {
+    min-width: 180px;
+  }
 }
 
 .banner-icon {

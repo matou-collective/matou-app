@@ -32,3 +32,16 @@ export async function assignWitnesses(): Promise<WitnessAssignment> {
     toad: pool.length >= 4 ? 2 : 1,
   };
 }
+
+/**
+ * Extract witness AIDs from KERIA config introduction OOBI URLs (iurls).
+ * iurls can also carry schema/data OOBIs (they belong in durls but have been
+ * mixed in — infra 2c010fb): those SAIDs are 'E'-prefixed digests, and passing
+ * one as a witness makes KERIA reject inception with "unknown witness".
+ * Witnesses are always non-transferable 'B'-prefixed AIDs, so filter on that.
+ */
+export function extractWitnessAids(iurls: string[]): string[] {
+  return iurls
+    .map((iurl) => /\/oobi\/([^/]+)/.exec(iurl)?.[1] ?? '')
+    .filter((aid) => aid.startsWith('B'));
+}

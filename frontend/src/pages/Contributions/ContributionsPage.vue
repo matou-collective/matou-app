@@ -172,9 +172,9 @@ import {
   type SortField,
   type SortDirection,
 } from 'src/lib/contributionsView';
-import ContributionCard from 'src/components/contributions/ContributionCard.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionsTimelineView from 'src/pages/Contributions/ContributionsTimelineView.vue';
+import ContributionCard from 'src/components/contributions/ContributionCard.vue';
 
 const router = useRouter();
 const $q = useQuasar();

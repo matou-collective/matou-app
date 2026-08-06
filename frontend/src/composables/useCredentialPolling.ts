@@ -85,6 +85,10 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   // Internal state
   let stopWatcher: (() => void) | null = null;
   let isProcessingGrant = false;
+  // Issuer of the last admitted grant — pollForCredential re-queries its key
+  // state while waiting, to unblock the Verifier/Tevery escrow for
+  // credentials issued from a (group) AID whose latest anchor we lack.
+  let lastGrantSender: string | null = null;
 
   // Rejection persistence (keyed by AID)
   const rejectionStorageKey = computed(() => {
@@ -561,6 +565,26 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       await client.notifications().mark(grant.i);
 
       console.log('[CredentialPolling] Grant admitted successfully');
+      lastGrantSender = grantSender || null;
+
+      // De-escrow: our agent may not know the grant issuer's key state yet
+      // (e.g. a credential issued from the org GROUP AID by an upgraded
+      // steward — "Unable to find sender <group AID> in kevers"). Without it
+      // the credential sits in the Verifier/Tevery escrow and never reaches
+      // the wallet. Resolving the issuer's bare OOBI (stable across agent
+      // re-boots) pushes their KEL/TEL so the escrow can finalize.
+      if (grantSender) {
+        const issuerOobi = `${keriClient.getCesrUrl().replace(/\/+$/, '')}/oobi/${grantSender}`;
+        void keriClient.resolveOOBIWithReason(issuerOobi, undefined, 30000).then((result) => {
+          if (!result.ok) {
+            console.warn(`[CredentialPolling] Grant issuer OOBI resolve failed (${issuerOobi}): ${result.reason || 'unknown'}`);
+          }
+        });
+        // Witness route as well: witnesses hold fully RECEIPTED copies of the
+        // issuer's events, and their URLs bypass KERIA's already-resolved
+        // OOBI dedup — required when an unreceipted copy is already escrowed.
+        void keriClient.resolveViaWitnesses(grantSender);
+      }
     } catch (err) {
       console.error('[CredentialPolling] Failed to admit grant:', err);
       throw err;
@@ -578,17 +602,22 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       return;
     }
 
-    // Poll with shorter interval for credential arrival
+    // Poll with shorter interval for credential arrival. 120s window: a
+    // credential issued from the group AID must clear the Verifier/Tevery
+    // escrow on our agent (issuer key state + TEL sync) before it appears
+    // in the wallet, which can take well over the old 60s bound.
     const credentialPollInterval = 2000;
-    const maxAttempts = 30; // 60 seconds max
+    const maxAttempts = 60; // 120 seconds max
     let attempts = 0;
 
     const checkCredential = async (): Promise<boolean> => {
       try {
         await notificationService.triggerNow();
+        const myAid = identityStore.currentAID?.prefix || '';
         const credentials = [...notificationService.credentials.value];
         for (const cred of credentials) {
           const schema = cred.sad?.s || '';
+          const recipient = cred.sad?.a?.i || '';
           if (schema === ENDORSEMENT_SCHEMA_SAID) {
             if (!endorsementReceived.value) {
               endorsementReceived.value = true;
@@ -596,7 +625,14 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             }
             continue; // Skip endorsement credentials
           }
-          // This is a membership credential
+          // Only the membership credential issued TO us counts. The wallet
+          // can also hold event-attendance credentials (and chained creds
+          // from ACDC edges) — treating one of those as the membership
+          // credential syncs an empty role to the backend, which rejects it
+          // with "invalid role" (list ordering made this flaky).
+          if (schema !== MEMBERSHIP_SCHEMA_SAID || (myAid && recipient !== myAid)) {
+            continue;
+          }
           console.log('[CredentialPolling] Membership credential received:', cred.sad?.d);
           credential.value = cred;
           credentialReceived.value = true;
@@ -620,6 +656,16 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       const credentialTimer = setInterval(async () => {
         attempts++;
         console.log(`[CredentialPolling] Polling attempt ${attempts}/${maxAttempts}...`);
+
+        // Still waiting after ~20s: re-query the grant issuer's key state
+        // from its witnesses. A group-issued credential stays escrowed until
+        // our agent sees the KEL event anchoring its registry; witnesses
+        // hold the receipted event even when the issuer's push missed us.
+        if (lastGrantSender && (attempts === 3 || attempts % 10 === 0) && !credentialReceived.value) {
+          console.log(`[CredentialPolling] Credential still pending — refreshing issuer key state (${lastGrantSender.slice(0, 12)}...)`);
+          void keriClient.refreshKeyState(lastGrantSender);
+          void keriClient.resolveViaWitnesses(lastGrantSender);
+        }
 
         if (await checkCredential()) {
           clearInterval(credentialTimer);

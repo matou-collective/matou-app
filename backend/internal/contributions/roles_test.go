@@ -14,10 +14,10 @@ func TestMapKERIRole(t *testing.T) {
 	if !HasRole(roles, RoleCommunitySteward) {
 		t.Error("expected Community Steward mapping")
 	}
-	// Unknown role returns empty
+	// Unknown role falls back to plain member
 	roles = MapKERIRole("Unknown Role")
-	if len(roles) != 0 {
-		t.Errorf("expected empty roles for unknown, got %v", roles)
+	if len(roles) != 1 || !HasRole(roles, RoleMember) {
+		t.Errorf("expected [member] for unknown role, got %v", roles)
 	}
 }
 
@@ -30,9 +30,9 @@ func TestCanPerformAction_CreateContribution(t *testing.T) {
 	if !CanPerformAction([]Role{RoleFoundingMember}, ActionCreateContribution) {
 		t.Error("founding member should create contributions")
 	}
-	// Plain contributor cannot create top-level contributions
-	if CanPerformAction([]Role{RoleContributor}, ActionCreateContribution) {
-		t.Error("contributor should not create top-level contributions")
+	// Contributions are member-created and steward-confirmed: any role can create
+	if !CanPerformAction([]Role{RoleContributor}, ActionCreateContribution) {
+		t.Error("contributor should create contributions")
 	}
 }
 
@@ -40,8 +40,8 @@ func TestCanPerformAction_AssignContribution(t *testing.T) {
 	if !CanPerformAction([]Role{RoleProjectLead}, ActionAssignContribution) {
 		t.Error("project lead should assign")
 	}
-	if CanPerformAction([]Role{RoleContributor}, ActionAssignContribution) {
-		t.Error("contributor should not assign")
+	if !CanPerformAction([]Role{RoleContributor}, ActionAssignContribution) {
+		t.Error("contributor should assign (self-assignment flow)")
 	}
 }
 
@@ -61,8 +61,8 @@ func TestCanPerformAction_ApproveContribution(t *testing.T) {
 	if !CanPerformAction([]Role{RoleProjectLead}, ActionApproveContribution) {
 		t.Error("project lead should approve")
 	}
-	if CanPerformAction([]Role{RoleContributor}, ActionApproveContribution) {
-		t.Error("contributor should not approve")
+	if !CanPerformAction([]Role{RoleContributor}, ActionApproveContribution) {
+		t.Error("contributor should approve (peer-review flow)")
 	}
 }
 

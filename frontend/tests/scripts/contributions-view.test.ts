@@ -52,10 +52,11 @@ describe('filterByType', () => {
 });
 
 describe('filterByScope', () => {
-  it('"all" hides archived, confirmed, and offers to others', () => {
+  it('"all" hides archived, rewarded, confirmed, and offers to others', () => {
     const list = [
       make({ id: 'ok', status: 'shared' }),
       make({ id: 'arch', status: 'archived' }),
+      make({ id: 'rew', status: 'rewarded' }),
       make({ id: 'plan', status: 'confirmed' }),
       make({ id: 'other-offer', status: 'offered', offered_to: 'did:someone-else' }),
       make({ id: 'my-offer', status: 'offered', offered_to: ME }),
@@ -64,15 +65,17 @@ describe('filterByScope', () => {
     expect(r).toContain('ok');
     expect(r).toContain('my-offer');
     expect(r).not.toContain('arch');
+    expect(r).not.toContain('rew');
     expect(r).not.toContain('plan');
     expect(r).not.toContain('other-offer');
   });
 
-  it('"mine" matches assigned or offered to me, excluding archived', () => {
+  it('"mine" matches assigned or offered to me, excluding archived and rewarded', () => {
     const list = [
       make({ id: 'assigned', status: 'in_progress', assigned_contributor_id: ME }),
       make({ id: 'offered', status: 'offered', offered_to: ME }),
       make({ id: 'archived-mine', status: 'archived', assigned_contributor_id: ME }),
+      make({ id: 'rewarded-mine', status: 'rewarded', assigned_contributor_id: ME }),
       make({ id: 'not-mine', status: 'shared' }),
     ];
     const r = filterByScope(list, 'mine', ME).map((c) => c.id);
@@ -97,13 +100,14 @@ describe('filterByScope', () => {
     expect(filterByScope(list, 'assigned', ME).map((c) => c.id)).toEqual(['a', 'b', 'c']);
   });
 
-  it('"signed_off" covers signed_off/rewarded', () => {
+  it('"signed_off" only shows signed_off; rewarded has its own chip', () => {
     const list = [
       make({ id: 'a', status: 'signed_off' }),
       make({ id: 'b', status: 'rewarded' }),
       make({ id: 'c', status: 'needs_review' }),
     ];
-    expect(filterByScope(list, 'signed_off', ME).map((c) => c.id)).toEqual(['a', 'b']);
+    expect(filterByScope(list, 'signed_off', ME).map((c) => c.id)).toEqual(['a']);
+    expect(filterByScope(list, 'rewarded', ME).map((c) => c.id)).toEqual(['b']);
   });
 
   it('"archived" only shows archived', () => {
