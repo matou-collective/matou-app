@@ -17,16 +17,37 @@ HEAL_MAX_REPLIES="${HEAL_MAX_REPLIES:-3}"
 
 # normalize_error_line <line> — strip run-specific noise (hex hashes,
 # numbers, timestamps collapse via the number rule, whitespace runs) so the
-# same fault produces the same text run-to-run.
+# same fault produces the same text run-to-run. Worker names fold first: their
+# random suffix is 6 hex chars — below the 7-char hex rule — and letters in it
+# survive the number rule differently per run (`887403`→N, `c0375b`→cNb), which
+# minted a fresh signature for one recurring fault every run (the 2026-08-01
+# WorktreeError storm: dedup never engaged, one Mattermost post per run).
 normalize_error_line() {
   printf '%s' "$1" |
-    sed -E 's/[0-9a-f]{7,40}/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g' |
+    sed -E 's/sandcastle-worker-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}/sandcastle-worker-W/g; s/[0-9a-f]{7,40}/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g' |
     cut -c1-200
 }
 
 # compute_signature <workflow> <error-line> — 12-char stable incident id.
 compute_signature() {
   printf '%s|%s' "$1" "$(normalize_error_line "$2")" | sha1sum | cut -c1-12
+}
+
+# seam_verdict_signal <verdict-file> — read a seam-verdict.txt artifact
+# (scripts/seam-smoke.sh writes it on failure to a well-known host path, #197)
+# and echo a single "<failing-stage> :: <first-error-line>" string for the
+# incident signature. This is how a `ci` failure — which has no readable log
+# API — carries the *actual* fault into compute_signature, so a moved fault
+# yields a new signature and re-triggers investigation instead of matching the
+# degraded workflow-name-only signature. Empty when the file is missing or
+# carries no stage/error (the caller degrades and says so — AC3).
+seam_verdict_signal() {
+  local f="$1" stage err
+  [ -f "$f" ] || return 0
+  stage="$(sed -n 's/^stage=//p' "$f" | head -1)"
+  err="$(sed -n '/^--- error lines ---$/,$p' "$f" | sed '1d' | grep -E '[^[:space:]]' | head -1)"
+  [ -z "$stage$err" ] && return 0
+  printf '%s :: %s' "$stage" "$err"
 }
 
 # The ledger: one file per signature, key=value lines. Keys: workflow,

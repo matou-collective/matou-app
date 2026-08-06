@@ -48,3 +48,35 @@ sweep_worktrees() {
 
   printf '%s' "$unmerged"
 }
+
+# reap_containers [max_age_seconds]
+# Force-remove leaked Sandcastle worker containers (name `sandcastle-*`) older
+# than a run-lifetime. Worker teardown leaks them — by 2026-07-31 three stale
+# `sandcastle-*` containers (44h and 2×2d old) were still up on an 8GB host
+# (#238). run-swarm.sh calls this from its EXIT trap while it still holds the
+# global /tmp/matou-swarm.lock, so no other swarm is live: any container older
+# than a full run-lifetime is dead and safe to remove regardless of its state
+# (the stale ones were "still up", so a stopped-only prune would miss them).
+# The age floor (default 3h > swarm.yml's 180-min timeout) guarantees this
+# run's own just-finished workers are never in range. Prints each reaped
+# container id, one per line. Never fails the caller — no docker, no problem.
+reap_containers() {
+  local max_age="${1:-10800}"
+  command -v docker >/dev/null 2>&1 || return 0
+  local now cutoff id created created_epoch reaped=""
+  now="$(date +%s)"
+  cutoff="$(( now - max_age ))"
+  # CreatedAt is a human string like "2026-07-29 21:55:00 +0000 UTC". GNU date
+  # chokes on the trailing timezone-abbreviation token but parses the numeric
+  # offset, so drop the last field before `date -d`. A row that still fails to
+  # parse is left alone (fail-safe: never reap something we can't age).
+  while IFS=$'\t' read -r id created; do
+    [ -n "$id" ] || continue
+    created_epoch="$(date -d "${created% *}" +%s 2>/dev/null)" || continue
+    [ -n "$created_epoch" ] || continue
+    if [ "$created_epoch" -lt "$cutoff" ]; then
+      docker rm -f "$id" >/dev/null 2>&1 && reaped+="$id"$'\n'
+    fi
+  done < <(docker ps -a --filter 'name=^/?sandcastle-' --format '{{.ID}}\t{{.CreatedAt}}' 2>/dev/null)
+  printf '%s' "$reaped"
+}

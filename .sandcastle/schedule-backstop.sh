@@ -15,6 +15,20 @@
 # workflow has not run inside its own window, so if Forgejo's schedules ever
 # come back this script quietly does nothing rather than double-firing.
 #
+# Waiting-aware (#238 AC3): on the capacity-1 runner that serves TWO repos, a
+# started run blocks the host for its whole lifetime and every dispatch after it
+# sits `status=waiting` for hours. Counting only STARTED runs (the pre-#238
+# behaviour) meant each tick re-dispatched a workflow whose earlier dispatch was
+# still queued — duplicates piled up 2x per workflow within 20 minutes. So we
+# treat an in-flight run — `waiting` (queued, not yet started) OR `running` —
+# as "already covered" and skip, not just a run STARTED within the window. That
+# guard first lived as a stopgap in the host's backstop-tick.sh wrapper; this is
+# its upstream home (the wrapper stopgap can be removed once this is installed).
+#
+# This file is CANONICAL in Matou/matou-app and synced to Matou/matou-app by
+# .sandcastle/sync-harness.sh (the ONE transform: the repo-slug substitution on
+# the FORGEJO_API default below); edit it here, never in the copy (#250).
+#
 # Usage: schedule-backstop.sh <workflow-file> <window-minutes>
 #   e.g. schedule-backstop.sh swarm.yml 25
 # Install: see the crontab block in .sandcastle/README.md.
@@ -47,15 +61,22 @@ if ! runs="$(api "$FORGEJO_API/actions/tasks?limit=50&page=1")"; then
   exit 0
 fi
 
-recent="$(printf '%s' "$runs" | jq -r --arg n "$name" --arg c "$cutoff" \
-  '[.workflow_runs[]? | select(.name == $n) | select((.run_started_at // "") >= $c)] | length')"
+# Count this workflow's runs that make a dispatch redundant: one still in flight
+# (`waiting` = queued behind the busy host, or `running`), OR one that STARTED
+# within the window (Forgejo's own scheduler is doing its job). The in-flight
+# clause is #238 AC3 — without it a queued dispatch is re-dispatched every tick.
+inflight="$(printf '%s' "$runs" | jq -r --arg n "$name" --arg c "$cutoff" \
+  '[.workflow_runs[]?
+     | select(.name == $n)
+     | select((.status == "waiting") or (.status == "running") or ((.run_started_at // "") >= $c))
+   ] | length')"
 
-if [ "${recent:-0}" -gt 0 ]; then
-  echo "backstop: $name ran within the last ${window_min}m — Forgejo's scheduler is doing its job, skipping"
+if [ "${inflight:-0}" -gt 0 ]; then
+  echo "backstop: $name already in flight (waiting/running) or ran within the last ${window_min}m — not piling on, skipping"
   exit 0
 fi
 
-echo "backstop: no $name run since $cutoff — dispatching"
+echo "backstop: no $name run since $cutoff and none waiting/running — dispatching"
 api -X POST -H "Content-Type: application/json" -d '{"ref":"main"}' \
   "$FORGEJO_API/actions/workflows/$wf/dispatches" >/dev/null
 echo "backstop: dispatched $wf"

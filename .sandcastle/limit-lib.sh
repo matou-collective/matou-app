@@ -39,3 +39,32 @@ claude_limit_reset_hint() {
   [ -n "$hint" ] || hint="$(grep -oiE "[^\"]*$CLAUDE_LIMIT_RE[^\"]*" "$1" | head -1 | sed 's/^ *//')"
   printf '%s' "$hint"
 }
+
+# ── Host-global limit MARKER, and the guard every claude caller rides ─────────
+#
+# The subscription window is ONE thing per host (#238 made the marker
+# deliberately HOST-GLOBAL — one host, one subscription). run-swarm.sh's worker
+# guard writes it on the first limit refusal; every claude caller — the workers,
+# run-triage.sh and the healer (#253) — consults it FIRST, so the first hit parks
+# the whole host instead of each caller reddening or going blind on its own
+# refusal. Marker path is repo-agnostic on purpose (this lib is byte-identical
+# across repos): a limit in one repo parks the other's callers too.
+CLAUDE_LIMIT_MARKER="${CLAUDE_LIMIT_MARKER:-/tmp/matou-swarm-claude-limit}"
+# How long a marker is trusted as "still parked". Matches run-swarm.sh's
+# hourly notice-dedupe window: during an ongoing outage each limit hit re-touches
+# the marker (posting the hourly notice), so it stays fresh; once claude stops
+# refusing nothing re-touches it and it goes stale, and the next caller retries.
+CLAUDE_LIMIT_TTL="${CLAUDE_LIMIT_TTL:-3600}"
+
+# claude_limit_parked — 0 iff the host is known-parked: the global marker exists
+# and is fresher than the TTL. A stale marker (the window has likely reset) is
+# ignored, so a caller tries claude again rather than parking forever.
+claude_limit_parked() {
+  [ -f "$CLAUDE_LIMIT_MARKER" ] || return 1
+  [ $(( $(date +%s) - $(stat -c %Y "$CLAUDE_LIMIT_MARKER") )) -le "$CLAUDE_LIMIT_TTL" ]
+}
+
+# claude_limit_park — mark the host parked (touch the global marker) so every
+# other caller yields until the window resets. Called after a caller classifies
+# its own claude refusal as a limit hit. Idempotent.
+claude_limit_park() { touch "$CLAUDE_LIMIT_MARKER"; }
