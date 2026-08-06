@@ -113,9 +113,9 @@ import { useContributions } from 'src/composables/useContributions';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
 import { useIdentityStore } from 'stores/identity';
 import type { Contribution, CreateContributionRequest } from 'src/lib/api/contributions';
-import ContributionCard from 'src/components/contributions/ContributionCard.vue';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionsTimelineView from 'src/pages/Contributions/ContributionsTimelineView.vue';
+import ContributionCard from 'src/components/contributions/ContributionCard.vue';
 
 const router = useRouter();
 const $q = useQuasar();
@@ -140,9 +140,26 @@ watch(viewMode, (v) => {
 });
 
 const SCOPE_STORAGE_KEY = 'matou:contributions:scope';
-type ScopeFilter = 'all' | 'mine' | 'open' | 'assigned' | 'in_review' | 'signed_off' | 'archived';
+type ScopeFilter =
+  | 'all'
+  | 'mine'
+  | 'open'
+  | 'assigned'
+  | 'in_review'
+  | 'signed_off'
+  | 'rewarded'
+  | 'archived';
 const storedScope = localStorage.getItem(SCOPE_STORAGE_KEY) as ScopeFilter | null;
-const validScopes: ScopeFilter[] = ['all', 'mine', 'open', 'assigned', 'in_review', 'signed_off', 'archived'];
+const validScopes: ScopeFilter[] = [
+  'all',
+  'mine',
+  'open',
+  'assigned',
+  'in_review',
+  'signed_off',
+  'rewarded',
+  'archived',
+];
 const activeScopeFilter = ref<ScopeFilter>(
   storedScope && validScopes.includes(storedScope) ? storedScope : 'all',
 );
@@ -157,6 +174,7 @@ const scopeFilters: { label: string; value: ScopeFilter }[] = [
   { label: 'Assigned', value: 'assigned' },
   { label: 'In Review', value: 'in_review' },
   { label: 'Signed Off', value: 'signed_off' },
+  { label: 'Rewarded', value: 'rewarded' },
   { label: 'Archived', value: 'archived' },
 ];
 
@@ -169,7 +187,8 @@ const typeFilters = [
 ];
 
 const ASSIGNED_STATUSES = new Set(['assigned', 'changed', 'in_progress']);
-const SIGNED_OFF_STATUSES = new Set(['signed_off', 'rewarded']);
+// Terminal statuses hidden from the All and Mine views; each has its own chip.
+const HIDDEN_TERMINAL_STATUSES = new Set(['archived', 'rewarded']);
 
 function isMineContribution(c: Contribution, me: string): boolean {
   const raw = c as typeof c & { assigned_contributor?: string; offered_to?: string };
@@ -185,14 +204,16 @@ const filteredContributions = computed(() => {
 
   switch (activeScopeFilter.value) {
     case 'mine':
-      // Assigned to me OR offered to me. Excludes archived.
-      list = list.filter((c) => c.status !== 'archived' && me && isMineContribution(c, me));
+      // Assigned to me OR offered to me. Excludes archived and rewarded.
+      list = list.filter(
+        (c) => !HIDDEN_TERMINAL_STATUSES.has(c.status) && me && isMineContribution(c, me),
+      );
       break;
     case 'all': {
       // Hide planning ('confirmed'), hide private offers to other users,
-      // and hide archived (archived has its own chip).
+      // and hide archived/rewarded (each has its own chip).
       list = list.filter((c) => {
-        if (c.status === 'archived') return false;
+        if (HIDDEN_TERMINAL_STATUSES.has(c.status)) return false;
         if (c.status === 'confirmed') return false;
         const raw = c as typeof c & { offered_to?: string };
         if (c.status === 'offered' && raw.offered_to && raw.offered_to !== me) return false;
@@ -210,7 +231,10 @@ const filteredContributions = computed(() => {
       list = list.filter((c) => c.status === 'needs_review');
       break;
     case 'signed_off':
-      list = list.filter((c) => SIGNED_OFF_STATUSES.has(c.status));
+      list = list.filter((c) => c.status === 'signed_off');
+      break;
+    case 'rewarded':
+      list = list.filter((c) => c.status === 'rewarded');
       break;
     case 'archived':
       list = list.filter((c) => c.status === 'archived');

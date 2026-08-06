@@ -121,7 +121,11 @@ func (h *ImplementationPlansHandler) HandleAddMilestone(w http.ResponseWriter, r
 	}
 	req.ImplementationPlanID = id
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	_, err := h.service.AddMilestone(r.Context(), spaceID, &req)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	_, err := h.service.AddMilestone(r.Context(), spaceID, actorID, &req)
 	if err != nil {
 		log.Printf("[ImplementationPlans] failed to add milestone to plan %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -176,7 +180,7 @@ func (h *ImplementationPlansHandler) HandleSignOff(w http.ResponseWriter, r *htt
 		var unconfirmedErr *contributions.UnconfirmedContributionsError
 		if errors.As(err, &unconfirmedErr) {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
-				"error":                   "unconfirmed contributions",
+				"error":                        "unconfirmed contributions",
 				"unconfirmed_contribution_ids": unconfirmedErr.IDs,
 			})
 			return
@@ -200,7 +204,7 @@ func (h *ImplementationPlansHandler) HandleSignOff(w http.ResponseWriter, r *htt
 		h.broker.Broadcast(SSEEvent{
 			Type: "implementation_plan:signed_off",
 			Data: map[string]string{
-				"plan_id":      id,
+				"plan_id":       id,
 				"signed_off_by": userID,
 			},
 		})

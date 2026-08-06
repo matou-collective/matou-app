@@ -1,5 +1,10 @@
 <template>
-  <div class="contribution-card" @click="$emit('click')">
+  <div
+    class="contribution-card"
+    :class="[`contrib-status-${liveContribution.status}`, { overdue: isOverdue }]"
+    @click="$emit('click')"
+  >
+    <ContributionOverdueTag v-if="isOverdue" />
     <div class="card-header">
       <div class="card-header-left">
         <span class="contribution-type">{{ contribution.contribution_type }}</span>
@@ -49,7 +54,9 @@ import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useCommentScope } from 'src/composables/useCommentScope';
+import { isContributionOverdue } from 'src/lib/contributionStatus';
 import ContributionStatusBadge from './ContributionStatusBadge.vue';
+import ContributionOverdueTag from './ContributionOverdueTag.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -83,6 +90,8 @@ const unread = computed(
     + scope.contributionOfferedCount(liveContribution.value),
 );
 
+const isOverdue = computed(() => isContributionOverdue(liveContribution.value));
+
 const assignedAid = computed(() => {
   const c = props.contribution as typeof props.contribution & {
     assigned_contributor?: string;
@@ -104,14 +113,23 @@ const assignedName = computed(() => {
 </script>
 
 <style scoped lang="scss">
+@import 'src/css/contribution-status.scss';
+
 .contribution-card {
+  position: relative;
   background: var(--matou-card);
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius);
   padding: 16px 20px;
   margin-bottom: 12px;
   cursor: pointer;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+
+  @include contribution-status-wash;
+
+  &.overdue {
+    border-color: var(--matou-destructive);
+  }
 
   &:hover {
     border-color: var(--matou-accent, #4a9d9c);

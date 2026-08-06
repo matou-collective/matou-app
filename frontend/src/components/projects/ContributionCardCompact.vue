@@ -1,5 +1,10 @@
 <template>
-  <div class="contribution-compact" @click="$emit('view-detail', contribution)">
+  <div
+    class="contribution-compact"
+    :class="[`contrib-status-${liveContribution.status}`, { overdue: isOverdue }]"
+    @click="$emit('view-detail', contribution)"
+  >
+    <ContributionOverdueTag v-if="isOverdue" />
     <!-- Top row: title (+ inline meta) left, status + assignment right -->
     <div class="compact-header">
       <div class="compact-title-wrap">
@@ -120,12 +125,14 @@ import { computed, ref } from 'vue';
 import { ChevronDown } from 'lucide-vue-next';
 import type { Contribution, ProjectRole } from 'src/types/projects';
 import ContributionStatusBadge from 'src/components/contributions/ContributionStatusBadge.vue';
+import ContributionOverdueTag from 'src/components/contributions/ContributionOverdueTag.vue';
 import ContributionTypeBadge from './ContributionTypeBadge.vue';
 import { useProfilesStore } from 'stores/profiles';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useCommentScope } from 'src/composables/useCommentScope';
 import { useContributionBudgetAccess } from 'src/composables/useContributionBudgetAccess';
+import { isContributionOverdue } from 'src/lib/contributionStatus';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 
 defineOptions({ name: 'ContributionCardCompact' });
@@ -178,6 +185,8 @@ const unread = computed(
     + scope.contributionOfferedCount(liveContribution.value),
 );
 
+const isOverdue = computed(() => isContributionOverdue(liveContribution.value));
+
 const budgetAccess = useContributionBudgetAccess();
 const canSeeBudgetForThis = computed(() => budgetAccess.canSeeBudget(props.contribution));
 
@@ -219,6 +228,8 @@ function formatDeadline(iso: string): string {
 </script>
 
 <style scoped lang="scss">
+@import 'src/css/contribution-status.scss';
+
 .contribution-compact {
   position: relative;
   display: flex;
@@ -229,8 +240,14 @@ function formatDeadline(iso: string): string {
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius-sm);
   cursor: pointer;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
   flex-wrap: wrap;
+
+  @include contribution-status-wash;
+
+  &.overdue {
+    border-color: var(--matou-destructive);
+  }
 
   &:hover {
     border-color: var(--matou-accent);
