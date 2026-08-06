@@ -10,6 +10,8 @@
       <div class="detail-nav">
         <q-btn flat round icon="arrow_back" @click="router.push({ name: 'contributions' })" />
         <span class="breadcrumb">Contributions</span>
+        <q-space />
+        <q-btn flat no-caps icon="link" label="Copy Link" @click="copyLink" />
       </div>
 
       <!-- Use ContributionDetailBody inline so the page matches the dialog layout -->
@@ -368,6 +370,13 @@ watch(
 function formatOutcome(outcome?: string): string {
   const map: Record<string, string> = { approved: 'Approved', incomplete: 'Sent Back', declined: 'Declined' };
   return outcome ? (map[outcome] ?? outcome) : '';
+}
+
+function copyLink() {
+  if (!contribution.value) return;
+  const link = `${window.location.origin}/dashboard/contributions/${contribution.value.id}`;
+  navigator.clipboard.writeText(link).catch(() => undefined);
+  $q.notify({ type: 'positive', message: 'Contribution link copied!' });
 }
 
 // ── Workflow actions ───────────────────────────────────────────────────────────

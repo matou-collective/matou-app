@@ -44,6 +44,22 @@
             :proposal-id="id"
             @open="openProposalDetail"
           />
+
+          <!-- Project Link Cards -->
+          <ProjectLinkCard
+            v-for="id in projectIds"
+            :key="id"
+            :project-id="id"
+            @open="openProjectDetail"
+          />
+
+          <!-- Contribution Link Cards -->
+          <ContributionLinkCard
+            v-for="id in contributionIds"
+            :key="id"
+            :contribution-id="id"
+            @open="openContributionDetail"
+          />
         </template>
 
         <!-- Inline timestamp -->
@@ -105,8 +121,11 @@ import MessageReactions from './MessageReactions.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import AttachmentPreview from './AttachmentPreview.vue';
 import ProposalLinkCard from './ProposalLinkCard.vue';
+import ProjectLinkCard from './ProjectLinkCard.vue';
+import ContributionLinkCard from './ContributionLinkCard.vue';
 import ProposalDetailModal from '../proposals/ProposalDetailModal.vue';
 import UserAvatar from 'components/profiles/UserAvatar.vue';
+import { useRouter } from 'vue-router';
 
 const props = defineProps<{
   message: ChatMessage;
@@ -141,15 +160,28 @@ const renderedContent = computed(() => {
   return DOMPurify.sanitize(html as string);
 });
 
-const proposalIds = computed(() => {
-  const regex = /\/dashboard\/proposals\/(prop_[a-f0-9]+)/g;
+function extractIds(pattern: RegExp): string[] {
   const ids = new Set<string>();
   let match;
-  while ((match = regex.exec(props.message.content)) !== null) {
+  while ((match = pattern.exec(props.message.content)) !== null) {
     ids.add(match[1]);
   }
   return [...ids];
-});
+}
+
+const proposalIds = computed(() =>
+  extractIds(/\/dashboard\/proposals\/(prop_[a-f0-9]+)/g),
+);
+
+const projectIds = computed(() =>
+  extractIds(/\/dashboard\/projects\/(proj_[a-f0-9]+)/g),
+);
+
+const contributionIds = computed(() =>
+  extractIds(/\/dashboard\/contributions\/(ctr_[a-f0-9]+)/g),
+);
+
+const router = useRouter();
 
 const selectedProposalId = ref('');
 const showProposalDetail = ref(false);
@@ -157,6 +189,14 @@ const showProposalDetail = ref(false);
 function openProposalDetail(id: string) {
   selectedProposalId.value = id;
   showProposalDetail.value = true;
+}
+
+function openProjectDetail(id: string) {
+  void router.push({ name: 'project-detail', params: { id } });
+}
+
+function openContributionDetail(id: string) {
+  void router.push({ name: 'contribution-detail', params: { id } });
 }
 
 function formatTime(dateStr: string): string {

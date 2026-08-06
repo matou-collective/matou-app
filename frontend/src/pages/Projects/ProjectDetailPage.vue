@@ -94,6 +94,7 @@
           </div>
         </div>
         <div class="project-header-actions">
+          <q-btn flat no-caps icon="link" label="Copy Link" @click="copyLink" />
           <q-btn
             v-if="perms.canEditProject.value"
             flat
@@ -751,6 +752,13 @@ const cascadeSummary = computed<string[]>(() => {
     `${subCount} sub-contribution${subCount === 1 ? '' : 's'}`,
   ];
 });
+
+function copyLink() {
+  if (!project.value) return;
+  const link = `${window.location.origin}/dashboard/projects/${project.value.id}`;
+  navigator.clipboard.writeText(link).catch(() => undefined);
+  $q.notify({ type: 'positive', message: 'Project link copied!' });
+}
 
 function onDeleteRequested() {
   showEditDialog.value = false;
