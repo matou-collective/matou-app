@@ -50,16 +50,24 @@ await_after="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=awaiting-v
 
 new="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
 if [ -n "$new" ]; then
-  msg=":wave: **Triage needs you** in \`$repo_slug\`:"
+  digest=""
   while IFS=$'\t' read -r num label; do
     [ -z "$num" ] && continue
+    if [ "$label" = ready-for-human ]; then
+      # The answerable ask thread, straight after triage — quotes the triage
+      # comment; the resume sweep records the reply and re-arms the issue.
+      bash "$here/post-issue-ask.sh" "$num" || true
+      continue
+    fi
     issue="$(api "$FORGEJO_API/issues/$num")"
     title="$(jq -r .title <<<"$issue")"
     url="$(jq -r .html_url <<<"$issue")"
-    msg="$msg
+    digest="$digest
 - [#$num $title]($url) → \`$label\`"
   done <<<"$new"
-  bash "$here/notify-mattermost.sh" "$msg"
+  if [ -n "$digest" ]; then
+    bash "$here/notify-mattermost.sh" ":wave: **Triage needs you** in \`$repo_slug\`:$digest"
+  fi
 fi
 
 # One verification thread per newly-gated issue — the poller

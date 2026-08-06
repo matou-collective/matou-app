@@ -52,10 +52,14 @@ To see a task in full:
    ambiguity about intent, UX judgement, scope. First check the issue
    comments for a prior ruling; otherwise run
    `bash .sandcastle/ask-human.sh "Question about #<NUMBER>: <question>"`
-   (at most once per issue per iteration; give the Bash tool a 25-minute
-   timeout). If it times out (exit 3): swap the issue's label
-   `ready-for-agent` → `ready-for-human`, comment what you need, and stop
-   working this issue.
+   (give the Bash tool a 25-minute timeout per ask; when designing, several
+   rounds are fine — each continues the issue's one Mattermost thread).
+   **Exit 0**: stdout is the human's answer — comment the question *and*
+   the answer onto the issue (the durable record; the next round's question
+   is composed from the issue's newest comment). If it times out (exit 3):
+   swap the issue's label `ready-for-agent` → `ready-for-human`, comment
+   what you need, and stop working this issue — the resume sweep keeps the
+   conversation going in the same thread.
 5. **Land as a PR — never push main, never close the issue.**
    - branch: `git checkout -b agent/issue-<NUMBER>`
    - commit(s): conventional style, subject prefixed `agent:`, referencing
