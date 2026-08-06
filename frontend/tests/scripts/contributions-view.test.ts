@@ -261,3 +261,35 @@ describe('applyContributionsView', () => {
     expect(r.map((c) => c.id)).toEqual(['match']);
   });
 });
+
+describe('admin visibility', () => {
+  it('"all" keeps offers to other users visible for admins', () => {
+    const list = [
+      make({ id: 'other-offer', status: 'offered', offered_to: 'did:someone-else' }),
+      make({ id: 'my-offer', status: 'offered', offered_to: ME }),
+      make({ id: 'plain', status: 'shared' }),
+    ];
+    const r = filterByScope(list, 'all', ME, { viewerIsAdmin: true }).map((c) => c.id);
+    expect(r).toContain('other-offer');
+    expect(r).toContain('my-offer');
+    expect(r).toContain('plain');
+  });
+
+  it('applyContributionsView passes viewerIsAdmin through to the scope filter', () => {
+    const list = [
+      make({ id: 'other-offer', status: 'offered', offered_to: 'did:someone-else' }),
+    ];
+    const opts = {
+      scope: 'all' as const,
+      type: 'all',
+      search: '',
+      sortField: 'created' as const,
+      sortDirection: 'desc' as const,
+      currentUserId: ME,
+    };
+    expect(applyContributionsView(list, opts).map((c) => c.id)).toEqual([]);
+    expect(
+      applyContributionsView(list, { ...opts, viewerIsAdmin: true }).map((c) => c.id),
+    ).toEqual(['other-offer']);
+  });
+});

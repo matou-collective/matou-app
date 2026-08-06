@@ -262,6 +262,7 @@
             v-else-if="showChangesActive && implementationPlan.change_log?.length"
             :milestones="milestones"
             :change-log="implementationPlan.change_log"
+            :contributions="allProjectContributions"
           />
 
           <div v-else class="milestones-list">

@@ -67,10 +67,16 @@ export function isMineContribution(c: Contribution, me: string): boolean {
   return false;
 }
 
+export interface ScopeFilterOptions {
+  /** Admins see everything, including offers made privately to other users. */
+  viewerIsAdmin?: boolean;
+}
+
 export function filterByScope(
   list: Contribution[],
   scope: ScopeFilter,
   me: string,
+  opts: ScopeFilterOptions = {},
 ): Contribution[] {
   switch (scope) {
     case 'mine':
@@ -79,13 +85,20 @@ export function filterByScope(
         (c) => !HIDDEN_TERMINAL_STATUSES.has(c.status) && !!me && isMineContribution(c, me),
       );
     case 'all':
-      // Hide planning ('confirmed'), hide private offers to other users,
-      // and hide archived/rewarded (each has its own chip).
+      // Hide planning ('confirmed'), hide private offers to other users
+      // (admins see those), and hide archived/rewarded (each has its own chip).
       return list.filter((c) => {
         if (HIDDEN_TERMINAL_STATUSES.has(c.status)) return false;
         if (c.status === 'confirmed') return false;
         const raw = c as typeof c & { offered_to?: string };
-        if (c.status === 'offered' && raw.offered_to && raw.offered_to !== me) return false;
+        if (
+          !opts.viewerIsAdmin &&
+          c.status === 'offered' &&
+          raw.offered_to &&
+          raw.offered_to !== me
+        ) {
+          return false;
+        }
         return true;
       });
     case 'open':
@@ -176,6 +189,7 @@ export interface ContributionsViewOptions {
   sortField: SortField;
   sortDirection: SortDirection;
   currentUserId: string;
+  viewerIsAdmin?: boolean;
 }
 
 /** Compose scope filter → type filter → search → sort. */
@@ -183,7 +197,9 @@ export function applyContributionsView(
   list: Contribution[],
   opts: ContributionsViewOptions,
 ): Contribution[] {
-  let out = filterByScope(list, opts.scope, opts.currentUserId);
+  let out = filterByScope(list, opts.scope, opts.currentUserId, {
+    viewerIsAdmin: opts.viewerIsAdmin ?? false,
+  });
   out = filterByType(out, opts.type);
   out = searchContributions(out, opts.search);
   out = sortContributions(out, opts.sortField, opts.sortDirection);

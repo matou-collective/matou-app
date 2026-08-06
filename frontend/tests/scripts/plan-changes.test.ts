@@ -146,3 +146,107 @@ describe('buildPlanChangeGroups', () => {
     ]);
   });
 });
+
+describe('buildPlanChangeGroups — subcontribution nesting', () => {
+  const contributions = [
+    { id: 'c1', title: 'Parent Work', milestone_id: 'm1' },
+    { id: 'sub1', title: 'Sub Work', parent_contribution: 'c1' },
+  ];
+
+  it('nests a sub entry under its parent entry within the milestone group', () => {
+    const groups = buildPlanChangeGroups(
+      [milestone()],
+      [
+        entry({
+          id: 'e1',
+          kind: 'contribution_added',
+          milestone_id: 'm1',
+          contribution_id: 'c1',
+          contribution_title: 'Parent Work',
+          changed_at: '2026-07-20T00:00:00.000Z',
+        }),
+        entry({
+          id: 'e2',
+          kind: 'contribution_added',
+          milestone_id: 'm1',
+          contribution_id: 'sub1',
+          contribution_title: 'Sub Work',
+          parent_contribution_id: 'c1',
+          parent_contribution_title: 'Parent Work',
+          changed_at: '2026-07-21T00:00:00.000Z',
+        }),
+      ],
+    );
+    expect(groups).toHaveLength(1);
+    const roots = groups[0]!.contributionChanges;
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.contributionId).toBe('c1');
+    expect(roots[0]!.children).toHaveLength(1);
+    expect(roots[0]!.children[0]!.contributionId).toBe('sub1');
+    expect(roots[0]!.children[0]!.title).toBe('Sub Work');
+  });
+
+  it('synthesizes a context row for a parent with no changes of its own', () => {
+    const groups = buildPlanChangeGroups(
+      [milestone()],
+      [
+        entry({
+          id: 'e1',
+          kind: 'contribution_added',
+          milestone_id: 'm1',
+          contribution_id: 'sub1',
+          contribution_title: 'Sub Work',
+          parent_contribution_id: 'c1',
+          parent_contribution_title: 'Parent Work',
+        }),
+      ],
+    );
+    const roots = groups[0]!.contributionChanges;
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.kind).toBe('contribution_context');
+    expect(roots[0]!.title).toBe('Parent Work');
+    expect(roots[0]!.children).toHaveLength(1);
+    expect(roots[0]!.children[0]!.contributionId).toBe('sub1');
+  });
+
+  it('resolves legacy sub entries (no milestone/parent refs) via the contributions list', () => {
+    const groups = buildPlanChangeGroups(
+      [milestone()],
+      [
+        entry({
+          id: 'e1',
+          kind: 'contribution_edited',
+          contribution_id: 'sub1',
+          contribution_title: 'Sub Work',
+          changes: [{ field: 'budget', old_value: '1', new_value: '2' }],
+        }),
+      ],
+      contributions,
+    );
+    // Resolved to milestone m1 via sub1 → c1 → m1, not the fallback group.
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.key).toBe('m1');
+    const roots = groups[0]!.contributionChanges;
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.kind).toBe('contribution_context');
+    expect(roots[0]!.title).toBe('Parent Work');
+    expect(roots[0]!.children[0]!.contributionId).toBe('sub1');
+  });
+
+  it('keeps unresolvable entries in the fallback group when no contributions are provided', () => {
+    const groups = buildPlanChangeGroups(
+      [milestone()],
+      [
+        entry({
+          id: 'e1',
+          kind: 'contribution_edited',
+          contribution_id: 'sub1',
+          contribution_title: 'Sub Work',
+        }),
+      ],
+    );
+    const fallback = groups.find((g) => g.key === '__unassigned__');
+    expect(fallback).toBeDefined();
+    expect(fallback!.contributionChanges).toHaveLength(1);
+  });
+});
