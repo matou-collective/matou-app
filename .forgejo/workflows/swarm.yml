@@ -27,8 +27,20 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
         run: |
           set -euo pipefail
+          # /tmp/matou-swarm.lock is GLOBAL by design: one heavy worker per host,
+          # serializing swarm AND triage across BOTH repos on this capacity-1
+          # runner (that cross-repo serialization is what we want). But CAMPING on
+          # it (flock -w 7200) turned that into hour-class waits — issue events
+          # stack a run each, every started run blocked up to 2h, and matou-app
+          # starved for hours behind ourcloud's queue (#238). Yield instead: if
+          # another swarm/triage run holds the host, exit 0 cleanly and let the
+          # cron (and the backstop) re-fire. Queued runs then drain in seconds
+          # instead of serializing hour-class waits.
           exec 9>/tmp/matou-swarm.lock
-          flock -w 7200 9
+          if ! flock -n 9; then
+            echo "swarm: another swarm/triage run holds /tmp/matou-swarm.lock — yielding; the cron/backstop re-fires"
+            exit 0
+          fi
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"

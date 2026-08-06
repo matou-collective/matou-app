@@ -26,8 +26,17 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
+          # Same global lock as swarm.yml — and the same yield-don't-camp fix
+          # (#238). Triage is a heavy worker too (it spins Sandcastle), so a
+          # camping flock -w 7200 here would re-introduce the exact hour-class
+          # serialization the swarm fix removes. If the host is busy, yield and
+          # let the cron (or the next issue event) re-fire — triage is
+          # idempotent, so a deferred pass costs nothing.
           exec 9>/tmp/matou-swarm.lock
-          flock -w 7200 9
+          if ! flock -n 9; then
+            echo "triage: another swarm/triage run holds /tmp/matou-swarm.lock — yielding; the cron re-fires"
+            exit 0
+          fi
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
