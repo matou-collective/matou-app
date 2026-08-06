@@ -99,8 +99,7 @@
 import { ref, computed } from 'vue';
 import { Smile, Reply, Pencil, Trash2 } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
+import { renderMarkdown } from 'src/lib/markdown';
 import MessageReactions from './MessageReactions.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import AttachmentPreview from './AttachmentPreview.vue';
@@ -136,10 +135,7 @@ const replyToTruncated = computed(() => {
   return content.length > 80 ? content.substring(0, 80) + '...' : content;
 });
 
-const renderedContent = computed(() => {
-  const html = marked.parse(props.message.content, { breaks: true });
-  return DOMPurify.sanitize(html as string);
-});
+const renderedContent = computed(() => renderMarkdown(props.message.content));
 
 const proposalIds = computed(() => {
   const regex = /\/dashboard\/proposals\/(prop_[a-f0-9]+)/g;
