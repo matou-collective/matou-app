@@ -55,7 +55,10 @@ curl -sf http://localhost:9080/health >/dev/null || { echo "backend never became
 ( cd frontend && npm ci && npx playwright install chromium )
 
 set +e
-( cd frontend && npx playwright test --project=features "tests/e2e/features/issue-$n.spec.ts" ) \
+# The e2e utils locate infra as a sibling of the repo root, which doesn't hold
+# for this checkout (~/swarm-e2e/<slug>) — point them at $INFRA explicitly.
+( cd frontend && MATOU_KERI_INFRA_DIR="$INFRA/keri" \
+    npx playwright test --project=features "tests/e2e/features/issue-$n.spec.ts" ) \
   >/tmp/pr-e2e-playwright.log 2>&1
 rc=$?
 set -e
