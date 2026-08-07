@@ -52,6 +52,14 @@ case "$url" in
       echo '{}'
     fi
     ;;
+  */issues/*/dependencies*)
+    id="${url%/dependencies*}"
+    id="${id##*/}"
+    cat "$FAKE_DIR/deps-$id.json" 2>/dev/null || echo '[]'
+    ;;
+  */pulls\?*)
+    cat "$FAKE_DIR/pulls.json" 2>/dev/null || echo '[]'
+    ;;
   */issues/*/labels/*)
     echo ''
     ;;

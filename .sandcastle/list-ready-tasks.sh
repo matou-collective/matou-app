@@ -2,10 +2,14 @@
 # The Sandcastle task source — injected into prompt.md via a shell expression,
 # evaluated INSIDE the sandbox at the start of every iteration.
 #
-# Surfaces ONLY issues that are both:
-#   1. open and labelled `ready-for-agent`, and
+# Surfaces ONLY issues that are all of:
+#   1. open and labelled `ready-for-agent`,
 #   2. unblocked — every Forgejo issue-dependency ("blocked by") is closed —
-# so the swarm honours the slice-map DAG (docs/slices/*.yaml) across features.
+#      so the swarm honours the slice-map DAG (docs/slices/*.yaml), and
+#   3. not already in review — no open PR from an `agent/issue-<n>` branch.
+#      Re-dispatching an issue whose PR just awaits a human costs a full agent
+#      run to stand down (issue #6 / PR #7, 2026-08-02) and risks a force-push
+#      over a branch mid-review.
 #
 # depends_on lives as NATIVE Forgejo issue dependencies (the repo has
 # enable_issue_dependencies on), not as body text — see
@@ -71,5 +75,26 @@ while :; do
   [ "$count" -lt 50 ] && break
   page=$((page + 1))
 done
+
+# Condition 3: drop issues whose fix is already up for review. An open PR from
+# `agent/issue-<n>` puts <n> in a human's court until it merges (auto-closing
+# the issue via "closes #n") or is closed. `set -e` + `curl -sf` keep the old
+# strictness: if the PR list can't be fetched, emit nothing rather than risk
+# re-dispatching an in-review issue.
+in_review='[]'
+page=1
+while :; do
+  prs="$(api "$FORGEJO_API/pulls?state=open&limit=50&page=$page")"
+  count="$(jq 'length' <<<"$prs")"
+  [ "$count" -eq 0 ] && break
+  in_review="$(jq --argjson new "$(jq '[.[].head.ref
+      | select(test("^agent/issue-[0-9]+$"))
+      | sub("^agent/issue-"; "") | tonumber]' <<<"$prs")" \
+    '. + $new' <<<"$in_review")"
+  [ "$count" -lt 50 ] && break
+  page=$((page + 1))
+done
+ready="$(jq --argjson prnums "$in_review" \
+  '[.[] | select(.number as $n | $prnums | index($n) == null)]' <<<"$ready")"
 
 jq . <<<"$ready"
