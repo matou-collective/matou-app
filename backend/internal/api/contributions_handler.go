@@ -426,13 +426,17 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 	if actorID == "" {
 		actorID = contrib.ChangedBy
 	}
+	msID, msTitle, parentID, parentTitle := h.service.ResolvePlanChangeRefs(r.Context(), spaceID, contrib)
 	entry := &contributions.PlanChangeEntry{
-		Kind:              "contribution_edited",
-		MilestoneID:       contrib.MilestoneID,
-		ContributionID:    contrib.ID,
-		ContributionTitle: contrib.Title,
-		Changes:           contributions.DiffContributionFields(&before, contrib),
-		ChangedBy:         actorID,
+		Kind:                    "contribution_edited",
+		MilestoneID:             msID,
+		MilestoneTitle:          msTitle,
+		ContributionID:          contrib.ID,
+		ContributionTitle:       contrib.Title,
+		ParentContributionID:    parentID,
+		ParentContributionTitle: parentTitle,
+		Changes:                 contributions.DiffContributionFields(&before, contrib),
+		ChangedBy:               actorID,
 	}
 	if err := h.service.UnsignPlanForProject(r.Context(), spaceID, contrib.ProjectID, entry); err != nil {
 		log.Printf("[Contributions] failed to unsign plan after contribution update: %v", err)

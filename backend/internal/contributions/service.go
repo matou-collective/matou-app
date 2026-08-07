@@ -1411,13 +1411,44 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 					if plan.SignedOff {
 						plan.SignedOff = false
 					}
-					appendPlanChange(plan, PlanChangeEntry{
+					entry := PlanChangeEntry{
 						Kind:              "contribution_added",
 						MilestoneID:       ms.MilestoneID,
 						MilestoneTitle:    ms.Title,
 						ContributionID:    c.ID,
 						ContributionTitle: c.Title,
 						ChangedBy:         c.CreatedBy,
+					}
+					if parentForLink != nil {
+						entry.ParentContributionID = parentForLink.ID
+						entry.ParentContributionTitle = parentForLink.Title
+					}
+					appendPlanChange(plan, entry)
+					plan.UpdatedAt = now
+					_ = s.store.Save(spaceID, plan.ID, "implementation_plan", plan)
+				}
+			}
+		}
+	} else if c.ParentContributionID != "" {
+		// Sub-contributions carry no milestone_id; attribute the addition to
+		// the parent chain's milestone so it shows up in the plan's change
+		// log, and invalidate sign-off just like a direct addition would.
+		msID, msTitle, parentID, parentTitle := s.ResolvePlanChangeRefs(ctx, spaceID, c)
+		if msID != "" {
+			if ms, err := s.GetMilestone(ctx, spaceID, msID); err == nil && ms.ImplementationPlanID != "" {
+				if plan, planErr := s.GetImplementationPlan(ctx, spaceID, ms.ImplementationPlanID); planErr == nil {
+					if plan.SignedOff {
+						plan.SignedOff = false
+					}
+					appendPlanChange(plan, PlanChangeEntry{
+						Kind:                    "contribution_added",
+						MilestoneID:             msID,
+						MilestoneTitle:          msTitle,
+						ContributionID:          c.ID,
+						ContributionTitle:       c.Title,
+						ParentContributionID:    parentID,
+						ParentContributionTitle: parentTitle,
+						ChangedBy:               c.CreatedBy,
 					})
 					plan.UpdatedAt = now
 					_ = s.store.Save(spaceID, plan.ID, "implementation_plan", plan)
@@ -2363,6 +2394,38 @@ func (s *Service) ArchiveMilestone(ctx context.Context, spaceID, milestoneID, ac
 	return firstErr
 }
 
+// ResolvePlanChangeRefs resolves the milestone a contribution should be
+// attributed to on a plan's change log. Sub-contributions carry no
+// milestone_id of their own, so the parent chain is walked to the first
+// ancestor with a milestone; the immediate parent's ID/title are returned as
+// well so the UI can nest the change under its parent. Zero values are
+// returned for anything that cannot be resolved.
+func (s *Service) ResolvePlanChangeRefs(ctx context.Context, spaceID string, c *Contribution) (milestoneID, milestoneTitle, parentID, parentTitle string) {
+	if c.ParentContributionID != "" {
+		if parent, err := s.GetContribution(ctx, spaceID, c.ParentContributionID); err == nil {
+			parentID = parent.ID
+			parentTitle = parent.Title
+		}
+	}
+	milestoneID = c.MilestoneID
+	cur := c
+	for hops := 0; milestoneID == "" && cur.ParentContributionID != "" && hops < 10; hops++ {
+		parent, err := s.GetContribution(ctx, spaceID, cur.ParentContributionID)
+		if err != nil {
+			break
+		}
+		milestoneID = parent.MilestoneID
+		cur = parent
+	}
+	if milestoneID == "" {
+		return "", "", parentID, parentTitle
+	}
+	if ms, err := s.GetMilestone(ctx, spaceID, milestoneID); err == nil {
+		milestoneTitle = ms.Title
+	}
+	return milestoneID, milestoneTitle, parentID, parentTitle
+}
+
 // ArchiveContribution archives a single contribution and cascades to all of its
 // sub-contributions (recursive). actorID identifies who made the change and
 // may be empty when the caller has no authenticated actor available.
@@ -2407,12 +2470,16 @@ func (s *Service) ArchiveContribution(ctx context.Context, spaceID, contribID, a
 	archive(contribID)
 
 	// Archiving a contribution invalidates the plan signoff — re-signoff is required.
+	msID, msTitle, parentID, parentTitle := s.ResolvePlanChangeRefs(ctx, spaceID, contrib)
 	entry := &PlanChangeEntry{
-		Kind:              "contribution_removed",
-		MilestoneID:       contrib.MilestoneID,
-		ContributionID:    contrib.ID,
-		ContributionTitle: contrib.Title,
-		ChangedBy:         actorID,
+		Kind:                    "contribution_removed",
+		MilestoneID:             msID,
+		MilestoneTitle:          msTitle,
+		ContributionID:          contrib.ID,
+		ContributionTitle:       contrib.Title,
+		ParentContributionID:    parentID,
+		ParentContributionTitle: parentTitle,
+		ChangedBy:               actorID,
 	}
 	if err := s.UnsignPlanForProject(ctx, spaceID, contrib.ProjectID, entry); err != nil {
 		capture(fmt.Errorf("unsign plan: %w", err))

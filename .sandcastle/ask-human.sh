@@ -6,21 +6,28 @@
 #   timeout defaults to $ASK_HUMAN_TIMEOUT or 1200 (20 min); polls every
 #   $ASK_HUMAN_POLL (20) seconds.
 #
-# Questions are RESUMABLE, keyed by the first issue reference (`#N`) in the
-# question text. Before posting, the script scans every recent (within
-# $ASK_HUMAN_LOOKBACK, default 48 h) unconsumed ask for the same issue —
-# "unconsumed" meaning its thread has no bot :white_check_mark:
-# confirmation yet — newest first:
-#   - if any such thread already holds a human reply (e.g. it arrived after
-#     the previous poller died, in whichever duplicate thread the human
-#     happened to answer), the reply is returned immediately;
-#   - otherwise polling resumes on the newest such thread — no duplicate
-#     question is posted, and an :eyes: note marks that thread as the live
-#     one to answer. (2026-07-27: seven duplicate asks for #129 because
-#     every killed poller left the issue re-askable and the late reply
-#     unread.)
+# Questions are RESUMABLE and MULTI-ROUND, keyed by the first issue reference
+# (`#N`) in the question text. An issue's conversation lives in ONE thread:
+# the newest bot root post starting `:raising_hand:` naming `#N` (within
+# $ASK_HUMAN_LOOKBACK, default 48 h). Within a thread, a QUESTION is the root
+# or any bot reply starting `:raising_hand:`; the CURRENT question is the
+# newest; it is CONSUMED once a bot `:white_check_mark:` follows it. Before
+# posting, every recent thread for the issue is judged by its current
+# question, newest thread first:
+#   - answered but not consumed (e.g. the reply arrived after the previous
+#     poller died, in whichever thread the human happened to answer) — the
+#     reply is returned immediately;
+#   - unanswered and not consumed — polling resumes there; no duplicate
+#     question is posted, an :eyes: note marks the live thread (2026-07-27:
+#     seven duplicate asks for #129);
+#   - consumed — the thread is idle; the NEW question is posted INTO it as a
+#     `:raising_hand:` thread reply, so a design conversation's rounds stay
+#     in one thread. Only when no thread exists at all does a fresh root get
+#     posted.
+# Replies are matched per ROUND: only thread posts at/after the current
+# question's create_at count, so an earlier round's answer is never re-read.
 #
-# Only posts whose root_id is the question post — i.e. replies inside its
+# Only posts whose root_id is the thread root — i.e. replies inside its
 # thread — and whose author is not the bot count as answers. Channel chatter
 # and other threads are never picked up. The bot must be a MEMBER of the
 # channel (posting works without membership; reading the thread does not).
@@ -28,7 +35,7 @@
 # Exit codes: 0 reply received (stdout = reply text)
 #             2 Mattermost env unset (chat not wired up)
 #             3 timed out (parking notice posted) or interrupted/killed —
-#               either way the thread stays open and a later ask for the
+#               either way the round stays open and a later ask for the
 #               same issue resumes it, so late replies are never lost.
 # Env: MATTERMOST_URL, MATTERMOST_CHANNEL_ID, and MATTERMOST_BOT_TOKEN — the
 # last one preferably via the bind-mounted .sandcastle/secrets/mattermost_bot_token
@@ -60,18 +67,37 @@ post() { # post <message> [root_id] — root_id makes it a thread reply
     api -X POST -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts"
 }
 
-first_reply() { # first_reply <thread_json> <qid> — earliest human reply, or empty
-  jq -r --arg qid "$2" --arg bot "$bot_id" \
-    '[.posts[] | select(.root_id == $qid and .user_id != $bot and .delete_at == 0)]
+first_reply() { # first_reply <thread_json> <root_id> <min_ts> — earliest human reply to the current round, or empty
+  jq -r --arg root "$2" --arg bot "$bot_id" --argjson min "$3" \
+    '[.posts[] | select(.root_id == $root and .user_id != $bot and .delete_at == 0
+                        and .create_at >= $min)]
      | sort_by(.create_at) | first | .message // empty' <<<"$1"
+}
+
+latest_question_ts() { # latest_question_ts <thread_json> <root_id> — create_at of the CURRENT question
+  jq -r --arg root "$2" --arg bot "$bot_id" \
+    '[.posts[] | select((.id == $root or .root_id == $root) and .user_id == $bot
+                        and .delete_at == 0
+                        and (.message | startswith(":raising_hand:")))]
+     | max_by(.create_at) | .create_at // 0' <<<"$1"
+}
+
+consumed_after() { # consumed_after <thread_json> <root_id> <min_ts> — bot :white_check_mark: count at/after min_ts
+  jq -r --arg root "$2" --arg bot "$bot_id" --argjson min "$3" \
+    '[.posts[] | select(.root_id == $root and .user_id == $bot and .delete_at == 0
+                        and .create_at >= $min
+                        and (.message | startswith(":white_check_mark:")))] | length' <<<"$1"
 }
 
 bot_id="$(api "$MATTERMOST_URL/api/v4/users/me" | jq -r .id)"
 
-# Resume path: scan recent unconsumed asks for the same issue, newest first.
-# A late reply in ANY of them wins; otherwise resume the newest.
+# Resume path: judge every recent thread for the issue by its CURRENT question,
+# newest thread first. A late reply anywhere wins; an open round resumes; the
+# newest idle (fully-consumed) thread is where a follow-up question goes.
 key="$(grep -oE '#[0-9]+' <<<"$question" | head -1 || true)"
 qid=""
+q_ts=0
+idle=""
 if [ -n "$key" ]; then
   chan="$(api "$MATTERMOST_URL/api/v4/channels/$MATTERMOST_CHANNEL_ID/posts?per_page=200" || true)"
   if [ -n "$chan" ]; then
@@ -85,17 +111,21 @@ if [ -n "$key" ]; then
     for cand in $cands; do
       thread="$(api "$MATTERMOST_URL/api/v4/posts/$cand/thread" || true)"
       [ -z "$thread" ] && continue
-      consumed="$(jq -r --arg qid "$cand" --arg bot "$bot_id" \
-        '[.posts[] | select(.root_id == $qid and .user_id == $bot
-                            and (.message | startswith(":white_check_mark:")))] | length' <<<"$thread")"
-      [ "$consumed" -gt 0 ] && continue
-      reply="$(first_reply "$thread" "$cand")"
+      qts="$(latest_question_ts "$thread" "$cand")"
+      if [ "$(consumed_after "$thread" "$cand" "$qts")" -gt 0 ]; then
+        [ -z "$idle" ] && idle="$cand"
+        continue
+      fi
+      reply="$(first_reply "$thread" "$cand" "$qts")"
       if [ -n "$reply" ]; then
         post ":white_check_mark: Got it — picked up this earlier reply; proceeding with it." "$cand" >/dev/null
         printf '%s\n' "$reply"
         exit 0
       fi
-      [ -z "$qid" ] && qid="$cand"
+      if [ -z "$qid" ]; then
+        qid="$cand"
+        q_ts="$qts"
+      fi
     done
     if [ -n "$qid" ]; then
       post ":eyes: Waiting on **this thread** again (up to $((timeout / 60)) min) — reply here." "$qid" >/dev/null
@@ -104,9 +134,18 @@ if [ -n "$key" ]; then
   fi
 fi
 
-if [ -z "$qid" ]; then
-  qid="$(post ":raising_hand: **Human decision needed** — reply **in this thread** to answer (waiting $((timeout / 60)) min).
-$question" | jq -r .id)"
+if [ -z "$qid" ] && [ -n "$idle" ]; then
+  # Idle conversation thread: the next round continues THERE, not in a new root.
+  qpost="$(post ":raising_hand: **Follow-up** — reply **in this thread** to answer (waiting $((timeout / 60)) min).
+$question" "$idle")"
+  qid="$idle"
+  q_ts="$(jq -r '.create_at // 0' <<<"$qpost")"
+  echo "ask-human: posted follow-up question in thread $idle" >&2
+elif [ -z "$qid" ]; then
+  qpost="$(post ":raising_hand: **Human decision needed** — reply **in this thread** to answer (waiting $((timeout / 60)) min).
+$question")"
+  qid="$(jq -r .id <<<"$qpost")"
+  q_ts="$(jq -r '.create_at // 0' <<<"$qpost")"
   echo "ask-human: posted question $qid" >&2
 fi
 echo "ask-human: waiting up to ${timeout}s for a thread reply on $qid" >&2
@@ -118,7 +157,7 @@ while [ "$waited" -lt "$timeout" ]; do
   # Tolerate transient fetch failures — just try again next poll.
   thread="$(api "$MATTERMOST_URL/api/v4/posts/$qid/thread" || true)"
   [ -z "$thread" ] && continue
-  reply="$(first_reply "$thread" "$qid")"
+  reply="$(first_reply "$thread" "$qid" "$q_ts")"
   if [ -n "$reply" ]; then
     post ":white_check_mark: Got it — proceeding with that answer." "$qid" >/dev/null
     printf '%s\n' "$reply"

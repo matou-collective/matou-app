@@ -82,6 +82,8 @@ export interface PlanChangeEntry {
   milestone_title?: string;
   contribution_id?: string;
   contribution_title?: string;
+  parent_contribution_id?: string;
+  parent_contribution_title?: string;
   changes?: PlanFieldChange[];
   changed_by: string;
   changed_at: string;

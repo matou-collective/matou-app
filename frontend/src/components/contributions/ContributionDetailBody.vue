@@ -168,7 +168,7 @@
 
         <!-- Description -->
         <div class="description-section">
-          <p class="section-text">{{ contribution.description }}</p>
+          <div class="section-text" v-html="renderMarkdown(contribution.description)"></div>
         </div>
 
         <!-- Hours / Budget / Due Date -->
@@ -521,7 +521,7 @@
           <!-- Completion Notes -->
           <div v-if="contribution.completion_notes" class="evidence-field">
             <div class="evidence-field-label">Completion Notes</div>
-            <div class="evidence-field-value">{{ contribution.completion_notes }}</div>
+            <div class="evidence-field-value" v-html="renderMarkdown(contribution.completion_notes)"></div>
           </div>
 
           <!-- Acceptance Criteria Responses -->
@@ -674,9 +674,11 @@
           <div class="review-outcome-chip" :class="contribution.review_outcome">
             {{ formatOutcome(contribution.review_outcome) }}
           </div>
-          <p v-if="contribution.review_feedback" class="section-text q-mt-sm">
-            {{ contribution.review_feedback }}
-          </p>
+          <div
+            v-if="contribution.review_feedback"
+            class="section-text q-mt-sm"
+            v-html="renderMarkdown(contribution.review_feedback)"
+          ></div>
           <div v-if="contribution.quality_rating" class="q-mt-sm">
             <span class="text-caption">Quality: {{ contribution.quality_rating }}/10</span>
           </div>
@@ -760,7 +762,7 @@
                   <span class="comment-author">{{ commentDisplayName(c) }}</span>
                   <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
                 </div>
-                <p class="comment-text">{{ c.text }}</p>
+                <div class="comment-text" v-html="renderMarkdown(c.text)"></div>
               </div>
             </div>
           </div>
@@ -963,6 +965,7 @@ import { useContributionWorkflow } from 'src/composables/useContributionWorkflow
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
+import { renderMarkdown } from 'src/lib/markdown';
 
 defineOptions({ name: 'ContributionDetailBody' });
 
@@ -1838,10 +1841,23 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 
 .section-text {
   color: var(--matou-muted-foreground);
-  white-space: pre-wrap;
   margin: 0;
   line-height: 1.6;
   font-size: 0.9rem;
+  word-wrap: break-word;
+
+  :deep(p) {
+    margin: 0;
+  }
+
+  :deep(p + p) {
+    margin-top: 0.5rem;
+  }
+
+  :deep(a) {
+    color: var(--matou-primary);
+    text-decoration: underline;
+  }
 }
 
 .count-chip {
@@ -2521,6 +2537,20 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   font-size: 0.875rem;
   color: var(--matou-foreground);
   line-height: 1.5;
+  word-wrap: break-word;
+
+  :deep(p) {
+    margin: 0;
+  }
+
+  :deep(p + p) {
+    margin-top: 0.5rem;
+  }
+
+  :deep(a) {
+    color: var(--matou-primary);
+    text-decoration: underline;
+  }
 }
 
 .evidence-criterion-item {
@@ -2809,7 +2839,20 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   color: var(--matou-muted-foreground);
   margin: 0;
   line-height: 1.5;
-  white-space: pre-wrap;
+  word-wrap: break-word;
+
+  :deep(p) {
+    margin: 0;
+  }
+
+  :deep(p + p) {
+    margin-top: 0.375rem;
+  }
+
+  :deep(a) {
+    color: var(--matou-primary);
+    text-decoration: underline;
+  }
 }
 
 .comment-input-row {

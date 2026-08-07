@@ -341,15 +341,21 @@ type ImplementationPlan struct {
 // PlanChangeEntry records a single change made to an implementation plan
 // (or one of its milestones/contributions) since the plan was last signed off.
 type PlanChangeEntry struct {
-	ID                string        `json:"id"`
-	Kind              string        `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed
-	MilestoneID       string        `json:"milestone_id,omitempty"`
-	MilestoneTitle    string        `json:"milestone_title,omitempty"`
-	ContributionID    string        `json:"contribution_id,omitempty"`
-	ContributionTitle string        `json:"contribution_title,omitempty"`
-	Changes           []FieldChange `json:"changes,omitempty"`
-	ChangedBy         string        `json:"changed_by"`
-	ChangedAt         time.Time     `json:"changed_at"`
+	ID                string `json:"id"`
+	Kind              string `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed
+	MilestoneID       string `json:"milestone_id,omitempty"`
+	MilestoneTitle    string `json:"milestone_title,omitempty"`
+	ContributionID    string `json:"contribution_id,omitempty"`
+	ContributionTitle string `json:"contribution_title,omitempty"`
+	// Parent refs are set when the change concerns a sub-contribution, so the
+	// UI can nest it under its parent within the milestone group. MilestoneID/
+	// MilestoneTitle are then resolved via the parent chain (subs carry no
+	// milestone_id of their own).
+	ParentContributionID    string        `json:"parent_contribution_id,omitempty"`
+	ParentContributionTitle string        `json:"parent_contribution_title,omitempty"`
+	Changes                 []FieldChange `json:"changes,omitempty"`
+	ChangedBy               string        `json:"changed_by"`
+	ChangedAt               time.Time     `json:"changed_at"`
 }
 
 // --- Milestone ---

@@ -34,17 +34,19 @@
         </div>
       </div>
 
-      <!-- Contribution changes -->
+      <!-- Contribution changes (sub-contribution changes nest under their parent) -->
       <div v-if="group.contributionChanges.length" class="redline-contributions">
         <div
           v-for="c in group.contributionChanges"
           :key="c.entryId"
           class="redline-contribution-row"
-          :class="{ 'is-added': c.kind === 'contribution_added', 'is-removed': c.kind === 'contribution_removed' }"
+          :class="rowClass(c)"
         >
           <div class="redline-contribution-main">
             <span class="contribution-title">{{ c.title }}</span>
-            <span class="tag" :class="contributionTagClass(c.kind)">{{ contributionTagLabel(c.kind) }}</span>
+            <span v-if="c.kind !== 'contribution_context'" class="tag" :class="contributionTagClass(c.kind)">
+              {{ contributionTagLabel(c.kind) }}
+            </span>
           </div>
           <div v-if="c.changes?.length" class="redline-contribution-fields">
             <div v-for="change in c.changes" :key="change.field" class="redline-field">
@@ -53,8 +55,34 @@
               <span class="new-value">{{ change.new_value }}</span>
             </div>
           </div>
-          <div class="redline-meta">
+          <div v-if="c.kind !== 'contribution_context'" class="redline-meta">
             {{ changedByLabel(c.changedBy) }} &middot; {{ formatRelative(c.changedAt) }}
+          </div>
+
+          <div v-if="c.children.length" class="redline-subcontributions">
+            <div
+              v-for="sub in c.children"
+              :key="sub.entryId"
+              class="redline-contribution-row redline-subcontribution-row"
+              :class="rowClass(sub)"
+            >
+              <div class="redline-contribution-main">
+                <span class="contribution-title">{{ sub.title }}</span>
+                <span v-if="sub.kind !== 'contribution_context'" class="tag" :class="contributionTagClass(sub.kind)">
+                  {{ contributionTagLabel(sub.kind) }}
+                </span>
+              </div>
+              <div v-if="sub.changes?.length" class="redline-contribution-fields">
+                <div v-for="change in sub.changes" :key="change.field" class="redline-field">
+                  <span class="field-label">{{ change.label }}:</span>
+                  <span class="old-value">{{ change.old_value }}</span>
+                  <span class="new-value">{{ change.new_value }}</span>
+                </div>
+              </div>
+              <div v-if="sub.kind !== 'contribution_context'" class="redline-meta">
+                {{ changedByLabel(sub.changedBy) }} &middot; {{ formatRelative(sub.changedAt) }}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -71,11 +99,14 @@ import { useAppStore } from 'stores/app';
 import { formatRelative } from 'src/lib/formatDate';
 import { resolveAidDisplay } from 'src/lib/aidDisplay';
 import { buildPlanChangeGroups } from 'src/lib/planChanges';
+import type { ContributionChangeItem, ContributionRef } from 'src/lib/planChanges';
 import type { Milestone, PlanChangeEntry } from 'src/types/projects';
 
 interface Props {
   milestones: Milestone[];
   changeLog?: PlanChangeEntry[];
+  /** Project contributions used to resolve legacy sub-contribution entries. */
+  contributions?: ContributionRef[];
 }
 
 const props = defineProps<Props>();
@@ -83,7 +114,17 @@ const props = defineProps<Props>();
 const profilesStore = useProfilesStore();
 const appStore = useAppStore();
 
-const groups = computed(() => buildPlanChangeGroups(props.milestones, props.changeLog));
+const groups = computed(() =>
+  buildPlanChangeGroups(props.milestones, props.changeLog, props.contributions),
+);
+
+function rowClass(c: ContributionChangeItem): Record<string, boolean> {
+  return {
+    'is-added': c.kind === 'contribution_added',
+    'is-removed': c.kind === 'contribution_removed',
+    'is-context': c.kind === 'contribution_context',
+  };
+}
 
 function changedByLabel(aid: string): string {
   return resolveAidDisplay(aid, profilesStore.profilesByAid, {
@@ -92,13 +133,13 @@ function changedByLabel(aid: string): string {
   });
 }
 
-function contributionTagLabel(kind: 'contribution_added' | 'contribution_edited' | 'contribution_removed'): string {
+function contributionTagLabel(kind: ContributionChangeItem['kind']): string {
   if (kind === 'contribution_added') return 'Added';
   if (kind === 'contribution_removed') return 'Removed';
   return 'Edited';
 }
 
-function contributionTagClass(kind: 'contribution_added' | 'contribution_edited' | 'contribution_removed'): string {
+function contributionTagClass(kind: ContributionChangeItem['kind']): string {
   if (kind === 'contribution_added') return 'tag-added';
   if (kind === 'contribution_removed') return 'tag-removed';
   return 'tag-edited';
@@ -215,6 +256,29 @@ function contributionTagClass(kind: 'contribution_added' | 'contribution_edited'
     background: rgba(200, 70, 58, 0.06);
     opacity: 0.7;
   }
+
+  &.is-context {
+    background: transparent;
+    border: 1px dashed var(--matou-border);
+
+    > .redline-contribution-main .contribution-title {
+      color: var(--matou-muted-foreground);
+    }
+  }
+}
+
+.redline-subcontributions {
+  margin-top: 8px;
+  margin-left: 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--matou-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.redline-subcontribution-row {
+  background: var(--matou-card);
 }
 
 .redline-contribution-main {

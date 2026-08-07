@@ -18,6 +18,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${FORGEJO_TOKEN:?}"
 : "${FORGEJO_API:?}"
 repo_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"
+# One runner now serves TWO repos (Matou/ourcloud + Matou/matou-app). Any /tmp
+# state that is per-repo must carry the repo in its name, or the two repos
+# clobber each other's stamps (#238). Slashes aren't valid in a path segment,
+# so flatten the slug: "Matou/matou-app" -> "Matou-matou-app".
+repo_tag="${repo_slug//\//-}"
 
 api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
@@ -43,7 +48,9 @@ jq -r '.[] | "  #\(.number) \(.title)"' <<<"$ready"
 # is the backstop either way.
 SWARM_DEBOUNCE="${SWARM_DEBOUNCE:-600}"
 ready_hash="$(printf '%s' "$ready" | sha1sum | cut -c1-16)"
-stamp="/tmp/matou-swarm-lastready"
+# Per-repo (#238): a shared /tmp/matou-swarm-lastready let each repo overwrite
+# the other's debounce stamp, defeating the coalescing entirely.
+stamp="/tmp/matou-swarm-lastready-$repo_tag"
 if [ -f "$stamp" ]; then
   read -r last_hash last_at < "$stamp" || true
   if [ "$last_hash" = "$ready_hash" ] &&
@@ -98,6 +105,10 @@ npx sandcastle docker build-image   # fast no-op after first build (layer cache)
 # and safe to remove. Runs on EVERY exit (limit-pause, push-fail, normal). An
 # unmerged worker branch is left intact and surfaced, never `-D`'d away.
 sweep_and_report() {
+  # Reap leaked worker containers older than a run-lifetime (#238) — quiet
+  # housekeeping, no alert. We hold the global lock, so anything this old is dead.
+  local reaped; reaped="$(reap_containers)" || true
+  [ -n "$reaped" ] && echo "run-swarm: reaped stale sandcastle-* container(s): $(printf '%s' "$reaped" | tr '\n' ' ')"
   local unmerged; unmerged="$(sweep_worktrees "$PWD")" || true
   [ -n "$unmerged" ] || return 0
   local count; count="$(printf '%s' "$unmerged" | grep -c .)"
@@ -122,6 +133,10 @@ sandcastle_log="$(mktemp)"
 if ! npm run sandcastle 2>&1 | tee "$sandcastle_log"; then
   if claude_limit_hit "$sandcastle_log"; then
     reset_hint="$(claude_limit_reset_hint "$sandcastle_log")"
+    # GLOBAL by design (#238): the Claude subscription is one window shared
+    # across every repo, so the hourly notice-dedupe marker stays repo-agnostic
+    # — one repo hitting the limit correctly suppresses the other's redundant
+    # first notice for the same outage.
     marker="/tmp/matou-swarm-claude-limit"
     if [ ! -f "$marker" ] || [ $(( $(date +%s) - $(stat -c %Y "$marker") )) -gt 3600 ]; then
       touch "$marker"

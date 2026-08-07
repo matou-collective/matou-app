@@ -32,7 +32,7 @@ case "$url" in
     n=$((n + 1))
     echo "$n" >"$FAKE_DIR/counter"
     printf '%s\n' "$body" >>"$FAKE_DIR/posts.log"
-    echo "{\"id\":\"NEWQ$n\"}"
+    echo "{\"id\":\"NEWQ$n\",\"create_at\":$(date +%s%3N)}"
     ;;
   */channels/*/posts*)
     cat "$FAKE_DIR/channel.json" 2>/dev/null || echo '{"posts":{},"order":[]}'
@@ -43,8 +43,14 @@ case "$url" in
     cat "$FAKE_DIR/thread-$id.json" 2>/dev/null || echo '{"posts":{}}'
     ;;
   */issues/*/comments)
-    printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
-    echo '{}'
+    if [ "$method" = GET ]; then
+      id="${url%/comments}"
+      id="${id##*/}"
+      cat "$FAKE_DIR/comments-$id.json" 2>/dev/null || echo '[]'
+    else
+      printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
+      echo '{}'
+    fi
     ;;
   */issues/*/labels/*)
     echo ''
@@ -54,9 +60,14 @@ case "$url" in
     echo '[]'
     ;;
   */issues/[0-9]*)
-    # Single-issue write, e.g. PATCH .../issues/9 {"state":"closed"}.
-    printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
-    echo '{}'
+    id="${url##*/}"
+    if [ "$method" = GET ]; then
+      cat "$FAKE_DIR/issue-$id.json" 2>/dev/null || echo '{}'
+    else
+      # Single-issue write, e.g. PATCH .../issues/9 {"state":"closed"}.
+      printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
+      echo '{}'
+    fi
     ;;
   */issues\?*)
     cat "$FAKE_DIR/issues.json" 2>/dev/null || echo '[]'

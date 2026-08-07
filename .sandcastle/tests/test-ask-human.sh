@@ -20,8 +20,9 @@ export ASK_HUMAN_POLL=1
 now_ms="$(($(date +%s) * 1000))"
 pass=0 fail=0
 
-mkpost() { # mkpost <id> <root> <user> <msg>
-  jq -n --arg id "$1" --arg root "$2" --arg user "$3" --arg msg "$4" --argjson t "$now_ms" \
+mkpost() { # mkpost <id> <root> <user> <msg> [create_at_ms]
+  jq -n --arg id "$1" --arg root "$2" --arg user "$3" --arg msg "$4" \
+    --argjson t "${5:-$now_ms}" \
     '{id:$id, root_id:$root, user_id:$user, message:$msg, create_at:$t, delete_at:0}'
 }
 
@@ -75,7 +76,8 @@ check "T3 exit 3 on timeout" "[ $rc -eq 3 ]"
 check "T3 posts a new question" "grep -q raising_hand \"\$FAKE_DIR/posts.log\""
 check "T3 parking notice on new thread" "grep -q '\"root_id\": *\"NEWQ1\"' \"\$FAKE_DIR/posts.log\""
 
-# ---- T4: consumed — earlier ask was answered AND confirmed: ask fresh
+# ---- T4: consumed — earlier round answered AND confirmed: next round joins
+# the SAME thread as a follow-up reply; the old answer is never reused
 setup
 jq -n --argjson q "$(mkpost OLDQ "" BOTID "$ask_msg")" '{posts:{OLDQ:$q}}' >"$FAKE_DIR/channel.json"
 jq -n --argjson q "$(mkpost OLDQ "" BOTID "$ask_msg")" \
@@ -85,13 +87,15 @@ jq -n --argjson q "$(mkpost OLDQ "" BOTID "$ask_msg")" \
 ASK_HUMAN_TIMEOUT=2 bash "$script" "question about [#129 x](u)" >/dev/null 2>&1
 rc=$?
 check "T4 exit 3 (old answer not reused)" "[ $rc -eq 3 ]"
-check "T4 posts a new question" "grep -q raising_hand \"\$FAKE_DIR/posts.log\""
+check "T4 posts a follow-up question" "grep -q raising_hand \"\$FAKE_DIR/posts.log\""
+check "T4 follow-up joins the old thread" "jq -se '[.[] | select(.message | startswith(\":raising_hand:\"))] | length == 1 and all(.root_id == \"OLDQ\")' \"\$FAKE_DIR/posts.log\" >/dev/null"
+check "T4 parking notice on the same thread" "jq -se '[.[] | select(.message | startswith(\":hourglass:\"))] | length == 1 and all(.root_id == \"OLDQ\")' \"\$FAKE_DIR/posts.log\" >/dev/null"
 
 # ---- T5: normal flow — fresh question answered while polling
 setup
 echo '{"posts":{}}' >"$FAKE_DIR/channel.json"
 jq -n --argjson q "$(mkpost NEWQ1 "" BOTID "$ask_msg")" \
-  --argjson r "$(mkpost R1 NEWQ1 HUMAN "A please")" \
+  --argjson r "$(mkpost R1 NEWQ1 HUMAN "A please" $((now_ms + 60000)))" \
   '{posts:{NEWQ1:$q, R1:$r}}' >"$FAKE_DIR/thread-NEWQ1.json"
 out="$(ASK_HUMAN_TIMEOUT=5 bash "$script" "question about [#129 x](u)" 2>/dev/null)"
 rc=$?
@@ -114,6 +118,21 @@ check "T6 exit 0" "[ $rc -eq 0 ]"
 check "T6 returns reply from older thread" "[ \"$out\" = 'pick C' ]"
 check "T6 confirms in the answered thread" "grep -q '\"root_id\": *\"OLDQ1\"' \"\$FAKE_DIR/posts.log\""
 check "T6 no duplicate question" "! grep -q raising_hand \"\$FAKE_DIR/posts.log\""
+
+# ---- T7: multi-round — follow-up in a consumed thread gets ITS OWN answer
+setup
+future_ms=$((now_ms + 3600000))
+jq -n --argjson q "$(mkpost OLDQ "" BOTID "$ask_msg")" '{posts:{OLDQ:$q}}' >"$FAKE_DIR/channel.json"
+jq -n --argjson q "$(mkpost OLDQ "" BOTID "$ask_msg")" \
+  --argjson r "$(mkpost R1 OLDQ HUMAN "A")" \
+  --argjson c "$(mkpost C1 OLDQ BOTID ":white_check_mark: Got it — proceeding with that answer.")" \
+  --argjson r2 "$(mkpost R2 OLDQ HUMAN "round two: use tokens" "$future_ms")" \
+  '{posts:{OLDQ:$q, R1:$r, C1:$c, R2:$r2}}' >"$FAKE_DIR/thread-OLDQ.json"
+out="$(ASK_HUMAN_TIMEOUT=5 bash "$script" "question about [#129 x](u)" 2>/dev/null)"
+rc=$?
+check "T7 exit 0" "[ $rc -eq 0 ]"
+check "T7 returns the new round's answer" "[ \"$out\" = 'round two: use tokens' ]"
+check "T7 confirms in the same thread" "jq -se '[.[] | select(.message | startswith(\":white_check_mark:\"))] | length == 1 and all(.root_id == \"OLDQ\")' \"\$FAKE_DIR/posts.log\" >/dev/null"
 
 echo
 echo "pass=$pass fail=$fail"

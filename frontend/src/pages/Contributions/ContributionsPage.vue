@@ -244,6 +244,7 @@ const filteredContributions = computed(() =>
     sortField: sortField.value,
     sortDirection: sortDirection.value,
     currentUserId: currentUserId.value,
+    viewerIsAdmin: isAdmin.value,
   }),
 );
 

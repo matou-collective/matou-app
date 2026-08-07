@@ -288,3 +288,154 @@ func TestAddMilestone_RecordingFailureDoesNotFailMutation(t *testing.T) {
 		t.Errorf("milestone title = %q, want M", got.Title)
 	}
 }
+
+// newTestContributionReq returns a minimal valid CreateContributionRequest.
+func newTestContributionReq(projectID, title string) *CreateContributionRequest {
+	return &CreateContributionRequest{
+		ProjectID:          projectID,
+		Title:              title,
+		Description:        "d",
+		CreatedBy:          "creator-1",
+		Objectives:         []string{"o"},
+		Deliverables:       []string{"d"},
+		AcceptanceCriteria: []string{"a"},
+	}
+}
+
+func TestCreateSubContribution_RecordsChangeLogEntryUnderParentMilestone(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+
+	proj, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+
+	parentReq := newTestContributionReq(proj.ID, "Parent Work")
+	parentReq.MilestoneID = ms.MilestoneID
+	parent, err := svc.CreateContribution(ctx, spaceID, parentReq)
+	if err != nil {
+		t.Fatalf("CreateContribution parent: %v", err)
+	}
+
+	// Sub-contributions are created with parent_contribution set and NO
+	// milestone_id (API convention). The change log must still attribute the
+	// change to the parent's milestone.
+	subReq := newTestContributionReq(proj.ID, "Sub Work")
+	subReq.ParentContributionID = parent.ID
+	sub, err := svc.CreateContribution(ctx, spaceID, subReq)
+	if err != nil {
+		t.Fatalf("CreateContribution sub: %v", err)
+	}
+
+	gotPlan, err := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if err != nil {
+		t.Fatalf("GetImplementationPlan: %v", err)
+	}
+	var entry *PlanChangeEntry
+	for i := range gotPlan.ChangeLog {
+		if gotPlan.ChangeLog[i].ContributionID == sub.ID {
+			entry = &gotPlan.ChangeLog[i]
+		}
+	}
+	if entry == nil {
+		t.Fatalf("expected a change log entry for sub-contribution %s, got %+v", sub.ID, gotPlan.ChangeLog)
+	}
+	if entry.Kind != "contribution_added" {
+		t.Errorf("kind = %q, want contribution_added", entry.Kind)
+	}
+	if entry.MilestoneID != ms.MilestoneID {
+		t.Errorf("milestone_id = %q, want %q (resolved via parent)", entry.MilestoneID, ms.MilestoneID)
+	}
+	if entry.MilestoneTitle != ms.Title {
+		t.Errorf("milestone_title = %q, want %q", entry.MilestoneTitle, ms.Title)
+	}
+	if entry.ParentContributionID != parent.ID {
+		t.Errorf("parent_contribution_id = %q, want %q", entry.ParentContributionID, parent.ID)
+	}
+	if entry.ParentContributionTitle != "Parent Work" {
+		t.Errorf("parent_contribution_title = %q, want Parent Work", entry.ParentContributionTitle)
+	}
+}
+
+func TestCreateSubContribution_InvalidatesPlanSignOff(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+
+	proj, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+
+	parentReq := newTestContributionReq(proj.ID, "Parent Work")
+	parentReq.MilestoneID = ms.MilestoneID
+	parentReq.Deadline = "2027-01-01"
+	parent, err := svc.CreateContribution(ctx, spaceID, parentReq)
+	if err != nil {
+		t.Fatalf("CreateContribution parent: %v", err)
+	}
+	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
+		t.Fatalf("ConfirmContribution: %v", err)
+	}
+	if _, err := svc.SignOffPlan(ctx, spaceID, plan.ID, "signer-1"); err != nil {
+		t.Fatalf("SignOffPlan: %v", err)
+	}
+
+	subReq := newTestContributionReq(proj.ID, "Sub Work")
+	subReq.ParentContributionID = parent.ID
+	if _, err := svc.CreateContribution(ctx, spaceID, subReq); err != nil {
+		t.Fatalf("CreateContribution sub: %v", err)
+	}
+
+	gotPlan, err := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if err != nil {
+		t.Fatalf("GetImplementationPlan: %v", err)
+	}
+	if gotPlan.SignedOff {
+		t.Error("expected sub-contribution creation to invalidate plan sign-off")
+	}
+	if len(gotPlan.ChangeLog) != 1 {
+		t.Fatalf("expected 1 change log entry after sign-off reset, got %d", len(gotPlan.ChangeLog))
+	}
+}
+
+func TestArchiveSubContribution_RecordsChangeLogEntryUnderParentMilestone(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+
+	proj, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+
+	parentReq := newTestContributionReq(proj.ID, "Parent Work")
+	parentReq.MilestoneID = ms.MilestoneID
+	parent, err := svc.CreateContribution(ctx, spaceID, parentReq)
+	if err != nil {
+		t.Fatalf("CreateContribution parent: %v", err)
+	}
+	subReq := newTestContributionReq(proj.ID, "Sub Work")
+	subReq.ParentContributionID = parent.ID
+	sub, err := svc.CreateContribution(ctx, spaceID, subReq)
+	if err != nil {
+		t.Fatalf("CreateContribution sub: %v", err)
+	}
+
+	if err := svc.ArchiveContribution(ctx, spaceID, sub.ID, "archiver-1"); err != nil {
+		t.Fatalf("ArchiveContribution: %v", err)
+	}
+
+	gotPlan, err := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if err != nil {
+		t.Fatalf("GetImplementationPlan: %v", err)
+	}
+	var entry *PlanChangeEntry
+	for i := range gotPlan.ChangeLog {
+		if gotPlan.ChangeLog[i].Kind == "contribution_removed" && gotPlan.ChangeLog[i].ContributionID == sub.ID {
+			entry = &gotPlan.ChangeLog[i]
+		}
+	}
+	if entry == nil {
+		t.Fatalf("expected contribution_removed entry for sub %s, got %+v", sub.ID, gotPlan.ChangeLog)
+	}
+	if entry.MilestoneID != ms.MilestoneID {
+		t.Errorf("milestone_id = %q, want %q (resolved via parent)", entry.MilestoneID, ms.MilestoneID)
+	}
+	if entry.ParentContributionID != parent.ID {
+		t.Errorf("parent_contribution_id = %q, want %q", entry.ParentContributionID, parent.ID)
+	}
+}
