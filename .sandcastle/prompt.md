@@ -42,13 +42,25 @@ To see a task in full:
    a failing Vitest test first; for backend bugs a failing Go test. If the
    bug can't be reproduced without live infrastructure, say so in the PR
    body and reason from the code.
-3. **Verification inside this sandbox** — run what you changed:
+3. **Feature e2e spec — user-facing changes only.** Before implementing,
+   create `frontend/tests/e2e/features/issue-<NUMBER>.spec.ts`. Import ONLY
+   from `./fixtures` (`test`, `expect` — fixtures provide `adminPage` and
+   `memberPage` as logged-in sessions, plus `snap`). Never register, log in,
+   or create the org manually. Call `await snap(page, '<label>')` at each
+   state that demonstrates the feature — these screenshots are what the
+   human reviewer sees in Mattermost. You cannot RUN e2e here; validate
+   syntax with:
+   `cd frontend && npx playwright test --list tests/e2e/features/issue-<NUMBER>.spec.ts`
+   For backend-only / docs / CI issues, skip the spec and put
+   `**Feature e2e:** skipped — <reason>` in the PR body (exact marker — the
+   pipeline reports it to Mattermost).
+4. **Verification inside this sandbox** — run what you changed:
    - frontend: `cd frontend && npm run test:script && npm run lint`
    - backend: `cd backend && go build ./... && make test`
    **Never** run e2e/Playwright/integration suites — they need live
    KERI/any-sync infrastructure this sandbox does not have. State in the PR
    body what you verified and what needs live testing.
-4. **Ask a human when the issue's `needs_human_decision` moment arrives** —
+5. **Ask a human when the issue's `needs_human_decision` moment arrives** —
    ambiguity about intent, UX judgement, scope. First check the issue
    comments for a prior ruling; otherwise run
    `bash .sandcastle/ask-human.sh "Question about #<NUMBER>: <question>"`
@@ -60,7 +72,7 @@ To see a task in full:
    swap the issue's label `ready-for-agent` → `ready-for-human`, comment
    what you need, and stop working this issue — the resume sweep keeps the
    conversation going in the same thread.
-5. **Land as a PR — never push main, never close the issue.**
+6. **Land as a PR — never push main, never close the issue.**
    - branch: `git checkout -b agent/issue-<NUMBER>`
    - commit(s): conventional style, subject prefixed `agent:`, referencing
      `#<NUMBER>`
@@ -69,14 +81,14 @@ To see a task in full:
 
          curl -sf -X POST -H "Authorization: token $(cat /run/secrets/forgejo_token)" \
            -H 'Content-Type: application/json' \
-           -d '{"title":"<concise title> (#<NUMBER>)","head":"agent/issue-<NUMBER>","base":"main","body":"closes #<NUMBER>\n\n<what changed>\n\n**Verified in sandbox:** <commands run>\n**Needs live verification:** <or None>"}' \
+           -d '{"title":"<concise title> (#<NUMBER>)","head":"agent/issue-<NUMBER>","base":"main","body":"closes #<NUMBER>\n\n<what changed>\n\n**Feature e2e:** tests/e2e/features/issue-<NUMBER>.spec.ts (or the `skipped — <reason>` form)\n**Verified in sandbox:** <commands run>\n**Needs live verification:** <or None>"}' \
            "$FORGEJO_API/pulls"
 
    - notify: `bash .sandcastle/notify-mattermost.sh ":package: PR ready for review: <PR html_url> (fixes #<NUMBER>)"`
-6. **Blocked with no human answer?** Label the issue `agent-blocked`, comment
+7. **Blocked with no human answer?** Label the issue `agent-blocked`, comment
    exactly what's blocking, and move on. A human resolves it and re-adds
    `ready-for-agent`.
-7. **Stay in scope.** Fix what the issue reports. No drive-by refactors, no
+8. **Stay in scope.** Fix what the issue reports. No drive-by refactors, no
    dependency changes unless the fix requires one — and a dependency change
    ships its lockfile update (`package-lock.json` / `go.sum`) in the same
    commit.

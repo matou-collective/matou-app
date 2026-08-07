@@ -1,0 +1,60 @@
+name: pr-e2e
+on:
+  pull_request:
+    types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to run feature e2e for"
+        required: true
+
+jobs:
+  feature-e2e:
+    runs-on: matou-workstation
+    timeout-minutes: 40
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.pull_request.head.ref, 'agent/issue-')
+    steps:
+      - name: Feature e2e under global lock
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          REPO_SLUG: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+        run: |
+          set -euo pipefail
+          exec 9>/tmp/matou-swarm.lock
+          flock -w 1800 9 || { echo "pr-e2e: lock busy for 30min — skipping this run (PR update retriggers)"; exit 0; }
+          workdir="$HOME/swarm-e2e/$REPO_SLUG"
+          mkdir -p "$workdir"
+          cd "$workdir"
+          url="https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git"
+          if [ -d .git ]; then
+            git remote set-url origin "$url"
+          else
+            git clone "$url" .
+          fi
+          git fetch origin "refs/pull/${PR_NUMBER}/head"
+          git checkout -f FETCH_HEAD
+          bash .sandcastle/run-pr-e2e.sh
+      - name: Investigate failure (healer)
+        if: failure()
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          WORKFLOW: pr-e2e
+          HEAL_DRY_RUN: "1"
+        run: |
+          bash "$HOME/swarm-e2e/${{ github.repository }}/.sandcastle/heal.sh" || {
+            [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
+            jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: pr-e2e failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message}' |
+              curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" || true
+          }

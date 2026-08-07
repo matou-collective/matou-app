@@ -139,6 +139,15 @@ export default defineConfig({
       testMatch: /e2e-proposal-link-cards\.spec\.ts/,
       use: browserConfig,
     },
+    // Feature specs authored by swarm agents (one per issue). Bootstrap via
+    // the self-sufficient org-setup + registration projects, which create the
+    // org and a member and persist tests/e2e/test-accounts.json.
+    {
+      name: 'features',
+      testMatch: /features\/issue-\d+\.spec\.ts/,
+      use: browserConfig,
+      dependencies: ['org-setup', 'registration'],
+    },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above
     {
@@ -160,6 +169,7 @@ export default defineConfig({
         /e2e-proposals\.spec\.ts/,
         /e2e-projects-contributions\.spec\.ts/,
         /e2e-proposal-link-cards\.spec\.ts/,
+        /features\/issue-\d+\.spec\.ts/,
       ],
     },
   ],
