@@ -41,10 +41,15 @@ export async function setupTestConfig(target: Page | BrowserContext) {
  * @param request - Playwright APIRequestContext
  */
 export async function clearTestConfig(request: APIRequestContext) {
-  // Clear config server
+  // Clear config server. Writes are bearer-gated on auth-enabled config
+  // servers (reads stay public) — send the token when the env provides one.
   try {
+    const headers: Record<string, string> = { 'X-Test-Config': 'true' };
+    if (process.env.CONFIG_ADMIN_TOKEN) {
+      headers['Authorization'] = `Bearer ${process.env.CONFIG_ADMIN_TOKEN}`;
+    }
     await request.delete(`${CONFIG_SERVER_URL}/api/config`, {
-      headers: { 'X-Test-Config': 'true' },
+      headers,
     });
     console.log('[TestConfig] Cleared config server');
   } catch {

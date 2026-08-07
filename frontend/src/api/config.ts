@@ -28,6 +28,21 @@ function configHeaders(extra?: Record<string, string>): Record<string, string> {
   return headers;
 }
 
+// Config-server write endpoints are bearer-gated once infra's
+// feat/config-server-auth is deployed (reads stay public). Dev/test servers
+// use the well-known dev token; without a token configured we send nothing,
+// which older (pre-auth) servers ignore.
+const CONFIG_ADMIN_TOKEN = (import.meta.env.VITE_CONFIG_ADMIN_TOKEN as string | undefined) ?? '';
+
+/** Headers for config-server writes: configHeaders plus bearer auth when configured. */
+function configWriteHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers = configHeaders(extra);
+  if (CONFIG_ADMIN_TOKEN) {
+    headers['Authorization'] = `Bearer ${CONFIG_ADMIN_TOKEN}`;
+  }
+  return headers;
+}
+
 export interface AdminInfo {
   aid: string;
   name: string;
@@ -200,7 +215,7 @@ export async function saveOrgConfig(config: OrgConfig): Promise<void> {
   try {
     const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
       method: 'POST',
-      headers: configHeaders({ 'Content-Type': 'application/json' }),
+      headers: configWriteHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(config),
     });
 

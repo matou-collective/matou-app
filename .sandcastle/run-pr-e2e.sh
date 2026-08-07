@@ -60,6 +60,15 @@ curl -sf http://localhost:9080/health >/dev/null || { echo "backend never became
 
 ( cd frontend && npm ci && npx playwright install chromium )
 
+# Auth-enabled config servers gate writes behind a bearer token. Surface the
+# test env's token (if the infra checkout provisions one) to the app
+# (VITE_CONFIG_ADMIN_TOKEN, read in src/api/config.ts) and to the e2e helpers
+# (CONFIG_ADMIN_TOKEN). Pre-auth servers ignore the extra header.
+if [ -z "${CONFIG_ADMIN_TOKEN:-}" ] && [ -f "$INFRA/keri/.env.test" ]; then
+  CONFIG_ADMIN_TOKEN="$(sed -n 's/^CONFIG_ADMIN_TOKEN=//p' "$INFRA/keri/.env.test" | head -1)"
+fi
+export CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}" VITE_CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}"
+
 set +e
 # The e2e utils locate infra as a sibling of the repo root, which doesn't hold
 # for this checkout (~/swarm-e2e/<slug>) — point them at $INFRA explicitly.
