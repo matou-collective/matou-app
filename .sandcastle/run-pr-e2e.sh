@@ -41,7 +41,9 @@ trap teardown EXIT
 echo "run-pr-e2e: PR #$PR_NUMBER issue #$n spec $spec"
 bash scripts/clean-test.sh
 make -C "$INFRA/keri" clean-test start-and-wait-test
-make -C "$INFRA/any-sync" clean-test start-and-wait-test
+# any-sync clean-test wipes the generated network config (etc-test/), which
+# bare start can't recreate — setup-test regenerates it before starting.
+make -C "$INFRA/any-sync" clean-test setup-test
 
 ( cd backend && make build )
 ( cd backend && MATOU_ENV=test exec ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
