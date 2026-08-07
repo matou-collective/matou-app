@@ -21,8 +21,15 @@
           <h3 class="section-title">My Projects</h3>
           <button
             class="archived-toggle"
-            :class="{ active: myShowArchived }"
-            @click="myShowArchived = !myShowArchived"
+            :class="{ active: myView === 'completed' }"
+            @click="toggleMyView('completed')"
+          >
+            Completed
+          </button>
+          <button
+            class="archived-toggle"
+            :class="{ active: myView === 'archived' }"
+            @click="toggleMyView('archived')"
           >
             Archived
           </button>
@@ -32,7 +39,7 @@
         </p>
         <div v-if="myProjectsFiltered.length === 0" class="empty-state-inline">
           <Target :size="32" class="empty-icon" />
-          <span>{{ myShowArchived ? 'No archived projects.' : 'No active projects yet.' }}</span>
+          <span>{{ myEmptyMessage }}</span>
         </div>
         <div v-else class="projects-list">
           <ProjectCard
@@ -100,6 +107,13 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import ProjectCard from 'src/components/projects/ProjectCard.vue';
 import ProjectForm from 'src/components/projects/ProjectForm.vue';
+import {
+  filterMyProjects,
+  filterAllProjects,
+  sortByCreatedDesc,
+  type MyProjectsView,
+  type AllProjectsFilter,
+} from 'src/lib/projectsView';
 
 const router = useRouter();
 const $q = useQuasar();
@@ -111,18 +125,35 @@ const isAdmin = computed(() => identityStore.isAdmin);
 const showCreateDialog = ref(false);
 const creating = ref(false);
 const createError = ref<string | null>(null);
-const activeFilter = ref('all');
-const myShowArchived = ref(false);
+const activeFilter = ref<AllProjectsFilter>('all');
+const myView = ref<MyProjectsView>('active');
 const nameMap = ref<Record<string, string>>({});
 const loaded = ref(false);
 
-const filters = [
+const filters: { label: string; value: AllProjectsFilter }[] = [
   { label: 'All', value: 'all' },
   { label: 'Active', value: 'active' },
   { label: 'Created', value: 'created' },
   { label: 'Completed', value: 'completed' },
   { label: 'Archived', value: 'archived' },
 ];
+
+// Toggle a "My Projects" reveal (completed / archived); clicking the active
+// one returns to the default 'active' view. The two are mutually exclusive.
+function toggleMyView(view: Exclude<MyProjectsView, 'active'>) {
+  myView.value = myView.value === view ? 'active' : view;
+}
+
+const myEmptyMessage = computed(() => {
+  switch (myView.value) {
+    case 'completed':
+      return 'No completed projects.';
+    case 'archived':
+      return 'No archived projects.';
+    default:
+      return 'No active projects yet.';
+  }
+});
 
 const currentUserId = computed(() => identityStore.aidPrefix ?? '');
 
@@ -144,19 +175,13 @@ function isMyProject(p: { id: string; created_by?: string; project_lead_id?: str
 
 const myProjects = computed(() => projectsStore.projects.filter(isMyProject));
 
-const myProjectsFiltered = computed(() => {
-  const list = myShowArchived.value
-    ? myProjects.value.filter(p => p.status === 'archived')
-    : myProjects.value.filter(p => p.status !== 'archived');
-  return [...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-});
+const myProjectsFiltered = computed(() =>
+  sortByCreatedDesc(filterMyProjects(myProjects.value, myView.value)),
+);
 
-const filteredProjects = computed(() => {
-  const list = activeFilter.value === 'all'
-    ? projectsStore.projects
-    : projectsStore.projects.filter(p => p.status === activeFilter.value);
-  return [...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-});
+const filteredProjects = computed(() =>
+  sortByCreatedDesc(filterAllProjects(projectsStore.projects, activeFilter.value)),
+);
 
 onMounted(async () => {
   await projectsStore.fetchProjects();
