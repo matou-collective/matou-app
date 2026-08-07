@@ -45,6 +45,10 @@ make -C "$INFRA/keri" clean-test start-and-wait-test
 # bare start can't recreate — setup-test regenerates it before starting.
 make -C "$INFRA/any-sync" clean-test setup-test
 
+# Runner shells are non-login: pick up a user-local Go toolchain if go isn't
+# already on PATH (the workstation installs one at ~/go-sdk/go).
+command -v go >/dev/null 2>&1 || export PATH="$HOME/go-sdk/go/bin:$PATH"
+
 ( cd backend && make build )
 ( cd backend && MATOU_ENV=test exec ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
 backend_pid=$!
