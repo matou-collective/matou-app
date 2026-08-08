@@ -18,7 +18,7 @@ if [ -z "${MATTERMOST_URL:-}" ] || [ -z "${MATTERMOST_BOT_TOKEN:-}" ] || [ -z "$
 fi
 root="${2:-}"
 resp="$(jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message "$msg" --arg root_id "$root" \
-    '{channel_id: $channel_id, message: $message} + (if $root_id != "" then {root_id: $root_id} else {} end)' |
+    '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}} + (if $root_id != "" then {root_id: $root_id} else {} end)' |
   curl -sf --max-time 30 -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' \
     -d @- "$MATTERMOST_URL/api/v4/posts")"
 # Print the created post id — heal.sh threads recurrences under it.
