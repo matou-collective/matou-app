@@ -21,7 +21,7 @@ mapi() { curl -sf -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" "$@"; }
 
 post() { # post <message> [root_id] — root_id makes it a thread reply (verbatim from ask-human.sh)
   jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message "$1" --arg root_id "${2:-}" \
-    '{channel_id: $channel_id, message: $message}
+    '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}
      + (if $root_id != "" then {root_id: $root_id} else {} end)' |
     mapi -X POST -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts"
 }

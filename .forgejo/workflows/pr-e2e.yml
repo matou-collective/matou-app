@@ -55,6 +55,6 @@ jobs:
         run: |
           bash "$HOME/swarm-e2e/${{ github.repository }}/.sandcastle/heal.sh" || {
             [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
-            jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: pr-e2e failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message}' |
+            jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: pr-e2e failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
               curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" || true
           }

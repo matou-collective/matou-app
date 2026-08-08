@@ -31,7 +31,7 @@ done
 post() { # $1=message $2=json-array-of-file-ids $3=root_id ("" for root)
   jq -cn --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message "$1" \
     --argjson file_ids "$2" --arg root_id "$3" \
-    '{channel_id: $channel_id, message: $message, file_ids: $file_ids}
+    '{channel_id: $channel_id, message: $message, file_ids: $file_ids, props: {remove_link_preview: "true"}}
      + (if $root_id != "" then {root_id: $root_id} else {} end)' |
   curl -sf --max-time 30 -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" \
     -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" 2>/dev/null |
