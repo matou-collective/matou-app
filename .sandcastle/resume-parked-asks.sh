@@ -55,7 +55,7 @@ fj() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
 mm_post() { # mm_post <message> <root_id>
   jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message "$1" --arg root_id "$2" \
-    '{channel_id: $channel_id, message: $message, root_id: $root_id}' |
+    '{channel_id: $channel_id, message: $message, root_id: $root_id, props: {remove_link_preview: "true"}}' |
     mm -X POST -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts"
 }
 
