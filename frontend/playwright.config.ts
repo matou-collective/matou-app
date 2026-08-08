@@ -54,6 +54,17 @@ export default defineConfig({
       testMatch: /e2e-registration\.spec\.ts/,
       use: browserConfig,
     },
+    // Bootstrap-only slice of registration for the features project: just the
+    // admin-approves flow that persists accounts.member. Keeps feature e2e
+    // independent of the steward-upgrade path (test 2), which is blocked on a
+    // known group-issuance TEL gap and would otherwise stop feature specs
+    // from ever running.
+    {
+      name: 'registration-member',
+      testMatch: /e2e-registration\.spec\.ts/,
+      grep: /admin approves user registration/,
+      use: browserConfig,
+    },
     // Invitation tests depend on org existing
     {
       name: 'invitation',
@@ -146,7 +157,7 @@ export default defineConfig({
       name: 'features',
       testMatch: /features\/issue-\d+\.spec\.ts/,
       use: browserConfig,
-      dependencies: ['org-setup', 'registration'],
+      dependencies: ['org-setup', 'registration-member'],
     },
     // Default project for running individual test files
     // Excludes tests that have dedicated projects above

@@ -41,7 +41,13 @@ trap teardown EXIT
 echo "run-pr-e2e: PR #$PR_NUMBER issue #$n spec $spec"
 bash scripts/clean-test.sh
 make -C "$INFRA/keri" clean-test start-and-wait-test
-make -C "$INFRA/any-sync" clean-test start-and-wait-test
+# any-sync clean-test wipes the generated network config (etc-test/), which
+# bare start can't recreate — setup-test regenerates it before starting.
+make -C "$INFRA/any-sync" clean-test setup-test
+
+# Runner shells are non-login: pick up a user-local Go toolchain if go isn't
+# already on PATH (the workstation installs one at ~/go-sdk/go).
+command -v go >/dev/null 2>&1 || export PATH="$HOME/go-sdk/go/bin:$PATH"
 
 ( cd backend && make build )
 ( cd backend && MATOU_ENV=test exec ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
@@ -54,8 +60,20 @@ curl -sf http://localhost:9080/health >/dev/null || { echo "backend never became
 
 ( cd frontend && npm ci && npx playwright install chromium )
 
+# Auth-enabled config servers gate writes behind a bearer token. Surface the
+# test env's token (if the infra checkout provisions one) to the app
+# (VITE_CONFIG_ADMIN_TOKEN, read in src/api/config.ts) and to the e2e helpers
+# (CONFIG_ADMIN_TOKEN). Pre-auth servers ignore the extra header.
+if [ -z "${CONFIG_ADMIN_TOKEN:-}" ] && [ -f "$INFRA/keri/.env.test" ]; then
+  CONFIG_ADMIN_TOKEN="$(sed -n 's/^CONFIG_ADMIN_TOKEN=//p' "$INFRA/keri/.env.test" | head -1)"
+fi
+export CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}" VITE_CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}"
+
 set +e
-( cd frontend && npx playwright test --project=features "tests/e2e/features/issue-$n.spec.ts" ) \
+# The e2e utils locate infra as a sibling of the repo root, which doesn't hold
+# for this checkout (~/swarm-e2e/<slug>) — point them at $INFRA explicitly.
+( cd frontend && MATOU_KERI_INFRA_DIR="$INFRA/keri" \
+    npx playwright test --project=features "tests/e2e/features/issue-$n.spec.ts" ) \
   >/tmp/pr-e2e-playwright.log 2>&1
 rc=$?
 set -e
