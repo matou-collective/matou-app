@@ -38,6 +38,19 @@ To see a task in full:
 ## Rules
 
 1. **One issue per iteration.** Do not touch other issues' territory.
+   Before implementing, check for prior work:
+   `curl -sf -H "Authorization: token $(cat /run/secrets/forgejo_token)" "$FORGEJO_API/pulls?state=all&limit=50"` —
+   - An **open** PR from `agent/issue-<NUMBER>` already resolves this issue →
+     do NOT open a duplicate. Verify the PR still addresses the issue, comment
+     your verification on the issue, and stop.
+   - A **closed but unmerged** PR from `agent/issue-<NUMBER>` exists → a human
+     closed prior agent work without landing it. That is a
+     `needs_human_decision` moment, NOT an invitation to redo it: swap the
+     issue's label `ready-for-agent` → `ready-for-human`, comment on the issue
+     linking the closed PR and asking whether to revive or abandon it, and
+     stop working this issue — the resume sweep owns it from there.
+     (Lesson of PR #21→#22: a re-served agent force-pushed over the closed
+     PR's branch and destroyed unmerged work.)
 2. **Reproduce before fixing** where feasible: for frontend logic bugs write
    a failing Vitest test first; for backend bugs a failing Go test. If the
    bug can't be reproduced without live infrastructure, say so in the PR
@@ -73,7 +86,11 @@ To see a task in full:
    what you need, and stop working this issue — the resume sweep keeps the
    conversation going in the same thread.
 6. **Land as a PR — never push main, never close the issue.**
-   - branch: `git checkout -b agent/issue-<NUMBER>`
+   - branch: `git checkout -b agent/issue-<NUMBER>`. If the remote branch
+     already exists with commits that are not yours, STOP — never force-push
+     an existing `agent/issue-<NUMBER>` branch (that erases unmerged work;
+     see rule 1's closed-PR case). A rejected non-fast-forward push means the
+     same thing: park the issue for a human instead.
    - commit(s): conventional style, subject prefixed `agent:`, referencing
      `#<NUMBER>`
    - push: `git push "https://swarm:$(cat /run/secrets/forgejo_token)@git.matou.nz/Matou/matou-app.git" HEAD:refs/heads/agent/issue-<NUMBER>`
