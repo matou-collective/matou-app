@@ -383,28 +383,28 @@ func (h *ProfilesHandler) HandleMyProfiles(w http.ResponseWriter, r *http.Reques
 
 // InitMemberProfilesRequest represents a request to initialize profiles for a new member.
 type InitMemberProfilesRequest struct {
-	MemberAID            string          `json:"memberAid"`
-	CredentialSAID       string          `json:"credentialSaid"`
-	Role                 string          `json:"role"`
-	Status               string          `json:"status,omitempty"` // SharedProfile status; defaults to "approved"
-	DisplayName          string          `json:"displayName"`
-	Email                string          `json:"email,omitempty"`
-	Avatar               string          `json:"avatar,omitempty"`
-	AvatarData           string          `json:"avatarData,omitempty"`     // Base64-encoded avatar fallback
-	AvatarMimeType       string          `json:"avatarMimeType,omitempty"` // MIME type for base64 avatar
-	Bio                  string          `json:"bio,omitempty"`
-	Interests            []string        `json:"interests,omitempty"`
-	CustomInterests      string          `json:"customInterests,omitempty"`
-	Location             string          `json:"location,omitempty"`
-	IndigenousCommunity  string          `json:"indigenousCommunity,omitempty"`
-	JoinReason           string          `json:"joinReason,omitempty"`
-	FacebookUrl          string          `json:"facebookUrl,omitempty"`
-	LinkedinUrl          string          `json:"linkedinUrl,omitempty"`
-	TwitterUrl           string          `json:"twitterUrl,omitempty"`
-	InstagramUrl         string          `json:"instagramUrl,omitempty"`
-	GithubUrl            string          `json:"githubUrl,omitempty"`
-	GitlabUrl            string          `json:"gitlabUrl,omitempty"`
-	ProfileData          json.RawMessage `json:"profileData,omitempty"` // Optional registration data
+	MemberAID           string          `json:"memberAid"`
+	CredentialSAID      string          `json:"credentialSaid"`
+	Role                string          `json:"role"`
+	Status              string          `json:"status,omitempty"` // SharedProfile status; defaults to "approved"
+	DisplayName         string          `json:"displayName"`
+	Email               string          `json:"email,omitempty"`
+	Avatar              string          `json:"avatar,omitempty"`
+	AvatarData          string          `json:"avatarData,omitempty"`     // Base64-encoded avatar fallback
+	AvatarMimeType      string          `json:"avatarMimeType,omitempty"` // MIME type for base64 avatar
+	Bio                 string          `json:"bio,omitempty"`
+	Interests           []string        `json:"interests,omitempty"`
+	CustomInterests     string          `json:"customInterests,omitempty"`
+	Location            string          `json:"location,omitempty"`
+	IndigenousCommunity string          `json:"indigenousCommunity,omitempty"`
+	JoinReason          string          `json:"joinReason,omitempty"`
+	FacebookUrl         string          `json:"facebookUrl,omitempty"`
+	LinkedinUrl         string          `json:"linkedinUrl,omitempty"`
+	TwitterUrl          string          `json:"twitterUrl,omitempty"`
+	InstagramUrl        string          `json:"instagramUrl,omitempty"`
+	GithubUrl           string          `json:"githubUrl,omitempty"`
+	GitlabUrl           string          `json:"gitlabUrl,omitempty"`
+	ProfileData         json.RawMessage `json:"profileData,omitempty"` // Optional registration data
 }
 
 // UpdateMemberRoleRequest represents a request to update a member's role.
@@ -610,17 +610,17 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 			"bio":                    req.Bio,
 			"avatar":                 req.Avatar,
 			"publicEmail":            req.Email,
-			"location":              req.Location,
-			"indigenousCommunity":   req.IndigenousCommunity,
-			"joinReason":            req.JoinReason,
-			"facebookUrl":           req.FacebookUrl,
-			"linkedinUrl":           req.LinkedinUrl,
-			"twitterUrl":            req.TwitterUrl,
-			"instagramUrl":          req.InstagramUrl,
-			"githubUrl":             req.GithubUrl,
-			"gitlabUrl":             req.GitlabUrl,
+			"location":               req.Location,
+			"indigenousCommunity":    req.IndigenousCommunity,
+			"joinReason":             req.JoinReason,
+			"facebookUrl":            req.FacebookUrl,
+			"linkedinUrl":            req.LinkedinUrl,
+			"twitterUrl":             req.TwitterUrl,
+			"instagramUrl":           req.InstagramUrl,
+			"githubUrl":              req.GithubUrl,
+			"gitlabUrl":              req.GitlabUrl,
 			"participationInterests": req.Interests,
-			"customInterests":       req.CustomInterests,
+			"customInterests":        req.CustomInterests,
 			"lastActiveAt":           now2,
 			"createdAt":              now2,
 			"updatedAt":              now2,
@@ -715,9 +715,9 @@ func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if !keri.IsValidRole(req.Role) {
+	if !isAssignableRole(req.Role) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": fmt.Sprintf("invalid role: %s", req.Role),
+			"error": "invalid role: not a builtin role or defined custom role",
 		})
 		return
 	}
@@ -1128,6 +1128,13 @@ func isEndorsementAppend(existingFields, newFields map[string]interface{}) bool 
 		}
 	}
 	return true
+}
+
+// isAssignableRole reports whether a role string may be written to a member
+// profile / issued in a membership credential: either one of the 10 builtin
+// KERI roles, or a custom role defined in the community's RolePolicy.
+func isAssignableRole(role string) bool {
+	return keri.IsValidRole(role) || contributions.CurrentPolicy().HasCustomRole(role)
 }
 
 // RegisterRoutes registers profile and type routes on the mux.
