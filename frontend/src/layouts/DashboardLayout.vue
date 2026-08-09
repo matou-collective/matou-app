@@ -144,6 +144,7 @@ import {
   Hammer,
   Bug,
   Menu,
+  ShieldCheck,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -154,6 +155,7 @@ import { useCommentCursorsStore } from 'stores/commentCursors';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useActivityStore } from 'stores/activity';
+import { useRolePolicyStore } from 'src/stores/rolePolicy';
 import { useCommentScope } from 'src/composables/useCommentScope';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useKERINotificationService } from 'src/composables/useKERINotificationService';
@@ -180,6 +182,7 @@ const commentCursorsStore = useCommentCursorsStore();
 const projectsStore = useProjectsStore();
 const contributionsStore = useContributionsStore();
 const activityStore = useActivityStore();
+const rolePolicyStore = useRolePolicyStore();
 const scope = useCommentScope();
 const profileViewer = useProfileViewer();
 const showReportDialog = ref(false);
@@ -223,6 +226,7 @@ const NAV_ICONS: Record<string, Component> = {
   proposals: Vote,
   projects: Target,
   contributions: Hammer,
+  'roles-permissions': ShieldCheck,
 };
 
 const navBadges = computed<Record<string, number>>(() => ({
@@ -232,8 +236,12 @@ const navBadges = computed<Record<string, number>>(() => ({
   contributions: contributionsUnreadTotal.value,
 }));
 
+// The Roles & Permissions entry is admin-only: it appears once the role
+// policy store confirms the caller holds manage_roles.
 const navItems = computed(() =>
-  NAV_ITEM_META.map((meta) => ({
+  NAV_ITEM_META.filter(
+    (meta) => meta.name !== 'roles-permissions' || rolePolicyStore.canManageRoles,
+  ).map((meta) => ({
     ...meta,
     icon: NAV_ICONS[meta.name] as Component,
     badge: navBadges.value[meta.name] ?? 0,
@@ -367,6 +375,7 @@ onMounted(() => {
   projectsStore.fetchProjects().catch(() => {});
   contributionsStore.fetchContributions().catch(() => {});
   activityStore.loadNotices().catch(() => {});
+  void rolePolicyStore.load();
 
   // Load chat data so the unread badge shows on all dashboard pages.
   // Fire-and-forget: don't await, so child routes mount immediately.
