@@ -113,6 +113,9 @@ const (
 	// may reach the handler; resource-level rules (owner / steward / role
 	// change) are applied in api.profileWritePolicy.
 	ActionWriteProfile Action = "write_profile"
+
+	// Role-policy management (the manage_roles meta-permission)
+	ActionManageRolePolicy Action = "manage_role_policy"
 )
 
 // actionPermissions maps each action to the roles that can perform it.
