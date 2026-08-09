@@ -15,7 +15,9 @@ This plan covers shipping Mātou App on Android and iOS. Both are v1 targets.
 
 The design work happened on 2026-05-19 and produced a phased plan with a four-axis audit across the frontend, backend, KERI, and any-sync. That session created the `mobile` branch but committed nothing — the plan survived only as working notes.
 
-This document reconstructs that plan and re-verifies every technical claim against `main` as of 2026-08-08. Where the codebase has moved since May, the drift is recorded in [Corrections since the original plan](#corrections-since-the-original-plan). Treat this file as the plan of record and the `mobile` branch as abandoned.
+This document reconstructs that plan and re-verifies every technical claim against `main` as of 2026-08-09. Where the codebase has moved since May, the drift is recorded in [Corrections since the original plan](#corrections-since-the-original-plan). Treat this file as the plan of record and the `mobile` branch as abandoned.
+
+Verification ran against Forgejo `main` (`git.matou.nz`, mesh-only SSH), which is the live repository. The GitLab mirror was 77 commits behind at the time of writing, so figures taken from GitLab will not match.
 
 ## Constraints
 
@@ -84,7 +86,7 @@ Verified against `main` at 2026-08-08.
 | Backend API | 68 handler registrations | All ship as-is over loopback |
 | Platform detection | `isCordova()` checks `window.cordova` | Does not detect Capacitor — see corrections |
 | Layouts | `DashboardLayout` sidebar, `ChatLayout` three-pane | Both need a mobile mode |
-| Dialogs | 35 hardcoded `min-width` rules of 100px or more | Each needs a responsive override |
+| Dialogs | 38 hardcoded `min-width` rules of 100px or more | Each needs a responsive override |
 | `quic-go` | `v0.59.0`, indirect | Phase 0 spike target |
 | `libsodium-wrappers-sumo` | Present transitively via `signify-ts` | Phase 0 spike target |
 
@@ -107,7 +109,7 @@ Three streams run in parallel.
 
 - **Backend:** gomobile entry point in `backend/cmd/mobile/`, lifecycle hooks, and a sync-on-foreground model with APNs wake to work around iOS suspension.
 - **Shell:** Capacitor build for both platforms, plus real Capacitor detection in `frontend/src/lib/platform.ts`.
-- **Frontend:** layout overhaul for `DashboardLayout`, `ChatLayout`, and the 35 fixed-width dialogs.
+- **Frontend:** layout overhaul for `DashboardLayout`, `ChatLayout`, and the 38 fixed-width dialogs.
 
 ### Phase 2 — Rejected
 
