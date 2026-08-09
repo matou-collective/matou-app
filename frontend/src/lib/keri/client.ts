@@ -216,7 +216,12 @@ export class KERIClient {
     try {
       const config = await this.client.config().get();
       if (config.iurls && Array.isArray(config.iurls)) {
+        // iurls also carries schema-preload OOBIs (.../oobi/<SAID>, no /controller
+        // suffix) alongside witness OOBIs (.../oobi/<AID>/controller) — only the
+        // latter are real witnesses. Passing a schema SAID as a witness AID fails
+        // AID creation with "unknown witness <SAID>".
         return (config.iurls as string[])
+          .filter((iurl) => iurl.endsWith('/controller'))
           .map((iurl) => {
             const match = iurl.match(/\/oobi\/([^/]+)/);
             return match ? match[1] : '';
@@ -577,8 +582,12 @@ export class KERIClient {
 
   /**
    * Patch the signify client's fetch to URL-encode path segments.
-   * signify-ts constructs paths like `/identifiers/${hab.name}/credentials`
-   * without encoding, which breaks when AID names contain spaces.
+   * Some signify-ts calls build paths like `/identifiers/${hab.name}/credentials`
+   * without encoding, which breaks when AID names contain spaces or brackets —
+   * but others (e.g. Identifier.get()) already call encodeURIComponent()
+   * themselves. Decode-then-encode makes this idempotent either way, instead
+   * of double-encoding the segments that already arrive encoded (which broke
+   * lookups like "[dev]-admin" -> %255Bdev%255D-admin -> 401).
    */
   private patchClientFetch(): void {
     if (!this.client) return;
@@ -589,7 +598,16 @@ export class KERIClient {
       if (typeof path === 'string') {
         // Split off query string before encoding path segments
         const [pathPart, ...queryParts] = path.split('?');
-        const encodedPath = pathPart.split('/').map(seg => encodeURIComponent(seg)).join('/');
+        const encodedPath = pathPart
+          .split('/')
+          .map((seg) => {
+            try {
+              return encodeURIComponent(decodeURIComponent(seg));
+            } catch {
+              return encodeURIComponent(seg);
+            }
+          })
+          .join('/');
         path = queryParts.length > 0 ? `${encodedPath}?${queryParts.join('?')}` : encodedPath;
       }
       return c._origFetch!(path, ...rest);
