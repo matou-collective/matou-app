@@ -11,8 +11,8 @@ import (
 // It also supports a set of known admin AIDs that are always granted community_admin.
 type ProfileRoleLookup struct {
 	store     ObjectStore
-	space     string            // community read-only space ID
-	adminAIDs map[string]bool   // AIDs that always get community_admin role
+	space     string          // community read-only space ID
+	adminAIDs map[string]bool // AIDs that always get community_admin role
 }
 
 func NewProfileRoleLookup(store ObjectStore, readOnlySpaceID string) *ProfileRoleLookup {
@@ -24,6 +24,13 @@ func (l *ProfileRoleLookup) SetAdminAIDs(aids []string) {
 	for _, aid := range aids {
 		l.adminAIDs[aid] = true
 	}
+}
+
+// IsAdminAID reports whether the AID is in the org-config admin list.
+// Used as the un-lockout backstop: org admins can always edit the role
+// policy regardless of what the policy's grants say.
+func (l *ProfileRoleLookup) IsAdminAID(aid string) bool {
+	return l.adminAIDs[aid]
 }
 
 // GetUserRoles reads the user's profile and maps the KERI role to contribution roles.

@@ -444,6 +444,15 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
 	contribNotifier := &contribNotifierAdapter{svc: notifService}
 	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
+	rolePolicyProvider := contributions.NewStorePolicyProvider(contribStoreAdapter, communityReadOnlySpaceID, 5*time.Second)
+	contributions.SetPolicyProvider(rolePolicyProvider)
+	rolePolicyHandler := api.NewRolePolicyHandler(
+		rolePolicyProvider,
+		api.NewSpacePolicyWriter(spaceManager, communityReadOnlySpaceID),
+		contribStoreAdapter,
+		communityReadOnlySpaceID,
+		profileRoleLookup.IsAdminAID,
+	)
 	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
 	credentialRoleLookup := api.NewCredentialRoleLookup(store)
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
@@ -668,6 +677,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	implPlansHandler.RegisterRoutes(mux, roleLookup)
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
+	rolePolicyHandler.RegisterRoutes(mux, roleLookup)
 	orgConfigHandler.RegisterRoutes(mux, roleLookup)
 	clientConfigHandler.RegisterRoutes(mux)
 
