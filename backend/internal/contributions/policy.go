@@ -60,8 +60,8 @@ func CanPerformActionWithPolicy(p *RolePolicy, userRoles []Role, action Action) 
 }
 
 // baseCaps are granted to every builtin role — they cover exactly the
-// actions the legacy table marks allRoles.
-var baseCaps = []Capability{CapContribute, CapManageProjects, CapAssignWork, CapReviewWork}
+// actions the legacy table marks allRoles. CapAssignWork is stewardScope.
+var baseCaps = []Capability{CapContribute, CapManageProjects, CapReviewWork}
 
 // DefaultRolePolicy returns the built-in policy, exactly equivalent to the
 // legacy actionPermissions table (proven by TestDefaultPolicyEquivalentToLegacyTable).
@@ -87,16 +87,16 @@ func DefaultRolePolicy() *RolePolicy {
 		string(RoleProjectLead): append(append([]Capability{}, baseCaps...),
 			CapSubmitCompletion, CapArchiveWork),
 		string(RoleProjectSteward): append(append([]Capability{}, baseCaps...),
-			CapSignOff, CapApproveCompletion, CapArchiveWork, CapManageGovernance),
+			CapAssignWork, CapSignOff, CapApproveCompletion, CapArchiveWork, CapManageGovernance),
 		string(RoleOperationsSteward): append(append([]Capability{}, baseCaps...),
-			CapSignOff, CapReward, CapSubmitCompletion, CapApproveCompletion,
+			CapAssignWork, CapSignOff, CapReward, CapSubmitCompletion, CapApproveCompletion,
 			CapArchiveWork, CapManageMembers, CapManageGovernance, CapManageComms, CapManageRoles),
 		string(RoleCommunitySteward): append(append([]Capability{}, baseCaps...),
 			CapManageGovernance, CapManageComms),
 		string(RoleTechSteward):     append([]Capability{}, baseCaps...),
 		string(RoleTreasurySteward): append([]Capability{}, baseCaps...),
 		string(RoleFoundingMember): append(append([]Capability{}, baseCaps...),
-			CapSignOff, CapReward, CapSubmitCompletion, CapApproveCompletion,
+			CapAssignWork, CapSignOff, CapReward, CapSubmitCompletion, CapApproveCompletion,
 			CapArchiveWork, CapManageMembers, CapManageGovernance, CapManageComms, CapManageRoles),
 		string(RoleElderCouncil): append([]Capability{}, baseCaps...),
 	}

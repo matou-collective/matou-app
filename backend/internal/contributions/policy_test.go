@@ -12,15 +12,19 @@ var keriRoles = []string{
 // legacyActions: every action present in the legacy actionPermissions table.
 var legacyActions = []Action{
 	ActionCreateProject, ActionEditProject, ActionDeleteProject,
+	ActionAssignProjectRole, ActionLinkProposal,
 	ActionCreateContribution, ActionConfirmContribution, ActionAssignContribution,
-	ActionApproveContribution, ActionSignOffContribution, ActionRewardContribution,
+	ActionSignOffContribution, ActionRewardContribution,
+	ActionTransitionContribution, ActionUpdateContribution,
 	ActionShareContribution, ActionOfferContribution, ActionAcceptOffer,
-	ActionSubmitEvidence, ActionReviewContribution, ActionSignOffPlan,
-	ActionCreateSubContrib, ActionApproveSubContrib, ActionRegisterInterest,
+	ActionSubmitEvidence, ActionEditEvidence, ActionReviewContribution, ActionSignOffPlan,
+	ActionApproveSubContrib, ActionRegisterInterest,
+	ActionChangeMemberRole, ActionRemoveMember, ActionInitMemberProfile, ActionStoreCredential,
 	ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal,
 	ActionArchiveProject, ActionArchiveMilestone, ActionArchiveContribution,
 	ActionUnassignContribution, ActionEditMilestone,
 	ActionSubmitProjectCompletion, ActionApproveProjectCompletion, ActionRejectProjectCompletion,
+	ActionSaveOrgConfig, ActionGrantStewardAdmin, ActionSetIdentity, ActionWriteProfile,
 }
 
 // legacyCan checks directly against the legacy actionPermissions table.

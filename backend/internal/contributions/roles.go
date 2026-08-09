@@ -43,6 +43,11 @@ func MapKERIRole(keriRole string) []Role {
 	case "Cultural Steward":
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward}
 	default:
+		// Custom roles: a credential role string matching a custom role in
+		// the current policy grants [member, <custom-role>].
+		if p := CurrentPolicy(); p.HasCustomRole(keriRole) {
+			return []Role{RoleMember, Role(keriRole)}
+		}
 		return []Role{RoleMember}
 	}
 }
@@ -234,18 +239,11 @@ func HasRole(roles []Role, target Role) bool {
 	return false
 }
 
-// CanPerformAction checks if any of the user's roles allows the given action.
+// CanPerformAction checks if any of the user's roles allows the given action
+// under the community's current RolePolicy (synced, or built-in default).
+// The legacy actionPermissions table above is retained as the permanent
+// reference the default policy is proven equivalent to (policy_test.go
+// legacyCan) — do not delete it.
 func CanPerformAction(userRoles []Role, action Action) bool {
-	allowed, ok := actionPermissions[action]
-	if !ok {
-		return false
-	}
-	for _, role := range userRoles {
-		for _, a := range allowed {
-			if role == a {
-				return true
-			}
-		}
-	}
-	return false
+	return CanPerformActionWithPolicy(CurrentPolicy(), userRoles, action)
 }
