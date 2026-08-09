@@ -72,6 +72,22 @@ func (h *RolePolicyHandler) effective() (*contributions.RolePolicy, string) {
 	return contributions.DefaultRolePolicy(), "default"
 }
 
+// effectiveOrErr is like effective but fails closed: a store read error is
+// surfaced instead of masked as "default policy". PUT must use this — the
+// version check and the manage_roles invariant are meaningless if a read
+// failure is silently mistaken for "policy was never saved", which would let
+// a stale version:0 request overwrite a synced policy (privilege rollback).
+func (h *RolePolicyHandler) effectiveOrErr() (*contributions.RolePolicy, string, error) {
+	p, err := h.provider.PolicyOrErr()
+	if err != nil {
+		return nil, "", err
+	}
+	if p != nil {
+		return p, "synced", nil
+	}
+	return contributions.DefaultRolePolicy(), "default", nil
+}
+
 func (h *RolePolicyHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	policy, source := h.effective()
 	resp := rolePolicyResponse{
@@ -131,7 +147,11 @@ func (h *RolePolicyHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current, _ := h.effective()
+	current, _, err := h.effectiveOrErr()
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": fmt.Sprintf("could not verify current policy: %v", err)})
+		return
+	}
 	if req.Version != current.Version {
 		writeJSON(w, http.StatusConflict, map[string]interface{}{
 			"error":          "policy was modified by someone else — reload and retry",
@@ -140,7 +160,12 @@ func (h *RolePolicyHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if errMsg := h.validate(&req, current); errMsg != "" {
+	errMsg, err := h.validate(&req, current)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": fmt.Sprintf("could not verify role removal safety: %v", err)})
+		return
+	}
+	if errMsg != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
 	}
@@ -160,39 +185,48 @@ func (h *RolePolicyHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"policy": updated})
 }
 
-// validate returns "" when the update is acceptable, else an error message.
-func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributions.RolePolicy) string {
+// validate returns ("", nil) when the update is acceptable, an error message
+// (caller responds 400) when the update itself is invalid, or a non-nil
+// error (caller responds 503) when a dependency check couldn't be completed
+// — e.g. the profile store failed to list, so custom-role-in-use safety
+// can't be verified. A 503 here must never be treated as "no problem found":
+// silently continuing would let a still-assigned custom role be deleted.
+func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributions.RolePolicy) (string, error) {
 	// 1. All builtins present, unrenamed, still flagged builtin.
-	builtins := map[string]bool{}
+	builtinNames := map[string]string{} // id -> canonical displayName
 	for _, r := range contributions.DefaultRolePolicy().Roles {
-		builtins[r.ID] = false
+		builtinNames[r.ID] = r.DisplayName
 	}
+	builtinsSeen := map[string]bool{}
 	seen := map[string]bool{}
 	for _, r := range req.Roles {
 		if seen[r.ID] {
-			return fmt.Sprintf("duplicate role id %q", r.ID)
+			return fmt.Sprintf("duplicate role id %q", r.ID), nil
 		}
 		seen[r.ID] = true
-		if _, isBuiltin := builtins[r.ID]; isBuiltin {
+		if canonicalName, isBuiltin := builtinNames[r.ID]; isBuiltin {
 			if !r.Builtin {
-				return fmt.Sprintf("builtin role %q cannot be made custom", r.ID)
+				return fmt.Sprintf("builtin role %q cannot be made custom", r.ID), nil
 			}
-			builtins[r.ID] = true
+			if r.DisplayName != canonicalName {
+				return fmt.Sprintf("builtin role %q cannot be renamed", r.ID), nil
+			}
+			builtinsSeen[r.ID] = true
 			continue
 		}
 		if r.Builtin {
-			return fmt.Sprintf("role %q cannot claim builtin status", r.ID)
+			return fmt.Sprintf("role %q cannot claim builtin status", r.ID), nil
 		}
 		if !roleIDPattern.MatchString(r.ID) {
-			return fmt.Sprintf("invalid custom role id %q (want %s)", r.ID, roleIDPattern.String())
+			return fmt.Sprintf("invalid custom role id %q (want %s)", r.ID, roleIDPattern.String()), nil
 		}
 		if r.DisplayName == "" {
-			return fmt.Sprintf("custom role %q needs a displayName", r.ID)
+			return fmt.Sprintf("custom role %q needs a displayName", r.ID), nil
 		}
 	}
-	for id, present := range builtins {
-		if !present {
-			return fmt.Sprintf("builtin role %q cannot be removed", id)
+	for id := range builtinNames {
+		if !builtinsSeen[id] {
+			return fmt.Sprintf("builtin role %q cannot be removed", id), nil
 		}
 	}
 
@@ -203,11 +237,11 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 	}
 	for roleID, caps := range req.Grants {
 		if !seen[roleID] {
-			return fmt.Sprintf("grants reference unknown role %q", roleID)
+			return fmt.Sprintf("grants reference unknown role %q", roleID), nil
 		}
 		for _, c := range caps {
 			if !validCaps[c] {
-				return fmt.Sprintf("unknown capability %q for role %q", c, roleID)
+				return fmt.Sprintf("unknown capability %q for role %q", c, roleID), nil
 			}
 		}
 	}
@@ -224,7 +258,7 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 		}
 	}
 	if !holderFound {
-		return "at least one role must hold manage_roles"
+		return "at least one role must hold manage_roles", nil
 	}
 
 	// 4. Custom roles removed by this update must not be held by any member.
@@ -238,19 +272,19 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 		for _, profileType := range []string{"CommunityProfile", "SharedProfile"} {
 			raws, err := h.store.List(h.roSpaceID, profileType)
 			if err != nil {
-				continue
+				return "", fmt.Errorf("checking custom-role usage in %s: %w", profileType, err)
 			}
 			for _, raw := range raws {
 				var prof struct {
 					Role string `json:"role"`
 				}
 				if json.Unmarshal(raw, &prof) == nil && removed[prof.Role] {
-					return fmt.Sprintf("custom role %q is still assigned to a member — reassign before deleting", prof.Role)
+					return fmt.Sprintf("custom role %q is still assigned to a member — reassign before deleting", prof.Role), nil
 				}
 			}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // SpacePolicyWriter writes the RolePolicy singleton into the community-

@@ -4,6 +4,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,6 +26,23 @@ func (f *fakePolicyWriter) WritePolicy(p *contributions.RolePolicy) error {
 		return http.ErrHandlerTimeout
 	}
 	return f.store.Save(f.space, "RolePolicy", "RolePolicy", p)
+}
+
+// failingListStore wraps a MockObjectStore and fails List for a given
+// objectType, letting tests simulate a store/read error independently of
+// what's actually stored (see contributions/change_log_test.go's
+// failingSaveStore for the write-side sibling of this pattern). failType can
+// be changed between calls within a test to target a specific read.
+type failingListStore struct {
+	*contributions.MockObjectStore
+	failType string
+}
+
+func (f *failingListStore) List(spaceID, objectType string) ([]json.RawMessage, error) {
+	if f.failType != "" && objectType == f.failType {
+		return nil, fmt.Errorf("simulated store failure for %s", objectType)
+	}
+	return f.MockObjectStore.List(spaceID, objectType)
 }
 
 type staticRoles map[string][]contributions.Role
@@ -204,6 +222,19 @@ func TestPutRolePolicyValidation(t *testing.T) {
 	if rec := putPolicy(t, mux, "EOpsAID", bad4); rec.Code != http.StatusBadRequest {
 		t.Errorf("unknown role in grants: %d, want 400", rec.Code)
 	}
+
+	// Builtin role renamed → 400
+	bad5 := validUpdate()
+	roles5 := append([]contributions.RoleDef{}, bad5["roles"].([]contributions.RoleDef)...)
+	for i, r := range roles5 {
+		if r.ID == "member" {
+			roles5[i].DisplayName = "Renamed Member"
+		}
+	}
+	bad5["roles"] = roles5
+	if rec := putPolicy(t, mux, "EOpsAID", bad5); rec.Code != http.StatusBadRequest {
+		t.Errorf("renamed builtin: %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestDeleteCustomRoleInUse(t *testing.T) {
@@ -224,5 +255,88 @@ func TestDeleteCustomRoleInUse(t *testing.T) {
 	rec := putPolicy(t, mux, "EOpsAID", update)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("removing in-use custom role: %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// newFailingTestPolicyHandler is like newTestPolicyHandler but the returned
+// store's List can be made to fail for a chosen objectType mid-test, so a
+// single test can exercise "store read fails" for the version check or the
+// custom-role-in-use check independently. Writes always go through the
+// underlying (non-failing) base store, mirroring fakePolicyWriter's real
+// round trip.
+func newFailingTestPolicyHandler(t *testing.T) (*RolePolicyHandler, *contributions.MockObjectStore, *failingListStore) {
+	t.Helper()
+	base := contributions.NewMockStore()
+	failing := &failingListStore{MockObjectStore: base}
+	provider := contributions.NewStorePolicyProvider(failing, "ro-space", time.Millisecond)
+	contributions.SetPolicyProvider(provider)
+	t.Cleanup(func() { contributions.SetPolicyProvider(nil) })
+	writer := &fakePolicyWriter{store: base, space: "ro-space"}
+	h := NewRolePolicyHandler(provider, writer, failing, "ro-space",
+		func(aid string) bool { return aid == "EAdminAID" })
+	return h, base, failing
+}
+
+func TestPutRolePolicyVersionCheckStoreFailure(t *testing.T) {
+	h, base, failing := newFailingTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	// First PUT succeeds normally and invalidates the provider cache.
+	if rec := putPolicy(t, mux, "EOpsAID", validUpdate()); rec.Code != http.StatusOK {
+		t.Fatalf("setup PUT: %d; body %s", rec.Code, rec.Body.String())
+	}
+
+	// The store now fails to list "RolePolicy" objects, so the version check
+	// can no longer distinguish "never saved" (version 0, default) from
+	// "read failed" — it must refuse rather than fail open to the default.
+	failing.failType = "RolePolicy"
+	update := validUpdate()
+	update["version"] = 1 // the correct current version, but unverifiable
+	rec := putPolicy(t, mux, "EOpsAID", update)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store read failure during version check: %d, want 503; body %s", rec.Code, rec.Body.String())
+	}
+
+	// Nothing was written by the failed attempt: still version 1 from setup.
+	failing.failType = ""
+	var stored contributions.RolePolicy
+	if err := base.Get("ro-space", "RolePolicy", &stored); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Version != 1 {
+		t.Errorf("stored policy version = %d, want 1 (unchanged)", stored.Version)
+	}
+}
+
+func TestPutRolePolicyCustomRoleCheckStoreFailure(t *testing.T) {
+	h, base, failing := newFailingTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	// Save policy with kaitiaki (setup PUT, version 0 -> 1).
+	if rec := putPolicy(t, mux, "EOpsAID", validUpdate()); rec.Code != http.StatusOK {
+		t.Fatalf("setup PUT: %d; body %s", rec.Code, rec.Body.String())
+	}
+
+	// An update (version 1) that removes kaitiaki, but the profile store
+	// can't be listed — the in-use check can't be verified, so it must
+	// refuse rather than silently allow the deletion through.
+	failing.failType = "CommunityProfile"
+	p := contributions.DefaultRolePolicy()
+	update := map[string]interface{}{"version": 1, "roles": p.Roles, "grants": p.Grants}
+	rec := putPolicy(t, mux, "EOpsAID", update)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("profile store failure during custom-role check: %d, want 503; body %s", rec.Code, rec.Body.String())
+	}
+
+	// Nothing was written: still version 1 (kaitiaki still present).
+	failing.failType = ""
+	var stored contributions.RolePolicy
+	if err := base.Get("ro-space", "RolePolicy", &stored); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Version != 1 {
+		t.Errorf("stored policy version = %d, want 1 (unchanged)", stored.Version)
 	}
 }

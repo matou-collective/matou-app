@@ -61,20 +61,42 @@ func NewStorePolicyProvider(store ObjectStore, spaceID string, ttl time.Duration
 
 // Policy returns the synced policy, or nil when none exists / space not
 // configured / read fails (callers fall back to defaults via CurrentPolicy).
+// It fails open: a store read error yields nil (or a stale cached value)
+// rather than an error, so most callers can treat "no policy" uniformly.
+// Callers that must not mistake a read failure for "policy absent" (e.g. the
+// PUT handler's optimistic-concurrency check) should use PolicyOrErr instead.
 func (s *StorePolicyProvider) Policy() *RolePolicy {
+	p, err := s.fetchFromStore()
+	if err != nil {
+		log.Printf("[RolePolicy] list failed (falling back to %s): %v",
+			map[bool]string{true: "cached", false: "default"}[p != nil], err)
+	}
+	return p
+}
+
+// PolicyOrErr is like Policy but fails closed: a store read error is
+// returned instead of masked as "no policy". nil, nil means the policy is
+// genuinely absent (never saved) — the only case callers should treat as
+// "fall back to the default policy".
+func (s *StorePolicyProvider) PolicyOrErr() (*RolePolicy, error) {
+	return s.fetchFromStore()
+}
+
+// fetchFromStore re-reads and caches the policy from the store, honoring the
+// TTL. It returns the store's error unmodified (alongside any still-cached
+// value) so callers can decide whether to fail open or closed.
+func (s *StorePolicyProvider) fetchFromStore() (*RolePolicy, error) {
 	if s.store == nil || s.spaceID == "" {
-		return nil
+		return nil, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cached != nil && time.Since(s.fetchedAt) < s.ttl {
-		return s.cached
+		return s.cached, nil
 	}
 	raws, err := s.store.List(s.spaceID, "RolePolicy")
 	if err != nil {
-		log.Printf("[RolePolicy] list failed (falling back to %s): %v",
-			map[bool]string{true: "cached", false: "default"}[s.cached != nil], err)
-		return s.cached // possibly nil → default
+		return s.cached, err // cached may be nil; err signals the read failed
 	}
 	var latest *RolePolicy
 	for _, raw := range raws {
@@ -89,7 +111,7 @@ func (s *StorePolicyProvider) Policy() *RolePolicy {
 	}
 	s.cached = latest
 	s.fetchedAt = time.Now()
-	return s.cached
+	return s.cached, nil
 }
 
 // Invalidate drops the cache so the next Policy() call re-reads the store.
