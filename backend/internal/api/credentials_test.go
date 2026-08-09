@@ -63,8 +63,8 @@ func TestHandleRoles(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if len(resp.Roles) != 8 {
-		t.Errorf("expected 8 roles, got %d", len(resp.Roles))
+	if len(resp.Roles) != 10 {
+		t.Errorf("expected 10 roles, got %d", len(resp.Roles))
 	}
 
 	// Check that each role has permissions
@@ -116,8 +116,8 @@ func TestHandleOrg(t *testing.T) {
 	if resp.Alias != "test-org" {
 		t.Errorf("expected alias test-org, got %s", resp.Alias)
 	}
-	if len(resp.Roles) != 8 {
-		t.Errorf("expected 8 roles, got %d", len(resp.Roles))
+	if len(resp.Roles) != 10 {
+		t.Errorf("expected 10 roles, got %d", len(resp.Roles))
 	}
 }
 
@@ -226,7 +226,7 @@ func TestHandleValidate_ValidCredential(t *testing.T) {
 			"schema": "EMatouMembershipSchemaV1",
 			"data": {
 				"communityName": "MATOU",
-				"role": "Admin",
+				"role": "Operations Steward",
 				"verificationStatus": "community_verified",
 				"permissions": ["read", "admin"],
 				"joinedAt": "2026-01-18T00:00:00Z"
@@ -254,8 +254,8 @@ func TestHandleValidate_ValidCredential(t *testing.T) {
 	if !resp.OrgIssued {
 		t.Error("expected orgIssued to be true")
 	}
-	if resp.Role != "Admin" {
-		t.Errorf("expected role Admin, got %s", resp.Role)
+	if resp.Role != "Operations Steward" {
+		t.Errorf("expected role Operations Steward, got %s", resp.Role)
 	}
 }
 

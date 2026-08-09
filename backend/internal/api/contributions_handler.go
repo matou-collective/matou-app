@@ -344,6 +344,7 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "contribution not found"})
 		return
 	}
+	before := *contrib
 
 	// Apply core field updates
 	if v, ok := req["title"].(string); ok {
@@ -419,8 +420,25 @@ func (h *ContributionsHandler) HandleUpdate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	// Editing a contribution invalidates plan signoff — re-signoff is required
-	// before contributions can be signed off again.
-	if err := h.service.UnsignPlanForProject(r.Context(), spaceID, contrib.ProjectID); err != nil {
+	// before contributions can be signed off again. Record a server-side diff
+	// of the fields that actually changed on the plan's change log.
+	actorID := r.Header.Get("X-User-AID")
+	if actorID == "" {
+		actorID = contrib.ChangedBy
+	}
+	msID, msTitle, parentID, parentTitle := h.service.ResolvePlanChangeRefs(r.Context(), spaceID, contrib)
+	entry := &contributions.PlanChangeEntry{
+		Kind:                    "contribution_edited",
+		MilestoneID:             msID,
+		MilestoneTitle:          msTitle,
+		ContributionID:          contrib.ID,
+		ContributionTitle:       contrib.Title,
+		ParentContributionID:    parentID,
+		ParentContributionTitle: parentTitle,
+		Changes:                 contributions.DiffContributionFields(&before, contrib),
+		ChangedBy:               actorID,
+	}
+	if err := h.service.UnsignPlanForProject(r.Context(), spaceID, contrib.ProjectID, entry); err != nil {
 		log.Printf("[Contributions] failed to unsign plan after contribution update: %v", err)
 	}
 	log.Printf("[Contributions] contribution updated: %s", id)
@@ -738,8 +756,8 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 		var blockingErr *contributions.BlockingChildrenError
 		if errors.As(err, &blockingErr) {
 			writeJSON(w, http.StatusConflict, map[string]interface{}{
-				"error":              "blocking child contributions",
-				"blocking_children":  blockingErr.IDs,
+				"error":             "blocking child contributions",
+				"blocking_children": blockingErr.IDs,
 			})
 			return
 		}
@@ -924,7 +942,11 @@ func (h *ContributionsHandler) HandleArchive(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	if err := h.service.ArchiveContribution(r.Context(), spaceID, id); err != nil {
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	if err := h.service.ArchiveContribution(r.Context(), spaceID, id, actorID); err != nil {
 		log.Printf("[Contributions] archive failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

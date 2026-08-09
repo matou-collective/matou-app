@@ -58,18 +58,18 @@ const (
 )
 
 type Proposal struct {
-	ID               string            `json:"id"`
-	ProposerID       string            `json:"proposer_id"`
-	Title            string            `json:"title"`
-	Types            []ProposalType    `json:"type"`
-	Priority         Priority          `json:"priority"`
-	Description      string            `json:"description"`
-	ProblemStatement string            `json:"problem_statement"`
-	Solution         string            `json:"solution"`
-	ExpectedOutcomes []string          `json:"expected_outcomes"`
-	EstimatedBudget  string            `json:"estimated_budget"`
-	Timeline         string            `json:"timeline"`
-	ProjectPlan      []ProjectPlanItem `json:"project_plan,omitempty"`
+	ID                    string            `json:"id"`
+	ProposerID            string            `json:"proposer_id"`
+	Title                 string            `json:"title"`
+	Types                 []ProposalType    `json:"type"`
+	Priority              Priority          `json:"priority"`
+	Description           string            `json:"description"`
+	ProblemStatement      string            `json:"problem_statement"`
+	Solution              string            `json:"solution"`
+	ExpectedOutcomes      []string          `json:"expected_outcomes"`
+	EstimatedBudget       string            `json:"estimated_budget"`
+	Timeline              string            `json:"timeline"`
+	ProjectPlan           []ProjectPlanItem `json:"project_plan,omitempty"`
 	Status                ProposalStatus    `json:"status"`
 	CreatedAt             time.Time         `json:"created_at"`
 	UpdatedAt             time.Time         `json:"updated_at"`
@@ -294,9 +294,9 @@ type ProposalComment struct {
 	CreatedAt  time.Time `json:"created_at"`
 
 	// Synthesized fields (omitempty). Plain user comments leave these unset.
-	Kind        string    `json:"kind,omitempty"`        // user | endorsement | completion | vote
-	Subtitle    string    `json:"subtitle,omitempty"`    // e.g. "Endorsed proposal" or "Voted Approved"
-	Outcome     string    `json:"outcome,omitempty"`     // for vote/completion: approved | rejected | no_veto | veto
+	Kind        string    `json:"kind,omitempty"`     // user | endorsement | completion | vote
+	Subtitle    string    `json:"subtitle,omitempty"` // e.g. "Endorsed proposal" or "Voted Approved"
+	Outcome     string    `json:"outcome,omitempty"`  // for vote/completion: approved | rejected | no_veto | veto
 	Attachments []FileRef `json:"attachments,omitempty"`
 	Links       []string  `json:"links,omitempty"`
 }
@@ -330,6 +330,32 @@ type ImplementationPlan struct {
 	SignedOffBy string     `json:"signed_off_by,omitempty"`
 	SignedOffAt *time.Time `json:"signed_off_at,omitempty"`
 	CreatedBy   string     `json:"created_by,omitempty"`
+
+	// ChangeLog records what has changed since the last sign-off, in
+	// chronological order. It is cleared whenever the plan is signed off
+	// (SignOffPlan) and accumulates entries again as subsequent mutations
+	// invalidate the sign-off. Capped at maxPlanChangeLogEntries.
+	ChangeLog []PlanChangeEntry `json:"change_log,omitempty"`
+}
+
+// PlanChangeEntry records a single change made to an implementation plan
+// (or one of its milestones/contributions) since the plan was last signed off.
+type PlanChangeEntry struct {
+	ID                string `json:"id"`
+	Kind              string `json:"kind"` // milestone_edited|milestone_added|milestone_archived|contribution_added|contribution_edited|contribution_removed
+	MilestoneID       string `json:"milestone_id,omitempty"`
+	MilestoneTitle    string `json:"milestone_title,omitempty"`
+	ContributionID    string `json:"contribution_id,omitempty"`
+	ContributionTitle string `json:"contribution_title,omitempty"`
+	// Parent refs are set when the change concerns a sub-contribution, so the
+	// UI can nest it under its parent within the milestone group. MilestoneID/
+	// MilestoneTitle are then resolved via the parent chain (subs carry no
+	// milestone_id of their own).
+	ParentContributionID    string        `json:"parent_contribution_id,omitempty"`
+	ParentContributionTitle string        `json:"parent_contribution_title,omitempty"`
+	Changes                 []FieldChange `json:"changes,omitempty"`
+	ChangedBy               string        `json:"changed_by"`
+	ChangedAt               time.Time     `json:"changed_at"`
 }
 
 // --- Milestone ---
@@ -353,15 +379,15 @@ type Milestone struct {
 	ContributionIDs      []string `json:"contribution_ids,omitempty"`
 
 	// Extended milestone fields
-	ProjectID          string          `json:"project_id,omitempty"`
-	Description        string          `json:"description,omitempty"`
-	StartDate          string          `json:"start_date,omitempty"`
-	EndDate            string          `json:"end_date,omitempty"`
-	Status             MilestoneStatus `json:"status,omitempty"`
-	SuccessCriteria    []string        `json:"success_criteria,omitempty"`
-	Dependencies       []string        `json:"dependencies,omitempty"`
-	BudgetAllocation   float64         `json:"budget_allocation,omitempty"`
-	ActualCost         float64         `json:"actual_cost,omitempty"`
+	ProjectID        string          `json:"project_id,omitempty"`
+	Description      string          `json:"description,omitempty"`
+	StartDate        string          `json:"start_date,omitempty"`
+	EndDate          string          `json:"end_date,omitempty"`
+	Status           MilestoneStatus `json:"status,omitempty"`
+	SuccessCriteria  []string        `json:"success_criteria,omitempty"`
+	Dependencies     []string        `json:"dependencies,omitempty"`
+	BudgetAllocation float64         `json:"budget_allocation,omitempty"`
+	ActualCost       float64         `json:"actual_cost,omitempty"`
 
 	// Hydrated contributions — populated at read time, not stored
 	Contributions []*Contribution `json:"contributions,omitempty"`
@@ -434,12 +460,12 @@ type Contribution struct {
 	RewardedAt             *time.Time         `json:"rewarded_at,omitempty"`
 
 	// Sharing & offering
-	IsShared              bool                    `json:"is_shared,omitempty"`
-	SharedWithRoles       []string                `json:"shared_with_roles,omitempty"`
-	ShareLink             string                  `json:"share_link,omitempty"`
-	OfferedTo             string                  `json:"offered_to,omitempty"`
-	OfferedToName         string                  `json:"offered_to_name,omitempty"`
-	OfferedAt             *time.Time              `json:"offered_at,omitempty"`
+	IsShared        bool       `json:"is_shared,omitempty"`
+	SharedWithRoles []string   `json:"shared_with_roles,omitempty"`
+	ShareLink       string     `json:"share_link,omitempty"`
+	OfferedTo       string     `json:"offered_to,omitempty"`
+	OfferedToName   string     `json:"offered_to_name,omitempty"`
+	OfferedAt       *time.Time `json:"offered_at,omitempty"`
 
 	// Interest registration
 	InterestedContributors []InterestedContributor `json:"interested_contributors,omitempty"`
@@ -448,19 +474,19 @@ type Contribution struct {
 	AssignedContributorName string `json:"assigned_contributor_name,omitempty"`
 
 	// Change tracking (populated when status is "changed")
-	ChangeReason string              `json:"change_reason,omitempty"`
-	ChangedBy    string              `json:"changed_by,omitempty"`
-	ChangedAt    *time.Time          `json:"changed_at,omitempty"`
-	ChangesDiff  []ContributionDiff  `json:"changes_diff,omitempty"`
+	ChangeReason string             `json:"change_reason,omitempty"`
+	ChangedBy    string             `json:"changed_by,omitempty"`
+	ChangedAt    *time.Time         `json:"changed_at,omitempty"`
+	ChangesDiff  []ContributionDiff `json:"changes_diff,omitempty"`
 
 	// Evidence & completion (extended)
-	AcceptanceNotes   []string  `json:"acceptance_notes,omitempty"`
-	EvidenceURLs      []string  `json:"evidence_urls,omitempty"`
-	EvidenceFiles     []FileRef `json:"evidence_files,omitempty"`
-	TimeReportFile    *FileRef  `json:"time_report_file,omitempty"`
-	AttachmentFiles   []FileRef `json:"attachment_files,omitempty"`
+	AcceptanceNotes []string  `json:"acceptance_notes,omitempty"`
+	EvidenceURLs    []string  `json:"evidence_urls,omitempty"`
+	EvidenceFiles   []FileRef `json:"evidence_files,omitempty"`
+	TimeReportFile  *FileRef  `json:"time_report_file,omitempty"`
+	AttachmentFiles []FileRef `json:"attachment_files,omitempty"`
 
-	CommentCount      int       `json:"comment_count,omitempty"`
+	CommentCount int `json:"comment_count,omitempty"`
 }
 
 // ContributionDiff records a single field change for change tracking.

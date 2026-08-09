@@ -20,7 +20,14 @@ export default defineConfig({
   test: {
     // Test scripts live outside src/
     include: ['tests/scripts/**/*.ts'],
-    exclude: ['tests/scripts/health-check.ts'],
+    exclude: [
+      'tests/scripts/health-check.ts',
+      // These need live KERI test infrastructure (localhost:4901/4903/4904) —
+      // absent in CI. Run with the infra up via `npm run test:infra`.
+      ...(process.env.TEST_INFRA
+        ? []
+        : ['tests/scripts/test-oobi-messaging.ts', 'tests/scripts/create-test-aid.ts']),
+    ],
     testTimeout: 120000,
     server: {
       deps: {

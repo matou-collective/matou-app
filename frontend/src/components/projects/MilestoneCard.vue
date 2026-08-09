@@ -177,7 +177,7 @@ function formatDate(iso: string): string {
 // Returns 0 when nothing parseable is found.
 function parseBudget(s: string | undefined): number {
   if (!s) return 0;
-  const cleaned = s.replace(/[^0-9.\-]/g, '');
+  const cleaned = s.replace(/[^0-9.-]/g, '');
   if (!cleaned) return 0;
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : 0;

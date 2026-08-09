@@ -1,0 +1,74 @@
+name: swarm
+on:
+  issues:
+    types: [labeled, closed]
+  schedule:
+    - cron: "15,45 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  swarm:
+    # Label events fire for EVERY label; only ready-for-agent means new work.
+    # (Triage mass-labelling once queued a dozen redundant runs.) Close events,
+    # cron, and manual dispatch always run.
+    if: github.event_name != 'issues' || github.event.action != 'labeled' || github.event.label.name == 'ready-for-agent'
+    runs-on: matou-workstation
+    timeout-minutes: 180
+    steps:
+      - name: Swarm under global lock
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          REPO_SLUG: ${{ github.repository }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          # /tmp/matou-swarm.lock is GLOBAL by design: one heavy worker per host,
+          # serializing swarm AND triage across BOTH repos on this capacity-1
+          # runner (that cross-repo serialization is what we want). But CAMPING on
+          # it (flock -w 7200) turned that into hour-class waits — issue events
+          # stack a run each, every started run blocked up to 2h, and matou-app
+          # starved for hours behind ourcloud's queue (#238). Yield instead: if
+          # another swarm/triage run holds the host, exit 0 cleanly and let the
+          # cron (and the backstop) re-fire. Queued runs then drain in seconds
+          # instead of serializing hour-class waits.
+          exec 9>/tmp/matou-swarm.lock
+          if ! flock -n 9; then
+            echo "swarm: another swarm/triage run holds /tmp/matou-swarm.lock — yielding; the cron/backstop re-fires"
+            exit 0
+          fi
+          workdir="$HOME/swarm/$REPO_SLUG"
+          mkdir -p "$workdir"
+          cd "$workdir"
+          url="https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git"
+          if [ -d .git ]; then
+            git remote set-url origin "$url"
+            git fetch origin main
+            git checkout -f main
+            git reset --hard origin/main
+          else
+            git clone "$url" .
+          fi
+          bash .sandcastle/run-swarm.sh
+      - name: Investigate failure (healer)
+        if: failure()
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          WORKFLOW: swarm
+          HEAL_DRY_RUN: "1"
+        run: |
+          bash "$HOME/swarm/${{ github.repository }}/.sandcastle/heal.sh" || {
+            [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
+            jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: swarm failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
+              curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" || true
+          }

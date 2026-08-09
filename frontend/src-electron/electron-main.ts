@@ -3,7 +3,7 @@
  * Spawns the Go backend as a child process, waits for it to become healthy,
  * then creates the BrowserWindow pointing at the Quasar frontend.
  */
-import { app, BrowserWindow, ipcMain, safeStorage, nativeImage, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, nativeImage, Notification, shell } from 'electron';
 import electronUpdater from 'electron-updater';
 
 import log from 'electron-log';
@@ -227,6 +227,51 @@ function stopBackend(): Promise<void> {
   });
 }
 
+/**
+ * Decide whether a navigation target should be handed to the OS browser
+ * instead of loaded inside the app window. External web/mail links (in
+ * contribution reports, comments, chat, etc.) must open externally; the app's
+ * own origin must keep navigating in-window.
+ */
+function isExternalUrl(target: string, currentUrl: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === 'mailto:') return true;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  // Same-origin http(s) navigation (e.g. the dev server) stays in-window.
+  try {
+    return parsed.origin !== new URL(currentUrl).origin;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Route clicked links to the OS default browser. Links rendered in message,
+ * report and comment bodies get `target="_blank"`, which fires
+ * `setWindowOpenHandler`; plain in-body navigations are caught by
+ * `will-navigate`. Both are denied in-window and opened externally instead.
+ */
+function setupExternalLinkHandling(window: BrowserWindow): void {
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^(https?|mailto):/i.test(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  window.webContents.on('will-navigate', (event, url) => {
+    if (isExternalUrl(url, window.webContents.getURL())) {
+      event.preventDefault();
+      void shell.openExternal(url);
+    }
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -246,6 +291,20 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  setupExternalLinkHandling(mainWindow);
+
+  // Forward renderer console output into main.log. Packaged builds have no
+  // devtools, so without this every renderer-side warning (e.g. a failed
+  // approval step) is invisible in the field.
+  mainWindow.webContents.on('console-message', (details) => {
+    const { level, message, lineNumber, sourceId } = details;
+    const src = sourceId ? `${sourceId.split('/').pop() ?? sourceId}:${lineNumber}` : '';
+    const text = `[renderer] ${src} ${message}`;
+    if (level === 'error') log.error(text);
+    else if (level === 'warning') log.warn(text);
+    else log.info(text);
   });
 
   if (process.env.DEV) {

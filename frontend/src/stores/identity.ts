@@ -1,9 +1,11 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
+import { Notify } from 'quasar';
 import { KERIClient, useKERIClient, type AIDInfo, type CredentialInfo } from 'src/lib/keri/client';
 import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinCommunity as apiJoinCommunity } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { fetchOrgConfig } from 'src/api/config';
+import { useAppStore } from 'stores/app';
 
 export interface AdminCredentialInfo extends CredentialInfo {
   role?: string;
@@ -81,11 +83,17 @@ export const useIdentityStore = defineStore('identity', () => {
         if (aids.length > 0) {
           // Prefer the stored personal admin AID over the org group AID.
           // After org setup there are two AIDs in KERIA (personal + org group);
-          // picking aids[0] could land on the org AID and break credential checks.
+          // picking aids[0] could land on the org AID and break credential
+          // checks — and attribute the user's actions (X-User-AID) to the org.
+          // matou_admin_aid is only written during org setup and is lost when
+          // browser storage is cleaned, so also exclude the org group AID
+          // (known from org config) when falling back.
           const savedAdminAid = await secureStorage.getItem('matou_admin_aid');
+          const orgAid = useAppStore().orgAid;
+          const fallbackAID = aids.find((a) => a.prefix !== orgAid) ?? aids[0];
           const personalAID = savedAdminAid
-            ? aids.find((a) => a.prefix === savedAdminAid) ?? aids[0]
-            : aids[0];
+            ? aids.find((a) => a.prefix === savedAdminAid) ?? fallbackAID
+            : fallbackAID;
           currentAID.value = personalAID;
           console.log('[IdentityStore] Set currentAID to:', personalAID.prefix);
         } else {
@@ -94,6 +102,13 @@ export const useIdentityStore = defineStore('identity', () => {
       } catch (listErr) {
         console.warn('[IdentityStore] Could not list AIDs (expected for new users):', listErr);
       }
+
+      // Surface + repair an agent re-boot: when the agent behind this
+      // passcode was re-created, every agent-form OOBI shared before is dead
+      // (Andrew Weaver incident). Re-publish the end role so fresh OOBIs
+      // resolve, and tell the user once — silently rebooting is how contacts
+      // end up unable to reach an identity for months.
+      await handleAgentReboot();
 
       // Persist passcode (encrypted in production)
       await secureStorage.setItem('matou_passcode', bran);
@@ -104,6 +119,56 @@ export const useIdentityStore = defineStore('identity', () => {
       return false;
     } finally {
       isConnecting.value = false;
+    }
+  }
+
+  /**
+   * Handle a detected agent re-creation (see KERIClient.recordAgentLifecycle).
+   * For an identity with an AID: re-publish the agent end role (so the new
+   * agent serves this AID's OOBI) and show a one-time warning — mirrors the
+   * useAdminActions.notifyApprovalWarning pattern. The persisted marker is
+   * only cleared once the repair succeeds, so a failed repair retries on the
+   * next connect. Never throws: connection must succeed regardless.
+   */
+  async function handleAgentReboot(): Promise<void> {
+    try {
+      const reboot = keriClient.getPendingAgentReboot();
+      if (!reboot) return;
+
+      if (!currentAID.value) {
+        // No AID on this identity yet — nothing was ever shared under the old
+        // agent, so there is nothing to repair or announce.
+        await keriClient.clearAgentRebootMarker();
+        return;
+      }
+
+      console.warn(
+        `[IdentityStore] Agent was re-created (${reboot.occurredAt}): ` +
+        `${reboot.previousAgentAid} → ${reboot.newAgentAid} — re-publishing end role`
+      );
+
+      let repairNote = '';
+      try {
+        await keriClient.republishAgentEndRole(currentAID.value.prefix);
+      } catch (endRoleErr) {
+        const msg = endRoleErr instanceof Error ? endRoleErr.message : String(endRoleErr);
+        repairNote = ` Automatic repair failed (${msg}) — it will be retried next time the app starts.`;
+      }
+
+      Notify.create({
+        type: 'warning',
+        message:
+          'Your identity agent was recreated — contacts may need to re-resolve ' +
+          `your identity before they can reach you.${repairNote}`,
+        timeout: 0,
+        actions: [{ label: 'Dismiss', color: 'white' }],
+      });
+
+      if (!repairNote) {
+        await keriClient.clearAgentRebootMarker();
+      }
+    } catch (rebootErr) {
+      console.warn('[IdentityStore] Agent re-boot handling failed:', rebootErr);
     }
   }
 

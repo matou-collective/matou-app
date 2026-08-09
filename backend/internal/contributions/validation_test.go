@@ -48,6 +48,7 @@ func TestContributionTransition_Valid(t *testing.T) {
 		to   ContributionStatus
 	}{
 		{ContribCreated, ContribConfirmed},
+		{ContribCreated, ContribAssigned},
 		{ContribConfirmed, ContribAssigned},
 		{ContribAssigned, ContribChanged},
 		{ContribChanged, ContribConfirmed},
@@ -71,7 +72,7 @@ func TestContributionTransition_Invalid(t *testing.T) {
 		from ContributionStatus
 		to   ContributionStatus
 	}{
-		{ContribCreated, ContribAssigned},
+		{ContribCreated, ContribShared},
 		{ContribAssigned, ContribApproved},
 		{ContribArchived, ContribCreated},
 	}

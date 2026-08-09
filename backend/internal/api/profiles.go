@@ -359,6 +359,7 @@ type InitMemberProfilesRequest struct {
 	MemberAID            string          `json:"memberAid"`
 	CredentialSAID       string          `json:"credentialSaid"`
 	Role                 string          `json:"role"`
+	Status               string          `json:"status,omitempty"` // SharedProfile status; defaults to "approved"
 	DisplayName          string          `json:"displayName"`
 	Email                string          `json:"email,omitempty"`
 	Avatar               string          `json:"avatar,omitempty"`
@@ -410,6 +411,13 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 
 	if req.Role == "" {
 		req.Role = "Member"
+	}
+
+	// The approve flow passes "pending" here and flips to "approved" only
+	// after credential issuance succeeds, so a failed approval keeps the
+	// member visible in the dashboard's pending list for retry.
+	if req.Status == "" {
+		req.Status = "approved"
 	}
 
 	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
@@ -570,7 +578,7 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		now2 := time.Now().UTC().Format(time.RFC3339)
 		sharedProfileData := map[string]interface{}{
 			"aid":                    req.MemberAID,
-			"status":                 "approved",
+			"status":                 req.Status,
 			"displayName":            req.DisplayName,
 			"bio":                    req.Bio,
 			"avatar":                 req.Avatar,

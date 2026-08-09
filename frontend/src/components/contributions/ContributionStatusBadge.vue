@@ -36,6 +36,8 @@ const label = computed(
 </script>
 
 <style scoped lang="scss">
+@import 'src/css/contribution-status.scss';
+
 .status-badge {
   display: inline-block;
   font-size: 0.75rem;
@@ -47,54 +49,6 @@ const label = computed(
   background: var(--matou-muted);
   color: var(--matou-muted-foreground);
 
-  &.created {
-    background: var(--matou-muted);
-    color: var(--matou-muted-foreground);
-  }
-
-  // accent/10 + accent text
-  &.confirmed,
-  &.shared,
-  &.assigned,
-  &.approved,
-  &.rewarded {
-    background: rgba(74, 157, 156, 0.12);
-    color: var(--matou-accent, #4a9d9c);
-  }
-
-  // signed off — solid accent so it reads as a clear terminal state
-  &.signed_off {
-    background: var(--matou-accent, #4a9d9c);
-    color: white;
-  }
-
-  // primary/10 + primary text
-  &.offered {
-    background: rgba(30, 95, 116, 0.1);
-    color: var(--matou-primary, #1e5f74);
-  }
-
-  // chart-1/10 + chart-1 text
-  &.needs_review,
-  &.incomplete,
-  &.changed,
-  &.in_progress {
-    background: rgba(30, 95, 116, 0.08);
-    color: var(--matou-chart-1, #1e5f74);
-  }
-
-  // destructive/10 + destructive text
-  &.declined,
-  &.rejected {
-    background: rgba(200, 70, 58, 0.1);
-    color: var(--matou-destructive, #c8463a);
-  }
-
-  &.archived,
-  &.cancelled {
-    background: var(--matou-muted);
-    color: var(--matou-muted-foreground);
-    opacity: 0.7;
-  }
+  @include contribution-status-badge;
 }
 </style>

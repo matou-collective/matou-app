@@ -13,7 +13,7 @@
             <span class="comment-author">{{ getCommentAuthorName(comment) }}</span>
             <span class="comment-time">{{ relativeTime(comment.createdAt) }}</span>
           </div>
-          <p class="comment-text">{{ comment.text }}</p>
+          <div class="comment-text" v-html="renderMarkdown(comment.text)"></div>
         </div>
       </div>
 
@@ -45,6 +45,7 @@ import { useActivityStore } from 'stores/activity';
 import { useProfilesStore } from 'stores/profiles';
 import { useCommentCursorsStore } from 'stores/commentCursors';
 import UserAvatar from 'components/profiles/UserAvatar.vue';
+import { renderMarkdown } from 'src/lib/markdown';
 
 const props = defineProps<{ noticeId: string }>();
 const activityStore = useActivityStore();
@@ -199,6 +200,20 @@ function relativeTime(dateStr: string): string {
   color: var(--matou-foreground);
   margin: 0.25rem 0 0;
   line-height: 1.4;
+  word-wrap: break-word;
+
+  :deep(p) {
+    margin: 0;
+  }
+
+  :deep(p + p) {
+    margin-top: 0.375rem;
+  }
+
+  :deep(a) {
+    color: var(--matou-primary);
+    text-decoration: underline;
+  }
 }
 
 .comment-input-row {

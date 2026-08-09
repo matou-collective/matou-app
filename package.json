@@ -1,0 +1,12 @@
+{
+  "name": "matou-app-swarm",
+  "private": true,
+  "description": "Root harness for the Sandcastle swarm (.sandcastle/). App code lives in frontend/ and backend/.",
+  "scripts": {
+    "sandcastle": "tsx .sandcastle/main.mts"
+  },
+  "devDependencies": {
+    "@ai-hero/sandcastle": "^0.12.0",
+    "tsx": "^4.19.0"
+  }
+}

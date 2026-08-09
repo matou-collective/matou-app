@@ -72,7 +72,11 @@ func (h *MilestonesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLo
 // HandleArchiveMilestone handles POST /api/v1/milestones/{id}/archive
 func (h *MilestonesHandler) HandleArchiveMilestone(w http.ResponseWriter, r *http.Request, id string) {
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	if err := h.service.ArchiveMilestone(r.Context(), spaceID, id); err != nil {
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	if err := h.service.ArchiveMilestone(r.Context(), spaceID, id, actorID); err != nil {
 		log.Printf("[Milestones] archive failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -89,7 +93,11 @@ func (h *MilestonesHandler) HandleUpdateMilestone(w http.ResponseWriter, r *http
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	ms, err := h.service.UpdateMilestone(r.Context(), spaceID, id, &req)
+	actorID := GetUserAID(r)
+	if actorID == "" {
+		actorID = r.Header.Get("X-User-AID")
+	}
+	ms, err := h.service.UpdateMilestone(r.Context(), spaceID, id, actorID, &req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

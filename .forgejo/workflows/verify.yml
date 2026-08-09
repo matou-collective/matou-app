@@ -1,0 +1,57 @@
+name: verify
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    runs-on: matou-workstation
+    timeout-minutes: 20
+    steps:
+      - name: Check Mattermost verifications under global lock
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          REPO_SLUG: ${{ github.repository }}
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+        run: |
+          set -euo pipefail
+          exec 9>/tmp/matou-swarm.lock
+          # Non-blocking: a long swarm run can hold the lock for hours — a
+          # poller should skip quietly and let the next cron tick retry, not
+          # go red every 10 minutes.
+          flock -n 9 || { echo "verify: swarm lock busy — skipping this tick"; exit 0; }
+          workdir="$HOME/swarm/$REPO_SLUG"
+          mkdir -p "$workdir"
+          cd "$workdir"
+          url="https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git"
+          if [ -d .git ]; then
+            git remote set-url origin "$url"
+            git fetch origin main
+            git checkout -f main
+            git reset --hard origin/main
+          else
+            git clone "$url" .
+          fi
+          bash .sandcastle/check-verifications.sh
+      - name: Investigate failure (healer)
+        if: failure()
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          WORKFLOW: verify
+          HEAL_DRY_RUN: "1"
+        run: |
+          bash "$HOME/swarm/${{ github.repository }}/.sandcastle/heal.sh" || {
+            [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
+            jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: verify failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
+              curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" || true
+          }

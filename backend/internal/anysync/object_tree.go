@@ -269,6 +269,16 @@ func (m *ObjectTreeManager) ReadObject(ctx context.Context, spaceID, objectID st
 // ReadObjectsByType reads all objects of a specific type from a space.
 func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, typeName string) ([]*ObjectPayload, error) {
 	entries := m.treeManager.GetTreesByType(spaceID, typeName)
+	if len(entries) == 0 {
+		// Index miss — the space index may not have been built yet (nothing
+		// indexes the readonly space at startup, unlike the community space
+		// which gets indexed via chat loading). Rebuild from storage and
+		// retry once, mirroring GetTreeForObject.
+		if err := m.treeManager.BuildSpaceIndex(ctx, spaceID); err != nil {
+			log.Printf("[ObjectTree] ReadObjectsByType index rebuild for space %s failed: %v", spaceID, err)
+		}
+		entries = m.treeManager.GetTreesByType(spaceID, typeName)
+	}
 	log.Printf("[ObjectTree] ReadObjectsByType space=%s type=%s entries=%d", spaceID, typeName, len(entries))
 	if len(entries) == 0 {
 		return nil, nil
