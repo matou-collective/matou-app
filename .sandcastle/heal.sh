@@ -11,6 +11,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/heal-lib.sh"
 # shellcheck source=limit-lib.sh
 . "$here/limit-lib.sh"
+# shellcheck source=model-lib.sh
+# The shared model config (#448): $SWARM_MODEL is the ONE value both this healer
+# and the swarm worker (main.mts, via swarm.config) run on — no hardcoded id can
+# drift between them anymore.
+. "$here/model-lib.sh"
 
 # Secrets: env wins (the workflow provides the authoritative value);
 # the bind-mounted secrets file is the fallback for host runs
@@ -184,7 +189,7 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     # Test seam: the stub receives the prompt as $1.
     timeout 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
   else
-    ( cd "$WORKDIR" && timeout 900 claude -p --model claude-opus-4-8 \
+    ( cd "$WORKDIR" && timeout 900 claude -p --model "$SWARM_MODEL" \
         --dangerously-skip-permissions "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
   fi
   # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard. Mid-
