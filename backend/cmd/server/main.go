@@ -10,13 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/api"
 	"github.com/matou-dao/backend/internal/config"
 	"github.com/matou-dao/backend/internal/contributions"
@@ -537,6 +538,53 @@ func main() {
 		setAdminAIDsFromConfig(orgConfigHandler.GetConfig())
 	}
 	orgConfigHandler.AddOnUpdate(setAdminAIDsFromConfig)
+
+	// Peer-side write-rule validation (GH#19): exclude forged high-stakes changes
+	// (contribution sign-off/reward, project completion, role changes) that a
+	// modified peer writes directly into shared spaces from this node's derived
+	// state. Any-sync ACLs are only space-scoped and cannot express per-object
+	// rules, so this runs at state-reconstruction time. The resolver maps a change
+	// author's any-sync account → member AID (ACL join metadata) → role
+	// (CommunityProfile), refreshed periodically off the tree-processing hot path.
+	writeRuleResolver := anysync.NewCachedRoleResolver()
+	writeRuleRecorder := anysync.NewLoggingRejectionRecorder(200)
+	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleRecorder)
+	chatListener.SetChangeValidator(writeRuleValidator)
+	// Also validate the API read path (ObjectTreeManager), so served objects
+	// exclude forged changes even when rebuilt directly from the tree.
+	spaceManager.ObjectTreeManager().SetChangeValidator(writeRuleValidator)
+	refreshWriteRuleRoles := func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[write-rules] role refresh panicked: %v", rec)
+			}
+		}()
+		if communitySpaceID == "" {
+			return
+		}
+		accountAID, err := spaceManager.ACLManager().AccountAIDMap(context.Background(), communitySpaceID)
+		if err != nil {
+			log.Printf("[write-rules] account→AID refresh failed: %v", err)
+			return
+		}
+		byAccount := make(map[string][]contributions.Role, len(accountAID))
+		for account, aid := range accountAID {
+			roles, rErr := profileRoleLookup.GetUserRoles(aid)
+			if rErr != nil || len(roles) == 0 {
+				continue
+			}
+			byAccount[account] = roles
+		}
+		writeRuleResolver.Replace(byAccount)
+	}
+	go func() {
+		refreshWriteRuleRoles()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			refreshWriteRuleRoles()
+		}
+	}()
 
 	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
 	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)

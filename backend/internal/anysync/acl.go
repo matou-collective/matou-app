@@ -7,6 +7,7 @@ package anysync
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -340,6 +341,62 @@ func (m *MatouACLManager) FindAccountPubKeyByAID(ctx context.Context, spaceID st
 		}
 	}
 	return nil, fmt.Errorf("no account found for AID %s in space %s", aid, spaceID)
+}
+
+// AccountAIDMap returns a deterministic mapping from every current ACL account's
+// any-sync account string (crypto.PubKey.Account()) to the KERI AID that account
+// declared in its join-request metadata. It is the reverse of
+// FindAccountPubKeyByAID and is used to resolve the author of a synced change
+// (change.Identity.Account()) back to a member AID for peer-side write-rule
+// validation. Accounts whose metadata carries no AID are omitted.
+func (m *MatouACLManager) AccountAIDMap(ctx context.Context, spaceID string) (map[string]string, error) {
+	space, err := m.client.GetSpace(ctx, spaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting space %s: %w", spaceID, err)
+	}
+
+	acl := space.Acl()
+	acl.RLock()
+	defer acl.RUnlock()
+
+	state := acl.AclState()
+	if state == nil {
+		return nil, fmt.Errorf("ACL state not available for space %s", spaceID)
+	}
+
+	var mdKey crypto.PrivKey
+	if k, mdErr := state.FirstMetadataKey(); mdErr == nil {
+		mdKey = k
+	}
+
+	out := make(map[string]string)
+	for _, account := range state.CurrentAccounts() {
+		if account.PubKey == nil || len(account.RequestMetadata) == 0 {
+			continue
+		}
+		raw := account.RequestMetadata
+		if mdKey != nil {
+			if decrypted, decErr := mdKey.Decrypt(raw); decErr == nil {
+				raw = decrypted
+			}
+		}
+		if aid := extractAIDFromMetadata(raw); aid != "" {
+			out[account.PubKey.Account()] = aid
+		}
+	}
+	return out, nil
+}
+
+// extractAIDFromMetadata pulls the "aid" value out of ACL join metadata, which
+// HandleJoinCommunity writes as `{"aid":"...","joinedAt":"..."}`.
+func extractAIDFromMetadata(raw []byte) string {
+	var md struct {
+		AID string `json:"aid"`
+	}
+	if err := json.Unmarshal(raw, &md); err == nil {
+		return md.AID
+	}
+	return ""
 }
 
 // =============================================================================

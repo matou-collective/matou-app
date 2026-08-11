@@ -38,12 +38,12 @@ const (
 // It provides backward compatibility with existing API responses.
 // Internally, data is stored as incremental ChangeOps in the tree.
 type ObjectPayload struct {
-	ID        string          `json:"id"`        // Unique object ID
-	Type      string          `json:"type"`      // e.g. "SharedProfile", "type_definition"
-	OwnerKey  string          `json:"ownerKey"`  // Public signing key of author
-	Data      json.RawMessage `json:"data"`      // Flat JSON object (reconstructed from state)
+	ID        string          `json:"id"`       // Unique object ID
+	Type      string          `json:"type"`     // e.g. "SharedProfile", "type_definition"
+	OwnerKey  string          `json:"ownerKey"` // Public signing key of author
+	Data      json.RawMessage `json:"data"`     // Flat JSON object (reconstructed from state)
 	Timestamp int64           `json:"timestamp"`
-	Version   int             `json:"version"` // Number of changes applied
+	Version   int             `json:"version"`          // Number of changes applied
 	TreeID    string          `json:"treeId,omitempty"` // any-sync tree ID
 }
 
@@ -53,6 +53,15 @@ type ObjectTreeManager struct {
 	client      AnySyncClient
 	keyManager  *PeerKeyManager
 	treeManager *UnifiedTreeManager
+	validator   ChangeValidator
+}
+
+// SetChangeValidator installs a peer-side write validator (see write_rules.go)
+// used on the object read paths, so objects served to the API exclude forged
+// high-stakes changes another peer wrote directly into a shared tree. A nil
+// validator (the default) leaves reads unchanged.
+func (m *ObjectTreeManager) SetChangeValidator(v ChangeValidator) {
+	m.validator = v
 }
 
 // NewObjectTreeManager creates a new ObjectTreeManager backed by UnifiedTreeManager.
@@ -248,14 +257,14 @@ func (m *ObjectTreeManager) ReadObject(ctx context.Context, spaceID, objectID st
 	entry := m.getIndexEntry(objectID)
 
 	tree.Lock()
-	state, err := BuildState(tree, objectID, entry.ObjectType)
+	state, err := BuildStateValidated(tree, objectID, entry.ObjectType, m.validator)
 	tree.Unlock()
 	if err != nil {
 		// Cached tree may have stale keys (ACL timing race). Try fresh tree.
 		freshTree, freshErr := m.treeManager.BuildFreshTree(ctx, spaceID, tree.Id())
 		if freshErr == nil {
 			freshTree.Lock()
-			state, err = BuildState(freshTree, objectID, entry.ObjectType)
+			state, err = BuildStateValidated(freshTree, objectID, entry.ObjectType, m.validator)
 			freshTree.Unlock()
 		}
 		if err != nil {
@@ -294,7 +303,7 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 		}
 
 		tree.Lock()
-		state, err := BuildState(tree, entry.ObjectID, entry.ObjectType)
+		state, err := BuildStateValidated(tree, entry.ObjectID, entry.ObjectType, m.validator)
 		tree.Unlock()
 		if err != nil {
 			// Cached tree may have stale keys (ACL timing race). Try a fresh
@@ -302,7 +311,7 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 			freshTree, freshErr := m.treeManager.BuildFreshTree(ctx, spaceID, entry.TreeID)
 			if freshErr == nil {
 				freshTree.Lock()
-				state, err = BuildState(freshTree, entry.ObjectID, entry.ObjectType)
+				state, err = BuildStateValidated(freshTree, entry.ObjectID, entry.ObjectType, m.validator)
 				freshTree.Unlock()
 			}
 			if err != nil {
@@ -337,7 +346,7 @@ func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]
 		}
 
 		tree.Lock()
-		state, err := BuildState(tree, entry.ObjectID, entry.ObjectType)
+		state, err := BuildStateValidated(tree, entry.ObjectID, entry.ObjectType, m.validator)
 		tree.Unlock()
 		if err != nil {
 			continue
