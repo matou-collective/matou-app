@@ -446,7 +446,7 @@ export async function initMemberProfiles(data: {
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/profiles/init-member`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(data),
     });
     return response.json();
@@ -464,7 +464,7 @@ export async function updateMemberRole(
 ): Promise<{ success: boolean; role?: string; error?: string }> {
   const res = await fetch(`${BACKEND_URL}/api/v1/members/${memberAid}/role`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ role }),
   });
   return res.json();
@@ -993,7 +993,7 @@ export async function removeMember(
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/members/${encodeURIComponent(memberAid)}`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ reason }),
     });
     if (!response.ok) {

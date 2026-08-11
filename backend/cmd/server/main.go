@@ -15,8 +15,8 @@ import (
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/api"
 	"github.com/matou-dao/backend/internal/config"
 	"github.com/matou-dao/backend/internal/contributions"
@@ -586,7 +586,7 @@ func main() {
 	}))
 
 	// Register API routes
-	credHandler.RegisterRoutes(mux)
+	credHandler.RegisterRoutes(mux, roleLookup)
 	syncHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)
 	spacesHandler.RegisterRoutes(mux)
@@ -594,7 +594,7 @@ func main() {
 	bookingHandler.RegisterRoutes(mux)
 	identityHandler.RegisterRoutes(mux)
 	eventsHandler.RegisterRoutes(mux)
-	profilesHandler.RegisterRoutes(mux)
+	profilesHandler.RegisterRoutes(mux, roleLookup)
 	multisigHandler.RegisterRoutes(mux)
 	noticesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
@@ -604,7 +604,7 @@ func main() {
 	proposalsHandler.RegisterRoutes(mux, roleLookup)
 	projectsHandler.RegisterRoutes(mux, roleLookup)
 	decisionPlansHandler.RegisterRoutes(mux, roleLookup)
-	implPlansHandler.RegisterRoutes(mux)
+	implPlansHandler.RegisterRoutes(mux, roleLookup)
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
 	orgConfigHandler.RegisterRoutes(mux)

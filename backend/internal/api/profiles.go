@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/keri"
 	"github.com/matou-dao/backend/internal/types"
@@ -22,6 +23,7 @@ type ProfilesHandler struct {
 	registry     *types.Registry
 	fileManager  *anysync.FileManager
 	eventBroker  *EventBroker
+	roleLookup   RoleLookup
 }
 
 // NewProfilesHandler creates a new profiles handler.
@@ -695,6 +697,18 @@ func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Promotion to Founding Member — the org's highest-privilege role — may only
+	// be performed by an existing Founding Member. All other role changes follow
+	// the standard RBAC table (ActionChangeMemberRole: ops steward / founding).
+	// Only enforced when RBAC is active (roleLookup configured).
+	if h.roleLookup != nil && req.Role == "Founding Member" &&
+		!contributions.HasRole(GetUserRoles(r), contributions.RoleFoundingMember) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "only a Founding Member may promote a member to Founding Member",
+		})
+		return
+	}
+
 	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
 	if roSpaceID == "" {
 		writeJSON(w, http.StatusConflict, map[string]string{
@@ -965,24 +979,35 @@ func deduplicateObjects(objects []*anysync.ObjectPayload) []*anysync.ObjectPaylo
 }
 
 // RegisterRoutes registers profile and type routes on the mux.
-func (h *ProfilesHandler) RegisterRoutes(mux *http.ServeMux) {
+// roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
+func (h *ProfilesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/types", h.handleTypes)
 	mux.HandleFunc("/api/v1/types/", h.HandleGetType)
 	mux.HandleFunc("/api/v1/profiles", h.handleProfiles)
 	mux.HandleFunc("/api/v1/profiles/", h.HandleListProfiles)
 	mux.HandleFunc("/api/v1/profiles/me", h.HandleMyProfiles)
-	mux.HandleFunc("/api/v1/profiles/init-member", h.HandleInitMemberProfiles)
+	mux.HandleFunc("/api/v1/profiles/init-member", h.withRBAC(contributions.ActionInitMemberProfile, h.HandleInitMemberProfiles))
 	mux.HandleFunc("/api/v1/members/", h.handleMembers)
 }
 
-// handleMembers routes /api/v1/members/* requests.
+// withRBAC applies RBAC middleware when a roleLookup is configured.
+// When roleLookup is nil (tests), the handler is invoked directly.
+func (h *ProfilesHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
+// handleMembers routes /api/v1/members/* requests through RBAC.
 func (h *ProfilesHandler) handleMembers(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/role") && r.Method == http.MethodPut {
-		h.HandleUpdateMemberRole(w, r)
+		h.withRBAC(contributions.ActionChangeMemberRole, h.HandleUpdateMemberRole)(w, r)
 		return
 	}
 	if r.Method == http.MethodDelete {
-		h.HandleRemoveMember(w, r)
+		h.withRBAC(contributions.ActionRemoveMember, h.HandleRemoveMember)(w, r)
 		return
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})

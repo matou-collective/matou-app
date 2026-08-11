@@ -16,6 +16,7 @@ type ImplementationPlansHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
 	broker       *EventBroker
+	roleLookup   RoleLookup
 }
 
 // NewImplementationPlansHandler creates a new implementation plans handler.
@@ -31,8 +32,19 @@ func (h *ImplementationPlansHandler) SetBroker(broker *EventBroker) {
 	h.broker = broker
 }
 
+// withRBAC applies RBAC middleware when a roleLookup is configured.
+// When roleLookup is nil (tests), the handler is invoked directly.
+func (h *ImplementationPlansHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
 // RegisterRoutes registers implementation plan routes on the mux.
-func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux) {
+// roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
+func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/implementation-plans", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -58,7 +70,9 @@ func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		if len(parts) == 2 && parts[1] == "sign-off" && r.Method == http.MethodPost {
-			h.HandleSignOff(w, r, id)
+			h.withRBAC(contributions.ActionSignOffPlan, func(w http.ResponseWriter, r *http.Request) {
+				h.HandleSignOff(w, r, id)
+			})(w, r)
 			return
 		}
 		if r.Method == http.MethodGet {

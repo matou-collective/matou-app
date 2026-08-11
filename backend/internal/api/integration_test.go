@@ -156,7 +156,7 @@ func setupIntegrationEnv(t *testing.T) *IntegrationTestEnv {
 
 	// Create mux and register routes
 	mux := http.NewServeMux()
-	credHandler.RegisterRoutes(mux)
+	credHandler.RegisterRoutes(mux, nil)
 	syncHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)
 	spacesHandler.RegisterRoutes(mux)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/keri"
 )
 
@@ -18,6 +19,7 @@ import (
 type CredentialsHandler struct {
 	keriClient *keri.Client
 	store      *anystore.LocalStore
+	roleLookup RoleLookup
 }
 
 // NewCredentialsHandler creates a new credentials handler
@@ -256,8 +258,20 @@ func (h *CredentialsHandler) HandleOrg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.keriClient.GetOrgInfo())
 }
 
-// RegisterRoutes registers credential routes on the mux
-func (h *CredentialsHandler) RegisterRoutes(mux *http.ServeMux) {
+// withRBAC applies RBAC middleware when a roleLookup is configured.
+// When roleLookup is nil (tests), the handler is invoked directly.
+func (h *CredentialsHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
+// RegisterRoutes registers credential routes on the mux.
+// roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
+func (h *CredentialsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	h.roleLookup = roleLookup
+
 	// Organization info
 	mux.HandleFunc("/api/v1/org", h.HandleOrg)
 
@@ -272,7 +286,7 @@ func (h *CredentialsHandler) RegisterRoutes(mux *http.ServeMux) {
 func (h *CredentialsHandler) handleCredentials(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		h.HandleStore(w, r)
+		h.withRBAC(contributions.ActionStoreCredential, h.HandleStore)(w, r)
 	case http.MethodGet:
 		h.handleList(w, r)
 	default:
