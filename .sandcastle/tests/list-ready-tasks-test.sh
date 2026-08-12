@@ -59,5 +59,16 @@ jq -n '[{number:99, head:{ref:"agent/issue-777"}}]' >"$FAKE_DIR/pulls.json"
 out="$(bash "$script")"
 check "S5 unrelated agent PR changes nothing" "[ '$(numbers "$out")' = '[11,12]' ]"
 
+# ---- S6: a ticket already claimed by another host (agent-working, #250
+# multi-host pool sync) is hidden from the queue even though it is otherwise
+# ready-for-agent and unblocked
+setup
+jq -n '[{number:11, title:"first", body:"b1", html_url:"http://x/11",
+         labels:[{name:"agent-working"}]},
+        {number:12, title:"second", body:"b2", html_url:"http://x/12"}]' \
+  >"$FAKE_DIR/issues.json"
+out="$(bash "$script")"
+check "S6 agent-working tickets are hidden from the queue" "[ '$(numbers "$out")' = '[12]' ]"
+
 echo "list-ready-tasks: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

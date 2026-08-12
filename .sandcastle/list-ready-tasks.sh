@@ -5,11 +5,16 @@
 # Surfaces ONLY issues that are all of:
 #   1. open and labelled `ready-for-agent`,
 #   2. unblocked — every Forgejo issue-dependency ("blocked by") is closed —
-#      so the swarm honours the slice-map DAG (docs/slices/*.yaml), and
+#      so the swarm honours the slice-map DAG (docs/slices/*.yaml),
 #   3. not already in review — no open PR from an `agent/issue-<n>` branch.
 #      Re-dispatching an issue whose PR just awaits a human costs a full agent
 #      run to stand down (issue #6 / PR #7, 2026-08-02) and risks a force-push
-#      over a branch mid-review.
+#      over a branch mid-review, and
+#   4. NOT labelled `agent-working` — claimed by a live run on another host
+#      under the multi-host pool (claim-next-task.sh, spec
+#      2026-08-11-multihost-swarm-design.md D4; #250 sync from ourcloud); a
+#      claimed ticket must vanish from every other host's queue immediately,
+#      not just get lost to the claim race once an agent sees it.
 #
 # depends_on lives as NATIVE Forgejo issue dependencies (the repo has
 # enable_issue_dependencies on), not as body text — see
@@ -69,7 +74,9 @@ while :; do
   # Membership select keeps the batch's original order.
   nums="$(printf '%s\n' "$unblocked" | jq -Rn '[inputs | select(length > 0) | tonumber]')"
   ready="$(jq --slurpfile batch <(printf '%s' "$batch") --argjson nums "$nums" \
-    '. + [$batch[0][] | select(.number as $n | $nums | index($n) != null) | {number, title, body, url: .html_url}]' \
+    '. + [$batch[0][] | select(.number as $n | $nums | index($n) != null)
+      | select(((.labels // []) | map(.name) | index("agent-working")) == null)
+      | {number, title, body, url: .html_url}]' \
     <<<"$ready")"
 
   [ "$count" -lt 50 ] && break

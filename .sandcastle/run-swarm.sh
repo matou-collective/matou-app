@@ -26,6 +26,15 @@ repo_tag="${repo_slug//\//-}"
 
 api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
+# Multi-host janitor (spec 2026-08-11-multihost-swarm-design.md D4; #250 sync
+# from ourcloud): re-arm tickets whose claiming run died — a crashed host must
+# not strand agent-working tickets, since nothing else here ever clears that
+# label. Runs BEFORE listing so re-armed tickets rejoin this very run's queue.
+# shellcheck source=claim-lib.sh
+. "$here/claim-lib.sh"
+rearmed="$(janitor_sweep || true)"
+[ -n "$rearmed" ] && echo "run-swarm: janitor re-armed stale-claimed issue(s): $(printf '%s' "$rearmed" | tr '\n' ' ')"
+
 ready="$(bash "$here/list-ready-tasks.sh")"
 n="$(jq 'length' <<<"$ready")"
 if [ "$n" -eq 0 ]; then

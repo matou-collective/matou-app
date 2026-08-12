@@ -42,6 +42,36 @@ case "$url" in
     id="${id%/thread}"
     cat "$FAKE_DIR/thread-$id.json" 2>/dev/null || echo '{"posts":{}}'
     ;;
+  */actions/tasks*)
+    # Review-finding-1 repro seam (#250 sync from ourcloud): presence of this
+    # flag file simulates the tasks API being down (curl -sf's own real
+    # failure mode), independent of the JSON fixture below — used to prove
+    # claim_alive_runs/janitor_sweep fail loud instead of silently degrading
+    # to an empty "nothing alive".
+    [ -f "$FAKE_DIR/tasks-fail" ] && exit 22
+    cat "$FAKE_DIR/tasks.json" 2>/dev/null || echo '{"workflow_runs":[]}'
+    ;;
+  */issues\?*labels=agent-working*)
+    # Paged: page N looks for issues-agent-working-page<N>.json first; page 1
+    # falls back to the unsuffixed fixture (existing single-page tests keep
+    # working unchanged), any other page with no override is an empty page
+    # (so a test that doesn't care about paging can't accidentally loop).
+    page="${url##*page=}"; page="${page%%&*}"
+    if [ -f "$FAKE_DIR/issues-agent-working-page$page.json" ]; then
+      cat "$FAKE_DIR/issues-agent-working-page$page.json"
+    elif [ "$page" = "1" ]; then
+      cat "$FAKE_DIR/issues-agent-working.json" 2>/dev/null || echo '[]'
+    else
+      echo '[]'
+    fi
+    ;;
+  */issues/comments/*)   # DELETE a claim comment (repo-level endpoint)
+    cid="${url##*/}"
+    for f in "$FAKE_DIR"/comments-*.json; do
+      [ -f "$f" ] || continue
+      jq --argjson id "$cid" '[.[] | select(.id != $id)]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+    done
+    ;;
   */issues/*/comments)
     if [ "$method" = GET ]; then
       id="${url%/comments}"
@@ -49,7 +79,17 @@ case "$url" in
       cat "$FAKE_DIR/comments-$id.json" 2>/dev/null || echo '[]'
     else
       printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
-      echo '{}'
+      if printf '%s' "$body" | jq -r .body 2>/dev/null | grep -q '^swarm-claim '; then
+        n="$(cat "$FAKE_DIR/comment-counter" 2>/dev/null || echo 1000)"; n=$((n + 1))
+        echo "$n" >"$FAKE_DIR/comment-counter"
+        num="${url%/comments}"; num="${num##*/}"
+        existing="$(cat "$FAKE_DIR/comments-$num.json" 2>/dev/null || echo '[]')"
+        jq --argjson id "$n" --arg b "$(printf '%s' "$body" | jq -r .body)" \
+          '. + [{id:$id, body:$b}]' <<<"$existing" >"$FAKE_DIR/comments-$num.json"
+        echo "{\"id\":$n}"
+      else
+        echo '{}'
+      fi
     fi
     ;;
   */issues/*/dependencies*)
@@ -82,6 +122,9 @@ case "$url" in
     ;;
   */repos/*/labels*)
     cat "$FAKE_DIR/labels.json" 2>/dev/null || echo '[]'
+    ;;
+  */actions/workflows/*/dispatches)
+    echo '{}'
     ;;
   *)
     echo "fake curl: unhandled url $url" >&2
