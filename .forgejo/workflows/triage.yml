@@ -12,7 +12,7 @@ on:
 
 jobs:
   triage:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 60
     steps:
       - name: Triage under global lock

@@ -12,7 +12,15 @@ jobs:
     # (Triage mass-labelling once queued a dozen redundant runs.) Close events,
     # cron, and manual dispatch always run.
     if: github.event_name != 'issues' || github.event.action != 'labeled' || github.event.label.name == 'ready-for-agent'
-    runs-on: matou-workstation
+    runs-on: swarm
+    strategy:
+      # Two jobs per trigger: with per-ticket claiming, two hosts can safely
+      # gang up on one repo's backlog. Width = "hosts per repo" dial — grow it
+      # when the pool grows. fail-fast off: one host's red must not cancel the
+      # other's live work.
+      fail-fast: false
+      matrix:
+        worker: [1, 2]
     timeout-minutes: 180
     steps:
       - name: Swarm under global lock
