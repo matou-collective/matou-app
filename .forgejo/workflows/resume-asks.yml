@@ -14,7 +14,7 @@ on:
 
 jobs:
   resume:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 10
     steps:
       # Own shallow checkout — triage/swarm reset the shared workdir under
