@@ -18,17 +18,41 @@
 # legitimate "nothing here" — and callers that guard with `|| return 0/1` never
 # fire (2026-08-11 review finding 1: an actions/tasks blip made claim_alive_runs
 # return `[]` at rc 0, and janitor_sweep's `|| return 0` guard never saw it,
-# mass-re-arming every live claim). claim_label_id and claim_mark_working are
-# the exceptions: their LAST pipeline stage is curl itself (no filter runs
-# after it), so the pipeline's own exit status already is curl's.
+# mass-re-arming every live claim). claim_mark_working is the one exception:
+# its LAST pipeline stage is curl itself (no filter runs after it), so the
+# pipeline's own exit status already is curl's. (This header used to also
+# name claim_label_id an exception — false premise: its pipeline ended in
+# `jq | head -1` and the real safety was the `[ -n "$id" ]` emptiness check.
+# It raw-captures like the rest now, and pages — #470 M-1/M-2.)
+#
+# Two live-probed facts arbitration RESTS on (2026-08-12 review, #470):
+# (a) this forge's issue-comments endpoint is UNPAGINATED — `?limit=1`
+#     returns every comment (probed live 2026-08-12). _claim_comments and
+#     claim_won depend on seeing ALL claim comments in one response; if a
+#     Forgejo upgrade starts paginating it, arbitration breaks silently.
+# (b) the timing invariant: a run is visible in /actions/tasks for MINUTES
+#     before its first claim post, while an alive-runs snapshot is only
+#     seconds stale — so "run not in snapshot" reliably means dead, never
+#     too-new. Any D6 revisit (intra-host parallelism, fast-boot workers)
+#     must re-verify this before relying on arbitration.
 
 _claim_api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
-claim_label_id() { # claim_label_id <name> -> id | rc 1
-  local id
-  id="$(_claim_api "$FORGEJO_API/labels?limit=50&page=1" |
-    jq -r --arg n "$1" '.[] | select(.name == $n) | .id' | head -1)"
-  [ -n "$id" ] && printf '%s\n' "$id"
+claim_label_id() { # claim_label_id <name> -> id | rc 1 (LOUD on miss)
+  # Paged (#470 M-2): single-page fetch went silently blind past 50 labels —
+  # janitor_sweep's `|| return 0` guard would turn the janitor off without a
+  # word. A genuinely missing label is now loud, and an API failure keeps
+  # curl's own rc (raw-capture, finding-1 style).
+  local id page=1 raw
+  while :; do
+    raw="$(_claim_api "$FORGEJO_API/labels?limit=50&page=$page")" || return 1
+    id="$(jq -r --arg n "$1" '.[] | select(.name == $n) | .id' <<<"$raw" | head -1)"
+    [ -n "$id" ] && { printf '%s\n' "$id"; return 0; }
+    [ "$(jq 'length' <<<"$raw")" -lt 50 ] && break
+    page=$((page + 1))
+  done
+  echo "claim-lib: label '$1' not found on the tracker ($page page(s) searched) — the depending label op is being skipped" >&2
+  return 1
 }
 
 claim_alive_runs() { # -> JSON array of in-progress swarm run numbers | rc 1 on API failure
@@ -51,7 +75,12 @@ claim_post() { # claim_post <issue> <host> <run> -> comment id | rc 1 on API fai
 _claim_comments() { # _claim_comments <issue> -> "id run" lines, ascending id | rc 1 on API failure
   local raw
   raw="$(_claim_api "$FORGEJO_API/issues/$1/comments")" || return 1
-  jq -r '.[] | select(.body | startswith("swarm-claim ")) |
+  # test() before capture() (#470 M-3): capture on a malformed hand-posted
+  # claim body (e.g. `run=abc`) errors MID-STREAM, dropping every subsequent
+  # line with the rc swallowed by the trailing sort — one bad comment could
+  # blind arbitration on the whole issue. A body failing the strict shape is
+  # not a claim; skip it.
+  jq -r '.[] | select(.body | test("^swarm-claim host=\\S+ run=[0-9]+")) |
     "\(.id) \(.body | capture("run=(?<r>[0-9]+)").r)"' <<<"$raw" | sort -n
 }
 

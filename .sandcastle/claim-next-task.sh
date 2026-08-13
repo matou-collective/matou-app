@@ -22,6 +22,18 @@ host="${SWARM_HOST:-$(hostname)}"
 run="${SWARM_RUN_ID:-0}"
 lister="${CLAIM_LISTER:-$here/list-ready-tasks.sh}"
 
+# #468: a claim naming run 0 LOOKS protective and is not — no alive-runs list
+# ever contains 0, so every other host's arbitration claims straight over it
+# and the next janitor sweep deletes the comment + label outright, while the
+# manual operator believes they hold the ticket. Manual invocations (no
+# SWARM_RUN_ID) therefore refuse to claim; SWARM_CLAIM_FORCE=1 is the explicit
+# eyes-open override (Ben's ruling 2026-08-13).
+if [ "$run" = "0" ] && [ "${SWARM_CLAIM_FORCE:-0}" != "1" ]; then
+  echo "claim-next-task: SWARM_RUN_ID unset/0 — a run-0 claim would be arbitrated over and janitor-swept, protecting nothing. Refusing to claim; set SWARM_CLAIM_FORCE=1 to claim anyway (it WILL be swept while you work)." >&2
+  echo '[]'
+  exit 0
+fi
+
 ready="$(bash "$lister")"
 n="$(jq length <<<"$ready")"
 [ "$n" -eq 0 ] && { echo '[]'; exit 0; }
