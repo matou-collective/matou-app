@@ -59,10 +59,13 @@ var contributionTransitions = map[ContributionStatus][]ContributionStatus{
 	ContribChanged:     {ContribConfirmed, ContribAssigned},
 	ContribNeedsReview: {ContribApproved, ContribIncomplete, ContribDeclined},
 	ContribIncomplete:  {ContribAssigned},
-	ContribApproved:    {ContribSignedOff},
-	ContribSignedOff:   {ContribRewarded},
-	ContribRewarded:    {ContribArchived},
-	ContribDeclined:    {ContribArchived},
+	// ContribNeedsReview is reachable from approved so a contributor can edit
+	// their submission before sign-off — the reviewer approved different
+	// content, so the edit drops the contribution back to needs_review.
+	ContribApproved:  {ContribSignedOff, ContribNeedsReview},
+	ContribSignedOff: {ContribRewarded},
+	ContribRewarded:  {ContribArchived},
+	ContribDeclined:  {ContribArchived},
 }
 
 func ValidateContributionTransition(from, to ContributionStatus) error {

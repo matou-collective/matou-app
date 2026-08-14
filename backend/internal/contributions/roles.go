@@ -68,6 +68,7 @@ const (
 	ActionOfferContribution  Action = "offer_contribution"
 	ActionAcceptOffer        Action = "accept_offer"
 	ActionSubmitEvidence     Action = "submit_evidence"
+	ActionEditEvidence       Action = "edit_evidence"
 	ActionReviewContribution Action = "review_contribution"
 	ActionSignOffPlan        Action = "sign_off_plan"
 	ActionApproveSubContrib  Action = "approve_sub_contribution"
@@ -112,28 +113,29 @@ var leadStewardScope = []Role{
 }
 
 var actionPermissions = map[Action][]Role{
-	ActionCreateProject:       allRoles,
-	ActionEditProject:         allRoles,
-	ActionDeleteProject:       allRoles,
-	ActionCreateContribution:  allRoles,
-	ActionConfirmContribution: allRoles,
-	ActionAssignContribution:  allRoles,
-	ActionApproveContribution: allRoles,
-	ActionSignOffContribution: {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-	ActionRewardContribution:  {RoleOperationsSteward, RoleFoundingMember},
-	ActionShareContribution:   allRoles,
-	ActionOfferContribution:   allRoles,
-	ActionAcceptOffer:         allRoles,
-	ActionSubmitEvidence:      allRoles,
-	ActionReviewContribution:  allRoles,
-	ActionSignOffPlan:         {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-	ActionCreateSubContrib:    allRoles,
-	ActionApproveSubContrib:   allRoles,
-	ActionRegisterInterest:    allRoles,
-	ActionSignOffProposal:     {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
-	ActionRejectProposal:      {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
-	ActionEditProposal:        {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
-	ActionWithdrawProposal:    {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionCreateProject:            allRoles,
+	ActionEditProject:              allRoles,
+	ActionDeleteProject:            allRoles,
+	ActionCreateContribution:       allRoles,
+	ActionConfirmContribution:      allRoles,
+	ActionAssignContribution:       allRoles,
+	ActionApproveContribution:      allRoles,
+	ActionSignOffContribution:      {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+	ActionRewardContribution:       {RoleOperationsSteward, RoleFoundingMember},
+	ActionShareContribution:        allRoles,
+	ActionOfferContribution:        allRoles,
+	ActionAcceptOffer:              allRoles,
+	ActionSubmitEvidence:           allRoles,
+	ActionEditEvidence:             allRoles,
+	ActionReviewContribution:       allRoles,
+	ActionSignOffPlan:              {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+	ActionCreateSubContrib:         allRoles,
+	ActionApproveSubContrib:        allRoles,
+	ActionRegisterInterest:         allRoles,
+	ActionSignOffProposal:          {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionRejectProposal:           {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionEditProposal:             {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionWithdrawProposal:         {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
 	ActionArchiveProject:           leadStewardScope,
 	ActionArchiveMilestone:         leadStewardScope,
 	ActionArchiveContribution:      leadStewardScope,

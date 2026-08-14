@@ -12,6 +12,7 @@ import {
   acceptOffer as apiAcceptOffer,
   registerInterest as apiRegisterInterest,
   submitEvidence as apiSubmitEvidence,
+  editEvidence as apiEditEvidence,
   submitReview as apiSubmitReview,
   signOffContribution as apiSignOff,
   rewardContribution as apiReward,
@@ -222,6 +223,18 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
+  async function editEvidence(id: string, req: SubmitEvidenceRequest) {
+    error.value = null;
+    try {
+      const updated = await apiEditEvidence(id, req);
+      _patch(updated);
+      return updated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Edit evidence failed';
+      throw e;
+    }
+  }
+
   async function review(id: string, req: SubmitReviewRequest) {
     error.value = null;
     try {
@@ -381,6 +394,7 @@ export const useContributionsStore = defineStore('contributions', () => {
     acceptOffer,
     registerInterest,
     submitEvidence,
+    editEvidence,
     review,
     signOff,
     reward,

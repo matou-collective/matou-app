@@ -143,6 +143,8 @@ export interface Contribution {
   evidence_files?: AttachedFile[];
   time_report_file?: AttachedFile;
   attachment_files?: AttachedFile[];
+  // Last time the assigned contributor edited their submission (pre sign-off).
+  evidence_edited_at?: string;
   // Review
   review_outcome?: 'approved' | 'incomplete' | 'declined';
   review_feedback?: string;

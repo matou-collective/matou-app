@@ -1815,6 +1815,74 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID st
 	return c, nil
 }
 
+// EditEvidence lets the assigned contributor amend their submitted evidence
+// before sign-off. Permitted while the contribution is in needs_review, or
+// approved-but-not-yet-signed-off. Only the submission itself (evidence text,
+// links, attachments, actuals) is editable here — contribution metadata stays
+// lead/steward-controlled via the general update path.
+//
+// An edit keeps the contribution at needs_review; if it was approved, the edit
+// drops it back to needs_review and clears the prior review outcome, because
+// the reviewer approved different content and must re-check. A last-edited
+// timestamp is recorded. Sign-off remains the immutable boundary.
+func (s *Service) EditEvidence(ctx context.Context, spaceID, contributionID string, req SubmitEvidenceRequest) (*Contribution, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if c.Status != ContribNeedsReview && c.Status != ContribApproved {
+		return nil, fmt.Errorf("evidence can only be edited before sign-off (needs_review or approved), current: %s", c.Status)
+	}
+
+	c.CompletionNotes = req.CompletionNotes
+	if req.EvidenceURLs != nil {
+		c.EvidenceURLs = req.EvidenceURLs
+	}
+	if req.AcceptanceNotes != nil {
+		c.AcceptanceNotes = req.AcceptanceNotes
+	}
+	if req.ActualDuration > 0 {
+		c.ActualDuration = req.ActualDuration
+	}
+	if req.ActualCost > 0 {
+		c.ActualCost = req.ActualCost
+	}
+	if req.TimeReportFile != nil {
+		c.TimeReportFile = req.TimeReportFile
+	}
+	if req.AttachmentFiles != nil {
+		c.AttachmentFiles = req.AttachmentFiles
+	}
+
+	// An approved contribution drops back to needs_review — the reviewer
+	// approved content that has now changed, so their approval is voided.
+	if c.Status == ContribApproved {
+		if err := ValidateContributionTransition(c.Status, ContribNeedsReview); err != nil {
+			return nil, err
+		}
+		c.Status = ContribNeedsReview
+		c.ReviewOutcome = ""
+		c.ReviewFeedback = ""
+		c.ReviewedBy = ""
+		c.ReviewedAt = nil
+	}
+
+	now := time.Now()
+	c.EvidenceEditedAt = &now
+	c.UpdatedAt = now
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	// Re-aggregate the parent milestone's actual cost so reporting stays in
+	// sync when the contributor revises their reported actual cost.
+	if c.MilestoneID != "" {
+		if err := s.recomputeMilestoneActualCost(ctx, spaceID, c.MilestoneID); err != nil {
+			log.Printf("[Contributions] recomputeMilestoneActualCost %s: %v", c.MilestoneID, err)
+		}
+	}
+	return c, nil
+}
+
 // recomputeMilestoneActualCost sums ActualCost across all non-archived
 // contributions in the milestone and writes it back to the milestone record.
 func (s *Service) recomputeMilestoneActualCost(ctx context.Context, spaceID, milestoneID string) error {

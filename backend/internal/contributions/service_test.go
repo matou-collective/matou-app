@@ -2008,3 +2008,112 @@ func TestPropagateOfferToChildren_SkipsAlreadyOfferedChild(t *testing.T) {
 		t.Errorf("OfferedTo = %q, want early-offer-user", got.OfferedTo)
 	}
 }
+
+// setupSubmittedContribution creates a contribution and drives it to
+// needs_review with evidence, returning the service and the contribution.
+func setupSubmittedContribution(t *testing.T) (*Service, context.Context, *Contribution) {
+	t.Helper()
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	c, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Task", Description: "Do it",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityLow,
+		CreatedBy: "lead-1", Objectives: []string{"o"},
+		Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		SkillRequirements: []string{"s"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
+	c, _ = svc.AssignContributor(ctx, "space-1", c.ID, "contributor-1")
+	c, err = svc.SubmitEvidence(ctx, "space-1", c.ID, SubmitEvidenceRequest{
+		CompletionNotes: "did the thing",
+		EvidenceURLs:    []string{"https://example.com/1"},
+	})
+	if err != nil {
+		t.Fatalf("submit evidence: %v", err)
+	}
+	return svc, ctx, c
+}
+
+func TestEditEvidence_NeedsReview_StaysNeedsReview(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	got, err := svc.EditEvidence(ctx, "space-1", c.ID, SubmitEvidenceRequest{
+		CompletionNotes: "revised notes",
+		EvidenceURLs:    []string{"https://example.com/2"},
+	})
+	if err != nil {
+		t.Fatalf("EditEvidence: %v", err)
+	}
+	if got.Status != ContribNeedsReview {
+		t.Errorf("status = %s, want needs_review", got.Status)
+	}
+	if got.CompletionNotes != "revised notes" {
+		t.Errorf("completion notes not updated: %q", got.CompletionNotes)
+	}
+	if len(got.EvidenceURLs) != 1 || got.EvidenceURLs[0] != "https://example.com/2" {
+		t.Errorf("evidence urls not updated: %v", got.EvidenceURLs)
+	}
+	if got.EvidenceEditedAt == nil {
+		t.Error("EvidenceEditedAt should be set after edit")
+	}
+}
+
+func TestEditEvidence_Approved_DropsBackToNeedsReview(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	// Reviewer approves the submission.
+	c, err := svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{
+		Decision: "approved", ReviewNotes: "looks good", QualityRating: 8,
+	})
+	if err != nil {
+		t.Fatalf("review approve: %v", err)
+	}
+	if c.Status != ContribApproved {
+		t.Fatalf("precondition: status = %s, want approved", c.Status)
+	}
+
+	got, err := svc.EditEvidence(ctx, "space-1", c.ID, SubmitEvidenceRequest{
+		CompletionNotes: "changed after approval",
+	})
+	if err != nil {
+		t.Fatalf("EditEvidence: %v", err)
+	}
+	if got.Status != ContribNeedsReview {
+		t.Errorf("status = %s, want needs_review (approval voided)", got.Status)
+	}
+	if got.ReviewOutcome != "" || got.ReviewFeedback != "" || got.ReviewedAt != nil {
+		t.Errorf("prior review not cleared: outcome=%q feedback=%q at=%v",
+			got.ReviewOutcome, got.ReviewFeedback, got.ReviewedAt)
+	}
+}
+
+func TestEditEvidence_RejectsSignedOffAndAssigned(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	// assigned (before submit) is not editable — build a fresh assigned one.
+	fresh, _ := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "T2", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityLow,
+		CreatedBy: "lead-1", Objectives: []string{"o"},
+		Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		SkillRequirements: []string{"s"},
+	})
+	svc.TransitionContribution(ctx, "space-1", fresh.ID, ContribConfirmed)
+	fresh, _ = svc.AssignContributor(ctx, "space-1", fresh.ID, "contributor-1")
+	if _, err := svc.EditEvidence(ctx, "space-1", fresh.ID, SubmitEvidenceRequest{CompletionNotes: "x"}); err == nil {
+		t.Error("expected error editing evidence while assigned")
+	}
+
+	// Drive the submitted one all the way to signed_off, then attempt an edit.
+	svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"})
+	// SignOff requires a signed-off plan; force status directly for this guard test.
+	signed, _ := svc.GetContribution(ctx, "space-1", c.ID)
+	signed.Status = ContribSignedOff
+	svc.store.Save("space-1", signed.ID, "contribution", signed)
+	if _, err := svc.EditEvidence(ctx, "space-1", c.ID, SubmitEvidenceRequest{CompletionNotes: "x"}); err == nil {
+		t.Error("expected error editing evidence after sign-off")
+	}
+}

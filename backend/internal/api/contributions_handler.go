@@ -144,6 +144,13 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "edit-evidence":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionEditEvidence, h.HandleEditEvidence)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "review":
 				if r.Method == http.MethodPost {
 					h.withRBAC(contributions.ActionReviewContribution, h.HandleReview)(w, r)
@@ -774,6 +781,53 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 			EntityID:    id,
 			EntityType:  "contribution",
 		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleEditEvidence handles POST /api/v1/contributions/{id}/edit-evidence
+// Body: SubmitEvidenceRequest.
+// RBAC: ActionEditEvidence (contributor). Lets the assigned contributor amend
+// their submission before sign-off; an approved contribution drops back to
+// needs_review and the reviewer/lead is notified.
+func (h *ContributionsHandler) HandleEditEvidence(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/edit-evidence")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req contributions.SubmitEvidenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	contrib, err := h.service.EditEvidence(r.Context(), spaceID, id, req)
+	if err != nil {
+		log.Printf("[Contributions] EditEvidence failed for %s: %v", id, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[Contributions] evidence edited for %s", id)
+	// Notify the reviewer/lead so they re-check the amended submission. Notify
+	// the contribution owner (lead) and any prior reviewer, skipping the editor.
+	if h.notifier != nil {
+		editor := GetUserAID(r)
+		seen := map[string]bool{editor: true, "": true}
+		for _, recipient := range []string{contrib.CreatedBy, contrib.ReviewedBy} {
+			if seen[recipient] {
+				continue
+			}
+			seen[recipient] = true
+			h.notifier.Notify(&ContribNotification{
+				Type:        "contribution:evidence_edited",
+				RecipientID: recipient,
+				Title:       "Submission Edited",
+				Message:     contrib.Title + " was edited and needs another look",
+				EntityID:    id,
+				EntityType:  "contribution",
+			})
+		}
 	}
 	writeJSON(w, http.StatusOK, contrib)
 }
