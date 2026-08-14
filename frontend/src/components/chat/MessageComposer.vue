@@ -15,6 +15,28 @@
       @error="(msg: string) => console.error('[Attachment]', msg)"
     />
 
+    <!-- @-mention typeahead -->
+    <ul v-if="mentionDropdownOpen" class="mention-dropdown" role="listbox">
+      <li
+        v-for="(candidate, idx) in mentionCandidates"
+        :key="candidate.type + ':' + candidate.id"
+        class="mention-option"
+        :class="{ active: idx === mentionActiveIndex }"
+        role="option"
+        :aria-selected="idx === mentionActiveIndex"
+        @mousedown.prevent="selectMention(candidate)"
+        @mouseenter="mentionActiveIndex = idx"
+      >
+        <UserAvatar
+          :aid="candidate.id"
+          :name="candidate.display"
+          :size="24"
+          :clickable="false"
+        />
+        <span class="mention-option-name">{{ candidate.display }}</span>
+      </li>
+    </ul>
+
     <!-- Input Area -->
     <div class="composer-input-area">
       <button
@@ -32,7 +54,10 @@
         :placeholder="placeholder"
         rows="1"
         @keydown="handleKeydown"
-        @input="autoResize"
+        @input="onInput"
+        @keyup="detectMention"
+        @click="detectMention"
+        @blur="closeMention"
       ></textarea>
 
       <button
@@ -53,8 +78,11 @@ import { ref, computed, nextTick, onMounted } from 'vue';
 import { Send, Loader2, Paperclip } from 'lucide-vue-next';
 import type { ChatMessage, AttachmentRef } from 'src/lib/api/chat';
 import { useProfilesStore } from 'stores/profiles';
+import { useMentionSearch, type MentionCandidate } from 'src/composables/useMentionSearch';
+import { serializeMention } from 'src/lib/mentions';
 import ReplyPreview from './ReplyPreview.vue';
 import AttachmentUploader from './AttachmentUploader.vue';
+import UserAvatar from 'components/profiles/UserAvatar.vue';
 
 const props = defineProps<{
   channelId: string;
@@ -75,6 +103,68 @@ const uploading = ref(false);
 const pendingFileCount = ref(0);
 const profilesStore = useProfilesStore();
 
+// --- @-mention typeahead ---
+const { search: searchMentions } = useMentionSearch();
+const mentionActive = ref(false);
+const mentionQuery = ref('');
+// Index of the triggering '@' within `content`.
+const mentionStart = ref(0);
+const mentionActiveIndex = ref(0);
+
+const mentionCandidates = computed<MentionCandidate[]>(() =>
+  mentionActive.value ? searchMentions(mentionQuery.value) : [],
+);
+const mentionDropdownOpen = computed(
+  () => mentionActive.value && mentionCandidates.value.length > 0,
+);
+
+function closeMention() {
+  mentionActive.value = false;
+  mentionQuery.value = '';
+}
+
+// Detect an in-progress `@mention` immediately before the caret and open the
+// typeahead. Triggers only when the `@` starts a word (line start or after
+// whitespace), so email addresses and mid-word `@` don't fire it.
+function detectMention() {
+  const el = textareaRef.value;
+  if (!el) return closeMention();
+  const caret = el.selectionStart ?? content.value.length;
+  const before = content.value.slice(0, caret);
+  const match = /(?:^|\s)@([^\s@]*)$/.exec(before);
+  if (!match) return closeMention();
+  mentionQuery.value = match[1];
+  mentionStart.value = caret - match[1].length - 1;
+  if (!mentionActive.value) mentionActiveIndex.value = 0;
+  mentionActive.value = true;
+  if (mentionActiveIndex.value >= mentionCandidates.value.length) {
+    mentionActiveIndex.value = 0;
+  }
+}
+
+function onInput() {
+  autoResize();
+  detectMention();
+}
+
+function selectMention(candidate: MentionCandidate) {
+  const el = textareaRef.value;
+  const caret = el?.selectionStart ?? content.value.length;
+  const end = mentionStart.value + 1 + mentionQuery.value.length;
+  const token = serializeMention(candidate.type, candidate.id, candidate.display);
+  const before = content.value.slice(0, mentionStart.value);
+  const after = content.value.slice(Math.max(end, caret));
+  content.value = `${before}${token} ${after}`;
+  closeMention();
+  nextTick(() => {
+    if (!el) return;
+    const pos = before.length + token.length + 1;
+    el.focus();
+    el.setSelectionRange(pos, pos);
+    autoResize();
+  });
+}
+
 const placeholder = computed(() => {
   if (props.replyTo) {
     const profile = profilesStore.profilesByAid[props.replyTo.senderAid];
@@ -89,6 +179,32 @@ const canSend = computed(() => {
 });
 
 function handleKeydown(e: KeyboardEvent) {
+  // Mention typeahead navigation takes priority while the dropdown is open.
+  if (mentionDropdownOpen.value) {
+    const count = mentionCandidates.value.length;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      mentionActiveIndex.value = (mentionActiveIndex.value + 1) % count;
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      mentionActiveIndex.value = (mentionActiveIndex.value - 1 + count) % count;
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      const candidate = mentionCandidates.value[mentionActiveIndex.value];
+      if (candidate) selectMention(candidate);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeMention();
+      return;
+    }
+  }
+
   // Send on Enter (without Shift)
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -114,6 +230,7 @@ async function handleSend() {
   emit('send', content.value.trim(), attachments);
   content.value = '';
   showUploader.value = false;
+  closeMention();
 
   nextTick(() => {
     if (textareaRef.value) {
@@ -138,6 +255,11 @@ function focus() {
 
 onMounted(() => {
   focus();
+  // Ensure the mention typeahead has people to search even if the user opens
+  // chat before other views have loaded the community roster.
+  if (profilesStore.communityProfiles.length === 0) {
+    void profilesStore.loadCommunityProfiles();
+  }
 });
 
 defineExpose({ focus });
@@ -148,6 +270,45 @@ defineExpose({ focus });
   border-top: 1px solid var(--matou-border);
   background-color: var(--matou-card);
   padding: 0.75rem 1rem;
+  position: relative;
+}
+
+.mention-dropdown {
+  position: absolute;
+  bottom: calc(100% - 0.25rem);
+  left: 1rem;
+  right: 1rem;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0 0 0.25rem;
+  padding: 0.25rem;
+  list-style: none;
+  background-color: var(--matou-card);
+  border: 1px solid var(--matou-border);
+  border-radius: var(--matou-radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 20;
+}
+
+.mention-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--matou-radius);
+  cursor: pointer;
+
+  &.active {
+    background-color: var(--matou-secondary);
+  }
+}
+
+.mention-option-name {
+  font-size: 0.875rem;
+  color: var(--matou-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer-input-area {

@@ -26,7 +26,7 @@
           <em>This message was deleted</em>
         </div>
         <template v-else>
-          <div class="message-body" v-html="renderedContent"></div>
+          <div class="message-body" v-html="renderedContent" @click="handleBodyClick"></div>
 
           <!-- Attachments -->
           <div v-if="message.attachments?.length" class="message-attachments">
@@ -115,7 +115,8 @@
 import { ref, computed } from 'vue';
 import { Smile, Reply, Pencil, Trash2 } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
-import { renderMarkdown } from 'src/lib/markdown';
+import { renderMessageContent, mentionsToPlainText } from 'src/lib/mentions';
+import { useProfileViewer } from 'stores/profileViewer';
 import MessageReactions from './MessageReactions.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import AttachmentPreview from './AttachmentPreview.vue';
@@ -150,11 +151,42 @@ const replyToDisplayName = computed(() =>
 );
 
 const replyToTruncated = computed(() => {
-  const content = props.replyToMessage?.content || '';
+  const content = mentionsToPlainText(props.replyToMessage?.content || '');
   return content.length > 80 ? content.substring(0, 80) + '...' : content;
 });
 
-const renderedContent = computed(() => renderMarkdown(props.message.content));
+const renderedContent = computed(() => renderMessageContent(props.message.content));
+
+const profileViewer = useProfileViewer();
+
+// Delegated click handler for inline @-mention chips rendered inside the
+// message body (issue #12). Each chip does what clicking that entity does in
+// its home list: people open the read-only profile dialog; project /
+// proposal / contribution navigate to their pages. (Typeahead creation is
+// people-first; the other types arrive with a follow-up.)
+function handleBodyClick(e: MouseEvent) {
+  const chip = (e.target as HTMLElement).closest('.mention-chip');
+  if (!chip) return;
+  e.preventDefault();
+  const type = chip.getAttribute('data-mention-type');
+  const id = chip.getAttribute('data-mention-id');
+  if (!type || !id) return;
+  switch (type) {
+    case 'person':
+      void profileViewer.open(id);
+      break;
+    case 'project':
+      void router.push({ name: 'project-detail', params: { id } });
+      break;
+    case 'proposal':
+      void router.push({ name: 'proposal-detail', params: { id } });
+      break;
+    case 'contribution':
+      void router.push({ name: 'contribution-detail', params: { id } });
+      break;
+    // event / update have no standalone route yet — handled in the follow-up.
+  }
+}
 
 function extractIds(pattern: RegExp): string[] {
   const ids = new Set<string>();
@@ -253,6 +285,15 @@ function handleEmojiSelect(emoji: string) {
         :deep(a) {
           color: white;
           text-decoration: underline;
+        }
+
+        :deep(.mention-chip) {
+          color: white;
+          background-color: rgba(255, 255, 255, 0.22);
+
+          &:hover {
+            background-color: rgba(255, 255, 255, 0.32);
+          }
         }
 
         :deep(code) {
@@ -399,6 +440,20 @@ function handleEmojiSelect(emoji: string) {
   :deep(a) {
     color: var(--matou-primary);
     text-decoration: underline;
+  }
+
+  :deep(.mention-chip) {
+    display: inline;
+    padding: 0 0.125rem;
+    border-radius: 0.25rem;
+    color: var(--matou-primary);
+    background-color: color-mix(in srgb, var(--matou-primary) 12%, transparent);
+    font-weight: 600;
+    cursor: pointer;
+
+    &:hover {
+      background-color: color-mix(in srgb, var(--matou-primary) 22%, transparent);
+    }
   }
 
   :deep(ul), :deep(ol) {
