@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { resolveBackend, MatouClient } from "./backend.js";
-import { resolveActingAid } from "./identity.js";
+import { resolveActingAid, resolveApiToken } from "./identity.js";
 import { MemberDirectory } from "./members.js";
 import type { BackendConfig, ToolContext } from "./context.js";
 import { registerMetaTools } from "./tools/meta.js";
@@ -14,13 +14,14 @@ import { registerNoticeTools } from "./tools/notices.js";
 async function buildContext(): Promise<ToolContext> {
   const { baseUrl, env } = await resolveBackend();
   const actingAid = resolveActingAid();
+  const apiToken = resolveApiToken();
   const config: BackendConfig = {
     baseUrl,
     actingAid,
     env,
     readonly: process.env.MATOU_READONLY === "1",
   };
-  const client = new MatouClient(baseUrl, actingAid);
+  const client = new MatouClient(baseUrl, actingAid, undefined, apiToken);
   const members = await MemberDirectory.load(client);
   return { client, config, members };
 }

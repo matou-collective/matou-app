@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { resolveActingAid, detectEnv } from "../src/identity.js";
+import { resolveActingAid, detectEnv, resolveApiToken } from "../src/identity.js";
 
 afterEach(() => {
   delete process.env.MATOU_USER_AID;
+  delete process.env.MATOU_API_TOKEN;
 });
 
 describe("resolveActingAid", () => {
@@ -27,5 +28,22 @@ describe("detectEnv", () => {
     expect(detectEnv("http://127.0.0.1:8080")).toBe("dev");
     expect(detectEnv("http://127.0.0.1:9080")).toBe("test");
     expect(detectEnv("http://127.0.0.1:46505")).toBe("prod");
+  });
+});
+
+describe("resolveApiToken", () => {
+  it("prefers the MATOU_API_TOKEN env override", () => {
+    process.env.MATOU_API_TOKEN = "env-token";
+    expect(resolveApiToken(() => "file-token")).toBe("env-token");
+  });
+  it("reads the token from the api-token file when no override", () => {
+    expect(resolveApiToken(() => "file-token\n")).toBe("file-token");
+  });
+  it("falls back to the dev constant when the file is unreadable", () => {
+    expect(
+      resolveApiToken(() => {
+        throw new Error("ENOENT");
+      }),
+    ).toBe("matou-dev");
   });
 });

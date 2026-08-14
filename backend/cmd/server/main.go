@@ -15,8 +15,8 @@ import (
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/api"
 	"github.com/matou-dao/backend/internal/config"
 	"github.com/matou-dao/backend/internal/contributions"
@@ -204,6 +204,17 @@ func main() {
 	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
+	}
+
+	// Resolve the per-launch API token and persist it (0600) for legitimate
+	// same-OS-user local tooling (matou-mcp, scripts). In bundled/production
+	// Electron passes a random token via MATOU_API_TOKEN; dev/test falls back
+	// to the fixed DevAPIToken constant. TokenGuard requires it on mutations.
+	apiToken := api.ResolveAPIToken()
+	if tokenPath, tokenErr := api.WriteTokenFile(dataDir, apiToken); tokenErr != nil {
+		log.Printf("[Security] failed to write API token file: %v", tokenErr)
+	} else {
+		log.Printf("[Security] API token written to %s", tokenPath)
 	}
 
 	// Load server configuration (SMTP, KERI URLs, etc.)
@@ -757,8 +768,10 @@ func main() {
 	syncWorker.Start()
 	defer syncWorker.Stop()
 
-	// Wrap with middleware: request logger → localhost guard (production) → CORS
-	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(mux)))
+	// Wrap with middleware: request logger → localhost guard → token guard → CORS.
+	// LocalhostGuard blocks other machines; TokenGuard blocks other local
+	// processes from issuing mutating requests without the per-launch token.
+	handler := api.RequestLogger(api.LocalhostGuard(api.TokenGuard(apiToken, api.CORSMiddleware(mux))))
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

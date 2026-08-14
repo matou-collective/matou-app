@@ -12,6 +12,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import net from 'net';
 import fs from 'fs';
+import crypto from 'crypto';
 
 // Using destructuring to access autoUpdater due to the CommonJS module of 'electron-updater'.
 // It is a workaround for ESM compatibility issues, see https://github.com/electron-userland/electron-builder/issues/7976.
@@ -95,6 +96,10 @@ Comment=Matou Community
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
 let backendPort = 0;
+// Random per-launch token shared with the backend (via MATOU_API_TOKEN) and the
+// renderer (via IPC). The backend's TokenGuard requires it on mutating requests,
+// blocking other local processes from issuing them.
+let apiToken = '';
 
 /**
  * Find a free TCP port.
@@ -144,6 +149,7 @@ function getBackendPath(): string {
  */
 async function startBackend(): Promise<void> {
   backendPort = await findFreePort();
+  apiToken = crypto.randomBytes(32).toString('hex');
   const backendPath = getBackendPath();
   const dataDir = path.join(app.getPath('userData'), 'matou-data');
 
@@ -160,6 +166,7 @@ async function startBackend(): Promise<void> {
       MATOU_SERVER_PORT: String(backendPort),
       MATOU_DATA_DIR: dataDir,
       MATOU_CORS_MODE: 'bundled',
+      MATOU_API_TOKEN: apiToken,
       ...(isProduction && {
         MATOU_ENV: 'production',
         MATOU_CONFIG_SERVER_URL: process.env.PROD_CONFIG_SERVER_URL,
@@ -322,6 +329,7 @@ function createWindow() {
 // IPC handlers for preload API
 ipcMain.handle('get-backend-port', () => backendPort);
 ipcMain.handle('get-data-dir', () => path.join(app.getPath('userData'), 'matou-data'));
+ipcMain.handle('get-api-token', () => apiToken);
 
 // Window control IPC handlers
 ipcMain.handle('window-minimize', () => mainWindow?.minimize());

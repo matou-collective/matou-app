@@ -38,6 +38,12 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'on',
     video: 'on-first-retry',
+    // Backend TokenGuard requires an API token on mutating requests. Test
+    // backends fall back to the fixed dev token, so inject it centrally here so
+    // both app-driven fetches and direct page.request calls are authenticated.
+    extraHTTPHeaders: {
+      Authorization: 'Bearer matou-dev',
+    },
   },
 
   projects: [

@@ -61,7 +61,15 @@ export class MatouClient {
     private readonly baseUrl: string,
     private readonly actingAid: string,
     private readonly fetchFn: FetchFn = fetch as unknown as FetchFn,
+    private readonly apiToken: string = "",
   ) {}
+
+  /** Headers common to every request: JSON + the API token (when configured). */
+  private baseHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.apiToken) headers["Authorization"] = `Bearer ${this.apiToken}`;
+    return headers;
+  }
 
   get<T>(path: string): Promise<T> {
     return this.request<T>("GET", path);
@@ -89,9 +97,12 @@ export class MatouClient {
     // Blob copy keeps types happy across the Buffer/ArrayBuffer boundary.
     form.append("file", new Blob([new Uint8Array(data)], { type: guessed }), fileName);
     // Note: no Content-Type header — fetch sets the multipart boundary itself.
+    const uploadHeaders: Record<string, string> = { "X-User-AID": this.actingAid };
+    if (this.apiToken) uploadHeaders["Authorization"] = `Bearer ${this.apiToken}`;
     const res = await this.fetchFn(`${this.baseUrl}/api/v1/files/upload`, {
       method: "POST",
-      headers: { "X-User-AID": this.actingAid },
+      // Note: no Content-Type — fetch sets the multipart boundary itself.
+      headers: uploadHeaders,
       body: form,
     });
     const text = await res.text();
@@ -116,7 +127,7 @@ export class MatouClient {
   }
 
   private async request<T>(method: string, path: string, body?: unknown, rbac = false): Promise<T> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const headers = this.baseHeaders();
     if (rbac) headers["X-User-AID"] = this.actingAid;
     const res = await this.fetchFn(`${this.baseUrl}${path}`, {
       method,
