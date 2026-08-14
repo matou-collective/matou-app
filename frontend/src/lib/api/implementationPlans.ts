@@ -5,6 +5,7 @@
 import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
 import type { PlanChangeEntry } from 'src/types/projects';
+import type { ActionProof } from '../keri/actionProof';
 
 const log = createLogger('ImplementationPlansAPI');
 
@@ -116,14 +117,14 @@ export async function getImplementationPlanForProject(
   return getImplementationPlan(skinny.id);
 }
 
-export async function signOffImplementationPlan(planId: string): Promise<ImplementationPlan> {
+export async function signOffImplementationPlan(planId: string, proof?: ActionProof): Promise<ImplementationPlan> {
   log.info('Signing off implementation plan %s', planId);
   const response = await fetch(
     `${BACKEND_URL}/api/v1/implementation-plans/${planId}/sign-off`,
     {
       method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({}),
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(proof ? { proof } : {}),
     },
   );
   if (!response.ok) {

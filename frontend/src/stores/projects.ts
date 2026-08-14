@@ -34,6 +34,7 @@ import {
 } from 'src/lib/api/implementationPlans';
 import type { Contribution } from 'src/lib/api/contributions';
 import { createLogger } from 'src/lib/logging';
+import { signActionProof } from 'src/lib/keri/signProof';
 
 const log = createLogger('ProjectsStore');
 
@@ -140,7 +141,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function approveCompletion(id: string) {
     error.value = null;
     try {
-      const updated = await apiApproveCompletion(id);
+      // KERI-verifiable proof of the completion approval (issue #20).
+      const proof = await signActionProof({ action: 'project_completion', subject: id, value: 'completed' });
+      const updated = await apiApproveCompletion(id, proof ?? undefined);
       _patchProject(updated);
       return updated;
     } catch (e) {
@@ -250,7 +253,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function signOffPlan(planId: string, projectId: string) {
     error.value = null;
     try {
-      const updated = await signOffImplementationPlan(planId);
+      // KERI-verifiable proof of the plan sign-off (issue #20).
+      const proof = await signActionProof({ action: 'plan_signoff', subject: planId, value: 'signed_off' });
+      const updated = await signOffImplementationPlan(planId, proof ?? undefined);
       implementationPlans.value = { ...implementationPlans.value, [projectId]: updated };
       return updated;
     } catch (e) {

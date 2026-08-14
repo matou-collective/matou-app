@@ -285,7 +285,7 @@ func TestService_TransitionDecisionPlan(t *testing.T) {
 		ProposalLeadID: "lead-1", ProposalStewardID: "steward-1",
 	})
 
-	updated, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted)
+	updated, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted, nil)
 	if err != nil {
 		t.Fatalf("TransitionDecisionPlan failed: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestService_TransitionDecisionPlan(t *testing.T) {
 	}
 
 	// Invalid: submitted → drafted (no such transition)
-	_, err = svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanDrafted)
+	_, err = svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanDrafted, nil)
 	if err == nil {
 		t.Error("expected error for invalid transition")
 	}
@@ -399,10 +399,10 @@ func TestService_CompleteGovernanceAction(t *testing.T) {
 	}
 
 	// Plan signoff is required before any action can be completed.
-	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted); err != nil {
+	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted, nil); err != nil {
 		t.Fatalf("TransitionDecisionPlan (submitted) failed: %v", err)
 	}
-	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSignedOff); err != nil {
+	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSignedOff, nil); err != nil {
 		t.Fatalf("TransitionDecisionPlan (signed_off) failed: %v", err)
 	}
 
@@ -1055,7 +1055,7 @@ func TestApproveProjectCompletion_FillsCompletedFields(t *testing.T) {
 	proj.Status = ProjectPendingCompletion
 	_ = svc.SaveProject(ctx, spaceID, proj)
 
-	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1")
+	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1", nil)
 	if err != nil {
 		t.Fatalf("ApproveProjectCompletion: %v", err)
 	}
@@ -1265,7 +1265,7 @@ func TestSignOffContribution_RequiresPlanSignedOff(t *testing.T) {
 	_ = svc.SaveContribution(ctx, spaceID, contrib)
 
 	// Plan is NOT signed off — sign off should fail
-	if _, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward"); err == nil {
+	if _, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward", nil); err == nil {
 		t.Fatal("expected error when plan not signed off, got nil")
 	}
 
@@ -1276,7 +1276,7 @@ func TestSignOffContribution_RequiresPlanSignedOff(t *testing.T) {
 	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
 
 	// Now sign-off should succeed
-	got, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward")
+	got, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward", nil)
 	if err != nil {
 		t.Fatalf("SignOffContribution after plan signoff: %v", err)
 	}

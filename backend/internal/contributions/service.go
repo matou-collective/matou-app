@@ -922,7 +922,7 @@ func (s *Service) hydrateDecisionPlanActions(spaceID string, dp *DecisionPlan) {
 	dp.GovernanceActions = actions
 }
 
-func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID string, newStatus DecisionPlanStatus) (*DecisionPlan, error) {
+func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID string, newStatus DecisionPlanStatus, proof *Proof) (*DecisionPlan, error) {
 	dp, err := s.GetDecisionPlan(ctx, spaceID, dpID)
 	if err != nil {
 		return nil, err
@@ -932,6 +932,9 @@ func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID stri
 	}
 	dp.Status = newStatus
 	dp.UpdatedAt = time.Now()
+	if proof != nil {
+		dp.Proof = proof
+	}
 	if err := s.store.Save(spaceID, dp.ID, "decision_plan", dp); err != nil {
 		return nil, err
 	}
@@ -1883,7 +1886,7 @@ func (s *Service) ReviewContribution(ctx context.Context, spaceID, contributionI
 }
 
 // SignOffContribution transitions an approved contribution to signed_off.
-func (s *Service) SignOffContribution(ctx context.Context, spaceID, contributionID, userID string) (*Contribution, error) {
+func (s *Service) SignOffContribution(ctx context.Context, spaceID, contributionID, userID string, proof *Proof) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
@@ -1916,6 +1919,9 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	c.SignedOffAt = &now
 	c.Status = ContribSignedOff
 	c.UpdatedAt = now
+	if proof != nil {
+		c.Proof = proof
+	}
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
@@ -1925,7 +1931,7 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 // RewardContribution transitions a signed-off contribution to rewarded.
 // Community-admin only — the role check happens at the HTTP layer via
 // ActionRewardContribution.
-func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionID, userID string) (*Contribution, error) {
+func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionID, userID string, proof *Proof) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
@@ -1941,6 +1947,9 @@ func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionI
 	c.RewardedAt = &now
 	c.Status = ContribRewarded
 	c.UpdatedAt = now
+	if proof != nil {
+		c.Proof = proof
+	}
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
 	}
@@ -1974,7 +1983,7 @@ func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contribut
 }
 
 // SignOffPlan marks an implementation plan as signed off after validating all milestones and contributions.
-func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID string) (*ImplementationPlan, error) {
+func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID string, proof *Proof) (*ImplementationPlan, error) {
 	plan, err := s.GetImplementationPlan(ctx, spaceID, planID)
 	if err != nil {
 		return nil, fmt.Errorf("implementation plan not found: %w", err)
@@ -2027,6 +2036,9 @@ func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID strin
 	// now that the plan has been (re-)signed off.
 	plan.ChangeLog = nil
 	plan.UpdatedAt = now
+	if proof != nil {
+		plan.Proof = proof
+	}
 	if err := s.store.Save(spaceID, plan.ID, "implementation_plan", plan); err != nil {
 		return nil, fmt.Errorf("saving plan: %w", err)
 	}
@@ -2627,7 +2639,7 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 }
 
 // ApproveProjectCompletion marks the project completed.
-func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string) (*Project, error) {
+func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string, proof *Proof) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
@@ -2640,6 +2652,9 @@ func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, project
 	proj.CompletedBy = stewardID
 	proj.CompletedAt = &now
 	proj.UpdatedAt = now
+	if proof != nil {
+		proj.Proof = proof
+	}
 	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
 		return nil, err
 	}

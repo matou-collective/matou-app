@@ -453,10 +453,107 @@ export function useAdminActions() {
   }
 
   /**
-   * Add a steward's AID to the org group AID via multisig rotation.
-   * Called after changing a member's role to Founding Member or Community Steward.
-   * @param stewardAid - The steward's personal AID prefix
+   * Revoke a member's current membership credential and re-issue it with a new
+   * role, then update the member's CommunityProfile (role + credential SAID).
+   *
+   * This is the credential-backed half of a role change (issue #20, item 3):
+   * a role change is only legitimate when the membership credential is
+   * re-issued, so the profile role and the credential role can never drift.
+   * TEL-anchored revocation of the old credential gives the change audit +
+   * revocation for free. Shared by BOTH the steward-upgrade path (which also
+   * does multisig rotation) and plain non-steward role changes.
+   *
+   * Reports progress via onStep using the same 'Revoking old credential...' /
+   * 'Issuing new credential...' messages the ChangeRoleModal stepper expects.
+   *
+   * @param memberAid - The member's personal AID prefix
+   * @param newRole   - The role to encode in the new credential
    */
+  async function reissueMembershipCredential(
+    memberAid: string,
+    newRole: string,
+    onStep?: (step: string) => void,
+  ): Promise<boolean> {
+    const client = keriClient.getSignifyClient();
+    if (!client) {
+      console.error('[AdminActions] No SignifyClient for credential re-issue');
+      return false;
+    }
+
+    // Resolve the org AID (credential issuer) and its local alias.
+    const orgAidPrefix = await getOrgAidName();
+    const aids = await client.identifiers().list();
+    const orgAid = aids.aids?.find((a: { prefix: string }) => a.prefix === orgAidPrefix);
+    const orgName = orgAid?.name;
+    if (!orgName) throw new Error('Could not find org AID name');
+
+    // Ensure KERIA can resolve the member (needed to grant them the new ACDC).
+    const cesrUrl = keriClient.getCesrUrl();
+    if (cesrUrl) {
+      await keriClient.resolveOOBI(`${cesrUrl}/oobi/${memberAid}`, undefined, 30000);
+    }
+
+    // --- Revoke the old membership credential (TEL-anchored) ---
+    processingStep.value = 'Revoking old credential...';
+    onStep?.('Revoking old credential...');
+    const configResult = await fetchOrgConfig();
+    if (configResult.status !== 'configured') throw new Error('Org config not available');
+    if (!configResult.config.registry?.id) throw new Error('Registry not found in org config');
+    const creds = await client.credentials().list();
+    const oldCred = creds.find(
+      (c: { sad: { s: string; a?: { i?: string } } }) =>
+        c.sad.s === MEMBERSHIP_SCHEMA_SAID && c.sad.a?.i === memberAid,
+    );
+    if (oldCred) {
+      await keriClient.revokeCredential(orgAid!.prefix, oldCred.sad.d);
+      console.log('[AdminActions] Old credential revoked:', oldCred.sad.d);
+    } else {
+      console.warn('[AdminActions] No existing membership credential found to revoke');
+    }
+
+    // --- Issue a new membership credential carrying the new role ---
+    processingStep.value = 'Issuing new credential...';
+    onStep?.('Issuing new credential...');
+    const orgRegistryId = await getOrCreateOrgRegistry(orgName);
+    const credResult = await keriClient.issueCredential(
+      orgName,
+      orgRegistryId,
+      MEMBERSHIP_SCHEMA_SAID,
+      memberAid,
+      {
+        communityName: 'MATOU',
+        role: newRole,
+        joinedAt: new Date().toISOString(),
+      },
+      `Role updated to ${newRole}`,
+    );
+    console.log('[AdminActions] New credential issued:', credResult.said);
+
+    // Update CommunityProfile with the new credential SAID + role. Read the
+    // existing profile first (createOrUpdateProfile is full-replace) so display
+    // fields and the original memberSince survive.
+    const profileId = `CommunityProfile-${memberAid}`;
+    const existing = await getProfileById('CommunityProfile', profileId);
+    const existingData = (existing?.data || {}) as Record<string, unknown>;
+    const now = new Date().toISOString();
+    const priorCredentials = Array.isArray(existingData.credentials)
+      ? (existingData.credentials as string[])
+      : [];
+    const merged = {
+      ...existingData,
+      userAID: memberAid,
+      credential: credResult.said,
+      role: newRole,
+      credentials: [...priorCredentials, credResult.said].filter(
+        (v, i, arr) => arr.indexOf(v) === i,
+      ),
+      memberSince: (existingData.memberSince as string) || now,
+      lastActiveAt: now,
+    };
+    await createOrUpdateProfile('CommunityProfile', merged, { id: profileId });
+    return true;
+  }
+
   /**
    * Upgrade a member to steward: multisig rotation + credential revoke/re-issue.
    * Reports progress via onStep callback.
@@ -525,62 +622,11 @@ export function useAdminActions() {
       await keriClient.addMemberRound2(orgName, stewardAid, personalAid.name, expectedStewardSn);
       console.log('[AdminActions] Steward added to org multisig');
 
-      // --- Step 3: Revoke old credential ---
-      processingStep.value = 'Revoking old credential...';
-      onStep?.('Revoking old credential...');
-      const configResult = await fetchOrgConfig();
-      if (configResult.status !== 'configured') throw new Error('Org config not available');
-      const config = configResult.config;
-      if (!config.registry?.id) throw new Error('Registry not found in org config');
-      const creds = await client.credentials().list();
-      const oldCred = creds.find(
-        (c: { sad: { s: string; a?: { i?: string } } }) =>
-          c.sad.s === MEMBERSHIP_SCHEMA_SAID && c.sad.a?.i === stewardAid
-      );
-      if (oldCred) {
-        await keriClient.revokeCredential(orgAid!.prefix, oldCred.sad.d);
-        console.log('[AdminActions] Old credential revoked:', oldCred.sad.d);
-      } else {
-        console.warn('[AdminActions] No existing membership credential found to revoke');
-      }
-
-      // --- Step 4: Issue new credential with updated role ---
-      processingStep.value = 'Issuing new credential...';
-      onStep?.('Issuing new credential...');
-      const grantMessage = `Role updated to ${newRole}`;
-      const orgRegistryId = await getOrCreateOrgRegistry(orgName);
-      const credResult = await keriClient.issueCredential(
-        orgName,
-        orgRegistryId,
-        MEMBERSHIP_SCHEMA_SAID,
-        stewardAid,
-        {
-          communityName: 'MATOU',
-          role: newRole,
-          joinedAt: new Date().toISOString(),
-        },
-        grantMessage,
-      );
-      console.log('[AdminActions] New credential issued:', credResult.said);
-
-      // Update CommunityProfile with new credential SAID.
-      // createOrUpdateProfile is full-replace; read existing first so we
-      // preserve display fields (displayName/avatar/bio/joinReason/etc.) and
-      // the original memberSince — they'd otherwise be wiped on every upgrade.
-      const profileId = `CommunityProfile-${stewardAid}`;
-      const existing = await getProfileById('CommunityProfile', profileId);
-      const existingData = (existing?.data || {}) as Record<string, unknown>;
-      const now = new Date().toISOString();
-      const merged = {
-        ...existingData,
-        userAID: stewardAid,
-        credential: credResult.said,
-        role: newRole,
-        credentials: oldCred ? [oldCred.sad.d, credResult.said] : [credResult.said],
-        memberSince: (existingData.memberSince as string) || now,
-        lastActiveAt: now,
-      };
-      await createOrUpdateProfile('CommunityProfile', merged, { id: profileId });
+      // --- Steps 3-4: Revoke the old credential + issue a new one with the
+      // updated role, and update the profile. Shared with the non-steward
+      // role-change path so profile role and credential role can never drift.
+      const reissued = await reissueMembershipCredential(stewardAid, newRole, onStep);
+      if (!reissued) throw new Error('Credential re-issue failed during steward upgrade');
 
       // Elevate the new steward's any-sync permission to Admin on both community
       // and community-readonly spaces. Writer alone is not enough: writing the
@@ -955,6 +1001,7 @@ export function useAdminActions() {
     approveRegistration,
     addStewardToOrgMultisig,
     upgradeMemberToSteward,
+    reissueMembershipCredential,
     runAdoptWitnesses,
     declineRegistration,
     sendMessageToApplicant,

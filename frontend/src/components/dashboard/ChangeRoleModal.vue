@@ -135,7 +135,7 @@ const emit = defineEmits<{
   (e: 'role-updated', role: string): void;
 }>();
 
-const { upgradeMemberToSteward } = useAdminActions();
+const { upgradeMemberToSteward, reissueMembershipCredential } = useAdminActions();
 
 const STEWARD_ROLES = ['Founding Member', 'Community Steward'];
 
@@ -165,7 +165,10 @@ const upgradeStarted = ref(false);
 const upgradeComplete = ref(false);
 const error = ref<string | null>(null);
 
-const upgradeSteps = reactive<UpgradeStep[]>([
+// Steward upgrades run the full multisig + credential re-issue flow; plain
+// role changes are credential-backed too (issue #20 item 3) but skip the
+// multisig steps, so the stepper only shows the credential steps.
+const STEWARD_STEPS: UpgradeStep[] = [
   { id: 'role', label: 'Updating role', status: 'pending' },
   { id: 'resolve', label: 'Resolving steward identity', status: 'pending' },
   { id: 'invite', label: 'Inviting steward (round 1)', status: 'pending' },
@@ -173,7 +176,22 @@ const upgradeSteps = reactive<UpgradeStep[]>([
   { id: 'promote', label: 'Promoting steward to signer (round 2)', status: 'pending' },
   { id: 'revoke', label: 'Revoking old credential', status: 'pending' },
   { id: 'issue', label: 'Issuing new credential', status: 'pending' },
-]);
+];
+const CREDENTIAL_STEPS: UpgradeStep[] = [
+  { id: 'role', label: 'Updating role', status: 'pending' },
+  { id: 'revoke', label: 'Revoking old credential', status: 'pending' },
+  { id: 'issue', label: 'Issuing new credential', status: 'pending' },
+];
+
+const upgradeSteps = reactive<UpgradeStep[]>([...STEWARD_STEPS]);
+
+function setStepsFor(isStewardRole: boolean) {
+  upgradeSteps.splice(
+    0,
+    upgradeSteps.length,
+    ...(isStewardRole ? STEWARD_STEPS : CREDENTIAL_STEPS).map(s => ({ ...s })),
+  );
+}
 
 function stepClass(index: number) {
   const step = upgradeSteps[index];
@@ -234,12 +252,13 @@ async function handleConfirm() {
 
   isUpdating.value = true;
   error.value = null;
-  resetSteps();
 
   const isStewardRole = STEWARD_ROLES.includes(selectedRole.value);
+  setStepsFor(isStewardRole);
 
   try {
     // Step 1: Update role in backend (CommunityProfile)
+    upgradeStarted.value = true;
     upgradeSteps[0].status = 'active';
     const result = await updateMemberRole(props.memberAid, selectedRole.value);
     if (result.error) {
@@ -250,19 +269,16 @@ async function handleConfirm() {
     }
     upgradeSteps[0].status = 'done';
 
-    // For non-steward roles, we're done after the API call
-    if (!isStewardRole) {
-      upgradeComplete.value = true;
-      emit('role-updated', selectedRole.value);
-      isUpdating.value = false;
-      return;
-    }
-
-    // Step 2-5: Full steward upgrade (multisig + credential rotation)
-    upgradeStarted.value = true;
-    const ok = await upgradeMemberToSteward(props.memberAid, selectedRole.value, advanceStep);
+    // Every role change is credential-backed (issue #20 item 3): the membership
+    // credential is revoked + re-issued with the new role so the profile role
+    // and the credential role can never drift. Steward roles additionally run
+    // the multisig rotation to make the member a group signer.
+    const ok = isStewardRole
+      ? await upgradeMemberToSteward(props.memberAid, selectedRole.value, advanceStep)
+      : await reissueMembershipCredential(props.memberAid, selectedRole.value, advanceStep);
 
     if (ok) {
+      for (const step of upgradeSteps) step.status = 'done';
       upgradeComplete.value = true;
       emit('role-updated', selectedRole.value);
     } else {
@@ -270,7 +286,9 @@ async function handleConfirm() {
       for (const step of upgradeSteps) {
         if (step.status === 'active') step.status = 'error';
       }
-      error.value = 'Steward upgrade failed. The role was updated but key rotation or credential re-issuance may not have completed.';
+      error.value = isStewardRole
+        ? 'Steward upgrade failed. The role was updated but key rotation or credential re-issuance may not have completed.'
+        : 'Credential re-issue failed. The role was updated but the membership credential may not reflect the new role.';
     }
   } catch (err) {
     for (const step of upgradeSteps) {

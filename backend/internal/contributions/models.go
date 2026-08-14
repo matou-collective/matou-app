@@ -167,6 +167,10 @@ type Project struct {
 	CompletedAt           *time.Time     `json:"completed_at,omitempty"`
 	RejectionReason       string         `json:"rejection_reason,omitempty"`
 	CommentCount          int            `json:"comment_count,omitempty"`
+
+	// Proof is a KERI-anchored proof envelope for the completion approval
+	// (issue #20). Persisted verbatim; verification is deferred to issue #19.
+	Proof *Proof `json:"proof,omitempty"`
 }
 
 // --- Decision Plan ---
@@ -192,6 +196,10 @@ type DecisionPlan struct {
 	ProposalStewardID string             `json:"proposal_steward_id"`
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
+
+	// Proof is a KERI-anchored proof envelope for the sign-off transition
+	// (issue #20). Persisted verbatim; verification is deferred to issue #19.
+	Proof *Proof `json:"proof,omitempty"`
 }
 
 // --- Governance Action ---
@@ -331,6 +339,10 @@ type ImplementationPlan struct {
 	SignedOffAt *time.Time `json:"signed_off_at,omitempty"`
 	CreatedBy   string     `json:"created_by,omitempty"`
 
+	// Proof is a KERI-anchored proof envelope for the sign-off action
+	// (issue #20). Persisted verbatim; verification is deferred to issue #19.
+	Proof *Proof `json:"proof,omitempty"`
+
 	// ChangeLog records what has changed since the last sign-off, in
 	// chronological order. It is cleared whenever the plan is signed off
 	// (SignOffPlan) and accumulates entries again as subsequent mutations
@@ -458,6 +470,11 @@ type Contribution struct {
 	SignedOffAt            *time.Time         `json:"signed_off_at,omitempty"`
 	RewardedBy             string             `json:"rewarded_by,omitempty"`
 	RewardedAt             *time.Time         `json:"rewarded_at,omitempty"`
+
+	// Proof is a KERI-anchored proof envelope for the sign-off or reward
+	// action (issue #20). Used for BOTH sign-off and reward. Persisted
+	// verbatim; verification is deferred to issue #19.
+	Proof *Proof `json:"proof,omitempty"`
 
 	// Sharing & offering
 	IsShared        bool       `json:"is_shared,omitempty"`
