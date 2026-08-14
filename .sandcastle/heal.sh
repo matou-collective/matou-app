@@ -184,25 +184,38 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     [ -n "${HEAL_DRY_RUN:-}" ] && echo "- DRY RUN: diagnose only. Make NO commits, NO pushes, file NO tickets."
   } > "$ctx"
   rm -f "$EVIDENCE/diagnosis.md"
-  local status=0
-  if [ -n "${HEAL_AGENT_CMD:-}" ]; then
-    # Test seam: the stub receives the prompt as $1.
-    timeout 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
-  else
-    ( cd "$WORKDIR" && timeout 900 claude -p --model "$SWARM_MODEL" \
-        --dangerously-skip-permissions "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
-  fi
-  # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard. Mid-
-  # diagnosis the claude call can itself hit the limit (the 0-byte agent-out.log
-  # of the 2026-08-01 incident): PARK the host so every other caller yields on
-  # the same window (#253), record the deferral, and exit 0 BEFORE the ledger
-  # attempt below is consumed — a limit refusal is not a spent diagnosis.
-  if claude_limit_hit "$EVIDENCE/agent-out.log"; then
-    claude_limit_park
-    echo "deferred: limit window (claude refused mid-diagnosis)" > "$EVIDENCE/deferred-limit.txt"
-    echo "heal: deferred — Claude usage limit mid-diagnosis; parked the host, no ledger attempt consumed"
-    exit 0
-  fi
+  local status=0 heal_attempt=1
+  claude_select_token
+  while :; do
+    status=0
+    if [ -n "${HEAL_AGENT_CMD:-}" ]; then
+      # Test seam: the stub receives the prompt as $1.
+      timeout 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
+    else
+      ( cd "$WORKDIR" && timeout 900 claude -p --model "$SWARM_MODEL" \
+          --dangerously-skip-permissions "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
+    fi
+    # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard. Mid-
+    # diagnosis the claude call can itself hit the limit (the 0-byte agent-out.log
+    # of the 2026-08-01 incident). First try the standby account (#510) — the
+    # SAME limit-lib predicate decided both the hit and the flip, no second grep
+    # anywhere. Only when both windows are exhausted (or no standby exists):
+    # PARK the host so every other caller yields on the same window (#253),
+    # record the deferral, and exit 0 BEFORE the ledger attempt below is
+    # consumed — a limit refusal is not a spent diagnosis.
+    if claude_limit_hit "$EVIDENCE/agent-out.log"; then
+      if [ "$heal_attempt" = 1 ] && claude_failover; then
+        heal_attempt=2
+        echo "heal: Claude account limited — failed over to account $(claude_active_account); retrying the diagnosis once"
+        continue
+      fi
+      claude_limit_park
+      echo "deferred: limit window (claude refused mid-diagnosis)" > "$EVIDENCE/deferred-limit.txt"
+      echo "heal: deferred — Claude usage limit mid-diagnosis; parked the host, no ledger attempt consumed"
+      exit 0
+    fi
+    break
+  done
   [ "$status" -eq 0 ] && [ -f "$EVIDENCE/diagnosis.md" ]
 }
 
