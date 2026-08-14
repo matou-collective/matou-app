@@ -800,6 +800,46 @@ export class KERIClient {
   }
 
   /**
+   * Sign a backend login challenge with the user's AID signing key and return a
+   * CESR-qualified non-indexed Ed25519 signature (Cigar qb64). Used by the
+   * signed-challenge authentication flow (issue #18) so the backend can verify
+   * the caller controls the AID's current key before minting a session token.
+   *
+   * @param challenge the challenge string returned by POST /api/v1/auth/challenge
+   * @param aidPrefix the AID to sign as; defaults to the first local identifier
+   */
+  async signChallenge(challenge: string, aidPrefix?: string): Promise<string> {
+    if (!this.client) {
+      throw new Error('KERI client not initialized');
+    }
+    await this.ensureConnected();
+
+    const list = await this.client.identifiers().list();
+    const habs = list.aids ?? [];
+    const hab =
+      (aidPrefix ? habs.find((h: { prefix: string }) => h.prefix === aidPrefix) : undefined) ??
+      habs[0];
+    if (!hab) {
+      throw new Error('No AID available to sign challenge');
+    }
+
+    const keeper = await this.client.manager!.get(hab);
+    const signify = await import('signify-ts');
+    // Non-indexed signature (indexed=false) → Cigar[], code "0B". keeper.sign is
+    // async in signify-ts 0.3.x; without await it serializes to {}.
+    const sigs = await keeper.sign(signify.b(challenge), false);
+    const first = Array.isArray(sigs) ? sigs[0] : undefined;
+    const qb64 =
+      typeof first === 'string'
+        ? first
+        : (first as { qb64?: string } | undefined)?.qb64;
+    if (!qb64) {
+      throw new Error('Failed to produce challenge signature');
+    }
+    return qb64;
+  }
+
+  /**
    * Ensure the client is connected, reconnect if necessary
    * @private
    */

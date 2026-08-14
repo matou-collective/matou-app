@@ -10,14 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/api"
+	"github.com/matou-dao/backend/internal/auth"
 	"github.com/matou-dao/backend/internal/config"
 	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/email"
@@ -520,6 +523,55 @@ func main() {
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
 	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
 
+	// Signed-challenge authentication (issue #18): make X-User-AID trustworthy.
+	// The backend resolves an AID's current signing keys read-only from KERIA's
+	// CESR/OOBI endpoint, verifies a signed challenge, and mints a short-lived
+	// session token checked per request. Enforcement is gated by
+	// MATOU_REQUIRE_SIGNED_AUTH (default OFF); the Playwright e2e config sets it
+	// ON against real KERIA infrastructure. NEEDS LIVE VERIFICATION: the exact
+	// KERIA key-state URL is deployment-specific and verified by the e2e run.
+	keyStateURLTemplate := os.Getenv("MATOU_KERIA_KEYSTATE_URL")
+	if keyStateURLTemplate == "" {
+		keyStateURLTemplate = strings.TrimRight(cfg.KERI.CESRURL, "/") + "/oobi/{aid}"
+	}
+	var keyStateResolver auth.KeyStateResolver
+	if kr, err := auth.NewKERIAResolver(keyStateURLTemplate, 5*time.Minute); err != nil {
+		log.Printf("[Auth] invalid key-state URL template %q: %v — falling back to static resolver", keyStateURLTemplate, err)
+		keyStateResolver = auth.NewStaticKeyStateResolver()
+	} else {
+		keyStateResolver = kr
+	}
+	authVerifier := auth.NewVerifier(keyStateResolver, nil, nil)
+	authHandler := api.NewAuthHandler(authVerifier)
+
+	// Revoke sessions when an AID's key state rotates (observed via KEL sync).
+	syncHandler.SetRotationHook(func(aid string, kel []api.KELEvent) {
+		bestSeq := -1
+		var bestKeys []string
+		for _, ev := range kel {
+			switch ev.Type {
+			case "icp", "rot", "dip", "drt":
+			default:
+				continue
+			}
+			db, err := json.Marshal(ev.Data)
+			if err != nil {
+				continue
+			}
+			var d struct {
+				K []string `json:"k"`
+			}
+			if err := json.Unmarshal(db, &d); err != nil || len(d.K) == 0 {
+				continue
+			}
+			if ev.Sequence >= bestSeq {
+				bestSeq = ev.Sequence
+				bestKeys = d.K
+			}
+		}
+		authVerifier.OnRotation(aid, bestKeys)
+	})
+
 	// Grant community_admin role to all configured org admins.
 	// Also register a callback so admin AIDs are updated whenever org config changes
 	// (e.g. when org setup runs after server start).
@@ -601,6 +653,7 @@ func main() {
 	chatHandler.RegisterRoutes(mux)
 	commentCursorsHandler.Routes(mux)
 	notificationsHandler.RegisterRoutes(mux)
+	authHandler.RegisterRoutes(mux)
 	proposalsHandler.RegisterRoutes(mux, roleLookup)
 	projectsHandler.RegisterRoutes(mux, roleLookup)
 	decisionPlansHandler.RegisterRoutes(mux, roleLookup)
@@ -758,7 +811,10 @@ func main() {
 	defer syncWorker.Stop()
 
 	// Wrap with middleware: request logger → localhost guard (production) → CORS
-	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(mux)))
+	// → signed-auth enforcement (gated by MATOU_REQUIRE_SIGNED_AUTH). SignedAuth
+	// sits inside CORS so preflight is handled, and outside the mux so it can set
+	// the verified X-User-AID before any route/RBAC runs.
+	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(api.SignedAuthMiddleware(authHandler.Sessions(), mux))))
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

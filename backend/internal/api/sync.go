@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/keri"
 )
@@ -17,11 +17,20 @@ import (
 // This handler receives credentials and KELs from the frontend (fetched from KERIA via signify-ts)
 // and stores them in anystore (local cache) and routes them to any-sync spaces.
 type SyncHandler struct {
-	keriClient    *keri.Client
-	store         *anystore.LocalStore
-	spaceManager  *anysync.SpaceManager
-	spaceStore    anysync.SpaceStore
-	userIdentity  *identity.UserIdentity
+	keriClient   *keri.Client
+	store        *anystore.LocalStore
+	spaceManager *anysync.SpaceManager
+	spaceStore   anysync.SpaceStore
+	userIdentity *identity.UserIdentity
+	// rotationHook, if set, is called with an AID and its synced KEL whenever a
+	// KEL is received, so signed-auth sessions can be revoked on key rotation.
+	rotationHook func(aid string, kel []KELEvent)
+}
+
+// SetRotationHook registers a callback invoked on every KEL sync with the AID
+// and its events. Used to invalidate sessions when an AID's key state rotates.
+func (h *SyncHandler) SetRotationHook(hook func(aid string, kel []KELEvent)) {
+	h.rotationHook = hook
 }
 
 // NewSyncHandler creates a new sync handler
@@ -268,6 +277,12 @@ func (h *SyncHandler) HandleSyncKEL(w http.ResponseWriter, r *http.Request) {
 			Error:   "kel events are required",
 		})
 		return
+	}
+
+	// Signal key-state observation so signed-auth sessions can be revoked if the
+	// AID's keys have rotated (best-effort; never blocks the sync).
+	if h.rotationHook != nil {
+		h.rotationHook(kelUserAID, req.KEL)
 	}
 
 	ctx := context.Background()

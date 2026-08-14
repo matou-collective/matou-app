@@ -2,7 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { Notify } from 'quasar';
 import { KERIClient, useKERIClient, type AIDInfo, type CredentialInfo } from 'src/lib/keri/client';
-import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinCommunity as apiJoinCommunity } from 'src/lib/api/client';
+import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinCommunity as apiJoinCommunity, getAuthChallenge, postAuthLogin, setSessionToken } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { fetchOrgConfig } from 'src/api/config';
 import { useAppStore } from 'stores/app';
@@ -102,6 +102,12 @@ export const useIdentityStore = defineStore('identity', () => {
       } catch (listErr) {
         console.warn('[IdentityStore] Could not list AIDs (expected for new users):', listErr);
       }
+
+      // Authenticate to the backend via signed-challenge login so RBAC-protected
+      // requests carry a cryptographically verified session (issue #18).
+      // Best-effort: with enforcement off (dev default) the bare X-User-AID
+      // header still works, so a failure here must not block connect.
+      await signInToBackend();
 
       // Surface + repair an agent re-boot: when the agent behind this
       // passcode was re-created, every agent-form OOBI shared before is dead
@@ -342,6 +348,30 @@ export const useIdentityStore = defineStore('identity', () => {
     return checkAdminStatus();
   }
 
+  /**
+   * Authenticate to the backend using the signed-challenge flow (issue #18):
+   * request a challenge for the current AID, sign it with the AID's key, and
+   * exchange the signature for a short-lived session token attached as a Bearer
+   * token on subsequent requests. Best-effort and never throws — with signed-auth
+   * enforcement off (dev default) the backend still accepts the X-User-AID header.
+   */
+  async function signInToBackend(): Promise<boolean> {
+    const aid = currentAID.value?.prefix;
+    if (!aid) return false;
+    try {
+      const { challenge } = await getAuthChallenge(aid);
+      const signature = await keriClient.signChallenge(challenge, aid);
+      const { token } = await postAuthLogin(aid, challenge, signature);
+      setSessionToken(token);
+      console.log('[IdentityStore] Backend session established');
+      return true;
+    } catch (err) {
+      console.warn('[IdentityStore] Backend sign-in failed (continuing unauthenticated):', err);
+      setSessionToken(null);
+      return false;
+    }
+  }
+
   async function disconnect() {
     currentAID.value = null;
     passcode.value = null;
@@ -349,6 +379,7 @@ export const useIdentityStore = defineStore('identity', () => {
     isAdmin.value = false;
     adminCredential.value = null;
     adminChecked.value = false;
+    setSessionToken(null);
     await secureStorage.removeItem('matou_passcode');
     await secureStorage.removeItem('matou_mnemonic');
   }
@@ -459,6 +490,7 @@ export const useIdentityStore = defineStore('identity', () => {
     connect,
     createIdentity,
     restore,
+    signInToBackend,
     disconnect,
     setInitialized,
     setInitError,

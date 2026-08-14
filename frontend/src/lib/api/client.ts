@@ -21,14 +21,41 @@ export async function initBackendUrl(): Promise<void> {
 }
 
 /**
- * Build request headers with JSON content type and the current user's AID
- * for RBAC-protected endpoints. Falls back gracefully if no identity is set.
+ * Session token minted by the backend's signed-challenge login (issue #18).
+ * When present it is sent as `Authorization: Bearer <token>` so the backend can
+ * bind the request to a cryptographically verified AID instead of trusting the
+ * bare X-User-AID header. Held in module state (not persisted) — re-minted on
+ * each app start via identityStore.signInToBackend().
+ */
+let sessionToken: string | null = null;
+
+/** Store the backend session token (called after a successful login). */
+export function setSessionToken(token: string | null): void {
+  sessionToken = token;
+}
+
+/** Current backend session token, if any. */
+export function getSessionToken(): string | null {
+  return sessionToken;
+}
+
+/**
+ * Build request headers with JSON content type, the backend session token
+ * (Bearer) when available, and the current user's AID for RBAC-protected
+ * endpoints. Falls back gracefully if no identity/session is set.
+ *
+ * When signed-auth enforcement is on, the backend derives the trusted AID from
+ * the Bearer token and ignores X-User-AID; when off (default), X-User-AID is
+ * still honored, so both are sent for compatibility.
  */
 export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...extra,
   };
+  if (sessionToken) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
+  }
   try {
     const identity = useIdentityStore();
     if (identity.aidPrefix) {
@@ -38,6 +65,52 @@ export function authHeaders(extra: Record<string, string> = {}): Record<string, 
     // Pinia not yet initialized — skip auth header
   }
   return headers;
+}
+
+export interface AuthChallengeResponse {
+  challenge: string;
+  expiresAt: string;
+}
+
+export interface AuthLoginResponse {
+  token: string;
+  expiresAt: string;
+}
+
+/**
+ * Request a login challenge for an AID (step 1 of signed-challenge auth).
+ */
+export async function getAuthChallenge(aid: string): Promise<AuthChallengeResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/auth/challenge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aid }),
+  });
+  if (!response.ok) {
+    throw new Error(`auth challenge failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+/**
+ * Submit a signed challenge and receive a session token (step 2).
+ * `signature` is a CESR-qualified non-indexed Ed25519 signature (Cigar qb64).
+ */
+export async function postAuthLogin(
+  aid: string,
+  challenge: string,
+  signature: string,
+): Promise<AuthLoginResponse> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aid, challenge, signature }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.error || `auth login failed: ${response.status}`);
+  }
+  return response.json();
 }
 
 export interface SyncCredentialsRequest {
