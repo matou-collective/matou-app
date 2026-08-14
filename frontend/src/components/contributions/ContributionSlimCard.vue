@@ -1,5 +1,9 @@
 <template>
-  <div class="slim-card" :class="{ 'slim-card--overdue': showOverdueLine }" @click="$emit('click')">
+  <div
+    class="slim-card"
+    :class="[`contrib-status-${contribution.status}`, { 'slim-card--overdue': showOverdueLine }]"
+    @click="$emit('click')"
+  >
     <div class="slim-card-row top">
       <span class="slim-card-title">{{ contribution.title }}</span>
       <ContributionStatusBadge :status="contribution.status" />
@@ -63,6 +67,8 @@ const projectName = computed(() => {
 </script>
 
 <style scoped lang="scss">
+@import 'src/css/contribution-status.scss';
+
 .slim-card {
   display: flex;
   flex-direction: column;
@@ -72,13 +78,18 @@ const projectName = computed(() => {
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius-sm);
   cursor: pointer;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+
+  @include contribution-status-wash;
 
   &:hover {
     border-color: var(--matou-accent);
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.05);
   }
 
+  // The timeline's Overdue section already labels these contributions
+  // (section header + inline "Due ... overdue" line) — a red border is
+  // enough here, no floating tag needed.
   &--overdue {
     border-color: var(--matou-destructive, #dc2626);
   }

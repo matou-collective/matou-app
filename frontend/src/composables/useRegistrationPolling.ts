@@ -16,6 +16,15 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useKERINotificationService } from './useKERINotificationService';
 import { createOrUpdateProfile, getProfiles, uploadFile } from 'src/lib/api/client';
 import { useProfilesStore } from 'stores/profiles';
+import {
+  buildOobiCandidates,
+  shouldAttemptResolve,
+  isApplicantUnreachable,
+  parseFailedRegistrationNotification,
+  FAILED_REGISTRATION_ROUTES,
+  type ResolveAttemptState,
+  type ExpiredRegistration,
+} from 'src/lib/registrationResolve';
 
 export interface PendingRegistration {
   notificationId: string;
@@ -46,6 +55,12 @@ export interface PendingRegistration {
   };
   /** True if from escrowed message (OOBI not resolved), false if verified */
   isPending: boolean;
+  /**
+   * True when repeated automatic OOBI resolution has failed for days —
+   * the applicant's key state can't be fetched, so approve/decline/message
+   * will not be deliverable until they come back online or re-register.
+   */
+  unreachable?: boolean;
 }
 
 export interface ApplicantMessage {
@@ -69,6 +84,9 @@ const REGISTRATION_ROUTES = {
   VERIFIED: '/exn/matou/registration/apply',
   // Message replies from applicants
   MESSAGE_REPLY: '/exn/matou/registration/message_reply',
+  // Dead-lettered (expired) registrations from KERIA patch — the escrowed exn
+  // was removed after the dead-letter bound; the applicant must re-apply.
+  // Routes: FAILED_REGISTRATION_ROUTES (custom EXN + IPEX apply forms).
 };
 
 export interface RegistrationPollingOptions {
@@ -84,6 +102,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
 
   // State
   const pendingRegistrations = ref<PendingRegistration[]>([]);
+  const expiredRegistrations = ref<ExpiredRegistration[]>([]);
   const applicantMessages = ref<ApplicantMessage[]>([]);
   const isPolling = ref(false);
   const error = ref<string | null>(null);
@@ -97,8 +116,74 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
   // Track applicants for whom we've already created a pending SharedProfile
   const createdPendingProfiles = new Set<string>();
 
+  // Per-applicant OOBI resolution state (backoff bookkeeping for pending rows)
+  const resolveStates = new Map<string, ResolveAttemptState>();
+  let isResolvingApplicants = false;
+
   // Internal state
   let stopWatcher: (() => void) | null = null;
+
+  /**
+   * Resolve the key state (OOBI) of pending applicants so KERIA's escrow
+   * processor can verify their registration exn and emit the real
+   * notification. This is the de-escrow step that closes the loop the
+   * KERIA exchanger patch assumes exists (same pattern as
+   * useMultisigJoin.resolvePendingMultisigSenders). Without it, a pending
+   * registration stays escrowed forever (Andrew Weaver incident: 4 months).
+   *
+   * Tries the candidate chain per applicant (bare OOBI first — stable across
+   * agent re-boots — then the recorded senderOOBI) with exponential backoff
+   * capped at hourly. Never gives up silently: long-failing applicants get
+   * flagged `unreachable` for the UI while retries continue.
+   */
+  async function resolvePendingApplicants(registrations: PendingRegistration[]): Promise<void> {
+    if (isResolvingApplicants) return;
+    isResolvingApplicants = true;
+    try {
+      const cesrUrl = keriClient.getCesrUrl();
+      for (const reg of registrations) {
+        if (!reg.isPending || !reg.applicantAid) continue;
+
+        const now = Date.now();
+        let state = resolveStates.get(reg.applicantAid);
+        if (!state) {
+          const submitted = Date.parse(reg.profile.submittedAt);
+          state = {
+            attempts: 0,
+            lastAttemptAt: 0,
+            firstSeenAt: Number.isFinite(submitted) ? submitted : now,
+            resolved: false,
+          };
+          resolveStates.set(reg.applicantAid, state);
+        }
+        if (!shouldAttemptResolve(state, now)) continue;
+
+        state.attempts += 1;
+        state.lastAttemptAt = now;
+
+        const candidates = buildOobiCandidates({
+          applicantAid: reg.applicantAid,
+          recordedOobi: reg.applicantOOBI,
+          cesrUrl,
+        });
+        const failures: string[] = [];
+        for (const oobi of candidates) {
+          const result = await keriClient.resolveOOBIWithReason(oobi, undefined, 30000);
+          if (result.ok) {
+            state.resolved = true;
+            console.log(`[RegistrationPolling] Resolved pending applicant ${reg.applicantAid.slice(0, 12)}... via ${oobi} — escrow will verify shortly`);
+            break;
+          }
+          failures.push(`${oobi}: ${result.reason || 'unknown'}`);
+        }
+        if (!state.resolved) {
+          console.warn(`[RegistrationPolling] Applicant ${reg.applicantAid.slice(0, 12)}... unresolvable (attempt ${state.attempts}): ${failures.join('; ')}`);
+        }
+      }
+    } finally {
+      isResolvingApplicants = false;
+    }
+  }
 
   /**
    * Poll for registration notifications
@@ -382,6 +467,39 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       // Filter out already-processed registrations (approved/declined)
       const filtered = deduped.filter(r => !processedApplicantAids.has(r.applicantAid));
 
+      // === 6b. Dead-lettered (expired) registrations from the KERIA patch ===
+      // The escrowed exn passed the dead-letter bound and was removed — it can
+      // never verify now, so the applicant has to re-apply. One entry per
+      // applicant (newest first, mirroring the dedup above).
+      const failedNotes = allNotes.filter(
+        n => FAILED_REGISTRATION_ROUTES.includes(n.a?.r ?? '') && !n.r
+      );
+      const expiredByAid = new Map<string, ExpiredRegistration>();
+      for (const note of failedNotes) {
+        const expired = parseFailedRegistrationNotification(note);
+        if (expired && !expiredByAid.has(expired.applicantAid)) {
+          expiredByAid.set(expired.applicantAid, expired);
+        }
+      }
+      expiredRegistrations.value = Array.from(expiredByAid.values());
+
+      // Flag applicants whose key state has been unresolvable for days.
+      // Skip expired ones — the dead-letter banner already covers them and
+      // retrying resolution can no longer rescue the removed exn.
+      const flagNow = Date.now();
+      for (const reg of filtered) {
+        if (reg.isPending && !expiredByAid.has(reg.applicantAid)) {
+          reg.unreachable = isApplicantUnreachable(resolveStates.get(reg.applicantAid), flagNow);
+        }
+      }
+
+      // De-escrow: resolve pending applicants' OOBIs in the background so the
+      // escrowed exn verifies and the real notification appears on a later poll.
+      const pendingToResolve = filtered.filter(r => r.isPending);
+      if (pendingToResolve.length > 0) {
+        void resolvePendingApplicants(pendingToResolve);
+      }
+
       if (filtered.length > 0) {
         const pendingCount = filtered.filter(r => r.isPending).length;
         const verifiedCount = filtered.filter(r => !r.isPending).length;
@@ -496,6 +614,21 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
     }
     pendingRegistrations.value = pendingRegistrations.value.filter(
       r => r.notificationId !== notificationId
+    );
+  }
+
+  /**
+   * Dismiss an expired-registration alert: marks the dead-letter notification
+   * read so it stops surfacing on every poll.
+   */
+  async function dismissExpired(notificationId: string): Promise<void> {
+    try {
+      await keriClient.markNotificationRead(notificationId);
+    } catch (err) {
+      console.warn('[RegistrationPolling] Failed to mark expired notification read:', err);
+    }
+    expiredRegistrations.value = expiredRegistrations.value.filter(
+      e => e.notificationId !== notificationId
     );
   }
 
@@ -618,6 +751,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
   return {
     // State
     pendingRegistrations,
+    expiredRegistrations,
     applicantMessages,
     isPolling,
     error,
@@ -628,6 +762,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
     stopPolling,
     refresh,
     removeRegistration,
+    dismissExpired,
     retry,
   };
 }

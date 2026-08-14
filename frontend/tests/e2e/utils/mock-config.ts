@@ -41,13 +41,15 @@ export async function setupTestConfig(target: Page | BrowserContext) {
  * @param request - Playwright APIRequestContext
  */
 export async function clearTestConfig(request: APIRequestContext) {
-  // Clear config server (DELETE requires the admin token, same as POST/DELETE
-  // via the backend — see matou-collective/matou-app#1)
+  // Clear config server. DELETE is bearer-gated (see matou-collective/
+  // matou-app#1): use the token from the environment when one is provided
+  // (pr-e2e sources it from the infra checkout), else the well-known
+  // dev/test placeholder.
   try {
     await request.delete(`${CONFIG_SERVER_URL}/api/config`, {
       headers: {
         'X-Test-Config': 'true',
-        Authorization: `Bearer ${configAdminToken}`,
+        Authorization: `Bearer ${process.env.CONFIG_ADMIN_TOKEN || configAdminToken}`,
       },
     });
     console.log('[TestConfig] Cleared config server');

@@ -310,11 +310,23 @@ func TestService_AddGovernanceAction(t *testing.T) {
 		ProposalLeadID: "lead-1", ProposalStewardID: "steward-1",
 	})
 
+	meeting, err := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
+		DecisionPlanID: dp.ID,
+		House:          HouseElderCouncil,
+		ActionType:     ActionMeeting,
+		Description:    "Elder meeting",
+	})
+	if err != nil {
+		t.Fatalf("AddGovernanceAction (meeting) failed: %v", err)
+	}
+
+	// Decision actions must be linked to a meeting or discussion.
 	action, err := svc.AddGovernanceAction(ctx, "space-1", &CreateGovernanceActionRequest{
 		DecisionPlanID: dp.ID,
 		House:          HouseElderCouncil,
 		ActionType:     ActionDecision,
 		Description:    "Elder veto check",
+		LinkedActionID: meeting.ID,
 	})
 	if err != nil {
 		t.Fatalf("AddGovernanceAction failed: %v", err)
@@ -484,7 +496,7 @@ func TestService_AddMilestone(t *testing.T) {
 		ProjectLeadID: "lead-1", ProjectStewardID: "steward-1",
 	})
 
-	ms, err := svc.AddMilestone(ctx, "space-1", &CreateMilestoneRequest{
+	ms, err := svc.AddMilestone(ctx, "space-1", "lead-1", &CreateMilestoneRequest{
 		ImplementationPlanID: ip.ID,
 		Title:                "Design Phase",
 		Duration:             "2 weeks",
@@ -714,7 +726,7 @@ func TestArchiveProject_CascadesAllChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ms, err := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+	ms, err := svc.AddMilestone(ctx, spaceID, "u", &CreateMilestoneRequest{
 		ImplementationPlanID: plan.ID,
 		Title:                "M1",
 		Duration:             "1w",
@@ -791,7 +803,7 @@ func TestArchiveMilestone_CascadesContributions(t *testing.T) {
 
 	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
 	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
-	ms, _ := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+	ms, _ := svc.AddMilestone(ctx, spaceID, "u", &CreateMilestoneRequest{
 		ImplementationPlanID: plan.ID, Title: "M", Duration: "1w",
 	})
 
@@ -804,10 +816,10 @@ func TestArchiveMilestone_CascadesContributions(t *testing.T) {
 		ProjectID: proj.ID, Title: "Sub", Description: "d",
 		ContributionType: "development", CreatedBy: "u",
 		ParentContributionID: contrib.ID,
-		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		Objectives:           []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
 	})
 
-	if err := svc.ArchiveMilestone(ctx, spaceID, ms.MilestoneID); err != nil {
+	if err := svc.ArchiveMilestone(ctx, spaceID, ms.MilestoneID, "u"); err != nil {
 		t.Fatalf("ArchiveMilestone: %v", err)
 	}
 
@@ -839,10 +851,10 @@ func TestArchiveContribution_CascadesSubContributions(t *testing.T) {
 	sub, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
 		ProjectID: proj.ID, Title: "S", Description: "d", ContributionType: "development", CreatedBy: "u",
 		ParentContributionID: parent.ID,
-		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		Objectives:           []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
 	})
 
-	if err := svc.ArchiveContribution(ctx, spaceID, parent.ID); err != nil {
+	if err := svc.ArchiveContribution(ctx, spaceID, parent.ID, "u"); err != nil {
 		t.Fatalf("ArchiveContribution: %v", err)
 	}
 
@@ -915,14 +927,14 @@ func TestUpdateMilestone_PatchesFields(t *testing.T) {
 
 	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
 	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
-	ms, _ := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+	ms, _ := svc.AddMilestone(ctx, spaceID, "u", &CreateMilestoneRequest{
 		ImplementationPlanID: plan.ID, Title: "Old", Duration: "1w",
 	})
 
 	newTitle := "New title"
 	newDesc := "desc"
 	newDur := "2w"
-	got, err := svc.UpdateMilestone(ctx, spaceID, ms.MilestoneID, &UpdateMilestoneRequest{
+	got, err := svc.UpdateMilestone(ctx, spaceID, ms.MilestoneID, "editor-1", &UpdateMilestoneRequest{
 		Title:       &newTitle,
 		Description: &newDesc,
 		Duration:    &newDur,
@@ -938,6 +950,50 @@ func TestUpdateMilestone_PatchesFields(t *testing.T) {
 	}
 	if got.Duration != "2w" {
 		t.Errorf("duration = %q, want 2w", got.Duration)
+	}
+
+	// ChangeLog also carries the "milestone_added" entry recorded by AddMilestone
+	// above; the edit we're asserting on is the most recent entry.
+	gotPlan, _ := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
+	if len(gotPlan.ChangeLog) != 2 {
+		t.Fatalf("expected 2 change log entries (added + edited), got %d", len(gotPlan.ChangeLog))
+	}
+	if gotPlan.ChangeLog[0].Kind != "milestone_added" {
+		t.Errorf("first entry kind = %q, want milestone_added", gotPlan.ChangeLog[0].Kind)
+	}
+	entry := gotPlan.ChangeLog[1]
+	if entry.Kind != "milestone_edited" {
+		t.Errorf("kind = %q, want milestone_edited", entry.Kind)
+	}
+	if entry.MilestoneID != ms.MilestoneID {
+		t.Errorf("milestone_id = %q, want %q", entry.MilestoneID, ms.MilestoneID)
+	}
+	if entry.ChangedBy != "editor-1" {
+		t.Errorf("changed_by = %q, want editor-1", entry.ChangedBy)
+	}
+	if entry.ID == "" {
+		t.Error("expected non-empty entry ID")
+	}
+	if entry.ChangedAt.IsZero() {
+		t.Error("expected non-zero ChangedAt")
+	}
+	wantFields := map[string][2]string{
+		"title":       {"Old", "New title"},
+		"description": {"", "desc"},
+		"duration":    {"1w", "2w"},
+	}
+	if len(entry.Changes) != len(wantFields) {
+		t.Fatalf("expected %d field changes, got %d: %+v", len(wantFields), len(entry.Changes), entry.Changes)
+	}
+	for _, fc := range entry.Changes {
+		want, ok := wantFields[fc.Field]
+		if !ok {
+			t.Errorf("unexpected field change for %q", fc.Field)
+			continue
+		}
+		if fc.OldValue != want[0] || fc.NewValue != want[1] {
+			t.Errorf("field %q: old=%q new=%q, want old=%q new=%q", fc.Field, fc.OldValue, fc.NewValue, want[0], want[1])
+		}
 	}
 }
 
@@ -1068,7 +1124,7 @@ func TestUpdateMilestone_UnsignsPlan(t *testing.T) {
 
 	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
 	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
-	ms, _ := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+	ms, _ := svc.AddMilestone(ctx, spaceID, "u", &CreateMilestoneRequest{
 		ImplementationPlanID: plan.ID, Title: "M", Duration: "1w",
 	})
 
@@ -1083,7 +1139,7 @@ func TestUpdateMilestone_UnsignsPlan(t *testing.T) {
 	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
 
 	newDur := "3w"
-	if _, err := svc.UpdateMilestone(ctx, spaceID, ms.MilestoneID, &UpdateMilestoneRequest{Duration: &newDur}); err != nil {
+	if _, err := svc.UpdateMilestone(ctx, spaceID, ms.MilestoneID, "u", &UpdateMilestoneRequest{Duration: &newDur}); err != nil {
 		t.Fatalf("UpdateMilestone: %v", err)
 	}
 
@@ -1109,7 +1165,7 @@ func TestArchiveMilestone_UnsignsPlan(t *testing.T) {
 
 	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
 	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
-	ms, _ := svc.AddMilestone(ctx, spaceID, &CreateMilestoneRequest{
+	ms, _ := svc.AddMilestone(ctx, spaceID, "u", &CreateMilestoneRequest{
 		ImplementationPlanID: plan.ID, Title: "M", Duration: "1w",
 	})
 
@@ -1121,7 +1177,7 @@ func TestArchiveMilestone_UnsignsPlan(t *testing.T) {
 	plan.SignedOffAt = &now
 	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
 
-	if err := svc.ArchiveMilestone(ctx, spaceID, ms.MilestoneID); err != nil {
+	if err := svc.ArchiveMilestone(ctx, spaceID, ms.MilestoneID, "u"); err != nil {
 		t.Fatalf("ArchiveMilestone: %v", err)
 	}
 
@@ -1150,7 +1206,7 @@ func TestArchiveContribution_UnsignsPlan(t *testing.T) {
 	plan.SignedOffAt = &now
 	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
 
-	if err := svc.ArchiveContribution(ctx, spaceID, contrib.ID); err != nil {
+	if err := svc.ArchiveContribution(ctx, spaceID, contrib.ID, "u"); err != nil {
 		t.Fatalf("ArchiveContribution: %v", err)
 	}
 

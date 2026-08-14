@@ -1,0 +1,7 @@
+.env
+secrets/*
+!secrets/README.md
+npm-cache/
+go-cache/
+logs/
+.state/

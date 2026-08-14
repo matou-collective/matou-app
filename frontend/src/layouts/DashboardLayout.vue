@@ -55,9 +55,13 @@
             {{ contributionsUnreadTotal > 99 ? '99+' : contributionsUnreadTotal }}
           </span>
         </button>
+        <button class="nav-item report-issue-btn" @click="showReportDialog = true">
+          <Bug class="nav-icon" />
+          <span>Report an issue</span>
+        </button>
       </nav>
 
-      <!-- User Profile -->
+      <!-- Footer: user profile -->
       <div class="sidebar-footer">
         <div class="user-profile" @click="router.push({ name: 'account-settings' })" style="cursor: pointer;">
           <div class="user-avatar">
@@ -84,11 +88,12 @@
       :community-profile="profileViewer.communityProfile"
       @close="profileViewer.close()"
     />
+    <ReportIssueDialog v-model="showReportDialog" :reporter-name="userName" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, watch } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import {
   Home,
   Wallet,
@@ -97,6 +102,7 @@ import {
   Vote,
   MessageSquare,
   Hammer,
+  Bug,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -114,6 +120,7 @@ import { initNotifications, registerNotificationClickHandler } from 'src/lib/not
 import { fetchOrgConfig } from 'src/api/config';
 import { getFileUrl } from 'src/lib/api/client';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
+import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
 import { useProfileViewer } from 'stores/profileViewer';
 
 const router = useRouter();
@@ -128,6 +135,7 @@ const contributionsStore = useContributionsStore();
 const activityStore = useActivityStore();
 const scope = useCommentScope();
 const profileViewer = useProfileViewer();
+const showReportDialog = ref(false);
 
 const projectsUnreadTotal = computed(() => {
   // Project rollup: own project comments + contribution comments for each
@@ -404,6 +412,24 @@ onBeforeUnmount(() => {
 .sidebar-footer {
   padding: 1rem;
   border-top: 1px solid var(--matou-sidebar-border);
+}
+
+.report-issue-btn {
+  font-size: 0.85rem;
+  color: var(--matou-sidebar-foreground);
+  opacity: 0.75;
+  margin-top: auto;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+
+  &:hover {
+    opacity: 1;
+  }
+
+  .nav-icon {
+    width: 16px;
+    height: 16px;
+  }
 }
 
 .user-profile {

@@ -1,0 +1,7 @@
+{"workflow_runs":[
+  {"name":"seam","status":"failure","run_number":110},
+  {"name":"swarm","status":"failure","run_number":109},
+  {"name":"swarm","status":"success","run_number":108},
+  {"name":"seam","status":"failure","run_number":107},
+  {"name":"seam","status":"failure","run_number":106}
+]}

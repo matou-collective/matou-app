@@ -298,6 +298,8 @@ func IsCommunityVisible(cred *Credential) bool {
 	switch cred.Schema {
 	case "EMatouMembershipSchemaV1":
 		return true // Memberships are public
+	case "ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI":
+		return true // Real MATOU membership schema SAID (schemas/matou-membership-schema.json)
 	case "EOperationsStewardSchemaV1":
 		return true // Roles are public
 	case "ESelfClaimSchemaV1":

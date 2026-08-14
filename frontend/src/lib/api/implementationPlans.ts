@@ -4,6 +4,7 @@
  */
 import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
+import type { PlanChangeEntry } from 'src/types/projects';
 
 const log = createLogger('ImplementationPlansAPI');
 
@@ -39,6 +40,7 @@ export interface ImplementationPlan {
   created_by?: string;
   created_at: string;
   updated_at: string;
+  change_log?: PlanChangeEntry[];
 }
 
 export interface CreateImplementationPlanRequest {

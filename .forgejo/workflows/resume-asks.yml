@@ -1,0 +1,54 @@
+name: resume-asks
+on:
+  # Makes ask-human.sh's parking promise true: a late human reply in a parked
+  # ask thread gets recorded on its issue and the issue re-armed
+  # (.sandcastle/resume-parked-asks.sh — a ready-for-human issue is off the
+  # swarm's frontier, so "the next ask picks it up" could never happen on its
+  # own). Offset from triage (:5,:35) and swarm (:15,:45); a re-arm fires the
+  # swarm immediately via the ready-for-agent label event, so this cadence
+  # only bounds how long a late reply waits to be read. Same silent-scheduler
+  # caveat as triage.yml — pushing workflow files re-registers the schedules.
+  schedule:
+    - cron: "10,40 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  resume:
+    runs-on: swarm
+    timeout-minutes: 10
+    steps:
+      # Own shallow checkout — triage/swarm reset the shared workdir under
+      # /tmp/matou-swarm.lock; this job must not race them there.
+      - name: Re-arm parked issues with late chat replies
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          REPO_SLUG: ${{ github.repository }}
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+        run: |
+          set -euo pipefail
+          workdir="$HOME/swarm/resume-asks/$REPO_SLUG"
+          mkdir -p "$workdir"
+          cd "$workdir"
+          url="https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git"
+          if [ -d .git ]; then
+            git remote set-url origin "$url"
+            git fetch --depth 1 origin main
+            git reset --hard FETCH_HEAD
+          else
+            git clone --depth 1 "$url" .
+          fi
+          bash .sandcastle/resume-parked-asks.sh
+      - name: Alert on failure
+        if: failure()
+        env:
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: |
+          [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
+          jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: resume-asks sweep failed in \`${{ github.repository }}\` — parked issues with late replies are NOT being re-armed — $RUN_URL" '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
+            curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" || true
