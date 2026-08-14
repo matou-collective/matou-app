@@ -1,4 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
+// Side-effect import: patches Node's global fetch to attach the dev API token
+// to local backend /api/ requests. extraHTTPHeaders below covers browser and
+// `request`-fixture calls; this covers specs that use Node's global fetch
+// directly (e.g. e2e-multi-backend identity/set, feature-spec seeding).
+import './tests/e2e/utils/node-fetch-auth';
 
 // Test dev server port (separate from dev server on 9002)
 const TEST_SERVER_PORT = 9003;
