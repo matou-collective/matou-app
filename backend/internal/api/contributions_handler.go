@@ -858,7 +858,8 @@ func (h *ContributionsHandler) HandleSignOff(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	contrib, err := h.service.SignOffContribution(r.Context(), spaceID, id, userID)
+	proof := decodeActionProof(r)
+	contrib, err := h.service.SignOffContribution(r.Context(), spaceID, id, userID, proof)
 	if err != nil {
 		log.Printf("[Contributions] SignOffContribution failed for %s: %v", id, err)
 		status := http.StatusBadRequest
@@ -895,7 +896,8 @@ func (h *ContributionsHandler) HandleReward(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	contrib, err := h.service.RewardContribution(r.Context(), spaceID, id, userID)
+	proof := decodeActionProof(r)
+	contrib, err := h.service.RewardContribution(r.Context(), spaceID, id, userID, proof)
 	if err != nil {
 		log.Printf("[Contributions] RewardContribution failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

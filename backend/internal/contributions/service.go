@@ -12,9 +12,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/matou-dao/backend/internal/keri"
 )
 
 var ErrNotFound = errors.New("not found")
+
+// firstProof returns the first proof from an optional-variadic argument, or nil
+// when none was supplied. High-stakes transitions accept an optional
+// KERI-verifiable proof (issue #20) attached by the acting steward's wallet;
+// the variadic keeps the proof optional without churning existing callers/tests.
+func firstProof(proof []*keri.ActionProof) *keri.ActionProof {
+	if len(proof) > 0 {
+		return proof[0]
+	}
+	return nil
+}
 
 // maxPlanChangeLogEntries caps ImplementationPlan.ChangeLog to avoid unbounded
 // growth; only the most recent entries are kept.
@@ -1883,7 +1896,7 @@ func (s *Service) ReviewContribution(ctx context.Context, spaceID, contributionI
 }
 
 // SignOffContribution transitions an approved contribution to signed_off.
-func (s *Service) SignOffContribution(ctx context.Context, spaceID, contributionID, userID string) (*Contribution, error) {
+func (s *Service) SignOffContribution(ctx context.Context, spaceID, contributionID, userID string, proof ...*keri.ActionProof) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
@@ -1915,6 +1928,7 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	c.SignedOffBy = userID
 	c.SignedOffAt = &now
 	c.Status = ContribSignedOff
+	c.Proof = firstProof(proof)
 	c.UpdatedAt = now
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
@@ -1925,7 +1939,7 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 // RewardContribution transitions a signed-off contribution to rewarded.
 // Community-admin only — the role check happens at the HTTP layer via
 // ActionRewardContribution.
-func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionID, userID string) (*Contribution, error) {
+func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionID, userID string, proof ...*keri.ActionProof) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
@@ -1940,6 +1954,7 @@ func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionI
 	c.RewardedBy = userID
 	c.RewardedAt = &now
 	c.Status = ContribRewarded
+	c.Proof = firstProof(proof)
 	c.UpdatedAt = now
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
@@ -1974,7 +1989,7 @@ func (s *Service) ApproveSubContribution(ctx context.Context, spaceID, contribut
 }
 
 // SignOffPlan marks an implementation plan as signed off after validating all milestones and contributions.
-func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID string) (*ImplementationPlan, error) {
+func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID string, proof ...*keri.ActionProof) (*ImplementationPlan, error) {
 	plan, err := s.GetImplementationPlan(ctx, spaceID, planID)
 	if err != nil {
 		return nil, fmt.Errorf("implementation plan not found: %w", err)
@@ -2022,6 +2037,7 @@ func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID strin
 	plan.SignedOff = true
 	plan.SignedOffBy = userID
 	plan.SignedOffAt = &now
+	plan.Proof = firstProof(proof)
 	plan.CurrentStatus = "active"
 	// Change log entries represent "changes since last sign-off" — clear them
 	// now that the plan has been (re-)signed off.
@@ -2594,7 +2610,7 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID, act
 // SubmitProjectCompletion transitions an active project to pending_completion
 // after verifying every contribution is signed off (or archived).
 // Clears any prior rejection_reason.
-func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectID, leadID string) (*Project, error) {
+func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectID, leadID string, proof ...*keri.ActionProof) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
@@ -2619,6 +2635,7 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 
 	proj.Status = ProjectPendingCompletion
 	proj.RejectionReason = ""
+	proj.Proof = firstProof(proof)
 	proj.UpdatedAt = time.Now()
 	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
 		return nil, err
@@ -2627,7 +2644,7 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 }
 
 // ApproveProjectCompletion marks the project completed.
-func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string) (*Project, error) {
+func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string, proof ...*keri.ActionProof) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
@@ -2639,6 +2656,7 @@ func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, project
 	proj.Status = ProjectCompleted
 	proj.CompletedBy = stewardID
 	proj.CompletedAt = &now
+	proj.Proof = firstProof(proof)
 	proj.UpdatedAt = now
 	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
 		return nil, err

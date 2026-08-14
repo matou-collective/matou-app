@@ -1,7 +1,11 @@
 // backend/internal/contributions/models.go
 package contributions
 
-import "time"
+import (
+	"time"
+
+	"github.com/matou-dao/backend/internal/keri"
+)
 
 // FileRef represents a file attachment stored via the files service.
 type FileRef struct {
@@ -167,6 +171,10 @@ type Project struct {
 	CompletedAt           *time.Time     `json:"completed_at,omitempty"`
 	RejectionReason       string         `json:"rejection_reason,omitempty"`
 	CommentCount          int            `json:"comment_count,omitempty"`
+
+	// KERI-verifiable proof of the most recent completion transition
+	// (submit / approve). See Contribution.Proof.
+	Proof *keri.ActionProof `json:"proof,omitempty"`
 }
 
 // --- Decision Plan ---
@@ -331,6 +339,9 @@ type ImplementationPlan struct {
 	SignedOffAt *time.Time `json:"signed_off_at,omitempty"`
 	CreatedBy   string     `json:"created_by,omitempty"`
 
+	// KERI-verifiable proof of the sign-off transition. See Contribution.Proof.
+	Proof *keri.ActionProof `json:"proof,omitempty"`
+
 	// ChangeLog records what has changed since the last sign-off, in
 	// chronological order. It is cleared whenever the plan is signed off
 	// (SignOffPlan) and accumulates entries again as subsequent mutations
@@ -458,6 +469,12 @@ type Contribution struct {
 	SignedOffAt            *time.Time         `json:"signed_off_at,omitempty"`
 	RewardedBy             string             `json:"rewarded_by,omitempty"`
 	RewardedAt             *time.Time         `json:"rewarded_at,omitempty"`
+
+	// KERI-verifiable proof of the most recent high-stakes transition
+	// (sign-off / reward). Attached by the acting steward's wallet at write
+	// time (issue #20); verified independently by peers (#19). Opaque here —
+	// the backend does not verify it.
+	Proof *keri.ActionProof `json:"proof,omitempty"`
 
 	// Sharing & offering
 	IsShared        bool       `json:"is_shared,omitempty"`

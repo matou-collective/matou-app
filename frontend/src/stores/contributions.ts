@@ -33,6 +33,7 @@ import type {
   SubmitEvidenceRequest,
   SubmitReviewRequest,
 } from 'src/types/projects';
+import { useActionProof } from 'composables/useActionProof';
 import { createLogger } from 'src/lib/logging';
 
 const log = createLogger('ContributionsStore');
@@ -237,7 +238,9 @@ export const useContributionsStore = defineStore('contributions', () => {
   async function signOff(id: string) {
     error.value = null;
     try {
-      const updated = await apiSignOff(id);
+      const { tryCreateProof } = useActionProof();
+      const proof = await tryCreateProof('contribution.sign_off', id);
+      const updated = await apiSignOff(id, proof);
       _patch(updated);
       return updated;
     } catch (e) {
@@ -249,7 +252,9 @@ export const useContributionsStore = defineStore('contributions', () => {
   async function reward(id: string) {
     error.value = null;
     try {
-      const updated = await apiReward(id);
+      const { tryCreateProof } = useActionProof();
+      const proof = await tryCreateProof('contribution.reward', id);
+      const updated = await apiReward(id, proof);
       _patch(updated);
       return updated;
     } catch (e) {

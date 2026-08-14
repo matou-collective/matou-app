@@ -7,6 +7,7 @@ import { Notify } from 'quasar';
 import { useKERIClient } from 'src/lib/keri/client';
 import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
+import { useActionProof } from './useActionProof';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
@@ -571,6 +572,8 @@ export function useAdminActions() {
       const existing = await getProfileById('CommunityProfile', profileId);
       const existingData = (existing?.data || {}) as Record<string, unknown>;
       const now = new Date().toISOString();
+      const { tryCreateProof } = useActionProof();
+      const proof = await tryCreateProof('member.role_change', stewardAid, { context: newRole });
       const merged = {
         ...existingData,
         userAID: stewardAid,
@@ -579,6 +582,7 @@ export function useAdminActions() {
         credentials: oldCred ? [oldCred.sad.d, credResult.said] : [credResult.said],
         memberSince: (existingData.memberSince as string) || now,
         lastActiveAt: now,
+        ...(proof ? { proof } : {}),
       };
       await createOrUpdateProfile('CommunityProfile', merged, { id: profileId });
 

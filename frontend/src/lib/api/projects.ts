@@ -4,6 +4,7 @@
  */
 import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
+import type { ActionProof } from 'src/lib/keri/actionProof';
 
 const log = createLogger('ProjectsAPI');
 
@@ -37,6 +38,7 @@ export interface Project {
   updated_at: string;
   completed_by?: string;
   completed_at?: string;
+  proof?: ActionProof;
   rejection_reason?: string;
   comment_count?: number;
 }
@@ -167,10 +169,11 @@ export async function archiveProject(id: string): Promise<void> {
   }
 }
 
-export async function submitProjectCompletion(id: string): Promise<Project> {
+export async function submitProjectCompletion(id: string, proof?: ActionProof): Promise<Project> {
   const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}/submit-completion`, {
     method: 'POST',
     headers: authHeaders(),
+    body: JSON.stringify({ proof }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
@@ -179,10 +182,11 @@ export async function submitProjectCompletion(id: string): Promise<Project> {
   return response.json();
 }
 
-export async function approveProjectCompletion(id: string): Promise<Project> {
+export async function approveProjectCompletion(id: string, proof?: ActionProof): Promise<Project> {
   const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}/approve-completion`, {
     method: 'POST',
     headers: authHeaders(),
+    body: JSON.stringify({ proof }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));

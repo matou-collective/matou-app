@@ -33,6 +33,7 @@ import {
   type UpdateMilestoneRequest,
 } from 'src/lib/api/implementationPlans';
 import type { Contribution } from 'src/lib/api/contributions';
+import { useActionProof } from 'composables/useActionProof';
 import { createLogger } from 'src/lib/logging';
 
 const log = createLogger('ProjectsStore');
@@ -128,7 +129,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function submitCompletion(id: string) {
     error.value = null;
     try {
-      const updated = await apiSubmitCompletion(id);
+      const { tryCreateProof } = useActionProof();
+      const proof = await tryCreateProof('project.completion_approval', id);
+      const updated = await apiSubmitCompletion(id, proof);
       _patchProject(updated);
       return updated;
     } catch (e) {
@@ -140,7 +143,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function approveCompletion(id: string) {
     error.value = null;
     try {
-      const updated = await apiApproveCompletion(id);
+      const { tryCreateProof } = useActionProof();
+      const proof = await tryCreateProof('project.completion_approval', id);
+      const updated = await apiApproveCompletion(id, proof);
       _patchProject(updated);
       return updated;
     } catch (e) {
@@ -250,7 +255,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function signOffPlan(planId: string, projectId: string) {
     error.value = null;
     try {
-      const updated = await signOffImplementationPlan(planId);
+      const { tryCreateProof } = useActionProof();
+      const proof = await tryCreateProof('plan.sign_off', planId);
+      const updated = await signOffImplementationPlan(planId, proof);
       implementationPlans.value = { ...implementationPlans.value, [projectId]: updated };
       return updated;
     } catch (e) {

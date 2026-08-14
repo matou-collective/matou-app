@@ -11,6 +11,7 @@ import type {
   SubmitEvidenceRequest,
   SubmitReviewRequest,
 } from 'src/types/projects';
+import type { ActionProof } from 'src/lib/keri/actionProof';
 
 const log = createLogger('ContributionsAPI');
 
@@ -54,6 +55,7 @@ export interface Contribution {
   assigned_contributor_id?: string;
   signed_off_by?: string;
   signed_off_at?: string;
+  proof?: ActionProof;
   rewarded_by?: string;
   rewarded_at?: string;
   created_by: string;
@@ -250,12 +252,12 @@ export async function submitReview(
   return response.json();
 }
 
-export async function signOffContribution(id: string): Promise<Contribution> {
+export async function signOffContribution(id: string, proof?: ActionProof): Promise<Contribution> {
   log.info('Signing off contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/sign-off`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({}),
+    body: JSON.stringify({ proof }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
@@ -264,12 +266,12 @@ export async function signOffContribution(id: string): Promise<Contribution> {
   return response.json();
 }
 
-export async function rewardContribution(id: string): Promise<Contribution> {
+export async function rewardContribution(id: string, proof?: ActionProof): Promise<Contribution> {
   log.info('Marking contribution %s as rewarded', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/reward`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({}),
+    body: JSON.stringify({ proof }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));

@@ -375,7 +375,8 @@ func (h *ProjectsHandler) HandleArchive(w http.ResponseWriter, r *http.Request, 
 func (h *ProjectsHandler) HandleSubmitCompletion(w http.ResponseWriter, r *http.Request, id string) {
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
 	leadID := GetUserAID(r)
-	proj, err := h.service.SubmitProjectCompletion(r.Context(), spaceID, id, leadID)
+	proof := decodeActionProof(r)
+	proj, err := h.service.SubmitProjectCompletion(r.Context(), spaceID, id, leadID, proof)
 	if err != nil {
 		log.Printf("[Projects] submit-completion failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -393,7 +394,8 @@ func (h *ProjectsHandler) HandleApproveCompletion(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 		return
 	}
-	proj, err := h.service.ApproveProjectCompletion(r.Context(), spaceID, id, stewardID)
+	proof := decodeActionProof(r)
+	proj, err := h.service.ApproveProjectCompletion(r.Context(), spaceID, id, stewardID, proof)
 	if err != nil {
 		log.Printf("[Projects] approve-completion failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

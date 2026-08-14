@@ -18,6 +18,7 @@ import {
 } from 'src/lib/agentLifecycle';
 import { extractWitnessAids } from 'src/lib/keri/witnessAssignment';
 import { parseCesrStream, filterKelMessages, mergeKelMessages } from 'src/lib/keri/cesr';
+import type { SignedDigest } from 'src/lib/keri/actionProof';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -2093,6 +2094,45 @@ export class KERIClient {
       await this.client.ipex().submitAdmit(aidName, admit, asigs, end, []);
       console.log('[KERIClient] Credential admitted (no specific recipient)');
     }
+  }
+
+  /**
+   * Sign an arbitrary digest/string with an AID's current signing key.
+   *
+   * Produces a non-indexed (detached Cigar) signature suitable for embedding
+   * in application objects as a KERI-verifiable proof of a high-stakes action
+   * (issue #20). This is NOT a KEL/TEL establishment-event signature — it
+   * carries no key index into an event's `k` array; a verifier checks it
+   * against the AID's key state (`k`) at the returned sequence number.
+   *
+   * The public key (`verferQb64`) and sequence (`s`) are captured from a fresh
+   * key-state fetch right before signing, so a concurrent rotation can't leave
+   * the embedded key state out of step with the signature.
+   *
+   * @param aidName - local alias of the signing AID (not the prefix)
+   * @param data - the canonical digest string to sign (UTF-8 encoded)
+   */
+  async signDigest(aidName: string, data: string): Promise<SignedDigest> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+
+    const signify = await import('signify-ts');
+
+    // hab.state.k = current signing key(s) qb64; hab.state.s = sequence (hex).
+    const hab = await this.client.identifiers().get(aidName);
+    const keeper = this.client.manager!.get(hab);
+
+    // indexed=false -> detached Cigar signature(s), one per current signing key.
+    const sigs = await keeper.sign(signify.b(data), false);
+    if (!sigs.length) throw new Error(`signDigest: no signature produced for ${aidName}`);
+
+    return {
+      aid: hab.prefix,
+      keyIndex: 0,
+      verferQb64: hab.state.k[0],
+      sequence: hab.state.s,
+      signature: sigs[0]!,
+    };
   }
 
   /**

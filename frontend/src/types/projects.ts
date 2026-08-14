@@ -3,6 +3,8 @@
  * Canonical definitions — import these everywhere; do not duplicate in API clients.
  */
 
+import type { ActionProof } from 'src/lib/keri/actionProof';
+
 export type ProjectStatus = 'created' | 'active' | 'pending_completion' | 'completed' | 'archived';
 
 export type ContributionStatus =
@@ -152,6 +154,7 @@ export interface Contribution {
   // Sign-off
   signed_off_by?: string;
   signed_off_at?: string;
+  proof?: ActionProof;
   // Rewarded
   rewarded_by?: string;
   rewarded_at?: string;
@@ -190,6 +193,7 @@ export interface ImplementationPlan {
   signed_off: boolean;
   signed_off_by?: string;
   signed_off_at?: string;
+  proof?: ActionProof;
   created_by?: string;
   created_at?: string;
   updated_at?: string;
@@ -223,6 +227,7 @@ export interface Project {
   updated_at: string;
   completed_by?: string;
   completed_at?: string;
+  proof?: ActionProof;
   rejection_reason?: string;
   comment_count?: number;
 }

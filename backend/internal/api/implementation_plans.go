@@ -9,6 +9,7 @@ import (
 
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/contributions"
+	"github.com/matou-dao/backend/internal/keri"
 )
 
 // ImplementationPlansHandler handles implementation plan HTTP requests.
@@ -147,26 +148,30 @@ func (h *ImplementationPlansHandler) HandleAddMilestone(w http.ResponseWriter, r
 // Signs off the plan if all milestones have contributions and all contributions are confirmed.
 // Returns 409 if already signed off, 422 if contributions are unconfirmed.
 func (h *ImplementationPlansHandler) HandleSignOff(w http.ResponseWriter, r *http.Request, id string) {
+	// The optional body carries a fallback user_id (when no RBAC middleware is
+	// wired on this route) and the KERI action proof (issue #20). Decode it
+	// once so the proof is captured regardless of where the AID came from.
+	var body struct {
+		UserID string            `json:"user_id"`
+		Proof  *keri.ActionProof `json:"proof"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
 	userID := GetUserAID(r)
 	if userID == "" {
 		// Fall back to reading X-User-AID header directly (no RBAC middleware on this route)
 		userID = r.Header.Get("X-User-AID")
 	}
-	if userID == "" {
+	if userID == "" && body.UserID != "" {
 		// Allow caller to pass user_id in body when running without RBAC middleware
-		var body struct {
-			UserID string `json:"user_id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.UserID != "" {
-			userID = body.UserID
-		}
+		userID = body.UserID
 	}
 	if userID == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	plan, err := h.service.SignOffPlan(r.Context(), spaceID, id, userID)
+	plan, err := h.service.SignOffPlan(r.Context(), spaceID, id, userID, body.Proof)
 	if err != nil {
 		log.Printf("[ImplementationPlans] SignOffPlan failed for %s: %v", id, err)
 
