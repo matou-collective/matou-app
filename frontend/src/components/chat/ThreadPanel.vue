@@ -30,7 +30,7 @@
                 <span class="sender-name">{{ reply.senderName }}</span>
                 <span class="reply-time">{{ formatTime(reply.sentAt) }}</span>
               </div>
-              <p class="reply-text">{{ reply.content }}</p>
+              <p class="reply-text">{{ mentionsToPlainText(reply.content) }}</p>
             </div>
           </div>
         </div>
@@ -45,6 +45,7 @@ import { X } from 'lucide-vue-next';
 import { useChatStore } from 'stores/chat';
 import type { ChatMessage } from 'src/lib/api/chat';
 import UserAvatar from 'components/profiles/UserAvatar.vue';
+import { mentionsToPlainText } from 'src/lib/mentions';
 
 const props = defineProps<{
   messageId: string;

@@ -40,8 +40,30 @@ export function markdownToHtml(text: string | null | undefined): string {
 }
 
 /**
+ * Sanitise an HTML string for safe `v-html` rendering. Anchors are forced to
+ * open externally (see the hook above); other elements keep DOMPurify's safe
+ * defaults, which pass through the `<span class="mention-chip" data-mention-*>`
+ * markup the chat mention renderer emits.
+ */
+export function sanitizeHtml(html: string): string {
+  // DOMPurify only has a working `sanitize` when a DOM is present. In a
+  // plain-node context (unit tests) it is unavailable — fail CLOSED by
+  // escaping everything rather than passing raw HTML through: a sanitizer
+  // that cannot sanitize must never become a bypass. Production always runs
+  // in the Electron renderer / browser where a DOM exists, so this branch is
+  // test-only (assertions there operate on escaped output).
+  if (typeof DOMPurify.sanitize !== 'function') {
+    return html
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+  return DOMPurify.sanitize(html);
+}
+
+/**
  * Render user-authored text to sanitised HTML safe for `v-html`.
  */
 export function renderMarkdown(text: string | null | undefined): string {
-  return DOMPurify.sanitize(markdownToHtml(text));
+  return sanitizeHtml(markdownToHtml(text));
 }
