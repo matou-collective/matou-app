@@ -174,7 +174,7 @@ func (h *DecisionPlansHandler) HandleTransition(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	dp, err := h.service.TransitionDecisionPlan(r.Context(), spaceID, id, contributions.DecisionPlanStatus(req.Status), req.Proof)
+	dp, err := h.service.TransitionDecisionPlan(r.Context(), spaceID, id, contributions.DecisionPlanStatus(req.Status), r.Header.Get("X-User-AID"), req.Proof)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

@@ -285,7 +285,7 @@ func TestService_TransitionDecisionPlan(t *testing.T) {
 		ProposalLeadID: "lead-1", ProposalStewardID: "steward-1",
 	})
 
-	updated, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted, nil)
+	updated, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted, "u", nil)
 	if err != nil {
 		t.Fatalf("TransitionDecisionPlan failed: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestService_TransitionDecisionPlan(t *testing.T) {
 	}
 
 	// Invalid: submitted → drafted (no such transition)
-	_, err = svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanDrafted, nil)
+	_, err = svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanDrafted, "u", nil)
 	if err == nil {
 		t.Error("expected error for invalid transition")
 	}
@@ -399,10 +399,10 @@ func TestService_CompleteGovernanceAction(t *testing.T) {
 	}
 
 	// Plan signoff is required before any action can be completed.
-	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted, nil); err != nil {
+	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted, "u", nil); err != nil {
 		t.Fatalf("TransitionDecisionPlan (submitted) failed: %v", err)
 	}
-	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSignedOff, nil); err != nil {
+	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSignedOff, "u", nil); err != nil {
 		t.Fatalf("TransitionDecisionPlan (signed_off) failed: %v", err)
 	}
 
@@ -2032,12 +2032,12 @@ func TestRewardContribution_KeepsSignOffProof(t *testing.T) {
 	contrib.Status = ContribApproved
 	_ = svc.SaveContribution(ctx, spaceID, contrib)
 
-	signOffProof := &Proof{V: "matou-proof/v1", Action: "contribution_signoff", Subject: contrib.ID, Value: "signed_off", Dt: "2026-08-15T00:00:00Z", AID: "steward", Sig: "0Bsig1"}
+	signOffProof := &Proof{V: "matou-proof/v1", Action: "contribution_signoff", Subject: contrib.ID, Space: spaceID, Value: "signed_off", Dt: "2026-08-15T00:00:00Z", AID: "steward", Sig: "0Bsig1"}
 	if _, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward", signOffProof); err != nil {
 		t.Fatalf("SignOffContribution: %v", err)
 	}
 
-	rewardProof := &Proof{V: "matou-proof/v1", Action: "contribution_reward", Subject: contrib.ID, Value: "rewarded", Dt: "2026-08-15T00:01:00Z", AID: "admin", Sig: "0Bsig2"}
+	rewardProof := &Proof{V: "matou-proof/v1", Action: "contribution_reward", Subject: contrib.ID, Space: spaceID, Value: "rewarded", Dt: "2026-08-15T00:01:00Z", AID: "admin", Sig: "0Bsig2"}
 	got, err := svc.RewardContribution(ctx, spaceID, contrib.ID, "admin", rewardProof)
 	if err != nil {
 		t.Fatalf("RewardContribution: %v", err)

@@ -12,11 +12,12 @@ import "fmt"
 //
 // Canonical signed message (mirrored by the Go verifier in #19):
 //
-//	<v>\n<action>\n<subject>\n<value>\n<dt>
+//	<v>\n<action>\n<subject>\n<space>\n<value>\n<dt>
 type Proof struct {
 	V       string `json:"v"`       // format tag, e.g. "matou-proof/v1"
 	Action  string `json:"action"`  // e.g. "contribution_signoff"
 	Subject string `json:"subject"` // object id / SAID the action targets
+	Space   string `json:"space"`   // any-sync space id the object lives in (anti-cross-space-replay)
 	Value   string `json:"value"`   // asserted value, e.g. "signed_off"
 	Dt      string `json:"dt"`      // RFC3339 timestamp bound into the signed message
 	AID     string `json:"aid"`     // signer AID prefix
@@ -30,7 +31,7 @@ type Proof struct {
 //
 // actorAID is the authenticated caller (X-User-AID); the signer must be the
 // actor. Pass "" to skip that check (e.g. no identity header on the route).
-func (p *Proof) ValidateConsistency(action, subject, value, actorAID string) error {
+func (p *Proof) ValidateConsistency(action, subject, space, value, actorAID string) error {
 	if p == nil {
 		return nil
 	}
@@ -42,6 +43,9 @@ func (p *Proof) ValidateConsistency(action, subject, value, actorAID string) err
 	}
 	if p.Subject != subject {
 		return fmt.Errorf("proof: subject %q does not match object %q", p.Subject, subject)
+	}
+	if p.Space != space {
+		return fmt.Errorf("proof: space %q does not match object space %q", p.Space, space)
 	}
 	if p.Value != value {
 		return fmt.Errorf("proof: value %q does not match asserted %q", p.Value, value)

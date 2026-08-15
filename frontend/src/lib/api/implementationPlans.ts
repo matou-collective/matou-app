@@ -123,7 +123,7 @@ export async function signOffImplementationPlan(planId: string, proof?: ActionPr
     `${BACKEND_URL}/api/v1/implementation-plans/${planId}/sign-off`,
     {
       method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(proof ? { proof } : {}),
     },
   );

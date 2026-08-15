@@ -42,25 +42,29 @@ side until the verifier lands.
 
 ### Canonical message
 
-Fixed five-line layout, newline-delimited:
+Fixed six-line layout, newline-delimited:
 
 ```
 matou-proof/v1
 <action>
 <subject>
+<space>
 <value>
 <dt>
 ```
 
-- Every field is required, non-empty, and **must not contain a newline**
-  (enforced in `buildProofMessage`) — so the layout has fixed arity and is
-  unambiguous by construction. There is no optional field whose omission could
-  make two different field-tuples serialize identically.
+- Every field is required, non-empty, and **must not contain a line break**
+  (`\n` or `\r`, enforced in `buildProofMessage`) — so the layout has fixed
+  arity and is unambiguous by construction. There is no optional field whose
+  omission could make two different field-tuples serialize identically.
 - The version tag is **inside the signed bytes**, so a future v2 proof can
   never be cross-replayed as v1.
 - `action` — one of the wire-stable literals `contribution_signoff`,
   `contribution_reward`, `plan_signoff`, `project_completion`.
 - `subject` — the id of the object the action targets.
+- `space` — the any-sync space id the object lives in. Binding it prevents
+  cross-space replay: a proof for `ctr_x` in the community space can never
+  validate a same-id object in another space.
 - `value` — the asserted target value (e.g. `signed_off`, `rewarded`,
   `completed`). Binding the value means a proof for one transition can never
   validate another (e.g. a submit-completion vs. approve-completion).
@@ -81,7 +85,7 @@ transition):
 | Key | Meaning |
 | --- | --- |
 | `v` | format tag `matou-proof/v1` |
-| `action` / `subject` / `value` / `dt` | the signed fields (duplicated so the verifier knows exactly what was signed; it must check each against the object's authoritative field) |
+| `action` / `subject` / `space` / `value` / `dt` | the signed fields (duplicated so the verifier knows exactly what was signed; it must check each against the object's authoritative field — `space` against the space the object was actually read from) |
 | `aid` | signer AID prefix (the acting member's personal AID) |
 | `sig` | qb64 CESR non-indexed (Cigar) signature over the canonical message bytes |
 
@@ -117,5 +121,23 @@ by honest peers — exactly the intended enforcement.
 - **No proof on submit-completion.** Only the approval (`project_completion`,
   value `completed`) is proof-bearing; the lower-privilege submit transition is
   gated by RBAC (#17) but carries no digest.
-- **Verification is entirely deferred** — until #19, proofs are persisted
-  verbatim and unchecked (the backend does cheap consistency checks only).
+- **Verification is entirely deferred** — until #19, proofs are cryptographically
+  unchecked. The backend does cheap consistency checks only
+  (`Proof.ValidateConsistency`: version/action/subject/space/value match the
+  transition, signer == acting `X-User-AID`, sig/dt non-empty).
+- **Item 3's invariant is client-side only.** `PUT /api/v1/members/{aid}/role`
+  still accepts a bare role change with no credential linkage; what ships is
+  "the UI always does both" (credential re-issue first, then the profile
+  write), not server-side enforcement of "valid only when accompanied by a
+  re-issue". Server-side enforcement arrives with #19's validation layer.
+- **Downgrades don't retract key authority.** Demoting a steward revokes and
+  re-issues the membership credential, but nothing removes the AID from the
+  org multisig group or demotes their any-sync ACL from Admin — the credential
+  says "member" while the key can still sign as a group signer. Pre-existing
+  gap, named here because this branch makes downgrades look complete.
+- **matou-mcp sign-offs carry no proof** (`workflow.ts` POSTs `{}`). Fine until
+  #19; after #19 every MCP-driven sign-off is invalid on honest peers — the
+  MCP needs a signing path or such sign-offs stay dev-only.
+- **Proposal sign-off is not proofed.** The ruling enumerates plan sign-off;
+  the proposal object's own sign-off transition carries no digest even though
+  the UI shows both affordances on the proposal page.

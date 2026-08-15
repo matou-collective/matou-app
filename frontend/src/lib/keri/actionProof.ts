@@ -38,6 +38,11 @@ export interface ActionProofInput {
   action: ProofAction;
   /** Stable identifier of the object being acted on (SAID / object id). */
   subject: string;
+  /**
+   * any-sync space id the object lives in. Bound into the signed message so a
+   * proof can never be replayed onto a same-id object in another space.
+   */
+  space: string;
   /** The target value the action asserts (e.g. the new status). */
   value: string;
   /** RFC3339 / ISO-8601 UTC timestamp bound into the signed message. */
@@ -59,12 +64,12 @@ export interface ActionProof extends ActionProofInput {
   sig: string;
 }
 
-const FIELD_ORDER: (keyof ActionProofInput)[] = ['action', 'subject', 'value', 'dt'];
+const FIELD_ORDER: (keyof ActionProofInput)[] = ['action', 'subject', 'space', 'value', 'dt'];
 
 /**
  * Build the canonical message that gets signed. Deterministic and trivially
  * reproducible in any language: the version tag followed by action, subject,
- * value and timestamp, each on its own line. None of these fields may contain a
+ * space, value and timestamp, each on its own line. None of these fields may contain a
  * newline (enforced below), so the layout is unambiguous.
  *
  * IMPORTANT for verifiers: do NOT trust a copy of this string carried on the
@@ -77,11 +82,11 @@ export function buildProofMessage(input: ActionProofInput): string {
     if (typeof val !== 'string' || val.length === 0) {
       throw new Error(`actionProof: field "${key}" must be a non-empty string`);
     }
-    if (val.includes('\n')) {
-      throw new Error(`actionProof: field "${key}" must not contain a newline`);
+    if (val.includes('\n') || val.includes('\r')) {
+      throw new Error(`actionProof: field "${key}" must not contain a line break`);
     }
   }
-  return [PROOF_VERSION, input.action, input.subject, input.value, input.dt].join('\n');
+  return [PROOF_VERSION, input.action, input.subject, input.space, input.value, input.dt].join('\n');
 }
 
 /** UTF-8 bytes of the canonical message — exactly what gets signed/verified. */

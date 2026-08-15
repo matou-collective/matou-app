@@ -183,7 +183,7 @@ export async function submitProjectCompletion(id: string): Promise<Project> {
 export async function approveProjectCompletion(id: string, proof?: ActionProof): Promise<Project> {
   const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}/approve-completion`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(proof ? { proof } : {}),
   });
   if (!response.ok) {

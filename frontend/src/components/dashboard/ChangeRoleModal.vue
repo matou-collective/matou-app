@@ -257,39 +257,47 @@ async function handleConfirm() {
   setStepsFor(isStewardRole);
 
   try {
-    // Step 1: Update role in backend (CommunityProfile)
-    upgradeStarted.value = true;
-    upgradeSteps[0].status = 'active';
-    const result = await updateMemberRole(props.memberAid, selectedRole.value);
-    if (result.error) {
-      upgradeSteps[0].status = 'error';
-      error.value = result.error;
-      isUpdating.value = false;
-      return;
-    }
-    upgradeSteps[0].status = 'done';
-
     // Every role change is credential-backed (issue #20 item 3): the membership
     // credential is revoked + re-issued with the new role so the profile role
     // and the credential role can never drift. Steward roles additionally run
     // the multisig rotation to make the member a group signer.
+    //
+    // The credential step runs FIRST: the credential is the authoritative
+    // record, so on failure nothing has changed and the profile never claims a
+    // role no credential asserts. (reissueMembershipCredential also writes the
+    // new role onto the profile; the explicit role write below keeps the
+    // backend REST path in sync.)
+    upgradeStarted.value = true;
+    upgradeSteps[0].status = 'active';
     const ok = isStewardRole
       ? await upgradeMemberToSteward(props.memberAid, selectedRole.value, advanceStep)
       : await reissueMembershipCredential(props.memberAid, selectedRole.value, advanceStep);
 
-    if (ok) {
-      for (const step of upgradeSteps) step.status = 'done';
-      upgradeComplete.value = true;
-      emit('role-updated', selectedRole.value);
-    } else {
-      // Mark remaining pending steps as errors
+    if (!ok) {
+      // Mark remaining pending steps as errors. The role was NOT changed —
+      // credential and profile still consistently assert the old role.
       for (const step of upgradeSteps) {
         if (step.status === 'active') step.status = 'error';
       }
       error.value = isStewardRole
-        ? 'Steward upgrade failed. The role was updated but key rotation or credential re-issuance may not have completed.'
-        : 'Credential re-issue failed. The role was updated but the membership credential may not reflect the new role.';
+        ? 'Steward upgrade failed. No role change was applied — the member keeps their previous role and credential.'
+        : 'Credential re-issue failed. No role change was applied — the member keeps their previous role and credential.';
+      isUpdating.value = false;
+      return;
     }
+
+    // Credential is authoritative and now asserts the new role — bring the
+    // backend profile record into line.
+    const result = await updateMemberRole(props.memberAid, selectedRole.value);
+    if (result.error) {
+      // Credential asserts the new role; profile write failed and will catch
+      // up (reissueMembershipCredential already patched the profile object).
+      error.value = result.error;
+    }
+
+    for (const step of upgradeSteps) step.status = 'done';
+    upgradeComplete.value = true;
+    emit('role-updated', selectedRole.value);
   } catch (err) {
     for (const step of upgradeSteps) {
       if (step.status === 'active') step.status = 'error';

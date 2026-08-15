@@ -59,9 +59,16 @@ export async function signActionProof(args: SignActionProofArgs): Promise<Action
     }
     await keriClient.ensureSession();
 
+    const space = identityStore.communitySpaceId;
+    if (!space) {
+      log.warn('No community space id — skipping %s proof for %s', args.action, args.subject);
+      return null;
+    }
+
     const input: ActionProofInput = {
       action: args.action,
       subject: args.subject,
+      space,
       value: args.value,
       dt: args.dt ?? new Date().toISOString(),
     };

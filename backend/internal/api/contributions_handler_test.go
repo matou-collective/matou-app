@@ -162,6 +162,7 @@ func TestContributionsHandler_SignOff_PersistsProof(t *testing.T) {
 		V:       "matou-proof/v1",
 		Action:  "contribution_signoff",
 		Subject: contrib.ID,
+		Space:   "community",
 		Value:   "signed_off",
 		Dt:      now.Format(time.RFC3339),
 		AID:     "steward-1", // must match X-User-AID: ValidateConsistency requires signer == actor

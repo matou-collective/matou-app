@@ -255,7 +255,7 @@ export async function signOffContribution(id: string, proof?: ActionProof): Prom
   log.info('Signing off contribution %s', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/sign-off`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(proof ? { proof } : {}),
   });
   if (!response.ok) {
@@ -269,7 +269,7 @@ export async function rewardContribution(id: string, proof?: ActionProof): Promi
   log.info('Marking contribution %s as rewarded', id);
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${id}/reward`, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify(proof ? { proof } : {}),
   });
   if (!response.ok) {
