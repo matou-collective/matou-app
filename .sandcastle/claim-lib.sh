@@ -58,9 +58,16 @@ claim_label_id() { # claim_label_id <name> -> id | rc 1 (LOUD on miss)
 claim_alive_runs() { # -> JSON array of in-progress swarm run numbers | rc 1 on API failure
   # &page=1 is mandatory: without it Forgejo ignores `limit` and dumps every
   # task ever (O(n), ~30s and growing — the 2026-07-30 healer blindness).
+  # Name match is `swarm` OR `swarm (N)` (#541): swarm.yml's 2-wide worker
+  # matrix (44fe333) makes Forgejo suffix each matrix job's name with its
+  # index — live-probed 2026-08-15, every real task is "swarm (1)"/"swarm
+  # (2)", never bare "swarm". An exact-match filter (the pre-matrix original)
+  # silently always returned [], so claim_won's arbitration only ever saw a
+  # caller's OWN claim as alive and every racing host "won" — two hosts fully
+  # implemented #536 before either noticed the other.
   local raw
   raw="$(_claim_api "$FORGEJO_API/actions/tasks?limit=100&page=1")" || return 1
-  jq -c '[.workflow_runs[]? | select(.name == "swarm" and (.status == "running" or .status == "waiting")) | .run_number]' <<<"$raw"
+  jq -c '[.workflow_runs[]? | select((.name == "swarm" or (.name | test("^swarm \\("))) and (.status == "running" or .status == "waiting")) | .run_number]' <<<"$raw"
 }
 
 claim_post() { # claim_post <issue> <host> <run> -> comment id | rc 1 on API failure
