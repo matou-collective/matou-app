@@ -65,9 +65,14 @@ fi
 # (`waiting` = queued behind the busy host, or `running`), OR one that STARTED
 # within the window (Forgejo's own scheduler is doing its job). The in-flight
 # clause is #238 AC3 — without it a queued dispatch is re-dispatched every tick.
+# Name match is `$name` OR `$name (N)` (#588, same drift as #541's
+# claim_alive_runs): swarm.yml's 2-wide worker matrix (44fe333) makes Forgejo
+# name each matrix job "swarm (1)"/"swarm (2)", never bare "swarm" — an
+# exact-match filter never sees a real swarm run as in-flight and can pile on
+# redundant dispatches while matrix workers are already running.
 inflight="$(printf '%s' "$runs" | jq -r --arg n "$name" --arg c "$cutoff" \
   '[.workflow_runs[]?
-     | select(.name == $n)
+     | select(.name == $n or (.name | test("^" + $n + " \\(")))
      | select((.status == "waiting") or (.status == "running") or ((.run_started_at // "") >= $c))
    ] | length')"
 
