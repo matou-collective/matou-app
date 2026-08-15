@@ -771,7 +771,11 @@ func main() {
 	// Wrap with middleware: request logger → localhost guard → token guard → CORS.
 	// LocalhostGuard blocks other machines; TokenGuard blocks other local
 	// processes from issuing mutating requests without the per-launch token.
-	handler := api.RequestLogger(api.LocalhostGuard(api.TokenGuard(apiToken, api.CORSMiddleware(mux))))
+	// CORS sits outside TokenGuard so 401 responses carry
+	// Access-Control-Allow-Origin — a browser then surfaces the 401 + JSON
+	// body instead of an opaque "Failed to fetch". Preflight OPTIONS is
+	// answered by CORSMiddleware before TokenGuard ever sees it.
+	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(api.TokenGuard(apiToken, mux))))
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

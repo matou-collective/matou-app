@@ -46,6 +46,11 @@ function mapError(status: number, body: unknown): string {
     body && typeof body === "object" && "error" in body ? String((body as Record<string, unknown>).error) : "";
   switch (status) {
     case 401:
+      // TokenGuard 401s carry "invalid or missing API token" — a different
+      // problem (wrong bearer token) than a missing X-User-AID identity.
+      if (backendMsg.includes("API token")) {
+        return `API token rejected by the backend — set MATOU_API_TOKEN (or check the api-token file matches this backend). ${backendMsg}`.trim();
+      }
       return `Identity not configured — open the Matou app or set MATOU_USER_AID. ${backendMsg}`.trim();
     case 403:
       return `You lack the role required (need project_lead / steward / founding_member). ${backendMsg}`.trim();

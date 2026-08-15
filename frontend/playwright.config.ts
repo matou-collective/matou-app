@@ -46,6 +46,15 @@ export default defineConfig({
     // Backend TokenGuard requires an API token on mutating requests. Test
     // backends fall back to the fixed dev token, so inject it centrally here so
     // both app-driven fetches and direct page.request calls are authenticated.
+    //
+    // CAVEAT: context-level extra headers participate in CORS — they make
+    // every cross-origin browser fetch preflighted, and the config server's
+    // allowlist must include Authorization or fetches to it fail ("Failed to
+    // fetch") and the app silently falls back to dev-infra defaults. Specs
+    // are safe when they use setupTestConfig() (its route interception
+    // bypasses preflight); any context that skips it must add it. The durable
+    // fix — Authorization in the config server's Access-Control-Allow-Headers
+    // — ships with matou-infrastructure feat/config-server-auth.
     extraHTTPHeaders: {
       Authorization: 'Bearer matou-dev',
     },

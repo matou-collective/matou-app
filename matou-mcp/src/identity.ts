@@ -34,20 +34,25 @@ const DEV_API_TOKEN = "matou-dev";
 /**
  * Resolve the API token the backend's TokenGuard requires on mutating requests:
  *   - MATOU_API_TOKEN env override, else
- *   - the 0600 api-token file the backend writes into its data dir, else
- *   - the fixed dev/test constant.
+ *   - dev/test backends: the fixed dev/test constant (their token), else
+ *   - the 0600 api-token file the packaged app's backend writes into its
+ *     data dir.
  *
- * The token file lives next to identity.json in the Electron app's data dir.
+ * The env matters: the token file only ever holds the *packaged* app's
+ * random token. Once the AppImage has run once the file exists, and reading
+ * it against a dev/test backend (which expects the constant) would 401
+ * every mutation with a misleading error.
  */
-export function resolveApiToken(readFile: ReadFile = defaultRead): string {
+export function resolveApiToken(env: MatouEnv, readFile: ReadFile = defaultRead): string {
   const override = process.env.MATOU_API_TOKEN;
   if (override) return override;
+  if (env === "dev" || env === "test") return DEV_API_TOKEN;
   const path = join(homedir(), ".config", "Matou", "matou-data", "api-token");
   try {
     const token = readFile(path).trim();
     if (token) return token;
   } catch {
-    // File absent (dev/test, or app not run yet) — fall back to the constant.
+    // File absent (app not run yet) — fall back to the constant.
   }
   return DEV_API_TOKEN;
 }

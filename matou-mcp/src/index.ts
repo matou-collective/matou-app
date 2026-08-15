@@ -14,7 +14,7 @@ import { registerNoticeTools } from "./tools/notices.js";
 async function buildContext(): Promise<ToolContext> {
   const { baseUrl, env } = await resolveBackend();
   const actingAid = resolveActingAid();
-  const apiToken = resolveApiToken();
+  const apiToken = resolveApiToken(env);
   const config: BackendConfig = {
     baseUrl,
     actingAid,

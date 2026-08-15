@@ -39,13 +39,12 @@ func ResolveAPIToken() string {
 }
 
 // randomToken returns a 32-byte hex-encoded random token. If the OS RNG fails
-// (should never happen), it falls back to the dev constant rather than crashing
-// the backend — the LocalhostGuard still restricts access to loopback.
+// (should never happen), the backend refuses to start: silently downgrading
+// production to the publicly known dev constant would be worse than crashing.
 func randomToken() string {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		log.Printf("[Security] failed to generate random API token, using dev fallback: %v", err)
-		return DevAPIToken
+		log.Fatalf("[Security] failed to generate random API token: %v", err)
 	}
 	return hex.EncodeToString(buf)
 }
@@ -55,6 +54,11 @@ func randomToken() string {
 func WriteTokenFile(dataDir, token string) (string, error) {
 	path := filepath.Join(dataDir, apiTokenFileName)
 	if err := os.WriteFile(path, []byte(token), 0600); err != nil {
+		return "", err
+	}
+	// os.WriteFile applies the mode only on creation; tighten a pre-existing
+	// file left behind with wider permissions.
+	if err := os.Chmod(path, 0600); err != nil {
 		return "", err
 	}
 	return path, nil

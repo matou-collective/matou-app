@@ -34,14 +34,20 @@ describe("detectEnv", () => {
 describe("resolveApiToken", () => {
   it("prefers the MATOU_API_TOKEN env override", () => {
     process.env.MATOU_API_TOKEN = "env-token";
-    expect(resolveApiToken(() => "file-token")).toBe("env-token");
+    expect(resolveApiToken("prod", () => "file-token")).toBe("env-token");
   });
-  it("reads the token from the api-token file when no override", () => {
-    expect(resolveApiToken(() => "file-token\n")).toBe("file-token");
+  it("uses the dev constant for dev/test backends even when the file exists", () => {
+    // The file only ever holds the packaged app's token; reading it against
+    // a dev/test backend would 401 every mutation.
+    expect(resolveApiToken("dev", () => "file-token")).toBe("matou-dev");
+    expect(resolveApiToken("test", () => "file-token")).toBe("matou-dev");
+  });
+  it("reads the token from the api-token file for prod backends", () => {
+    expect(resolveApiToken("prod", () => "file-token\n")).toBe("file-token");
   });
   it("falls back to the dev constant when the file is unreadable", () => {
     expect(
-      resolveApiToken(() => {
+      resolveApiToken("prod", () => {
         throw new Error("ENOENT");
       }),
     ).toBe("matou-dev");
