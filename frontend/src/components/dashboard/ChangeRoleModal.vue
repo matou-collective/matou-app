@@ -168,19 +168,21 @@ const error = ref<string | null>(null);
 // Steward upgrades run the full multisig + credential re-issue flow; plain
 // role changes are credential-backed too (issue #20 item 3) but skip the
 // multisig steps, so the stepper only shows the credential steps.
+// Step order mirrors execution order: the credential (and, for stewards, the
+// multisig) work runs FIRST, and the profile role write comes last.
 const STEWARD_STEPS: UpgradeStep[] = [
-  { id: 'role', label: 'Updating role', status: 'pending' },
   { id: 'resolve', label: 'Resolving steward identity', status: 'pending' },
   { id: 'invite', label: 'Inviting steward (round 1)', status: 'pending' },
   { id: 'wait', label: 'Waiting for steward to accept', status: 'pending' },
   { id: 'promote', label: 'Promoting steward to signer (round 2)', status: 'pending' },
   { id: 'revoke', label: 'Revoking old credential', status: 'pending' },
   { id: 'issue', label: 'Issuing new credential', status: 'pending' },
+  { id: 'role', label: 'Updating role', status: 'pending' },
 ];
 const CREDENTIAL_STEPS: UpgradeStep[] = [
-  { id: 'role', label: 'Updating role', status: 'pending' },
   { id: 'revoke', label: 'Revoking old credential', status: 'pending' },
   { id: 'issue', label: 'Issuing new credential', status: 'pending' },
+  { id: 'role', label: 'Updating role', status: 'pending' },
 ];
 
 const upgradeSteps = reactive<UpgradeStep[]>([...STEWARD_STEPS]);
@@ -282,7 +284,6 @@ async function handleConfirm() {
       error.value = isStewardRole
         ? 'Steward upgrade failed. No role change was applied — the member keeps their previous role and credential.'
         : 'Credential re-issue failed. No role change was applied — the member keeps their previous role and credential.';
-      isUpdating.value = false;
       return;
     }
 
@@ -290,9 +291,11 @@ async function handleConfirm() {
     // backend profile record into line.
     const result = await updateMemberRole(props.memberAid, selectedRole.value);
     if (result.error) {
-      // Credential asserts the new role; profile write failed and will catch
-      // up (reissueMembershipCredential already patched the profile object).
-      error.value = result.error;
+      // The credential (and the profile object patched by
+      // reissueMembershipCredential) already assert the new role — only the
+      // backend REST mirror failed and will catch up. Log rather than
+      // painting an error banner over a successful role change.
+      console.warn('[ChangeRole] backend role mirror failed (non-critical):', result.error);
     }
 
     for (const step of upgradeSteps) step.status = 'done';
