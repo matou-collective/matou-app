@@ -259,6 +259,12 @@ MATOU_ENV=production go run ./cmd/server
 
 ## Environment Variables
 
+### API auth (local hardening)
+
+- `MATOU_API_TOKEN` — bearer token required on mutating requests (`TokenGuard`). Unset: dev/test use the fixed `matou-dev` constant; bundled/production generate a random per-launch token.
+- The active token is written to `{dataDir}/api-token` (0600) so same-user tooling (matou-mcp, scripts) can read it. Reads (GET/HEAD/OPTIONS) need no token.
+- `MATOU_ALLOW_REMOTE=1` — disables the unconditional LocalhostGuard for remote-dev setups.
+
 The backend reads configuration primarily from the org config api. The following environment variables provide overrides:
 
 ```bash
