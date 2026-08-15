@@ -28,21 +28,6 @@ function configHeaders(extra?: Record<string, string>): Record<string, string> {
   return headers;
 }
 
-// Config-server write endpoints are bearer-gated once infra's
-// feat/config-server-auth is deployed (reads stay public). Dev/test servers
-// use the well-known dev token; without a token configured we send nothing,
-// which older (pre-auth) servers ignore.
-const CONFIG_ADMIN_TOKEN = (import.meta.env.VITE_CONFIG_ADMIN_TOKEN as string | undefined) ?? '';
-
-/** Headers for config-server writes: configHeaders plus bearer auth when configured. */
-function configWriteHeaders(extra?: Record<string, string>): Record<string, string> {
-  const headers = configHeaders(extra);
-  if (CONFIG_ADMIN_TOKEN) {
-    headers['Authorization'] = `Bearer ${CONFIG_ADMIN_TOKEN}`;
-  }
-  return headers;
-}
-
 export interface AdminInfo {
   aid: string;
   name: string;
@@ -186,49 +171,28 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
 }
 
 /**
- * Save org config to both backend and config server
- * Called after org setup completes
+ * Save org config to the backend.
+ * Called after org setup completes.
+ *
+ * The backend mirrors this write to the legacy config server itself
+ * (server-side, with an admin token). This function used to POST to the
+ * config server directly from the browser, but that endpoint now requires
+ * an admin bearer token that must not be exposed to the browser — see
+ * matou-collective/matou-app#1.
  */
 export async function saveOrgConfig(config: OrgConfig): Promise<void> {
-  const errors: string[] = [];
+  const backendUrl = await getBackendUrl();
+  const response = await fetch(`${backendUrl}/api/v1/org/config`, {
+    method: 'POST',
+    headers: configHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(config),
+  });
 
-  // Save to backend (primary)
-  try {
-    const backendUrl = await getBackendUrl();
-    const backendResponse = await fetch(`${backendUrl}/api/v1/org/config`, {
-      method: 'POST',
-      headers: configHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(config),
-    });
-
-    if (!backendResponse.ok) {
-      const error = await backendResponse.json().catch(() => ({ message: 'Unknown error' }));
-      errors.push(`Backend: ${error.message || backendResponse.status}`);
-    } else {
-      console.log('[Config] Saved config to backend');
-    }
-  } catch (err) {
-    errors.push(`Backend: ${err instanceof Error ? err.message : 'unreachable'}`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+    throw new Error(`Failed to save config: Backend: ${error.message || response.status}`);
   }
-
-  // Also save to legacy config server for backward compatibility
-  try {
-    const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
-      method: 'POST',
-      headers: configWriteHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(config),
-    });
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ message: 'Unknown error' }));
-      errors.push(`Config server: ${error.message || response.status}`);
-    } else {
-      console.log('[Config] Saved config to config server');
-    }
-  } catch (err) {
-    // Config server failure is not critical if backend succeeded
-    console.warn('[Config] Config server save failed:', err);
-  }
+  console.log('[Config] Saved config to backend');
 
   // Update in-memory cache so getOrFetchOrgConfig() returns fresh data immediately
   orgConfigCache = config;
@@ -237,11 +201,6 @@ export async function saveOrgConfig(config: OrgConfig): Promise<void> {
   // Cache locally regardless
   await secureStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(config));
   console.log('[Config] Cached config in secure storage');
-
-  // If both failed, throw error
-  if (errors.length === 2) {
-    throw new Error(`Failed to save config: ${errors.join('; ')}`);
-  }
 }
 
 /**
