@@ -111,18 +111,23 @@ export function renderMessageContent(text: string | null | undefined): string {
   if (!text) return '';
 
   const mentions: Mention[] = [];
+  // Per-call random nonce so message text can never forge (or collide with)
+  // a placeholder: a pasted literal sentinel would duplicate or delete chips.
+  const nonce = Math.random().toString(36).slice(2, 10);
   const re = new RegExp(MENTION_TOKEN_RE.source, 'g');
   const withPlaceholders = text.replace(re, (_full, type, id, display) => {
     const idx = mentions.length;
     mentions.push({ type: type as MentionType, id, display });
-    // Wrapped in sentinels marked can't interpret as markdown syntax.
-    return `⁣MENTION${idx}⁣`;
+    // Wrapped in sentinels markdown can't interpret as markdown syntax.
+    return `⁣MENTION${nonce}-${idx}⁣`;
   });
 
   let html = markdownToHtml(withPlaceholders);
-  html = html.replace(/⁣MENTION(\d+)⁣/g, (_full, i) => {
+  html = html.replace(new RegExp(`⁣MENTION${nonce}-(\\d+)⁣`, 'g'), (full, i) => {
     const m = mentions[Number(i)];
-    return m ? mentionChipHtml(m) : '';
+    // Leave the original text visible rather than silently deleting it if
+    // the index somehow doesn't resolve.
+    return m ? mentionChipHtml(m) : full;
   });
 
   return sanitizeHtml(html);

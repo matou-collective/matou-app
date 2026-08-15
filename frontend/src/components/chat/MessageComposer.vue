@@ -110,6 +110,9 @@ const mentionQuery = ref('');
 // Index of the triggering '@' within `content`.
 const mentionStart = ref(0);
 const mentionActiveIndex = ref(0);
+// '@' index dismissed via Escape: detectMention (which also runs on keyup,
+// including Escape's own keyup) must not reopen for the same token.
+const mentionDismissedStart = ref<number | null>(null);
 
 const mentionCandidates = computed<MentionCandidate[]>(() =>
   mentionActive.value ? searchMentions(mentionQuery.value) : [],
@@ -132,9 +135,15 @@ function detectMention() {
   const caret = el.selectionStart ?? content.value.length;
   const before = content.value.slice(0, caret);
   const match = /(?:^|\s)@([^\s@]*)$/.exec(before);
-  if (!match) return closeMention();
+  if (!match) {
+    mentionDismissedStart.value = null;
+    return closeMention();
+  }
+  const start = caret - match[1].length - 1;
+  if (mentionDismissedStart.value === start) return closeMention();
+  mentionDismissedStart.value = null;
   mentionQuery.value = match[1];
-  mentionStart.value = caret - match[1].length - 1;
+  mentionStart.value = start;
   if (!mentionActive.value) mentionActiveIndex.value = 0;
   mentionActive.value = true;
   if (mentionActiveIndex.value >= mentionCandidates.value.length) {
@@ -200,6 +209,7 @@ function handleKeydown(e: KeyboardEvent) {
     }
     if (e.key === 'Escape') {
       e.preventDefault();
+      mentionDismissedStart.value = mentionStart.value;
       closeMention();
       return;
     }

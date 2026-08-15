@@ -26,7 +26,12 @@
           <em>This message was deleted</em>
         </div>
         <template v-else>
-          <div class="message-body" v-html="renderedContent" @click="handleBodyClick"></div>
+          <div
+            class="message-body"
+            v-html="renderedContent"
+            @click="handleBodyClick"
+            @keydown="handleBodyKeydown"
+          ></div>
 
           <!-- Attachments -->
           <div v-if="message.attachments?.length" class="message-attachments">
@@ -165,7 +170,19 @@ const profileViewer = useProfileViewer();
 // proposal / contribution navigate to their pages. (Typeahead creation is
 // people-first; the other types arrive with a follow-up.)
 function handleBodyClick(e: MouseEvent) {
-  const chip = (e.target as HTMLElement).closest('.mention-chip');
+  activateChip(e, (e.target as HTMLElement).closest('.mention-chip'));
+}
+
+// Chips carry role="button" tabindex="0", so Enter/Space must activate them
+// too, not just clicks.
+function handleBodyKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const target = e.target as HTMLElement;
+  if (!target.classList?.contains('mention-chip')) return;
+  activateChip(e, target);
+}
+
+function activateChip(e: Event, chip: Element | null) {
   if (!chip) return;
   e.preventDefault();
   const type = chip.getAttribute('data-mention-type');

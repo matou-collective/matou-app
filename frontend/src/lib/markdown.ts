@@ -47,10 +47,17 @@ export function markdownToHtml(text: string | null | undefined): string {
  */
 export function sanitizeHtml(html: string): string {
   // DOMPurify only has a working `sanitize` when a DOM is present. In a
-  // plain-node context (unit tests) it is unavailable — return the HTML
-  // as-is, mirroring the guarded `addHook` above. Production always runs in
-  // the Electron renderer / browser where a DOM exists.
-  if (typeof DOMPurify.sanitize !== 'function') return html;
+  // plain-node context (unit tests) it is unavailable — fail CLOSED by
+  // escaping everything rather than passing raw HTML through: a sanitizer
+  // that cannot sanitize must never become a bypass. Production always runs
+  // in the Electron renderer / browser where a DOM exists, so this branch is
+  // test-only (assertions there operate on escaped output).
+  if (typeof DOMPurify.sanitize !== 'function') {
+    return html
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
   return DOMPurify.sanitize(html);
 }
 
