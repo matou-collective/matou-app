@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -564,8 +565,13 @@ func main() {
 	// This used to be a direct unauthenticated POST from the browser
 	// (frontend/src/api/config.ts); it moved server-side because the admin
 	// token must not be exposed to the browser.
+	//
+	// The onUpdate chain runs inline in the config-save request, so the
+	// mirror client needs a timeout: against a remote config server an
+	// un-timeout-ed connect would stall POST /api/v1/org/config.
+	mirrorClient := &http.Client{Timeout: 10 * time.Second}
 	orgConfigHandler.AddOnUpdate(func(orgData *api.OrgConfigData) {
-		if err := api.MirrorToConfigServer(http.DefaultClient, configServerURL, configServerToken, isTest, orgData); err != nil {
+		if err := api.MirrorToConfigServer(mirrorClient, configServerURL, configServerToken, isTest, orgData); err != nil {
 			log.Printf("[Config] Config-server mirror write failed (non-critical): %v", err)
 		} else if configServerToken != "" {
 			log.Printf("[Config] Mirrored org config to config server")

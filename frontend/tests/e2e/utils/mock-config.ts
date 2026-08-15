@@ -46,21 +46,31 @@ export async function clearTestConfig(request: APIRequestContext) {
   // (pr-e2e sources it from the infra checkout), else the well-known
   // dev/test placeholder.
   try {
-    await request.delete(`${CONFIG_SERVER_URL}/api/config`, {
+    const resp = await request.delete(`${CONFIG_SERVER_URL}/api/config`, {
       headers: {
         'X-Test-Config': 'true',
         Authorization: `Bearer ${process.env.CONFIG_ADMIN_TOKEN || configAdminToken}`,
       },
     });
-    console.log('[TestConfig] Cleared config server');
+    // request.delete does not throw on non-2xx: a 401 (token mismatch) would
+    // otherwise log success while stale config survives into the next run.
+    if (resp.ok() || resp.status() === 404) {
+      console.log('[TestConfig] Cleared config server');
+    } else {
+      console.warn(`[TestConfig] Config server clear failed: ${resp.status()}`);
+    }
   } catch {
     console.log('[TestConfig] No config server config to clear');
   }
 
   // Clear backend org config
   try {
-    await request.delete(`${BACKEND_URL}/api/v1/org/config`);
-    console.log('[TestConfig] Cleared backend org config');
+    const resp = await request.delete(`${BACKEND_URL}/api/v1/org/config`);
+    if (resp.ok() || resp.status() === 404) {
+      console.log('[TestConfig] Cleared backend org config');
+    } else {
+      console.warn(`[TestConfig] Backend org config clear failed: ${resp.status()}`);
+    }
   } catch {
     console.log('[TestConfig] No backend org config to clear');
   }
