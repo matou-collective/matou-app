@@ -135,7 +135,7 @@ const emit = defineEmits<{
   (e: 'role-updated', role: string): void;
 }>();
 
-const { upgradeMemberToSteward } = useAdminActions();
+const { upgradeMemberToSteward, reissueMembershipCredential } = useAdminActions();
 
 const STEWARD_ROLES = ['Founding Member', 'Community Steward'];
 
@@ -165,15 +165,35 @@ const upgradeStarted = ref(false);
 const upgradeComplete = ref(false);
 const error = ref<string | null>(null);
 
-const upgradeSteps = reactive<UpgradeStep[]>([
-  { id: 'role', label: 'Updating role', status: 'pending' },
+// Steward upgrades run the full multisig + credential re-issue flow; plain
+// role changes are credential-backed too (issue #20 item 3) but skip the
+// multisig steps, so the stepper only shows the credential steps.
+// Step order mirrors execution order: the credential (and, for stewards, the
+// multisig) work runs FIRST, and the profile role write comes last.
+const STEWARD_STEPS: UpgradeStep[] = [
   { id: 'resolve', label: 'Resolving steward identity', status: 'pending' },
   { id: 'invite', label: 'Inviting steward (round 1)', status: 'pending' },
   { id: 'wait', label: 'Waiting for steward to accept', status: 'pending' },
   { id: 'promote', label: 'Promoting steward to signer (round 2)', status: 'pending' },
   { id: 'revoke', label: 'Revoking old credential', status: 'pending' },
   { id: 'issue', label: 'Issuing new credential', status: 'pending' },
-]);
+  { id: 'role', label: 'Updating role', status: 'pending' },
+];
+const CREDENTIAL_STEPS: UpgradeStep[] = [
+  { id: 'revoke', label: 'Revoking old credential', status: 'pending' },
+  { id: 'issue', label: 'Issuing new credential', status: 'pending' },
+  { id: 'role', label: 'Updating role', status: 'pending' },
+];
+
+const upgradeSteps = reactive<UpgradeStep[]>([...STEWARD_STEPS]);
+
+function setStepsFor(isStewardRole: boolean) {
+  upgradeSteps.splice(
+    0,
+    upgradeSteps.length,
+    ...(isStewardRole ? STEWARD_STEPS : CREDENTIAL_STEPS).map(s => ({ ...s })),
+  );
+}
 
 function stepClass(index: number) {
   const step = upgradeSteps[index];
@@ -234,44 +254,53 @@ async function handleConfirm() {
 
   isUpdating.value = true;
   error.value = null;
-  resetSteps();
 
   const isStewardRole = STEWARD_ROLES.includes(selectedRole.value);
+  setStepsFor(isStewardRole);
 
   try {
-    // Step 1: Update role in backend (CommunityProfile)
-    upgradeSteps[0].status = 'active';
-    const result = await updateMemberRole(props.memberAid, selectedRole.value);
-    if (result.error) {
-      upgradeSteps[0].status = 'error';
-      error.value = result.error;
-      isUpdating.value = false;
-      return;
-    }
-    upgradeSteps[0].status = 'done';
-
-    // For non-steward roles, we're done after the API call
-    if (!isStewardRole) {
-      upgradeComplete.value = true;
-      emit('role-updated', selectedRole.value);
-      isUpdating.value = false;
-      return;
-    }
-
-    // Step 2-5: Full steward upgrade (multisig + credential rotation)
+    // Every role change is credential-backed (issue #20 item 3): the membership
+    // credential is revoked + re-issued with the new role so the profile role
+    // and the credential role can never drift. Steward roles additionally run
+    // the multisig rotation to make the member a group signer.
+    //
+    // The credential step runs FIRST: the credential is the authoritative
+    // record, so on failure nothing has changed and the profile never claims a
+    // role no credential asserts. (reissueMembershipCredential also writes the
+    // new role onto the profile; the explicit role write below keeps the
+    // backend REST path in sync.)
     upgradeStarted.value = true;
-    const ok = await upgradeMemberToSteward(props.memberAid, selectedRole.value, advanceStep);
+    upgradeSteps[0].status = 'active';
+    const ok = isStewardRole
+      ? await upgradeMemberToSteward(props.memberAid, selectedRole.value, advanceStep)
+      : await reissueMembershipCredential(props.memberAid, selectedRole.value, advanceStep);
 
-    if (ok) {
-      upgradeComplete.value = true;
-      emit('role-updated', selectedRole.value);
-    } else {
-      // Mark remaining pending steps as errors
+    if (!ok) {
+      // Mark remaining pending steps as errors. The role was NOT changed —
+      // credential and profile still consistently assert the old role.
       for (const step of upgradeSteps) {
         if (step.status === 'active') step.status = 'error';
       }
-      error.value = 'Steward upgrade failed. The role was updated but key rotation or credential re-issuance may not have completed.';
+      error.value = isStewardRole
+        ? 'Steward upgrade failed. No role change was applied — the member keeps their previous role and credential.'
+        : 'Credential re-issue failed. No role change was applied — the member keeps their previous role and credential.';
+      return;
     }
+
+    // Credential is authoritative and now asserts the new role — bring the
+    // backend profile record into line.
+    const result = await updateMemberRole(props.memberAid, selectedRole.value);
+    if (result.error) {
+      // The credential (and the profile object patched by
+      // reissueMembershipCredential) already assert the new role — only the
+      // backend REST mirror failed and will catch up. Log rather than
+      // painting an error banner over a successful role change.
+      console.warn('[ChangeRole] backend role mirror failed (non-critical):', result.error);
+    }
+
+    for (const step of upgradeSteps) step.status = 'done';
+    upgradeComplete.value = true;
+    emit('role-updated', selectedRole.value);
   } catch (err) {
     for (const step of upgradeSteps) {
       if (step.status === 'active') step.status = 'error';

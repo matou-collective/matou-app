@@ -15,6 +15,7 @@ import {
   type CompleteActionRequest,
 } from 'src/lib/api/decisionPlans';
 import { createLogger } from 'src/lib/logging';
+import { signActionProof } from 'src/lib/keri/signProof';
 
 const log = createLogger('DecisionPlansStore');
 
@@ -70,7 +71,13 @@ export const useDecisionPlansStore = defineStore('decisionPlans', () => {
   async function transition(id: string, status: string): Promise<DecisionPlan> {
     error.value = null;
     try {
-      const updated = await transitionDecisionPlan(id, status);
+      // Sign-off is the high-stakes governance transition; attach a
+      // KERI-verifiable proof so honest peers can validate it (issue #20).
+      const proof =
+        status === 'signed_off'
+          ? await signActionProof({ action: 'plan_signoff', subject: id, value: 'signed_off' })
+          : null;
+      const updated = await transitionDecisionPlan(id, status, proof ?? undefined);
       if (currentPlan.value?.id === id) currentPlan.value = updated;
       log.info('Decision plan %s → %s', id, status);
       return updated;

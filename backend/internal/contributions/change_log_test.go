@@ -199,7 +199,7 @@ func TestSignOffPlan_ClearsChangeLog(t *testing.T) {
 		t.Fatal("expected change log entries to exist before sign-off")
 	}
 
-	signed, err := svc.SignOffPlan(ctx, spaceID, plan.ID, "steward-1")
+	signed, err := svc.SignOffPlan(ctx, spaceID, plan.ID, "steward-1", nil)
 	if err != nil {
 		t.Fatalf("SignOffPlan: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestCreateSubContribution_InvalidatesPlanSignOff(t *testing.T) {
 	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
 		t.Fatalf("ConfirmContribution: %v", err)
 	}
-	if _, err := svc.SignOffPlan(ctx, spaceID, plan.ID, "signer-1"); err != nil {
+	if _, err := svc.SignOffPlan(ctx, spaceID, plan.ID, "signer-1", nil); err != nil {
 		t.Fatalf("SignOffPlan: %v", err)
 	}
 
