@@ -118,8 +118,8 @@ test.describe('KERI proof on high-stakes actions (#20)', () => {
     const contribution = fetched.contribution ?? fetched;
     expect(contribution.status).toBe('signed_off');
 
-    const proof = contribution.proof;
-    expect(proof, 'sign-off object must carry a proof').toBeTruthy();
+    const proof = contribution.sign_off_proof;
+    expect(proof, 'sign-off object must carry a sign-off proof').toBeTruthy();
     expect(proof.v).toBe('matou-proof/v1');
     expect(proof.action).toBe('contribution_signoff');
     expect(proof.subject).toBe(contributionId);

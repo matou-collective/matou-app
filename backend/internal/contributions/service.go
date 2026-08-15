@@ -930,6 +930,9 @@ func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID stri
 	if err := ValidateDecisionPlanTransition(dp.Status, newStatus); err != nil {
 		return nil, err
 	}
+	if err := proof.ValidateConsistency("plan_signoff", dpID, string(newStatus), ""); err != nil {
+		return nil, err
+	}
 	dp.Status = newStatus
 	dp.UpdatedAt = time.Now()
 	if proof != nil {
@@ -1897,6 +1900,9 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	if err := ValidateContributionTransition(c.Status, ContribSignedOff); err != nil {
 		return nil, err
 	}
+	if err := proof.ValidateConsistency("contribution_signoff", contributionID, "signed_off", userID); err != nil {
+		return nil, err
+	}
 
 	// Implementation plan must be signed off before any contribution can be signed off.
 	plans, err := s.ListImplementationPlans(ctx, spaceID)
@@ -1920,7 +1926,7 @@ func (s *Service) SignOffContribution(ctx context.Context, spaceID, contribution
 	c.Status = ContribSignedOff
 	c.UpdatedAt = now
 	if proof != nil {
-		c.Proof = proof
+		c.SignOffProof = proof
 	}
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
@@ -1942,13 +1948,16 @@ func (s *Service) RewardContribution(ctx context.Context, spaceID, contributionI
 	if err := ValidateContributionTransition(c.Status, ContribRewarded); err != nil {
 		return nil, err
 	}
+	if err := proof.ValidateConsistency("contribution_reward", contributionID, "rewarded", userID); err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	c.RewardedBy = userID
 	c.RewardedAt = &now
 	c.Status = ContribRewarded
 	c.UpdatedAt = now
 	if proof != nil {
-		c.Proof = proof
+		c.RewardProof = proof
 	}
 	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
 		return nil, fmt.Errorf("saving contribution: %w", err)
@@ -1990,6 +1999,9 @@ func (s *Service) SignOffPlan(ctx context.Context, spaceID, planID, userID strin
 	}
 	if plan.SignedOff {
 		return nil, fmt.Errorf("plan is already signed off")
+	}
+	if err := proof.ValidateConsistency("plan_signoff", planID, "signed_off", userID); err != nil {
+		return nil, err
 	}
 
 	// Load all milestones for this plan
@@ -2646,6 +2658,9 @@ func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, project
 	}
 	if proj.Status != ProjectPendingCompletion {
 		return nil, fmt.Errorf("project must be pending_completion (current: %s)", proj.Status)
+	}
+	if err := proof.ValidateConsistency("project_completion", projectID, "completed", stewardID); err != nil {
+		return nil, err
 	}
 	now := time.Now()
 	proj.Status = ProjectCompleted

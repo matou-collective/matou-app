@@ -471,10 +471,12 @@ type Contribution struct {
 	RewardedBy             string             `json:"rewarded_by,omitempty"`
 	RewardedAt             *time.Time         `json:"rewarded_at,omitempty"`
 
-	// Proof is a KERI-anchored proof envelope for the sign-off or reward
-	// action (issue #20). Used for BOTH sign-off and reward. Persisted
-	// verbatim; verification is deferred to issue #19.
-	Proof *Proof `json:"proof,omitempty"`
+	// KERI-anchored proof envelopes (issue #20), one per proof-bearing
+	// transition so a later reward can never destroy the sign-off proof —
+	// #19's verifier needs both to hold simultaneously. Persisted verbatim;
+	// verification is deferred to issue #19.
+	SignOffProof *Proof `json:"sign_off_proof,omitempty"`
+	RewardProof  *Proof `json:"reward_proof,omitempty"`
 
 	// Sharing & offering
 	IsShared        bool       `json:"is_shared,omitempty"`

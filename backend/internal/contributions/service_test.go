@@ -2008,3 +2008,45 @@ func TestPropagateOfferToChildren_SkipsAlreadyOfferedChild(t *testing.T) {
 		t.Errorf("OfferedTo = %q, want early-offer-user", got.OfferedTo)
 	}
 }
+
+// TestRewardContribution_KeepsSignOffProof pins the per-transition proof
+// storage (issue #20): rewarding must not destroy the sign-off proof — #19's
+// verifier needs both to hold simultaneously.
+func TestRewardContribution_KeepsSignOffProof(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	plan.SignedOff = true
+	now := time.Now()
+	plan.SignedOffAt = &now
+	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
+
+	contrib, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	contrib.Status = ContribApproved
+	_ = svc.SaveContribution(ctx, spaceID, contrib)
+
+	signOffProof := &Proof{V: "matou-proof/v1", Action: "contribution_signoff", Subject: contrib.ID, Value: "signed_off", Dt: "2026-08-15T00:00:00Z", AID: "steward", Sig: "0Bsig1"}
+	if _, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward", signOffProof); err != nil {
+		t.Fatalf("SignOffContribution: %v", err)
+	}
+
+	rewardProof := &Proof{V: "matou-proof/v1", Action: "contribution_reward", Subject: contrib.ID, Value: "rewarded", Dt: "2026-08-15T00:01:00Z", AID: "admin", Sig: "0Bsig2"}
+	got, err := svc.RewardContribution(ctx, spaceID, contrib.ID, "admin", rewardProof)
+	if err != nil {
+		t.Fatalf("RewardContribution: %v", err)
+	}
+
+	if got.SignOffProof == nil || got.SignOffProof.Sig != "0Bsig1" {
+		t.Errorf("sign-off proof lost or clobbered after reward: %+v", got.SignOffProof)
+	}
+	if got.RewardProof == nil || got.RewardProof.Sig != "0Bsig2" {
+		t.Errorf("reward proof missing: %+v", got.RewardProof)
+	}
+}

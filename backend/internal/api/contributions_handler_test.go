@@ -164,7 +164,7 @@ func TestContributionsHandler_SignOff_PersistsProof(t *testing.T) {
 		Subject: contrib.ID,
 		Value:   "signed_off",
 		Dt:      now.Format(time.RFC3339),
-		AID:     "EAID123",
+		AID:     "steward-1", // must match X-User-AID: ValidateConsistency requires signer == actor
 		Sig:     "0Bsig123",
 	}
 	body, _ := json.Marshal(map[string]interface{}{"proof": proof})
@@ -183,11 +183,11 @@ func TestContributionsHandler_SignOff_PersistsProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetContribution: %v", err)
 	}
-	if saved.Proof == nil {
+	if saved.SignOffProof == nil {
 		t.Fatal("expected proof to be persisted on the contribution")
 	}
-	if saved.Proof.Sig != proof.Sig || saved.Proof.AID != proof.AID || saved.Proof.Action != proof.Action {
-		t.Errorf("persisted proof mismatch: got %+v, want %+v", saved.Proof, proof)
+	if saved.SignOffProof.Sig != proof.Sig || saved.SignOffProof.AID != proof.AID || saved.SignOffProof.Action != proof.Action {
+		t.Errorf("persisted proof mismatch: got %+v, want %+v", saved.SignOffProof, proof)
 	}
 }
 
@@ -230,8 +230,8 @@ func TestContributionsHandler_SignOff_NoBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetContribution: %v", err)
 	}
-	if saved.Proof != nil {
-		t.Errorf("expected no proof when none was sent, got %+v", saved.Proof)
+	if saved.SignOffProof != nil {
+		t.Errorf("expected no proof when none was sent, got %+v", saved.SignOffProof)
 	}
 }
 
