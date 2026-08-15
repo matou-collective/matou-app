@@ -106,9 +106,10 @@
         @close="showEmojiPicker = false"
       />
 
-      <!-- Proposal Detail Modal -->
+      <!-- Proposal Detail Modal (opened by a proposal link card or an inline
+           @-mention chip) -->
       <ProposalDetailModal
-        v-if="proposalIds.length"
+        v-if="proposalIds.length || showProposalDetail"
         v-model="showProposalDetail"
         :proposal-id="selectedProposalId"
       />
@@ -118,10 +119,16 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { useQuasar } from 'quasar';
 import { Smile, Reply, Pencil, Trash2 } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
-import { renderMessageContent, mentionsToPlainText } from 'src/lib/mentions';
+import { renderMessageContent, mentionsToPlainText, type MentionType } from 'src/lib/mentions';
 import { useProfileViewer } from 'stores/profileViewer';
+import { useProfilesStore } from 'stores/profiles';
+import { useProjectsStore } from 'stores/projects';
+import { useProposalsStore } from 'stores/proposals';
+import { useContributionsStore } from 'stores/contributions';
+import { useActivityStore } from 'stores/activity';
 import MessageReactions from './MessageReactions.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import AttachmentPreview from './AttachmentPreview.vue';
@@ -163,12 +170,18 @@ const replyToTruncated = computed(() => {
 const renderedContent = computed(() => renderMessageContent(props.message.content));
 
 const profileViewer = useProfileViewer();
+const profilesStore = useProfilesStore();
+const projectsStore = useProjectsStore();
+const proposalsStore = useProposalsStore();
+const contributionsStore = useContributionsStore();
+const activityStore = useActivityStore();
+const $q = useQuasar();
 
 // Delegated click handler for inline @-mention chips rendered inside the
-// message body (issue #12). Each chip does what clicking that entity does in
-// its home list: people open the read-only profile dialog; project /
-// proposal / contribution navigate to their pages. (Typeahead creation is
-// people-first; the other types arrive with a follow-up.)
+// message body (issues #12, #37). Each chip does what clicking that entity
+// does in its home list: people open the read-only profile dialog; proposals
+// open the detail modal; projects/contributions navigate to their pages;
+// events/updates open the Activity feed filtered to their kind.
 function handleBodyClick(e: MouseEvent) {
   activateChip(e, (e.target as HTMLElement).closest('.mention-chip'));
 }
@@ -182,12 +195,67 @@ function handleBodyKeydown(e: KeyboardEvent) {
   activateChip(e, target);
 }
 
+// Whether a mentioned entity is present in its local store. Returns 'unknown'
+// when the store is empty (not yet loaded) so we never toast a false negative
+// — only 'absent' (store populated, id missing) marks a departed member or a
+// deleted/never-synced object.
+function resolveMention(type: MentionType, id: string): 'found' | 'absent' | 'unknown' {
+  let list: ReadonlyArray<{ id?: string }>;
+  let present: boolean;
+  switch (type) {
+    case 'person':
+      list = profilesStore.communityProfiles;
+      present = profilesStore.communityProfiles.some((p) => p.data.aid === id);
+      break;
+    case 'project':
+      list = projectsStore.projects;
+      present = projectsStore.projects.some((p) => p.id === id);
+      break;
+    case 'proposal':
+      list = proposalsStore.proposals;
+      present = proposalsStore.proposals.some((p) => p.id === id);
+      break;
+    case 'contribution':
+      list = contributionsStore.contributions;
+      present = contributionsStore.contributions.some((c) => c.id === id);
+      break;
+    case 'event':
+    case 'update':
+      list = activityStore.notices;
+      present = activityStore.notices.some((n) => n.id === id && n.type === type);
+      break;
+    default:
+      return 'unknown';
+  }
+  if (list.length === 0) return 'unknown';
+  return present ? 'found' : 'absent';
+}
+
+const MENTION_LABELS: Record<MentionType, string> = {
+  person: 'person',
+  project: 'project',
+  proposal: 'proposal',
+  event: 'event',
+  update: 'update',
+  contribution: 'contribution',
+};
+
 function activateChip(e: Event, chip: Element | null) {
   if (!chip) return;
   e.preventDefault();
-  const type = chip.getAttribute('data-mention-type');
+  const type = chip.getAttribute('data-mention-type') as MentionType | null;
   const id = chip.getAttribute('data-mention-id');
   if (!type || !id) return;
+
+  if (resolveMention(type, id) === 'absent') {
+    $q.notify({
+      type: 'warning',
+      message: `This ${MENTION_LABELS[type] ?? 'item'} is no longer available.`,
+      timeout: 2500,
+    });
+    return;
+  }
+
   switch (type) {
     case 'person':
       void profileViewer.open(id);
@@ -196,12 +264,19 @@ function activateChip(e: Event, chip: Element | null) {
       void router.push({ name: 'project-detail', params: { id } });
       break;
     case 'proposal':
-      void router.push({ name: 'proposal-detail', params: { id } });
+      openProposalDetail(id);
       break;
     case 'contribution':
       void router.push({ name: 'contribution-detail', params: { id } });
       break;
-    // event / update have no standalone route yet — handled in the follow-up.
+    case 'event':
+      activityStore.setFilter('event');
+      void router.push({ name: 'activity' });
+      break;
+    case 'update':
+      activityStore.setFilter('update');
+      void router.push({ name: 'activity' });
+      break;
   }
 }
 

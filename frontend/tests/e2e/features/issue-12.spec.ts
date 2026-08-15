@@ -78,7 +78,7 @@ test.describe('in-chat @-mentions (#12)', () => {
     const query = person.name.split(/\s+/)[0];
     const input = adminPage.locator('.message-input');
     await input.click();
-    await input.type(`Kia ora @${query}`);
+    await input.pressSequentially(`Kia ora @${query}`);
 
     // Typeahead dropdown appears with the person as an option.
     const dropdown = adminPage.locator('.mention-dropdown');
