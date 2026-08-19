@@ -13,7 +13,8 @@ if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f /run/secrets/forgejo_token ]; then
   FORGEJO_TOKEN="$(cat /run/secrets/forgejo_token)"
 fi
 : "${FORGEJO_TOKEN:?}"
-: "${FORGEJO_API:=https://git.matou.nz/api/v1/repos/Matou/matou-app}"
+# shellcheck source=swarm-identity.sh
+. "$here/swarm-identity.sh"
 export FORGEJO_TOKEN FORGEJO_API
 # shellcheck source=claim-lib.sh
 . "$here/claim-lib.sh"

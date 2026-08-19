@@ -25,9 +25,14 @@
 # guard first lived as a stopgap in the host's backstop-tick.sh wrapper; this is
 # its upstream home (the wrapper stopgap can be removed once this is installed).
 #
-# This file is CANONICAL in Matou/matou-app and synced to Matou/matou-app by
-# .sandcastle/sync-harness.sh (the ONE transform: the repo-slug substitution on
-# the FORGEJO_API default below); edit it here, never in the copy (#250).
+# This file is CANONICAL in the repo harness-manifest names as
+# canonical_slug and synced to siblings by .sandcastle/sync-harness.sh; edit
+# it there, never in a copy (#250). It carries no repo slug of its own now
+# (ADR 0180 / #571 phase 1: the FORGEJO_API default collapsed out into
+# swarm-identity.sh, a per-repo file the manifest transforms by design) — so
+# the manifest's one allowed transform (the slug substitution) is a no-op on
+# this file, closing the "slug as value vs. slug as ownership claim"
+# ambiguity that made this class of file risky to sync blind.
 #
 # Usage: schedule-backstop.sh <workflow-file> <window-minutes>
 #   e.g. schedule-backstop.sh swarm.yml 25
@@ -38,7 +43,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 wf="${1:?workflow file, e.g. swarm.yml}"
 window_min="${2:?window in minutes}"
 
-: "${FORGEJO_API:=https://git.matou.nz/api/v1/repos/Matou/matou-app}"
+# shellcheck source=swarm-identity.sh
+. "$here/swarm-identity.sh"
 if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/secrets/forgejo_token" ]; then
   FORGEJO_TOKEN="$(cat "$here/secrets/forgejo_token")"
 fi

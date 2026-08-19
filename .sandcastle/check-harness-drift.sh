@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # Far-side drift alarm for the shared Sandcastle harness (#250). This file is
-# CANONICAL in Matou/matou-app and shipped into sibling repos (matou-app) by
-# sync-harness.sh — so it is on the harness-manifest and kept identical across
-# repos by this very check. It is GENERIC: it carries no repo slug and reads
-# everything it needs from the marker the sync recorded, so the slug transform
-# is a no-op on it.
+# itself shipped by sync-harness.sh (it is on the harness-manifest, kept
+# identical across repos by this very check) — so it is GENERIC by
+# construction: it carries no repo slug of its own and reads everything it
+# needs (which repo is canonical, which is the target) from the
+# .harness-canonical marker the sync recorded, so the slug transform is a
+# no-op on it. (#571: naming the canonical repo literally in this comment,
+# instead of only in the marker, was the ownership-inversion bug — a
+# hardcoded "canonical in ourcloud" claim reads as false once sed-rendered
+# into the far side, even though the file's actual LOGIC never hardcoded it.)
 #
 # What it proves, run from a target repo's checkout root in that repo's ci:
 # every manifest file here matches what re-rendering the canonical revision the
 # last sync recorded produces. If a copy was edited directly on the far side,
-# CI goes RED naming the file and the canonical rule — the fix belongs in
-# ourcloud (or the file belongs OUT of the manifest), never in a divergent
-# far-side edit (the limit-guard-storm class: fixed in one place, re-erupts in
-# the other).
+# CI goes RED naming the file and the canonical rule — the fix belongs in the
+# repo the marker's slug= names as canonical (or the file belongs OUT of the
+# manifest), never in a divergent far-side edit (the limit-guard-storm class:
+# fixed in one place, re-erupts in the other).
 #
 # Marker: .sandcastle/.harness-canonical, written by sync-harness.sh, four
 # `key=value` lines: repo= (canonical git URL) rev= (the synced canonical SHA)

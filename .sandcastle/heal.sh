@@ -21,7 +21,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # the bind-mounted secrets file is the fallback for host runs
 # (same precedence as list-ready-tasks.sh).
 [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/secrets/forgejo_token" ] && FORGEJO_TOKEN="$(cat "$here/secrets/forgejo_token")"
-: "${FORGEJO_API:=https://git.matou.nz/api/v1/repos/Matou/matou-app}"
+# shellcheck source=swarm-identity.sh
+. "$here/swarm-identity.sh"
 # One runner serves TWO repos now (#238). Per-repo healer state must carry the
 # repo slug or one repo's healer makes the other's skip its incident (the
 # healer lock) and stomps its evidence dir. "Matou/matou-app" -> "Matou-ourcloud"
@@ -29,7 +30,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_TAG="${FORGEJO_API##*/repos/}"; REPO_TAG="${REPO_TAG//\//-}"
 MODE="${HEAL_MODE:-hook}"
 WORKFLOW="${WORKFLOW:-unknown}"
-WORKDIR="${HEAL_WORKDIR:-$HOME/swarm/Matou/matou-app}"
+WORKDIR="$HEAL_WORKDIR"
 HEALER_STATE="${HEALER_STATE:-$WORKDIR/.sandcastle/.state/healer}"
 mkdir -p "$HEALER_STATE"
 NOW="$(date +%s)"
