@@ -38,10 +38,13 @@ NOW="$(date +%s)"
 # error lines). The runner is host-mode on the workstation and ci has no readable
 # log API, so a well-known host path is how a run's real fault reaches the healer:
 # `ci` via scripts/seam-smoke.sh (#197), `swarm`/`triage` via verdict-lib.sh
-# (#235). Same defaults those scripts write to.
-SEAM_VERDICT="${SEAM_VERDICT_PATH:-/tmp/matou-seam-verdict.txt}"
-SWARM_VERDICT="${SWARM_VERDICT_PATH:-/tmp/matou-swarm-verdict.txt}"
-TRIAGE_VERDICT="${TRIAGE_VERDICT_PATH:-/tmp/matou-triage-verdict.txt}"
+# (#235). Same repo-tagged defaults those scripts write to (#574) — REPO_TAG is
+# already computed above from FORGEJO_API, same formula seam-smoke.sh derives
+# from `git remote get-url origin` and run-swarm.sh/run-triage.sh derive from
+# REPO_SLUG, so reader and writers always agree on the path.
+SEAM_VERDICT="${SEAM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-seam-verdict.txt}"
+SWARM_VERDICT="${SWARM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-swarm-verdict.txt}"
+TRIAGE_VERDICT="${TRIAGE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-triage-verdict.txt}"
 
 # How fresh a verdict or worker log must be to count as evidence for THIS
 # incident's run. Older artifacts (the stale 03:38 worker log that minted phantom
