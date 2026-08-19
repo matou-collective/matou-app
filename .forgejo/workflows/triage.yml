@@ -2,10 +2,10 @@ name: triage
 on:
   issues:
     types: [opened, reopened]
-  # Forgejo re-registers a repo's schedules when workflow files are pushed to
-  # the default branch, so pushing this file re-registers the schedule. If
-  # the crons stop firing, that registration is the first thing to check —
-  # confirm a :05/:35 run appears within 30 minutes of a workflow push.
+  # Forgejo has been observed to silently stop firing a repo's schedules;
+  # pushing a workflow file re-registers them (ourcloud's 2026-07-28
+  # incident). If the cron below stops firing, that's the first thing to
+  # check, not this file's logic.
   schedule:
     - cron: "5,35 * * * *"
   workflow_dispatch: {}
@@ -19,6 +19,7 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
           FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
           REPO_SLUG: ${{ github.repository }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
@@ -26,12 +27,9 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
-          # Same global lock as swarm.yml — and the same yield-don't-camp fix
-          # (#238). Triage is a heavy worker too (it spins Sandcastle), so a
-          # camping flock -w 7200 here would re-introduce the exact hour-class
-          # serialization the swarm fix removes. If the host is busy, yield and
-          # let the cron (or the next issue event) re-fire — triage is
-          # idempotent, so a deferred pass costs nothing.
+          # Same global lock as swarm.yml, same yield-don't-camp rule: if the
+          # host is busy, yield and let the cron (or the next issue event)
+          # re-fire — triage is idempotent, so a deferred pass costs nothing.
           exec 9>/tmp/matou-swarm.lock
           if ! flock -n 9; then
             echo "triage: another swarm/triage run holds /tmp/matou-swarm.lock — yielding; the cron re-fires"
@@ -40,7 +38,8 @@ jobs:
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
-          url="https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git"
+          host="${SERVER_URL#https://}"
+          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
           if [ -d .git ]; then
             git remote set-url origin "$url"
             git fetch origin main

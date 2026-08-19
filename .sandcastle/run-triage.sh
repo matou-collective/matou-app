@@ -10,12 +10,35 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=verdict-lib.sh
+. "$here/verdict-lib.sh"
+# shellcheck source=limit-lib.sh
+. "$here/limit-lib.sh"
 : "${FORGEJO_TOKEN:?}"
 : "${FORGEJO_API:?}"
 repo_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"
+# One runner serves TWO repos (#238) — a /tmp verdict path must carry the repo
+# or the two clobber each other's (#574). Same formula as run-swarm.sh/heal.sh.
+repo_tag="${repo_slug//\//-}"
 
 api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
+# Drop a stage/exit verdict on failure so the healer keys the incident signature
+# on the run's REAL failing stage, not on worker chain-of-thought prose (#235).
+verdict_begin "${TRIAGE_VERDICT_PATH:-/tmp/matou-$repo_tag-triage-verdict.txt}"
+trap 'verdict_write $?' EXIT
+
+# Limit gate, BEFORE claude (#253): if the host-global marker says the Claude
+# subscription window is already exhausted (a worker or the healer parked it),
+# yield cleanly — a blind claude call would only refuse, and one refusal within
+# the watchdog window mints an always-red incident. Exit 0 with an honest
+# "limit-parked" note so the run list never reads a parked window as green health.
+if claude_limit_parked; then
+  echo "run-triage: limit-parked — Claude usage limit window (marker fresh), yielding without calling claude"
+  exit 0
+fi
+
+verdict_stage "preflight (list untriaged issues)"
 untriaged="$(bash "$here/preflight-triage.sh")"
 n="$(jq 'length' <<<"$untriaged")"
 if [ "$n" -eq 0 ]; then
@@ -27,7 +50,7 @@ jq -r '.[] | "  #\(.number) \(.title)"' <<<"$untriaged"
 
 # Open issues currently sitting at a human gate, as "number<TAB>label" lines.
 human_gated() {
-  for label in ready-for-human; do
+  for label in ready-for-human needs-design; do
     page=1
     while :; do
       batch="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=$label&limit=50&page=$page")"
@@ -41,12 +64,25 @@ human_gated() {
 }
 
 before="$(human_gated)"
-# Snapshot awaiting-verification BEFORE the claude call (cap: 50 open
-# awaiting-verification issues per snapshot is far beyond realistic volume).
-await_before="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=awaiting-verification&limit=50" | jq -r '.[].number' | sort -u)"
-timeout 2700 claude -p "/triage You are running headless in CI: no human can answer questions, so never ask any. Every untriaged issue must leave this run carrying a triage label. This repo has a HUMAN VERIFICATION GATE: never apply the ready-for-agent label — where the default /triage flow would mark an issue ready-for-agent, apply awaiting-verification instead and post a comment summarizing your assessment (what the issue asks, whether it is reproducible/actionable, suggested approach). A human promotes it to ready-for-agent via Mattermost. When you hit ambiguity or a judgement call, label the issue ready-for-human (or needs-info if the reporter must supply missing information) and post a comment explaining what needs deciding." --dangerously-skip-permissions
+# Capture the claude output so a limit refusal can be classified after a failed
+# call (#253): the log feeds both the limit detector and the verdict's error
+# lines if this stage fails for a REAL fault.
+triage_log="$(mktemp)"
+verdict_stage "triage skill (claude -p /triage)" "$triage_log"
+if ! timeout 2700 claude -p "/triage You are running headless in CI: no human can answer questions, so never ask any. Every untriaged issue must leave this run carrying a triage label. When you hit ambiguity or a judgement call you would normally ask a human about, first try to RULE it yourself under ADR 0174 (docs/adr/0174-*.md): if the call is revertible by a later commit or label change and provable by an existing test/drive/probe, and it is not on the one-way-door list (personal credentials, a security-posture widening, a member-facing trust accept, data destruction, non-routine spend), post the ruling to the issue — 'Ruled by agent under ADR 0174 — veto anytime', the ruling, why it is a two-way door, and what proves it — and apply the label your ruling calls for. Only label ready-for-human when the call is a genuine one-way door (state which in a '## Why human' line, per docs/agents/triage-labels.md), or needs-info if the reporter must supply missing information." --dangerously-skip-permissions 2>&1 | tee "$triage_log"; then
+  # A limit refusal parks the host for every caller and exits CLEAN (never red);
+  # any other failure still reddens honestly (the EXIT trap's verdict reads the log).
+  if claude_limit_hit "$triage_log"; then
+    claude_limit_park
+    rm -f "$triage_log"
+    echo "run-triage: limit-parked — Claude refused with a usage-limit signature; marked the host parked, exiting clean"
+    exit 0
+  fi
+  rm -f "$triage_log"
+  exit 1
+fi
+rm -f "$triage_log"
 after="$(human_gated)"
-await_after="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=awaiting-verification&limit=50" | jq -r '.[].number' | sort -u)"
 
 new="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
 if [ -n "$new" ]; then
@@ -69,23 +105,6 @@ if [ -n "$new" ]; then
     bash "$here/notify-mattermost.sh" ":wave: **Triage needs you** in \`$repo_slug\`:$digest"
   fi
 fi
-
-# One verification thread per newly-gated issue — the poller
-# (check-verifications.sh) keys on the ':mag: **Verify #N**' marker.
-new_await="$(comm -13 <(printf '%s\n' "$await_before") <(printf '%s\n' "$await_after"))"
-for num in $new_await; do
-  [ -n "$num" ] || continue
-  issue="$(api "$FORGEJO_API/issues/$num")"
-  title="$(jq -r .title <<<"$issue")"
-  url="$(jq -r .html_url <<<"$issue")"
-  body_excerpt="$(jq -r '.body // ""' <<<"$issue" | head -c 500)"
-  bash "$here/notify-mattermost.sh" ":mag: **Verify #$num** — $title
-$url
-
-$body_excerpt
-
-Reply **approve** (optionally followed by guidance for the agent) or **reject** (optionally a reason) in this thread. Anything else is copied to the issue as a comment." || true
-done
 
 still="$(bash "$here/preflight-triage.sh" | jq 'length')"
 if [ "$still" -gt 0 ]; then

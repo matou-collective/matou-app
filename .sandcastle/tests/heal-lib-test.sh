@@ -21,6 +21,13 @@ b="$(normalize_error_line 'error: commit d101c2c999888 not found')"
 [ "$a" = "$b" ] || fail "normalize should equate differing hashes"
 pass=$((pass+1))
 
+# worker names fold whole: the 6-hex suffix is under the hex rule's floor and
+# its letters survive the number rule differently per run (2026-08-01 storm)
+a="$(normalize_error_line "WorktreeError: fatal: '/x/.sandcastle/worktrees/sandcastle-worker-20260731-225724-887403' is not a working tree")"
+b="$(normalize_error_line "WorktreeError: fatal: '/x/.sandcastle/worktrees/sandcastle-worker-20260801-005751-c0375b' is not a working tree")"
+[ "$a" = "$b" ] || fail "normalize should equate error lines differing only in worker name"
+pass=$((pass+1))
+
 # signatures: stable, workflow-scoped
 s1="$(compute_signature swarm 'npm error Missing: prettier@3.9.6 from lock file')"
 s2="$(compute_signature swarm 'npm error Missing: prettier@3.9.7 from lock file')"
@@ -77,6 +84,35 @@ ledger_set "$capsig" repaired 1
 # …and a stale incident re-investigates however many replies it accumulated
 [ "$(ledger_decide "$capsig" $((now + 21601)))" = "investigate-stale" ] \
   || fail "cooldown expiry must reset the incident regardless of the cap"
+pass=$((pass+1))
+
+# --- #197: ci signatures are stage/fault-aware over the seam verdict ----------
+# The seam script writes a verdict (failing stage + first error lines); the
+# signal folds it into "<stage> :: <error>" so compute_signature tracks the
+# actual fault. A moved fault (the #193 SA4010 → #195 revive case that masked
+# for 40 minutes) must yield a DIFFERENT signature; the same fault the same one.
+vdir="$(mktemp -d)"
+printf 'stage=Go: build/vet/test/lint\nexit=1\n--- error lines ---\nwiring_test.go:41:2: err shadows builtin (revive)\n' > "$vdir/revive"
+printf 'stage=Go: build/vet/test/lint\nexit=1\n--- error lines ---\nconfig.go:88:3: this value of x is never used (SA4010) (staticcheck)\n' > "$vdir/staticcheck"
+printf 'stage=TypeScript: build/test/lint\nexit=1\n--- error lines ---\nwiring_test.go:41:2: err shadows builtin (revive)\n' > "$vdir/ts-stage"
+sigRevive="$(compute_signature ci "$(seam_verdict_signal "$vdir/revive")")"
+sigStatic="$(compute_signature ci "$(seam_verdict_signal "$vdir/staticcheck")")"
+sigTsStage="$(compute_signature ci "$(seam_verdict_signal "$vdir/ts-stage")")"
+[ "$sigRevive" != "$sigStatic" ] || fail "a moved fault (same stage, different error) → different ci signature"
+[ "$sigRevive" != "$sigTsStage" ] || fail "same error in a different failing stage → different ci signature"
+# the same fault recurring → the same signature (behaviour unchanged, AC2)
+cp "$vdir/revive" "$vdir/revive-again"
+[ "$sigRevive" = "$(compute_signature ci "$(seam_verdict_signal "$vdir/revive-again")")" ] \
+  || fail "same stage+fault → same ci signature"
+# run-specific jitter (line numbers) inside one fault still collapses
+sed 's/:41:2:/:57:9:/' "$vdir/revive" > "$vdir/revive-jitter"
+[ "$sigRevive" = "$(compute_signature ci "$(seam_verdict_signal "$vdir/revive-jitter")")" ] \
+  || fail "line-number jitter within one fault must normalize to the same signature"
+# missing / empty verdict → empty signal (the degrade path; AC3)
+[ -z "$(seam_verdict_signal "$vdir/nope")" ] || fail "missing verdict → empty signal"
+printf 'stage=\nexit=1\n--- error lines ---\n' > "$vdir/empty"
+[ -z "$(seam_verdict_signal "$vdir/empty")" ] || fail "verdict with no stage/error → empty signal"
+rm -rf "$vdir"
 pass=$((pass+1))
 
 # ledger round-trip

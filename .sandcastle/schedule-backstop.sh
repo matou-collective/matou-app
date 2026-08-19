@@ -25,14 +25,13 @@
 # guard first lived as a stopgap in the host's backstop-tick.sh wrapper; this is
 # its upstream home (the wrapper stopgap can be removed once this is installed).
 #
-# This file is CANONICAL in the repo harness-manifest names as
-# canonical_slug and synced to siblings by .sandcastle/sync-harness.sh; edit
-# it there, never in a copy (#250). It carries no repo slug of its own now
-# (ADR 0180 / #571 phase 1: the FORGEJO_API default collapsed out into
-# swarm-identity.sh, a per-repo file the manifest transforms by design) — so
-# the manifest's one allowed transform (the slug substitution) is a no-op on
-# this file, closing the "slug as value vs. slug as ownership claim"
-# ambiguity that made this class of file risky to sync blind.
+# This file is CANONICAL in Matou/dev-factory (ADR 0180 / #571: the factory
+# core moved out of any one product repo) and vendored byte-identical here —
+# edit it there, bump FACTORY_REF, re-vendor; never in this copy directly
+# (check-harness-drift.sh reds on a direct edit). It carries no repo slug of
+# its own (the FORGEJO_API default lives in swarm-identity.sh, the one file
+# that's deliberately NOT vendored — the per-repo declarative layer), so
+# being byte-identical here is exactly as safe as in any other product repo.
 #
 # Usage: schedule-backstop.sh <workflow-file> <window-minutes>
 #   e.g. schedule-backstop.sh swarm.yml 25
