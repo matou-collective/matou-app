@@ -23,8 +23,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/swarm-identity.sh"   # FORGEJO_API / REPO_SLUG — this repo's identity (ADR 0180 / #571)
 # shellcheck source=forgejo-lib.sh
 . "$here/forgejo-lib.sh"   # forgejo_* — the tracker adapter (ADR 0180 / #571)
+# shellcheck source=evidence-lib.sh
+. "$here/evidence-lib.sh"   # pick_representative_screenshot (#596)
 # shellcheck source=heal-lib.sh
-. "$here/heal-lib.sh"    # normalize_error_line, compute_signature
+. "$here/heal-lib.sh"    # normalize_error_line, display_error_line, compute_signature
 # shellcheck source=limit-lib.sh
 . "$here/limit-lib.sh"   # claude_limit_parked / _hit / _park
 # shellcheck source=rehearsal-heal-lib.sh
@@ -75,8 +77,18 @@ match_sig() {
 }
 
 # append_evidence <issue-number> <note> — land one drive-evidence comment.
+# #596: also attaches one representative screenshot (newest *.png under
+# $run_dir) to the SAME comment via Forgejo's comment-asset API, best-effort
+# — a missing screenshot or a failed attach never fails the comment itself,
+# the host-path note in $2 still stands as the fallback. rc = the comment
+# post's, unchanged from before this ticket.
 append_evidence() {
-  forgejo_comment "$1" "$2"
+  local id shot
+  id="$(forgejo_comment_id "$1" "$2")" || return 1
+  if [ -n "$id" ]; then
+    shot="$(pick_representative_screenshot "$run_dir")"
+    [ -n "$shot" ] && forgejo_attach_comment_asset "$id" "$shot" "$(basename "$shot")" >/dev/null
+  fi
 }
 
 # parse_diagnosis <raw> — echo a clean JSON object carved from claude's stdout,
@@ -298,8 +310,8 @@ for red in "${reds[@]}"; do
   # Leg-keyed signature: noise in the error never moves it.
   sig="$(compute_signature "rehearsal-183" "$leg")"
   stamp="$(basename "$run_dir")"
-  evidence_note="drive \`$stamp\` red at \`$leg\`: \`$(normalize_error_line "$err")\`
-evidence: \`test-results/…/$stamp/\` on matou-workstation (legs.json, droplet-journal.txt, trace)"
+  evidence_note="drive \`$stamp\` red at \`$leg\`: \`$(display_error_line "$err")\`
+evidence: \`test-results/…/$stamp/\` on matou-workstation (legs.json, droplet-journal.txt, trace) — a representative screenshot is attached here if one was captured (#596)"
 
   match="$(match_sig "$open_issues" "$sig")"
   if [ -n "$match" ]; then
@@ -445,7 +457,21 @@ $evidence_note
     echo "reporter: filed '$title' ($sig)"
     new_filed=$((new_filed+1))
     num="$(jq -r '.number // empty' <<<"$resp" 2>/dev/null)"
-    [ -n "$num" ] && touched+=("$num")
+    if [ -n "$num" ]; then
+      touched+=("$num")
+      # #596: the body above only NAMES the run dir — attach one
+      # representative screenshot directly to the new issue (no prior
+      # comment to key off, so this is the issue-asset endpoint, not the
+      # comment one) so a tracker-only reader can eyeball it.
+      shot="$(pick_representative_screenshot "$run_dir")"
+      if [ -n "$shot" ]; then
+        code="$(forgejo_attach_issue_asset "$num" "$shot" "$(basename "$shot")")"
+        case "$code" in
+          2??) echo "reporter: attached $(basename "$shot") to #$num" ;;
+          *) echo "reporter: WARN screenshot attach for #$num → HTTP ${code:-000}" ;;
+        esac
+      fi
+    fi
   else
     echo "reporter: WARN could not file '$title' ($sig) — API refused"
   fi

@@ -7,12 +7,12 @@
 # container exits (regression 93c6afb, runs 1654+). Kept only as the tested
 # reference for the two-way-link mechanics — see .sandcastle/worktree-lib.sh.
 #
-# Active only inside the sandbox (OURCLOUD_SANDBOX=1). On a host checkout the
+# Active only inside the sandbox (FACTORY_SANDBOX=1). On a host checkout the
 # worktree's recorded path already matches, so there is nothing to align and we
 # must not touch a developer's git state.
 set -euo pipefail
 
-[ "${OURCLOUD_SANDBOX:-}" = "1" ] || exit 0
+[ "${FACTORY_SANDBOX:-}" = "1" ] || exit 0
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=worktree-lib.sh

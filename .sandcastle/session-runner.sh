@@ -17,7 +17,7 @@
 # failure.
 #
 # Crontab (workstation):
-#   */10 * * * * . /home/dev/swarm/rehearsal-env.sh && /home/dev/swarm/Matou/ourcloud/.sandcastle/session-runner.sh >> /home/dev/swarm/session-runner.log 2>&1
+#   */10 * * * * . /home/dev/swarm/rehearsal-env.sh && /home/dev/swarm/Matou/idss/.sandcastle/session-runner.sh >> /home/dev/swarm/session-runner.log 2>&1
 #
 # Kill switch: SESSION_RUNNER=0 in env, or touch the off-file
 # (.sandcastle/session-runner.off by default) — checked before ANY network.
@@ -55,6 +55,19 @@ notify() { bash "$here/notify-mattermost.sh" "$1" >/dev/null 2>&1 || echo "sessi
 # ── one at a time: a session in flight absorbs this tick ─────────────────────
 exec 9>"$SESSION_RUNNER_LOCK"
 if ! flock -n 9; then echo "session-runner: session in flight — tick absorbed"; exit 0; fi
+
+# ── join the host capacity pool: a live session-runner session runs a
+#    headless claude call exactly like a swarm/triage worker, so it now
+#    counts against the SAME 2-slot host-wide pool instead of being
+#    invisible to it (a live session and a live swarm worker could
+#    otherwise both run concurrently, unbounded). Held for the same span
+#    SESSION_RUNNER_LOCK already covers — process exit releases both fds.
+# shellcheck source=host-capacity-lib.sh
+. "$here/host-capacity-lib.sh"
+if ! host_capacity_acquire_heavy; then
+  echo "session-runner: host capacity pool exhausted — tick absorbed"
+  exit 0
+fi
 
 # ── the host-global limit guard every claude caller rides (#253/#510) ────────
 if claude_limit_parked; then

@@ -17,7 +17,7 @@ export MATTERMOST_URL="http://mm.test"
 export MATTERMOST_BOT_TOKEN="tok"
 export MATTERMOST_CHANNEL_ID="chan"
 export FORGEJO_TOKEN="ftok"
-export FORGEJO_API="http://fj.test/api/v1/repos/Matou/ourcloud"
+export FORGEJO_API="http://fj.test/api/v1/repos/Matou/idss"
 
 now_ms="$(($(date +%s) * 1000))"
 pass=0 fail=0

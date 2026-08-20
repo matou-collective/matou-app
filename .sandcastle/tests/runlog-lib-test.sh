@@ -11,13 +11,13 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 
 # --- runlog_line: deterministic format, ready-set numbers, duration ----------
-line="$(runlog_line 1000 1042 Matou/ourcloud 432 completed 0)"
-[ "$line" = "1970-01-01T00:17:22Z repo=Matou/ourcloud ready=[432] reason=completed exit=0 duration=42s" ] \
+line="$(runlog_line 1000 1042 Matou/idss 432 completed 0)"
+[ "$line" = "1970-01-01T00:17:22Z repo=Matou/idss ready=[432] reason=completed exit=0 duration=42s" ] \
   || fail "unexpected line format: $line"
 pass=$((pass+1))
 
 # a multi-issue ready set is carried verbatim; a red exit code is preserved
-line="$(runlog_line 500 560 Matou/ourcloud '426,432' no-worker-spawned 1)"
+line="$(runlog_line 500 560 Matou/idss '426,432' no-worker-spawned 1)"
 case "$line" in
   *"ready=[426,432]"*) : ;; *) fail "ready set not carried: $line" ;;
 esac
@@ -27,7 +27,7 @@ esac
 pass=$((pass+1))
 
 # an empty ready set (the no-ready-tasks exit) still logs a clean line
-line="$(runlog_line 10 11 Matou/ourcloud '' no-ready-tasks 0)"
+line="$(runlog_line 10 11 Matou/idss '' no-ready-tasks 0)"
 case "$line" in *"ready=[]"*"duration=1s"*) : ;; *) fail "empty ready line wrong: $line" ;; esac
 pass=$((pass+1))
 

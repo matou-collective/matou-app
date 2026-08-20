@@ -48,14 +48,14 @@ done
 pass=$((pass+1))
 
 # --- invariant 1: status defaults to 'fail' (success must be EARNED) ----------
-db run-start --run RUNfail --repo Matou/ourcloud --trigger cron --started 1000
+db run-start --run RUNfail --repo Matou/idss --trigger cron --started 1000
 db attempt --run RUNfail --issue 447 --started 1001   # NO --status passed
 [ "$(val "SELECT status FROM attempts WHERE run_id='RUNfail'")" = fail ] \
   || fail "an attempt with no explicit status must default to 'fail'"
 pass=$((pass+1))
 
 # --- a normal GREEN run: earned success survives finalisation -----------------
-db run-start --run GREEN --repo Matou/ourcloud --trigger dispatch --started 2000
+db run-start --run GREEN --repo Matou/idss --trigger dispatch --started 2000
 db attempt --run GREEN --issue 900 --status success --commits deadbeef --started 2001
 db run-end --run GREEN --verdict completed --source completed --exit 0 --ended 2050
 [ "$(val "SELECT verdict FROM runs WHERE run_id='GREEN'")" = completed ] || fail "green run verdict wrong"
@@ -66,7 +66,7 @@ db run-end --run GREEN --verdict completed --source completed --exit 0 --ended 2
 pass=$((pass+1))
 
 # --- a RED run: non-zero exit, attempt stays fail, surfaced by red-by-stage ---
-db run-start --run RED --repo Matou/ourcloud --trigger cron --started 3000
+db run-start --run RED --repo Matou/idss --trigger cron --started 3000
 db attempt --run RED --issue 901 --started 3001                 # opened, never earned
 db run-end --run RED --verdict sandcastle-run-failed --source "died in workers" --exit 1 --ended 3040
 [ "$(val "SELECT exit_code FROM runs WHERE run_id='RED'")" = 1 ] || fail "red run exit_code wrong"
@@ -81,7 +81,7 @@ pass=$((pass+1))
 # --- invariant 2: KILLS finalise the trace (nothing reads 'running' forever) --
 # Model run-swarm's SIGTERM route: start, open an attempt, then the EXIT trap's
 # run-end fires with a killed: verdict. No row may be left open afterwards.
-db run-start --run KILLED --repo Matou/ourcloud --trigger cron --started 4000
+db run-start --run KILLED --repo Matou/idss --trigger cron --started 4000
 db attempt --run KILLED --issue 902 --started 4001              # still running when killed
 db run-end --run KILLED --verdict "killed:SIGTERM" --source "killed:SIGTERM" --exit 143 --ended 4005
 [ "$(val "SELECT verdict FROM runs WHERE run_id='KILLED'")" = "killed:SIGTERM" ] || fail "killed verdict wrong"
@@ -97,7 +97,7 @@ pass=$((pass+1))
 # --- the #435 wedge: an UNFINALISED processes row + a worker_wedge event -------
 # Deliberately the ONE row that stays open — a hung agent emits nothing, so the
 # open row IS the evidence; open-processes surfaces it forever until accounted.
-db run-start --run WEDGE --repo Matou/ourcloud --trigger label --started 5000
+db run-start --run WEDGE --repo Matou/idss --trigger label --started 5000
 swarmdb_wedge WEDGE "447,446"
 [ "$(val "SELECT count(*) FROM processes WHERE run_id='WEDGE' AND ended_at IS NULL")" = 1 ] \
   || fail "the wedge must leave exactly one unfinalised (ended_at NULL) processes row"
@@ -128,7 +128,7 @@ pass=$((pass+1))
 # An unwritable db path must not red the run — swallowed, caller sees exit 0.
 ( set -e
   SWARM_DB=/proc/nonexistent/cannot.db
-  swarmdb_run_start X Matou/ourcloud cron 1 || exit 7
+  swarmdb_run_start X Matou/idss cron 1 || exit 7
   swarmdb_event X "" ready-set "1 task" "[447]" || exit 7
   swarmdb_run_end X completed completed 0 2 || exit 7
 ) || fail "a swarm-db writer must NEVER fail its caller (mirror is best-effort)"
@@ -136,7 +136,7 @@ pass=$((pass+1))
 mkdir -p "$tmp/emptybin"
 ( set -e
   export PATH="$tmp/emptybin"
-  swarmdb_run_start Y Matou/ourcloud cron 1 || exit 7   # swarmdb_available false → return 0
+  swarmdb_run_start Y Matou/idss cron 1 || exit 7   # swarmdb_available false → return 0
 ) || fail "writers must no-op (return 0) when python3 is absent"
 pass=$((pass+1))
 

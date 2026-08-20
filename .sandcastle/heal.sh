@@ -25,7 +25,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/swarm-identity.sh"
 # One runner serves TWO repos now (#238). Per-repo healer state must carry the
 # repo slug or one repo's healer makes the other's skip its incident (the
-# healer lock) and stomps its evidence dir. "Matou/ourcloud" -> "Matou-ourcloud"
+# healer lock) and stomps its evidence dir. "Matou/idss" -> "Matou-idss"
 # (slashes aren't valid in a path segment).
 REPO_TAG="${FORGEJO_API##*/repos/}"; REPO_TAG="${REPO_TAG//\//-}"
 MODE="${HEAL_MODE:-hook}"
@@ -70,7 +70,7 @@ verdict_is_fresh() {
 }
 
 # One healer at a time PER REPO. Our OWN lock — never the swarm's — and
-# per-repo (#238) so ourcloud's healer never blocks matou-app's incident.
+# per-repo (#238) so idss's healer never blocks matou-app's incident.
 exec 8>"/tmp/matou-healer-$REPO_TAG.lock"
 flock -n 8 || { echo "heal: another healer holds the lock — exiting"; exit 0; }
 

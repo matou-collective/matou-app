@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drift alarm for the vendored factory core (ADR 0180 / #571: the factory
 # moved out of this repo into Matou/dev-factory; this repo now PULLS from it
-# at a pinned ref instead of ourcloud pushing sed-transformed copies into
+# at a pinned ref instead of idss pushing sed-transformed copies into
 # siblings). "Drift" used to mean "a far-side copy was hand-edited instead of
 # re-synced"; it now means the same thing from the other direction — a
 # vendored file here no longer matches FACTORY_REF's content, byte for byte,

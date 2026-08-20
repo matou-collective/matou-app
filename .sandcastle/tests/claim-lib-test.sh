@@ -7,7 +7,7 @@ set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$here/fakebin:$PATH"
 export FORGEJO_TOKEN="ftok"
-export FORGEJO_API="http://fj.test/api/v1/repos/Matou/ourcloud"
+export FORGEJO_API="http://fj.test/api/v1/repos/Matou/idss"
 . "$here/../claim-lib.sh"
 
 pass=0 fail=0

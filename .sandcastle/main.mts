@@ -1,6 +1,6 @@
 import { run, claudeCode } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -61,104 +61,181 @@ function resolveSwarmModel(): string {
 const SWARM_MODEL = resolveSwarmModel();
 console.log(`worker: launching on model ${SWARM_MODEL}`);
 
-const result = await run({
-  // A name for this run, shown as a prefix in log output.
-  name: "worker",
+// #612 (idss ADR 0186): operator-cancel kill-path. SWARM_DB_RUN_ID is the
+// SAME run_db_id run-swarm.sh's swarm.db writes already use (read early here,
+// not only at the bottom for the #574 mirror, so it can also name this run's
+// cancel marker) — moved up from its original spot below the run() call.
+// Absent (a bare `pnpm run sandcastle` outside run-swarm.sh) means there is no
+// run_id to name a marker after, so cancellation is simply unavailable on that
+// path — consistent with #574's own "best-effort, run-swarm.sh-only" posture.
+const swarmDbRunId = process.env.SWARM_DB_RUN_ID;
 
-  // Sandbox provider — runs the agent inside an isolated container.
-  // `mounts` delivers FORGEJO_TOKEN/MATTERMOST_BOT_TOKEN/DIGITALOCEAN_ACCESS_TOKEN
-  // as read-only files under /run/secrets instead of forwarding them as `-e`
-  // env vars — env vars land in `docker inspect .Config.Env`, which is
-  // readable by anyone with Docker API access (the 2026-07-11 breach vector;
-  // see docs/architecture/07-secrets-architecture.md). run-swarm.sh
-  // materializes .sandcastle/secrets/* from its own process env before every
-  // run. CLAUDE_CODE_OAUTH_TOKEN is NOT moved here — it's Anthropic's
-  // long-lived automation token, which the `claude` CLI only accepts as an
-  // env var (no file-based flag exists), so it remains a documented,
-  // tool-level residual exposure. Rotate it periodically.
-  sandbox: docker({
-    mounts: [
-      { hostPath: ".sandcastle/secrets", sandboxPath: "/run/secrets", readonly: true },
-      // Persistent pnpm store shared by every worker container: the sandbox
-      // installs from here instead of re-downloading the registry each
-      // iteration. run-swarm.sh creates the dir beside secrets/.
-      { hostPath: ".sandcastle/pnpm-store", sandboxPath: "/home/agent/.pnpm-store", readonly: false },
-      // Persistent nix store shared by every worker container: the #198 Go
-      // pre-push gate's `nix develop .#go-ci` finds the ADR-0040 pinned toolchain
-      // already substituted here instead of re-downloading it from the binary
-      // cache per container (#249 — the 110/116/161-min tail). run-swarm.sh
-      // creates AND seeds .sandcastle/nix-store from the image's own /nix before
-      // the first worker mounts it (a bare empty mount would hide Nix itself);
-      // the global swarm flock admits one heavy worker per host, so concurrent
-      // writes to the shared store are already fenced.
-      { hostPath: ".sandcastle/nix-store", sandboxPath: "/nix", readonly: false },
-      // The worktrees dir, mounted at its HOST path (issue #239, Ben's option 1).
-      // A linked worktree's admin back-link (.git/worktrees/<name>/gitdir) names
-      // the worktree's host path; the parent .git is already mounted at its host
-      // path, so with this mount the back-link resolves identically on host and
-      // in the sandbox. libgit2 (nix flake evaluation, the #198 gate) is
-      // satisfied without anyone rewriting shared admin state — the in-container
-      // rewrite (93c6afb) corrupted the host's view and reded every merge-to-head
-      // from run 1654 on. The git-fence shim (Dockerfile) remains the backstop
-      // against workers running `git worktree` admin commands.
-      { hostPath: ".sandcastle/worktrees", sandboxPath: `${process.cwd()}/.sandcastle/worktrees`, readonly: false },
-    ],
-  }),
+// One marker file per run_id, host-local, under the SAME $HOME/swarm/state/
+// home swarm.db itself already uses (never .sandcastle/, never synced) — the
+// TUI's data/cancel.py writes it; this poll consumes it. See ADR 0186 §1 for
+// why a marker file rather than a new IPC mechanism.
+const CANCEL_DIR = process.env.SWARM_CANCEL_DIR ?? `${process.env.HOME}/swarm/state/cancel-request`;
+function cancelMarkerPath(runId: string): string {
+  return `${CANCEL_DIR}/${runId}`;
+}
 
-  // The agent provider. The model is the shared SWARM_MODEL resolved above (no
-  // hardcoded id — #448): the fleet default balances capability against
-  // subscription quota for continuous swarm use (fable exhausted the usage
-  // window in ~14 h on 2026-07-25; the run-swarm limit guard now handles that
-  // gracefully, but the default stretches the window), and a ticket's model-*
-  // label can right-size a mechanical ticket down via run-swarm.sh.
-  agent: claudeCode(SWARM_MODEL),
+const cancelController = new AbortController();
+let cancelReason: string | undefined;
+let cancelTimer: ReturnType<typeof setInterval> | undefined;
+if (swarmDbRunId) {
+  const markerPath = cancelMarkerPath(swarmDbRunId);
+  // A poll, not a filesystem watch (no new dependency, trivially testable as
+  // a pure predicate) — Sandcastle's own `signal` contract offers no finer
+  // latency guarantee than "checked at phase boundaries" anyway (ADR 0186 §1).
+  // `.unref()`'d so a pending poll can never itself keep the process alive
+  // past every other exit path (normal completion, a genuine crash) — the
+  // ONE thing that must never regress by adding this.
+  cancelTimer = setInterval(() => {
+    if (!existsSync(markerPath)) return;
+    try {
+      cancelReason = readFileSync(markerPath, "utf8");
+    } catch {
+      cancelReason = "";
+    }
+    try {
+      rmSync(markerPath);
+    } catch {
+      // best-effort consume — a marker that outlives its run is harmless
+      // (run_id is unique per run), just untidy.
+    }
+    clearInterval(cancelTimer);
+    cancelController.abort(new Error(`operator cancel via the factory TUI (#612)`));
+  }, 2000);
+  cancelTimer.unref();
+}
 
-  // Path to the prompt file. Shell expressions inside are evaluated inside the
-  // sandbox at the start of each iteration, so the agent always sees fresh data.
-  promptFile: "./.sandcastle/prompt.md",
+let result;
+try {
+  result = await run({
+    // A name for this run, shown as a prefix in log output.
+    name: "worker",
 
-  // Maximum number of iterations (agent invocations) to run in a session.
-  // Each iteration works on a single issue. Increase this to process more issues
-  // per run, or set it to 1 for a single-shot mode.
-  maxIterations: 3,
-
-  // Branch strategy — merge-to-head creates a temporary branch for the agent
-  // to work on, then merges the result back to HEAD when the run completes.
-  // This is required when using copyToWorktree, since head mode bind-mounts
-  // the host directory directly (no worktree to copy into).
-  branchStrategy: { type: "merge-to-head" },
-
-  // node_modules is NOT copied from the host: the host's pnpm layout records
-  // host store paths in .modules.yaml, so inside the container pnpm demands a
-  // purge-and-reinstall anyway (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY,
-  // 2026-07-27). The sandbox installs fresh from the mounted persistent store
-  // instead — warm after the first run, seconds thereafter.
-
-  // Lifecycle hooks — commands grouped by where they run (host or sandbox).
-  hooks: {
-    sandbox: {
-      // onSandboxReady runs once after the sandbox is initialised and the repo is
-      // synced in, before the agent starts. CI=true keeps pnpm non-interactive;
-      // frozen: the lockfile is the contract — a dependency change that forgot
-      // its lockfile update should fail loudly here, not be papered over.
-      onSandboxReady: [
-        // No worktree back-link alignment here: the worktrees mount (above) makes
-        // the host-recorded back-link resolve in the sandbox as-is. Any write to
-        // the shared .git/worktrees/ admin from inside the container persists to
-        // the host and breaks merge-to-head after the container exits (93c6afb).
-        { command: "CI=true pnpm install --frozen-lockfile --store-dir /home/agent/.pnpm-store" },
-        // The pre-push language gate (#198): point git at the tracked hook dir
-        // so every worker's push runs the pinned Go seam stages over any Go
-        // change before it lands — a lint/build/test defect becomes a
-        // worker-visible push failure instead of a red main. The hook self-skips
-        // outside the sandbox (OURCLOUD_SANDBOX, set by the Dockerfile), so a
-        // host push is never gated. Relative path resolves from the worktree
-        // root; guarded so a config hiccup can't abort the sandbox.
-        { command: "git config core.hooksPath .sandcastle/git-hooks || true" },
+    // Sandbox provider — runs the agent inside an isolated container.
+    // `mounts` delivers FORGEJO_TOKEN/MATTERMOST_BOT_TOKEN/DIGITALOCEAN_ACCESS_TOKEN
+    // as read-only files under /run/secrets instead of forwarding them as `-e`
+    // env vars — env vars land in `docker inspect .Config.Env`, which is
+    // readable by anyone with Docker API access (the 2026-07-11 breach vector;
+    // see docs/architecture/07-secrets-architecture.md). run-swarm.sh
+    // materializes .sandcastle/secrets/* from its own process env before every
+    // run. CLAUDE_CODE_OAUTH_TOKEN is NOT moved here — it's Anthropic's
+    // long-lived automation token, which the `claude` CLI only accepts as an
+    // env var (no file-based flag exists), so it remains a documented,
+    // tool-level residual exposure. Rotate it periodically.
+    sandbox: docker({
+      mounts: [
+        { hostPath: ".sandcastle/secrets", sandboxPath: "/run/secrets", readonly: true },
+        // Persistent pnpm store shared by every worker container: the sandbox
+        // installs from here instead of re-downloading the registry each
+        // iteration. run-swarm.sh creates the dir beside secrets/.
+        { hostPath: ".sandcastle/pnpm-store", sandboxPath: "/home/agent/.pnpm-store", readonly: false },
+        // Persistent nix store shared by every worker container: the #198 Go
+        // pre-push gate's `nix develop .#go-ci` finds the ADR-0040 pinned toolchain
+        // already substituted here instead of re-downloading it from the binary
+        // cache per container (#249 — the 110/116/161-min tail). run-swarm.sh
+        // creates AND seeds .sandcastle/nix-store from the image's own /nix before
+        // the first worker mounts it (a bare empty mount would hide Nix itself);
+        // the global swarm flock admits one heavy worker per host, so concurrent
+        // writes to the shared store are already fenced.
+        { hostPath: ".sandcastle/nix-store", sandboxPath: "/nix", readonly: false },
+        // The worktrees dir, mounted at its HOST path (issue #239, Ben's option 1).
+        // A linked worktree's admin back-link (.git/worktrees/<name>/gitdir) names
+        // the worktree's host path; the parent .git is already mounted at its host
+        // path, so with this mount the back-link resolves identically on host and
+        // in the sandbox. libgit2 (nix flake evaluation, the #198 gate) is
+        // satisfied without anyone rewriting shared admin state — the in-container
+        // rewrite (93c6afb) corrupted the host's view and reded every merge-to-head
+        // from run 1654 on. The git-fence shim (Dockerfile) remains the backstop
+        // against workers running `git worktree` admin commands.
+        { hostPath: ".sandcastle/worktrees", sandboxPath: `${process.cwd()}/.sandcastle/worktrees`, readonly: false },
       ],
+    }),
+
+    // The agent provider. The model is the shared SWARM_MODEL resolved above (no
+    // hardcoded id — #448): the fleet default balances capability against
+    // subscription quota for continuous swarm use (fable exhausted the usage
+    // window in ~14 h on 2026-07-25; the run-swarm limit guard now handles that
+    // gracefully, but the default stretches the window), and a ticket's model-*
+    // label can right-size a mechanical ticket down via run-swarm.sh.
+    agent: claudeCode(SWARM_MODEL),
+
+    // Path to the prompt file. Shell expressions inside are evaluated inside the
+    // sandbox at the start of each iteration, so the agent always sees fresh data.
+    promptFile: "./.sandcastle/prompt.md",
+
+    // Maximum number of iterations (agent invocations) to run in a session.
+    // Each iteration works on a single issue. Increase this to process more issues
+    // per run, or set it to 1 for a single-shot mode.
+    maxIterations: 3,
+
+    // Branch strategy — merge-to-head creates a temporary branch for the agent
+    // to work on, then merges the result back to HEAD when the run completes.
+    // This is required when using copyToWorktree, since head mode bind-mounts
+    // the host directory directly (no worktree to copy into).
+    branchStrategy: { type: "merge-to-head" },
+
+    // node_modules is NOT copied from the host: the host's pnpm layout records
+    // host store paths in .modules.yaml, so inside the container pnpm demands a
+    // purge-and-reinstall anyway (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY,
+    // 2026-07-27). The sandbox installs fresh from the mounted persistent store
+    // instead — warm after the first run, seconds thereafter.
+
+    // Lifecycle hooks — commands grouped by where they run (host or sandbox).
+    hooks: {
+      sandbox: {
+        // onSandboxReady runs once after the sandbox is initialised and the repo is
+        // synced in, before the agent starts. CI=true keeps pnpm non-interactive;
+        // frozen: the lockfile is the contract — a dependency change that forgot
+        // its lockfile update should fail loudly here, not be papered over.
+        onSandboxReady: [
+          // No worktree back-link alignment here: the worktrees mount (above) makes
+          // the host-recorded back-link resolve in the sandbox as-is. Any write to
+          // the shared .git/worktrees/ admin from inside the container persists to
+          // the host and breaks merge-to-head after the container exits (93c6afb).
+          { command: "CI=true pnpm install --frozen-lockfile --store-dir /home/agent/.pnpm-store" },
+          // The pre-push language gate (#198): point git at the tracked hook dir
+          // so every worker's push runs the pinned Go seam stages over any Go
+          // change before it lands — a lint/build/test defect becomes a
+          // worker-visible push failure instead of a red main. The hook self-skips
+          // outside the sandbox (FACTORY_SANDBOX, set by the Dockerfile), so a
+          // host push is never gated. Relative path resolves from the worktree
+          // root; guarded so a config hiccup can't abort the sandbox.
+          { command: "git config core.hooksPath .sandcastle/git-hooks || true" },
+        ],
+      },
     },
-  },
-});
+
+    // #612: cancels the whole run (all remaining iterations) when the TUI's
+    // Cancel action writes this run's marker file. See ADR 0186 for the full
+    // design — including why a hard, immediate mid-iteration kill is accepted
+    // rather than deferred, and why that is provably safe against
+    // close-report.sh's own comment-then-close ordering.
+    signal: cancelController.signal,
+  });
+} catch (err) {
+  if (cancelTimer) clearInterval(cancelTimer);
+  if (cancelController.signal.aborted) {
+    // #612: a deliberate operator stop, not a crash. Sandcastle's `signal`
+    // contract gives no partial RunResult back on abort ("no
+    // Sandcastle-specific wrapping") — so, unlike the success path below,
+    // nothing here can feed record-run-result.sh; any iteration that fully
+    // succeeded before the cancel landed keeps its real Forgejo close but
+    // loses its swarm.db mirror row (ADR 0186 §2, a named/accepted gap: the
+    // db is a MIRROR, losing it loses nothing authoritative).
+    //
+    // This line mirrors close-report.sh's SANDCASTLE_ATTEMPT convention — a
+    // structured protocol line for run-swarm.sh's swarm_cancel_hit to grep
+    // (cancel-lib.sh), never worker chain-of-thought prose.
+    console.log(`SANDCASTLE_CANCELLED run=${swarmDbRunId ?? "unknown"} reason=${cancelReason ?? ""}`);
+    process.exit(1);
+  }
+  throw err;
+}
+if (cancelTimer) clearInterval(cancelTimer);
 
 // #574: RunResult capture — this used to be discarded entirely, leaving
 // swarm.db's attempts/spend tables with zero production writers (schema +
@@ -177,7 +254,6 @@ const result = await run({
 // other swarm-db write in the codebase, so a write we cannot make — or
 // correctly attribute to a run — must never fail this otherwise-successful
 // run.
-const swarmDbRunId = process.env.SWARM_DB_RUN_ID;
 if (swarmDbRunId) {
   try {
     const payload = JSON.stringify({

@@ -34,7 +34,7 @@ pp_is_protected "dashboard/src/app.ts"         && fail "app code is NOT protecte
 pp_is_protected "docs/adr/0042.md"             && fail "docs are NOT protected"; ok
 # healer evidence dirs are runtime, not machinery — exempt even though they can
 # sit under a protected-looking absolute path.
-pp_is_protected "/tmp/matou-heal-ourcloud.abc/diagnosis.md" && fail "healer evidence is exempt"; ok
+pp_is_protected "/tmp/matou-heal-idss.abc/diagnosis.md" && fail "healer evidence is exempt"; ok
 PP_EXEMPT_GLOBS=".sandcastle/runtime/*" pp_is_protected ".sandcastle/runtime/x" \
   && fail "an extra exempt glob wins over the protected dir"; ok
 

@@ -19,7 +19,7 @@ pass=0
 #     secret-shaped (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY-style). ---
 cat > "$tmp/clean.env" <<'EOF'
 CLAUDE_CODE_OAUTH_TOKEN=sk-test-not-real
-FORGEJO_API=https://example.invalid/api/v1/repos/Matou/ourcloud
+FORGEJO_API=https://example.invalid/api/v1/repos/Matou/idss
 MATTERMOST_URL=https://mattermost.example
 MATTERMOST_CHANNEL_ID=abc123
 BASH_DEFAULT_TIMEOUT_MS=1500000

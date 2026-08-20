@@ -15,7 +15,7 @@
 # in the fleet repo). --cpu-shares 320 was calibrated LIVE on elitebook-03
 # (2026-08-15): with the systemd cgroup driver, docker's shares→cpu.weight
 # conversion is log-scaled, and 320 lands cpu.weight=41 — the same ~40 the
-# runner unit's own fence carries (ourcloud #467 / fleet 9f1d196). Note
+# runner unit's own fence carries (idss #467 / fleet 9f1d196). Note
 # 1024 (the daemon default) is treated as UNSET and writes nothing.
 # Kill switch: SWARM_FENCE=0.
 
