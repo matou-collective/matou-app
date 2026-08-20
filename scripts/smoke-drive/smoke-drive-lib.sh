@@ -81,15 +81,17 @@ sd_legs_array() {
   fi
 }
 
-# sd_verdict_json <green|red> <base> <feature> <stamp> <legs-total> <legs-red> —
+# sd_verdict_json <green|red> <base> <feature> <stamp> <legs-total> <legs-red> [sha] —
 # the authoritative run verdict (contract clause 5): the reporter reads `.verdict`
 # and trusts it over any out-of-band exit code. The extra fields are for humans
-# reading the run dir.
+# reading the run dir. `sha` records the exact tree the lap drove (the dispatched
+# ref's tip, matou-app#49) so a green/red can never be mistaken for a test of a
+# different tree; empty when the driver runs outside a git checkout.
 sd_verdict_json() {
-  local verdict="${1:?}" base="${2:?}" feature="${3:-}" stamp="${4:?}" total="${5:-0}" red="${6:-0}"
+  local verdict="${1:?}" base="${2:?}" feature="${3:-}" stamp="${4:?}" total="${5:-0}" red="${6:-0}" sha="${7:-}"
   [[ "$total" =~ ^[0-9]+$ ]] || total=0
   [[ "$red" =~ ^[0-9]+$ ]] || red=0
   jq -cn --arg verdict "$verdict" --arg base "$base" --arg feature "$feature" \
-    --arg stamp "$stamp" --argjson total "$total" --argjson red "$red" \
-    '{verdict:$verdict, tier:"smoke", base:$base, feature:$feature, stamp:$stamp, legs_total:$total, legs_red:$red}'
+    --arg stamp "$stamp" --argjson total "$total" --argjson red "$red" --arg sha "$sha" \
+    '{verdict:$verdict, tier:"smoke", base:$base, feature:$feature, sha:$sha, stamp:$stamp, legs_total:$total, legs_red:$red}'
 }
