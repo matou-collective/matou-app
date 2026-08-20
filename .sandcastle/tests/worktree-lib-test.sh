@@ -87,16 +87,16 @@ out="$(worktree_realign_backpointer "$tmp/repo/.git" "$tmp/repo")"
 pass=$((pass+1))
 
 # --- align-worktree.sh: no-op off the sandbox, aligns inside it -------------
-# Off the sandbox (OURCLOUD_SANDBOX unset) it must exit 0 without touching git.
-( cd "$tmp/repo/.sandcastle/worktrees/wB" && unset OURCLOUD_SANDBOX && bash "$here/../align-worktree.sh" >/dev/null ) \
+# Off the sandbox (FACTORY_SANDBOX unset) it must exit 0 without touching git.
+( cd "$tmp/repo/.sandcastle/worktrees/wB" && unset FACTORY_SANDBOX && bash "$here/../align-worktree.sh" >/dev/null ) \
   || fail "align-worktree must be a clean no-op off the sandbox"
 pass=$((pass+1))
 
 # End-to-end through the driver (real git plumbing): break wB's back-link, then
-# run the driver from inside wB with OURCLOUD_SANDBOX=1 — it must resolve the git
+# run the driver from inside wB with FACTORY_SANDBOX=1 — it must resolve the git
 # dir and toplevel via git and realign the back-link to the checkout it runs in.
 printf '%s\n' "$absent" > "$adminB/gitdir"
-( cd "$tmp/repo/.sandcastle/worktrees/wB" && OURCLOUD_SANDBOX=1 bash "$here/../align-worktree.sh" >/dev/null ) \
+( cd "$tmp/repo/.sandcastle/worktrees/wB" && FACTORY_SANDBOX=1 bash "$here/../align-worktree.sh" >/dev/null ) \
   || fail "align-worktree must succeed inside the sandbox"
 [ "$(cat "$adminB/gitdir")" = "$tmp/repo/.sandcastle/worktrees/wB/.git" ] \
   || fail "align-worktree must realign a broken back-link to the running checkout, got: $(cat "$adminB/gitdir")"

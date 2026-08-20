@@ -29,6 +29,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # swarm.db trace MIRROR (#447): best-effort SQLite front-end. Every writer
 # swallows its own failure — a mirror we cannot write must never red a run.
 . "$here/swarm-db-lib.sh"
+# shellcheck source=cancel-lib.sh
+# The operator-cancel kill-path (#612, idss ADR 0186): marker-file
+# protocol the TUI writes and main.mts polls, plus the log-side
+# swarm_cancel_hit detector this script's retry loop uses below.
+. "$here/cancel-lib.sh"
 # shellcheck source=protected-paths-lib.sh
 # The outcome boundary (#445): fingerprint `.sandcastle/`+`.forgejo/` before and
 # after the sandcastle run, attribute every protected change to the workers, roll
@@ -42,10 +47,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${FORGEJO_TOKEN:?}"
 : "${FORGEJO_API:?}"
 repo_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"
-# One runner now serves TWO repos (Matou/ourcloud + Matou/matou-app). Any /tmp
+# One runner now serves TWO repos (Matou/idss + Matou/matou-app). Any /tmp
 # state that is per-repo must carry the repo in its name, or the two repos
 # clobber each other's stamps (#238). Slashes aren't valid in a path segment,
-# so flatten the slug: "Matou/ourcloud" -> "Matou-ourcloud".
+# so flatten the slug: "Matou/idss" -> "Matou-idss".
 repo_tag="${repo_slug//\//-}"
 
 # sandcastle tags its per-repo image `sandcastle:<checkout-basename>`, lowercased
@@ -440,6 +445,20 @@ export SWARM_DB_RUN_ID="$run_db_id"
 claude_select_token
 swarm_attempt=1
 while ! pnpm run sandcastle 2>&1 | tee "$sandcastle_log"; do
+  # #612: a deliberate operator cancel (the TUI's Cancel action, via
+  # main.mts's AbortController) reads as a distinct, unalarmed stop — never
+  # the generic sandcastle-run-failed fallback below, and never paged to the
+  # healer (verdict_write only fires on a non-zero exit). Checked FIRST,
+  # exactly like the limit guard immediately below it.
+  if swarm_cancel_hit "$sandcastle_log"; then
+    cancel_reason="$(swarm_cancel_hit_reason "$sandcastle_log")"
+    bash "$here/notify-mattermost.sh" ":stop_sign: **Swarm run cancelled** in \`$repo_slug\` — operator cancel via the factory TUI${cancel_reason:+ ($cancel_reason)}. In-flight work for this run's current iteration is NOT recorded in swarm.db (ADR 0186); its ticket will be picked back up by the next janitor sweep." || true
+    swarmdb_event "$run_db_id" "" cancelled "operator cancel${cancel_reason:+: $cancel_reason}" "$repo_tag"
+    rm -f "$sandcastle_log"
+    echo "run-swarm: run cancelled by operator${cancel_reason:+ ($cancel_reason)}"
+    SWARM_EXIT_REASON="cancelled:operator"
+    exit 0
+  fi
   if claude_limit_hit "$sandcastle_log"; then
     reset_hint="$(claude_limit_reset_hint "$sandcastle_log")"
     if [ "$swarm_attempt" = 1 ]; then

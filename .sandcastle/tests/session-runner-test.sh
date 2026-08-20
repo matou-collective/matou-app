@@ -119,9 +119,10 @@ run_runner() {
     SESSION_RUNNER_LOCK="$tmp/lock" SESSION_RUNNER_OFF_FILE="$tmp/off" \
     SESSION_RUNNER_COOLDOWN=0 SESSION_RUNNER_TIMEOUT=60 \
     CLAUDE_LIMIT_MARKER="$tmp/limit-marker" CLAUDE_ACTIVE_MARKER="$tmp/active-marker" \
+    HOST_CAPACITY_SLOTS="$tmp/hc-slot1 $tmp/hc-slot2" \
     "$@" bash "$here/../session-runner.sh" 2>&1
 }
-reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; rm -f "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" 2>/dev/null || true; reset_queue; }
+reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; rm -f "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/hc-slot1" "$tmp/hc-slot2" 2>/dev/null || true; reset_queue; }
 
 # 1: kill switch — env and file both stop pickup before any API call.
 reset_case
@@ -192,4 +193,17 @@ grep -qi "parked" <<<"$out" || fail "a parked host must be reported"
 [ -s "$tmp/claude.calls" ] && fail "a parked host must not start a session"
 echo "ok 7 parked host"
 
-echo "session-runner: 7 groups passed"
+# 8: host capacity pool exhausted — both pooled slots already held by
+#    someone else must absorb the tick before ANY API call, same shape as
+#    the single-instance lock (own-lock test lives in
+#    tests/host-capacity-lib-test.sh; this proves the WIRING).
+reset_case
+exec 7>"$tmp/hc-slot1"; flock -n 7 || fail "test setup: could not hold hc-slot1"
+exec 6>"$tmp/hc-slot2"; flock -n 6 || fail "test setup: could not hold hc-slot2"
+out="$(run_runner)"
+exec 7>&-; exec 6>&-
+grep -qi "host capacity pool exhausted" <<<"$out" || fail "an exhausted pool must be reported (got: $out)"
+[ -s "$tmp/curl.log" ] && fail "pool exhaustion must stop before any API call"
+echo "ok 8 host capacity pool exhausted"
+
+echo "session-runner: 8 groups passed"

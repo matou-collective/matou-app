@@ -53,7 +53,7 @@ USER ${AGENT_UID}:${AGENT_GID}
 # Marks this as the Sandcastle sandbox: align-worktree.sh and the pre-push
 # protected-paths gate (both factory-vendored, #572) only run when this is
 # set, so a human's or the swarm harness's own host push is never gated.
-ENV OURCLOUD_SANDBOX=1
+ENV FACTORY_SANDBOX=1
 
 # Install Claude Code CLI
 RUN curl -fsSL https://claude.ai/install.sh | bash

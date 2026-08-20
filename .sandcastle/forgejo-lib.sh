@@ -53,6 +53,32 @@ forgejo_comment() { # forgejo_comment <issue-num> <body-text> -> rc = curl's
   forgejo_post "/issues/$1/comments" "$(jq -n --arg b "$2" '{body:$b}')" >/dev/null
 }
 
+forgejo_comment_id() { # forgejo_comment_id <issue-num> <body-text> -> new comment's id on stdout (empty on parse failure); rc = curl's
+  local resp
+  resp="$(forgejo_post "/issues/$1/comments" "$(jq -n --arg b "$2" '{body:$b}')")" || return 1
+  jq -r '.id // empty' <<<"$resp" 2>/dev/null
+}
+
+forgejo_attach_comment_asset() { # forgejo_attach_comment_asset <comment-id> <file-path> [display-name] -> HTTP code (000 if file missing)
+  # #596: the eyeball rule needs an actual image a tracker-only reader can
+  # open, not a host path — POST multipart/form-data to the comment's own
+  # asset endpoint (Forgejo's issueCreateIssueCommentAttachment).
+  local file="$2" name="${3:-$(basename "$2")}"
+  [ -f "$file" ] || { echo 000; return 0; }
+  _forgejo_code -X POST -F "attachment=@${file};filename=${name};type=image/png" \
+    "$FORGEJO_API/issues/comments/$1/assets"
+}
+
+forgejo_attach_issue_asset() { # forgejo_attach_issue_asset <issue-num> <file-path> [display-name] -> HTTP code (000 if file missing)
+  # Same shape as forgejo_attach_comment_asset, for evidence attached directly
+  # to an issue's own body (a freshly filed issue — the initial body is not a
+  # comment, so it takes the issue-level asset endpoint instead).
+  local file="$2" name="${3:-$(basename "$2")}"
+  [ -f "$file" ] || { echo 000; return 0; }
+  _forgejo_code -X POST -F "attachment=@${file};filename=${name};type=image/png" \
+    "$FORGEJO_API/issues/$1/assets"
+}
+
 forgejo_add_labels() { # forgejo_add_labels <issue-num> <label-ids-csv> -> HTTP code
   # POST /labels ADDS to the set (only PUT replaces) — the label-PATCH-ignored
   # lesson every caller used to re-learn: a `labels` field in a PATCH on the

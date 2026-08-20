@@ -4,7 +4,7 @@ set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$here/fakebin:$PATH"
 export FORGEJO_TOKEN="ftok"
-export FORGEJO_API="http://fj.test/api/v1/repos/Matou/ourcloud"
+export FORGEJO_API="http://fj.test/api/v1/repos/Matou/idss"
 export SWARM_HOST="eb03" SWARM_RUN_ID="513"
 script="$here/../claim-next-task.sh"
 

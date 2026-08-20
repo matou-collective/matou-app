@@ -25,7 +25,7 @@ export REHEARSAL_HEAL_REPO="$tmp/no-such-origin.git"
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 echo "$@" >> "${CURL_LOG:?}"
-want_code=false; is_dep=false; is_lab=false; prev=""; body=""
+want_code=false; is_dep=false; is_lab=false; is_comment_asset=false; is_issue_asset=false; is_comment=false; prev=""; body=""
 for a in "$@"; do
   [ "$prev" = "-d" ] && body="$a"
   case "$a" in
@@ -33,6 +33,12 @@ for a in "$@"; do
     */dependencies) is_dep=true;;
     */issues/*/labels) is_lab=true;;
     */dispatches) is_disp=true;;
+    # #596 asset-attach routes — the more specific comment-asset pattern MUST
+    # be checked before the generic issue-asset one (both match a comment
+    # asset URL; case takes the first hit).
+    */issues/comments/*/assets) is_comment_asset=true;;
+    */issues/*/assets) is_issue_asset=true;;
+    */issues/*/comments) is_comment=true;;
   esac
   prev="$a"
 done
@@ -47,6 +53,8 @@ if $is_dep; then
   exit 0
 fi
 if $is_lab; then $want_code && echo "${LABEL_CODE:-204}"; exit 0; fi
+if $is_comment_asset || $is_issue_asset; then $want_code && echo "${ASSET_CODE:-201}"; exit 0; fi
+if $is_comment; then echo '{"id": 12345}'; exit 0; fi
 for a in "$@"; do case "$a" in
   *labels=rehearsal-183*)
     # The open-issues snapshot. #403 defect 3 (stale snapshot): a sig-matched
@@ -437,6 +445,59 @@ bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero
 [ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -eq 0 ] || fail "verdict.json green must file nothing"
 grep -q '500/dependencies' "$CURL_LOG" && fail "verdict.json green must wire no dependency"
 rm -f "$tmp/run/artifacts/verdict.json"
+pass=$((pass+1))
+
+# 27 (#596): a fresh filing attaches one representative screenshot to the
+#     NEW issue via the issue-asset endpoint (there's no prior comment to key
+#     off — the initial body isn't a comment).
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+echo '{"title":"rehearsal: pairing never flips on the droplet","body":"diagnosis body","confident":true}'
+SH
+chmod +x "$tmp/bin/claude"
+mkdir -p "$tmp/run/artifacts/ceremony"
+: > "$tmp/run/artifacts/ceremony/finish.png"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (screenshot on new filing)"
+grep -q '991/assets' "$CURL_LOG" || fail "new filing did not attach a screenshot to the issue"
+grep -q 'attachment=@.*finish\.png' "$CURL_LOG" || fail "attach call did not name the representative screenshot"
+pass=$((pass+1))
+
+# 28 (#596): the MATCHED path — a comment appended to an EXISTING issue also
+#     attaches the screenshot, to the SAME comment (comment-asset endpoint,
+#     keyed off the comment's own id — 12345 per the shim's fixture).
+sig27="$(grep -o 'rehearsal-sig: [a-f0-9]*' "$CURL_LOG" | head -1)"
+[ -n "$sig27" ] || fail "could not capture sig for the screenshot-match case"
+printf '[{"number": 991, "body": "x\\n%s"}]' "$sig27" > "$ISSUE_FIXTURE"
+: > "$CURL_LOG"
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (screenshot on match)"
+grep -q '991/comments' "$CURL_LOG" || fail "no comment posted on the matched issue"
+grep -q 'comments/12345/assets' "$CURL_LOG" || fail "matched-issue comment did not attach a screenshot"
+grep -q 'attachment=@.*finish\.png' "$CURL_LOG" || fail "attach call did not name the representative screenshot"
+pass=$((pass+1))
+
+# 29 (#596): no screenshot captured (a run dir with no *.png anywhere) —
+#     filing/appending still succeeds, and no asset-attach call is even
+#     attempted (never a failed upload, just skipped).
+rm -f "$tmp/run/artifacts/ceremony/finish.png"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (no screenshot)"
+grep -q '/issues -d' "$CURL_LOG" || fail "filing without a screenshot still must file"
+grep -q '/assets' "$CURL_LOG" && fail "no screenshot present — no asset-attach call should have been attempted"
+pass=$((pass+1))
+
+# 30 (#610): the evidence note must show the REAL error text to a human/agent
+# -- not normalize_error_line's signature fold. Digits (port/timeout) survive,
+# and ANSI color codes (Playwright's TimeoutError coloring) are stripped
+# clean rather than garbled into "[Nm" junk. The dedup signature itself is
+# unaffected (case 3 already pins that normalization still drives it).
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run '\u001b[31mTimeoutError\u001b[0m: locator.click: Timeout 30000ms exceeded, port 127.0.0.1:8443'
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (evidence display)"
+grep -q 'Timeout 30000ms exceeded, port 127.0.0.1:8443' "$CURL_LOG" || fail "evidence note redacted the real port/timeout digits"
+grep -Eq '\[[0-9]*m' "$CURL_LOG" && fail "evidence note leaked ANSI/garbled [Nm noise"
 pass=$((pass+1))
 
 echo "PASS ($pass cases)"

@@ -13,12 +13,14 @@
 # secrets/.
 align-worktree.sh
 ask-human.sh
+cancel-lib.sh
 check-harness-drift.sh
 claim-lib.sh
 claim-next-task.sh
 close-report-lib.sh
 close-report.sh
 env-allowlist-lib.sh
+evidence-lib.sh
 fence-lib.sh
 forgejo-lib.sh
 gate-lib.sh
@@ -27,6 +29,7 @@ git-fence
 git-hooks/pre-push
 heal-lib.sh
 heal.sh
+host-capacity-lib.sh
 limit-lib.sh
 list-ready-tasks.sh
 main.mts
@@ -50,6 +53,7 @@ swarm-db.py
 swarm-db.sh
 swarm.config
 sweep-lib.sh
+tests/cancel-lib-test.sh
 tests/check-harness-drift-test.sh
 tests/claim-lib-test.sh
 tests/claim-next-task-test.sh
@@ -58,6 +62,7 @@ tests/close-report-lib-test.sh
 tests/close-report-test.sh
 tests/debounce-test.sh
 tests/env-allowlist-lib-test.sh
+tests/evidence-lib-test.sh
 tests/fakebin/curl
 tests/fence-lib-test.sh
 tests/fixtures/claude-usage-limit.txt
@@ -72,6 +77,7 @@ tests/forgejo-lib-test.sh
 tests/gate-lib-test.sh
 tests/heal-lib-test.sh
 tests/heal-test.sh
+tests/host-capacity-lib-test.sh
 tests/judgement-call-prompts-test.sh
 tests/limit-lib-test.sh
 tests/list-ready-tasks-test.sh

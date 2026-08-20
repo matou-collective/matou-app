@@ -45,7 +45,7 @@ chmod +x "$tmp/bin/curl"
 run_backstop() { # run_backstop <runs-json-file>
   : > "$tmp/dispatch.log"
   env PATH="$tmp/bin:$PATH" FORGEJO_TOKEN=dummy \
-    FORGEJO_API=http://x/api/v1/repos/Matou/ourcloud \
+    FORGEJO_API=http://x/api/v1/repos/Matou/idss \
     RUNS_JSON="$1" DISPATCH_LOG="$tmp/dispatch.log" \
     bash "$here/../schedule-backstop.sh" swarm.yml 25
 }

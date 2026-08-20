@@ -3,7 +3,7 @@
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$here/fakebin:$PATH"
-export FORGEJO_TOKEN="ftok" FORGEJO_API="http://fj.test/api/v1/repos/Matou/ourcloud"
+export FORGEJO_TOKEN="ftok" FORGEJO_API="http://fj.test/api/v1/repos/Matou/idss"
 FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
 . "$here/../claim-lib.sh"
 rearm_dispatch >/dev/null 2>&1 || true

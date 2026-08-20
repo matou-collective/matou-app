@@ -27,11 +27,11 @@ sandcastle_image_name() { # sandcastle_image_name <checkout-dir>
 # contract our bash replica must match. Kept beside the replica so a drift in
 # either direction reds this test.
 #   dirName = basename; sanitized = lower, [^a-z0-9_.-] -> '-'; empty -> "local".
-[ "$(sandcastle_image_name /srv/ci/ourcloud)" = "sandcastle:ourcloud" ] \
+[ "$(sandcastle_image_name /srv/ci/idss)" = "sandcastle:idss" ] \
   || fail "plain checkout name"
 [ "$(sandcastle_image_name /srv/ci/matou-app)" = "sandcastle:matou-app" ] \
   || fail "hyphen preserved (allowed char)"
-[ "$(sandcastle_image_name /home/dev/OurCloud)" = "sandcastle:ourcloud" ] \
+[ "$(sandcastle_image_name /home/dev/IDSS)" = "sandcastle:idss" ] \
   || fail "uppercase lowercased"
 [ "$(sandcastle_image_name '/tmp/My Repo!')" = "sandcastle:my-repo-" ] \
   || fail "space and bang become '-'"
@@ -39,7 +39,7 @@ sandcastle_image_name() { # sandcastle_image_name <checkout-dir>
   || fail "underscore and dot are allowed chars"
 # A trailing slash: basename strips it, same as defaultImageName's trailing-slash
 # regex, so the tag is stable however the checkout path is spelled.
-[ "$(sandcastle_image_name /srv/ci/ourcloud/)" = "sandcastle:ourcloud" ] \
+[ "$(sandcastle_image_name /srv/ci/idss/)" = "sandcastle:idss" ] \
   || fail "trailing slash stripped"
 pass=$((pass+1))
 

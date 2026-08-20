@@ -28,6 +28,29 @@ b="$(normalize_error_line "WorktreeError: fatal: '/x/.sandcastle/worktrees/sandc
 [ "$a" = "$b" ] || fail "normalize should equate error lines differing only in worker name"
 pass=$((pass+1))
 
+# display_error_line (#610): the human/agent-facing counterpart — strip ANSI,
+# collapse whitespace, but NEVER redact digits/hashes (normalize_error_line's
+# job is signature folding, not display; the reporter's evidence note needs
+# the real port/timeout).
+out="$(display_error_line 'connect ECONNREFUSED 127.0.0.1:443')"
+[ "$out" = "connect ECONNREFUSED 127.0.0.1:443" ] || fail "display should keep the real port, got: $out"
+pass=$((pass+1))
+
+out="$(display_error_line 'Timeout: 600000ms exceeded')"
+[ "$out" = "Timeout: 600000ms exceeded" ] || fail "display should keep the real timeout, got: $out"
+pass=$((pass+1))
+
+# a Playwright-style ANSI-colored line: the ESC byte + its digit-bearing CSI
+# sequence must be stripped whole, not folded into visible "[Nm" junk
+out="$(display_error_line "$(printf '\033[31mTimeoutError\033[0m: locator.click: Timeout 30000ms exceeded')")"
+[ "$out" = "TimeoutError: locator.click: Timeout 30000ms exceeded" ] || fail "display should strip ANSI without leaving [Nm junk, got: $out"
+pass=$((pass+1))
+
+# multi-line input collapses to one line (evidence_note embeds this inline)
+out="$(display_error_line "$(printf 'first line\nsecond   line')")"
+[ "$out" = "first line second line" ] || fail "display should collapse to a single line, got: $out"
+pass=$((pass+1))
+
 # signatures: stable, workflow-scoped
 s1="$(compute_signature swarm 'npm error Missing: prettier@3.9.6 from lock file')"
 s2="$(compute_signature swarm 'npm error Missing: prettier@3.9.7 from lock file')"
