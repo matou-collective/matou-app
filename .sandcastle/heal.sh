@@ -25,7 +25,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/swarm-identity.sh"
 # One runner serves TWO repos now (#238). Per-repo healer state must carry the
 # repo slug or one repo's healer makes the other's skip its incident (the
-# healer lock) and stomps its evidence dir. "Matou/matou-app" -> "Matou-ourcloud"
+# healer lock) and stomps its evidence dir. "Matou/ourcloud" -> "Matou-ourcloud"
 # (slashes aren't valid in a path segment).
 REPO_TAG="${FORGEJO_API##*/repos/}"; REPO_TAG="${REPO_TAG//\//-}"
 MODE="${HEAL_MODE:-hook}"

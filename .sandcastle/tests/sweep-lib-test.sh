@@ -13,6 +13,18 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 
+# This suite drives REAL `git worktree add`/`remove` to build and sweep its
+# fixture — exactly the operations .sandcastle/git-fence refuses inside the
+# Sandcastle sandbox (#239), where every worker shares one .git/worktrees/
+# admin. It is a normal green suite off-sandbox (workstation/CI), where the
+# fence is absent. Skip explicitly here rather than red on the fence (#587).
+# Off-sandbox `git` is the real binary, so the marker never matches and the
+# suite runs in full.
+if grep -qs git-fence "$(command -v git 2>/dev/null)"; then
+  echo "sweep-lib: SKIP — git worktree add is fenced in-sandbox (#239); run off-sandbox"
+  exit 0
+fi
+
 repo="$(mktemp -d)"; trap 'rm -rf "$repo"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 git -C "$repo" init -q -b main
@@ -69,4 +81,39 @@ pass=$((pass+1))
 sweep_worktrees "$(mktemp -d)" >/dev/null || fail "non-git dir must be a no-op, not an error"
 pass=$((pass+1))
 
+# --- reap_containers: force-remove leaked sandcastle-* containers older than a
+#     run-lifetime, leave fresh ones alone (#238 AC4) ---
+# A fake `docker` on PATH: `ps` emits canned rows (one stale, one fresh, in
+# docker's real CreatedAt format incl. the trailing tz name); `rm -f` records
+# the id it was asked to remove. This exercises the age arithmetic and the
+# CreatedAt parsing without a real daemon.
+bin="$(mktemp -d)"; rmlog="$(mktemp)"; psfile="$(mktemp)"
+export FAKE_RM_LOG="$rmlog" FAKE_PS_FILE="$psfile"
+cat > "$bin/docker" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  ps)      cat "$FAKE_PS_FILE" ;;
+  rm)      shift; [ "$1" = "-f" ] && shift; printf '%s\n' "$@" >> "$FAKE_RM_LOG" ;;
+esac
+EOF
+chmod +x "$bin/docker"
+
+fmt='+%Y-%m-%d %H:%M:%S %z UTC'   # docker CreatedAt shape, trailing tz name
+printf '%s\t%s\n' stale_old "$(date -u -d '2 days ago' "$fmt")"  >  "$psfile"
+printf '%s\t%s\n' fresh_now "$(date -u "$fmt")"                  >> "$psfile"
+
+reaped="$(PATH="$bin:$PATH" reap_containers 10800)"   # 3h floor
+
+printf '%s' "$reaped" | grep -qx stale_old || fail "the 2-day-old container must be reaped, got: [$reaped]"
+printf '%s' "$reaped" | grep -qx fresh_now && fail "a just-created container must NOT be reaped (in-flight run)"
+grep -qx stale_old "$rmlog" || fail "reap must call docker rm -f on the stale container"
+grep -qx fresh_now "$rmlog" && fail "reap must never rm -f a fresh container"
+pass=$((pass+1))
+
+# --- no docker on PATH: a safe no-op, never an error (host without docker) ---
+emptybin="$(mktemp -d)"
+( PATH="$emptybin" reap_containers ) >/dev/null 2>&1 || fail "missing docker must be a no-op, not an error"
+pass=$((pass+1))
+
+rm -rf "$bin" "$emptybin" "$rmlog" "$psfile"
 echo "sweep-lib: $pass groups passed"

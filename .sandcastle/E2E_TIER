@@ -1,0 +1,2 @@
+tier: opt-out
+reason: no driver satisfying the six-clause contract (docs/agents/e2e-driver-contract.md) exists yet — pr-e2e.yml is a PR-scoped feature-e2e job (per-PR spec run + Mattermost notify), not a standing rehearsal-drive journey/smoke driver (no legs.json/verdict.json emission). Follow-up: build a smoke-tier driver, tracked in Matou/dev-factory.

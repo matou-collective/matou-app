@@ -69,4 +69,69 @@ do
 done
 pass=$((pass+1))
 
+# --- the host-global limit MARKER matrix (#253): the guard every claude caller
+#     rides. absent → not parked; fresh → parked; stale → not parked; and park()
+#     makes a subsequent parked() true. Point the marker at a temp path so the
+#     test never touches the real /tmp/matou-swarm-claude-limit. ---
+export CLAUDE_LIMIT_MARKER="$(mktemp -u)"; export CLAUDE_LIMIT_TTL=3600
+rm -f "$CLAUDE_LIMIT_MARKER"
+claude_limit_parked && fail "an ABSENT marker must not read as parked"
+claude_limit_park
+claude_limit_parked || fail "park() then parked() must read as parked (fresh marker)"
+# a marker older than the TTL is stale — the window has likely reset, so retry
+touch -d "2 hours ago" "$CLAUDE_LIMIT_MARKER"
+claude_limit_parked && fail "a STALE marker (older than the TTL) must not read as parked"
+rm -f "$CLAUDE_LIMIT_MARKER"
+pass=$((pass+1))
+
+# --- two-account failover (#510): ride over an exhausted weekly window ---
+# Marker points at a temp path so the test never touches the real
+# /tmp/matou-swarm-claude-active-token; TTL matrix mirrors the limit marker's.
+export CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; export CLAUDE_ACTIVE_TTL=3600
+rm -f "$CLAUDE_ACTIVE_MARKER"
+
+# no standby token: selection is a NO-OP (single-account hosts unchanged) and
+# failover REFUSES — the caller falls through to today's quiet park.
+unset CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY 2>/dev/null || true
+export CLAUDE_CODE_OAUTH_TOKEN="tok-A"
+claude_select_token
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-A" ] || fail "select without a standby must be a no-op"
+claude_failover && fail "failover without a standby token must refuse"
+pass=$((pass+1))
+
+# standby present: the active account defaults to A; a failover flips the
+# marker to B and re-exports the standby token; a second failover flips back.
+export CLAUDE_CODE_OAUTH_TOKEN_B="tok-B"
+claude_select_token
+[ "$(claude_active_account)" = "A" ] || fail "active account must default to A"
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-A" ] || fail "select on A must keep the primary token"
+claude_failover || fail "failover with a standby must succeed"
+[ "$(claude_active_account)" = "B" ] || fail "failover must mark B active"
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-B" ] || fail "failover must export the standby token"
+claude_failover || fail "second failover must succeed"
+[ "$(claude_active_account)" = "A" ] || fail "second failover must flip back to A"
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-A" ] || fail "second failover must restore the primary token"
+pass=$((pass+1))
+
+# a FRESH B marker steers a NEW caller straight to the standby — no failed
+# attempt paid first (the marker's whole purpose). Simulate a fresh shell by
+# clearing the primary snapshot and re-exporting the env as cron would.
+claude_mark_active B
+unset CLAUDE_TOKEN_PRIMARY
+export CLAUDE_CODE_OAUTH_TOKEN="tok-A"
+claude_select_token
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-B" ] || fail "a fresh B marker must start the caller on the standby token"
+pass=$((pass+1))
+
+# a STALE marker never pins the host to the standby forever (AC-4): older than
+# the TTL → the active account falls back to A, re-probing the primary.
+touch -d "2 hours ago" "$CLAUDE_ACTIVE_MARKER"
+unset CLAUDE_TOKEN_PRIMARY
+export CLAUDE_CODE_OAUTH_TOKEN="tok-A"
+claude_select_token
+[ "$(claude_active_account)" = "A" ] || fail "a stale marker must fall back to account A"
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-A" ] || fail "a stale marker must re-select the primary token"
+rm -f "$CLAUDE_ACTIVE_MARKER"
+pass=$((pass+1))
+
 echo "limit-lib: $pass groups passed"

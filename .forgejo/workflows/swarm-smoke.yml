@@ -1,0 +1,38 @@
+name: swarm-smoke
+# Dispatch-only preflight for a NEW swarm host: proves checkout, pnpm,
+# sandcastle image build, a rootless container run, claude CLI, and
+# Mattermost notify — before the host is ever allowed real tickets. Also
+# this repo's runner-registration + acceptance-gate smoke ticket (#572).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    runs-on: matou-workstation
+    timeout-minutes: 45
+    steps:
+      - name: Smoke the swarm toolchain
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO_SLUG: ${{ github.repository }}
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+        run: |
+          set -euo pipefail
+          echo "host: $(hostname)  docker: $(docker info --format '{{join .SecurityOptions ","}}')"
+          docker info --format '{{join .SecurityOptions ","}}' | grep -q rootless
+          node -v | grep -q '^v22' && pnpm --version && claude --version
+          workdir="$HOME/swarm/$REPO_SLUG"
+          mkdir -p "$workdir" && cd "$workdir"
+          host="${SERVER_URL#https://}"
+          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+          if [ -d .git ]; then git remote set-url origin "$url"; git fetch origin main; git reset --hard origin/main
+          else git clone "$url" .; fi
+          pnpm install --frozen-lockfile
+          pnpm exec sandcastle docker build-image
+          image="sandcastle:$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+          # -c not -lc: a login shell sources /etc/profile which resets PATH and hides the image's nix profile
+          docker run --rm --entrypoint bash "$image" -c 'echo sandbox-boots-OK && command -v nix >/dev/null && echo nix-present-OK'
+          bash .sandcastle/notify-mattermost.sh ":white_check_mark: **swarm-smoke green** on \`$(hostname)\` — rootless sandbox builds and boots."

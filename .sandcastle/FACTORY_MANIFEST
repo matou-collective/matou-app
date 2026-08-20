@@ -1,0 +1,101 @@
+# FACTORY_MANIFEST — the files this repo vendors byte-identical from the
+# factory core (ADR 0180 / #571), one path per line, relative to
+# .sandcastle/. Checked by check-harness-drift.sh against FACTORY_REF (the
+# pinned Matou/dev-factory commit). No sed transform, no rendering — the
+# whole point of the extraction is that these bytes are IDENTICAL everywhere,
+# a stronger invariant than "matches whatever was last synced".
+#
+# Deliberately excluded (the thin declarative layer that stays per-repo,
+# ADR 0180 point 2): swarm-identity.sh (this repo's own FORGEJO_API/
+# HEAL_WORKDIR/REPO_SLUG), the prompt-*.md files (not yet a real templated
+# skeleton — see Matou/dev-factory's README "Prompt skeletons"), Dockerfile,
+# README.md, gate*'s repo-specific rules if any diverge later, .env*, and
+# secrets/.
+align-worktree.sh
+ask-human.sh
+check-harness-drift.sh
+claim-lib.sh
+claim-next-task.sh
+close-report-lib.sh
+close-report.sh
+env-allowlist-lib.sh
+fence-lib.sh
+forgejo-lib.sh
+gate-lib.sh
+gate.sh
+git-fence
+git-hooks/pre-push
+heal-lib.sh
+heal.sh
+limit-lib.sh
+list-ready-tasks.sh
+main.mts
+model-lib.sh
+notify-mattermost.sh
+post-issue-ask.sh
+preflight-swarm.sh
+preflight-triage.sh
+protected-paths-lib.sh
+record-run-result.sh
+rehearsal-heal-lib.sh
+rehearsal-report.sh
+resume-parked-asks.sh
+run-swarm.sh
+run-triage.sh
+runlog-lib.sh
+schedule-backstop.sh
+session-runner.sh
+swarm-db-lib.sh
+swarm-db.py
+swarm-db.sh
+swarm.config
+sweep-lib.sh
+tests/check-harness-drift-test.sh
+tests/claim-lib-test.sh
+tests/claim-next-task-test.sh
+tests/claude-call-guards-test.sh
+tests/close-report-lib-test.sh
+tests/close-report-test.sh
+tests/debounce-test.sh
+tests/env-allowlist-lib-test.sh
+tests/fakebin/curl
+tests/fence-lib-test.sh
+tests/fixtures/claude-usage-limit.txt
+tests/fixtures/runs-alwaysred.json
+tests/fixtures/runs-healthy.json
+tests/fixtures/runs-streak.json
+tests/fixtures/secret-empty.txt
+tests/fixtures/secret-nonempty.txt
+tests/fixtures/stub-agent.sh
+tests/fixtures/swarm-verdict-fail.txt
+tests/forgejo-lib-test.sh
+tests/gate-lib-test.sh
+tests/heal-lib-test.sh
+tests/heal-test.sh
+tests/judgement-call-prompts-test.sh
+tests/limit-lib-test.sh
+tests/list-ready-tasks-test.sh
+tests/model-lib-test.sh
+tests/nix-store-test.sh
+tests/notify-test.sh
+tests/post-issue-ask-test.sh
+tests/preflight-swarm-test.sh
+tests/preflight-triage-test.sh
+tests/protected-paths-lib-test.sh
+tests/record-run-result-test.sh
+tests/rehearsal-heal-lib-test.sh
+tests/rehearsal-healer-test.sh
+tests/rehearsal-report-test.sh
+tests/resume-parked-asks-test.sh
+tests/run-swarm-env-guard-test.sh
+tests/runlog-lib-test.sh
+tests/schedule-backstop-test.sh
+tests/self-rearm-test.sh
+tests/session-runner-test.sh
+tests/swarm-db-test.sh
+tests/swarm-lock-yield-test.sh
+tests/sweep-lib-test.sh
+tests/test-ask-human.sh
+tests/worktree-lib-test.sh
+verdict-lib.sh
+worktree-lib.sh
