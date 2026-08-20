@@ -33,6 +33,13 @@ RUN echo 'export PATH="/usr/local/go/bin:$PATH"' > /etc/profile.d/00-go.sh
 COPY git-fence /usr/local/bin/git
 RUN chmod 0755 /usr/local/bin/git
 
+# pnpm, for the swarm harness's own root install (main.mts's sandbox setup
+# step runs `pnpm install --frozen-lockfile` at /home/agent/workspace before
+# the agent starts — the root package.json is sandcastle+tsx only, separate
+# from frontend's npm and backend's go). Pinned to the version this host's
+# lockfile was generated with (factory onboarding, #572).
+RUN npm install -g pnpm@11.6.0
+
 # Build-args for UID/GID alignment: sandcastle docker build-image defaults
 # these to the host user's UID/GID so image-built files and bind-mounted
 # files share an owner without runtime chown.
