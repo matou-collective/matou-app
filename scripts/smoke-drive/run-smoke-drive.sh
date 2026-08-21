@@ -65,12 +65,17 @@ fi
 
 base="$(sd_resolve_base "$base_opt" "$root/$spec")"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+# The exact tree this lap drives — recorded in verdict.json (matou-app#49) so a
+# green/red can never be mistaken for a test of a different ref. git HEAD is
+# authoritative (it is literally what was checked out); GITHUB_SHA is the
+# fallback when run outside a git checkout.
+sha="$(git -C "$root" rev-parse HEAD 2>/dev/null || echo "${GITHUB_SHA:-unknown}")"
 [ -n "$run_dir" ] || run_dir="$root/test-results/smoke/$stamp"
 mkdir -p "$run_dir/artifacts" "$run_dir/logs" "$run_dir/screenshots"
 legs_d="$run_dir/artifacts/legs.d"; mkdir -p "$legs_d"
 results_dir="$root/frontend/tests/e2e/results"
 
-echo "run-smoke-drive: base=$base feature=${feature:-none} run-dir=$run_dir"
+echo "run-smoke-drive: base=$base feature=${feature:-none} sha=$sha run-dir=$run_dir"
 sd_plan_legs "$base" "$feature" | sed 's/^/  leg: /' | cut -f1
 
 # --- infra bootstrap (mirrors .sandcastle/run-pr-e2e.sh) -------------------
@@ -158,10 +163,10 @@ while IFS=$'\t' read -r leg project filter; do
 done < <(sd_plan_legs "$base" "$feature")
 
 # Clause 2 + 5: authoritative verdict.
-sd_verdict_json "$verdict" "$base" "$feature" "$stamp" "$n" "$red_count" \
+sd_verdict_json "$verdict" "$base" "$feature" "$stamp" "$n" "$red_count" "$sha" \
   > "$run_dir/artifacts/verdict.json"
 
-echo "run-smoke-drive: verdict=$verdict legs=$n red=$red_count run-dir=$run_dir"
+echo "run-smoke-drive: verdict=$verdict legs=$n red=$red_count sha=$sha run-dir=$run_dir"
 [ "$verdict" = green ] && exit 0
 echo "run-smoke-drive: first red leg: $first_red" >&2
 exit 1
