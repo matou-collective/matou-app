@@ -487,11 +487,112 @@ export class KERIClient {
         bases.map((base) => this.resolveOOBIWithReason(`${base}/oobi/${aidPrefix}`, undefined, timeoutMs)),
       );
       resolved = results.filter((r) => r.ok).length;
-      console.log(`[KERIClient] Witness KEL resolve for ${aidPrefix.slice(0, 12)}...: ${resolved}/${bases.length} witnesses served it`);
+      // Report which base failed and why, plus the sn our local KEL reached
+      // after the pull. Per-witness sn is not obtainable here: every witness
+      // OOBI resolves into the SAME local key state, and KERIA merges to the
+      // MAX sn seen, so a lagging witness can't lower the number a served one
+      // already raised — the merged sn is the best signal available. The guard
+      // that actually gates issuance, verifyGroupKelWitnessed(), uses
+      // keyStates().query(pre, sn) which asks the witnesses for a specific sn
+      // and so DOES tell whether they serve the anchoring event.
+      let mergedSn: string | undefined;
+      try {
+        const ksList = await this.client.keyStates().get(aidPrefix);
+        const ks = Array.isArray(ksList) ? ksList[0] : ksList;
+        mergedSn = (ks as { s?: string } | undefined)?.s;
+      } catch {
+        // best-effort diagnostic only
+      }
+      const perWitness = bases
+        .map((base, i) => `${base}=${results[i]?.ok ? 'ok' : `fail(${results[i]?.reason ?? 'unknown'})`}`)
+        .join(', ');
+      console.log(
+        `[KERIClient] Witness KEL resolve for ${aidPrefix.slice(0, 12)}...: ${resolved}/${bases.length} witnesses served it; ` +
+        `local KEL now at sn=${mergedSn ?? 'unknown'} [${perWitness}]`,
+      );
     } catch (err) {
       console.warn('[KERIClient] Witness KEL resolve failed:', err instanceof Error ? err.message : err);
     }
     return resolved;
+  }
+
+  /**
+   * Confirm a (group) AID's witnesses have receipted its KEL up to at least
+   * `targetSn` — the sn anchoring the event we are about to rely on: a
+   * registry `vcp` ixn, a credential `iss` ixn, or a member-add rotation.
+   *
+   * A group-AID anchoring event flips its local operation to `done` the moment
+   * KERIA applies it locally, LONG before — or regardless of whether — the
+   * org's witnesses receipt it (`adoptOrgWitnesses` documents this as the exact
+   * June 2026 issuance freeze). If we IPEX-grant a credential before its
+   * issuer's KEL is witness-served, the recipient resolves the issuer via those
+   * same witnesses, never sees the anchoring event, and the credential sits in
+   * their Tevery/Verifier escrow forever — the #51 second-member join hang.
+   *
+   * `keyStates().query(pre, sn)` asks KERIA to pull the KEL from the AID's
+   * witnesses up to `sn` and returns a long-running op that only completes once
+   * a witness actually serves that sn — unlike re-`resolveOOBI`, which KERIA's
+   * Oobiery dedupes to a no-op for an already-known URL. Bounded retry; throws
+   * loudly on timeout, naming the AID + sn, so the failure points at the
+   * un-served event instead of silently granting an unverifiable credential.
+   *
+   * @param aidPrefix - Prefix of the (group) AID whose KEL must be witnessed
+   * @param opts.targetSn - sn to require (hex). Defaults to the current local sn.
+   * @param opts.timeoutMs - Total budget (default 2 minutes)
+   * @param opts.label - Short context tag for logs/errors (e.g. 'issuance')
+   * @throws if witnesses never serve the target sn within the budget
+   */
+  async verifyGroupKelWitnessed(
+    aidPrefix: string,
+    opts: { targetSn?: string; timeoutMs?: number; label?: string } = {},
+  ): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+    const timeoutMs = opts.timeoutMs ?? 120_000;
+    const tag = opts.label ? ` (${opts.label})` : '';
+
+    // Default target: our own local view of the AID's latest sn — the event we
+    // just anchored. Read it fresh so we capture the just-applied ixn.
+    let targetSn = opts.targetSn;
+    if (targetSn === undefined) {
+      const ksList = await this.client.keyStates().get(aidPrefix);
+      const ks = Array.isArray(ksList) ? ksList[0] : ksList;
+      targetSn = (ks as { s?: string } | undefined)?.s;
+    }
+    if (targetSn === undefined) {
+      throw new Error(`verifyGroupKelWitnessed${tag}: no local key state for ${aidPrefix.slice(0, 12)}...`);
+    }
+    const targetSnInt = parseInt(targetSn, 16);
+
+    const deadline = Date.now() + timeoutMs;
+    let lastSeen: string | undefined;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+      attempt++;
+      try {
+        const op = await this.client.keyStates().query(aidPrefix, targetSn, undefined);
+        const res = await this.client.operations().wait(op, { signal: AbortSignal.timeout(15000) });
+        const ks = res.response as { s?: string } | undefined;
+        lastSeen = ks?.s;
+        if (ks?.s !== undefined && parseInt(ks.s, 16) >= targetSnInt) {
+          console.log(
+            `[KERIClient] verifyGroupKelWitnessed${tag}: ${aidPrefix.slice(0, 12)}... witness-served up to sn=${ks.s} after ${attempt} attempt(s)`,
+          );
+          return;
+        }
+      } catch (err) {
+        // query throws/times out while the witnesses haven't caught up — expected
+        console.log(
+          `[KERIClient] verifyGroupKelWitnessed${tag}: attempt ${attempt} — witnesses not yet serving sn=${targetSn} (lastSeen=${lastSeen ?? 'none'}, ${err instanceof Error ? err.message : err})`,
+        );
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+    throw new Error(
+      `verifyGroupKelWitnessed${tag}: group AID ${aidPrefix.slice(0, 12)}... KEL not witness-served up to sn=${targetSn} within ${Math.round(timeoutMs / 1000)}s ` +
+      `(last witnessed sn=${lastSeen ?? 'none'}). The anchoring event (registry/issuance ixn or member-add rotation) has not propagated to the org witnesses, ` +
+      `so the recipient could never validate a credential issued from it — refusing to proceed. Retry once the group KEL is witness-served.`,
+    );
   }
 
   /**
@@ -1604,6 +1705,16 @@ export class KERIClient {
       }
     }
 
+    // Confirm the round-2 group rotation is witness-served before we declare
+    // the upgrade done. Like the issuance ixns, the rotation's op flips `done`
+    // from local state before the witnesses receipt it; if we return here while
+    // the group KEL is stuck locally, the upgraded steward will immediately
+    // issue from a group AID whose current key state no witness serves, and
+    // every credential they grant dies in the recipient's escrow (issue #51).
+    // Fail loudly naming the un-served sn instead of silently proceeding.
+    const groupAfter = await this.client.identifiers().get(groupName);
+    await this.verifyGroupKelWitnessed(groupAfter.prefix, { label: 'addMemberRound2' });
+
     console.log('[KERIClient] addMemberRound2 complete');
   }
 
@@ -2003,6 +2114,19 @@ export class KERIClient {
     const acdc = credResult.acdc;
     const credentialSaid = acdc?.said || (acdc as any)?.sad?.d || 'unknown';
     console.log(`[KERIClient] Credential issued with SAID: ${credentialSaid}`);
+
+    // Before granting: if the issuer is a multisig GROUP AID (org steward
+    // issuing membership creds), the registry `vcp` and credential `iss`
+    // events are anchored by `ixn`s in the group KEL. Those flip the local op
+    // to `done` before the org witnesses receipt them, so a grant sent now
+    // would sit in the recipient's escrow forever (they resolve the issuer via
+    // its witnesses and never see the anchoring ixn — issue #51's second-member
+    // join hang). Gate the grant on the witnesses actually serving the KEL up
+    // to the iss anchor. Personal-AID issuance (endorsements, attendance) has
+    // no `group` and is skipped — its witness set is already established.
+    if ((issuerAid as { group?: unknown }).group) {
+      await this.verifyGroupKelWitnessed(issuerAid.prefix, { label: 'issuance' });
+    }
 
     // Now grant the credential via IPEX (with timeout protection)
     console.log('[KERIClient] Granting credential via IPEX...');
