@@ -40,11 +40,19 @@ jobs:
           mkdir -p "$workdir"
           cd "$workdir"
           url="https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git"
+          # Drive the dispatched ref, not always main (matou-app#49): a
+          # workflow_dispatch on a PR branch must live-verify THAT branch's tree
+          # before merge. Default to main when no ref is given (manual/local run).
+          ref="${GITHUB_REF_NAME:-main}"
           if [ -d .git ]; then
-            git remote set-url origin "$url"; git fetch origin main; git reset --hard origin/main
+            git remote set-url origin "$url"
           else
             git clone "$url" .
           fi
+          git fetch origin "$ref"
+          git reset --hard FETCH_HEAD
+          driven_sha="$(git rev-parse HEAD)"
+          echo "smoke-drive: driving ref=$ref sha=$driven_sha"
 
           args=()
           case "${BASE_INPUT:-auto}" in a) args+=(--base a);; b) args+=(--base b);; esac

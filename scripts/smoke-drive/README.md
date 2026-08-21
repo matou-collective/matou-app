@@ -96,8 +96,10 @@ test-results/smoke/<stamp>/            # 3. run dir (UTC basic stamp = basename)
 1. **`legs.json`** — a JSON array of `{leg, status, ms[, error]}`, rewritten
    after every leg so partial progress survives a red.
 2. **`verdict.json`** — `{verdict:"green"|"red", tier:"smoke", base, feature,
-   stamp, legs_total, legs_red}`. The reporter trusts `.verdict` over any
-   out-of-band exit code (contract clause 5).
+   sha, stamp, legs_total, legs_red}`. The reporter trusts `.verdict` over any
+   out-of-band exit code (contract clause 5). `sha` is the exact tree the lap
+   drove — the dispatched ref's tip (matou-app#49) — so a green/red can never be
+   mistaken for a test of a different tree.
 3. **run dir** — `test-results/smoke/<stamp>/`, stamp = `YYYYMMDDThhmmssZ`.
 4. **screenshots** — per leg, curated snaps + Playwright's own captures.
 5. **text logs** — per-leg Playwright output.

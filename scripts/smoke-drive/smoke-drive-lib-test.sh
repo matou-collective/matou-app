@@ -78,13 +78,17 @@ eq "legs_array: red leg selectable (reporter path)" \
   "$(jq -r '.[]|select(.status=="red")|.leg' <<<"$arr")"
 
 # ---- sd_verdict_json ------------------------------------------------------
-v="$(sd_verdict_json red a 41 20260820T010203Z 3 1)"
-eq "verdict: .verdict"    red     "$(jq -r .verdict <<<"$v")"
-eq "verdict: .tier"       smoke   "$(jq -r .tier <<<"$v")"
-eq "verdict: .base"       a       "$(jq -r .base <<<"$v")"
-eq "verdict: .feature"    41      "$(jq -r .feature <<<"$v")"
-eq "verdict: .legs_total" 3       "$(jq -r .legs_total <<<"$v")"
-eq "verdict: .legs_red"   1       "$(jq -r .legs_red <<<"$v")"
+v="$(sd_verdict_json red a 41 20260820T010203Z 3 1 deadbeefcafe)"
+eq "verdict: .verdict"    red          "$(jq -r .verdict <<<"$v")"
+eq "verdict: .tier"       smoke        "$(jq -r .tier <<<"$v")"
+eq "verdict: .base"       a            "$(jq -r .base <<<"$v")"
+eq "verdict: .feature"    41           "$(jq -r .feature <<<"$v")"
+eq "verdict: .legs_total" 3            "$(jq -r .legs_total <<<"$v")"
+eq "verdict: .legs_red"   1            "$(jq -r .legs_red <<<"$v")"
+eq "verdict: .sha"        deadbeefcafe "$(jq -r .sha <<<"$v")"
+# sha is optional (omitted arg -> empty field), so runs outside a checkout still
+# emit a well-formed verdict.
+eq "verdict: .sha empty when absent" "" "$(jq -r .sha <<<"$(sd_verdict_json green a "" 20260820T010203Z 1 0)")"
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

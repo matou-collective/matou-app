@@ -81,6 +81,12 @@ eq "bare: rc 0" 0 "$rc"
 eq "bare: single org-setup leg" "org-setup" \
   "$(jq -r '[.[].leg]|join(",")' "$rd/artifacts/legs.json")"
 eq "bare: base recorded a" a "$(jq -r .base "$rd/artifacts/verdict.json")"
+# verdict.json records the driven tree's SHA (matou-app#49): the driver reads it
+# from the checkout's git HEAD so a lap can never be mistaken for a test of a
+# different tree.
+eq "bare: verdict sha == git HEAD" \
+  "$(git -C "$here" rev-parse HEAD 2>/dev/null || echo unknown)" \
+  "$(jq -r .sha "$rd/artifacts/verdict.json")"
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
