@@ -38,13 +38,16 @@ NOW="$(date +%s)"
 # error lines). The runner is host-mode on the workstation and ci has no readable
 # log API, so a well-known host path is how a run's real fault reaches the healer:
 # `ci` via scripts/seam-smoke.sh (#197), `swarm`/`triage` via verdict-lib.sh
-# (#235). Same repo-tagged defaults those scripts write to (#574) — REPO_TAG is
+# (#235), `smoke-drive` via the consumer's smoke driver (#10 — the reader half
+# of matou-app#46; without it a red smoke lap degraded to stale worker prose).
+# Same repo-tagged defaults those scripts write to (#574) — REPO_TAG is
 # already computed above from FORGEJO_API, same formula seam-smoke.sh derives
 # from `git remote get-url origin` and run-swarm.sh/run-triage.sh derive from
 # REPO_SLUG, so reader and writers always agree on the path.
 SEAM_VERDICT="${SEAM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-seam-verdict.txt}"
 SWARM_VERDICT="${SWARM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-swarm-verdict.txt}"
 TRIAGE_VERDICT="${TRIAGE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-triage-verdict.txt}"
+SMOKE_DRIVE_VERDICT="${SMOKE_DRIVE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-smoke-drive-verdict.txt}"
 
 # How fresh a verdict or worker log must be to count as evidence for THIS
 # incident's run. Older artifacts (the stale 03:38 worker log that minted phantom
@@ -59,6 +62,7 @@ verdict_path() {
     ci)     printf '%s' "$SEAM_VERDICT" ;;
     swarm)  printf '%s' "$SWARM_VERDICT" ;;
     triage) printf '%s' "$TRIAGE_VERDICT" ;;
+    smoke-drive) printf '%s' "$SMOKE_DRIVE_VERDICT" ;;
   esac
 }
 
@@ -136,15 +140,16 @@ gather_evidence() {
 
 # The signature's raw material.
 #
-# For every workflow that drops a verdict artifact — `ci` (#197), now `swarm`
-# and `triage` (#235) — key the signature on the run's OWN failing stage + first
-# error line, so the incident signature tracks the ACTUAL fault. A moved fault →
-# a new signature → a fresh investigation, instead of collapsing every failure
-# within the cooldown onto one degraded workflow-name-only signature (a moved
-# fault masked as "still failing"). Crucially, swarm/triage no longer grep the
-# Sandcastle worker chain-of-thought (saturated with "error"/"failed" prose), so
-# a stale worker log narrating an unrelated, already-closed ticket can no longer
-# mint a phantom signature (the 2026-07-31 false positives this ticket fixes).
+# For every workflow that drops a verdict artifact — `ci` (#197), `swarm` and
+# `triage` (#235), `smoke-drive` (#10) — key the signature on the run's OWN
+# failing stage + first error line, so the incident signature tracks the
+# ACTUAL fault. A moved fault → a new signature → a fresh investigation,
+# instead of collapsing every failure within the cooldown onto one degraded
+# workflow-name-only signature (a moved fault masked as "still failing").
+# Crucially, swarm/triage no longer grep the Sandcastle worker chain-of-thought
+# (saturated with "error"/"failed" prose), so a stale worker log narrating an
+# unrelated, already-closed ticket can no longer mint a phantom signature (the
+# 2026-07-31 false positives this ticket fixes).
 #
 # With no fresh verdict, degrade to the workflow name alone (empty line) but
 # leave a marker so every post says the "still failing" line is unverified (AC1).

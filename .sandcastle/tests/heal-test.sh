@@ -158,6 +158,38 @@ out="$(run_heal_swarm)"
 echo "$out" | grep -qi "signature degraded to workflow name" || fail "a stale swarm verdict must flag the signature degraded"
 rm -f "$swarm_verdict"
 
+# --- #10: smoke-drive is a verdict-bearing workflow too ---------------------
+# The reader half of matou-app#46: a consumer's smoke driver writes the same
+# stage/exit marker run-swarm.sh does, at /tmp/matou-<tag>-smoke-drive-verdict.txt.
+# verdict_path used to return empty for `smoke-drive`, so a red smoke lap fell
+# through to the prose grep and minted a signature from an unrelated worker
+# session. Pin: the marker keys the signature, and its absence degrades (never
+# prose), exactly like swarm.
+rm -f "$work/state/"*
+smoke_verdict="$work/smoke-drive-verdict.txt"
+run_heal_smoke() {
+  env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
+    HEAL_MODE=hook WORKFLOW=smoke-drive RUN_URL=http://x/runs/8 \
+    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" \
+    SMOKE_DRIVE_VERDICT_PATH="$smoke_verdict" \
+    HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
+    FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    "$@" bash "$here/../heal.sh" 2>&1
+}
+printf 'stage=registration\nexit=1\n--- error lines ---\n1) [chromium] › e2e-registration.spec.ts:732 › register and approve a second member\n' > "$smoke_verdict"
+smokesig="$(compute_signature smoke-drive "$(seam_verdict_signal "$smoke_verdict")")"
+smokeprose="$(compute_signature smoke-drive "$(grep -hE 'error|Error|ERR|failed|Failed|timed out|fatal' "$work/wd/.sandcastle/logs/x-worker.log" | tail -1)")"
+out="$(run_heal_smoke)"
+[ -f "$work/state/$smokesig" ] || fail "smoke-drive signature must key on the driver's verdict marker (#10)"
+[ ! -f "$work/state/$smokeprose" ] || fail "smoke-drive signature must NOT be minted from worker prose"
+echo "$out" | grep -qi "signature degraded" && fail "a fresh smoke-drive verdict must NOT flag the signature degraded"
+rm -f "$work/state/"* "$smoke_verdict"
+smokedeg="$(compute_signature smoke-drive "")"
+out="$(run_heal_smoke)"
+[ -f "$work/state/$smokedeg" ] || fail "with no smoke-drive verdict the signature must degrade to the workflow name"
+[ ! -f "$work/state/$smokeprose" ] || fail "the smoke-drive degrade path must NOT grep worker prose"
+echo "$out" | grep -qi "signature degraded to workflow name" || fail "a degraded smoke-drive signature must be flagged in the post"
+
 # fresh state; agent that never writes diagnosis.md → healer posts plain alert
 rm -f "$work/state/"* "$work/wd/.sandcastle/logs/"*.log
 echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"

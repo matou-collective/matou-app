@@ -26,5 +26,8 @@ jobs:
           MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
           HEAL_MODE: watchdog
-          HEAL_DRY_RUN: "1"
+          # HEAL_DRY_RUN deliberately NOT set (Ben's ruling 2026-08-21, first applied
+          # in Matou/idss): the healer files tickets and makes its ONE bounded
+          # harness-infra repair for real. Set HEAL_DRY_RUN: "1" to return to
+          # diagnose-only.
         run: bash .sandcastle/heal.sh
