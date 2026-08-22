@@ -84,6 +84,13 @@ backend_pid=""
 teardown() {
   [ -n "$backend_pid" ] && kill "$backend_pid" 2>/dev/null || true
   if [ "$skip_infra" -eq 0 ]; then
+    # Keep the KERI-side story (KERIA + witnesses) next to the browser/backend
+    # logs before the containers go away. Escrow reasons (MissingRegistryError,
+    # Missing anchor, MissingWitnessSignature…) are only ever written here —
+    # a red registration leg is undiagnosable without them (matou-app#51).
+    ( cd "$INFRA/keri" && docker compose --env-file .env.test \
+        -f docker-compose.yml -f docker-compose.patched.yml logs --no-color --timestamps ) \
+      >"$run_dir/logs/zz-keri-containers.txt" 2>&1 || true
     fuser -k 9003/tcp 2>/dev/null || true
     make -C "$INFRA/any-sync" down-test >/dev/null 2>&1 || true
     make -C "$INFRA/keri" down-test >/dev/null 2>&1 || true
