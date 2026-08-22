@@ -97,7 +97,10 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
           WORKFLOW: smoke-drive
-          HEAL_DRY_RUN: "1"
+          # HEAL_DRY_RUN deliberately NOT set (Ben's ruling 2026-08-21, first applied
+          # in Matou/idss): the healer files tickets and makes its ONE bounded
+          # harness-infra repair for real. Set HEAL_DRY_RUN: "1" to return to
+          # diagnose-only.
         run: |
           bash "$HOME/swarm-e2e/${{ github.repository }}/.sandcastle/heal.sh" || {
             [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
