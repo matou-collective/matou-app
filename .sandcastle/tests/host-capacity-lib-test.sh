@@ -102,4 +102,112 @@ pass=$((pass+1))
 kill "$h1" 2>/dev/null || true
 wait "$h1" 2>/dev/null || true
 
+# --- drive reservation (#663/#664): reserve is seen, release clears it ---
+wanted="$(mktemp -u)"; skips="$(mktemp -u)"
+export HOST_CAPACITY_DRIVE_WANTED="$wanted" HOST_CAPACITY_DRIVE_SKIPS="$skips"
+out="$(bash -c '
+  . "$1"
+  host_capacity_drive_wanted && echo "PRE-WANTED-BUG"      # nothing reserved yet
+  host_capacity_drive_reserve
+  host_capacity_drive_wanted && echo reserved              # a consumer now sees it
+  host_capacity_drive_reserve                              # idempotent: no error
+  host_capacity_drive_release
+  host_capacity_drive_wanted && echo "POST-RELEASE-BUG"    # cleared
+  host_capacity_drive_release                              # idempotent: no error
+  echo done
+' _ "$lib")"
+[[ "$out" != *"PRE-WANTED-BUG"* ]]   || fail "drive_wanted true before any reserve: $out"
+[[ "$out" == *"reserved"* ]]         || fail "drive_wanted false after reserve: $out"
+[[ "$out" != *"POST-RELEASE-BUG"* ]] || fail "drive_wanted still true after release: $out"
+[[ "$out" == *"done"* ]]             || fail "reservation helpers errored (set -e): $out"
+[ ! -e "$wanted" ]                   || fail "reservation file left on disk after release"
+pass=$((pass+1))
+
+# --- drive reservation: skip counter climbs, resets, and release wipes it ---
+out="$(bash -c '
+  . "$1"
+  echo "bump=$(host_capacity_drive_skip_bump)"            # 1
+  echo "bump=$(host_capacity_drive_skip_bump)"            # 2
+  echo "bump=$(host_capacity_drive_skip_bump)"            # 3
+  host_capacity_drive_skip_reset
+  echo "afterreset=$(host_capacity_drive_skip_bump)"      # back to 1
+  host_capacity_drive_release                             # also wipes the counter
+  echo "afterrelease=$(host_capacity_drive_skip_bump)"    # 1 again
+' _ "$lib")"
+[[ "$out" == *"bump=1"* && "$out" == *"bump=2"* && "$out" == *"bump=3"* ]] \
+  || fail "skip counter did not climb 1,2,3 across ticks: $out"
+[[ "$out" == *"afterreset=1"* ]]   || fail "skip counter did not reset to 0 (next bump != 1): $out"
+[[ "$out" == *"afterrelease=1"* ]] || fail "release did not wipe the skip counter (next bump != 1): $out"
+pass=$((pass+1))
+unset HOST_CAPACITY_DRIVE_WANTED HOST_CAPACITY_DRIVE_SKIPS
+
+# --- drive reservation: the TTL is the anti-deadlock -----------------------
+# The reservation is cleared only by rehearsal-cycle.sh's EXIT traps, which arm
+# after the drive WINS capacity — and the executor never reaches the cycle once
+# the drive ticket is blocked or closed. So an abandoned reservation has nothing
+# scheduled to remove it; without a freshness bound that wedges every heavy job
+# on the host until a human clears /tmp. Re-point at fresh temp paths so this
+# never touches the REAL host-global /tmp/matou-drive-wanted.
+ttl_wanted="$(mktemp -u)"; ttl_skips="$(mktemp -u)"
+export HOST_CAPACITY_DRIVE_WANTED="$ttl_wanted" HOST_CAPACITY_DRIVE_SKIPS="$ttl_skips"
+export HOST_CAPACITY_DRIVE_WANTED_TTL=900
+trap 'rm -f "$slot1" "$slot2" "$side" "$ttl_wanted" "$ttl_skips"' EXIT
+bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"
+bash -c '. "$1"; host_capacity_drive_wanted' _ "$lib" \
+  || fail "a just-declared reservation must be honoured"
+touch -d '@1' "$ttl_wanted"
+bash -c '. "$1"; host_capacity_drive_wanted' _ "$lib" \
+  && fail "a reservation older than the TTL must EXPIRE — an abandoned one must never wedge the host"
+bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"
+bash -c '. "$1"; host_capacity_drive_wanted' _ "$lib" \
+  || fail "re-declaring must refresh the reservation (a starving drive re-reserves every tick)"
+bash -c '. "$1"; host_capacity_drive_release' _ "$lib"
+pass=$((pass+1))
+
+bash -c '. "$1"; host_capacity_drive_wanted' _ "$lib" \
+  && fail "a released reservation must not be wanted"
+pass=$((pass+1))
+
+bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"
+out="$(bash -c '. "$1"; host_capacity_acquire_heavy && echo "$HOST_CAPACITY_HELD_SLOT"' _ "$lib")"
+[ "$out" = "$slot1" ] || fail "a standing reservation must not itself block the pool, got: $out"
+bash -c '. "$1"; host_capacity_drive_release' _ "$lib"
+pass=$((pass+1))
+
+# --- per-consumer drive-defer counter (#664): each caller's own path ------
+# Takes the counter PATH directly (like HOST_CAPACITY_DRIVE_WANTED/_SKIPS
+# above) so an offline test never touches real host-global /tmp state.
+defer_a="$(mktemp -u)"; defer_b="$(mktemp -u)"
+trap 'rm -f "$slot1" "$slot2" "$side" "$defer_a" "$defer_b"' EXIT
+out="$(bash -c '
+  . "$1"
+  echo "bump=$(host_capacity_consumer_defer_bump "$2")"    # 1
+  echo "bump=$(host_capacity_consumer_defer_bump "$2")"    # 2
+  host_capacity_consumer_defer_reset "$2"
+  echo "afterreset=$(host_capacity_consumer_defer_bump "$2")"  # back to 1
+' _ "$lib" "$defer_a")"
+[[ "$out" == *"bump=1"* && "$out" == *"bump=2"* ]] \
+  || fail "consumer defer counter did not climb 1,2 across ticks: $out"
+[[ "$out" == *"afterreset=1"* ]] \
+  || fail "consumer defer reset did not bring the next bump back to 1: $out"
+rm -f "$defer_a"
+pass=$((pass+1))
+
+# two different consumer counter files must never share state — a swarm
+# streak and a triage streak on the SAME host are independent (#664:
+# different cadences, different paths).
+out="$(bash -c '
+  . "$1"
+  host_capacity_consumer_defer_bump "$2" >/dev/null
+  host_capacity_consumer_defer_bump "$2" >/dev/null
+  host_capacity_consumer_defer_bump "$2" >/dev/null
+  echo "a=$(host_capacity_consumer_defer_bump "$2")"   # 4
+  echo "b=$(host_capacity_consumer_defer_bump "$3")"   # 1, unaffected by a
+' _ "$lib" "$defer_a" "$defer_b")"
+[[ "$out" == *"a=4"* ]] || fail "consumer a's counter did not reach 4: $out"
+[[ "$out" == *"b=1"* ]] || fail "consumer b's counter was not independent of a's: $out"
+rm -f "$defer_a" "$defer_b"
+pass=$((pass+1))
+
+
 echo "host-capacity-lib: $pass groups passed"

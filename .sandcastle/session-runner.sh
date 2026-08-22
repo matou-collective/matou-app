@@ -64,6 +64,21 @@ if ! flock -n 9; then echo "session-runner: session in flight — tick absorbed"
 #    SESSION_RUNNER_LOCK already covers — process exit releases both fds.
 # shellcheck source=host-capacity-lib.sh
 . "$here/host-capacity-lib.sh"
+# Drive reservation (#663 producer / #664 consumer): a waiting rehearsal drive
+# needs EVERY host lock at once and yields the instant one is busy, so it loses
+# to anything that claims in the gap — unboundedly. Stand down BEFORE taking a
+# slot; this tick is idempotent and costs nothing deferred. Work already running
+# is untouched, and the predicate is TTL-bounded so an abandoned reservation
+# expires instead of absorbing every tick forever. The consecutive-defer count
+# is session-runner's OWN (not the drive's) — its */10 cadence differs from
+# swarm's and triage's, so each consumer tracks its own streak (#664).
+SESSION_RUNNER_DRIVE_DEFER_COUNT="${SESSION_RUNNER_DRIVE_DEFER_COUNT:-/tmp/matou-session-runner-drive-defer-count}"
+if host_capacity_drive_wanted; then
+  n="$(host_capacity_consumer_defer_bump "$SESSION_RUNNER_DRIVE_DEFER_COUNT")"
+  echo "session-runner: a rehearsal drive has reserved host capacity (#663) — deferring to a ready drive — skipped $n consecutive tick(s)"
+  exit 0
+fi
+host_capacity_consumer_defer_reset "$SESSION_RUNNER_DRIVE_DEFER_COUNT"
 if ! host_capacity_acquire_heavy; then
   echo "session-runner: host capacity pool exhausted — tick absorbed"
   exit 0
@@ -155,6 +170,9 @@ git -C "$SESSION_RUNNER_CHECKOUT" reset -q --hard origin/main || true
 git -C "$SESSION_RUNNER_CHECKOUT" clean -qfd || true
 
 # ── the session: one headless claude, riding the #510 failover ───────────────
+# Stamp the factory git identity (#19) so the session's commits carry
+# "…(session-runner@<host>)", never the host user's ~/.gitconfig.
+swarm_git_identity session-runner
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 log="$SESSION_RUNNER_STATE/logs/run-$pick-$ts.log"
 touch "$SESSION_RUNNER_STATE/attempt-$pick"

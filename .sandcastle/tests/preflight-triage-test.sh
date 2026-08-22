@@ -18,7 +18,12 @@ cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 n="$(cat "$FAIL_COUNTER" 2>/dev/null || echo 0)"; n=$((n+1)); echo "$n" > "$FAIL_COUNTER"
 [ "$n" -le "${FAIL_TIMES:-0}" ] && exit 22
-echo '[]'
+# The bare repo-root GET is the #20 issue-write probe — answer it with a
+# permissions block that grants write; every other call is an empty issue page.
+case "$*" in
+  *repos/x/y) echo '{"permissions":{"push":true}}' ;;
+  *) echo '[]' ;;
+esac
 SH
 chmod +x "$tmp/bin/curl"
 
@@ -46,6 +51,7 @@ fi
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
+  *repos/x/y) echo '{"permissions":{"push":true}}' ;;  # #20 issue-write probe
   *page=1*) cat <<'JSON'
 [
   {"number": 100, "title": "already ruled ready-for-session", "html_url": "u",
@@ -72,4 +78,20 @@ numbers="$(printf '%s' "$out" | jq -c '[.[].number] | sort')"
 [ "$numbers" = "[104]" ] ||
   fail "expected only #104 (no outcome label) to surface as untriaged, got: $numbers"
 
-echo "preflight-triage: 3 scenarios passed"
+# #20: a bot that cannot write issues on this repo must red preflight, not run
+# a triage that silently fails to apply a single label. The repo-root probe
+# returns permissions.push=false → the job fails before listing anything.
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *repos/x/y) echo '{"permissions":{"push":false}}' ;;
+  *) echo '[]' ;;
+esac
+SH
+chmod +x "$tmp/bin/curl"
+if env PATH="$tmp/bin:$PATH" FORGEJO_TOKEN=dummy \
+    FORGEJO_API=http://x/api/v1/repos/x/y bash "$here/../preflight-triage.sh" >/dev/null 2>&1; then
+  fail "a bot without issue-write permission must fail triage preflight"
+fi
+
+echo "preflight-triage: 4 scenarios passed"

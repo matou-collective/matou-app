@@ -36,6 +36,20 @@ check "emits exactly one ticket" '[ "$(jq length <<<"$out")" = "1" ]'
 check "emits the head" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "claim comment posted" 'grep -q "swarm-claim host=eb03 run=513" "$FAKE_DIR/comments-431.json"'
 check "agent-working added" 'grep -q "POST .*issues/431/labels" "$FAKE_DIR/calls.log"'
+# #13: the landing instruction line — default (no policy file) is push-to-main,
+# on stderr so the JSON stdout contract stays clean.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+bash "$script" >"$FAKE_DIR/lstdout" 2>"$FAKE_DIR/lstderr"
+check "push-mode landing line printed on stderr" 'grep -q "landing: push to main" "$FAKE_DIR/lstderr"'
+check "landing line does NOT pollute the JSON stdout" \
+  '[ "$(jq -r ".[0].number" < "$FAKE_DIR/lstdout")" = "431" ]'
+check "landing line is stderr-only, never on stdout" '! grep -q "landing:" "$FAKE_DIR/lstdout"'
+
+# T2b (#13): under a LANDING=pr policy the line names the PR branch.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+printf '%s\n' 'LANDING=pr' > "$FAKE_DIR/swarm-policy.sh"
+lerr="$(SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" bash "$script" 2>&1 >/dev/null)"
+check "pr-mode landing line names agent/issue-<N>" 'grep -q "landing: PR from agent/issue-431" <<<"$lerr"'
 
 # T3: head already claimed by a LIVE lower id -> loser walks to next ticket
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"},{"number":433,"title":"c","body":"d","url":"u2"}]'

@@ -53,6 +53,18 @@ repo_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"
 # so flatten the slug: "Matou/idss" -> "Matou-idss".
 repo_tag="${repo_slug//\//-}"
 
+# Factory git identity (#19): every headless commit path stamps GIT_AUTHOR_*/
+# GIT_COMMITTER_* from ONE place (swarm-identity.sh) so commits record which
+# machinery made them instead of inheriting the host user's ~/.gitconfig. Pin
+# REPO_SLUG to THIS run's repo (the runner serves several) before sourcing, and
+# source AFTER the FORGEJO_API guard above so swarm-identity's `:=` defaults can
+# never mask a missing API. `worker` covers this host's reconcile/rescue commits
+# AND the value main.mts forwards into each worker container.
+export REPO_SLUG="$repo_slug"
+# shellcheck source=swarm-identity.sh
+. "$here/swarm-identity.sh"
+swarm_git_identity worker
+
 # sandcastle tags its per-repo image `sandcastle:<checkout-basename>`, lowercased
 # with every character outside [a-z0-9_.-] replaced by '-' (empty -> "local");
 # see @ai-hero/sandcastle's defaultImageName. Replicated here so the nix-store
@@ -149,8 +161,9 @@ api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 # silently-failing guard (limit grep, healer signature/rails, verdict parsing,
 # secrets-as-content) is fired against a canned fixture it MUST match. A guard
 # that has quietly broken (a mangled limit grep, a §17 `:?`-in-$() rail no-op)
-# reds HERE in seconds, named, instead of during an incident. Zero token, no
-# network. Fails closed: the run aborts and posts the failing guard, like every
+# reds HERE in seconds, named, instead of during an incident. Zero token; the
+# only network call is the #20 issue-write permission probe (one cheap GET).
+# Fails closed: the run aborts and posts the failing guard, like every
 # other run-fail path (runlog line comes from the EXIT trap via SWARM_EXIT_REASON).
 verdict_stage "preflight self-tests (#446)"
 if ! preflight_out="$(bash "$here/preflight-swarm.sh" 2>&1)"; then
@@ -163,6 +176,30 @@ $(printf '%s\n' "$preflight_out" | grep 'PREFLIGHT RED' | head -20)
   exit 1
 fi
 printf '%s\n' "$preflight_out"
+
+# Per-repo POLICY (#12, ADR 0002): landing / merge-authority / loop-in-label
+# knobs live in the consumer's swarm-policy.sh (beside swarm-identity.sh),
+# defaulting to today's byte-identical behaviour when absent. Load + validate
+# HERE, before a single worker spawns — an invalid policy fails LOUD like
+# swarm_resolve_model, never a silent misconfiguration. NO knob is CONSUMED yet
+# (the landing / merge / loop-in consumers are follow-up tickets); this only
+# proves the file parses and every gate is well-formed.
+# shellcheck source=policy-lib.sh
+. "$here/policy-lib.sh"
+# shellcheck source=landing-lib.sh
+. "$here/landing-lib.sh"   # landing_reconcile (#13) — consumed by the reconcile stage in pr mode
+policy_load
+if ! policy_validate; then
+  verdict_stage "policy validation (#12)"
+  bash "$here/notify-mattermost.sh" ":no_entry: **Swarm aborted — invalid \`swarm-policy.sh\`** in \`$repo_slug\`. Fix the named policy key; no worker was spawned." || true
+  SWARM_EXIT_REASON="invalid-policy"
+  exit 1
+fi
+if [ "${SWARM_POLICY_FILE_PRESENT:-false}" = true ]; then
+  echo "run-swarm: policy: LANDING=$SWARM_POLICY_LANDING MERGE_AUTHORITY=$SWARM_POLICY_MERGE_AUTHORITY"
+else
+  echo "run-swarm: policy: defaults (LANDING=$SWARM_POLICY_LANDING MERGE_AUTHORITY=$SWARM_POLICY_MERGE_AUTHORITY)"
+fi
 
 # Multi-host janitor (spec D4): re-arm tickets whose claiming run died — a
 # crashed host must not strand agent-working tickets. Runs BEFORE listing so
@@ -250,8 +287,14 @@ else
   # vector, the #578 leak class) silently. Fail closed instead.
   env_violations="$(env_allowlist_violations "$here/.env")"
   if [ -n "$env_violations" ]; then
-    echo "run-swarm: FATAL — $here/.env carries key(s) beyond the allowlist: $(printf '%s' "$env_violations" | tr '\n' ' ')" >&2
+    # Same #9 treatment as the cold-store guard below: name the stage and capture
+    # the FATAL, so the death is not mis-keyed to "preflight self-tests" with an
+    # empty error block.
+    verdict_stage "env allowlist check (#593)"
+    env_fatal="run-swarm: FATAL — $here/.env carries key(s) beyond the allowlist: $(printf '%s' "$env_violations" | tr '\n' ' ')"
+    echo "$env_fatal" >&2
     echo "run-swarm: sandcastle forwards every .env key as a docker run -e value (docker inspect .Config.Env — the 2026-07-11 breach vector, #578 leak class). Move secret-shaped keys to .sandcastle/secrets/ (see secrets/README.md) or add them to ENV_ALLOWLIST_KEYS in env-allowlist-lib.sh if they are genuinely non-secret." >&2
+    verdict_error "$env_fatal"
     SWARM_EXIT_REASON="env-allowlist-violation"
     exit 1
   fi
@@ -280,8 +323,21 @@ mkdir -p "$here/pnpm-store"
 # 2026-08-13). SWARM_ALLOW_COLD_STORE=1 overrides for a deliberate cold start.
 if [ "${SWARM_ALLOW_COLD_STORE:-0}" != "1" ] \
     && [ -z "$(find "$here/pnpm-store" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-  echo "run-swarm: FATAL — pnpm store $here/pnpm-store is EMPTY: workers cannot install (GOTCHAS #20, #489)." >&2
+  # Key the death on THIS guard's own stage + FATAL line (#9). Without the
+  # verdict_stage the EXIT trap attributes the death to the last stage set (still
+  # "preflight self-tests (#446)") — both in the verdict file's stage= and in the
+  # runlog's died-in: reason, which derives from VERDICT_STAGE when
+  # SWARM_EXIT_REASON is unset — and verdict_write leaves an EMPTY error block, so
+  # the healer keys its signature on the wrong stage with no evidence and
+  # escalates unknown. verdict_error captures the FATAL as the run's error line.
+  # SWARM_EXIT_REASON is deliberately left UNSET so the runlog reason stays the
+  # died-in:<stage> form the ticket's acceptance names (died-in:pnpm store warm
+  # check) rather than a bare slug; the healer classifies off the verdict file.
+  verdict_stage "pnpm store warm check (#489)"
+  cold_fatal="run-swarm: FATAL — pnpm store $here/pnpm-store is EMPTY: workers cannot install (GOTCHAS #20, #489)."
+  echo "$cold_fatal" >&2
   echo "run-swarm: seed it from an established host (.forgejo/runner/README.md → 'Fresh-host warm state'), or set SWARM_ALLOW_COLD_STORE=1 for a deliberate cold start." >&2
+  verdict_error "$cold_fatal"
   exit 1
 fi
 # The sandbox's persistent nix store (main.mts mounts it at /nix) — survives
@@ -358,11 +414,13 @@ fi
 # Post-run sweep: Sandcastle's merge-to-head worktrees and sandcastle/worker/*
 # branches are never cleaned up, so the workdir leaked 18 worktrees (2.9 GB) and
 # 198 orphaned branches by 2026-07-30 — and the stale checkouts poisoned
-# `go test ./internal/wireconvention/...` with 1867 phantom findings (#187). We
-# hold /tmp/matou-swarm.lock for the whole run (the workflow's flock), so no
-# other swarm is live when this exit trap fires — every leftover worktree is dead
-# and safe to remove. Runs on EVERY exit (limit-pause, push-fail, normal). An
-# unmerged worker branch is left intact and surfaced, never `-D`'d away.
+# `go test ./internal/wireconvention/...` with 1867 phantom findings (#187).
+# Since #577 / ADR 0184 host capacity is a TWO-slot pool with no repo affinity,
+# so a sibling swarm on this SAME repo+workdir can be live when this exit trap
+# fires — sweep_worktrees/reap_containers therefore spare anything younger than a
+# run-lifetime (that live sibling's checkout) and only remove provably-dead
+# debris. Runs on EVERY exit (limit-pause, push-fail, normal). An unmerged worker
+# branch is left intact and surfaced, never `-D`'d away.
 sweep_and_report() {
   # Reap leaked worker containers older than a run-lifetime (#238) — quiet
   # housekeeping, no alert. We hold the global lock, so anything this old is dead.
@@ -457,6 +515,49 @@ while ! pnpm run sandcastle 2>&1 | tee "$sandcastle_log"; do
     rm -f "$sandcastle_log"
     echo "run-swarm: run cancelled by operator${cancel_reason:+ ($cancel_reason)}"
     SWARM_EXIT_REASON="cancelled:operator"
+    exit 0
+  fi
+  # #632: a DEAD TOKEN ("Not logged in · Please run /login", "Failed to
+  # authenticate: OAuth session expired…") is a distinct refusal shape from
+  # the usage-limit hit below — it must never wait out a "reset" that will
+  # never come, and it must never fall through to the generic
+  # sandcastle-run-failed red either (that pages the healer on a signature
+  # that degrades to the workflow name alone — the near-unparseable class
+  # 2f0d3a6 already ruled out for the rehearsal path; this is its mirror for
+  # the swarm executor). Checked BEFORE the limit guard, same order
+  # rehearsal-report.sh's try_heal/reporter loops use. Mirrors the #510
+  # limit failover exactly: one retry on the standby, then a clean, named
+  # halt — never a red.
+  if claude_auth_failed "$sandcastle_log"; then
+    auth_line="$(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$sandcastle_log" | head -1)"
+    if [ "$swarm_attempt" = 1 ]; then
+      auth_account="$(claude_active_account)"
+      if claude_failover; then
+        swarm_attempt=2
+        bash "$here/notify-mattermost.sh" ":arrows_counterclockwise: **Swarm failover — Claude account $auth_account auth-dead** in \`$repo_slug\` (${auth_line:-not logged in}) — retrying once on account $(claude_active_account)."
+        swarmdb_event "$run_db_id" "" auth-failover "Claude account $auth_account auth-dead — failed over to $(claude_active_account)" "${auth_line:-not logged in}"
+        : > "$sandcastle_log"
+        continue
+      fi
+    fi
+    if claude_standby_available; then
+      auth_headline="**Swarm halted — BOTH Claude accounts auth-dead** in \`$repo_slug\` — re-login required"
+    else
+      auth_headline="**Swarm halted — Claude account $(claude_active_account) auth-dead** in \`$repo_slug\` — re-login required"
+    fi
+    # Hourly notice-dedupe, same shape as the limit-pause marker below — a
+    # queued-trigger burst against a dead token must not become its own
+    # storm. Repo-agnostic on purpose, matching the limit marker (#238):
+    # the Claude auth session is one host-global thing.
+    marker="/tmp/matou-swarm-claude-auth-dead"
+    if [ ! -f "$marker" ] || [ $(( $(date +%s) - $(stat -c %Y "$marker") )) -gt 3600 ]; then
+      touch "$marker"
+      bash "$here/notify-mattermost.sh" ":rotating_light: $auth_headline (${auth_line:-not logged in}). No worker was lost; queued tickets stay ready and pick back up once the token is refreshed."
+    fi
+    swarmdb_event "$run_db_id" "" auth-dead "$auth_headline" "${auth_line:-not logged in}"
+    rm -f "$sandcastle_log"
+    echo "run-swarm: Claude auth refusal — $auth_headline"
+    SWARM_EXIT_REASON="claude-auth-dead"
     exit 0
   fi
   if claude_limit_hit "$sandcastle_log"; then
@@ -604,6 +705,22 @@ resolve_rebase_with_claude() {
   [ ! -e .git/rebase-merge ] && [ ! -e .git/rebase-apply ]
 }
 
+opened_prs="" merged_prs=""
+if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
+  # LANDING=pr (#13): land each issue this run touched on its own agent/issue-<N>
+  # branch and open/refresh its PR (closes #<N>); a human — or agent-after-green —
+  # merges. No push to main here (that would bypass the PR); the rescue ladder
+  # below is the push-mode path only. Touched = the pickup set + any #NN scraped
+  # from this run's commit subjects (a mid-run close can unblock a child).
+  verdict_stage "reconcile landing (pr — branch + PR per issue)"
+  reconcile_nums="$({ jq -r '.[].number' <<<"$ready";
+      git log --format=%s "$start_sha"..HEAD | grep -oE '#[0-9]+' | tr -d '#'; } | sort -un)"
+  opened_prs="$(landing_reconcile $reconcile_nums || true)"
+  # agent-after-green (#15): merge EVERY open agent PR whose required checks are
+  # green — including PRs from EARLIER runs that only went green after their own
+  # run ended. A no-op under MERGE_AUTHORITY=human.
+  merged_prs="$(landing_merge_reconcile || true)"
+else
 verdict_stage "reconcile push to main"
 git push origin HEAD:main || {
   git fetch origin main
@@ -622,6 +739,7 @@ git push origin HEAD:main || {
     exit 1
   fi
 }
+fi
 
 commits="$(git log --format="- [\`%h\`]($repo_web/commit/%H) %s" "$start_sha"..HEAD)"
 summary=":hammer_and_wrench: **Swarm run** in \`$repo_slug\` — $n task(s) picked up."
@@ -633,13 +751,41 @@ else
   summary="$summary
 No commits produced (agent blocked or task left open — see issue comments)."
 fi
+# LANDING=pr (#13): the PRs opened/refreshed this run, one line each (closes #N).
+# In push mode $opened_prs is empty and this section is omitted.
+if [ -n "$opened_prs" ]; then
+  pr_lines="$(while read -r pnum pr; do
+      [ -n "$pr" ] || continue
+      printf -- '- [PR #%s](%s/pulls/%s) (closes #%s)\n' "$pr" "$repo_web" "$pr" "$pnum"
+    done <<<"$opened_prs")"
+  summary="$summary
+**PRs opened this run:**
+$pr_lines"
+fi
+# agent-after-green (#15): the open agent PRs this reconcile pass merged / parked,
+# one line each. Empty (section omitted) under MERGE_AUTHORITY=human or push mode.
+if [ -n "$merged_prs" ]; then
+  merge_lines="$(while read -r mnum mres; do
+      [ -n "$mnum" ] || continue
+      printf -- '- #%s → %s\n' "$mnum" "$mres"
+    done <<<"$merged_prs")"
+  summary="$summary
+**Agent PRs reconciled (merge-if-green):**
+$merge_lines"
+fi
 # Report every issue the run touched: the pickup snapshot PLUS issues shipped
 # mid-run (a closed ticket can unblock children the agent picks up in a later
 # iteration — they appear in commit subjects as #NN but not in $ready).
 commit_nums="$(git log --format=%s "$start_sha"..HEAD | grep -oE '#[0-9]+' | tr -d '#' || true)"
 while read -r num; do
   [ -n "$num" ] || continue
-  issue="$(api "$FORGEJO_API/issues/$num")"
+  # A commit subject can cite a FOREIGN #NN — a matou-app PR (#54) or an idss
+  # issue (#664) referenced in a STATUS line — that does not resolve in THIS
+  # repo. `api` is `curl -sf`, so its 404 exits 22 and, under `set -e`, kills
+  # the whole reconcile stage AFTER the work is pushed and issues closed (run
+  # 70: `#54` 404'd, verdict `reconcile push to main` exit=22). Skip a number
+  # this repo cannot resolve rather than red an already-successful run.
+  issue="$(api "$FORGEJO_API/issues/$num")" || continue
   state="$(jq -r .state <<<"$issue")"
   title="$(jq -r .title <<<"$issue")"
   labels="$(jq -r '[.labels[].name] | join(", ")' <<<"$issue")"

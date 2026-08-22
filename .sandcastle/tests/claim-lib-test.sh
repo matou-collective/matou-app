@@ -86,6 +86,18 @@ claim_release 431 "$c1"
 check "release deleted the comment" '! grep -q swarm-claim "$FAKE_DIR/comments-431.json"'
 check "release removed agent-working" 'grep -q "DELETE .*issues/431/labels/50" "$FAKE_DIR/calls.log"'
 
+# T6b (#20): a label write that returns non-2xx must fail LOUD, not silently
+# continue. #19's swarm-bot had repo.code write but not repo.issues write, so
+# the agent-working POST 403'd and the ticket was worked with no claim label —
+# invisible to the janitor and every other host. A 2xx passes; a 403 pages.
+setup
+check "a 2xx label write succeeds quietly" 'claim_mark_working 431'
+setup
+echo 403 >"$FAKE_DIR/labels-post-fail"
+check "a refused label write returns rc 1" '! claim_mark_working 431 2>/dev/null'
+err="$(claim_mark_working 431 2>&1 >/dev/null || true)"
+check "a refused label write pages with the HTTP code" 'grep -q "label write refused (HTTP 403)" <<<"$err"'
+
 # T7: janitor re-arms a ticket whose claiming run died
 setup
 jq -n '[{number:77, labels:[{id:36,name:"ready-for-agent"},{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"

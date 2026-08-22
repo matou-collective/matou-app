@@ -114,6 +114,28 @@ parse_diagnosis() {
 # 2026-08-10-rehearsal-healer-design). rc 0 = healed, drive stays armed.
 # rc 1 = not healed; HEAL_FILE_VERDICT may carry the session's file-verdict
 # so the filing flow below reuses it (one claude call per red, ever).
+#
+# claude_auth_failed/CLAUDE_AUTH_RE now live in limit-lib.sh (#632 —
+# run-swarm.sh needed the identical classifier for its own worker-log guard,
+# so it moved to the shared lib both scripts already source rather than
+# drifting a second copy, the same lesson CLAUDE_LIMIT_RE already teaches).
+# Until 2026-08-21 an auth refusal here read as an "unparseable verdict": five
+# consecutive red drives (003234Z..030832Z) went straight to a ticket with
+# "(headless diagnosis unparseable)" while the real cause — "Failed to
+# authenticate: OAuth session expired and could not be refreshed" — sat unread
+# in healer-claude.out. Ben's rule: never silent. Detect it, fail over ONCE
+# like a limit hit, and if both accounts refuse, say so on the drive ticket
+# and stop pretending to diagnose.
+claude_auth_announce() { # <who> <run_dir>
+  local who="$1" run_dir="$2" acct tok
+  acct="$(claude_active_account 2>/dev/null || echo A)"
+  tok="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  local msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token ${tok:+${tok:0:14}…}${tok:-EMPTY}) — $(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is the workstation's rehearsal-env.sh (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
+  echo "$who: $msg" >&2
+  forgejo_comment "$REHEARSAL_DRIVE_ISSUE" ":rotating_light: @ben $msg" >/dev/null 2>&1 || true
+  bash "$here/notify-mattermost.sh" "@ben $msg" >/dev/null 2>&1 || true
+}
+
 try_heal() {
   local leg="$1" err="$2" sig="$3" stamp="$4"
   HEAL_FILE_VERDICT=""
@@ -156,6 +178,15 @@ try_heal() {
   # missed it and the generic fallback filed (#530's raw-fallback ticket).
   # Two-account failover (#510): a limit on the active account flips to the
   # standby and retries ONCE; both exhausted → park, file instead (as before).
+  # Diagnostic (2026-08-21): every in-drive healer/reporter claude call since
+  # 00:32Z died with "OAuth session expired and could not be refreshed" while the
+  # identical call succeeds from every manual reproduction (interactive, both
+  # devshells, cron-mimic env -i). Capture the env the call actually sees so the
+  # next red explains itself. Token values are truncated to a 14-char prefix.
+  { echo "cwd=$co"; echo "uid=$(id -u) user=$(id -un)"; env | LC_ALL=C sort \
+      | grep -E '^(HOME|USER|LOGNAME|SHELL|PATH|TMPDIR|XDG_[A-Z_]+|CLAUDE[A-Z_]*|ANTHROPIC[A-Z_]*|NODE[A-Z_]*|SSL_[A-Z_]+|https?_proxy|HTTPS?_PROXY|NO_PROXY|no_proxy|NIX_[A-Z_]+|IN_NIX_SHELL|name)=' \
+      | sed -E 's/^((CLAUDE|ANTHROPIC)[A-Z_]*(TOKEN|KEY)[A-Z_]*=.{14}).*/\1…/'; } \
+    > "$run_dir/logs/claude-env.txt" 2>&1 || true
   claude_select_token
   local heal_attempt=1
   while :; do
@@ -170,6 +201,17 @@ Signature: $sig
 Recent healer history on #$REHEARSAL_DRIVE_ISSUE (empty = none):
 ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
     printf '%s\n' "$out" > "$run_dir/logs/healer-claude.out"
+    if claude_auth_failed "$run_dir/logs/healer-claude.err" "$run_dir/logs/healer-claude.out"; then
+      if [ "$heal_attempt" = 1 ] && claude_failover; then
+        heal_attempt=2
+        echo "healer: Claude auth refused — failed over to account $(claude_active_account); retrying once"
+        continue
+      fi
+      claude_auth_announce healer "$run_dir"
+      git -C "$co" reset --hard "$pre_head" >/dev/null 2>&1 || true
+      HEAL_AUTH_FAILED=1
+      return 1
+    fi
     if claude_limit_hit "$run_dir/logs/healer-claude.err" \
        || claude_limit_hit "$run_dir/logs/healer-claude.out"; then
       if [ "$heal_attempt" = 1 ] && claude_failover; then
@@ -388,6 +430,17 @@ Run directory: $run_dir$live_prompt" 2>"$run_dir/logs/reporter-claude.err" || tr
       # nothing recorded what claude actually emitted. This file makes a parse flake
       # diagnosable after the fact.
       printf '%s\n' "$diagnosis" > "$run_dir/logs/reporter-claude.out"
+      if claude_auth_failed "$run_dir/logs/reporter-claude.err" "$run_dir/logs/reporter-claude.out"; then
+        if [ "$reporter_attempt" = 1 ] && claude_failover; then
+          reporter_attempt=2
+          echo "reporter: Claude auth refused — failed over to account $(claude_active_account); retrying once"
+          continue
+        fi
+        claude_auth_announce reporter "$run_dir"
+        REPORTER_AUTH_FAILED=1
+        diagnosis=""
+        break
+      fi
       if claude_limit_hit "$run_dir/logs/reporter-claude.err" \
          || claude_limit_hit "$run_dir/logs/reporter-claude.out"; then
         if [ "$reporter_attempt" = 1 ] && claude_failover; then
@@ -414,7 +467,11 @@ Run directory: $run_dir$live_prompt" 2>"$run_dir/logs/reporter-claude.err" || tr
     # Unparseable even after fence-strip + brace-carve: file it, but unconfident
     # (a human ruling) and pointing at the saved raw stdout, never dropped.
     title="rehearsal drive red at $leg"
-    body="(headless diagnosis unparseable — raw stdout saved to logs/reporter-claude.out)"
+    if [ -n "${REPORTER_AUTH_FAILED:-}" ]; then
+      body="(:rotating_light: NO DIAGNOSIS — the reporter's claude call could not authenticate on either account; see the auth comment on #$REHEARSAL_DRIVE_ISSUE and logs/claude-env.txt + logs/reporter-claude.out in the run dir. Fix the token source, then re-drive.)"
+    else
+      body="(headless diagnosis unparseable — raw stdout saved to logs/reporter-claude.out)"
+    fi
     confident=false
   fi
 

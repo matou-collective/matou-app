@@ -70,6 +70,17 @@ refutes "commit off main" "not reachable from main" "$(jq -n --arg s "$side" '{
   issue:444, status:"success", commits:[$s], changed_files:["side.txt"], summary:"s"
 }')"
 
+# T3b (#13, LANDING=pr): gate 1 is mode-agnostic — the caller chooses the head.
+# The `side` commit is off main but IS the head of an agent PR branch; pointing
+# the gate at that head lets the same envelope pass (this is how close-report.sh
+# gates a pr-mode close against the issue's open PR head, not main).
+pr_side="$(cr_violations "$(jq -n --arg s "$side" '{
+  issue:444, status:"success", commits:[$s], changed_files:["side.txt"], summary:"s"
+}')" "$repo" side 2>/dev/null)" \
+  && { [ -z "$pr_side" ] || { echo "FAIL: pr-mode gate-1 against the PR head should pass cleanly, got: $pr_side" >&2; exit 1; }; } \
+  || { echo "FAIL: a commit reachable from the given (PR) head must pass gate 1" >&2; exit 1; }
+ok
+
 # T4 — gate 2: a changed_file absent from the commits' diff is refused.
 refutes "phantom changed_file" "not in the diff" "$(jq -n --arg c1 "$c1" '{
   issue:444, status:"success", commits:[$c1],

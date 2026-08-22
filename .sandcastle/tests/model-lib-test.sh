@@ -60,7 +60,7 @@ got="$(unset __SWARM_MODEL_LIB SWARM_MODEL SWARM_MODEL_MAP
 eq "$got" "claude-sonnet-4-5" "a changed swarm.config default flows through the resolver"
 
 # --- both consumers read the shared value; NO hardcoded model id survives ---
-grep -q 'claudeCode(SWARM_MODEL)' "$sc/main.mts" || fail "main.mts must launch on the resolved SWARM_MODEL"
+grep -q 'claudeCode(SWARM_MODEL' "$sc/main.mts" || fail "main.mts must launch on the resolved SWARM_MODEL"
 grep -q 'readFileSync' "$sc/main.mts"            || fail "main.mts must read swarm.config"
 ! grep -Eq 'claude-(opus|sonnet|haiku|fable)-' "$sc/main.mts" \
   || fail "main.mts still hardcodes a model id (#448 AC: grep proves none remains)"

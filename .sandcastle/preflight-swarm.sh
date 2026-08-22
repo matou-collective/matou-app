@@ -36,6 +36,8 @@ FIX="$here/tests/fixtures"
 . "$here/close-report-lib.sh"
 # shellcheck source=env-allowlist-lib.sh
 . "$here/env-allowlist-lib.sh"
+# shellcheck source=forgejo-lib.sh
+. "$here/forgejo-lib.sh"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
@@ -65,6 +67,31 @@ guard_limit_detection() {
   [ -n "$(claude_limit_reset_hint "$FIX/claude-usage-limit.txt")" ] || {
     echo "limit-detection: claude_limit_reset_hint empty on a real limit block"
     return 1; }
+  return 0
+}
+
+guard_auth_detection() {
+  # Positive: the auth classifier MUST match a real "Not logged in" refusal —
+  # the shape #632's incident fell through on (run-swarm.sh had no branch for
+  # it and reds the job with a degraded, unnamed signature).
+  claude_auth_failed "$FIX/claude-auth-refusal.txt" || {
+    echo "auth-detection: CLAUDE_AUTH_RE failed to match a real auth refusal — run-swarm.sh would fall through to a degraded red (#632)"
+    return 1; }
+  # Cross-classification: an auth refusal must NOT also read as a usage-limit
+  # hit (it would wait out a 'reset' that never comes), and a usage-limit hit
+  # must NOT read as an auth refusal (it would fail over a token that isn't
+  # actually dead) — the two guards must stay mutually exclusive.
+  if claude_limit_hit "$FIX/claude-auth-refusal.txt"; then
+    echo "auth-detection: an auth refusal ALSO matched CLAUDE_LIMIT_RE — the limit guard would misclassify a dead token as a usage window"
+    return 1; fi
+  if claude_auth_failed "$FIX/claude-usage-limit.txt"; then
+    echo "auth-detection: a usage-limit refusal ALSO matched CLAUDE_AUTH_RE — the auth guard would misclassify a live-but-limited token as dead"
+    return 1; fi
+  # Negative: a normal worker log MUST NOT match.
+  printf 'building app\nerror: test failed\ncompilation aborted\n' > "$TMP/normal-auth.log"
+  if claude_auth_failed "$TMP/normal-auth.log"; then
+    echo "auth-detection: CLAUDE_AUTH_RE matched a NON-auth log — a false halt would stop the swarm needlessly"
+    return 1; fi
   return 0
 }
 
@@ -263,15 +290,33 @@ guard_close_report() {
   return 0
 }
 
+guard_issue_write_permission() {
+  # #20: the ONE live, zero-token probe in preflight. #19 looked like four
+  # successful closes because swarm-bot had repo.code write but not repo.issues
+  # write — every label/state write 403'd silently while comments (public repo)
+  # succeeded. GET the repo root with the bot token and assert the permissions
+  # block grants write; a bot that cannot write reds HERE, before a worker
+  # spawns, not at the close. Skipped ONLY when no token is present (the offline
+  # self-test path); run-swarm.sh always exports FORGEJO_TOKEN/FORGEJO_API
+  # before calling this.
+  [ -n "${FORGEJO_TOKEN:-}" ] || return 0
+  local reason
+  reason="$(forgejo_issue_write_probe)" && return 0
+  printf '%s' "$reason"
+  return 1
+}
+
 # ── Runner ───────────────────────────────────────────────────────────────────
 GUARDS=(
   guard_limit_detection
+  guard_auth_detection
   guard_healer_signature
   guard_healer_rails
   guard_verdict_parsing
   guard_secrets_content
   guard_secrets_allowlist
   guard_close_report
+  guard_issue_write_permission
 )
 
 failed=0

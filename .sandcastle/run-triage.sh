@@ -26,7 +26,11 @@ api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 # Drop a stage/exit verdict on failure so the healer keys the incident signature
 # on the run's REAL failing stage, not on worker chain-of-thought prose (#235).
 verdict_begin "${TRIAGE_VERDICT_PATH:-/tmp/matou-$repo_tag-triage-verdict.txt}"
-trap 'verdict_write $?' EXIT
+# Clean up the captured claude log AFTER the verdict is written, never before —
+# an `rm` on the failure path ahead of `exit 1` used to delete the log the EXIT
+# trap's verdict_write then tried to read, leaving an empty `--- error lines ---`
+# block and defeating the whole stage/exit/error verdict (#18).
+trap 'verdict_write $?; [ -n "${triage_log:-}" ] && rm -f "$triage_log"' EXIT
 
 # Limit gate, BEFORE claude (#253): if the host-global marker says the Claude
 # subscription window is already exhausted (a worker or the healer parked it),
@@ -74,14 +78,11 @@ if ! timeout 2700 claude -p "/triage You are running headless in CI: no human ca
   # any other failure still reddens honestly (the EXIT trap's verdict reads the log).
   if claude_limit_hit "$triage_log"; then
     claude_limit_park
-    rm -f "$triage_log"
     echo "run-triage: limit-parked — Claude refused with a usage-limit signature; marked the host parked, exiting clean"
     exit 0
   fi
-  rm -f "$triage_log"
   exit 1
 fi
-rm -f "$triage_log"
 after="$(human_gated)"
 
 new="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"

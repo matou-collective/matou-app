@@ -194,6 +194,9 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
   } > "$ctx"
   rm -f "$EVIDENCE/diagnosis.md"
   local status=0 heal_attempt=1
+  # Stamp the factory git identity (#19) so the /tmp/heal-fix clone's commits
+  # carry "…(healer@<host>)", never the host user's ~/.gitconfig.
+  swarm_git_identity healer
   claude_select_token
   while :; do
     status=0
