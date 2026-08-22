@@ -10,7 +10,7 @@ on:
 
 jobs:
   checks:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 45
     steps:
       - name: Checkout (raw clone — actions/checkout depends on data.forgejo.org action fetch, which fast-fails intermittently, d18d869)

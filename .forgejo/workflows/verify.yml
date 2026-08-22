@@ -6,7 +6,7 @@ on:
 
 jobs:
   verify:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 20
     steps:
       - name: Check Mattermost verifications under global lock

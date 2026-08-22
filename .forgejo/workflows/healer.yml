@@ -9,7 +9,7 @@ on:
 
 jobs:
   watchdog:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 25
     steps:
       - name: Checkout
