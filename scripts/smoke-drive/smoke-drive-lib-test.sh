@@ -14,6 +14,46 @@ eq()   { [ "$2" = "$3" ] && ok "$1" || bad "$1" "$2" "$3"; }
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
+# ---- sd_repo_tag ----------------------------------------------------------
+eq "repo_tag: REPO_SLUG wins"        Matou-matou-app "$(sd_repo_tag Matou/matou-app https://x/api/v1/repos/Other/repo git@h:zz/qq.git)"
+eq "repo_tag: from FORGEJO_API"      Matou-matou-app "$(sd_repo_tag "" https://git.matou.nz/api/v1/repos/Matou/matou-app "")"
+eq "repo_tag: from https remote"     Matou-matou-app "$(sd_repo_tag "" "" https://swarm:tok@git.matou.nz/Matou/matou-app.git)"
+eq "repo_tag: from ssh remote"       Matou-matou-app "$(sd_repo_tag "" "" git@git.matou.nz:Matou/matou-app.git)"
+eq "repo_tag: idss slug"             Matou-idss      "$(sd_repo_tag Matou/idss "" "")"
+eq "repo_tag: non-api url ignored"   ""              "$(sd_repo_tag "" https://git.matou.nz/health "")"
+eq "repo_tag: nothing -> empty"      ""              "$(sd_repo_tag "" "" "")"
+
+# ---- sd_leg_error ---------------------------------------------------------
+# A realistic Playwright red log: a failure summary block, preceded by the
+# non-fatal ?type=ixn console noise (#51) that the OLD grep would have grabbed.
+cat > "$tmp/red.log" <<'LOG'
+Running 1 test using 1 worker
+[chromium] POST http://localhost:9080/api/v1/anchor?type=ixn => 500 FAILED
+  ✘  1 [features] › tests/e2e/features/issue-46.spec.ts:12:5 › feature › renders the marker (5.0s)
+
+
+  1) [features] › tests/e2e/features/issue-46.spec.ts:12:5 › feature › renders the marker ─────
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByText('marker')
+    Expected: visible
+
+  1 failed
+LOG
+err="$(sd_leg_error "$tmp/red.log" 1)"
+case "$err" in *"toBeVisible"*) ok "leg_error: carries the assertion detail";; *) bad "leg_error: carries the assertion detail" "*toBeVisible*" "$err";; esac
+case "$err" in *"issue-46.spec.ts:12:5"*) ok "leg_error: carries the failing test header";; *) bad "leg_error: carries the failing test header" "*issue-46.spec.ts:12:5*" "$err";; esac
+case "$err" in *"?type=ixn"*) bad "leg_error: excludes the ?type=ixn noise" "no ?type=ixn" "$err";; *) ok "leg_error: excludes the ?type=ixn noise";; esac
+# No summary block (a crash before Playwright reports): fall back to error grep.
+printf 'boot\nError: backend never became healthy\nbye\n' > "$tmp/crash.log"
+eq "leg_error: falls back to error grep" \
+  "Error: backend never became healthy" "$(sd_leg_error "$tmp/crash.log" 1)"
+# Nothing error-ish at all: a bare exit note keyed on the code.
+printf 'all quiet\n' > "$tmp/quiet.log"
+eq "leg_error: bare exit note when nothing matches" \
+  "playwright exited 7" "$(sd_leg_error "$tmp/quiet.log" 7)"
+
 # ---- sd_detect_base -------------------------------------------------------
 printf '// smoke-base: b\nimport ...\n'   > "$tmp/b.spec.ts"
 printf '// smoke-base:a\n'                 > "$tmp/a.spec.ts"

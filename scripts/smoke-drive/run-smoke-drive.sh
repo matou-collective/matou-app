@@ -35,6 +35,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=smoke-drive-lib.sh
 . "$here/smoke-drive-lib.sh"
 root="$(cd "$here/../.." && pwd)"
+# shellcheck source=../../.sandcastle/verdict-lib.sh
+. "$root/.sandcastle/verdict-lib.sh"
 
 usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
@@ -75,6 +77,20 @@ mkdir -p "$run_dir/artifacts" "$run_dir/logs" "$run_dir/screenshots"
 legs_d="$run_dir/artifacts/legs.d"; mkdir -p "$legs_d"
 results_dir="$root/frontend/tests/e2e/results"
 
+# Drop a stage/exit verdict for the swarm healer, mirroring run-swarm.sh's EXIT
+# trap (#235, matou-app#46). The healer reads this marker to key a red drive's
+# incident signature on the run's REAL failing stage — instead of grepping stale
+# worker chain-of-thought prose (the #235 mis-key this repairs). Repo-tagged
+# (#238/#574) so matou-app and idss never stomp each other's file; the reader
+# (heal.sh) derives the same path from the same slug. verdict_begin clears any
+# stale marker, so a marker on disk always belongs to THIS run, and (per
+# verdict-lib's contract) verdict_write only writes on a non-zero exit — a green
+# drive leaves none, a red one always does.
+repo_tag="$(sd_repo_tag "${REPO_SLUG:-}" "${FORGEJO_API:-}" "$(git -C "$root" remote get-url origin 2>/dev/null || true)")"
+[ -n "$repo_tag" ] || repo_tag="Matou-matou-app"
+verdict_begin "${SMOKE_DRIVE_VERDICT_PATH:-/tmp/matou-$repo_tag-smoke-drive-verdict.txt}"
+verdict_stage "startup (base=$base feature=${feature:-none})"
+
 echo "run-smoke-drive: base=$base feature=${feature:-none} sha=$sha run-dir=$run_dir"
 sd_plan_legs "$base" "$feature" | sed 's/^/  leg: /' | cut -f1
 
@@ -82,16 +98,20 @@ sd_plan_legs "$base" "$feature" | sed 's/^/  leg: /' | cut -f1
 INFRA="${MATOU_INFRA_DIR:-$HOME/matou/matou-infrastructure}"
 backend_pid=""
 teardown() {
+  local ec=$?
   [ -n "$backend_pid" ] && kill "$backend_pid" 2>/dev/null || true
   if [ "$skip_infra" -eq 0 ]; then
     fuser -k 9003/tcp 2>/dev/null || true
     make -C "$INFRA/any-sync" down-test >/dev/null 2>&1 || true
     make -C "$INFRA/keri" down-test >/dev/null 2>&1 || true
   fi
+  # Write the healer marker last, from the final exit code + current stage (#46).
+  verdict_write "$ec"
 }
 trap teardown EXIT
 
 if [ "$skip_infra" -eq 0 ]; then
+  verdict_stage "infra bootstrap (KERI/any-sync/backend)" "$run_dir/logs/00-backend.txt"
   echo "run-smoke-drive: bootstrapping test infra under $INFRA"
   ( cd "$root" && bash scripts/clean-test.sh )
   make -C "$INFRA/keri" clean-test start-and-wait-test
@@ -123,6 +143,10 @@ while IFS=$'\t' read -r leg project filter; do
   [ -n "$leg" ] || continue
   n=$((n+1)); nn="$(printf '%02d' "$n")"
   log="$run_dir/logs/$nn-$leg.txt"
+  # Key a red drive's verdict on the failing leg + its Playwright log (#46): if
+  # this is the first red leg, the EXIT trap's verdict_write reads $log for the
+  # error lines the healer folds into the incident signature.
+  verdict_stage "leg $nn $leg (project=$project)" "$log"
   echo "run-smoke-drive: leg $nn $leg (project=$project${filter:+ file=$filter})"
 
   # Isolate this leg's screenshots: clear Playwright's shared results dir first,
@@ -146,8 +170,9 @@ while IFS=$'\t' read -r leg project filter; do
   if [ "$rc" -eq 0 ]; then
     sd_leg_record "$leg" green "$ms" "" > "$legs_d/$nn-$leg.json"
   else
-    err="$(grep -m1 -E 'Error|error|FAIL|timed out|✘|✖' "$log" 2>/dev/null | tail -c 400)"
-    [ -n "$err" ] || err="playwright exited $rc (see logs/$nn-$leg.txt)"
+    # The failure summary block ("N) [proj] › … › title" + assertion), not the
+    # trailing console FAILED noise (#51). See sd_leg_error.
+    err="$(sd_leg_error "$log" "$rc")"
     sd_leg_record "$leg" red "$ms" "$err" > "$legs_d/$nn-$leg.json"
     red_count=$((red_count+1)); verdict="red"; first_red="$leg"
   fi

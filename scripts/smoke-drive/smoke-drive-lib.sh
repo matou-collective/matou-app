@@ -12,6 +12,26 @@
 # unit-tested — is what lets the driver be verified in a sandbox that cannot
 # stand up KERI/any-sync.
 
+# sd_repo_tag <repo-slug> <forgejo-api> <git-remote-url> — the repo tag the swarm
+# healer keys its per-repo verdict marker on, derived the SAME way heal.sh derives
+# REPO_TAG: REPO_SLUG when set, else FORGEJO_API's trailing `owner/name`, with a
+# git-remote fallback for a hand-run outside the workflow (which sets neither).
+# Slashes aren't valid in a path segment, so `Matou/matou-app` -> `Matou-matou-app`.
+# Reader (heal.sh) and writer (run-smoke-drive.sh) must agree on the path
+# /tmp/matou-<tag>-smoke-drive-verdict.txt, so this mirrors that formula exactly.
+sd_repo_tag() {
+  local slug="${1:-}" api="${2:-}" remote="${3:-}"
+  if [ -z "$slug" ] && [ -n "$api" ]; then
+    slug="${api##*/repos/}"
+    [ "$slug" = "$api" ] && slug=""   # no /repos/ segment — not a Forgejo API url
+  fi
+  if [ -z "$slug" ] && [ -n "$remote" ]; then
+    slug="$(printf '%s' "$remote" | sed -E 's#\.git$##; s#.*[/:]([^/]+/[^/]+)$#\1#')"
+    [[ "$slug" =~ ^[^/]+/[^/]+$ ]] || slug=""   # unrecognised url shape
+  fi
+  printf '%s' "${slug//\//-}"
+}
+
 # sd_detect_base <spec-file> — a feature spec declares which base sub-journey it
 # needs with a `smoke-base: a|b` marker comment (see README). `b` selects the
 # membership growth loop (org-setup -> registration -> invitation) for features
@@ -67,6 +87,31 @@ sd_leg_record() {
   [[ "$ms" =~ ^[0-9]+$ ]] || ms=0
   jq -cn --arg leg "$name" --arg status "$status" --argjson ms "$ms" --arg error "$error" \
     '{leg:$leg, status:$status, ms:$ms} + (if $error == "" then {} else {error:$error} end)'
+}
+
+# sd_leg_error <log-file> <exit-code> — the actionable error for a red leg's
+# legs.json record. Playwright's line/list reporter ends a failed run with a
+# failure summary listing each failing test as an `  N) [project] › file:line ›
+# title` header followed by the assertion detail; the FIRST such block (the first
+# failing test) is the real fault. Extract it — NOT the trailing console `FAILED`
+# line, which today echoes the non-fatal `?type=ixn` request noise the app logs
+# during a run (matou-app#51). Falls back to the legacy error-ish grep, then to a
+# bare exit note, so a leg that dies before Playwright prints a summary (a crash,
+# a killed process) still records something.
+sd_leg_error() {
+  local log="${1:-}" rc="${2:-1}" block=""
+  if [ -n "$log" ] && [ -f "$log" ]; then
+    block="$(awk '
+      /^[[:space:]]*[0-9]+\)[[:space:]]/ { if (grab) exit; grab=1 }
+      grab { lines[++n]=$0; if (n>=14) exit }
+      END { while (n>0 && lines[n] ~ /^[[:space:]]*$/) n--; for (i=1;i<=n;i++) print lines[i] }
+    ' "$log" 2>/dev/null)"
+  fi
+  if [ -z "$block" ]; then
+    block="$(grep -m1 -E 'Error|error|FAIL|timed out|✘|✖' "$log" 2>/dev/null | tail -c 400)"
+  fi
+  [ -n "$block" ] || block="playwright exited $rc"
+  printf '%s' "$block" | head -c 600
 }
 
 # sd_legs_array <legs-dir> — concatenate the per-leg record files (`NN-*.json`,
