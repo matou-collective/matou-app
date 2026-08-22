@@ -2167,6 +2167,25 @@ export class KERIClient {
       }
     }
 
+    // Make sure the recipient's agent already holds OUR key state at the sn
+    // the grant will be signed against BEFORE the grant arrives. If it does
+    // not, KERIA's exchanger escrows the grant ("Unable to find sender … in
+    // kevers"), and the escrow replay never re-processes the embedded ACDC —
+    // nor does the Admitter fallback ("missing path label") — so the
+    // credential never reaches the recipient's wallet (issue #51: smoke lap
+    // 20260822T162813Z showed User2's agent accepting the org group AID's
+    // inception only from the post-grant push, 50 ms after the grant). The
+    // applicant's own org-OOBI resolve can time out, so do not rely on it.
+    // Best-effort: a failed push must not block issuance.
+    try {
+      const push = await this.pushKelToAgent(issuerAid.prefix, recipientAid);
+      if (push.pushed === 0) {
+        console.warn(`[KERIClient] Pre-grant KEL push to ${recipientAid.slice(0, 12)}... delivered nothing (${push.failed} failed)`);
+      }
+    } catch (pushErr) {
+      console.warn('[KERIClient] Pre-grant KEL push failed:', pushErr instanceof Error ? pushErr.message : pushErr);
+    }
+
     // Now grant the credential via IPEX (with timeout protection)
     console.log('[KERIClient] Granting credential via IPEX...');
 
