@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Smoke drive under global lock
+        id: drive
         env:
           FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
           FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
@@ -35,7 +36,16 @@ jobs:
         run: |
           set -euo pipefail
           exec 9>/tmp/matou-swarm.lock
-          flock -w 1800 9 || { echo "smoke-drive: lock busy for 30min — skipping this run"; exit 0; }
+          # A lap that never ran must not show as a green run (matou-app#51:
+          # a lock-skipped dispatch read as "success" with no run dir and was
+          # mistaken for a lap). Fail the job, but flag it so the healer step
+          # does not treat "the swarm held the lock" as a red journey.
+          if ! flock -w 1800 9; then
+            echo "smoke-drive: lock busy for 30min — NOT driven (re-dispatch when /tmp/matou-swarm.lock is free)"
+            echo "lock_skipped=1" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "lock_skipped=0" >> "$GITHUB_OUTPUT"
           workdir="$HOME/swarm-e2e/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
@@ -87,7 +97,7 @@ jobs:
           # the healer investigates (six-clause contract clause 6).
           exit "$drive_rc"
       - name: Investigate failure (healer)
-        if: failure()
+        if: failure() && steps.drive.outputs.lock_skipped != '1'
         env:
           FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
           FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}

@@ -96,10 +96,11 @@ sd_plan_legs "$base" "$feature" | sed 's/^/  leg: /' | cut -f1
 
 # --- infra bootstrap (mirrors .sandcastle/run-pr-e2e.sh) -------------------
 INFRA="${MATOU_INFRA_DIR:-$HOME/matou/matou-infrastructure}"
-backend_pid=""
+backend_pid="" smtp_pid=""
 teardown() {
   local ec=$?
   [ -n "$backend_pid" ] && kill "$backend_pid" 2>/dev/null || true
+  [ -n "$smtp_pid" ] && kill "$smtp_pid" 2>/dev/null || true
   if [ "$skip_infra" -eq 0 ]; then
     # Keep the KERI-side story (KERIA + witnesses) next to the browser/backend
     # logs before the containers go away. Escrow reasons (MissingRegistryError,
@@ -128,6 +129,16 @@ if [ "$skip_infra" -eq 0 ]; then
     CONFIG_ADMIN_TOKEN="$(sed -n 's/^CONFIG_ADMIN_TOKEN=//p' "$INFRA/keri/.env.test" | head -1)"
   fi
   export CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}" MATOU_CONFIG_SERVER_TOKEN="${CONFIG_ADMIN_TOKEN:-}"
+  # Test-mode backends send booking confirmations to MATOU_SMTP_PORT (3525 —
+  # backend-manager.ts); with nothing listening the booking endpoint answers
+  # 500 and `user books a Whakawhānaunga session` reds the registration leg
+  # (clean-start gotcha #16, seen on smoke lap 20260822T170144Z). Run a
+  # throwaway sink; received mail is summarised in logs/zz-smtp-sink.txt.
+  if ! ss -ltn 2>/dev/null | grep -qE '[:.]3525\b'; then
+    python3 "$here/smtp-sink.py" --port 3525 --log "$run_dir/logs/zz-smtp-sink.txt" \
+      2>>"$run_dir/logs/zz-smtp-sink.txt" &
+    smtp_pid=$!
+  fi
   ( cd "$root/backend" && make build )
   ( cd "$root/backend" && MATOU_ENV=test exec ./bin/server ) >"$run_dir/logs/00-backend.txt" 2>&1 &
   backend_pid=$!
