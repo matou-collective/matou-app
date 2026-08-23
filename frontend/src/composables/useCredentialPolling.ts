@@ -89,6 +89,10 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   // state while waiting, to unblock the Verifier/Tevery escrow for
   // credentials issued from a (group) AID whose latest anchor we lack.
   let lastGrantSender: string | null = null;
+  // sn (hex) of the KEL event anchoring the last admitted grant's credential
+  // (`exn.e.anc.s`). Lets us pull the issuer's KEL from its witnesses up to
+  // exactly that event while the credential is still in escrow (issue #51).
+  let lastGrantAncSn: string | null = null;
 
   // Rejection persistence (keyed by AID)
   const rejectionStorageKey = computed(() => {
@@ -566,6 +570,20 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
       console.log('[CredentialPolling] Grant admitted successfully');
       lastGrantSender = grantSender || null;
+      // Diagnostics for issue #51: which KEL event anchors this credential,
+      // and how far our agent's copy of the issuer's KEL currently reaches.
+      const anc = (grantExn.exn as { e?: { anc?: { s?: string; d?: string } } }).e?.anc;
+      lastGrantAncSn = anc?.s ?? null;
+      try {
+        const ksList = await client.keyStates().get(grantSender);
+        const ks = (Array.isArray(ksList) ? ksList[0] : ksList) as { s?: string } | undefined;
+        console.log(
+          `[CredentialPolling] Grant anchor: issuer ${grantSender.slice(0, 12)}... anc sn=${anc?.s ?? '?'} d=${(anc?.d ?? '?').slice(0, 12)}; ` +
+          `our local KEL for issuer at sn=${ks?.s ?? 'none'}`,
+        );
+      } catch (ksErr) {
+        console.log(`[CredentialPolling] Grant anchor: anc sn=${anc?.s ?? '?'}; issuer key state not in our agent yet (${ksErr instanceof Error ? ksErr.message : ksErr})`);
+      }
 
       // De-escrow: our agent may not know the grant issuer's key state yet
       // (e.g. a credential issued from the org GROUP AID by an upgraded
@@ -663,7 +681,15 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         // hold the receipted event even when the issuer's push missed us.
         if (lastGrantSender && (attempts === 3 || attempts % 10 === 0) && !credentialReceived.value) {
           console.log(`[CredentialPolling] Credential still pending — refreshing issuer key state (${lastGrantSender.slice(0, 12)}...)`);
-          void keriClient.refreshKeyState(lastGrantSender);
+          if (lastGrantAncSn) {
+            // Pull the issuer's KEL from its witnesses up to the anchoring
+            // event (SeqNoQuerier: completes when OUR kever reaches that sn).
+            // The no-sn `ksn` refresh needs the witness to reach back to our
+            // agent and is observed to time out env-wide (issue #51).
+            void keriClient.queryKeyStateToSn(lastGrantSender, lastGrantAncSn);
+          } else {
+            void keriClient.refreshKeyState(lastGrantSender);
+          }
           void keriClient.resolveViaWitnesses(lastGrantSender);
         }
 

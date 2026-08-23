@@ -730,7 +730,7 @@ test.describe.serial('Registration Approval Flow', () => {
   // for now — the ChangeRoleModal needs investigation.
   // ------------------------------------------------------------------
   test('register and approve a second member', async ({ browser }) => {
-    test.setTimeout(360_000); // 6 min: registration + endorsements + attendance + approval
+    test.setTimeout(480_000); // 8 min: registration + endorsements + attendance + steward upgrade + approval (group-AID credential escrow clear can take ~2 min before User2 joins)
 
     // Reload accounts saved by test 1 (includes member mnemonic).
     // Skip gracefully when running standalone without test 1.
@@ -1031,9 +1031,15 @@ test.describe.serial('Registration Approval Flow', () => {
         resp => resp.url().includes('/api/v1/spaces/community/invite') && resp.request().method() === 'POST',
         { timeout: TIMEOUT.long },
       );
+      // User2's join fires only after it admits the membership credential and
+      // clears the Verifier/Tevery escrow. Because User1 is an UPGRADED steward
+      // issuing from the org GROUP AID, that escrow-clear can take up to the
+      // product's own 120s pollForCredential budget (plus notification poll +
+      // OOBI resolves) — well past aidCreation (90s), which is why the founding
+      // admin's first-member approval clears in 90s but this one does not.
       const joinResponse = user2Page.waitForResponse(
         resp => resp.url().includes('/api/v1/spaces/community/join') && resp.request().method() === 'POST',
-        { timeout: TIMEOUT.aidCreation },
+        { timeout: TIMEOUT.groupCredentialJoin },
       );
 
       await approveBtn.click();
