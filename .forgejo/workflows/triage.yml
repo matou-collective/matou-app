@@ -30,6 +30,31 @@ jobs:
           # Same global lock as swarm.yml, same yield-don't-camp rule: if the
           # host is busy, yield and let the cron (or the next issue event)
           # re-fire — triage is idempotent, so a deferred pass costs nothing.
+          # Drive reservation (Matou/idss #663/#664). /tmp/matou-swarm.lock is
+          # HOST-global and shared by every repo on this box, so the rehearsal
+          # drive's reservation only works if every repo honours it: idss shipped
+          # the guard and still starved 20 consecutive executor ticks (~40 min)
+          # behind an unguarded sibling. The drive needs EVERY host lock at once
+          # and yields the instant one is busy, so it loses unboundedly to any
+          # repo that keeps claiming.
+          #
+          # Applied to the autonomous pollers ONLY (swarm, triage) — never to the
+          # PR gates (verify.yml, pr-e2e.yml, smoke-drive.yml). Yielding here is
+          # `exit 0`, which for a poller means "not this tick, the cron re-fires",
+          # but on a PR check would be a FALSE GREEN: the gate would report
+          # success without ever running. A human's PR must never be marked
+          # passing because a rehearsal drive wanted the host.
+          #
+          # The mtime TTL is the anti-deadlock: a declarer killed by OOM/SIGKILL/
+          # reboot runs no trap, and an abandoned reservation would otherwise
+          # wedge every heavy job here until a human cleared /tmp. Keep 900 in
+          # step with HOST_CAPACITY_DRIVE_WANTED_TTL in host-capacity-lib.sh.
+          drive_res=/tmp/matou-drive-wanted
+          if [ -f "$drive_res" ] \
+            && [ "$(( $(date +%s) - $(stat -c %Y "$drive_res" 2>/dev/null || echo 0) ))" -lt 900 ]; then
+            echo "triage: a rehearsal drive has reserved host capacity (idss #663) — yielding so it is not starved; the cron re-fires"
+            exit 0
+          fi
           exec 9>/tmp/matou-swarm.lock
           if ! flock -n 9; then
             echo "triage: another swarm/triage run holds /tmp/matou-swarm.lock — yielding; the cron re-fires"
