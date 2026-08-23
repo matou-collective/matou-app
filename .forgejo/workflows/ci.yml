@@ -10,7 +10,7 @@ on:
 
 jobs:
   checks:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 45
     steps:
       - name: Checkout (raw clone — actions/checkout depends on data.forgejo.org action fetch, which fast-fails intermittently, d18d869)
@@ -30,7 +30,14 @@ jobs:
       - name: Frontend + backend checks in the sandbox image
         run: |
           set -euo pipefail
-          docker build -t matou-app-ci -f .sandcastle/Dockerfile .sandcastle
+          # AGENT_UID/GID MUST follow the host user (sandcastle build-image does
+          # the same): the image's "agent" defaults to 1000, and the bind-mounted
+          # workspace is owned by whichever uid the runner runs as — 1000 on
+          # matou-workstation, 1500 on elitebook-03. Without this, npm ci dies
+          # with EACCES on node_modules the moment the job lands on a pool host
+          # whose uid differs (dev-factory GOTCHAS 6).
+          docker build --build-arg AGENT_UID="$(id -u)" --build-arg AGENT_GID="$(id -g)" \
+            -t matou-app-ci -f .sandcastle/Dockerfile .sandcastle
           # --entrypoint bash is required: the image's ENTRYPOINT is
           # ["sleep", "infinity"] (for sandcastle's own bind-mount/exec
           # workflows), and without an override `docker run` appends the
