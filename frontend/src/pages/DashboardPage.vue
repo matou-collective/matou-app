@@ -272,6 +272,7 @@ import { useRegistrationPolling, type PendingRegistration } from 'src/composable
 import { useAdminActions } from 'src/composables/useAdminActions';
 import { useMultisigJoin } from 'src/composables/useMultisigJoin';
 import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSignal';
+import { useMultisigIxnSync } from 'src/composables/useMultisigIxnSync';
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
@@ -343,6 +344,16 @@ const {
   start: startRotationSignalWatcher,
   stop: stopRotationSignalWatcher,
 } = useMultisigRotationSignal();
+
+// Group members keep their agent's copy of the org group KEL in step with
+// ixns other members create (issue #63). Armed once we know we're a member.
+const {
+  start: startMultisigIxnSync,
+  stop: stopMultisigIxnSync,
+} = useMultisigIxnSync();
+watch([isSteward, hasJoinedMultisig], ([steward, joined]) => {
+  if (steward || joined) startMultisigIxnSync();
+});
 
 const {
   isEndorsing,
@@ -584,6 +595,8 @@ onMounted(async () => {
 
   // Poll for multisig rotation notifications (e.g., after being promoted to steward)
   startMultisigPolling(5000);
+  // Already a group member on this device: start applying peers' group ixns now.
+  if (isSteward.value) startMultisigIxnSync();
 
   // Watch for rotation signals from admin so we can pre-emptively query
   // admin's KEL before the /multisig/rot EXN arrives.  No-op if we never
@@ -622,6 +635,7 @@ onUnmounted(() => {
   stopPolling();
   stopMultisigPolling();
   stopRotationSignalWatcher();
+  stopMultisigIxnSync();
 });
 
 watch(hasJoinedMultisig, async (joined) => {

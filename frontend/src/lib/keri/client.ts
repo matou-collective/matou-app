@@ -17,6 +17,9 @@ import {
   type AgentRebootRecord,
 } from 'src/lib/agentLifecycle';
 import { extractWitnessAids } from 'src/lib/keri/witnessAssignment';
+
+/** CommunityProfile roles whose holders are members of the org multisig group. */
+const GROUP_MEMBER_ROLES = new Set(['Founding Member', 'Community Steward', 'Admin']);
 import { parseCesrStream, filterKelMessages, mergeKelMessages } from 'src/lib/keri/cesr';
 
 export interface AIDInfo {
@@ -587,6 +590,172 @@ export class KERIClient {
       `. The group KEL anchoring event has not been receipted by every org witness, so a recipient could not validate a credential` +
       ` issued from it — refusing to grant. Retry once the org witnesses have caught up.`,
     );
+  }
+
+  /**
+   * Other members of the org multisig group (prefixes), excluding ourselves.
+   *
+   * KERIA does not expose `smids` for a group hab, and the promotion flow
+   * does not maintain `orgConfig.admins`, so the roster is rebuilt from what
+   * every member can read: org-config admins ∪ CommunityProfiles whose role
+   * is a group role (Founding Member / Community Steward / Admin).
+   */
+  async getGroupMemberRecipients(excludePrefix: string): Promise<string[]> {
+    const members = new Set<string>();
+    try {
+      const { getOrFetchOrgConfig } = await import('../../api/config');
+      const cfg = await getOrFetchOrgConfig();
+      for (const a of cfg?.admins ?? []) if (a?.aid) members.add(a.aid);
+    } catch (err) {
+      console.warn('[KERIClient] group roster: org config unavailable:', err instanceof Error ? err.message : err);
+    }
+    try {
+      const { getProfiles } = await import('../api/client');
+      const profiles = await getProfiles('CommunityProfile');
+      for (const p of profiles) {
+        const d = p.data as { aid?: string; role?: string };
+        if (d?.aid && d.role && GROUP_MEMBER_ROLES.has(d.role)) members.add(d.aid);
+      }
+    } catch (err) {
+      console.warn('[KERIClient] group roster: community profiles unavailable:', err instanceof Error ? err.message : err);
+    }
+    members.delete(excludePrefix);
+    return [...members];
+  }
+
+  /**
+   * Tell the other group members about a group `ixn` we just created, via
+   * KERIA's native `/multisig/ixn` exn (keri/app/grouping.py
+   * `multisigInteractExn`: payload {gid, smids}, embed {ixn}).
+   *
+   * Why: with kt=1 a member's agent completes a group ixn alone and nothing
+   * ever tells the OTHER members' agents about it — KERIA does not poll
+   * witnesses for a group hab it co-controls. The next member to issue then
+   * anchors at the same sn and the group KEL forks (issue #63: admin's sn=8
+   * vs steward's sn=8 → recipients see `Likely Duplicitous`, credentials
+   * never validate). Each member's client applies the notification with
+   * `syncGroupIxnNotifications`, so every agent holds the same chain.
+   *
+   * Best-effort: the sender must not fail issuance because a peer is
+   * unreachable — the recipient's drain-before-issue guard catches up later.
+   */
+  async sendMultisigIxnExn(groupName: string, ixnSn: string): Promise<number> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+    const signify = await import('signify-ts');
+
+    const group = await this.client.identifiers().get(groupName);
+    const gid = group.prefix as string;
+    const aids = await this.client.identifiers().list();
+    const personal = aids?.aids?.find((a: { prefix: string; group?: unknown }) => !a.group && a.prefix !== gid);
+    if (!personal) throw new Error('sendMultisigIxnExn: no personal AID to sign the exn');
+    const personalFresh = await this.client.identifiers().get(personal.name);
+
+    const events = await this.client.keyEvents().get(gid) as Array<{ ked: Record<string, unknown>; atc?: string }>;
+    const target = parseInt(ixnSn, 16);
+    const evt = events.find((e) => e?.ked && parseInt(String(e.ked.s), 16) === target);
+    if (!evt) throw new Error(`sendMultisigIxnExn: group event sn=${ixnSn} not in local KEL`);
+    const serder = new signify.Serder(evt.ked);
+    const atc = (evt.atc ?? '').replace(/[\r\n]+/g, '');
+
+    const recipients = await this.getGroupMemberRecipients(personal.prefix);
+    if (recipients.length === 0) {
+      console.log(`[KERIClient] sendMultisigIxnExn: no other group members known for ${gid.slice(0, 12)}... — nothing to send`);
+      return 0;
+    }
+    const smids = [personal.prefix, ...recipients];
+    console.log(`[KERIClient] sendMultisigIxnExn: gid=${gid.slice(0, 12)} sn=${ixnSn} → ${recipients.length} member(s)`);
+    await this.client.exchanges().send(
+      personal.name,
+      groupName,
+      personalFresh,
+      '/multisig/ixn',
+      { gid, smids },
+      { ixn: [serder, atc] },
+      recipients,
+    );
+    return recipients.length;
+  }
+
+  /**
+   * Apply unread `/multisig/ixn` notifications for `groupName` to our agent,
+   * in sn order, so our copy of the group KEL matches the member who created
+   * each ixn. Re-creating the event locally (`identifiers().interact` with
+   * the same data on the same prior state) yields the identical SAID, and
+   * KERIA's group path (`agent.groups` → Counselor → witnesses) merges our
+   * signature onto the event the witnesses already hold.
+   *
+   * Called by the dashboard watcher on every notification fetch, and by
+   * `createRegistry` / `issueCredential` BEFORE they anchor a new group ixn
+   * (drain-before-issue) so a member who was offline cannot fork the chain
+   * on its first issuance (issue #63).
+   *
+   * @returns number of ixns applied this call
+   */
+  async syncGroupIxnNotifications(groupName: string): Promise<number> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+
+    const group = await this.client.identifiers().get(groupName);
+    const gid = group.prefix as string;
+    const notes = ((await this.client.notifications().list(0, 1000))?.notes ?? []) as Array<{
+      i: string; r: boolean; a: { r?: string; d?: string };
+    }>;
+    const pending = notes.filter((n) => n.a?.r === '/multisig/ixn' && !n.r && n.a?.d);
+    if (pending.length === 0) return 0;
+
+    // Load the embedded ixns and sort by sn so we apply in chain order.
+    const items: Array<{ note: typeof pending[number]; ixn: Record<string, unknown> }> = [];
+    for (const note of pending) {
+      try {
+        const exch = await this.client.exchanges().get(note.a.d as string);
+        const exn = exch?.exn as { a?: { gid?: string }; e?: { ixn?: Record<string, unknown> } } | undefined;
+        const ixn = exn?.e?.ixn;
+        if (exn?.a?.gid !== gid || !ixn) continue;
+        items.push({ note, ixn });
+      } catch (err) {
+        console.warn(`[KERIClient] syncGroupIxn: cannot load exn ${String(note.a.d).slice(0, 12)}:`, err instanceof Error ? err.message : err);
+      }
+    }
+    items.sort((a, b) => parseInt(String(a.ixn.s), 16) - parseInt(String(b.ixn.s), 16));
+
+    let applied = 0;
+    for (const { note, ixn } of items) {
+      const ixnSn = parseInt(String(ixn.s), 16);
+      const fresh = await this.client.identifiers().get(groupName);
+      const st = fresh.state as { s?: string; d?: string };
+      const localSn = st?.s !== undefined ? parseInt(st.s, 16) : -1;
+
+      if (localSn >= ixnSn) {
+        // Already in our KEL (we created it, or it arrived via witnesses).
+        await this.client.notifications().mark(note.i);
+        continue;
+      }
+      if (localSn !== ixnSn - 1 || st?.d !== ixn.p) {
+        // Behind by more than one, or our tip isn't this ixn's prior: pull
+        // the group KEL from witnesses up to the prior event and let the
+        // next cycle retry. Leave the notification unread.
+        console.log(`[KERIClient] syncGroupIxn: local sn=${localSn} d=${String(st?.d).slice(0, 12)} ≠ prior of ixn sn=${ixnSn} (p=${String(ixn.p).slice(0, 12)}) — pulling KEL and deferring`);
+        await this.queryKeyStateToSn(gid, (ixnSn - 1).toString(16));
+        continue;
+      }
+
+      const res = await this.client.identifiers().interact(groupName, ixn.a as unknown[]);
+      const recreated = (res.serder as { said?: string; sad?: { d?: string } }).said ?? (res.serder as { sad?: { d?: string } }).sad?.d;
+      if (recreated !== ixn.d) {
+        // Same prior + same data must give the same SAID; anything else means
+        // the group has already forked. Loud, and leave the note unread.
+        throw new Error(
+          `syncGroupIxn: recreated ixn sn=${ixnSn} has SAID ${String(recreated).slice(0, 12)} ≠ peer's ${String(ixn.d).slice(0, 12)} — group KEL ${gid.slice(0, 12)}... is forked`,
+        );
+      }
+      const op = await res.op();
+      await this.client.operations().wait(op, { signal: AbortSignal.timeout(60000) });
+      await this.client.notifications().mark(note.i);
+      applied++;
+      console.log(`[KERIClient] syncGroupIxn: applied group ixn sn=${ixnSn} (${String(ixn.d).slice(0, 12)}) to ${gid.slice(0, 12)}...`);
+    }
+    return applied;
   }
 
   /**
@@ -2043,6 +2212,18 @@ export class KERIClient {
 
     console.log(`[KERIClient] Creating registry "${registryName}" for AID "${aidName}"...`);
 
+    // Group AID: apply any group ixns other members created before we anchor
+    // a new one on top of a stale tip (issue #63 fork guard).
+    let isGroup = false;
+    try {
+      const hab = await this.client.identifiers().get(aidName);
+      isGroup = !!(hab as { group?: unknown }).group;
+      if (isGroup) await this.syncGroupIxnNotifications(aidName);
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('syncGroupIxn')) throw err;
+      console.warn('[KERIClient] createRegistry: pre-ixn group sync skipped:', err instanceof Error ? err.message : err);
+    }
+
     const result = await this.client.registries().create({
       name: aidName,
       registryName: registryName,
@@ -2058,12 +2239,17 @@ export class KERIClient {
     // for it so the registry is resolvable by recipients before anything is
     // issued from it (issue #51). See awaitGroupAnchorWitnessed().
     try {
-      const hab = await this.client.identifiers().get(aidName);
-      if ((hab as { group?: unknown }).group) {
-        const ixnSaid = (result.serder as { said?: string; sad?: { d?: string } } | undefined)?.said
-          ?? (result.serder as { sad?: { d?: string } } | undefined)?.sad?.d;
+      if (isGroup) {
+        const ser = result.serder as { said?: string; sad?: { d?: string; s?: string } } | undefined;
+        const ixnSaid = ser?.said ?? ser?.sad?.d;
         if (ixnSaid) {
           await this.awaitGroupAnchorWitnessed(ixnSaid, { label: 'registry' });
+        }
+        // Tell the other members so their agents apply this ixn (issue #63).
+        const ixnSn = ser?.sad?.s;
+        if (ixnSn !== undefined) {
+          await this.sendMultisigIxnExn(aidName, String(ixnSn)).catch((e) =>
+            console.warn('[KERIClient] createRegistry: /multisig/ixn send failed (members will catch up on their next issuance):', e instanceof Error ? e.message : e));
         }
       }
     } catch (err) {
@@ -2135,6 +2321,18 @@ export class KERIClient {
     if (edgeData) {
       issueArgs.e = edgeData;
     }
+    // Group AID: apply any group ixns other members created before we anchor
+    // the iss on top of a stale tip (issue #63 fork guard).
+    const issuerIsGroup = !!(issuerAid as { group?: unknown }).group;
+    if (issuerIsGroup) {
+      try {
+        await this.syncGroupIxnNotifications(issuerAid.name);
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith('syncGroupIxn')) throw err;
+        console.warn('[KERIClient] issueCredential: pre-ixn group sync skipped:', err instanceof Error ? err.message : err);
+      }
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const credResult = await this.client.credentials().issue(issuerAid.prefix, issueArgs as any);
 
@@ -2157,13 +2355,18 @@ export class KERIClient {
     // the credential sits in its escrow (issue #51's second-member join hang).
     // Personal-AID issuance (endorsements, attendance) has no `group` and is
     // skipped — its events are witnessed synchronously by the `witness` op.
-    if ((issuerAid as { group?: unknown }).group) {
-      const ancSaid = (credResult.anc as { said?: string; sad?: { d?: string } } | undefined)?.said
-        ?? (credResult.anc as { sad?: { d?: string } } | undefined)?.sad?.d;
+    if (issuerIsGroup) {
+      const anc = credResult.anc as { said?: string; sad?: { d?: string; s?: string } } | undefined;
+      const ancSaid = anc?.said ?? anc?.sad?.d;
       if (ancSaid) {
         await this.awaitGroupAnchorWitnessed(ancSaid, { label: 'issuance' });
       } else {
         console.warn('[KERIClient] Group issuance: no anchoring ixn SAID on issue() result — cannot gate grant on witness receipts');
+      }
+      // Tell the other members so their agents apply this ixn (issue #63).
+      if (anc?.sad?.s !== undefined) {
+        await this.sendMultisigIxnExn(issuerAid.name, String(anc.sad.s)).catch((e) =>
+          console.warn('[KERIClient] issueCredential: /multisig/ixn send failed (members will catch up on their next issuance):', e instanceof Error ? e.message : e));
       }
     }
 
