@@ -20,16 +20,29 @@ verdict_begin() {
   VERDICT_PATH="$1"
   VERDICT_STAGE="starting"
   VERDICT_ERRLOG=""
+  VERDICT_ERROR=""
   rm -f "$VERDICT_PATH" 2>/dev/null || true
 }
 
 # verdict_stage <name> [errlog] — mark the stage now beginning. When <errlog> is
 # a readable file, its error-ish tail feeds the verdict if THIS stage fails;
 # otherwise the stage name alone keys the signature (still marker-derived, still
-# distinct per stage — never worker prose).
+# distinct per stage — never worker prose). Clears any explicit error line from a
+# prior stage so a stale FATAL never leaks into this one's verdict.
 verdict_stage() {
   VERDICT_STAGE="$1"
   VERDICT_ERRLOG="${2:-}"
+  VERDICT_ERROR=""
+}
+
+# verdict_error <line> — record an explicit error line for a stage that fails
+# with no errlog to grep: a guard's FATAL is echoed to the job's stderr, not a
+# file (#9), so verdict_write would otherwise emit an EMPTY `--- error lines ---`
+# block and the healer would key its signature on the bare stage. Set this to the
+# FATAL text right before the guard's `exit`; verdict_write uses it as the error
+# line when no errlog yielded one.
+verdict_error() {
+  VERDICT_ERROR="$1"
 }
 
 # verdict_write <exit-code> — write the verdict iff the code is non-zero. Safe to
@@ -43,6 +56,10 @@ verdict_write() {
       "$VERDICT_ERRLOG" 2>/dev/null | grep -v '^==> ' | tail -12)"
     [ -z "$errs" ] && errs="$(grep -vE '^[[:space:]]*$' "$VERDICT_ERRLOG" 2>/dev/null | tail -8)"
   fi
+  # No errlog line (a guard that FATAL-ed to stderr, #9): fall back to the
+  # explicit line the caller recorded via verdict_error, so the healer sees the
+  # real cause instead of an empty error block.
+  [ -z "$errs" ] && errs="${VERDICT_ERROR:-}"
   {
     echo "stage=${VERDICT_STAGE:-unknown}"
     echo "exit=$ec"

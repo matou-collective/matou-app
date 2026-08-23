@@ -134,4 +134,43 @@ claude_select_token
 rm -f "$CLAUDE_ACTIVE_MARKER"
 pass=$((pass+1))
 
+# --- Claude auth-refusal detection (#632): a DEAD TOKEN is a different
+#     refusal shape than a usage-limit hit and must never be confused with
+#     one in either direction -- a false "limit" read waits out a window that
+#     will never reset, and a false "auth" read fails over a token that isn't
+#     actually dead. ---
+auth_detects() { printf '%s\n' "$1" > "$tmp"; claude_auth_failed "$tmp"; }
+
+for line in \
+  "Not logged in · Please run /login" \
+  "Failed to authenticate: OAuth session expired and could not be refreshed" \
+  "Invalid API key · check your credentials" \
+  "authentication_error: token is invalid"
+do
+  auth_detects "$line" || fail "must detect this as a Claude auth refusal: $line"
+done
+pass=$((pass+1))
+
+# must NOT fire on a usage-limit refusal, and a usage-limit refusal must NOT
+# fire on the auth detector -- the two guards must stay mutually exclusive.
+printf '%s\n' "You've hit your weekly limit · resets Aug 1, 8am (UTC)" > "$tmp"
+claude_auth_failed "$tmp" && fail "a usage-limit message must NOT read as an auth refusal"
+claude_limit_hit "$tmp" || fail "sanity: this fixture should still read as a limit hit"
+pass=$((pass+1))
+
+# must NOT fire on an unrelated failure
+auth_detects "npm error Missing: prettier@3.9.6 from lock file" \
+  && fail "must NOT treat an unrelated failure as a Claude auth refusal"
+pass=$((pass+1))
+
+# claude_auth_failed checks every file argument (the caller's multi-file
+# err+out grep pattern); an EMPTY file must never match (the [ -s ] guard).
+empty="$(mktemp)"
+printf '%s\n' "Failed to authenticate: OAuth session expired" > "$tmp"
+claude_auth_failed "$empty" "$tmp" || fail "must find a match among multiple file args"
+rm -f "$empty"
+: > "$tmp"
+claude_auth_failed "$tmp" && fail "an empty file must never match"
+pass=$((pass+1))
+
 echo "limit-lib: $pass groups passed"

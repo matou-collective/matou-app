@@ -18,9 +18,10 @@
 # legitimate "nothing here" — and callers that guard with `|| return 0/1` never
 # fire (2026-08-11 review finding 1: an actions/tasks blip made claim_alive_runs
 # return `[]` at rc 0, and janitor_sweep's `|| return 0` guard never saw it,
-# mass-re-arming every live claim). claim_mark_working is the one exception:
-# its LAST pipeline stage is curl itself (no filter runs after it), so the
-# pipeline's own exit status already is curl's. (This header used to also
+# mass-re-arming every live claim). claim_mark_working does not raw-capture: it
+# posts the label with the `-o /dev/null -w '%{http_code}'` idiom and pages on
+# any non-2xx (#20 — a silent 403 on the agent-working write let #19 be worked
+# with no claim label). (This header used to also
 # name claim_label_id an exception — false premise: its pipeline ended in
 # `jq | head -1` and the real safety was the `[ -n "$id" ]` emptiness check.
 # It raw-captures like the rest now, and pages — #470 M-1/M-2.)
@@ -109,11 +110,24 @@ claim_won() { # claim_won <issue> <my_comment_id> <alive_runs_json> -> rc 0 if m
   [ "$lowest" = "$2" ]
 }
 
-claim_mark_working() { # claim_mark_working <issue>
-  local lid; lid="$(claim_label_id agent-working)" || return 1
-  jq -n --argjson l "$lid" '{labels: [$l]}' |
-    _claim_api -X POST -H 'Content-Type: application/json' -d @- \
-      "$FORGEJO_API/issues/$1/labels" >/dev/null
+claim_mark_working() { # claim_mark_working <issue> -> rc 0 on a 2xx label write; LOUD + rc 1 on refusal (#20)
+  # A label write that returns non-2xx must fail LOUD, never silently continue:
+  # #19's swarm-bot had repo.code write but not repo.issues write, so this POST
+  # 403'd and the ticket was worked WITHOUT agent-working — invisible to the
+  # janitor and to every other host's queue. Capture the HTTP code with the
+  # -o/-w idiom (not curl -sf, which swallows a 403 into an rc the caller here
+  # dropped) and page on anything but a 2xx.
+  local lid code
+  lid="$(claim_label_id agent-working)" || return 1
+  code="$(jq -n --argjson l "$lid" '{labels: [$l]}' |
+    curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $FORGEJO_TOKEN" \
+      -X POST -H 'Content-Type: application/json' -d @- \
+      "$FORGEJO_API/issues/$1/labels")"
+  case "$code" in
+    2*) return 0 ;;
+    *) echo "claim: label write refused (HTTP $code) — check the bot's issues permission on this repo" >&2
+       return 1 ;;
+  esac
 }
 
 claim_release() { # claim_release <issue> <comment_id>

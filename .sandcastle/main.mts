@@ -61,6 +61,27 @@ function resolveSwarmModel(): string {
 const SWARM_MODEL = resolveSwarmModel();
 console.log(`worker: launching on model ${SWARM_MODEL}`);
 
+// Factory git identity (#19): run-swarm.sh stamps GIT_AUTHOR_*/GIT_COMMITTER_*
+// into our process env (swarm-identity.sh's swarm_git_identity, class `worker`,
+// naming the HOST) before launching us. Forward those into the worker container
+// so its commits record "…(worker@<host>)" instead of inheriting the container
+// user's git config. Absent on a bare `pnpm run sandcastle` — then we inject
+// nothing and git falls back to its usual config, same best-effort posture as
+// SWARM_DB_RUN_ID below.
+function factoryGitIdentityEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+  ]) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
+  return env;
+}
+
 // #612 (idss ADR 0186): operator-cancel kill-path. SWARM_DB_RUN_ID is the
 // SAME run_db_id run-swarm.sh's swarm.db writes already use (read early here,
 // not only at the bottom for the #574 mirror, so it can also name this run's
@@ -161,7 +182,10 @@ try {
     // window in ~14 h on 2026-07-25; the run-swarm limit guard now handles that
     // gracefully, but the default stretches the window), and a ticket's model-*
     // label can right-size a mechanical ticket down via run-swarm.sh.
-    agent: claudeCode(SWARM_MODEL),
+    // The agent provider injects the factory git identity (#19) into the
+    // sandbox so worker commits carry the machinery's provenance, not the
+    // container user's git config.
+    agent: claudeCode(SWARM_MODEL, { env: factoryGitIdentityEnv() }),
 
     // Path to the prompt file. Shell expressions inside are evaluated inside the
     // sandbox at the start of each iteration, so the agent always sees fresh data.

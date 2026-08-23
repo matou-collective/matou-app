@@ -251,4 +251,28 @@ out="$(run_heal HEAL_AGENT_CMD="bash $flipstub" FLIP_COUNT="$work/flip-count" \
 echo "$out" | grep -qi "deferred — Claude usage limit" || fail "a limit without a standby must defer as before"
 [ -f "$work/limit-marker" ] || fail "the deferral must park the host"
 
-echo "heal.sh: 9 scenarios passed"
+# --- #19: the healer exports the factory git identity to the agent ----------
+# heal.sh's diagnosis clones ~/swarm/... into /tmp/heal-fix and commits there;
+# without an explicit identity those commits inherit the host user's ~/.gitconfig
+# (Cherese on matou-workstation). Assert the agent process sees GIT_AUTHOR_NAME
+# naming the healer class + host, sourced from swarm-identity.sh — never the
+# host gitconfig. SWARM_HOST/REPO_SLUG pinned so the assertion is host-agnostic.
+rm -f "$work/state/"*
+idcap="$work/heal-git-identity"
+cat > "$work/id-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+{ echo "GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-}"
+  echo "GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-}"
+  echo "GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-}"
+  echo "GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-}"; } > "${IDCAP:?}"
+EOF
+chmod +x "$work/id-agent.sh"
+run_heal HEAL_AGENT_CMD="bash $work/id-agent.sh" IDCAP="$idcap" \
+  SWARM_HOST=box1 REPO_SLUG=Acme/widget >/dev/null 2>&1 || true
+grep -q "^GIT_AUTHOR_NAME=Acme Swarm (healer@box1)$" "$idcap" \
+  || fail "the healer must export GIT_AUTHOR_NAME naming the healer class + host (got: $(cat "$idcap" 2>/dev/null))"
+grep -q "^GIT_COMMITTER_NAME=Acme Swarm (healer@box1)$" "$idcap" \
+  || fail "the healer's committer identity must match the author"
+grep -q "^GIT_AUTHOR_EMAIL=swarm@" "$idcap" || fail "the healer must export a factory author email"
+
+echo "heal.sh: 10 scenarios passed"

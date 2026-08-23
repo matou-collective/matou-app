@@ -44,13 +44,35 @@ git -C "$repo" worktree add -q -b sandcastle/worker/20260730-111111-unmerged \
 git -C "$repo" -C "$repo/.sandcastle/worktrees/sandcastle-worker-20260730-111111-unmerged" \
   commit -q --allow-empty -m "unmerged work"
 
+# --- a FRESH worktree standing in for a concurrent, still-live slot-2 swarm on
+#     this same repo (#577/ADR 0184): its mtime is NOW, so the age floor must
+#     SPARE it — removing it would unlink a running worker's checkout mid-flight
+#     (the exit-128 `git checkout --detach` incident this guards against). ---
+git -C "$repo" worktree add -q -b sandcastle/worker/20260822-999999-live \
+  "$repo/.sandcastle/worktrees/sandcastle-worker-20260822-999999-live" main
+
+# Age the two DEAD fixtures past the floor so they are still swept; a real dead
+# run's worktree is older than the 180-min job timeout. The live one is left at
+# its just-created mtime.
+touch -d '4 hours ago' \
+  "$repo/.sandcastle/worktrees/sandcastle-worker-20260730-000000-merged" \
+  "$repo/.sandcastle/worktrees/sandcastle-worker-20260730-111111-unmerged"
+
 # --- a NON-worker branch must be left entirely alone ---
 git -C "$repo" branch keep/me
 
 out="$(sweep_worktrees "$repo")"
 
-[ -z "$(ls -A "$repo/.sandcastle/worktrees" 2>/dev/null)" ] \
-  || fail "worktrees/ should be empty, still has: $(ls -A "$repo/.sandcastle/worktrees")"
+# Only the fresh live worktree survives; both aged fixtures are gone.
+survivors="$(ls -A "$repo/.sandcastle/worktrees" 2>/dev/null)"
+[ "$survivors" = "sandcastle-worker-20260822-999999-live" ] \
+  || fail "only the fresh live worktree should survive, worktrees/ has: [$survivors]"
+pass=$((pass+1))
+
+# The live sibling's branch must NOT be reported as lost work (it is still
+# checked out in the spared worktree — branch -d would refuse it).
+printf '%s' "$out" | grep -qx "sandcastle/worker/20260822-999999-live" \
+  && fail "a still-checked-out live worktree's branch must NOT be surfaced as unmerged"
 pass=$((pass+1))
 
 git -C "$repo" show-ref --verify -q refs/heads/sandcastle/worker/20260730-000000-merged \

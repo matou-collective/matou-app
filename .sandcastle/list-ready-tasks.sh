@@ -39,22 +39,34 @@ fi
 : "${FORGEJO_TOKEN:?set in .sandcastle/.env, the environment, or /run/secrets/forgejo_token}"
 # shellcheck source=swarm-identity.sh
 . "$here/swarm-identity.sh"   # FORGEJO_API default — this repo's identity (ADR 0180 / #571)
-# The standing #183 rehearsal DRIVE issue is executed HOST-MODE by the
-# workstation cron (scripts/rehearsal-executor.sh), never by the swarm — Ben's
-# ruling on #380 (DO/broker secrets stay off the swarm containers; #377 proved
+# A standing rehearsal DRIVE issue is executed HOST-MODE by the workstation
+# cron (scripts/rehearsal-executor.sh), never by the swarm — Ben's ruling on
+# Matou/idss#380 (DO/broker secrets stay off the swarm containers; #377 proved
 # the substrate has no /dev/kvm and carries no drive credentials). It is open,
 # ready-for-agent and — until a red blocks it — unblocked, so it would
 # otherwise pass every filter below and a swarm iteration would hot-loop on a
 # drive it structurally cannot run. Exclude it here. The executor reads the
 # issue directly, so the ratchet's real trigger is untouched.
 # PRIMARY exclusion = the `standing-drive` tracker label (Ben's ruling
-# 2026-08-13 on #493): re-minting the drive issue is ONE tracker action —
-# label the new issue (PUT/POST /labels, never issue-PATCH). The number below
-# (same env knob the host-mode scripts default; .env.example carries the
-# swarm-side value) stays as the BACKSTOP so a forgotten label and a stale
-# number must BOTH happen before the live drive leaks into the queue.
-: "${REHEARSAL_DRIVE_ISSUE:=492}"
+# 2026-08-13 on Matou/idss#493): re-minting the drive issue is ONE tracker
+# action — label the new issue (PUT/POST /labels, never issue-PATCH). This is
+# the name-based, per-repo-safe half and needs no configuration.
+# REHEARSAL_DRIVE_ISSUE is an OPTIONAL numeric BACKSTOP: a consumer that wants
+# a forgotten label and a stale number to BOTH have to happen before the live
+# drive leaks sets it from its identity layer (.env / swarm-identity.sh) to the
+# drive's number. No product number is defaulted here — an empty/unset value
+# excludes NOTHING by number (CLAUDE.md: never default a per-repo value to any
+# product), leaving the label as the sole automatic exclusion.
+: "${REHEARSAL_DRIVE_ISSUE:=}"
 export FORGEJO_TOKEN FORGEJO_API
+
+# Per-repo LANDING policy (#13, ADR 0002). SWARM_POLICY_FILE is a TEST-only seam
+# (points policy_load at a throwaway swarm-policy.sh); unset in production, so
+# policy_load reads the consumer's real file and defaults LANDING=push — the
+# queue is then byte-identical to before (idss/factory nil-diff).
+# shellcheck source=policy-lib.sh
+. "$here/policy-lib.sh"
+policy_load "${SWARM_POLICY_FILE:-}"
 
 api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
@@ -110,6 +122,21 @@ while :; do
   [ "$count" -lt 50 ] && break
   page=$((page + 1))
 done
+
+# LANDING=pr (#13): an issue with an OPEN agent PR (agent/issue-<N>) is already
+# being landed and awaiting merge — drop it so the swarm neither re-claims nor
+# re-works it while a human reviews (matou-app's filter, promoted into the core).
+# In push mode (default) this whole block is skipped: no /pulls call is made and
+# the queue is byte-identical.
+if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
+  open_pr_nums="$(api "$FORGEJO_API/pulls?state=open&limit=50" |
+    jq -r '.[]? | (.head.ref // "") | select(test("^agent/issue-[0-9]+$")) | sub("^agent/issue-";"")' 2>/dev/null || true)"
+  if [ -n "$open_pr_nums" ]; then
+    drop="$(printf '%s\n' $open_pr_nums | jq -Rn '[inputs | select(length > 0) | tonumber]')"
+    ready="$(jq --argjson drop "$drop" \
+      'map(select(.number as $n | ($drop | index($n)) == null))' <<<"$ready")"
+  fi
+fi
 
 # `priority`-labelled issues first (prompt.md's "pick the first task" makes
 # this list order the scheduler); concatenation, not sort_by, so tracker order

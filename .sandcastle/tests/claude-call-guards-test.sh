@@ -23,6 +23,7 @@ url="${*: -1}"
 case "$url" in
   *labels=*) echo '[]' ;;                                             # human_gated: nothing gated
   *state=open*) echo '[{"number":999,"title":"t","html_url":"http://x/999","labels":[]}]' ;;
+  */repos/x/y) echo '{"permissions":{"push":true}}' ;;                # #20 repo-root issue-write probe
   *) echo '[]' ;;
 esac
 SH

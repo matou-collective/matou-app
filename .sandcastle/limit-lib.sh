@@ -69,6 +69,22 @@ claude_limit_parked() {
 # its own claude refusal as a limit hit. Idempotent.
 claude_limit_park() { touch "$CLAUDE_LIMIT_MARKER"; }
 
+# ── Claude auth-refusal detection (#632) ──────────────────────────────────────
+#
+# A DEAD TOKEN ("Not logged in · Please run /login", "Failed to authenticate:
+# OAuth session expired and could not be refreshed", …) is a different shape
+# of refusal than the usage-limit hit above and must never be classified as
+# one: parking on a false "limit" read waits out a window that will never
+# reset. It must also never fall through to a caller's generic-failure path —
+# that reds the job with an incident signature that degrades to the workflow
+# name alone (2f0d3a6's "near-unparseable" ruling). ONE definition, shared by
+# rehearsal-report.sh's healer/reporter calls and run-swarm.sh's worker guard,
+# for the same reason CLAUDE_LIMIT_RE above is shared: two copies drift.
+CLAUDE_AUTH_RE="failed to authenticate|oauth session expired|not logged in|invalid api key|authentication_error"
+
+# claude_auth_failed <file>... — 0 iff any file carries the CLI's auth refusal.
+claude_auth_failed() { local f; for f in "$@"; do [ -s "$f" ] && grep -qiE "$CLAUDE_AUTH_RE" "$f" && return 0; done; return 1; }
+
 # ── Two-account failover (#510): ride over an exhausted weekly window ─────────
 #
 # We hold TWO Claude accounts. The primary's token rides CLAUDE_CODE_OAUTH_TOKEN

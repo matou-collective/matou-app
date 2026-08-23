@@ -32,7 +32,9 @@
 #   }
 #
 # The gates (all deterministic; a failure of ANY refuses the close):
-#   1. every SHA in commits is a real commit reachable from main's pushed head
+#   1. every SHA in commits is a real commit reachable from the landing head —
+#      main's pushed head in push mode, the issue's open PR head in pr mode
+#      (#13, LANDING=pr): the caller passes the head, the gate is mode-agnostic
 #   2. every path in changed_files appears in the union diff of those commits
 #   3. status:success needs >=1 commit OR a non-empty no_code_change reason
 #   4. status:success is refuted by any tests[] entry with a non-zero exit_code
@@ -108,7 +110,9 @@ cr_violations() {
         continue
       fi
       if [ "$headok" = 1 ] && ! git -C "$root" merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
-        _cr_add "commit $sha is not reachable from $head (not landed on main)"
+        # $head is main in push mode, the issue's open PR head in pr mode (#13):
+        # gate 1 asks "did this commit actually land where the ticket lands?"
+        _cr_add "commit $sha is not reachable from $head (not landed)"
         continue
       fi
       valid_shas+=("$sha")

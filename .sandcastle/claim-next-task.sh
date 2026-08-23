@@ -18,6 +18,25 @@ fi
 export FORGEJO_TOKEN FORGEJO_API
 # shellcheck source=claim-lib.sh
 . "$here/claim-lib.sh"
+# Per-repo LANDING policy (#13, ADR 0002): print the claimed ticket's landing
+# instruction so the worker knows whether to push to main or open a PR. The
+# prompt already surfaces the claim's context; the line goes to stderr so the
+# JSON contract on stdout stays a clean {number,title,body,url} array.
+# SWARM_POLICY_FILE is a test-only seam (unset in production → the real policy
+# file → LANDING=push default → "landing: push to main", today's behaviour).
+# shellcheck source=policy-lib.sh
+. "$here/policy-lib.sh"
+# shellcheck source=landing-lib.sh
+. "$here/landing-lib.sh"
+policy_load "${SWARM_POLICY_FILE:-}"
+
+print_landing() { # print_landing <issue-number>
+  if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
+    echo "landing: PR from $(landing_branch_for "$1")" >&2
+  else
+    echo "landing: push to main" >&2
+  fi
+}
 
 host="${SWARM_HOST:-$(hostname)}"
 run="${SWARM_RUN_ID:-0}"
@@ -53,6 +72,7 @@ for i in $(seq 0 $((n - 1))); do
   cid="$(claim_post "$num" "$host" "$run")" || continue
   if claim_won "$num" "$cid" "$alive"; then
     claim_mark_working "$num" || true
+    print_landing "$num"
     jq -c "[.[$i]]" <<<"$ready"
     exit 0
   fi

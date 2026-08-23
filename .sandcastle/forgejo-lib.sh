@@ -111,6 +111,81 @@ forgejo_create_issue() { # forgejo_create_issue <title> <body> [label-ids-json-a
   forgejo_post "/issues" "$payload"
 }
 
+# --- pull requests (the LANDING=pr flow — #13, ADR 0002) ------------------
+# Forgejo exposes no reliable `head=` query filter on /pulls, so the open-PR
+# lookup GETs the open set and filters client-side by .head.ref (matou-app's
+# prompt learned this the hard way). Raw-capture-then-filter — never curl|jq in
+# one pipeline (claim-lib.sh finding-1 discipline).
+
+forgejo_open_pr_for() { # forgejo_open_pr_for <head-branch> -> open PR number on stdout (empty if none); rc = curl's on the GET
+  local branch="$1" resp
+  resp="$(forgejo_get "/pulls?state=open&limit=50")" || return 1
+  jq -r --arg b "$branch" '.[]? | select(.head.ref==$b) | .number' <<<"$resp" 2>/dev/null | head -1
+}
+
+forgejo_create_pr() { # forgejo_create_pr <title> <head> <base> <body> -> response JSON on stdout | rc = curl's
+  forgejo_post "/pulls" \
+    "$(jq -n --arg t "$1" --arg h "$2" --arg base "$3" --arg b "$4" '{title:$t, head:$h, base:$base, body:$b}')"
+}
+
+forgejo_pr_head_sha() { # forgejo_pr_head_sha <pr-number> -> the PR head commit sha on stdout (empty on miss); rc = curl's
+  local resp
+  resp="$(forgejo_get "/pulls/$1")" || return 1
+  jq -r '.head.sha // empty' <<<"$resp" 2>/dev/null
+}
+
+forgejo_merge_pr() { # forgejo_merge_pr <pr-number> [style] -> HTTP code on stdout, rc 0 always
+  # style: Forgejo's merge `Do` (merge|rebase|squash…); default a plain merge.
+  forgejo_post_code "/pulls/$1/merge" "$(jq -cn --arg s "${2:-merge}" '{Do:$s}')"
+}
+
+forgejo_pr_combined_status() { # forgejo_pr_combined_status <pr-number> -> CombinedStatus JSON on stdout; rc non-zero if the head sha is unknown or the GET fails
+  # The merge-if-green gate (#15) reads whether every required check on the PR
+  # head is `success`. Forgejo's combined-status endpoint keys off a commit, not
+  # a PR, so resolve the head sha first, then GET .../commits/<sha>/status — its
+  # `.state` is the overall verdict (success|pending|failure|error, "" for no
+  # checks) and `.statuses[].context` names each check.
+  local sha
+  sha="$(forgejo_pr_head_sha "$1")" || return 1
+  [ -n "$sha" ] || return 1
+  forgejo_get "/commits/$sha/status"
+}
+
+forgejo_repo_default_merge_style() { # forgejo_repo_default_merge_style -> the repo's merge style (merge|rebase|rebase-merge); rc 0 always
+  # #15: an agent-after-green merge follows the repo's own Forgejo setting, but
+  # NEVER a squash — squashing rewrites the human/agent commit into a new one,
+  # breaking the close-report gate's SHA-reachability check. squash/unknown/
+  # unreachable all fall back to a plain merge commit.
+  local resp style
+  resp="$(forgejo_get "" 2>/dev/null)" || { printf 'merge\n'; return 0; }
+  style="$(jq -r '.default_merge_style // "merge"' <<<"$resp" 2>/dev/null)"
+  case "$style" in
+    rebase|rebase-merge|merge) printf '%s\n' "$style" ;;
+    *) printf 'merge\n' ;;
+  esac
+}
+
+forgejo_issue_write_probe() { # forgejo_issue_write_probe -> rc 0 if the bot has repo write; LOUD + rc 1 otherwise (#20)
+  # Zero-token preflight probe: GET the repo root with the bot token and assert
+  # the caller's `permissions` block grants write. #19 looked like four
+  # successful closes because swarm-bot had repo.code write but not repo.issues
+  # write — it could COMMENT on a public repo yet every label/state write 403'd
+  # silently. The repo-level permissions block (admin/push/pull) is the coarsest
+  # signal the API exposes without a write; it reds a bot with no write at all
+  # HERE, before a worker spawns. The code-write-but-not-issues case is caught
+  # deeper — close-report.sh closes-then-verifies and claim_mark_working pages
+  # on a 403 label write — so the three layers together never again read a
+  # permission gap as a clean close.
+  local resp push
+  resp="$(forgejo_get "")" || {
+    echo "forgejo: repo probe GET failed — cannot confirm the bot can write issues on $(forgejo_repo_slug)"
+    return 1; }
+  push="$(jq -r '.permissions.push // false' <<<"$resp" 2>/dev/null)"
+  [ "$push" = "true" ] && return 0
+  echo "forgejo: the bot has no write access (permissions.push=$push) on $(forgejo_repo_slug) — issue label/state writes will 403 (the machines team needs repo.issues + repo.pulls write, not just repo.code)"
+  return 1
+}
+
 forgejo_repo_slug() { # forgejo_repo_slug -> "owner/repo", derived from FORGEJO_API's .../repos/<owner>/<repo> tail
   local api_base="${FORGEJO_API%/}" repo owner
   repo="${api_base##*/}"

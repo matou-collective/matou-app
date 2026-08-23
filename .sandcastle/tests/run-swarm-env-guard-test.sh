@@ -10,6 +10,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 sc="$here/.."
 . "$sc/env-allowlist-lib.sh"
+. "$sc/verdict-lib.sh"   # #9: the guard now names its stage + captures the FATAL
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -17,15 +18,20 @@ pass=0
 
 # The decision under test, verbatim from run-swarm.sh (the .env materialize
 # block, paths/GITHUB_ACTIONS injected as args instead of read from the real
-# process env).
+# process env). verdict-lib state is threaded through so the #9 stage/error
+# capture is exercised too (VP set by the caller).
 materialize_or_guard() { # materialize_or_guard <here> <github_actions>
-  local dhere="$1" GITHUB_ACTIONS="$2" env_violations
+  local dhere="$1" GITHUB_ACTIONS="$2" env_violations env_fatal
   if [ -n "${GITHUB_ACTIONS:-}" ] || [ ! -f "$dhere/.env" ]; then
     cp -f "$dhere/.env.example" "$dhere/.env"
   else
     env_violations="$(env_allowlist_violations "$dhere/.env")"
     if [ -n "$env_violations" ]; then
-      echo "run-swarm: FATAL — $dhere/.env carries key(s) beyond the allowlist: $(printf '%s' "$env_violations" | tr '\n' ' ')" >&2
+      verdict_stage "env allowlist check (#593)"
+      env_fatal="run-swarm: FATAL — $dhere/.env carries key(s) beyond the allowlist: $(printf '%s' "$env_violations" | tr '\n' ' ')"
+      echo "$env_fatal" >&2
+      verdict_error "$env_fatal"
+      verdict_write 1
       return 1
     fi
   fi
@@ -43,7 +49,9 @@ setup_workdir() { # setup_workdir <name>
 #        guard must not fire on the CI path, per the ticket's requirement. ---
 d="$(setup_workdir ci-bad)"
 printf 'FOO_TOKEN=leaked\n' > "$d/.env"
+verdict_begin "$tmp/ci-bad-verdict.txt"
 materialize_or_guard "$d" "true" || fail "CI-mode must never refuse, even with a stray secret in the pre-existing .env"
+[ ! -f "$tmp/ci-bad-verdict.txt" ] || fail "CI-mode must not write a verdict (it never refuses)"
 diff -q "$d/.env" "$d/.env.example" >/dev/null || fail "CI-mode must overwrite .env from .env.example"
 pass=$((pass+1))
 
@@ -68,6 +76,9 @@ pass=$((pass+1))
 d="$(setup_workdir host-bad)"
 printf 'CLAUDE_CODE_OAUTH_TOKEN=sk-test\nFOO_TOKEN=leaked\n' > "$d/.env"
 before="$(cat "$d/.env")"
+vp="$tmp/host-bad-verdict.txt"
+verdict_begin "$vp"
+verdict_stage "preflight self-tests (#446)"   # the stale stage the #9 fix must overwrite
 if materialize_or_guard "$d" "" 2>"$tmp/err"; then
   fail "host-mode with a stray FOO_TOKEN must be refused, not passed"
 fi
@@ -75,6 +86,12 @@ grep -q 'FOO_TOKEN' "$tmp/err" || fail "the refusal must name the offending key:
 $(cat "$tmp/err")"
 after="$(cat "$d/.env")"
 [ "$before" = "$after" ] || fail "a refused .env must be left untouched (never silently rewritten)"
+# #9: the death must key on THIS guard's stage with the FATAL as its error line,
+# not the stale "preflight self-tests" stage with an empty error block.
+grep -q '^stage=env allowlist check (#593)$' "$vp" || fail "verdict stage not re-keyed to the allowlist guard:
+$(cat "$vp")"
+grep -q 'FOO_TOKEN' "$vp" || fail "the FATAL naming the offending key was not captured as the error line:
+$(cat "$vp")"
 pass=$((pass+1))
 
 echo "run-swarm-env-guard: $pass scenarios passed"

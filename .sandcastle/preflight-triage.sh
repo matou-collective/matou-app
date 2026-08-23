@@ -44,6 +44,19 @@ api() {
   done
 }
 
+# #20: zero-token permission probe — a bot with repo.code write but not
+# repo.issues write can COMMENT on a public repo yet 403s every label/state
+# write, so a triage run would silently fail to apply a single label (and #19
+# looked like four clean closes). GET the repo root through the same retry
+# wrapper (a transient blip must not false-red) and assert the caller's
+# permissions block grants write; a read-only bot reds HERE, before triage
+# touches a label.
+repo_json="$(api "$FORGEJO_API")"
+if [ "$(jq -r '.permissions.push // false' <<<"$repo_json")" != "true" ]; then
+  echo "preflight-triage: the bot has no write access on this repo (permissions.push != true) — issue writes will 403 (the machines team needs repo.issues + repo.pulls write, not just repo.code)" >&2
+  exit 1
+fi
+
 untriaged='[]'
 page=1
 while :; do

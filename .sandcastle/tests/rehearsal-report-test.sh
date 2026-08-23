@@ -500,4 +500,34 @@ grep -q 'Timeout 30000ms exceeded, port 127.0.0.1:8443' "$CURL_LOG" || fail "evi
 grep -Eq '\[[0-9]*m' "$CURL_LOG" && fail "evidence note leaked ANSI/garbled [Nm noise"
 pass=$((pass+1))
 
+# 31 (#632): a DEAD TOKEN reported by claude must NEVER read as "unparseable
+#     diagnosis" (five consecutive red drives 003234Z..030832Z went straight to
+#     a ticket saying exactly that while the real cause -- an auth refusal --
+#     sat unread in reporter-claude.out). Healer disabled so this scenario
+#     isolates the reporter's own auth path; no standby token configured, so
+#     claude_failover refuses immediately and the first refusal is terminal.
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+unset CLAUDE_CODE_OAUTH_TOKEN_B CLAUDE_TOKEN_PRIMARY 2>/dev/null || true
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+echo "Failed to authenticate: OAuth session expired and could not be refreshed"
+SH
+chmod +x "$tmp/bin/claude"
+red_run "pairing timeout after 900000ms"
+REHEARSAL_HEALER=0 bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (auth refusal)"
+grep -q 'CLAUDE AUTH FAILED' "$CURL_LOG" \
+  || fail "no auth-refusal alert posted to the drive issue -- an auth-dead token must never be silent"
+grep -q 'NO DIAGNOSIS' "$CURL_LOG" \
+  || fail "auth refusal must file a NAMED no-diagnosis body, not the generic 'unparseable' wording"
+grep -q 'unparseable' "$CURL_LOG" \
+  && fail "an auth refusal must NOT be filed under the generic 'unparseable' wording -- that is the exact silent-cause bug (#632)"
+pass=$((pass+1))
+
+# Restore the fixed confident-diagnosis shim for anything appended after this.
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+echo '{"title":"rehearsal: pairing never flips on the droplet","body":"diagnosis body","confident":true}'
+SH
+chmod +x "$tmp/bin/claude"
+
 echo "PASS ($pass cases)"

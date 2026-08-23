@@ -62,6 +62,25 @@ case "$url" in
   */labels?limit=100|*/labels)
     echo '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"bug"}]'
     ;;
+  */pulls?state=open*)
+    cat "${OPEN_PULLS:-/dev/null}" 2>/dev/null || echo '[]'
+    ;;
+  */pulls/7/merge)
+    $want_code && { echo "${MERGE_CODE:-200}"; exit 0; }
+    echo '{}'
+    ;;
+  */commits/prheadsha7/status)
+    cat "${STATUS_JSON:-/dev/null}" 2>/dev/null || echo '{"state":"success","statuses":[]}'
+    ;;
+  */pulls/7)
+    echo '{"number":7,"head":{"ref":"agent/issue-7","sha":"prheadsha7"}}'
+    ;;
+  */pulls)
+    echo '{"number":101,"head":{"ref":"agent/issue-7"}}'
+    ;;
+  */repos/Matou/idss)   # repo-root GET — #20 write probe + #15 default_merge_style
+    echo "{\"permissions\":{\"push\":${PROBE_PUSH:-true}},\"default_merge_style\":\"${MERGE_STYLE:-merge}\"}"
+    ;;
   *)
     echo "fake curl: unhandled url $url" >&2
     exit 22
@@ -162,8 +181,63 @@ no_label_body="$(cat "$BODIES_LOG")"
 check "forgejo_create_issue without labels omits the field" \
   '[ "$(jq "has(\"labels\")" <<<"$no_label_body")" = false ]'
 
+# forgejo_open_pr_for (#13) — finds an OPEN PR by head.ref, empty on miss
+open_pulls="$tmp/open-pulls.json"
+printf '%s\n' '[{"number":101,"head":{"ref":"agent/issue-7"}},{"number":102,"head":{"ref":"other"}}]' >"$open_pulls"
+check "forgejo_open_pr_for returns the PR number matching head.ref" \
+  '[ "$(OPEN_PULLS=$open_pulls forgejo_open_pr_for agent/issue-7)" = "101" ]'
+printf '%s\n' '[]' >"$tmp/no-pulls.json"
+check "forgejo_open_pr_for is empty when no open PR matches" \
+  '[ -z "$(OPEN_PULLS=$tmp/no-pulls.json forgejo_open_pr_for agent/issue-7)" ]'
+
+# forgejo_create_pr (#13) — POST /pulls with {title,head,base,body}
+: > "$BODIES_LOG"
+resp="$(forgejo_create_pr "a title (#7)" "agent/issue-7" "main" "closes #7")"
+check "forgejo_create_pr returns the created PR number" '[ "$(jq -r .number <<<"$resp")" = "101" ]'
+check "forgejo_create_pr posts to /pulls" 'grep -q "POST .*/pulls$" "$CALLS_LOG"'
+check "forgejo_create_pr body names head+base+title+body" \
+  '[ "$(jq -c "{title,head,base,body}" < "$BODIES_LOG")" = "{\"title\":\"a title (#7)\",\"head\":\"agent/issue-7\",\"base\":\"main\",\"body\":\"closes #7\"}" ]'
+
+# forgejo_pr_head_sha (#13) — the head commit the close gate checks reachability from
+check "forgejo_pr_head_sha returns the PR head sha" '[ "$(forgejo_pr_head_sha 7)" = "prheadsha7" ]'
+
+# forgejo_merge_pr (#13) — POST /pulls/N/merge, {Do:style}, HTTP code passthrough
+: > "$BODIES_LOG"
+code="$(MERGE_CODE=200 forgejo_merge_pr 7)"
+check "forgejo_merge_pr returns the HTTP code" '[ "$code" = "200" ]'
+check "forgejo_merge_pr body carries {Do:merge}" '[ "$(jq -r .Do < "$BODIES_LOG")" = "merge" ]'
+check "forgejo_merge_pr hits the merge endpoint" 'grep -q "POST .*/pulls/7/merge" "$CALLS_LOG"'
+
+# forgejo_pr_combined_status (#15) — resolves the PR head sha, then GETs the
+# commit's combined status; the caller reads .state / .statuses[].context
+: > "$CALLS_LOG"
+printf '%s\n' '{"state":"success","statuses":[{"status":"success","context":"ci/build"}]}' > "$tmp/green.json"
+combined="$(STATUS_JSON=$tmp/green.json forgejo_pr_combined_status 7)"
+check "forgejo_pr_combined_status returns the combined .state" '[ "$(jq -r .state <<<"$combined")" = success ]'
+check "forgejo_pr_combined_status GETs the head sha's status endpoint" \
+  'grep -q "GET .*/commits/prheadsha7/status" "$CALLS_LOG"'
+
+# forgejo_repo_default_merge_style (#15) — reads the repo setting; squash and
+# unknowns fall back to a plain merge (never a squash-rewrite of a real commit)
+check "default merge style passes through a rebase setting" \
+  '[ "$(MERGE_STYLE=rebase forgejo_repo_default_merge_style)" = rebase ]'
+check "default merge style maps squash -> merge" \
+  '[ "$(MERGE_STYLE=squash forgejo_repo_default_merge_style)" = merge ]'
+check "default merge style falls back to merge on an unknown value" \
+  '[ "$(MERGE_STYLE=weird forgejo_repo_default_merge_style)" = merge ]'
+
 # forgejo_repo_slug — derived from FORGEJO_API's .../repos/<owner>/<repo> tail
 check "forgejo_repo_slug derives owner/repo from FORGEJO_API" '[ "$(forgejo_repo_slug)" = Matou/idss ]'
+
+# forgejo_issue_write_probe (#20): a repo whose permissions block grants write
+# passes; one that does not reds LOUD, naming the missing write.
+check "issue-write probe passes when permissions.push is true" \
+  '( export PROBE_PUSH=true; forgejo_issue_write_probe >/dev/null )'
+check "issue-write probe reds when permissions.push is false" \
+  '! ( export PROBE_PUSH=false; forgejo_issue_write_probe >/dev/null 2>&1 )'
+probe_out="$( ( export PROBE_PUSH=false; forgejo_issue_write_probe ) 2>&1 || true )"
+check "issue-write probe names the missing write access" \
+  'grep -q "no write access" <<<"$probe_out"'
 
 # curl -f semantics: forgejo_get dies loud (rc != 0) on a real failure, never a silent empty success
 if forgejo_get "/fail/x" >/dev/null 2>&1; then fail=$((fail+1)); echo "FAIL: forgejo_get propagates curl's failure rc"; else pass=$((pass+1)); fi

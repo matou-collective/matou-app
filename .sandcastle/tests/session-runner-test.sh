@@ -50,6 +50,13 @@ chmod +x "$tmp/bin/curl"
 cat > "$tmp/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 echo "call" >> "${CLAUDE_CALLS:?}"
+# #19: the session's commits inherit whatever git identity the runner exports.
+# Record it so the test can assert the factory identity reached the session,
+# not the host user's ~/.gitconfig.
+{ echo "GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-}"
+  echo "GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-}"
+  echo "GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-}"
+  echo "GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-}"; } > "${CLAUDE_ENV:?}"
 prompt="${*: -1}"
 n="$(grep -oE 'Ticket #[0-9]+' <<<"$prompt" | head -1 | tr -dc 0-9)"
 calls="$(wc -l < "$CLAUDE_CALLS")"
@@ -112,7 +119,7 @@ run_runner() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     PATH="$tmp/bin:$PATH" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://fake/api/v1/repos/x/y \
-    CURL_LOG="$tmp/curl.log" CLAUDE_CALLS="$tmp/claude.calls" \
+    CURL_LOG="$tmp/curl.log" CLAUDE_CALLS="$tmp/claude.calls" CLAUDE_ENV="$tmp/claude.env" \
     FIXTURES_DIR="$tmp/fixtures" \
     LABELS_FIXTURE="$tmp/fixtures/labels.json" QUEUE_FIXTURE="$tmp/fixtures/queue.json" \
     SESSION_RUNNER_STATE="$tmp/state" SESSION_RUNNER_CHECKOUT="$tmp/checkout" \
@@ -120,9 +127,11 @@ run_runner() {
     SESSION_RUNNER_COOLDOWN=0 SESSION_RUNNER_TIMEOUT=60 \
     CLAUDE_LIMIT_MARKER="$tmp/limit-marker" CLAUDE_ACTIVE_MARKER="$tmp/active-marker" \
     HOST_CAPACITY_SLOTS="$tmp/hc-slot1 $tmp/hc-slot2" \
+    HOST_CAPACITY_DRIVE_WANTED="$tmp/hc-drive-wanted-absent-by-default" \
+    SESSION_RUNNER_DRIVE_DEFER_COUNT="$tmp/hc-drive-defer-count" \
     "$@" bash "$here/../session-runner.sh" 2>&1
 }
-reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; rm -f "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/hc-slot1" "$tmp/hc-slot2" 2>/dev/null || true; reset_queue; }
+reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; rm -f "$tmp/claude.env" "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/hc-slot1" "$tmp/hc-slot2" "$tmp/drive-wanted" "$tmp/hc-drive-defer-count" 2>/dev/null || true; reset_queue; }
 
 # 1: kill switch — env and file both stop pickup before any API call.
 reset_case
@@ -206,4 +215,38 @@ grep -qi "host capacity pool exhausted" <<<"$out" || fail "an exhausted pool mus
 [ -s "$tmp/curl.log" ] && fail "pool exhaustion must stop before any API call"
 echo "ok 8 host capacity pool exhausted"
 
-echo "session-runner: 8 groups passed"
+# 9: drive reservation present — session-runner defers to a ready drive
+#    BEFORE claiming any capacity (#663 producer / #664 consumer), and its
+#    own consecutive-defer count climbs across repeated deferred ticks,
+#    independent of the drive's own skip counter.
+reset_case
+drive_res="$tmp/drive-wanted"; defer_count="$tmp/hc-drive-defer-count"
+: > "$drive_res"; rm -f "$defer_count"
+out="$(run_runner HOST_CAPACITY_DRIVE_WANTED="$drive_res")"
+grep -qi "deferring to a ready drive" <<<"$out" || fail "a standing reservation must be reported (got: $out)"
+grep -q "skipped 1 consecutive tick(s)" <<<"$out" || fail "the first deferred tick must read skipped 1 (got: $out)"
+[ -s "$tmp/curl.log" ] && fail "deferring to the drive must stop before any API call"
+out2="$(run_runner HOST_CAPACITY_DRIVE_WANTED="$drive_res")"
+grep -q "skipped 2 consecutive tick(s)" <<<"$out2" || fail "the count must climb on a second consecutive defer (got: $out2)"
+rm -f "$drive_res"
+out3="$(run_runner HOST_CAPACITY_DRIVE_WANTED="$drive_res")"
+[ -f "$defer_count" ] && fail "a cleared reservation must reset the consecutive-defer counter"
+grep -q "picked #25" <<<"$out3" || fail "a cleared reservation must let the tick proceed to claiming (got: $out3)"
+rm -f "$defer_count"
+echo "ok 9 drive reservation defers before claiming, count climbs, clears on release"
+
+# 10: factory git identity (#19) — the session's commits must carry the
+#     session-runner identity from swarm-identity.sh (naming the class + host),
+#     never the host user's ~/.gitconfig. SWARM_HOST/REPO_SLUG pinned so the
+#     assertion is host-independent.
+reset_case
+run_runner SWARM_HOST=box1 REPO_SLUG=Acme/widget >/dev/null 2>&1
+[ -f "$tmp/claude.env" ] || fail "the session must run with a recorded git identity"
+grep -q "^GIT_AUTHOR_NAME=Acme Swarm (session-runner@box1)$" "$tmp/claude.env" \
+  || fail "the session's GIT_AUTHOR_NAME must name the session-runner class + host (got: $(cat "$tmp/claude.env"))"
+grep -q "^GIT_COMMITTER_NAME=Acme Swarm (session-runner@box1)$" "$tmp/claude.env" \
+  || fail "the committer identity must match the author"
+grep -q "^GIT_AUTHOR_EMAIL=swarm@" "$tmp/claude.env" || fail "the session must carry a factory author email"
+echo "ok 10 factory git identity reaches the session"
+
+echo "session-runner: 10 groups passed"
