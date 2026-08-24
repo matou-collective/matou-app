@@ -17,9 +17,9 @@ This installs, idempotently, under `$HOME/.matou-android` (override with
 
 | Component | Version |
 |-----------|---------|
-| Temurin JDK | 17.0.13+11 |
+| Temurin JDK | 21.0.5+11 (Capacitor 7 needs source level 21) |
 | Android cmdline-tools | 11076708 |
-| Android platform | android-34 |
+| Android platforms | android-34, android-35 (Capacitor 7 compileSdk) |
 | Android build-tools | 34.0.0 |
 | Android NDK | r27c (27.2.12479018) |
 | gomobile / gobind | `golang.org/x/mobile` @ `v0.0.0-20260812174124-2f419b2fb945` |

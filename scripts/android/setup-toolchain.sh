@@ -21,10 +21,14 @@ GOBIN_DIR="$ROOT/gobin"
 
 NDK_VERSION="27.2.12479018"            # r27c
 PLATFORM="android-34"
+PLATFORM_CAP="android-35"   # Capacitor 7 gradle project compiles against SDK 35
 BUILD_TOOLS="34.0.0"
 CMDLINE_TOOLS_ZIP="commandlinetools-linux-11076708_latest.zip"
 CMDLINE_TOOLS_SHA256="2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258"
-JDK_VER="17.0.13"
+# Capacitor 7's android library sets Java sourceCompatibility 21, so JDK 17 is
+# not enough for the APK build; 21 also satisfies gomobile/gradle.
+JDK_MAJOR="21"
+JDK_VER="21.0.5"
 JDK_BUILD="11"
 XMOBILE_VERSION="v0.0.0-20260812174124-2f419b2fb945"
 
@@ -39,8 +43,8 @@ if [ -x "$JAVA_HOME_DIR/bin/java" ]; then
   log "JDK already installed: $JAVA_HOME_DIR"
 else
   log "Downloading Temurin JDK ${JDK_VER}+${JDK_BUILD}"
-  jdk_tar="OpenJDK17U-jdk_x64_linux_hotspot_${JDK_VER}_${JDK_BUILD}.tar.gz"
-  jdk_url="https://github.com/adoptium/temurin17-binaries/releases/download/jdk-${JDK_VER}%2B${JDK_BUILD}/${jdk_tar}"
+  jdk_tar="OpenJDK${JDK_MAJOR}U-jdk_x64_linux_hotspot_${JDK_VER}_${JDK_BUILD}.tar.gz"
+  jdk_url="https://github.com/adoptium/temurin${JDK_MAJOR}-binaries/releases/download/jdk-${JDK_VER}%2B${JDK_BUILD}/${jdk_tar}"
   curl -fL --retry 3 -o "$jdk_tar" "$jdk_url"
   curl -fL --retry 3 -o "$jdk_tar.sha256.txt" "$jdk_url.sha256.txt"
   (cd "$ROOT" && sha256sum -c "$jdk_tar.sha256.txt")
@@ -66,7 +70,7 @@ fi
 
 # --- SDK packages (platform, build-tools, NDK) ------------------------------
 NDK_HOME="$SDK/ndk/$NDK_VERSION"
-if [ -d "$NDK_HOME" ] && [ -d "$SDK/platforms/$PLATFORM" ] && [ -d "$SDK/build-tools/$BUILD_TOOLS" ]; then
+if [ -d "$NDK_HOME" ] && [ -d "$SDK/platforms/$PLATFORM" ] && [ -d "$SDK/platforms/$PLATFORM_CAP" ] && [ -d "$SDK/build-tools/$BUILD_TOOLS" ]; then
   log "SDK packages already installed (platform, build-tools, NDK r27c)"
 else
   log "Accepting SDK licenses + installing platform/build-tools/NDK (large download, ~1 GB)"
@@ -75,7 +79,7 @@ else
   # still fails loudly if licenses weren't actually accepted).
   yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses > /dev/null || true
   "$SDKMANAGER" --sdk_root="$SDK" \
-    "platforms;$PLATFORM" "build-tools;$BUILD_TOOLS" "ndk;$NDK_VERSION"
+    "platforms;$PLATFORM" "platforms;$PLATFORM_CAP" "build-tools;$BUILD_TOOLS" "ndk;$NDK_VERSION"
 fi
 
 # --- gomobile / gobind ------------------------------------------------------
