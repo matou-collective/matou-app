@@ -1,822 +1,209 @@
+// Command server runs the Matou backend as a standalone process. It resolves
+// runtime configuration from the environment (app.OptionsFromEnv), hands the
+// wiring to app.Start, prints the endpoint reference banner, then blocks until
+// an interrupt triggers a graceful shutdown. All server wiring lives in
+// internal/app so cmd/mobile can embed the same backend in-process.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
-	"path/filepath"
-	"strconv"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
-	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
-
-	"github.com/matou-dao/backend/internal/anystore"
-	"github.com/matou-dao/backend/internal/anysync"
-	"github.com/matou-dao/backend/internal/api"
-	"github.com/matou-dao/backend/internal/config"
-	"github.com/matou-dao/backend/internal/contributions"
-	"github.com/matou-dao/backend/internal/email"
-	"github.com/matou-dao/backend/internal/identity"
-	"github.com/matou-dao/backend/internal/keri"
-	"github.com/matou-dao/backend/internal/notifications"
-	bgSync "github.com/matou-dao/backend/internal/sync"
-	matouTypes "github.com/matou-dao/backend/internal/types"
+	"github.com/matou-dao/backend/internal/app"
 )
 
-// fetchAndSaveAnySyncConfig fetches the any-sync client config from the config
-// server and writes it to disk as YAML.
-func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) error {
-	resp, err := http.Get(configServerURL + "/api/client-config")
-	if err != nil {
-		return fmt.Errorf("failed to reach config server at %s: %w", configServerURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("config server returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return fmt.Errorf("failed to parse JSON response: %w", err)
-	}
-
-	anysyncRaw, ok := envelope["anysync"]
-	if !ok {
-		return fmt.Errorf("config server response missing \"anysync\" key")
-	}
-
-	var clientConfig interface{}
-	if err := json.Unmarshal(anysyncRaw, &clientConfig); err != nil {
-		return fmt.Errorf("failed to parse anysync config: %w", err)
-	}
-
-	yamlData, err := yaml.Marshal(clientConfig)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config to YAML: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	if err := os.WriteFile(targetPath, yamlData, 0644); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
-	}
-
-	return nil
-}
-
-// eventBrokerAdapter adapts api.EventBroker to anysync.EventBroadcaster.
-type eventBrokerAdapter struct {
-	broker *api.EventBroker
-}
-
-func (a *eventBrokerAdapter) Broadcast(event anysync.SSEEvent) {
-	a.broker.Broadcast(api.SSEEvent{
-		Type: event.Type,
-		Data: event.Data,
-	})
-}
-
-// chatPersisterAdapter adapts anystore.LocalStore to anysync.ChatPersister.
-// It converts ObjectPayload to anystore types, breaking the circular import.
-type chatPersisterAdapter struct {
-	store *anystore.LocalStore
-}
-
-func (a *chatPersisterAdapter) PersistChatObject(ctx context.Context, p *anysync.ObjectPayload) error {
-	switch p.Type {
-	case "ChatChannel":
-		var data struct {
-			Name         string   `json:"name"`
-			Description  string   `json:"description,omitempty"`
-			Icon         string   `json:"icon,omitempty"`
-			Photo        string   `json:"photo,omitempty"`
-			CreatedAt    string   `json:"createdAt"`
-			CreatedBy    string   `json:"createdBy"`
-			IsArchived   bool     `json:"isArchived,omitempty"`
-			AllowedRoles []string `json:"allowedRoles,omitempty"`
-		}
-		if err := json.Unmarshal(p.Data, &data); err != nil {
-			return err
-		}
-		return a.store.UpsertChannel(ctx, &anystore.ChatChannel{
-			ID: p.ID, Name: data.Name, Description: data.Description,
-			Icon: data.Icon, Photo: data.Photo, CreatedAt: data.CreatedAt,
-			CreatedBy: data.CreatedBy, IsArchived: data.IsArchived,
-			AllowedRoles: data.AllowedRoles, Version: p.Version,
-		})
-
-	case "ChatMessage":
-		var data struct {
-			ChannelID   string          `json:"channelId"`
-			SenderAID   string          `json:"senderAid"`
-			SenderName  string          `json:"senderName"`
-			Content     string          `json:"content"`
-			Attachments json.RawMessage `json:"attachments,omitempty"`
-			ReplyTo     string          `json:"replyTo,omitempty"`
-			SentAt      string          `json:"sentAt"`
-			EditedAt    string          `json:"editedAt,omitempty"`
-			DeletedAt   string          `json:"deletedAt,omitempty"`
-		}
-		if err := json.Unmarshal(p.Data, &data); err != nil {
-			return err
-		}
-		return a.store.UpsertMessage(ctx, &anystore.ChatMessage{
-			ID: p.ID, ChannelID: data.ChannelID, SenderAID: data.SenderAID,
-			SenderName: data.SenderName, Content: data.Content,
-			Attachments: data.Attachments, ReplyTo: data.ReplyTo,
-			SentAt: data.SentAt, EditedAt: data.EditedAt,
-			DeletedAt: data.DeletedAt, Version: p.Version,
-		})
-
-	case "MessageReaction":
-		var data struct {
-			MessageID   string   `json:"messageId"`
-			Emoji       string   `json:"emoji"`
-			ReactorAIDs []string `json:"reactorAids"`
-		}
-		if err := json.Unmarshal(p.Data, &data); err != nil {
-			return err
-		}
-		return a.store.UpsertReaction(ctx, &anystore.ChatReaction{
-			ID: p.ID, MessageID: data.MessageID, Emoji: data.Emoji,
-			ReactorAIDs: data.ReactorAIDs, Version: p.Version,
-		})
-	}
-	return nil
-}
-
-// contribNotifierAdapter bridges api.ContribNotifier to notifications.Service.
-type contribNotifierAdapter struct {
-	svc *notifications.Service
-}
-
-func (a *contribNotifierAdapter) Notify(n *api.ContribNotification) error {
-	return a.svc.Notify(&notifications.Notification{
-		Type:        notifications.NotificationType(n.Type),
-		RecipientID: n.RecipientID,
-		Title:       n.Title,
-		Message:     n.Message,
-		EntityID:    n.EntityID,
-		EntityType:  n.EntityType,
-		Channel:     notifications.ChannelInApp,
-	})
-}
+// shutdownGrace bounds how long a graceful shutdown may take before the process
+// exits regardless. Ctrl-C must return the shell within this window.
+const shutdownGrace = 10 * time.Second
 
 func main() {
-	// Detect environment: "test" uses isolated data, configs, and ports
-	// "production" uses production configs (for Electron builds)
-	env := os.Getenv("MATOU_ENV")
-	isTest := env == "test"
-	isProd := env == "production"
-
-	// Resolve the config server URL and its admin bearer token up front: both
-	// the any-sync config fetch (GET, unauthenticated) and the org config
-	// mirror-write / email relay (POST, authenticated) need them.
-	//
-	// The config server fails closed without a token (503 on writes), so a
-	// missing token here degrades to "mirror-write and relay don't work" rather
-	// than crashing the backend - the backend itself is the primary source of
-	// truth for org config (see OrgConfigHandler), and email relay is optional
-	// (falls back to direct SMTP unless MATOU_SMTP_RELAY_URL is set).
-	configServerURL := os.Getenv("MATOU_CONFIG_SERVER_URL")
-	if configServerURL == "" {
-		switch {
-		case isTest:
-			configServerURL = "http://localhost:4904"
-		case isProd:
-			log.Fatalf("MATOU_CONFIG_SERVER_URL is not set for production")
-		default:
-			configServerURL = "http://localhost:3904"
-		}
-	}
-	configServerToken := os.Getenv("MATOU_CONFIG_SERVER_TOKEN")
-	if configServerToken == "" && !isProd {
-		// Matches matou-infrastructure/keri's generate-env.sh dev/test placeholder.
-		configServerToken = "dev-insecure-local-only"
-	}
-	if configServerToken == "" {
-		log.Println("[Config] WARNING: MATOU_CONFIG_SERVER_TOKEN is not set - " +
-			"org config will not mirror to the config server, and email relay (if configured) will fail")
-	}
-
-	switch {
-	case isTest:
-		fmt.Println("MATOU DAO Backend Server (TEST)")
-	case isProd:
-		fmt.Println("MATOU DAO Backend Server (PRODUCTION)")
-	default:
-		fmt.Println("MATOU DAO Backend Server")
-	}
-	fmt.Println("============================")
-	fmt.Println()
-
-	// Initialize data directory first (needed for org config)
-	dataDir := os.Getenv("MATOU_DATA_DIR")
-	if dataDir == "" {
-		if isTest {
-			dataDir = "./data-test"
-		} else {
-			dataDir = "./data"
-		}
-	}
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
-	}
-
-	// Resolve the per-launch API token and persist it (0600) for legitimate
-	// same-OS-user local tooling (matou-mcp, scripts). In bundled/production
-	// Electron passes a random token via MATOU_API_TOKEN; dev/test falls back
-	// to the fixed DevAPIToken constant. TokenGuard requires it on mutations.
-	apiToken := api.ResolveAPIToken()
-	if tokenPath, tokenErr := api.WriteTokenFile(dataDir, apiToken); tokenErr != nil {
-		log.Printf("[Security] failed to write API token file: %v", tokenErr)
-	} else {
-		log.Printf("[Security] API token written to %s", tokenPath)
-	}
-
-	// Load server configuration (SMTP, KERI URLs, etc.)
-	fmt.Println("Loading configuration...")
-	cfg, err := config.Load("", "")
+	opts, err := app.OptionsFromEnv()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatalf("Failed to resolve options: %v", err)
 	}
 
-	// Test mode uses port 9080 to avoid conflicting with dev server on 8080
-	if isTest {
-		cfg.Server.Port = 9080
-	}
+	// Interrupt/terminate cancels the context, unblocking the wait below and
+	// driving App.Shutdown so deferred closers (sync worker, store, SDK client)
+	// run in reverse before the process exits.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	// Allow port override from environment (used by Electron to allocate dynamic ports)
-	if portStr := os.Getenv("MATOU_SERVER_PORT"); portStr != "" {
-		if port, parseErr := strconv.Atoi(portStr); parseErr == nil {
-			cfg.Server.Port = port
-		}
-	}
-
-	// Initialize org config handler - single source of truth for organization identity
-	// The callback updates the in-memory config when org config is saved via API
-	orgConfigHandler := api.NewOrgConfigHandler(dataDir, func(orgData *api.OrgConfigData) {
-		admins := make([]config.AdminInfo, len(orgData.Admins))
-		for i, a := range orgData.Admins {
-			admins[i] = config.AdminInfo{AID: a.AID, Name: a.Name, OOBI: a.OOBI}
-		}
-		cfg.SetOrgConfig(orgData.Organization.AID, orgData.Organization.Name, admins, orgData.CommunitySpaceID)
-		log.Printf("[Config] Updated in-memory config from org-config.yaml\n")
-	})
-
-	// Load org config into main config if available
-	if orgConfigHandler.IsConfigured() {
-		orgData := orgConfigHandler.GetConfig()
-		admins := make([]config.AdminInfo, len(orgData.Admins))
-		for i, a := range orgData.Admins {
-			admins[i] = config.AdminInfo{AID: a.AID, Name: a.Name, OOBI: a.OOBI}
-		}
-		cfg.SetOrgConfig(orgData.Organization.AID, orgData.Organization.Name, admins, orgData.CommunitySpaceID)
-	}
-
-	fmt.Printf("  Configuration loaded\n")
-	if cfg.IsOrgConfigured() {
-		fmt.Printf("   Organization: %s\n", cfg.Bootstrap.Organization.Name)
-		fmt.Printf("   Org AID: %s\n", cfg.GetOrgAID())
-		fmt.Printf("   Admin AID: %s\n", cfg.GetAdminAID())
-	} else {
-		fmt.Println("   Organization: Not configured (run frontend setup)")
-	}
-	fmt.Println()
-
-	// Initialize user identity (per-user mode)
-	fmt.Println("Initializing user identity...")
-	userIdentity := identity.New(dataDir)
-	if userIdentity.IsConfigured() {
-		fmt.Printf("  Identity loaded from disk\n")
-		fmt.Printf("   AID: %s\n", userIdentity.GetAID())
-		fmt.Printf("   Peer ID: %s\n", userIdentity.GetPeerID())
-	} else {
-		fmt.Println("  No identity configured yet (will be set via /api/v1/identity/set)")
-	}
-	fmt.Println()
-
-	// Initialize any-sync client
-	fmt.Println("Initializing any-sync client...")
-
-	// Select config file based on environment
-	anysyncConfigPath := os.Getenv("MATOU_ANYSYNC_CONFIG")
-	if anysyncConfigPath == "" {
-		switch {
-		case isTest:
-			// Test network uses ports 2001-2006
-			anysyncConfigPath = "config/client-test.yml"
-		case isProd:
-			// Production: always fetch from config server to stay in sync with infrastructure
-			anysyncConfigPath = filepath.Join(dataDir, "client-production.yml")
-		default:
-			// Dev network uses ports 1001-1006
-			anysyncConfigPath = "config/client-dev.yml"
-		}
-	}
-
-	// In production, always fetch fresh config from the config server.
-	// For dev/test, fetch only if the config file doesn't exist.
-	shouldFetch := isProd || os.IsNotExist(func() error { _, err := os.Stat(anysyncConfigPath); return err }())
-	if shouldFetch {
-		fmt.Printf("  Fetching any-sync config from config server %s...\n", configServerURL)
-		if err := fetchAndSaveAnySyncConfig(configServerURL, anysyncConfigPath); err != nil {
-			// In production, try using cached config if fetch fails
-			if isProd {
-				if _, statErr := os.Stat(anysyncConfigPath); statErr == nil {
-					fmt.Printf("  Config server unreachable, using cached config at %s\n", anysyncConfigPath)
-				} else {
-					log.Fatalf("Failed to fetch any-sync config from config server: %v\n\n"+
-						"Ensure the config server is running at %s\n", err, configServerURL)
-				}
-			} else {
-				log.Fatalf("Failed to fetch any-sync config from config server: %v\n\n"+
-					"Ensure the config server is running at %s\n", err, configServerURL)
-			}
-		} else {
-			fmt.Printf("  Config saved to %s\n", anysyncConfigPath)
-		}
-	}
-
-	// If identity is persisted with mnemonic, derive peer key for SDK initialization
-	sdkOpts := &anysync.ClientOptions{
-		DataDir:     dataDir,
-		PeerKeyPath: dataDir + "/peer.key",
-	}
-	if userIdentity.IsConfigured() {
-		sdkOpts.Mnemonic = userIdentity.GetMnemonic()
-		fmt.Println("  Using mnemonic-derived peer key from persisted identity")
-	}
-
-	sdkClient, err := anysync.NewSDKClient(anysyncConfigPath, sdkOpts)
+	application, err := app.Start(ctx, opts)
 	if err != nil {
-		log.Fatalf("Failed to create any-sync SDK client: %v", err)
+		log.Fatalf("Failed to start server: %v", err)
 	}
-	var anysyncClient anysync.AnySyncClient = sdkClient
-	defer sdkClient.Close()
 
-	fmt.Printf("  any-sync client initialized\n")
-	fmt.Printf("   Network ID: %s\n", anysyncClient.GetNetworkID())
-	fmt.Printf("   Coordinator: %s\n", anysyncClient.GetCoordinatorURL())
-	fmt.Printf("   Peer ID: %s\n", anysyncClient.GetPeerID())
+	// Endpoint reference banner lives here (not in app.Start) so an embedded
+	// backend stays silent; it is gated on the same PrintBanner flag.
+	if opts.PrintBanner {
+		printEndpoints(os.Stdout)
+	}
 
-	// Validate any-sync network connectivity
-	fmt.Print("  Validating network connectivity...")
-	if err := sdkClient.Ping(); err != nil {
-		fmt.Println(" FAILED")
-		configFile := "client-dev.yml"
-		infraSuffix := ""
-		if isTest {
-			configFile = "client-test.yml"
-			infraSuffix = "-test"
-		} else if isProd {
-			configFile = "client-production.yml"
+	// Wait for either the server to stop on its own (fatal serve error) or an
+	// interrupt signal. Serve errors are fatal; a signal triggers graceful
+	// shutdown.
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- application.Wait() }()
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			log.Fatalf("Server failed: %v", err)
 		}
-		log.Fatalf("\nCannot connect to any-sync network: %v\n\n"+
-			"Troubleshooting:\n"+
-			"  1. Check that any-sync infrastructure is running:\n"+
-			"     cd ../matou-infrastructure/any-sync && make health%s\n"+
-			"  2. Ensure config/%-22s matches the running network.\n"+
-			"     To update: cp ../matou-infrastructure/any-sync/etc%s/client.yml config/%s\n",
-			err, infraSuffix, configFile, infraSuffix, configFile)
-	}
-	fmt.Println(" OK")
-	fmt.Println()
-
-	// Initialize local storage
-	fmt.Println("Initializing local storage (anystore)...")
-
-	store, err := anystore.NewLocalStore(anystore.DefaultConfig(dataDir))
-	if err != nil {
-		log.Fatalf("Failed to create local store: %v", err)
-	}
-	defer store.Close()
-
-	// Ensure chat indexes for anystore persistence
-	if err := store.EnsureChatIndexes(context.Background()); err != nil {
-		log.Fatalf("Failed to create chat indexes: %v", err)
-	}
-
-	fmt.Printf("  Local storage initialized (with chat indexes)\n")
-	fmt.Printf("   Data directory: %s\n", dataDir)
-	fmt.Println()
-
-	// Determine community space ID: prefer runtime config from identity, fall back to org config
-	communitySpaceID := orgConfigHandler.GetCommunitySpaceID()
-	orgAID := orgConfigHandler.GetOrgAID()
-	if userIdentity.GetCommunitySpaceID() != "" {
-		communitySpaceID = userIdentity.GetCommunitySpaceID()
-	}
-	if userIdentity.GetOrgAID() != "" {
-		orgAID = userIdentity.GetOrgAID()
-	}
-
-	// Load additional space IDs from persisted identity
-	communityReadOnlySpaceID := ""
-	adminSpaceID := ""
-	if userIdentity.GetCommunityReadOnlySpaceID() != "" {
-		communityReadOnlySpaceID = userIdentity.GetCommunityReadOnlySpaceID()
-	}
-	if userIdentity.GetAdminSpaceID() != "" {
-		adminSpaceID = userIdentity.GetAdminSpaceID()
-	}
-
-	// Initialize space manager
-	fmt.Println("Initializing space manager...")
-	spaceManager := anysync.NewSpaceManager(anysyncClient, &anysync.SpaceManagerConfig{
-		CommunitySpaceID:         communitySpaceID,
-		CommunityReadOnlySpaceID: communityReadOnlySpaceID,
-		AdminSpaceID:             adminSpaceID,
-		OrgAID:                   orgAID,
-	}, sdkClient.GetTreeManager())
-	spaceStore := anystore.NewSpaceStoreAdapter(store)
-
-	fmt.Printf("  Space manager initialized\n")
-	fmt.Printf("   Community Space ID: %s\n", communitySpaceID)
-	fmt.Println()
-
-	// Verify community space (log warning if not configured)
-	if communitySpaceID == "" {
-		fmt.Println("  Warning: Community space ID not configured")
-		fmt.Println("     Memberships will only be stored in private spaces")
-	}
-
-	// Initialize KERI client (config-only, no KERIA connection needed)
-	fmt.Println("Initializing KERI client...")
-	keriClient, err := keri.NewClient(&keri.Config{
-		OrgAID:   orgConfigHandler.GetOrgAID(),
-		OrgAlias: orgConfigHandler.GetOrgName(), // Use name as alias
-		OrgName:  orgConfigHandler.GetOrgName(),
-	})
-	if err != nil {
-		log.Fatalf("Failed to create KERI client: %v", err)
-	}
-
-	fmt.Printf("  KERI client initialized\n")
-	if !orgConfigHandler.IsConfigured() {
-		fmt.Println("   Note: Organization not configured yet - credential validation disabled")
-	}
-	fmt.Printf("   Note: Credential issuance handled by frontend (signify-ts)\n")
-	fmt.Println()
-
-	// Initialize type registry
-	fmt.Println("Initializing type registry...")
-	typeRegistry := matouTypes.NewRegistry()
-	typeRegistry.Bootstrap()
-	fmt.Printf("  Type registry initialized with %d types\n", len(typeRegistry.All()))
-	fmt.Println()
-
-	// Create event broker for SSE
-	eventBroker := api.NewEventBroker()
-
-	// Create push-based listener for P2P chat changes (replaces polling)
-	chatListener := anysync.NewTreeUpdateListener(
-		&chatPersisterAdapter{store: store},
-		&eventBrokerAdapter{broker: eventBroker},
-	)
-	spaceManager.SetObjectTreeListener(chatListener)
-
-	// Wire up FreshTreeReader so the listener can rebuild trees with updated ACL keys
-	// when the cached tree was built before the joiner's InviteJoin was applied.
-	chatListener.SetFreshTreeReader(func(treeId string) (objecttree.ObjectTree, error) {
-		utm := spaceManager.TreeManager()
-		ctx := context.Background()
-
-		// Fast path: tree is already indexed.
-		if spaceId := utm.SpaceForTree(treeId); spaceId != "" {
-			return utm.BuildFreshTree(ctx, spaceId, treeId)
+	case <-ctx.Done():
+		stop() // restore default signal handling so a second Ctrl-C force-quits
+		fmt.Println("\nShutting down...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		if err := application.Shutdown(shutdownCtx); err != nil {
+			log.Fatalf("Shutdown failed: %v", err)
 		}
-
-		// Slow path: tree arrived via P2P sync between BuildSpaceIndex runs, so
-		// the index doesn't know about it. Re-index every known space, then
-		// look up again. If still missing, try each known space directly.
-		for _, sid := range utm.KnownSpaceIDs() {
-			_ = utm.BuildSpaceIndex(ctx, sid)
-		}
-		if spaceId := utm.SpaceForTree(treeId); spaceId != "" {
-			return utm.BuildFreshTree(ctx, spaceId, treeId)
-		}
-		for _, sid := range utm.KnownSpaceIDs() {
-			if tree, err := utm.BuildFreshTree(ctx, sid, treeId); err == nil {
-				return tree, nil
-			}
-		}
-		return nil, fmt.Errorf("no space found for tree %s (probed %d spaces)", treeId, len(utm.KnownSpaceIDs()))
-	})
-
-	// Create API handlers
-	credHandler := api.NewCredentialsHandler(keriClient, store)
-	syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore, userIdentity)
-	trustHandler := api.NewTrustHandler(store, orgConfigHandler.GetOrgAID(), spaceManager)
-	healthHandler := api.NewHealthHandler(store, spaceStore, orgConfigHandler.GetOrgAID, orgConfigHandler.GetAdminAID)
-	spacesHandler := api.NewSpacesHandler(spaceManager, store, userIdentity, spaceManager.FileManager())
-	emailSender := email.NewSender(cfg.SMTP, configServerToken)
-	invitesHandler := api.NewInvitesHandler(emailSender)
-	bookingHandler := api.NewBookingHandler(emailSender)
-	notificationsHandler := api.NewNotificationsHandler(emailSender)
-	identityHandler := api.NewIdentityHandler(userIdentity, sdkClient, spaceManager, spaceStore)
-	eventsHandler := api.NewEventsHandler(eventBroker)
-	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager(), eventBroker)
-	multisigHandler := api.NewMultisigHandler(spaceManager)
-	noticesHandler := api.NewNoticesHandler(spaceManager, userIdentity, eventBroker)
-	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
-	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store, chatListener)
-	commentCursorsHandler := api.NewCommentCursorsHandler(spaceManager, userIdentity)
-
-	// Initialize contributions system
-	fmt.Println("Initializing contributions system...")
-	contribStoreAdapter := anysync.NewObjectStoreAdapter(spaceManager.ObjectTreeManager(), sdkClient, userIdentity)
-	contribService := contributions.NewService(contribStoreAdapter)
-	notifBroadcaster := notifications.NewSSEBrokerAdapter(eventBroker)
-	notifEmailAdapter := notifications.NewEmailAdapter(emailSender)
-	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
-	contribNotifier := &contribNotifierAdapter{svc: notifService}
-	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
-	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
-	credentialRoleLookup := api.NewCredentialRoleLookup(store)
-	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
-	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
-
-	// Grant community_admin role to all configured org admins.
-	// Also register a callback so admin AIDs are updated whenever org config changes
-	// (e.g. when org setup runs after server start).
-	setAdminAIDsFromConfig := func(orgData *api.OrgConfigData) {
-		adminAIDs := make([]string, 0, len(orgData.Admins))
-		for _, a := range orgData.Admins {
-			if a.AID != "" {
-				adminAIDs = append(adminAIDs, a.AID)
-			}
-		}
-		profileRoleLookup.SetAdminAIDs(adminAIDs)
-		log.Printf("[RBAC] Updated admin AIDs: %v", adminAIDs)
 	}
-	if orgConfigHandler.IsConfigured() {
-		setAdminAIDsFromConfig(orgConfigHandler.GetConfig())
-	}
-	orgConfigHandler.AddOnUpdate(setAdminAIDsFromConfig)
+}
 
-	// Mirror org config writes to the legacy config server for backward
-	// compatibility (older clients / multi-session dev still read it). The
-	// backend is the primary source of truth (OrgConfigHandler above), so a
-	// failure here is logged and swallowed rather than surfaced to the caller.
-	// This used to be a direct unauthenticated POST from the browser
-	// (frontend/src/api/config.ts); it moved server-side because the admin
-	// token must not be exposed to the browser.
-	//
-	// The onUpdate chain runs inline in the config-save request, so the
-	// mirror client needs a timeout: against a remote config server an
-	// un-timeout-ed connect would stall POST /api/v1/org/config.
-	mirrorClient := &http.Client{Timeout: 10 * time.Second}
-	orgConfigHandler.AddOnUpdate(func(orgData *api.OrgConfigData) {
-		if err := api.MirrorToConfigServer(mirrorClient, configServerURL, configServerToken, isTest, orgData); err != nil {
-			log.Printf("[Config] Config-server mirror write failed (non-critical): %v", err)
-		} else if configServerToken != "" {
-			log.Printf("[Config] Mirrored org config to config server")
-		}
-	})
-
-	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
-	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)
-	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager, contribNotifier)
-	implPlansHandler := api.NewImplementationPlansHandler(contribService, spaceManager)
-	milestonesHandler := api.NewMilestonesHandler(contribService, spaceManager)
-	contributionsHandler := api.NewContributionsHandler(contribService, spaceManager, contribNotifier)
-
-	// Wire event broker to contribution, project, and plan handlers for SSE broadcasts
-	contributionsHandler.SetBroker(eventBroker)
-	projectsHandler.SetBroker(eventBroker)
-	implPlansHandler.SetBroker(eventBroker)
-	fmt.Println("  Contributions system initialized")
-	fmt.Println()
-
-	// Create HTTP server
-	mux := http.NewServeMux()
-
-	// Health check endpoint (with sync/trust status)
-	mux.HandleFunc("/health", api.CORSHandler(healthHandler.HandleHealth))
-
-	// Info endpoint
-	mux.HandleFunc("/info", api.CORSHandler(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{
-			"organization": {
-				"name": "%s",
-				"aid": "%s",
-				"configured": %t
-			},
-			"admin": {
-				"aid": "%s"
-			},
-			"anysync": {
-				"networkId": "%s",
-				"coordinator": "%s"
-			}
-		}`,
-			orgConfigHandler.GetOrgName(),
-			orgConfigHandler.GetOrgAID(),
-			orgConfigHandler.IsConfigured(),
-			orgConfigHandler.GetAdminAID(),
-			anysyncClient.GetNetworkID(),
-			anysyncClient.GetCoordinatorURL(),
-		)
-	}))
-
-	// Register API routes
-	credHandler.RegisterRoutes(mux)
-	syncHandler.RegisterRoutes(mux)
-	trustHandler.RegisterRoutes(mux)
-	spacesHandler.RegisterRoutes(mux)
-	invitesHandler.RegisterRoutes(mux)
-	bookingHandler.RegisterRoutes(mux)
-	identityHandler.RegisterRoutes(mux)
-	eventsHandler.RegisterRoutes(mux)
-	profilesHandler.RegisterRoutes(mux)
-	multisigHandler.RegisterRoutes(mux)
-	noticesHandler.RegisterRoutes(mux)
-	filesHandler.RegisterRoutes(mux)
-	chatHandler.RegisterRoutes(mux)
-	commentCursorsHandler.Routes(mux)
-	notificationsHandler.RegisterRoutes(mux)
-	proposalsHandler.RegisterRoutes(mux, roleLookup)
-	projectsHandler.RegisterRoutes(mux, roleLookup)
-	decisionPlansHandler.RegisterRoutes(mux, roleLookup)
-	implPlansHandler.RegisterRoutes(mux)
-	milestonesHandler.RegisterRoutes(mux, roleLookup)
-	contributionsHandler.RegisterRoutes(mux, roleLookup)
-	orgConfigHandler.RegisterRoutes(mux)
-
-	// Start server
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	fmt.Printf("Starting HTTP server on %s\n", addr)
-	fmt.Println()
-	fmt.Println("Endpoints:")
-	fmt.Println("  GET  /health                       - Health check")
-	fmt.Println("  GET  /info                         - System information")
-	fmt.Println()
-	fmt.Println("  Identity (per-user mode):")
-	fmt.Println("  POST /api/v1/identity/set          - Set user identity (triggers SDK restart)")
-	fmt.Println("  GET  /api/v1/identity              - Get current identity status")
-	fmt.Println("  DELETE /api/v1/identity             - Clear identity (logout/reset)")
-	fmt.Println()
-	fmt.Println("  Credentials:")
-	fmt.Println("  GET  /api/v1/org                   - Organization info for frontend")
-	fmt.Println("  GET  /api/v1/credentials           - List stored credentials")
-	fmt.Println("  POST /api/v1/credentials           - Store credential from frontend")
-	fmt.Println("  GET  /api/v1/credentials/{said}    - Get credential by SAID")
-	fmt.Println("  POST /api/v1/credentials/validate  - Validate credential structure")
-	fmt.Println("  GET  /api/v1/credentials/roles     - List available roles")
-	fmt.Println()
-	fmt.Println("  Sync:")
-	fmt.Println("  POST /api/v1/sync/credentials      - Sync credentials from KERIA")
-	fmt.Println("  POST /api/v1/sync/kel              - Sync KEL from KERIA")
-	fmt.Println("  GET  /api/v1/community/members     - List community members")
-	fmt.Println("  GET  /api/v1/community/credentials - List community-visible credentials")
-	fmt.Println()
-	fmt.Println("  Trust Graph:")
-	fmt.Println("  GET  /api/v1/trust/graph           - Get trust graph (full or filtered)")
-	fmt.Println("  GET  /api/v1/trust/score/{aid}     - Get trust score for an AID")
-	fmt.Println("  GET  /api/v1/trust/scores          - Get top trust scores")
-	fmt.Println("  GET  /api/v1/trust/summary         - Get trust graph summary")
-	fmt.Println()
-	fmt.Println("  Spaces (any-sync):")
-	fmt.Println("  POST /api/v1/spaces/community                - Create community space")
-	fmt.Println("  GET  /api/v1/spaces/community                - Get community space info")
-	fmt.Println("  POST /api/v1/spaces/private                  - Create private space")
-	fmt.Println("  POST /api/v1/spaces/community/invite         - Generate invite for user")
-	fmt.Println("  POST /api/v1/spaces/community/join           - Join community with invite key")
-	fmt.Println("  GET  /api/v1/spaces/community/verify-access  - Verify community access")
-	fmt.Println("  GET  /api/v1/spaces/sync-status              - Check space sync readiness")
-	fmt.Println()
-	fmt.Println("  Invites:")
-	fmt.Println("  POST /api/v1/invites/send-email       - Email invite code to user")
-	fmt.Println()
-	fmt.Println("  Notifications:")
-	fmt.Println("  POST /api/v1/notifications/registration-submitted - Notify onboarding of new registration")
-	fmt.Println("  POST /api/v1/notifications/registration-approved  - Notify applicant of approval")
-	fmt.Println()
-	fmt.Println("  Profiles & Types:")
-	fmt.Println("  GET  /api/v1/types                    - List all type definitions")
-	fmt.Println("  GET  /api/v1/types/{name}             - Get specific type definition")
-	fmt.Println("  POST /api/v1/profiles                 - Create/update a profile object")
-	fmt.Println("  GET  /api/v1/profiles/{type}          - List profiles of a type")
-	fmt.Println("  GET  /api/v1/profiles/{type}/{id}     - Get specific profile")
-	fmt.Println("  GET  /api/v1/profiles/me              - Get current user's profiles")
-	fmt.Println("  POST /api/v1/profiles/init-member     - Initialize member profiles (admin)")
-	fmt.Println()
-	fmt.Println("  Notices (Activity):")
-	fmt.Println("  POST /api/v1/notices                  - Create notice (draft or published)")
-	fmt.Println("  GET  /api/v1/notices                  - List notices (?view=upcoming|current|past&type=event|update)")
-	fmt.Println("  GET  /api/v1/notices/{id}             - Get single notice")
-	fmt.Println("  POST /api/v1/notices/{id}/publish     - Publish a draft notice")
-	fmt.Println("  POST /api/v1/notices/{id}/archive     - Archive a published notice")
-	fmt.Println("  POST /api/v1/notices/{id}/rsvp        - Create/update RSVP")
-	fmt.Println("  GET  /api/v1/notices/{id}/rsvp        - List RSVPs for notice")
-	fmt.Println("  POST /api/v1/notices/{id}/ack         - Create acknowledgment")
-	fmt.Println("  GET  /api/v1/notices/{id}/ack         - List acks for notice")
-	fmt.Println("  POST /api/v1/notices/{id}/save        - Toggle save/pin")
-	fmt.Println("  GET  /api/v1/notices/saved            - List saved notices")
-	fmt.Println()
-	fmt.Println("  Files:")
-	fmt.Println("  POST /api/v1/files/upload             - Upload file (avatar)")
-	fmt.Println("  GET  /api/v1/files/{ref}              - Download file by ref")
-	fmt.Println()
-	fmt.Println("  Events:")
-	fmt.Println("  GET  /api/v1/events                   - SSE event stream")
-	fmt.Println()
-	fmt.Println("  Chat:")
-	fmt.Println("  GET  /api/v1/chat/channels            - List chat channels")
-	fmt.Println("  POST /api/v1/chat/channels            - Create channel (admin)")
-	fmt.Println("  GET  /api/v1/chat/channels/{id}       - Get channel details")
-	fmt.Println("  PUT  /api/v1/chat/channels/{id}       - Update channel (admin)")
-	fmt.Println("  DELETE /api/v1/chat/channels/{id}     - Archive channel (admin)")
-	fmt.Println("  GET  /api/v1/chat/channels/{id}/messages - List messages")
-	fmt.Println("  POST /api/v1/chat/channels/{id}/messages - Send message")
-	fmt.Println("  PUT  /api/v1/chat/messages/{id}       - Edit message (owner)")
-	fmt.Println("  DELETE /api/v1/chat/messages/{id}     - Delete message (owner)")
-	fmt.Println("  GET  /api/v1/chat/messages/{id}/thread - Get thread replies")
-	fmt.Println("  POST /api/v1/chat/messages/{id}/reactions - Add reaction")
-	fmt.Println("  DELETE /api/v1/chat/messages/{id}/reactions/{emoji} - Remove reaction")
-	fmt.Println("  GET  /api/v1/chat/read-cursors      - Get read cursors")
-	fmt.Println("  PUT  /api/v1/chat/read-cursors      - Update read cursor")
-	fmt.Println()
-	fmt.Println("  Contributions System:")
-	fmt.Println("  GET  /api/v1/proposals                    - List proposals")
-	fmt.Println("  POST /api/v1/proposals                    - Create proposal")
-	fmt.Println("  GET  /api/v1/proposals/{id}               - Get proposal")
-	fmt.Println("  POST /api/v1/proposals/{id}/transition    - Transition proposal status")
-	fmt.Println("  POST /api/v1/proposals/{id}/endorse       - Endorse proposal")
-	fmt.Println("  GET  /api/v1/proposals/{id}/endorsements  - List endorsements")
-	fmt.Println("  GET  /api/v1/projects                     - List projects")
-	fmt.Println("  POST /api/v1/projects                     - Create project")
-	fmt.Println("  GET  /api/v1/projects/{id}                - Get project")
-	fmt.Println("  PUT  /api/v1/projects/{id}                - Update project")
-	fmt.Println("  DELETE /api/v1/projects/{id}              - Delete project")
-	fmt.Println("  POST /api/v1/projects/{id}/link-proposal  - Link proposal to project")
-	fmt.Println("  GET  /api/v1/decision-plans               - List decision plans")
-	fmt.Println("  POST /api/v1/decision-plans               - Create decision plan")
-	fmt.Println("  GET  /api/v1/decision-plans/{id}          - Get decision plan")
-	fmt.Println("  POST /api/v1/decision-plans/{id}/transition - Transition decision plan")
-	fmt.Println("  POST /api/v1/decision-plans/{id}/actions  - Add governance action")
-	fmt.Println("  GET  /api/v1/implementation-plans         - List implementation plans")
-	fmt.Println("  POST /api/v1/implementation-plans         - Create implementation plan")
-	fmt.Println("  GET  /api/v1/implementation-plans/{id}    - Get implementation plan")
-	fmt.Println("  POST /api/v1/implementation-plans/{id}/milestones - Add milestone")
-	fmt.Println("  GET  /api/v1/contributions                - List contributions")
-	fmt.Println("  POST /api/v1/contributions                - Create contribution")
-	fmt.Println("  GET  /api/v1/contributions/{id}           - Get contribution")
-	fmt.Println("  PUT  /api/v1/contributions/{id}           - Update contribution")
-	fmt.Println("  POST /api/v1/contributions/{id}/transition - Transition contribution")
-	fmt.Println("  POST /api/v1/contributions/{id}/register  - Register interest")
-	fmt.Println("  GET  /api/v1/contributions/{id}/registrations - List registrations")
-	fmt.Println("  POST /api/v1/contributions/{id}/assign    - Assign contributor")
-	fmt.Println("  POST /api/v1/contributions/{id}/confirm   - Confirm contribution")
-	fmt.Println("  POST /api/v1/contributions/{id}/share     - Share contribution")
-	fmt.Println("  POST /api/v1/contributions/{id}/offer     - Offer contribution")
-	fmt.Println("  POST /api/v1/contributions/{id}/accept-offer - Accept offered contribution")
-	fmt.Println("  POST /api/v1/contributions/{id}/submit-evidence - Submit evidence")
-	fmt.Println("  POST /api/v1/contributions/{id}/review    - Review contribution")
-	fmt.Println("  POST /api/v1/contributions/{id}/sign-off  - Sign off contribution")
-	fmt.Println("  POST /api/v1/contributions/{id}/approve-sub - Approve sub-contribution")
-	fmt.Println("  POST /api/v1/implementation-plans/{id}/sign-off - Sign off plan")
-	fmt.Println("  GET  /api/v1/projects/{id}/contributions  - List project contributions")
-	fmt.Println()
-	fmt.Println("  Org Config:")
-	fmt.Println("  GET  /api/v1/org/config               - Get org configuration")
-	fmt.Println("  POST /api/v1/org/config               - Save org configuration")
-	fmt.Println("  GET  /api/v1/org/health               - Config service health")
-	fmt.Println()
-
-	// Start background sync worker
-	syncWorkerConfig := bgSync.DefaultConfig()
-	syncWorkerConfig.CommunitySpaceID = communitySpaceID
-	syncWorker := bgSync.NewWorker(syncWorkerConfig, spaceManager, store, eventBroker)
-	syncWorker.Start()
-	defer syncWorker.Stop()
-
-	// Wrap with middleware: request logger → localhost guard → token guard → CORS.
-	// LocalhostGuard blocks other machines; TokenGuard blocks other local
-	// processes from issuing mutating requests without the per-launch token.
-	// CORS sits outside TokenGuard so 401 responses carry
-	// Access-Control-Allow-Origin — a browser then surfaces the 401 + JSON
-	// body instead of an opaque "Failed to fetch". Preflight OPTIONS is
-	// answered by CORSMiddleware before TokenGuard ever sees it.
-	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(api.TokenGuard(apiToken, mux))))
-	if err := http.ListenAndServe(addr, handler); err != nil {
-		log.Fatalf("Server failed: %v", err)
-	}
+// printEndpoints writes the human-readable API endpoint reference. It is purely
+// informational and matches the banner the standalone server has always shown.
+func printEndpoints(w io.Writer) {
+	fmt.Fprintln(w, "Endpoints:")
+	fmt.Fprintln(w, "  GET  /health                       - Health check")
+	fmt.Fprintln(w, "  GET  /info                         - System information")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Identity (per-user mode):")
+	fmt.Fprintln(w, "  POST /api/v1/identity/set          - Set user identity (triggers SDK restart)")
+	fmt.Fprintln(w, "  GET  /api/v1/identity              - Get current identity status")
+	fmt.Fprintln(w, "  DELETE /api/v1/identity             - Clear identity (logout/reset)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Credentials:")
+	fmt.Fprintln(w, "  GET  /api/v1/org                   - Organization info for frontend")
+	fmt.Fprintln(w, "  GET  /api/v1/credentials           - List stored credentials")
+	fmt.Fprintln(w, "  POST /api/v1/credentials           - Store credential from frontend")
+	fmt.Fprintln(w, "  GET  /api/v1/credentials/{said}    - Get credential by SAID")
+	fmt.Fprintln(w, "  POST /api/v1/credentials/validate  - Validate credential structure")
+	fmt.Fprintln(w, "  GET  /api/v1/credentials/roles     - List available roles")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Sync:")
+	fmt.Fprintln(w, "  POST /api/v1/sync/credentials      - Sync credentials from KERIA")
+	fmt.Fprintln(w, "  POST /api/v1/sync/kel              - Sync KEL from KERIA")
+	fmt.Fprintln(w, "  GET  /api/v1/community/members     - List community members")
+	fmt.Fprintln(w, "  GET  /api/v1/community/credentials - List community-visible credentials")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Trust Graph:")
+	fmt.Fprintln(w, "  GET  /api/v1/trust/graph           - Get trust graph (full or filtered)")
+	fmt.Fprintln(w, "  GET  /api/v1/trust/score/{aid}     - Get trust score for an AID")
+	fmt.Fprintln(w, "  GET  /api/v1/trust/scores          - Get top trust scores")
+	fmt.Fprintln(w, "  GET  /api/v1/trust/summary         - Get trust graph summary")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Spaces (any-sync):")
+	fmt.Fprintln(w, "  POST /api/v1/spaces/community                - Create community space")
+	fmt.Fprintln(w, "  GET  /api/v1/spaces/community                - Get community space info")
+	fmt.Fprintln(w, "  POST /api/v1/spaces/private                  - Create private space")
+	fmt.Fprintln(w, "  POST /api/v1/spaces/community/invite         - Generate invite for user")
+	fmt.Fprintln(w, "  POST /api/v1/spaces/community/join           - Join community with invite key")
+	fmt.Fprintln(w, "  GET  /api/v1/spaces/community/verify-access  - Verify community access")
+	fmt.Fprintln(w, "  GET  /api/v1/spaces/sync-status              - Check space sync readiness")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Invites:")
+	fmt.Fprintln(w, "  POST /api/v1/invites/send-email       - Email invite code to user")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Notifications:")
+	fmt.Fprintln(w, "  POST /api/v1/notifications/registration-submitted - Notify onboarding of new registration")
+	fmt.Fprintln(w, "  POST /api/v1/notifications/registration-approved  - Notify applicant of approval")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Profiles & Types:")
+	fmt.Fprintln(w, "  GET  /api/v1/types                    - List all type definitions")
+	fmt.Fprintln(w, "  GET  /api/v1/types/{name}             - Get specific type definition")
+	fmt.Fprintln(w, "  POST /api/v1/profiles                 - Create/update a profile object")
+	fmt.Fprintln(w, "  GET  /api/v1/profiles/{type}          - List profiles of a type")
+	fmt.Fprintln(w, "  GET  /api/v1/profiles/{type}/{id}     - Get specific profile")
+	fmt.Fprintln(w, "  GET  /api/v1/profiles/me              - Get current user's profiles")
+	fmt.Fprintln(w, "  POST /api/v1/profiles/init-member     - Initialize member profiles (admin)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Notices (Activity):")
+	fmt.Fprintln(w, "  POST /api/v1/notices                  - Create notice (draft or published)")
+	fmt.Fprintln(w, "  GET  /api/v1/notices                  - List notices (?view=upcoming|current|past&type=event|update)")
+	fmt.Fprintln(w, "  GET  /api/v1/notices/{id}             - Get single notice")
+	fmt.Fprintln(w, "  POST /api/v1/notices/{id}/publish     - Publish a draft notice")
+	fmt.Fprintln(w, "  POST /api/v1/notices/{id}/archive     - Archive a published notice")
+	fmt.Fprintln(w, "  POST /api/v1/notices/{id}/rsvp        - Create/update RSVP")
+	fmt.Fprintln(w, "  GET  /api/v1/notices/{id}/rsvp        - List RSVPs for notice")
+	fmt.Fprintln(w, "  POST /api/v1/notices/{id}/ack         - Create acknowledgment")
+	fmt.Fprintln(w, "  GET  /api/v1/notices/{id}/ack         - List acks for notice")
+	fmt.Fprintln(w, "  POST /api/v1/notices/{id}/save        - Toggle save/pin")
+	fmt.Fprintln(w, "  GET  /api/v1/notices/saved            - List saved notices")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Files:")
+	fmt.Fprintln(w, "  POST /api/v1/files/upload             - Upload file (avatar)")
+	fmt.Fprintln(w, "  GET  /api/v1/files/{ref}              - Download file by ref")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Events:")
+	fmt.Fprintln(w, "  GET  /api/v1/events                   - SSE event stream")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Chat:")
+	fmt.Fprintln(w, "  GET  /api/v1/chat/channels            - List chat channels")
+	fmt.Fprintln(w, "  POST /api/v1/chat/channels            - Create channel (admin)")
+	fmt.Fprintln(w, "  GET  /api/v1/chat/channels/{id}       - Get channel details")
+	fmt.Fprintln(w, "  PUT  /api/v1/chat/channels/{id}       - Update channel (admin)")
+	fmt.Fprintln(w, "  DELETE /api/v1/chat/channels/{id}     - Archive channel (admin)")
+	fmt.Fprintln(w, "  GET  /api/v1/chat/channels/{id}/messages - List messages")
+	fmt.Fprintln(w, "  POST /api/v1/chat/channels/{id}/messages - Send message")
+	fmt.Fprintln(w, "  PUT  /api/v1/chat/messages/{id}       - Edit message (owner)")
+	fmt.Fprintln(w, "  DELETE /api/v1/chat/messages/{id}     - Delete message (owner)")
+	fmt.Fprintln(w, "  GET  /api/v1/chat/messages/{id}/thread - Get thread replies")
+	fmt.Fprintln(w, "  POST /api/v1/chat/messages/{id}/reactions - Add reaction")
+	fmt.Fprintln(w, "  DELETE /api/v1/chat/messages/{id}/reactions/{emoji} - Remove reaction")
+	fmt.Fprintln(w, "  GET  /api/v1/chat/read-cursors      - Get read cursors")
+	fmt.Fprintln(w, "  PUT  /api/v1/chat/read-cursors      - Update read cursor")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Contributions System:")
+	fmt.Fprintln(w, "  GET  /api/v1/proposals                    - List proposals")
+	fmt.Fprintln(w, "  POST /api/v1/proposals                    - Create proposal")
+	fmt.Fprintln(w, "  GET  /api/v1/proposals/{id}               - Get proposal")
+	fmt.Fprintln(w, "  POST /api/v1/proposals/{id}/transition    - Transition proposal status")
+	fmt.Fprintln(w, "  POST /api/v1/proposals/{id}/endorse       - Endorse proposal")
+	fmt.Fprintln(w, "  GET  /api/v1/proposals/{id}/endorsements  - List endorsements")
+	fmt.Fprintln(w, "  GET  /api/v1/projects                     - List projects")
+	fmt.Fprintln(w, "  POST /api/v1/projects                     - Create project")
+	fmt.Fprintln(w, "  GET  /api/v1/projects/{id}                - Get project")
+	fmt.Fprintln(w, "  PUT  /api/v1/projects/{id}                - Update project")
+	fmt.Fprintln(w, "  DELETE /api/v1/projects/{id}              - Delete project")
+	fmt.Fprintln(w, "  POST /api/v1/projects/{id}/link-proposal  - Link proposal to project")
+	fmt.Fprintln(w, "  GET  /api/v1/decision-plans               - List decision plans")
+	fmt.Fprintln(w, "  POST /api/v1/decision-plans               - Create decision plan")
+	fmt.Fprintln(w, "  GET  /api/v1/decision-plans/{id}          - Get decision plan")
+	fmt.Fprintln(w, "  POST /api/v1/decision-plans/{id}/transition - Transition decision plan")
+	fmt.Fprintln(w, "  POST /api/v1/decision-plans/{id}/actions  - Add governance action")
+	fmt.Fprintln(w, "  GET  /api/v1/implementation-plans         - List implementation plans")
+	fmt.Fprintln(w, "  POST /api/v1/implementation-plans         - Create implementation plan")
+	fmt.Fprintln(w, "  GET  /api/v1/implementation-plans/{id}    - Get implementation plan")
+	fmt.Fprintln(w, "  POST /api/v1/implementation-plans/{id}/milestones - Add milestone")
+	fmt.Fprintln(w, "  GET  /api/v1/contributions                - List contributions")
+	fmt.Fprintln(w, "  POST /api/v1/contributions                - Create contribution")
+	fmt.Fprintln(w, "  GET  /api/v1/contributions/{id}           - Get contribution")
+	fmt.Fprintln(w, "  PUT  /api/v1/contributions/{id}           - Update contribution")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/transition - Transition contribution")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/register  - Register interest")
+	fmt.Fprintln(w, "  GET  /api/v1/contributions/{id}/registrations - List registrations")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/assign    - Assign contributor")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/confirm   - Confirm contribution")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/share     - Share contribution")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/offer     - Offer contribution")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/accept-offer - Accept offered contribution")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/submit-evidence - Submit evidence")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/review    - Review contribution")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/sign-off  - Sign off contribution")
+	fmt.Fprintln(w, "  POST /api/v1/contributions/{id}/approve-sub - Approve sub-contribution")
+	fmt.Fprintln(w, "  POST /api/v1/implementation-plans/{id}/sign-off - Sign off plan")
+	fmt.Fprintln(w, "  GET  /api/v1/projects/{id}/contributions  - List project contributions")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Org Config:")
+	fmt.Fprintln(w, "  GET  /api/v1/org/config               - Get org configuration")
+	fmt.Fprintln(w, "  POST /api/v1/org/config               - Save org configuration")
+	fmt.Fprintln(w, "  GET  /api/v1/org/health               - Config service health")
+	fmt.Fprintln(w)
 }
