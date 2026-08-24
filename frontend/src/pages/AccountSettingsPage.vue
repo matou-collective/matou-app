@@ -1331,6 +1331,12 @@ textarea.field-input {
   min-width: 100px;
 }
 
+@media (max-width: 767px) {
+  .social-link-label {
+    min-width: 0;
+  }
+}
+
 .social-link-url {
   flex: 1;
   color: var(--matou-primary, #1a4f5e);
