@@ -713,8 +713,14 @@ if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
   # below is the push-mode path only. Touched = the pickup set + any #NN scraped
   # from this run's commit subjects (a mid-run close can unblock a child).
   verdict_stage "reconcile landing (pr — branch + PR per issue)"
+  # `grep -oE` exits 1 when a commit range has no `#NN` (in pr mode the workers
+  # push to their own branches, so this workdir's HEAD gets no new commits and
+  # the range is empty). Under `set -euo pipefail` that 1 propagates out of the
+  # command substitution and kills the whole reconcile stage with exit=1 before
+  # a single PR is reconciled. Guard the scrape with `|| true`, exactly as the
+  # sibling `commit_nums=` scrape below already does.
   reconcile_nums="$({ jq -r '.[].number' <<<"$ready";
-      git log --format=%s "$start_sha"..HEAD | grep -oE '#[0-9]+' | tr -d '#'; } | sort -un)"
+      git log --format=%s "$start_sha"..HEAD | grep -oE '#[0-9]+' | tr -d '#' || true; } | sort -un)"
   opened_prs="$(landing_reconcile $reconcile_nums || true)"
   # agent-after-green (#15): merge EVERY open agent PR whose required checks are
   # green — including PRs from EARLIER runs that only went green after their own

@@ -31,7 +31,7 @@ reconcile() { # reconcile <landing> <ready-json> <commit-subjects-multiline>
   local SWARM_POLICY_LANDING="$1" ready="$2" subjects="$3" opened_prs="" reconcile_nums
   if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
     reconcile_nums="$({ jq -r '.[].number' <<<"$ready";
-        printf '%s\n' "$subjects" | grep -oE '#[0-9]+' | tr -d '#'; } | sort -un)"
+        printf '%s\n' "$subjects" | grep -oE '#[0-9]+' | tr -d '#' || true; } | sort -un)"
     opened_prs="$(landing_reconcile $reconcile_nums || true)"
   else
     opened_prs=""   # push mode: main push happens here (not exercised offline)
@@ -117,6 +117,23 @@ rm -f "$MERGE_CALLS"
 merged="$(SWARM_POLICY_MERGE_AUTHORITY=human landing_merge_reconcile || true)"
 [ ! -f "$MERGE_CALLS" ] || fail "human authority must NOT run the merge-if-green pass"
 [ -z "$(merge_summary "$merged")" ] || fail "human authority summary must omit the merge section"
+pass=$((pass+1))
+
+# --- 6. pr mode with an empty commit range: `grep -oE` matches nothing and
+# exits 1. Under `set -euo pipefail` an unguarded scrape kills the whole
+# reconcile stage (verdict "reconcile landing", exit=1, empty error lines) —
+# run 5896's fault. This MUST run the scrape at top level in its own
+# `set -euo pipefail` shell: wrapping it in a function consumed by `$()` (as
+# the reconcile() shim above does) masks the death, which is how the bug
+# shipped. The guarded scrape from run-swarm.sh must exit 0 on an empty range.
+scrape='reconcile_nums="$({ jq -r ".[].number" <<<"[{\"number\":7}]";
+    printf "%s\n" "" | grep -oE "#[0-9]+" | tr -d "#" || true; } | sort -un)"
+printf "nums=[%s]\n" "$reconcile_nums"'
+if out="$(bash -euo pipefail -c "$scrape" 2>&1)"; then
+  [ "$out" = "nums=[7]" ] || fail "empty-range scrape must yield the pickup set alone; got '$out'"
+else
+  fail "empty-range scrape died under set -euo pipefail (exit $?) — the || true guard is missing"
+fi
 pass=$((pass+1))
 
 echo "run-swarm-landing: $pass scenarios passed"
