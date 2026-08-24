@@ -23,6 +23,20 @@ build-linux-amd64:
 build-windows-amd64:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/windows-amd64/matou-backend.exe ./cmd/server
 
+# Android .aar for the embedded mobile backend (issue #68). Needs the toolchain
+# from scripts/android/setup-toolchain.sh; -androidapi 21 is mandatory with NDK
+# r27c (gomobile still defaults to API 16, which the NDK rejects).
+ANDROID_ENV ?= $(or $(MATOU_ANDROID_HOME),$(HOME)/.matou-android)/env.sh
+ANDROID_AAR ?= ../frontend/src-capacitor/android/app/libs/matou.aar
+
+build-android-aar:
+	@test -f $(ANDROID_ENV) || { echo "Missing $(ANDROID_ENV) — run scripts/android/setup-toolchain.sh first"; exit 1; }
+	mkdir -p $(dir $(ANDROID_AAR))
+	. $(ANDROID_ENV) && gomobile bind \
+		-target=android/arm64,android/amd64 -androidapi 21 \
+		-javapkg nz.matou.backend \
+		-o $(ANDROID_AAR) ./cmd/mobile
+
 build-all: build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-windows-amd64
 
 run: build
@@ -129,6 +143,7 @@ help:
 	@echo "Build:"
 	@echo "  make build              - Build the server binary"
 	@echo "  make build-all          - Cross-compile for all platforms (Electron packaging)"
+	@echo "  make build-android-aar  - gomobile bind Android .aar (needs scripts/android/setup-toolchain.sh)"
 	@echo "  make run                - Build and run the server"
 	@echo "  make run-test           - Run server in test mode (isolated data)"
 	@echo ""
@@ -157,7 +172,7 @@ help:
 	@echo "  make clean-data-test    - Remove test mode data"
 	@echo "  make clean-all          - Remove build artifacts + all data (dev + test)"
 
-.PHONY: build build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-windows-amd64 build-all \
+.PHONY: build build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-windows-amd64 build-android-aar build-all \
         run run-test test test-coverage test-integration test-integration-keep test-all \
         testnet-up testnet-down testnet-clean testnet-status testnet-health \
         lint fmt vet clean clean-data clean-data-test clean-all help
