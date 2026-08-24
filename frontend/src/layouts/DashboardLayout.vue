@@ -15,45 +15,16 @@
 
       <!-- Navigation -->
       <nav class="sidebar-nav">
-        <button class="nav-item" :class="{ active: route.name === 'dashboard' }" @click="router.push({ name: 'dashboard' })">
-          <Home class="nav-icon" />
-          <span>Home</span>
-        </button>
-        <button class="nav-item" :class="{ active: route.name === 'chat' }" @click="router.push({ name: 'chat' })">
-          <MessageSquare class="nav-icon" />
-          <span>Chat</span>
-          <span v-if="chatStore.totalUnreadCount > 0" class="nav-badge">
-            {{ chatStore.totalUnreadCount > 99 ? '99+' : chatStore.totalUnreadCount }}
-          </span>
-        </button>
-        <button class="nav-item" :class="{ active: route.name === 'wallet' }" @click="router.push({ name: 'wallet' })">
-          <Wallet class="nav-icon" />
-          <span>Wallet</span>
-        </button>
-        <button class="nav-item" :class="{ active: route.name === 'activity' }" @click="router.push({ name: 'activity' })">
-          <Bell class="nav-icon" />
-          <span>Notices</span>
-          <span v-if="noticesUnreadTotal > 0" class="nav-badge">
-            {{ noticesUnreadTotal > 99 ? '99+' : noticesUnreadTotal }}
-          </span>
-        </button>
-        <button class="nav-item" :class="{ active: route.name === 'proposals' }" @click="router.push({ name: 'proposals' })">
-          <Vote class="nav-icon" />
-          <span>Proposals</span>
-        </button>
-        <button class="nav-item" :class="{ active: route.name === 'projects' }" @click="router.push({ name: 'projects' })">
-          <Target class="nav-icon" />
-          <span>Projects</span>
-          <span v-if="projectsUnreadTotal > 0" class="nav-badge">
-            {{ projectsUnreadTotal > 99 ? '99+' : projectsUnreadTotal }}
-          </span>
-        </button>
-        <button class="nav-item" :class="{ active: route.name === 'contributions' || route.name === 'contribution-detail' }" @click="router.push({ name: 'contributions' })">
-          <Hammer class="nav-icon" />
-          <span>Contributions</span>
-          <span v-if="contributionsUnreadTotal > 0" class="nav-badge">
-            {{ contributionsUnreadTotal > 99 ? '99+' : contributionsUnreadTotal }}
-          </span>
+        <button
+          v-for="item in navItems"
+          :key="item.name"
+          class="nav-item"
+          :class="{ active: isNavActive(item) }"
+          @click="router.push({ name: item.name })"
+        >
+          <component :is="item.icon" class="nav-icon" />
+          <span>{{ item.label }}</span>
+          <span v-if="item.badge > 0" class="nav-badge">{{ badgeLabel(item.badge) }}</span>
         </button>
         <button class="nav-item report-issue-btn" @click="showReportDialog = true">
           <Bug class="nav-icon" />
@@ -81,6 +52,38 @@
       <router-view />
     </main>
 
+    <!-- Mobile bottom tab bar (≤767px) — sidebar is hidden there, so this is
+         the only navigation. Shares navItems with the sidebar; adds a profile
+         tab. "Report an issue" lives on Account settings on mobile. -->
+    <nav class="bottom-nav">
+      <button
+        v-for="item in navItems"
+        :key="item.name"
+        class="bottom-nav-item"
+        :class="{ active: isNavActive(item) }"
+        @click="router.push({ name: item.name })"
+      >
+        <span class="bottom-nav-icon-wrap">
+          <component :is="item.icon" class="bottom-nav-icon" />
+          <span v-if="item.badge > 0" class="bottom-nav-badge">{{ badgeLabel(item.badge) }}</span>
+        </span>
+        <span class="bottom-nav-label">{{ item.label }}</span>
+      </button>
+      <button
+        class="bottom-nav-item"
+        :class="{ active: route.name === 'account-settings' }"
+        @click="router.push({ name: 'account-settings' })"
+      >
+        <span class="bottom-nav-icon-wrap">
+          <span class="bottom-nav-avatar">
+            <img v-if="userAvatarUrl" :src="userAvatarUrl" class="w-full h-full rounded-full object-cover" alt="Avatar" />
+            <span v-else>{{ userInitials }}</span>
+          </span>
+        </span>
+        <span class="bottom-nav-label">Profile</span>
+      </button>
+    </nav>
+
     <!-- App-wide read-only profile viewer, driven by clicks on any UserAvatar -->
     <ProfileModal
       :show="profileViewer.isOpen"
@@ -93,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref, watch, type Component } from 'vue';
 import {
   Home,
   Wallet,
@@ -122,6 +125,12 @@ import { getFileUrl } from 'src/lib/api/client';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
 import { useProfileViewer } from 'stores/profileViewer';
+import {
+  NAV_ITEM_META,
+  isNavActive as isNavActiveFor,
+  badgeLabel,
+  type NavItemMeta,
+} from 'src/composables/navItems';
 
 const router = useRouter();
 const route = useRoute();
@@ -164,6 +173,39 @@ const noticesUnreadTotal = computed(() => {
     return sum + scope.noticeUnread(n);
   }, 0);
 });
+// Primary navigation: the sidebar (desktop) and the bottom tab bar (mobile,
+// ≤767px) both render from one array so they never drift out of sync. Static
+// metadata (name/label/aliases) lives in navItems.ts; here we map an icon and
+// the live unread badge onto each entry.
+const NAV_ICONS: Record<string, Component> = {
+  dashboard: Home,
+  chat: MessageSquare,
+  wallet: Wallet,
+  activity: Bell,
+  proposals: Vote,
+  projects: Target,
+  contributions: Hammer,
+};
+
+const navBadges = computed<Record<string, number>>(() => ({
+  chat: chatStore.totalUnreadCount,
+  activity: noticesUnreadTotal.value,
+  projects: projectsUnreadTotal.value,
+  contributions: contributionsUnreadTotal.value,
+}));
+
+const navItems = computed(() =>
+  NAV_ITEM_META.map((meta) => ({
+    ...meta,
+    icon: NAV_ICONS[meta.name] as Component,
+    badge: navBadges.value[meta.name] ?? 0,
+  })),
+);
+
+function isNavActive(item: NavItemMeta): boolean {
+  return isNavActiveFor(item, route.name as string | null | undefined);
+}
+
 const { connect: connectBackendEvents, lastEvent } = useBackendEvents();
 
 // Keep entity comment_count and notice counts in sync with peer comments so
@@ -467,14 +509,110 @@ onBeforeUnmount(() => {
   color: var(--matou-muted-foreground);
 }
 
-// Responsive: Hide sidebar on small screens
+// Mobile bottom tab bar — hidden on desktop, shown only at ≤767px.
+$bottom-nav-height: 64px;
+
+.bottom-nav {
+  display: none;
+}
+
+.bottom-nav-item {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--matou-sidebar-foreground);
+  transition: color 0.15s ease;
+
+  &.active {
+    color: var(--matou-sidebar-primary);
+  }
+}
+
+.bottom-nav-icon-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bottom-nav-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.bottom-nav-label {
+  font-size: 0.625rem;
+  line-height: 1;
+  font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottom-nav-badge {
+  position: absolute;
+  top: -6px;
+  left: 12px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 0.25rem;
+  background-color: var(--matou-destructive);
+  color: white;
+  border-radius: 9999px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bottom-nav-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 0.6rem;
+  font-weight: 600;
+}
+
+// Responsive: Hide sidebar on small screens, show the bottom tab bar instead.
 @media (max-width: 767px) {
   .sidebar {
     display: none;
   }
-  
+
   .main-content {
     margin-left: 0;
+    width: 100%;
+    // Keep content clear of the fixed bottom bar (bar height + safe area).
+    padding-bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+  }
+
+  .bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    background-color: var(--matou-sidebar);
+    border-top: 1px solid var(--matou-sidebar-border);
+    z-index: 50;
   }
 }
 </style>
