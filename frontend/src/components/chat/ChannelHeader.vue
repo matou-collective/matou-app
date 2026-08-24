@@ -1,6 +1,14 @@
 <template>
   <header class="channel-header">
     <div class="channel-info">
+      <button
+        v-if="showBack"
+        class="back-btn"
+        @click="$emit('back')"
+        title="Back to channels"
+      >
+        <ArrowLeft class="icon" />
+      </button>
       <span class="channel-icon">{{ channel.icon || '#' }}</span>
       <div class="channel-details">
         <h1 class="channel-name">{{ channel.name }}</h1>
@@ -22,16 +30,22 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Settings } from 'lucide-vue-next';
+import { Settings, ArrowLeft } from 'lucide-vue-next';
 import type { Channel } from 'src/lib/api/chat';
 import { useIdentityStore } from 'stores/identity';
 
-defineProps<{
-  channel: Channel;
-}>();
+withDefaults(
+  defineProps<{
+    channel: Channel;
+    // Show a back button on mobile single-pane mode (returns to channel list).
+    showBack?: boolean;
+  }>(),
+  { showBack: false },
+);
 
 defineEmits<{
   (e: 'settings'): void;
+  (e: 'back'): void;
 }>();
 
 const identityStore = useIdentityStore();
@@ -53,6 +67,31 @@ const isAdmin = computed(() => identityStore.isSteward);
   align-items: center;
   gap: 0.75rem;
   min-width: 0;
+}
+
+.back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--matou-radius);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--matou-muted-foreground);
+  transition: all 0.15s ease;
+
+  &:hover {
+    background-color: var(--matou-secondary);
+    color: var(--matou-foreground);
+  }
+
+  .icon {
+    width: 20px;
+    height: 20px;
+  }
 }
 
 .channel-icon {
