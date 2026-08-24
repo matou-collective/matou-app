@@ -354,6 +354,18 @@
         </div>
       </section> -->
 
+      <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
+           button is hidden on mobile, so surface the same dialog here. -->
+      <section v-if="isMobile" class="settings-card">
+        <div class="card-header">
+          <h3 class="card-title"><Bug :size="18" /> Support</h3>
+        </div>
+        <button type="button" class="report-issue-btn" @click="showReportDialog = true">
+          <Bug :size="16" />
+          <span>Report an issue</span>
+        </button>
+      </section>
+
       <!-- Unsaved changes bar -->
       <Transition name="bar">
         <div v-if="hasUnsavedChanges" class="unsaved-bar">
@@ -369,6 +381,8 @@
         </div>
       </Transition>
     </div>
+
+    <ReportIssueDialog v-model="showReportDialog" :reporter-name="sharedForm.displayName || 'Member'" />
   </div>
 </template>
 
@@ -387,6 +401,7 @@ import {
   Camera,
   X,
   Loader2,
+  Bug,
 } from 'lucide-vue-next';
 import { useRouter } from 'vue-router';
 import { useProfilesStore } from 'stores/profiles';
@@ -394,11 +409,16 @@ import { useTypesStore } from 'stores/types';
 import { useIdentityStore } from 'stores/identity';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 import { getFileUrl, uploadFile } from 'src/lib/api/client';
+import { useIsMobile } from 'src/composables/useIsMobile';
+import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
 
 const router = useRouter();
 const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const identityStore = useIdentityStore();
+
+const isMobile = useIsMobile();
+const showReportDialog = ref(false);
 
 const loading = ref(true);
 const saveError = ref('');
@@ -1530,6 +1550,27 @@ textarea.field-input {
   border-radius: 999px;
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+/* Report an issue (mobile support card) */
+.report-issue-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: 0.5rem;
+  border: 1px solid var(--matou-border, #d1e7ea);
+  background: var(--matou-card, white);
+  color: var(--matou-foreground, #1f2937);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.report-issue-btn:hover {
+  background: #f0f9fa;
+  border-color: #a8d4da;
 }
 
 /* Save feedback */
