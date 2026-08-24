@@ -6,6 +6,23 @@ on:
     - cron: "15,45 * * * *"
   workflow_dispatch: {}
 
+# One workflow-level concurrency group per repo (#26). A triage mass-label or a
+# burst of `closed` events otherwise fires this workflow once per event, and the
+# 2-wide matrix doubles each — 71 dev-factory + 73 idss no-op runs in one hour
+# were observed, each spinning a sandbox to conclude no-ready-tasks in ~6 s.
+# Forgejo Actions honours workflow-level concurrency, but NOT GitHub's "at most
+# one pending" collapse: with cancel-in-progress false it QUEUES every superseded
+# run and executes them strictly in sequence. A burst of three qualifying events
+# yields one running + TWO queued (N-1 for N events), not one queued — nothing is
+# cancelled, nothing is dropped. The success signal is therefore zero cross-run
+# overlap (serial execution), never a queue depth of 1 (verified live on
+# Forgejo v15.0.5, #38).
+# cancel-in-progress MUST stay false — a live worker's run is never cancelled by
+# a later event (the matrix comment's fail-fast reasoning applies here too).
+concurrency:
+  group: swarm-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   swarm:
     # Label events fire for EVERY label; only ready-for-agent means new work.
@@ -37,54 +54,100 @@ jobs:
         run: |
           set -euo pipefail
           export SWARM_HOST="$(hostname)"
-          # /tmp/matou-swarm.lock is GLOBAL by design today: one heavy worker
-          # per host, serializing every factory-driven repo sharing this host.
-          # That's a known structural wall for a host running >1 repo's swarm
-          # (ourcloud's #577) — unchanged here; #572 templates the workflow,
-          # it doesn't re-solve host scheduling.
-          # Drive reservation (Matou/idss #663/#664). /tmp/matou-swarm.lock is
-          # HOST-global and shared by every repo on this box, so the rehearsal
-          # drive's reservation only works if every repo honours it: idss shipped
-          # the guard and still starved 20 consecutive executor ticks (~40 min)
-          # behind an unguarded sibling. The drive needs EVERY host lock at once
-          # and yields the instant one is busy, so it loses unboundedly to any
-          # repo that keeps claiming.
+          # Host capacity semaphore (idss #577, idss ADR 0184): TWO pooled
+          # heavy slots shared by swarm AND triage across every repo on this
+          # host — /tmp/matou-swarm.lock (slot 1, kept under its original
+          # name so an unmodified sibling repo's workflow still excludes
+          # correctly against it) and /tmp/matou-host-slot-2.lock (slot 2,
+          # new capacity). First-fit, non-blocking: try slot 1, then slot 2.
+          # Still never CAMP (idss #238) — both busy means yield (exit 0)
+          # and let the :15/:45 cron (and the backstop) re-fire.
+          # Drive reservation (Matou/idss #663/#664). The rehearsal drive needs
+          # EVERY host lock at once and yields the instant one is busy, so it
+          # loses to any worker that claims a ticket in the gap — unboundedly,
+          # not just slowly. /tmp/matou-swarm.lock is HOST-global and shared by
+          # every repo on this box, so a repo without this guard starves the
+          # drive no matter how well-guarded the others are: idss was guarded and
+          # a dev-factory run still held the slot for 20 consecutive ticks
+          # (~40 min) before this landed.
           #
-          # Applied to the autonomous pollers ONLY (swarm, triage) — never to the
-          # PR gates (verify.yml, pr-e2e.yml, smoke-drive.yml). Yielding here is
-          # `exit 0`, which for a poller means "not this tick, the cron re-fires",
-          # but on a PR check would be a FALSE GREEN: the gate would report
-          # success without ever running. A human's PR must never be marked
-          # passing because a rehearsal drive wanted the host.
+          # Stand down before taking a slot. Work already in flight is untouched,
+          # so this costs at most one deferred claim. Inline because this runs
+          # before the checkout exists. The mtime TTL is the anti-deadlock: a
+          # declarer killed by OOM/SIGKILL/reboot (no trap runs) would otherwise
+          # wedge every heavy job on this host until a human cleared /tmp. Keep
+          # 900 in step with HOST_CAPACITY_DRIVE_WANTED_TTL in host-capacity-lib.sh.
           #
-          # The mtime TTL is the anti-deadlock: a declarer killed by OOM/SIGKILL/
-          # reboot runs no trap, and an abandoned reservation would otherwise
-          # wedge every heavy job here until a human cleared /tmp. Keep 900 in
-          # step with HOST_CAPACITY_DRIVE_WANTED_TTL in host-capacity-lib.sh.
+          # The consecutive-defer count (idss #664) is THIS consumer's own,
+          # distinct from the drive's own skip counter and from triage's/
+          # session-runner's — three consumers on three cadences need three
+          # independent streaks so "skipped 3" always means 3 ticks of THIS
+          # worker, not a blend across consumers.
           drive_res=/tmp/matou-drive-wanted
+          defer_count=/tmp/matou-swarm-drive-defer-count
           if [ -f "$drive_res" ] \
             && [ "$(( $(date +%s) - $(stat -c %Y "$drive_res" 2>/dev/null || echo 0) ))" -lt 900 ]; then
-            echo "swarm: a rehearsal drive has reserved host capacity (idss #663) — yielding so it is not starved; the cron re-fires"
+            n="$(cat "$defer_count" 2>/dev/null || echo 0)"; case "$n" in ''|*[!0-9]*) n=0;; esac; n=$((n+1))
+            echo "$n" >"$defer_count"
+            echo "swarm: a rehearsal drive has reserved host capacity (idss #663) — deferring to a ready drive — skipped $n consecutive tick(s); the cron/backstop re-fires"
             exit 0
           fi
+          rm -f "$defer_count"
           exec 9>/tmp/matou-swarm.lock
           if ! flock -n 9; then
-            echo "swarm: another swarm/triage run holds /tmp/matou-swarm.lock — yielding; the cron/backstop re-fires"
-            exit 0
+            exec 9>&-
+            exec 9>/tmp/matou-host-slot-2.lock
+            if ! flock -n 9; then
+              echo "swarm: both host capacity slots busy — yielding; the cron/backstop re-fires"
+              exit 0
+            fi
           fi
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"
-          cd "$workdir"
-          host="${SERVER_URL#https://}"
-          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
-          if [ -d .git ]; then
-            git remote set-url origin "$url"
-            git fetch origin main
-            git checkout -f main
-            git reset --hard origin/main
-          else
-            git clone "$url" .
+          # Per-repo-workdir lock (idss #638): a matrix sibling or triage
+          # targeting the SAME repo can win a DIFFERENT host-capacity slot in
+          # the same second and race this job's git mutation of the shared
+          # clone (idss's `git reflog` showed the loser's checkout+reset
+          # never landing — a bare red job, no worker log, no run row).
+          # Scoped to ONLY the git setup below; it releases before
+          # run-swarm.sh, so intra-host matrix parallelism during the run
+          # itself is unchanged. Never camp (idss #238) — a workdir
+          # mid-checkout just means this poll loses; the cron/backstop
+          # re-fires.
+          workdir_lock="/tmp/matou-workdir-$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
+          exec 8>"$workdir_lock"
+          if ! flock -n 8; then
+            echo "swarm: workdir $workdir busy with another job for this repo — yielding; the cron/backstop re-fires"
+            exit 0
           fi
+          cd "$workdir"
+          # idss #639: once a prior run has checked out .sandcastle/git-setup.sh,
+          # route through it so a git-setup failure — before run-swarm.sh even
+          # starts and can verdict_begin its own stages — still drops a
+          # stage/exit/error verdict the healer keys a real signature on,
+          # instead of collapsing onto the bare workflow-name signature. A
+          # workdir that hasn't pulled this commit yet (git-setup.sh absent —
+          # a genuinely fresh clone, OR an existing checkout one fetch behind)
+          # falls back to the exact pre-git-setup.sh inline fetch-or-clone
+          # below, no verdict; the NEXT run (now carrying git-setup.sh) uses
+          # the script. The fallback keeps deriving the host from
+          # github.server_url (onboarding/README.md's no-hardcoded-remote
+          # fix) rather than copying git-setup.sh's own hardcoded default.
+          if [ -f .sandcastle/git-setup.sh ]; then
+            WORKFLOW=swarm bash .sandcastle/git-setup.sh
+          else
+            host="${SERVER_URL#https://}"
+            url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+            if [ -d .git ]; then
+              git remote set-url origin "$url"
+              git fetch origin main
+              git checkout -f main
+              git reset --hard origin/main
+            else
+              git clone "$url" .
+            fi
+          fi
+          exec 8>&-
           bash .sandcastle/run-swarm.sh
       - name: Investigate failure (healer)
         if: failure()
