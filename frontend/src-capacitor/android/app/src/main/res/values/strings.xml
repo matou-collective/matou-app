@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Matou</string>
+    <string name="title_activity_main">Matou</string>
+    <string name="package_name">nz.matou.app</string>
+    <string name="custom_url_scheme">nz.matou.app</string>
+</resources>

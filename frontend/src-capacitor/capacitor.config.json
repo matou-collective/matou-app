@@ -1,0 +1,10 @@
+{
+  "appId": "nz.matou.app",
+  "appName": "Matou",
+  "webDir": "www",
+  "plugins": {
+    "MatouBackend": {
+      "configServerUrl": ""
+    }
+  }
+}
