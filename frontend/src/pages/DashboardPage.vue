@@ -1023,6 +1023,11 @@ function handleRoleUpdated(newRole: string) {
   gap: 0.5rem;
   flex: 1;
   min-width: 200px;
+
+  @media (max-width: 767px) {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 .moon-energy {
