@@ -53,15 +53,16 @@
     </main>
 
     <!-- Mobile bottom tab bar (≤767px) — sidebar is hidden there, so this is
-         the only navigation. Shares navItems with the sidebar; adds a profile
-         tab. "Report an issue" lives on Account settings on mobile. -->
+         the only navigation. Shows the primary navItems plus a "More" tab; the
+         overflow navItems and the profile link live behind the More sheet.
+         "Report an issue" lives on Account settings on mobile. -->
     <nav class="bottom-nav">
       <button
-        v-for="item in navItems"
+        v-for="item in primaryNavItems"
         :key="item.name"
         class="bottom-nav-item"
         :class="{ active: isNavActive(item) }"
-        @click="router.push({ name: item.name })"
+        @click="navigateTo(item.name)"
       >
         <span class="bottom-nav-icon-wrap">
           <component :is="item.icon" class="bottom-nav-icon" />
@@ -70,19 +71,55 @@
         <span class="bottom-nav-label">{{ item.label }}</span>
       </button>
       <button
-        class="bottom-nav-item"
-        :class="{ active: route.name === 'account-settings' }"
-        @click="router.push({ name: 'account-settings' })"
+        class="bottom-nav-item more-tab"
+        :class="{ active: showMoreSheet || isOverflowActive }"
+        aria-label="More"
+        @click="showMoreSheet = true"
       >
         <span class="bottom-nav-icon-wrap">
-          <span class="bottom-nav-avatar">
-            <img v-if="userAvatarUrl" :src="userAvatarUrl" class="w-full h-full rounded-full object-cover" alt="Avatar" />
-            <span v-else>{{ userInitials }}</span>
-          </span>
+          <Menu class="bottom-nav-icon" />
+          <span v-if="overflowBadgeTotal > 0" class="bottom-nav-badge">{{ badgeLabel(overflowBadgeTotal) }}</span>
         </span>
-        <span class="bottom-nav-label">Profile</span>
+        <span class="bottom-nav-label">More</span>
       </button>
     </nav>
+
+    <!-- "More" overflow sheet (≤767px): scrim + a bottom sheet above the tab
+         bar listing the overflow navItems and the profile link. Tapping an
+         entry navigates and closes the sheet. -->
+    <Transition name="more-sheet">
+      <div v-if="showMoreSheet" class="more-sheet-overlay" @click="showMoreSheet = false">
+        <div class="more-sheet" role="dialog" aria-label="More navigation" @click.stop>
+          <div class="more-sheet-handle" />
+          <button
+            v-for="item in overflowNavItems"
+            :key="item.name"
+            class="more-sheet-item"
+            :class="{ active: isNavActive(item) }"
+            @click="navigateTo(item.name)"
+          >
+            <span class="more-sheet-icon-wrap">
+              <component :is="item.icon" class="more-sheet-icon" />
+            </span>
+            <span class="more-sheet-label">{{ item.label }}</span>
+            <span v-if="item.badge > 0" class="more-sheet-badge">{{ badgeLabel(item.badge) }}</span>
+          </button>
+          <button
+            class="more-sheet-item"
+            :class="{ active: route.name === 'account-settings' }"
+            @click="navigateTo('account-settings')"
+          >
+            <span class="more-sheet-icon-wrap">
+              <span class="more-sheet-avatar">
+                <img v-if="userAvatarUrl" :src="userAvatarUrl" class="w-full h-full rounded-full object-cover" alt="Avatar" />
+                <span v-else>{{ userInitials }}</span>
+              </span>
+            </span>
+            <span class="more-sheet-label">{{ userName }}</span>
+          </button>
+        </div>
+      </div>
+    </Transition>
 
     <!-- App-wide read-only profile viewer, driven by clicks on any UserAvatar -->
     <ProfileModal
@@ -106,6 +143,7 @@ import {
   MessageSquare,
   Hammer,
   Bug,
+  Menu,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -202,8 +240,33 @@ const navItems = computed(() =>
   })),
 );
 
+// Mobile bottom bar splits navItems into the primary tabs (own tab) and the
+// overflow entries shown behind the "More" tab's sheet. The desktop sidebar
+// keeps rendering the full `navItems` list.
+const primaryNavItems = computed(() => navItems.value.filter((i) => i.primary));
+const overflowNavItems = computed(() => navItems.value.filter((i) => !i.primary));
+
+// The More tab rolls the overflow entries' unread counts into one badge and
+// lights up whenever the current route is any overflow destination (an overflow
+// navItem or the profile → account-settings link).
+const overflowBadgeTotal = computed(() =>
+  overflowNavItems.value.reduce((sum, i) => sum + i.badge, 0),
+);
+const isOverflowActive = computed(() => {
+  if (route.name === 'account-settings') return true;
+  return overflowNavItems.value.some((i) => isNavActive(i));
+});
+
+const showMoreSheet = ref(false);
+
 function isNavActive(item: NavItemMeta): boolean {
   return isNavActiveFor(item, route.name as string | null | undefined);
+}
+
+// Navigate from the mobile bottom bar / More sheet, closing the sheet after.
+function navigateTo(name: string): void {
+  showMoreSheet.value = false;
+  void router.push({ name });
 }
 
 const { connect: connectBackendEvents, lastEvent } = useBackendEvents();
@@ -575,7 +638,78 @@ $bottom-nav-height: 64px;
   justify-content: center;
 }
 
-.bottom-nav-avatar {
+// "More" overflow sheet — hidden by default, shown only at ≤767px.
+.more-sheet-overlay {
+  display: none;
+}
+
+.more-sheet {
+  background-color: var(--matou-sidebar);
+  border-top: 1px solid var(--matou-sidebar-border);
+  border-radius: 16px 16px 0 0;
+  padding: 8px 0 12px;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.more-sheet-handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background-color: var(--matou-sidebar-border);
+  margin: 4px auto 8px;
+}
+
+.more-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  width: 100%;
+  padding: 0.75rem 1.25rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--matou-sidebar-foreground);
+
+  &.active {
+    color: var(--matou-sidebar-primary);
+  }
+}
+
+.more-sheet-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+
+.more-sheet-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.more-sheet-label {
+  flex: 1 1 auto;
+}
+
+.more-sheet-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 0.375rem;
+  background-color: var(--matou-destructive);
+  color: white;
+  border-radius: 9999px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.more-sheet-avatar {
   width: 24px;
   height: 24px;
   border-radius: 50%;
@@ -587,6 +721,25 @@ $bottom-nav-height: 64px;
   color: white;
   font-size: 0.6rem;
   font-weight: 600;
+}
+
+// Sheet slide-up / scrim fade.
+.more-sheet-enter-active,
+.more-sheet-leave-active {
+  transition: opacity 0.2s ease;
+
+  .more-sheet {
+    transition: transform 0.2s ease;
+  }
+}
+
+.more-sheet-enter-from,
+.more-sheet-leave-to {
+  opacity: 0;
+
+  .more-sheet {
+    transform: translateY(100%);
+  }
 }
 
 // Responsive: Hide sidebar on small screens, show the bottom tab bar instead.
@@ -613,6 +766,19 @@ $bottom-nav-height: 64px;
     background-color: var(--matou-sidebar);
     border-top: 1px solid var(--matou-sidebar-border);
     z-index: 50;
+  }
+
+  .more-sheet-overlay {
+    // Flex column anchored to the bottom so the sheet sits just above the tab
+    // bar with the scrim filling the rest of the screen behind it.
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background-color: rgba(0, 0, 0, 0.4);
+    padding-bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
   }
 }
 </style>
