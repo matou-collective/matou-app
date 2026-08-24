@@ -22,6 +22,12 @@ func isBundledOrigin(origin string) bool {
 		strings.HasPrefix(origin, "http://127.0.0.1:") {
 		return true
 	}
+	// Capacitor's Android WebView serves the SPA from https://localhost with no
+	// port (a port is possible via a custom server config). Match the bare host
+	// and any :port, but not lookalikes such as https://localhost.evil.com.
+	if origin == "https://localhost" || strings.HasPrefix(origin, "https://localhost:") {
+		return true
+	}
 	return false
 }
 
