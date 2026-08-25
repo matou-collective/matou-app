@@ -64,6 +64,18 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		out = os.Stdout
 	}
 
+	// Production runs as a bundled app (Electron desktop, or an embedded mobile
+	// host with no process environment). Bundled CORS accepts file://, capacitor://
+	// and any localhost origin — the desktop launcher already exports
+	// MATOU_CORS_MODE=bundled, but cmd/mobile boots in-process with no env, so
+	// app.Start sets it here for prod. This is the one sanctioned os.Setenv: the
+	// CORS middleware reads MATOU_CORS_MODE per request, so it must be set before
+	// the server serves. Setting it to the same value the desktop already exports
+	// leaves Electron behaviour unchanged.
+	if opts.IsProd() {
+		_ = os.Setenv("MATOU_CORS_MODE", "bundled")
+	}
+
 	// Resources opened during Start; released in reverse on any early return so
 	// a failed Start leaks nothing. On success ownership transfers to the App.
 	var closers []func() error
@@ -115,6 +127,13 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// Options.Port already encodes the per-environment default, the test shift to
 	// 9080 and the MATOU_SERVER_PORT override, so it is authoritative here.
 	cfg.Server.Port = opts.Port
+
+	// Options.Host is authoritative for the bind address too: cmd/server resolves
+	// it to "localhost" (unchanged desktop behaviour), while cmd/mobile pins it to
+	// 127.0.0.1 for the on-device loopback listener.
+	if opts.Host != "" {
+		cfg.Server.Host = opts.Host
+	}
 
 	// Initialize org config handler - single source of truth for organization identity
 	// The callback updates the in-memory config when org config is saved via API
