@@ -1,0 +1,82 @@
+name: android
+# Android P1 debug-APK build (matou-app#76). Unlike ci.yml this job runs
+# DIRECTLY on the swarm runner host (not inside the sandbox container), so the
+# Android toolchain persists in $HOME/.matou-android across runs: the first run
+# on a fresh host installs ~2.9 GB (JDK 21 + Android SDK/NDK + gomobile) and is
+# slow; later runs hit that cache and are much faster (acceptance criterion 2).
+# The runner host provides Go, Node/npm and python3 directly (Ben's #76 notes).
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/src-capacitor/**'
+      - 'frontend/src/lib/platform.ts'
+      - 'frontend/src/**/capacitor.ts'
+      - 'scripts/android/**'
+      - '.forgejo/workflows/android.yml'
+
+jobs:
+  build-apk:
+    runs-on: swarm
+    # First run per host downloads the whole toolchain and binds the backend
+    # twice (arm64 + amd64); give it room. Cached runs finish well under this.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout (raw clone — actions/checkout depends on data.forgejo.org action fetch, which fast-fails intermittently, d18d869)
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO_SLUG: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          host="${SERVER_URL#https://}"
+          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+          git init -q .
+          git remote add origin "$url" 2>/dev/null || git remote set-url origin "$url"
+          git fetch -q --depth=1 origin "$SHA"
+          git checkout -q -f FETCH_HEAD
+      - name: Install Android toolchain (idempotent, cached in $HOME/.matou-android)
+        run: |
+          set -euo pipefail
+          bash scripts/android/setup-toolchain.sh
+      - name: gomobile bind — embedded backend .aar
+        run: |
+          set -euo pipefail
+          make -C backend build-android-aar
+      - name: Install frontend deps
+        run: |
+          set -euo pipefail
+          cd frontend && CI=true npm ci
+      - name: Build debug APK
+        env:
+          # build-apk.sh reads VITE_PROD_CONFIG_URL from the env before falling
+          # back to frontend/.env.production (Ben's #76 notes).
+          VITE_PROD_CONFIG_URL: ${{ secrets.PROD_CONFIG_URL }}
+        run: |
+          set -euo pipefail
+          bash scripts/android/build-apk.sh
+      - name: Upload app-debug.apk
+        id: upload
+        # actions/upload-artifact is fetched from data.forgejo.org, which
+        # fast-fails intermittently like actions/checkout — don't let that flake
+        # fail the whole build; the next step posts the APK to Mattermost instead.
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: frontend/dist/capacitor/android/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Fallback — post APK to Mattermost if artifact upload flaked
+        if: steps.upload.outcome != 'success'
+        env:
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          apk="frontend/dist/capacitor/android/apk/debug/app-debug.apk"
+          bash .sandcastle/notify-mattermost-files.sh \
+            ":robot: android debug APK (actions/upload-artifact flaked — attached instead) — $RUN_URL" "$apk"
