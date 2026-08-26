@@ -152,6 +152,10 @@ export class BackendManager {
         // NEEDS LIVE VERIFICATION: adjust the URL template if the OOBI route differs.
         MATOU_REQUIRE_SIGNED_AUTH: '1',
         MATOU_KERIA_KEYSTATE_URL: 'http://localhost:4902/oobi/{aid}',
+        // Long-running specs hold a session in the Node helper registry
+        // (tests/e2e/utils/signed-auth.ts) without refreshing it; keep it live
+        // for the whole run. The app itself re-logs in on 401 regardless.
+        MATOU_AUTH_SESSION_TTL: '4h',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

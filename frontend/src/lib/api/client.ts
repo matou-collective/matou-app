@@ -43,51 +43,87 @@ export async function initApiToken(): Promise<void> {
  * inline `fetch(${BACKEND_URL}/...)` call sites don't each need updating, and
  * leaves requests to other origins (KERIA, config server) untouched. An
  * explicit Authorization header on a call is preserved.
+ *
+ * The token is the signed-challenge session token when one is live, else the
+ * per-launch API token; a 401 on a session-authenticated request re-runs the
+ * signed-challenge login once and retries (see backend-auth.ts).
  */
 export function installBackendAuth(): void {
   installBackendAuthCore(
     globalThis as unknown as AuthTarget,
     () => BACKEND_URL,
     () => API_TOKEN,
+    {
+      getSessionToken,
+      refreshSession: async () => {
+        try {
+          const ok = await useIdentityStore().signInToBackend();
+          return ok ? getSessionToken() : null;
+        } catch {
+          return null;
+        }
+      },
+    },
   );
 }
 
 /**
  * Session token minted by the backend's signed-challenge login (issue #18).
- * When present it is sent as `Authorization: Bearer <token>` so the backend can
- * bind the request to a cryptographically verified AID instead of trusting the
- * bare X-User-AID header. Held in module state (not persisted) — re-minted on
- * each app start via identityStore.signInToBackend().
+ * When present it is sent as `Authorization: Bearer <token>` (by the fetch
+ * wrapper above) so the backend can bind the request to a cryptographically
+ * verified AID instead of trusting the bare X-User-AID header. Held in module
+ * state (not persisted) — re-minted on each app start via
+ * identityStore.signInToBackend(), and again on any 401.
  */
 let sessionToken: string | null = null;
+let sessionExpiresAt = 0;
 
-/** Store the backend session token (called after a successful login). */
-export function setSessionToken(token: string | null): void {
+/**
+ * Treat a session as gone this long before its server-side expiry so a request
+ * in flight at the boundary does not race the TTL.
+ */
+const SESSION_EXPIRY_SKEW_MS = 30_000;
+
+/** Store the backend session token and its expiry (ISO string) after login. */
+export function setSessionToken(token: string | null, expiresAt?: string | null): void {
   sessionToken = token;
+  const parsed = expiresAt ? Date.parse(expiresAt) : NaN;
+  sessionExpiresAt = token && Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** Current backend session token, if any. */
+/** Current backend session token if it exists and has not (nearly) expired. */
 export function getSessionToken(): string | null {
+  if (!sessionToken) return null;
+  if (sessionExpiresAt && Date.now() >= sessionExpiresAt - SESSION_EXPIRY_SKEW_MS) {
+    return null;
+  }
   return sessionToken;
 }
 
 /**
- * Build request headers with JSON content type, the backend session token
- * (Bearer) when available, and the current user's AID for RBAC-protected
- * endpoints. Falls back gracefully if no identity/session is set.
+ * Domain-separated message a client signs to prove control of `aid` for a
+ * login challenge: "matou-auth:<aid>:<nonce>". Must match the backend's
+ * auth.SignedMessage exactly.
+ */
+export function loginMessage(aid: string, challenge: string): string {
+  return `matou-auth:${aid}:${challenge}`;
+}
+
+/**
+ * Build request headers with JSON content type and the current user's AID for
+ * RBAC-protected endpoints. Falls back gracefully if no identity is set. The
+ * Authorization header is added by the fetch wrapper (installBackendAuth), not
+ * here, so the session-refresh-on-401 path applies uniformly.
  *
  * When signed-auth enforcement is on, the backend derives the trusted AID from
- * the Bearer token and ignores X-User-AID; when off (default), X-User-AID is
- * still honored, so both are sent for compatibility.
+ * the Bearer session and ignores X-User-AID; when off (default), X-User-AID is
+ * still honored, so it is always sent for compatibility.
  */
 export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...extra,
   };
-  if (sessionToken) {
-    headers['Authorization'] = `Bearer ${sessionToken}`;
-  }
   try {
     const identity = useIdentityStore();
     if (identity.aidPrefix) {

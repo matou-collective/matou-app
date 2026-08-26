@@ -994,29 +994,38 @@ export class KERIClient {
    * signed-challenge authentication flow (issue #18) so the backend can verify
    * the caller controls the AID's current key before minting a session token.
    *
+   * The bytes signed are the domain-separated login message
+   * "matou-auth:<aid>:<challenge>" (see loginMessage in src/lib/api/client.ts
+   * and auth.SignedMessage on the backend), never the bare nonce.
+   *
    * @param challenge the challenge string returned by POST /api/v1/auth/challenge
-   * @param aidPrefix the AID to sign as; defaults to the first local identifier
+   * @param aidPrefix the AID to sign as; must be one of this agent's identifiers
    */
-  async signChallenge(challenge: string, aidPrefix?: string): Promise<string> {
+  async signChallenge(challenge: string, aidPrefix: string): Promise<string> {
     if (!this.client) {
       throw new Error('KERI client not initialized');
+    }
+    if (!aidPrefix) {
+      throw new Error('signChallenge: aidPrefix is required');
     }
     await this.ensureConnected();
 
     const list = await this.client.identifiers().list();
     const habs = list.aids ?? [];
-    const hab =
-      (aidPrefix ? habs.find((h: { prefix: string }) => h.prefix === aidPrefix) : undefined) ??
-      habs[0];
+    // Never fall back to another identifier: signing as the wrong AID would at
+    // best fail verification and at worst mint a session for an AID the user
+    // did not intend to act as.
+    const hab = habs.find((h: { prefix: string }) => h.prefix === aidPrefix);
     if (!hab) {
-      throw new Error('No AID available to sign challenge');
+      throw new Error(`signChallenge: AID ${aidPrefix} is not managed by this agent`);
     }
 
     const keeper = await this.client.manager!.get(hab);
     const signify = await import('signify-ts');
+    const message = `matou-auth:${aidPrefix}:${challenge}`;
     // Non-indexed signature (indexed=false) → Cigar[], code "0B". keeper.sign is
     // async in signify-ts 0.3.x; without await it serializes to {}.
-    const sigs = await keeper.sign(signify.b(challenge), false);
+    const sigs = await keeper.sign(signify.b(message), false);
     const first = Array.isArray(sigs) ? sigs[0] : undefined;
     const qb64 =
       typeof first === 'string'

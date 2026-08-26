@@ -20,6 +20,7 @@ import { test, expect, Page, BrowserContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
 import { BackendManager, BackendInstance } from './utils/backend-manager';
+import { loginAs, sessionHeaders, jsonSessionHeaders } from './utils/signed-auth';
 import {
   FRONTEND_URL,
   BACKEND_URL,
@@ -315,6 +316,10 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       console.log('[Setup] Admin logged in and on dashboard');
     }
 
+    // Signed-auth session (issue #18): direct API calls as the admin below
+    // carry the Bearer session the app minted on login.
+    await loginAs(adminPage);
+
     // Resolve admin AID from multiple sources
     adminAID = accounts.admin?.aid ?? '';
     if (!adminAID) {
@@ -373,6 +378,7 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     console.log('[Setup] Reusing saved member account, logging in...');
     await loginWithMnemonic(memberPage, accounts.member.mnemonic);
+    await loginAs(memberPage);
     memberAID = accounts.member.aid ?? '';
     if (!memberAID) {
       memberAID = await memberPage.evaluate(() => {
@@ -2004,14 +2010,14 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
     // Overdue section appears, one with no deadline so the Due Date TBC
     // section appears. Reuses the existing adminAID.
     const projResp = await adminPage.request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { title: 'E2E Timeline Seed', description: 'Seed for contributions page tests', created_by: adminAID },
     });
     expect(projResp.ok()).toBeTruthy();
     const seedProject: { id: string } = await projResp.json();
 
     await adminPage.request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: {
         project_id: seedProject.id,
         title: 'E2E Overdue Seed',
@@ -2023,7 +2029,7 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       },
     });
     await adminPage.request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: {
         project_id: seedProject.id,
         title: 'E2E TBC Seed',
@@ -2083,7 +2089,7 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
 
     // Cleanup: archive the seed project.
     await adminPage.request.post(`${BACKEND_URL}/api/v1/projects/${seedProject.id}/archive`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
   });
 });
@@ -2105,10 +2111,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     expect(resolvedAdminAID).toBeTruthy();
 
     const response = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-User-AID': resolvedAdminAID,
-      },
+      headers: jsonSessionHeaders(resolvedAdminAID),
       data: { title: '', description: 'No title', created_by: resolvedAdminAID },
     });
     expect(response.status()).toBe(400);
@@ -2132,14 +2135,14 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     expect(adminAID).toBeTruthy();
 
     const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { title: 'API Deadline Gate Test', description: 'Confirm without deadline test', created_by: adminAID },
     });
     expect(projectResp.ok()).toBeTruthy();
     const project: { id: string } = await projectResp.json();
 
     const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: {
         project_id: project.id,
         title: 'Needs deadline',
@@ -2153,7 +2156,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     const contrib: { id: string } = await contribResp.json();
 
     const confirmResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/confirm`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
     expect(confirmResp.status()).toBe(400);
     const body = await confirmResp.json();
@@ -2162,7 +2165,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Cleanup
     await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
   });
 
@@ -2172,14 +2175,14 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     expect(adminAID).toBeTruthy();
 
     const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { title: 'API Reward Test', description: 'Reward on wrong status test', created_by: adminAID },
     });
     expect(projectResp.ok()).toBeTruthy();
     const project: { id: string } = await projectResp.json();
 
     const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: {
         project_id: project.id,
         title: 'Not signed off',
@@ -2193,7 +2196,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
     const contrib: { id: string } = await contribResp.json();
 
     const rewardResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/reward`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
     // Status 400 from the service ("must be signed off ..."), the route is
     // RBAC-gated (403 only if AID lacks the community-admin role).
@@ -2202,7 +2205,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Cleanup
     await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
   });
 
@@ -2213,14 +2216,14 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Create a fresh project and contribution (status = 'created', not 'assigned')
     const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { title: 'API Unassign Test Project', description: 'Created for unassign 409 test', created_by: adminAID },
     });
     expect(projectResp.ok()).toBeTruthy();
     const project: { id: string } = await projectResp.json();
 
     const contribResp = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: {
         project_id: project.id,
         title: 'API Unassign Test Contribution',
@@ -2238,14 +2241,14 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Attempt to unassign a 'created' contribution — expect 409
     const unassignResp = await request.post(`${BACKEND_URL}/api/v1/contributions/${contrib.id}/unassign`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
     expect(unassignResp.status()).toBe(409);
     console.log('[API] Unassign on non-assigned contribution correctly returned 409');
 
     // Cleanup: archive the test project
     await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
   });
 
@@ -2256,7 +2259,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Create a fresh project with an active (unsigned) contribution
     const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { title: 'API Submit Completion Test', description: 'For submit-completion 400 test', created_by: adminAID },
     });
     expect(projectResp.ok()).toBeTruthy();
@@ -2264,7 +2267,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Add a contribution (status = 'created', definitely not signed_off)
     await request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: {
         project_id: project.id,
         title: 'Unsigned Contribution',
@@ -2279,14 +2282,14 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Submit for completion — should fail because contribution is not signed_off/archived
     const submitResp = await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/submit-completion`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
     expect(submitResp.status()).toBe(400);
     console.log('[API] submit-completion with unsigned contributions correctly returned 400');
 
     // Cleanup
     await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
   });
 
@@ -2297,7 +2300,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Create a fresh project to archive
     const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { title: 'API Archive Test Project', description: 'For archive cascade test', created_by: adminAID },
     });
     expect(projectResp.ok()).toBeTruthy();
@@ -2307,7 +2310,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Archive it — handler returns {success: "true"} (archive is fire-and-forget)
     const archiveResp = await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
     expect(archiveResp.status()).toBe(200);
     const body: { success?: string } = await archiveResp.json();
@@ -2315,7 +2318,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Verify cascade by re-fetching and checking project status is now archived
     const verifyResp = await request.get(`${BACKEND_URL}/api/v1/projects/${project.id}`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
     expect(verifyResp.ok()).toBeTruthy();
     const verified: { status: string } = await verifyResp.json();
@@ -2330,7 +2333,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Create a fresh project + plan + milestone via API to get a patchable milestone_id
     const projectResp = await request.post(`${BACKEND_URL}/api/v1/projects`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { title: 'API Milestone PATCH Test', description: 'For milestone patch test', created_by: adminAID },
     });
     expect(projectResp.ok()).toBeTruthy();
@@ -2338,13 +2341,13 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Create a plan for the project
     const planResp = await request.post(`${BACKEND_URL}/api/v1/implementation-plans`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { project_id: project.id, total_budget: '0', project_lead: adminAID, project_steward_id: adminAID },
     });
     if (!planResp.ok()) {
       console.log('[API] Could not create plan for milestone PATCH test (status=%d) — skipping', planResp.status());
       await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
-        headers: { 'X-User-AID': adminAID },
+        headers: sessionHeaders(adminAID),
       });
       return;
     }
@@ -2352,7 +2355,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Add a milestone via the plan-scoped endpoint
     const msResp = await request.post(`${BACKEND_URL}/api/v1/implementation-plans/${plan.id}/milestones`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { title: 'Test Milestone', duration: '1 week' },
     });
     expect(msResp.ok()).toBeTruthy();
@@ -2364,7 +2367,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // PATCH the milestone description
     const patchResp = await request.put(`${BACKEND_URL}/api/v1/milestones/${milestoneId}`, {
-      headers: { 'Content-Type': 'application/json', 'X-User-AID': adminAID },
+      headers: jsonSessionHeaders(adminAID),
       data: { description: 'Patched description from API validation test' },
     });
     expect(patchResp.status()).toBe(200);
@@ -2374,7 +2377,7 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
 
     // Cleanup
     await request.post(`${BACKEND_URL}/api/v1/projects/${project.id}/archive`, {
-      headers: { 'X-User-AID': adminAID },
+      headers: sessionHeaders(adminAID),
     });
   });
 

@@ -191,6 +191,9 @@ export const useIdentityStore = defineStore('identity', () => {
       const safeName = name.replace(/[/\\?#%\s]+/g, '-').replace(/^-|-$/g, '').trim();
       const aid = await keriClient.createAID(safeName, { useWitnesses: options?.useWitnesses ?? false });
       currentAID.value = aid;
+      // A first-run user must not spend the whole session tokenless: mint the
+      // backend session as soon as there is an AID to sign with (issue #18).
+      await signInToBackend();
       return aid;
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'AID creation failed';
@@ -348,26 +351,60 @@ export const useIdentityStore = defineStore('identity', () => {
     return checkAdminStatus();
   }
 
+  /** Live backend session token (mirrors the api client's module state). */
+  const backendSessionToken = ref<string | null>(null);
+  const backendSessionExpiresAt = ref<string | null>(null);
+
+  // Coalesce concurrent sign-ins (connect + createIdentity + 401 refreshes).
+  let signInInFlight: Promise<boolean> | null = null;
+
   /**
    * Authenticate to the backend using the signed-challenge flow (issue #18):
-   * request a challenge for the current AID, sign it with the AID's key, and
-   * exchange the signature for a short-lived session token attached as a Bearer
-   * token on subsequent requests. Best-effort and never throws — with signed-auth
-   * enforcement off (dev default) the backend still accepts the X-User-AID header.
+   * request a challenge for the current AID, sign the domain-separated login
+   * message with the AID's key, and exchange the signature for a short-lived
+   * session token attached as a Bearer token on subsequent requests. Called on
+   * connect, after identity creation/selection, and again by the fetch wrapper
+   * whenever the backend answers 401. Best-effort and never throws — with
+   * signed-auth enforcement off (dev default) the backend still accepts the
+   * X-User-AID header.
    */
-  async function signInToBackend(): Promise<boolean> {
+  function signInToBackend(): Promise<boolean> {
+    if (signInInFlight) return signInInFlight;
+    signInInFlight = doSignInToBackend().finally(() => {
+      signInInFlight = null;
+    });
+    return signInInFlight;
+  }
+
+  async function doSignInToBackend(): Promise<boolean> {
     const aid = currentAID.value?.prefix;
     if (!aid) return false;
     try {
       const { challenge } = await getAuthChallenge(aid);
       const signature = await keriClient.signChallenge(challenge, aid);
-      const { token } = await postAuthLogin(aid, challenge, signature);
-      setSessionToken(token);
-      console.log('[IdentityStore] Backend session established');
+      const { token, expiresAt } = await postAuthLogin(aid, challenge, signature);
+      setSessionToken(token, expiresAt);
+      backendSessionToken.value = token;
+      backendSessionExpiresAt.value = expiresAt;
+      console.log('[IdentityStore] Backend session established (expires', expiresAt + ')');
       return true;
     } catch (err) {
-      console.warn('[IdentityStore] Backend sign-in failed (continuing unauthenticated):', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/503|key state/i.test(msg)) {
+        // The backend could not fetch this AID's KEL from KERIA's OOBI route.
+        // Typical cause: an AID with no agent end-role/witness OOBI to serve
+        // (witness-less identities). Surface it clearly instead of a silent 503.
+        console.warn(
+          `[IdentityStore] Backend sign-in failed: key state for ${aid} is not resolvable ` +
+            '(no OOBI served for this AID?). Continuing unauthenticated:',
+          msg,
+        );
+      } else {
+        console.warn('[IdentityStore] Backend sign-in failed (continuing unauthenticated):', msg);
+      }
       setSessionToken(null);
+      backendSessionToken.value = null;
+      backendSessionExpiresAt.value = null;
       return false;
     }
   }
@@ -380,6 +417,8 @@ export const useIdentityStore = defineStore('identity', () => {
     adminCredential.value = null;
     adminChecked.value = false;
     setSessionToken(null);
+    backendSessionToken.value = null;
+    backendSessionExpiresAt.value = null;
     await secureStorage.removeItem('matou_passcode');
     await secureStorage.removeItem('matou_mnemonic');
   }
@@ -449,10 +488,14 @@ export const useIdentityStore = defineStore('identity', () => {
   }
 
   /**
-   * Set the current AID directly (used by org setup)
+   * Set the current AID directly (used by org setup and invite claim) and mint
+   * a backend session for it. Returns the sign-in promise so callers that go
+   * on to make RBAC-protected requests can await it; the AID itself is set
+   * synchronously.
    */
-  function setCurrentAID(aid: AIDInfo) {
+  function setCurrentAID(aid: AIDInfo): Promise<boolean> {
     currentAID.value = aid;
+    return signInToBackend();
   }
 
   return {
@@ -491,6 +534,8 @@ export const useIdentityStore = defineStore('identity', () => {
     createIdentity,
     restore,
     signInToBackend,
+    backendSessionToken,
+    backendSessionExpiresAt,
     disconnect,
     setInitialized,
     setInitError,

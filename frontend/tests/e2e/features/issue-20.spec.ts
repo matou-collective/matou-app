@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { loginAs, jsonSessionHeaders } from '../utils/signed-auth';
 
 // Feature (#20): high-stakes actions carry a KERI-verifiable proof envelope so
 // honest peers can validate legitimacy independently of the any-sync transport
@@ -23,7 +24,7 @@ async function adminAid(): Promise<string> {
 async function api(aid: string, method: string, route: string, body?: unknown) {
   const res = await fetch(`${API}${route}`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-User-AID': aid },
+    headers: jsonSessionHeaders(aid),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -87,6 +88,7 @@ test.describe('KERI proof on high-stakes actions (#20)', () => {
   }) => {
     test.setTimeout(300_000);
     const aid = await adminAid();
+    await loginAs(adminPage); // signed-auth session so API calls act as the admin
 
     const runTag = Date.now().toString(36);
     const title = `Proofed Contribution ${runTag}`;
