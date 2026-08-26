@@ -116,6 +116,8 @@ export ANDROID_HOME="$SDK"
 export ANDROID_SDK_ROOT="$SDK"
 export ANDROID_NDK_HOME="$NDK_HOME"
 export PATH="$GOBIN_DIR:\$JAVA_HOME/bin:\$ANDROID_HOME/cmdline-tools/latest/bin:\$ANDROID_HOME/platform-tools:\$PATH"
+# CI runner daemons use a non-login PATH without go — same guard as run-smoke-drive.sh
+command -v go >/dev/null 2>&1 || export PATH="\$HOME/go-sdk/go/bin:\$HOME/.nix-profile/bin:\$PATH"
 EOF
 
 log "Done. Toolchain in $ROOT — source $ROOT/env.sh to use it."
