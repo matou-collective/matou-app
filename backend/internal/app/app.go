@@ -492,12 +492,12 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 
 	// Register API routes
 	credHandler.RegisterRoutes(mux, roleLookup)
-	syncHandler.RegisterRoutes(mux)
+	syncHandler.RegisterRoutes(mux, roleLookup)
 	trustHandler.RegisterRoutes(mux)
-	spacesHandler.RegisterRoutes(mux)
+	spacesHandler.RegisterRoutes(mux, roleLookup)
 	invitesHandler.RegisterRoutes(mux)
 	bookingHandler.RegisterRoutes(mux)
-	identityHandler.RegisterRoutes(mux)
+	identityHandler.RegisterRoutes(mux, roleLookup)
 	eventsHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux, roleLookup)
 	multisigHandler.RegisterRoutes(mux)
@@ -512,7 +512,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	implPlansHandler.RegisterRoutes(mux, roleLookup)
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
-	orgConfigHandler.RegisterRoutes(mux)
+	orgConfigHandler.RegisterRoutes(mux, roleLookup)
 
 	// Bind the listener before starting the sync worker so a bind failure aborts
 	// cleanly. net.Listen honours port 0 by picking a free port, which App.Port

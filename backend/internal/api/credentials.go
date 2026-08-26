@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -104,6 +105,16 @@ func (h *CredentialsHandler) HandleStore(w http.ResponseWriter, r *http.Request)
 			Error:   fmt.Sprintf("invalid credential: %v", err),
 		})
 		return
+	}
+
+	// Resource check (RBAC active): non-stewards may only cache credentials
+	// issued to themselves. See credentialSubjectPolicy.
+	if h.roleLookup != nil {
+		if msg := credentialSubjectPolicy(GetUserAID(r), GetUserRoles(r), "", []keri.Credential{req.Credential}); msg != "" {
+			log.Printf("[Credentials] store denied for %s: %s", GetUserAID(r), msg)
+			writeJSON(w, http.StatusForbidden, StoreResponse{Success: false, Error: msg})
+			return
+		}
 	}
 
 	// Store in anystore
@@ -270,6 +281,7 @@ func (h *CredentialsHandler) withRBAC(action contributions.Action, handler http.
 // RegisterRoutes registers credential routes on the mux.
 // roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
 func (h *CredentialsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("CredentialsHandler", roleLookup)
 	h.roleLookup = roleLookup
 
 	// Organization info

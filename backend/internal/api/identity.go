@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/types"
 )
@@ -19,6 +20,7 @@ type IdentityHandler struct {
 	sdkClient    *anysync.SDKClient
 	spaceManager *anysync.SpaceManager
 	spaceStore   anysync.SpaceStore
+	roleLookup   RoleLookup // nil = RBAC disabled (tests only)
 }
 
 // NewIdentityHandler creates a new identity handler.
@@ -457,7 +459,50 @@ func (h *IdentityHandler) handleIdentity(w http.ResponseWriter, r *http.Request)
 }
 
 // RegisterRoutes registers identity routes on the mux.
-func (h *IdentityHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/v1/identity/set", h.HandleSetIdentity)
-	mux.HandleFunc("/api/v1/identity", h.handleIdentity)
+// roleLookup gates POST /api/v1/identity/set and DELETE /api/v1/identity once
+// an identity exists; pass nil to skip auth (tests only).
+func (h *IdentityHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("IdentityHandler", roleLookup)
+	h.roleLookup = roleLookup
+	mux.HandleFunc("/api/v1/identity/set", h.withBootstrapRBAC(h.HandleSetIdentity))
+	mux.HandleFunc("/api/v1/identity", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			h.withBootstrapRBAC(h.HandleDeleteIdentity)(w, r)
+			return
+		}
+		h.handleIdentity(w, r)
+	})
+}
+
+// withBootstrapRBAC applies the bootstrap rule for identity writes:
+//
+//   - No identity configured yet (first run / after DELETE): allowed without
+//     X-User-AID. This is the onboarding path — the backend has no owner and
+//     no roles to check.
+//   - Identity configured: the caller must authenticate and either be the
+//     current owner (X-User-AID == the configured AID; the app re-sets its
+//     own identity on boot and in the welcome checks, and a plain Member must
+//     be able to do that on their own backend) or hold ActionSetIdentity
+//     (Operations Steward / Founding Member). Anyone else re-pointing the
+//     backend at a different AID is refused with 403.
+func (h *IdentityHandler) withBootstrapRBAC(handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.userIdentity == nil || !h.userIdentity.IsConfigured() {
+			log.Printf("[Identity] bootstrap: accepting %s %s without RBAC (no identity configured yet)", r.Method, r.URL.Path)
+			handler(w, r)
+			return
+		}
+		RBACMiddleware(h.roleLookup, func(w http.ResponseWriter, r *http.Request) {
+			caller := GetUserAID(r)
+			if caller == h.userIdentity.GetAID() || contributions.CanPerformAction(GetUserRoles(r), contributions.ActionSetIdentity) {
+				handler(w, r)
+				return
+			}
+			log.Printf("[Identity] %s %s denied for %s: not the identity owner and lacks %s", r.Method, r.URL.Path, caller, contributions.ActionSetIdentity)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions"})
+		})(w, r)
+	}
 }

@@ -33,6 +33,7 @@ Two facts frame every matrix below (details in [Role Model & Resolution](#role-m
 
 ## Contents
 
+- [Issue #17 enforcement (PR #28)](#issue-17-enforcement-pr-28)
 - [Role Model & Resolution](#role-model--resolution)
 - [Projects](#projects)
 - [Contributions Lifecycle](#contributions-lifecycle)
@@ -44,6 +45,56 @@ Two facts frame every matrix below (details in [Role Model & Resolution](#role-m
 - [Appendix: Known Gaps & Design-Doc Drift](#appendix-known-gaps--design-doc-drift)
 
 ---
+
+## Issue #17 enforcement (PR #28)
+
+Added 2026-08-26. The matrices below were generated before PR #28 and still describe the pre-#17 state where they say "no RBAC"; this section is the authoritative delta. Code: `backend/internal/contributions/roles.go` (policy), `backend/internal/api/rbac.go` (middleware), per-handler `withRBAC`/`withBootstrapRBAC`, tests in `backend/internal/api/rbac_enforcement_test.go` and `rbac_enforcement_review_test.go`, e2e in `frontend/tests/e2e/features/issue-17.spec.ts`.
+
+### Newly gated routes
+
+| Route | Action | Roles | Resource-level rule |
+|---|---|---|---|
+| `PUT /api/v1/members/{aid}/role` | `change_member_role` | Operations Steward, Founding Member | `Founding Member` may only be granted by a Founding Member |
+| `DELETE /api/v1/members/{aid}` | `remove_member` | Operations Steward, Founding Member | — |
+| `POST /api/v1/profiles/init-member` | `init_member_profile` | steward scope | — |
+| `POST /api/v1/profiles` | `write_profile` | any authenticated member | `profileWritePolicy` (below) |
+| `POST /api/v1/contributions/{id}/transition` | `transition_contribution` + upgraded action for the target status | any member; `signed_off` → `sign_off_contribution`, `rewarded` → `reward_contribution`, `archived` → `archive_contribution` | `archived` is delegated to the `/archive` path (child cascade + `contribution:archived` SSE) |
+| `POST /api/v1/projects/{id}/approve-completion`, `/reject-completion` | `approve_/reject_project_completion` | steward scope | non-exempt caller must be this project's steward and not the submitter |
+| `POST /api/v1/implementation-plans/{id}/sign-off` | `sign_off_plan` | steward scope | caller AID comes from the RBAC context only (body `user_id` fallback removed) |
+| `POST /api/v1/credentials`, `POST /api/v1/sync/credentials` | `store_credential` | any authenticated member | `credentialSubjectPolicy`: non-stewards may only store credentials whose `recipient` (and `userAid`) is their own AID; stewards may store credentials they issued to others |
+| `POST /api/v1/spaces/grant-steward-admin` | `grant_steward_admin` | Operations Steward, Founding Member | — |
+| `POST /api/v1/org/config`, `DELETE /api/v1/org/config` | `save_org_config` | Operations Steward, Founding Member | **bootstrap rule** (below) |
+| `POST /api/v1/identity/set`, `DELETE /api/v1/identity` | `set_identity` | Operations Steward, Founding Member **or** the current identity owner | **bootstrap rule** (below) |
+
+`adminScope` = `{operations_steward, founding_member}` — the same set that may change member roles — is used for every route that grants a role or an ACL permission.
+
+### Bootstrap rule (maintainer decision, 2026-08-26)
+
+`POST /api/v1/org/config` and `POST /api/v1/identity/set` are called during first-run setup before any role exists, so they cannot be unconditionally gated:
+
+- **Org config** (`OrgConfigHandler.withBootstrapRBAC`): while `IsConfigured()` is false (no `org-config.yaml` with an organization AID) the POST/DELETE are accepted without `X-User-AID` — the admins list written by that very request is what `OrgConfigAdminLookup`/`ProfileRoleLookup.SetAdminAIDs` resolve to Founding Member. From the first successful save on, both methods require an authenticated caller with `save_org_config`. The check is per request, so a DELETE puts the backend back into bootstrap (this is how the e2e harness resets; `tests/e2e/utils/mock-config.ts` sends the configured admin AID).
+- **Identity** (`IdentityHandler.withBootstrapRBAC`): while `UserIdentity.IsConfigured()` is false, `identity/set` and `DELETE /identity` are open (onboarding). Once an identity exists the caller must be its **owner** (`X-User-AID` equals the configured AID — the app re-sets its own identity on boot and in the welcome-overlay checks, and a plain Member must be able to do that on their own backend) or hold `set_identity`. Re-pointing a configured backend at a different AID as a non-admin is refused with 403.
+
+The `roleLookup` used by all of the above is the production composite (`profile → org-config admins → cached credentials → own identity`).
+
+### `profileWritePolicy` — `POST /api/v1/profiles`
+
+`POST /profiles` was the unguarded twin of `PUT /members/{aid}/role`: `ProfileRoleLookup` reads `role` from the `CommunityProfile` object that this endpoint writes verbatim. Rules, in order (`backend/internal/api/profiles.go`):
+
+1. A `CommunityProfile` write that **changes the role** — new object with a role other than `Member`, or an existing object whose `role` differs — is a role change and needs `change_member_role`; granting `Founding Member` additionally needs the caller to be a Founding Member. Same rule as `PUT /members/{aid}/role`.
+2. Steward scope may write any profile whose role is unchanged (registration approval by a Community Steward writes `role: 'Member'` over the init-member placeholder; decline/attendance/pending-profile creation run as stewards).
+3. The profile's subject may write their own profile. Subject = existing object's `userAID`/`aid` (existing wins over the payload so a caller cannot relabel someone else's profile), else the incoming payload's, else the object-id convention `<Type>-<aid>[-suffix]`.
+4. Any authenticated member may append to another member's `SharedProfile.endorsements` — the write must leave every other field byte-identical and may only grow the array.
+
+Everything else is 403. The frontend's `createOrUpdateProfile` now sends `X-User-AID` (`frontend/src/lib/api/client.ts`); `useAdminActions.ts` needed no change because all its writes go through that helper.
+
+### `store_credential` scope decision
+
+`POST /api/v1/sync/credentials` is called by a **newly approved member** right after their membership credential arrives (`useCredentialPolling.ts`) — at that point their profile role is `Member`, so scoping the action to steward scope would break the sync flow. The action therefore stays `allRoles` (authenticated) with the `credentialSubjectPolicy` resource check: a non-steward may only store credentials issued **to their own AID** (and `userAid`, if sent, must match), which closes the "seed the credential cache with a role credential for someone else" path while keeping the member self-sync working. Stewards keep the ability to cache credentials they issued.
+
+### Fail-loud wiring
+
+Every `RegisterRoutes(mux, roleLookup)` calls `requireRoleLookup`, which `log.Fatalf`s when the lookup is nil outside `go test` (`testing.Testing()`). Handlers still treat a nil lookup as "RBAC disabled" so unit tests can call them directly, but the production server can no longer start with a guarded route silently fail-open.
 
 ## Role Model & Resolution
 

@@ -37,6 +37,7 @@ func (h *ProposalsHandler) SetBroker(broker *EventBroker) {
 // RegisterRoutes registers proposal routes on the mux.
 // Both the collection and sub-resource endpoints use RBAC middleware for role resolution.
 func (h *ProposalsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ProposalsHandler", roleLookup)
 	mux.HandleFunc("/api/v1/proposals", CORSHandler(RBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

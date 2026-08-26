@@ -37,6 +37,7 @@ func (h *ProjectsHandler) SetBroker(broker *EventBroker) {
 // RegisterRoutes registers project routes on the mux.
 // roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
 func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ProjectsHandler", roleLookup)
 	createHandler := http.HandlerFunc(h.HandleCreate)
 	if roleLookup != nil {
 		createHandler = RBACMiddleware(roleLookup, RequireAction(contributions.ActionCreateProject, h.HandleCreate))

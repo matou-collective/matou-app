@@ -97,14 +97,30 @@ const (
 	ActionSubmitProjectCompletion  Action = "submit_project_completion"
 	ActionApproveProjectCompletion Action = "approve_project_completion"
 	ActionRejectProjectCompletion  Action = "reject_project_completion"
+
+	// Role-granting / bootstrap routes (issue #17 follow-up). These endpoints
+	// hand out roles indirectly — org config admins resolve to Founding Member,
+	// grant-steward-admin elevates any-sync ACL permissions, identity/set
+	// decides which AID the backend treats as its owner — so they are limited
+	// to adminScope once the backend is past first-run bootstrap (see
+	// docs/RBAC.md "Bootstrap rule").
+	ActionSaveOrgConfig     Action = "save_org_config"
+	ActionGrantStewardAdmin Action = "grant_steward_admin"
+	ActionSetIdentity       Action = "set_identity"
+
+	// ActionWriteProfile gates POST /api/v1/profiles. Any authenticated member
+	// may reach the handler; resource-level rules (owner / steward / role
+	// change) are applied in api.profileWritePolicy.
+	ActionWriteProfile Action = "write_profile"
 )
 
 // actionPermissions maps each action to the roles that can perform it.
 // 5-role model: Community Admin (OperationsSteward/FoundingMember), Project Steward,
 // Project Lead, Contributor, Member.
-// allRoles is the full set of contribution-system roles.
-// Backend RBAC verifies the user is authenticated; project-level permission
-// checks (lead, steward, admin) are enforced on the frontend.
+// allRoles is the full set of contribution-system roles. An action mapped to
+// allRoles only verifies the caller is authenticated (has an X-User-AID that
+// resolves to at least one role); resource-level checks for those actions
+// live in the service/handler layer.
 var allRoles = []Role{
 	RoleMember, RoleContributor, RoleProjectLead, RoleProjectSteward,
 	RoleCommunitySteward, RoleTechSteward, RoleTreasurySteward,
@@ -117,6 +133,12 @@ var stewardScope = []Role{
 
 var leadStewardScope = []Role{
 	RoleProjectLead, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember,
+}
+
+// adminScope is the community-admin tier: the same set that may change member
+// roles. Used for routes that grant roles or ACL permissions.
+var adminScope = []Role{
+	RoleOperationsSteward, RoleFoundingMember,
 }
 
 var actionPermissions = map[Action][]Role{
@@ -158,6 +180,33 @@ var actionPermissions = map[Action][]Role{
 	ActionSubmitProjectCompletion:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
 	ActionApproveProjectCompletion: stewardScope,
 	ActionRejectProjectCompletion:  stewardScope,
+
+	// Role-granting / bootstrap routes
+	ActionSaveOrgConfig:     adminScope,
+	ActionGrantStewardAdmin: adminScope,
+	ActionSetIdentity:       adminScope,
+	ActionWriteProfile:      allRoles,
+}
+
+// IsStewardScope reports whether the caller holds any steward-tier role
+// (project steward, operations steward, founding member).
+func IsStewardScope(roles []Role) bool {
+	return hasAnyRole(roles, stewardScope)
+}
+
+// IsAdminScope reports whether the caller holds a community-admin role
+// (operations steward, founding member).
+func IsAdminScope(roles []Role) bool {
+	return hasAnyRole(roles, adminScope)
+}
+
+func hasAnyRole(roles []Role, scope []Role) bool {
+	for _, r := range roles {
+		if HasRole(scope, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsCompletionExempt reports whether the caller is exempt from the

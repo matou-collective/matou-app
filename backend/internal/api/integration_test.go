@@ -157,9 +157,9 @@ func setupIntegrationEnv(t *testing.T) *IntegrationTestEnv {
 	// Create mux and register routes
 	mux := http.NewServeMux()
 	credHandler.RegisterRoutes(mux, nil)
-	syncHandler.RegisterRoutes(mux)
+	syncHandler.RegisterRoutes(mux, nil)
 	trustHandler.RegisterRoutes(mux)
-	spacesHandler.RegisterRoutes(mux)
+	spacesHandler.RegisterRoutes(mux, nil)
 
 	cleanup := func() {
 		store.Close()
