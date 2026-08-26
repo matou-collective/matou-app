@@ -198,5 +198,43 @@ bash "$script" >/dev/null 2>&1
 check "S7 second run performs zero new label ops" \
   "! tail -n +$((first_calls + 1)) \"\$FAKE_DIR/calls.log\" | grep -q 'issues/7/labels'"
 
+# ---- S8: two-decisions-one-thread — approve then reject; only the first fires.
+# The poller breaks out of the reply loop after the first decision, so the
+# second decision reply must never be inspected: no wontfix, no close, and its
+# content copied nowhere (not even via the chatter path). Distinct create_at so
+# oldest-first ordering is deterministic (same reason as resume-parked-asks-test).
+setup
+jq -n --argjson i "$(mkissue 16 "Double decision bug")" '[$i]' >"$FAKE_DIR/issues.json"
+jq -n --argjson t "$(mkpost T16 "" BOTID "$(verify_msg 16 "Double decision bug")")" '{posts:{T16:$t}}' >"$FAKE_DIR/channel.json"
+jq -n --argjson t "$(mkpost T16 "" BOTID "$(verify_msg 16 "Double decision bug")")" \
+  --argjson r1 "$(mkpost R1 T16 HUMAN "approve" "$now_ms")" \
+  --argjson r2 "$(mkpost R2 T16 HUMAN "reject this is wrong on second thought" "$((now_ms + 1000))")" \
+  '{posts:{T16:$t, R1:$r1, R2:$r2}}' >"$FAKE_DIR/thread-T16.json"
+bash "$script" >/dev/null 2>&1
+check "S8 first decision (approve) fires" "grep -q 'DELETE .*/issues/16/labels/50' \"\$FAKE_DIR/calls.log\" && grep -q '\"labels\": *\\[36\\]' \"\$FAKE_DIR/forgejo.log\""
+check "S8 second decision (reject) never fires: no wontfix, no close" \
+  "! grep -q '\"labels\": *\\[44\\]' \"\$FAKE_DIR/forgejo.log\" && ! grep -q 'PATCH .*/issues/16\$' \"\$FAKE_DIR/calls.log\""
+check "S8 second reply copied nowhere (no comment, content absent)" \
+  "! grep -q 'issues/16/comments' \"\$FAKE_DIR/calls.log\" && ! grep -q 'this is wrong on second thought' \"\$FAKE_DIR/forgejo.log\""
+check "S8 second reply id never confirmed in-thread" "! grep -q '\`R2\`' \"\$FAKE_DIR/posts.log\""
+
+# ---- S8b: reject then approve — mirror of S8; the first decision (reject)
+# fires and closes, the later approve is never reached and never promotes.
+setup
+jq -n --argjson i "$(mkissue 17 "Double decision bug 2")" '[$i]' >"$FAKE_DIR/issues.json"
+jq -n --argjson t "$(mkpost T17 "" BOTID "$(verify_msg 17 "Double decision bug 2")")" '{posts:{T17:$t}}' >"$FAKE_DIR/channel.json"
+jq -n --argjson t "$(mkpost T17 "" BOTID "$(verify_msg 17 "Double decision bug 2")")" \
+  --argjson r1 "$(mkpost R1 T17 HUMAN "reject" "$now_ms")" \
+  --argjson r2 "$(mkpost R2 T17 HUMAN "approve go ahead after all" "$((now_ms + 1000))")" \
+  '{posts:{T17:$t, R1:$r1, R2:$r2}}' >"$FAKE_DIR/thread-T17.json"
+bash "$script" >/dev/null 2>&1
+check "S8b first decision (reject) fires: wontfix + close" \
+  "grep -q '\"labels\": *\\[44\\]' \"\$FAKE_DIR/forgejo.log\" && grep -q 'PATCH .*/issues/17\$' \"\$FAKE_DIR/calls.log\""
+check "S8b second decision (approve) never fires: no ready-for-agent label" \
+  "! grep -q '\"labels\": *\\[36\\]' \"\$FAKE_DIR/forgejo.log\""
+check "S8b second reply copied nowhere (no guidance comment, content absent)" \
+  "! grep -q 'go ahead after all' \"\$FAKE_DIR/forgejo.log\""
+check "S8b second reply id never confirmed in-thread" "! grep -q '\`R2\`' \"\$FAKE_DIR/posts.log\""
+
 echo "check-verifications: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

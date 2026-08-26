@@ -2,12 +2,16 @@
 
 ## Ready tasks
 
-!`bash .sandcastle/list-ready-tasks.sh`
+!`bash .sandcastle/claim-next-task.sh`
 
-The list above holds only issues that are `ready-for-agent` (human-verified
-via Mattermost) with every Forgejo dependency closed. It is the sole source
-of truth for what work exists. Do not run your own unfiltered query — if the
-list is empty, there is nothing to do.
+The list above holds **at most one issue: the ticket this iteration has
+already claimed** for you (multi-host pool — other hosts, including
+`Matou/ourcloud`'s, are working other tickets concurrently; the claim means
+no one else will touch this one). It is drawn from the same `ready-for-agent`
++ dependencies-closed queue `list-ready-tasks.sh` always used, so it is still
+human-verified via Mattermost with every Forgejo dependency closed. It is the
+sole source of truth for what work exists. Do not run your own unfiltered
+query — if the list is empty, there is nothing claimable right now.
 
 ## Recent agent PRs (last 10)
 
@@ -103,8 +107,19 @@ To see a task in full:
 
    - notify: `bash .sandcastle/notify-mattermost.sh ":package: PR ready for review: <PR html_url> (fixes #<NUMBER>)"`
 7. **Blocked with no human answer?** Label the issue `agent-blocked`, comment
-   exactly what's blocking, and move on. A human resolves it and re-adds
-   `ready-for-agent`.
+   exactly what's blocking, then release the claim so the audit trail stays
+   clean (multi-host pool, spec D4) — delete THIS run's claim comment (the
+   one whose first line is `swarm-claim host=... run=$SWARM_RUN_ID`) and
+   remove `agent-working`:
+
+       token="$(cat /run/secrets/forgejo_token)"
+       cid="$(curl -sf -H "Authorization: token $token" "$FORGEJO_API/issues/<NUMBER>/comments" |
+         jq -r --arg r "$SWARM_RUN_ID" '.[] | select(.body | startswith("swarm-claim ") and contains("run=" + $r)) | .id' | head -1)"
+       [ -n "$cid" ] && curl -sf -X DELETE -H "Authorization: token $token" "$FORGEJO_API/issues/comments/$cid"
+       # agent-working label id: GET $FORGEJO_API/labels (per repo — do not hardcode)
+       curl -sf -X DELETE -H "Authorization: token $token" "$FORGEJO_API/issues/<NUMBER>/labels/<agent-working-id>"
+
+   Then move on. A human resolves it and re-adds `ready-for-agent`.
 8. **Stay in scope.** Fix what the issue reports. No drive-by refactors, no
    dependency changes unless the fix requires one — and a dependency change
    ships its lockfile update (`package-lock.json` / `go.sum`) in the same

@@ -175,8 +175,14 @@ test.describe.serial('Organization Setup', () => {
       expect(config.organization).toBeDefined();
       expect(config.organization.aid).toBeTruthy();
       expect(config.organization.name).toBe('Matou Community');
-      expect(config.admin).toBeDefined();
-      expect(config.admin.aid).toBeTruthy();
+      // The canonical admin field is `admins` (plural array) — the backend's
+      // OrgConfigData persists only `admins`, and the whole app reads it
+      // (useRegistration, identity store, DashboardPage, useCredentialPolling).
+      // The legacy singular `admin` is a read-only backward-compat shim in
+      // normalizeOrgConfig and is never persisted, so assert on `admins`.
+      expect(Array.isArray(config.admins)).toBe(true);
+      expect(config.admins.length).toBeGreaterThan(0);
+      expect(config.admins[0].aid).toBeTruthy();
       expect(config.registry).toBeDefined();
       expect(config.registry.id).toBeTruthy();
       console.log('[Test] Config verified on server');

@@ -25,9 +25,13 @@
 # guard first lived as a stopgap in the host's backstop-tick.sh wrapper; this is
 # its upstream home (the wrapper stopgap can be removed once this is installed).
 #
-# This file is CANONICAL in Matou/matou-app and synced to Matou/matou-app by
-# .sandcastle/sync-harness.sh (the ONE transform: the repo-slug substitution on
-# the FORGEJO_API default below); edit it here, never in the copy (#250).
+# This file is CANONICAL in Matou/dev-factory (ADR 0180 / #571: the factory
+# core moved out of any one product repo) and vendored byte-identical here —
+# edit it there, bump FACTORY_REF, re-vendor; never in this copy directly
+# (check-harness-drift.sh reds on a direct edit). It carries no repo slug of
+# its own (the FORGEJO_API default lives in swarm-identity.sh, the one file
+# that's deliberately NOT vendored — the per-repo declarative layer), so
+# being byte-identical here is exactly as safe as in any other product repo.
 #
 # Usage: schedule-backstop.sh <workflow-file> <window-minutes>
 #   e.g. schedule-backstop.sh swarm.yml 25
@@ -38,7 +42,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 wf="${1:?workflow file, e.g. swarm.yml}"
 window_min="${2:?window in minutes}"
 
-: "${FORGEJO_API:=https://git.matou.nz/api/v1/repos/Matou/matou-app}"
+# shellcheck source=swarm-identity.sh
+. "$here/swarm-identity.sh"
 if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/secrets/forgejo_token" ]; then
   FORGEJO_TOKEN="$(cat "$here/secrets/forgejo_token")"
 fi
@@ -65,9 +70,14 @@ fi
 # (`waiting` = queued behind the busy host, or `running`), OR one that STARTED
 # within the window (Forgejo's own scheduler is doing its job). The in-flight
 # clause is #238 AC3 — without it a queued dispatch is re-dispatched every tick.
+# Name match is `$name` OR `$name (N)` (#588, same drift as #541's
+# claim_alive_runs): swarm.yml's 2-wide worker matrix (44fe333) makes Forgejo
+# name each matrix job "swarm (1)"/"swarm (2)", never bare "swarm" — an
+# exact-match filter never sees a real swarm run as in-flight and can pile on
+# redundant dispatches while matrix workers are already running.
 inflight="$(printf '%s' "$runs" | jq -r --arg n "$name" --arg c "$cutoff" \
   '[.workflow_runs[]?
-     | select(.name == $n)
+     | select(.name == $n or (.name | test("^" + $n + " \\(")))
      | select((.status == "waiting") or (.status == "running") or ((.run_started_at // "") >= $c))
    ] | length')"
 

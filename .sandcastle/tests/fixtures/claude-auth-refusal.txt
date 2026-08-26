@@ -1,0 +1,8 @@
+# Captured Claude Code auth refusal (2026-08-21, five consecutive rehearsal
+# drives 003234Z..030832Z — see rehearsal-report.sh header). Same-commit law:
+# if the auth wording changes, this fixture changes with limit-lib.sh's
+# CLAUDE_AUTH_RE (GOTCHAS-style).
+Setting up sandbox done (4.2s)
+Agent started
+Failed to authenticate: OAuth session expired and could not be refreshed
+Agent invocation failed: claude-code exited with code 1:

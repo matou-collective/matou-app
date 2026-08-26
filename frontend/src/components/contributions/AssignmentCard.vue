@@ -300,6 +300,11 @@ function closeInlinePicker() {
 
 .assignment-modal {
   min-width: 360px;
+
+  @media (max-width: 767px) {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 .state-hidden {

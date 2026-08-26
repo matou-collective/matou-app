@@ -285,7 +285,7 @@ func TestService_TransitionDecisionPlan(t *testing.T) {
 		ProposalLeadID: "lead-1", ProposalStewardID: "steward-1",
 	})
 
-	updated, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted)
+	updated, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted, "u", nil)
 	if err != nil {
 		t.Fatalf("TransitionDecisionPlan failed: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestService_TransitionDecisionPlan(t *testing.T) {
 	}
 
 	// Invalid: submitted → drafted (no such transition)
-	_, err = svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanDrafted)
+	_, err = svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanDrafted, "u", nil)
 	if err == nil {
 		t.Error("expected error for invalid transition")
 	}
@@ -399,10 +399,10 @@ func TestService_CompleteGovernanceAction(t *testing.T) {
 	}
 
 	// Plan signoff is required before any action can be completed.
-	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted); err != nil {
+	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSubmitted, "u", nil); err != nil {
 		t.Fatalf("TransitionDecisionPlan (submitted) failed: %v", err)
 	}
-	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSignedOff); err != nil {
+	if _, err := svc.TransitionDecisionPlan(ctx, "space-1", dp.ID, DecisionPlanSignedOff, "u", nil); err != nil {
 		t.Fatalf("TransitionDecisionPlan (signed_off) failed: %v", err)
 	}
 
@@ -1055,7 +1055,7 @@ func TestApproveProjectCompletion_FillsCompletedFields(t *testing.T) {
 	proj.Status = ProjectPendingCompletion
 	_ = svc.SaveProject(ctx, spaceID, proj)
 
-	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1", []Role{RoleFoundingMember})
+	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1", []Role{RoleFoundingMember}, nil)
 	if err != nil {
 		t.Fatalf("ApproveProjectCompletion: %v", err)
 	}
@@ -1138,7 +1138,7 @@ func TestApproveProjectCompletion_RejectsSubmitterAndNonSteward(t *testing.T) {
 	}
 
 	// A steward who is not this project's steward is rejected.
-	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "other-steward", []Role{RoleProjectSteward}); err == nil {
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "other-steward", []Role{RoleProjectSteward}, nil); err == nil {
 		t.Error("expected non-steward-of-project approver to be rejected")
 	}
 
@@ -1148,12 +1148,12 @@ func TestApproveProjectCompletion_RejectsSubmitterAndNonSteward(t *testing.T) {
 	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj2.ID, "dual-aid", []Role{RoleProjectLead, RoleProjectSteward}); err != nil {
 		t.Fatalf("submit dual: %v", err)
 	}
-	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj2.ID, "dual-aid", []Role{RoleProjectSteward}); err == nil {
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj2.ID, "dual-aid", []Role{RoleProjectSteward}, nil); err == nil {
 		t.Error("expected submitter to be rejected as their own approver")
 	}
 
 	// This project's steward (not the submitter) approves.
-	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-aid", []Role{RoleProjectSteward}); err != nil {
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-aid", []Role{RoleProjectSteward}, nil); err != nil {
 		t.Fatalf("project steward approve: %v", err)
 	}
 }
@@ -1168,7 +1168,7 @@ func TestApproveProjectCompletion_FoundingMemberExempt(t *testing.T) {
 	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "fm-aid", []Role{RoleFoundingMember}); err != nil {
 		t.Fatalf("fm submit: %v", err)
 	}
-	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "fm-aid", []Role{RoleFoundingMember}); err != nil {
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "fm-aid", []Role{RoleFoundingMember}, nil); err != nil {
 		t.Fatalf("fm approve (exempt): %v", err)
 	}
 }
@@ -1346,7 +1346,7 @@ func TestSignOffContribution_RequiresPlanSignedOff(t *testing.T) {
 	_ = svc.SaveContribution(ctx, spaceID, contrib)
 
 	// Plan is NOT signed off — sign off should fail
-	if _, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward"); err == nil {
+	if _, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward", nil); err == nil {
 		t.Fatal("expected error when plan not signed off, got nil")
 	}
 
@@ -1357,7 +1357,7 @@ func TestSignOffContribution_RequiresPlanSignedOff(t *testing.T) {
 	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
 
 	// Now sign-off should succeed
-	got, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward")
+	got, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward", nil)
 	if err != nil {
 		t.Fatalf("SignOffContribution after plan signoff: %v", err)
 	}
@@ -2087,5 +2087,47 @@ func TestPropagateOfferToChildren_SkipsAlreadyOfferedChild(t *testing.T) {
 	}
 	if got.OfferedTo != "early-offer-user" {
 		t.Errorf("OfferedTo = %q, want early-offer-user", got.OfferedTo)
+	}
+}
+
+// TestRewardContribution_KeepsSignOffProof pins the per-transition proof
+// storage (issue #20): rewarding must not destroy the sign-off proof — #19's
+// verifier needs both to hold simultaneously.
+func TestRewardContribution_KeepsSignOffProof(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockStore()
+	svc := NewService(store)
+	spaceID := "s"
+
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	plan, _ := svc.CreateImplementationPlan(ctx, spaceID, &CreateImplementationPlanRequest{ProjectID: proj.ID, ProjectLeadID: "u"})
+	plan.SignedOff = true
+	now := time.Now()
+	plan.SignedOffAt = &now
+	_ = svc.SaveImplementationPlan(ctx, spaceID, plan)
+
+	contrib, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	contrib.Status = ContribApproved
+	_ = svc.SaveContribution(ctx, spaceID, contrib)
+
+	signOffProof := &Proof{V: "matou-proof/v1", Action: "contribution_signoff", Subject: contrib.ID, Space: spaceID, Value: "signed_off", Dt: "2026-08-15T00:00:00Z", AID: "steward", Sig: "0Bsig1"}
+	if _, err := svc.SignOffContribution(ctx, spaceID, contrib.ID, "steward", signOffProof); err != nil {
+		t.Fatalf("SignOffContribution: %v", err)
+	}
+
+	rewardProof := &Proof{V: "matou-proof/v1", Action: "contribution_reward", Subject: contrib.ID, Space: spaceID, Value: "rewarded", Dt: "2026-08-15T00:01:00Z", AID: "admin", Sig: "0Bsig2"}
+	got, err := svc.RewardContribution(ctx, spaceID, contrib.ID, "admin", rewardProof)
+	if err != nil {
+		t.Fatalf("RewardContribution: %v", err)
+	}
+
+	if got.SignOffProof == nil || got.SignOffProof.Sig != "0Bsig1" {
+		t.Errorf("sign-off proof lost or clobbered after reward: %+v", got.SignOffProof)
+	}
+	if got.RewardProof == nil || got.RewardProof.Sig != "0Bsig2" {
+		t.Errorf("reward proof missing: %+v", got.RewardProof)
 	}
 }

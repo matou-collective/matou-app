@@ -11,20 +11,26 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/heal-lib.sh"
 # shellcheck source=limit-lib.sh
 . "$here/limit-lib.sh"
+# shellcheck source=model-lib.sh
+# The shared model config (#448): $SWARM_MODEL is the ONE value both this healer
+# and the swarm worker (main.mts, via swarm.config) run on — no hardcoded id can
+# drift between them anymore.
+. "$here/model-lib.sh"
 
 # Secrets: env wins (the workflow provides the authoritative value);
 # the bind-mounted secrets file is the fallback for host runs
 # (same precedence as list-ready-tasks.sh).
 [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/secrets/forgejo_token" ] && FORGEJO_TOKEN="$(cat "$here/secrets/forgejo_token")"
-: "${FORGEJO_API:=https://git.matou.nz/api/v1/repos/Matou/matou-app}"
+# shellcheck source=swarm-identity.sh
+. "$here/swarm-identity.sh"
 # One runner serves TWO repos now (#238). Per-repo healer state must carry the
 # repo slug or one repo's healer makes the other's skip its incident (the
-# healer lock) and stomps its evidence dir. "Matou/matou-app" -> "Matou-ourcloud"
+# healer lock) and stomps its evidence dir. "Matou/idss" -> "Matou-idss"
 # (slashes aren't valid in a path segment).
 REPO_TAG="${FORGEJO_API##*/repos/}"; REPO_TAG="${REPO_TAG//\//-}"
 MODE="${HEAL_MODE:-hook}"
 WORKFLOW="${WORKFLOW:-unknown}"
-WORKDIR="${HEAL_WORKDIR:-$HOME/swarm/Matou/matou-app}"
+WORKDIR="$HEAL_WORKDIR"
 HEALER_STATE="${HEALER_STATE:-$WORKDIR/.sandcastle/.state/healer}"
 mkdir -p "$HEALER_STATE"
 NOW="$(date +%s)"
@@ -32,10 +38,16 @@ NOW="$(date +%s)"
 # error lines). The runner is host-mode on the workstation and ci has no readable
 # log API, so a well-known host path is how a run's real fault reaches the healer:
 # `ci` via scripts/seam-smoke.sh (#197), `swarm`/`triage` via verdict-lib.sh
-# (#235). Same defaults those scripts write to.
-SEAM_VERDICT="${SEAM_VERDICT_PATH:-/tmp/matou-seam-verdict.txt}"
-SWARM_VERDICT="${SWARM_VERDICT_PATH:-/tmp/matou-swarm-verdict.txt}"
-TRIAGE_VERDICT="${TRIAGE_VERDICT_PATH:-/tmp/matou-triage-verdict.txt}"
+# (#235), `smoke-drive` via the consumer's smoke driver (#10 — the reader half
+# of matou-app#46; without it a red smoke lap degraded to stale worker prose).
+# Same repo-tagged defaults those scripts write to (#574) — REPO_TAG is
+# already computed above from FORGEJO_API, same formula seam-smoke.sh derives
+# from `git remote get-url origin` and run-swarm.sh/run-triage.sh derive from
+# REPO_SLUG, so reader and writers always agree on the path.
+SEAM_VERDICT="${SEAM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-seam-verdict.txt}"
+SWARM_VERDICT="${SWARM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-swarm-verdict.txt}"
+TRIAGE_VERDICT="${TRIAGE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-triage-verdict.txt}"
+SMOKE_DRIVE_VERDICT="${SMOKE_DRIVE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-smoke-drive-verdict.txt}"
 
 # How fresh a verdict or worker log must be to count as evidence for THIS
 # incident's run. Older artifacts (the stale 03:38 worker log that minted phantom
@@ -50,6 +62,7 @@ verdict_path() {
     ci)     printf '%s' "$SEAM_VERDICT" ;;
     swarm)  printf '%s' "$SWARM_VERDICT" ;;
     triage) printf '%s' "$TRIAGE_VERDICT" ;;
+    smoke-drive) printf '%s' "$SMOKE_DRIVE_VERDICT" ;;
   esac
 }
 
@@ -61,7 +74,7 @@ verdict_is_fresh() {
 }
 
 # One healer at a time PER REPO. Our OWN lock — never the swarm's — and
-# per-repo (#238) so ourcloud's healer never blocks matou-app's incident.
+# per-repo (#238) so idss's healer never blocks matou-app's incident.
 exec 8>"/tmp/matou-healer-$REPO_TAG.lock"
 flock -n 8 || { echo "heal: another healer holds the lock — exiting"; exit 0; }
 
@@ -127,15 +140,16 @@ gather_evidence() {
 
 # The signature's raw material.
 #
-# For every workflow that drops a verdict artifact — `ci` (#197), now `swarm`
-# and `triage` (#235) — key the signature on the run's OWN failing stage + first
-# error line, so the incident signature tracks the ACTUAL fault. A moved fault →
-# a new signature → a fresh investigation, instead of collapsing every failure
-# within the cooldown onto one degraded workflow-name-only signature (a moved
-# fault masked as "still failing"). Crucially, swarm/triage no longer grep the
-# Sandcastle worker chain-of-thought (saturated with "error"/"failed" prose), so
-# a stale worker log narrating an unrelated, already-closed ticket can no longer
-# mint a phantom signature (the 2026-07-31 false positives this ticket fixes).
+# For every workflow that drops a verdict artifact — `ci` (#197), `swarm` and
+# `triage` (#235), `smoke-drive` (#10) — key the signature on the run's OWN
+# failing stage + first error line, so the incident signature tracks the
+# ACTUAL fault. A moved fault → a new signature → a fresh investigation,
+# instead of collapsing every failure within the cooldown onto one degraded
+# workflow-name-only signature (a moved fault masked as "still failing").
+# Crucially, swarm/triage no longer grep the Sandcastle worker chain-of-thought
+# (saturated with "error"/"failed" prose), so a stale worker log narrating an
+# unrelated, already-closed ticket can no longer mint a phantom signature (the
+# 2026-07-31 false positives this ticket fixes).
 #
 # With no fresh verdict, degrade to the workflow name alone (empty line) but
 # leave a marker so every post says the "still failing" line is unverified (AC1).
@@ -179,25 +193,41 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     [ -n "${HEAL_DRY_RUN:-}" ] && echo "- DRY RUN: diagnose only. Make NO commits, NO pushes, file NO tickets."
   } > "$ctx"
   rm -f "$EVIDENCE/diagnosis.md"
-  local status=0
-  if [ -n "${HEAL_AGENT_CMD:-}" ]; then
-    # Test seam: the stub receives the prompt as $1.
-    timeout 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
-  else
-    ( cd "$WORKDIR" && timeout 900 claude -p --model claude-opus-4-8 \
-        --dangerously-skip-permissions "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
-  fi
-  # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard. Mid-
-  # diagnosis the claude call can itself hit the limit (the 0-byte agent-out.log
-  # of the 2026-08-01 incident): PARK the host so every other caller yields on
-  # the same window (#253), record the deferral, and exit 0 BEFORE the ledger
-  # attempt below is consumed — a limit refusal is not a spent diagnosis.
-  if claude_limit_hit "$EVIDENCE/agent-out.log"; then
-    claude_limit_park
-    echo "deferred: limit window (claude refused mid-diagnosis)" > "$EVIDENCE/deferred-limit.txt"
-    echo "heal: deferred — Claude usage limit mid-diagnosis; parked the host, no ledger attempt consumed"
-    exit 0
-  fi
+  local status=0 heal_attempt=1
+  # Stamp the factory git identity (#19) so the /tmp/heal-fix clone's commits
+  # carry "…(healer@<host>)", never the host user's ~/.gitconfig.
+  swarm_git_identity healer
+  claude_select_token
+  while :; do
+    status=0
+    if [ -n "${HEAL_AGENT_CMD:-}" ]; then
+      # Test seam: the stub receives the prompt as $1.
+      timeout 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
+    else
+      ( cd "$WORKDIR" && timeout 900 claude -p --model "$SWARM_MODEL" \
+          --dangerously-skip-permissions "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
+    fi
+    # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard. Mid-
+    # diagnosis the claude call can itself hit the limit (the 0-byte agent-out.log
+    # of the 2026-08-01 incident). First try the standby account (#510) — the
+    # SAME limit-lib predicate decided both the hit and the flip, no second grep
+    # anywhere. Only when both windows are exhausted (or no standby exists):
+    # PARK the host so every other caller yields on the same window (#253),
+    # record the deferral, and exit 0 BEFORE the ledger attempt below is
+    # consumed — a limit refusal is not a spent diagnosis.
+    if claude_limit_hit "$EVIDENCE/agent-out.log"; then
+      if [ "$heal_attempt" = 1 ] && claude_failover; then
+        heal_attempt=2
+        echo "heal: Claude account limited — failed over to account $(claude_active_account); retrying the diagnosis once"
+        continue
+      fi
+      claude_limit_park
+      echo "deferred: limit window (claude refused mid-diagnosis)" > "$EVIDENCE/deferred-limit.txt"
+      echo "heal: deferred — Claude usage limit mid-diagnosis; parked the host, no ledger attempt consumed"
+      exit 0
+    fi
+    break
+  done
   [ "$status" -eq 0 ] && [ -f "$EVIDENCE/diagnosis.md" ]
 }
 

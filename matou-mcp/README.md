@@ -21,6 +21,7 @@ Register it in Claude Code by adding the contents of `.mcp.json.example` to the
 |-----|---------|---------|
 | `MATOU_BACKEND_URL` | auto-discovered via `ss` | Point at a specific backend (e.g. `http://127.0.0.1:9080` for test) |
 | `MATOU_USER_AID` | `aid` from `~/.config/Matou/matou-data/identity.json` | Identity for RBAC-gated (project/contribution) tools |
+| `MATOU_API_TOKEN` | dev/test backends: fixed `matou-dev` constant; prod: `~/.config/Matou/matou-data/api-token` | Bearer token the backend's TokenGuard requires on mutating requests |
 | `MATOU_READONLY` | unset | Set to `1` to hide all mutating tools (query-only) |
 
 Run `matou_status` first to confirm the target environment and acting identity.

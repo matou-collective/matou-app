@@ -190,7 +190,7 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
   // - Bug 3: All profile fields (bio, location, social links, etc.) persist to SharedProfile
   // ------------------------------------------------------------------
   test('invitee claims identity and admin approves membership', async ({ browser }) => {
-    test.setTimeout(240_000); // 4 min — includes credential issuance + OOBI resolution + admin approval
+    test.setTimeout(420_000); // 7 min — invitee claim + admin onboard/approve + group-AID membership credential escrow clear + community-space join (see the welcome-overlay wait below)
 
     expect(inviteCode, 'Invite code must exist from previous test').toBeTruthy();
 
@@ -475,9 +475,21 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
 
       // --- Invitee: Welcome overlay after approval ---
       console.log('[Test] Invitee: Waiting for welcome overlay...');
+      // The membership credential is issued from the org GROUP AID, so the
+      // invitee's agent must clear the Verifier/Tevery escrow (receive the
+      // group key state anchoring the registry event) before the credential
+      // lands in the wallet and the overlay renders. useCredentialPolling
+      // budgets up to 120s for that alone, plus the 15s notification poll,
+      // admit, OOBI/witness resolves and the community-space join. Unlike the
+      // registration flow — which spends that budget on an explicit
+      // /spaces/community/join response wait — the invitee client performs the
+      // join internally, so the whole group-AID escrow clear folds into this
+      // single wait. aidCreation (90s) is shorter than that budget and the
+      // overlay legitimately misses it even when nothing is wrong; use the
+      // group-credential budget (matches the registration second-member join).
       await expect(
         inviteePage.locator('.welcome-overlay'),
-      ).toBeVisible({ timeout: TIMEOUT.aidCreation });
+      ).toBeVisible({ timeout: TIMEOUT.groupCredentialJoin });
       console.log('[Test] Welcome overlay shown');
 
       // Click "Enter Community"

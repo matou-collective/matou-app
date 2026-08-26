@@ -877,8 +877,14 @@ func (h *ContributionsHandler) HandleSignOff(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 		return
 	}
+	// Body is optional and may carry a KERI proof envelope for the sign-off
+	// action (issue #20). Absent/empty bodies are tolerated.
+	var body struct {
+		Proof *contributions.Proof `json:"proof"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	contrib, err := h.service.SignOffContribution(r.Context(), spaceID, id, userID)
+	contrib, err := h.service.SignOffContribution(r.Context(), spaceID, id, userID, body.Proof)
 	if err != nil {
 		log.Printf("[Contributions] SignOffContribution failed for %s: %v", id, err)
 		status := http.StatusBadRequest
@@ -914,8 +920,14 @@ func (h *ContributionsHandler) HandleReward(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 		return
 	}
+	// Body is optional and may carry a KERI proof envelope for the reward
+	// action (issue #20). Absent/empty bodies are tolerated.
+	var body struct {
+		Proof *contributions.Proof `json:"proof"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	contrib, err := h.service.RewardContribution(r.Context(), spaceID, id, userID)
+	contrib, err := h.service.RewardContribution(r.Context(), spaceID, id, userID, body.Proof)
 	if err != nil {
 		log.Printf("[Contributions] RewardContribution failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

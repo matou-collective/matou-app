@@ -1,7 +1,10 @@
 <template>
-  <div class="chat-layout">
-    <!-- Channel Sidebar -->
+  <div class="chat-layout" :class="{ 'is-mobile': isMobile }">
+    <!-- Channel Sidebar.
+         Desktop: always visible. Mobile: only when no channel is selected
+         (single-pane list view). -->
     <ChannelSidebar
+      v-if="!isMobile || !chatStore.currentChannel"
       :channels="chatStore.sortedChannels"
       :currentChannelId="chatStore.currentChannelId"
       :loading="chatStore.loadingChannels"
@@ -9,12 +12,16 @@
       @create="showCreateModal = true"
     />
 
-    <!-- Main Chat Area -->
-    <div class="chat-main">
+    <!-- Main Chat Area.
+         Desktop: always visible (shows placeholder when no channel). Mobile:
+         only when a channel is selected (single-pane message view). -->
+    <div v-if="!isMobile || chatStore.currentChannel" class="chat-main">
       <template v-if="chatStore.currentChannel">
         <ChannelHeader
           :channel="chatStore.currentChannel"
+          :showBack="isMobile"
           @settings="showSettingsModal = true"
+          @back="handleBack"
         />
         <MessageList
           :messages="chatStore.currentMessages"
@@ -45,10 +52,12 @@
       </div>
     </div>
 
-    <!-- Thread Panel (when viewing a thread) -->
+    <!-- Thread Panel (when viewing a thread).
+         Desktop: fixed-width side panel. Mobile: full-screen overlay. -->
     <ThreadPanel
       v-if="threadMessageId"
       :messageId="threadMessageId"
+      :overlay="isMobile"
       @close="threadMessageId = null"
     />
 
@@ -80,6 +89,7 @@
 import { ref, computed, nextTick } from 'vue';
 import { MessageSquare } from 'lucide-vue-next';
 import { useChatStore } from 'stores/chat';
+import { useIsMobile } from 'src/composables/useIsMobile';
 import type { ChatMessage, AttachmentRef } from 'src/lib/api/chat';
 
 import ChannelSidebar from './ChannelSidebar.vue';
@@ -92,6 +102,7 @@ import ChannelSettingsModal from './ChannelSettingsModal.vue';
 import EditMessageModal from './EditMessageModal.vue';
 
 const chatStore = useChatStore();
+const isMobile = useIsMobile();
 
 const composerRef = ref<InstanceType<typeof MessageComposer> | null>(null);
 
@@ -111,6 +122,14 @@ const hasMoreMessages = computed(() => {
 // Handlers
 async function handleSelectChannel(channelId: string) {
   await chatStore.selectChannel(channelId);
+  replyingTo.value = null;
+  threadMessageId.value = null;
+}
+
+// Mobile back navigation: clear the current channel to return to the
+// single-pane channel list. selectChannel(null) resets currentChannelId.
+async function handleBack() {
+  await chatStore.selectChannel(null);
   replyingTo.value = null;
   threadMessageId.value = null;
 }
@@ -166,6 +185,16 @@ function handleChannelUpdated() {
   width: 100%;
   height: 100%;
   background-color: var(--matou-background);
+}
+
+// Mobile single-pane: whichever pane is shown fills the full width. The
+// ChannelSidebar's fixed 240px width is overridden so the channel list spans
+// the viewport when it is the active pane.
+.chat-layout.is-mobile {
+  :deep(.channel-sidebar) {
+    width: 100%;
+    border-right: none;
+  }
 }
 
 .chat-main {

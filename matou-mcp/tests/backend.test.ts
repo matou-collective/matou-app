@@ -24,6 +24,21 @@ describe("MatouClient", () => {
     const init = (f.mock.calls[0] as any)[1];
     expect(init.headers["X-User-AID"]).toBe("EBEN");
   });
+  it("sends the API token as a bearer header when configured", async () => {
+    const f = fakeFetch(200, "{}");
+    const c = new MatouClient("http://x", "EBEN", f as any, "tok-42");
+    await c.post("/api/v1/projects", { title: "t" }, { rbac: true });
+    const init = (f.mock.calls[0] as any)[1];
+    expect(init.headers["Authorization"]).toBe("Bearer tok-42");
+    expect(init.headers["X-User-AID"]).toBe("EBEN");
+  });
+  it("omits the Authorization header when no token is configured", async () => {
+    const f = fakeFetch(200, "{}");
+    const c = new MatouClient("http://x", "EBEN", f as any);
+    await c.get("/api/v1/projects");
+    const init = (f.mock.calls[0] as any)[1];
+    expect(init.headers["Authorization"]).toBeUndefined();
+  });
   it("maps a 401 to a helpful message", async () => {
     const c = new MatouClient("http://x", "EBEN", fakeFetch(401, '{"error":"X-User-AID header required"}') as any);
     await expect(c.get("/api/v1/projects")).rejects.toThrowError(/Identity not configured/);

@@ -7,6 +7,7 @@ import { ref } from 'vue';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { KERIClient, useKERIClient } from 'src/lib/keri/client';
+import { extractWitnessAids } from 'src/lib/keri/witnessAssignment';
 import { useIdentityStore } from 'stores/identity';
 import { getOrCreatePersonalRegistry } from 'src/lib/keri/registry';
 
@@ -64,14 +65,15 @@ export function usePreCreatedInvite() {
       // Step 3: Create AID in invitee's agent
       progress.value = 'Creating invitee identity...';
       const aidName = config.inviteeName.toLowerCase().replace(/\s+/g, '-');
-      // Get witness AIDs from KERIA config iurls (environment-agnostic)
+      // Get witness AIDs from KERIA config iurls (environment-agnostic).
+      // iurls also carry schema OOBIs (infra keria-config.json lists the
+      // schema-server under iurls); extractWitnessAids keeps only the
+      // non-transferable 'B'-prefixed witness AIDs — passing a schema SAID
+      // as a witness makes KERIA reject the inception with
+      // "unknown witness E…" (smoke lap 20260823T031841Z, invitation leg).
+      // Same hardening the registration path already has.
       const keriConfig = await inviteeClient.config().get();
-      const witnessAIDs: string[] = ((keriConfig.iurls as string[]) || [])
-        .map((iurl: string) => {
-          const match = iurl.match(/\/oobi\/([^/]+)/);
-          return match ? match[1] : '';
-        })
-        .filter(Boolean);
+      const witnessAIDs: string[] = extractWitnessAids((keriConfig.iurls as string[]) || []);
       if (witnessAIDs.length === 0) {
         throw new Error('[PreCreatedInvite] No witness AIDs configured in KERIA');
       }

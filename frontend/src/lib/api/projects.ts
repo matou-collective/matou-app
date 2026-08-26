@@ -4,6 +4,7 @@
  */
 import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
+import type { ActionProof } from '../keri/actionProof';
 
 const log = createLogger('ProjectsAPI');
 
@@ -179,10 +180,11 @@ export async function submitProjectCompletion(id: string): Promise<Project> {
   return response.json();
 }
 
-export async function approveProjectCompletion(id: string): Promise<Project> {
+export async function approveProjectCompletion(id: string, proof?: ActionProof): Promise<Project> {
   const response = await fetch(`${BACKEND_URL}/api/v1/projects/${id}/approve-completion`, {
     method: 'POST',
     headers: authHeaders(),
+    body: JSON.stringify(proof ? { proof } : {}),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));

@@ -3,7 +3,8 @@
  * Communicates with the Go backend for sync and community operations
  */
 
-import { getBackendUrl, getBackendUrlSync } from '../platform';
+import { getBackendUrl, getBackendUrlSync, getApiToken, getApiTokenSync } from '../platform';
+import { installBackendAuth as installBackendAuthCore, type AuthTarget } from './backend-auth';
 import { useIdentityStore } from 'stores/identity';
 
 /**
@@ -13,11 +14,42 @@ import { useIdentityStore } from 'stores/identity';
 export let BACKEND_URL = getBackendUrlSync();
 
 /**
+ * Per-launch API token sent as `Authorization: Bearer <token>` on mutating
+ * backend requests (the backend's TokenGuard rejects mutations without it).
+ * Populated by initApiToken() at boot.
+ */
+export let API_TOKEN = getApiTokenSync();
+
+/**
  * Initialize the backend URL (must be called once at app startup).
  * Resolves the Electron dynamic port via IPC; no-op in browser mode.
  */
 export async function initBackendUrl(): Promise<void> {
   BACKEND_URL = await getBackendUrl();
+}
+
+/**
+ * Initialize the API token (must be called once at app startup).
+ * Resolves the Electron per-launch token via IPC; falls back to the dev
+ * constant in browser mode.
+ */
+export async function initApiToken(): Promise<void> {
+  API_TOKEN = await getApiToken();
+}
+
+/**
+ * Install a global fetch wrapper that attaches `Authorization: Bearer <token>`
+ * to every request targeting the backend. This centralises auth so the many
+ * inline `fetch(${BACKEND_URL}/...)` call sites don't each need updating, and
+ * leaves requests to other origins (KERIA, config server) untouched. An
+ * explicit Authorization header on a call is preserved.
+ */
+export function installBackendAuth(): void {
+  installBackendAuthCore(
+    globalThis as unknown as AuthTarget,
+    () => BACKEND_URL,
+    () => API_TOKEN,
+  );
 }
 
 /**
