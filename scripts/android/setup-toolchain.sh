@@ -34,6 +34,17 @@ XMOBILE_VERSION="v0.0.0-20260812174124-2f419b2fb945"
 
 log() { printf '\n==> %s\n' "$*"; }
 
+# CI runner hosts don't all have unzip; python3 is guaranteed there instead.
+extract_zip() { # extract_zip <zip> <dest-dir>
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q "$1" -d "$2"
+  else
+    python3 -m zipfile -e "$1" "$2"
+    # python's zipfile drops the executable bit; restore it on bin/ entries
+    find "$2" -path '*/bin/*' -type f -exec chmod +x {} +
+  fi
+}
+
 mkdir -p "$ROOT" "$GOBIN_DIR"
 cd "$ROOT"
 
@@ -63,7 +74,7 @@ else
   curl -fL --retry 3 -o "$CMDLINE_TOOLS_ZIP" "https://dl.google.com/android/repository/$CMDLINE_TOOLS_ZIP"
   echo "$CMDLINE_TOOLS_SHA256  $CMDLINE_TOOLS_ZIP" | sha256sum -c -
   mkdir -p "$SDK/cmdline-tools"
-  unzip -q "$CMDLINE_TOOLS_ZIP" -d "$SDK/cmdline-tools"
+  extract_zip "$CMDLINE_TOOLS_ZIP" "$SDK/cmdline-tools"
   mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
   rm -f "$CMDLINE_TOOLS_ZIP"
 fi
