@@ -33,21 +33,28 @@ type Sender struct {
 	logoURL    template.URL
 	textURL    template.URL
 	relayURL   string // config server URL for email relay (production)
+	relayToken string // admin bearer token for the relay's /api/send-email
 }
 
-// NewSender creates a new email Sender from SMTP config.
-func NewSender(cfg config.SMTPConfig) *Sender {
+// NewSender creates a new email Sender from SMTP config. relayToken
+// authenticates against the config server's /api/send-email endpoint when
+// relaying; it is unused for direct SMTP.
+func NewSender(cfg config.SMTPConfig, relayToken string) *Sender {
 	s := &Sender{
-		host:     cfg.Host,
-		port:     cfg.Port,
-		from:     cfg.From,
-		fromName: cfg.FromName,
-		logoURL:  template.URL(cfg.LogoURL),
-		textURL:  template.URL(cfg.TextLogoURL),
-		relayURL: cfg.RelayURL,
+		host:       cfg.Host,
+		port:       cfg.Port,
+		from:       cfg.From,
+		fromName:   cfg.FromName,
+		logoURL:    template.URL(cfg.LogoURL),
+		textURL:    template.URL(cfg.TextLogoURL),
+		relayURL:   cfg.RelayURL,
+		relayToken: relayToken,
 	}
 	if s.relayURL != "" {
 		log.Printf("[Email] Using relay: %s/api/send-email", s.relayURL)
+		if s.relayToken == "" {
+			log.Printf("[Email] WARNING: relay configured but no token set - sends will be rejected (401)")
+		}
 	}
 	return s
 }
@@ -67,7 +74,16 @@ func (s *Sender) sendViaRelay(to, subject, htmlBody string) error {
 	}
 
 	url := strings.TrimRight(s.relayURL, "/") + "/api/send-email"
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building relay request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.relayToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.relayToken)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("relay request: %w", err)
 	}

@@ -380,6 +380,41 @@ func TestCORSPreflight_CustomHeaders(t *testing.T) {
 	}
 }
 
+// TestIsBundledOrigin covers the bundled-app origins accepted when
+// MATOU_CORS_MODE=bundled, including Capacitor's Android WebView origin
+// https://localhost (see issue #64). Lookalike hosts must be rejected.
+func TestIsBundledOrigin(t *testing.T) {
+	testCases := []struct {
+		origin   string
+		expected bool
+	}{
+		// Capacitor Android WebView (issue #64)
+		{"https://localhost", true},
+		{"https://localhost:8443", true},
+		{"https://localhost.evil.com", false},
+		{"https://localhost.evil.com:8443", false},
+		{"https://evil.com", false},
+		// Existing bundled origins still accepted
+		{"file:///index.html", true},
+		{"capacitor://localhost", true},
+		{"app://matou", true},
+		{"http://localhost:9000", true},
+		{"http://127.0.0.1:9000", true},
+		// Non-bundled / plain http host with no port
+		{"http://localhost", false},
+		{"http://example.com", false},
+		{"", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.origin, func(t *testing.T) {
+			if got := isBundledOrigin(tc.origin); got != tc.expected {
+				t.Errorf("isBundledOrigin(%q) = %v, want %v", tc.origin, got, tc.expected)
+			}
+		})
+	}
+}
+
 // Helper function to check if a comma-separated string contains a value
 func containsMethod(list, value string) bool {
 	// Simple contains check - in production would parse properly

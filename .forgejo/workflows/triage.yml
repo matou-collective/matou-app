@@ -2,13 +2,29 @@ name: triage
 on:
   issues:
     types: [opened, reopened]
-  # Forgejo re-registers a repo's schedules when workflow files are pushed to
-  # the default branch, so pushing this file re-registers the schedule. If
-  # the crons stop firing, that registration is the first thing to check —
-  # confirm a :05/:35 run appears within 30 minutes of a workflow push.
+  # Forgejo has been observed to silently stop firing a repo's schedules;
+  # pushing a workflow file re-registers them (idss's 2026-07-28
+  # incident). If the cron below stops firing, that's the first thing to
+  # check, not this file's logic.
   schedule:
     - cron: "5,35 * * * *"
   workflow_dispatch: {}
+
+# One workflow-level concurrency group per repo (#26), same shape as swarm.yml.
+# Triage fires on every `opened`/`reopened` issue event, so a burst of new issues
+# would otherwise run one job per event, all in parallel. (There is no matrix
+# here: the single triage job below is not doubled the way swarm.yml's 2-wide
+# matrix doubles each of its events.) The group SERIALISES them:
+# with cancel-in-progress false, Forgejo queues every superseded run and executes
+# them in sequence (it does not collapse the pending set to one — that's GitHub's
+# semantics, not Forgejo's; see swarm.yml and #38). The group is keyed distinctly
+# from swarm's so the two heavy flows queue independently — they already
+# coordinate on the shared host-capacity slots, not this group.
+# cancel-in-progress stays false: a running triage is never cancelled by a later
+# issue event.
+concurrency:
+  group: triage-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   triage:
@@ -19,6 +35,7 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
           FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
           REPO_SLUG: ${{ github.repository }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
@@ -26,29 +43,100 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
-          # Same global lock as swarm.yml — and the same yield-don't-camp fix
-          # (#238). Triage is a heavy worker too (it spins Sandcastle), so a
-          # camping flock -w 7200 here would re-introduce the exact hour-class
-          # serialization the swarm fix removes. If the host is busy, yield and
-          # let the cron (or the next issue event) re-fire — triage is
-          # idempotent, so a deferred pass costs nothing.
+          # Host capacity semaphore (idss #577, idss ADR 0184): TWO pooled
+          # heavy slots shared by swarm AND triage across every repo on this
+          # host — /tmp/matou-swarm.lock (slot 1, kept under its original
+          # name so an unmodified sibling repo's workflow still excludes
+          # correctly against it) and /tmp/matou-host-slot-2.lock (slot 2,
+          # new capacity). First-fit, non-blocking: try slot 1, then slot 2.
+          # Still never CAMP (idss #238) — both busy means yield (exit 0)
+          # and let the :05/:35 cron (or the next issue event) re-fire —
+          # triage is idempotent, so a deferred pass costs nothing.
+          # Drive reservation (Matou/idss #663/#664). The rehearsal drive needs
+          # EVERY host lock at once and yields the instant one is busy, so it
+          # loses to any worker that claims a ticket in the gap — unboundedly,
+          # not just slowly. /tmp/matou-swarm.lock is HOST-global and shared by
+          # every repo on this box, so a repo without this guard starves the
+          # drive no matter how well-guarded the others are: idss was guarded and
+          # a dev-factory run still held the slot for 20 consecutive ticks
+          # (~40 min) before this landed.
+          #
+          # Stand down before taking a slot. Work already in flight is untouched,
+          # so this costs at most one deferred claim. Inline because this runs
+          # before the checkout exists. The mtime TTL is the anti-deadlock: a
+          # declarer killed by OOM/SIGKILL/reboot (no trap runs) would otherwise
+          # wedge every heavy job on this host until a human cleared /tmp. Keep
+          # 900 in step with HOST_CAPACITY_DRIVE_WANTED_TTL in host-capacity-lib.sh.
+          #
+          # The consecutive-defer count (idss #664) is THIS consumer's own,
+          # distinct from the drive's own skip counter and from swarm's/
+          # session-runner's — three consumers on three cadences need three
+          # independent streaks so "skipped 3" always means 3 ticks of THIS
+          # worker, not a blend across consumers.
+          drive_res=/tmp/matou-drive-wanted
+          defer_count=/tmp/matou-triage-drive-defer-count
+          if [ -f "$drive_res" ] \
+            && [ "$(( $(date +%s) - $(stat -c %Y "$drive_res" 2>/dev/null || echo 0) ))" -lt 900 ]; then
+            n="$(cat "$defer_count" 2>/dev/null || echo 0)"; case "$n" in ''|*[!0-9]*) n=0;; esac; n=$((n+1))
+            echo "$n" >"$defer_count"
+            echo "triage: a rehearsal drive has reserved host capacity (idss #663) — deferring to a ready drive — skipped $n consecutive tick(s); the cron re-fires"
+            exit 0
+          fi
+          rm -f "$defer_count"
           exec 9>/tmp/matou-swarm.lock
           if ! flock -n 9; then
-            echo "triage: another swarm/triage run holds /tmp/matou-swarm.lock — yielding; the cron re-fires"
-            exit 0
+            exec 9>&-
+            exec 9>/tmp/matou-host-slot-2.lock
+            if ! flock -n 9; then
+              echo "triage: both host capacity slots busy — yielding; the cron re-fires"
+              exit 0
+            fi
           fi
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"
-          cd "$workdir"
-          url="https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git"
-          if [ -d .git ]; then
-            git remote set-url origin "$url"
-            git fetch origin main
-            git checkout -f main
-            git reset --hard origin/main
-          else
-            git clone "$url" .
+          # Per-repo-workdir lock (idss #638): a matrix sibling or swarm
+          # targeting the SAME repo can win a DIFFERENT host-capacity slot in
+          # the same second and race this job's git mutation of the shared
+          # clone (idss's `git reflog` showed the loser's checkout+reset
+          # never landing — a bare red job, no worker log, no run row).
+          # Scoped to ONLY the git setup below; it releases before
+          # run-triage.sh, so intra-host matrix parallelism during the run
+          # itself is unchanged. Never camp (idss #238) — a workdir
+          # mid-checkout just means this poll loses; the cron re-fires.
+          workdir_lock="/tmp/matou-workdir-$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
+          exec 8>"$workdir_lock"
+          if ! flock -n 8; then
+            echo "triage: workdir $workdir busy with another job for this repo — yielding; the cron re-fires"
+            exit 0
           fi
+          cd "$workdir"
+          # idss #639: once a prior run has checked out .sandcastle/git-setup.sh,
+          # route through it so a git-setup failure — before run-triage.sh even
+          # starts and can verdict_begin its own stages — still drops a
+          # stage/exit/error verdict the healer keys a real signature on,
+          # instead of collapsing onto the bare workflow-name signature. A
+          # workdir that hasn't pulled this commit yet (git-setup.sh absent —
+          # a genuinely fresh clone, OR an existing checkout one fetch behind)
+          # falls back to the exact pre-git-setup.sh inline fetch-or-clone
+          # below, no verdict; the NEXT run (now carrying git-setup.sh) uses
+          # the script. The fallback keeps deriving the host from
+          # github.server_url (onboarding/README.md's no-hardcoded-remote
+          # fix) rather than copying git-setup.sh's own hardcoded default.
+          if [ -f .sandcastle/git-setup.sh ]; then
+            WORKFLOW=triage bash .sandcastle/git-setup.sh
+          else
+            host="${SERVER_URL#https://}"
+            url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+            if [ -d .git ]; then
+              git remote set-url origin "$url"
+              git fetch origin main
+              git checkout -f main
+              git reset --hard origin/main
+            else
+              git clone "$url" .
+            fi
+          fi
+          exec 8>&-
           bash .sandcastle/run-triage.sh
       - name: Investigate failure (healer)
         if: failure()
@@ -61,7 +149,10 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
           WORKFLOW: triage
-          HEAL_DRY_RUN: "1"
+          # HEAL_DRY_RUN deliberately NOT set (Ben's ruling 2026-08-21, first applied
+          # in Matou/idss): the healer files tickets and makes its ONE bounded
+          # harness-infra repair for real. Set HEAL_DRY_RUN: "1" to return to
+          # diagnose-only.
         run: |
           bash "$HOME/swarm/${{ github.repository }}/.sandcastle/heal.sh" || {
             [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0

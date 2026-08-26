@@ -1,0 +1,11 @@
+# The swarm harness's own root install (.sandcastle/run-swarm.sh /
+# main.mts — `pnpm install --frozen-lockfile`). frontend/ and backend/ are
+# separate ecosystems (npm + Go) and not part of this workspace; this file
+# exists only to set the build-script policy below, matching Matou/ourcloud's
+# ADR 0040 pnpm-only-at-the-root convention (factory onboarding, #572).
+
+# Build-script policy (pnpm 11 allowBuilds): esbuild (tsx's runtime) must run
+# its install script to place its platform binary, or `pnpm install` (and
+# every `pnpm exec`) fails closed under ERR_PNPM_IGNORED_BUILDS.
+allowBuilds:
+  esbuild: true

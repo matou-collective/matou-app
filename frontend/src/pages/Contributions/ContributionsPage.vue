@@ -434,6 +434,11 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
   :deep(.q-btn) {
     min-width: 140px;
     padding: 8px 24px;
+
+    @media (max-width: 767px) {
+      min-width: 0;
+      flex: 1;
+    }
   }
 }
 
@@ -446,6 +451,11 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
 
 .search-input {
   min-width: 220px;
+
+  @media (max-width: 767px) {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 .sort-dropdown,

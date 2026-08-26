@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
 # claim-next-task.sh: emits exactly ONE verified-claimed ticket (or []).
-#
-# claim-next-task.sh itself is a #250 mechanical sync from ourcloud
-# (canonical — see .sandcastle/harness-manifest); this test file is NOT
-# synced (tests are deliberately off the manifest) but exercises matou-app's
-# own copy against matou-app's own fakebin, ported from ourcloud's version.
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$here/fakebin:$PATH"
 export FORGEJO_TOKEN="ftok"
-export FORGEJO_API="http://fj.test/api/v1/repos/Matou/matou-app"
+export FORGEJO_API="http://fj.test/api/v1/repos/Matou/idss"
 export SWARM_HOST="eb03" SWARM_RUN_ID="513"
 script="$here/../claim-next-task.sh"
 
@@ -25,7 +20,7 @@ mklister() { # mklister <json>
 }
 setup() {
   FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
-  jq -n '[{"id":36,"name":"ready-for-agent"},{"id":104,"name":"agent-working"}]' >"$FAKE_DIR/labels.json"
+  jq -n '[{"id":36,"name":"ready-for-agent"},{"id":50,"name":"agent-working"}]' >"$FAKE_DIR/labels.json"
   jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":513}]}' >"$FAKE_DIR/tasks.json"
   echo 1000 >"$FAKE_DIR/comment-counter"
 }
@@ -41,6 +36,20 @@ check "emits exactly one ticket" '[ "$(jq length <<<"$out")" = "1" ]'
 check "emits the head" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "claim comment posted" 'grep -q "swarm-claim host=eb03 run=513" "$FAKE_DIR/comments-431.json"'
 check "agent-working added" 'grep -q "POST .*issues/431/labels" "$FAKE_DIR/calls.log"'
+# #13: the landing instruction line — default (no policy file) is push-to-main,
+# on stderr so the JSON stdout contract stays clean.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+bash "$script" >"$FAKE_DIR/lstdout" 2>"$FAKE_DIR/lstderr"
+check "push-mode landing line printed on stderr" 'grep -q "landing: push to main" "$FAKE_DIR/lstderr"'
+check "landing line does NOT pollute the JSON stdout" \
+  '[ "$(jq -r ".[0].number" < "$FAKE_DIR/lstdout")" = "431" ]'
+check "landing line is stderr-only, never on stdout" '! grep -q "landing:" "$FAKE_DIR/lstdout"'
+
+# T2b (#13): under a LANDING=pr policy the line names the PR branch.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+printf '%s\n' 'LANDING=pr' > "$FAKE_DIR/swarm-policy.sh"
+lerr="$(SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" bash "$script" 2>&1 >/dev/null)"
+check "pr-mode landing line names agent/issue-<N>" 'grep -q "landing: PR from agent/issue-431" <<<"$lerr"'
 
 # T3: head already claimed by a LIVE lower id -> loser walks to next ticket
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"},{"number":433,"title":"c","body":"d","url":"u2"}]'
@@ -67,6 +76,20 @@ touch "$FAKE_DIR/tasks-fail"
 check "alive-runs API failure emits []" '[ "$(bash "$script")" = "[]" ]'
 check "no claim comment posted on API failure" '! grep -q swarm-claim "$FAKE_DIR/comments-431.json" 2>/dev/null'
 check "no comment POST issued on API failure" '! grep -q "POST .*issues/431/comments" "$FAKE_DIR/calls.log"'
+
+# T-#468: SWARM_RUN_ID unset/0 refuses to claim — a run-0 claim looks
+# protective but every other host arbitrates over it and the janitor sweeps
+# it. Emit [] and post NOTHING; SWARM_CLAIM_FORCE=1 is the eyes-open override.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+check "run-0 refuses: emits []" '[ "$(SWARM_RUN_ID= bash "$script" 2>/dev/null)" = "[]" ]'
+check "run-0 refuses: no claim POST" '! grep -q "POST .*issues/431/comments" "$FAKE_DIR/calls.log"'
+check "run-0 refuses: warns on stderr" 'SWARM_RUN_ID= bash "$script" 2>&1 >/dev/null | grep -q "SWARM_CLAIM_FORCE"'
+
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":0}]}' >"$FAKE_DIR/tasks.json"
+out="$(SWARM_RUN_ID= SWARM_CLAIM_FORCE=1 bash "$script" 2>/dev/null)"
+check "forced run-0 claim goes through" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
+check "forced claim posted at run 0" 'grep -q "swarm-claim host=eb03 run=0" "$FAKE_DIR/comments-431.json"'
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -27,6 +27,7 @@ import {
   type CreateContributionRequest,
   type UpdateContributionRequest,
 } from 'src/lib/api/contributions';
+import { signActionProof } from 'src/lib/keri/signProof';
 import type {
   ShareContributionRequest,
   OfferContributionRequest,
@@ -250,7 +251,10 @@ export const useContributionsStore = defineStore('contributions', () => {
   async function signOff(id: string) {
     error.value = null;
     try {
-      const updated = await apiSignOff(id);
+      // Attach a KERI-verifiable proof so honest peers can validate the sign-off
+      // independently of the any-sync transport signature (issue #20).
+      const proof = await signActionProof({ action: 'contribution_signoff', subject: id, value: 'signed_off' });
+      const updated = await apiSignOff(id, proof ?? undefined);
       _patch(updated);
       return updated;
     } catch (e) {
@@ -262,7 +266,8 @@ export const useContributionsStore = defineStore('contributions', () => {
   async function reward(id: string) {
     error.value = null;
     try {
-      const updated = await apiReward(id);
+      const proof = await signActionProof({ action: 'contribution_reward', subject: id, value: 'rewarded' });
+      const updated = await apiReward(id, proof ?? undefined);
       _patch(updated);
       return updated;
     } catch (e) {

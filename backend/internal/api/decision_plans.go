@@ -138,7 +138,8 @@ func (h *DecisionPlansHandler) HandleList(w http.ResponseWriter, r *http.Request
 // HandleTransition handles POST /api/v1/decision-plans/{id}/transition
 func (h *DecisionPlansHandler) HandleTransition(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
-		Status string `json:"status"`
+		Status string               `json:"status"`
+		Proof  *contributions.Proof `json:"proof"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -173,7 +174,7 @@ func (h *DecisionPlansHandler) HandleTransition(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	dp, err := h.service.TransitionDecisionPlan(r.Context(), spaceID, id, contributions.DecisionPlanStatus(req.Status))
+	dp, err := h.service.TransitionDecisionPlan(r.Context(), spaceID, id, contributions.DecisionPlanStatus(req.Status), r.Header.Get("X-User-AID"), req.Proof)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

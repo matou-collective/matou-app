@@ -1,4 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
+// Side-effect import: patches Node's global fetch to attach the dev API token
+// to local backend /api/ requests. extraHTTPHeaders below covers browser and
+// `request`-fixture calls; this covers specs that use Node's global fetch
+// directly (e.g. e2e-multi-backend identity/set, feature-spec seeding).
+import './tests/e2e/utils/node-fetch-auth';
 
 // Test dev server port (separate from dev server on 9002)
 const TEST_SERVER_PORT = 9003;
@@ -38,6 +43,21 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'on',
     video: 'on-first-retry',
+    // Backend TokenGuard requires an API token on mutating requests. Test
+    // backends fall back to the fixed dev token, so inject it centrally here so
+    // both app-driven fetches and direct page.request calls are authenticated.
+    //
+    // CAVEAT: context-level extra headers participate in CORS — they make
+    // every cross-origin browser fetch preflighted, and the config server's
+    // allowlist must include Authorization or fetches to it fail ("Failed to
+    // fetch") and the app silently falls back to dev-infra defaults. Specs
+    // are safe when they use setupTestConfig() (its route interception
+    // bypasses preflight); any context that skips it must add it. The durable
+    // fix — Authorization in the config server's Access-Control-Allow-Headers
+    // — ships with matou-infrastructure feat/config-server-auth.
+    extraHTTPHeaders: {
+      Authorization: 'Bearer matou-dev',
+    },
   },
 
   projects: [

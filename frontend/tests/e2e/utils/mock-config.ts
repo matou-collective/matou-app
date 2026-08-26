@@ -5,7 +5,7 @@
  * to all config server requests, making them use a separate test config file.
  */
 import { Page, BrowserContext, APIRequestContext } from '@playwright/test';
-import { keriEndpoints, backendEndpoint } from './keri-testnet';
+import { keriEndpoints, backendEndpoint, configAdminToken } from './keri-testnet';
 
 // The app reads VITE_CONFIG_SERVER_URL from env (.env.test sets it to port 4904).
 // We intercept browser requests to add X-Test-Config header so the config server
@@ -41,25 +41,36 @@ export async function setupTestConfig(target: Page | BrowserContext) {
  * @param request - Playwright APIRequestContext
  */
 export async function clearTestConfig(request: APIRequestContext) {
-  // Clear config server. Writes are bearer-gated on auth-enabled config
-  // servers (reads stay public) — send the token when the env provides one.
+  // Clear config server. DELETE is bearer-gated (see matou-collective/
+  // matou-app#1): use the token from the environment when one is provided
+  // (pr-e2e sources it from the infra checkout), else the well-known
+  // dev/test placeholder.
   try {
-    const headers: Record<string, string> = { 'X-Test-Config': 'true' };
-    if (process.env.CONFIG_ADMIN_TOKEN) {
-      headers['Authorization'] = `Bearer ${process.env.CONFIG_ADMIN_TOKEN}`;
-    }
-    await request.delete(`${CONFIG_SERVER_URL}/api/config`, {
-      headers,
+    const resp = await request.delete(`${CONFIG_SERVER_URL}/api/config`, {
+      headers: {
+        'X-Test-Config': 'true',
+        Authorization: `Bearer ${process.env.CONFIG_ADMIN_TOKEN || configAdminToken}`,
+      },
     });
-    console.log('[TestConfig] Cleared config server');
+    // request.delete does not throw on non-2xx: a 401 (token mismatch) would
+    // otherwise log success while stale config survives into the next run.
+    if (resp.ok() || resp.status() === 404) {
+      console.log('[TestConfig] Cleared config server');
+    } else {
+      console.warn(`[TestConfig] Config server clear failed: ${resp.status()}`);
+    }
   } catch {
     console.log('[TestConfig] No config server config to clear');
   }
 
   // Clear backend org config
   try {
-    await request.delete(`${BACKEND_URL}/api/v1/org/config`);
-    console.log('[TestConfig] Cleared backend org config');
+    const resp = await request.delete(`${BACKEND_URL}/api/v1/org/config`);
+    if (resp.ok() || resp.status() === 404) {
+      console.log('[TestConfig] Cleared backend org config');
+    } else {
+      console.warn(`[TestConfig] Backend org config clear failed: ${resp.status()}`);
+    }
   } catch {
     console.log('[TestConfig] No backend org config to clear');
   }

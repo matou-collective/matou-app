@@ -292,6 +292,10 @@ function formatDeadline(iso: string): string {
   align-items: center;
   gap: 12px;
   overflow: hidden;
+
+  @media (max-width: 767px) {
+    min-width: 0;
+  }
 }
 
 .compact-title {

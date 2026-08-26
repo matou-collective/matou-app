@@ -1,0 +1,753 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
+
+	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/api"
+	"github.com/matou-dao/backend/internal/config"
+	"github.com/matou-dao/backend/internal/contributions"
+	"github.com/matou-dao/backend/internal/email"
+	"github.com/matou-dao/backend/internal/identity"
+	"github.com/matou-dao/backend/internal/keri"
+	"github.com/matou-dao/backend/internal/notifications"
+	bgSync "github.com/matou-dao/backend/internal/sync"
+	matouTypes "github.com/matou-dao/backend/internal/types"
+)
+
+// App is a running backend instance: an HTTP server bound to a listener plus the
+// ordered set of resources (any-sync SDK client, local store, sync worker) that
+// must be released on shutdown. Start builds one from Options; Shutdown tears it
+// down in reverse order. cmd/server drives it from a process; cmd/mobile drives
+// it in-process on a device.
+type App struct {
+	listener net.Listener
+	server   *http.Server
+
+	// closers run in reverse of registration order on Shutdown, reproducing the
+	// `defer X.Close()` unwinding main.go used to rely on.
+	closers []func() error
+
+	// serveErr carries the result of server.Serve so Wait can block on it.
+	serveErr chan error
+}
+
+// Start builds the full backend from opts and begins serving HTTP on a freshly
+// bound listener. It reproduces the wiring cmd/server/main.go performed inline,
+// but returns errors instead of calling log.Fatalf so callers (cmd/server and
+// cmd/mobile) decide how to surface failures. On any error every resource opened
+// so far is released before returning, so a failed Start leaks nothing.
+//
+// Binding uses net.Listen, so opts.Port == 0 selects a free port; the chosen
+// port is then available via App.Port. Startup progress is written to stdout
+// only when opts.PrintBanner is set.
+func Start(ctx context.Context, opts Options) (*App, error) {
+	// Banner/progress output goes to stdout only when requested; cmd/mobile
+	// leaves PrintBanner false so an embedded backend stays silent.
+	out := io.Writer(io.Discard)
+	if opts.PrintBanner {
+		out = os.Stdout
+	}
+
+	// Production runs as a bundled app (Electron desktop, or an embedded mobile
+	// host with no process environment). Bundled CORS accepts file://, capacitor://
+	// and any localhost origin — the desktop launcher already exports
+	// MATOU_CORS_MODE=bundled, but cmd/mobile boots in-process with no env, so
+	// app.Start sets it here for prod. This is the one sanctioned os.Setenv: the
+	// CORS middleware reads MATOU_CORS_MODE per request, so it must be set before
+	// the server serves. Setting it to the same value the desktop already exports
+	// leaves Electron behaviour unchanged.
+	if opts.IsProd() {
+		_ = os.Setenv("MATOU_CORS_MODE", "bundled")
+	}
+
+	// Resources opened during Start; released in reverse on any early return so
+	// a failed Start leaks nothing. On success ownership transfers to the App.
+	var closers []func() error
+	success := false
+	defer func() {
+		if !success {
+			for i := len(closers) - 1; i >= 0; i-- {
+				_ = closers[i]()
+			}
+		}
+	}()
+
+	switch {
+	case opts.IsTest():
+		fmt.Fprintln(out, "MATOU DAO Backend Server (TEST)")
+	case opts.IsProd():
+		fmt.Fprintln(out, "MATOU DAO Backend Server (PRODUCTION)")
+	default:
+		fmt.Fprintln(out, "MATOU DAO Backend Server")
+	}
+	fmt.Fprintln(out, "============================")
+	fmt.Fprintln(out)
+
+	if opts.ConfigServerToken == "" {
+		log.Println("[Config] WARNING: MATOU_CONFIG_SERVER_TOKEN is not set - " +
+			"org config will not mirror to the config server, and email relay (if configured) will fail")
+	}
+
+	// Initialize data directory first (needed for org config)
+	if err := os.MkdirAll(opts.DataDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create data directory: %w", err)
+	}
+
+	// Persist the per-launch API token (0600) for legitimate same-OS-user local
+	// tooling (matou-mcp, scripts). TokenGuard requires it on mutations.
+	if tokenPath, tokenErr := api.WriteTokenFile(opts.DataDir, opts.APIToken); tokenErr != nil {
+		log.Printf("[Security] failed to write API token file: %v", tokenErr)
+	} else {
+		log.Printf("[Security] API token written to %s", tokenPath)
+	}
+
+	// Load server configuration (SMTP, KERI URLs, etc.)
+	fmt.Fprintln(out, "Loading configuration...")
+	cfg, err := config.Load("", "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Options.Port already encodes the per-environment default, the test shift to
+	// 9080 and the MATOU_SERVER_PORT override, so it is authoritative here.
+	cfg.Server.Port = opts.Port
+
+	// Options.Host is authoritative for the bind address too: cmd/server resolves
+	// it to "localhost" (unchanged desktop behaviour), while cmd/mobile pins it to
+	// 127.0.0.1 for the on-device loopback listener.
+	if opts.Host != "" {
+		cfg.Server.Host = opts.Host
+	}
+
+	// Initialize org config handler - single source of truth for organization identity
+	// The callback updates the in-memory config when org config is saved via API
+	orgConfigHandler := api.NewOrgConfigHandler(opts.DataDir, func(orgData *api.OrgConfigData) {
+		admins := make([]config.AdminInfo, len(orgData.Admins))
+		for i, a := range orgData.Admins {
+			admins[i] = config.AdminInfo{AID: a.AID, Name: a.Name, OOBI: a.OOBI}
+		}
+		cfg.SetOrgConfig(orgData.Organization.AID, orgData.Organization.Name, admins, orgData.CommunitySpaceID)
+		log.Printf("[Config] Updated in-memory config from org-config.yaml\n")
+	})
+
+	// Load org config into main config if available
+	if orgConfigHandler.IsConfigured() {
+		orgData := orgConfigHandler.GetConfig()
+		admins := make([]config.AdminInfo, len(orgData.Admins))
+		for i, a := range orgData.Admins {
+			admins[i] = config.AdminInfo{AID: a.AID, Name: a.Name, OOBI: a.OOBI}
+		}
+		cfg.SetOrgConfig(orgData.Organization.AID, orgData.Organization.Name, admins, orgData.CommunitySpaceID)
+	}
+
+	fmt.Fprintf(out, "  Configuration loaded\n")
+	if cfg.IsOrgConfigured() {
+		fmt.Fprintf(out, "   Organization: %s\n", cfg.Bootstrap.Organization.Name)
+		fmt.Fprintf(out, "   Org AID: %s\n", cfg.GetOrgAID())
+		fmt.Fprintf(out, "   Admin AID: %s\n", cfg.GetAdminAID())
+	} else {
+		fmt.Fprintln(out, "   Organization: Not configured (run frontend setup)")
+	}
+	fmt.Fprintln(out)
+
+	// Initialize user identity (per-user mode)
+	fmt.Fprintln(out, "Initializing user identity...")
+	userIdentity := identity.New(opts.DataDir)
+	if userIdentity.IsConfigured() {
+		fmt.Fprintf(out, "  Identity loaded from disk\n")
+		fmt.Fprintf(out, "   AID: %s\n", userIdentity.GetAID())
+		fmt.Fprintf(out, "   Peer ID: %s\n", userIdentity.GetPeerID())
+	} else {
+		fmt.Fprintln(out, "  No identity configured yet (will be set via /api/v1/identity/set)")
+	}
+	fmt.Fprintln(out)
+
+	// Initialize any-sync client
+	fmt.Fprintln(out, "Initializing any-sync client...")
+
+	anysyncConfigPath := opts.AnysyncConfigPath
+
+	// In production, always fetch fresh config from the config server.
+	// For dev/test, fetch only if the config file doesn't exist.
+	shouldFetch := opts.IsProd() || os.IsNotExist(func() error { _, statErr := os.Stat(anysyncConfigPath); return statErr }())
+	if shouldFetch {
+		fmt.Fprintf(out, "  Fetching any-sync config from config server %s...\n", opts.ConfigServerURL)
+		if fetchErr := fetchAndSaveAnySyncConfig(opts.ConfigServerURL, anysyncConfigPath); fetchErr != nil {
+			// In production, try using cached config if fetch fails
+			if opts.IsProd() {
+				if _, statErr := os.Stat(anysyncConfigPath); statErr == nil {
+					fmt.Fprintf(out, "  Config server unreachable, using cached config at %s\n", anysyncConfigPath)
+				} else {
+					return nil, fmt.Errorf("failed to fetch any-sync config from config server: %w\n\n"+
+						"Ensure the config server is running at %s", fetchErr, opts.ConfigServerURL)
+				}
+			} else {
+				return nil, fmt.Errorf("failed to fetch any-sync config from config server: %w\n\n"+
+					"Ensure the config server is running at %s", fetchErr, opts.ConfigServerURL)
+			}
+		} else {
+			fmt.Fprintf(out, "  Config saved to %s\n", anysyncConfigPath)
+		}
+	}
+
+	// If identity is persisted with mnemonic, derive peer key for SDK initialization
+	sdkOpts := &anysync.ClientOptions{
+		DataDir:     opts.DataDir,
+		PeerKeyPath: opts.DataDir + "/peer.key",
+	}
+	if userIdentity.IsConfigured() {
+		sdkOpts.Mnemonic = userIdentity.GetMnemonic()
+		fmt.Fprintln(out, "  Using mnemonic-derived peer key from persisted identity")
+	}
+
+	sdkClient, err := anysync.NewSDKClient(anysyncConfigPath, sdkOpts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create any-sync SDK client: %w", err)
+	}
+	closers = append(closers, sdkClient.Close)
+	var anysyncClient anysync.AnySyncClient = sdkClient
+
+	fmt.Fprintf(out, "  any-sync client initialized\n")
+	fmt.Fprintf(out, "   Network ID: %s\n", anysyncClient.GetNetworkID())
+	fmt.Fprintf(out, "   Coordinator: %s\n", anysyncClient.GetCoordinatorURL())
+	fmt.Fprintf(out, "   Peer ID: %s\n", anysyncClient.GetPeerID())
+
+	// Validate any-sync network connectivity
+	fmt.Fprint(out, "  Validating network connectivity...")
+	if pingErr := sdkClient.Ping(); pingErr != nil {
+		fmt.Fprintln(out, " FAILED")
+		configFile := "client-dev.yml"
+		infraSuffix := ""
+		if opts.IsTest() {
+			configFile = "client-test.yml"
+			infraSuffix = "-test"
+		} else if opts.IsProd() {
+			configFile = "client-production.yml"
+		}
+		return nil, fmt.Errorf("\nCannot connect to any-sync network: %w\n\n"+
+			"Troubleshooting:\n"+
+			"  1. Check that any-sync infrastructure is running:\n"+
+			"     cd ../matou-infrastructure/any-sync && make health%s\n"+
+			"  2. Ensure config/%-22s matches the running network.\n"+
+			"     To update: cp ../matou-infrastructure/any-sync/etc%s/client.yml config/%s",
+			pingErr, infraSuffix, configFile, infraSuffix, configFile)
+	}
+	fmt.Fprintln(out, " OK")
+	fmt.Fprintln(out)
+
+	// Initialize local storage
+	fmt.Fprintln(out, "Initializing local storage (anystore)...")
+
+	store, err := anystore.NewLocalStore(anystore.DefaultConfig(opts.DataDir))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create local store: %w", err)
+	}
+	closers = append(closers, store.Close)
+
+	// Ensure chat indexes for anystore persistence
+	if err := store.EnsureChatIndexes(ctx); err != nil {
+		return nil, fmt.Errorf("failed to create chat indexes: %w", err)
+	}
+
+	fmt.Fprintf(out, "  Local storage initialized (with chat indexes)\n")
+	fmt.Fprintf(out, "   Data directory: %s\n", opts.DataDir)
+	fmt.Fprintln(out)
+
+	// Determine community space ID: prefer runtime config from identity, fall back to org config
+	communitySpaceID := orgConfigHandler.GetCommunitySpaceID()
+	orgAID := orgConfigHandler.GetOrgAID()
+	if userIdentity.GetCommunitySpaceID() != "" {
+		communitySpaceID = userIdentity.GetCommunitySpaceID()
+	}
+	if userIdentity.GetOrgAID() != "" {
+		orgAID = userIdentity.GetOrgAID()
+	}
+
+	// Load additional space IDs from persisted identity
+	communityReadOnlySpaceID := ""
+	adminSpaceID := ""
+	if userIdentity.GetCommunityReadOnlySpaceID() != "" {
+		communityReadOnlySpaceID = userIdentity.GetCommunityReadOnlySpaceID()
+	}
+	if userIdentity.GetAdminSpaceID() != "" {
+		adminSpaceID = userIdentity.GetAdminSpaceID()
+	}
+
+	// Initialize space manager
+	fmt.Fprintln(out, "Initializing space manager...")
+	spaceManager := anysync.NewSpaceManager(anysyncClient, &anysync.SpaceManagerConfig{
+		CommunitySpaceID:         communitySpaceID,
+		CommunityReadOnlySpaceID: communityReadOnlySpaceID,
+		AdminSpaceID:             adminSpaceID,
+		OrgAID:                   orgAID,
+	}, sdkClient.GetTreeManager())
+	spaceStore := anystore.NewSpaceStoreAdapter(store)
+
+	fmt.Fprintf(out, "  Space manager initialized\n")
+	fmt.Fprintf(out, "   Community Space ID: %s\n", communitySpaceID)
+	fmt.Fprintln(out)
+
+	// Verify community space (log warning if not configured)
+	if communitySpaceID == "" {
+		fmt.Fprintln(out, "  Warning: Community space ID not configured")
+		fmt.Fprintln(out, "     Memberships will only be stored in private spaces")
+	}
+
+	// Initialize KERI client (config-only, no KERIA connection needed)
+	fmt.Fprintln(out, "Initializing KERI client...")
+	keriClient, err := keri.NewClient(&keri.Config{
+		OrgAID:   orgConfigHandler.GetOrgAID(),
+		OrgAlias: orgConfigHandler.GetOrgName(), // Use name as alias
+		OrgName:  orgConfigHandler.GetOrgName(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KERI client: %w", err)
+	}
+
+	fmt.Fprintf(out, "  KERI client initialized\n")
+	if !orgConfigHandler.IsConfigured() {
+		fmt.Fprintln(out, "   Note: Organization not configured yet - credential validation disabled")
+	}
+	fmt.Fprintf(out, "   Note: Credential issuance handled by frontend (signify-ts)\n")
+	fmt.Fprintln(out)
+
+	// Initialize type registry
+	fmt.Fprintln(out, "Initializing type registry...")
+	typeRegistry := matouTypes.NewRegistry()
+	typeRegistry.Bootstrap()
+	fmt.Fprintf(out, "  Type registry initialized with %d types\n", len(typeRegistry.All()))
+	fmt.Fprintln(out)
+
+	// Create event broker for SSE
+	eventBroker := api.NewEventBroker()
+
+	// Create push-based listener for P2P chat changes (replaces polling)
+	chatListener := anysync.NewTreeUpdateListener(
+		&chatPersisterAdapter{store: store},
+		&eventBrokerAdapter{broker: eventBroker},
+	)
+	spaceManager.SetObjectTreeListener(chatListener)
+
+	// Wire up FreshTreeReader so the listener can rebuild trees with updated ACL keys
+	// when the cached tree was built before the joiner's InviteJoin was applied.
+	chatListener.SetFreshTreeReader(func(treeId string) (objecttree.ObjectTree, error) {
+		utm := spaceManager.TreeManager()
+		ctx := context.Background()
+
+		// Fast path: tree is already indexed.
+		if spaceId := utm.SpaceForTree(treeId); spaceId != "" {
+			return utm.BuildFreshTree(ctx, spaceId, treeId)
+		}
+
+		// Slow path: tree arrived via P2P sync between BuildSpaceIndex runs, so
+		// the index doesn't know about it. Re-index every known space, then
+		// look up again. If still missing, try each known space directly.
+		for _, sid := range utm.KnownSpaceIDs() {
+			_ = utm.BuildSpaceIndex(ctx, sid)
+		}
+		if spaceId := utm.SpaceForTree(treeId); spaceId != "" {
+			return utm.BuildFreshTree(ctx, spaceId, treeId)
+		}
+		for _, sid := range utm.KnownSpaceIDs() {
+			if tree, err := utm.BuildFreshTree(ctx, sid, treeId); err == nil {
+				return tree, nil
+			}
+		}
+		return nil, fmt.Errorf("no space found for tree %s (probed %d spaces)", treeId, len(utm.KnownSpaceIDs()))
+	})
+
+	// Create API handlers
+	credHandler := api.NewCredentialsHandler(keriClient, store)
+	syncHandler := api.NewSyncHandler(keriClient, store, spaceManager, spaceStore, userIdentity)
+	trustHandler := api.NewTrustHandler(store, orgConfigHandler.GetOrgAID(), spaceManager)
+	healthHandler := api.NewHealthHandler(store, spaceStore, orgConfigHandler.GetOrgAID, orgConfigHandler.GetAdminAID)
+	spacesHandler := api.NewSpacesHandler(spaceManager, store, userIdentity, spaceManager.FileManager())
+	emailSender := email.NewSender(cfg.SMTP, opts.ConfigServerToken)
+	invitesHandler := api.NewInvitesHandler(emailSender)
+	bookingHandler := api.NewBookingHandler(emailSender)
+	notificationsHandler := api.NewNotificationsHandler(emailSender)
+	identityHandler := api.NewIdentityHandler(userIdentity, sdkClient, spaceManager, spaceStore)
+	eventsHandler := api.NewEventsHandler(eventBroker)
+	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager(), eventBroker)
+	multisigHandler := api.NewMultisigHandler(spaceManager)
+	noticesHandler := api.NewNoticesHandler(spaceManager, userIdentity, eventBroker)
+	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
+	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store, chatListener)
+	commentCursorsHandler := api.NewCommentCursorsHandler(spaceManager, userIdentity)
+
+	// Initialize contributions system
+	fmt.Fprintln(out, "Initializing contributions system...")
+	contribStoreAdapter := anysync.NewObjectStoreAdapter(spaceManager.ObjectTreeManager(), sdkClient, userIdentity)
+	contribService := contributions.NewService(contribStoreAdapter)
+	notifBroadcaster := notifications.NewSSEBrokerAdapter(eventBroker)
+	notifEmailAdapter := notifications.NewEmailAdapter(emailSender)
+	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
+	contribNotifier := &contribNotifierAdapter{svc: notifService}
+	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
+	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
+	credentialRoleLookup := api.NewCredentialRoleLookup(store)
+	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
+	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
+
+	// Grant community_admin role to all configured org admins.
+	// Also register a callback so admin AIDs are updated whenever org config changes
+	// (e.g. when org setup runs after server start).
+	setAdminAIDsFromConfig := func(orgData *api.OrgConfigData) {
+		adminAIDs := make([]string, 0, len(orgData.Admins))
+		for _, a := range orgData.Admins {
+			if a.AID != "" {
+				adminAIDs = append(adminAIDs, a.AID)
+			}
+		}
+		profileRoleLookup.SetAdminAIDs(adminAIDs)
+		log.Printf("[RBAC] Updated admin AIDs: %v", adminAIDs)
+	}
+	if orgConfigHandler.IsConfigured() {
+		setAdminAIDsFromConfig(orgConfigHandler.GetConfig())
+	}
+	orgConfigHandler.AddOnUpdate(setAdminAIDsFromConfig)
+
+	// Mirror org config writes to the legacy config server for backward
+	// compatibility (older clients / multi-session dev still read it). The
+	// backend is the primary source of truth (OrgConfigHandler above), so a
+	// failure here is logged and swallowed rather than surfaced to the caller.
+	// This used to be a direct unauthenticated POST from the browser
+	// (frontend/src/api/config.ts); it moved server-side because the admin
+	// token must not be exposed to the browser.
+	//
+	// The onUpdate chain runs inline in the config-save request, so the
+	// mirror client needs a timeout: against a remote config server an
+	// un-timeout-ed connect would stall POST /api/v1/org/config.
+	mirrorClient := &http.Client{Timeout: 10 * time.Second}
+	orgConfigHandler.AddOnUpdate(func(orgData *api.OrgConfigData) {
+		if mirrorErr := api.MirrorToConfigServer(mirrorClient, opts.ConfigServerURL, opts.ConfigServerToken, opts.IsTest(), orgData); mirrorErr != nil {
+			log.Printf("[Config] Config-server mirror write failed (non-critical): %v", mirrorErr)
+		} else if opts.ConfigServerToken != "" {
+			log.Printf("[Config] Mirrored org config to config server")
+		}
+	})
+
+	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
+	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)
+	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager, contribNotifier)
+	implPlansHandler := api.NewImplementationPlansHandler(contribService, spaceManager)
+	milestonesHandler := api.NewMilestonesHandler(contribService, spaceManager)
+	contributionsHandler := api.NewContributionsHandler(contribService, spaceManager, contribNotifier)
+
+	// Wire event broker to contribution, project, and plan handlers for SSE broadcasts
+	contributionsHandler.SetBroker(eventBroker)
+	projectsHandler.SetBroker(eventBroker)
+	implPlansHandler.SetBroker(eventBroker)
+	fmt.Fprintln(out, "  Contributions system initialized")
+	fmt.Fprintln(out)
+
+	// Create HTTP server
+	mux := http.NewServeMux()
+
+	// Health check endpoint (with sync/trust status)
+	mux.HandleFunc("/health", api.CORSHandler(healthHandler.HandleHealth))
+
+	// Info endpoint
+	mux.HandleFunc("/info", api.CORSHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{
+			"organization": {
+				"name": "%s",
+				"aid": "%s",
+				"configured": %t
+			},
+			"admin": {
+				"aid": "%s"
+			},
+			"anysync": {
+				"networkId": "%s",
+				"coordinator": "%s"
+			}
+		}`,
+			orgConfigHandler.GetOrgName(),
+			orgConfigHandler.GetOrgAID(),
+			orgConfigHandler.IsConfigured(),
+			orgConfigHandler.GetAdminAID(),
+			anysyncClient.GetNetworkID(),
+			anysyncClient.GetCoordinatorURL(),
+		)
+	}))
+
+	// Register API routes
+	credHandler.RegisterRoutes(mux)
+	syncHandler.RegisterRoutes(mux)
+	trustHandler.RegisterRoutes(mux)
+	spacesHandler.RegisterRoutes(mux)
+	invitesHandler.RegisterRoutes(mux)
+	bookingHandler.RegisterRoutes(mux)
+	identityHandler.RegisterRoutes(mux)
+	eventsHandler.RegisterRoutes(mux)
+	profilesHandler.RegisterRoutes(mux)
+	multisigHandler.RegisterRoutes(mux)
+	noticesHandler.RegisterRoutes(mux)
+	filesHandler.RegisterRoutes(mux)
+	chatHandler.RegisterRoutes(mux)
+	commentCursorsHandler.Routes(mux)
+	notificationsHandler.RegisterRoutes(mux)
+	proposalsHandler.RegisterRoutes(mux, roleLookup)
+	projectsHandler.RegisterRoutes(mux, roleLookup)
+	decisionPlansHandler.RegisterRoutes(mux, roleLookup)
+	implPlansHandler.RegisterRoutes(mux)
+	milestonesHandler.RegisterRoutes(mux, roleLookup)
+	contributionsHandler.RegisterRoutes(mux, roleLookup)
+	orgConfigHandler.RegisterRoutes(mux)
+
+	// Bind the listener before starting the sync worker so a bind failure aborts
+	// cleanly. net.Listen honours port 0 by picking a free port, which App.Port
+	// then reports back (used by tests and by any dynamic-port host).
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, opts.Port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+
+	fmt.Fprintf(out, "Starting HTTP server on %s\n", listener.Addr().String())
+	fmt.Fprintln(out)
+
+	// Start background sync worker
+	syncWorkerConfig := bgSync.DefaultConfig()
+	syncWorkerConfig.CommunitySpaceID = communitySpaceID
+	syncWorker := bgSync.NewWorker(syncWorkerConfig, spaceManager, store, eventBroker)
+	syncWorker.Start()
+	closers = append(closers, func() error { syncWorker.Stop(); return nil })
+
+	// Wrap with middleware: request logger → localhost guard → token guard → CORS.
+	// LocalhostGuard blocks other machines; TokenGuard blocks other local
+	// processes from issuing mutating requests without the per-launch token.
+	// CORS sits outside TokenGuard so 401 responses carry
+	// Access-Control-Allow-Origin — a browser then surfaces the 401 + JSON
+	// body instead of an opaque "Failed to fetch". Preflight OPTIONS is
+	// answered by CORSMiddleware before TokenGuard ever sees it.
+	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(api.TokenGuard(opts.APIToken, mux))))
+
+	app := newServing(listener, handler, closers)
+	success = true
+	return app, nil
+}
+
+// newServing wraps an already-bound listener in an App and begins serving
+// handler in a background goroutine. closers are released (reverse order) by
+// Shutdown. Factored out of Start so tests can exercise the listen/serve/
+// shutdown lifecycle without the full backend wiring.
+func newServing(listener net.Listener, handler http.Handler, closers []func() error) *App {
+	app := &App{
+		listener: listener,
+		server:   &http.Server{Handler: handler},
+		closers:  closers,
+		serveErr: make(chan error, 1),
+	}
+	go func() {
+		app.serveErr <- app.server.Serve(listener)
+	}()
+	return app
+}
+
+// Port returns the TCP port the server is listening on. When Options.Port was 0
+// this is the free port net.Listen selected.
+func (a *App) Port() int {
+	if tcp, ok := a.listener.Addr().(*net.TCPAddr); ok {
+		return tcp.Port
+	}
+	return 0
+}
+
+// Addr returns the listener's network address (host:port).
+func (a *App) Addr() string {
+	return a.listener.Addr().String()
+}
+
+// Wait blocks until the server stops serving and returns the reason. A graceful
+// Shutdown is reported as nil (http.ErrServerClosed is not an error to callers).
+func (a *App) Wait() error {
+	err := <-a.serveErr
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+// Shutdown gracefully stops the HTTP server, then releases every resource opened
+// by Start in reverse of the order they were opened — mirroring the `defer
+// X.Close()` unwinding cmd/server/main.go relied on. The first error encountered
+// is returned; remaining closers still run.
+func (a *App) Shutdown(ctx context.Context) error {
+	var firstErr error
+	if err := a.server.Shutdown(ctx); err != nil {
+		firstErr = err
+	}
+	for i := len(a.closers) - 1; i >= 0; i-- {
+		if err := a.closers[i](); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// fetchAndSaveAnySyncConfig fetches the any-sync client config from the config
+// server and writes it to disk as YAML.
+func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) error {
+	resp, err := http.Get(configServerURL + "/api/client-config")
+	if err != nil {
+		return fmt.Errorf("failed to reach config server at %s: %w", configServerURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("config server returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return fmt.Errorf("failed to parse JSON response: %w", err)
+	}
+
+	anysyncRaw, ok := envelope["anysync"]
+	if !ok {
+		return fmt.Errorf("config server response missing \"anysync\" key")
+	}
+
+	var clientConfig interface{}
+	if err := json.Unmarshal(anysyncRaw, &clientConfig); err != nil {
+		return fmt.Errorf("failed to parse anysync config: %w", err)
+	}
+
+	yamlData, err := yaml.Marshal(clientConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config to YAML: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	if err := os.WriteFile(targetPath, yamlData, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
+}
+
+// eventBrokerAdapter adapts api.EventBroker to anysync.EventBroadcaster.
+type eventBrokerAdapter struct {
+	broker *api.EventBroker
+}
+
+func (a *eventBrokerAdapter) Broadcast(event anysync.SSEEvent) {
+	a.broker.Broadcast(api.SSEEvent{
+		Type: event.Type,
+		Data: event.Data,
+	})
+}
+
+// chatPersisterAdapter adapts anystore.LocalStore to anysync.ChatPersister.
+// It converts ObjectPayload to anystore types, breaking the circular import.
+type chatPersisterAdapter struct {
+	store *anystore.LocalStore
+}
+
+func (a *chatPersisterAdapter) PersistChatObject(ctx context.Context, p *anysync.ObjectPayload) error {
+	switch p.Type {
+	case "ChatChannel":
+		var data struct {
+			Name         string   `json:"name"`
+			Description  string   `json:"description,omitempty"`
+			Icon         string   `json:"icon,omitempty"`
+			Photo        string   `json:"photo,omitempty"`
+			CreatedAt    string   `json:"createdAt"`
+			CreatedBy    string   `json:"createdBy"`
+			IsArchived   bool     `json:"isArchived,omitempty"`
+			AllowedRoles []string `json:"allowedRoles,omitempty"`
+		}
+		if err := json.Unmarshal(p.Data, &data); err != nil {
+			return err
+		}
+		return a.store.UpsertChannel(ctx, &anystore.ChatChannel{
+			ID: p.ID, Name: data.Name, Description: data.Description,
+			Icon: data.Icon, Photo: data.Photo, CreatedAt: data.CreatedAt,
+			CreatedBy: data.CreatedBy, IsArchived: data.IsArchived,
+			AllowedRoles: data.AllowedRoles, Version: p.Version,
+		})
+
+	case "ChatMessage":
+		var data struct {
+			ChannelID   string          `json:"channelId"`
+			SenderAID   string          `json:"senderAid"`
+			SenderName  string          `json:"senderName"`
+			Content     string          `json:"content"`
+			Attachments json.RawMessage `json:"attachments,omitempty"`
+			ReplyTo     string          `json:"replyTo,omitempty"`
+			SentAt      string          `json:"sentAt"`
+			EditedAt    string          `json:"editedAt,omitempty"`
+			DeletedAt   string          `json:"deletedAt,omitempty"`
+		}
+		if err := json.Unmarshal(p.Data, &data); err != nil {
+			return err
+		}
+		return a.store.UpsertMessage(ctx, &anystore.ChatMessage{
+			ID: p.ID, ChannelID: data.ChannelID, SenderAID: data.SenderAID,
+			SenderName: data.SenderName, Content: data.Content,
+			Attachments: data.Attachments, ReplyTo: data.ReplyTo,
+			SentAt: data.SentAt, EditedAt: data.EditedAt,
+			DeletedAt: data.DeletedAt, Version: p.Version,
+		})
+
+	case "MessageReaction":
+		var data struct {
+			MessageID   string   `json:"messageId"`
+			Emoji       string   `json:"emoji"`
+			ReactorAIDs []string `json:"reactorAids"`
+		}
+		if err := json.Unmarshal(p.Data, &data); err != nil {
+			return err
+		}
+		return a.store.UpsertReaction(ctx, &anystore.ChatReaction{
+			ID: p.ID, MessageID: data.MessageID, Emoji: data.Emoji,
+			ReactorAIDs: data.ReactorAIDs, Version: p.Version,
+		})
+	}
+	return nil
+}
+
+// contribNotifierAdapter bridges api.ContribNotifier to notifications.Service.
+type contribNotifierAdapter struct {
+	svc *notifications.Service
+}
+
+func (a *contribNotifierAdapter) Notify(n *api.ContribNotification) error {
+	return a.svc.Notify(&notifications.Notification{
+		Type:        notifications.NotificationType(n.Type),
+		RecipientID: n.RecipientID,
+		Title:       n.Title,
+		Message:     n.Message,
+		EntityID:    n.EntityID,
+		EntityType:  n.EntityType,
+		Channel:     notifications.ChannelInApp,
+	})
+}

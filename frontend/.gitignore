@@ -58,3 +58,7 @@ tests/e2e/screenshots/
 
 # certs
 certs/
+
+# Android build artifacts (make build-android-aar)
+src-capacitor/android/app/libs/*.aar
+src-capacitor/android/app/libs/*-sources.jar

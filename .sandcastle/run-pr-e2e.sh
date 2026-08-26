@@ -49,6 +49,18 @@ make -C "$INFRA/any-sync" clean-test setup-test
 # already on PATH (the workstation installs one at ~/go-sdk/go).
 command -v go >/dev/null 2>&1 || export PATH="$HOME/go-sdk/go/bin:$PATH"
 
+# Auth-enabled config servers gate writes behind a bearer token. Surface the
+# test env's token (if the infra checkout provisions one) to the backend
+# (MATOU_CONFIG_SERVER_TOKEN, used for the server-side config mirror and email
+# relay) and to the e2e helpers (CONFIG_ADMIN_TOKEN, used for the test-reset
+# DELETE in mock-config.ts). The browser never holds the token — see
+# matou-collective/matou-app#1. If unset, both sides fall back to the
+# well-known dev/test placeholder, which matches infra's generated default.
+if [ -z "${CONFIG_ADMIN_TOKEN:-}" ] && [ -f "$INFRA/keri/.env.test" ]; then
+  CONFIG_ADMIN_TOKEN="$(sed -n 's/^CONFIG_ADMIN_TOKEN=//p' "$INFRA/keri/.env.test" | head -1)"
+fi
+export CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}" MATOU_CONFIG_SERVER_TOKEN="${CONFIG_ADMIN_TOKEN:-}"
+
 ( cd backend && make build )
 ( cd backend && MATOU_ENV=test exec ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
 backend_pid=$!
@@ -59,15 +71,6 @@ done
 curl -sf http://localhost:9080/health >/dev/null || { echo "backend never became healthy" >&2; exit 1; }
 
 ( cd frontend && npm ci && npx playwright install chromium )
-
-# Auth-enabled config servers gate writes behind a bearer token. Surface the
-# test env's token (if the infra checkout provisions one) to the app
-# (VITE_CONFIG_ADMIN_TOKEN, read in src/api/config.ts) and to the e2e helpers
-# (CONFIG_ADMIN_TOKEN). Pre-auth servers ignore the extra header.
-if [ -z "${CONFIG_ADMIN_TOKEN:-}" ] && [ -f "$INFRA/keri/.env.test" ]; then
-  CONFIG_ADMIN_TOKEN="$(sed -n 's/^CONFIG_ADMIN_TOKEN=//p' "$INFRA/keri/.env.test" | head -1)"
-fi
-export CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}" VITE_CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}"
 
 set +e
 # The e2e utils locate infra as a sibling of the repo root, which doesn't hold

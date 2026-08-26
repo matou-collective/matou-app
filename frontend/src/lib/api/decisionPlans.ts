@@ -5,6 +5,7 @@
 import { BACKEND_URL, authHeaders } from './client';
 import { createLogger } from '../logging';
 import { useIdentityStore } from 'stores/identity';
+import type { ActionProof } from '../keri/actionProof';
 
 const log = createLogger('DecisionPlansAPI');
 
@@ -72,7 +73,7 @@ export async function getDecisionPlan(id: string): Promise<DecisionPlan> {
   return response.json();
 }
 
-export async function transitionDecisionPlan(id: string, status: string): Promise<DecisionPlan> {
+export async function transitionDecisionPlan(id: string, status: string, proof?: ActionProof): Promise<DecisionPlan> {
   const identityStore = useIdentityStore();
   const userName = identityStore.currentAID?.name;
   const response = await fetch(`${BACKEND_URL}/api/v1/decision-plans/${id}/transition`, {
@@ -82,7 +83,7 @@ export async function transitionDecisionPlan(id: string, status: string): Promis
       ...authHeaders(),
       ...(userName ? { 'X-User-Name': userName } : {}),
     },
-    body: JSON.stringify({ status }),
+    body: JSON.stringify(proof ? { status, proof } : { status }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));

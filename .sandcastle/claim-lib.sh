@@ -18,9 +18,10 @@
 # legitimate "nothing here" — and callers that guard with `|| return 0/1` never
 # fire (2026-08-11 review finding 1: an actions/tasks blip made claim_alive_runs
 # return `[]` at rc 0, and janitor_sweep's `|| return 0` guard never saw it,
-# mass-re-arming every live claim). claim_mark_working is the one exception:
-# its LAST pipeline stage is curl itself (no filter runs after it), so the
-# pipeline's own exit status already is curl's. (This header used to also
+# mass-re-arming every live claim). claim_mark_working does not raw-capture: it
+# posts the label with the `-o /dev/null -w '%{http_code}'` idiom and pages on
+# any non-2xx (#20 — a silent 403 on the agent-working write let #19 be worked
+# with no claim label). (This header used to also
 # name claim_label_id an exception — false premise: its pipeline ended in
 # `jq | head -1` and the real safety was the `[ -n "$id" ]` emptiness check.
 # It raw-captures like the rest now, and pages — #470 M-1/M-2.)
@@ -58,9 +59,16 @@ claim_label_id() { # claim_label_id <name> -> id | rc 1 (LOUD on miss)
 claim_alive_runs() { # -> JSON array of in-progress swarm run numbers | rc 1 on API failure
   # &page=1 is mandatory: without it Forgejo ignores `limit` and dumps every
   # task ever (O(n), ~30s and growing — the 2026-07-30 healer blindness).
+  # Name match is `swarm` OR `swarm (N)` (#541): swarm.yml's 2-wide worker
+  # matrix (44fe333) makes Forgejo suffix each matrix job's name with its
+  # index — live-probed 2026-08-15, every real task is "swarm (1)"/"swarm
+  # (2)", never bare "swarm". An exact-match filter (the pre-matrix original)
+  # silently always returned [], so claim_won's arbitration only ever saw a
+  # caller's OWN claim as alive and every racing host "won" — two hosts fully
+  # implemented #536 before either noticed the other.
   local raw
   raw="$(_claim_api "$FORGEJO_API/actions/tasks?limit=100&page=1")" || return 1
-  jq -c '[.workflow_runs[]? | select(.name == "swarm" and (.status == "running" or .status == "waiting")) | .run_number]' <<<"$raw"
+  jq -c '[.workflow_runs[]? | select((.name == "swarm" or (.name | test("^swarm \\("))) and (.status == "running" or .status == "waiting")) | .run_number]' <<<"$raw"
 }
 
 claim_post() { # claim_post <issue> <host> <run> -> comment id | rc 1 on API failure
@@ -102,11 +110,24 @@ claim_won() { # claim_won <issue> <my_comment_id> <alive_runs_json> -> rc 0 if m
   [ "$lowest" = "$2" ]
 }
 
-claim_mark_working() { # claim_mark_working <issue>
-  local lid; lid="$(claim_label_id agent-working)" || return 1
-  jq -n --argjson l "$lid" '{labels: [$l]}' |
-    _claim_api -X POST -H 'Content-Type: application/json' -d @- \
-      "$FORGEJO_API/issues/$1/labels" >/dev/null
+claim_mark_working() { # claim_mark_working <issue> -> rc 0 on a 2xx label write; LOUD + rc 1 on refusal (#20)
+  # A label write that returns non-2xx must fail LOUD, never silently continue:
+  # #19's swarm-bot had repo.code write but not repo.issues write, so this POST
+  # 403'd and the ticket was worked WITHOUT agent-working — invisible to the
+  # janitor and to every other host's queue. Capture the HTTP code with the
+  # -o/-w idiom (not curl -sf, which swallows a 403 into an rc the caller here
+  # dropped) and page on anything but a 2xx.
+  local lid code
+  lid="$(claim_label_id agent-working)" || return 1
+  code="$(jq -n --argjson l "$lid" '{labels: [$l]}' |
+    curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $FORGEJO_TOKEN" \
+      -X POST -H 'Content-Type: application/json' -d @- \
+      "$FORGEJO_API/issues/$1/labels")"
+  case "$code" in
+    2*) return 0 ;;
+    *) echo "claim: label write refused (HTTP $code) — check the bot's issues permission on this repo" >&2
+       return 1 ;;
+  esac
 }
 
 claim_release() { # claim_release <issue> <comment_id>
