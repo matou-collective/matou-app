@@ -418,43 +418,24 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	if keyStateURLTemplate == "" {
 		keyStateURLTemplate = strings.TrimRight(cfg.KERI.CESRURL, "/") + "/oobi/{aid}"
 	}
+	var resolverOpts []auth.ResolverOption
+	if os.Getenv("MATOU_KERIA_KEYSTATE_ALLOW_HTTP") == "1" {
+		resolverOpts = append(resolverOpts, auth.AllowInsecureHTTP())
+	}
 	var keyStateResolver auth.KeyStateResolver
-	if kr, err := auth.NewKERIAResolver(keyStateURLTemplate, 5*time.Minute); err != nil {
+	if kr, err := auth.NewKERIAResolver(keyStateURLTemplate, 5*time.Minute, resolverOpts...); err != nil {
 		log.Printf("[Auth] invalid key-state URL template %q: %v — falling back to static resolver", keyStateURLTemplate, err)
 		keyStateResolver = auth.NewStaticKeyStateResolver()
 	} else {
 		keyStateResolver = kr
 	}
-	authVerifier := auth.NewVerifier(keyStateResolver, nil, nil)
+	authVerifier := auth.NewVerifier(keyStateResolver, nil, auth.NewSessionStore(opts.SessionTTL))
 	authHandler := api.NewAuthHandler(authVerifier)
 
-	// Revoke sessions when an AID's key state rotates (observed via KEL sync).
-	syncHandler.SetRotationHook(func(aid string, kel []api.KELEvent) {
-		bestSeq := -1
-		var bestKeys []string
-		for _, ev := range kel {
-			switch ev.Type {
-			case "icp", "rot", "dip", "drt":
-			default:
-				continue
-			}
-			db, err := json.Marshal(ev.Data)
-			if err != nil {
-				continue
-			}
-			var d struct {
-				K []string `json:"k"`
-			}
-			if err := json.Unmarshal(db, &d); err != nil || len(d.K) == 0 {
-				continue
-			}
-			if ev.Sequence >= bestSeq {
-				bestSeq = ev.Sequence
-				bestKeys = d.K
-			}
-		}
-		authVerifier.OnRotation(aid, bestKeys)
-	})
+	// Revoke sessions when an AID's key state rotates: a session-verified KEL
+	// sync for the caller's own AID triggers a re-resolve from the authoritative
+	// key-state source (never the request body).
+	syncHandler.SetRotationHook(authVerifier.OnRotation)
 
 	// Grant community_admin role to all configured org admins.
 	// Also register a callback so admin AIDs are updated whenever org config changes

@@ -17,6 +17,18 @@ import (
 // window of use.
 const DefaultSessionTTL = 30 * time.Minute
 
+// DefaultMaxSessions caps the total number of live sessions held in memory;
+// DefaultMaxSessionsPerAID caps how many one AID may hold (the oldest is
+// evicted when a new one is minted past the cap).
+const (
+	DefaultMaxSessions       = 10_000
+	DefaultMaxSessionsPerAID = 32
+)
+
+// ErrSessionStoreFull is returned by Mint when the store is at capacity with
+// no expired sessions left to evict.
+var ErrSessionStoreFull = fmt.Errorf("too many live sessions")
+
 type session struct {
 	aid      string
 	keysHash string
@@ -28,25 +40,36 @@ type session struct {
 // AID. Sessions carry the hash of the AID's signing keys at mint time so they
 // can be invalidated when that AID's key state rotates (revoke-on-rotation).
 type SessionStore struct {
-	ttl     time.Duration
-	mu      sync.Mutex
-	byToken map[string]session
-	byAID   map[string]map[string]struct{} // aid -> set of tokens
-	now     func() time.Time
+	ttl       time.Duration
+	max       int
+	maxPerAID int
+	mu        sync.Mutex
+	byToken   map[string]session
+	byAID     map[string]map[string]struct{} // aid -> set of tokens
+	now       func() time.Time
 }
 
 // NewSessionStore creates a SessionStore with the given TTL (0 uses
-// DefaultSessionTTL).
+// DefaultSessionTTL) and default capacity caps.
 func NewSessionStore(ttl time.Duration) *SessionStore {
 	if ttl <= 0 {
 		ttl = DefaultSessionTTL
 	}
 	return &SessionStore{
-		ttl:     ttl,
-		byToken: make(map[string]session),
-		byAID:   make(map[string]map[string]struct{}),
-		now:     time.Now,
+		ttl:       ttl,
+		max:       DefaultMaxSessions,
+		maxPerAID: DefaultMaxSessionsPerAID,
+		byToken:   make(map[string]session),
+		byAID:     make(map[string]map[string]struct{}),
+		now:       time.Now,
 	}
+}
+
+// SetMax overrides the total and per-AID session caps (tests).
+func (s *SessionStore) SetMax(total, perAID int) {
+	s.mu.Lock()
+	s.max, s.maxPerAID = total, perAID
+	s.mu.Unlock()
 }
 
 // KeysHash returns a stable hash of a set of qb64 signing keys, used to detect
@@ -69,15 +92,33 @@ func (s *SessionStore) Mint(aid, keysHash string) (token string, expiresAt time.
 		return "", time.Time{}, fmt.Errorf("generate token: %w", err)
 	}
 	token = base64.RawURLEncoding.EncodeToString(buf)
-	expiresAt = s.now().Add(s.ttl)
+	now := s.now()
+	expiresAt = now.Add(s.ttl)
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.byToken) >= s.max {
+		s.sweepLocked(now)
+		if len(s.byToken) >= s.max {
+			return "", time.Time{}, ErrSessionStoreFull
+		}
+	}
+	// Per-AID cap: evict this AID's earliest-expiring session to make room.
+	for len(s.byAID[aid]) >= s.maxPerAID {
+		var oldest string
+		var oldestExp time.Time
+		for t := range s.byAID[aid] {
+			if exp := s.byToken[t].expiry; oldest == "" || exp.Before(oldestExp) {
+				oldest, oldestExp = t, exp
+			}
+		}
+		s.deleteLocked(oldest, aid)
+	}
 	s.byToken[token] = session{aid: aid, keysHash: keysHash, expiry: expiresAt}
 	if s.byAID[aid] == nil {
 		s.byAID[aid] = make(map[string]struct{})
 	}
 	s.byAID[aid][token] = struct{}{}
-	s.mu.Unlock()
 	return token, expiresAt, nil
 }
 
@@ -98,6 +139,13 @@ func (s *SessionStore) Validate(token string) (aid string, ok bool) {
 		return "", false
 	}
 	return sess.aid, true
+}
+
+// Len reports the number of sessions held (including not-yet-swept expired ones).
+func (s *SessionStore) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.byToken)
 }
 
 // RevokeAID invalidates every session for the given AID. Called when the AID's
@@ -142,6 +190,15 @@ func (s *SessionStore) deleteLocked(token, aid string) {
 		delete(set, token)
 		if len(set) == 0 {
 			delete(s.byAID, aid)
+		}
+	}
+}
+
+// sweepLocked drops expired sessions. Caller must hold s.mu.
+func (s *SessionStore) sweepLocked(now time.Time) {
+	for token, sess := range s.byToken {
+		if now.After(sess.expiry) {
+			s.deleteLocked(token, sess.aid)
 		}
 	}
 }

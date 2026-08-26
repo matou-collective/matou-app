@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -11,15 +13,31 @@ import (
 	"github.com/matou-dao/backend/internal/auth"
 )
 
+// Rate limits for the public (pre-session) auth endpoints, applied per client
+// IP and per AID: a burst of authLimitBurst, refilling at authLimitRate/s.
+// Generous for a human or a machine client re-logging on 401, tight enough
+// that looping the endpoints cannot brute-force a signature or exhaust the
+// challenge store.
+const (
+	authLimitRate  = 1.0
+	authLimitBurst = 20
+)
+
 // AuthHandler exposes the signed-challenge login endpoints and holds the
 // verifier used by SignedAuthMiddleware.
 type AuthHandler struct {
 	verifier *auth.Verifier
+	byIP     *auth.RateLimiter
+	byAID    *auth.RateLimiter
 }
 
 // NewAuthHandler creates an AuthHandler around a verifier.
 func NewAuthHandler(verifier *auth.Verifier) *AuthHandler {
-	return &AuthHandler{verifier: verifier}
+	return &AuthHandler{
+		verifier: verifier,
+		byIP:     auth.NewRateLimiter(authLimitRate, authLimitBurst),
+		byAID:    auth.NewRateLimiter(authLimitRate, authLimitBurst),
+	}
 }
 
 // Sessions returns the underlying session store (for middleware wiring).
@@ -33,6 +51,27 @@ func (h *AuthHandler) Verifier() *auth.Verifier { return h.verifier }
 func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/challenge", CORSHandler(h.HandleChallenge))
 	mux.HandleFunc("/api/v1/auth/login", CORSHandler(h.HandleLogin))
+}
+
+// allow applies the per-IP and per-AID rate limits, writing a 429 and
+// returning false when either is exceeded.
+func (h *AuthHandler) allow(w http.ResponseWriter, r *http.Request, aid string) bool {
+	if !h.byIP.Allow(clientIP(r)) || !h.byAID.Allow(aid) {
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many authentication attempts, retry later"})
+		return false
+	}
+	return true
+}
+
+// clientIP returns the remote host of the request (no proxy headers: the API
+// is loopback-only, so RemoteAddr is authoritative).
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 type challengeRequest struct {
@@ -51,13 +90,20 @@ func (h *AuthHandler) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req challengeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "aid is required"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !auth.ValidAID(req.AID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a valid aid is required"})
+		return
+	}
+	if !h.allow(w, r, req.AID) {
 		return
 	}
 	nonce, expiresAt, err := h.verifier.Challenge(req.AID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to issue challenge"})
+		status := http.StatusInternalServerError
+		if errors.Is(err, auth.ErrChallengeStoreFull) {
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, map[string]string{"error": "failed to issue challenge"})
 		return
 	}
 	writeJSON(w, http.StatusOK, challengeResponse{
@@ -78,7 +124,8 @@ type loginResponse struct {
 }
 
 // HandleLogin verifies a signed challenge and mints a session token:
-// POST /api/v1/auth/login {aid, challenge, signature}.
+// POST /api/v1/auth/login {aid, challenge, signature}. The signature must be
+// over auth.SignedMessage(aid, challenge), not the bare challenge.
 func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -86,16 +133,24 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
-		req.AID == "" || req.Challenge == "" || req.Signature == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "aid, challenge and signature are required"})
+		!auth.ValidAID(req.AID) || req.Challenge == "" || req.Signature == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a valid aid, challenge and signature are required"})
+		return
+	}
+	if !h.allow(w, r, req.AID) {
 		return
 	}
 	token, expiresAt, err := h.verifier.Login(r.Context(), req.AID, req.Challenge, req.Signature)
 	if err != nil {
 		status := http.StatusUnauthorized
-		if errors.Is(err, auth.ErrKeyState) {
+		switch {
+		case errors.Is(err, auth.ErrKeyState):
 			// Could not reach/parse key state — a server-side dependency issue,
 			// not a client auth failure.
+			status = http.StatusServiceUnavailable
+		case errors.Is(err, auth.ErrUnsupportedKeyState):
+			status = http.StatusForbidden
+		case errors.Is(err, auth.ErrSessionStoreFull):
 			status = http.StatusServiceUnavailable
 		}
 		log.Printf("[Auth] login failed for %s: %v", req.AID, err)
@@ -131,9 +186,32 @@ var authExemptPaths = map[string]bool{
 	"/api/v1/auth/login":     true,
 }
 
-// SignedAuthMiddleware enforces KERI-signed authentication when enabled.
+// verifiedAIDKey is the context key under which SignedAuthMiddleware records
+// the AID a request's session token proved control of.
+type verifiedAIDKey struct{}
+
+// VerifiedAID returns the AID bound to the request's validated session token,
+// or "" when the request carried no valid session. Unlike X-User-AID it is
+// never client-supplied, whether or not enforcement is on, so handlers that
+// take security-relevant actions on an AID's behalf (session revocation) must
+// use it rather than the header.
+func VerifiedAID(r *http.Request) string {
+	aid, _ := r.Context().Value(verifiedAIDKey{}).(string)
+	return aid
+}
+
+// withVerifiedAID records aid on the request context.
+func withVerifiedAID(r *http.Request, aid string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), verifiedAIDKey{}, aid))
+}
+
+// SignedAuthMiddleware validates signed-challenge session tokens and, when
+// enforcement is on, is the ONLY thing allowed to populate a trusted X-User-AID.
 //
-// When enabled, it is the ONLY thing allowed to populate a trusted X-User-AID:
+// Regardless of the enforcement flag, a request bearing a valid session token
+// has its verified AID recorded on the context (see VerifiedAID).
+//
+// When enabled:
 //   - a request bearing a valid session token has its X-User-AID overwritten
 //     with the cryptographically verified AID from the session;
 //   - a request bearing an invalid/expired token is rejected with 401;
@@ -141,13 +219,13 @@ var authExemptPaths = map[string]bool{
 //     it reaches RBAC as an anonymous request (protected routes then 401,
 //     public read routes still serve).
 //
-// When disabled (default), it is a pass-through and X-User-AID behaves as
-// before.
+// When disabled (default), X-User-AID behaves as before: the header is passed
+// through untouched and never rejected.
 func SignedAuthMiddleware(sessions *auth.SessionStore, next http.Handler) http.Handler {
-	if !signedAuthEnabled() {
-		return next
+	enforced := signedAuthEnabled()
+	if enforced {
+		log.Println("[Security] Signed-request auth ENFORCED (MATOU_REQUIRE_SIGNED_AUTH set)")
 	}
-	log.Println("[Security] Signed-request auth ENFORCED (MATOU_REQUIRE_SIGNED_AUTH set)")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions || authExemptPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
@@ -155,18 +233,26 @@ func SignedAuthMiddleware(sessions *auth.SessionStore, next http.Handler) http.H
 		}
 		token := bearerToken(r.Header.Get("Authorization"))
 		if token == "" {
-			// No proof of identity — do not let a spoofed header through.
-			r.Header.Del("X-User-AID")
+			if enforced {
+				// No proof of identity — do not let a spoofed header through.
+				r.Header.Del("X-User-AID")
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
 		aid, ok := sessions.Validate(token)
 		if !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired session"})
+			if enforced {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired session"})
+				return
+			}
+			// Not a session (e.g. the API token) — nothing to verify.
+			next.ServeHTTP(w, r)
 			return
 		}
 		// Bind the request to the verified AID, overriding anything the client
 		// claimed in the header.
+		r = withVerifiedAID(r, aid)
 		r.Header.Set("X-User-AID", aid)
 		next.ServeHTTP(w, r)
 	})

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,26 @@ import (
 // have signed the challenge; the client's claimed key is never trusted.
 type KeyStateResolver interface {
 	CurrentKeys(ctx context.Context, aid string) ([]string, error)
+}
+
+// ValidAID reports whether s looks like a CESR-qualified KERI identifier
+// prefix: base64url characters only, 44 chars (one-character derivation code
+// over 32 bytes — the "E"/"D"/"B" prefixes signify creates) or 48 chars
+// (two-character code over 33 bytes). It is a syntactic check used before an
+// AID is interpolated into a URL or used as a store key.
+func ValidAID(s string) bool {
+	if len(s) != 44 && len(s) != 48 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // StaticKeyStateResolver serves key state from an in-memory map. Used in tests
@@ -50,6 +72,15 @@ func (r *StaticKeyStateResolver) CurrentKeys(_ context.Context, aid string) ([]s
 // KERIAResolver resolves key state read-only over HTTP by fetching an AID's KEL
 // as a CESR stream and extracting the current establishment keys.
 //
+// Trust boundary: the resolver trusts the KEL the configured endpoint serves
+// wholesale — it does not verify event signatures, digests or witness receipts
+// itself. Whoever controls that endpoint (or the network path to it) therefore
+// controls which key the backend accepts for login. That is acceptable only
+// because the endpoint is the deployment's own KERIA/witness reached over
+// loopback (dev/test/Electron) or TLS (remote); NewKERIAResolver refuses plain
+// http to a non-loopback host for this reason. Full KEL verification is a
+// follow-up.
+//
 // NEEDS LIVE VERIFICATION: the exact URL that serves an unauthenticated CESR
 // KEL for an AID depends on the KERI deployment (KERIA OOBI endpoint vs a
 // witness). urlTemplate must contain "{aid}"; it defaults to the KERIA CESR
@@ -61,12 +92,43 @@ type KERIAResolver struct {
 	cache       *keyStateCache
 }
 
+// ResolverOption tunes NewKERIAResolver.
+type ResolverOption func(*resolverOptions)
+
+type resolverOptions struct {
+	allowInsecure bool
+}
+
+// AllowInsecureHTTP permits a plain-http key-state URL to a non-loopback host.
+// Only for remote-dev setups where the KERIA endpoint is on a trusted network;
+// it re-opens the trust-boundary hole documented on KERIAResolver.
+func AllowInsecureHTTP() ResolverOption {
+	return func(o *resolverOptions) { o.allowInsecure = true }
+}
+
 // NewKERIAResolver builds a KERIAResolver. urlTemplate must contain the literal
-// "{aid}" placeholder (e.g. "http://localhost:3902/oobi/{aid}"). cacheTTL of 0
-// disables caching.
-func NewKERIAResolver(urlTemplate string, cacheTTL time.Duration) (*KERIAResolver, error) {
+// "{aid}" placeholder (e.g. "http://localhost:3902/oobi/{aid}") and must be
+// https or plain http to a loopback host. cacheTTL of 0 disables caching.
+func NewKERIAResolver(urlTemplate string, cacheTTL time.Duration, opts ...ResolverOption) (*KERIAResolver, error) {
+	var o resolverOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	if !strings.Contains(urlTemplate, "{aid}") {
 		return nil, fmt.Errorf("url template must contain {aid} placeholder")
+	}
+	probe, err := url.Parse(strings.ReplaceAll(urlTemplate, "{aid}", "probe"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid url template: %w", err)
+	}
+	switch probe.Scheme {
+	case "https":
+	case "http":
+		if !o.allowInsecure && !isLoopbackHost(probe.Hostname()) {
+			return nil, fmt.Errorf("refusing plain-http key-state URL to non-loopback host %q: the KEL it serves is trusted wholesale, use https", probe.Hostname())
+		}
+	default:
+		return nil, fmt.Errorf("unsupported key-state URL scheme %q", probe.Scheme)
 	}
 	return &KERIAResolver{
 		urlTemplate: urlTemplate,
@@ -75,15 +137,28 @@ func NewKERIAResolver(urlTemplate string, cacheTTL time.Duration) (*KERIAResolve
 	}, nil
 }
 
+// isLoopbackHost reports whether host is localhost or a loopback IP.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // CurrentKeys fetches and parses the AID's KEL, returning its current signing
 // keys. Results are cached for the resolver's TTL; Invalidate drops the cache
-// on rotation.
+// on rotation. An AID whose key state is not a single key with threshold 1
+// yields ErrUnsupportedKeyState.
 func (r *KERIAResolver) CurrentKeys(ctx context.Context, aid string) ([]string, error) {
+	if !ValidAID(aid) {
+		return nil, fmt.Errorf("invalid AID %q", aid)
+	}
 	if keys, ok := r.cache.get(aid); ok {
 		return keys, nil
 	}
-	url := strings.ReplaceAll(r.urlTemplate, "{aid}", aid)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	u := strings.ReplaceAll(r.urlTemplate, "{aid}", url.PathEscape(aid))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build key-state request: %w", err)
 	}
@@ -99,12 +174,15 @@ func (r *KERIAResolver) CurrentKeys(ctx context.Context, aid string) ([]string, 
 	if err != nil {
 		return nil, fmt.Errorf("read key state for %s: %w", aid, err)
 	}
-	keys, err := ExtractCurrentKeys(body)
+	ks, err := ExtractKeyState(body, aid)
 	if err != nil {
 		return nil, fmt.Errorf("parse KEL for %s: %w", aid, err)
 	}
-	r.cache.set(aid, keys)
-	return keys, nil
+	if !ks.SingleKey() {
+		return nil, fmt.Errorf("%w (%d keys, kt=%s)", ErrUnsupportedKeyState, len(ks.Keys), ks.Threshold)
+	}
+	r.cache.set(aid, ks.Keys)
+	return ks.Keys, nil
 }
 
 // Invalidate drops any cached key state for aid, forcing the next resolution to
@@ -112,6 +190,10 @@ func (r *KERIAResolver) CurrentKeys(ctx context.Context, aid string) ([]string, 
 func (r *KERIAResolver) Invalidate(aid string) {
 	r.cache.invalidate(aid)
 }
+
+// maxKeyStateCacheEntries bounds the resolver cache; when full, expired
+// entries are swept and, if still full, the new entry is simply not cached.
+const maxKeyStateCacheEntries = 10_000
 
 type keyStateCache struct {
 	ttl time.Duration
@@ -147,8 +229,19 @@ func (c *keyStateCache) set(aid string, keys []string) {
 		return
 	}
 	c.mu.Lock()
-	c.m[aid] = keyStateEntry{keys: append([]string(nil), keys...), expiry: c.now().Add(c.ttl)}
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	now := c.now()
+	if len(c.m) >= maxKeyStateCacheEntries {
+		for k, e := range c.m {
+			if now.After(e.expiry) {
+				delete(c.m, k)
+			}
+		}
+		if len(c.m) >= maxKeyStateCacheEntries {
+			return
+		}
+	}
+	c.m[aid] = keyStateEntry{keys: append([]string(nil), keys...), expiry: now.Add(c.ttl)}
 }
 
 func (c *keyStateCache) invalidate(aid string) {

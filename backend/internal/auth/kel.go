@@ -8,12 +8,41 @@ import (
 )
 
 // establishmentEvent is the subset of a KERI event we need to find the current
-// signing keys: the event type, sequence number and key list.
+// signing keys: the event type, controller prefix, sequence number, signing
+// threshold and key list.
 type establishmentEvent struct {
-	Version string   `json:"v"`
-	Type    string   `json:"t"`
-	Seq     string   `json:"s"`
-	Keys    []string `json:"k"`
+	Version   string          `json:"v"`
+	Type      string          `json:"t"`
+	Prefix    string          `json:"i"`
+	Seq       string          `json:"s"`
+	Threshold json.RawMessage `json:"kt"`
+	Keys      []string        `json:"k"`
+}
+
+// KeyState is the current signing key state of an AID as read from its KEL.
+type KeyState struct {
+	// Keys are the qb64 signing keys of the latest establishment event.
+	Keys []string
+	// Threshold is the raw signing threshold ("kt") as it appears in that
+	// event: a decimal/hex string for a simple threshold, or a JSON list for a
+	// weighted (fractional) threshold. Empty when the event carried none.
+	Threshold string
+}
+
+// SingleKey reports whether the key state is a plain single-key AID with a
+// signing threshold of 1 — the only shape the login path accepts. Multi-key
+// AIDs (multisig groups) are refused so a single member cannot mint a session
+// for the group; supporting them needs threshold-aware verification.
+func (ks KeyState) SingleKey() bool {
+	if len(ks.Keys) != 1 {
+		return false
+	}
+	switch ks.Threshold {
+	case "", "1", `"1"`:
+		return true
+	default:
+		return false
+	}
 }
 
 // isEstablishment reports whether a KERI event type establishes key state
@@ -28,14 +57,32 @@ func isEstablishment(t string) bool {
 }
 
 // ExtractCurrentKeys parses a CESR event stream (as returned by a KERIA/witness
-// OOBI resolution, or the KEL the frontend forwards) and returns the qb64
-// signing keys of the most recent establishment event.
+// OOBI resolution) and returns the qb64 signing keys of aid's most recent
+// establishment event. See ExtractKeyState.
+func ExtractCurrentKeys(stream []byte, aid string) ([]string, error) {
+	ks, err := ExtractKeyState(stream, aid)
+	if err != nil {
+		return nil, err
+	}
+	return ks.Keys, nil
+}
+
+// ExtractKeyState parses a CESR event stream and returns the key state of aid's
+// most recent establishment event.
+//
+// Only events whose controller prefix ("i") equals aid are considered. OOBI
+// responses routinely carry other KELs alongside the controller's (witnesses,
+// delegators, the agent), so binding on "i" is what stops a foreign event with
+// a higher sequence number from being taken as the user's key state.
 //
 // KERI JSON events are self-framing: the version string ("KERI10JSON0000fb_")
 // encodes the exact byte length of the serialized event, so each event can be
 // sliced out precisely regardless of the CESR signature material interleaved
 // between events. Only JSON serialization is supported (what signify emits).
-func ExtractCurrentKeys(stream []byte) ([]string, error) {
+func ExtractKeyState(stream []byte, aid string) (*KeyState, error) {
+	if aid == "" {
+		return nil, fmt.Errorf("aid is required")
+	}
 	s := string(stream)
 	var best *establishmentEvent
 	bestSeq := int64(-1)
@@ -62,7 +109,7 @@ func ExtractCurrentKeys(stream []byte) ([]string, error) {
 		if err := json.Unmarshal([]byte(raw), &ev); err != nil {
 			continue
 		}
-		if !isEstablishment(ev.Type) {
+		if ev.Prefix != aid || !isEstablishment(ev.Type) {
 			continue
 		}
 		seq, err := strconv.ParseInt(ev.Seq, 16, 64)
@@ -77,12 +124,15 @@ func ExtractCurrentKeys(stream []byte) ([]string, error) {
 	}
 
 	if best == nil {
-		return nil, fmt.Errorf("no establishment event found in KEL stream")
+		return nil, fmt.Errorf("no establishment event for %s found in KEL stream", aid)
 	}
 	if len(best.Keys) == 0 {
 		return nil, fmt.Errorf("establishment event has no keys")
 	}
-	return best.Keys, nil
+	return &KeyState{
+		Keys:      best.Keys,
+		Threshold: strings.TrimSpace(string(best.Threshold)),
+	}, nil
 }
 
 // eventSize reads the KERI version string at the start of a JSON event and
