@@ -251,7 +251,8 @@ export interface SubmitEvidenceRequest {
   acceptance_notes?: string[];
   evidence_urls?: string[];
   evidence_files?: AttachedFile[];
-  time_report_file?: AttachedFile;
+  /** `null` explicitly removes a previously attached time report (edit flow). */
+  time_report_file?: AttachedFile | null;
   attachment_files?: AttachedFile[];
   actual_duration?: number;
   actual_cost?: number;

@@ -277,3 +277,124 @@ func TestContributionsHandler_UpdateAssignedContributorID(t *testing.T) {
 		t.Errorf("expected assigned_contributor = new-assignee-aid, got %v", updated["assigned_contributor"])
 	}
 }
+
+// recordingNotifier captures ContribNotifications for assertions.
+type recordingNotifier struct {
+	sent []*ContribNotification
+}
+
+func (n *recordingNotifier) Notify(c *ContribNotification) error {
+	n.sent = append(n.sent, c)
+	return nil
+}
+
+// setupSubmittedForEdit creates a contribution assigned to contributor-1 that
+// has been submitted (needs_review), approved by reviewer-1, and returns the
+// handler plus its id.
+func setupSubmittedForEdit(t *testing.T) (*ContributionsHandler, *recordingNotifier, chan SSEEvent, string) {
+	t.Helper()
+	store := contributions.NewMockStore()
+	svc := contributions.NewService(store)
+	notifier := &recordingNotifier{}
+	handler := NewContributionsHandler(svc, nil, notifier)
+	broker := NewEventBroker()
+	handler.SetBroker(broker)
+	events := broker.Subscribe()
+
+	ctx := context.Background()
+	c, err := svc.CreateContribution(ctx, "community", &contributions.CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Task", Description: "Do it",
+		ContributionType: "technical", Priority: "low", CreatedBy: "lead-1",
+		Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	svc.TransitionContribution(ctx, "community", c.ID, contributions.ContribConfirmed)
+	svc.AssignContributor(ctx, "community", c.ID, "contributor-1")
+	if _, err := svc.SubmitEvidence(ctx, "community", c.ID, contributions.SubmitEvidenceRequest{CompletionNotes: "done"}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	approved, err := svc.ReviewContribution(ctx, "community", c.ID, contributions.ReviewRequest{Decision: "approved"})
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	approved.ReviewedBy = "reviewer-1"
+	if err := svc.SaveContribution(ctx, "community", approved); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	return handler, notifier, events, c.ID
+}
+
+func editEvidenceRequest(id, actor string) *http.Request {
+	body, _ := json.Marshal(map[string]interface{}{"completion_notes": "revised"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+id+"/edit-evidence", bytes.NewReader(body))
+	req.Header.Set("X-User-AID", actor)
+	return req.WithContext(context.WithValue(req.Context(), ctxUserAID, actor))
+}
+
+func TestContributionsHandler_EditEvidence_NonOwnerForbidden(t *testing.T) {
+	handler, notifier, events, id := setupSubmittedForEdit(t)
+
+	for _, actor := range []string{"lead-1", "reviewer-1", "", "stranger"} {
+		w := httptest.NewRecorder()
+		handler.HandleEditEvidence(w, editEvidenceRequest(id, actor))
+		if w.Code != http.StatusForbidden {
+			t.Errorf("actor %q: expected 403, got %d: %s", actor, w.Code, w.Body.String())
+		}
+	}
+	if len(notifier.sent) != 0 {
+		t.Errorf("no notifications expected on rejected edit, got %d", len(notifier.sent))
+	}
+	select {
+	case ev := <-events:
+		t.Errorf("no SSE event expected on rejected edit, got %s", ev.Type)
+	default:
+	}
+}
+
+func TestContributionsHandler_EditEvidence_OwnerNotifiesAndBroadcasts(t *testing.T) {
+	handler, notifier, events, id := setupSubmittedForEdit(t)
+
+	w := httptest.NewRecorder()
+	handler.HandleEditEvidence(w, editEvidenceRequest(id, "contributor-1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp contributions.Contribution
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Status != contributions.ContribNeedsReview {
+		t.Errorf("status = %s, want needs_review", resp.Status)
+	}
+	if resp.EvidenceEditedAt == nil {
+		t.Error("evidence_edited_at should be set")
+	}
+
+	// SSE broadcast so open views refresh.
+	select {
+	case ev := <-events:
+		if ev.Type != "contribution:evidence_edited" {
+			t.Errorf("event type = %s, want contribution:evidence_edited", ev.Type)
+		}
+		data := ev.Data.(map[string]string)
+		if data["contribution_id"] != id || data["previous_status"] != "approved" || data["status"] != "needs_review" {
+			t.Errorf("unexpected event data: %v", data)
+		}
+	default:
+		t.Error("expected an SSE broadcast on edit")
+	}
+
+	// Lead AND the reviewer whose approval was voided are notified; the
+	// editor is not.
+	recipients := map[string]bool{}
+	for _, n := range notifier.sent {
+		if n.Type != "contribution:evidence_edited" {
+			t.Errorf("notification type = %s", n.Type)
+		}
+		recipients[n.RecipientID] = true
+	}
+	if !recipients["lead-1"] || !recipients["reviewer-1"] || recipients["contributor-1"] || len(recipients) != 2 {
+		t.Errorf("recipients = %v, want {lead-1, reviewer-1}", recipients)
+	}
+}

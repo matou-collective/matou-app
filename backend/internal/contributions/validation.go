@@ -59,10 +59,11 @@ var contributionTransitions = map[ContributionStatus][]ContributionStatus{
 	ContribChanged:     {ContribConfirmed, ContribAssigned},
 	ContribNeedsReview: {ContribApproved, ContribIncomplete, ContribDeclined},
 	ContribIncomplete:  {ContribAssigned},
-	// ContribNeedsReview is reachable from approved so a contributor can edit
-	// their submission before sign-off — the reviewer approved different
-	// content, so the edit drops the contribution back to needs_review.
-	ContribApproved:  {ContribSignedOff, ContribNeedsReview},
+	// approved→needs_review is deliberately NOT listed here: it only happens
+	// when the assigned contributor edits their submission (Service.EditEvidence),
+	// which clears the voided review as part of the same write. Keeping it out
+	// of the table means POST /transition cannot void an approval.
+	ContribApproved:  {ContribSignedOff},
 	ContribSignedOff: {ContribRewarded},
 	ContribRewarded:  {ContribArchived},
 	ContribDeclined:  {ContribArchived},

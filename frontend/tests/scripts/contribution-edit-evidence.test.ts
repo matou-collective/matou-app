@@ -37,11 +37,16 @@ describe('canEditEvidence (issue #9 — contributor self-edit before sign-off)',
     expect(canEditEvidence(contrib({ status: 'needs_review' }), 'aid-someone-else')).toBe(false);
   });
 
-  it('lets a lead/steward edit on the contributor’s behalf', () => {
+  it('does NOT let a lead/steward/admin edit on the contributor’s behalf (owner only)', () => {
     const c = contrib({ status: 'needs_review', assigned_contributor: 'aid-other' });
-    expect(canEditEvidence(c, 'aid-lead', 'project_lead')).toBe(true);
-    expect(canEditEvidence(c, 'aid-steward', 'project_steward')).toBe(true);
-    expect(canEditEvidence(c, 'aid-admin', 'community_admin')).toBe(true);
+    expect(canEditEvidence(c, 'aid-lead')).toBe(false);
+    expect(canEditEvidence(c, 'aid-steward')).toBe(false);
+    expect(canEditEvidence(c, 'aid-admin')).toBe(false);
+  });
+
+  it('is false when nobody is assigned or the viewer is anonymous', () => {
+    expect(canEditEvidence(contrib({ assigned_contributor: undefined }), CONTRIBUTOR)).toBe(false);
+    expect(canEditEvidence(contrib({}), '')).toBe(false);
   });
 
   it('honours the assigned_contributor_id fallback field', () => {

@@ -517,6 +517,11 @@
             <Paperclip class="section-icon" />
             Submitted Evidence
           </h3>
+          <div v-if="contribution.evidence_edited_at" class="evidence-edited-note">
+            <Pencil class="evidence-edited-icon" />
+            Edited by the contributor on {{ formatDateTime(contribution.evidence_edited_at) }}
+            <span v-if="contribution.status === 'needs_review'"> — needs re-review</span>
+          </div>
 
           <!-- Completion Notes -->
           <div v-if="contribution.completion_notes" class="evidence-field">
@@ -949,6 +954,7 @@ import {
   CircleDot,
   AlertTriangle,
   Paperclip,
+  Pencil,
   ClipboardCheck,
   GitBranch,
   UserCheck,
@@ -972,6 +978,7 @@ import { useContributionBudgetAccess } from 'src/composables/useContributionBudg
 import { useProfilesStore } from 'stores/profiles';
 import { uploadFile, getFileUrl } from 'src/lib/api/client';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
+import { buildEvidenceRequest as buildEvidencePayload, round2 } from 'src/lib/evidenceRequest';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
@@ -1270,7 +1277,7 @@ const canSubmitEvidenceNow = computed(() =>
   ),
 );
 const canEditEvidenceNow = computed(() =>
-  workflow.canEditEvidence(props.contribution, props.currentUserId, role.value),
+  workflow.canEditEvidence(props.contribution, props.currentUserId),
 );
 const canReviewNow = computed(() => workflow.canReview(props.contribution, role.value));
 const canSignOffNow = computed(() => workflow.canSignOff(props.contribution, role.value));
@@ -1335,6 +1342,16 @@ function formatDate(iso: string): string {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
+  });
+}
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   });
 }
 
@@ -1544,25 +1561,10 @@ function removeAttachment(idx: number) {
   evidenceForm.value.attachment_files.splice(idx, 1);
 }
 
-// Round to at most 2 decimal places (hours/cost). Backend stores these as
-// float64; we cap precision so values like an auto-prefilled 6.0158 become
-// 6.02 rather than being sent raw.
-function round2(v: number | undefined): number | undefined {
-  if (v === undefined || v === null || Number.isNaN(v)) return undefined;
-  return Math.round(v * 100) / 100;
-}
-
-// Build the evidence payload from the form (shared by submit + edit).
+// Build the evidence payload from the form (shared by submit + edit). Always
+// the complete submission — see src/lib/evidenceRequest.ts for why.
 function buildEvidenceRequest() {
-  return {
-    completion_notes: evidenceForm.value.completion_notes.trim(),
-    evidence_urls: evidenceForm.value.evidence_urls.filter((u) => u.trim()),
-    actual_duration: round2(evidenceForm.value.actual_duration),
-    actual_cost: round2(evidenceForm.value.actual_cost),
-    acceptance_notes: evidenceForm.value.acceptance_notes.filter((n) => n.trim()),
-    time_report_file: evidenceForm.value.time_report_files[0] ? toBackendFileRef(evidenceForm.value.time_report_files[0]) as any : undefined,
-    attachment_files: evidenceForm.value.attachment_files.length ? evidenceForm.value.attachment_files.map(f => toBackendFileRef(f)) as any : undefined,
-  };
+  return buildEvidencePayload(evidenceForm.value, toBackendFileRef);
 }
 
 async function handleSubmitEvidence() {
@@ -2617,6 +2619,21 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 
 .evidence-field {
   margin-bottom: 14px;
+}
+
+.evidence-edited-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--matou-muted-foreground);
+  margin-bottom: 12px;
+}
+
+.evidence-edited-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .evidence-field-label {

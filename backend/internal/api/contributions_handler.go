@@ -786,10 +786,12 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 }
 
 // HandleEditEvidence handles POST /api/v1/contributions/{id}/edit-evidence
-// Body: SubmitEvidenceRequest.
-// RBAC: ActionEditEvidence (contributor). Lets the assigned contributor amend
-// their submission before sign-off; an approved contribution drops back to
-// needs_review and the reviewer/lead is notified.
+// Body: SubmitEvidenceRequest (the complete new submission).
+// RBAC: ActionEditEvidence, plus a service-side ownership check — only the
+// assigned contributor (X-User-AID) may edit; anyone else gets 403. An
+// approved contribution drops back to needs_review; the lead and the
+// reviewer whose approval was voided are notified, and an SSE event is
+// broadcast so open views refresh.
 func (h *ContributionsHandler) HandleEditEvidence(w http.ResponseWriter, r *http.Request) {
 	id := extractContribID(r, "/api/v1/contributions/", "/edit-evidence")
 	if id == "" {
@@ -801,20 +803,40 @@ func (h *ContributionsHandler) HandleEditEvidence(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	editor := GetUserAID(r)
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	contrib, err := h.service.EditEvidence(r.Context(), spaceID, id, req)
+	res, err := h.service.EditEvidence(r.Context(), spaceID, id, editor, req)
 	if err != nil {
-		log.Printf("[Contributions] EditEvidence failed for %s: %v", id, err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		log.Printf("[Contributions] EditEvidence failed for %s by %q: %v", id, editor, err)
+		status := http.StatusBadRequest
+		if errors.Is(err, contributions.ErrNotEvidenceOwner) {
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	log.Printf("[Contributions] evidence edited for %s", id)
-	// Notify the reviewer/lead so they re-check the amended submission. Notify
-	// the contribution owner (lead) and any prior reviewer, skipping the editor.
+	contrib := res.Contribution
+	log.Printf("[Contributions] evidence edited for %s (was %s)", id, res.PriorStatus)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:evidence_edited",
+			Data: map[string]string{
+				"contribution_id": id,
+				"previous_status": string(res.PriorStatus),
+				"status":          string(contrib.Status),
+				"edited_by":       editor,
+			},
+		})
+	}
+	// Notify the lead and, when an approval was voided, the reviewer who gave
+	// it (captured by the service before the edit cleared ReviewedBy).
 	if h.notifier != nil {
-		editor := GetUserAID(r)
+		message := contrib.Title + " was edited and needs another look"
+		if res.PriorStatus == contributions.ContribApproved {
+			message = contrib.Title + " was edited after approval — the approval has been voided and it needs re-review"
+		}
 		seen := map[string]bool{editor: true, "": true}
-		for _, recipient := range []string{contrib.CreatedBy, contrib.ReviewedBy} {
+		for _, recipient := range []string{contrib.CreatedBy, res.PriorReviewedBy} {
 			if seen[recipient] {
 				continue
 			}
@@ -823,7 +845,7 @@ func (h *ContributionsHandler) HandleEditEvidence(w http.ResponseWriter, r *http
 				Type:        "contribution:evidence_edited",
 				RecipientID: recipient,
 				Title:       "Submission Edited",
-				Message:     contrib.Title + " was edited and needs another look",
+				Message:     message,
 				EntityID:    id,
 				EntityType:  "contribution",
 			})
