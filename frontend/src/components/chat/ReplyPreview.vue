@@ -16,6 +16,7 @@ import { computed } from 'vue';
 import { X } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
 import { useProfilesStore } from 'stores/profiles';
+import { mentionsToPlainText } from 'src/lib/mentions';
 
 const props = defineProps<{
   message: ChatMessage;
@@ -33,7 +34,7 @@ const replyToName = computed(() => {
 });
 
 const truncatedContent = computed(() => {
-  const content = props.message.content;
+  const content = mentionsToPlainText(props.message.content);
   if (content.length > 100) {
     return content.substring(0, 100) + '...';
   }

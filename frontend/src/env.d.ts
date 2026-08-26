@@ -24,6 +24,8 @@ interface ImportMetaEnv {
   readonly VITE_PROD_CONFIG_URL?: string;
   /** Backend API URL (Go server) */
   readonly VITE_BACKEND_URL?: string;
+  /** Per-launch API token for the backend (dev/test fallback: 'matou-dev') */
+  readonly VITE_API_TOKEN?: string;
 }
 
 interface ImportMeta {

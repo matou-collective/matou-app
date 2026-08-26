@@ -1890,6 +1890,15 @@ async function submitAssign() {
   .q-btn {
     min-width: 180px;
   }
+
+  @media (max-width: 767px) {
+    flex-wrap: wrap;
+
+    .q-btn {
+      min-width: 0;
+      width: 100%;
+    }
+  }
 }
 
 .banner-icon {
@@ -1924,6 +1933,12 @@ async function submitAssign() {
 .assign-dialog {
   min-width: 460px;
   max-width: 540px;
+
+  @media (max-width: 767px) {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+  }
 }
 
 .assign-body {

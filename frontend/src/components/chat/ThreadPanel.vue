@@ -1,5 +1,5 @@
 <template>
-  <aside class="thread-panel">
+  <aside class="thread-panel" :class="{ 'thread-panel--overlay': overlay }">
     <header class="thread-header">
       <h3>Thread</h3>
       <button class="close-btn" @click="$emit('close')" title="Close thread">
@@ -30,7 +30,7 @@
                 <span class="sender-name">{{ reply.senderName }}</span>
                 <span class="reply-time">{{ formatTime(reply.sentAt) }}</span>
               </div>
-              <p class="reply-text">{{ reply.content }}</p>
+              <p class="reply-text">{{ mentionsToPlainText(reply.content) }}</p>
             </div>
           </div>
         </div>
@@ -45,10 +45,17 @@ import { X } from 'lucide-vue-next';
 import { useChatStore } from 'stores/chat';
 import type { ChatMessage } from 'src/lib/api/chat';
 import UserAvatar from 'components/profiles/UserAvatar.vue';
+import { mentionsToPlainText } from 'src/lib/mentions';
 
-const props = defineProps<{
-  messageId: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    messageId: string;
+    // On mobile the thread renders as a full-screen overlay instead of a
+    // fixed-width side panel.
+    overlay?: boolean;
+  }>(),
+  { overlay: false },
+);
 
 defineEmits<{
   (e: 'close'): void;
@@ -88,6 +95,17 @@ watch(() => props.messageId, () => {
   border-left: 1px solid var(--matou-border);
   display: flex;
   flex-direction: column;
+}
+
+// Mobile: promote the thread to a full-screen overlay that sits above the
+// bottom navigation (which will be introduced later in Phase 1). A high
+// z-index keeps it over both the chat panes and any bottom nav.
+.thread-panel--overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  border-left: none;
+  z-index: 50;
 }
 
 .thread-header {

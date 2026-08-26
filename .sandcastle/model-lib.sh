@@ -12,9 +12,9 @@
 #   - main.mts               parses swarm.config directly (node can't source bash),
 #                            so the SAME default/allowlist bytes drive it too
 #
-# Pure logic; offline-tested by tests/model-lib-test.sh. On the harness-manifest
-# (with swarm.config) so both propagate to matou-app and check-harness-drift.sh
-# covers them.
+# Pure logic; offline-tested by tests/model-lib-test.sh. Vendored from
+# Matou/dev-factory (ADR 0180 / #571), with swarm.config, so both propagate to
+# every product repo and check-harness-drift.sh covers them.
 
 if [ -z "${__SWARM_MODEL_LIB:-}" ]; then
 __SWARM_MODEL_LIB=1

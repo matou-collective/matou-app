@@ -104,6 +104,9 @@ frontend/test-results/
 frontend/playwright-report/
 frontend/tests/e2e/results/
 
+# Smoke-drive run dirs (scripts/smoke-drive) — six-clause artifacts, not source
+/test-results/
+
 # E2E test artifacts (auto-generated, contains test secrets)
 frontend/tests/e2e/test-accounts.json
 

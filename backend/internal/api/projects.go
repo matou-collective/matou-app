@@ -393,7 +393,13 @@ func (h *ProjectsHandler) HandleApproveCompletion(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 		return
 	}
-	proj, err := h.service.ApproveProjectCompletion(r.Context(), spaceID, id, stewardID)
+	// Body is optional and may carry a KERI proof envelope for the completion
+	// approval (issue #20). Absent/empty bodies are tolerated.
+	var req struct {
+		Proof *contributions.Proof `json:"proof"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	proj, err := h.service.ApproveProjectCompletion(r.Context(), spaceID, id, stewardID, req.Proof)
 	if err != nil {
 		log.Printf("[Projects] approve-completion failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

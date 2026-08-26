@@ -72,3 +72,19 @@ code {
 .q-btn:not(.q-btn--round):not(.q-btn--fab) {
   border-radius: 10px;
 }
+
+// ── Mobile dialogs (Android P1) ────────────────────────────────────────────────
+// At the mobile breakpoint (≤767px, the same one used by DashboardLayout.vue and
+// DashboardPage.vue), 24+ dialog `q-card`s carry inline `min-width: 400–620px`
+// that overflow a 390px-wide phone viewport. `!important` beats inline styles and
+// scoped `min-width` rules, so this single override makes every dialog fit within
+// a 12px gutter without touching each component. Desktop (≥768px) is unaffected.
+@media (max-width: 767px) {
+  .q-dialog .q-card {
+    min-width: 0 !important;
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: calc(100vh - 24px) !important;
+    overflow-y: auto !important;
+  }
+}

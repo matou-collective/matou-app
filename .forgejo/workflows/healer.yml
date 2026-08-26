@@ -1,29 +1,33 @@
 name: healer
 on:
-  # Hourly watchdog — pushing this file re-registers the schedule (see the
-  # note in triage.yml). This is the swarm's only independent failure
-  # detector, so keeping its schedule alive matters.
+  # Hourly watchdog — the swarm's only independent failure detector. Forgejo
+  # has been observed to silently stop firing a repo's schedules; pushing a
+  # workflow file re-registers them (see triage.yml.tmpl's note).
   schedule:
     - cron: "0 * * * *"
   workflow_dispatch: {}
 
 jobs:
   watchdog:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       # NO failure hook on this workflow — healer self-failure must never
-      # recurse (spec). A red healer run is visible in the Actions list.
+      # recurse. A red healer run is visible in the Actions list.
       - name: Watchdog sweep
         env:
           FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
           FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN_B: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_B }}
           MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
           MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
           HEAL_MODE: watchdog
-          HEAL_DRY_RUN: "1"
+          # HEAL_DRY_RUN deliberately NOT set (Ben's ruling 2026-08-21, first applied
+          # in Matou/idss): the healer files tickets and makes its ONE bounded
+          # harness-infra repair for real. Set HEAL_DRY_RUN: "1" to return to
+          # diagnose-only.
         run: bash .sandcastle/heal.sh

@@ -11,7 +11,7 @@ export MATTERMOST_URL="http://mm.test"
 export MATTERMOST_BOT_TOKEN="tok"
 export MATTERMOST_CHANNEL_ID="chan"
 export FORGEJO_TOKEN="ftok"
-export FORGEJO_API="http://fj.test/api/v1/repos/Matou/matou-app"
+export FORGEJO_API="http://fj.test/api/v1/repos/Matou/idss"
 
 now_ms="$(($(date +%s) * 1000))"
 pass=0 fail=0
@@ -120,9 +120,15 @@ jq -n --arg body "$(seq -s ' ' 1 900)" '[{body:$body}]' >"$FAKE_DIR/comments-309
 bash "$script" 309 >/dev/null 2>&1
 check "P9 truncation note present" "grep -q 'truncated — the full text is on the issue' \"\$FAKE_DIR/posts.log\""
 
-# ---- P7: env unset — exit 2, nothing called
+# ---- P7: chat env unset — exit 2, nothing called. Scrub ALL three
+# MATTERMOST_* vars, not just the token: post-issue-ask.sh falls back to
+# /run/secrets/mattermost_bot_token when MATTERMOST_BOT_TOKEN is unset, so a
+# host carrying that secret (every real worker does) refills the token and the
+# guard never fires. MATTERMOST_URL/MATTERMOST_CHANNEL_ID have no such fallback,
+# so dropping them keeps this case hermetic to the ambient chat env (#587).
 setup
-env -u MATTERMOST_BOT_TOKEN bash "$script" 307 >/dev/null 2>&1
+env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
+  bash "$script" 307 >/dev/null 2>&1
 rc=$?
 check "P7 exit 2" "[ $rc -eq 2 ]"
 check "P7 no calls" "[ ! -s \"\$FAKE_DIR/calls.log\" ]"

@@ -22,6 +22,12 @@ func isBundledOrigin(origin string) bool {
 		strings.HasPrefix(origin, "http://127.0.0.1:") {
 		return true
 	}
+	// Capacitor's Android WebView serves the SPA from https://localhost with no
+	// port (a port is possible via a custom server config). Match the bare host
+	// and any :port, but not lookalikes such as https://localhost.evil.com.
+	if origin == "https://localhost" || strings.HasPrefix(origin, "https://localhost:") {
+		return true
+	}
 	return false
 }
 
@@ -35,8 +41,8 @@ func isAllowedOrigin(origin string) bool {
 
 	// Default dev mode: fixed list
 	devOrigins := []string{
-		"http://localhost:9000",  // Quasar dev server
-		"http://localhost:9300",  // Electron dev server
+		"http://localhost:9000", // Quasar dev server
+		"http://localhost:9300", // Electron dev server
 		"http://127.0.0.1:9000",
 		"http://127.0.0.1:9300",
 	}
@@ -187,18 +193,18 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// LocalhostGuard rejects non-loopback requests when MATOU_CORS_MODE=bundled.
+// LocalhostGuard rejects non-loopback requests in every mode.
 // The Matou backend is designed to run as a local child process of the Electron
-// app and has no authentication layer. This middleware ensures that in production
-// (bundled) mode, only requests originating from localhost are accepted.
-// In dev/test mode this middleware is a no-op.
+// app and trusts its own OS user; this middleware ensures only requests
+// originating from localhost are accepted, defending against other machines on
+// the network. Set MATOU_ALLOW_REMOTE=1 to opt out (e.g. remote dev access).
 func LocalhostGuard(next http.Handler) http.Handler {
-	mode := os.Getenv("MATOU_CORS_MODE")
-	if mode != "bundled" {
-		return next // no-op in dev/test
+	if os.Getenv("MATOU_ALLOW_REMOTE") == "1" {
+		log.Println("[Security] Localhost guard DISABLED (MATOU_ALLOW_REMOTE=1)")
+		return next
 	}
 
-	log.Println("[Security] Localhost guard ACTIVE (MATOU_CORS_MODE=bundled)")
+	log.Println("[Security] Localhost guard ACTIVE (loopback-only)")
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)

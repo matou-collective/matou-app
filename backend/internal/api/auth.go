@@ -153,7 +153,7 @@ func SignedAuthMiddleware(sessions *auth.SessionStore, next http.Handler) http.H
 			next.ServeHTTP(w, r)
 			return
 		}
-		token := bearerToken(r)
+		token := bearerToken(r.Header.Get("Authorization"))
 		if token == "" {
 			// No proof of identity — do not let a spoofed header through.
 			r.Header.Del("X-User-AID")
@@ -170,14 +170,4 @@ func SignedAuthMiddleware(sessions *auth.SessionStore, next http.Handler) http.H
 		r.Header.Set("X-User-AID", aid)
 		next.ServeHTTP(w, r)
 	})
-}
-
-// bearerToken extracts the token from an "Authorization: Bearer <token>" header.
-func bearerToken(r *http.Request) string {
-	h := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
-		return strings.TrimSpace(h[len(prefix):])
-	}
-	return ""
 }

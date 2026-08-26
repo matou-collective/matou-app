@@ -45,6 +45,16 @@ export const anysyncEndpoints = {
 export const backendEndpoint = 'http://localhost:9080' as const;
 
 /**
+ * Admin bearer token for the config server's mutating endpoints
+ * (POST/DELETE /api/config, POST /api/send-email).
+ *
+ * Fixed, non-secret placeholder for dev/test — must match
+ * CONFIG_ADMIN_TOKEN_DEV in matou-infrastructure/keri/.env.example, which
+ * generate-env.sh writes into .env/.env.test as CONFIG_ADMIN_TOKEN.
+ */
+export const configAdminToken = 'dev-insecure-local-only' as const;
+
+/**
  * Resolve the absolute path to the KERI infrastructure directory.
  * Uses MATOU_KERI_INFRA_DIR env var, falling back to sibling repo at ../matou-infrastructure/keri.
  */

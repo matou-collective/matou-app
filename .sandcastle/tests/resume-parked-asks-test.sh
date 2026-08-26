@@ -17,7 +17,7 @@ export MATTERMOST_URL="http://mm.test"
 export MATTERMOST_BOT_TOKEN="tok"
 export MATTERMOST_CHANNEL_ID="chan"
 export FORGEJO_TOKEN="ftok"
-export FORGEJO_API="http://fj.test/api/v1/repos/Matou/matou-app"
+export FORGEJO_API="http://fj.test/api/v1/repos/Matou/idss"
 
 now_ms="$(($(date +%s) * 1000))"
 pass=0 fail=0
@@ -144,10 +144,16 @@ check "T6 answered issue re-armed" "grep -q 'issues/209/labels\$' \"\$FAKE_DIR/c
 check "T6 unanswered issue untouched" "! grep -q 'issues/208/comments\|issues/208/labels' \"\$FAKE_DIR/calls.log\""
 check "T6 no extra ask posted" "! grep -q raising_hand \"\$FAKE_DIR/posts.log\""
 
-# ---- T7: chat env unset — exit 2, tracker never touched
+# ---- T7: chat env unset — exit 2, tracker never touched. Scrub ALL three
+# MATTERMOST_* vars, not just the token: resume-parked-asks.sh falls back to
+# /run/secrets/mattermost_bot_token when MATTERMOST_BOT_TOKEN is unset, so a
+# host carrying that secret (every real worker does) refills the token and the
+# guard never fires. MATTERMOST_URL/MATTERMOST_CHANNEL_ID have no such fallback,
+# so dropping them keeps this case hermetic to the ambient chat env (#587).
 setup
 jq -n --argjson i "$(mkissue 210)" '[$i]' >"$FAKE_DIR/issues.json"
-env -u MATTERMOST_BOT_TOKEN bash "$script" >/dev/null 2>&1
+env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
+  bash "$script" >/dev/null 2>&1
 rc=$?
 check "T7 exit 2 without chat env" "[ $rc -eq 2 ]"
 check "T7 no calls made" "[ ! -s \"\$FAKE_DIR/calls.log\" ]"

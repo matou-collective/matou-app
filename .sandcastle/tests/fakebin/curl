@@ -4,11 +4,18 @@
 # Mattermost posts in $FAKE_DIR/posts.log, Forgejo write bodies in
 # $FAKE_DIR/forgejo.log, and every call as "METHOD URL" in $FAKE_DIR/calls.log.
 set -eu
-url="" data="" method=GET
+url="" data="" method=GET want_code=
 while [ $# -gt 0 ]; do
   case "$1" in
     -X)
       method="$2"
+      shift 2
+      ;;
+    -w)   # `-w '%{http_code}'` — caller wants the HTTP status, not the body
+      want_code=1
+      shift 2
+      ;;
+    -o)   # `-o /dev/null` — discard body (its value is a filename, consume it)
       shift 2
       ;;
     -H | -d)
@@ -43,11 +50,10 @@ case "$url" in
     cat "$FAKE_DIR/thread-$id.json" 2>/dev/null || echo '{"posts":{}}'
     ;;
   */actions/tasks*)
-    # Review-finding-1 repro seam (#250 sync from ourcloud): presence of this
-    # flag file simulates the tasks API being down (curl -sf's own real
-    # failure mode), independent of the JSON fixture below — used to prove
-    # claim_alive_runs/janitor_sweep fail loud instead of silently degrading
-    # to an empty "nothing alive".
+    # Review-finding-1 repro seam: presence of this flag file simulates the
+    # tasks API being down (curl -sf's own real failure mode), independent of
+    # the JSON fixture below — used to prove claim_alive_runs/janitor_sweep
+    # fail loud instead of silently degrading to an empty "nothing alive".
     [ -f "$FAKE_DIR/tasks-fail" ] && exit 22
     cat "$FAKE_DIR/tasks.json" 2>/dev/null || echo '{"workflow_runs":[]}'
     ;;
@@ -64,6 +70,22 @@ case "$url" in
     else
       echo '[]'
     fi
+    ;;
+  */pulls\?state=open*)   # open PR set (LANDING=pr, #13) — client filters by head.ref
+    cat "$FAKE_DIR/open-pulls.json" 2>/dev/null || echo '[]'
+    ;;
+  */pulls/*/merge)        # merge a PR; its `closes #N` closes the mapped issue
+    printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
+    prn="${url%/merge}"; prn="${prn##*/}"
+    [ -f "$FAKE_DIR/pr-$prn-closes" ] && touch "$FAKE_DIR/closed-$(cat "$FAKE_DIR/pr-$prn-closes")"
+    if [ -n "$want_code" ]; then cat "$FAKE_DIR/merge-code" 2>/dev/null || echo 200; else echo '{}'; fi
+    ;;
+  */commits/*/status*)    # combined CI status for a commit (merge-if-green, #15)
+    cat "$FAKE_DIR/commit-status.json" 2>/dev/null || echo '{"state":"success","statuses":[]}'
+    ;;
+  */pulls/[0-9]*)         # GET a single PR — head.sha + html_url
+    prn="${url##*/}"
+    cat "$FAKE_DIR/pr-$prn.json" 2>/dev/null || echo '{"number":'"$prn"',"head":{"ref":"agent/issue-444"},"html_url":"u/pr/'"$prn"'"}'
     ;;
   */issues/comments/*)   # DELETE a claim comment (repo-level endpoint)
     cid="${url##*/}"
@@ -92,29 +114,66 @@ case "$url" in
       fi
     fi
     ;;
-  */issues/*/dependencies*)
-    id="${url%/dependencies*}"
-    id="${id##*/}"
-    cat "$FAKE_DIR/deps-$id.json" 2>/dev/null || echo '[]'
-    ;;
-  */pulls\?*)
-    cat "$FAKE_DIR/pulls.json" 2>/dev/null || echo '[]'
-    ;;
   */issues/*/labels/*)
-    echo ''
+    # DELETE a single label off an issue (claim release, #22). When the caller
+    # asks for the HTTP code (forgejo_remove_label's -w idiom), answer it;
+    # $FAKE_DIR/label-delete-fail (containing a code, default 404) simulates a
+    # 4xx removal — which must warn but NOT change close-report's exit code.
+    if [ -n "$want_code" ]; then
+      if [ -f "$FAKE_DIR/label-delete-fail" ]; then
+        cat "$FAKE_DIR/label-delete-fail" 2>/dev/null || echo 404
+      else
+        echo 204
+      fi
+    else
+      echo ''
+    fi
     ;;
   */issues/*/labels)
     printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
-    echo '[]'
+    # A label write returns an HTTP code when the caller asked with -w (the
+    # claim_mark_working / forgejo_add_labels idiom). $FAKE_DIR/labels-post-fail
+    # (containing a code, default 403) simulates the bot lacking repo.issues
+    # write — the #20 seam that let #19 be worked with no agent-working label.
+    if [ -n "$want_code" ]; then
+      if [ -f "$FAKE_DIR/labels-post-fail" ]; then
+        cat "$FAKE_DIR/labels-post-fail" 2>/dev/null || echo 403
+      else
+        echo 201
+      fi
+    else
+      echo '[]'
+    fi
     ;;
   */issues/[0-9]*)
     id="${url##*/}"
     if [ "$method" = GET ]; then
-      cat "$FAKE_DIR/issue-$id.json" 2>/dev/null || echo '{}'
+      # After a successful close PATCH the issue reads `closed` (close-report.sh
+      # GETs to VERIFY the close stuck — #20). A fixture wins if provided.
+      if [ -f "$FAKE_DIR/issue-$id.json" ]; then
+        cat "$FAKE_DIR/issue-$id.json"
+      elif [ -f "$FAKE_DIR/closed-$id" ]; then
+        echo '{"state":"closed"}'
+      else
+        echo '{"state":"open"}'
+      fi
     else
       # Single-issue write, e.g. PATCH .../issues/9 {"state":"closed"}.
       printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
-      echo '{}'
+      # $FAKE_DIR/close-fail (containing a code, default 403) simulates the bot
+      # lacking repo.issues write: the close PATCH is refused and the issue does
+      # NOT flip to closed (#20 — the gap that made #19 look like four closes).
+      if printf '%s' "$body" | grep -q '"state":"closed"'; then
+        if [ -f "$FAKE_DIR/close-fail" ]; then
+          [ -n "$want_code" ] && { cat "$FAKE_DIR/close-fail" 2>/dev/null || echo 403; }
+        else
+          touch "$FAKE_DIR/closed-$id"
+          [ -n "$want_code" ] && echo 200
+        fi
+      else
+        [ -n "$want_code" ] && echo 200
+      fi
+      [ -z "$want_code" ] && echo '{}'
     fi
     ;;
   */issues\?*)
@@ -124,7 +183,12 @@ case "$url" in
     cat "$FAKE_DIR/labels.json" 2>/dev/null || echo '[]'
     ;;
   */actions/workflows/*/dispatches)
+    printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
     echo '{}'
+    ;;
+  */api/v1/repos/*)   # bare repo root GET — #15 default_merge_style (all named
+                      # sub-resources are matched above, so only the root lands here)
+    cat "$FAKE_DIR/repo.json" 2>/dev/null || echo '{"default_merge_style":"merge","permissions":{"push":true}}'
     ;;
   *)
     echo "fake curl: unhandled url $url" >&2
