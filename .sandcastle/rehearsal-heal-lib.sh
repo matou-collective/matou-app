@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# The rehearsal healer's rails (spec 2026-08-10-rehearsal-healer-design):
+# pure functions over an explicit checkout — the PROMPT guides the healer
+# session, these functions are LAW. Sourced by rehearsal-report.sh; unit-tested
+# in isolation (tests/rehearsal-heal-lib-test.sh).
+
+# heal_rails <co> <pre_head> — accept HEAD as a healed commit, or reset to
+# <pre_head> and fail. Caps per Ben's ruling: ≤3 files, ≤60 changed lines,
+# exactly 1 commit, never touching the healer's own harness.
+heal_rails() {
+  local co="$1" pre="$2" head files lines
+  head="$(git -C "$co" rev-parse HEAD)"
+  if [ "$head" = "$pre" ]; then
+    echo "healer: claimed healed but committed nothing"
+    return 1
+  fi
+  if [ "$(git -C "$co" rev-list --count "$pre..$head")" -gt 1 ]; then
+    echo "healer: multiple commits — reverting"
+    git -C "$co" reset --hard "$pre" >/dev/null
+    return 1
+  fi
+  files="$(git -C "$co" diff --name-only "$pre..$head" | grep -c . || true)"
+  lines="$(git -C "$co" diff --numstat "$pre..$head" | awk '{s+=$1+$2} END{print s+0}')"
+  if [ "$files" -gt 3 ] || [ "$lines" -gt 60 ]; then
+    echo "healer: diff cap breach ($files files / $lines lines; cap 3/60) — reverting"
+    git -C "$co" reset --hard "$pre" >/dev/null
+    return 1
+  fi
+  if git -C "$co" diff --name-only "$pre..$head" \
+      | grep -qE '^\.sandcastle/rehearsal-|^\.forgejo/workflows/'; then
+    echo "healer: self-modification attempt — reverting"
+    git -C "$co" reset --hard "$pre" >/dev/null
+    return 1
+  fi
+  return 0
+}
+
+# heal_push <co> <pre_head> <run_dir> — land the healer's single commit on
+# origin/main even when main advanced under us (a concurrent operator or swarm
+# push): fetch + rebase onto origin/main, re-run the rails against the replayed
+# commit, then push; retry once if a further push lands during our rebase. A
+# rebase conflict, a post-rebase cap/self-mod breach, a push still refused after
+# the retry, or a commit that never reaches the remote all reset to <pre_head>
+# and fail (the caller files). On success the healed commit is verified present
+# on origin/main (spec rail 4). Without this a correct heal is silently lost to a
+# non-fast-forward whenever main moves under the session — it lost three correct
+# heals on 2026-08-11/12 (#460).
+heal_push() {
+  local co="$1" pre="$2" run_dir="$3" attempt base head errlog
+  errlog="$run_dir/logs/healer-claude.err"
+  for attempt in 1 2; do
+    git -C "$co" fetch -q origin main >>"$errlog" 2>&1 || true
+    if ! git -C "$co" rebase origin/main >>"$errlog" 2>&1; then
+      git -C "$co" rebase --abort >/dev/null 2>&1 || true
+      echo "healer: rebase onto origin/main conflicted — reverting and filing"
+      git -C "$co" reset --hard "$pre" >/dev/null 2>&1 || true
+      return 1
+    fi
+    # The commit is now replayed atop origin/main, so re-validate it against its
+    # NEW parent (HEAD~1) — not the stale pre_head, which would fold main's
+    # advance into the diff and false-breach the cap. On breach heal_rails
+    # resets to that parent (origin/main's tip), discarding only the heal.
+    base="$(git -C "$co" rev-parse HEAD~1)"
+    if ! heal_rails "$co" "$base"; then
+      git -C "$co" reset --hard "$pre" >/dev/null 2>&1 || true
+      return 1
+    fi
+    if git -C "$co" push origin HEAD:main >>"$errlog" 2>&1; then
+      head="$(git -C "$co" rev-parse HEAD)"
+      if git -C "$co" ls-remote origin main 2>/dev/null | grep -q "^$head"; then
+        return 0
+      fi
+      echo "healer: push reported ok but commit absent from origin/main — reverting and filing"
+      git -C "$co" reset --hard "$pre" >/dev/null 2>&1 || true
+      return 1
+    fi
+    echo "healer: push refused (attempt $attempt) — re-fetching and rebasing"
+  done
+  echo "healer: push still refused after rebase retry — reverting and filing"
+  git -C "$co" reset --hard "$pre" >/dev/null 2>&1 || true
+  return 1
+}
+
+# scrub_commit_message <co> — amend HEAD's message: Forgejo auto-close keywords
+# become "advances #N" (the hazard has fired twice: even DESCRIBING a close
+# closes), and the "rehearsal healer: " prefix is enforced.
+scrub_commit_message() {
+  local co="$1" msg
+  msg="$(git -C "$co" log -1 --pretty=%B)"
+  if grep -qiE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*#[0-9]+' <<<"$msg"; then
+    msg="$(sed -E 's/\b([Cc]lose[sd]?|[Ff]ix(e[sd])?|[Rr]esolve[sd]?)[[:space:]]*#/advances #/g' <<<"$msg")"
+  fi
+  case "$msg" in
+    "rehearsal healer: "*) ;;
+    *) msg="rehearsal healer: $msg" ;;
+  esac
+  git -C "$co" commit --amend -qm "$msg"
+}
+
+# Consecutive MECHANICAL failure counter per sig (gate/cap rejects only —
+# judgment declines never count). Two force filing (spec rail 6).
+_heal_fail_file() { echo "${REHEARSAL_STATE:?REHEARSAL_STATE unset}/heal-fail-$1"; }
+heal_fail_count() { local f; f="$(_heal_fail_file "$1")"; [ -f "$f" ] && cat "$f" || echo 0; }
+heal_fail_mark()  { local f; f="$(_heal_fail_file "$1")"; echo "$(( $(heal_fail_count "$1") + 1 ))" > "$f"; }
+heal_fail_clear() { rm -f "$(_heal_fail_file "$1")"; }

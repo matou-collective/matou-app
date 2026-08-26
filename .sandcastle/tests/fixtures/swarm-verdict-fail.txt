@@ -1,0 +1,5 @@
+stage=sandcastle run (workers)
+exit=1
+--- error lines ---
+error: worktree error at sandcastle-worker-20260811-233726-abc123
+fatal: not a git repository (or any of the parent directories): .git

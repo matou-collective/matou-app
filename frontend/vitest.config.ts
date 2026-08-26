@@ -6,6 +6,13 @@ export default defineConfig({
     alias: {
       // Resolve 'src/*' imports (mirrors tsconfig paths)
       src: path.join(__dirname, 'src'),
+      // Mirror the remaining tsconfig path aliases so tests can import modules
+      // that reference them transitively (e.g. client.ts -> stores/identity).
+      stores: path.join(__dirname, 'src/stores'),
+      components: path.join(__dirname, 'src/components'),
+      composables: path.join(__dirname, 'src/composables'),
+      layouts: path.join(__dirname, 'src/layouts'),
+      pages: path.join(__dirname, 'src/pages'),
       // Force CommonJS version to avoid missing libsodium-sumo.mjs ESM issue
       // (same workaround as quasar.config.ts)
       'libsodium-wrappers-sumo': path.join(

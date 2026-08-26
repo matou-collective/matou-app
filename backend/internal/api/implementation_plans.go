@@ -152,21 +152,23 @@ func (h *ImplementationPlansHandler) HandleSignOff(w http.ResponseWriter, r *htt
 		// Fall back to reading X-User-AID header directly (no RBAC middleware on this route)
 		userID = r.Header.Get("X-User-AID")
 	}
-	if userID == "" {
-		// Allow caller to pass user_id in body when running without RBAC middleware
-		var body struct {
-			UserID string `json:"user_id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.UserID != "" {
-			userID = body.UserID
-		}
+	// Body is optional: it may carry a user_id fallback (no RBAC middleware on this
+	// route) and/or a KERI proof envelope for the sign-off action (issue #20).
+	// Absent/empty bodies are tolerated.
+	var body struct {
+		UserID string               `json:"user_id"`
+		Proof  *contributions.Proof `json:"proof"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // absent/empty/invalid body is fine
+	if userID == "" && body.UserID != "" {
+		userID = body.UserID
 	}
 	if userID == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	plan, err := h.service.SignOffPlan(r.Context(), spaceID, id, userID)
+	plan, err := h.service.SignOffPlan(r.Context(), spaceID, id, userID, body.Proof)
 	if err != nil {
 		log.Printf("[ImplementationPlans] SignOffPlan failed for %s: %v", id, err)
 

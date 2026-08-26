@@ -1,0 +1,6 @@
+# Captured Claude Code usage-limit refusal (2026-08-11). Real phrasings pinned
+# in .sandcastle/limit-lib.sh's header. Same-commit law: if the limit wording
+# changes, this fixture changes with limit-lib.sh (GOTCHAS-style).
+Approaching the ticket now.
+You've hit your weekly limit · resets Aug 12, 8am (UTC)
+See cc_cli_limit_message for details.

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# git-fence — the command backstop for issue #239 (Ben's ruling, option 3).
+#
+# Installed as /usr/local/bin/git in the worker sandbox image (ahead of the real
+# git on PATH — see .sandcastle/Dockerfile). Every Sandcastle worker bind-mounts
+# the SAME parent `.git/worktrees/` admin directory, so a `git worktree` command
+# that mutates that shared admin from inside one worker's container can corrupt a
+# parallel worker's worktree and red the whole run (run 1649: `git worktree
+# repair`; #196: `git worktree prune`). This shim refuses those mutating
+# worktree operations and passes every other git invocation straight through.
+#
+# The root cause is removed by .sandcastle/align-worktree.sh — the worktree
+# evaluates under `nix develop` with no repair needed — so a well-behaved worker
+# never trips this. It is the fence that guarantees a MISBEHAVING worker cannot
+# break its siblings regardless. Legitimate worktree bookkeeping (creating and
+# removing workers' worktrees) is the harness's job and runs on the HOST, where
+# this shim is not installed.
+#
+# GIT_FENCE_REAL overrides the real git path (default /usr/bin/git) — the tests
+# point it at a stub. This shim is exercised directly by
+# .sandcastle/tests/worktree-lib-test.sh, so its logic cannot drift from a copy.
+set -euo pipefail
+
+real="${GIT_FENCE_REAL:-/usr/bin/git}"
+
+# Worktree operations that mutate the shared parent `.git/worktrees/` admin. Read
+# operations (`list`) and everything outside `git worktree` are never fenced.
+FENCED_WORKTREE_OPS="add remove move lock unlock prune repair"
+
+# Walk the argv past git's global options to the subcommand and, for `worktree`,
+# its operation. Skip the value of the global options that take a separate one so
+# a value is never mistaken for the subcommand.
+sub="" op="" skip_value=0
+for arg in "$@"; do
+  if [ "$skip_value" = 1 ]; then skip_value=0; continue; fi
+  if [ -z "$sub" ]; then
+    case "$arg" in
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix) skip_value=1; continue ;;
+      --) continue ;;
+      -*) continue ;;
+      *) sub="$arg" ;;
+    esac
+  elif [ "$sub" = worktree ] && [ -z "$op" ]; then
+    case "$arg" in
+      -*) continue ;;
+      *) op="$arg"; break ;;
+    esac
+  fi
+done
+
+if [ "$sub" = worktree ] && [ -n "$op" ]; then
+  for fenced in $FENCED_WORKTREE_OPS; do
+    if [ "$op" = "$fenced" ]; then
+      cat >&2 <<EOF
+git-fence: refusing 'git worktree $op' inside the Sandcastle sandbox (issue #239).
+Every worker shares the parent .git/worktrees/ admin, so this would corrupt a
+parallel worker's worktree. You do NOT need it: .sandcastle/align-worktree.sh
+already makes 'nix develop .#go-ci' evaluate this worktree cleanly. If the flake
+still will not evaluate, stop and report it — do not mutate git's worktree admin.
+EOF
+      exit 1
+    fi
+  done
+fi
+
+exec "$real" "$@"

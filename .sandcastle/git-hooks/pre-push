@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Pre-push language gate (issue #198). Runs the pinned Go seam stages over any
+# Go change before it is pushed, so a lint/build/test defect is caught here — a
+# worker-visible failure — instead of on main's seam.
+#
+# Active ONLY inside the Sandcastle sandbox (FACTORY_SANDBOX=1, set by
+# .sandcastle/Dockerfile). A human's or the swarm harness's own host push is
+# never gated by it — they already run the full seam through `nix develop`, and
+# run-swarm.sh's reconcile push must not stall on a Go build.
+#
+# Wired via `git config core.hooksPath .sandcastle/git-hooks` from
+# .sandcastle/main.mts's onSandboxReady, so every worker container gets it.
+[ "${FACTORY_SANDBOX:-}" = "1" ] || exit 0
+
+root="$(git rev-parse --show-toplevel)"
+exec bash "$root/.sandcastle/gate.sh" --prepush

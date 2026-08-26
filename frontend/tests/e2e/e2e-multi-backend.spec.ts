@@ -6,6 +6,7 @@ import {
   setupBackendRouting,
   TIMEOUT,
 } from './utils/test-helpers';
+import { setupTestConfig } from './utils/mock-config';
 
 /**
  * E2E: Multi-Backend Infrastructure Smoke Test
@@ -93,6 +94,11 @@ test.describe('Multi-Backend Infrastructure', () => {
 
     // Create a context with routing to the user backend
     const context = await browser.newContext();
+    // The suite-wide Authorization extraHTTPHeader makes browser fetches to
+    // the config server preflighted, and its CORS allowlist doesn't include
+    // Authorization — setupTestConfig's route interception (which bypasses
+    // preflight) keeps those fetches working, same as every other spec.
+    await setupTestConfig(context);
     await setupBackendRouting(context, instance.port);
     const page = await context.newPage();
 
@@ -203,10 +209,12 @@ test.describe('Multi-Backend Infrastructure', () => {
     const backend2 = await backends.start('multi-ctx-2');
 
     const ctx1 = await browser.newContext();
+    await setupTestConfig(ctx1);
     await setupBackendRouting(ctx1, backend1.port);
     const page1 = await ctx1.newPage();
 
     const ctx2 = await browser.newContext();
+    await setupTestConfig(ctx2);
     await setupBackendRouting(ctx2, backend2.port);
     const page2 = await ctx2.newPage();
 

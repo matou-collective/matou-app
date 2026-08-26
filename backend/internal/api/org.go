@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -315,4 +318,49 @@ func (h *OrgConfigHandler) GetCommunitySpaceID() string {
 		return ""
 	}
 	return h.cache.CommunitySpaceID
+}
+
+// MirrorToConfigServer POSTs orgData to the legacy config server's
+// /api/config endpoint, authenticated with its admin bearer token. This
+// exists for backward compatibility with clients that still read the config
+// server directly (e.g. multi-session dev) - OrgConfigHandler, not the
+// config server, is the source of truth for org config.
+//
+// A conflict response (config server already holds a config, e.g. from
+// before this backend existed) is treated as success: there is nothing to
+// reconcile automatically. An empty token means mirroring is disabled and
+// this is a no-op.
+func MirrorToConfigServer(httpClient *http.Client, configServerURL, token string, isTest bool, orgData *OrgConfigData) error {
+	if token == "" {
+		return nil
+	}
+
+	body, err := json.Marshal(orgData)
+	if err != nil {
+		return fmt.Errorf("marshaling org config: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(configServerURL, "/")+"/api/config", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if isTest {
+		req.Header.Set("X-Test-Config", "true")
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusConflict:
+		return nil
+	default:
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("config server returned %d: %s", resp.StatusCode, respBody)
+	}
 }

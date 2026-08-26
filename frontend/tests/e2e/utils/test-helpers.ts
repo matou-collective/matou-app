@@ -42,6 +42,15 @@ export const TIMEOUT = {
   aidCreation: 90_000,  // 1.5 min - connect + OOBI resolution + witness-backed AID creation + end role
   orgSetup: 120_000,   // 2 min - full org setup
   stewardUpgrade: 300_000, // 5 min - OOBI + 2 key rotations + credential revoke + re-issue
+  // 3.5 min - a member joins the community space only after admitting the
+  // membership credential AND clearing the Verifier/Tevery escrow. For a
+  // credential issued by an UPGRADED steward from the org GROUP AID, the
+  // applicant's agent must first receive the group key state anchoring the
+  // registry event, so pollForCredential budgets up to 120s on its own
+  // (useCredentialPolling.ts) on top of the 15s notification poll + admit +
+  // OOBI/witness resolves. 90s (aidCreation) is shorter than that budget, so
+  // the second-member join legitimately misses it even when nothing is wrong.
+  groupCredentialJoin: 210_000,
 } as const;
 
 // ---------------------------------------------------------------------------

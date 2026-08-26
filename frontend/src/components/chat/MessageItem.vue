@@ -26,7 +26,12 @@
           <em>This message was deleted</em>
         </div>
         <template v-else>
-          <div class="message-body" v-html="renderedContent"></div>
+          <div
+            class="message-body"
+            v-html="renderedContent"
+            @click="handleBodyClick"
+            @keydown="handleBodyKeydown"
+          ></div>
 
           <!-- Attachments -->
           <div v-if="message.attachments?.length" class="message-attachments">
@@ -101,9 +106,10 @@
         @close="showEmojiPicker = false"
       />
 
-      <!-- Proposal Detail Modal -->
+      <!-- Proposal Detail Modal (opened by a proposal link card or an inline
+           @-mention chip) -->
       <ProposalDetailModal
-        v-if="proposalIds.length"
+        v-if="proposalIds.length || showProposalDetail"
         v-model="showProposalDetail"
         :proposal-id="selectedProposalId"
       />
@@ -113,9 +119,16 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { useQuasar } from 'quasar';
 import { Smile, Reply, Pencil, Trash2 } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
-import { renderMarkdown } from 'src/lib/markdown';
+import { renderMessageContent, mentionsToPlainText, type MentionType } from 'src/lib/mentions';
+import { useProfileViewer } from 'stores/profileViewer';
+import { useProfilesStore } from 'stores/profiles';
+import { useProjectsStore } from 'stores/projects';
+import { useProposalsStore } from 'stores/proposals';
+import { useContributionsStore } from 'stores/contributions';
+import { useActivityStore } from 'stores/activity';
 import MessageReactions from './MessageReactions.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import AttachmentPreview from './AttachmentPreview.vue';
@@ -150,11 +163,122 @@ const replyToDisplayName = computed(() =>
 );
 
 const replyToTruncated = computed(() => {
-  const content = props.replyToMessage?.content || '';
+  const content = mentionsToPlainText(props.replyToMessage?.content || '');
   return content.length > 80 ? content.substring(0, 80) + '...' : content;
 });
 
-const renderedContent = computed(() => renderMarkdown(props.message.content));
+const renderedContent = computed(() => renderMessageContent(props.message.content));
+
+const profileViewer = useProfileViewer();
+const profilesStore = useProfilesStore();
+const projectsStore = useProjectsStore();
+const proposalsStore = useProposalsStore();
+const contributionsStore = useContributionsStore();
+const activityStore = useActivityStore();
+const $q = useQuasar();
+
+// Delegated click handler for inline @-mention chips rendered inside the
+// message body (issues #12, #37). Each chip does what clicking that entity
+// does in its home list: people open the read-only profile dialog; proposals
+// open the detail modal; projects/contributions navigate to their pages;
+// events/updates open the Activity feed filtered to their kind.
+function handleBodyClick(e: MouseEvent) {
+  activateChip(e, (e.target as HTMLElement).closest('.mention-chip'));
+}
+
+// Chips carry role="button" tabindex="0", so Enter/Space must activate them
+// too, not just clicks.
+function handleBodyKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const target = e.target as HTMLElement;
+  if (!target.classList?.contains('mention-chip')) return;
+  activateChip(e, target);
+}
+
+// Whether a mentioned entity is present in its local store. Returns 'unknown'
+// when the store is empty (not yet loaded) so we never toast a false negative
+// — only 'absent' (store populated, id missing) marks a departed member or a
+// deleted/never-synced object.
+function resolveMention(type: MentionType, id: string): 'found' | 'absent' | 'unknown' {
+  let list: ReadonlyArray<{ id?: string }>;
+  let present: boolean;
+  switch (type) {
+    case 'person':
+      list = profilesStore.communityProfiles;
+      present = profilesStore.communityProfiles.some((p) => p.data.aid === id);
+      break;
+    case 'project':
+      list = projectsStore.projects;
+      present = projectsStore.projects.some((p) => p.id === id);
+      break;
+    case 'proposal':
+      list = proposalsStore.proposals;
+      present = proposalsStore.proposals.some((p) => p.id === id);
+      break;
+    case 'contribution':
+      list = contributionsStore.contributions;
+      present = contributionsStore.contributions.some((c) => c.id === id);
+      break;
+    case 'event':
+    case 'update':
+      list = activityStore.notices;
+      present = activityStore.notices.some((n) => n.id === id && n.type === type);
+      break;
+    default:
+      return 'unknown';
+  }
+  if (list.length === 0) return 'unknown';
+  return present ? 'found' : 'absent';
+}
+
+const MENTION_LABELS: Record<MentionType, string> = {
+  person: 'person',
+  project: 'project',
+  proposal: 'proposal',
+  event: 'event',
+  update: 'update',
+  contribution: 'contribution',
+};
+
+function activateChip(e: Event, chip: Element | null) {
+  if (!chip) return;
+  e.preventDefault();
+  const type = chip.getAttribute('data-mention-type') as MentionType | null;
+  const id = chip.getAttribute('data-mention-id');
+  if (!type || !id) return;
+
+  if (resolveMention(type, id) === 'absent') {
+    $q.notify({
+      type: 'warning',
+      message: `This ${MENTION_LABELS[type] ?? 'item'} is no longer available.`,
+      timeout: 2500,
+    });
+    return;
+  }
+
+  switch (type) {
+    case 'person':
+      void profileViewer.open(id);
+      break;
+    case 'project':
+      void router.push({ name: 'project-detail', params: { id } });
+      break;
+    case 'proposal':
+      openProposalDetail(id);
+      break;
+    case 'contribution':
+      void router.push({ name: 'contribution-detail', params: { id } });
+      break;
+    case 'event':
+      activityStore.setFilter('event');
+      void router.push({ name: 'activity' });
+      break;
+    case 'update':
+      activityStore.setFilter('update');
+      void router.push({ name: 'activity' });
+      break;
+  }
+}
 
 function extractIds(pattern: RegExp): string[] {
   const ids = new Set<string>();
@@ -253,6 +377,15 @@ function handleEmojiSelect(emoji: string) {
         :deep(a) {
           color: white;
           text-decoration: underline;
+        }
+
+        :deep(.mention-chip) {
+          color: white;
+          background-color: rgba(255, 255, 255, 0.22);
+
+          &:hover {
+            background-color: rgba(255, 255, 255, 0.32);
+          }
         }
 
         :deep(code) {
@@ -399,6 +532,20 @@ function handleEmojiSelect(emoji: string) {
   :deep(a) {
     color: var(--matou-primary);
     text-decoration: underline;
+  }
+
+  :deep(.mention-chip) {
+    display: inline;
+    padding: 0 0.125rem;
+    border-radius: 0.25rem;
+    color: var(--matou-primary);
+    background-color: color-mix(in srgb, var(--matou-primary) 12%, transparent);
+    font-weight: 600;
+    cursor: pointer;
+
+    &:hover {
+      background-color: color-mix(in srgb, var(--matou-primary) 22%, transparent);
+    }
   }
 
   :deep(ul), :deep(ol) {

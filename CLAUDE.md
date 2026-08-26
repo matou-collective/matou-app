@@ -126,6 +126,8 @@ curl -s http://localhost:9000 > /dev/null && echo "Running" || echo "Not running
 | Variable | Description |
 |----------|-------------|
 | `MATOU_ENV=test` | Enable test mode (port 9080, isolated data) |
+| `MATOU_API_TOKEN` | Override the API token TokenGuard requires on mutating requests (dev/test default: `matou-dev`; bundled/prod: random per launch, written to `{dataDir}/api-token` 0600) |
+| `MATOU_ALLOW_REMOTE=1` | Disable LocalhostGuard (loopback-only API) — remote-dev escape hatch |
 | `MATOU_ENV=production` | Enable production mode (uses client-production.yml) |
 | `MATOU_ANYSYNC_CONFIG` | Path to any-sync client config (optional) |
 | `MATOU_ANYSYNC_INFRA_DIR` | Path to any-sync infrastructure |

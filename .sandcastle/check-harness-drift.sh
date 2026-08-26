@@ -1,102 +1,99 @@
 #!/usr/bin/env bash
-# Far-side drift alarm for the shared Sandcastle harness (#250). This file is
-# CANONICAL in Matou/matou-app and shipped into sibling repos (matou-app) by
-# sync-harness.sh — so it is on the harness-manifest and kept identical across
-# repos by this very check. It is GENERIC: it carries no repo slug and reads
-# everything it needs from the marker the sync recorded, so the slug transform
-# is a no-op on it.
+# Drift alarm for the vendored factory core (ADR 0180 / #571: the factory
+# moved out of this repo into Matou/dev-factory; this repo now PULLS from it
+# at a pinned ref instead of idss pushing sed-transformed copies into
+# siblings). "Drift" used to mean "a far-side copy was hand-edited instead of
+# re-synced"; it now means the same thing from the other direction — a
+# vendored file here no longer matches FACTORY_REF's content, byte for byte,
+# no rendering (the old sed transform's "slug as value" vs "slug as
+# canonical-repo reference" ambiguity — the #571 bug where 2 of 13 synced
+# files arrived ownership-inverted, one of them this very file — cannot
+# recur: there is no transform).
 #
-# What it proves, run from a target repo's checkout root in that repo's ci:
-# every manifest file here matches what re-rendering the canonical revision the
-# last sync recorded produces. If a copy was edited directly on the far side,
-# CI goes RED naming the file and the canonical rule — the fix belongs in
-# ourcloud (or the file belongs OUT of the manifest), never in a divergent
-# far-side edit (the limit-guard-storm class: fixed in one place, re-erupts in
-# the other).
+# FACTORY_REPO is the SAME upstream for every consumer (unlike FORGEJO_API,
+# this is not a per-repo value the ownership-inversion bug class applies to —
+# every product repo vendors from the one factory repo), so it is a plain
+# default here, not sourced from swarm-identity.sh.
 #
-# Marker: .sandcastle/.harness-canonical, written by sync-harness.sh, four
-# `key=value` lines: repo= (canonical git URL) rev= (the synced canonical SHA)
-# slug= (canonical slug) target= (this repo's slug, the transform target).
-# No marker → this repo has never been synced; nothing to enforce, green.
+# Inputs (both under .sandcastle/, both committed):
+#   FACTORY_REF       one line, the pinned Matou/dev-factory commit SHA.
+#   FACTORY_MANIFEST  one vendored path per line (relative to .sandcastle/),
+#                     `#`-comments and blank lines ignored.
 #
-# Exit 0 in sync (or no marker / not applicable); 1 on drift.
+# No FACTORY_REF -> this repo has never vendored the factory core; nothing to
+# enforce, green (mirrors the old marker's absence-is-fine rule).
+#
+# Exit 0 in sync (or not applicable); 1 on drift.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"       # .sandcastle
-repo_root="$(cd "$here/.." && pwd)"
-marker="$here/.harness-canonical"
+ref_file="$here/FACTORY_REF"
+manifest="$here/FACTORY_MANIFEST"
+: "${FACTORY_REPO:=https://git.matou.nz/Matou/dev-factory.git}"
 
-if [ ! -f "$marker" ]; then
-  echo "check-harness-drift: no $marker — this repo is not a harness-sync target; nothing to enforce."
+if [ ! -f "$ref_file" ]; then
+  echo "check-harness-drift: no $ref_file — this repo does not vendor the factory core; nothing to enforce."
   exit 0
 fi
+[ -f "$manifest" ] || { echo "check-harness-drift: $ref_file exists but $manifest is missing." >&2; exit 1; }
 
-# Parse the marker (only the four keys we write; ignore anything else).
-canon_repo=""; canon_rev=""; canon_slug=""; target_slug=""
-while IFS='=' read -r k v; do
-  case "$k" in
-    repo)   canon_repo="$v" ;;
-    rev)    canon_rev="$v" ;;
-    slug)   canon_slug="$v" ;;
-    target) target_slug="$v" ;;
-  esac
-done <"$marker"
+factory_ref="$(tr -d '[:space:]' <"$ref_file")"
+[ -n "$factory_ref" ] || { echo "check-harness-drift: $ref_file is empty." >&2; exit 1; }
 
-if [ -z "$canon_repo" ] || [ -z "$canon_rev" ] || [ -z "$canon_slug" ] || [ -z "$target_slug" ]; then
-  echo "check-harness-drift: $marker is malformed (need repo=/rev=/slug=/target=)." >&2
-  exit 1
-fi
-
-# Fetch the recorded canonical revision into a throwaway checkout — never a
-# working tree we share. Shallow fetch of the exact SHA; fall back to a shallow
-# clone for servers that refuse by-SHA fetch.
-work="$(mktemp -d "${TMPDIR:-/tmp}/harness-drift.XXXXXX")"
+# Fetch the pinned revision into a throwaway checkout — never a working tree
+# we share. Shallow fetch of the exact SHA; fall back to a full clone for
+# servers that refuse by-SHA fetch.
+work="$(mktemp -d "${TMPDIR:-/tmp}/factory-drift.XXXXXX")"
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
 if ! (
   git init -q "$work" &&
-  git -C "$work" remote add origin "$canon_repo" &&
-  git -C "$work" fetch -q --depth 1 origin "$canon_rev" &&
+  git -C "$work" remote add origin "$FACTORY_REPO" &&
+  git -C "$work" fetch -q --depth 1 origin "$factory_ref" &&
   git -C "$work" checkout -q FETCH_HEAD
 ) 2>/dev/null; then
-  rm -rf "$work"; work="$(mktemp -d "${TMPDIR:-/tmp}/harness-drift.XXXXXX")"
-  git clone -q "$canon_repo" "$work"
-  git -C "$work" checkout -q "$canon_rev"
+  rm -rf "$work"; work="$(mktemp -d "${TMPDIR:-/tmp}/factory-drift.XXXXXX")"
+  git clone -q "$FACTORY_REPO" "$work"
+  git -C "$work" checkout -q "$factory_ref"
 fi
 
-canon_sc="$work/.sandcastle"
-manifest="$canon_sc/harness-manifest"
-[ -f "$manifest" ] || { echo "check-harness-drift: canonical rev $canon_rev has no harness-manifest." >&2; exit 1; }
-
-# The transform: the single allowed one, the repo-slug substitution. `#` is a
-# safe sed delimiter because slugs never contain it.
-render() { sed "s#${canon_slug}#${target_slug}#g" "$1"; }
-
 drift=0
-while read -r kind name; do
-  [ "$kind" = "file" ] || continue
-  src="$canon_sc/$name"
+while IFS= read -r name; do
+  case "$name" in ''|'#'*) continue ;; esac
+  src="$work/$name"
   local_copy="$here/$name"
   if [ ! -f "$src" ]; then
-    echo "check-harness-drift: manifest lists $name but canonical rev has no such file." >&2
+    echo "check-harness-drift: FACTORY_MANIFEST lists $name but $FACTORY_REPO@$factory_ref has no such file." >&2
     drift=1; continue
   fi
   if [ ! -f "$local_copy" ]; then
-    echo "DRIFT: $name is missing here but is a synced harness file (canonical: $canon_slug). Re-run the sync; do not hand-add it." >&2
+    echo "DRIFT: $name is missing here but is a vendored factory file (pinned: $factory_ref). Re-vendor it; do not hand-add it." >&2
     drift=1; continue
   fi
-  if ! diff -u <(render "$src") "$local_copy" >/dev/null; then
-    echo "DRIFT: .sandcastle/$name was edited directly here — it is owned by $canon_slug (rev $canon_rev)." >&2
-    echo "       Shared harness files are canonical in $canon_slug: land the fix THERE and let sync-harness.sh propagate it," >&2
-    echo "       or remove $name from the harness-manifest if it must diverge. Diff (rendered canonical -> local):" >&2
-    diff -u <(render "$src") "$local_copy" | sed 's/^/       /' >&2 || true
+  if ! diff -u "$src" "$local_copy" >/dev/null; then
+    echo "DRIFT: .sandcastle/$name was edited directly here — it is owned by $FACTORY_REPO (pinned rev $factory_ref)." >&2
+    echo "       Vendored factory files are canonical in $FACTORY_REPO: land the fix THERE, bump FACTORY_REF, and re-vendor," >&2
+    echo "       or remove $name from FACTORY_MANIFEST if it must diverge here. Diff (pinned factory -> local):" >&2
+    diff -u "$src" "$local_copy" | sed 's/^/       /' >&2 || true
     drift=1
   fi
 done <"$manifest"
 
 if [ "$drift" -ne 0 ]; then
-  echo "check-harness-drift: FAILED — shared harness copies drifted from $canon_slug@$canon_rev." >&2
+  echo "check-harness-drift: FAILED — vendored factory copies drifted from $FACTORY_REPO@$factory_ref." >&2
   exit 1
 fi
-echo "check-harness-drift: OK — every synced harness file matches $canon_slug@$canon_rev."
+
+echo "check-harness-drift: OK — every vendored factory file matches $FACTORY_REPO@$factory_ref."
+
+# Advisory only (never fails the check): how far behind dev-factory's main
+# tip the pin is, so a stale-but-intentional pin stays visible without
+# forcing an upgrade — "drift" is a mismatch, not simply "not on the latest
+# tag" (ADR 0180: "a product repo upgrades by bumping the ref"). Best-effort
+# extra fetch (the primary fetch above is shallow-by-SHA and may not carry
+# main); silently skipped if unreachable — this is a bonus note, not a check.
+git -C "$work" fetch -q origin main:refs/remotes/origin/main 2>/dev/null || true
+if behind="$(git -C "$work" rev-list --count "$factory_ref"..origin/main 2>/dev/null)" && [ "${behind:-0}" -gt 0 ] 2>/dev/null; then
+  echo "check-harness-drift: NOTE — FACTORY_REF is $behind commit(s) behind $FACTORY_REPO main. Bump it when convenient (not a failure)."
+fi

@@ -28,6 +28,19 @@ normalize_error_line() {
     cut -c1-200
 }
 
+# display_error_line <line> — the human/agent-facing counterpart to
+# normalize_error_line: strip ANSI escapes and collapse to one line, but keep
+# digits/hashes intact. normalize_error_line's fold is for compute_signature
+# only; applying it to the evidence text too was destroying the exact
+# port/timeout a human/agent needs to diagnose, and garbling Playwright's
+# ANSI color codes into literal "[Nm" junk (idss #610).
+display_error_line() {
+  printf '%s' "$1" |
+    tr '\n' ' ' |
+    sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/[[:space:]]+/ /g' |
+    cut -c1-200
+}
+
 # compute_signature <workflow> <error-line> — 12-char stable incident id.
 compute_signature() {
   printf '%s|%s' "$1" "$(normalize_error_line "$2")" | sha1sum | cut -c1-12
