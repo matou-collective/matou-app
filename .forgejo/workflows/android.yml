@@ -16,6 +16,12 @@ on:
       - 'scripts/android/**'
       - '.forgejo/workflows/android.yml'
 
+# Two overlapping runs on the same host would race the $HOME/.matou-android
+# first-install and the gradle caches (review note on #97).
+concurrency:
+  group: android-apk
+  cancel-in-progress: false
+
 jobs:
   build-apk:
     runs-on: swarm
