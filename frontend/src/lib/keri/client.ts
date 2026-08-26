@@ -18,6 +18,7 @@ import {
 } from 'src/lib/agentLifecycle';
 import { extractWitnessAids } from 'src/lib/keri/witnessAssignment';
 import { parseCesrStream, filterKelMessages, mergeKelMessages } from 'src/lib/keri/cesr';
+import { selectGroupKelPushTargets } from 'src/lib/keri/groupKelPush';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -722,6 +723,72 @@ export class KERIClient {
       console.warn('[KERIClient] KEL push failed:', err instanceof Error ? err.message : err);
     }
     return { pushed, failed };
+  }
+
+  /**
+   * After a group-AID member anchors a group `ixn` (registry `vcp` or
+   * credential `iss`), proactively push the freshly-advanced group KEL to
+   * every OTHER signing member's agent (issue #63).
+   *
+   * With kt=1 no `/multisig/ixn` co-sign round runs, so a member's agent never
+   * otherwise learns another member's group ixn. Without this push, the next
+   * member to issue from the same group AID re-anchors at the sequence number
+   * the first member already used → the group KEL forks, agents that saw the
+   * first event treat the second as duplicitous, and the second issuance's
+   * credential escrows forever ("Missing anchor" / "not in Tevers").
+   *
+   * Recipients are the org config `admins` (the group's signing members) minus
+   * the currently-acting member (the group's local `mhab`) and the group AID
+   * itself. The push destination is each member's managed personal AID (an
+   * agent AID 404s "unknown destination"). Best-effort and fire-and-forget:
+   * a failed or partial push logs a warning but never blocks or fails the
+   * issuing operation. Mirrors the pre-grant recipient push used above.
+   */
+  private async pushGroupKelToOtherMembers(
+    groupAidPrefix: string,
+    actingMemberAid?: string,
+  ): Promise<void> {
+    try {
+      const { fetchOrgConfig } = await import('../../api/config');
+      const result = await fetchOrgConfig();
+      const config =
+        result.status === 'configured'
+          ? result.config
+          : result.status === 'server_unreachable'
+            ? result.cached
+            : null;
+      const targets = selectGroupKelPushTargets(
+        (config?.admins ?? []).map((a) => a.aid),
+        groupAidPrefix,
+        actingMemberAid,
+      );
+      if (targets.length === 0) {
+        console.log(
+          `[KERIClient] Group KEL push: no other members to notify for ${groupAidPrefix.slice(0, 12)}...`,
+        );
+        return;
+      }
+      for (const memberAid of targets) {
+        try {
+          const push = await this.pushKelToAgent(groupAidPrefix, memberAid);
+          if (push.pushed === 0) {
+            console.warn(
+              `[KERIClient] Group KEL push to member ${memberAid.slice(0, 12)}... delivered nothing (${push.failed} failed)`,
+            );
+          }
+        } catch (pushErr) {
+          console.warn(
+            `[KERIClient] Group KEL push to member ${memberAid.slice(0, 12)}... failed:`,
+            pushErr instanceof Error ? pushErr.message : pushErr,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        '[KERIClient] Group KEL push to other members skipped:',
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   /**
@@ -2057,9 +2124,11 @@ export class KERIClient {
     // the `vcp` ixn's `group.<said>` op is what tracks witness receipts. Wait
     // for it so the registry is resolvable by recipients before anything is
     // issued from it (issue #51). See awaitGroupAnchorWitnessed().
+    let groupHab: { prefix: string; group?: { mhab?: { prefix?: string } } } | undefined;
     try {
-      const hab = await this.client.identifiers().get(aidName);
-      if ((hab as { group?: unknown }).group) {
+      const hab = await this.client.identifiers().get(aidName) as { prefix: string; group?: { mhab?: { prefix?: string } } };
+      if (hab.group) {
+        groupHab = hab;
         const ixnSaid = (result.serder as { said?: string; sad?: { d?: string } } | undefined)?.said
           ?? (result.serder as { sad?: { d?: string } } | undefined)?.sad?.d;
         if (ixnSaid) {
@@ -2069,6 +2138,14 @@ export class KERIClient {
     } catch (err) {
       if (err instanceof Error && err.message.startsWith('awaitGroupAnchorWitnessed')) throw err;
       console.warn('[KERIClient] createRegistry: group witness gate skipped:', err instanceof Error ? err.message : err);
+    }
+
+    // For a GROUP AID, propagate the freshly-anchored group KEL (this registry
+    // `vcp` ixn) to the other signing members' agents so the next member to
+    // issue from this group AID doesn't re-anchor at the same sn and fork the
+    // KEL (issue #63). Best-effort — never throws.
+    if (groupHab) {
+      await this.pushGroupKelToOtherMembers(groupHab.prefix, groupHab.group?.mhab?.prefix);
     }
 
     // Get the registry ID from the registries list
@@ -2165,6 +2242,17 @@ export class KERIClient {
       } else {
         console.warn('[KERIClient] Group issuance: no anchoring ixn SAID on issue() result — cannot gate grant on witness receipts');
       }
+
+      // Propagate the freshly-anchored group KEL (this credential `iss` ixn) to
+      // the OTHER signing members' agents so the next member to issue from this
+      // group AID doesn't re-anchor at the same sn and fork the KEL — the
+      // duplicitous-event fork that left invitee credentials stuck in escrow
+      // (issue #63). Best-effort — never throws. This is distinct from the
+      // pre-grant push below, which targets the credential RECIPIENT.
+      await this.pushGroupKelToOtherMembers(
+        issuerAid.prefix,
+        (issuerAid as { group?: { mhab?: { prefix?: string } } }).group?.mhab?.prefix,
+      );
     }
 
     // Make sure the recipient's agent already holds OUR key state at the sn
