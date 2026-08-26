@@ -44,6 +44,9 @@ case "$url" in
     $want_code && { echo "${FAKE_CODE:-204}"; exit 0; }
     echo '[]'
     ;;
+  */issues/42/timeline*)
+    cat "${TIMELINE_JSON:-/dev/null}" 2>/dev/null || echo '[]'
+    ;;
   */issues/42/labels/7)
     $want_code && { echo "${FAKE_CODE:-204}"; exit 0; }
     echo ''
@@ -238,6 +241,32 @@ check "issue-write probe reds when permissions.push is false" \
 probe_out="$( ( export PROBE_PUSH=false; forgejo_issue_write_probe ) 2>&1 || true )"
 check "issue-write probe names the missing write access" \
   'grep -q "no write access" <<<"$probe_out"'
+
+# forgejo_label_applied_at (#99): the LATEST label-ADD timestamp from the issue
+# timeline, ignoring removes and earlier adds; empty for a label never added.
+timeline="$tmp/timeline.json"
+cat > "$timeline" <<'JSON'
+[
+  {"type":"comment","body":"kickoff","created_at":"2026-08-25T09:00:00Z"},
+  {"type":"label","body":"1","label":{"name":"ready-for-agent"},"created_at":"2026-08-25T09:30:00Z"},
+  {"type":"label","body":"","label":{"name":"ready-for-agent"},"created_at":"2026-08-25T09:45:00Z"},
+  {"type":"label","body":"1","label":{"name":"ready-for-agent"},"created_at":"2026-08-25T10:00:00Z"},
+  {"type":"label","body":"1","label":{"name":"agent-working"},"created_at":"2026-08-25T10:10:00Z"}
+]
+JSON
+ready_epoch="$(jq -n '"2026-08-25T10:00:00Z" | fromdateiso8601')"
+working_epoch="$(jq -n '"2026-08-25T10:10:00Z" | fromdateiso8601')"
+: > "$CALLS_LOG"
+check "label_applied_at returns the LATEST ready-for-agent ADD (not the earlier add or the remove)" \
+  '[ "$(TIMELINE_JSON=$timeline forgejo_label_applied_at 42 ready-for-agent)" = "$ready_epoch" ]'
+check "label_applied_at returns the agent-working ADD time" \
+  '[ "$(TIMELINE_JSON=$timeline forgejo_label_applied_at 42 agent-working)" = "$working_epoch" ]'
+check "label_applied_at is empty for a label never added" \
+  '[ -z "$(TIMELINE_JSON=$timeline forgejo_label_applied_at 42 no-such-label)" ]'
+check "label_applied_at reads the issue timeline endpoint" \
+  'TIMELINE_JSON=$timeline forgejo_label_applied_at 42 ready-for-agent >/dev/null; grep -q "GET .*/issues/42/timeline" "$CALLS_LOG"'
+check "label_applied_at is empty on an empty timeline" \
+  '[ -z "$(TIMELINE_JSON=/dev/null forgejo_label_applied_at 42 ready-for-agent)" ]'
 
 # curl -f semantics: forgejo_get dies loud (rc != 0) on a real failure, never a silent empty success
 if forgejo_get "/fail/x" >/dev/null 2>&1; then fail=$((fail+1)); echo "FAIL: forgejo_get propagates curl's failure rc"; else pass=$((pass+1)); fi

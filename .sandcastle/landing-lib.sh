@@ -26,6 +26,8 @@ __SWARM_LANDING_LIB=1
 __landing_lib_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=forgejo-lib.sh
 . "$__landing_lib_here/forgejo-lib.sh"
+# shellcheck source=model-lib.sh
+. "$__landing_lib_here/model-lib.sh"   # SWARM_MODEL — swarm.config is the ONE model source (#448); before this the rebase-rescue claude call passed no --model and ran on the host user's CLI default
 
 landing_branch_for() { # landing_branch_for <N> -> the issue's agent branch name
   printf 'agent/issue-%s\n' "${1:?landing_branch_for: issue number required}"
@@ -189,6 +191,95 @@ landing_merge_reconcile() {
     res="$(landing_merge_if_green "$n")"
     printf '%s %s\n' "$n" "$res"
   done < <(landing_open_agent_issues)
+}
+
+# ── the LAND seam of run-swarm.sh (#2) ─────────────────────────────────────
+# The two modes' whole reconcile pass, so the orchestrator carries one call
+# rather than a 45-line rescue ladder inline.
+
+LANDING_NOTIFY="${LANDING_NOTIFY:-$__landing_lib_here/notify-mattermost.sh}"
+# The stage's outputs (a bash function returns one rc, and both are consumed by
+# the report seam).
+LANDING_OPENED_PRS=""
+LANDING_MERGED_PRS=""
+
+_landing_notify() { bash "$LANDING_NOTIFY" "$1" || true; }
+
+# landing_resolve_rebase_with_claude — hand a mid-rebase checkout to a headless
+# claude. Merging both sides of a STATUS.md entry is judgement work a text merge
+# can't do: its one-line header collides with any concurrent edit. rc 0 only if
+# the rebase actually completed.
+landing_resolve_rebase_with_claude() {
+  command -v claude >/dev/null 2>&1 || return 1
+  timeout 900 claude -p --model "$SWARM_MODEL" --dangerously-skip-permissions \
+    "This git checkout is mid-rebase with conflicts. Finish the rebase: resolve every conflicted file preserving BOTH sides' intent — for STATUS.md keep both milestone-log entries (newest first) and merge the one-line header so it reflects the newest state plus any facts only one side carries. Then 'git add' the resolved files and 'GIT_EDITOR=true git rebase --continue'; repeat until the rebase completes. NEVER 'git rebase --abort', never force-push, never delete either side's content." \
+    || return 1
+  [ ! -e .git/rebase-merge ] && [ ! -e .git/rebase-apply ]
+}
+
+# landing_push_main_with_rescue <repo-slug> — push mode's ladder.
+#
+# A human may have pushed to main during the (long) sandcastle run. The agent's
+# commits are freshly authored, so rebase-and-retry is safe — and necessary: the
+# issues are already closed, so abandoned commits would otherwise be silently
+# discarded by the next run's reset --hard. (Agents also push per iteration —
+# prompt step 6 — so this final push is usually a no-op; the rebase deduplicates
+# patch-identical commits.)
+#
+# If even claude can't land the push, NEVER die with the commits stranded: park
+# HEAD on a rescue branch, alert, and fail — a human cherry-picks from there.
+# (Run 330 lost three closed-issue commits before this ladder existed.)
+# rc 1 + SWARM_EXIT_REASON=push-parked-on-rescue when it parks.
+landing_push_main_with_rescue() {
+  local repo_slug="$1" pushed="" rescue
+  git push origin HEAD:main && return 0
+  git fetch origin main
+  if git rebase origin/main; then
+    git push origin HEAD:main && pushed=1
+  elif landing_resolve_rebase_with_claude; then
+    git push origin HEAD:main && pushed=1
+  fi
+  [ -z "$pushed" ] || return 0
+  git rebase --abort 2>/dev/null || true
+  rescue="sandcastle/rescue-$(date -u +%Y%m%d-%H%M%S)"
+  git push origin "HEAD:refs/heads/$rescue"
+  _landing_notify ":rotating_light: **Swarm push failed after issues were closed** in \`$repo_slug\` — commits parked on \`$rescue\`. Cherry-pick them onto main or the work is lost (the issues will NOT retry)."
+  SWARM_EXIT_REASON="push-parked-on-rescue"
+  return 1
+}
+
+# landing_stage <repo-slug> <ready-json> <start-sha> — the whole land seam.
+#
+# pr mode (#13): land each issue this run touched on its own agent/issue-<N>
+# branch and open/refresh its PR (closes #<N>); a human — or agent-after-green —
+# merges. No push to main here (that would bypass the PR); the rescue ladder is
+# the push-mode path only. Touched = the pickup set + any #NN scraped from this
+# run's commit subjects (a mid-run close can unblock a child).
+#
+# Sets LANDING_OPENED_PRS / LANDING_MERGED_PRS for the report seam. rc 1 only
+# when push mode parked on a rescue branch.
+landing_stage() {
+  local repo_slug="$1" ready="$2" start_sha="$3" nums
+  LANDING_OPENED_PRS=""; LANDING_MERGED_PRS=""
+  if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
+    verdict_stage "reconcile landing (pr — branch + PR per issue)"
+    # `|| true` on the scrape: a run whose commit subjects cite NO `#NN` makes
+    # grep exit 1, and under the caller's `set -o pipefail` that non-zero rippled
+    # out of the command substitution and killed the whole reconcile stage —
+    # after the work was already committed. Same class as #21's foreign-`#NN`
+    # 404; surfaced by the #2 decomposition's test for this seam.
+    nums="$({ jq -r '.[].number' <<<"$ready";
+        git log --format=%s "$start_sha"..HEAD | grep -oE '#[0-9]+' | tr -d '#' || true; } | sort -un)"
+    # shellcheck disable=SC2086 — the number list is deliberately word-split.
+    LANDING_OPENED_PRS="$(landing_reconcile $nums || true)"
+    # agent-after-green (#15): merge EVERY open agent PR whose required checks are
+    # green — including PRs from EARLIER runs that only went green after their own
+    # run ended. A no-op under MERGE_AUTHORITY=human.
+    LANDING_MERGED_PRS="$(landing_merge_reconcile || true)"
+    return 0
+  fi
+  verdict_stage "reconcile push to main"
+  landing_push_main_with_rescue "$repo_slug"
 }
 
 fi

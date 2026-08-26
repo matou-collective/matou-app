@@ -4,9 +4,18 @@
 # unrelated places — main.mts's `claudeCode("claude-opus-4-8")` and heal.sh's
 # `claude -p --model claude-opus-4-8` — which could drift apart silently.
 #
-# Sourceable, no side effects beyond defining SWARM_MODEL / SWARM_MODEL_MAP (read
-# from swarm.config, beside this file) and the resolver functions. Consumers:
-#   - heal.sh                sources this, launches `claude --model "$SWARM_MODEL"`
+# Sourceable, no side effects beyond defining SWARM_MODEL / SWARM_MODEL_MAP /
+# SWARM_HEAL_MODEL / SWARM_REPORT_MODEL (read from swarm.config, beside this
+# file) and the resolver functions. Consumers:
+#   - heal.sh                sources this, launches `claude --model "$SWARM_HEAL_MODEL"`
+#   - rehearsal-report.sh    sources this; its heal leg launches on
+#                            $SWARM_HEAL_MODEL, its diagnosis leg on
+#                            $SWARM_REPORT_MODEL
+#   - session-runner.sh,
+#     run-triage.sh,
+#     landing-lib.sh         source this, launch `claude --model "$SWARM_MODEL"`
+#                            (before this they passed NO --model and silently ran
+#                            on whatever the host user's claude CLI defaulted to)
 #   - run-swarm.sh           sources this, resolves the first ready ticket's
 #                            model-<name> label per-run and exports SWARM_MODEL
 #   - main.mts               parses swarm.config directly (node can't source bash),
@@ -26,7 +35,9 @@ __model_lib_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$__model_lib_here/swarm.config"
 : "${SWARM_MODEL:?swarm.config must set SWARM_MODEL}"
 : "${SWARM_MODEL_MAP:?swarm.config must set SWARM_MODEL_MAP}"
-export SWARM_MODEL SWARM_MODEL_MAP
+: "${SWARM_HEAL_MODEL:?swarm.config must set SWARM_HEAL_MODEL}"
+: "${SWARM_REPORT_MODEL:?swarm.config must set SWARM_REPORT_MODEL}"
+export SWARM_MODEL SWARM_MODEL_MAP SWARM_HEAL_MODEL SWARM_REPORT_MODEL
 
 # swarm_model_names — echo the short label suffixes (map keys), one per line.
 swarm_model_names() {

@@ -1,0 +1,106 @@
+{
+  "$comment": "Worker-class inventory for the swarm software factory — the classes the HARNESS itself ships, i.e. whose code lives in this repo. Read by the factory TUI's Fleet screen (tui/data/worker_classes.py); do not fork this data into a second table. Deliberately carries NO host names and NO product-specific workers: which machines run a class, and which extra classes a product repo runs, are per-deployment facts a consumer declares in its own worker-classes.local.json overlay beside its swarm-identity.sh (merged by id). Lock and marker paths are named by the LIB that owns them rather than repeated as literals, so this table cannot drift from the code it describes.",
+  "generated": "2026-08-23",
+  "verified_against": "docs/research/2026-08-15-factory-reengineering-survey.md#4 (worker inventory) — every field re-derived from the named source files, not copied from the survey's prose",
+  "classes": [
+    {
+      "id": "swarm-worker",
+      "name": "swarm worker",
+      "trigger": "cron 15,45 * * * *; issues:[labeled(ready-for-agent), closed]; workflow_dispatch; self-rearm dispatch when work remains and a worker ran",
+      "lock": "2-slot host-capacity semaphore (host-capacity-lib.sh: slot 1 then slot 2, flock -n, yields if both busy); per-repo ready-set debounce stamp, 600s (schedule-lib.sh)",
+      "writes": "Forgejo labels/comments/close (close-report), git commits+push to main (or an agent PR under LANDING=pr), chat summary, swarm.db run/attempt/event rows, verdict file, runlog, materialised .env+secrets/, worktree/container sweep",
+      "stuck_signal": "verdict + runlog line on every exit; swarm.db unfinalised processes row = wedge evidence; explicit green-wedge detector (ready!=0, exit 0, zero worker-container births -> loud red + chat notice)",
+      "invisible_failure": false,
+      "invisible_failure_note": "best-instrumented of the harness classes; not one of the survey's invisible classes",
+      "sources": ["run-swarm.sh", ".forgejo/workflows/swarm.yml"]
+    },
+    {
+      "id": "triage",
+      "name": "triage",
+      "trigger": "cron 5,35 * * * *; issues:[opened, reopened]; workflow_dispatch",
+      "lock": "same 2-slot host-capacity semaphore as the swarm worker",
+      "writes": "Forgejo labels via claude -p /triage; issue comments/asks (post-issue-ask.sh); verdict file; chat digest of newly human-gated issues",
+      "stuck_signal": "trap 'verdict_write $?' EXIT; triage.yml's failure() step routes into the healer",
+      "invisible_failure": false,
+      "invisible_failure_note": null,
+      "sources": ["run-triage.sh", ".forgejo/workflows/triage.yml"]
+    },
+    {
+      "id": "resume-asks",
+      "name": "resume-asks",
+      "trigger": "cron 10,40 * * * * (offset from triage/swarm on purpose); workflow_dispatch",
+      "lock": "none — deliberately lockless, own shallow workdir disjoint from swarm/triage",
+      "writes": "Forgejo comment (durable ruling), label swap ready-for-human -> ready-for-agent, chat checkmark consuming the ask thread",
+      "stuck_signal": "resume-asks.yml's failure() step posts a direct chat alert naming the exact risk (parked issues not being re-armed)",
+      "invisible_failure": false,
+      "invisible_failure_note": null,
+      "sources": ["resume-parked-asks.sh", ".forgejo/workflows/resume-asks.yml"]
+    },
+    {
+      "id": "healer",
+      "name": "healer",
+      "trigger": "hourly cron (HEAL_MODE=watchdog, HEAL_DRY_RUN=1); also the failure() step of swarm.yml/triage.yml/ci.yml (HEAL_MODE=hook)",
+      "lock": "per-repo healer lock (flock -n, host-capacity-lib.sh's namespace), exits 0 if held",
+      "writes": "chat posts (ledger-gated), ledger files under $HEALER_STATE/<signature>, a per-repo evidence dir; HEAL_DRY_RUN=1 by default so no commits/pushes/tickets",
+      "stuck_signal": "none by design — healer.yml deliberately carries no failure() hook (self-failure must never recurse); a schedule of its own once silently deregistered for ~24h (2026-07-28) with zero alert until the storm the next day",
+      "invisible_failure": true,
+      "invisible_failure_note": "one of the survey's explicitly named invisible-failure classes (\"no run in Actions is the healer's only tell\")",
+      "sources": ["heal.sh", "heal-lib.sh", ".forgejo/workflows/healer.yml"]
+    },
+    {
+      "id": "reporter",
+      "name": "reporter (rehearsal-report.sh)",
+      "trigger": "invoked by a consumer's rehearsal cycle on a red leg with a run dir, or directly by its box cleanup before teardown",
+      "lock": "none of its own — rides the caller's locks",
+      "writes": "new/appended rehearsal issues, priority label, native dependency wiring onto the drive issue, screenshot attach, comments; flips the drive to ready-for-human on filing failure; dispatches the swarm workflow; may delegate the first red leg to the rehearsal healer",
+      "stuck_signal": "none — set -uo pipefail (no -e) and every terminating path is an explicit exit 0 regardless of internal WARNs",
+      "invisible_failure": true,
+      "invisible_failure_note": "one of the survey's explicitly named invisible-failure classes (\"reporter... always exit 0\")",
+      "sources": ["rehearsal-report.sh"]
+    },
+    {
+      "id": "rehearsal-healer",
+      "name": "rehearsal healer",
+      "trigger": "called by the reporter's try_heal() for the first red leg only, gated REHEARSAL_HEALER=1 (default on)",
+      "lock": "none of its own — rides the caller's already-held locks; dedicated clone at $REHEARSAL_CHECKOUT, never the shared swarm checkout",
+      "writes": "at most one git commit pushed straight to origin/main, rails-enforced (<=3 files, <=60 lines, 1 commit, never the harness dir or the workflows); a heal-fail counter file per signature; a comment on the drive issue naming the fix",
+      "stuck_signal": "heal_fail_count (2 mechanical failures on one signature force filing) is the only self-limiter; bounded by a hard timeout; failures fold into the reporter's exit-0 umbrella",
+      "invisible_failure": false,
+      "invisible_failure_note": "shares the reporter's exit-0 umbrella but is not itself one of the survey's named classes",
+      "sources": ["rehearsal-report.sh", "rehearsal-heal-lib.sh"]
+    },
+    {
+      "id": "session-runner",
+      "name": "session-runner",
+      "trigger": "host cron; drains the ready-for-session queue (ADR 0174), one ticket per tick",
+      "lock": "own per-repo session-runner lock, plus joins the 2-slot host-capacity pool (host_capacity_acquire_heavy)",
+      "writes": "Forgejo agent-working/agent-blocked labels, issue comments, ticket state via its own headless claude session; chat notify(); local attempt-<n>/fail-<n> counters keyed per repo; per-run log file",
+      "stuck_signal": "thin — nearly every exit is exit 0 (including the two-strikes escalation path) and notify() degrades to a log-only line if chat is unreachable; it never appears in Forgejo Actions at all, so an identity-contract failure once flickered claims for ~15 ticks in silence",
+      "invisible_failure": true,
+      "invisible_failure_note": "100% exit-0, zero Actions visibility, notify() fails open — the best-evidenced candidate for the survey's unstated fourth invisible class",
+      "sources": ["session-runner.sh"]
+    },
+    {
+      "id": "schedule-backstop",
+      "name": "schedule-backstop",
+      "trigger": "host cron; schedule-backstop.sh <workflow>.yml <window-min> — backstop for the 2026-07-28 silent-schedule-loss incident",
+      "lock": "none — stateless/idempotent, checks the Actions task listing each tick instead of holding a lock",
+      "writes": "dispatches the named workflow (POST /actions/workflows/<wf>/dispatches) when it decides a run is missing; no tracker/chat writes",
+      "stuck_signal": "none — fails closed silently on an API-listing failure (skip this tick); dispatch outcome logged to the cron log only, no chat either way",
+      "invisible_failure": false,
+      "invisible_failure_note": "second-tier candidate surfaced by the same exit-code lens as the session-runner, but its failure mode is API-blip avoidance, not intentional success-masking",
+      "sources": ["schedule-backstop.sh"]
+    },
+    {
+      "id": "in-run-sweeps",
+      "name": "in-run sweeps (janitor_sweep / claim-lib sweeps)",
+      "trigger": "automatic inside every run-swarm.sh execution: janitor_sweep() once at start; sweep_and_report() (reap_containers + sweep_worktrees) from the EXIT trap once SWEEP_ARMED is set",
+      "lock": "none of its own — piggybacks entirely on run-swarm.sh's already-held capacity slot",
+      "writes": "janitor_sweep: deletes stale swarm-claim comments + the agent-working label on issues whose claiming run died; sweep_and_report: force-removes stale worktrees (sparing any younger than a run lifetime), deletes only MERGED worker branches, and removes worker containers older than 3h",
+      "stuck_signal": "janitor_sweep || true swallows its own failure with zero alert — a broken janitor would silently strand tickets agent-working forever; the worktree sweep DOES warn on any unmerged branch it refused to delete",
+      "invisible_failure": false,
+      "invisible_failure_note": "sub-step of the well-instrumented swarm worker, but janitor_sweep's own silent-failure swallow is worth flagging",
+      "sources": ["claim-lib.sh", "sweep-lib.sh", "run-swarm.sh"]
+    }
+  ]
+}

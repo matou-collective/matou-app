@@ -74,6 +74,9 @@ pass=$((pass+1))
 #     makes a subsequent parked() true. Point the marker at a temp path so the
 #     test never touches the real /tmp/matou-swarm-claude-limit. ---
 export CLAUDE_LIMIT_MARKER="$(mktemp -u)"; export CLAUDE_LIMIT_TTL=3600
+# Pin the active-account marker too (claude_limit_park now reads it for the
+# exhausted account, #100) so this test never reads the real host marker.
+export CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; rm -f "$CLAUDE_ACTIVE_MARKER"
 rm -f "$CLAUDE_LIMIT_MARKER"
 claude_limit_parked && fail "an ABSENT marker must not read as parked"
 claude_limit_park
@@ -84,10 +87,55 @@ claude_limit_parked && fail "a STALE marker (older than the TTL) must not read a
 rm -f "$CLAUDE_LIMIT_MARKER"
 pass=$((pass+1))
 
+# --- limit-park HISTORY (#100): the park edges are recorded, per account, so the
+#     lost-capacity window survives the live marker clearing. limit-lib carries
+#     no hard swarm-db dependency, so the record is a no-op where swarmdb_event
+#     is undefined — but the park itself (marker + account content) still works. ---
+export CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; rm -f "$CLAUDE_ACTIVE_MARKER"
+rm -f "$CLAUDE_LIMIT_MARKER"
+# (a) NO mirror wired: park must still stamp the marker with the active account,
+#     and neither park nor sweep may error for want of swarmdb_event.
+declare -F swarmdb_event >/dev/null 2>&1 && fail "swarmdb_event must be undefined here"
+claude_limit_park
+claude_limit_parked || fail "park() must still park with no mirror wired"
+[ "$(cat "$CLAUDE_LIMIT_MARKER")" = "A" ] || fail "the marker must carry the exhausted account letter"
+claude_limit_sweep    # fresh marker → no-op, must not clear a live park
+claude_limit_parked || fail "sweep must not close a still-fresh window"
+rm -f "$CLAUDE_LIMIT_MARKER"
+pass=$((pass+1))
+
+# (b) mirror wired: park records ONE park edge with the account; a re-hit while
+#     parked adds no duplicate; the exit observer records the paired unpark for
+#     the marker's account and clears it, so a later hit re-parks cleanly.
+edln="$tmp.edges"; rm -f "$edln"
+swarmdb_event() { printf '%s|%s|%s\n' "$1" "$3" "$4" >> "$edln"; }
+claude_mark_active B                       # exhausted account is the standby
+claude_limit_park run-42
+[ "$(cat "$CLAUDE_LIMIT_MARKER")" = "B" ] || fail "the marker must carry account B"
+grep -q '^run-42|limit-pause|park account=B$' "$edln" \
+  || fail "entry must record a limit-pause park event with the account: $(cat "$edln")"
+claude_limit_park run-42                    # a re-hit inside the same window
+[ "$(grep -c '|park account=B$' "$edln")" = 1 ] \
+  || fail "a re-hit while parked must not record a second park edge"
+# window ends: mark the marker stale, then the sweep closes it exactly once.
+touch -d "2 hours ago" "$CLAUDE_LIMIT_MARKER"
+claude_limit_sweep run-42
+grep -q 'limit-pause|unpark account=B$' "$edln" \
+  || fail "the exit observer must record the paired unpark for account B: $(cat "$edln")"
+[ -f "$CLAUDE_LIMIT_MARKER" ] && fail "the sweep must clear the marker so a later hit re-parks"
+claude_limit_sweep run-42                   # nothing parked now → no-op
+[ "$(grep -c unpark "$edln")" = 1 ] || fail "a second sweep with no marker must record nothing"
+# a fresh outage after the window reset re-parks and records a new park edge.
+claude_limit_park run-99
+[ "$(grep -c '|park account=B$' "$edln")" = 2 ] || fail "a later outage must record a fresh park edge"
+unset -f swarmdb_event
+rm -f "$CLAUDE_LIMIT_MARKER" "$CLAUDE_ACTIVE_MARKER" "$edln"
+pass=$((pass+1))
+
 # --- two-account failover (#510): ride over an exhausted weekly window ---
 # Marker points at a temp path so the test never touches the real
-# /tmp/matou-swarm-claude-active-token; TTL matrix mirrors the limit marker's.
-export CLAUDE_ACTIVE_MARKER="$(mktemp -u)"; export CLAUDE_ACTIVE_TTL=3600
+# /tmp/matou-swarm-claude-active-token.
+export CLAUDE_ACTIVE_MARKER="$(mktemp -u)"
 rm -f "$CLAUDE_ACTIVE_MARKER"
 
 # no standby token: selection is a NO-OP (single-account hosts unchanged) and
@@ -123,14 +171,23 @@ claude_select_token
 [ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-B" ] || fail "a fresh B marker must start the caller on the standby token"
 pass=$((pass+1))
 
-# a STALE marker never pins the host to the standby forever (AC-4): older than
-# the TTL → the active account falls back to A, re-probing the primary.
-touch -d "2 hours ago" "$CLAUDE_ACTIVE_MARKER"
+# the marker is STICKY (Ben's ruling 2026-08-26, supersedes AC-4's freshness
+# fallback): an AGED B marker is still B — the account only changes hands at
+# an explicit failover, never by timer. The old hourly fall-back re-probed a
+# hard-7d-exhausted A per caller and re-parked the host whenever that refusal
+# met transient pressure on B (the five 2026-08-25 reporter parks on #722).
+touch -d "25 hours ago" "$CLAUDE_ACTIVE_MARKER"
 unset CLAUDE_TOKEN_PRIMARY
 export CLAUDE_CODE_OAUTH_TOKEN="tok-A"
 claude_select_token
-[ "$(claude_active_account)" = "A" ] || fail "a stale marker must fall back to account A"
-[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-A" ] || fail "a stale marker must re-select the primary token"
+[ "$(claude_active_account)" = "B" ] || fail "an aged B marker must stay B (sticky)"
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-B" ] || fail "sticky B must select the standby token"
+# ...and symmetric: failover off the sticky B lands on A with the primary token.
+claude_failover
+[ "$(claude_active_account)" = "A" ] || fail "failover from sticky B must land on A"
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "tok-A" ] || fail "failover to A must restore the primary token"
+touch -d "25 hours ago" "$CLAUDE_ACTIVE_MARKER"
+[ "$(claude_active_account)" = "A" ] || fail "an aged A marker must stay A (sticky, not a B latch)"
 rm -f "$CLAUDE_ACTIVE_MARKER"
 pass=$((pass+1))
 

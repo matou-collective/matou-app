@@ -6,6 +6,28 @@
 # race costs ~3 API calls and zero Claude tokens — the loser walks down the
 # list. Spec: docs/superpowers/specs/2026-08-11-multihost-swarm-design.md D4.
 set -euo pipefail
+
+# Wall-clock budget (#77). This whole script runs INSIDE one Sandcastle
+# shell-expression whose budget is 30 s, and its cost is O(ready-queue)
+# sequential Forgejo calls: the loser's claim walk does ~3 calls per contested
+# ticket. A non-trivial ready DAG (#64–#75 stood 13 deep) sums those past 30 s
+# under a modest latency bump and REDs the tick as a PromptExpansionTimeoutError
+# — while a matrix sibling that won the head in one pass finishes fast (the
+# observed asymmetry). Two bounds fix this:
+#   1. CLAIM_NEXT_BUDGET — an overall wall-clock ceiling on the claim walk (below
+#      the 30 s outer budget). Once spent we stop walking and emit [] gracefully;
+#      the cron/backstop re-fires next tick. A partial walk that claims nothing
+#      costs only API calls, no Claude tokens — the same trade a lost race makes.
+#   2. CLAIM_API_MAX_TIME — the per-call timeout, set BELOW the 30 s outer budget
+#      here (claim-lib defaults it to 30 s for the HOST-mode janitor, which runs
+#      under no such budget). At 30 s = the outer budget, a single stalled call
+#      fires the outer timeout at the very instant it would have failed closed
+#      (#28); a smaller cap lets it fail closed to [] within budget instead.
+SECONDS=0
+CLAIM_NEXT_BUDGET="${CLAIM_NEXT_BUDGET:-22}"
+: "${CLAIM_API_MAX_TIME:=10}"
+export CLAIM_API_MAX_TIME
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/.env" ]; then . "$here/.env"; fi
@@ -68,6 +90,17 @@ n="$(jq length <<<"$ready")"
 # review of commit 68fb911.)
 alive="$(claim_alive_runs)" || { echo '[]'; exit 0; }
 for i in $(seq 0 $((n - 1))); do
+  # #77: stop the walk once our wall-clock budget is spent. $SECONDS already
+  # counts the lister + alive-runs fetch, so this also fails closed when those
+  # ate most of the budget before the walk even began. Emitting [] here is the
+  # SAME outcome as losing every race — nothing claimed, no Claude tokens — and
+  # the cron/backstop re-fires, versus letting the sum run past 30 s and RED the
+  # whole tick.
+  if [ "$SECONDS" -ge "$CLAIM_NEXT_BUDGET" ]; then
+    echo "claim-next-task: ${CLAIM_NEXT_BUDGET}s wall-clock budget spent after $i candidate(s) of $n — emitting [] within the 30s prompt-expansion budget; cron/backstop re-fires." >&2
+    echo '[]'
+    exit 0
+  fi
   num="$(jq -r ".[$i].number" <<<"$ready")"
   cid="$(claim_post "$num" "$host" "$run")" || continue
   if claim_won "$num" "$cid" "$alive"; then

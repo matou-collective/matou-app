@@ -13,8 +13,9 @@
 #      just get lost to the claim race once an agent sees it.
 #
 # depends_on lives as NATIVE Forgejo issue dependencies (the repo has
-# enable_issue_dependencies on), not as body text — see
-# docs/agents/issue-tracker.md for how to set them.
+# enable_issue_dependencies on), not as body text — see the factory's
+# docs/agents/issue-tracker.md for how to set them (a factory doc, not a path
+# in a consumer's checkout; #47).
 #
 # Output: a JSON array of {number, title, body, url} — the shape Sandcastle's
 # built-in trackers emit. An empty array means done.
@@ -60,6 +61,21 @@ fi
 : "${REHEARSAL_DRIVE_ISSUE:=}"
 export FORGEJO_TOKEN FORGEJO_API
 
+# A transient Forgejo 5xx/timeout while listing must not RED an otherwise-idle
+# tick (#52, run 421): these reads had neither a `--max-time` nor a retry
+# (unlike forgejo-lib.sh:_forgejo_get, heal.sh, session-runner.sh,
+# schedule-backstop.sh — all `--max-time 30`), so a brief blip that one retry
+# absorbs propagated `curl -sf`'s exit 22 up through `set -e` and reddened the
+# run (run-swarm re-keys any death here to the "list ready tasks" stage —
+# GOTCHAS #7). Retry with exponential backoff, each attempt bounded by
+# `--max-time`, matching _forgejo_get's posture. A persistent outage still
+# exhausts the attempts and returns 22, failing the caller under `set -e`.
+# Exported so the 10-wide dependency subshells below inherit the same knobs.
+LIST_READY_MAX_TIME="${LIST_READY_MAX_TIME:-30}"
+LIST_READY_RETRIES="${LIST_READY_RETRIES:-3}"
+LIST_READY_BACKOFF="${LIST_READY_BACKOFF:-2}"
+export LIST_READY_MAX_TIME LIST_READY_RETRIES LIST_READY_BACKOFF
+
 # Per-repo LANDING policy (#13, ADR 0002). SWARM_POLICY_FILE is a TEST-only seam
 # (points policy_load at a throwaway swarm-policy.sh); unset in production, so
 # policy_load reads the consumer's real file and defaults LANDING=push — the
@@ -68,7 +84,19 @@ export FORGEJO_TOKEN FORGEJO_API
 . "$here/policy-lib.sh"
 policy_load "${SWARM_POLICY_FILE:-}"
 
-api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
+api() {
+  local attempt=1 delay="$LIST_READY_BACKOFF" out
+  while :; do
+    if out="$(curl -sf --max-time "$LIST_READY_MAX_TIME" -H "Authorization: token $FORGEJO_TOKEN" "$@")"; then
+      printf '%s' "$out"
+      return 0
+    fi
+    [ "$attempt" -ge "$LIST_READY_RETRIES" ] && return 22
+    sleep "$delay"
+    delay=$((delay * 2))
+    attempt=$((attempt + 1))
+  done
+}
 
 ready='[]'
 page=1
@@ -93,9 +121,22 @@ while :; do
                 and ((.number | tostring) != $drive))
        | .number' <<<"$batch" | xargs -r -P 10 -n 1 bash -c '
     set -euo pipefail
-    open="$(curl -sf -H "Authorization: token $FORGEJO_TOKEN" \
-        "$FORGEJO_API/issues/$0/dependencies?limit=50" |
-      jq "[.[] | select(.state == \"open\")] | length")"
+    # Same transient-5xx posture as api() above (#52): the dependency GET is a
+    # `curl -sf` too, so a blip here would abort the whole listing under the
+    # xargs failure propagation. Retry with backoff, each attempt --max-time
+    # bounded; raw-capture then jq (never curl|jq, which merges curl'"'"'s failure
+    # into jq'"'"'s exit — claim-lib finding-1). A persistent failure still exits 1
+    # so a blocker that could not be verified closed is never emitted.
+    attempt=1; delay="${LIST_READY_BACKOFF:-2}"; raw=""
+    while :; do
+      if raw="$(curl -sf --max-time "${LIST_READY_MAX_TIME:-30}" -H "Authorization: token $FORGEJO_TOKEN" \
+          "$FORGEJO_API/issues/$0/dependencies?limit=50")"; then
+        break
+      fi
+      [ "$attempt" -ge "${LIST_READY_RETRIES:-3}" ] && exit 1
+      sleep "$delay"; delay=$((delay * 2)); attempt=$((attempt + 1))
+    done
+    open="$(jq "[.[] | select(.state == \"open\")] | length" <<<"$raw")"
     case "$open" in
       0) echo "$0" ;;
       "" | *[!0-9]*) exit 1 ;;
@@ -138,11 +179,39 @@ if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
   fi
 fi
 
-# `priority`-labelled issues first (prompt.md's "pick the first task" makes
-# this list order the scheduler); concatenation, not sort_by, so tracker order
-# is provably preserved within each group. The rehearsal reporter applies
-# `priority` to every issue blocking the VPS-own drive (#378); a human may
-# hand-apply it to anything else.
-jq '[.[] | select(.priority)] + [.[] | select(.priority | not)] | map(del(.priority))' <<<"$ready"
-# `model` survives the del above — it is the per-ticket override run-swarm.sh
-# reads from .[0].model (#448); the agent sees it too, purely informational.
+# Drive-blocker ordering (#24): a ready ticket that is a native Forgejo
+# dependency ("blocked by") of an OPEN `standing-drive` issue is exactly what a
+# standing drive is waiting on — surface it AHEAD of ordinary backlog so a
+# reporter-filed blocker is claimed on the next tick instead of losing the
+# "lowest live claim id" race to unrelated work (the swarm-gridlock shape:
+# idss #668 sat 69 minutes blocking drive #652 while the host slot chewed
+# backlog). Resolve via the dependencies API ONCE per standing drive (not per
+# candidate): list the open standing drives, GET each one's blockers, keep the
+# open ones. A failed fetch, no standing drive, or none with open blockers →
+# blocker_nums stays [] and the emit order below is byte-identical to before.
+blocker_nums='[]'
+if drives="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50")"; then
+  for d in $(jq -r '.[]?.number' <<<"$drives" 2>/dev/null || true); do
+    deps="$(api "$FORGEJO_API/issues/$d/dependencies?limit=50")" || continue
+    blocker_nums="$(jq --argjson acc "$blocker_nums" \
+      '($acc + [.[]? | select(.state == "open") | .number]) | unique' <<<"$deps" \
+      2>/dev/null || printf '%s' "$blocker_nums")"
+  done
+fi
+
+# Emit order: drive blockers FIRST, then everything else; WITHIN each partition
+# keep today's ordering — `priority`-labelled first (the rehearsal reporter
+# applies `priority` to every issue blocking the VPS-own drive, #378; a human
+# may hand-apply it to anything else), tracker order preserved within a group.
+# Concatenation, never sort_by, so within-group order is provably the tracker's.
+# prompt.md's "pick the first task" makes this list order the scheduler. The
+# `priority`/`blocker` helper flags are stripped before emit; the contract stays
+# {number, title, body, url} plus the additive `.model` (#448) — which survives
+# the del below, the per-ticket override run-swarm.sh reads from .[0].model.
+jq --argjson blockers "$blocker_nums" '
+  map(. + {blocker: ((.number) as $n | ($blockers | index($n)) != null)})
+  | ( [.[] | select(.blocker and .priority)]
+    + [.[] | select(.blocker and (.priority | not))]
+    + [.[] | select((.blocker | not) and .priority)]
+    + [.[] | select((.blocker | not) and (.priority | not))] )
+  | map(del(.priority, .blocker))' <<<"$ready"

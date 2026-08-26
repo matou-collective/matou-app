@@ -20,8 +20,37 @@ pass=0
 # fence is absent. Skip explicitly here rather than red on the fence (#587).
 # Off-sandbox `git` is the real binary, so the marker never matches and the
 # suite runs in full.
+# --- #98: prune_session_logs — proven FIRST, before the git-fence skip below,
+#     because it uses NO git worktree op and must run in-sandbox too. Raw session
+#     jsonl older than the retention window is removed (already ingested into
+#     swarm.db); fresher jsonl and any non-jsonl are left alone; a missing dir is
+#     a safe no-op.
+plogs="$(mktemp -d)"
+printf '{}\n' > "$plogs/old.jsonl"
+printf '{}\n' > "$plogs/fresh.jsonl"
+printf 'run log text\n' > "$plogs/run.log"          # non-jsonl: never pruned here
+touch -d '30 days ago' "$plogs/old.jsonl"
+touch -d '30 days ago' "$plogs/run.log"             # aged, but not a .jsonl
+prune_session_logs "$plogs"                          # default 14-day window
+[ -e "$plogs/old.jsonl" ] && fail "a jsonl older than the retention window must be pruned"
+[ -e "$plogs/fresh.jsonl" ] || fail "a fresh jsonl (within the window) must be kept"
+[ -e "$plogs/run.log" ] || fail "a non-jsonl file must never be pruned by prune_session_logs"
+pass=$((pass+1))
+
+# the window is a plain number: an explicit max-age overrides the default.
+touch -d '2 days ago' "$plogs/fresh.jsonl"
+prune_session_logs "$plogs" 86400                    # 1-day window: 2-day-old now falls
+[ -e "$plogs/fresh.jsonl" ] && fail "an explicit shorter window must prune the now-too-old jsonl"
+pass=$((pass+1))
+
+# a missing dir / empty arg: safe no-ops, never an error.
+prune_session_logs "$plogs/does-not-exist" || fail "a missing logs dir must be a no-op, not an error"
+prune_session_logs "" || fail "an empty dir arg must be a no-op, not an error"
+pass=$((pass+1))
+rm -rf "$plogs"
+
 if grep -qs git-fence "$(command -v git 2>/dev/null)"; then
-  echo "sweep-lib: SKIP — git worktree add is fenced in-sandbox (#239); run off-sandbox"
+  echo "sweep-lib: SKIP (worktree suite) — git worktree add is fenced in-sandbox (#239); prune_session_logs proven above, run the rest off-sandbox"
   exit 0
 fi
 

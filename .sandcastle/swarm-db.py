@@ -27,7 +27,10 @@ non-zero exit): a mirror we cannot write must never red a run.
 """
 
 import argparse
+import datetime
+import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -84,10 +87,14 @@ CREATE TABLE IF NOT EXISTS spend (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id        TEXT,
   issue         INTEGER,
-  input_tokens  INTEGER,
+  input_tokens  INTEGER,                -- FRESH input only — cache classes are their own columns (#96)
   output_tokens INTEGER,
   requests      INTEGER,
-  at            INTEGER
+  at            INTEGER,
+  account       TEXT,                   -- the active Claude account letter (A|B); NULL = unattributed
+  cache_creation_tokens INTEGER,        -- cache-write tokens (~1.25x fresh input price); NULL = unrecorded (#96)
+  cache_read_tokens     INTEGER,        -- cache-hit tokens (~0.1x fresh input price); NULL = unrecorded (#96)
+  model                 TEXT            -- the model that billed the tokens; NULL = unrecorded (#96)
 );
 
 CREATE INDEX IF NOT EXISTS idx_attempts_issue ON attempts(issue);
@@ -110,10 +117,35 @@ def connect(db):
     return conn
 
 
+# Additive columns bolted onto an EXISTING db after its table was first created.
+# `CREATE TABLE IF NOT EXISTS` in SCHEMA only shapes a fresh table, so a db that
+# predates a column never gains it from SCHEMA alone — each additive column is
+# ADDed here, guarded by a table_info probe so the migration is idempotent and
+# safe to run on every connection. Additive + nullable only: never a rename or a
+# drop (a consumer at an older pin still reads the same rows). `account` (#75).
+ADDITIVE_COLUMNS = [
+    ("spend", "account", "TEXT"),
+    # #96: cache-write, cache-read, and the billing model — separated so a
+    # dollar figure can be derived (the three price ~10x apart). Additive +
+    # nullable like `account`: existing rows read NULL, never rewritten.
+    ("spend", "cache_creation_tokens", "INTEGER"),
+    ("spend", "cache_read_tokens", "INTEGER"),
+    ("spend", "model", "TEXT"),
+]
+
+
+def _add_missing_columns(conn):
+    for table, column, decl in ADDITIVE_COLUMNS:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(%s)" % table).fetchall()]
+        if column not in cols:
+            conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, decl))
+
+
 def migrate(db):
     conn = connect(db)
     with conn:
         conn.executescript(SCHEMA)
+        _add_missing_columns(conn)
     conn.close()
 
 
@@ -241,10 +273,131 @@ def cmd_spend(a):
     conn = connect(a.db)
     with conn:
         conn.execute(
-            "INSERT INTO spend (run_id, issue, input_tokens, output_tokens, requests, at) VALUES (?,?,?,?,?,?)",
-            (a.run, a.issue, a.input, a.output, a.requests, _now(a.at)),
+            "INSERT INTO spend (run_id, issue, input_tokens, output_tokens, requests, at, account, "
+            "cache_creation_tokens, cache_read_tokens, model) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (a.run, a.issue, a.input, a.output, a.requests, _now(a.at), a.account,
+             a.cache_creation, a.cache_read, a.model),
         )
     conn.close()
+
+
+# --- session-file ingest (#98) -----------------------------------------------
+# The true per-action record — every API request with its own usage, every tool
+# call — already lives in the claude session jsonl `record-run-result.sh` stores
+# as `iteration` events, but nothing parsed it: per-action granularity was
+# archaeology. This walks ONE session jsonl and emits per-REQUEST `spend` rows
+# (cache classes split, the #96 columns) plus per-tool-call `events` (tool name,
+# duration from the assistant→tool_result timestamp gap). Best-effort like every
+# swarm.db writer: a parse failure records nothing and never fails the caller
+# (cmd_ingest swallows every exception). When it writes ≥1 per-request spend row,
+# record-run-result.sh SKIPS its single aggregate row for that iteration — the
+# per-request rows sum to the same tokens, so there is no double count.
+
+
+def _parse_iso_ts(s):
+    """ISO-8601 timestamp (trailing `Z` or numeric offset) -> float epoch, or
+    None. Claude session lines stamp millisecond precision (`...T..:..:..000Z`);
+    older Pythons are strict about the fractional field, so fall back to a
+    fraction-stripped retry before giving up."""
+    if not s or not isinstance(s, str):
+        return None
+    t = s.strip()
+    if t.endswith("Z"):
+        t = t[:-1] + "+00:00"
+    try:
+        return datetime.datetime.fromisoformat(t).timestamp()
+    except Exception:
+        pass
+    try:
+        return datetime.datetime.fromisoformat(re.sub(r"\.\d+", "", t)).timestamp()
+    except Exception:
+        return None
+
+
+def ingest_session(conn, run, issue, path, account):
+    """Parse one claude session jsonl into per-request spend + per-tool-call
+    events on `conn`. Returns (n_spend_rows, n_tool_events). Raises on IO/parse
+    of the file itself (cmd_ingest catches); a single malformed LINE is skipped,
+    not fatal — a truncated session still yields every well-formed record."""
+    n_spend = 0
+    calls = []          # ordered {id, name, at} for each tool_use, encounter order
+    result_ts = {}      # tool_use_id -> float epoch of its tool_result
+    with open(path, "r") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            typ = obj.get("type")
+            msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+            ts = _parse_iso_ts(obj.get("timestamp"))
+            if typ == "assistant":
+                usage = msg.get("usage")
+                if isinstance(usage, dict) and usage:
+                    # One assistant message == one API request. requests=1 each;
+                    # they SUM to the iteration's real request count.
+                    conn.execute(
+                        "INSERT INTO spend (run_id, issue, input_tokens, output_tokens, "
+                        "requests, at, account, cache_creation_tokens, cache_read_tokens, model) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (run, issue,
+                         usage.get("input_tokens"), usage.get("output_tokens"), 1,
+                         int(ts) if ts is not None else int(time.time()), account,
+                         usage.get("cache_creation_input_tokens"),
+                         usage.get("cache_read_input_tokens"),
+                         msg.get("model")))
+                    n_spend += 1
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict) or block.get("type") != "tool_use":
+                            continue
+                        name = block.get("name")
+                        if isinstance(name, str) and name:
+                            calls.append({"id": block.get("id"), "name": name, "at": ts})
+            elif typ == "user":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict) or block.get("type") != "tool_result":
+                            continue
+                        tid = block.get("tool_use_id")
+                        if tid and ts is not None:
+                            result_ts.setdefault(tid, ts)  # first result wins
+
+    for c in calls:
+        at = c["at"]
+        rt = result_ts.get(c["id"]) if c["id"] else None
+        # duration is derived from the gap to the matching tool_result; a call
+        # with no result yet (truncated/last) records its name with no duration.
+        evidence = ""
+        if rt is not None and at is not None and rt >= at:
+            evidence = "duration_ms=%d" % int(round((rt - at) * 1000))
+        conn.execute(
+            "INSERT INTO events (run_id, issue, at, kind, detail, evidence) VALUES (?,?,?,?,?,?)",
+            (run, issue, int(at) if at is not None else None, "tool-call", c["name"], evidence))
+    return n_spend, len(calls)
+
+
+def cmd_ingest(a):
+    """Best-effort: prints `<n_spend> <n_tool_events>` and ALWAYS exits 0 (return
+    None => main() maps to 0). record-run-result.sh reads the spend count to
+    decide whether the per-request rows replaced its aggregate fallback."""
+    migrate(a.db)
+    n_spend = n_events = 0
+    try:
+        conn = connect(a.db)
+        try:
+            with conn:
+                n_spend, n_events = ingest_session(conn, a.run, a.issue, a.session, a.account)
+        finally:
+            conn.close()
+    except Exception:
+        n_spend = n_events = 0
+    print("%d %d" % (n_spend, n_events))
 
 
 # --- reader surface: canned queries (swarm-db.sh wraps these) ----------------
@@ -255,49 +408,146 @@ def _print_rows(rows, headers):
         print("\t".join("" if c is None else str(c) for c in r))
 
 
-def q_issue(conn, args):
-    """History of one issue: attempts, then events, then spend — chronological."""
+def q_issue(conn, args, repo):
+    """History of one issue: attempts, then events, then spend — chronological.
+
+    Issue numbers are PER-REPO but swarm.db is one shared db per host (ADR 0004
+    point 5), so this read MUST be repo-scoped or it conflates every repo's
+    issue N. `attempts`/`events`/`spend` carry no repo of their own — they reach
+    it through `runs.repo` via `run_id` — so each is LEFT JOINed to `runs` and
+    filtered by repo. `repo=None` means the escape hatch (`--repo all`): no
+    filter, every repo's rows (a LEFT JOIN keeps rows whose run row is missing)."""
     issue = int(args[0])
+    p = {"issue": issue, "repo": repo}
+    rf = "" if repo is None else " AND r.repo = :repo"
     print("== attempts ==")
     _print_rows(conn.execute(
-        "SELECT run_id, iteration, status, commits, close_outcome, started_at, ended_at "
-        "FROM attempts WHERE issue=? ORDER BY started_at, iteration", (issue,)).fetchall(),
+        "SELECT a.run_id, a.iteration, a.status, a.commits, a.close_outcome, a.started_at, a.ended_at "
+        "FROM attempts a LEFT JOIN runs r ON a.run_id = r.run_id "
+        "WHERE a.issue = :issue" + rf + " ORDER BY a.started_at, a.iteration", p).fetchall(),
         ["run", "iter", "status", "commits", "close", "started", "ended"])
     print("== events ==")
     _print_rows(conn.execute(
-        "SELECT at, run_id, kind, detail, evidence FROM events WHERE issue=? ORDER BY at", (issue,)).fetchall(),
+        "SELECT e.at, e.run_id, e.kind, e.detail, e.evidence "
+        "FROM events e LEFT JOIN runs r ON e.run_id = r.run_id "
+        "WHERE e.issue = :issue" + rf + " ORDER BY e.at", p).fetchall(),
         ["at", "run", "kind", "detail", "evidence"])
     print("== spend ==")
     _print_rows(conn.execute(
-        "SELECT at, run_id, input_tokens, output_tokens, requests FROM spend WHERE issue=? ORDER BY at", (issue,)).fetchall(),
+        "SELECT s.at, s.run_id, s.input_tokens, s.output_tokens, s.requests "
+        "FROM spend s LEFT JOIN runs r ON s.run_id = r.run_id "
+        "WHERE s.issue = :issue" + rf + " ORDER BY s.at", p).fetchall(),
         ["at", "run", "in", "out", "req"])
 
 
-def q_open_processes(conn, args):
-    """Believed-alive process rows — the #435 wedge surface (a row, no end)."""
+def q_open_processes(conn, args, repo):
+    """Believed-alive process rows — the #435 wedge surface (a row, no end).
+
+    Host-scoped by design (ADR 0004 point 5) — the default answers a HOST
+    question — but takes an OPTIONAL repo filter (`--repo <slug>`) to narrow to
+    one consumer's wedges. `repo=None` => the whole host."""
+    rf = "" if repo is None else " AND r.repo = :repo"
     _print_rows(conn.execute(
-        "SELECT run_id, kind, ref, command, started_at FROM processes "
-        "WHERE ended_at IS NULL ORDER BY started_at").fetchall(),
+        "SELECT p.run_id, p.kind, p.ref, p.command, p.started_at "
+        "FROM processes p LEFT JOIN runs r ON p.run_id = r.run_id "
+        "WHERE p.ended_at IS NULL" + rf + " ORDER BY p.started_at",
+        {"repo": repo}).fetchall(),
         ["run", "kind", "ref", "command", "started"])
 
 
-def q_spend_weekly(conn, args):
-    """Token/request spend bucketed by ISO week."""
+def q_spend_weekly(conn, args, repo):
+    """Token/request spend bucketed by ISO week. Host-scoped by design with an
+    OPTIONAL repo filter (`--repo <slug>`); `repo=None` => the whole host."""
+    rf = "" if repo is None else " WHERE r.repo = :repo"
     _print_rows(conn.execute(
-        "SELECT strftime('%Y-W%W', at, 'unixepoch') AS week, "
-        "COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
-        "COALESCE(SUM(requests),0), COUNT(*) "
-        "FROM spend GROUP BY week ORDER BY week").fetchall(),
+        "SELECT strftime('%Y-W%W', s.at, 'unixepoch') AS week, "
+        "COALESCE(SUM(s.input_tokens),0), COALESCE(SUM(s.output_tokens),0), "
+        "COALESCE(SUM(s.requests),0), COUNT(*) "
+        "FROM spend s LEFT JOIN runs r ON s.run_id = r.run_id" + rf +
+        " GROUP BY week ORDER BY week", {"repo": repo}).fetchall(),
         ["week", "in", "out", "req", "records"])
 
 
-def q_red_by_stage(conn, args):
-    """Red runs (non-zero exit) grouped by the verdict/stage that killed them."""
+def _percentile(sorted_vals, p):
+    """Nearest-rank percentile of an already-sorted list. rank = ceil(p/100 * n),
+    1-based; clamped to [1, n]. SQLite has no native percentile, so the values
+    come back from the query and the maths lives here."""
+    n = len(sorted_vals)
+    if n == 0:
+        return ""
+    rank = -(-(p * n) // 100)      # integer ceil of p/100 * n
+    rank = max(1, min(n, rank))
+    return sorted_vals[rank - 1]
+
+
+def q_queue_wait(conn, args, repo):
+    """Ready→claimed queue-wait percentiles bucketed by DAY, from `queue-wait`
+    events (record-run-result.sh writes the seconds into `detail`). The backlog's
+    core health number — how long a ticket sits claimable before a machine takes
+    it (#99). Host-scoped by design with an OPTIONAL repo filter (`--repo <slug>`,
+    the TUI's REPOS-tab call); `repo=None` => the whole host. Percentiles are
+    computed in Python (`_percentile`) since SQLite carries none natively."""
+    rf = "" if repo is None else " AND r.repo = :repo"
+    rows = conn.execute(
+        "SELECT strftime('%Y-%m-%d', e.at, 'unixepoch') AS day, "
+        "CAST(e.detail AS INTEGER) AS secs "
+        "FROM events e LEFT JOIN runs r ON e.run_id = r.run_id "
+        "WHERE e.kind = 'queue-wait' AND e.detail IS NOT NULL AND e.detail != ''" + rf +
+        " ORDER BY day", {"repo": repo}).fetchall()
+    by_day = {}
+    for day, secs in rows:
+        by_day.setdefault(day, []).append(secs)
+    out = []
+    for day in sorted(by_day):
+        vals = sorted(by_day[day])
+        out.append((day, len(vals),
+                    _percentile(vals, 50), _percentile(vals, 90), _percentile(vals, 99)))
+    _print_rows(out, ["day", "n", "p50", "p90", "p99"])
+
+
+def q_red_by_stage(conn, args, repo):
+    """Red runs (non-zero exit) grouped by the verdict/stage that killed them.
+    Host-scoped by design with an OPTIONAL repo filter (`--repo <slug>`);
+    `repo=None` => the whole host."""
+    rf = "" if repo is None else " AND repo = :repo"
     _print_rows(conn.execute(
         "SELECT COALESCE(verdict, 'unknown') AS stage, COUNT(*) "
-        "FROM runs WHERE exit_code IS NOT NULL AND exit_code != 0 "
-        "GROUP BY stage ORDER BY COUNT(*) DESC").fetchall(),
+        "FROM runs WHERE exit_code IS NOT NULL AND exit_code != 0" + rf +
+        " GROUP BY stage ORDER BY COUNT(*) DESC", {"repo": repo}).fetchall(),
         ["stage", "red_runs"])
+
+
+def q_limit_lost(conn, args, repo):
+    """Lost capacity to Claude usage limits, per account, bucketed by ISO week
+    (#100). Reads the `limit-pause` edge events limit-lib.sh records — a `park`
+    opens a window for the exhausted account, the next `unpark` for that account
+    closes it — and sums the parked seconds into the week the park STARTED in.
+
+    Host-scoped by nature: a subscription window is one host-global thing, so
+    this reads every `limit-pause` row (no repo filter). An unclosed park (still
+    parked, or an exit no tick observed yet) contributes no duration — only
+    closed windows are counted, so the number never over-reports."""
+    rows = conn.execute(
+        "SELECT at, detail FROM events WHERE kind = 'limit-pause' ORDER BY at, id"
+    ).fetchall()
+    open_at = {}          # account -> the `at` of its currently-open park
+    agg = {}              # (week, account) -> [parked_seconds, windows]
+    for at, detail in rows:
+        parts = (detail or "").split()
+        edge = parts[0] if parts else ""
+        acct = next((p.split("=", 1)[1] for p in parts
+                     if p.startswith("account=")), "?")
+        if edge == "park":
+            open_at.setdefault(acct, at)               # first park wins; re-hits ignored
+        elif edge == "unpark" and acct in open_at:
+            start = open_at.pop(acct)
+            week = time.strftime("%Y-W%W", time.gmtime(start))
+            cell = agg.setdefault((week, acct), [0, 0])
+            cell[0] += max(0, (at or 0) - (start or 0))
+            cell[1] += 1
+    _print_rows(
+        [(w, a, s, n) for (w, a), (s, n) in sorted(agg.items())],
+        ["week", "account", "parked_s", "windows"])
 
 
 QUERIES = {
@@ -305,6 +555,8 @@ QUERIES = {
     "open-processes": q_open_processes,
     "spend-weekly": q_spend_weekly,
     "red-by-stage": q_red_by_stage,
+    "queue-wait": q_queue_wait,
+    "limit-lost": q_limit_lost,
 }
 
 
@@ -314,9 +566,13 @@ def cmd_query(a):
     if not fn:
         sys.stderr.write("unknown query: %s (have: %s)\n" % (a.name, ", ".join(sorted(QUERIES))))
         return 2
+    # `--repo all` (or absent) is the escape hatch: no filter, host-wide.
+    repo = getattr(a, "repo", None)
+    if repo == "all":
+        repo = None
     conn = connect(a.db)
     try:
-        fn(conn, a.args)
+        fn(conn, a.args, repo)
     finally:
         conn.close()
     return 0
@@ -380,9 +636,20 @@ def build_parser():
     s.add_argument("--output", type=int)
     s.add_argument("--requests", type=int)
     s.add_argument("--at", type=int)
+    s.add_argument("--account")               # the active account letter; omitted => NULL (unattributed)
+    s.add_argument("--cache-creation", type=int)  # cache-write tokens; omitted => NULL (#96)
+    s.add_argument("--cache-read", type=int)       # cache-read tokens; omitted => NULL (#96)
+    s.add_argument("--model")                      # the billing model; omitted => NULL (#96)
+
+    s = sub.add_parser("ingest"); s.set_defaults(func=cmd_ingest)
+    s.add_argument("--run", required=True)
+    s.add_argument("--issue", type=int)       # omitted => NULL (run-scoped)
+    s.add_argument("--session", required=True)  # path to the claude session jsonl
+    s.add_argument("--account")               # active account letter; omitted => NULL
 
     s = sub.add_parser("query"); s.set_defaults(func=cmd_query)
     s.add_argument("name")
+    s.add_argument("--repo")                  # None/all => host-wide (no filter)
     s.add_argument("args", nargs="*")
 
     return p

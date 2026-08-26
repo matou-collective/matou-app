@@ -61,12 +61,45 @@ echo "ok 5 default class is worker"
 #    (run-swarm.sh needs docker/pnpm; main.mts is the TS orchestrator). Assert
 #    they still call the ONE place and forward it, so a refactor can't silently
 #    drop the identity from those paths.
-grep -q 'swarm_git_identity worker' "$sc/run-swarm.sh" \
+# Since #2 run-swarm.sh reaches swarm_git_identity through identity-lib.sh's
+# identity_apply (the IDENTITY seam), which adds the #31 contract check and the
+# call-site `command -v` guard around the same one call. Either spelling counts;
+# NEITHER does not — this guard exists precisely so a refactor cannot silently
+# drop the identity from the reconcile/rescue path.
+grep -qE 'swarm_git_identity worker|identity_apply worker' "$sc/run-swarm.sh" \
   || fail "run-swarm.sh must stamp the worker identity for its reconcile/rescue commits"
-grep -q '\. "\$here/swarm-identity.sh"' "$sc/run-swarm.sh" \
+# The source line itself (SWARM_IDENTITY_FILE-overridable, the #31 precedent).
+# Matched on the `. "…swarm-identity.sh…"` form rather than a bare filename: the
+# old pattern was accidentally satisfied by the regenerate-command string in the
+# call-site guard, which moved into identity-lib.sh with #2 — so it would have
+# gone on passing even if the source were dropped.
+grep -qE '^\. "\$\{SWARM_IDENTITY_FILE:-\$here/swarm-identity\.sh\}"$' "$sc/run-swarm.sh" \
   || fail "run-swarm.sh must source swarm-identity.sh"
 grep -q 'GIT_AUTHOR_NAME' "$sc/main.mts" && grep -q 'claudeCode(SWARM_MODEL, { env: factoryGitIdentityEnv() })' "$sc/main.mts" \
   || fail "main.mts must forward the factory git identity into the worker container"
 echo "ok 6 run-swarm.sh + main.mts wire the identity in"
 
-echo "swarm-identity: 6 groups passed"
+# 7: the identity contract seam (#31). swarm-identity.sh stamps
+#    SWARM_IDENTITY_CONTRACT so identity-lib.sh's identity_require can refuse an
+#    OLDER identity layer than the harness needs — the file that broke every
+#    session-runner tick had neither the stamp nor swarm_git_identity. Assert
+#    the stamp is present AND satisfies the harness, and that a pre-#19 file
+#    (no stamp) is refused loud with the regenerate command.
+out="$(env -u SWARM_IDENTITY_CONTRACT -u REPO_SLUG -u FORGEJO_API bash -c '
+  . "'"$sc"'/swarm-identity.sh"; echo "$SWARM_IDENTITY_CONTRACT"')"
+[ "$out" = 1 ] || fail "swarm-identity.sh must stamp SWARM_IDENTITY_CONTRACT=1: $out"
+out="$(env -u SWARM_IDENTITY_CONTRACT -u REPO_SLUG -u FORGEJO_API bash -c '
+  . "'"$sc"'/swarm-identity.sh"; . "'"$sc"'/identity-lib.sh"; identity_require && echo ok')"
+[ "$out" = ok ] || fail "the shipped identity file must satisfy the harness contract: $out"
+# A pre-#19 identity layer (no stamp) is refused loud, naming the regenerate cmd.
+out="$(env -u SWARM_IDENTITY_CONTRACT bash -c '
+  REPO_SLUG=Acme/widget
+  . "'"$sc"'/identity-lib.sh"
+  err="$(identity_require 2>&1 1>/dev/null)"; rc=$?
+  printf "%s|%s\n" "$rc" "$err"')"
+[ "${out%%|*}" = 2 ] || fail "a stamp-less identity layer must be refused (rc 2): $out"
+grep -q "is contract 0, this harness needs 1" <<<"$out" || fail "the mismatch must name have/need: $out"
+grep -q "re-run: onboard.sh identity Acme/widget" <<<"$out" || fail "the mismatch must name the fix: $out"
+echo "ok 7 contract stamp satisfies the harness; a stamp-less layer is refused loud"
+
+echo "swarm-identity: 7 groups passed"

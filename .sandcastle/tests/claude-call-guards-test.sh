@@ -4,6 +4,11 @@
 # reddening (triage) or going blind and burning ledger attempts (the healer) on a
 # limit window. Drives the REAL scripts with a fake claude/agent emitting limit
 # signatures across the marker fresh/stale/absent matrix.
+# Both run helpers pin EVERY host-global path the entry point reads into $tmp
+# (#90, GOTCHAS 29's class): CLAUDE_LIMIT_MARKER, plus HOST_CAPACITY_DRIVE_WANTED
+# and the consumer's own drive-defer count — else a real rehearsal drive waiting
+# on the host makes run-triage.sh/heal.sh yield at the #663 drive gate before
+# they ever reach the claude call these ACs assert on.
 # Run: bash .sandcastle/tests/claude-call-guards-test.sh
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +47,8 @@ run_triage() {
     FORGEJO_TOKEN=dummy FORGEJO_API=http://x/api/v1/repos/x/y \
     CLAUDE_LIMIT_MARKER="$marker" TRIAGE_VERDICT_PATH="$tmp/triage-verdict" \
     CLAUDE_CALLED_LOG="$tmp/claude-called" \
+    HOST_CAPACITY_DRIVE_WANTED="$tmp/absent-drive-wanted" \
+    TRIAGE_DRIVE_DEFER_COUNT="$tmp/triage-defer-count" \
     "$@" bash "$here/../run-triage.sh"
 }
 claude_was_called() { [ -s "$tmp/claude-called" ]; }
@@ -98,6 +105,9 @@ run_heal() {
     SWARM_VERDICT_PATH="$tmp/absent-swarm-verdict" \
     CLAUDE_LIMIT_MARKER="$marker" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+    HOST_CAPACITY_DRIVE_WANTED="$tmp/absent-drive-wanted" \
+    HEALER_DRIVE_DEFER_COUNT="$tmp/healer-defer-count" \
     "$@" bash "$here/../heal.sh" 2>&1
 }
 evidence_of() { sed -n 's/^heal: evidence at \([^ ]*\).*/\1/p' <<<"$1" | head -1; }

@@ -64,10 +64,64 @@ claude_limit_parked() {
   [ $(( $(date +%s) - $(stat -c %Y "$CLAUDE_LIMIT_MARKER") )) -le "$CLAUDE_LIMIT_TTL" ]
 }
 
-# claude_limit_park — mark the host parked (touch the global marker) so every
-# other caller yields until the window resets. Called after a caller classifies
-# its own claude refusal as a limit hit. Idempotent.
-claude_limit_park() { touch "$CLAUDE_LIMIT_MARKER"; }
+# ── Limit-park HISTORY (#100) ─────────────────────────────────────────────────
+#
+# The marker above is LIVE-ONLY: it says "parked now", but when the park began,
+# when it lifted, and which account was exhausted are gone once it clears — so
+# real lost capacity per account per week (the budget/second-account decision,
+# the Loss tab's calibration input) was unmeasured. The park edges are recorded
+# as swarm.db `limit-pause` events (an envisioned kind in swarm-db.py's schema),
+# stamped with the account letter, so a paired park→unpark spans the lost window.
+#
+# Recording is BEST-EFFORT and DECOUPLED: this lib stays sourceable on its own
+# (run-triage/heal/preflight source it WITHOUT swarm-db-lib), so the write is a
+# no-op wherever swarmdb_event is not defined — a caller with the mirror (a
+# worker run, a session tick) records the edge; one without still parks. The
+# marker now CARRIES the exhausted account letter as its content (it was empty),
+# so the exit observer can attribute the window it closes; freshness is still by
+# mtime, so no reader that only stats the marker changes.
+
+# _claude_limit_event <park|unpark> <account> <run_id> <evidence> — append a
+# `limit-pause` edge to the swarm.db mirror. A no-op where swarm-db-lib.sh was
+# not sourced (swarmdb_event undefined), so limit-lib carries no hard dependency.
+_claude_limit_event() {
+  declare -F swarmdb_event >/dev/null 2>&1 || return 0
+  swarmdb_event "$3" "" limit-pause "$1 account=$2" "$4"
+}
+
+# claude_limit_park [run_id] [evidence] — mark the host parked (write the active
+# account into the global marker, then keep it fresh) so every other caller
+# yields until the window resets. Called after a caller classifies its own claude
+# refusal as a limit hit. Idempotent: on the ENTRY EDGE (not already parked) it
+# stamps the marker with the exhausted account and records ONE park event; while
+# already parked it only re-touches the marker (keeping the live window fresh and
+# preserving the original entry account), so re-hits during one outage add no
+# duplicate edge.
+claude_limit_park() {
+  local run="${1:-${SWARM_RUN_ID:-limit-park}}" evidence="${2:-$CLAUDE_LIMIT_MARKER}" acct
+  if claude_limit_parked; then
+    touch "$CLAUDE_LIMIT_MARKER"
+    return 0
+  fi
+  acct="$(claude_active_account)"
+  printf '%s' "$acct" > "$CLAUDE_LIMIT_MARKER"
+  _claude_limit_event park "$acct" "$run" "$evidence"
+}
+
+# claude_limit_sweep [run_id] — the EXIT observer: whichever swarm-db-capable
+# tick first sees the marker present-but-STALE (the window has ended) records the
+# paired unpark event for the account the marker names and clears the marker, so
+# the exit is stamped exactly once and a later hit re-parks cleanly. A no-op when
+# nothing is parked or the window is still fresh; safe to call every tick.
+claude_limit_sweep() {
+  local run="${1:-${SWARM_RUN_ID:-limit-park}}" acct
+  [ -f "$CLAUDE_LIMIT_MARKER" ] || return 0
+  claude_limit_parked && return 0
+  acct="$(cat "$CLAUDE_LIMIT_MARKER" 2>/dev/null)"
+  [ -n "$acct" ] || acct="?"
+  _claude_limit_event unpark "$acct" "$run" "window reset"
+  rm -f "$CLAUDE_LIMIT_MARKER"
+}
 
 # ── Claude auth-refusal detection (#632) ──────────────────────────────────────
 #
@@ -95,22 +149,23 @@ claude_auth_failed() { local f; for f in "$@"; do [ -s "$f" ] && grep -qiE "$CLA
 #
 # The active-account marker is host-global and repo-agnostic exactly like the
 # limit marker above (one subscription window per ACCOUNT, shared by every
-# caller on the host). Content is the account letter. Freshness matters both
-# ways (#510 AC-4): a fresh B marker steers every caller straight to the
-# standby (no failed attempt paid per run), and a STALE one falls back to A so
-# the host re-probes the primary after its window likely reset — a stale marker
-# never pins the host to the standby forever.
+# caller on the host). Content is the account letter, and it is STICKY (Ben's
+# ruling 2026-08-26, supersedes #510 AC-4's freshness fallback): whichever
+# account last worked stays primary until IT takes a failover — in either
+# direction. The old decay timer re-probed a hard-7d-exhausted A every hour,
+# paying a guaranteed refusal per caller, and whenever that refusal coincided
+# with transient pressure on B the host fully parked — the five 2026-08-25
+# reporter parks on #722. Recovery needs no timer: when the resting account's
+# window resets, the active one's NEXT limit refusal fails over onto it.
 CLAUDE_ACTIVE_MARKER="${CLAUDE_ACTIVE_MARKER:-/tmp/matou-swarm-claude-active-token}"
-CLAUDE_ACTIVE_TTL="${CLAUDE_ACTIVE_TTL:-3600}"
 
 # claude_standby_available — 0 iff a standby token is configured at all.
 claude_standby_available() { [ -n "${CLAUDE_CODE_OAUTH_TOKEN_B:-}" ]; }
 
-# claude_active_account — prints A or B. B only while the marker is fresh.
+# claude_active_account — prints A or B: the marker's letter, sticky, A when
+# no marker has ever been stamped.
 claude_active_account() {
-  if [ -f "$CLAUDE_ACTIVE_MARKER" ] \
-     && [ $(( $(date +%s) - $(stat -c %Y "$CLAUDE_ACTIVE_MARKER") )) -le "$CLAUDE_ACTIVE_TTL" ] \
-     && [ "$(cat "$CLAUDE_ACTIVE_MARKER" 2>/dev/null)" = "B" ]; then
+  if [ "$(cat "$CLAUDE_ACTIVE_MARKER" 2>/dev/null)" = "B" ]; then
     printf 'B'
   else
     printf 'A'
