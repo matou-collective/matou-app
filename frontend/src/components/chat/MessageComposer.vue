@@ -28,12 +28,17 @@
         @mouseenter="mentionActiveIndex = idx"
       >
         <UserAvatar
+          v-if="candidate.type === 'person'"
           :aid="candidate.id"
           :name="candidate.display"
           :size="24"
           :clickable="false"
         />
+        <span v-else class="mention-option-icon">
+          <component :is="MENTION_ICONS[candidate.type]" class="icon" />
+        </span>
         <span class="mention-option-name">{{ candidate.display }}</span>
+        <span v-if="candidate.type !== 'person'" class="mention-option-type">{{ candidate.type }}</span>
       </li>
     </ul>
 
@@ -74,15 +79,38 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue';
-import { Send, Loader2, Paperclip } from 'lucide-vue-next';
+import { ref, computed, nextTick, onMounted, type Component } from 'vue';
+import {
+  Send,
+  Loader2,
+  Paperclip,
+  Folder,
+  Vote,
+  Award,
+  CalendarDays,
+  RefreshCw,
+} from 'lucide-vue-next';
 import type { ChatMessage, AttachmentRef } from 'src/lib/api/chat';
 import { useProfilesStore } from 'stores/profiles';
+import { useProjectsStore } from 'stores/projects';
+import { useProposalsStore } from 'stores/proposals';
+import { useContributionsStore } from 'stores/contributions';
+import { useActivityStore } from 'stores/activity';
 import { useMentionSearch, type MentionCandidate } from 'src/composables/useMentionSearch';
-import { serializeMention } from 'src/lib/mentions';
+import { serializeMention, type MentionType } from 'src/lib/mentions';
 import ReplyPreview from './ReplyPreview.vue';
 import AttachmentUploader from './AttachmentUploader.vue';
 import UserAvatar from 'components/profiles/UserAvatar.vue';
+
+// Dropdown glyph per non-person type (people use their avatar). Mirrors the
+// dashboard's notice iconography so events/updates read the same everywhere.
+const MENTION_ICONS: Partial<Record<MentionType, Component>> = {
+  project: Folder,
+  proposal: Vote,
+  contribution: Award,
+  event: CalendarDays,
+  update: RefreshCw,
+};
 
 const props = defineProps<{
   channelId: string;
@@ -102,6 +130,10 @@ const showUploader = ref(false);
 const uploading = ref(false);
 const pendingFileCount = ref(0);
 const profilesStore = useProfilesStore();
+const projectsStore = useProjectsStore();
+const proposalsStore = useProposalsStore();
+const contributionsStore = useContributionsStore();
+const activityStore = useActivityStore();
 
 // --- @-mention typeahead ---
 const { search: searchMentions } = useMentionSearch();
@@ -128,14 +160,20 @@ function closeMention() {
 
 // Detect an in-progress `@mention` immediately before the caret and open the
 // typeahead. Triggers only when the `@` starts a word (line start or after
-// whitespace), so email addresses and mid-word `@` don't fire it.
+// whitespace), so email addresses and mid-word `@` don't fire it. The query
+// may span spaces (Slack-style) so multi-word titles — "Fix login flow" — and
+// "@Andrew W" keep matching; a runaway tail (long, or many words with no hit)
+// simply yields no candidates and the dropdown stays hidden.
 function detectMention() {
   const el = textareaRef.value;
   if (!el) return closeMention();
   const caret = el.selectionStart ?? content.value.length;
   const before = content.value.slice(0, caret);
-  const match = /(?:^|\s)@([^\s@]*)$/.exec(before);
-  if (!match) {
+  // Capture everything after the triggering `@` up to the caret, excluding a
+  // later `@` (that starts a fresh mention) and newlines. Bounded so an `@`
+  // early in a long message doesn't turn the whole line into a query.
+  const match = /(?:^|\s)@([^@\n]{0,60})$/.exec(before);
+  if (!match || match[1].split(/\s+/).filter(Boolean).length > 6) {
     mentionDismissedStart.value = null;
     return closeMention();
   }
@@ -265,10 +303,24 @@ function focus() {
 
 onMounted(() => {
   focus();
-  // Ensure the mention typeahead has people to search even if the user opens
-  // chat before other views have loaded the community roster.
+  // Warm the local stores the @-mention typeahead searches, in case the user
+  // opens chat before other views have loaded them. Each is a no-op-ish
+  // refresh if already populated; failures are non-fatal (typeahead just has
+  // fewer candidates until the owning view loads them).
   if (profilesStore.communityProfiles.length === 0) {
     void profilesStore.loadCommunityProfiles();
+  }
+  if (projectsStore.projects.length === 0) {
+    void projectsStore.fetchProjects().catch(() => {});
+  }
+  if (proposalsStore.proposals.length === 0) {
+    void proposalsStore.fetchProposals().catch(() => {});
+  }
+  if (contributionsStore.contributions.length === 0) {
+    void contributionsStore.fetchContributions().catch(() => {});
+  }
+  if (activityStore.notices.length === 0) {
+    void activityStore.loadNotices().catch(() => {});
   }
 });
 
@@ -313,12 +365,38 @@ defineExpose({ focus });
   }
 }
 
+.mention-option-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  color: var(--matou-primary);
+  background-color: color-mix(in srgb, var(--matou-primary) 12%, transparent);
+
+  .icon {
+    width: 14px;
+    height: 14px;
+  }
+}
+
 .mention-option-name {
   font-size: 0.875rem;
   color: var(--matou-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mention-option-type {
+  margin-left: auto;
+  padding-left: 0.5rem;
+  font-size: 0.6875rem;
+  text-transform: capitalize;
+  color: var(--matou-muted-foreground);
+  flex-shrink: 0;
 }
 
 .composer-input-area {
