@@ -41,6 +41,7 @@ Two facts frame every matrix below (details in [Role Model & Resolution](#role-m
 - [Membership, Registration & Credentials](#membership-registration--credentials)
 - [Communication & Content (Notices, Chat, Events, Files)](#communication--content-notices-chat-events-files)
 - [Spaces, Sync & Admin Infrastructure](#spaces-sync--admin-infrastructure)
+- [Peer-Side Write Rules (synced-object validation)](#peer-side-write-rules-synced-object-validation)
 - [Appendix: Known Gaps & Design-Doc Drift](#appendix-known-gaps--design-doc-drift)
 
 ---
@@ -721,6 +722,27 @@ No space/sync/trust/org/multisig action constant exists in `contributions/roles.
 - **Admin space (`SpaceTypeAdmin`) is created and its ID is surfaced (`spaces.go:451-482`, `api/identity.go:313`) but no read/write endpoint in this area gates on it.** Its ACL is owner-only (`acl.go:513-522` `AdminACL` → `PermissionNone` default), so protection is again consensus-key possession, not application logic. `ACLPolicyForSpaceType` (`acl.go:524-538`) and `ValidateAccess`/`GrantAccess`/`RevokeAccess` (`acl.go:449-502`) exist but are the older `ACLManager` path — `GrantAccess`'s own comment calls it "the legacy AddToACL path" (`acl.go:477`) — while the live invite/join flow uses `MatouACLManager` (`CreateOpenInvite`/`JoinWithInvite`), so those policy-evaluation helpers are largely parallel/unused for the community flow.
 
 ---
+
+## Peer-Side Write Rules (synced-object validation)
+
+Added by GH#19 part 1 (`backend/internal/anysync/write_rules.go`, `role_resolver.go`, `state.go BuildStateValidated`, `acl.go AccountAIDMap`, wired in `backend/internal/app/app.go`). Everything above concerns the HTTP layer of *this* node. Any-sync ACLs are space-scoped only, so a modified peer with Writer permission on the community space can write any change to any object — including a forged `signed_off`/`rewarded`/`completed` transition or a plan/proposal sign-off — and every peer's SDK will accept it into the tree. The write rules run when a node reconstructs object state from a tree and **exclude** guarded changes whose author did not hold the required role, so forged changes never enter this node's derived state.
+
+| Guarded object (field) | High-stakes values | Rule |
+|---|---|---|
+| `contribution.status` | `signed_off`, `rewarded` | `ActionSignOffContribution` / `ActionRewardContribution` |
+| `project.status` | `pending_completion`, `completed` | `ActionSubmitProjectCompletion` / `ActionApproveProjectCompletion` |
+| `implementation_plan.signed_off` | `true` | `ActionSignOffPlan` |
+| `proposal.status` | `signed_off` | `ActionSignOffProposal` |
+| `CommunityProfile.role` | any | operations_steward, founding_member |
+
+How a verdict is computed (deterministic, AC-2): change author (any-sync account) → AID via the community space's ACL join records walked **in record order, first claim of an AID wins** (`AccountAIDMap`) → the AID's role **as of the change's own timestamp**, from the role history of its `CommunityProfile` tree (`HistoryRoleResolver`; org-config admins are a static Founding Member override) → `MapKERIRole` → policy table. Because every input is synced tree/ACL data, two honest peers reach the same verdict, and demoting a steward does not retroactively reject their past sign-offs. Snapshots that merely carry a guarded value forward are not re-gated. `UpdateObject` diffs against the same validated baseline so a forged change cannot block the legitimate transition. An object of unknown type (missing from the local index) is an error, not an unguarded pass.
+
+**Known gaps — GH#19 AC-1 is NOT met by part 1:**
+
+- The account→AID binding is ACL join metadata written by the *joining* peer (`api/spaces.go HandleJoinCommunity` interpolates the client-supplied `userAID`). A modified client can join claiming any AID that has not joined yet. First-bound-wins stops a second account from hijacking an already-bound AID, nothing more. Closing this needs KERI-backed binding proofs (GH#20).
+- The engine is **fail-open** when an author cannot be resolved (unknown account, profile not yet synced). The decided design is fail-closed per-action digest verification; that is an engine change that lands with the KEL/TEL verifier, not a resolver swap.
+- Change timestamps are author-set. Backdating can only claim a role the author genuinely held earlier (bounded by their own history) — it cannot manufacture one.
+- `decision_plan` sign-off and raw `/transition` endpoints are not guarded.
 
 ## Appendix: Known Gaps & Design-Doc Drift
 

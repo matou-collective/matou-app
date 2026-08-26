@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anyproto/any-sync/commonspace/acl/aclclient"
+	"github.com/anyproto/any-sync/commonspace/object/acl/aclrecordproto"
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/consensus/consensusproto"
 	"github.com/anyproto/any-sync/util/crypto"
@@ -343,12 +344,21 @@ func (m *MatouACLManager) FindAccountPubKeyByAID(ctx context.Context, spaceID st
 	return nil, fmt.Errorf("no account found for AID %s in space %s", aid, spaceID)
 }
 
-// AccountAIDMap returns a deterministic mapping from every current ACL account's
-// any-sync account string (crypto.PubKey.Account()) to the KERI AID that account
-// declared in its join-request metadata. It is the reverse of
+// AccountAIDMap returns a deterministic mapping from every current ACL
+// account's any-sync account string (crypto.PubKey.Account()) to the KERI AID
+// that account declared in its join metadata. It is the reverse of
 // FindAccountPubKeyByAID and is used to resolve the author of a synced change
 // (change.Identity.Account()) back to a member AID for peer-side write-rule
-// validation. Accounts whose metadata carries no AID are omitted.
+// validation.
+//
+// Determinism and dedupe: join metadata is written by the *joining* peer, so a
+// modified client can claim any AID. Records are walked in ACL record order
+// (the same on every peer) and the FIRST account to claim an AID wins; a later
+// account claiming an already-bound AID is dropped and logged. This blocks a
+// second account from hijacking an existing member's AID, but NOT a fresh claim
+// of an AID that has not joined yet — that needs KERI-backed binding proofs
+// (GH#20). Accounts that are no longer active members, and accounts whose
+// metadata carries no AID, are omitted.
 func (m *MatouACLManager) AccountAIDMap(ctx context.Context, spaceID string) (map[string]string, error) {
 	space, err := m.client.GetSpace(ctx, spaceID)
 	if err != nil {
@@ -364,27 +374,105 @@ func (m *MatouACLManager) AccountAIDMap(ctx context.Context, spaceID string) (ma
 		return nil, fmt.Errorf("ACL state not available for space %s", spaceID)
 	}
 
-	var mdKey crypto.PrivKey
-	if k, mdErr := state.FirstMetadataKey(); mdErr == nil {
-		mdKey = k
+	// Metadata may be encrypted with any of the space's metadata keys.
+	var mdKeys []crypto.PrivKey
+	for _, k := range state.Keys() {
+		if k.MetadataPrivKey != nil {
+			mdKeys = append(mdKeys, k.MetadataPrivKey)
+		}
 	}
 
-	out := make(map[string]string)
+	active := make(map[string]bool)
 	for _, account := range state.CurrentAccounts() {
-		if account.PubKey == nil || len(account.RequestMetadata) == 0 {
-			continue
-		}
-		raw := account.RequestMetadata
-		if mdKey != nil {
-			if decrypted, decErr := mdKey.Decrypt(raw); decErr == nil {
-				raw = decrypted
-			}
-		}
-		if aid := extractAIDFromMetadata(raw); aid != "" {
-			out[account.PubKey.Account()] = aid
+		if account.PubKey != nil && !account.Permissions.NoPermissions() {
+			active[account.PubKey.Account()] = true
 		}
 	}
-	return out, nil
+
+	claims := aidClaimsInRecordOrder(acl, mdKeys)
+	return bindFirstClaims(claims, active), nil
+}
+
+// aidClaim is one (account, AID) declaration found in an ACL record.
+type aidClaim struct {
+	account string
+	aid     string
+}
+
+// aidClaimsInRecordOrder walks the ACL records in order and extracts every
+// account → AID declaration from join content (invite-join, request-join,
+// accounts-add). Order is the ACL record order, identical on every peer.
+func aidClaimsInRecordOrder(acl list.AclList, mdKeys []crypto.PrivKey) []aidClaim {
+	var claims []aidClaim
+	add := func(identity crypto.PubKey, metadata []byte) {
+		if identity == nil || len(metadata) == 0 {
+			return
+		}
+		if aid := extractAIDFromMetadata(decryptMetadata(metadata, mdKeys)); aid != "" {
+			claims = append(claims, aidClaim{account: identity.Account(), aid: aid})
+		}
+	}
+	acl.Iterate(func(record *list.AclRecord) bool {
+		data, ok := record.Model.(*aclrecordproto.AclData)
+		if !ok || data == nil {
+			return true
+		}
+		for _, content := range data.GetAclContent() {
+			switch {
+			case content.GetInviteJoin() != nil:
+				ij := content.GetInviteJoin()
+				if pk, err := crypto.UnmarshalEd25519PublicKeyProto(ij.GetIdentity()); err == nil {
+					add(pk, ij.GetMetadata())
+				}
+			case content.GetRequestJoin() != nil:
+				add(record.Identity, content.GetRequestJoin().GetMetadata())
+			case content.GetAccountsAdd() != nil:
+				for _, a := range content.GetAccountsAdd().GetAdditions() {
+					if pk, err := crypto.UnmarshalEd25519PublicKeyProto(a.GetIdentity()); err == nil {
+						add(pk, a.GetMetadata())
+					}
+				}
+			}
+		}
+		return true
+	})
+	return claims
+}
+
+// bindFirstClaims applies first-bound-wins over claims (already in ACL record
+// order), keeping only accounts in active. An account's own later re-claim of
+// the same AID is a no-op; a different account's claim of a bound AID is
+// rejected and logged.
+func bindFirstClaims(claims []aidClaim, active map[string]bool) map[string]string {
+	out := make(map[string]string)
+	aidOwner := make(map[string]string)
+	for _, c := range claims {
+		if !active[c.account] {
+			continue
+		}
+		if _, bound := out[c.account]; bound {
+			continue // account already bound (first declaration wins)
+		}
+		if owner, taken := aidOwner[c.aid]; taken && owner != c.account {
+			log.Printf("[write-rules] REJECTED duplicate AID claim: account %s claims %s already bound to %s (first-bound wins)",
+				c.account, c.aid, owner)
+			continue
+		}
+		aidOwner[c.aid] = c.account
+		out[c.account] = c.aid
+	}
+	return out
+}
+
+// decryptMetadata tries each metadata key and returns the first successful
+// plaintext, falling back to the raw bytes (older join records were plaintext).
+func decryptMetadata(raw []byte, mdKeys []crypto.PrivKey) []byte {
+	for _, k := range mdKeys {
+		if decrypted, err := k.Decrypt(raw); err == nil {
+			return decrypted
+		}
+	}
+	return raw
 }
 
 // extractAIDFromMetadata pulls the "aid" value out of ACL join metadata, which

@@ -7,6 +7,7 @@ package anysync
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
@@ -37,6 +38,11 @@ type ObjectState struct {
 	Timestamp  int64                      `json:"timestamp"` // latest change timestamp
 }
 
+// ErrUnknownObjectType is returned by BuildStateValidated when a validator is
+// supplied but the object's type is unknown (empty), which would otherwise
+// bypass the write rules.
+var ErrUnknownObjectType = errors.New("cannot validate object of unknown type")
+
 // SnapshotInterval controls how many changes between automatic snapshots.
 // After this many changes, a snapshot is created for faster state reconstruction.
 const SnapshotInterval = 10
@@ -54,6 +60,12 @@ func BuildState(tree objecttree.ReadableObjectTree, objectID, objectType string)
 // (e.g. a member-authored sign-off) cannot alter the reconstructed state. A nil
 // validator reproduces BuildState's behaviour exactly.
 func BuildStateValidated(tree objecttree.ReadableObjectTree, objectID, objectType string, validator ChangeValidator) (*ObjectState, error) {
+	if validator != nil && objectType == "" {
+		// An unknown object type cannot be matched against the write rules, so
+		// validating it would silently treat a guarded object (e.g. one that is
+		// missing from the local index) as unguarded. Fail loudly instead.
+		return nil, fmt.Errorf("%w: object %s", ErrUnknownObjectType, objectID)
+	}
 	state := &ObjectState{
 		ObjectID:   objectID,
 		ObjectType: objectType,
@@ -105,12 +117,12 @@ func BuildStateValidated(tree objecttree.ReadableObjectTree, objectID, objectTyp
 // it stands immediately before this change, so it can distinguish a genuine
 // high-stakes transition from a value merely carried forward by a snapshot.
 func (s *ObjectState) applyChange(change *objecttree.Change, oc *ObjectChange, validator ChangeValidator) {
-	if validator != nil && s.ObjectType != "" {
+	if validator != nil {
 		author := ""
 		if change.Identity != nil {
 			author = change.Identity.Account()
 		}
-		if !validator.ValidateChange(s.ObjectType, s.ObjectID, change.Id, author, oc.Ops, s.Fields) {
+		if !validator.ValidateChange(s.ObjectType, s.ObjectID, change.Id, author, change.Timestamp, oc.Ops, s.Fields) {
 			return
 		}
 	}

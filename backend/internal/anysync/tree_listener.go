@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 	"github.com/anyproto/any-sync/commonspace/object/tree/treechangeproto"
@@ -41,7 +42,7 @@ type TreeUpdateListener struct {
 	persister       ChatPersister
 	broker          EventBroadcaster
 	freshTreeReader FreshTreeReader
-	validator       ChangeValidator
+	validator       atomic.Pointer[validatorHolder]
 	seeded          bool
 	known           map[string]int // objectID → version
 }
@@ -67,7 +68,15 @@ func (l *TreeUpdateListener) SetFreshTreeReader(reader FreshTreeReader) {
 // peer does not alter this node's application state. A nil validator (the
 // default) leaves state reconstruction unchanged.
 func (l *TreeUpdateListener) SetChangeValidator(v ChangeValidator) {
-	l.validator = v
+	l.validator.Store(&validatorHolder{v: v})
+}
+
+// changeValidator returns the installed validator (nil when none).
+func (l *TreeUpdateListener) changeValidator() ChangeValidator {
+	if h := l.validator.Load(); h != nil {
+		return h.v
+	}
+	return nil
 }
 
 // Update is called when the tree receives new changes from peers.
@@ -147,7 +156,7 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 
 	// Build the full state from the tree (tree lock is held by caller). The
 	// validator excludes forged high-stakes changes from other peers.
-	state, err := BuildStateValidated(tree, objectID, objectType, l.validator)
+	state, err := BuildStateValidated(tree, objectID, objectType, l.changeValidator())
 	if err != nil {
 		if isProfileType || isMultisigCoordType {
 			// Best-effort for profile + coord types: just skip and let a later
@@ -172,7 +181,7 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 				return nil
 			}
 			freshTree.Lock()
-			state, err = BuildStateValidated(freshTree, objectID, objectType, l.validator)
+			state, err = BuildStateValidated(freshTree, objectID, objectType, l.changeValidator())
 			freshTree.Unlock()
 			if err != nil {
 				log.Printf("[TreeUpdateListener] BuildState on fresh tree also failed for %s: %v", objectID, err)

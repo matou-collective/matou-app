@@ -1,26 +1,38 @@
 // Package anysync provides any-sync integration for MATOU.
 // write_rules.go implements peer-side validation of synced object changes
-// (GH#19). Any-sync ACL permissions are strictly space-scoped — a space Writer
-// may write any change to any object in that space — so the SDK cannot express
-// "only a steward may set a contribution to signed_off". A modified peer with
-// legitimate Writer permission on the community space can therefore forge a
-// high-stakes transition (sign-off, reward, project completion, role change)
-// and every peer's SDK will accept the change into the tree.
+// (GH#19, part 1). Any-sync ACL permissions are strictly space-scoped — a space
+// Writer may write any change to any object in that space — so the SDK cannot
+// express "only a steward may set a contribution to signed_off". A modified
+// peer with legitimate Writer permission on the community space can therefore
+// forge a high-stakes transition (sign-off, reward, project completion, role
+// change) and every peer's SDK will accept the change into the tree.
 //
 // This file adds an application-layer check that runs while state is
-// reconstructed from a tree (state.go BuildState). Each change that sets a
-// guarded field to a high-stakes value is validated against the author's
-// synced role; changes that fail are excluded from the computed state (as if
-// they were never authored) and recorded for observability. The check is
-// deterministic — it depends only on synced ACL/profile state and the tree's
-// own change order — so every honest peer converges on the same view.
+// reconstructed from a tree (state.go BuildStateValidated). Each change that
+// sets a guarded field to a high-stakes value is validated against the
+// author's synced role; changes that fail are excluded from the computed state
+// (as if they were never authored) and recorded for observability.
 //
-// Legitimacy source (see GH#19 item 4): until KERI-signed proofs land (GH#20),
-// authorship binds to the any-sync identity ↔ AID mapping carried in ACL join
-// metadata plus the admin-written CommunityProfile role. That binding is weaker
-// than a KERI proof (a member controls the AID they claim at join time) but the
-// structure is in place and swapping in a proof-backed RoleResolver later needs
-// no change to the rule engine or the state path.
+// Determinism (GH#19 AC-2): a verdict depends only on data every peer syncs —
+// the change's author identity and timestamp, the ACL join records (account →
+// AID, first-bound wins in ACL record order, see acl.go AccountAIDMap) and the
+// CommunityProfile role history (role as-of the change's timestamp, see
+// role_resolver.go). It never consults wall-clock time or "current" roles, so
+// two honest peers with the same synced trees reach the same verdict, and
+// demoting a steward later does not retroactively reject their past sign-offs.
+//
+// Legitimacy source — KNOWN GAP (GH#19 AC-1 is NOT met by this part): the
+// account → AID binding comes from ACL join metadata that the *joining* peer
+// writes (api/spaces.go HandleJoinCommunity interpolates the client-supplied
+// UserAID). A modified client can therefore join claiming a steward's AID. The
+// first-bound-wins dedupe in AccountAIDMap stops a *second* account from
+// hijacking an AID that is already bound, but it cannot stop a fresh claim of
+// an AID that has not joined yet. Closing that hole requires KERI-backed
+// proofs of the AID ↔ any-sync-account binding (GH#20). When those land, the
+// RoleResolver must be replaced by one that also verifies the proof; the
+// fail-open branch below (unresolved author → allow) must then become
+// fail-closed per the decided design (per-action digest verification), which
+// is an engine change, not a drop-in swap.
 package anysync
 
 import (
@@ -32,31 +44,35 @@ import (
 )
 
 // ChangeValidator decides whether a decoded change may contribute to derived
-// state. It is consulted per change during state reconstruction (BuildState).
+// state. It is consulted per change during state reconstruction.
 type ChangeValidator interface {
-	// ValidateChange reports whether the change identified by changeID and
-	// authored by the any-sync account `author` (crypto.PubKey.Account()) may
-	// apply `ops` to an object of the given type. `current` is the object's
-	// field state immediately before this change is applied, used to tell a
-	// genuine high-stakes transition apart from a no-op re-assertion (e.g. a
-	// snapshot that merely carries a value forward).
+	// ValidateChange reports whether the change identified by changeID,
+	// authored by the any-sync account `author` (crypto.PubKey.Account()) at
+	// unix time `timestamp` (the change's own Timestamp field, part of the
+	// synced tree data), may apply `ops` to an object of the given type.
+	// `current` is the object's field state immediately before this change is
+	// applied, used to tell a genuine high-stakes transition apart from a
+	// no-op re-assertion (e.g. a snapshot that merely carries a value forward).
 	//
 	// Returning false excludes the change from state computation and is
 	// expected to record it for observability. Implementations must be
 	// deterministic: the same inputs yield the same verdict on every peer.
-	ValidateChange(objectType, objectID, changeID, author string, ops []ChangeOp, current map[string]json.RawMessage) bool
+	ValidateChange(objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage) bool
 }
 
 // RoleResolver maps an any-sync change author (the account string returned by
-// crypto.PubKey.Account()) to the contribution-system roles that author holds,
-// derived purely from synced state. It must be deterministic so every honest
-// peer with the same synced state resolves the same roles.
+// crypto.PubKey.Account()) to the contribution-system roles that author held
+// at a given point in time, derived purely from synced state. It must be
+// deterministic so every honest peer with the same synced state resolves the
+// same roles.
 type RoleResolver interface {
-	// RolesForAuthor returns the roles for the given account. ok is false when
-	// the author cannot be resolved from currently-synced state (unknown
-	// account, or role not yet replicated). Callers fail open on !ok, because
-	// absence of evidence is not proof of a violation.
-	RolesForAuthor(account string) (roles []contributions.Role, ok bool)
+	// RolesForAuthorAt returns the roles the account held as of unix time
+	// `at` (a change timestamp). ok is false when the author cannot be
+	// resolved from currently-synced state (unknown account, or profile not
+	// yet replicated). Callers fail open on !ok, because absence of evidence
+	// is not proof of a violation — see the package comment for why this is
+	// a known gap.
+	RolesForAuthorAt(account string, at int64) (roles []contributions.Role, ok bool)
 }
 
 // RejectedChange describes a change excluded from state by a write rule.
@@ -77,31 +93,45 @@ type RejectionRecorder interface {
 }
 
 // LoggingRejectionRecorder logs every rejection and keeps a bounded in-memory
-// ring of the most recent ones so they remain inspectable at runtime.
+// ring of the most recent ones so they remain inspectable at runtime. State is
+// rebuilt on every read, so the same forged change is re-rejected on every
+// read; the recorder dedupes by change ID so each forgery is logged and
+// retained once.
 type LoggingRejectionRecorder struct {
 	mu     sync.Mutex
 	recent []RejectedChange
+	seen   map[string]struct{}
 	max    int
 }
 
 // NewLoggingRejectionRecorder creates a recorder that retains up to max recent
-// rejections (max <= 0 defaults to 100).
+// distinct rejections (max <= 0 defaults to 100).
 func NewLoggingRejectionRecorder(max int) *LoggingRejectionRecorder {
 	if max <= 0 {
 		max = 100
 	}
-	return &LoggingRejectionRecorder{max: max}
+	return &LoggingRejectionRecorder{max: max, seen: make(map[string]struct{})}
 }
 
-// RecordRejection logs the rejection and appends it to the bounded ring.
+// RecordRejection logs the rejection and appends it to the bounded ring,
+// unless a rejection for the same change ID has already been recorded.
 func (r *LoggingRejectionRecorder) RecordRejection(rc RejectedChange) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, dup := r.seen[rc.ChangeID]; dup {
+		return
+	}
+
 	log.Printf("[write-rules] REJECTED %s change %s on %s/%s by %q: %s (%s=%s)",
 		rc.ObjectType, rc.ChangeID, rc.ObjectType, rc.ObjectID, rc.Author, rc.Reason, rc.Field, rc.Value)
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.seen[rc.ChangeID] = struct{}{}
 	r.recent = append(r.recent, rc)
 	if len(r.recent) > r.max {
+		evicted := r.recent[:len(r.recent)-r.max]
+		for _, e := range evicted {
+			delete(r.seen, e.ChangeID)
+		}
 		r.recent = r.recent[len(r.recent)-r.max:]
 	}
 }
@@ -165,9 +195,9 @@ func (r objectRule) permitFor(value string) (rolePredicate, bool) {
 }
 
 // communityWriteRules is the per-object-type write policy for high-stakes
-// community-space objects. It intentionally starts with the set called out in
-// GH#19: contribution sign-off/reward, project completion, and profile role
-// changes. Every honest peer evaluates this identical table, so verdicts agree.
+// community-space objects: contribution sign-off/reward, project completion,
+// implementation-plan and proposal sign-off, and profile role changes. Every
+// honest peer evaluates this identical table, so verdicts agree.
 var communityWriteRules = map[string]objectRule{
 	TypeContribution: {
 		field: "status",
@@ -183,6 +213,20 @@ var communityWriteRules = map[string]objectRule{
 			string(contributions.ProjectPendingCompletion): allowAction(contributions.ActionSubmitProjectCompletion),
 		},
 	},
+	// ImplementationPlan.signed_off is a bool; only the transition to true is
+	// high-stakes (invalidation back to false happens on any milestone edit).
+	TypeImplementationPlan: {
+		field: "signed_off",
+		byValue: map[string]rolePredicate{
+			"true": allowAction(contributions.ActionSignOffPlan),
+		},
+	},
+	TypeProposal: {
+		field: "status",
+		byValue: map[string]rolePredicate{
+			string(contributions.ProposalSignedOff): allowAction(contributions.ActionSignOffProposal),
+		},
+	},
 	// CommunityProfile carries the member role and lives in the admin-only
 	// community-readonly space, so the SDK ACL already blocks non-admin writers.
 	// This entry is defense-in-depth for that space and a ready hook for the day
@@ -192,6 +236,12 @@ var communityWriteRules = map[string]objectRule{
 		field:    "role",
 		anyValue: allowRoles(contributions.RoleOperationsSteward, contributions.RoleFoundingMember),
 	},
+}
+
+// IsGuardedObjectType reports whether objectType has a peer-side write rule.
+func IsGuardedObjectType(objectType string) bool {
+	_, ok := communityWriteRules[objectType]
+	return ok
 }
 
 // WriteRuleValidator implements ChangeValidator using communityWriteRules, a
@@ -209,7 +259,7 @@ func NewWriteRuleValidator(resolver RoleResolver, recorder RejectionRecorder) *W
 }
 
 // ValidateChange implements ChangeValidator.
-func (v *WriteRuleValidator) ValidateChange(objectType, objectID, changeID, author string, ops []ChangeOp, current map[string]json.RawMessage) bool {
+func (v *WriteRuleValidator) ValidateChange(objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage) bool {
 	rule, guarded := communityWriteRules[objectType]
 	if !guarded || v.resolver == nil {
 		return true
@@ -232,10 +282,12 @@ func (v *WriteRuleValidator) ValidateChange(objectType, objectID, changeID, auth
 		if cur, ok := current[op.Field]; ok && jsonStringValue(cur) == value {
 			continue
 		}
-		roles, resolved := v.resolver.RolesForAuthor(author)
+		roles, resolved := v.resolver.RolesForAuthorAt(author, timestamp)
 		if !resolved {
-			// Cannot prove a violation from currently-synced state — fail open.
-			// Deterministic: peers sharing the same synced state resolve alike.
+			// FAIL-OPEN (by design for part 1, see package comment): the author
+			// cannot be resolved from currently-synced state. Deterministic
+			// across peers sharing the same synced state, but not a security
+			// guarantee — GH#20 proofs turn this into fail-closed.
 			continue
 		}
 		if !permit(roles) {
@@ -257,7 +309,8 @@ func (v *WriteRuleValidator) ValidateChange(objectType, objectID, changeID, auth
 }
 
 // jsonStringValue decodes a JSON string value (e.g. `"signed_off"`) to its
-// underlying text, falling back to the raw bytes for non-string values.
+// underlying text, falling back to the raw bytes for non-string values (so a
+// JSON `true` compares as "true").
 func jsonStringValue(raw json.RawMessage) string {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
