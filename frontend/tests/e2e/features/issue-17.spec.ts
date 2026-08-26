@@ -50,11 +50,32 @@ test.describe('backend RBAC enforcement on mutating routes (#17)', () => {
     );
     expect(await status(MEMBER_AID, 'DELETE', `/members/${MEMBER_AID}`, { reason: 'x' })).toBe(403);
 
-    // Even an authorized role-changer (the admin) may not promote to Founding
-    // Member unless they already hold it — the admin here IS a Founding Member,
-    // so this is only asserted as "not forbidden by the change-role gate".
+    // Founding Member promotion: denied for the member (fails the change-role
+    // gate), but the admin — who IS a Founding Member — passes both the
+    // change-role gate and the FM-only rule (the request then fails
+    // downstream with a non-403 because the target has no profile).
     expect(
-      await status(MEMBER_AID, 'PUT', `/members/${admin}/role`, { role: 'Operations Steward' }),
+      await status(MEMBER_AID, 'PUT', `/members/${admin}/role`, { role: 'Founding Member' }),
+    ).toBe(403);
+    expect(
+      await status(admin, 'PUT', `/members/${MEMBER_AID}/role`, { role: 'Founding Member' }),
+    ).not.toBe(403);
+
+    // --- POST /profiles is the same write path: a member cannot write a
+    // role-bearing CommunityProfile for themselves (#28 review, blocking 1) ---
+    expect(
+      await status(MEMBER_AID, 'POST', `/profiles`, {
+        type: 'CommunityProfile',
+        id: `CommunityProfile-${MEMBER_AID}`,
+        data: { userAID: MEMBER_AID, credential: 'ESAID', role: 'Founding Member' },
+      }),
+    ).toBe(403);
+
+    // --- /transition may not archive either (#28 review, blocking 2) ---
+    expect(
+      await status(MEMBER_AID, 'POST', `/contributions/no-such-contribution/transition`, {
+        status: 'archived',
+      }),
     ).toBe(403);
 
     // --- Project role assignment (steward scope) ---
