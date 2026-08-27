@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/keri"
 	"github.com/matou-dao/backend/internal/types"
@@ -22,6 +23,7 @@ type ProfilesHandler struct {
 	registry     *types.Registry
 	fileManager  *anysync.FileManager
 	eventBroker  *EventBroker
+	roleLookup   RoleLookup
 }
 
 // NewProfilesHandler creates a new profiles handler.
@@ -127,14 +129,8 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 
 	// Determine target space
 	spaceID := req.SpaceID
-	if spaceID == "" {
+	if spaceID == "" && h.spaceManager != nil {
 		spaceID = h.resolveSpaceForType(def)
-	}
-	if spaceID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": fmt.Sprintf("no space configured for type %s (space=%s)", req.Type, def.Space),
-		})
-		return
 	}
 
 	// Generate object ID if not provided
@@ -145,6 +141,38 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 			aid = h.userIdentity.GetAID()
 		}
 		objectID = fmt.Sprintf("%s-%s-%d", req.Type, aid, time.Now().UnixMilli())
+	}
+
+	// Read the existing object (if any) — needed both for the version bump and
+	// for the write policy (role-change detection / ownership).
+	ctx := r.Context()
+	var existing *anysync.ObjectPayload
+	if h.spaceManager != nil && spaceID != "" {
+		if obj, err := h.spaceManager.ObjectTreeManager().ReadLatestByID(ctx, spaceID, objectID); err == nil {
+			existing = obj
+		}
+	}
+
+	// Resource-level authorization (RBAC active only). POST /profiles is the
+	// same write path as PUT /members/{aid}/role for role-bearing
+	// CommunityProfiles, so it applies the same rule; see profileWritePolicy.
+	if h.roleLookup != nil {
+		var existingData json.RawMessage
+		if existing != nil {
+			existingData = existing.Data
+		}
+		if reason := profileWritePolicy(GetUserAID(r), GetUserRoles(r), req.Type, objectID, req.Data, existingData); reason != "" {
+			log.Printf("[Profiles] write of %s/%s denied for %s: %s", req.Type, objectID, GetUserAID(r), reason)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
+			return
+		}
+	}
+
+	if spaceID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("no space configured for type %s (space=%s)", req.Type, def.Space),
+		})
+		return
 	}
 
 	// Get signing key for the space
@@ -164,11 +192,10 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Determine version (read existing to increment)
-	ctx := r.Context()
+	// Determine version (increment over the existing object)
 	objMgr := h.spaceManager.ObjectTreeManager()
 	version := 1
-	if existing, err := objMgr.ReadLatestByID(ctx, spaceID, objectID); err == nil {
+	if existing != nil {
 		version = existing.Version + 1
 	}
 
@@ -695,6 +722,18 @@ func (h *ProfilesHandler) HandleUpdateMemberRole(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Promotion to Founding Member — the org's highest-privilege role — may only
+	// be performed by an existing Founding Member. All other role changes follow
+	// the standard RBAC table (ActionChangeMemberRole: ops steward / founding).
+	// Only enforced when RBAC is active (roleLookup configured).
+	if h.roleLookup != nil && req.Role == "Founding Member" &&
+		!contributions.HasRole(GetUserRoles(r), contributions.RoleFoundingMember) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "only a Founding Member may promote a member to Founding Member",
+		})
+		return
+	}
+
 	roSpaceID := h.spaceManager.GetCommunityReadOnlySpaceID()
 	if roSpaceID == "" {
 		writeJSON(w, http.StatusConflict, map[string]string{
@@ -964,25 +1003,164 @@ func deduplicateObjects(objects []*anysync.ObjectPayload) []*anysync.ObjectPaylo
 	return result
 }
 
+// profileWritePolicy decides whether caller may write the given profile via
+// POST /api/v1/profiles. It returns "" to allow, or a denial reason.
+//
+// Rules (in order):
+//
+//  1. A CommunityProfile write that changes the role (new profile with a role
+//     other than "Member", or an existing profile whose role differs) is a
+//     role change and must satisfy exactly what PUT /members/{aid}/role
+//     requires: ActionChangeMemberRole, and Founding Member may only be
+//     granted by a Founding Member. This closes the escalation the review
+//     found — ProfileRoleLookup resolves roles from this very object.
+//  2. Steward scope (project/operations steward, founding member) may write
+//     any profile whose role is unchanged (registration approval, decline,
+//     attendance, pending-profile creation all run as a steward).
+//  3. The profile's subject may write their own profile (PrivateProfile,
+//     SharedProfile edits). Subject = data.userAID / data.aid, or the object
+//     id "<Type>-<aid>[-suffix]".
+//  4. Any authenticated member may append endorsements to another member's
+//     SharedProfile — the only field that write may touch is "endorsements"
+//     and it may only grow.
+//
+// Everything else is denied.
+func profileWritePolicy(caller string, roles []contributions.Role, typeName, objectID string, newData, existingData json.RawMessage) string {
+	newFields := decodeProfileFields(newData)
+	existingFields := decodeProfileFields(existingData)
+
+	if typeName == "CommunityProfile" {
+		newRole, _ := newFields["role"].(string)
+		if newRole != "" {
+			roleChanged := newRole != "Member"
+			if existingData != nil {
+				existingRole, _ := existingFields["role"].(string)
+				roleChanged = newRole != existingRole
+			}
+			if roleChanged {
+				if !contributions.CanPerformAction(roles, contributions.ActionChangeMemberRole) {
+					return "changing a member's role requires the change_member_role permission"
+				}
+				if newRole == "Founding Member" && !contributions.HasRole(roles, contributions.RoleFoundingMember) {
+					return "only a Founding Member may promote a member to Founding Member"
+				}
+				return ""
+			}
+		}
+	}
+
+	if contributions.IsStewardScope(roles) {
+		return ""
+	}
+	if isProfileOwner(caller, typeName, objectID, newFields, existingFields) {
+		return ""
+	}
+	if typeName == "SharedProfile" && existingData != nil && isEndorsementAppend(existingFields, newFields) {
+		return ""
+	}
+	return "you may only write your own profile"
+}
+
+func decodeProfileFields(raw json.RawMessage) map[string]interface{} {
+	fields := map[string]interface{}{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &fields)
+	}
+	return fields
+}
+
+// isProfileOwner reports whether caller is the AID a profile object is about.
+// The existing object's identifiers (userAID / aid) win over the incoming
+// payload so a caller cannot re-label someone else's profile as their own;
+// when neither carries an identifier the object id convention
+// "<Type>-<aid>" or "<Type>-<aid>-<suffix>" is used.
+func isProfileOwner(caller, typeName, objectID string, newFields, existingFields map[string]interface{}) bool {
+	if caller == "" {
+		return false
+	}
+	for _, fields := range []map[string]interface{}{existingFields, newFields} {
+		for _, key := range []string{"userAID", "aid"} {
+			if v, ok := fields[key].(string); ok && v != "" {
+				return v == caller
+			}
+		}
+	}
+	rest := strings.TrimPrefix(objectID, typeName+"-")
+	if rest == objectID {
+		return false
+	}
+	return rest == caller || strings.HasPrefix(rest, caller+"-")
+}
+
+// isEndorsementAppend reports whether newFields equals existingFields except
+// for an "endorsements" array that only gained entries.
+func isEndorsementAppend(existingFields, newFields map[string]interface{}) bool {
+	if len(newFields) != len(existingFields) && !(len(newFields) == len(existingFields)+1 && existingFields["endorsements"] == nil) {
+		return false
+	}
+	for k, v := range newFields {
+		if k == "endorsements" {
+			continue
+		}
+		ev, ok := existingFields[k]
+		if !ok {
+			return false
+		}
+		a, _ := json.Marshal(v)
+		b, _ := json.Marshal(ev)
+		if string(a) != string(b) {
+			return false
+		}
+	}
+	newEnd, ok := newFields["endorsements"].([]interface{})
+	if !ok {
+		return false
+	}
+	oldEnd, _ := existingFields["endorsements"].([]interface{})
+	if len(newEnd) <= len(oldEnd) {
+		return false
+	}
+	for i, e := range oldEnd {
+		a, _ := json.Marshal(e)
+		b, _ := json.Marshal(newEnd[i])
+		if string(a) != string(b) {
+			return false
+		}
+	}
+	return true
+}
+
 // RegisterRoutes registers profile and type routes on the mux.
-func (h *ProfilesHandler) RegisterRoutes(mux *http.ServeMux) {
+// roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
+func (h *ProfilesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ProfilesHandler", roleLookup)
+	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/types", h.handleTypes)
 	mux.HandleFunc("/api/v1/types/", h.HandleGetType)
 	mux.HandleFunc("/api/v1/profiles", h.handleProfiles)
 	mux.HandleFunc("/api/v1/profiles/", h.HandleListProfiles)
 	mux.HandleFunc("/api/v1/profiles/me", h.HandleMyProfiles)
-	mux.HandleFunc("/api/v1/profiles/init-member", h.HandleInitMemberProfiles)
+	mux.HandleFunc("/api/v1/profiles/init-member", h.withRBAC(contributions.ActionInitMemberProfile, h.HandleInitMemberProfiles))
 	mux.HandleFunc("/api/v1/members/", h.handleMembers)
 }
 
-// handleMembers routes /api/v1/members/* requests.
+// withRBAC applies RBAC middleware when a roleLookup is configured.
+// When roleLookup is nil (tests), the handler is invoked directly.
+func (h *ProfilesHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
+// handleMembers routes /api/v1/members/* requests through RBAC.
 func (h *ProfilesHandler) handleMembers(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/role") && r.Method == http.MethodPut {
-		h.HandleUpdateMemberRole(w, r)
+		h.withRBAC(contributions.ActionChangeMemberRole, h.HandleUpdateMemberRole)(w, r)
 		return
 	}
 	if r.Method == http.MethodDelete {
-		h.HandleRemoveMember(w, r)
+		h.withRBAC(contributions.ActionRemoveMember, h.HandleRemoveMember)(w, r)
 		return
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -997,7 +1175,7 @@ func (h *ProfilesHandler) handleTypes(w http.ResponseWriter, r *http.Request) {
 func (h *ProfilesHandler) handleProfiles(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		h.HandleCreateProfile(w, r)
+		h.withRBAC(contributions.ActionWriteProfile, h.HandleCreateProfile)(w, r)
 	case http.MethodGet:
 		h.HandleMyProfiles(w, r)
 	default:

@@ -214,9 +214,11 @@ export interface OrgInfo {
 export async function syncCredentials(
   request: SyncCredentialsRequest,
 ): Promise<SyncCredentialsResponse> {
+  // RBAC (#17): sync/credentials requires the caller's AID; non-stewards may
+  // only sync credentials issued to themselves.
   const response = await fetch(`${BACKEND_URL}/api/v1/sync/credentials`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'X-User-AID': request.userAid }),
     body: JSON.stringify(request),
   });
 
@@ -393,9 +395,11 @@ export async function setBackendIdentity(
   request: SetBackendIdentityRequest,
 ): Promise<SetBackendIdentityResponse> {
   try {
+    // RBAC (#17): once an identity exists, only its owner (or an admin) may
+    // re-set it. First-run (no identity) is allowed without the header.
     const response = await fetch(`${BACKEND_URL}/api/v1/identity/set`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'X-User-AID': request.aid }),
       body: JSON.stringify(request),
       signal: AbortSignal.timeout(30000),
     });
@@ -498,9 +502,11 @@ export async function createOrUpdateProfile(
   options?: { id?: string; spaceId?: string }
 ): Promise<{ success: boolean; objectId?: string; error?: string }> {
   try {
+    // RBAC (#17): profile writes are authorised per resource on the backend
+    // (own profile, steward scope, or change_member_role for role changes).
     const response = await fetch(`${BACKEND_URL}/api/v1/profiles`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({
         type: typeName,
         id: options?.id,
@@ -587,7 +593,7 @@ export async function initMemberProfiles(data: {
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/profiles/init-member`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(data),
     });
     return response.json();
@@ -605,7 +611,7 @@ export async function updateMemberRole(
 ): Promise<{ success: boolean; role?: string; error?: string }> {
   const res = await fetch(`${BACKEND_URL}/api/v1/members/${memberAid}/role`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ role }),
   });
   return res.json();
@@ -622,9 +628,10 @@ export async function updateMemberRole(
 export async function grantStewardAdmin(
   stewardAid: string,
 ): Promise<{ success: boolean; error?: string }> {
+  // RBAC (#17): grant_steward_admin — Operations Steward / Founding Member.
   const res = await fetch(`${BACKEND_URL}/api/v1/spaces/grant-steward-admin`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ stewardAid }),
   });
   return res.json();
@@ -1134,7 +1141,7 @@ export async function removeMember(
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/members/${encodeURIComponent(memberAid)}`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ reason }),
     });
     if (!response.ok) {

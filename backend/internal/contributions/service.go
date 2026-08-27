@@ -2627,7 +2627,7 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID, act
 // SubmitProjectCompletion transitions an active project to pending_completion
 // after verifying every contribution is signed off (or archived).
 // Clears any prior rejection_reason.
-func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectID, leadID string) (*Project, error) {
+func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectID, leadID string, callerRoles []Role) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
@@ -2635,6 +2635,12 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 
 	if proj.Status != ProjectActive {
 		return nil, fmt.Errorf("project must be active to submit completion (current: %s)", proj.Status)
+	}
+
+	// Resource-level check: only this project's lead may submit it for
+	// completion. Operations Stewards and Founding Members are exempt.
+	if !IsCompletionExempt(callerRoles) && leadID != proj.ProjectLeadID {
+		return nil, fmt.Errorf("only the project lead may submit this project for completion")
 	}
 
 	contribs, err := s.ListContributionsByProject(ctx, spaceID, projectID)
@@ -2652,6 +2658,7 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 
 	proj.Status = ProjectPendingCompletion
 	proj.RejectionReason = ""
+	proj.SubmittedBy = leadID
 	proj.UpdatedAt = time.Now()
 	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
 		return nil, err
@@ -2659,14 +2666,34 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 	return proj, nil
 }
 
+// verifyCompletionReviewer enforces the resource-level checks shared by the
+// approve and reject paths: a non-exempt caller must be this project's steward
+// and may not be the member who submitted the completion. Operations Stewards
+// and Founding Members are exempt from both checks.
+func verifyCompletionReviewer(proj *Project, reviewerID string, callerRoles []Role) error {
+	if IsCompletionExempt(callerRoles) {
+		return nil
+	}
+	if reviewerID == "" || reviewerID != proj.ProjectStewardID {
+		return fmt.Errorf("only this project's steward may review completion")
+	}
+	if reviewerID == proj.SubmittedBy {
+		return fmt.Errorf("the submitter may not review their own completion")
+	}
+	return nil
+}
+
 // ApproveProjectCompletion marks the project completed.
-func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string, proof *Proof) (*Project, error) {
+func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string, callerRoles []Role, proof *Proof) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
 	}
 	if proj.Status != ProjectPendingCompletion {
 		return nil, fmt.Errorf("project must be pending_completion (current: %s)", proj.Status)
+	}
+	if err := verifyCompletionReviewer(proj, stewardID, callerRoles); err != nil {
+		return nil, err
 	}
 	if err := proof.ValidateConsistency("project_completion", projectID, spaceID, "completed", stewardID); err != nil {
 		return nil, err
@@ -2686,13 +2713,16 @@ func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, project
 }
 
 // RejectProjectCompletion sends the project back to active with a reason.
-func (s *Service) RejectProjectCompletion(ctx context.Context, spaceID, projectID, reason string) (*Project, error) {
+func (s *Service) RejectProjectCompletion(ctx context.Context, spaceID, projectID, rejectorID, reason string, callerRoles []Role) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
 	}
 	if proj.Status != ProjectPendingCompletion {
 		return nil, fmt.Errorf("project must be pending_completion (current: %s)", proj.Status)
+	}
+	if err := verifyCompletionReviewer(proj, rejectorID, callerRoles); err != nil {
+		return nil, err
 	}
 	proj.Status = ProjectActive
 	proj.RejectionReason = reason
