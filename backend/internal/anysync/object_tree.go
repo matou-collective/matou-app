@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
@@ -38,12 +39,12 @@ const (
 // It provides backward compatibility with existing API responses.
 // Internally, data is stored as incremental ChangeOps in the tree.
 type ObjectPayload struct {
-	ID        string          `json:"id"`        // Unique object ID
-	Type      string          `json:"type"`      // e.g. "SharedProfile", "type_definition"
-	OwnerKey  string          `json:"ownerKey"`  // Public signing key of author
-	Data      json.RawMessage `json:"data"`      // Flat JSON object (reconstructed from state)
+	ID        string          `json:"id"`       // Unique object ID
+	Type      string          `json:"type"`     // e.g. "SharedProfile", "type_definition"
+	OwnerKey  string          `json:"ownerKey"` // Public signing key of author
+	Data      json.RawMessage `json:"data"`     // Flat JSON object (reconstructed from state)
 	Timestamp int64           `json:"timestamp"`
-	Version   int             `json:"version"` // Number of changes applied
+	Version   int             `json:"version"`          // Number of changes applied
 	TreeID    string          `json:"treeId,omitempty"` // any-sync tree ID
 }
 
@@ -53,6 +54,57 @@ type ObjectTreeManager struct {
 	client      AnySyncClient
 	keyManager  *PeerKeyManager
 	treeManager *UnifiedTreeManager
+	validator   atomic.Pointer[validatorHolder]
+}
+
+// validatorHolder wraps the ChangeValidator interface so it can be stored in
+// an atomic.Pointer (interfaces cannot be stored atomically as-is).
+type validatorHolder struct{ v ChangeValidator }
+
+// SetChangeValidator installs a peer-side write validator (see write_rules.go)
+// used on the object read AND update-baseline paths, so objects served to the
+// API exclude forged high-stakes changes another peer wrote directly into a
+// shared tree, and a legitimate write is diffed against the validated state.
+// Safe to call concurrently with reads. A nil validator (the default) leaves
+// reads unchanged.
+func (m *ObjectTreeManager) SetChangeValidator(v ChangeValidator) {
+	m.validator.Store(&validatorHolder{v: v})
+}
+
+// changeValidator returns the installed validator (nil when none).
+func (m *ObjectTreeManager) changeValidator() ChangeValidator {
+	if h := m.validator.Load(); h != nil {
+		return h.v
+	}
+	return nil
+}
+
+// CollectRoleHistories walks every CommunityProfile tree in spaceID once and
+// returns each profile AID's role history (see RoleHistoryFromTree). It is the
+// single listing pass the write-rule role refresher uses instead of per-member
+// profile lookups.
+func (m *ObjectTreeManager) CollectRoleHistories(ctx context.Context, spaceID string) (map[string][]RoleAt, error) {
+	if !m.treeManager.HasTrees(spaceID) {
+		if err := m.treeManager.BuildSpaceIndex(ctx, spaceID); err != nil {
+			return nil, fmt.Errorf("indexing space %s: %w", spaceID, err)
+		}
+	}
+	out := make(map[string][]RoleAt)
+	for _, entry := range m.treeManager.GetTreesByType(spaceID, "CommunityProfile") {
+		tree, err := m.treeManager.GetTree(ctx, spaceID, entry.TreeID)
+		if err != nil {
+			log.Printf("[write-rules] role history: cannot open profile tree %s: %v", entry.TreeID, err)
+			continue
+		}
+		tree.Lock()
+		aid, hist := RoleHistoryFromTree(tree)
+		tree.Unlock()
+		if aid == "" {
+			continue
+		}
+		out[aid] = append(out[aid], hist...)
+	}
+	return out, nil
 }
 
 // NewObjectTreeManager creates a new ObjectTreeManager backed by UnifiedTreeManager.
@@ -119,9 +171,14 @@ func (m *ObjectTreeManager) UpdateObject(
 		return "", fmt.Errorf("getting tree for object %s: %w", objectID, err)
 	}
 
-	// Read current state (with lock)
+	// Read the current state with the same validator the read paths use, so
+	// the diff is computed against the *validated* baseline. Diffing against
+	// the raw tree (which may already carry a forged high-stakes change) would
+	// make a legitimate transition to the same value diff to zero ops and
+	// never be written, permanently blocking it (GH#19 review item 2).
+	objectType := m.getIndexEntry(objectID).ObjectType
 	tree.Lock()
-	state, err := BuildState(tree, objectID, "")
+	state, err := BuildStateValidated(tree, objectID, objectType, m.changeValidator())
 	if err != nil {
 		tree.Unlock()
 		return "", fmt.Errorf("building state for %s: %w", objectID, err)
@@ -248,14 +305,14 @@ func (m *ObjectTreeManager) ReadObject(ctx context.Context, spaceID, objectID st
 	entry := m.getIndexEntry(objectID)
 
 	tree.Lock()
-	state, err := BuildState(tree, objectID, entry.ObjectType)
+	state, err := BuildStateValidated(tree, objectID, entry.ObjectType, m.changeValidator())
 	tree.Unlock()
 	if err != nil {
 		// Cached tree may have stale keys (ACL timing race). Try fresh tree.
 		freshTree, freshErr := m.treeManager.BuildFreshTree(ctx, spaceID, tree.Id())
 		if freshErr == nil {
 			freshTree.Lock()
-			state, err = BuildState(freshTree, objectID, entry.ObjectType)
+			state, err = BuildStateValidated(freshTree, objectID, entry.ObjectType, m.changeValidator())
 			freshTree.Unlock()
 		}
 		if err != nil {
@@ -294,7 +351,7 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 		}
 
 		tree.Lock()
-		state, err := BuildState(tree, entry.ObjectID, entry.ObjectType)
+		state, err := BuildStateValidated(tree, entry.ObjectID, entry.ObjectType, m.changeValidator())
 		tree.Unlock()
 		if err != nil {
 			// Cached tree may have stale keys (ACL timing race). Try a fresh
@@ -302,7 +359,7 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 			freshTree, freshErr := m.treeManager.BuildFreshTree(ctx, spaceID, entry.TreeID)
 			if freshErr == nil {
 				freshTree.Lock()
-				state, err = BuildState(freshTree, entry.ObjectID, entry.ObjectType)
+				state, err = BuildStateValidated(freshTree, entry.ObjectID, entry.ObjectType, m.changeValidator())
 				freshTree.Unlock()
 			}
 			if err != nil {
@@ -337,7 +394,7 @@ func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]
 		}
 
 		tree.Lock()
-		state, err := BuildState(tree, entry.ObjectID, entry.ObjectType)
+		state, err := BuildStateValidated(tree, entry.ObjectID, entry.ObjectType, m.changeValidator())
 		tree.Unlock()
 		if err != nil {
 			continue

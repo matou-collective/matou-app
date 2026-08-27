@@ -339,11 +339,28 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// Create event broker for SSE
 	eventBroker := api.NewEventBroker()
 
+	// Peer-side write-rule validation (GH#19 part 1): exclude forged high-stakes
+	// changes (contribution sign-off/reward, project completion, plan/proposal
+	// sign-off, role changes) that a modified peer writes directly into shared
+	// spaces from this node's derived state. Any-sync ACLs are only
+	// space-scoped and cannot express per-object rules, so this runs at
+	// state-reconstruction time. Verdicts are deterministic: author → AID via
+	// ACL join records (first-bound wins, record order) → role as-of the
+	// change's timestamp via the CommunityProfile role history. The validator
+	// is installed BEFORE the listener is registered with the space manager
+	// so no tree update is ever processed unvalidated; the resolver is
+	// populated by a background refresher (single pass over profile trees).
+	writeRuleResolver := anysync.NewHistoryRoleResolver()
+	writeRuleRecorder := anysync.NewLoggingRejectionRecorder(200)
+	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleRecorder)
+	spaceManager.ObjectTreeManager().SetChangeValidator(writeRuleValidator)
+
 	// Create push-based listener for P2P chat changes (replaces polling)
 	chatListener := anysync.NewTreeUpdateListener(
 		&chatPersisterAdapter{store: store},
 		&eventBrokerAdapter{broker: eventBroker},
 	)
+	chatListener.SetChangeValidator(writeRuleValidator)
 	spaceManager.SetObjectTreeListener(chatListener)
 
 	// Wire up FreshTreeReader so the listener can rebuild trees with updated ACL keys
@@ -454,6 +471,57 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		setAdminAIDsFromConfig(orgConfigHandler.GetConfig())
 	}
 	orgConfigHandler.AddOnUpdate(setAdminAIDsFromConfig)
+
+	// Write-rule role refresher: rebuilds the resolver snapshot from synced
+	// state — ACL join records of the community space and one listing pass
+	// over the CommunityProfile trees of the read-only space — every 30s, off
+	// the tree-processing hot path. Stopped via the app's closers on Shutdown.
+	refreshWriteRuleRoles := func(ctx context.Context) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[write-rules] role refresh panicked: %v", rec)
+			}
+		}()
+		if communitySpaceID == "" || communityReadOnlySpaceID == "" {
+			return
+		}
+		accountAID, err := spaceManager.ACLManager().AccountAIDMap(ctx, communitySpaceID)
+		if err != nil {
+			log.Printf("[write-rules] account→AID refresh failed: %v", err)
+			return
+		}
+		history, err := spaceManager.ObjectTreeManager().CollectRoleHistories(ctx, communityReadOnlySpaceID)
+		if err != nil {
+			log.Printf("[write-rules] role history refresh failed: %v", err)
+			return
+		}
+		adminAIDs := make(map[string]bool)
+		if orgConfigHandler.IsConfigured() {
+			for _, a := range orgConfigHandler.GetConfig().Admins {
+				if a.AID != "" {
+					adminAIDs[a.AID] = true
+				}
+			}
+		}
+		writeRuleResolver.Replace(anysync.RoleSnapshot{AccountAID: accountAID, History: history, AdminAIDs: adminAIDs})
+	}
+	refreshCtx, stopRefresh := context.WithCancel(ctx)
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		refreshWriteRuleRoles(refreshCtx)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-refreshCtx.Done():
+				return
+			case <-ticker.C:
+				refreshWriteRuleRoles(refreshCtx)
+			}
+		}
+	}()
+	closers = append(closers, func() error { stopRefresh(); <-refreshDone; return nil })
 
 	// Mirror org config writes to the legacy config server for backward
 	// compatibility (older clients / multi-session dev still read it). The
