@@ -114,11 +114,38 @@ func (r *HistoryRoleResolver) RolesForAuthorAt(account string, at int64) ([]cont
 	if !bound {
 		return nil, false
 	}
+	return rolesForAIDAt(snap, aid, at)
+}
+
+// RolesForAIDAt implements RoleResolver keyed directly by AID (used by the
+// proof-backed rules, where the AID is cryptographically authenticated). An AID
+// with no ACL binding and no role history resolves ok=false, so a proof from an
+// AID this peer has never seen as a member cannot pass.
+func (r *HistoryRoleResolver) RolesForAIDAt(aid string, at int64) ([]contributions.Role, bool) {
+	if aid == "" {
+		return nil, false
+	}
+	r.mu.RLock()
+	snap := r.snap
+	r.mu.RUnlock()
+	return rolesForAIDAt(snap, aid, at)
+}
+
+// rolesForAIDAt resolves an AID's roles as of unix time `at` from a snapshot:
+// org-config admins are Founding Member at all times; otherwise the latest role
+// history entry whose timestamp <= at applies, defaulting to member for a known
+// AID with no (or not-yet) recorded role. An AID with neither an admin override,
+// role history, nor an ACL binding is unknown → ok=false.
+func rolesForAIDAt(snap RoleSnapshot, aid string, at int64) ([]contributions.Role, bool) {
 	if snap.AdminAIDs[aid] {
 		return contributions.MapKERIRole("Founding Member"), true
 	}
+	history, hasHistory := snap.History[aid]
+	if !hasHistory && !aidIsBound(snap, aid) {
+		return nil, false
+	}
 	role := ""
-	for _, h := range snap.History[aid] {
+	for _, h := range history {
 		if h.Since > at {
 			break
 		}
@@ -128,6 +155,17 @@ func (r *HistoryRoleResolver) RolesForAuthorAt(account string, at int64) ([]cont
 		return []contributions.Role{contributions.RoleMember}, true
 	}
 	return contributions.MapKERIRole(role), true
+}
+
+// aidIsBound reports whether the AID is bound to any active ACL account, i.e. it
+// is a known member even if its profile role history has not replicated yet.
+func aidIsBound(snap RoleSnapshot, aid string) bool {
+	for _, boundAID := range snap.AccountAID {
+		if boundAID == aid {
+			return true
+		}
+	}
+	return false
 }
 
 // RoleHistoryFromTree walks one CommunityProfile tree in a single pass and

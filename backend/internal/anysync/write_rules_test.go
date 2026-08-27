@@ -20,6 +20,13 @@ func (f fakeResolver) RolesForAuthorAt(account string, _ int64) ([]contributions
 	return roles, ok
 }
 
+// RolesForAIDAt keys off the same map so proof-backed tests can register an AID
+// directly (the AID is the map key in those tests).
+func (f fakeResolver) RolesForAIDAt(aid string, _ int64) ([]contributions.Role, bool) {
+	roles, ok := f[aid]
+	return roles, ok
+}
+
 // recordingRecorder captures rejections for assertions.
 type recordingRecorder struct{ rejections []RejectedChange }
 
@@ -40,9 +47,9 @@ func TestValidateChange_ForgedSignOffRejected(t *testing.T) {
 		"acct-member": contributions.MapKERIRole("Member"), // baseline member
 	}
 	rec := &recordingRecorder{}
-	v := NewWriteRuleValidator(resolver, rec)
+	v := NewWriteRuleValidator(resolver, nil, rec, false)
 
-	ok := v.ValidateChange(TypeContribution, "contrib-1", "chg-1", "acct-member", 0,
+	ok := v.ValidateChange("", TypeContribution, "contrib-1", "chg-1", "acct-member", 0,
 		[]ChangeOp{setOp("status", string(contributions.ContribSignedOff))}, nil)
 
 	if ok {
@@ -61,9 +68,9 @@ func TestValidateChange_LegitSignOffAllowed(t *testing.T) {
 		"acct-steward": contributions.MapKERIRole("Operations Steward"),
 	}
 	rec := &recordingRecorder{}
-	v := NewWriteRuleValidator(resolver, rec)
+	v := NewWriteRuleValidator(resolver, nil, rec, false)
 
-	ok := v.ValidateChange(TypeContribution, "contrib-1", "chg-1", "acct-steward", 0,
+	ok := v.ValidateChange("", TypeContribution, "contrib-1", "chg-1", "acct-steward", 0,
 		[]ChangeOp{setOp("status", string(contributions.ContribSignedOff))}, nil)
 
 	if !ok {
@@ -79,13 +86,13 @@ func TestValidateChange_RewardRequiresOpsSteward(t *testing.T) {
 	resolver := fakeResolver{
 		"acct-projsteward": {contributions.RoleProjectSteward},
 	}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
-	if v.ValidateChange(TypeContribution, "c", "chg", "acct-projsteward", 0,
+	if v.ValidateChange("", TypeContribution, "c", "chg", "acct-projsteward", 0,
 		[]ChangeOp{setOp("status", string(contributions.ContribRewarded))}, nil) {
 		t.Error("project steward must not be able to reward")
 	}
-	if !v.ValidateChange(TypeContribution, "c", "chg", "acct-projsteward", 0,
+	if !v.ValidateChange("", TypeContribution, "c", "chg", "acct-projsteward", 0,
 		[]ChangeOp{setOp("status", string(contributions.ContribSignedOff))}, nil) {
 		t.Error("project steward must be able to sign off")
 	}
@@ -96,13 +103,13 @@ func TestValidateChange_ProjectCompletion(t *testing.T) {
 		"acct-member": {contributions.RoleMember},
 		"acct-lead":   {contributions.RoleProjectLead},
 	}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
-	if v.ValidateChange(TypeProject, "p", "chg", "acct-member", 0,
+	if v.ValidateChange("", TypeProject, "p", "chg", "acct-member", 0,
 		[]ChangeOp{setOp("status", string(contributions.ProjectCompleted))}, nil) {
 		t.Error("member must not complete a project")
 	}
-	if !v.ValidateChange(TypeProject, "p", "chg", "acct-lead", 0,
+	if !v.ValidateChange("", TypeProject, "p", "chg", "acct-lead", 0,
 		[]ChangeOp{setOp("status", string(contributions.ProjectPendingCompletion))}, nil) {
 		t.Error("project lead must be able to submit completion")
 	}
@@ -115,19 +122,19 @@ func TestValidateChange_PlanSignOffGuarded(t *testing.T) {
 		"acct-steward": {contributions.RoleProjectSteward},
 	}
 	rec := &recordingRecorder{}
-	v := NewWriteRuleValidator(resolver, rec)
+	v := NewWriteRuleValidator(resolver, nil, rec, false)
 
-	if v.ValidateChange(TypeImplementationPlan, "plan", "chg1", "acct-member", 0,
+	if v.ValidateChange("", TypeImplementationPlan, "plan", "chg1", "acct-member", 0,
 		[]ChangeOp{rawOp("signed_off", `true`)}, nil) {
 		t.Error("member must not sign off an implementation plan")
 	}
-	if !v.ValidateChange(TypeImplementationPlan, "plan", "chg2", "acct-steward", 0,
+	if !v.ValidateChange("", TypeImplementationPlan, "plan", "chg2", "acct-steward", 0,
 		[]ChangeOp{rawOp("signed_off", `true`)}, nil) {
 		t.Error("project steward must be able to sign off a plan")
 	}
 	// Invalidation (signed_off → false) is not high-stakes: anyone editing a
 	// milestone triggers it.
-	if !v.ValidateChange(TypeImplementationPlan, "plan", "chg3", "acct-member", 0,
+	if !v.ValidateChange("", TypeImplementationPlan, "plan", "chg3", "acct-member", 0,
 		[]ChangeOp{rawOp("signed_off", `false`)}, map[string]json.RawMessage{"signed_off": json.RawMessage(`true`)}) {
 		t.Error("clearing plan sign-off must be allowed for any member")
 	}
@@ -141,17 +148,17 @@ func TestValidateChange_ProposalSignOffGuarded(t *testing.T) {
 		"acct-member":  {contributions.RoleMember},
 		"acct-steward": {contributions.RoleCommunitySteward},
 	}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
-	if v.ValidateChange(TypeProposal, "prop", "chg1", "acct-member", 0,
+	if v.ValidateChange("", TypeProposal, "prop", "chg1", "acct-member", 0,
 		[]ChangeOp{setOp("status", string(contributions.ProposalSignedOff))}, nil) {
 		t.Error("member must not sign off a proposal")
 	}
-	if !v.ValidateChange(TypeProposal, "prop", "chg2", "acct-steward", 0,
+	if !v.ValidateChange("", TypeProposal, "prop", "chg2", "acct-steward", 0,
 		[]ChangeOp{setOp("status", string(contributions.ProposalSignedOff))}, nil) {
 		t.Error("community steward must be able to sign off a proposal")
 	}
-	if !v.ValidateChange(TypeProposal, "prop", "chg3", "acct-member", 0,
+	if !v.ValidateChange("", TypeProposal, "prop", "chg3", "acct-member", 0,
 		[]ChangeOp{setOp("status", string(contributions.ProposalSubmitted))}, nil) {
 		t.Error("non-high-stakes proposal transition must be allowed")
 	}
@@ -162,13 +169,13 @@ func TestValidateChange_RoleChangeRequiresAdmin(t *testing.T) {
 		"acct-member":  {contributions.RoleMember},
 		"acct-founder": contributions.MapKERIRole("Founding Member"),
 	}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
-	if v.ValidateChange("CommunityProfile", "cp", "chg", "acct-member", 0,
+	if v.ValidateChange("", "CommunityProfile", "cp", "chg", "acct-member", 0,
 		[]ChangeOp{setOp("role", "Operations Steward")}, nil) {
 		t.Error("member must not change a role")
 	}
-	if !v.ValidateChange("CommunityProfile", "cp", "chg", "acct-founder", 0,
+	if !v.ValidateChange("", "CommunityProfile", "cp", "chg", "acct-founder", 0,
 		[]ChangeOp{setOp("role", "Operations Steward")}, nil) {
 		t.Error("founding member must be able to change a role")
 	}
@@ -176,9 +183,9 @@ func TestValidateChange_RoleChangeRequiresAdmin(t *testing.T) {
 
 func TestValidateChange_NonHighStakesValueAllowed(t *testing.T) {
 	resolver := fakeResolver{"acct-member": {contributions.RoleMember}}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
-	if !v.ValidateChange(TypeContribution, "c", "chg", "acct-member", 0,
+	if !v.ValidateChange("", TypeContribution, "c", "chg", "acct-member", 0,
 		[]ChangeOp{setOp("status", string(contributions.ContribAssigned)), setOp("title", "x")}, nil) {
 		t.Error("ordinary status transitions must be allowed")
 	}
@@ -186,9 +193,9 @@ func TestValidateChange_NonHighStakesValueAllowed(t *testing.T) {
 
 func TestValidateChange_UnresolvedAuthorFailsOpen(t *testing.T) {
 	rec := &recordingRecorder{}
-	v := NewWriteRuleValidator(fakeResolver{}, rec)
+	v := NewWriteRuleValidator(fakeResolver{}, nil, rec, false)
 
-	if !v.ValidateChange(TypeContribution, "c", "chg", "acct-unknown", 0,
+	if !v.ValidateChange("", TypeContribution, "c", "chg", "acct-unknown", 0,
 		[]ChangeOp{setOp("status", string(contributions.ContribSignedOff))}, nil) {
 		t.Error("unresolvable author must fail open (documented gap; fail-closed lands with GH#20)")
 	}
@@ -201,10 +208,10 @@ func TestValidateChange_ReassertedValueAllowed(t *testing.T) {
 	// A non-steward snapshot that carries forward an already-signed-off status
 	// is not a new privileged action.
 	resolver := fakeResolver{"acct-member": {contributions.RoleMember}}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
 	current := map[string]json.RawMessage{"status": json.RawMessage(`"signed_off"`)}
-	if !v.ValidateChange(TypeContribution, "c", "chg", "acct-member", 0,
+	if !v.ValidateChange("", TypeContribution, "c", "chg", "acct-member", 0,
 		[]ChangeOp{setOp("status", "signed_off"), setOp("title", "renamed")}, current) {
 		t.Error("re-asserting the current high-stakes value must be allowed")
 	}
@@ -212,9 +219,9 @@ func TestValidateChange_ReassertedValueAllowed(t *testing.T) {
 
 func TestValidateChange_UnguardedTypeAllowed(t *testing.T) {
 	resolver := fakeResolver{"acct-member": {contributions.RoleMember}}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
-	if !v.ValidateChange("SharedProfile", "sp", "chg", "acct-member", 0,
+	if !v.ValidateChange("", "SharedProfile", "sp", "chg", "acct-member", 0,
 		[]ChangeOp{setOp("status", "signed_off")}, nil) {
 		t.Error("types without a rule must not be gated")
 	}
@@ -222,14 +229,14 @@ func TestValidateChange_UnguardedTypeAllowed(t *testing.T) {
 
 // Blocking item 4: an empty object type must not silently bypass validation.
 func TestBuildStateValidated_EmptyTypeFailsLoudly(t *testing.T) {
-	v := NewWriteRuleValidator(fakeResolver{}, &recordingRecorder{})
-	_, err := BuildStateValidated(nil, "obj-1", "", v)
+	v := NewWriteRuleValidator(fakeResolver{}, nil, &recordingRecorder{}, false)
+	_, err := BuildStateValidated(nil, "", "obj-1", "", v)
 	if !errors.Is(err, ErrUnknownObjectType) {
 		t.Fatalf("expected ErrUnknownObjectType, got %v", err)
 	}
 	// Without a validator the legacy behaviour (type-less build) is preserved.
 	tree := &fakeTree{changes: []fakeChange{{id: "c1", ops: []ChangeOp{setOp("a", "b")}}}}
-	if _, err := BuildStateValidated(tree, "obj-1", "", nil); err != nil {
+	if _, err := BuildStateValidated(tree, "", "obj-1", "", nil); err != nil {
 		t.Fatalf("nil validator must not require a type: %v", err)
 	}
 }
@@ -440,7 +447,7 @@ func TestApplyChange_ForgedSignOffExcludedFromState(t *testing.T) {
 		stewardAcct: contributions.MapKERIRole("Operations Steward"),
 		memberAcct:  contributions.MapKERIRole("Member"),
 	}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
 	state := &ObjectState{
 		ObjectID:   "contrib-1",
@@ -449,10 +456,10 @@ func TestApplyChange_ForgedSignOffExcludedFromState(t *testing.T) {
 	}
 
 	// 1. steward creates + assigns (legit)
-	state.applyChange(changeFor("c1", stewardKey, true, setOp("status", "assigned")), &ObjectChange{Ops: []ChangeOp{setOp("status", "assigned")}}, v)
+	state.applyChange("", changeFor("c1", stewardKey, true, setOp("status", "assigned")), &ObjectChange{Ops: []ChangeOp{setOp("status", "assigned")}}, v)
 	// 2. member forges a sign-off (must be ignored)
 	forge := &ObjectChange{Ops: []ChangeOp{setOp("status", "signed_off")}}
-	state.applyChange(changeFor("c2", memberKey, false, forge.Ops...), forge, v)
+	state.applyChange("", changeFor("c2", memberKey, false, forge.Ops...), forge, v)
 
 	if got := jsonStringValue(state.Fields["status"]); got != "assigned" {
 		t.Fatalf("forged sign-off leaked into state: status=%q (want assigned)", got)
@@ -463,7 +470,7 @@ func TestApplyChange_ForgedSignOffExcludedFromState(t *testing.T) {
 
 	// 3. the steward's own sign-off is applied
 	legit := &ObjectChange{Ops: []ChangeOp{setOp("status", "signed_off")}}
-	state.applyChange(changeFor("c3", stewardKey, false, legit.Ops...), legit, v)
+	state.applyChange("", changeFor("c3", stewardKey, false, legit.Ops...), legit, v)
 	if got := jsonStringValue(state.Fields["status"]); got != "signed_off" {
 		t.Fatalf("legit steward sign-off not applied: status=%q", got)
 	}
@@ -476,7 +483,7 @@ func TestApplyChange_NilValidatorUnchanged(t *testing.T) {
 	memberKey, _ := mustAccount(t)
 	state := &ObjectState{ObjectID: "c", ObjectType: TypeContribution, Fields: make(map[string]json.RawMessage)}
 	ops := &ObjectChange{Ops: []ChangeOp{setOp("status", "signed_off")}}
-	state.applyChange(changeFor("c1", memberKey, false, ops.Ops...), ops, nil)
+	state.applyChange("", changeFor("c1", memberKey, false, ops.Ops...), ops, nil)
 	if jsonStringValue(state.Fields["status"]) != "signed_off" {
 		t.Error("nil validator must apply every change unchanged")
 	}
@@ -489,18 +496,18 @@ func TestApplyChange_ForgedSnapshotDoesNotWipeState(t *testing.T) {
 		stewardAcct: contributions.MapKERIRole("Operations Steward"),
 		memberAcct:  contributions.MapKERIRole("Member"),
 	}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
 	state := &ObjectState{ObjectID: "c", ObjectType: TypeContribution, Fields: make(map[string]json.RawMessage)}
 	// steward signs off legitimately
 	so := &ObjectChange{Ops: []ChangeOp{setOp("title", "Fix bug"), setOp("status", "signed_off")}}
-	state.applyChange(changeFor("c1", stewardKey, true, so.Ops...), so, v)
+	state.applyChange("", changeFor("c1", stewardKey, true, so.Ops...), so, v)
 
 	// member issues a snapshot that flips status to rewarded while carrying the
 	// title forward. The whole change is high-stakes (rewarded) → rejected → the
 	// snapshot must not wipe or alter existing fields.
 	snap := &ObjectChange{Ops: []ChangeOp{setOp("title", "Fix bug"), setOp("status", "rewarded")}}
-	state.applyChange(changeFor("c2", memberKey, true, snap.Ops...), snap, v)
+	state.applyChange("", changeFor("c2", memberKey, true, snap.Ops...), snap, v)
 
 	if got := jsonStringValue(state.Fields["status"]); got != "signed_off" {
 		t.Fatalf("forged snapshot altered status: %q (want signed_off)", got)
@@ -520,7 +527,7 @@ func TestValidatedBaseline_LegitTransitionStillDiffs(t *testing.T) {
 		stewardAcct: contributions.MapKERIRole("Operations Steward"),
 		memberAcct:  contributions.MapKERIRole("Member"),
 	}
-	v := NewWriteRuleValidator(resolver, &recordingRecorder{})
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
 
 	tree := &fakeTree{changes: []fakeChange{
 		{id: "c1", identity: stewardKey, snapshot: true, ops: []ChangeOp{setOp("status", "assigned")}},
@@ -535,7 +542,7 @@ func TestValidatedBaseline_LegitTransitionStillDiffs(t *testing.T) {
 		t.Fatal("sanity: against the raw tree the legit sign-off diffs to nothing (the DoS)")
 	}
 
-	validated, err := BuildStateValidated(tree, "contrib-1", TypeContribution, v)
+	validated, err := BuildStateValidated(tree, "", "contrib-1", TypeContribution, v)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,6 +584,61 @@ func TestLoggingRejectionRecorder_DedupesByChangeID(t *testing.T) {
 	rec.RecordRejection(RejectedChange{ChangeID: "other", ObjectID: "o"})
 	if got := rec.Recent(); len(got) != 2 {
 		t.Fatalf("expected 2 distinct rejections, got %d: %+v", len(got), got)
+	}
+}
+
+// proofOp marshals a signed proof into the object field carrying it.
+func proofOp(field string, p *contributions.Proof) ChangeOp {
+	js, _ := json.Marshal(p)
+	return rawOp(field, string(js))
+}
+
+// With proof enforcement ON, a valid signature by a credentialed steward AID is
+// allowed; the same signature by a revoked (now member-only) AID is rejected;
+// and an AID with no known role is rejected — exercising the crypto branch of
+// ValidateChange end to end (forged-sig coverage is in proof_verifier_test.go
+// and write_rules_tree_test.go).
+func TestValidateChange_EnforceProofs(t *testing.T) {
+	s := newSigner(t, "E-steward")
+	keys := NewStaticKeyProvider()
+	keys.Set(s.aid, s.verfer)
+	proof := s.sign("contribution_signoff", "contrib-1", "space-community", "signed_off", "2026-08-27T00:00:00Z")
+
+	ops := []ChangeOp{
+		setOp("status", string(contributions.ContribSignedOff)),
+		proofOp("sign_off_proof", proof),
+	}
+
+	// Valid: signer AID holds the ops-steward role.
+	valid := NewWriteRuleValidator(
+		fakeResolver{"E-steward": contributions.MapKERIRole("Operations Steward")}, keys, &recordingRecorder{}, true)
+	if !valid.ValidateChange("space-community", TypeContribution, "contrib-1", "chg", "acct-x", 0, ops, nil) {
+		t.Error("a valid steward-signed sign-off must be allowed under enforcement")
+	}
+
+	// Revoked: the signature is valid but the AID's credentialed role is now
+	// member-only, so the transition is not permitted.
+	rec := &recordingRecorder{}
+	revoked := NewWriteRuleValidator(
+		fakeResolver{"E-steward": contributions.MapKERIRole("Member")}, keys, rec, true)
+	if revoked.ValidateChange("space-community", TypeContribution, "contrib-1", "chg", "acct-x", 0, ops, nil) {
+		t.Error("a valid signature from a revoked/demoted AID must be rejected")
+	}
+	if len(rec.rejections) != 1 || rec.rejections[0].Reason != "signer role not permitted to set this value" {
+		t.Errorf("unexpected rejection record: %+v", rec.rejections)
+	}
+
+	// Unknown AID: valid signature but no role resolvable → rejected.
+	unknown := NewWriteRuleValidator(fakeResolver{}, keys, &recordingRecorder{}, true)
+	if unknown.ValidateChange("space-community", TypeContribution, "contrib-1", "chg", "acct-x", 0, ops, nil) {
+		t.Error("a signature from an AID with no known role must be rejected")
+	}
+
+	// Missing key state (empty provider) → fail closed even with a role.
+	noKeys := NewWriteRuleValidator(
+		fakeResolver{"E-steward": contributions.MapKERIRole("Operations Steward")}, NewStaticKeyProvider(), &recordingRecorder{}, true)
+	if noKeys.ValidateChange("space-community", TypeContribution, "contrib-1", "chg", "acct-x", 0, ops, nil) {
+		t.Error("an unresolved signer key must fail closed under enforcement")
 	}
 }
 

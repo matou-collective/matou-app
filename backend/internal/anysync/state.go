@@ -50,7 +50,7 @@ const SnapshotInterval = 10
 // BuildState iterates a tree's changes and replays ops to reconstruct current state.
 // Starts from latest snapshot if one exists, otherwise from root.
 func BuildState(tree objecttree.ReadableObjectTree, objectID, objectType string) (*ObjectState, error) {
-	return BuildStateValidated(tree, objectID, objectType, nil)
+	return BuildStateValidated(tree, "", objectID, objectType, nil)
 }
 
 // BuildStateValidated is BuildState with an optional peer-side write validator
@@ -58,8 +58,11 @@ func BuildState(tree objecttree.ReadableObjectTree, objectID, objectType string)
 // its ops are applied; a rejected change is skipped entirely — its ops are not
 // applied and it does not advance the version — so a forged high-stakes change
 // (e.g. a member-authored sign-off) cannot alter the reconstructed state. A nil
-// validator reproduces BuildState's behaviour exactly.
-func BuildStateValidated(tree objecttree.ReadableObjectTree, objectID, objectType string, validator ChangeValidator) (*ObjectState, error) {
+// validator reproduces BuildState's behaviour exactly. spaceID is the any-sync
+// space the tree lives in; it is passed to the validator so proof-backed
+// transitions can be bound to their space (anti-cross-space-replay). Pass "" on
+// a path that cannot determine the space (the space check is then skipped).
+func BuildStateValidated(tree objecttree.ReadableObjectTree, spaceID, objectID, objectType string, validator ChangeValidator) (*ObjectState, error) {
 	if validator != nil && objectType == "" {
 		// An unknown object type cannot be matched against the write rules, so
 		// validating it would silently treat a guarded object (e.g. one that is
@@ -96,7 +99,7 @@ func BuildStateValidated(tree objecttree.ReadableObjectTree, objectID, objectTyp
 			if !ok || oc == nil {
 				return true
 			}
-			state.applyChange(change, oc, validator)
+			state.applyChange(spaceID, change, oc, validator)
 			return true
 		},
 	)
@@ -116,13 +119,13 @@ func BuildStateValidated(tree objecttree.ReadableObjectTree, objectID, objectTyp
 // treated as if it were never authored). The validator sees the field state as
 // it stands immediately before this change, so it can distinguish a genuine
 // high-stakes transition from a value merely carried forward by a snapshot.
-func (s *ObjectState) applyChange(change *objecttree.Change, oc *ObjectChange, validator ChangeValidator) {
+func (s *ObjectState) applyChange(spaceID string, change *objecttree.Change, oc *ObjectChange, validator ChangeValidator) {
 	if validator != nil {
 		author := ""
 		if change.Identity != nil {
 			author = change.Identity.Account()
 		}
-		if !validator.ValidateChange(s.ObjectType, s.ObjectID, change.Id, author, change.Timestamp, oc.Ops, s.Fields) {
+		if !validator.ValidateChange(spaceID, s.ObjectType, s.ObjectID, change.Id, author, change.Timestamp, oc.Ops, s.Fields) {
 			return
 		}
 	}
