@@ -43,10 +43,24 @@ with open(path, "w") as f:
 PY
 
 # --- embedded backend .aar --------------------------------------------------
-if [ ! -f "$CAP/android/app/libs/matou.aar" ]; then
+# The .aar embeds the Go backend, so a stale one silently ships an old client
+# (issue #130: the phone 404'd on /api/v1/client-config because the AAR predated
+# a backend change). Rebuild when it is missing OR when any backend source is
+# newer than it, then always report which AAR is being packaged.
+AAR="$CAP/android/app/libs/matou.aar"
+aar_state="reused"
+if [ ! -f "$AAR" ]; then
   echo "==> matou.aar missing — building it"
   make -C "$ROOT_DIR/backend" build-android-aar
+  aar_state="rebuilt (was missing)"
+elif [ -n "$(find "$ROOT_DIR/backend" \
+    \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) \
+    -type f -newer "$AAR" -print -quit)" ]; then
+  echo "==> matou.aar is older than backend sources — rebuilding it"
+  make -C "$ROOT_DIR/backend" build-android-aar
+  aar_state="rebuilt (backend changed)"
 fi
+echo "==> Packaging AAR: $AAR ($aar_state, mtime $(date -r "$AAR" '+%Y-%m-%d %H:%M:%S'))"
 
 # --- Quasar Capacitor build -------------------------------------------------
 cd "$FRONTEND"
