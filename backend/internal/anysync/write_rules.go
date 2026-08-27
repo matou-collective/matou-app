@@ -21,18 +21,22 @@
 // two honest peers with the same synced trees reach the same verdict, and
 // demoting a steward later does not retroactively reject their past sign-offs.
 //
-// Legitimacy source — KNOWN GAP (GH#19 AC-1 is NOT met by this part): the
-// account → AID binding comes from ACL join metadata that the *joining* peer
-// writes (api/spaces.go HandleJoinCommunity interpolates the client-supplied
-// UserAID). A modified client can therefore join claiming a steward's AID. The
-// first-bound-wins dedupe in AccountAIDMap stops a *second* account from
-// hijacking an AID that is already bound, but it cannot stop a fresh claim of
-// an AID that has not joined yet. Closing that hole requires KERI-backed
-// proofs of the AID ↔ any-sync-account binding (GH#20). When those land, the
-// RoleResolver must be replaced by one that also verifies the proof; the
-// fail-open branch below (unresolved author → allow) must then become
-// fail-closed per the decided design (per-action digest verification), which
-// is an engine change, not a drop-in swap.
+// Legitimacy source (GH#19 part 2): high-stakes proof-backed transitions
+// (contribution sign-off/reward, project completion, plan sign-off) are now
+// gated by verifying a KERI action proof — see proof_verifier.go. The signer
+// AID is authenticated cryptographically (the change must carry a signature
+// over the object's own action/subject/space/value/dt), so the interim,
+// attacker-controlled ACL-join-metadata binding is no longer trusted for these
+// transitions and AC-1 is met: a writer-permission forger cannot mint a valid
+// signature. The signer's role is then resolved BY AID
+// (RoleResolver.RolesForAIDAt) from the synced CommunityProfile role history.
+//
+// A residual set of transitions the frontend does not yet sign a proof for
+// (submit-completion, proposal sign-off, and CommunityProfile role changes —
+// the last ACL-enforced by living in the admin-only space) stay on the interim
+// account → AID → role path from part 1, which remains fail-open on an
+// unresolved author. See docs/RBAC.md for the full matrix and the remaining
+// follow-ups (KEL-sn-anchored key state, credential-TEL role binding).
 package anysync
 
 import (
@@ -46,10 +50,13 @@ import (
 // ChangeValidator decides whether a decoded change may contribute to derived
 // state. It is consulted per change during state reconstruction.
 type ChangeValidator interface {
-	// ValidateChange reports whether the change identified by changeID,
-	// authored by the any-sync account `author` (crypto.PubKey.Account()) at
-	// unix time `timestamp` (the change's own Timestamp field, part of the
-	// synced tree data), may apply `ops` to an object of the given type.
+	// ValidateChange reports whether the change identified by changeID, in
+	// any-sync space `spaceID`, authored by the account `author`
+	// (crypto.PubKey.Account()) at unix time `timestamp` (the change's own
+	// Timestamp field, part of the synced tree data), may apply `ops` to an
+	// object of the given type. `spaceID` binds a proof-backed transition to the
+	// space it lives in (anti-cross-space-replay); it may be "" on a read path
+	// that cannot determine the space, in which case the space check is skipped.
 	// `current` is the object's field state immediately before this change is
 	// applied, used to tell a genuine high-stakes transition apart from a
 	// no-op re-assertion (e.g. a snapshot that merely carries a value forward).
@@ -57,7 +64,7 @@ type ChangeValidator interface {
 	// Returning false excludes the change from state computation and is
 	// expected to record it for observability. Implementations must be
 	// deterministic: the same inputs yield the same verdict on every peer.
-	ValidateChange(objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage) bool
+	ValidateChange(spaceID, objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage) bool
 }
 
 // RoleResolver maps an any-sync change author (the account string returned by
@@ -71,8 +78,16 @@ type RoleResolver interface {
 	// resolved from currently-synced state (unknown account, or profile not
 	// yet replicated). Callers fail open on !ok, because absence of evidence
 	// is not proof of a violation — see the package comment for why this is
-	// a known gap.
+	// a known gap. Used only for the interim role-based (non-proof) rules.
 	RolesForAuthorAt(account string, at int64) (roles []contributions.Role, ok bool)
+
+	// RolesForAIDAt returns the roles the member AID held as of unix time `at`,
+	// keyed directly by the KERI AID rather than by an any-sync account. It is
+	// used by the proof-backed rules, where the AID has already been
+	// cryptographically authenticated by verifying the action proof, so the
+	// attacker-controlled account → AID binding is bypassed entirely. ok is
+	// false when the AID has no known role in currently-synced state.
+	RolesForAIDAt(aid string, at int64) (roles []contributions.Role, ok bool)
 }
 
 // RejectedChange describes a change excluded from state by a write rule.
@@ -173,25 +188,52 @@ func allowRoles(allowed ...contributions.Role) rolePredicate {
 	}
 }
 
+// guardedValue declares how one high-stakes transition is authorised.
+//
+// A transition is either PROOF-BACKED or ROLE-ONLY:
+//
+//   - Proof-backed (proofAction != ""): the change MUST carry a valid KERI
+//     action proof (see proof_verifier.go). The signer AID is authenticated
+//     cryptographically and its role is then resolved by AID. This is the
+//     GH#19 part-2 legitimacy source and meets AC-1: a forger cannot produce a
+//     valid signature. proofField is the object field carrying the Proof
+//     envelope; proofValue is the value bound in the signed message (which can
+//     differ from the field's literal value — e.g. a bool "true" is signed as
+//     "signed_off").
+//
+//   - Role-only (proofAction == ""): the frontend does not (yet) sign a proof
+//     for this transition, so it stays on the interim role-based path from part
+//     1 — the author is resolved via the ACL account → AID binding and gated by
+//     role. Weaker (fail-open on unknown author), retained as defence-in-depth
+//     for transitions without proof coverage (e.g. CommunityProfile role
+//     changes, which are ACL-enforced by living in the admin-only space, and
+//     submit-completion / proposal sign-off, which have no proof action).
+type guardedValue struct {
+	permit      rolePredicate
+	proofAction string
+	proofField  string
+	proofValue  string
+}
+
 // objectRule declares the guarded field of one object type and which values of
 // that field are high-stakes.
 type objectRule struct {
 	field string
 	// byValue gates specific values of the field (e.g. status transitions).
-	byValue map[string]rolePredicate
+	byValue map[string]guardedValue
 	// anyValue, when non-nil, treats any change of the field as high-stakes
 	// (e.g. CommunityProfile.role).
-	anyValue rolePredicate
+	anyValue *guardedValue
 }
 
-// permitFor returns the predicate guarding a proposed value and whether that
-// value is high-stakes at all.
-func (r objectRule) permitFor(value string) (rolePredicate, bool) {
+// permitFor returns the guarded transition for a proposed value and whether
+// that value is high-stakes at all.
+func (r objectRule) permitFor(value string) (guardedValue, bool) {
 	if r.anyValue != nil {
-		return r.anyValue, true
+		return *r.anyValue, true
 	}
-	p, ok := r.byValue[value]
-	return p, ok
+	gv, ok := r.byValue[value]
+	return gv, ok
 }
 
 // communityWriteRules is the per-object-type write policy for high-stakes
@@ -201,40 +243,89 @@ func (r objectRule) permitFor(value string) (rolePredicate, bool) {
 var communityWriteRules = map[string]objectRule{
 	TypeContribution: {
 		field: "status",
-		byValue: map[string]rolePredicate{
-			string(contributions.ContribSignedOff): allowAction(contributions.ActionSignOffContribution),
-			string(contributions.ContribRewarded):  allowAction(contributions.ActionRewardContribution),
+		byValue: map[string]guardedValue{
+			// Proof-backed: the frontend signs contribution_signoff /
+			// contribution_reward with the acting steward's AID.
+			string(contributions.ContribSignedOff): {
+				permit:      allowAction(contributions.ActionSignOffContribution),
+				proofAction: "contribution_signoff",
+				proofField:  "sign_off_proof",
+				proofValue:  string(contributions.ContribSignedOff),
+			},
+			string(contributions.ContribRewarded): {
+				permit:      allowAction(contributions.ActionRewardContribution),
+				proofAction: "contribution_reward",
+				proofField:  "reward_proof",
+				proofValue:  string(contributions.ContribRewarded),
+			},
 		},
 	},
 	TypeProject: {
 		field: "status",
-		byValue: map[string]rolePredicate{
-			string(contributions.ProjectCompleted):         allowAction(contributions.ActionApproveProjectCompletion),
-			string(contributions.ProjectPendingCompletion): allowAction(contributions.ActionSubmitProjectCompletion),
+		byValue: map[string]guardedValue{
+			// Proof-backed: the frontend signs project_completion for the
+			// completion approval.
+			string(contributions.ProjectCompleted): {
+				permit:      allowAction(contributions.ActionApproveProjectCompletion),
+				proofAction: "project_completion",
+				proofField:  "proof",
+				proofValue:  string(contributions.ProjectCompleted),
+			},
+			// Role-only: submit-completion has no signed proof; keep the interim
+			// role gate (defence-in-depth, weaker binding).
+			string(contributions.ProjectPendingCompletion): {
+				permit: allowAction(contributions.ActionSubmitProjectCompletion),
+			},
 		},
 	},
 	// ImplementationPlan.signed_off is a bool; only the transition to true is
 	// high-stakes (invalidation back to false happens on any milestone edit).
+	// Proof-backed: the frontend signs plan_signoff (value "signed_off") for the
+	// sign-off, even though the object field is a bool "true".
 	TypeImplementationPlan: {
 		field: "signed_off",
-		byValue: map[string]rolePredicate{
-			"true": allowAction(contributions.ActionSignOffPlan),
+		byValue: map[string]guardedValue{
+			"true": {
+				permit:      allowAction(contributions.ActionSignOffPlan),
+				proofAction: "plan_signoff",
+				proofField:  "proof",
+				proofValue:  "signed_off",
+			},
 		},
 	},
+	// DecisionPlan.status → signed_off is proof-backed: the frontend signs
+	// plan_signoff for decision-plan sign-off.
+	TypeDecisionPlan: {
+		field: "status",
+		byValue: map[string]guardedValue{
+			string(contributions.DecisionPlanSignedOff): {
+				permit:      allowAction(contributions.ActionSignOffPlan),
+				proofAction: "plan_signoff",
+				proofField:  "proof",
+				proofValue:  "signed_off",
+			},
+		},
+	},
+	// Role-only: proposal sign-off has no dedicated proof action in the frontend
+	// yet, so it stays on the interim role gate.
 	TypeProposal: {
 		field: "status",
-		byValue: map[string]rolePredicate{
-			string(contributions.ProposalSignedOff): allowAction(contributions.ActionSignOffProposal),
+		byValue: map[string]guardedValue{
+			string(contributions.ProposalSignedOff): {
+				permit: allowAction(contributions.ActionSignOffProposal),
+			},
 		},
 	},
 	// CommunityProfile carries the member role and lives in the admin-only
 	// community-readonly space, so the SDK ACL already blocks non-admin writers.
-	// This entry is defense-in-depth for that space and a ready hook for the day
-	// role state moves to a member-writable space. Role changes are reserved to
-	// operations stewards and founding members (mirrors the 2026-02-22 design).
+	// Role changes are credential-backed (ACDC revoke/re-issue), not signed via
+	// the action-proof path, so this stays a role-only gate: defence-in-depth
+	// for that space and a ready hook for the day role state moves to a
+	// member-writable space. Reserved to operations stewards and founding
+	// members (mirrors the 2026-02-22 design).
 	"CommunityProfile": {
 		field:    "role",
-		anyValue: allowRoles(contributions.RoleOperationsSteward, contributions.RoleFoundingMember),
+		anyValue: &guardedValue{permit: allowRoles(contributions.RoleOperationsSteward, contributions.RoleFoundingMember)},
 	},
 }
 
@@ -244,22 +335,41 @@ func IsGuardedObjectType(objectType string) bool {
 	return ok
 }
 
-// WriteRuleValidator implements ChangeValidator using communityWriteRules, a
-// RoleResolver for authorship, and an optional RejectionRecorder.
+// WriteRuleValidator implements ChangeValidator using communityWriteRules.
+//
+// Proof-backed transitions are gated by verifying a KERI action proof against a
+// KeyProvider (GH#19 part 2) and then resolving the crypto-verified signer AID's
+// role. Role-only transitions fall back to the interim account → role
+// resolution (part 1). An optional RejectionRecorder surfaces every exclusion.
 type WriteRuleValidator struct {
-	resolver RoleResolver
-	recorder RejectionRecorder
+	resolver      RoleResolver
+	keys          KeyProvider
+	recorder      RejectionRecorder
+	enforceProofs bool
 }
 
-// NewWriteRuleValidator creates a validator. resolver must be non-nil; recorder
-// may be nil (rejections are then dropped without a trace, which callers should
-// avoid).
-func NewWriteRuleValidator(resolver RoleResolver, recorder RejectionRecorder) *WriteRuleValidator {
-	return &WriteRuleValidator{resolver: resolver, recorder: recorder}
+// NewWriteRuleValidator creates a validator. resolver must be non-nil; keys may
+// be nil (only used when proof enforcement is on); recorder may be nil
+// (rejections are dropped without a trace, which callers should avoid).
+//
+// enforceProofs selects the legitimacy source for proof-backed transitions:
+//
+//   - false (default, dev/test without the KERI crypto stack): proof-backed
+//     transitions use the interim role-based path from part 1 (author → AID via
+//     ACL metadata, fail-open on unknown). No proof is required, so a legit
+//     sign-off made without a signify keystore is not rejected. This preserves
+//     part-1 behaviour exactly and keeps environments without live KERIA
+//     working.
+//   - true (production / e2e with live KERIA, gated by MATOU_REQUIRE_SIGNED_AUTH
+//     — the same signal that makes X-User-AID trustworthy): proof-backed
+//     transitions are gated on cryptographic proof verification (fail-closed),
+//     meeting GH#19 AC-1.
+func NewWriteRuleValidator(resolver RoleResolver, keys KeyProvider, recorder RejectionRecorder, enforceProofs bool) *WriteRuleValidator {
+	return &WriteRuleValidator{resolver: resolver, keys: keys, recorder: recorder, enforceProofs: enforceProofs}
 }
 
 // ValidateChange implements ChangeValidator.
-func (v *WriteRuleValidator) ValidateChange(objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage) bool {
+func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, changeID, author string, timestamp int64, ops []ChangeOp, current map[string]json.RawMessage) bool {
 	rule, guarded := communityWriteRules[objectType]
 	if !guarded || v.resolver == nil {
 		return true
@@ -270,7 +380,7 @@ func (v *WriteRuleValidator) ValidateChange(objectType, objectID, changeID, auth
 			continue
 		}
 		value := jsonStringValue(op.Value)
-		permit, highStakes := rule.permitFor(value)
+		gv, highStakes := rule.permitFor(value)
 		if !highStakes {
 			continue
 		}
@@ -282,30 +392,82 @@ func (v *WriteRuleValidator) ValidateChange(objectType, objectID, changeID, auth
 		if cur, ok := current[op.Field]; ok && jsonStringValue(cur) == value {
 			continue
 		}
-		roles, resolved := v.resolver.RolesForAuthorAt(author, timestamp)
-		if !resolved {
-			// FAIL-OPEN (by design for part 1, see package comment): the author
-			// cannot be resolved from currently-synced state. Deterministic
-			// across peers sharing the same synced state, but not a security
-			// guarantee — GH#20 proofs turn this into fail-closed.
-			continue
-		}
-		if !permit(roles) {
+
+		reject := func(reason, ruleField string) bool {
 			if v.recorder != nil {
 				v.recorder.RecordRejection(RejectedChange{
 					ObjectType: objectType,
 					ObjectID:   objectID,
 					ChangeID:   changeID,
 					Author:     author,
-					Field:      op.Field,
+					Field:      ruleField,
 					Value:      value,
-					Reason:     "author not permitted to set this value",
+					Reason:     reason,
 				})
 			}
 			return false
 		}
+
+		if gv.proofAction != "" && v.enforceProofs {
+			// Proof-backed with enforcement on: the crypto proof is the
+			// legitimacy source (AC-1). A forger cannot mint a valid signature.
+			proof := extractProof(gv.proofField, ops)
+			aid, ok, reason := verifyActionProof(v.keys, gv.proofAction, objectID, spaceID, gv.proofValue, proof)
+			if !ok {
+				return reject(reason, gv.proofField)
+			}
+			roles, resolved := v.resolver.RolesForAIDAt(aid, timestamp)
+			if !resolved {
+				return reject("signer AID has no known role", op.Field)
+			}
+			if !gv.permit(roles) {
+				return reject("signer role not permitted to set this value", op.Field)
+			}
+			continue
+		}
+
+		// Role-only path: either a transition with no proof action, or a
+		// proof-backed transition with enforcement off (interim part-1
+		// behaviour). Resolve the author via the account → AID binding and gate
+		// by role. Fail-open on an unresolved author.
+		roles, resolved := v.resolver.RolesForAuthorAt(author, timestamp)
+		if !resolved {
+			continue
+		}
+		if !gv.permit(roles) {
+			return reject("author not permitted to set this value", op.Field)
+		}
 	}
 	return true
+}
+
+// extractProof pulls the Proof envelope for a proof-backed transition from the
+// change's OWN ops only. A genuine transition always writes the proof in the
+// same change as the guarded field (the service layer sets status and proof in
+// one save). The object's persisted proof field is deliberately NOT consulted:
+// a proof that already sits on the object binds the same action/subject/space/
+// value by construction, so falling back to it would let any writer re-assert
+// the high-stakes value (e.g. after a permitted revert) without a signature of
+// their own — a replay of the original signer's authority. Returns nil when the
+// change carries no proof, which verifyActionProof treats as a missing proof.
+func extractProof(field string, ops []ChangeOp) *contributions.Proof {
+	for _, op := range ops {
+		if op.Op == "set" && op.Field == field {
+			return decodeProof(op.Value)
+		}
+	}
+	return nil
+}
+
+func decodeProof(raw json.RawMessage) *contributions.Proof {
+	if len(raw) == 0 {
+		return nil
+	}
+	var p contributions.Proof
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil
+	}
+	return &p
 }
 
 // jsonStringValue decodes a JSON string value (e.g. `"signed_off"`) to its
