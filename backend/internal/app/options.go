@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/matou-dao/backend/internal/api"
 )
@@ -56,6 +57,14 @@ type Options struct {
 	AnysyncConfigPath string
 	// PrintBanner controls whether the startup banner is written to stdout.
 	PrintBanner bool
+	// KeyStateURL is the URL template (containing "{aid}") the signed-auth
+	// key-state resolver fetches an AID's KEL from. Empty means derive it from
+	// the KERI CESR URL in the loaded config ("{cesrUrl}/oobi/{aid}").
+	KeyStateURL string
+	// SessionTTL is the lifetime of a signed-auth session token; zero uses
+	// auth.DefaultSessionTTL (30m). MATOU_AUTH_SESSION_TTL overrides it (a Go
+	// duration, e.g. "4h") — the e2e harness lengthens it for long specs.
+	SessionTTL time.Duration
 }
 
 // IsTest reports whether the backend is running in the isolated test env.
@@ -138,6 +147,16 @@ func OptionsFromEnv() (Options, error) {
 	// API token: MATOU_API_TOKEN, else a random token in bundled/production,
 	// else the fixed dev constant (see api.ResolveAPIToken).
 	o.APIToken = api.ResolveAPIToken()
+
+	// Signed-auth key-state URL template (issue #18); empty derives from config.
+	o.KeyStateURL = os.Getenv("MATOU_KERIA_KEYSTATE_URL")
+	if ttlStr := os.Getenv("MATOU_AUTH_SESSION_TTL"); ttlStr != "" {
+		ttl, err := time.ParseDuration(ttlStr)
+		if err != nil || ttl <= 0 {
+			return Options{}, fmt.Errorf("invalid MATOU_AUTH_SESSION_TTL %q: %v", ttlStr, err)
+		}
+		o.SessionTTL = ttl
+	}
 
 	// Any-sync config path: explicit override wins; otherwise the per-env default.
 	o.AnysyncConfigPath = os.Getenv("MATOU_ANYSYNC_CONFIG")

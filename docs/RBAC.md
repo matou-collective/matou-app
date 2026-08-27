@@ -92,9 +92,19 @@ Notes: "Financial Steward" and "Treasury Steward" collapse to the same role; "Go
 
 ### 3. Request authentication & role resolution
 
+> **Update (issue #18):** `X-User-AID` is now made trustworthy by a
+> signed-challenge login (`internal/auth`, `SignedAuthMiddleware`). When
+> `MATOU_REQUIRE_SIGNED_AUTH` is set, the middleware ahead of RBAC derives the
+> AID from a verified session token (`Authorization: Bearer`) and strips any
+> client-supplied `X-User-AID`, so roles are only ever resolved for a
+> cryptographically verified AID. The flag defaults **OFF** (bare header still
+> accepted); the e2e config turns it on. See [signed-auth.md](signed-auth.md) for
+> the flow, key-state resolution, revoke-on-rotation, and the machine-client
+> path. The description below reflects the **enforcement-off** behavior.
+
 Flow for an RBAC-wrapped endpoint (note: many mutating endpoints are **not** wrapped at all — see the Implementation Status table):
 
-1. **`X-User-AID` header** — client-supplied, set by the frontend from its own identity store (`frontend/src/lib/api/client.ts:27-41` `authHeaders()`). No signature, no session token, no verification (`rbac.go:31`).
+1. **`X-User-AID` header** — client-supplied, set by the frontend from its own identity store (`frontend/src/lib/api/client.ts:27-41` `authHeaders()`). No signature, no session token, no verification (`rbac.go:31`) — unless signed-auth enforcement is on (see the update note above).
 2. **`RBACMiddleware`** (`rbac.go:29-46`) — 401 if header absent; otherwise resolves roles via the injected `RoleLookup` and stores AID+roles in request context. On lookup *error* it proceeds with empty roles (fail-open into "no roles", rbac.go:37-40). `OptionalRBACMiddleware` (`rbac.go:78-93`) is the same but lets header-less requests through with no roles (used on read routes and on mixed read/write prefixes whose write subroutes then re-check in-handler, e.g. `decision_plans.go:28,39`, `proposals.go:54`).
 3. **`RequireAction`** (`rbac.go:50-60`) — 403 unless `contributions.CanPerformAction(roles, action)` passes against the policy table.
 4. Handlers may additionally call `GetUserAID(r)` / `GetUserRoles(r)` for in-handler checks (e.g. `proposals.go:209-210,226-227,260-261,402-403`, `contributions_handler.go:705,855,892,945`, `decision_plans.go:150-174`).

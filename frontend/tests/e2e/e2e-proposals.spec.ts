@@ -31,16 +31,17 @@ import {
   performOrgSetup,
   TestAccounts,
 } from './utils/test-helpers';
+import { loginAs, sessionHeaders } from './utils/signed-auth';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Headers to act as `aid`. Adds the Bearer session registered by loginAs()
+// for real identities; synthetic personas (e.g. 'e2e-admin-aid') only carry
+// X-User-AID and therefore need MATOU_REQUIRE_SIGNED_AUTH off.
 function authHeaders(aid: string): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    'X-User-AID': aid,
-  };
+  return sessionHeaders(aid, { 'Content-Type': 'application/json' });
 }
 
 async function createProposalAPI(
@@ -320,6 +321,7 @@ test.describe.serial('Proposals UI', () => {
     if (needsSetup) {
       console.log('[ProposalsUI] No org config — running org setup...');
       accounts = await performOrgSetup(page, request);
+      await loginAs(page);
     } else {
       console.log('[ProposalsUI] Recovering admin identity...');
       accounts = loadAccounts();
@@ -329,6 +331,7 @@ test.describe.serial('Proposals UI', () => {
         );
       }
       await loginWithMnemonic(page, accounts.admin.mnemonic);
+      await loginAs(page);
       console.log('[ProposalsUI] Admin logged in');
     }
   });
@@ -644,10 +647,12 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
 
     if (needsSetup) {
       accounts = await performOrgSetup(adminPage, request);
+      await loginAs(adminPage);
     } else {
       accounts = loadAccounts();
       if (!accounts.admin?.mnemonic) throw new Error('No admin mnemonic');
       await loginWithMnemonic(adminPage, accounts.admin.mnemonic);
+      await loginAs(adminPage);
     }
 
     adminAID = accounts.admin?.aid ?? '';
@@ -673,6 +678,7 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
       throw new Error('No member account — run registration test first');
     }
     await loginWithMnemonic(memberPage, accounts.member.mnemonic);
+    await loginAs(memberPage);
     memberAID = accounts.member.aid ?? '';
     console.log('[Setup] Member AID: %s', memberAID);
 
@@ -688,6 +694,7 @@ test.describe.serial('Proposals Full 21-Step Lifecycle', () => {
     member2Page = await member2Context.newPage();
     setupPageLogging(member2Page, 'Member2-P');
     await loginWithMnemonic(member2Page, accounts.member2.mnemonic);
+    await loginAs(member2Page);
     member2AID = accounts.member2.aid ?? '';
     console.log('[Setup] Member2 AID: %s', member2AID);
   });

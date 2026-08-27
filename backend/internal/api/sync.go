@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/keri"
 )
@@ -17,11 +17,25 @@ import (
 // This handler receives credentials and KELs from the frontend (fetched from KERIA via signify-ts)
 // and stores them in anystore (local cache) and routes them to any-sync spaces.
 type SyncHandler struct {
-	keriClient    *keri.Client
-	store         *anystore.LocalStore
-	spaceManager  *anysync.SpaceManager
-	spaceStore    anysync.SpaceStore
-	userIdentity  *identity.UserIdentity
+	keriClient   *keri.Client
+	store        *anystore.LocalStore
+	spaceManager *anysync.SpaceManager
+	spaceStore   anysync.SpaceStore
+	userIdentity *identity.UserIdentity
+	// rotationHook, if set, is called with the verified caller's AID whenever
+	// that caller syncs its own KEL, so signed-auth sessions can be re-checked
+	// against the AID's authoritative key state (revoke-on-rotation).
+	rotationHook func(ctx context.Context, aid string)
+}
+
+// SetRotationHook registers a callback invoked when a request carrying a valid
+// signed-auth session syncs the KEL of that same AID. The hook receives only
+// the AID — never key material from the request body — and is expected to
+// re-resolve key state itself (see auth.Verifier.OnRotation). It is not fired
+// for unauthenticated requests or for a KEL belonging to another AID, so this
+// unauthenticated endpoint cannot be used to log arbitrary AIDs out.
+func (h *SyncHandler) SetRotationHook(hook func(ctx context.Context, aid string)) {
+	h.rotationHook = hook
 }
 
 // NewSyncHandler creates a new sync handler
@@ -268,6 +282,15 @@ func (h *SyncHandler) HandleSyncKEL(w http.ResponseWriter, r *http.Request) {
 			Error:   "kel events are required",
 		})
 		return
+	}
+
+	// Signal key-state observation so signed-auth sessions can be revoked if the
+	// AID's keys have rotated — only when the caller proved control of this very
+	// AID via its session (best-effort; never blocks the sync).
+	if h.rotationHook != nil {
+		if verified := VerifiedAID(r); verified != "" && verified == kelUserAID {
+			h.rotationHook(r.Context(), verified)
+		}
 	}
 
 	ctx := context.Background()

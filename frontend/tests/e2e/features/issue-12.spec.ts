@@ -1,4 +1,5 @@
 import { test, expect, Page } from './fixtures';
+import { loginAs, jsonSessionHeaders } from '../utils/signed-auth';
 
 // Feature (#12): typed @-mentions in the in-app chat. Typing `@` opens a
 // typeahead over the community roster; picking a person inserts a mention
@@ -22,7 +23,7 @@ async function adminAid(): Promise<string> {
 async function api(aid: string, method: string, route: string, body?: unknown) {
   const res = await fetch(`${API}${route}`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-User-AID': aid },
+    headers: jsonSessionHeaders(aid),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -62,6 +63,7 @@ test.describe('in-chat @-mentions (#12)', () => {
     test.setTimeout(180_000);
 
     const aid = await adminAid();
+    await loginAs(adminPage); // signed-auth session so API calls act as the admin
     const person = await firstMentionablePerson();
 
     // A fresh channel so this run's message can't collide with leftovers.
