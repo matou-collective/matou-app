@@ -38,6 +38,8 @@ FIX="$here/tests/fixtures"
 . "$here/env-allowlist-lib.sh"
 # shellcheck source=forgejo-lib.sh
 . "$here/forgejo-lib.sh"
+# shellcheck source=park-wiring-lib.sh
+. "$here/park-wiring-lib.sh"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
@@ -247,6 +249,46 @@ EOF
   return 0
 }
 
+guard_park_token_wiring() {
+  # #85 / GOTCHAS 30. Unlike its neighbours this guard reads THIS REPO's live
+  # workflow files, not a fixture — the same family as
+  # guard_issue_write_permission, which probes the live tracker. It is here,
+  # and not only in a factory-side test, because the violation lives in the
+  # CONSUMER's workflows: a repo edits the templates it was onboarded with, and
+  # several of its park-capable workflows never came from a template at all, so
+  # a check that can only read the factory's own files can never fire where the
+  # bug is. Vendored + run every swarm tick, it fires in the repo that owns the
+  # fault, before a worker spawns and before anything can park the host.
+  #
+  # Scope is deliberately the WHOLE workflow directory, not just the swarm
+  # workflow: a mis-wired healer or triage step parks the same host-global
+  # marker this run depends on, so this run is entitled to refuse.
+  # Where the repo root is depends on which side of the vendor boundary we are
+  # on, and nothing else: a consumer runs this from <repo>/.sandcastle/, the
+  # factory runs its own copy from the repo root. Derive it from the directory
+  # NAME, never from any repo-specific path.
+  local root violations rc=0 dirs=()
+  root="$here"
+  [ "$(basename "$here")" = ".sandcastle" ] && root="$(cd "$here/.." && pwd)"
+  dirs=("$root/.forgejo/workflows" "$root/.github/workflows")
+  violations="$(park_wiring_scan "${dirs[@]}")" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    2)
+      # Not silence. A checkout with no workflow directory is a legitimate
+      # shape (a bare harness copy, this repo's own offline test fixtures), but
+      # "the guard could not see anything" must be SAID — reading that as green
+      # is the defect this guard exists to end.
+      echo "park-token-wiring: SKIPPED — no workflow files under ${dirs[*]} (this guard could not reach the code it guards)" >&2
+      return 0
+      ;;
+  esac
+  echo "park-token-wiring: park-capable workflow step(s) run WITHOUT the standby token \$$PARK_WIRING_TOKEN, so a usage-limit refusal there parks EVERY repo on this host for the window (the 2026-08-25 outage shape):
+$(printf '%s\n' "$violations" | sed 's/^/    /')
+    $(park_wiring_remedy)"
+  return 1
+}
+
 guard_close_report() {
   # The close-report claim gates (close-report-lib.sh, #444) are a silent-failure
   # guard: if cr_violations breaks and returns EMPTY at rc 0, a worker's false
@@ -315,6 +357,7 @@ GUARDS=(
   guard_verdict_parsing
   guard_secrets_content
   guard_secrets_allowlist
+  guard_park_token_wiring
   guard_close_report
   guard_issue_write_permission
 )

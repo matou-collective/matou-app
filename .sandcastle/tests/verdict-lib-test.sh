@@ -65,4 +65,40 @@ vp="$tmp/v4.txt"
 [ ! -f "$vp" ] || fail "verdict_write wrote a verdict on a CLEAN run"
 pass=$((pass+1))
 
+# --- 5. The SIGKILL breadcrumb (#34): a heavy job killed mid-stage before its
+#        EXIT trap can run leaves NO verdict (a SIGKILL is untrappable), so the
+#        healer degrades to the bare workflow name and burns an investigation on
+#        a non-fault. The breadcrumb, written eagerly at each verdict_stage,
+#        survives the kill and records the last running stage. ---
+vp="$tmp/v5.txt"; bc="$vp.breadcrumb"
+# NO verdict_write here — simulate the process being SIGKILL'd mid-stage.
+( verdict_begin "$vp"; verdict_stage "triage skill (claude -p /triage)" )
+[ ! -f "$vp" ] || fail "a killed run must leave NO verdict (verdict_write never ran)"
+[ -f "$bc" ] || fail "a killed run must leave a breadcrumb for the healer to key on"
+grep -q '^stage=triage skill (claude -p /triage)$' "$bc" || fail "the breadcrumb must record the last running stage:
+$(cat "$bc")"
+grep -q '^status=running$' "$bc" || fail "the breadcrumb must mark the run as still running:
+$(cat "$bc")"
+# The healer keys the signature on the STAGE, never the bare workflow name — the
+# whole point is that the phantom sha1("triage|") incident stops being minted.
+sigKilled="$(compute_signature triage "killed mid-stage :: $(sed -n 's/^stage=//p' "$bc" | head -1)")"
+sigBare="$(compute_signature triage "")"
+[ "$sigKilled" != "$sigBare" ] || fail "a killed-stage signature must differ from the bare-workflow-name signature"
+pass=$((pass+1))
+
+# --- 6. verdict_write erases the breadcrumb on EVERY trapped exit, so a
+#        breadcrumb only ever survives a real kill. A clean run leaves neither
+#        verdict nor breadcrumb; a genuine fault leaves the verdict (never the
+#        breadcrumb), so the healer reads the real fault, not the kill path. ---
+vp="$tmp/v6a.txt"; bc="$vp.breadcrumb"
+( verdict_begin "$vp"; verdict_stage "guard"; verdict_write 0 )
+[ ! -f "$bc" ] || fail "a clean (exit 0) run must erase the breadcrumb"
+vp="$tmp/v6b.txt"; bc="$vp.breadcrumb"; errlog="$tmp/e6.log"
+printf 'error: real fault line\n' > "$errlog"
+( verdict_begin "$vp"; verdict_stage "build" "$errlog"; verdict_write 2 )
+[ -f "$vp" ] || fail "a genuine fault must still write its verdict"
+[ ! -f "$bc" ] || fail "a genuine fault must erase the breadcrumb (the verdict supersedes it)"
+grep -q 'real fault line' "$vp" || fail "the fault verdict must carry the real error line"
+pass=$((pass+1))
+
 echo "verdict-lib: $pass scenarios passed"

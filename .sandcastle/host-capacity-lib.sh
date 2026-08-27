@@ -8,6 +8,11 @@
 #   host_capacity_acquire_exclusive — ALL named locks, all-or-nothing,
 #                                     non-blocking (a drive's shape: it must
 #                                     coexist with NOTHING heavy on the host).
+#                                     HOST_CAPACITY_DRIVE_MODE=single-slot
+#                                     relaxes this on a big host: the drive
+#                                     keeps slot 1 but hands every pooled slot
+#                                     past the first back to the pool, so one
+#                                     worker runs beside it (#46, ADR 0184).
 # Both NEVER camp (no flock -w): a busy resource means the caller yields
 # (exit 0) and the next cron tick / backstop re-fires — the #238 lesson this
 # whole subsystem is built around (originated in Matou/idss's #577,
@@ -60,6 +65,38 @@ host_capacity_release_heavy() {
   HOST_CAPACITY_HELD_SLOT=""
 }
 
+# HOST_CAPACITY_DRIVE_MODE — how a drive's exclusive acquire sizes itself
+# against the pooled slots (#46, ruled on the ticket under ADR 0184). Two
+# values, default `exclusive`:
+#   exclusive   — acquire EVERY path given, pooled slots included: the drive
+#                 coexists with nothing heavy. Unset == exclusive, so the
+#                 acquire is BYTE-IDENTICAL to the pre-#46 behaviour on any
+#                 host that never declares the knob (the 7 GB workstation the
+#                 exclusivity rule was sized for stays here).
+#   single-slot — acquire slot 1 (the first pooled slot) and every sibling
+#                 lock the caller names, but LEAVE every pooled slot past the
+#                 first to the pool, so one worker can run beside the drive on
+#                 a host with headroom (the 8-core box the exclusive rule
+#                 would idle). Set per-host in the identity layer
+#                 (rehearsal-env.sh), never hardcoded in a repo.
+# The mode only ever DROPS pooled slots past the first from the acquire set; a
+# sibling lock the drive names (its healer lock, session-runner's lock) is
+# still fully held under either mode, so the drive's heal path always rides the
+# drive's own slot and never contends for slot 2.
+
+# _host_capacity_pool_slot_past_first <path> — 0 if <path> is a pooled slot
+# that single-slot mode releases to the pool (any HOST_CAPACITY_SLOTS entry
+# AFTER the first), else 1. The first pooled slot is never released: the drive
+# always holds slot 1.
+_host_capacity_pool_slot_past_first() {
+  local target="$1" first=1 slot
+  for slot in $HOST_CAPACITY_SLOTS; do
+    if [ "$first" = 1 ]; then first=0; continue; fi
+    [ "$slot" = "$target" ] && return 0
+  done
+  return 1
+}
+
 # host_capacity_acquire_exclusive <lock-path>... — non-blocking, all-or-
 # nothing over every path given (the pooled slots AND any sibling locks the
 # caller names, e.g. session-runner's own lock, a repo's healer lock) — so
@@ -67,11 +104,16 @@ host_capacity_release_heavy() {
 # One busy lock releases everything already grabbed this call and returns 1
 # — never camp holding partial capacity. Fds live in
 # HOST_CAPACITY_EXCLUSIVE_FDS (space-separated) until
-# host_capacity_release_exclusive.
+# host_capacity_release_exclusive. Under HOST_CAPACITY_DRIVE_MODE=single-slot
+# every pooled slot past the first is skipped (left to the pool) — see the
+# knob's doc above; the acquire is otherwise unchanged.
 host_capacity_acquire_exclusive() {
-  local path fd
+  local path fd mode="${HOST_CAPACITY_DRIVE_MODE:-exclusive}"
   HOST_CAPACITY_EXCLUSIVE_FDS=""
   for path in "$@"; do
+    if [ "$mode" = single-slot ] && _host_capacity_pool_slot_past_first "$path"; then
+      continue
+    fi
     exec {fd}>"$path"
     if flock -n "$fd"; then
       HOST_CAPACITY_EXCLUSIVE_FDS="$HOST_CAPACITY_EXCLUSIVE_FDS $fd"
@@ -101,18 +143,35 @@ HOST_CAPACITY_DRIVE_WANTED="${HOST_CAPACITY_DRIVE_WANTED:-/tmp/matou-drive-wante
 # distinguishes tick 3 from tick 50 — the observability gap that let the first
 # occurrence starve ~100 minutes across ~50 ticks unnoticed.
 HOST_CAPACITY_DRIVE_SKIPS="${HOST_CAPACITY_DRIVE_SKIPS:-/tmp/matou-drive-skip-count}"
+# First-post marker for the CURRENT reservation episode (#93). WANTED's mtime is
+# deliberately refreshed on every re-declaring tick (that is the TTL freshness
+# mechanism), so it can only report the per-tick age (#30), never the full
+# reservation WINDOW — reservation first posted → drive started. This sibling
+# marker is created ONCE per episode (create-if-absent, mtime never disturbed by
+# a re-declare) and removed by release, so its mtime pins the episode's start and
+# host_capacity_drive_wanted_window can report the true deferred-work window the
+# drive should be credited with, not idleness. Derived from WANTED by default so
+# an offline test that re-points WANTED automatically isolates this too.
+HOST_CAPACITY_DRIVE_WANTED_SINCE="${HOST_CAPACITY_DRIVE_WANTED_SINCE:-${HOST_CAPACITY_DRIVE_WANTED}-since}"
 
 # host_capacity_drive_reserve — declare that a ready drive wants the host's
-# heavy capacity. Idempotent (truncate-or-create): a re-declaring tick does
-# not disturb a reservation an earlier tick already made.
-host_capacity_drive_reserve() { : >"$HOST_CAPACITY_DRIVE_WANTED"; }
+# heavy capacity. Idempotent: WANTED is truncate-or-created (refreshing its mtime
+# so the TTL sees a live want), while the SINCE marker is created only if absent
+# — a re-declaring tick refreshes freshness without disturbing the episode's
+# first-post time, so the reservation WINDOW survives across ticks (#93).
+host_capacity_drive_reserve() {
+  : >"$HOST_CAPACITY_DRIVE_WANTED"
+  [ -e "$HOST_CAPACITY_DRIVE_WANTED_SINCE" ] || : >"$HOST_CAPACITY_DRIVE_WANTED_SINCE"
+}
 
-# host_capacity_drive_release — clear the reservation (and any skip counter).
-# Idempotent; the drive arms this on a trap so a crash cannot leak it (a leaked
-# reservation only makes consumers yield until the next drive tick clears it —
-# it never kills work — so it self-heals, but the trap keeps it tight).
+# host_capacity_drive_release — clear the reservation (skip counter and the
+# first-post marker included). Idempotent; the drive arms this on a trap so a
+# crash cannot leak it (a leaked reservation only makes consumers yield until the
+# next drive tick clears it — it never kills work — so it self-heals, but the
+# trap keeps it tight).
 host_capacity_drive_release() {
-  rm -f "$HOST_CAPACITY_DRIVE_WANTED" "$HOST_CAPACITY_DRIVE_SKIPS"
+  rm -f "$HOST_CAPACITY_DRIVE_WANTED" "$HOST_CAPACITY_DRIVE_SKIPS" \
+        "$HOST_CAPACITY_DRIVE_WANTED_SINCE"
 }
 
 # host_capacity_drive_wanted — predicate: 0 if a drive has reserved capacity,
@@ -151,6 +210,64 @@ host_capacity_drive_wanted() {
   case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
   now="$(date +%s)"
   [ "$(( now - mtime ))" -lt "$HOST_CAPACITY_DRIVE_WANTED_TTL" ]
+}
+
+# host_capacity_drive_wanted_issue — echo the reserving drive's issue number if
+# the reservation file carries one, else nothing (#24). The producer
+# (idss rehearsal-cycle.sh) writes REHEARSAL_DRIVE_ISSUE into the file so a
+# consumer can admit the one worker whose next claim would UNBLOCK that drive —
+# the work the drive is waiting on — instead of yielding to it. An EMPTY file
+# (today's touch-file, and any producer still on the pre-#24 pin) yields nothing
+# here, so host_capacity_drive_wanted's unconditional-yield semantics are
+# preserved and the reservation-format change is backward compatible across the
+# pin lag: the admit exception only fires when a number is actually present.
+# Reads only the first line and only a bare integer — any other content (a stale
+# multi-line file, a non-numeric token) is treated as "no issue" so a malformed
+# reservation can never mis-admit a worker. Does NOT re-check the TTL: a caller
+# gates on host_capacity_drive_wanted (freshness) first, then reads the number.
+host_capacity_drive_wanted_issue() {
+  local first
+  [ -e "$HOST_CAPACITY_DRIVE_WANTED" ] || return 0
+  first="$(head -n1 "$HOST_CAPACITY_DRIVE_WANTED" 2>/dev/null || true)"
+  case "$first" in
+    '' | *[!0-9]*) return 0 ;;
+    *) echo "$first" ;;
+  esac
+}
+
+# host_capacity_drive_wanted_age — echo the reservation's age in whole seconds
+# (now - mtime); rc 1 with no output when the file is absent or unreadable. A
+# consumer that stands down (swarm/triage/healer, #30) prints this in its yield
+# line so its "yielded" line and the executor's "skipped N consecutive tick(s)"
+# line corroborate on the SAME reservation. Reports the age regardless of the
+# TTL (a caller only logs it on the fresh-reservation path, where the age is
+# by definition < TTL) — kept a pure read of the mtime so the offline test can
+# assert it directly.
+host_capacity_drive_wanted_age() {
+  local mtime now
+  [ -e "$HOST_CAPACITY_DRIVE_WANTED" ] || return 1
+  mtime="$(stat -c %Y "$HOST_CAPACITY_DRIVE_WANTED" 2>/dev/null || true)"
+  case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s)"
+  echo "$(( now - mtime ))"
+}
+
+# host_capacity_drive_wanted_window — echo the CURRENT reservation episode's full
+# window in whole seconds (now - first-post), or rc 1 with no output when no
+# episode is open (the SINCE marker is absent or unreadable). Unlike
+# host_capacity_drive_wanted_age (which reads WANTED's per-tick-refreshed mtime),
+# this reads the SINCE marker whose mtime is pinned at the episode's first
+# host_capacity_drive_reserve — so it reports the deferred-work window a drive
+# waited before winning capacity, the #663 time the timeline must attribute to
+# the drive rather than idleness (#93). Independent of the TTL, a pure read of
+# the mtime, so the offline test can assert it directly.
+host_capacity_drive_wanted_window() {
+  local mtime now
+  [ -e "$HOST_CAPACITY_DRIVE_WANTED_SINCE" ] || return 1
+  mtime="$(stat -c %Y "$HOST_CAPACITY_DRIVE_WANTED_SINCE" 2>/dev/null || true)"
+  case "$mtime" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s)"
+  echo "$(( now - mtime ))"
 }
 
 # host_capacity_drive_skip_bump — increment the consecutive-skip counter and
@@ -197,3 +314,73 @@ host_capacity_consumer_defer_bump() { # <path> -> prints the new count
 # (deferred or not); the next starvation episode for that consumer counts
 # from 1 again.
 host_capacity_consumer_defer_reset() { rm -f "$1"; }
+
+# --- Durable drive-lifecycle log (#93) -------------------------------------
+#
+# The live drive-status file (the `drive-status` registry directive, #80) is
+# overwritten as a drive progresses and says NOTHING once the drive ends, so a
+# whole-host-exclusive window — the single largest capacity event a host has —
+# vanishes from the timeline the moment the next drive starts (or the file is
+# cleared). This append-only JSONL log, kept next to swarm.db, is the DURABLE
+# host-side record: one `start` line (box, target, mode, and the reservation
+# WINDOW the drive is crediting itself with) and one matching `end` line
+# (verdict) per drive, correlated by a caller-chosen drive id. Append-only is the
+# whole point — a later drive can NEVER overwrite an earlier drive's record, the
+# live status file's exact flaw. The probe tails it (fleet-tui probe
+# `--drive-log`), so the operator side reconstructs the exclusive-window timeline
+# offline. Best-effort, swarm.db's posture: a log we cannot write NEVER reds a
+# drive. The writer is the host-side drive machinery (a consumer's
+# rehearsal-cycle.sh once vendored), NOT the identity layer (pull-only, ADR
+# 0001) — this primitive lives here so the two copies stay in lockstep and the
+# drive-side wiring is a one-liner (mirrors host_capacity_drive_wanted, #24).
+HOST_CAPACITY_DRIVE_LOG="${HOST_CAPACITY_DRIVE_LOG:-$HOME/swarm/state/drive-log.jsonl}"
+
+# _host_capacity_drive_log_append <json-line> — append one line, creating the
+# parent dir. Best-effort: an unwritable path is swallowed (never reds a drive).
+_host_capacity_drive_log_append() {
+  local dir
+  dir="$(dirname "$HOST_CAPACITY_DRIVE_LOG")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  printf '%s\n' "$1" >>"$HOST_CAPACITY_DRIVE_LOG" 2>/dev/null || true
+}
+
+# host_capacity_drive_log_start <id> <box> <target> [mode] [reservation_window_s]
+#   Record that a drive won the host's heavy capacity and started. <id>
+#   correlates this start with its later end (any stable per-drive token: the
+#   drive's run id, or "$(date +%s)-$$"). <box> is the box the drive stood up
+#   (CONTEXT.md vocabulary), <target> what it targets (a repo slug or the drive's
+#   issue number). [mode] defaults to the live HOST_CAPACITY_DRIVE_MODE
+#   (exclusive|single-slot) — the capacity shape the drive actually held.
+#   [reservation_window_s] is the #663 window (reservation posted → drive
+#   started), deferred-work time the timeline must attribute to the drive, not to
+#   idleness; omitted, it is read from the still-standing reservation via
+#   host_capacity_drive_wanted_window (so the drive machinery just logs the start
+#   BEFORE releasing its reservation and the window is captured automatically).
+#   A non-numeric / absent window records JSON null. Best-effort; never reds the
+#   drive. Requires jq (present on every swarm host); absent, it is a silent
+#   no-op like the swarm.db writers.
+host_capacity_drive_log_start() {
+  command -v jq >/dev/null 2>&1 || return 0
+  local id="$1" box="$2" target="$3"
+  local mode="${4:-${HOST_CAPACITY_DRIVE_MODE:-exclusive}}"
+  local window="${5:-}"
+  [ -n "$window" ] || window="$(host_capacity_drive_wanted_window 2>/dev/null || true)"
+  case "$window" in ''|*[!0-9]*) window=null ;; esac
+  _host_capacity_drive_log_append "$(jq -cn \
+    --arg id "$id" --arg box "$box" --arg target "$target" --arg mode "$mode" \
+    --argjson at "$(date +%s)" --argjson res "$window" \
+    '{event:"start",id:$id,at:$at,box:$box,target:$target,mode:$mode,reservation_window_s:$res}')"
+}
+
+# host_capacity_drive_log_end <id> [verdict]
+#   Record that the drive <id> ended. [verdict] is the drive's outcome
+#   (completed, failed, killed:...); omitted → "ended". This end line is
+#   permanent and independent of the live status file, which the next drive
+#   overwrites (the whole point, #93). Best-effort; jq-gated like _start.
+host_capacity_drive_log_end() {
+  command -v jq >/dev/null 2>&1 || return 0
+  local id="$1" verdict="${2:-ended}"
+  _host_capacity_drive_log_append "$(jq -cn \
+    --arg id "$id" --arg verdict "$verdict" --argjson at "$(date +%s)" \
+    '{event:"end",id:$id,at:$at,verdict:$verdict}')"
+}

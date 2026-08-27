@@ -16,12 +16,19 @@ unset FORGEJO_TOKEN 2>/dev/null || true
 # ── 1. Green path: all guards fire on the real fixtures against the real libs.
 out="$(bash "$SC/preflight-swarm.sh" 2>&1)" || fail "green preflight must pass on the current guards; got:
 $out"
-grep -q 'all 9 guards fired' <<<"$out" || fail "green preflight did not report all guards fired:
+grep -q 'all 10 guards fired' <<<"$out" || fail "green preflight did not report all guards fired:
 $out"
 
 # A copy of the harness we can mangle without touching the real scripts. Only
 # what preflight sources + its fixtures; secrets are deliberately NOT copied.
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# #58: scenario 5's workflow fixtures name run-swarm.sh in a `run:` body, which
+# test-env.sh's (deliberately over-approximating) lint reads as an exec. Nothing
+# here execs an orchestrator, but redirect host state anyway rather than loosen
+# that guard.
+# shellcheck source=test-env.sh
+. "$here/test-env.sh"
+test_env_hermetic "$tmp"
 mkdir -p "$tmp/sc/tests"
 cp "$SC"/*.sh "$tmp/sc/"
 cp -r "$SC/tests/fixtures" "$tmp/sc/tests/fixtures"
@@ -97,4 +104,70 @@ env PATH="$tmp/bin:$PATH" FORGEJO_TOKEN=bot FORGEJO_API=http://x/api/v1/repos/x/
   || fail "a bot WITH write permission must pass the probe:
 $(cat "$tmp/o4")"
 
-echo "preflight-swarm: 5 scenarios passed (green; mangled limit grep named; mangled auth grep named; disabled rail named; read-only-issues bot named)"
+# ── 5. The #85 / GOTCHAS 30 guard, exercised from the CONSUMER side: a harness
+#      copy under <repo>/.sandcastle/ whose sibling `.forgejo/workflows/` holds
+#      a park-capable step with the primary token alone must red preflight,
+#      NAMED, with the offending step identified. This is the scenario the
+#      factory-only test could never reach — the guard has to see a consumer's
+#      own workflow file, which only a vendored check ever does.
+repo="$tmp/repo"
+mkdir -p "$repo/.sandcastle/tests" "$repo/.forgejo/workflows"
+cp "$SC"/*.sh "$repo/.sandcastle/"
+cp -r "$SC/tests/fixtures" "$repo/.sandcastle/tests/fixtures"
+
+cat > "$repo/.forgejo/workflows/triage.yml" <<'YML'
+name: triage
+jobs:
+  triage:
+    steps:
+      - name: Triage under global lock
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: bash .sandcastle/run-triage.sh
+YML
+# A clean sibling workflow proves the guard reports the offender, not the file set.
+cat > "$repo/.forgejo/workflows/swarm.yml" <<'YML'
+name: swarm
+jobs:
+  swarm:
+    steps:
+      - name: Swarm under global lock
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN_B: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_B }}
+        run: bash .sandcastle/run-swarm.sh
+YML
+
+if bash "$repo/.sandcastle/preflight-swarm.sh" >"$tmp/o5" 2>&1; then
+  fail "a consumer workflow step missing the standby token must turn preflight RED; it passed:
+$(cat "$tmp/o5")"
+fi
+grep -q 'PREFLIGHT RED: park_token_wiring' "$tmp/o5" \
+  || fail "preflight red did not NAME the park-token-wiring guard:
+$(cat "$tmp/o5")"
+grep -q 'triage.yml: Triage under global lock' "$tmp/o5" \
+  || fail "the park-token-wiring red did not name the offending workflow step:
+$(cat "$tmp/o5")"
+grep -q 'swarm.yml' "$tmp/o5" \
+  && fail "the correctly wired sibling workflow must not be reported:
+$(cat "$tmp/o5")"
+
+# Wiring the token turns the same checkout green — the guard tracks the
+# property, not the presence of a workflow file.
+sed -i 's#^\( *\)CLAUDE_CODE_OAUTH_TOKEN: .*#&\n\1CLAUDE_CODE_OAUTH_TOKEN_B: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_B }}#' \
+  "$repo/.forgejo/workflows/triage.yml"
+bash "$repo/.sandcastle/preflight-swarm.sh" >"$tmp/o6" 2>&1 \
+  || fail "wiring the standby token must make the same checkout green:
+$(cat "$tmp/o6")"
+
+# And an unreachable workflow directory must SAY so rather than read as a
+# silent pass — the defect class the guard exists to end (GOTCHAS 30).
+rm -rf "$repo/.forgejo"
+bash "$repo/.sandcastle/preflight-swarm.sh" >"$tmp/o7" 2>&1 \
+  || fail "a checkout with no workflow directory must not fail preflight:
+$(cat "$tmp/o7")"
+grep -q 'park-token-wiring: SKIPPED' "$tmp/o7" \
+  || fail "an unreachable workflow directory must be announced, not silently green:
+$(cat "$tmp/o7")"
+
+echo "preflight-swarm: 6 scenarios passed (green; mangled limit grep named; mangled auth grep named; disabled rail named; read-only-issues bot named; consumer-side park-token wiring named)"

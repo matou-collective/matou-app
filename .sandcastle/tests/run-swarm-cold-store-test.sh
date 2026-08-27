@@ -5,43 +5,48 @@
 # `died-in:preflight self-tests (#446)` with an EMPTY error block: the cold-store
 # FATAL set neither verdict_stage nor an error line, so the EXIT trap attributed
 # the death to the last stage set (still "preflight self-tests") and the healer
-# escalated CLASS unknown. This exercises the guard + EXIT-trap reason derivation
-# in isolation (the surrounding script needs pnpm, docker and a live tracker), so
-# the block below is kept structurally identical to run-swarm.sh — only the
-# terminal exit is swapped for a captured exit code. Run:
-#   bash .sandcastle/tests/run-swarm-cold-store-test.sh
+# escalated CLASS unknown.
+#
+# Until #2 this file kept a structurally-identical COPY of the guard. It now
+# lives in provision-lib.sh (the PROVISION seam) as provision_pnpm_store_guard,
+# so this test drives the REAL guard and keeps only the EXIT-trap reason
+# derivation as a local replica — that half genuinely belongs to run-swarm's
+# trap, and the `fixed=0` arm still reproduces the pre-#9 symptom for contrast,
+# proving the assertions have teeth.
+#
+# Run: bash .sandcastle/tests/run-swarm-cold-store-test.sh
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 sc="$here/.."
 . "$sc/verdict-lib.sh"
-. "$sc/heal-lib.sh"   # seam_verdict_signal — the healer's reader
+. "$sc/heal-lib.sh"        # seam_verdict_signal — the healer's reader
+. "$sc/provision-lib.sh"   # the guard under test
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 pass=0
 
-# The guard + trap, verbatim from run-swarm.sh (the pnpm-store warm check and the
-# reason line the on_exit trap derives). `fixed=1` runs the #9 version (names the
-# stage, captures the FATAL); `fixed=0` reproduces the pre-#9 bug for contrast.
-run_guard() { # run_guard <store-root> <allow_cold> <fixed> ; sets REASON, VP
+# run_guard <store-root> <allow_cold> <fixed> ; sets REASON, VP
+# `fixed=1` runs the real (#9) guard; `fixed=0` reproduces the pre-#9 bug — the
+# same refusal WITHOUT the verdict_stage/verdict_error — for contrast.
+run_guard() {
   local root="$1" SWARM_ALLOW_COLD_STORE="$2" fixed="$3"
-  local SWARM_EXIT_REASON="" ec=0 cold_fatal
+  local SWARM_EXIT_REASON="" ec=0
   VP="$tmp/verdict.txt"
   verdict_begin "$VP"
   # Earlier in the run the last stage set was the preflight self-tests — the
   # intervening verdict_stage calls only fire inside failure branches not taken.
   verdict_stage "preflight self-tests (#446)"
-  if [ "${SWARM_ALLOW_COLD_STORE:-0}" != "1" ] \
-      && [ -z "$(find "$root/pnpm-store" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
-    cold_fatal="run-swarm: FATAL — pnpm store $root/pnpm-store is EMPTY: workers cannot install (GOTCHAS #20, #489)."
-    if [ "$fixed" = 1 ]; then
-      verdict_stage "pnpm store warm check (#489)"
-      verdict_error "$cold_fatal"
+  if [ "$fixed" = 1 ]; then
+    provision_pnpm_store_guard "$root" 2>/dev/null || ec=1
+  else
+    if [ "${SWARM_ALLOW_COLD_STORE:-0}" != "1" ] \
+       && [ -z "$(find "$root/pnpm-store" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+      ec=1
     fi
-    ec=1
   fi
-  # on_exit's reason derivation (verbatim): SWARM_EXIT_REASON is unset on this
-  # path, so the reason falls back to died-in:<stage>.
+  # on_exit's reason derivation (verbatim from run-swarm.sh): SWARM_EXIT_REASON
+  # is unset on this path, so the reason falls back to died-in:<stage>.
   verdict_write "$ec"
   local reason="${SWARM_EXIT_REASON:-}"
   [ -n "$reason" ] || reason="died-in:${VERDICT_STAGE:-unknown}"

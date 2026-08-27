@@ -12,8 +12,10 @@ if [ -z "${MATTERMOST_BOT_TOKEN:-}" ] && [ -f /run/secrets/mattermost_bot_token 
   MATTERMOST_BOT_TOKEN="$(cat /run/secrets/mattermost_bot_token)"
 fi
 if [ -z "${MATTERMOST_URL:-}" ] || [ -z "${MATTERMOST_BOT_TOKEN:-}" ] || [ -z "${MATTERMOST_CHANNEL_ID:-}" ]; then
-  echo "notify-mattermost: MATTERMOST_URL/MATTERMOST_BOT_TOKEN/MATTERMOST_CHANNEL_ID unset — would have sent:" >&2
-  echo "$msg" >&2
+  # printf '%s\n', never echo: the message is DATA — a leading '-' or a
+  # ':shortcode:' must reach stderr verbatim, not be read as an echo flag (#27).
+  printf '%s\n' "notify-mattermost: MATTERMOST_URL/MATTERMOST_BOT_TOKEN/MATTERMOST_CHANNEL_ID unset — would have sent:" >&2
+  printf '%s\n' "$msg" >&2
   exit 0
 fi
 root="${2:-}"

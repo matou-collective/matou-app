@@ -120,4 +120,22 @@ heal_push "$co" "$pre" "$rd" && fail "heal_push landed despite a rebase conflict
 [ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset to pre after rebase conflict"
 pass=$((pass+1))
 
+# --- rehearsal_heal_authed_url (#676) ----------------------------------------
+
+# 12: a bare git.matou.nz https URL gets the swarm:$FORGEJO_TOKEN credential
+FORGEJO_TOKEN=tok12
+got="$(rehearsal_heal_authed_url "https://git.matou.nz/Matou/idss.git")"
+[ "$got" = "https://swarm:tok12@git.matou.nz/Matou/idss.git" ] || fail "credential not injected: $got"
+pass=$((pass+1))
+
+# 13: a local bare-repo path (the test fixtures' shape) passes through unchanged
+got="$(rehearsal_heal_authed_url "$tmp/origin.git")"
+[ "$got" = "$tmp/origin.git" ] || fail "local path was rewritten: $got"
+pass=$((pass+1))
+
+# 14: a URL that already carries userinfo passes through unchanged (idempotent)
+got="$(rehearsal_heal_authed_url "https://swarm:tok12@git.matou.nz/Matou/idss.git")"
+[ "$got" = "https://swarm:tok12@git.matou.nz/Matou/idss.git" ] || fail "already-credentialed URL was rewritten: $got"
+pass=$((pass+1))
+
 echo "OK: $pass cases"

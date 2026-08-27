@@ -18,10 +18,14 @@
 # ignores verdicts older than its run window as a second guard).
 verdict_begin() {
   VERDICT_PATH="$1"
+  # Companion breadcrumb path (#34). Same deterministic suffix the healer's reader
+  # derives, so writer and reader agree without sharing state.
+  VERDICT_BREADCRUMB="${VERDICT_PATH}.breadcrumb"
   VERDICT_STAGE="starting"
   VERDICT_ERRLOG=""
   VERDICT_ERROR=""
   rm -f "$VERDICT_PATH" 2>/dev/null || true
+  verdict_breadcrumb_write
 }
 
 # verdict_stage <name> [errlog] — mark the stage now beginning. When <errlog> is
@@ -33,6 +37,24 @@ verdict_stage() {
   VERDICT_STAGE="$1"
   VERDICT_ERRLOG="${2:-}"
   VERDICT_ERROR=""
+  verdict_breadcrumb_write
+}
+
+# verdict_breadcrumb_write — drop the CURRENTLY-running stage to a companion file,
+# eagerly (NOT via the EXIT trap). The whole verdict seam is trap-driven
+# (verdict_write fires from an `EXIT` trap), and a SIGKILL — the OOM killer's
+# weapon — cannot be trapped, so a resource-killed heavy job leaves NO verdict at
+# all: the healer then degrades to the bare workflow-name signature and burns a
+# full investigation on a NON-fault (#34). This breadcrumb survives a kill because
+# it is written the moment each stage begins; verdict_write erases it on ANY
+# trapped exit (clean OR faulted), so a breadcrumb on disk with no verdict beside
+# it means exactly one thing to the healer: the run was killed mid-stage.
+verdict_breadcrumb_write() {
+  [ -n "${VERDICT_BREADCRUMB:-}" ] || return 0
+  {
+    echo "stage=${VERDICT_STAGE:-unknown}"
+    echo "status=running"
+  } > "$VERDICT_BREADCRUMB" 2>/dev/null || true
 }
 
 # verdict_error <line> — record an explicit error line for a stage that fails
@@ -49,6 +71,10 @@ verdict_error() {
 # wire into an EXIT trap: a clean (exit 0) run leaves no verdict behind.
 verdict_write() {
   local ec="$1" errs=""
+  # The EXIT trap ran, so this run was NOT SIGKILL'd: erase the breadcrumb (#34).
+  # Only a kill — where this line never executes — leaves it behind, and that
+  # residue is exactly the resource-kill signal the healer keys on.
+  [ -n "${VERDICT_BREADCRUMB:-}" ] && rm -f "$VERDICT_BREADCRUMB" 2>/dev/null
   [ "${ec:-0}" -eq 0 ] 2>/dev/null && return 0
   [ -n "${VERDICT_PATH:-}" ] || return 0
   if [ -n "${VERDICT_ERRLOG:-}" ] && [ -f "$VERDICT_ERRLOG" ]; then

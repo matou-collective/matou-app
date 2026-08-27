@@ -24,6 +24,13 @@
 # default — each consumer states its own.
 : "${RUNNER_HOST:=matou-workstation}"
 
+# Contract version of this identity layer (#31): the harness's identity-lib.sh
+# refuses an older stamp than it needs (identity_require), so a pin bump that
+# requires a new identity symbol fails LOUD with the regenerate command instead
+# of dying mid-tick on `command not found`. Bump with the symbols below.
+# 1 = swarm_git_identity.
+SWARM_IDENTITY_CONTRACT=1
+
 # Factory git identity for every headless commit path (dev-factory #19):
 # without it, commits from session-runner.sh, heal.sh's clone, run-swarm.sh's
 # reconcile, or a worker container inherit the host user's ~/.gitconfig —

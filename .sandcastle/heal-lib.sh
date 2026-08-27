@@ -89,25 +89,63 @@ ledger_set() { # <sig> <key> <value>
 #   escalate-repaired  — inside cooldown AND a repair was already attempted:
 #                        the loop-breaker; the healer never repairs twice.
 #   escalate-noisy     — inside cooldown and the reply cap is spent: say so once
-#   silent             — already escalated for this incident; post nothing
+#   silent             — already escalated for this incident (by EITHER ladder);
+#                        post nothing
 #
 # Two independent brakes, because they stop different things: escalate-repaired
 # stops the healer repairing the same fault twice, escalate-noisy stops it
 # TALKING about the same fault forever. Dry-run never sets `repaired`, so only
 # the second one could have stopped the 2026-07-29 storm.
+#
+# The `escalated` latch is read FIRST, above both (#79). It used to live inside
+# the reply-cap branch only, below the `repaired` short-circuit — so a signature
+# marked repaired bypassed the TALKING brake entirely: every recurrence inside
+# the cooldown returned escalate-repaired, the reply counter never moved, and
+# each incident refreshed last_seen so the window never expired. That is the
+# 2026-08-24 storm: one @ben ping per red run, a run every ~2 minutes, for a
+# fault already ticketed. Whichever ladder speaks, it speaks once per window.
 ledger_decide() {
   local sig="$1" now="$2" last repaired replies
   last="$(ledger_get "$sig" last_seen)"
   if [ -z "$last" ]; then echo investigate; return; fi
   if [ $((now - last)) -gt "$HEAL_COOLDOWN" ]; then echo investigate-stale; return; fi
+  if [ "$(ledger_get "$sig" escalated)" = "1" ]; then echo silent; return; fi
   repaired="$(ledger_get "$sig" repaired)"
   if [ "${repaired:-0}" = "1" ]; then echo escalate-repaired; return; fi
   replies="$(ledger_get "$sig" replies | grep -E '^[0-9]+$' || echo 0)"
-  if [ "${replies:-0}" -ge "$HEAL_MAX_REPLIES" ]; then
-    if [ "$(ledger_get "$sig" escalated)" = "1" ]; then echo silent; else echo escalate-noisy; fi
-    return
-  fi
+  if [ "${replies:-0}" -ge "$HEAL_MAX_REPLIES" ]; then echo escalate-noisy; return; fi
   echo reply-recurring
+}
+
+# action_is_ticket_only <action-taken> — 0 iff the diagnosis's ACTION-TAKEN line
+# describes ONLY ticket filing, so nothing on the host or in the repo changed.
+#
+# Filing a ticket is the RIGHT action for a product-class fault, but it is not a
+# repair (#79): the fault WILL recur until the fix lands, and each recurrence
+# carries no new information. heal.sh records such an outcome as `ticketed`
+# instead of `repaired`, which keeps its recurrences on the normal reply-cap
+# ladder rather than the once-and-quiet repair loop-breaker. On 2026-08-24 the
+# healer's only action was "filed ready-for-agent ticket #77" and the signature
+# was marked repaired — the routing this classifier fixes.
+#
+# The line is one sentence of prose written by the diagnosis agent, so decide it
+# in two greps rather than by parsing: it is ticket-only iff it names a FILING
+# (a filing verb followed by a ticket noun or a bare `#N`) and names no verb
+# that CHANGED something. "filed ticket #77 and restarted the runner" is
+# therefore a repair; "filed a ticket (#77) — product-class, no code touched"
+# is not. Both misreadings are now bounded — a ticket-only outcome read as a
+# repair pings once and latches (the fix above), a repair read as ticket-only
+# rides the reply cap to one escalation — so this classifier only ever chooses
+# WHICH bounded ladder speaks, never whether the healer can storm.
+ACTION_FILED_RE='\b(file|files|filed|filing|open|opens|opened|opening|create|creates|created|creating|raise|raises|raised|log|logs|logged|report|reports|reported|ticket|tickets|ticketed)\b.*(\b(ticket|issue|bug)\b|#[0-9]+)'
+ACTION_CHANGED_RE='\b(commit|commits|committed|push|pushed|merge|merged|revert|reverted|restart|restarted|reset|resets|remove|removed|delete|deleted|clean|cleaned|clear|cleared|prune|pruned|kill|killed|rebuild|rebuilt|rebase|rebased|bump|bumped|install|installed|reinstalled|patch|patched|fix|fixed|repair|repaired|edit|edited|write|wrote|change|changed|update|updated|move|moved|chmod|freed|unstuck|disable|disabled|enable|enabled|stop|stopped|start|started|ran|reran|re-ran)\b'
+action_is_ticket_only() {
+  local act="$1"
+  [ -n "$act" ] && [ "$act" != "none" ] || return 1
+  act="$(printf '%s' "$act" | tr '[:upper:]' '[:lower:]')"
+  printf '%s' "$act" | grep -qE "$ACTION_FILED_RE" || return 1
+  printf '%s' "$act" | grep -qE "$ACTION_CHANGED_RE" && return 1
+  return 0
 }
 
 # watchdog_detect <runs-json-path> — reads a Forgejo actions/tasks payload

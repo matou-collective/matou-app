@@ -19,17 +19,18 @@ headless on the runner host (`matou-workstation`) as user `dev`.
 - The swarm workdir `~/swarm/Matou/matou-app` — READ-ONLY unless
   `swarm-lock.txt` says `free`.
 - Ops context: `.sandcastle/run-swarm.sh`, `.forgejo/workflows/*.yml`,
-  `docs/superpowers/specs/2026-07-27-self-healing-swarm-design.md`, and
-  recent `git log` — the fault usually shipped in a recent commit.
+  `.sandcastle/README.md`,
+  `docs/superpowers/specs/2026-07-31-sandcastle-swarm-design.md`, and recent
+  `git log` — the fault usually shipped in a recent commit.
 
 ## Classify, then act
 
 - **harness-infra** (run-swarm.sh, workflows, lockfiles, flake, sandbox
   image/config, stuck git state): you MAY repair it — see Allowed repairs.
-- **product** (a bug in `internal/`, `app/`, `dashboard/`, `packages/`
-  sources): do NOT touch the code. File one `ready-for-agent` issue with
-  the evidence (see `docs/agents/issue-tracker.md` for the API recipe; the
-  token is in `.sandcastle/secrets/forgejo_token`).
+- **product** (a bug in `frontend/` or `backend/` sources — Vue/Quasar,
+  Pinia stores, Go API handlers, KERI/any-sync integration): do NOT touch
+  the code. File one `ready-for-agent` issue with the evidence (the token is
+  in `.sandcastle/secrets/forgejo_token`; `FORGEJO_API` names this repo).
 - **transient-external** (Forgejo slow/5xx, registry down, network): no
   repair. Say what you observed and that it self-heals; the ledger tracks
   recurrence.
@@ -37,20 +38,20 @@ headless on the runner host (`matou-workstation`) as user `dev`.
 
 ## Allowed repairs (harness-infra only, ONE attempt)
 
-- Commit and push fixes to `.sandcastle/`, `.forgejo/`, `pnpm-lock.yaml`,
-  `flake.lock`/`flake.nix`, root config plumbing. Work in a FRESH clone:
+- Commit and push fixes to `.sandcastle/`, `.forgejo/`, `pnpm-lock.yaml`
+  (root workspace), `frontend/package-lock.json`, root config plumbing. Work
+  in a FRESH clone:
   `git clone ~/swarm/Matou/matou-app /tmp/heal-fix && cd /tmp/heal-fix`,
   fix, rebase on origin/main, push to main. Never force-push, never revert
   a human's commit.
-- Regenerate lockfiles (`pnpm install --lockfile-only`, `nix flake lock`).
+- Regenerate a lockfile from its own manifest (`pnpm install --lockfile-only`
+  at the root, `npm install --package-lock-only` in `frontend/`).
 - Clean stuck git state in the workdir (abort rebase, `reset --hard
   origin/main`) — ONLY if `swarm-lock.txt` says `free`.
 - Verify your fix: re-run the failing command, or
   `POST $FORGEJO_API/../../actions/workflows/<file>/dispatches {"ref":"main"}`.
 - Label management on issues you file or that this incident already owns
   (e.g. add `ready-for-agent`) — never relabel unrelated issues.
-- Update STATUS.md in the same commit if the fix changes project state
-  (repo rule, CLAUDE.md).
 
 ## Forbidden — no exceptions
 

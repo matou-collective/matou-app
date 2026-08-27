@@ -112,4 +112,34 @@ run_backstop "$tmp/matrix.json" >/dev/null
 dispatched && fail "a matrix-suffixed running swarm run ('swarm (1)') must SUPPRESS dispatch (#588)"
 pass=$((pass+1))
 
+# --- #45: order-repos lists repos STALEST-first, missing stamp first of all ----
+# The freed-slot fairness the generated host backstop-tick.sh dispatches in.
+# alpha evaluated 2m ago, beta 90m ago, gamma never (no stamp): the order must
+# be gamma (missing = stalest of all), then beta, then alpha.
+odir="$tmp/lastready"; mkdir -p "$odir"
+oprefix="$odir/matou-swarm-lastready-"
+: > "${oprefix}Acme-alpha"; touch -d '-2 minutes'  "${oprefix}Acme-alpha"
+: > "${oprefix}Acme-beta";  touch -d '-90 minutes' "${oprefix}Acme-beta"
+# gamma: no stamp file at all
+order="$(SWARM_LASTREADY_PREFIX="$oprefix" \
+  bash "$here/../schedule-backstop.sh" order-repos Acme/alpha Acme/beta Acme/gamma)"
+[ "$order" = "$(printf 'Acme/gamma\nAcme/beta\nAcme/alpha')" ] \
+  || fail "order-repos must list stalest first, missing stamp first of all (got: $(printf '%s' "$order" | tr '\n' ' '))"
+pass=$((pass+1))
+
+# two never-evaluated repos keep INPUT order (stable) — deterministic dispatch.
+order2="$(SWARM_LASTREADY_PREFIX="$tmp/none-" \
+  bash "$here/../schedule-backstop.sh" order-repos Zed/one Zed/two)"
+[ "$order2" = "$(printf 'Zed/one\nZed/two')" ] \
+  || fail "two missing-stamp repos must keep input order (got: $(printf '%s' "$order2" | tr '\n' ' '))"
+pass=$((pass+1))
+
+# order-repos is PURE: it needs neither a token nor the tasks API (it exits
+# before sourcing swarm-identity), so it must dispatch NOTHING.
+: > "$tmp/dispatch.log"
+SWARM_LASTREADY_PREFIX="$oprefix" \
+  bash "$here/../schedule-backstop.sh" order-repos Acme/alpha >/dev/null
+dispatched && fail "order-repos must never dispatch a workflow"
+pass=$((pass+1))
+
 echo "schedule-backstop: $pass scenarios passed"

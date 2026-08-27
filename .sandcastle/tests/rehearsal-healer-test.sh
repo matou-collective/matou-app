@@ -18,6 +18,8 @@ export REHEARSAL_DRIVE_ISSUE=378
 export CLAUDE_LIMIT_MARKER="$tmp/claude-limit"
 export CURL_LOG="$tmp/curl.log" ISSUE_FIXTURE="$tmp/issues.json" LIST_COUNT="$tmp/list-count"
 export CLAUDE_CALLS="$tmp/claude-calls"
+export REHEARSAL_HEAL_PROMPT_FILE="$here/../.sandcastle/rehearsal-heal-prompt.md"
+export REHEARSAL_REPORT_PROMPT_FILE="$here/../.sandcastle/rehearsal-report-prompt.md"
 
 # --- real checkout + bare origin ---------------------------------------------
 mkrepo() { # (re)build $tmp/origin.git + $tmp/co, export REHEARSAL_CHECKOUT
@@ -213,7 +215,7 @@ pass=$((pass+1))
 # 9: HEALED WITH RESIDUAL — the heal fixed only the red's presentation and
 #    names the distinct underlying fault (drive 20260811T165115Z: the healer
 #    fixed the hidden standup bar, KNEW about the supply host-key fault, and
-#    left the drive armed with nothing filed — one paid droplet re-drive per
+#    left the drive armed with nothing filed — one paid re-drive of the box per
 #    occurrence). The commit lands AND the residual files from the SAME
 #    session (one claude call), wired as a drive blocker + priority-labelled.
 reset_case; export HEAL_MODE=healed-residual
