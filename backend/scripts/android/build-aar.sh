@@ -32,6 +32,9 @@ test -f "$ANDROID_ENV" || {
 }
 
 # 1. Generate the patched libc copy (build/android-libc-patched, gitignored).
+# env.sh puts gomobile on PATH and, on CI runner hosts whose daemon PATH lacks
+# go, falls back to ~/go-sdk — patch-libc.sh needs `go` too, so source it first.
+. "$ANDROID_ENV"
 PATCHED="$(scripts/android/patch-libc.sh)"
 
 # 2. Apply the replace to go.mod for the build only; always restore it.
@@ -45,7 +48,6 @@ echo "build-aar: modernc.org/libc replaced with patched copy for this build" >&2
 # 3. Bind.
 mkdir -p "$(dirname "$ANDROID_AAR")"
 # shellcheck disable=SC1090
-. "$ANDROID_ENV"
 gomobile bind \
     -target="$ANDROID_TARGETS" -androidapi 21 \
     -javapkg nz.matou.backend \
