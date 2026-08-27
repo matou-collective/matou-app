@@ -82,7 +82,7 @@ export function useOrgSetup() {
       console.log('[OrgSetup] Created admin AID:', adminAid.prefix);
 
       // Store admin AID in identity store for credential polling
-      identityStore.setCurrentAID(adminAid);
+      await identityStore.setCurrentAID(adminAid);
 
       // Step 4: Create org AID as group with admin as master
       progress.value = 'Creating organization identity...';

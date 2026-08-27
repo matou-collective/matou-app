@@ -1,4 +1,5 @@
 import { test, expect, Page } from './fixtures';
+import { loginAs, jsonSessionHeaders } from '../utils/signed-auth';
 
 // Feature (#73): relax non-dialog fixed min-widths at phone widths so pages
 // don't overflow horizontally. Acceptance: at 390×844 each page satisfies
@@ -20,7 +21,7 @@ async function adminAid(): Promise<string> {
 async function api(aid: string, method: string, route: string, body?: unknown) {
   const res = await fetch(`${API}${route}`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-User-AID': aid },
+    headers: jsonSessionHeaders(aid),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -46,6 +47,7 @@ test.describe('no horizontal overflow at phone width (#73)', () => {
   }) => {
     test.setTimeout(300_000);
     const aid = await adminAid();
+    await loginAs(adminPage); // signed-auth session so API calls act as the admin
 
     // Seed a project so the Projects list and a project-detail page have real
     // content to lay out (the banner-actions + compact contribution cards are

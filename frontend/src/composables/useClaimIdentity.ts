@@ -268,7 +268,7 @@ export function useClaimIdentity() {
 
       // Populate identity store so router guard allows /dashboard access
       const identityStore = useIdentityStore();
-      identityStore.setCurrentAID({ name: aid.name, prefix: aid.prefix, state: aid.state ?? null });
+      await identityStore.setCurrentAID({ name: aid.name, prefix: aid.prefix, state: aid.state ?? null });
 
       // Populate identity info for the dashboard
       onboardingStore.setUserAID(aid.prefix);
