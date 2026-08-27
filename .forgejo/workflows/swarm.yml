@@ -1,7 +1,17 @@
 name: swarm
 on:
+  # `closed` only — never `labeled` (Matou/dev-factory#103, GOTCHAS 32). Forgejo
+  # delivers BOTH a label add and a label remove as one `issues` action,
+  # `label_updated`, with no `label` field in the payload, and its matcher maps
+  # that action onto `labeled`. So a label trigger cannot be narrowed to
+  # "ready-for-agent was added": every claim/release toggle of `agent-working`
+  # re-fired this workflow, and under the concurrency group below (which
+  # queues, never drops) a limit-parked host that claimed-and-released N ready
+  # tickets per run queued >=N successors per run — 2,700 waiting no-op runs
+  # across four repos on 2026-08-26. Newly readied tickets are picked up by the
+  # :15/:45 cron and by the D5 self-rearm dispatch instead.
   issues:
-    types: [labeled, closed]
+    types: [closed]
   schedule:
     - cron: "15,45 * * * *"
   workflow_dispatch: {}
@@ -25,8 +35,6 @@ concurrency:
 
 jobs:
   swarm:
-    # Label events fire for EVERY label; only ready-for-agent means new work.
-    if: github.event_name != 'issues' || github.event.action != 'labeled' || github.event.label.name == 'ready-for-agent'
     runs-on: swarm
     strategy:
       # Two jobs per trigger: with per-ticket claiming, two hosts can safely

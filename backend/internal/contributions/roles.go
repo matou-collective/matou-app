@@ -51,23 +51,32 @@ func MapKERIRole(keriRole string) []Role {
 type Action string
 
 const (
-	ActionCreateContribution  Action = "create_contribution"
-	ActionConfirmContribution Action = "confirm_contribution"
-	ActionAssignContribution  Action = "assign_contribution"
-	ActionApproveContribution Action = "approve_contribution"
-	ActionSignOffContribution Action = "sign_off_contribution"
-	ActionRewardContribution  Action = "reward_contribution"
-	ActionCreateProject       Action = "create_project"
-	ActionEditProject         Action = "edit_project"
-	ActionDeleteProject       Action = "delete_project"
-	ActionCreateSubContrib    Action = "create_sub_contribution"
-	ActionRegisterInterest    Action = "register_interest"
+	ActionCreateContribution     Action = "create_contribution"
+	ActionConfirmContribution    Action = "confirm_contribution"
+	ActionAssignContribution     Action = "assign_contribution"
+	ActionSignOffContribution    Action = "sign_off_contribution"
+	ActionRewardContribution     Action = "reward_contribution"
+	ActionTransitionContribution Action = "transition_contribution"
+	ActionUpdateContribution     Action = "update_contribution"
+	ActionCreateProject          Action = "create_project"
+	ActionEditProject            Action = "edit_project"
+	ActionDeleteProject          Action = "delete_project"
+	ActionAssignProjectRole      Action = "assign_project_role"
+	ActionLinkProposal           Action = "link_proposal"
+	ActionRegisterInterest       Action = "register_interest"
+
+	// Membership & credential actions
+	ActionChangeMemberRole  Action = "change_member_role"
+	ActionRemoveMember      Action = "remove_member"
+	ActionInitMemberProfile Action = "init_member_profile"
+	ActionStoreCredential   Action = "store_credential"
 
 	// Workflow actions added in Stage 1
 	ActionShareContribution  Action = "share_contribution"
 	ActionOfferContribution  Action = "offer_contribution"
 	ActionAcceptOffer        Action = "accept_offer"
 	ActionSubmitEvidence     Action = "submit_evidence"
+	ActionEditEvidence       Action = "edit_evidence"
 	ActionReviewContribution Action = "review_contribution"
 	ActionSignOffPlan        Action = "sign_off_plan"
 	ActionApproveSubContrib  Action = "approve_sub_contribution"
@@ -89,14 +98,30 @@ const (
 	ActionSubmitProjectCompletion  Action = "submit_project_completion"
 	ActionApproveProjectCompletion Action = "approve_project_completion"
 	ActionRejectProjectCompletion  Action = "reject_project_completion"
+
+	// Role-granting / bootstrap routes (issue #17 follow-up). These endpoints
+	// hand out roles indirectly — org config admins resolve to Founding Member,
+	// grant-steward-admin elevates any-sync ACL permissions, identity/set
+	// decides which AID the backend treats as its owner — so they are limited
+	// to adminScope once the backend is past first-run bootstrap (see
+	// docs/RBAC.md "Bootstrap rule").
+	ActionSaveOrgConfig     Action = "save_org_config"
+	ActionGrantStewardAdmin Action = "grant_steward_admin"
+	ActionSetIdentity       Action = "set_identity"
+
+	// ActionWriteProfile gates POST /api/v1/profiles. Any authenticated member
+	// may reach the handler; resource-level rules (owner / steward / role
+	// change) are applied in api.profileWritePolicy.
+	ActionWriteProfile Action = "write_profile"
 )
 
 // actionPermissions maps each action to the roles that can perform it.
 // 5-role model: Community Admin (OperationsSteward/FoundingMember), Project Steward,
 // Project Lead, Contributor, Member.
-// allRoles is the full set of contribution-system roles.
-// Backend RBAC verifies the user is authenticated; project-level permission
-// checks (lead, steward, admin) are enforced on the frontend.
+// allRoles is the full set of contribution-system roles. An action mapped to
+// allRoles only verifies the caller is authenticated (has an X-User-AID that
+// resolves to at least one role); resource-level checks for those actions
+// live in the service/handler layer.
 var allRoles = []Role{
 	RoleMember, RoleContributor, RoleProjectLead, RoleProjectSteward,
 	RoleCommunitySteward, RoleTechSteward, RoleTreasurySteward,
@@ -111,29 +136,44 @@ var leadStewardScope = []Role{
 	RoleProjectLead, RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember,
 }
 
+// adminScope is the community-admin tier: the same set that may change member
+// roles. Used for routes that grant roles or ACL permissions.
+var adminScope = []Role{
+	RoleOperationsSteward, RoleFoundingMember,
+}
+
 var actionPermissions = map[Action][]Role{
-	ActionCreateProject:       allRoles,
-	ActionEditProject:         allRoles,
-	ActionDeleteProject:       allRoles,
-	ActionCreateContribution:  allRoles,
-	ActionConfirmContribution: allRoles,
-	ActionAssignContribution:  allRoles,
-	ActionApproveContribution: allRoles,
-	ActionSignOffContribution: {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-	ActionRewardContribution:  {RoleOperationsSteward, RoleFoundingMember},
-	ActionShareContribution:   allRoles,
-	ActionOfferContribution:   allRoles,
-	ActionAcceptOffer:         allRoles,
-	ActionSubmitEvidence:      allRoles,
-	ActionReviewContribution:  allRoles,
-	ActionSignOffPlan:         {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
-	ActionCreateSubContrib:    allRoles,
-	ActionApproveSubContrib:   allRoles,
-	ActionRegisterInterest:    allRoles,
-	ActionSignOffProposal:     {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
-	ActionRejectProposal:      {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
-	ActionEditProposal:        {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
-	ActionWithdrawProposal:    {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionCreateProject:          allRoles,
+	ActionEditProject:            allRoles,
+	ActionDeleteProject:          allRoles,
+	ActionAssignProjectRole:      stewardScope,
+	ActionLinkProposal:           leadStewardScope,
+	ActionCreateContribution:     allRoles,
+	ActionConfirmContribution:    allRoles,
+	ActionAssignContribution:     allRoles,
+	ActionSignOffContribution:    {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+	ActionRewardContribution:     {RoleOperationsSteward, RoleFoundingMember},
+	ActionTransitionContribution: allRoles,
+	ActionUpdateContribution:     allRoles,
+	ActionShareContribution:      allRoles,
+	ActionOfferContribution:      allRoles,
+	ActionAcceptOffer:            allRoles,
+	ActionSubmitEvidence:         allRoles,
+	ActionEditEvidence:           allRoles,
+	ActionReviewContribution:     allRoles,
+	ActionSignOffPlan:            {RoleProjectSteward, RoleOperationsSteward, RoleFoundingMember},
+	ActionApproveSubContrib:      allRoles,
+	ActionRegisterInterest:       allRoles,
+
+	// Membership & credential actions
+	ActionChangeMemberRole:         {RoleOperationsSteward, RoleFoundingMember},
+	ActionRemoveMember:             {RoleOperationsSteward, RoleFoundingMember},
+	ActionInitMemberProfile:        stewardScope,
+	ActionStoreCredential:          allRoles,
+	ActionSignOffProposal:          {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionRejectProposal:           {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionEditProposal:             {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
+	ActionWithdrawProposal:         {RoleProjectSteward, RoleOperationsSteward, RoleCommunitySteward, RoleFoundingMember},
 	ActionArchiveProject:           leadStewardScope,
 	ActionArchiveMilestone:         leadStewardScope,
 	ActionArchiveContribution:      leadStewardScope,
@@ -142,6 +182,43 @@ var actionPermissions = map[Action][]Role{
 	ActionSubmitProjectCompletion:  {RoleProjectLead, RoleOperationsSteward, RoleFoundingMember},
 	ActionApproveProjectCompletion: stewardScope,
 	ActionRejectProjectCompletion:  stewardScope,
+
+	// Role-granting / bootstrap routes
+	ActionSaveOrgConfig:     adminScope,
+	ActionGrantStewardAdmin: adminScope,
+	ActionSetIdentity:       adminScope,
+	ActionWriteProfile:      allRoles,
+}
+
+// IsStewardScope reports whether the caller holds any steward-tier role
+// (project steward, operations steward, founding member).
+func IsStewardScope(roles []Role) bool {
+	return hasAnyRole(roles, stewardScope)
+}
+
+// IsAdminScope reports whether the caller holds a community-admin role
+// (operations steward, founding member).
+func IsAdminScope(roles []Role) bool {
+	return hasAnyRole(roles, adminScope)
+}
+
+func hasAnyRole(roles []Role, scope []Role) bool {
+	for _, r := range roles {
+		if HasRole(scope, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsCompletionExempt reports whether the caller is exempt from the
+// resource-level project-completion checks (submitter != approver, and
+// lead/steward-of-this-project). Operations Stewards and Founding Members are
+// exempt: they may submit/approve/reject any project's completion regardless
+// of whether they are its lead or steward, and may approve their own
+// submission. All other roles are bound by the per-project checks.
+func IsCompletionExempt(roles []Role) bool {
+	return HasRole(roles, RoleOperationsSteward) || HasRole(roles, RoleFoundingMember)
 }
 
 // HasRole checks if a role list contains the given role.

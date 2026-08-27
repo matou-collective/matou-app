@@ -2,7 +2,7 @@
  * Contribution Registrations API Client
  * Register contributor interest, list registrations, and assign contributors.
  */
-import { BACKEND_URL } from './client';
+import { BACKEND_URL, authHeaders } from './client';
 
 export interface ContributionRegistration {
   id: string;
@@ -20,7 +20,7 @@ export async function registerInterest(
     `${BACKEND_URL}/api/v1/contributions/${contribId}/register`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ statement }),
     },
   );
@@ -42,7 +42,7 @@ export async function assignContributor(contribId: string, userId: string): Prom
     `${BACKEND_URL}/api/v1/contributions/${contribId}/assign`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ user_id: userId }),
     },
   );

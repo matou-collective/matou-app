@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { loginAs } from '../utils/signed-auth';
 
 // Feature (#16): local API hardening. The backend now applies LocalhostGuard
 // in every mode and a per-launch TokenGuard that rejects mutating requests
@@ -28,6 +29,9 @@ test.describe('local API hardening — TokenGuard on mutations (#16)', () => {
   }) => {
     test.setTimeout(120_000);
     const aid = await adminAid();
+    // Signed-auth session (issue #18): the only bearer that also carries a
+    // verified AID when MATOU_REQUIRE_SIGNED_AUTH is on.
+    const session = await loginAs(adminPage);
     const runTag = Date.now().toString(36);
 
     // Negative: an explicit wrong bearer token → TokenGuard returns 401.
@@ -48,14 +52,16 @@ test.describe('local API hardening — TokenGuard on mutations (#16)', () => {
     });
     expect(rejected.status, 'mutation without a valid token must be 401').toBe(401);
 
-    // Positive: the correct dev token → the mutation succeeds.
+    // Positive: a valid bearer (the admin's signed-auth session) → the mutation succeeds.
     const acceptedTitle = `Token-authenticated project ${runTag}`;
     const accepted = await fetch(`${API}/projects`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-User-AID': aid,
-        Authorization: 'Bearer matou-dev',
+        // A session token satisfies TokenGuard too — it was minted through the
+        // token-guarded login endpoints — and binds the request to the admin AID.
+        Authorization: `Bearer ${session.token}`,
       },
       body: JSON.stringify({
         title: acceptedTitle,

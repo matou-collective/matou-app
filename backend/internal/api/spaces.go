@@ -12,6 +12,7 @@ import (
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/types"
@@ -24,6 +25,7 @@ type SpacesHandler struct {
 	spaceStore   anysync.SpaceStore
 	userIdentity *identity.UserIdentity
 	fileManager  *anysync.FileManager
+	roleLookup   RoleLookup // nil = RBAC disabled (tests only)
 }
 
 // NewSpacesHandler creates a new spaces handler
@@ -1386,14 +1388,27 @@ func (h *SpacesHandler) HandleSyncStatus(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// RegisterRoutes registers space routes on the mux
-func (h *SpacesHandler) RegisterRoutes(mux *http.ServeMux) {
+// withRBAC applies RBAC middleware when a roleLookup is configured.
+// When roleLookup is nil (tests), the handler is invoked directly.
+func (h *SpacesHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
+// RegisterRoutes registers space routes on the mux.
+// roleLookup gates POST /api/v1/spaces/grant-steward-admin (ActionGrantStewardAdmin);
+// pass nil to skip auth (tests only).
+func (h *SpacesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("SpacesHandler", roleLookup)
+	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/spaces/community", h.handleCommunitySpace)
 	mux.HandleFunc("/api/v1/spaces/community/invite", h.HandleInvite)
 	mux.HandleFunc("/api/v1/spaces/community/join", h.HandleJoinCommunity)
 	mux.HandleFunc("/api/v1/spaces/community/verify-access", h.handleVerifyAccess)
 	mux.HandleFunc("/api/v1/spaces/community-readonly/invite", h.HandleCommunityReadOnlyInvite)
-	mux.HandleFunc("/api/v1/spaces/grant-steward-admin", h.HandleGrantStewardAdmin)
+	mux.HandleFunc("/api/v1/spaces/grant-steward-admin", h.withRBAC(contributions.ActionGrantStewardAdmin, h.HandleGrantStewardAdmin))
 	mux.HandleFunc("/api/v1/spaces/private", h.HandleCreatePrivate)
 	mux.HandleFunc("/api/v1/spaces/user", h.HandleGetUserSpaces)
 	mux.HandleFunc("/api/v1/spaces/sync-status", h.HandleSyncStatus)

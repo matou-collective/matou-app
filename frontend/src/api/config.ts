@@ -182,9 +182,21 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
  */
 export async function saveOrgConfig(config: OrgConfig): Promise<void> {
   const backendUrl = await getBackendUrl();
+  // RBAC (#17): the first save (no org configured yet) is a bootstrap write
+  // and needs no identity; later saves require an Operations Steward /
+  // Founding Member AID. The identity store is imported lazily because it
+  // imports this module.
+  const headers = configHeaders({ 'Content-Type': 'application/json' });
+  try {
+    const { useIdentityStore } = await import('stores/identity');
+    const aid = useIdentityStore().aidPrefix;
+    if (aid) headers['X-User-AID'] = aid;
+  } catch {
+    // Pinia not initialised — bootstrap path
+  }
   const response = await fetch(`${backendUrl}/api/v1/org/config`, {
     method: 'POST',
-    headers: configHeaders({ 'Content-Type': 'application/json' }),
+    headers,
     body: JSON.stringify(config),
   });
 

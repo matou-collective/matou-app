@@ -809,7 +809,8 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
 
       const syncResponse = await fetch(`${BACKEND_URL}/api/v1/sync/credentials`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // RBAC (#17): the member syncs their own credential.
+        headers: { 'Content-Type': 'application/json', 'X-User-AID': currentAID.prefix },
         body: JSON.stringify({
           userAid: currentAID.prefix,
           credentials: [backendCredential],

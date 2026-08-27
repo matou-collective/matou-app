@@ -143,6 +143,8 @@ export interface Contribution {
   evidence_files?: AttachedFile[];
   time_report_file?: AttachedFile;
   attachment_files?: AttachedFile[];
+  // Last time the assigned contributor edited their submission (pre sign-off).
+  evidence_edited_at?: string;
   // Review
   review_outcome?: 'approved' | 'incomplete' | 'declined';
   review_feedback?: string;
@@ -249,7 +251,8 @@ export interface SubmitEvidenceRequest {
   acceptance_notes?: string[];
   evidence_urls?: string[];
   evidence_files?: AttachedFile[];
-  time_report_file?: AttachedFile;
+  /** `null` explicitly removes a previously attached time report (edit flow). */
+  time_report_file?: AttachedFile | null;
   attachment_files?: AttachedFile[];
   actual_duration?: number;
   actual_cost?: number;

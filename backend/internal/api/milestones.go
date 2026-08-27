@@ -27,6 +27,7 @@ func NewMilestonesHandler(service *contributions.Service, spaceManager *anysync.
 // RegisterRoutes registers milestone routes on the mux.
 // roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
 func (h *MilestonesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("MilestonesHandler", roleLookup)
 	mux.HandleFunc("/api/v1/milestones/", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/milestones/")
 		parts := strings.SplitN(path, "/", 2)

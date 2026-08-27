@@ -57,6 +57,7 @@ func (h *ContributionsHandler) SetBroker(broker *EventBroker) {
 // RegisterRoutes registers contribution routes on the mux.
 // roleLookup is required for RBAC on mutating endpoints; pass nil to skip auth (tests only).
 func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ContributionsHandler", roleLookup)
 	h.roleLookup = roleLookup
 
 	mux.HandleFunc("/api/v1/contributions", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +65,7 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 		case http.MethodGet:
 			h.HandleList(w, r)
 		case http.MethodPost:
-			h.HandleCreate(w, r)
+			h.withRBAC(contributions.ActionCreateContribution, h.HandleCreate)(w, r)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -83,14 +84,18 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 			switch parts[1] {
 			case "transition":
 				if r.Method == http.MethodPost {
-					h.HandleTransition(w, r, id)
+					h.withRBAC(contributions.ActionTransitionContribution, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleTransition(w, r, id)
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "register":
 				if r.Method == http.MethodPost {
-					h.HandleRegister(w, r, id)
+					h.withRBAC(contributions.ActionRegisterInterest, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleRegister(w, r, id)
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -104,7 +109,9 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				return
 			case "assign":
 				if r.Method == http.MethodPost {
-					h.HandleAssign(w, r, id)
+					h.withRBAC(contributions.ActionAssignContribution, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleAssign(w, r, id)
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -140,6 +147,13 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 			case "submit-evidence":
 				if r.Method == http.MethodPost {
 					h.withRBAC(contributions.ActionSubmitEvidence, h.HandleSubmitEvidence)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			case "edit-evidence":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionEditEvidence, h.HandleEditEvidence)(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -203,7 +217,9 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 		case http.MethodGet:
 			h.HandleGet(w, r, id)
 		case http.MethodPut:
-			h.HandleUpdate(w, r, id)
+			h.withRBAC(contributions.ActionUpdateContribution, func(w http.ResponseWriter, r *http.Request) {
+				h.HandleUpdate(w, r, id)
+			})(w, r)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -268,7 +284,44 @@ func (h *ContributionsHandler) HandleTransition(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	// Guard: the generic transition endpoint must not reach states whose
+	// dedicated endpoints require stricter roles (sign-off, reward, archive).
+	// Only enforced when RBAC is active (roleLookup configured).
+	if h.roleLookup != nil {
+		if action, restricted := transitionGuardAction(contributions.ContributionStatus(req.Status)); restricted {
+			if !contributions.CanPerformAction(GetUserRoles(r), action) {
+				log.Printf("[Contributions] transition to %s denied for %s: requires %s", req.Status, GetUserAID(r), action)
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions for this status transition"})
+				return
+			}
+		}
+	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+
+	// Archiving through the generic endpoint must behave exactly like the
+	// dedicated /archive route (child cascade + contribution:archived SSE),
+	// not as a bare status write.
+	if contributions.ContributionStatus(req.Status) == contributions.ContribArchived {
+		actorID := GetUserAID(r)
+		if actorID == "" {
+			actorID = r.Header.Get("X-User-AID")
+		}
+		if err := h.service.ArchiveContribution(r.Context(), spaceID, id, actorID); err != nil {
+			log.Printf("[Contributions] archive (via transition) failed for %s: %v", id, err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		log.Printf("[Contributions] contribution %s archived (via transition)", id)
+		if h.broker != nil {
+			h.broker.Broadcast(SSEEvent{
+				Type: "contribution:archived",
+				Data: map[string]string{"contribution_id": id},
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"success": "true"})
+		return
+	}
+
 	contrib, err := h.service.TransitionContribution(r.Context(), spaceID, id, contributions.ContributionStatus(req.Status))
 	if err != nil {
 		log.Printf("[Contributions] transition failed for %s: %v", id, err)
@@ -778,6 +831,75 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, contrib)
 }
 
+// HandleEditEvidence handles POST /api/v1/contributions/{id}/edit-evidence
+// Body: SubmitEvidenceRequest (the complete new submission).
+// RBAC: ActionEditEvidence, plus a service-side ownership check — only the
+// assigned contributor (X-User-AID) may edit; anyone else gets 403. An
+// approved contribution drops back to needs_review; the lead and the
+// reviewer whose approval was voided are notified, and an SSE event is
+// broadcast so open views refresh.
+func (h *ContributionsHandler) HandleEditEvidence(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/edit-evidence")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req contributions.SubmitEvidenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	editor := GetUserAID(r)
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	res, err := h.service.EditEvidence(r.Context(), spaceID, id, editor, req)
+	if err != nil {
+		log.Printf("[Contributions] EditEvidence failed for %s by %q: %v", id, editor, err)
+		status := http.StatusBadRequest
+		if errors.Is(err, contributions.ErrNotEvidenceOwner) {
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	contrib := res.Contribution
+	log.Printf("[Contributions] evidence edited for %s (was %s)", id, res.PriorStatus)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:evidence_edited",
+			Data: map[string]string{
+				"contribution_id": id,
+				"previous_status": string(res.PriorStatus),
+				"status":          string(contrib.Status),
+				"edited_by":       editor,
+			},
+		})
+	}
+	// Notify the lead and, when an approval was voided, the reviewer who gave
+	// it (captured by the service before the edit cleared ReviewedBy).
+	if h.notifier != nil {
+		message := contrib.Title + " was edited and needs another look"
+		if res.PriorStatus == contributions.ContribApproved {
+			message = contrib.Title + " was edited after approval — the approval has been voided and it needs re-review"
+		}
+		seen := map[string]bool{editor: true, "": true}
+		for _, recipient := range []string{contrib.CreatedBy, res.PriorReviewedBy} {
+			if seen[recipient] {
+				continue
+			}
+			seen[recipient] = true
+			h.notifier.Notify(&ContribNotification{
+				Type:        "contribution:evidence_edited",
+				RecipientID: recipient,
+				Title:       "Submission Edited",
+				Message:     message,
+				EntityID:    id,
+				EntityType:  "contribution",
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
 // HandleReview handles POST /api/v1/contributions/{id}/review
 // Body: ReviewRequest.
 // RBAC: ActionReviewContribution (lead/admin).
@@ -996,6 +1118,23 @@ func (h *ContributionsHandler) HandleUnassign(w http.ResponseWriter, r *http.Req
 		})
 	}
 	writeJSON(w, http.StatusOK, contrib)
+}
+
+// transitionGuardAction returns the stricter Action required to move a
+// contribution into the given status via the generic /transition endpoint,
+// mirroring the dedicated endpoints (sign-off, reward). The bool is false for
+// statuses that carry no extra restriction beyond ActionTransitionContribution.
+func transitionGuardAction(status contributions.ContributionStatus) (contributions.Action, bool) {
+	switch status {
+	case contributions.ContribSignedOff:
+		return contributions.ActionSignOffContribution, true
+	case contributions.ContribRewarded:
+		return contributions.ActionRewardContribution, true
+	case contributions.ContribArchived:
+		return contributions.ActionArchiveContribution, true
+	default:
+		return "", false
+	}
 }
 
 // toStringSlice converts an interface{} (typically []interface{} from JSON) to []string.

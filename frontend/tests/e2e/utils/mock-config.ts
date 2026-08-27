@@ -63,9 +63,22 @@ export async function clearTestConfig(request: APIRequestContext) {
     console.log('[TestConfig] No config server config to clear');
   }
 
-  // Clear backend org config
+  // Clear backend org config. RBAC (#17): once configured, DELETE requires
+  // an admin AID — read it from the current config (bootstrap state needs
+  // no header).
   try {
-    const resp = await request.delete(`${BACKEND_URL}/api/v1/org/config`);
+    const headers: Record<string, string> = {};
+    try {
+      const current = await request.get(`${BACKEND_URL}/api/v1/org/config`);
+      if (current.ok()) {
+        const cfg = (await current.json()) as { admins?: { aid?: string }[]; admin?: { aid?: string } };
+        const adminAid = cfg.admin?.aid ?? cfg.admins?.[0]?.aid;
+        if (adminAid) headers['X-User-AID'] = adminAid;
+      }
+    } catch {
+      /* not configured */
+    }
+    const resp = await request.delete(`${BACKEND_URL}/api/v1/org/config`, { headers });
     if (resp.ok() || resp.status() === 404) {
       console.log('[TestConfig] Cleared backend org config');
     } else {
