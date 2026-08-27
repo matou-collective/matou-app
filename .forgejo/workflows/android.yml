@@ -24,7 +24,10 @@ concurrency:
 
 jobs:
   build-apk:
-    runs-on: swarm
+    # Pinned to the one pool host that carries the persistent toolchain. `swarm`
+    # is a pool: jobs that land on the other host die in ~20s doing a first
+    # install with no go/JDK (tasks 27461/27490/27493/27510 on 2026-08-27).
+    runs-on: matou-workstation
     # First run per host downloads the whole toolchain and binds the backend
     # twice (arm64 + amd64); give it room. Cached runs finish well under this.
     timeout-minutes: 90
