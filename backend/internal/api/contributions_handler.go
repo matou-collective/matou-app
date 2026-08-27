@@ -57,6 +57,7 @@ func (h *ContributionsHandler) SetBroker(broker *EventBroker) {
 // RegisterRoutes registers contribution routes on the mux.
 // roleLookup is required for RBAC on mutating endpoints; pass nil to skip auth (tests only).
 func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ContributionsHandler", roleLookup)
 	h.roleLookup = roleLookup
 
 	mux.HandleFunc("/api/v1/contributions", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +65,7 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 		case http.MethodGet:
 			h.HandleList(w, r)
 		case http.MethodPost:
-			h.HandleCreate(w, r)
+			h.withRBAC(contributions.ActionCreateContribution, h.HandleCreate)(w, r)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -83,14 +84,18 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 			switch parts[1] {
 			case "transition":
 				if r.Method == http.MethodPost {
-					h.HandleTransition(w, r, id)
+					h.withRBAC(contributions.ActionTransitionContribution, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleTransition(w, r, id)
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "register":
 				if r.Method == http.MethodPost {
-					h.HandleRegister(w, r, id)
+					h.withRBAC(contributions.ActionRegisterInterest, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleRegister(w, r, id)
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -104,7 +109,9 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				return
 			case "assign":
 				if r.Method == http.MethodPost {
-					h.HandleAssign(w, r, id)
+					h.withRBAC(contributions.ActionAssignContribution, func(w http.ResponseWriter, r *http.Request) {
+						h.HandleAssign(w, r, id)
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -210,7 +217,9 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 		case http.MethodGet:
 			h.HandleGet(w, r, id)
 		case http.MethodPut:
-			h.HandleUpdate(w, r, id)
+			h.withRBAC(contributions.ActionUpdateContribution, func(w http.ResponseWriter, r *http.Request) {
+				h.HandleUpdate(w, r, id)
+			})(w, r)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
@@ -275,7 +284,44 @@ func (h *ContributionsHandler) HandleTransition(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	// Guard: the generic transition endpoint must not reach states whose
+	// dedicated endpoints require stricter roles (sign-off, reward, archive).
+	// Only enforced when RBAC is active (roleLookup configured).
+	if h.roleLookup != nil {
+		if action, restricted := transitionGuardAction(contributions.ContributionStatus(req.Status)); restricted {
+			if !contributions.CanPerformAction(GetUserRoles(r), action) {
+				log.Printf("[Contributions] transition to %s denied for %s: requires %s", req.Status, GetUserAID(r), action)
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions for this status transition"})
+				return
+			}
+		}
+	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+
+	// Archiving through the generic endpoint must behave exactly like the
+	// dedicated /archive route (child cascade + contribution:archived SSE),
+	// not as a bare status write.
+	if contributions.ContributionStatus(req.Status) == contributions.ContribArchived {
+		actorID := GetUserAID(r)
+		if actorID == "" {
+			actorID = r.Header.Get("X-User-AID")
+		}
+		if err := h.service.ArchiveContribution(r.Context(), spaceID, id, actorID); err != nil {
+			log.Printf("[Contributions] archive (via transition) failed for %s: %v", id, err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		log.Printf("[Contributions] contribution %s archived (via transition)", id)
+		if h.broker != nil {
+			h.broker.Broadcast(SSEEvent{
+				Type: "contribution:archived",
+				Data: map[string]string{"contribution_id": id},
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"success": "true"})
+		return
+	}
+
 	contrib, err := h.service.TransitionContribution(r.Context(), spaceID, id, contributions.ContributionStatus(req.Status))
 	if err != nil {
 		log.Printf("[Contributions] transition failed for %s: %v", id, err)
@@ -1072,6 +1118,23 @@ func (h *ContributionsHandler) HandleUnassign(w http.ResponseWriter, r *http.Req
 		})
 	}
 	writeJSON(w, http.StatusOK, contrib)
+}
+
+// transitionGuardAction returns the stricter Action required to move a
+// contribution into the given status via the generic /transition endpoint,
+// mirroring the dedicated endpoints (sign-off, reward). The bool is false for
+// statuses that carry no extra restriction beyond ActionTransitionContribution.
+func transitionGuardAction(status contributions.ContributionStatus) (contributions.Action, bool) {
+	switch status {
+	case contributions.ContribSignedOff:
+		return contributions.ActionSignOffContribution, true
+	case contributions.ContribRewarded:
+		return contributions.ActionRewardContribution, true
+	case contributions.ContribArchived:
+		return contributions.ActionArchiveContribution, true
+	default:
+		return "", false
+	}
 }
 
 // toStringSlice converts an interface{} (typically []interface{} from JSON) to []string.

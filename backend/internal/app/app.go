@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -20,6 +21,7 @@ import (
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/api"
+	"github.com/matou-dao/backend/internal/auth"
 	"github.com/matou-dao/backend/internal/config"
 	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/email"
@@ -405,6 +407,36 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
 	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
 
+	// Signed-challenge authentication (issue #18): make X-User-AID trustworthy.
+	// The backend resolves an AID's current signing keys read-only from KERIA's
+	// CESR/OOBI endpoint, verifies a signed challenge, and mints a short-lived
+	// session token checked per request. Enforcement is gated by
+	// MATOU_REQUIRE_SIGNED_AUTH (default OFF); the Playwright e2e config sets it
+	// ON against real KERIA infrastructure. NEEDS LIVE VERIFICATION: the exact
+	// KERIA key-state URL is deployment-specific and verified by the e2e run.
+	keyStateURLTemplate := opts.KeyStateURL
+	if keyStateURLTemplate == "" {
+		keyStateURLTemplate = strings.TrimRight(cfg.KERI.CESRURL, "/") + "/oobi/{aid}"
+	}
+	var resolverOpts []auth.ResolverOption
+	if os.Getenv("MATOU_KERIA_KEYSTATE_ALLOW_HTTP") == "1" {
+		resolverOpts = append(resolverOpts, auth.AllowInsecureHTTP())
+	}
+	var keyStateResolver auth.KeyStateResolver
+	if kr, err := auth.NewKERIAResolver(keyStateURLTemplate, 5*time.Minute, resolverOpts...); err != nil {
+		log.Printf("[Auth] invalid key-state URL template %q: %v — falling back to static resolver", keyStateURLTemplate, err)
+		keyStateResolver = auth.NewStaticKeyStateResolver()
+	} else {
+		keyStateResolver = kr
+	}
+	authVerifier := auth.NewVerifier(keyStateResolver, nil, auth.NewSessionStore(opts.SessionTTL))
+	authHandler := api.NewAuthHandler(authVerifier)
+
+	// Revoke sessions when an AID's key state rotates: a session-verified KEL
+	// sync for the caller's own AID triggers a re-resolve from the authoritative
+	// key-state source (never the request body).
+	syncHandler.SetRotationHook(authVerifier.OnRotation)
+
 	// Grant community_admin role to all configured org admins.
 	// Also register a callback so admin AIDs are updated whenever org config changes
 	// (e.g. when org setup runs after server start).
@@ -491,28 +523,29 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}))
 
 	// Register API routes
-	credHandler.RegisterRoutes(mux)
-	syncHandler.RegisterRoutes(mux)
+	credHandler.RegisterRoutes(mux, roleLookup)
+	syncHandler.RegisterRoutes(mux, roleLookup)
 	trustHandler.RegisterRoutes(mux)
-	spacesHandler.RegisterRoutes(mux)
+	spacesHandler.RegisterRoutes(mux, roleLookup)
 	invitesHandler.RegisterRoutes(mux)
 	bookingHandler.RegisterRoutes(mux)
-	identityHandler.RegisterRoutes(mux)
+	identityHandler.RegisterRoutes(mux, roleLookup)
 	eventsHandler.RegisterRoutes(mux)
-	profilesHandler.RegisterRoutes(mux)
+	profilesHandler.RegisterRoutes(mux, roleLookup)
 	multisigHandler.RegisterRoutes(mux)
 	noticesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
 	chatHandler.RegisterRoutes(mux)
 	commentCursorsHandler.Routes(mux)
 	notificationsHandler.RegisterRoutes(mux)
+	authHandler.RegisterRoutes(mux)
 	proposalsHandler.RegisterRoutes(mux, roleLookup)
 	projectsHandler.RegisterRoutes(mux, roleLookup)
 	decisionPlansHandler.RegisterRoutes(mux, roleLookup)
-	implPlansHandler.RegisterRoutes(mux)
+	implPlansHandler.RegisterRoutes(mux, roleLookup)
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
-	orgConfigHandler.RegisterRoutes(mux)
+	orgConfigHandler.RegisterRoutes(mux, roleLookup)
 
 	// Bind the listener before starting the sync worker so a bind failure aborts
 	// cleanly. net.Listen honours port 0 by picking a free port, which App.Port
@@ -533,14 +566,19 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	syncWorker.Start()
 	closers = append(closers, func() error { syncWorker.Stop(); return nil })
 
-	// Wrap with middleware: request logger → localhost guard → token guard → CORS.
-	// LocalhostGuard blocks other machines; TokenGuard blocks other local
-	// processes from issuing mutating requests without the per-launch token.
-	// CORS sits outside TokenGuard so 401 responses carry
-	// Access-Control-Allow-Origin — a browser then surfaces the 401 + JSON
-	// body instead of an opaque "Failed to fetch". Preflight OPTIONS is
-	// answered by CORSMiddleware before TokenGuard ever sees it.
-	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(api.TokenGuard(opts.APIToken, mux))))
+	// Wrap with middleware: request logger → localhost guard → CORS → token
+	// guard → signed-auth. LocalhostGuard blocks other machines; TokenGuard
+	// blocks other local processes from issuing mutating requests without the
+	// per-launch token (or a session minted through it — see
+	// TokenGuardWithSessions). CORS sits outside both guards so 401 responses
+	// carry Access-Control-Allow-Origin — a browser then surfaces the 401 + JSON
+	// body instead of an opaque "Failed to fetch". Preflight OPTIONS is answered
+	// by CORSMiddleware before either guard sees it. SignedAuthMiddleware
+	// (gated by MATOU_REQUIRE_SIGNED_AUTH) sits innermost so it can set the
+	// verified X-User-AID before any route/RBAC runs.
+	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(
+		api.TokenGuardWithSessions(opts.APIToken, authHandler.Sessions(),
+			api.SignedAuthMiddleware(authHandler.Sessions(), mux)))))
 
 	app := newServing(listener, handler, closers)
 	success = true

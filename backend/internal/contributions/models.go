@@ -163,6 +163,7 @@ type Project struct {
 	CreatedBy             string         `json:"created_by"`
 	CreatedAt             time.Time      `json:"created_at"`
 	UpdatedAt             time.Time      `json:"updated_at"`
+	SubmittedBy           string         `json:"submitted_by,omitempty"`
 	CompletedBy           string         `json:"completed_by,omitempty"`
 	CompletedAt           *time.Time     `json:"completed_at,omitempty"`
 	RejectionReason       string         `json:"rejection_reason,omitempty"`

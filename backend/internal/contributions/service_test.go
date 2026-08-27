@@ -1014,7 +1014,7 @@ func TestSubmitProjectCompletion_RequiresAllSignedOff(t *testing.T) {
 	})
 
 	// Not signed off — should fail
-	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead"); err == nil {
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead", []Role{RoleFoundingMember}); err == nil {
 		t.Error("expected error when not all contributions signed off")
 	}
 
@@ -1022,7 +1022,7 @@ func TestSubmitProjectCompletion_RequiresAllSignedOff(t *testing.T) {
 	c1.Status = ContribSignedOff
 	_ = svc.SaveContribution(ctx, spaceID, c1)
 
-	got, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead")
+	got, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead", []Role{RoleFoundingMember})
 	if err != nil {
 		t.Fatalf("SubmitProjectCompletion: %v", err)
 	}
@@ -1041,7 +1041,7 @@ func TestSubmitProjectCompletion_RejectsNonActiveStatus(t *testing.T) {
 	proj.Status = ProjectCompleted
 	_ = svc.SaveProject(ctx, spaceID, proj)
 
-	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead"); err == nil {
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead", []Role{RoleFoundingMember}); err == nil {
 		t.Error("expected error when project status is not active")
 	}
 }
@@ -1056,7 +1056,7 @@ func TestApproveProjectCompletion_FillsCompletedFields(t *testing.T) {
 	proj.Status = ProjectPendingCompletion
 	_ = svc.SaveProject(ctx, spaceID, proj)
 
-	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1", nil)
+	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1", []Role{RoleFoundingMember}, nil)
 	if err != nil {
 		t.Fatalf("ApproveProjectCompletion: %v", err)
 	}
@@ -1081,7 +1081,7 @@ func TestRejectProjectCompletion_RevertsToActive(t *testing.T) {
 	proj.Status = ProjectPendingCompletion
 	_ = svc.SaveProject(ctx, spaceID, proj)
 
-	got, err := svc.RejectProjectCompletion(ctx, spaceID, proj.ID, "needs more work")
+	got, err := svc.RejectProjectCompletion(ctx, spaceID, proj.ID, "steward-1", "needs more work", []Role{RoleFoundingMember})
 	if err != nil {
 		t.Fatalf("RejectProjectCompletion: %v", err)
 	}
@@ -1090,6 +1090,87 @@ func TestRejectProjectCompletion_RevertsToActive(t *testing.T) {
 	}
 	if got.RejectionReason != "needs more work" {
 		t.Errorf("rejection_reason = %q, want needs more work", got.RejectionReason)
+	}
+}
+
+// signedOffProject builds a pending_completion-ready active project with one
+// signed-off contribution, assigned lead/steward, for resource-check tests.
+func signedOffProject(t *testing.T, ctx context.Context, svc *Service, spaceID, lead, steward string) *Project {
+	t.Helper()
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	proj.Status = ProjectActive
+	proj.ProjectLeadID = lead
+	proj.ProjectStewardID = steward
+	_ = svc.SaveProject(ctx, spaceID, proj)
+	c1, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	c1.Status = ContribSignedOff
+	_ = svc.SaveContribution(ctx, spaceID, c1)
+	return proj
+}
+
+func TestSubmitProjectCompletion_NonLeadRejected(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+
+	// A plain contributor who is not this project's lead is rejected.
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "someone-else", []Role{RoleContributor}); err == nil {
+		t.Error("expected non-lead submitter to be rejected")
+	}
+	// The actual project lead succeeds.
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead-aid", []Role{RoleProjectLead}); err != nil {
+		t.Fatalf("project lead submit: %v", err)
+	}
+}
+
+func TestApproveProjectCompletion_RejectsSubmitterAndNonSteward(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+
+	// Lead submits (exempt not needed — lead matches).
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead-aid", []Role{RoleProjectLead}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// A steward who is not this project's steward is rejected.
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "other-steward", []Role{RoleProjectSteward}, nil); err == nil {
+		t.Error("expected non-steward-of-project approver to be rejected")
+	}
+
+	// The submitter cannot approve their own completion, even if they are the
+	// project steward (make lead==steward to test the submitter guard).
+	proj2 := signedOffProject(t, ctx, svc, spaceID, "dual-aid", "dual-aid")
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj2.ID, "dual-aid", []Role{RoleProjectLead, RoleProjectSteward}); err != nil {
+		t.Fatalf("submit dual: %v", err)
+	}
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj2.ID, "dual-aid", []Role{RoleProjectSteward}, nil); err == nil {
+		t.Error("expected submitter to be rejected as their own approver")
+	}
+
+	// This project's steward (not the submitter) approves.
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-aid", []Role{RoleProjectSteward}, nil); err != nil {
+		t.Fatalf("project steward approve: %v", err)
+	}
+}
+
+func TestApproveProjectCompletion_FoundingMemberExempt(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+
+	// Founding member submits and approves their own completion — exempt.
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "fm-aid", []Role{RoleFoundingMember}); err != nil {
+		t.Fatalf("fm submit: %v", err)
+	}
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "fm-aid", []Role{RoleFoundingMember}, nil); err != nil {
+		t.Fatalf("fm approve (exempt): %v", err)
 	}
 }
 
@@ -1111,7 +1192,7 @@ func TestSubmitProjectCompletion_ClearsPriorRejection(t *testing.T) {
 	c1.Status = ContribSignedOff
 	_ = svc.SaveContribution(ctx, spaceID, c1)
 
-	got, _ := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead")
+	got, _ := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead", []Role{RoleFoundingMember})
 	if got.RejectionReason != "" {
 		t.Errorf("rejection_reason = %q, want empty", got.RejectionReason)
 	}

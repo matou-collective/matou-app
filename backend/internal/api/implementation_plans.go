@@ -16,6 +16,7 @@ type ImplementationPlansHandler struct {
 	service      *contributions.Service
 	spaceManager *anysync.SpaceManager
 	broker       *EventBroker
+	roleLookup   RoleLookup
 }
 
 // NewImplementationPlansHandler creates a new implementation plans handler.
@@ -31,8 +32,20 @@ func (h *ImplementationPlansHandler) SetBroker(broker *EventBroker) {
 	h.broker = broker
 }
 
+// withRBAC applies RBAC middleware when a roleLookup is configured.
+// When roleLookup is nil (tests), the handler is invoked directly.
+func (h *ImplementationPlansHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
 // RegisterRoutes registers implementation plan routes on the mux.
-func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux) {
+// roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
+func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ImplementationPlansHandler", roleLookup)
+	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/implementation-plans", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -58,7 +71,9 @@ func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		if len(parts) == 2 && parts[1] == "sign-off" && r.Method == http.MethodPost {
-			h.HandleSignOff(w, r, id)
+			h.withRBAC(contributions.ActionSignOffPlan, func(w http.ResponseWriter, r *http.Request) {
+				h.HandleSignOff(w, r, id)
+			})(w, r)
 			return
 		}
 		if r.Method == http.MethodGet {
@@ -147,22 +162,19 @@ func (h *ImplementationPlansHandler) HandleAddMilestone(w http.ResponseWriter, r
 // Signs off the plan if all milestones have contributions and all contributions are confirmed.
 // Returns 409 if already signed off, 422 if contributions are unconfirmed.
 func (h *ImplementationPlansHandler) HandleSignOff(w http.ResponseWriter, r *http.Request, id string) {
+	// The route is wrapped in RBACMiddleware (ActionSignOffPlan) so the caller
+	// AID comes from the context; the header fallback only applies when RBAC
+	// is disabled (roleLookup nil, tests).
 	userID := GetUserAID(r)
 	if userID == "" {
-		// Fall back to reading X-User-AID header directly (no RBAC middleware on this route)
 		userID = r.Header.Get("X-User-AID")
 	}
-	// Body is optional: it may carry a user_id fallback (no RBAC middleware on this
-	// route) and/or a KERI proof envelope for the sign-off action (issue #20).
-	// Absent/empty bodies are tolerated.
+	// Body is optional: it may carry a KERI proof envelope for the sign-off
+	// action (issue #20). Absent/empty bodies are tolerated.
 	var body struct {
-		UserID string               `json:"user_id"`
-		Proof  *contributions.Proof `json:"proof"`
+		Proof *contributions.Proof `json:"proof"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // absent/empty/invalid body is fine
-	if userID == "" && body.UserID != "" {
-		userID = body.UserID
-	}
 	if userID == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
 		return

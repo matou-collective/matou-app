@@ -25,6 +25,7 @@ func NewDecisionPlansHandler(service *contributions.Service, spaceManager *anysy
 
 // RegisterRoutes registers decision plan and governance action routes on the mux.
 func (h *DecisionPlansHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("DecisionPlansHandler", roleLookup)
 	mux.HandleFunc("/api/v1/decision-plans", CORSHandler(OptionalRBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
