@@ -185,12 +185,20 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 
 	anysyncConfigPath := opts.AnysyncConfigPath
 
+	// Serves the full fetched client config over the loopback API so the
+	// Capacitor frontend can source it locally (issue #99). Populated below
+	// once the startup fetch succeeds; stays empty (503) when the fetch is
+	// skipped, which only happens on dev/test where the frontend hits the
+	// config server directly anyway.
+	clientConfigHandler := api.NewClientConfigHandler()
+
 	// In production, always fetch fresh config from the config server.
 	// For dev/test, fetch only if the config file doesn't exist.
 	shouldFetch := opts.IsProd() || os.IsNotExist(func() error { _, statErr := os.Stat(anysyncConfigPath); return statErr }())
 	if shouldFetch {
 		fmt.Fprintf(out, "  Fetching any-sync config from config server %s...\n", opts.ConfigServerURL)
-		if fetchErr := fetchAndSaveAnySyncConfig(opts.ConfigServerURL, anysyncConfigPath); fetchErr != nil {
+		rawConfig, fetchErr := fetchAndSaveAnySyncConfig(opts.ConfigServerURL, anysyncConfigPath)
+		if fetchErr != nil {
 			// In production, try using cached config if fetch fails
 			if opts.IsProd() {
 				if _, statErr := os.Stat(anysyncConfigPath); statErr == nil {
@@ -204,6 +212,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 					"Ensure the config server is running at %s", fetchErr, opts.ConfigServerURL)
 			}
 		} else {
+			clientConfigHandler.SetRaw(rawConfig)
 			fmt.Fprintf(out, "  Config saved to %s\n", anysyncConfigPath)
 		}
 	}
@@ -660,6 +669,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
 	orgConfigHandler.RegisterRoutes(mux, roleLookup)
+	clientConfigHandler.RegisterRoutes(mux)
 
 	// Bind the listener before starting the sync worker so a bind failure aborts
 	// cleanly. net.Listen honours port 0 by picking a free port, which App.Port
@@ -770,53 +780,57 @@ func signedAuthEnforced() bool {
 	}
 }
 
-// fetchAndSaveAnySyncConfig fetches the any-sync client config from the config
-// server and writes it to disk as YAML.
-func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) error {
+// fetchAndSaveAnySyncConfig fetches the full client config from the config
+// server, writes the any-sync fragment to disk as YAML, and returns the raw
+// JSON body it fetched. The raw body is retained (via ClientConfigHandler) so
+// the frontend can source the full config over the loopback API on Capacitor,
+// where the WebView's cleartext policy blocks a direct config-server fetch
+// (issue #99).
+func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) ([]byte, error) {
 	resp, err := http.Get(configServerURL + "/api/client-config")
 	if err != nil {
-		return fmt.Errorf("failed to reach config server at %s: %w", configServerURL, err)
+		return nil, fmt.Errorf("failed to reach config server at %s: %w", configServerURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("config server returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("config server returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return fmt.Errorf("failed to parse JSON response: %w", err)
+		return nil, fmt.Errorf("failed to parse JSON response: %w", err)
 	}
 
 	anysyncRaw, ok := envelope["anysync"]
 	if !ok {
-		return fmt.Errorf("config server response missing \"anysync\" key")
+		return nil, fmt.Errorf("config server response missing \"anysync\" key")
 	}
 
 	var clientConfig interface{}
 	if err := json.Unmarshal(anysyncRaw, &clientConfig); err != nil {
-		return fmt.Errorf("failed to parse anysync config: %w", err)
+		return nil, fmt.Errorf("failed to parse anysync config: %w", err)
 	}
 
 	yamlData, err := yaml.Marshal(clientConfig)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config to YAML: %w", err)
+		return nil, fmt.Errorf("failed to marshal config to YAML: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
+		return nil, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
 	if err := os.WriteFile(targetPath, yamlData, 0644); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
+		return nil, fmt.Errorf("failed to write config file: %w", err)
 	}
 
-	return nil
+	return body, nil
 }
 
 // eventBrokerAdapter adapts api.EventBroker to anysync.EventBroadcaster.
