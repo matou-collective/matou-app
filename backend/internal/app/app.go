@@ -352,7 +352,17 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// populated by a background refresher (single pass over profile trees).
 	writeRuleResolver := anysync.NewHistoryRoleResolver()
 	writeRuleRecorder := anysync.NewLoggingRejectionRecorder(200)
-	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleRecorder)
+	// GH#19 part 2: high-stakes proof-backed transitions (contribution
+	// sign-off/reward, project completion, plan sign-off) are gated on
+	// cryptographic KERI action-proof verification when crypto enforcement is on.
+	// The key snapshot is populated by the refresher below from the same
+	// KERIA key-state source signed-auth uses. Enforcement is gated by
+	// MATOU_REQUIRE_SIGNED_AUTH (default OFF) — the same signal that makes
+	// X-User-AID trustworthy — so environments without live KERIA keep the
+	// interim role-based behaviour and are never broken by a missing proof.
+	writeRuleKeys := anysync.NewStaticKeyProvider()
+	enforceProofs := signedAuthEnforced()
+	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleKeys, writeRuleRecorder, enforceProofs)
 	spaceManager.ObjectTreeManager().SetChangeValidator(writeRuleValidator)
 
 	// Create push-based listener for P2P chat changes (replaces polling)
@@ -361,6 +371,12 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		&eventBrokerAdapter{broker: eventBroker},
 	)
 	chatListener.SetChangeValidator(writeRuleValidator)
+	// Bind proof-backed transitions to their space during listener-path
+	// validation (anti-cross-space-replay). Resolves a tree id to its space via
+	// the tree index; returns "" (space check skipped) if not yet indexed.
+	chatListener.SetSpaceResolver(func(treeId string) string {
+		return spaceManager.TreeManager().SpaceForTree(treeId)
+	})
 	spaceManager.SetObjectTreeListener(chatListener)
 
 	// Wire up FreshTreeReader so the listener can rebuild trees with updated ACL keys
@@ -504,6 +520,36 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 			}
 		}
 		writeRuleResolver.Replace(anysync.RoleSnapshot{AccountAID: accountAID, History: history, AdminAIDs: adminAIDs})
+
+		// GH#19 part 2: when proof enforcement is on, refresh the signing-key
+		// snapshot the proof verifier reads. Resolve each known member/admin
+		// AID's current KEL signing key off the hot path (a network fetch, so
+		// never done under a tree lock). Best-effort: an AID that fails to
+		// resolve is simply absent from the snapshot, and a proof from it then
+		// fails closed. NEEDS LIVE VERIFICATION: requires a reachable KERIA
+		// key-state endpoint (see the signed-auth wiring below); the e2e run is
+		// the verification per the ticket's acceptance criteria.
+		if enforceProofs {
+			aids := make(map[string]bool, len(accountAID)+len(adminAIDs))
+			for _, aid := range accountAID {
+				if aid != "" {
+					aids[aid] = true
+				}
+			}
+			for aid := range adminAIDs {
+				aids[aid] = true
+			}
+			keySnap := make(map[string][]string, len(aids))
+			for aid := range aids {
+				keys, err := keyStateResolver.CurrentKeys(ctx, aid)
+				if err != nil {
+					log.Printf("[write-rules] key-state refresh failed for %s: %v", aid, err)
+					continue
+				}
+				keySnap[aid] = keys
+			}
+			writeRuleKeys.Replace(keySnap)
+		}
 	}
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	refreshDone := make(chan struct{})
@@ -709,6 +755,19 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 	return firstErr
+}
+
+// signedAuthEnforced reports whether the KERI crypto stack is required, gating
+// GH#19 part-2 proof enforcement on the same MATOU_REQUIRE_SIGNED_AUTH signal
+// that makes X-User-AID trustworthy (see api.signedAuthEnabled). Default OFF, so
+// environments without live KERIA keep the interim role-based write rules.
+func signedAuthEnforced() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MATOU_REQUIRE_SIGNED_AUTH"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // fetchAndSaveAnySyncConfig fetches the any-sync client config from the config

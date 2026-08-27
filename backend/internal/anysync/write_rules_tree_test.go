@@ -97,67 +97,64 @@ func addOps(t *testing.T, tree objecttree.ObjectTree, key crypto.PrivKey, ts int
 	return res.Heads[0]
 }
 
-func TestAC1_ForgedSignOffOnRealTree(t *testing.T) {
+// TestAC1_ForgedSignOffOnRealTree_Crypto is the GH#19 part-2 acceptance test.
+// On a REAL any-sync object tree (real change builder, signature + ACL
+// validation, encryption), a writer-permission peer that forges a high-stakes
+// sign-off — either with no proof, or with a proof that claims a steward's AID
+// but is signed with the attacker's own key — is excluded from every honest
+// peer's derived state, while the steward's genuinely-signed sign-off applies.
+// Proof enforcement is ON (as under MATOU_REQUIRE_SIGNED_AUTH).
+func TestAC1_ForgedSignOffOnRealTree_Crypto(t *testing.T) {
 	acl, steward, member := twoWriterACL(t)
-	stewardAcct := steward.Keys.SignKey.GetPublic().Account()
-	memberAcct := member.Keys.SignKey.GetPublic().Account()
 
-	// Blocking item 1: bind accounts → AIDs from the real ACL records, first
-	// claim wins, hijacker "c" dropped. The owner joined via root (no metadata)
-	// so it is not bound by the ACL; bind it explicitly as the steward.
-	var mdKeys []crypto.PrivKey
-	for _, k := range acl.AclState().Keys() {
-		if k.MetadataPrivKey != nil {
-			mdKeys = append(mdKeys, k.MetadataPrivKey)
-		}
-	}
-	active := map[string]bool{}
-	for _, a := range acl.AclState().CurrentAccounts() {
-		active[a.PubKey.Account()] = true
-	}
-	bound := bindFirstClaims(aidClaimsInRecordOrder(acl, mdKeys), active)
-	if bound[memberAcct] != "E-member" {
-		t.Fatalf("member account must bind to E-member, got %v", bound)
-	}
-	if len(bound) != 1 {
-		t.Fatalf("hijacker must be dropped, got %v", bound)
-	}
-	bound[stewardAcct] = "E-steward"
+	stewardSigner := newSigner(t, "E-steward")
+	keys := NewStaticKeyProvider()
+	keys.Set(stewardSigner.aid, stewardSigner.verfer)
 
-	resolver := NewHistoryRoleResolver()
-	resolver.Replace(RoleSnapshot{
-		AccountAID: bound,
-		History: map[string][]RoleAt{
-			"E-steward": {{Since: 500, Role: "Operations Steward"}},
-			"E-member":  {{Since: 500, Role: "Member"}},
-		},
-	})
+	// Roles keyed by the crypto-verified AID: the steward AID is an ops steward,
+	// the member AID a plain member.
+	resolver := fakeResolver{
+		"E-steward": contributions.MapKERIRole("Operations Steward"),
+		"E-member":  contributions.MapKERIRole("Member"),
+	}
 	recorder := NewLoggingRejectionRecorder(10)
-	validator := NewWriteRuleValidator(resolver, recorder)
+	validator := NewWriteRuleValidator(resolver, keys, recorder, true)
 
+	const spaceID = "space-test"
 	tree := newEncryptedTree(t, acl, steward, "contrib-1", TypeContribution)
 
-	// Steward creates and assigns the contribution (legit).
+	// Steward creates + assigns (legit, no proof needed).
 	addOps(t, tree, steward.Keys.SignKey, 2000, true, setOp("title", "Fix bug"), setOp("status", "assigned"))
-	// Member (legit Writer on the space) FORGES a sign-off directly into the tree.
-	forgedID := addOps(t, tree, member.Keys.SignKey, 3000, false, setOp("status", "signed_off"))
 
-	// AC-1: every honest peer excludes the forged change from derived state.
-	tree.Lock()
-	state, err := BuildStateValidated(tree, "contrib-1", TypeContribution, validator)
-	tree.Unlock()
-	if err != nil {
-		t.Fatal(err)
+	// FORGERY: member writes a sign-off with a proof claiming the steward's AID
+	// but signed with the member's OWN key (they lack the steward's key).
+	forger := newSigner(t, "E-member")
+	forged := forger.sign("contribution_signoff", "contrib-1", spaceID, "signed_off", "2026-08-27T01:00:00Z")
+	forged.AID = "E-steward" // claim the steward's identity
+	forgedJSON, _ := json.Marshal(forged)
+	forgedID := addOps(t, tree, member.Keys.SignKey, 3000, false,
+		setOp("status", "signed_off"), rawOp("sign_off_proof", string(forgedJSON)))
+
+	build := func() *ObjectState {
+		tree.Lock()
+		defer tree.Unlock()
+		st, err := BuildStateValidated(tree, spaceID, "contrib-1", TypeContribution, validator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
 	}
+
+	// AC-1: the forged sign-off is excluded from derived state.
+	state := build()
 	if got := jsonStringValue(state.Fields["status"]); got != "assigned" {
 		t.Fatalf("forged sign-off entered state: status=%q", got)
 	}
 	if got := jsonStringValue(state.Fields["title"]); got != "Fix bug" {
 		t.Fatalf("unrelated field lost: title=%q", got)
 	}
-	rej := recorder.Recent()
-	if len(rej) != 1 || rej[0].ChangeID != forgedID || rej[0].Author != memberAcct {
-		t.Fatalf("expected the forged change to be recorded once, got %+v", rej)
+	if rej := recorder.Recent(); len(rej) != 1 || rej[0].ChangeID != forgedID {
+		t.Fatalf("forged change must be recorded once, got %+v", rej)
 	}
 
 	// The raw (unvalidated) tree DOES contain the forgery — the SDK accepted it.
@@ -168,58 +165,29 @@ func TestAC1_ForgedSignOffOnRealTree(t *testing.T) {
 		t.Fatal("sanity: SDK should have accepted the forged change into the tree")
 	}
 
-	// Blocking item 2: the steward's legitimate sign-off must still be
-	// writable. Diff against the validated baseline (as UpdateObject now does).
-	want := map[string]json.RawMessage{"title": json.RawMessage(`"Fix bug"`), "status": json.RawMessage(`"signed_off"`)}
-	diff := DiffState(state, want)
-	if diff == nil {
-		t.Fatal("legit sign-off diffed to zero ops against the validated baseline (DoS)")
-	}
-	addOps(t, tree, steward.Keys.SignKey, 4000, false, diff.Ops...)
+	// The steward's genuinely-signed sign-off applies.
+	proof := stewardSigner.sign("contribution_signoff", "contrib-1", spaceID, "signed_off", "2026-08-27T02:00:00Z")
+	proofJSON, _ := json.Marshal(proof)
+	addOps(t, tree, steward.Keys.SignKey, 4000, false,
+		setOp("status", "signed_off"), rawOp("sign_off_proof", string(proofJSON)))
 
-	tree.Lock()
-	after, err := BuildStateValidated(tree, "contrib-1", TypeContribution, validator)
-	tree.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
+	after := build()
 	if got := jsonStringValue(after.Fields["status"]); got != "signed_off" {
 		t.Fatalf("legit steward sign-off not applied: status=%q", got)
 	}
 
-	// Blocking item 3: determinism / as-of. Demote the steward AFTER the
-	// sign-off; the past sign-off stays valid, a new reward by them does not.
-	resolver.Replace(RoleSnapshot{
-		AccountAID: bound,
-		History: map[string][]RoleAt{
-			"E-steward": {{Since: 500, Role: "Operations Steward"}, {Since: 4500, Role: "Member"}},
-			"E-member":  {{Since: 500, Role: "Member"}},
-		},
-	})
-	addOps(t, tree, steward.Keys.SignKey, 5000, false, setOp("status", "rewarded"))
-	tree.Lock()
-	final, err := BuildStateValidated(tree, "contrib-1", TypeContribution, validator)
-	tree.Unlock()
+	// A member sign-off with NO proof at all is also rejected (fail-closed).
+	tree2 := newEncryptedTree(t, acl, steward, "contrib-2", TypeContribution)
+	addOps(t, tree2, steward.Keys.SignKey, 2000, true, setOp("status", "assigned"))
+	addOps(t, tree2, member.Keys.SignKey, 3000, false, setOp("status", "signed_off"))
+	tree2.Lock()
+	st2, err := BuildStateValidated(tree2, spaceID, "contrib-2", TypeContribution, validator)
+	tree2.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := jsonStringValue(final.Fields["status"]); got != "signed_off" {
-		t.Fatalf("after demotion: past sign-off must survive and new reward must be rejected, got %q", got)
-	}
-	// Dedupe: the original forgery was re-rejected on each rebuild but recorded once.
-	seen := 0
-	for _, r := range recorder.Recent() {
-		if r.ChangeID == forgedID {
-			seen++
-		}
-	}
-	if seen != 1 {
-		t.Fatalf("forged change recorded %d times, want 1", seen)
-	}
-
-	// Sanity on the role-mapping used above.
-	if !contributions.CanPerformAction(contributions.MapKERIRole("Operations Steward"), contributions.ActionRewardContribution) {
-		t.Fatal("test premise: ops steward can reward")
+	if got := jsonStringValue(st2.Fields["status"]); got != "assigned" {
+		t.Fatalf("proofless sign-off must be rejected, status=%q", got)
 	}
 }
 

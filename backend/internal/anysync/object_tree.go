@@ -178,7 +178,7 @@ func (m *ObjectTreeManager) UpdateObject(
 	// never be written, permanently blocking it (GH#19 review item 2).
 	objectType := m.getIndexEntry(objectID).ObjectType
 	tree.Lock()
-	state, err := BuildStateValidated(tree, objectID, objectType, m.changeValidator())
+	state, err := BuildStateValidated(tree, spaceID, objectID, objectType, m.changeValidator())
 	if err != nil {
 		tree.Unlock()
 		return "", fmt.Errorf("building state for %s: %w", objectID, err)
@@ -305,14 +305,14 @@ func (m *ObjectTreeManager) ReadObject(ctx context.Context, spaceID, objectID st
 	entry := m.getIndexEntry(objectID)
 
 	tree.Lock()
-	state, err := BuildStateValidated(tree, objectID, entry.ObjectType, m.changeValidator())
+	state, err := BuildStateValidated(tree, spaceID, objectID, entry.ObjectType, m.changeValidator())
 	tree.Unlock()
 	if err != nil {
 		// Cached tree may have stale keys (ACL timing race). Try fresh tree.
 		freshTree, freshErr := m.treeManager.BuildFreshTree(ctx, spaceID, tree.Id())
 		if freshErr == nil {
 			freshTree.Lock()
-			state, err = BuildStateValidated(freshTree, objectID, entry.ObjectType, m.changeValidator())
+			state, err = BuildStateValidated(freshTree, spaceID, objectID, entry.ObjectType, m.changeValidator())
 			freshTree.Unlock()
 		}
 		if err != nil {
@@ -351,7 +351,7 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 		}
 
 		tree.Lock()
-		state, err := BuildStateValidated(tree, entry.ObjectID, entry.ObjectType, m.changeValidator())
+		state, err := BuildStateValidated(tree, spaceID, entry.ObjectID, entry.ObjectType, m.changeValidator())
 		tree.Unlock()
 		if err != nil {
 			// Cached tree may have stale keys (ACL timing race). Try a fresh
@@ -359,7 +359,7 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 			freshTree, freshErr := m.treeManager.BuildFreshTree(ctx, spaceID, entry.TreeID)
 			if freshErr == nil {
 				freshTree.Lock()
-				state, err = BuildStateValidated(freshTree, entry.ObjectID, entry.ObjectType, m.changeValidator())
+				state, err = BuildStateValidated(freshTree, spaceID, entry.ObjectID, entry.ObjectType, m.changeValidator())
 				freshTree.Unlock()
 			}
 			if err != nil {
@@ -394,7 +394,7 @@ func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]
 		}
 
 		tree.Lock()
-		state, err := BuildStateValidated(tree, entry.ObjectID, entry.ObjectType, m.changeValidator())
+		state, err := BuildStateValidated(tree, spaceID, entry.ObjectID, entry.ObjectType, m.changeValidator())
 		tree.Unlock()
 		if err != nil {
 			continue
