@@ -27,6 +27,8 @@
 # because that lands in `docker inspect .Config.Env`).
 set -euo pipefail
 
+SECONDS=0   # wall-clock for the drive-blocker ordering budget below
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Source .env only when the environment doesn't already provide the token —
 # in CI the workflow sets it, and the materialized .env holds empty values
@@ -190,8 +192,30 @@ fi
 # open ones. A failed fetch, no standing drive, or none with open blockers →
 # blocker_nums stays [] and the emit order below is byte-identical to before.
 blocker_nums='[]'
+# Forgejo IGNORES an unknown `labels=` filter instead of matching nothing: in a
+# repo with no `standing-drive` label the query above returns EVERY open issue
+# (probed live 2026-08-27 on matou-app — 23 of 23, none carrying the label).
+# That made this block one SERIAL dependencies call per OPEN ISSUE: 25.5s of the
+# lister's 29.7s, which alone blew Sandcastle's 30s shell-expression budget and
+# REDed the tick as `PromptExpansionTimeoutError` (run 7707) — before
+# claim-next-task.sh's CLAIM_NEXT_BUDGET could even be consulted, since that
+# guard lives inside the claim walk this lister runs BEFORE. It also poisoned
+# the ordering it exists to fix, promoting any ready ticket that blocks ANY open
+# issue as a "drive blocker". Re-filter the response CLIENT-side on the label we
+# actually asked for, so a repo with no standing drive does zero extra calls and
+# blocker_nums stays [] (the emit order below is then byte-identical to before —
+# the same fallback this block already documents). A repo that DOES carry the
+# label is unaffected: server filter and client filter agree.
 if drives="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50")"; then
-  for d in $(jq -r '.[]?.number' <<<"$drives" 2>/dev/null || true); do
+  for d in $(jq -r '.[]? | select((((.labels // []) | map(.name) | index("standing-drive"))) != null) | .number' <<<"$drives" 2>/dev/null || true); do
+    # Wall-clock bound (belt and braces): even a repo with a genuinely deep
+    # standing-drive list must not spend the whole 30s budget on ORDERING.
+    # Stopping early keeps whatever blockers we resolved; the rest just lose
+    # their front-of-queue promotion for this tick.
+    if [ "$SECONDS" -ge "${LIST_READY_DRIVE_BUDGET:-8}" ]; then
+      echo "list-ready-tasks: drive-blocker ordering stopped at ${SECONDS}s (budget ${LIST_READY_DRIVE_BUDGET:-8}s) — queue emitted unpromoted." >&2
+      break
+    fi
     deps="$(api "$FORGEJO_API/issues/$d/dependencies?limit=50")" || continue
     blocker_nums="$(jq --argjson acc "$blocker_nums" \
       '($acc + [.[]? | select(.state == "open") | .number]) | unique' <<<"$deps" \
