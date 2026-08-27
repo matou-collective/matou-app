@@ -151,6 +151,13 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
+			case "edit-evidence":
+				if r.Method == http.MethodPost {
+					h.withRBAC(contributions.ActionEditEvidence, h.HandleEditEvidence)(w, r)
+					return
+				}
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
 			case "review":
 				if r.Method == http.MethodPost {
 					h.withRBAC(contributions.ActionReviewContribution, h.HandleReview)(w, r)
@@ -820,6 +827,75 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 			EntityID:    id,
 			EntityType:  "contribution",
 		})
+	}
+	writeJSON(w, http.StatusOK, contrib)
+}
+
+// HandleEditEvidence handles POST /api/v1/contributions/{id}/edit-evidence
+// Body: SubmitEvidenceRequest (the complete new submission).
+// RBAC: ActionEditEvidence, plus a service-side ownership check — only the
+// assigned contributor (X-User-AID) may edit; anyone else gets 403. An
+// approved contribution drops back to needs_review; the lead and the
+// reviewer whose approval was voided are notified, and an SSE event is
+// broadcast so open views refresh.
+func (h *ContributionsHandler) HandleEditEvidence(w http.ResponseWriter, r *http.Request) {
+	id := extractContribID(r, "/api/v1/contributions/", "/edit-evidence")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "contribution id required"})
+		return
+	}
+	var req contributions.SubmitEvidenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	editor := GetUserAID(r)
+	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
+	res, err := h.service.EditEvidence(r.Context(), spaceID, id, editor, req)
+	if err != nil {
+		log.Printf("[Contributions] EditEvidence failed for %s by %q: %v", id, editor, err)
+		status := http.StatusBadRequest
+		if errors.Is(err, contributions.ErrNotEvidenceOwner) {
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	contrib := res.Contribution
+	log.Printf("[Contributions] evidence edited for %s (was %s)", id, res.PriorStatus)
+	if h.broker != nil {
+		h.broker.Broadcast(SSEEvent{
+			Type: "contribution:evidence_edited",
+			Data: map[string]string{
+				"contribution_id": id,
+				"previous_status": string(res.PriorStatus),
+				"status":          string(contrib.Status),
+				"edited_by":       editor,
+			},
+		})
+	}
+	// Notify the lead and, when an approval was voided, the reviewer who gave
+	// it (captured by the service before the edit cleared ReviewedBy).
+	if h.notifier != nil {
+		message := contrib.Title + " was edited and needs another look"
+		if res.PriorStatus == contributions.ContribApproved {
+			message = contrib.Title + " was edited after approval — the approval has been voided and it needs re-review"
+		}
+		seen := map[string]bool{editor: true, "": true}
+		for _, recipient := range []string{contrib.CreatedBy, res.PriorReviewedBy} {
+			if seen[recipient] {
+				continue
+			}
+			seen[recipient] = true
+			h.notifier.Notify(&ContribNotification{
+				Type:        "contribution:evidence_edited",
+				RecipientID: recipient,
+				Title:       "Submission Edited",
+				Message:     message,
+				EntityID:    id,
+				EntityType:  "contribution",
+			})
+		}
 	}
 	writeJSON(w, http.StatusOK, contrib)
 }

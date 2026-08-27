@@ -325,9 +325,9 @@
           </div>
         </div>
 
-        <!-- Evidence submission form (toggled by footer button) -->
-        <div v-if="canSubmitEvidenceNow && showEvidenceForm" class="submit-completion-form">
-          <h3 class="completion-form-title">Submit Completion</h3>
+        <!-- Evidence submission / edit form (toggled by footer button) -->
+        <div v-if="(canSubmitEvidenceNow || canEditEvidenceNow) && showEvidenceForm" class="submit-completion-form">
+          <h3 class="completion-form-title">{{ isEditingEvidence ? 'Edit Submission' : 'Submit Completion' }}</h3>
 
           <!-- Completion Notes -->
           <div class="completion-field">
@@ -494,7 +494,7 @@
               no-caps
               color="primary"
               icon="send"
-              label="Submit for Review"
+              :label="isEditingEvidence ? 'Save Changes' : 'Submit for Review'"
               class="dialog-btn-half"
               :loading="actionLoading === 'submit-evidence'"
               :disable="!canSubmitEvidence"
@@ -506,7 +506,7 @@
               label="Cancel"
               color="primary"
               class="dialog-btn-half"
-              @click="showEvidenceForm = false"
+              @click="closeEvidenceForm"
             />
           </div>
         </div>
@@ -517,6 +517,11 @@
             <Paperclip class="section-icon" />
             Submitted Evidence
           </h3>
+          <div v-if="contribution.evidence_edited_at" class="evidence-edited-note">
+            <Pencil class="evidence-edited-icon" />
+            Edited by the contributor on {{ formatDateTime(contribution.evidence_edited_at) }}
+            <span v-if="contribution.status === 'needs_review'"> — needs re-review</span>
+          </div>
 
           <!-- Completion Notes -->
           <div v-if="contribution.completion_notes" class="evidence-field">
@@ -842,7 +847,17 @@
             label="Submit Evidence & Complete"
             icon="check_circle"
             class="footer-action-btn"
-            @click="showEvidenceForm = true"
+            @click="openSubmitEvidence"
+          />
+          <q-btn
+            v-if="canEditEvidenceNow && !canSubmitEvidenceNow && !showEvidenceForm"
+            outline
+            no-caps
+            color="primary"
+            label="Edit Submission"
+            icon="edit"
+            class="footer-action-btn"
+            @click="openEditEvidence"
           />
           <q-btn
             v-if="canReviewNow && !showReviewForm"
@@ -939,6 +954,7 @@ import {
   CircleDot,
   AlertTriangle,
   Paperclip,
+  Pencil,
   ClipboardCheck,
   GitBranch,
   UserCheck,
@@ -962,6 +978,7 @@ import { useContributionBudgetAccess } from 'src/composables/useContributionBudg
 import { useProfilesStore } from 'stores/profiles';
 import { uploadFile, getFileUrl } from 'src/lib/api/client';
 import { useContributionWorkflow } from 'src/composables/useContributionWorkflow';
+import { buildEvidenceRequest as buildEvidencePayload, round2 } from 'src/lib/evidenceRequest';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
@@ -1014,6 +1031,9 @@ const actionLoading = ref<string | null>(null);
 const showInterestDialog = ref(false);
 const showChangeDialog = ref(false);
 const showEvidenceForm = ref(false);
+// True when the evidence form is amending an already-submitted contribution
+// (contributor self-edit before sign-off) rather than a first submission.
+const isEditingEvidence = ref(false);
 const showReviewForm = ref(false);
 const newEvidenceUrl = ref('');
 const showOfferConfirmDialog = ref(false);
@@ -1036,6 +1056,7 @@ const evidenceForm = ref({
 
 watch(() => props.contribution.id, (id) => {
   showEvidenceForm.value = false;
+  isEditingEvidence.value = false;
   showReviewForm.value = false;
   localChildren.value = [];
   if (id) {
@@ -1255,6 +1276,9 @@ const canSubmitEvidenceNow = computed(() =>
     role.value,
   ),
 );
+const canEditEvidenceNow = computed(() =>
+  workflow.canEditEvidence(props.contribution, props.currentUserId),
+);
 const canReviewNow = computed(() => workflow.canReview(props.contribution, role.value));
 const canSignOffNow = computed(() => workflow.canSignOff(props.contribution, role.value));
 // Reward = community-admin only, on a signed-off contribution.
@@ -1318,6 +1342,16 @@ function formatDate(iso: string): string {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
+  });
+}
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   });
 }
 
@@ -1425,6 +1459,58 @@ function toBackendFileRef(f: AttachedFile): Record<string, string> {
   };
 }
 
+// Reverse of toBackendFileRef — turns a stored evidence FileRef (which uses
+// file_name/content_type) back into the AttachedFile shape the form expects,
+// so an edit can prefill the existing time-report / attachment thumbnails.
+function fromBackendFileRef(f: AttachedFile): AttachedFile {
+  const r = f as unknown as Record<string, string | undefined>;
+  return {
+    name: r.file_name || r.name || '',
+    url: resolveFileUrl(r as Record<string, string>),
+    type: r.content_type || r.type || '',
+    file_ref: r.file_ref || r.url || '',
+  };
+}
+
+const emptyEvidenceForm = () => ({
+  completion_notes: '',
+  evidence_urls: [''],
+  actual_duration: undefined as number | undefined,
+  actual_cost: undefined as number | undefined,
+  acceptance_notes: [] as string[],
+  time_report_files: [] as AttachedFile[],
+  attachment_files: [] as AttachedFile[],
+});
+
+// Open the evidence form for a first submission (status assigned).
+function openSubmitEvidence() {
+  isEditingEvidence.value = false;
+  evidenceForm.value = emptyEvidenceForm();
+  showEvidenceForm.value = true;
+}
+
+// Open the evidence form to amend an already-submitted contribution,
+// prefilling every editable field from the current submission.
+function openEditEvidence() {
+  const c = props.contribution;
+  isEditingEvidence.value = true;
+  evidenceForm.value = {
+    completion_notes: c.completion_notes ?? '',
+    evidence_urls: c.evidence_urls?.length ? [...c.evidence_urls] : [''],
+    actual_duration: c.actual_duration,
+    actual_cost: c.actual_cost,
+    acceptance_notes: c.acceptance_notes ? [...c.acceptance_notes] : [],
+    time_report_files: c.time_report_file ? [fromBackendFileRef(c.time_report_file)] : [],
+    attachment_files: c.attachment_files ? c.attachment_files.map(fromBackendFileRef) : [],
+  };
+  showEvidenceForm.value = true;
+}
+
+function closeEvidenceForm() {
+  showEvidenceForm.value = false;
+  isEditingEvidence.value = false;
+}
+
 async function handleTimeReportUpload(files: FileList | File[]) {
   uploadingFiles.value = true;
   try {
@@ -1475,33 +1561,44 @@ function removeAttachment(idx: number) {
   evidenceForm.value.attachment_files.splice(idx, 1);
 }
 
-// Round to at most 2 decimal places (hours/cost). Backend stores these as
-// float64; we cap precision so values like an auto-prefilled 6.0158 become
-// 6.02 rather than being sent raw.
-function round2(v: number | undefined): number | undefined {
-  if (v === undefined || v === null || Number.isNaN(v)) return undefined;
-  return Math.round(v * 100) / 100;
+// Build the evidence payload from the form (shared by submit + edit). Always
+// the complete submission — see src/lib/evidenceRequest.ts for why.
+function buildEvidenceRequest() {
+  return buildEvidencePayload(evidenceForm.value, toBackendFileRef);
 }
 
 async function handleSubmitEvidence() {
   if (!canSubmitEvidence.value) return;
+  // Editing an already-submitted contribution goes through the edit path.
+  if (isEditingEvidence.value) {
+    await handleEditEvidence();
+    return;
+  }
   actionLoading.value = 'submit-evidence';
   try {
-    const updated = await store.submitEvidence(props.contribution.id, {
-      completion_notes: evidenceForm.value.completion_notes.trim(),
-      evidence_urls: evidenceForm.value.evidence_urls.filter((u) => u.trim()),
-      actual_duration: round2(evidenceForm.value.actual_duration),
-      actual_cost: round2(evidenceForm.value.actual_cost),
-      acceptance_notes: evidenceForm.value.acceptance_notes.filter((n) => n.trim()),
-      time_report_file: evidenceForm.value.time_report_files[0] ? toBackendFileRef(evidenceForm.value.time_report_files[0]) as any : undefined,
-      attachment_files: evidenceForm.value.attachment_files.length ? evidenceForm.value.attachment_files.map(f => toBackendFileRef(f)) as any : undefined,
-    });
+    const updated = await store.submitEvidence(props.contribution.id, buildEvidenceRequest());
     $q.notify({ type: 'positive', message: 'Submitted for review!' });
-    showEvidenceForm.value = false;
-    evidenceForm.value = { completion_notes: '', evidence_urls: [''], actual_duration: undefined, actual_cost: undefined, acceptance_notes: [], time_report_files: [], attachment_files: [] };
+    closeEvidenceForm();
+    evidenceForm.value = emptyEvidenceForm();
     emit('update', updated as unknown as Contribution);
   } catch (e) {
     $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Submission failed' });
+  } finally {
+    actionLoading.value = null;
+  }
+}
+
+async function handleEditEvidence() {
+  if (!canSubmitEvidence.value) return;
+  actionLoading.value = 'submit-evidence';
+  try {
+    const updated = await store.editEvidence(props.contribution.id, buildEvidenceRequest());
+    $q.notify({ type: 'positive', message: 'Submission updated!' });
+    closeEvidenceForm();
+    evidenceForm.value = emptyEvidenceForm();
+    emit('update', updated as unknown as Contribution);
+  } catch (e) {
+    $q.notify({ type: 'negative', message: e instanceof Error ? e.message : 'Update failed' });
   } finally {
     actionLoading.value = null;
   }
@@ -2522,6 +2619,21 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 
 .evidence-field {
   margin-bottom: 14px;
+}
+
+.evidence-edited-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--matou-muted-foreground);
+  margin-bottom: 12px;
+}
+
+.evidence-edited-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .evidence-field-label {
