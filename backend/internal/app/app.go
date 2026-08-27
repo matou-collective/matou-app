@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -20,6 +21,7 @@ import (
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/api"
+	"github.com/matou-dao/backend/internal/auth"
 	"github.com/matou-dao/backend/internal/config"
 	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/email"
@@ -346,11 +348,28 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// Create event broker for SSE
 	eventBroker := api.NewEventBroker()
 
+	// Peer-side write-rule validation (GH#19 part 1): exclude forged high-stakes
+	// changes (contribution sign-off/reward, project completion, plan/proposal
+	// sign-off, role changes) that a modified peer writes directly into shared
+	// spaces from this node's derived state. Any-sync ACLs are only
+	// space-scoped and cannot express per-object rules, so this runs at
+	// state-reconstruction time. Verdicts are deterministic: author → AID via
+	// ACL join records (first-bound wins, record order) → role as-of the
+	// change's timestamp via the CommunityProfile role history. The validator
+	// is installed BEFORE the listener is registered with the space manager
+	// so no tree update is ever processed unvalidated; the resolver is
+	// populated by a background refresher (single pass over profile trees).
+	writeRuleResolver := anysync.NewHistoryRoleResolver()
+	writeRuleRecorder := anysync.NewLoggingRejectionRecorder(200)
+	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleRecorder)
+	spaceManager.ObjectTreeManager().SetChangeValidator(writeRuleValidator)
+
 	// Create push-based listener for P2P chat changes (replaces polling)
 	chatListener := anysync.NewTreeUpdateListener(
 		&chatPersisterAdapter{store: store},
 		&eventBrokerAdapter{broker: eventBroker},
 	)
+	chatListener.SetChangeValidator(writeRuleValidator)
 	spaceManager.SetObjectTreeListener(chatListener)
 
 	// Wire up FreshTreeReader so the listener can rebuild trees with updated ACL keys
@@ -414,6 +433,36 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
 	roleLookup := api.NewCompositeRoleLookup(profileRoleLookup, orgConfigRoleLookup, credentialRoleLookup, identityRoleLookup)
 
+	// Signed-challenge authentication (issue #18): make X-User-AID trustworthy.
+	// The backend resolves an AID's current signing keys read-only from KERIA's
+	// CESR/OOBI endpoint, verifies a signed challenge, and mints a short-lived
+	// session token checked per request. Enforcement is gated by
+	// MATOU_REQUIRE_SIGNED_AUTH (default OFF); the Playwright e2e config sets it
+	// ON against real KERIA infrastructure. NEEDS LIVE VERIFICATION: the exact
+	// KERIA key-state URL is deployment-specific and verified by the e2e run.
+	keyStateURLTemplate := opts.KeyStateURL
+	if keyStateURLTemplate == "" {
+		keyStateURLTemplate = strings.TrimRight(cfg.KERI.CESRURL, "/") + "/oobi/{aid}"
+	}
+	var resolverOpts []auth.ResolverOption
+	if os.Getenv("MATOU_KERIA_KEYSTATE_ALLOW_HTTP") == "1" {
+		resolverOpts = append(resolverOpts, auth.AllowInsecureHTTP())
+	}
+	var keyStateResolver auth.KeyStateResolver
+	if kr, err := auth.NewKERIAResolver(keyStateURLTemplate, 5*time.Minute, resolverOpts...); err != nil {
+		log.Printf("[Auth] invalid key-state URL template %q: %v — falling back to static resolver", keyStateURLTemplate, err)
+		keyStateResolver = auth.NewStaticKeyStateResolver()
+	} else {
+		keyStateResolver = kr
+	}
+	authVerifier := auth.NewVerifier(keyStateResolver, nil, auth.NewSessionStore(opts.SessionTTL))
+	authHandler := api.NewAuthHandler(authVerifier)
+
+	// Revoke sessions when an AID's key state rotates: a session-verified KEL
+	// sync for the caller's own AID triggers a re-resolve from the authoritative
+	// key-state source (never the request body).
+	syncHandler.SetRotationHook(authVerifier.OnRotation)
+
 	// Grant community_admin role to all configured org admins.
 	// Also register a callback so admin AIDs are updated whenever org config changes
 	// (e.g. when org setup runs after server start).
@@ -431,6 +480,57 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		setAdminAIDsFromConfig(orgConfigHandler.GetConfig())
 	}
 	orgConfigHandler.AddOnUpdate(setAdminAIDsFromConfig)
+
+	// Write-rule role refresher: rebuilds the resolver snapshot from synced
+	// state — ACL join records of the community space and one listing pass
+	// over the CommunityProfile trees of the read-only space — every 30s, off
+	// the tree-processing hot path. Stopped via the app's closers on Shutdown.
+	refreshWriteRuleRoles := func(ctx context.Context) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[write-rules] role refresh panicked: %v", rec)
+			}
+		}()
+		if communitySpaceID == "" || communityReadOnlySpaceID == "" {
+			return
+		}
+		accountAID, err := spaceManager.ACLManager().AccountAIDMap(ctx, communitySpaceID)
+		if err != nil {
+			log.Printf("[write-rules] account→AID refresh failed: %v", err)
+			return
+		}
+		history, err := spaceManager.ObjectTreeManager().CollectRoleHistories(ctx, communityReadOnlySpaceID)
+		if err != nil {
+			log.Printf("[write-rules] role history refresh failed: %v", err)
+			return
+		}
+		adminAIDs := make(map[string]bool)
+		if orgConfigHandler.IsConfigured() {
+			for _, a := range orgConfigHandler.GetConfig().Admins {
+				if a.AID != "" {
+					adminAIDs[a.AID] = true
+				}
+			}
+		}
+		writeRuleResolver.Replace(anysync.RoleSnapshot{AccountAID: accountAID, History: history, AdminAIDs: adminAIDs})
+	}
+	refreshCtx, stopRefresh := context.WithCancel(ctx)
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		refreshWriteRuleRoles(refreshCtx)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-refreshCtx.Done():
+				return
+			case <-ticker.C:
+				refreshWriteRuleRoles(refreshCtx)
+			}
+		}
+	}()
+	closers = append(closers, func() error { stopRefresh(); <-refreshDone; return nil })
 
 	// Mirror org config writes to the legacy config server for backward
 	// compatibility (older clients / multi-session dev still read it). The
@@ -500,28 +600,29 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}))
 
 	// Register API routes
-	credHandler.RegisterRoutes(mux)
-	syncHandler.RegisterRoutes(mux)
+	credHandler.RegisterRoutes(mux, roleLookup)
+	syncHandler.RegisterRoutes(mux, roleLookup)
 	trustHandler.RegisterRoutes(mux)
-	spacesHandler.RegisterRoutes(mux)
+	spacesHandler.RegisterRoutes(mux, roleLookup)
 	invitesHandler.RegisterRoutes(mux)
 	bookingHandler.RegisterRoutes(mux)
-	identityHandler.RegisterRoutes(mux)
+	identityHandler.RegisterRoutes(mux, roleLookup)
 	eventsHandler.RegisterRoutes(mux)
-	profilesHandler.RegisterRoutes(mux)
+	profilesHandler.RegisterRoutes(mux, roleLookup)
 	multisigHandler.RegisterRoutes(mux)
 	noticesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
 	chatHandler.RegisterRoutes(mux)
 	commentCursorsHandler.Routes(mux)
 	notificationsHandler.RegisterRoutes(mux)
+	authHandler.RegisterRoutes(mux)
 	proposalsHandler.RegisterRoutes(mux, roleLookup)
 	projectsHandler.RegisterRoutes(mux, roleLookup)
 	decisionPlansHandler.RegisterRoutes(mux, roleLookup)
-	implPlansHandler.RegisterRoutes(mux)
+	implPlansHandler.RegisterRoutes(mux, roleLookup)
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
-	orgConfigHandler.RegisterRoutes(mux)
+	orgConfigHandler.RegisterRoutes(mux, roleLookup)
 	clientConfigHandler.RegisterRoutes(mux)
 
 	// Bind the listener before starting the sync worker so a bind failure aborts
@@ -543,14 +644,19 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	syncWorker.Start()
 	closers = append(closers, func() error { syncWorker.Stop(); return nil })
 
-	// Wrap with middleware: request logger → localhost guard → token guard → CORS.
-	// LocalhostGuard blocks other machines; TokenGuard blocks other local
-	// processes from issuing mutating requests without the per-launch token.
-	// CORS sits outside TokenGuard so 401 responses carry
-	// Access-Control-Allow-Origin — a browser then surfaces the 401 + JSON
-	// body instead of an opaque "Failed to fetch". Preflight OPTIONS is
-	// answered by CORSMiddleware before TokenGuard ever sees it.
-	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(api.TokenGuard(opts.APIToken, mux))))
+	// Wrap with middleware: request logger → localhost guard → CORS → token
+	// guard → signed-auth. LocalhostGuard blocks other machines; TokenGuard
+	// blocks other local processes from issuing mutating requests without the
+	// per-launch token (or a session minted through it — see
+	// TokenGuardWithSessions). CORS sits outside both guards so 401 responses
+	// carry Access-Control-Allow-Origin — a browser then surfaces the 401 + JSON
+	// body instead of an opaque "Failed to fetch". Preflight OPTIONS is answered
+	// by CORSMiddleware before either guard sees it. SignedAuthMiddleware
+	// (gated by MATOU_REQUIRE_SIGNED_AUTH) sits innermost so it can set the
+	// verified X-User-AID before any route/RBAC runs.
+	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(
+		api.TokenGuardWithSessions(opts.APIToken, authHandler.Sessions(),
+			api.SignedAuthMiddleware(authHandler.Sessions(), mux)))))
 
 	app := newServing(listener, handler, closers)
 	success = true

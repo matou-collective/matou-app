@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { loginAs, jsonSessionHeaders } from '../utils/signed-auth';
 
 // Feature (#15): completed projects are hidden from the project lists by
 // default. "My Projects" gets a Completed toggle alongside Archived; the
@@ -21,7 +22,7 @@ async function adminAid(): Promise<string> {
 async function api(aid: string, method: string, route: string, body?: unknown) {
   const res = await fetch(`${API}${route}`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-User-AID': aid },
+    headers: jsonSessionHeaders(aid),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -92,6 +93,7 @@ test.describe('hide completed projects by default (#15)', () => {
   }) => {
     test.setTimeout(300_000);
     const aid = await adminAid();
+    await loginAs(adminPage); // signed-auth session so API calls act as the admin
 
     // Unique per run so leftovers from an interrupted earlier run can't
     // collide with this run's assertions.

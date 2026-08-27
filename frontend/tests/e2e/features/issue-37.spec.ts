@@ -1,4 +1,5 @@
 import { test, expect, Page } from './fixtures';
+import { loginAs, jsonSessionHeaders } from '../utils/signed-auth';
 
 // Feature (#37): the @-mention machinery shipped for `person` in #12 now covers
 // the remaining five entity types (project, proposal, event, update,
@@ -24,7 +25,7 @@ async function adminAid(): Promise<string> {
 async function api(aid: string, method: string, route: string, body?: unknown) {
   const res = await fetch(`${API}${route}`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-User-AID': aid },
+    headers: jsonSessionHeaders(aid),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -51,6 +52,7 @@ test.describe('in-chat @-mentions: project type (#37)', () => {
     test.setTimeout(180_000);
 
     const aid = await adminAid();
+    await loginAs(adminPage); // signed-auth session so API calls act as the admin
 
     // Seed a project with a distinctive multi-word title so the typeahead has
     // an unambiguous match, then a fresh channel to post in.

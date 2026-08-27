@@ -37,6 +37,7 @@ func (h *ProjectsHandler) SetBroker(broker *EventBroker) {
 // RegisterRoutes registers project routes on the mux.
 // roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
 func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ProjectsHandler", roleLookup)
 	createHandler := http.HandlerFunc(h.HandleCreate)
 	if roleLookup != nil {
 		createHandler = RBACMiddleware(roleLookup, RequireAction(contributions.ActionCreateProject, h.HandleCreate))
@@ -67,7 +68,7 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 			case "assign-role":
 				if r.Method == http.MethodPost {
 					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionCreateProject, func(w http.ResponseWriter, r *http.Request) {
+						RBACMiddleware(roleLookup, RequireAction(contributions.ActionAssignProjectRole, func(w http.ResponseWriter, r *http.Request) {
 							h.HandleAssignRole(w, r, id)
 						}))(w, r)
 					} else {
@@ -79,7 +80,13 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 				return
 			case "link-proposal":
 				if r.Method == http.MethodPost {
-					h.HandleLinkProposal(w, r, id)
+					if roleLookup != nil {
+						RBACMiddleware(roleLookup, RequireAction(contributions.ActionLinkProposal, func(w http.ResponseWriter, r *http.Request) {
+							h.HandleLinkProposal(w, r, id)
+						}))(w, r)
+					} else {
+						h.HandleLinkProposal(w, r, id)
+					}
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -375,7 +382,7 @@ func (h *ProjectsHandler) HandleArchive(w http.ResponseWriter, r *http.Request, 
 func (h *ProjectsHandler) HandleSubmitCompletion(w http.ResponseWriter, r *http.Request, id string) {
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
 	leadID := GetUserAID(r)
-	proj, err := h.service.SubmitProjectCompletion(r.Context(), spaceID, id, leadID)
+	proj, err := h.service.SubmitProjectCompletion(r.Context(), spaceID, id, leadID, GetUserRoles(r))
 	if err != nil {
 		log.Printf("[Projects] submit-completion failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -399,7 +406,7 @@ func (h *ProjectsHandler) HandleApproveCompletion(w http.ResponseWriter, r *http
 		Proof *contributions.Proof `json:"proof"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	proj, err := h.service.ApproveProjectCompletion(r.Context(), spaceID, id, stewardID, req.Proof)
+	proj, err := h.service.ApproveProjectCompletion(r.Context(), spaceID, id, stewardID, GetUserRoles(r), req.Proof)
 	if err != nil {
 		log.Printf("[Projects] approve-completion failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -416,13 +423,18 @@ func (h *ProjectsHandler) HandleRejectCompletion(w http.ResponseWriter, r *http.
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	proj, err := h.service.RejectProjectCompletion(r.Context(), spaceID, id, req.Reason)
+	rejectorID := GetUserAID(r)
+	if rejectorID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+		return
+	}
+	proj, err := h.service.RejectProjectCompletion(r.Context(), spaceID, id, rejectorID, req.Reason, GetUserRoles(r))
 	if err != nil {
 		log.Printf("[Projects] reject-completion failed for %s: %v", id, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	log.Printf("[Projects] project %s completion rejected", id)
+	log.Printf("[Projects] project %s completion rejected by %s", id, rejectorID)
 	writeJSON(w, http.StatusOK, proj)
 }
 

@@ -6,19 +6,22 @@ import "time"
 type NotificationType string
 
 const (
-	NotifyProposalSubmitted     NotificationType = "proposal:submitted"
-	NotifyProposalEndorsed      NotificationType = "proposal:endorsed"
-	NotifyProposalApproved      NotificationType = "proposal:approved"
-	NotifyProposalRejected      NotificationType = "proposal:rejected"
-	NotifyProjectCreated        NotificationType = "project:created"
-	NotifyContributionAssigned  NotificationType = "contribution:assigned"
-	NotifyContributionReview    NotificationType = "contribution:needs_review"
-	NotifyContributionApproved  NotificationType = "contribution:approved"
-	NotifyContributionDeclined  NotificationType = "contribution:declined"
+	NotifyProposalSubmitted      NotificationType = "proposal:submitted"
+	NotifyProposalEndorsed       NotificationType = "proposal:endorsed"
+	NotifyProposalApproved       NotificationType = "proposal:approved"
+	NotifyProposalRejected       NotificationType = "proposal:rejected"
+	NotifyProjectCreated         NotificationType = "project:created"
+	NotifyContributionAssigned   NotificationType = "contribution:assigned"
+	NotifyContributionReview     NotificationType = "contribution:needs_review"
+	NotifyContributionApproved   NotificationType = "contribution:approved"
+	NotifyContributionDeclined   NotificationType = "contribution:declined"
 	NotifyContributionRegistered NotificationType = "contribution:registered"
-	NotifyDecisionPlanSubmitted NotificationType = "decision_plan:submitted"
-	NotifyDecisionPlanSignedOff NotificationType = "decision_plan:signed_off"
-	NotifyGovActionCompleted    NotificationType = "governance_action:completed"
+	// NotifyContributionEvidenceEdited: the assigned contributor amended a
+	// submission before sign-off (lead + voided reviewer are the recipients).
+	NotifyContributionEvidenceEdited NotificationType = "contribution:evidence_edited"
+	NotifyDecisionPlanSubmitted      NotificationType = "decision_plan:submitted"
+	NotifyDecisionPlanSignedOff      NotificationType = "decision_plan:signed_off"
+	NotifyGovActionCompleted         NotificationType = "governance_action:completed"
 )
 
 // DeliveryChannel controls how a notification is delivered.

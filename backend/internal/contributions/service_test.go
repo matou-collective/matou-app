@@ -3,6 +3,7 @@ package contributions
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -1013,7 +1014,7 @@ func TestSubmitProjectCompletion_RequiresAllSignedOff(t *testing.T) {
 	})
 
 	// Not signed off — should fail
-	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead"); err == nil {
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead", []Role{RoleFoundingMember}); err == nil {
 		t.Error("expected error when not all contributions signed off")
 	}
 
@@ -1021,7 +1022,7 @@ func TestSubmitProjectCompletion_RequiresAllSignedOff(t *testing.T) {
 	c1.Status = ContribSignedOff
 	_ = svc.SaveContribution(ctx, spaceID, c1)
 
-	got, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead")
+	got, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead", []Role{RoleFoundingMember})
 	if err != nil {
 		t.Fatalf("SubmitProjectCompletion: %v", err)
 	}
@@ -1040,7 +1041,7 @@ func TestSubmitProjectCompletion_RejectsNonActiveStatus(t *testing.T) {
 	proj.Status = ProjectCompleted
 	_ = svc.SaveProject(ctx, spaceID, proj)
 
-	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead"); err == nil {
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead", []Role{RoleFoundingMember}); err == nil {
 		t.Error("expected error when project status is not active")
 	}
 }
@@ -1055,7 +1056,7 @@ func TestApproveProjectCompletion_FillsCompletedFields(t *testing.T) {
 	proj.Status = ProjectPendingCompletion
 	_ = svc.SaveProject(ctx, spaceID, proj)
 
-	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1", nil)
+	got, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-1", []Role{RoleFoundingMember}, nil)
 	if err != nil {
 		t.Fatalf("ApproveProjectCompletion: %v", err)
 	}
@@ -1080,7 +1081,7 @@ func TestRejectProjectCompletion_RevertsToActive(t *testing.T) {
 	proj.Status = ProjectPendingCompletion
 	_ = svc.SaveProject(ctx, spaceID, proj)
 
-	got, err := svc.RejectProjectCompletion(ctx, spaceID, proj.ID, "needs more work")
+	got, err := svc.RejectProjectCompletion(ctx, spaceID, proj.ID, "steward-1", "needs more work", []Role{RoleFoundingMember})
 	if err != nil {
 		t.Fatalf("RejectProjectCompletion: %v", err)
 	}
@@ -1089,6 +1090,87 @@ func TestRejectProjectCompletion_RevertsToActive(t *testing.T) {
 	}
 	if got.RejectionReason != "needs more work" {
 		t.Errorf("rejection_reason = %q, want needs more work", got.RejectionReason)
+	}
+}
+
+// signedOffProject builds a pending_completion-ready active project with one
+// signed-off contribution, assigned lead/steward, for resource-check tests.
+func signedOffProject(t *testing.T, ctx context.Context, svc *Service, spaceID, lead, steward string) *Project {
+	t.Helper()
+	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
+	proj.Status = ProjectActive
+	proj.ProjectLeadID = lead
+	proj.ProjectStewardID = steward
+	_ = svc.SaveProject(ctx, spaceID, proj)
+	c1, _ := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
+		ProjectID: proj.ID, Title: "C", Description: "d", ContributionType: "development", CreatedBy: "u",
+		Objectives: []string{"o"}, Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+	})
+	c1.Status = ContribSignedOff
+	_ = svc.SaveContribution(ctx, spaceID, c1)
+	return proj
+}
+
+func TestSubmitProjectCompletion_NonLeadRejected(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+
+	// A plain contributor who is not this project's lead is rejected.
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "someone-else", []Role{RoleContributor}); err == nil {
+		t.Error("expected non-lead submitter to be rejected")
+	}
+	// The actual project lead succeeds.
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead-aid", []Role{RoleProjectLead}); err != nil {
+		t.Fatalf("project lead submit: %v", err)
+	}
+}
+
+func TestApproveProjectCompletion_RejectsSubmitterAndNonSteward(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+
+	// Lead submits (exempt not needed — lead matches).
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead-aid", []Role{RoleProjectLead}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// A steward who is not this project's steward is rejected.
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "other-steward", []Role{RoleProjectSteward}, nil); err == nil {
+		t.Error("expected non-steward-of-project approver to be rejected")
+	}
+
+	// The submitter cannot approve their own completion, even if they are the
+	// project steward (make lead==steward to test the submitter guard).
+	proj2 := signedOffProject(t, ctx, svc, spaceID, "dual-aid", "dual-aid")
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj2.ID, "dual-aid", []Role{RoleProjectLead, RoleProjectSteward}); err != nil {
+		t.Fatalf("submit dual: %v", err)
+	}
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj2.ID, "dual-aid", []Role{RoleProjectSteward}, nil); err == nil {
+		t.Error("expected submitter to be rejected as their own approver")
+	}
+
+	// This project's steward (not the submitter) approves.
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "steward-aid", []Role{RoleProjectSteward}, nil); err != nil {
+		t.Fatalf("project steward approve: %v", err)
+	}
+}
+
+func TestApproveProjectCompletion_FoundingMemberExempt(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMockStore())
+	spaceID := "s"
+	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+
+	// Founding member submits and approves their own completion — exempt.
+	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "fm-aid", []Role{RoleFoundingMember}); err != nil {
+		t.Fatalf("fm submit: %v", err)
+	}
+	if _, err := svc.ApproveProjectCompletion(ctx, spaceID, proj.ID, "fm-aid", []Role{RoleFoundingMember}, nil); err != nil {
+		t.Fatalf("fm approve (exempt): %v", err)
 	}
 }
 
@@ -1110,7 +1192,7 @@ func TestSubmitProjectCompletion_ClearsPriorRejection(t *testing.T) {
 	c1.Status = ContribSignedOff
 	_ = svc.SaveContribution(ctx, spaceID, c1)
 
-	got, _ := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead")
+	got, _ := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead", []Role{RoleFoundingMember})
 	if got.RejectionReason != "" {
 		t.Errorf("rejection_reason = %q, want empty", got.RejectionReason)
 	}
@@ -2006,6 +2088,205 @@ func TestPropagateOfferToChildren_SkipsAlreadyOfferedChild(t *testing.T) {
 	}
 	if got.OfferedTo != "early-offer-user" {
 		t.Errorf("OfferedTo = %q, want early-offer-user", got.OfferedTo)
+	}
+}
+
+// setupSubmittedContribution creates a contribution and drives it to
+// needs_review with evidence, returning the service and the contribution.
+func setupSubmittedContribution(t *testing.T) (*Service, context.Context, *Contribution) {
+	t.Helper()
+	svc := NewService(NewMockStore())
+	ctx := context.Background()
+	c, err := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Task", Description: "Do it",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityLow,
+		CreatedBy: "lead-1", Objectives: []string{"o"},
+		Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		SkillRequirements: []string{"s"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
+	c, _ = svc.AssignContributor(ctx, "space-1", c.ID, "contributor-1")
+	c, err = svc.SubmitEvidence(ctx, "space-1", c.ID, SubmitEvidenceRequest{
+		CompletionNotes: "did the thing",
+		EvidenceURLs:    []string{"https://example.com/1"},
+	})
+	if err != nil {
+		t.Fatalf("submit evidence: %v", err)
+	}
+	return svc, ctx, c
+}
+
+func TestEditEvidence_NeedsReview_StaysNeedsReview(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	res, err := svc.EditEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "revised notes",
+		EvidenceURLs:    []string{"https://example.com/2"},
+	})
+	if err != nil {
+		t.Fatalf("EditEvidence: %v", err)
+	}
+	got := res.Contribution
+	if got.Status != ContribNeedsReview {
+		t.Errorf("status = %s, want needs_review", got.Status)
+	}
+	if res.PriorStatus != ContribNeedsReview || res.PriorReviewedBy != "" {
+		t.Errorf("prior = (%s, %q), want (needs_review, \"\")", res.PriorStatus, res.PriorReviewedBy)
+	}
+	if got.CompletionNotes != "revised notes" {
+		t.Errorf("completion notes not updated: %q", got.CompletionNotes)
+	}
+	if len(got.EvidenceURLs) != 1 || got.EvidenceURLs[0] != "https://example.com/2" {
+		t.Errorf("evidence urls not updated: %v", got.EvidenceURLs)
+	}
+	if got.EvidenceEditedAt == nil {
+		t.Error("EvidenceEditedAt should be set after edit")
+	}
+}
+
+func TestEditEvidence_Approved_DropsBackToNeedsReview(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	// Reviewer approves the submission.
+	c, err := svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{
+		Decision: "approved", ReviewNotes: "looks good", QualityRating: 8,
+	})
+	if err != nil {
+		t.Fatalf("review approve: %v", err)
+	}
+	if c.Status != ContribApproved {
+		t.Fatalf("precondition: status = %s, want approved", c.Status)
+	}
+	// Record who approved so the handler can notify them after the edit
+	// clears the field.
+	c.ReviewedBy = "reviewer-1"
+	svc.store.Save("space-1", c.ID, "contribution", c)
+
+	res, err := svc.EditEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "changed after approval",
+	})
+	if err != nil {
+		t.Fatalf("EditEvidence: %v", err)
+	}
+	got := res.Contribution
+	if got.Status != ContribNeedsReview {
+		t.Errorf("status = %s, want needs_review (approval voided)", got.Status)
+	}
+	if got.ReviewOutcome != "" || got.ReviewFeedback != "" || got.ReviewedAt != nil || got.ReviewedBy != "" {
+		t.Errorf("prior review not cleared: outcome=%q feedback=%q by=%q at=%v",
+			got.ReviewOutcome, got.ReviewFeedback, got.ReviewedBy, got.ReviewedAt)
+	}
+	if res.PriorStatus != ContribApproved {
+		t.Errorf("PriorStatus = %s, want approved", res.PriorStatus)
+	}
+	if res.PriorReviewedBy != "reviewer-1" {
+		t.Errorf("PriorReviewedBy = %q, want reviewer-1 (captured before clearing)", res.PriorReviewedBy)
+	}
+}
+
+func TestEditEvidence_OnlyAssignedContributor(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	for _, actor := range []string{"", "lead-1", "steward-1", "someone-else"} {
+		_, err := svc.EditEvidence(ctx, "space-1", c.ID, actor, SubmitEvidenceRequest{CompletionNotes: "x"})
+		if !errors.Is(err, ErrNotEvidenceOwner) {
+			t.Errorf("actor %q: err = %v, want ErrNotEvidenceOwner", actor, err)
+		}
+	}
+	// Nothing was written.
+	got, _ := svc.GetContribution(ctx, "space-1", c.ID)
+	if got.CompletionNotes != "did the thing" || got.EvidenceEditedAt != nil {
+		t.Errorf("rejected edit mutated the record: %+v", got)
+	}
+}
+
+func TestEditEvidence_RemovalsStick(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	// Seed attachments + time report on the submission.
+	c.AttachmentFiles = []FileRef{{FileName: "a.pdf"}}
+	c.TimeReportFile = &FileRef{FileName: "time.csv"}
+	c.AcceptanceNotes = []string{"note"}
+	svc.store.Save("space-1", c.ID, "contribution", c)
+
+	// Edit form sends the full submission with the lists emptied / file removed.
+	res, err := svc.EditEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "kept notes",
+		EvidenceURLs:    []string{},
+		AcceptanceNotes: []string{},
+		AttachmentFiles: []FileRef{},
+	})
+	if err != nil {
+		t.Fatalf("EditEvidence: %v", err)
+	}
+	got := res.Contribution
+	if len(got.AttachmentFiles) != 0 {
+		t.Errorf("attachments not removed: %v", got.AttachmentFiles)
+	}
+	if got.TimeReportFile != nil {
+		t.Errorf("time report not removed: %v", got.TimeReportFile)
+	}
+	if len(got.EvidenceURLs) != 0 || len(got.AcceptanceNotes) != 0 {
+		t.Errorf("lists not cleared: urls=%v notes=%v", got.EvidenceURLs, got.AcceptanceNotes)
+	}
+}
+
+func TestEditEvidence_RequiresCompletionNotes(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	if _, err := svc.EditEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
+		CompletionNotes: "   ",
+		EvidenceURLs:    []string{"https://example.com/2"},
+	}); err == nil {
+		t.Fatal("expected error for blank completion_notes")
+	}
+	got, _ := svc.GetContribution(ctx, "space-1", c.ID)
+	if got.CompletionNotes != "did the thing" {
+		t.Errorf("completion notes blanked by partial payload: %q", got.CompletionNotes)
+	}
+}
+
+func TestEditEvidence_ApprovedToNeedsReviewNotGloballyLegal(t *testing.T) {
+	// The approval-voiding move is confined to EditEvidence; the generic
+	// transition path (POST /transition) must still refuse it.
+	if err := ValidateContributionTransition(ContribApproved, ContribNeedsReview); err == nil {
+		t.Error("approved→needs_review must not be a generic transition")
+	}
+	svc, ctx, c := setupSubmittedContribution(t)
+	svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"})
+	if _, err := svc.TransitionContribution(ctx, "space-1", c.ID, ContribNeedsReview); err == nil {
+		t.Error("TransitionContribution approved→needs_review should be rejected")
+	}
+}
+
+func TestEditEvidence_RejectsSignedOffAndAssigned(t *testing.T) {
+	svc, ctx, c := setupSubmittedContribution(t)
+
+	// assigned (before submit) is not editable — build a fresh assigned one.
+	fresh, _ := svc.CreateContribution(ctx, "space-1", &CreateContributionRequest{
+		ProjectID: "proj-1", Title: "T2", Description: "d",
+		ContributionType: ProposalTypeTechnical, Priority: PriorityLow,
+		CreatedBy: "lead-1", Objectives: []string{"o"},
+		Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
+		SkillRequirements: []string{"s"},
+	})
+	svc.TransitionContribution(ctx, "space-1", fresh.ID, ContribConfirmed)
+	fresh, _ = svc.AssignContributor(ctx, "space-1", fresh.ID, "contributor-1")
+	if _, err := svc.EditEvidence(ctx, "space-1", fresh.ID, "contributor-1", SubmitEvidenceRequest{CompletionNotes: "x"}); err == nil {
+		t.Error("expected error editing evidence while assigned")
+	}
+
+	// Drive the submitted one all the way to signed_off, then attempt an edit.
+	svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"})
+	// SignOff requires a signed-off plan; force status directly for this guard test.
+	signed, _ := svc.GetContribution(ctx, "space-1", c.ID)
+	signed.Status = ContribSignedOff
+	svc.store.Save("space-1", signed.ID, "contribution", signed)
+	if _, err := svc.EditEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{CompletionNotes: "x"}); err == nil {
+		t.Error("expected error editing evidence after sign-off")
 	}
 }
 

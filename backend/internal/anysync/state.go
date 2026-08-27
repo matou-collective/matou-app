@@ -7,6 +7,7 @@ package anysync
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
@@ -37,6 +38,11 @@ type ObjectState struct {
 	Timestamp  int64                      `json:"timestamp"` // latest change timestamp
 }
 
+// ErrUnknownObjectType is returned by BuildStateValidated when a validator is
+// supplied but the object's type is unknown (empty), which would otherwise
+// bypass the write rules.
+var ErrUnknownObjectType = errors.New("cannot validate object of unknown type")
+
 // SnapshotInterval controls how many changes between automatic snapshots.
 // After this many changes, a snapshot is created for faster state reconstruction.
 const SnapshotInterval = 10
@@ -44,6 +50,22 @@ const SnapshotInterval = 10
 // BuildState iterates a tree's changes and replays ops to reconstruct current state.
 // Starts from latest snapshot if one exists, otherwise from root.
 func BuildState(tree objecttree.ReadableObjectTree, objectID, objectType string) (*ObjectState, error) {
+	return BuildStateValidated(tree, objectID, objectType, nil)
+}
+
+// BuildStateValidated is BuildState with an optional peer-side write validator
+// (see write_rules.go). When validator is non-nil, each change is checked before
+// its ops are applied; a rejected change is skipped entirely — its ops are not
+// applied and it does not advance the version — so a forged high-stakes change
+// (e.g. a member-authored sign-off) cannot alter the reconstructed state. A nil
+// validator reproduces BuildState's behaviour exactly.
+func BuildStateValidated(tree objecttree.ReadableObjectTree, objectID, objectType string, validator ChangeValidator) (*ObjectState, error) {
+	if validator != nil && objectType == "" {
+		// An unknown object type cannot be matched against the write rules, so
+		// validating it would silently treat a guarded object (e.g. one that is
+		// missing from the local index) as unguarded. Fail loudly instead.
+		return nil, fmt.Errorf("%w: object %s", ErrUnknownObjectType, objectID)
+	}
 	state := &ObjectState{
 		ObjectID:   objectID,
 		ObjectType: objectType,
@@ -74,28 +96,7 @@ func BuildState(tree objecttree.ReadableObjectTree, objectID, objectType string)
 			if !ok || oc == nil {
 				return true
 			}
-
-			// If this is a snapshot, reset fields and replay from here
-			if change.IsSnapshot {
-				state.Fields = make(map[string]json.RawMessage)
-			}
-
-			// Apply ops
-			for _, op := range oc.Ops {
-				switch op.Op {
-				case "set":
-					state.Fields[op.Field] = op.Value
-				case "unset":
-					delete(state.Fields, op.Field)
-				}
-			}
-
-			state.Version++
-			state.HeadID = change.Id
-			if change.Timestamp > state.Timestamp {
-				state.Timestamp = change.Timestamp
-			}
-
+			state.applyChange(change, oc, validator)
 			return true
 		},
 	)
@@ -108,6 +109,44 @@ func BuildState(tree objecttree.ReadableObjectTree, objectID, objectType string)
 	}
 
 	return state, nil
+}
+
+// applyChange replays one decoded change onto the state. When validator is
+// supplied and rejects the change, the state is left untouched (the change is
+// treated as if it were never authored). The validator sees the field state as
+// it stands immediately before this change, so it can distinguish a genuine
+// high-stakes transition from a value merely carried forward by a snapshot.
+func (s *ObjectState) applyChange(change *objecttree.Change, oc *ObjectChange, validator ChangeValidator) {
+	if validator != nil {
+		author := ""
+		if change.Identity != nil {
+			author = change.Identity.Account()
+		}
+		if !validator.ValidateChange(s.ObjectType, s.ObjectID, change.Id, author, change.Timestamp, oc.Ops, s.Fields) {
+			return
+		}
+	}
+
+	// If this is a snapshot, reset fields and replay from here
+	if change.IsSnapshot {
+		s.Fields = make(map[string]json.RawMessage)
+	}
+
+	// Apply ops
+	for _, op := range oc.Ops {
+		switch op.Op {
+		case "set":
+			s.Fields[op.Field] = op.Value
+		case "unset":
+			delete(s.Fields, op.Field)
+		}
+	}
+
+	s.Version++
+	s.HeadID = change.Id
+	if change.Timestamp > s.Timestamp {
+		s.Timestamp = change.Timestamp
+	}
 }
 
 // DiffState computes minimal ChangeOps to go from current state to desired fields.

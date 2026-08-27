@@ -80,6 +80,24 @@ func bearerToken(authHeader string) string {
 // tooling keep working with zero setup. This defends against other local
 // processes on the same host — not against the user themselves.
 func TokenGuard(token string, next http.Handler) http.Handler {
+	return TokenGuardWithSessions(token, nil, next)
+}
+
+// SessionValidator is the subset of auth.SessionStore TokenGuardWithSessions
+// needs: it reports whether a bearer token is a live signed-auth session.
+type SessionValidator interface {
+	Validate(token string) (aid string, ok bool)
+}
+
+// TokenGuardWithSessions is TokenGuard extended to also accept a live
+// signed-challenge session token (issue #18) in the Authorization header. Both
+// tokens travel in the same header, so a client holding a session sends that
+// instead of the per-launch API token.
+//
+// Accepting a session here does not weaken TokenGuard: the login endpoints that
+// mint sessions are themselves mutating requests guarded by the API token, so
+// every session holder already proved possession of it. sessions may be nil.
+func TokenGuardWithSessions(token string, sessions SessionValidator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -88,10 +106,20 @@ func TokenGuard(token string, next http.Handler) http.Handler {
 		}
 
 		got := bearerToken(r.Header.Get("Authorization"))
-		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+		if got == "" {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing API token"})
 			return
 		}
-		next.ServeHTTP(w, r)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if sessions != nil {
+			if _, ok := sessions.Validate(got); ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing API token"})
 	})
 }
