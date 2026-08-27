@@ -642,6 +642,46 @@ func TestValidateChange_EnforceProofs(t *testing.T) {
 	}
 }
 
+// TestValidateChange_StaleProofNotReplayed pins the replay fix: a proof already
+// persisted on the object must never authorise a later change that re-asserts
+// the guarded value without carrying its own proof op. Sequence: steward signs
+// off (proof P persisted) → sign-off reverted (permitted, P left behind) → a
+// plain writer re-asserts signed_off with no proof op. Must be rejected.
+func TestValidateChange_StaleProofNotReplayed(t *testing.T) {
+	s := newSigner(t, "E-steward")
+	keys := NewStaticKeyProvider()
+	keys.Set(s.aid, s.verfer)
+	proof := s.sign("contribution_signoff", "contrib-1", "space-community", "signed_off", "2026-08-27T00:00:00Z")
+	proofJSON, err := json.Marshal(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &recordingRecorder{}
+	v := NewWriteRuleValidator(
+		fakeResolver{"E-steward": contributions.MapKERIRole("Operations Steward")}, keys, rec, true)
+
+	// Stale proof P sits on the object; the change re-asserts signed_off
+	// without a proof op of its own.
+	current := map[string]json.RawMessage{
+		"status":         json.RawMessage(`"in_progress"`),
+		"sign_off_proof": proofJSON,
+	}
+	ops := []ChangeOp{setOp("status", string(contributions.ContribSignedOff))}
+	if v.ValidateChange("space-community", TypeContribution, "contrib-1", "chg", "acct-forger", 0, ops, current) {
+		t.Fatal("a persisted proof must not be replayed to authorise an unsigned re-assertion")
+	}
+	if len(rec.rejections) != 1 || rec.rejections[0].Field != "sign_off_proof" {
+		t.Errorf("expected a missing-proof rejection on sign_off_proof, got %+v", rec.rejections)
+	}
+
+	// Control: the same re-assertion carrying the proof in its own ops passes.
+	ops = append(ops, proofOp("sign_off_proof", proof))
+	if !v.ValidateChange("space-community", TypeContribution, "contrib-1", "chg2", "acct-x", 0, ops, current) {
+		t.Error("a re-assertion that carries a valid proof op must be allowed")
+	}
+}
+
 func TestIsGuardedObjectType(t *testing.T) {
 	for _, typ := range []string{TypeContribution, TypeProject, TypeImplementationPlan, TypeProposal, "CommunityProfile"} {
 		if !IsGuardedObjectType(typ) {

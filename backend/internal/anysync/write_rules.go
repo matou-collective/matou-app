@@ -411,7 +411,7 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 		if gv.proofAction != "" && v.enforceProofs {
 			// Proof-backed with enforcement on: the crypto proof is the
 			// legitimacy source (AC-1). A forger cannot mint a valid signature.
-			proof := extractProof(gv.proofField, ops, current)
+			proof := extractProof(gv.proofField, ops)
 			aid, ok, reason := verifyActionProof(v.keys, gv.proofAction, objectID, spaceID, gv.proofValue, proof)
 			if !ok {
 				return reject(reason, gv.proofField)
@@ -442,18 +442,19 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 }
 
 // extractProof pulls the Proof envelope for a proof-backed transition from the
-// change's own ops (where a genuine transition carries it alongside the guarded
-// field) and, failing that, from the object's current field state. Returns nil
-// when no proof field is present, which verifyActionProof treats as a missing
-// proof.
-func extractProof(field string, ops []ChangeOp, current map[string]json.RawMessage) *contributions.Proof {
+// change's OWN ops only. A genuine transition always writes the proof in the
+// same change as the guarded field (the service layer sets status and proof in
+// one save). The object's persisted proof field is deliberately NOT consulted:
+// a proof that already sits on the object binds the same action/subject/space/
+// value by construction, so falling back to it would let any writer re-assert
+// the high-stakes value (e.g. after a permitted revert) without a signature of
+// their own — a replay of the original signer's authority. Returns nil when the
+// change carries no proof, which verifyActionProof treats as a missing proof.
+func extractProof(field string, ops []ChangeOp) *contributions.Proof {
 	for _, op := range ops {
 		if op.Op == "set" && op.Field == field {
 			return decodeProof(op.Value)
 		}
-	}
-	if raw, ok := current[field]; ok {
-		return decodeProof(raw)
 	}
 	return nil
 }
