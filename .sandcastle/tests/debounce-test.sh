@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
-# Offline test for run-swarm.sh's trigger coalescing. Exercises the decision in
-# isolation (the surrounding script needs pnpm, docker and a live tracker), so
-# the logic below is kept a byte-for-byte copy of the block in run-swarm.sh.
+# Offline test for run-swarm.sh's trigger coalescing.
+#
+# Until #2 this file kept a byte-for-byte COPY of the decision block from
+# run-swarm.sh, because the surrounding script needed pnpm, docker and a live
+# tracker to reach it. The coalescer now lives in schedule-lib.sh (the SCHEDULE
+# seam) and this test drives the REAL function — a copy that can silently drift
+# from its original is exactly the hazard the decomposition removed.
+#
+# The scenarios below are unchanged: they are the behaviour the copy pinned.
 # Run: bash .sandcastle/tests/debounce-test.sh
 set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$here/../schedule-lib.sh"
+
 fail() { echo "FAIL: $1" >&2; exit 1; }
 stamp="$(mktemp)"; trap 'rm -f "$stamp"' EXIT
 pass=0
 
-# The decision under test, verbatim from run-swarm.sh (stamp path injected).
-decide() { # decide <ready-json> <debounce-seconds> → "run" | "coalesce"
-  local ready="$1" SWARM_DEBOUNCE="$2" ready_hash last_hash last_at
-  ready_hash="$(printf '%s' "$ready" | sha1sum | cut -c1-16)"
-  if [ -s "$stamp" ]; then
-    read -r last_hash last_at < "$stamp" || true
-    if [ "$last_hash" = "$ready_hash" ] &&
-       [ $(( $(date +%s) - ${last_at:-0} )) -lt "$SWARM_DEBOUNCE" ]; then
-      echo coalesce; return
-    fi
-  fi
-  printf '%s %s\n' "$ready_hash" "$(date +%s)" > "$stamp"
-  echo run
-}
+# decide <ready-json> <debounce-seconds> → "run" | "coalesce"
+# schedule_debounce_decide additionally carries the coalesced age (so run-swarm
+# can say "attempted Ns ago"); these scenarios only care about the ruling.
+decide() { local d; d="$(schedule_debounce_decide "$1" "$stamp" "$2")"; printf '%s' "${d%% *}"; }
 
 SET_A='[{"number":162},{"number":165},{"number":171}]'
 SET_B='[{"number":165},{"number":171}]'   # 162 closed — the set changed

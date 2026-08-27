@@ -786,24 +786,32 @@ No space/sync/trust/org/multisig action constant exists in `contributions/roles.
 
 ## Peer-Side Write Rules (synced-object validation)
 
-Added by GH#19 part 1 (`backend/internal/anysync/write_rules.go`, `role_resolver.go`, `state.go BuildStateValidated`, `acl.go AccountAIDMap`, wired in `backend/internal/app/app.go`). Everything above concerns the HTTP layer of *this* node. Any-sync ACLs are space-scoped only, so a modified peer with Writer permission on the community space can write any change to any object — including a forged `signed_off`/`rewarded`/`completed` transition or a plan/proposal sign-off — and every peer's SDK will accept it into the tree. The write rules run when a node reconstructs object state from a tree and **exclude** guarded changes whose author did not hold the required role, so forged changes never enter this node's derived state.
+Added by GH#19 (`backend/internal/anysync/write_rules.go`, `proof_verifier.go`, `role_resolver.go`, `state.go BuildStateValidated`, `acl.go AccountAIDMap`, wired in `backend/internal/app/app.go`). Everything above concerns the HTTP layer of *this* node. Any-sync ACLs are space-scoped only, so a modified peer with Writer permission on the community space can write any change to any object — including a forged `signed_off`/`rewarded`/`completed` transition or a plan/proposal sign-off — and every peer's SDK will accept it into the tree. The write rules run when a node reconstructs object state from a tree and **exclude** guarded changes that fail the rule, so forged changes never enter this node's derived state.
 
-| Guarded object (field) | High-stakes values | Rule |
-|---|---|---|
-| `contribution.status` | `signed_off`, `rewarded` | `ActionSignOffContribution` / `ActionRewardContribution` |
-| `project.status` | `pending_completion`, `completed` | `ActionSubmitProjectCompletion` / `ActionApproveProjectCompletion` |
-| `implementation_plan.signed_off` | `true` | `ActionSignOffPlan` |
-| `proposal.status` | `signed_off` | `ActionSignOffProposal` |
-| `CommunityProfile.role` | any | operations_steward, founding_member |
+| Guarded object (field) | High-stakes values | Legitimacy source | Rule |
+|---|---|---|---|
+| `contribution.status` | `signed_off`, `rewarded` | proof-backed¹ | `ActionSignOffContribution` / `ActionRewardContribution` |
+| `project.status` | `completed` | proof-backed¹ | `ActionApproveProjectCompletion` |
+| `project.status` | `pending_completion` | role-only² | `ActionSubmitProjectCompletion` |
+| `implementation_plan.signed_off` | `true` | proof-backed¹ | `ActionSignOffPlan` |
+| `decision_plan.status` | `signed_off` | proof-backed¹ | `ActionSignOffPlan` |
+| `proposal.status` | `signed_off` | role-only² | `ActionSignOffProposal` |
+| `CommunityProfile.role` | any | role-only² (ACL-enforced³) | operations_steward, founding_member |
 
-How a verdict is computed (deterministic, AC-2): change author (any-sync account) → AID via the community space's ACL join records walked **in record order, first claim of an AID wins** (`AccountAIDMap`) → the AID's role **as of the change's own timestamp**, from the role history of its `CommunityProfile` tree (`HistoryRoleResolver`; org-config admins are a static Founding Member override) → `MapKERIRole` → policy table. Because every input is synced tree/ACL data, two honest peers reach the same verdict, and demoting a steward does not retroactively reject their past sign-offs. Snapshots that merely carry a guarded value forward are not re-gated. `UpdateObject` diffs against the same validated baseline so a forged change cannot block the legitimate transition. An object of unknown type (missing from the local index) is an error, not an unguarded pass.
+**¹ Proof-backed (GH#19 part 2 — meets AC-1).** The change must carry a KERI **action proof** (`sign_off_proof` / `reward_proof` / `proof` field) — a Cigar signature over the canonical message `matou-proof/v1\n<action>\n<subject>\n<space>\n<value>\n<dt>` (single source of truth: `frontend/src/lib/keri/actionProof.ts`). The verifier (`proof_verifier.go`) rebuilds that message from the object's **own** authoritative fields (never a copy on the object) and verifies the signature against the signer AID's KEL signing key using the CESR + ed25519 primitives from GH#18 (`internal/auth`). The signer AID is thus authenticated cryptographically, so the attacker-controlled ACL-join-metadata binding is no longer trusted: a writer-permission forger cannot mint a valid signature, cannot lift a real steward's proof onto a different object (subject binding) or space (space binding), and a proof from a non-current key is rejected (fail-closed). The verified AID's role is then resolved by AID (`RolesForAIDAt`) as of the change's timestamp. Enforcement is gated by `MATOU_REQUIRE_SIGNED_AUTH` (same signal that makes `X-User-AID` trustworthy); when off (dev/test without live KERIA) proof-backed rules fall back to the role-only path so a missing proof never breaks a legitimate action.
 
-**Known gaps — GH#19 AC-1 is NOT met by part 1:**
+**² Role-only (interim, GH#19 part 1).** No frontend proof action exists for these transitions yet, so they keep the part-1 path: author (any-sync account) → AID via the community space's ACL join records walked **in record order, first claim of an AID wins** (`AccountAIDMap`) → role **as of the change's timestamp** from the `CommunityProfile` role history (`HistoryRoleResolver`; org-config admins are a static Founding Member override) → `MapKERIRole` → policy table. Fail-open on an unresolved author. Weaker (the account→AID binding is client-supplied join metadata), retained as defence-in-depth.
 
-- The account→AID binding is ACL join metadata written by the *joining* peer (`api/spaces.go HandleJoinCommunity` interpolates the client-supplied `userAID`). A modified client can join claiming any AID that has not joined yet. First-bound-wins stops a second account from hijacking an already-bound AID, nothing more. Closing this needs KERI-backed binding proofs (GH#20).
-- The engine is **fail-open** when an author cannot be resolved (unknown account, profile not yet synced). The decided design is fail-closed per-action digest verification; that is an engine change that lands with the KEL/TEL verifier, not a resolver swap.
-- Change timestamps are author-set. Backdating can only claim a role the author genuinely held earlier (bounded by their own history) — it cannot manufacture one.
-- `decision_plan` sign-off and raw `/transition` endpoints are not guarded.
+**³ ACL-enforced.** `CommunityProfile` lives in the admin-only community-readonly space, so the SDK ACL already blocks non-admin writers; the role change is credential-backed (ACDC revoke/re-issue), not signed via the action-proof path.
+
+Determinism (AC-2): every input is synced tree/ACL data plus the signer's KEL key snapshot (KELs are append-only and eventually consistent), so two honest peers reach the same verdict, and demoting a steward does not retroactively reject their past sign-offs. Snapshots that merely carry a guarded value forward are not re-gated. `UpdateObject` diffs against the same validated baseline so a forged change cannot block the legitimate transition. An object of unknown type (missing from the local index) is an error, not an unguarded pass.
+
+**Remaining follow-ups (do not block AC-1):**
+
+- The proof envelope carries no KEL sequence number, so the Cigar is verified against the AID's **current** signing key from the snapshot rather than the key state as of the signing-time sn. A key rotation therefore invalidates the verifiability of proofs signed with the rotated-away key (fail-closed, the safe direction). Binding to the exact signing-time key state needs the wire format to anchor an sn — a frontend change tracked separately.
+- The signer's role is resolved from the synced `CommunityProfile` role history keyed by the crypto-verified AID. Binding the role check to unrevoked org-**credential** (TEL) state from the synced credential tree is the remaining refinement; the seam (`RoleResolver.RolesForAIDAt`) is in place.
+- Proof enforcement needs a reachable KERIA key-state endpoint to populate the signing-key snapshot; verified by the e2e run (NEEDS LIVE VERIFICATION), not in-sandbox unit tests.
+- `proposal` sign-off, `project` submit-completion, and raw `/transition` endpoints remain on the interim role-only path until they gain a frontend proof action.
 
 ## Appendix: Known Gaps & Design-Doc Drift
 

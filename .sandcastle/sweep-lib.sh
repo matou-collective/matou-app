@@ -78,6 +78,34 @@ sweep_worktrees() {
   printf '%s' "$unmerged"
 }
 
+# prune_session_logs <logs_dir> [max_age_seconds]
+# Retention half of #98's ingest-then-prune pipeline. Remove raw claude session
+# `*.jsonl` files under <logs_dir> OLDER than max_age_seconds (default =
+# SESSION_LOG_RETENTION_DAYS days, itself defaulting to 14) — Sandcastle logs
+# session (and run) files here with no bound, so the dir grew forever. Safe to
+# delete because record-run-result.sh ingests every run's session jsonl into
+# swarm.db per-request spend + per-tool-call events IMMEDIATELY post-run: a file
+# older than the window has provably already been harvested into its durable
+# record, so this only prunes what is already captured — never destroys the sole
+# copy of anything. The window is just a number, widen it here to keep raw jsonl
+# longer. A file we cannot age is left alone (fail-safe). Never fails the caller.
+prune_session_logs() {
+  local dir="${1:-}"
+  local max_age="${2:-$(( ${SESSION_LOG_RETENTION_DAYS:-14} * 86400 ))}"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+
+  local now cutoff f f_epoch
+  now="$(date +%s)"
+  cutoff="$(( now - max_age ))"
+  for f in "$dir"/*.jsonl; do
+    [ -f "$f" ] || continue
+    f_epoch="$(stat -c %Y "$f" 2>/dev/null)" || continue
+    [ -n "$f_epoch" ] || continue
+    [ "$f_epoch" -ge "$cutoff" ] && continue
+    rm -f "$f" 2>/dev/null || true
+  done
+}
+
 # reap_containers [max_age_seconds]
 # Force-remove leaked Sandcastle worker containers (name `sandcastle-*`) older
 # than a run-lifetime. Worker teardown leaks them — by 2026-07-31 three stale

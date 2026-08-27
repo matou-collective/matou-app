@@ -51,6 +51,58 @@ swarmdb_event() {
   fi
 }
 
+# swarmdb_ingest <run_id> <issue|''> <session_jsonl_path> <account|''> — #98:
+# parse ONE claude session jsonl into per-request `spend` rows + per-tool-call
+# `events`. Unlike the other writers this one's stdout MATTERS — it echoes
+# `<n_spend> <n_tool_events>` so record-run-result.sh can tell whether the
+# per-request rows landed (and thus skip its aggregate fallback). Best-effort:
+# a missing engine, or any failure, echoes `0 0` and never fails the caller.
+swarmdb_ingest() {
+  local run="$1" issue="$2" session="$3" account="${4:-}"
+  swarmdb_available || { echo "0 0"; return 0; }
+  local args=(ingest --run "$run" --session "$session")
+  [ -n "$issue" ] && args+=(--issue "$issue")
+  [ -n "$account" ] && args+=(--account "$account")
+  python3 "$_SWARMDB_PY" --db "$SWARM_DB" "${args[@]}" 2>/dev/null || echo "0 0"
+}
+
+# swarmdb_spend_from_result <run> <issue|''> <account> <result-json> — #94: a
+# STANDALONE claude call (session-runner today; triage/heal once their runs are
+# recorded, #91/#92) emits ONE result object with `--output-format json` whose
+# `.usage` block carries the call's token counts. Turn it into ONE aggregate
+# `spend` row attributed to <account> — the SAME account-attributed shape
+# record-run-result.sh writes per swarm iteration (fresh input, cache classes
+# split #96, model passed through when the result surfaces one else NULL). This
+# does NOT touch record-run-result.sh's own path (it reads sandbox RunResult, not
+# a --output-format json blob), so its behaviour is unchanged. Best-effort, this
+# lib's posture: a missing / unparseable / usage-less result writes NOTHING and
+# never fails the caller. Echoes 1 iff a row was written, else 0.
+swarmdb_spend_from_result() {
+  local run="$1" issue="$2" account="$3" result="$4"
+  swarmdb_available || { echo 0; return 0; }
+  [ -n "$result" ] && [ -f "$result" ] || { echo 0; return 0; }
+  local usage
+  usage="$(jq -c 'if type=="object" and (.usage|type=="object") then .usage else empty end' "$result" 2>/dev/null)" || usage=""
+  [ -n "$usage" ] || { echo 0; return 0; }
+  local in out cc cr model
+  in="$(jq -r '.input_tokens // 0' <<<"$usage" 2>/dev/null)";                 case "$in" in ''|*[!0-9]*) in=0 ;; esac
+  out="$(jq -r '.output_tokens // 0' <<<"$usage" 2>/dev/null)";               case "$out" in ''|*[!0-9]*) out=0 ;; esac
+  cc="$(jq -r '.cache_creation_input_tokens // 0' <<<"$usage" 2>/dev/null)";   case "$cc" in ''|*[!0-9]*) cc=0 ;; esac
+  cr="$(jq -r '.cache_read_input_tokens // 0' <<<"$usage" 2>/dev/null)";       case "$cr" in ''|*[!0-9]*) cr=0 ;; esac
+  # #96: the aggregate result carries no per-request model, but recent CLIs expose
+  # the billing model as a `.modelUsage` key (or a top-level `.model`); pass it
+  # through when present, else leave NULL rather than guess.
+  model="$(jq -r 'if type=="object" then ((.modelUsage // {} | keys[0]?) // .model? // empty) else empty end' "$result" 2>/dev/null)" || model=""
+  local model_args=() acct_args=() issue_args=()
+  [ -n "$model" ] && model_args=(--model "$model")
+  [ -n "$account" ] && acct_args=(--account "$account")
+  [ -n "$issue" ] && issue_args=(--issue "$issue")
+  swarmdb spend --run "$run" ${issue_args[@]+"${issue_args[@]}"} \
+    --input "$in" --output "$out" --cache-creation "$cc" --cache-read "$cr" --requests 1 \
+    ${acct_args[@]+"${acct_args[@]}"} ${model_args[@]+"${model_args[@]}"}
+  echo 1
+}
+
 # swarmdb_wedge <run_id> <ready_nums> — the #435 answer: a green run that
 # spawned NO worker is written as an UNFINALISED processes row (ended_at NULL =
 # believed alive, but it emitted nothing) plus a worker_wedge event. `open

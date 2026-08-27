@@ -35,6 +35,23 @@ heal_rails() {
   return 0
 }
 
+# rehearsal_heal_authed_url <url> — inject the same non-interactive
+# `swarm:$FORGEJO_TOKEN` credential git-setup.sh's worker checkouts already
+# use for git.matou.nz (#676: the healer's dedicated checkout clones/pushes
+# with a bare `https://git.matou.nz/...` origin — no username, no credential
+# helper, no GIT_ASKPASS — so a headless `git push` blocks on a username
+# prompt and dies; that stranded the already-computed, already-validated fix
+# e920f9e7 until it was landed by hand in #675). Only rewrites a plain
+# git.matou.nz https URL with no userinfo yet; a local path (the test
+# fixtures' bare origins) or an already-credentialed URL pass through
+# unchanged, so this is safe to call unconditionally on every heal.
+rehearsal_heal_authed_url() {
+  case "$1" in
+    https://git.matou.nz/*) printf 'https://swarm:%s@%s' "${FORGEJO_TOKEN:-}" "${1#https://}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # heal_push <co> <pre_head> <run_dir> — land the healer's single commit on
 # origin/main even when main advanced under us (a concurrent operator or swarm
 # push): fetch + rebase onto origin/main, re-run the rails against the replayed

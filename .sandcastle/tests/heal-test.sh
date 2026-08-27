@@ -23,13 +23,27 @@ run_heal() {
   # fail over instead of defer and reds that assertion (#586). The failover
   # scenario re-sets both explicitly (a later NAME=VALUE overrides -u), so this
   # only clears the ambient leak.
+  # Same lesson one level in (#79): limit-lib's markers are HOST-GLOBAL paths by
+  # design, so a host that is genuinely limit-parked while the suite runs made
+  # every agent-path scenario here bail at the #253 gate ("deferred — Claude
+  # usage limit window") and read as a code red. Pin them into $work; the
+  # failover scenarios still name their own.
+  # Same class one file over (#90): HOST_CAPACITY_DRIVE_WANTED defaults to a
+  # host-global path, so a real rehearsal drive waiting while the suite runs made
+  # heal.sh yield at the #663 drive gate before ever reaching the stub agent. Pin
+  # it (and the healer's own defer count) into $work too — run_heal_ci must too.
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN_B \
+    CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+    CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
     HEAL_MODE=hook WORKFLOW=swarm RUN_URL=http://x/runs/1 \
-    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" \
+    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
     SWARM_VERDICT_PATH="$work/absent-swarm-verdict" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
+    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+    HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
     "$@" bash "$here/../heal.sh" 2>&1
 }
 
@@ -41,9 +55,29 @@ sig="$(ls "$work/state")"
 grep -q "repaired=1" "$work/state/$sig" || fail "ACTION-TAKEN != none should mark repaired=1"
 
 # 2nd hook, same fault, still in cooldown, already repaired → escalate, NO agent
-out="$(run_heal)"
+out="$(run_heal SWARM_HOST=box1)"
 echo "$out" | grep -qi "recurred after a repair" || fail "repaired recurrence should escalate"
 echo "$out" | grep -q "stub agent ran" && fail "escalation must not re-run the agent"
+# --- #79: the escalation names the host it actually RAN on, never a literal ---
+# The 2026-08-24 pings all read "on matou-workstation" while the healer was
+# running on another box in the pool, so every evidence path pointed at a
+# directory that does not exist there (and a product's box was baked into a
+# vendored harness file — CLAUDE.md's blast-radius rule).
+echo "$out" | grep -q "evidence: .* on box1" || fail "the escalation must name the healer's own host (got: $out)"
+echo "$out" | grep -q "matou-workstation" && fail "no hardcoded host may appear in healer post text (#79)"
+
+# --- #79: escalate-repaired latches, exactly like escalate-noisy -------------
+# It used to set NOTHING: `repaired=1` short-circuits ledger_decide ahead of the
+# reply cap, so every later recurrence inside the cooldown re-pinged @ben — one
+# ping per red run, one run every ~2 minutes, indefinitely (the storm this
+# ticket closes). Say it once, then go quiet for the rest of the window.
+grep -q "escalated=1" "$work/state/$sig" || fail "escalate-repaired must set the silence latch (#79)"
+for n in 3 4 5; do
+  out="$(run_heal)"
+  echo "$out" | grep -q "already escalated and silenced" \
+    || fail "recurrence $n after a repaired escalation must post nothing (#79), got: $out"
+  echo "$out" | grep -q "@ben" && fail "recurrence $n must not re-ping @ben (#79)"
+done
 
 # fresh state; dry-run flows through to the report path, and must NOT mark
 # the incident repaired (a dry run changes nothing, so the loop-breaker must
@@ -74,6 +108,47 @@ done
 sig2="$(ls "$work/state" | head -1)"
 grep -q "repaired=1" "$work/state/$sig2" && fail "the storm path must never mark a dry run repaired"
 
+# --- #79: a filed ticket is an ACTION, but it is not a repair ----------------
+# On 2026-08-24 the diagnosis's only action was "filed ready-for-agent ticket
+# #77" — nothing on the host or in the repo changed, so the fault recurred on
+# every run and each recurrence carried no new information. Marking it
+# `repaired` put it on the loop-breaker path (one @ben ping per recurrence back
+# then); it belongs on the normal reply-cap ladder: three thread replies, ONE
+# escalation, then silence — and the replies say a ticket is already filed.
+rm -f "$work/state/"*
+replies=0; escalations=0; pings=0; silences=0; repaired_recur=0
+for _ in 1 2 3 4 5 6 7 8; do
+  out="$(run_heal HEAL_MAX_REPLIES=3 STUB_ACTION='filed ready-for-agent ticket #77')"
+  echo "$out" | grep -q "still failing"        && replies=$((replies+1))
+  echo "$out" | grep -q "going quiet on it"    && escalations=$((escalations+1))
+  echo "$out" | grep -q "already escalated and silenced" && silences=$((silences+1))
+  echo "$out" | grep -q "@ben"                 && pings=$((pings+1))
+  echo "$out" | grep -qi "recurred after a repair" && repaired_recur=$((repaired_recur+1))
+done
+tsig="$(ls "$work/state" | head -1)"
+grep -q "repaired=1" "$work/state/$tsig" && fail "filing a ticket must NOT mark the signature repaired (#79)"
+grep -q "ticketed=1" "$work/state/$tsig" || fail "a filed-ticket outcome must be recorded as ticketed=<n> (#79)"
+[ "$repaired_recur" -eq 0 ] || fail "a ticketed fault must never take the repaired path, got $repaired_recur"
+[ "$replies" -eq 3 ]     || fail "a ticketed fault must ride the reply cap (3 replies), got $replies"
+[ "$escalations" -eq 1 ] || fail "a ticketed fault must escalate exactly once, got $escalations"
+[ "$silences" -eq 3 ]    || fail "a ticketed fault must then go silent, got $silences"
+[ "$pings" -eq 1 ]       || fail "a ticketed fault must ping @ben exactly once per window, got $pings"
+# the thread replies point at the ticket rather than repeating an unexplained
+# "still failing" — the recurrence is expected until the fix lands
+out="$(run_heal HEAL_MAX_REPLIES=99 STUB_ACTION='filed ready-for-agent ticket #77')"
+echo "$out" | grep -qi "already escalated and silenced" || fail "the latch must still hold with a raised cap"
+rm -f "$work/state/"*
+run_heal STUB_ACTION='filed ready-for-agent ticket #77' >/dev/null
+out="$(run_heal STUB_ACTION='filed ready-for-agent ticket #77')"
+echo "$out" | grep -q "still failing" || fail "the second sighting of a ticketed fault must thread-reply"
+echo "$out" | grep -qi "ticket" || fail "a ticketed fault's reply should say a ticket is already filed (#79)"
+
+# a real repair (the default stub action) still takes the repaired path
+rm -f "$work/state/"*
+run_heal >/dev/null
+rsig="$(ls "$work/state" | head -1)"
+grep -q "repaired=1" "$work/state/$rsig" || fail "a genuine repair must still mark repaired=1"
+
 # --- #197: a moved ci fault re-triggers investigation ------------------------
 # ci has no readable log API; the seam script leaves a verdict at a well-known
 # host path. Two consecutive ci failures with DIFFERENT faults must produce two
@@ -85,10 +160,15 @@ verdict="$work/seam-verdict.txt"
 run_heal_ci() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     HEAL_MODE=hook WORKFLOW=ci RUN_URL=http://x/runs/9 \
-    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" \
+    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
     SEAM_VERDICT_PATH="$verdict" \
+    CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+    CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
+    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+    HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
     "$@" bash "$here/../heal.sh" 2>&1
 }
 printf 'stage=Go: build/vet/test/lint\nexit=1\n--- error lines ---\nwiring_test.go:41:2: err shadows builtin (revive)\n' > "$verdict"
@@ -126,10 +206,15 @@ prosesig="$(compute_signature swarm "$(grep -hE 'error|Error|ERR|failed|Failed|t
 run_heal_swarm() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     HEAL_MODE=hook WORKFLOW=swarm RUN_URL=http://x/runs/7 \
-    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" \
+    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
     SWARM_VERDICT_PATH="$swarm_verdict" \
+    CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+    CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
+    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+    HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
     "$@" bash "$here/../heal.sh" 2>&1
 }
 # a stage marker present → the marker-derived signature, NOT the prose one
@@ -158,6 +243,33 @@ out="$(run_heal_swarm)"
 echo "$out" | grep -qi "signature degraded to workflow name" || fail "a stale swarm verdict must flag the signature degraded"
 rm -f "$swarm_verdict"
 
+# --- #34: a SIGKILL'd (probable OOM) heavy job leaves a breadcrumb, no verdict ---
+# The verdict seam is EXIT-trap-driven and a SIGKILL is untrappable, so a
+# resource-killed run writes no verdict — before this fix the healer degraded to
+# the bare workflow name (`sha1("swarm|")`) and burned a full investigation on a
+# NON-fault. Now verdict-lib.sh drops an eager breadcrumb at each stage; with a
+# fresh breadcrumb but no verdict the healer keys the signature on the killed
+# STAGE, DOWNGRADES (no investigation agent), and posts a low-severity note.
+rm -f "$swarm_verdict" "$work/state/"*
+bcrumb="$swarm_verdict.breadcrumb"
+printf 'stage=sandcastle run (workers)\nstatus=running\n' > "$bcrumb"
+killedsig="$(compute_signature swarm "killed mid-stage :: sandcastle run (workers)")"
+out="$(run_heal_swarm)"
+[ -f "$work/state/$killedsig" ] || fail "a killed run must key the signature on the breadcrumb's stage (#34)"
+[ ! -f "$work/state/$degraded" ] || fail "a killed run must NOT mint the bare workflow-name signature (#34)"
+echo "$out" | grep -qi "probable resource kill" || fail "a killed run must post a probable-resource-kill note (#34)"
+echo "$out" | grep -q "stub agent ran" && fail "a killed run must NOT burn an investigation agent (#34)"
+
+# a STALE breadcrumb (older than the run window) is a prior run's — it must NOT
+# trigger the kill path; degrade to the bare workflow name exactly as before.
+rm -f "$work/state/"*
+touch -d '5 hours ago' "$bcrumb"
+out="$(run_heal_swarm)"
+[ -f "$work/state/$degraded" ] || fail "a stale breadcrumb must degrade to the workflow name, not the kill path (#34)"
+[ ! -f "$work/state/$killedsig" ] || fail "a stale breadcrumb must NOT be read as this run's kill (#34)"
+echo "$out" | grep -qi "signature degraded to workflow name" || fail "a stale breadcrumb must still flag the signature degraded (#34)"
+rm -f "$bcrumb"
+
 # --- #10: smoke-drive is a verdict-bearing workflow too ---------------------
 # The reader half of matou-app#46: a consumer's smoke driver writes the same
 # stage/exit marker run-swarm.sh does, at /tmp/matou-<tag>-smoke-drive-verdict.txt.
@@ -170,10 +282,15 @@ smoke_verdict="$work/smoke-drive-verdict.txt"
 run_heal_smoke() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     HEAL_MODE=hook WORKFLOW=smoke-drive RUN_URL=http://x/runs/8 \
-    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" \
+    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
     SMOKE_DRIVE_VERDICT_PATH="$smoke_verdict" \
+    CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+    CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
+    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+    HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
     "$@" bash "$here/../heal.sh" 2>&1
 }
 printf 'stage=registration\nexit=1\n--- error lines ---\n1) [chromium] › e2e-registration.spec.ts:732 › register and approve a second member\n' > "$smoke_verdict"
@@ -275,4 +392,79 @@ grep -q "^GIT_COMMITTER_NAME=Acme Swarm (healer@box1)$" "$idcap" \
   || fail "the healer's committer identity must match the author"
 grep -q "^GIT_AUTHOR_EMAIL=swarm@" "$idcap" || fail "the healer must export a factory author email"
 
-echo "heal.sh: 10 scenarios passed"
+# --- drive reservation (#663/#664/#30): the healer's investigation is a heavy
+# (claude-calling) consumer, so a FRESH reservation makes it stand down — exit 0,
+# no agent run, no ledger touched — and climb its own consecutive-defer count; an
+# EXPIRED (mtime > TTL) reservation does not. ---
+rm -rf "$work/state"; mkdir -p "$work/state"
+drive="$work/drive-wanted"; hdefer="$work/healer-defer-count"
+rm -f "$hdefer"; : > "$drive"
+out="$(run_heal HOST_CAPACITY_DRIVE_WANTED="$drive" HEALER_DRIVE_DEFER_COUNT="$hdefer")"
+echo "$out" | grep -qi "yielding this run to a ready drive" || fail "a standing reservation must make the healer yield (got: $out)"
+echo "$out" | grep -q "skipped 1 consecutive tick(s)" || fail "the first deferred tick must read skipped 1 (got: $out)"
+echo "$out" | grep -q "stub agent ran" && fail "a drive-yield must stop BEFORE the investigation agent runs (got: $out)"
+[ "$(ls "$work/state" | wc -l)" -eq 0 ] || fail "a drive-yield must not touch the ledger"
+[ "$(cat "$hdefer")" = 1 ] || fail "the first deferred tick must leave a defer count of 1, got: $(cat "$hdefer" 2>/dev/null)"
+out="$(run_heal HOST_CAPACITY_DRIVE_WANTED="$drive" HEALER_DRIVE_DEFER_COUNT="$hdefer")"
+echo "$out" | grep -q "skipped 2 consecutive tick(s)" || fail "the count must climb on a second consecutive defer (got: $out)"
+# expired reservation → the healer proceeds (agent runs), and the counter resets.
+touch -d '@1' "$drive"
+out="$(run_heal HOST_CAPACITY_DRIVE_WANTED="$drive" HEALER_DRIVE_DEFER_COUNT="$hdefer")"
+echo "$out" | grep -qi "yielding this run to a ready drive" && fail "an expired reservation must NOT make the healer yield (got: $out)"
+echo "$out" | grep -q "CLASS: harness-infra" || fail "an expired reservation must let the investigation proceed (got: $out)"
+[ -f "$hdefer" ] && fail "proceeding past the reservation must reset the consecutive-defer counter"
+
+# --- #92: a heal that actually invokes claude is recorded as a run in swarm.db ---
+# The investigation is a claude call — a pooled heavy slot up to 15 min — that
+# used to leave swarm.db empty, so heal time was invisible to the machine
+# timeline, the util bar, and any later reconstruction of host activity. A heal
+# that reaches the agent must open a `heal`-trigger run row + a claude process
+# row, close them on exit with the investigation's outcome as verdict, and write
+# a `heal` event pointing at the evidence dir. A heal that never reaches claude
+# (a downgraded kill) records NOTHING. swarm.db needs python3; skip cleanly when
+# it is absent (the mirror is best-effort — the run must not depend on it).
+if command -v python3 >/dev/null 2>&1; then
+  db92="$work/heal-trace.db"
+  # Robust to a db that was never created (the negative case writes nothing, so
+  # the file / tables may not exist): a missing db or table reads as empty.
+  sqval() { python3 - "$db92" "$1" <<'PY'
+import sqlite3, sys, os
+try:
+    row = sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()
+    print("" if row is None or row[0] is None else row[0])
+except sqlite3.OperationalError:
+    print("")
+PY
+  }
+  rm -f "$db92"; rm -rf "$work/state"; mkdir -p "$work/state"
+  echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+  run_heal SWARM_DB="$db92" >/dev/null
+  [ "$(sqval "SELECT count(*) FROM runs WHERE trigger='heal'")" = 1 ] \
+    || fail "an investigating heal must open exactly one heal-trigger run row (#92)"
+  [ "$(sqval "SELECT verdict FROM runs WHERE trigger='heal'")" = diagnosed ] \
+    || fail "a produced diagnosis must close the run with verdict 'diagnosed' (#92)"
+  [ -n "$(sqval "SELECT ended_at FROM runs WHERE trigger='heal'")" ] \
+    || fail "the heal run must be finalised on exit (ended_at set) (#92)"
+  [ "$(sqval "SELECT count(*) FROM processes WHERE kind='claude'")" = 1 ] \
+    || fail "an investigating heal must open a claude process row (#92)"
+  [ -n "$(sqval "SELECT ended_at FROM processes WHERE kind='claude'")" ] \
+    || fail "the claude process row must be closed on exit (#92)"
+  [ "$(sqval "SELECT count(*) FROM events WHERE kind='heal'")" = 1 ] \
+    || fail "an investigating heal must write exactly one heal event (#92)"
+  ev92="$(sqval "SELECT evidence FROM events WHERE kind='heal'")"
+  case "$ev92" in /tmp/matou-heal-x-y.*) ;; *) fail "the heal event must point at the evidence dir (got: $ev92) (#92)";; esac
+
+  # a heal that never reaches claude (a downgraded SIGKILL, #34) records NOTHING:
+  # the trace choke point is the claude call, not the script's entry.
+  rm -f "$db92"; rm -rf "$work/state"; mkdir -p "$work/state"
+  swarm_verdict="$work/heal92-verdict.txt"
+  printf 'stage=sandcastle run (workers)\nstatus=running\n' > "$swarm_verdict.breadcrumb"
+  run_heal_swarm SWARM_DB="$db92" >/dev/null
+  [ "$(sqval "SELECT count(*) FROM runs")" = 0 ] || [ -z "$(sqval "SELECT count(*) FROM runs")" ] \
+    || fail "a downgraded kill (no claude call) must open NO run row (#92)"
+  [ "$(sqval "SELECT count(*) FROM events WHERE kind='heal'")" = 0 ] || [ -z "$(sqval "SELECT count(*) FROM events WHERE kind='heal'")" ] \
+    || fail "a heal that never invokes claude must write NO heal event (#92)"
+  rm -f "$swarm_verdict.breadcrumb" "$swarm_verdict"
+fi
+
+echo "heal.sh: 15 scenarios passed"

@@ -35,6 +35,13 @@ type EventBroadcaster interface {
 // Used as a fallback when the cached tree instance has stale decryption keys.
 type FreshTreeReader func(treeId string) (objecttree.ObjectTree, error)
 
+// SpaceResolver maps a tree id to the any-sync space it lives in, so the write
+// validator can bind proof-backed transitions to their space. It returns "" when
+// the space cannot be determined (e.g. the tree arrived via P2P before the space
+// index caught up); the validator then skips the cross-space check for that
+// change (see verifyActionProof).
+type SpaceResolver func(treeId string) string
+
 // TreeUpdateListener implements updatelistener.UpdateListener.
 // It persists CRDT tree changes to a store and emits SSE events.
 type TreeUpdateListener struct {
@@ -42,6 +49,7 @@ type TreeUpdateListener struct {
 	persister       ChatPersister
 	broker          EventBroadcaster
 	freshTreeReader FreshTreeReader
+	spaceResolver   SpaceResolver
 	validator       atomic.Pointer[validatorHolder]
 	seeded          bool
 	known           map[string]int // objectID → version
@@ -54,6 +62,20 @@ func NewTreeUpdateListener(persister ChatPersister, broker EventBroadcaster) *Tr
 		broker:    broker,
 		known:     make(map[string]int),
 	}
+}
+
+// SetSpaceResolver sets the callback that maps a tree id to its space id, used
+// to bind proof-backed transitions to their space during validation.
+func (l *TreeUpdateListener) SetSpaceResolver(resolver SpaceResolver) {
+	l.spaceResolver = resolver
+}
+
+// resolveSpace returns the space id for a tree, or "" when unknown.
+func (l *TreeUpdateListener) resolveSpace(treeID string) string {
+	if l.spaceResolver == nil {
+		return ""
+	}
+	return l.spaceResolver(treeID)
 }
 
 // SetFreshTreeReader sets the callback for building fresh trees when the
@@ -156,7 +178,8 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 
 	// Build the full state from the tree (tree lock is held by caller). The
 	// validator excludes forged high-stakes changes from other peers.
-	state, err := BuildStateValidated(tree, objectID, objectType, l.changeValidator())
+	spaceID := l.resolveSpace(tree.Id())
+	state, err := BuildStateValidated(tree, spaceID, objectID, objectType, l.changeValidator())
 	if err != nil {
 		if isProfileType || isMultisigCoordType {
 			// Best-effort for profile + coord types: just skip and let a later
@@ -181,7 +204,7 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 				return nil
 			}
 			freshTree.Lock()
-			state, err = BuildStateValidated(freshTree, objectID, objectType, l.changeValidator())
+			state, err = BuildStateValidated(freshTree, spaceID, objectID, objectType, l.changeValidator())
 			freshTree.Unlock()
 			if err != nil {
 				log.Printf("[TreeUpdateListener] BuildState on fresh tree also failed for %s: %v", objectID, err)

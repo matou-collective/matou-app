@@ -1,0 +1,25 @@
+{
+  "$comment": "Per-repo worker-class overlay for Matou/matou-app (dev-factory#29). Merged BY ID onto the vendored tui/worker-classes.json table (the harness's own classes, which deliberately declare no hosts): a known id has its fields overridden — declaring `hosts` leaves the vendored description intact — and a new id is appended. Read by the factory TUI's Fleet screen (tui/data/worker_classes.py). Two hosts carry this repo: `matou-workstation` (= matou-dev-server-01, the automation host that also runs the live e2e/smoke stack) and `elitebook-03` (a lighter pool box); both wear the `swarm` runner-pool label. Classes whose workflow is `runs-on: swarm` run on both; the e2e/drive classes pin to matou-workstation, which is where the KERI/any-sync/backend stack stands up.",
+  "classes": [
+    {"id": "swarm-worker", "hosts": ["matou-workstation", "elitebook-03"]},
+    {"id": "triage", "hosts": ["matou-workstation", "elitebook-03"]},
+    {"id": "resume-asks", "hosts": ["matou-workstation", "elitebook-03"]},
+    {"id": "healer", "hosts": ["matou-workstation", "elitebook-03"]},
+    {"id": "in-run-sweeps", "hosts": ["matou-workstation", "elitebook-03"]},
+    {"id": "reporter", "hosts": ["matou-workstation"]},
+    {"id": "rehearsal-healer", "hosts": ["matou-workstation"]},
+    {"id": "schedule-backstop", "hosts": ["matou-workstation"]},
+    {
+      "id": "check-verifications",
+      "name": "check-verifications",
+      "hosts": ["matou-workstation", "elitebook-03"],
+      "trigger": "cron */10 * * * *; workflow_dispatch",
+      "lock": "shared /tmp/matou-swarm.lock (flock -n 9, skips the tick if a triage/swarm run holds it)",
+      "writes": "the human verification gate: label swaps awaiting-verification -> ready-for-agent (approve) or -> wontfix + closed (reject) resolved by name; issue comments (approval guidance / copied chatter); Mattermost thread confirmations that embed each processed reply id so a rerun never re-acts on the same reply; a re-posted thread when one is missing",
+      "stuck_signal": "verify.yml's failure() step routes into the healer; a missing verification thread is re-posted rather than stalling the issue; otherwise thin — the poller exits 0 quietly when chat env is unset",
+      "invisible_failure": false,
+      "invisible_failure_note": "the one worker class the vendored table describes only secondhand (it is not shipped by the factory); its failures are gate-visible via the healer hook, unlike the reporter/session-runner exit-0 classes",
+      "sources": ["check-verifications.sh", ".forgejo/workflows/verify.yml"]
+    }
+  ]
+}

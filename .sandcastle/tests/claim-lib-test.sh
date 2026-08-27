@@ -167,5 +167,48 @@ check "malformed claim is skipped, not fatal" '[ "$(wc -l <<<"$lines")" = "2" ]'
 check "claims after the malformed one survive" 'grep -q "^902 513$" <<<"$lines"'
 check "well-formed lower claim still first" '[ "$(head -1 <<<"$lines")" = "901 512" ]'
 
+# T13 (#28): every claim API call carries a timeout. The tasks listing is the
+# hottest reader in the harness (limit=100, once per claim and once per janitor
+# sweep) and it is exactly the endpoint that went unanswerable on the big repos
+# — `/actions/runs` stopped answering inside 60 s at ~8,900 runs (2026-08-22),
+# and `/actions/tasks` is only cheap while it stays paged. Without `--max-time`
+# curl waits on the socket indefinitely, so a degraded forge does not RED a
+# tick, it silently stalls one: the worker's claim never returns, the run holds
+# its host-capacity slot, and nothing on the ticket says why. schedule-backstop
+# and heal already timed out; claim-lib did not.
+setup
+alive="$(claim_alive_runs)"
+check "the tasks read carries a timeout" 'grep -q -- "--max-time" "$FAKE_DIR/argv.log"'
+check "every claim API call carries a timeout" '[ "$(grep -c -- "--max-time" "$FAKE_DIR/argv.log")" = "$(wc -l <"$FAKE_DIR/argv.log")" ]'
+setup
+claim_mark_working 431 >/dev/null 2>&1
+check "the label write carries a timeout too" 'grep -q -- "--max-time" "$FAKE_DIR/argv.log"'
+
+# T13b: and a timed-out call must fail the way an API failure already does —
+# rc nonzero from the readers (never a degraded `[]`, review finding 1) and a
+# LOUD page from the label write (whose -w idiom reads `000` on a timeout, the
+# same non-2xx path as #20's silent 403).
+setup
+touch "$FAKE_DIR/api-timeout"
+check "a timed-out tasks read is rc nonzero" '! claim_alive_runs >/dev/null 2>&1'
+check "a timed-out claim post is rc nonzero" '! claim_post 431 ws 513 >/dev/null 2>&1'
+# The label write times out on its own leg (its label-id lookup got through):
+# curl reports `000` to the -w idiom, which must page down the same non-2xx
+# path as #20's silent 403 — never be read as a 2xx-ish success.
+setup
+echo 000 >"$FAKE_DIR/labels-post-fail"
+check "a timed-out label write returns rc 1" '! claim_mark_working 431 2>/dev/null'
+err="$(claim_mark_working 431 2>&1 >/dev/null || true)"
+check "a timed-out label write pages with HTTP 000" 'grep -q "label write refused (HTTP 000)" <<<"$err"'
+
+# T13c: the timeout is overridable (a caller on a slow link, or a test), and the
+# default is the one the rest of the harness uses.
+setup
+( CLAIM_API_MAX_TIME=5 claim_alive_runs >/dev/null 2>&1 )
+check "CLAIM_API_MAX_TIME overrides the default" 'grep -q -- "--max-time 5 " "$FAKE_DIR/argv.log"'
+setup
+alive="$(claim_alive_runs)"
+check "default timeout matches the harness-wide 30s" 'grep -q -- "--max-time 30 " "$FAKE_DIR/argv.log"'
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

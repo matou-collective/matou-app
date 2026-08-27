@@ -26,16 +26,17 @@ build-windows-amd64:
 # Android .aar for the embedded mobile backend (issue #68). Needs the toolchain
 # from scripts/android/setup-toolchain.sh; -androidapi 21 is mandatory with NDK
 # r27c (gomobile still defaults to API 16, which the NDK rejects).
+#
+# build-aar.sh applies the issue #98 seccomp patch (legacy path syscalls ->
+# *at variants) to modernc.org/libc via a build-scoped go.mod replace so the
+# backend doesn't SIGSYS on the android/amd64 emulator. The replace is added
+# and stripped inside the script — it never touches the committed go.mod.
 ANDROID_ENV ?= $(or $(MATOU_ANDROID_HOME),$(HOME)/.matou-android)/env.sh
 ANDROID_AAR ?= ../frontend/src-capacitor/android/app/libs/matou.aar
 
 build-android-aar:
-	@test -f $(ANDROID_ENV) || { echo "Missing $(ANDROID_ENV) — run scripts/android/setup-toolchain.sh first"; exit 1; }
-	mkdir -p $(dir $(ANDROID_AAR))
-	. $(ANDROID_ENV) && gomobile bind \
-		-target=android/arm64,android/amd64 -androidapi 21 \
-		-javapkg nz.matou.backend \
-		-o $(ANDROID_AAR) ./cmd/mobile
+	ANDROID_ENV="$(ANDROID_ENV)" ANDROID_AAR="$(ANDROID_AAR)" \
+		scripts/android/build-aar.sh
 
 build-all: build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-windows-amd64
 

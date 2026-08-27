@@ -100,13 +100,67 @@ ledger_set "$capsig" escalated 1
   || fail "after escalating once the healer must go quiet, not keep posting"
 pass=$((pass+1))
 
-# the cap must never pre-empt the repair loop-breaker: repaired=1 still wins
+# the cap must never pre-empt the repair loop-breaker: an UNLATCHED signature
+# marked repaired escalates on the repair path however many replies it spent
+ledger_set "$capsig" escalated 0
 ledger_set "$capsig" repaired 1
 [ "$(ledger_decide "$capsig" $((now + 60)))" = "escalate-repaired" ] \
   || fail "repaired=1 must still take precedence over the reply cap"
 # …and a stale incident re-investigates however many replies it accumulated
 [ "$(ledger_decide "$capsig" $((now + 21601)))" = "investigate-stale" ] \
   || fail "cooldown expiry must reset the incident regardless of the cap"
+pass=$((pass+1))
+
+# --- #79: the silence latch sits above BOTH ladders ---------------------------
+# escalate-repaired used to short-circuit ledger_decide ahead of the reply cap
+# AND set nothing, so a repaired signature re-pinged @ben on every recurrence
+# inside the cooldown — and each recurrence refreshed last_seen, so the window
+# never expired either (the 2026-08-24 storm: one @ben ping per red run, one run
+# every ~2 minutes). `escalated` is now consulted BEFORE `repaired`: whichever
+# ladder spoke, it spoke once.
+latchsig="$(compute_signature swarm 'a fault the healer already tried to repair')"
+ledger_set "$latchsig" last_seen "$now"
+ledger_set "$latchsig" repaired 1
+[ "$(ledger_decide "$latchsig" $((now + 60)))" = "escalate-repaired" ] \
+  || fail "the first recurrence after a repair attempt must still escalate once"
+ledger_set "$latchsig" escalated 1
+[ "$(ledger_decide "$latchsig" $((now + 60)))" = "silent" ] \
+  || fail "a LATCHED repaired signature must go silent, not ping again (#79)"
+[ "$(ledger_decide "$latchsig" $((now + 3600)))" = "silent" ] \
+  || fail "the latch must hold for the rest of the cooldown window (#79)"
+# the latch is per WINDOW, not forever: past the cooldown the incident is new
+# again (heal.sh clears the ladder state on investigate-stale)
+[ "$(ledger_decide "$latchsig" $((now + 21601)))" = "investigate-stale" ] \
+  || fail "the latch must not survive cooldown expiry (#79)"
+pass=$((pass+1))
+
+# --- #79: filing a ticket is not a repair ------------------------------------
+# The 2026-08-24 diagnosis's only action was "filed ready-for-agent ticket #77"
+# — no code, no config, nothing on the host changed. Marking that `repaired`
+# routed every later recurrence into the (then latch-less) escalate-repaired
+# branch. action_is_ticket_only is the classifier heal.sh uses to keep a
+# diagnosis-only outcome on the normal reply-cap ladder.
+for a in \
+  'filed ready-for-agent ticket #77' \
+  'filed issue #77 for the product-class fault' \
+  'opened ticket #12' \
+  'Filed a ticket (#77) — the fault is product-class, no code touched' \
+  'filed ticket #77 and filed ticket #78' \
+  'logged issue #5'
+do
+  action_is_ticket_only "$a" || fail "should classify as ticket-only: $a"
+done
+for a in \
+  'committed a fix' \
+  'none' \
+  '' \
+  'removed the stale worktree and filed ticket #77' \
+  'filed ticket #77 and restarted the forgejo-runner' \
+  'cleaned /tmp/heal-fix' \
+  'logged the failing stage in the run log'
+do
+  action_is_ticket_only "$a" && fail "should NOT classify as ticket-only: $a"
+done
 pass=$((pass+1))
 
 # --- #197: ci signatures are stage/fault-aware over the seam verdict ----------

@@ -91,5 +91,32 @@ out="$(SWARM_RUN_ID= SWARM_CLAIM_FORCE=1 bash "$script" 2>/dev/null)"
 check "forced run-0 claim goes through" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "forced claim posted at run 0" 'grep -q "swarm-claim host=eb03 run=0" "$FAKE_DIR/comments-431.json"'
 
+# T-#77a: an exhausted wall-clock budget stops the walk BEFORE the first claim.
+# The whole script runs inside one Sandcastle 30s shell-expression; a large
+# contested ready DAG would otherwise sum O(queue) sequential API calls past
+# that budget and RED the tick. With the budget spent, emit [] gracefully (the
+# same outcome as losing every race — no claim, no Claude tokens) and let the
+# cron/backstop re-fire, rather than walk on and blow the outer timeout.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"},{"number":433,"title":"c","body":"d","url":"u2"}]'
+out="$(CLAIM_NEXT_BUDGET=0 bash "$script" 2>"$FAKE_DIR/berr")"
+check "budget spent emits []" '[ "$out" = "[]" ]'
+check "budget spent posts NO claim comment" '! grep -q "POST .*issues/431/comments" "$FAKE_DIR/calls.log"'
+check "budget spent warns on stderr" 'grep -q "budget" "$FAKE_DIR/berr"'
+
+# T-#77b: per-call --max-time is capped BELOW the 30s outer budget (default 10s
+# in-sandbox), so a single stalled call fails closed within budget instead of
+# firing the outer timeout at the same instant (#28). claim-lib keeps its 30s
+# default for the HOST-mode janitor, which runs under no such budget.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+bash "$script" >/dev/null 2>&1
+check "claim calls use the sub-budget max-time (10s)" 'grep -q -- "--max-time 10" "$FAKE_DIR/argv.log"'
+check "no claim call uses the 30s outer-budget-equal timeout" '! grep -q -- "--max-time 30" "$FAKE_DIR/argv.log"'
+
+# T-#77c: an explicit CLAIM_API_MAX_TIME override is honoured (a consumer or a
+# probe can retune it) — the sandbox default only applies when unset.
+setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
+CLAIM_API_MAX_TIME=7 bash "$script" >/dev/null 2>&1
+check "explicit CLAIM_API_MAX_TIME override wins" 'grep -q -- "--max-time 7" "$FAKE_DIR/argv.log"'
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

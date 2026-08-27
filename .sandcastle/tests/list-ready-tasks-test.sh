@@ -30,8 +30,14 @@ unset REHEARSAL_DRIVE_ISSUE 2>/dev/null || true
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 for a in "$@"; do case "$a" in
-  */dependencies*) echo '[]'; exit 0 ;;
+  */dependencies*)
+    # per-issue blockers when a fixture names them (drive-blocker ordering, #24);
+    # default "no open blockers" so every candidate is unblocked and surfaces.
+    n="${a#*/issues/}"; n="${n%%/*}"
+    if [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ]; then cat "$DEPS_DIR/$n.json"; else echo '[]'; fi
+    exit 0 ;;
   *pulls?state=open*) cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]'; exit 0 ;;
+  *labels=standing-drive*) if [ -n "${DRIVES_FIXTURE:-}" ]; then cat "$DRIVES_FIXTURE"; else echo '[]'; fi; exit 0 ;;
   *labels=ready-for-agent*) cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
 esac; done
 echo '[]'
@@ -198,6 +204,41 @@ if jq -e '.[] | select(.number == 731)' <<<"$out7pr" >/dev/null; then
 fi
 jq -e '.[] | select(.number == 730)' <<<"$out7pr" >/dev/null \
   || fail "pr mode must keep #730 — it has no open agent PR"
+pass=$((pass+1))
+
+# 10 (#24): a ready ticket that is a native Forgejo dependency ("blocked by")
+#    of an OPEN `standing-drive` issue is surfaced AHEAD of ordinary backlog —
+#    even ahead of a `priority` non-blocker and even when its own number is
+#    HIGHER — so the swarm plugs the drive's hole first instead of losing the
+#    "lowest live claim id" race (the swarm-gridlock shape). One GET per standing
+#    drive resolves the blockers.
+export DEPS_DIR="$tmp/deps"; mkdir -p "$DEPS_DIR"
+export DRIVES_FIXTURE="$tmp/drives.json"
+# the standing drive #950 is blocked by #900 (open) — that is the drive blocker.
+printf '%s\n' '[{"number":950,"title":"THE DRIVE","labels":[{"name":"standing-drive"}]}]' > "$DRIVES_FIXTURE"
+printf '%s\n' '[{"number":900,"state":"open"}]' > "$DEPS_DIR/950.json"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 300, "title": "ordinary lower number", "body": "b", "html_url": "u/300", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 400, "title": "priority non-blocker", "body": "b", "html_url": "u/400", "labels": [{"name":"ready-for-agent"},{"name":"priority"}]},
+  {"number": 900, "title": "the drive blocker", "body": "b", "html_url": "u/900", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+out8="$(bash "$here/../list-ready-tasks.sh")" || fail "drive-blocker ordering run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out8")" = "900,400,300" ] \
+  || fail "the drive blocker (#900) must sort first, then priority (#400), then the rest (#300) (got $(jq -c '[.[].number]' <<<"$out8"))"
+jq -e 'all(.[]; keys == ["body","model","number","title","url"])' <<<"$out8" >/dev/null \
+  || fail "emitted shape changed — the blocker helper flag must not leak (expected {body,model,number,title,url})"
+pass=$((pass+1))
+
+# 10b: with NO standing drive (the common case), ordering is byte-identical to
+#      the pre-#24 priority-only order — the drive-blocker query returns [] and
+#      no ticket is promoted. Same fixture as case 10, drives cleared.
+printf '%s\n' '[]' > "$DRIVES_FIXTURE"
+out8b="$(bash "$here/../list-ready-tasks.sh")" || fail "no-drive ordering run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out8b")" = "400,300,900" ] \
+  || fail "with no standing drive, order is priority-first then tracker order (got $(jq -c '[.[].number]' <<<"$out8b"))"
+unset DEPS_DIR DRIVES_FIXTURE
 pass=$((pass+1))
 
 echo "PASS ($pass cases)"

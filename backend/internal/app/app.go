@@ -185,12 +185,20 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 
 	anysyncConfigPath := opts.AnysyncConfigPath
 
+	// Serves the full fetched client config over the loopback API so the
+	// Capacitor frontend can source it locally (issue #99). Populated below
+	// once the startup fetch succeeds; stays empty (503) when the fetch is
+	// skipped, which only happens on dev/test where the frontend hits the
+	// config server directly anyway.
+	clientConfigHandler := api.NewClientConfigHandler()
+
 	// In production, always fetch fresh config from the config server.
 	// For dev/test, fetch only if the config file doesn't exist.
 	shouldFetch := opts.IsProd() || os.IsNotExist(func() error { _, statErr := os.Stat(anysyncConfigPath); return statErr }())
 	if shouldFetch {
 		fmt.Fprintf(out, "  Fetching any-sync config from config server %s...\n", opts.ConfigServerURL)
-		if fetchErr := fetchAndSaveAnySyncConfig(opts.ConfigServerURL, anysyncConfigPath); fetchErr != nil {
+		rawConfig, fetchErr := fetchAndSaveAnySyncConfig(opts.ConfigServerURL, anysyncConfigPath)
+		if fetchErr != nil {
 			// In production, try using cached config if fetch fails
 			if opts.IsProd() {
 				if _, statErr := os.Stat(anysyncConfigPath); statErr == nil {
@@ -204,6 +212,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 					"Ensure the config server is running at %s", fetchErr, opts.ConfigServerURL)
 			}
 		} else {
+			clientConfigHandler.SetRaw(rawConfig)
 			fmt.Fprintf(out, "  Config saved to %s\n", anysyncConfigPath)
 		}
 	}
@@ -352,7 +361,17 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// populated by a background refresher (single pass over profile trees).
 	writeRuleResolver := anysync.NewHistoryRoleResolver()
 	writeRuleRecorder := anysync.NewLoggingRejectionRecorder(200)
-	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleRecorder)
+	// GH#19 part 2: high-stakes proof-backed transitions (contribution
+	// sign-off/reward, project completion, plan sign-off) are gated on
+	// cryptographic KERI action-proof verification when crypto enforcement is on.
+	// The key snapshot is populated by the refresher below from the same
+	// KERIA key-state source signed-auth uses. Enforcement is gated by
+	// MATOU_REQUIRE_SIGNED_AUTH (default OFF) — the same signal that makes
+	// X-User-AID trustworthy — so environments without live KERIA keep the
+	// interim role-based behaviour and are never broken by a missing proof.
+	writeRuleKeys := anysync.NewStaticKeyProvider()
+	enforceProofs := signedAuthEnforced()
+	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleKeys, writeRuleRecorder, enforceProofs)
 	spaceManager.ObjectTreeManager().SetChangeValidator(writeRuleValidator)
 
 	// Create push-based listener for P2P chat changes (replaces polling)
@@ -361,6 +380,12 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		&eventBrokerAdapter{broker: eventBroker},
 	)
 	chatListener.SetChangeValidator(writeRuleValidator)
+	// Bind proof-backed transitions to their space during listener-path
+	// validation (anti-cross-space-replay). Resolves a tree id to its space via
+	// the tree index; returns "" (space check skipped) if not yet indexed.
+	chatListener.SetSpaceResolver(func(treeId string) string {
+		return spaceManager.TreeManager().SpaceForTree(treeId)
+	})
 	spaceManager.SetObjectTreeListener(chatListener)
 
 	// Wire up FreshTreeReader so the listener can rebuild trees with updated ACL keys
@@ -504,6 +529,36 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 			}
 		}
 		writeRuleResolver.Replace(anysync.RoleSnapshot{AccountAID: accountAID, History: history, AdminAIDs: adminAIDs})
+
+		// GH#19 part 2: when proof enforcement is on, refresh the signing-key
+		// snapshot the proof verifier reads. Resolve each known member/admin
+		// AID's current KEL signing key off the hot path (a network fetch, so
+		// never done under a tree lock). Best-effort: an AID that fails to
+		// resolve is simply absent from the snapshot, and a proof from it then
+		// fails closed. NEEDS LIVE VERIFICATION: requires a reachable KERIA
+		// key-state endpoint (see the signed-auth wiring below); the e2e run is
+		// the verification per the ticket's acceptance criteria.
+		if enforceProofs {
+			aids := make(map[string]bool, len(accountAID)+len(adminAIDs))
+			for _, aid := range accountAID {
+				if aid != "" {
+					aids[aid] = true
+				}
+			}
+			for aid := range adminAIDs {
+				aids[aid] = true
+			}
+			keySnap := make(map[string][]string, len(aids))
+			for aid := range aids {
+				keys, err := keyStateResolver.CurrentKeys(ctx, aid)
+				if err != nil {
+					log.Printf("[write-rules] key-state refresh failed for %s: %v", aid, err)
+					continue
+				}
+				keySnap[aid] = keys
+			}
+			writeRuleKeys.Replace(keySnap)
+		}
 	}
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	refreshDone := make(chan struct{})
@@ -614,6 +669,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
 	orgConfigHandler.RegisterRoutes(mux, roleLookup)
+	clientConfigHandler.RegisterRoutes(mux)
 
 	// Bind the listener before starting the sync worker so a bind failure aborts
 	// cleanly. net.Listen honours port 0 by picking a free port, which App.Port
@@ -711,53 +767,70 @@ func (a *App) Shutdown(ctx context.Context) error {
 	return firstErr
 }
 
-// fetchAndSaveAnySyncConfig fetches the any-sync client config from the config
-// server and writes it to disk as YAML.
-func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) error {
+// signedAuthEnforced reports whether the KERI crypto stack is required, gating
+// GH#19 part-2 proof enforcement on the same MATOU_REQUIRE_SIGNED_AUTH signal
+// that makes X-User-AID trustworthy (see api.signedAuthEnabled). Default OFF, so
+// environments without live KERIA keep the interim role-based write rules.
+func signedAuthEnforced() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MATOU_REQUIRE_SIGNED_AUTH"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// fetchAndSaveAnySyncConfig fetches the full client config from the config
+// server, writes the any-sync fragment to disk as YAML, and returns the raw
+// JSON body it fetched. The raw body is retained (via ClientConfigHandler) so
+// the frontend can source the full config over the loopback API on Capacitor,
+// where the WebView's cleartext policy blocks a direct config-server fetch
+// (issue #99).
+func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) ([]byte, error) {
 	resp, err := http.Get(configServerURL + "/api/client-config")
 	if err != nil {
-		return fmt.Errorf("failed to reach config server at %s: %w", configServerURL, err)
+		return nil, fmt.Errorf("failed to reach config server at %s: %w", configServerURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("config server returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("config server returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return fmt.Errorf("failed to parse JSON response: %w", err)
+		return nil, fmt.Errorf("failed to parse JSON response: %w", err)
 	}
 
 	anysyncRaw, ok := envelope["anysync"]
 	if !ok {
-		return fmt.Errorf("config server response missing \"anysync\" key")
+		return nil, fmt.Errorf("config server response missing \"anysync\" key")
 	}
 
 	var clientConfig interface{}
 	if err := json.Unmarshal(anysyncRaw, &clientConfig); err != nil {
-		return fmt.Errorf("failed to parse anysync config: %w", err)
+		return nil, fmt.Errorf("failed to parse anysync config: %w", err)
 	}
 
 	yamlData, err := yaml.Marshal(clientConfig)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config to YAML: %w", err)
+		return nil, fmt.Errorf("failed to marshal config to YAML: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
+		return nil, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
 	if err := os.WriteFile(targetPath, yamlData, 0644); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
+		return nil, fmt.Errorf("failed to write config file: %w", err)
 	}
 
-	return nil
+	return body, nil
 }
 
 // eventBrokerAdapter adapts api.EventBroker to anysync.EventBroadcaster.

@@ -13,6 +13,7 @@
  */
 
 import { secureStorage } from './secureStorage';
+import { isCapacitor, getBackendUrl } from './platform';
 
 // Environment-based config URL selection
 const ENV = (import.meta.env.VITE_ENV as string) || 'dev';
@@ -103,9 +104,31 @@ export async function fetchClientConfig(): Promise<ClientConfig> {
   }
 }
 
+/**
+ * Resolve where the client config is fetched from for the current platform.
+ *
+ * On Capacitor (Android) the WebView's cleartext-network policy only allows
+ * plain HTTP to 127.0.0.1/localhost, so a direct request to the plain-HTTP
+ * config server is blocked. The embedded Go backend is not subject to that
+ * policy and already fetches the same config at startup, exposing it over the
+ * loopback API, so we source it from there instead — keeping the loopback-only
+ * cleartext policy intact (issue #99).
+ *
+ * Electron and browser builds are unaffected: they keep hitting the remote
+ * config server directly.
+ */
+async function resolveConfigFetchUrl(): Promise<string> {
+  if (isCapacitor()) {
+    const backendUrl = await getBackendUrl();
+    return `${backendUrl}/api/v1/client-config`;
+  }
+  return `${CONFIG_URL}/api/client-config`;
+}
+
 async function doFetchConfig(): Promise<ClientConfig> {
   try {
-    const response = await fetch(`${CONFIG_URL}/api/client-config`, {
+    const url = await resolveConfigFetchUrl();
+    const response = await fetch(url, {
       signal: AbortSignal.timeout(5000),
     });
 

@@ -102,6 +102,80 @@ pass=$((pass+1))
 kill "$h1" 2>/dev/null || true
 wait "$h1" 2>/dev/null || true
 
+# --- HOST_CAPACITY_DRIVE_MODE (#46) ----------------------------------------
+# single-slot: the drive keeps slot 1 (and any sibling lock it names) but hands
+# every pooled slot past the first back to the pool, so one worker can run
+# beside it on a big host. exclusive (set OR unset) grabs every pooled slot —
+# byte-identical to the pre-#46 behaviour.
+
+# single-slot, only the pooled slots named -> holds EXACTLY slot 1, leaves slot 2.
+: > "$slot1"; : > "$slot2"
+out="$(bash -c '
+  . "$1"
+  export HOST_CAPACITY_DRIVE_MODE=single-slot
+  host_capacity_acquire_exclusive "$2" "$3" && echo ok
+  # slot 1 held (a fresh flock -n on it must FAIL); slot 2 left to the pool
+  # (a fresh flock -n on it must SUCCEED).
+  exec 8>"$2"; flock -n 8 && echo "LEAK:slot1-not-held"
+  exec 7>"$3"; flock -n 7 && echo slot2-free
+  echo "fds=$(set -- $HOST_CAPACITY_EXCLUSIVE_FDS; echo $#)"
+  true
+' _ "$lib" "$slot1" "$slot2")"
+[[ "$out" == *ok* ]]          || fail "single-slot exclusive acquire must succeed, got: $out"
+[[ "$out" != *LEAK* ]]        || fail "single-slot must still HOLD slot 1: $out"
+[[ "$out" == *slot2-free* ]]  || fail "single-slot must LEAVE slot 2 to the pool, got: $out"
+[[ "$out" == *fds=1* ]]       || fail "single-slot must hold exactly one lock (slot 1), got: $out"
+pass=$((pass+1))
+
+# single-slot still HOLDS a sibling lock the drive names (only pooled slots past
+# the first are released) — a drive's healer/session-runner lock is unaffected.
+: > "$slot1"; : > "$slot2"; : > "$side"
+out="$(bash -c '
+  . "$1"
+  export HOST_CAPACITY_DRIVE_MODE=single-slot
+  host_capacity_acquire_exclusive "$2" "$3" "$4" && echo ok
+  exec 8>"$2"; flock -n 8 && echo "LEAK:slot1-not-held"
+  exec 9>"$4"; flock -n 9 && echo "LEAK:side-not-held"
+  exec 7>"$3"; flock -n 7 && echo slot2-free
+  echo "fds=$(set -- $HOST_CAPACITY_EXCLUSIVE_FDS; echo $#)"
+  true
+' _ "$lib" "$slot1" "$slot2" "$side")"
+[[ "$out" == *ok* ]]          || fail "single-slot acquire with a sibling lock must succeed, got: $out"
+[[ "$out" != *LEAK* ]]        || fail "single-slot must hold slot 1 AND the sibling lock: $out"
+[[ "$out" == *slot2-free* ]]  || fail "single-slot must still leave slot 2 to the pool: $out"
+[[ "$out" == *fds=2* ]]       || fail "single-slot must hold slot 1 + the sibling (2 fds), got: $out"
+pass=$((pass+1))
+
+# exclusive, set EXPLICITLY -> grabs BOTH pooled slots (old behaviour).
+: > "$slot1"; : > "$slot2"
+out="$(bash -c '
+  . "$1"
+  export HOST_CAPACITY_DRIVE_MODE=exclusive
+  host_capacity_acquire_exclusive "$2" "$3" && echo ok
+  exec 7>"$3"; flock -n 7 && echo "LEAK:slot2-not-held"
+  echo "fds=$(set -- $HOST_CAPACITY_EXCLUSIVE_FDS; echo $#)"
+  true
+' _ "$lib" "$slot1" "$slot2")"
+[[ "$out" == *ok* ]]     || fail "explicit exclusive acquire must succeed, got: $out"
+[[ "$out" != *LEAK* ]]   || fail "explicit exclusive must grab BOTH pooled slots: $out"
+[[ "$out" == *fds=2* ]]  || fail "explicit exclusive must hold both pooled slots (2 fds), got: $out"
+pass=$((pass+1))
+
+# UNSET == exclusive -> byte-identical, grabs BOTH pooled slots.
+: > "$slot1"; : > "$slot2"
+out="$(bash -c '
+  . "$1"
+  unset HOST_CAPACITY_DRIVE_MODE
+  host_capacity_acquire_exclusive "$2" "$3" && echo ok
+  exec 7>"$3"; flock -n 7 && echo "LEAK:slot2-not-held"
+  echo "fds=$(set -- $HOST_CAPACITY_EXCLUSIVE_FDS; echo $#)"
+  true
+' _ "$lib" "$slot1" "$slot2")"
+[[ "$out" == *ok* ]]     || fail "unset drive-mode acquire must succeed, got: $out"
+[[ "$out" != *LEAK* ]]   || fail "unset drive-mode must default to exclusive (grab both slots): $out"
+[[ "$out" == *fds=2* ]]  || fail "unset drive-mode must hold both pooled slots (2 fds), got: $out"
+pass=$((pass+1))
+
 # --- drive reservation (#663/#664): reserve is seen, release clears it ---
 wanted="$(mktemp -u)"; skips="$(mktemp -u)"
 export HOST_CAPACITY_DRIVE_WANTED="$wanted" HOST_CAPACITY_DRIVE_SKIPS="$skips"
@@ -174,6 +248,59 @@ out="$(bash -c '. "$1"; host_capacity_acquire_heavy && echo "$HOST_CAPACITY_HELD
 bash -c '. "$1"; host_capacity_drive_release' _ "$lib"
 pass=$((pass+1))
 
+# --- drive reservation carries the reserving issue number (#24) ------------
+# The predicate still yields on an EMPTY reservation (today's touch-file, and any
+# producer still on the pre-#24 pin — backward compatible); the new helper reads
+# the drive number ONLY when the producer wrote one, so the consumer's admit
+# exception (proceed iff the next claim unblocks THIS drive) can never fire on an
+# empty file. A malformed reservation carries no number — never mis-admits.
+res="$(mktemp -u)"
+export HOST_CAPACITY_DRIVE_WANTED="$res"
+trap 'rm -f "$slot1" "$slot2" "$side" "$res"' EXIT
+bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"           # empty touch-file
+bash -c '. "$1"; host_capacity_drive_wanted' _ "$lib" \
+  || fail "an empty reservation must STILL be wanted (unconditional-yield preserved)"
+out="$(bash -c '. "$1"; host_capacity_drive_wanted_issue' _ "$lib")"
+[ -z "$out" ] || fail "an empty reservation must carry NO issue number, got: $out"
+printf '668\n' > "$res"                                          # producer names the drive
+bash -c '. "$1"; host_capacity_drive_wanted' _ "$lib" \
+  || fail "a numbered reservation must still be wanted"
+out="$(bash -c '. "$1"; host_capacity_drive_wanted_issue' _ "$lib")"
+[ "$out" = 668 ] || fail "the helper must return the reserving drive number, got: $out"
+printf 'garbage\n' > "$res"                                      # malformed → no number
+out="$(bash -c '. "$1"; host_capacity_drive_wanted_issue' _ "$lib")"
+[ -z "$out" ] || fail "a non-numeric reservation must carry no issue number, got: $out"
+rm -f "$res"
+out="$(bash -c '. "$1"; host_capacity_drive_wanted_issue' _ "$lib")"       # absent
+[ -z "$out" ] || fail "an absent reservation must carry no issue number, got: $out"
+unset HOST_CAPACITY_DRIVE_WANTED
+trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+pass=$((pass+1))
+
+# --- drive reservation age (#30): the yield log line reports how old the ------
+# reservation is, so a consumer's "yielded" line and the executor's "skipped N
+# ticks" line corroborate on the SAME reservation. A fresh reserve reads ~0s; a
+# back-dated file reads its real age (independent of the TTL); an absent file
+# yields nothing at rc 1.
+age_wanted="$(mktemp -u)"
+export HOST_CAPACITY_DRIVE_WANTED="$age_wanted"
+trap 'rm -f "$slot1" "$slot2" "$side" "$age_wanted"' EXIT
+bash -c '. "$1"; host_capacity_drive_wanted_age' _ "$lib" \
+  && fail "an absent reservation must report no age (rc 1)"
+bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"
+age="$(bash -c '. "$1"; host_capacity_drive_wanted_age' _ "$lib")" \
+  || fail "a fresh reservation must report an age"
+case "$age" in ''|*[!0-9]*) fail "age must be a whole number of seconds, got: '$age'" ;; esac
+[ "$age" -lt 5 ] || fail "a just-declared reservation must read a small age, got: ${age}s"
+touch -d '@1' "$age_wanted"
+age="$(bash -c '. "$1"; host_capacity_drive_wanted_age' _ "$lib")" \
+  || fail "a back-dated reservation must still report its age (independent of the TTL)"
+[ "$age" -gt 900 ] || fail "a 1970-dated reservation must read a large age, got: ${age}s"
+bash -c '. "$1"; host_capacity_drive_release' _ "$lib"
+unset HOST_CAPACITY_DRIVE_WANTED
+trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+pass=$((pass+1))
+
 # --- per-consumer drive-defer counter (#664): each caller's own path ------
 # Takes the counter PATH directly (like HOST_CAPACITY_DRIVE_WANTED/_SKIPS
 # above) so an offline test never touches real host-global /tmp state.
@@ -208,6 +335,90 @@ out="$(bash -c '
 [[ "$out" == *"b=1"* ]] || fail "consumer b's counter was not independent of a's: $out"
 rm -f "$defer_a" "$defer_b"
 pass=$((pass+1))
+
+# --- reservation WINDOW (#93): the full posted->started span, not per-tick -----
+# host_capacity_drive_wanted_age reads WANTED's mtime, which every re-declaring
+# tick refreshes for the TTL — so it can only report the per-tick age. The window
+# must survive re-declares: the SINCE marker is created once per episode and its
+# mtime is NEVER disturbed by a re-reserve, so a drive that starved across many
+# ticks still reads its TRUE deferred-work window. Absent episode -> rc 1.
+win_wanted="$(mktemp -u)"; win_since="${win_wanted}-since"
+export HOST_CAPACITY_DRIVE_WANTED="$win_wanted"
+unset HOST_CAPACITY_DRIVE_WANTED_SINCE  # let it derive from WANTED (test isolation)
+trap 'rm -f "$slot1" "$slot2" "$side" "$win_wanted" "$win_since"' EXIT
+bash -c '. "$1"; host_capacity_drive_wanted_window' _ "$lib" \
+  && fail "no open reservation episode must report no window (rc 1)"
+bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"
+[ -e "$win_since" ] || fail "reserve must create the first-post SINCE marker"
+win="$(bash -c '. "$1"; host_capacity_drive_wanted_window' _ "$lib")" \
+  || fail "an open reservation must report a window"
+case "$win" in ''|*[!0-9]*) fail "window must be a whole number, got: '$win'" ;; esac
+[ "$win" -lt 5 ] || fail "a just-opened episode must read a small window, got: ${win}s"
+# Back-date the FIRST-POST marker to 1970, then re-reserve: WANTED's mtime is
+# refreshed (small age) but SINCE is untouched (large window) — the whole point.
+touch -d '@1' "$win_since"
+bash -c '. "$1"; host_capacity_drive_reserve' _ "$lib"   # a later starving tick re-declares
+age="$(bash -c '. "$1"; host_capacity_drive_wanted_age' _ "$lib")"
+win="$(bash -c '. "$1"; host_capacity_drive_wanted_window' _ "$lib")"
+[ "$age" -lt 5 ]   || fail "a re-declare must refresh the per-tick age, got: ${age}s"
+[ "$win" -gt 900 ] || fail "a re-declare must NOT reset the reservation window, got: ${win}s"
+bash -c '. "$1"; host_capacity_drive_release' _ "$lib"
+[ ! -e "$win_since" ] || fail "release must remove the first-post SINCE marker"
+bash -c '. "$1"; host_capacity_drive_wanted_window' _ "$lib" \
+  && fail "a released episode must report no window (rc 1)"
+unset HOST_CAPACITY_DRIVE_WANTED
+trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+pass=$((pass+1))
+
+# --- durable drive-lifecycle log (#93): append-only start/end records ----------
+# The live drive-status file is overwritten by the next drive; this JSONL log is
+# the permanent host-side record. Start captures box/target/mode + the
+# reservation window; end is a separate appended line so it survives the next
+# drive; a later drive NEVER overwrites an earlier one's lines.
+if command -v jq >/dev/null 2>&1; then
+  dlog="$(mktemp -u)"; dwanted="$(mktemp -u)"; dsince="${dwanted}-since"
+  export HOST_CAPACITY_DRIVE_LOG="$dlog" HOST_CAPACITY_DRIVE_WANTED="$dwanted"
+  unset HOST_CAPACITY_DRIVE_WANTED_SINCE
+  trap 'rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince"' EXIT
+  bash -c '
+    . "$1"
+    host_capacity_drive_reserve
+    touch -d "@1" "$2"                                  # a long-starved episode
+    export HOST_CAPACITY_DRIVE_MODE=exclusive
+    host_capacity_drive_log_start d1 box-alpha 42 single-slot   # explicit mode wins
+    host_capacity_drive_log_start d2 box-alpha Acme/widget      # mode defaults to env
+    host_capacity_drive_log_end d1 completed
+  ' _ "$lib" "$dsince"
+  [ -f "$dlog" ] || fail "drive log was never written"
+  lines="$(wc -l <"$dlog")"
+  [ "$lines" -eq 3 ] || fail "append-only log must hold 3 lines (2 starts + 1 end), got: $lines"
+  # d1 start: box/target/mode captured, reservation window credited from SINCE.
+  s1="$(jq -c 'select(.event=="start" and .id=="d1")' "$dlog")"
+  [ "$(jq -r '.box' <<<"$s1")" = box-alpha ]      || fail "d1 box not recorded: $s1"
+  [ "$(jq -r '.target' <<<"$s1")" = 42 ]          || fail "d1 target not recorded: $s1"
+  [ "$(jq -r '.mode' <<<"$s1")" = single-slot ]   || fail "d1 explicit mode not recorded: $s1"
+  win="$(jq -r '.reservation_window_s' <<<"$s1")"
+  case "$win" in ''|null|*[!0-9]*) fail "d1 reservation window not captured: $s1" ;; esac
+  [ "$win" -gt 900 ] || fail "d1 must credit the FULL reservation window, got: ${win}s"
+  # d2 start: mode falls back to the live HOST_CAPACITY_DRIVE_MODE.
+  s2="$(jq -c 'select(.event=="start" and .id=="d2")' "$dlog")"
+  [ "$(jq -r '.mode' <<<"$s2")" = exclusive ]     || fail "d2 mode did not default to env: $s2"
+  [ "$(jq -r '.target' <<<"$s2")" = Acme/widget ] || fail "d2 target not recorded: $s2"
+  # end line for d1 present, independent and permanent.
+  e1="$(jq -c 'select(.event=="end" and .id=="d1")' "$dlog")"
+  [ "$(jq -r '.verdict' <<<"$e1")" = completed ]  || fail "d1 end verdict not recorded: $e1"
+  # No reservation open -> window records null, and a default verdict applies.
+  bash -c '. "$1"; host_capacity_drive_release; host_capacity_drive_log_start d3 box-alpha 9; host_capacity_drive_log_end d3' _ "$lib"
+  s3="$(jq -c 'select(.event=="start" and .id=="d3")' "$dlog")"
+  [ "$(jq -r '.reservation_window_s' <<<"$s3")" = null ] || fail "d3 with no reservation must record null window: $s3"
+  e3="$(jq -c 'select(.event=="end" and .id=="d3")' "$dlog")"
+  [ "$(jq -r '.verdict' <<<"$e3")" = ended ] || fail "d3 end must default to 'ended': $e3"
+  unset HOST_CAPACITY_DRIVE_LOG HOST_CAPACITY_DRIVE_WANTED HOST_CAPACITY_DRIVE_MODE
+  trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
+  pass=$((pass+1))
+else
+  echo "host-capacity-lib: jq absent — skipping drive-log group" >&2
+fi
 
 
 echo "host-capacity-lib: $pass groups passed"
