@@ -62,6 +62,16 @@ export interface ActionProof extends ActionProofInput {
   aid: string;
   /** qb64 CESR non-indexed signature (Cigar) over the canonical message bytes. */
   sig: string;
+  /**
+   * Signer's KEL sequence number at signing time — the establishment event
+   * whose key produced `sig`. Optional; when present the peer-side verifier
+   * (#19/#112) resolves the signing key as of this sn so the proof survives a
+   * later legitimate rotation. It is NOT part of the signed message (see
+   * {@link buildProofMessage}); it only tells the verifier which historical key
+   * state to check against, so it needs no PROOF_VERSION bump. A tampered sn
+   * simply resolves a key the signature will not match.
+   */
+  sn?: number;
 }
 
 const FIELD_ORDER: (keyof ActionProofInput)[] = ['action', 'subject', 'space', 'value', 'dt'];
@@ -97,15 +107,25 @@ export function proofMessageBytes(input: ActionProofInput): Uint8Array {
 /**
  * Assemble a complete proof envelope from the signed input, signer AID and the
  * qb64 signature produced over {@link proofMessageBytes}.
+ *
+ * `sn` is the signer's KEL sequence number at signing time (from the identifier
+ * key state). When provided it is carried on the envelope so the verifier can
+ * anchor verification to the signing-time key state; omit it (or pass a
+ * non-finite value) to fall back to the pre-anchor behaviour.
  */
 export function makeActionProof(
   input: ActionProofInput,
   aid: string,
   sig: string,
+  sn?: number,
 ): ActionProof {
   if (!aid) throw new Error('actionProof: signer aid is required');
   if (!sig) throw new Error('actionProof: signature is required');
   // Re-validate the input fields so a malformed envelope can never be built.
   buildProofMessage(input);
-  return { v: PROOF_VERSION, ...input, aid, sig };
+  const proof: ActionProof = { v: PROOF_VERSION, ...input, aid, sig };
+  if (typeof sn === 'number' && Number.isInteger(sn) && sn >= 0) {
+    proof.sn = sn;
+  }
+  return proof;
 }

@@ -155,3 +155,80 @@ func TestExtractKeyStateThreshold(t *testing.T) {
 func frameJSON(raw string) []byte {
 	return []byte(strings.Replace(raw, "KERI10JSON000000_", fmt.Sprintf("KERI10JSON%06x_", len(raw)), 1))
 }
+
+// TestExtractKeyStateAt resolves the signing key state as of a past KEL sn, so a
+// proof signed under an earlier establishment event stays verifiable after a
+// later rotation (GH#19 part 3 / #112).
+func TestExtractKeyStateAt(t *testing.T) {
+	icp := makeEvent(t, "icp", "0", []string{"Dkey0"})
+	ixn := makeEvent(t, "ixn", "1", nil) // interaction: no key change, ignored
+	rot2 := makeEvent(t, "rot", "2", []string{"Dkey2"})
+	rot5 := makeEvent(t, "rot", "5", []string{"Dkey5"})
+
+	stream := append([]byte{}, icp...)
+	stream = append(stream, ixn...)
+	stream = append(stream, rot2...)
+	stream = append(stream, rot5...)
+
+	cases := []struct {
+		sn   int64
+		want string
+	}{
+		{0, "Dkey0"}, // inception
+		{1, "Dkey0"}, // interaction at sn1 → still inception keys
+		{2, "Dkey2"}, // rotation
+		{3, "Dkey2"}, // between rotations → latest establishment <= sn
+		{5, "Dkey5"}, // latest rotation
+		{9, "Dkey5"}, // past the head → current keys
+	}
+	for _, c := range cases {
+		ks, err := ExtractKeyStateAt(stream, testAID, c.sn)
+		if err != nil {
+			t.Fatalf("ExtractKeyStateAt(sn=%d): %v", c.sn, err)
+		}
+		if len(ks.Keys) != 1 || ks.Keys[0] != c.want {
+			t.Errorf("sn=%d: got %v, want [%s]", c.sn, ks.Keys, c.want)
+		}
+	}
+
+	// Current key state still resolves to the head rotation.
+	ks, err := ExtractKeyState(stream, testAID)
+	if err != nil {
+		t.Fatalf("ExtractKeyState: %v", err)
+	}
+	if len(ks.Keys) != 1 || ks.Keys[0] != "Dkey5" {
+		t.Fatalf("current key state: got %v, want [Dkey5]", ks.Keys)
+	}
+
+	// A sn before the first establishment event (none at or below) errors.
+	onlyRot := rot2
+	if _, err := ExtractKeyStateAt(onlyRot, testAID, 1); err == nil {
+		t.Error("expected error for sn below the earliest establishment event")
+	}
+}
+
+// TestExtractKeyStates returns the full establishment history ascending, binding
+// on the controller prefix so foreign KELs never leak in.
+func TestExtractKeyStates(t *testing.T) {
+	icp := makeEvent(t, "icp", "0", []string{"Dkey0"})
+	rot2 := makeEvent(t, "rot", "2", []string{"Dkey2"})
+	witness := makeEventFor(t, foreignAID, "rot", "9", "", []string{"Bwitness9"})
+
+	stream := append([]byte{}, witness...)
+	stream = append(stream, icp...)
+	stream = append(stream, rot2...)
+
+	states, err := ExtractKeyStates(stream, testAID)
+	if err != nil {
+		t.Fatalf("ExtractKeyStates: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("expected 2 establishment states, got %d: %+v", len(states), states)
+	}
+	if states[0].Seq != 0 || states[0].Keys[0] != "Dkey0" {
+		t.Errorf("first state: got %+v", states[0])
+	}
+	if states[1].Seq != 2 || states[1].Keys[0] != "Dkey2" {
+		t.Errorf("second state: got %+v", states[1])
+	}
+}

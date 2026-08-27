@@ -17,6 +17,17 @@ import { createLogger } from '../logging';
 
 const log = createLogger('ActionProof');
 
+/**
+ * Parse a KERI key-state sequence number ("s"), a hex string per the KERI spec,
+ * into a non-negative integer. Returns undefined for a missing or unparseable
+ * value so the proof is written without an sn anchor (safe fallback).
+ */
+function parseKelSn(s: string | undefined): number | undefined {
+  if (typeof s !== 'string' || s.length === 0) return undefined;
+  const n = parseInt(s, 16);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
 export interface SignActionProofArgs {
   action: ProofAction;
   /** Stable identifier of the object being acted on (SAID / object id). */
@@ -85,7 +96,13 @@ export async function signActionProof(args: SignActionProofArgs): Promise<Action
       return null;
     }
 
-    return makeActionProof(input, aid.prefix, sig);
+    // Anchor the proof to the current KEL sequence number so it survives a later
+    // legitimate rotation (#112): hab.state.s is the current establishment
+    // event's sn, a hex string. Best-effort — a missing/unparseable sn simply
+    // omits the anchor (the verifier then falls back to current-key checking).
+    const sn = parseKelSn((hab as { state?: { s?: string } }).state?.s);
+
+    return makeActionProof(input, aid.prefix, sig, sn);
   } catch (err) {
     log.warn(
       'Failed to sign %s proof for %s: %s',
