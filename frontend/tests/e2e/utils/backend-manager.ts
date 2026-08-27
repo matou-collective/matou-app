@@ -145,6 +145,17 @@ export class BackendManager {
         MATOU_DATA_DIR: dataDir,
         MATOU_ANYSYNC_CONFIG: path.join(this.backendDir, 'config', 'client-test.yml'),
         MATOU_SMTP_PORT: '3525', // Test postfix container
+        // Issue #18: enforce KERI-signed request auth in e2e. A green run is the
+        // live verification of the signify↔Go CESR/key-state path (per the
+        // maintainer decision on 2026-08-13). The key-state resolver reads the
+        // AID's KEL read-only from the test KERIA CESR endpoint (port 4902).
+        // NEEDS LIVE VERIFICATION: adjust the URL template if the OOBI route differs.
+        MATOU_REQUIRE_SIGNED_AUTH: '1',
+        MATOU_KERIA_KEYSTATE_URL: 'http://localhost:4902/oobi/{aid}',
+        // Long-running specs hold a session in the Node helper registry
+        // (tests/e2e/utils/signed-auth.ts) without refreshing it; keep it live
+        // for the whole run. The app itself re-logs in on 401 regardless.
+        MATOU_AUTH_SESSION_TTL: '4h',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

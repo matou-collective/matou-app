@@ -31,6 +31,7 @@ import {
   loadAccounts,
   type TestAccounts,
 } from './utils/test-helpers';
+import { loginAs, sessionHeaders } from './utils/signed-auth';
 
 const CHAT_URL = '/#/dashboard/chat';
 
@@ -39,10 +40,7 @@ const CHAT_URL = '/#/dashboard/chat';
 // ---------------------------------------------------------------------------
 
 function authHeaders(aid: string): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    'X-User-AID': aid,
-  };
+  return sessionHeaders(aid, { 'Content-Type': 'application/json' });
 }
 
 async function createProposalAPI(
@@ -165,6 +163,7 @@ test.describe.serial('Proposal Link Cards in Chat', () => {
 
     // Login
     await loginWithMnemonic(page, accounts.admin.mnemonic);
+    await loginAs(page); // signed-auth session for the API seeding below
   });
 
   test.afterAll(async () => {
