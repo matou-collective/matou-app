@@ -37,6 +37,7 @@ func (h *ProposalsHandler) SetBroker(broker *EventBroker) {
 // RegisterRoutes registers proposal routes on the mux.
 // Both the collection and sub-resource endpoints use RBAC middleware for role resolution.
 func (h *ProposalsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ProposalsHandler", roleLookup)
 	mux.HandleFunc("/api/v1/proposals", CORSHandler(RBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -232,6 +233,9 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "proposal not found"})
 				return
 			}
+			// NOTE: X-User-Name is client-supplied and NOT covered by signed auth
+			// (only X-User-AID is verified) — it is display-only attribution; any
+			// authorization decision must key off the verified AID.
 			userName := r.Header.Get("X-User-Name")
 			isAssignedSteward = existing.ProposalStewardID != "" &&
 				(existing.ProposalStewardID == aid || (userName != "" && existing.ProposalStewardID == userName))

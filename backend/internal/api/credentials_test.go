@@ -333,7 +333,7 @@ func TestRegisterRoutes(t *testing.T) {
 	defer cleanup()
 
 	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux)
+	handler.RegisterRoutes(mux, nil)
 
 	// Test that routes are registered
 	paths := []struct {

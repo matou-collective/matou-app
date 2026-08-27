@@ -55,6 +55,7 @@ export type BackendEventType =
   | 'contribution:declined'
   | 'contribution:registered'
   | 'contribution:reviewed'
+  | 'contribution:evidence_edited'
   | 'contribution:shared'
   | 'contribution:confirmed'
   | 'contribution:accepted'
@@ -352,6 +353,7 @@ function connect() {
     'contribution:declined',
     'contribution:registered',
     'contribution:reviewed',
+    'contribution:evidence_edited',
     'contribution:shared',
     'contribution:confirmed',
     'contribution:accepted',

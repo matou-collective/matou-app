@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/keri"
 )
@@ -17,11 +19,26 @@ import (
 // This handler receives credentials and KELs from the frontend (fetched from KERIA via signify-ts)
 // and stores them in anystore (local cache) and routes them to any-sync spaces.
 type SyncHandler struct {
-	keriClient    *keri.Client
-	store         *anystore.LocalStore
-	spaceManager  *anysync.SpaceManager
-	spaceStore    anysync.SpaceStore
-	userIdentity  *identity.UserIdentity
+	keriClient   *keri.Client
+	store        *anystore.LocalStore
+	spaceManager *anysync.SpaceManager
+	spaceStore   anysync.SpaceStore
+	userIdentity *identity.UserIdentity
+	roleLookup   RoleLookup // nil = RBAC disabled (tests only)
+	// rotationHook, if set, is called with the verified caller's AID whenever
+	// that caller syncs its own KEL, so signed-auth sessions can be re-checked
+	// against the AID's authoritative key state (revoke-on-rotation).
+	rotationHook func(ctx context.Context, aid string)
+}
+
+// SetRotationHook registers a callback invoked when a request carrying a valid
+// signed-auth session syncs the KEL of that same AID. The hook receives only
+// the AID — never key material from the request body — and is expected to
+// re-resolve key state itself (see auth.Verifier.OnRotation). It is not fired
+// for unauthenticated requests or for a KEL belonging to another AID, so this
+// unauthenticated endpoint cannot be used to log arbitrary AIDs out.
+func (h *SyncHandler) SetRotationHook(hook func(ctx context.Context, aid string)) {
+	h.rotationHook = hook
 }
 
 // NewSyncHandler creates a new sync handler
@@ -122,6 +139,24 @@ func (h *SyncHandler) HandleSyncCredentials(w http.ResponseWriter, r *http.Reque
 			Errors:  []string{fmt.Sprintf("invalid request: %v", err)},
 		})
 		return
+	}
+
+	// Resource check (RBAC active): a member may only sync credentials issued
+	// to themselves — userAid and every credential recipient must match the
+	// caller — unless the caller is steward scope (stewards cache credentials
+	// they issued to other members). Without this, any authenticated member
+	// could seed the credential cache (a role source for CredentialRoleLookup)
+	// with a role credential for their own AID.
+	if h.roleLookup != nil {
+		caller := GetUserAID(r)
+		if msg := credentialSubjectPolicy(caller, GetUserRoles(r), req.UserAID, req.Credentials); msg != "" {
+			log.Printf("[Sync] credential sync denied for %s: %s", caller, msg)
+			writeJSON(w, http.StatusForbidden, SyncCredentialsResponse{Success: false, Errors: []string{msg}})
+			return
+		}
+		if req.UserAID == "" {
+			req.UserAID = caller
+		}
 	}
 
 	// In per-user mode, use local identity. Fall back to request body for backward compat.
@@ -268,6 +303,15 @@ func (h *SyncHandler) HandleSyncKEL(w http.ResponseWriter, r *http.Request) {
 			Error:   "kel events are required",
 		})
 		return
+	}
+
+	// Signal key-state observation so signed-auth sessions can be revoked if the
+	// AID's keys have rotated — only when the caller proved control of this very
+	// AID via its session (best-effort; never blocks the sync).
+	if h.rotationHook != nil {
+		if verified := VerifiedAID(r); verified != "" && verified == kelUserAID {
+			h.rotationHook(r.Context(), verified)
+		}
 	}
 
 	ctx := context.Background()
@@ -523,10 +567,41 @@ func (h *SyncHandler) HandleGetCommunityCredentials(w http.ResponseWriter, r *ht
 	})
 }
 
-// RegisterRoutes registers sync routes on the mux
-func (h *SyncHandler) RegisterRoutes(mux *http.ServeMux) {
+// withRBAC applies RBAC middleware when a roleLookup is configured.
+// When roleLookup is nil (tests), the handler is invoked directly.
+func (h *SyncHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
+// credentialSubjectPolicy returns a non-empty denial reason when a non-steward
+// caller tries to store credentials that are not about themselves. Shared by
+// POST /api/v1/sync/credentials and POST /api/v1/credentials.
+func credentialSubjectPolicy(caller string, roles []contributions.Role, userAID string, creds []keri.Credential) string {
+	if contributions.IsStewardScope(roles) {
+		return ""
+	}
+	if userAID != "" && userAID != caller {
+		return "userAid must match the authenticated caller"
+	}
+	for _, c := range creds {
+		if c.Recipient != caller {
+			return fmt.Sprintf("credential %s is issued to %s, not the authenticated caller", c.SAID, c.Recipient)
+		}
+	}
+	return ""
+}
+
+// RegisterRoutes registers sync routes on the mux.
+// roleLookup gates POST /api/v1/sync/credentials (ActionStoreCredential +
+// recipient check); pass nil to skip auth (tests only).
+func (h *SyncHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("SyncHandler", roleLookup)
+	h.roleLookup = roleLookup
 	// Sync endpoints
-	mux.HandleFunc("/api/v1/sync/credentials", h.HandleSyncCredentials)
+	mux.HandleFunc("/api/v1/sync/credentials", h.withRBAC(contributions.ActionStoreCredential, h.HandleSyncCredentials))
 	mux.HandleFunc("/api/v1/sync/kel", h.HandleSyncKEL)
 
 	// Community endpoints

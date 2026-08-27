@@ -140,6 +140,26 @@ export function useContributionWorkflow() {
   }
 
   /**
+   * Only the assigned contributor can edit their submitted evidence, any time
+   * before sign-off — i.e. while the contribution is `needs_review`, or
+   * `approved` but not yet `signed_off`. This is contributor self-edit; the
+   * submission is the contributor's own statement about their work, so
+   * leads/stewards/admins are deliberately NOT granted it (the backend enforces
+   * the same ownership rule). Sign-off remains the immutable boundary. Editing
+   * an approved contribution drops it back to `needs_review` (handled backend).
+   * Scope is evidence + attachments only; contribution metadata stays gated by
+   * `canEditContribution` (lead/steward).
+   */
+  function canEditEvidence(contribution: Contribution, currentUserId: string): boolean {
+    if (contribution.status !== 'needs_review' && contribution.status !== 'approved') {
+      return false;
+    }
+    const assignedId =
+      contribution.assigned_contributor ?? contribution.assigned_contributor_id;
+    return !!currentUserId && !!assignedId && assignedId === currentUserId;
+  }
+
+  /**
    * Lead or admin can review a contribution that is in `needs_review` status.
    */
   function canReview(contribution: Contribution, role: ProjectRole | string): boolean {
@@ -226,6 +246,7 @@ export function useContributionWorkflow() {
     canRegisterInterest,
     canAccept,
     canSubmitEvidence,
+    canEditEvidence,
     canReview,
     canSignOff,
     canChange,

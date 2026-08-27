@@ -1159,6 +1159,7 @@ watch(lastEvent, (event) => {
     'contribution:declined',
     'contribution:accepted',
     'contribution:reviewed',
+    'contribution:evidence_edited',
     'contribution:signed_off',
     'contribution:updated',
     'implementation_plan:signed_off',

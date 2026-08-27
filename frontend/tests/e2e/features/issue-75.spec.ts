@@ -1,4 +1,5 @@
 import { test, expect, Page } from './fixtures';
+import { loginAs, jsonSessionHeaders } from '../utils/signed-auth';
 
 // Feature (#75): mobile single-pane ChatLayout. On a phone viewport (≤767px)
 // the 3-pane chat (channel list | messages | thread) collapses to one pane:
@@ -21,7 +22,7 @@ async function adminAid(): Promise<string> {
 async function api(aid: string, method: string, route: string, body?: unknown) {
   const res = await fetch(`${API}${route}`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-User-AID': aid },
+    headers: jsonSessionHeaders(aid),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -48,6 +49,7 @@ test.describe('mobile single-pane chat (#75)', () => {
     test.setTimeout(180_000);
 
     const aid = await adminAid();
+    await loginAs(adminPage); // signed-auth session so API calls act as the admin
     const runTag = Date.now().toString(36);
     const channelName = `mobile-nav-${runTag}`;
     await api(aid, 'POST', '/chat/channels', {
@@ -87,6 +89,7 @@ test.describe('mobile single-pane chat (#75)', () => {
     test.setTimeout(180_000);
 
     const aid = await adminAid();
+    await loginAs(adminPage); // signed-auth session so API calls act as the admin
     const runTag = Date.now().toString(36);
     const channelName = `desktop-panes-${runTag}`;
     await api(aid, 'POST', '/chat/channels', {
