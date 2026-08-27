@@ -163,6 +163,7 @@ type Project struct {
 	CreatedBy             string         `json:"created_by"`
 	CreatedAt             time.Time      `json:"created_at"`
 	UpdatedAt             time.Time      `json:"updated_at"`
+	SubmittedBy           string         `json:"submitted_by,omitempty"`
 	CompletedBy           string         `json:"completed_by,omitempty"`
 	CompletedAt           *time.Time     `json:"completed_at,omitempty"`
 	RejectionReason       string         `json:"rejection_reason,omitempty"`
@@ -468,8 +469,11 @@ type Contribution struct {
 	QualityRating          int                `json:"quality_rating,omitempty"`
 	SignedOffBy            string             `json:"signed_off_by,omitempty"`
 	SignedOffAt            *time.Time         `json:"signed_off_at,omitempty"`
-	RewardedBy             string             `json:"rewarded_by,omitempty"`
-	RewardedAt             *time.Time         `json:"rewarded_at,omitempty"`
+	// EvidenceEditedAt records the last time the assigned contributor edited
+	// their submitted evidence (contributor self-edit before sign-off).
+	EvidenceEditedAt *time.Time `json:"evidence_edited_at,omitempty"`
+	RewardedBy       string     `json:"rewarded_by,omitempty"`
+	RewardedAt       *time.Time `json:"rewarded_at,omitempty"`
 
 	// KERI-anchored proof envelopes (issue #20), one per proof-bearing
 	// transition so a later reward can never destroy the sign-off proof —

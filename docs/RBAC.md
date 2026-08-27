@@ -33,6 +33,7 @@ Two facts frame every matrix below (details in [Role Model & Resolution](#role-m
 
 ## Contents
 
+- [Issue #17 enforcement (PR #28)](#issue-17-enforcement-pr-28)
 - [Role Model & Resolution](#role-model--resolution)
 - [Projects](#projects)
 - [Contributions Lifecycle](#contributions-lifecycle)
@@ -41,9 +42,60 @@ Two facts frame every matrix below (details in [Role Model & Resolution](#role-m
 - [Membership, Registration & Credentials](#membership-registration--credentials)
 - [Communication & Content (Notices, Chat, Events, Files)](#communication--content-notices-chat-events-files)
 - [Spaces, Sync & Admin Infrastructure](#spaces-sync--admin-infrastructure)
+- [Peer-Side Write Rules (synced-object validation)](#peer-side-write-rules-synced-object-validation)
 - [Appendix: Known Gaps & Design-Doc Drift](#appendix-known-gaps--design-doc-drift)
 
 ---
+
+## Issue #17 enforcement (PR #28)
+
+Added 2026-08-26. The matrices below were generated before PR #28 and still describe the pre-#17 state where they say "no RBAC"; this section is the authoritative delta. Code: `backend/internal/contributions/roles.go` (policy), `backend/internal/api/rbac.go` (middleware), per-handler `withRBAC`/`withBootstrapRBAC`, tests in `backend/internal/api/rbac_enforcement_test.go` and `rbac_enforcement_review_test.go`, e2e in `frontend/tests/e2e/features/issue-17.spec.ts`.
+
+### Newly gated routes
+
+| Route | Action | Roles | Resource-level rule |
+|---|---|---|---|
+| `PUT /api/v1/members/{aid}/role` | `change_member_role` | Operations Steward, Founding Member | `Founding Member` may only be granted by a Founding Member |
+| `DELETE /api/v1/members/{aid}` | `remove_member` | Operations Steward, Founding Member | — |
+| `POST /api/v1/profiles/init-member` | `init_member_profile` | steward scope | — |
+| `POST /api/v1/profiles` | `write_profile` | any authenticated member | `profileWritePolicy` (below) |
+| `POST /api/v1/contributions/{id}/transition` | `transition_contribution` + upgraded action for the target status | any member; `signed_off` → `sign_off_contribution`, `rewarded` → `reward_contribution`, `archived` → `archive_contribution` | `archived` is delegated to the `/archive` path (child cascade + `contribution:archived` SSE) |
+| `POST /api/v1/projects/{id}/approve-completion`, `/reject-completion` | `approve_/reject_project_completion` | steward scope | non-exempt caller must be this project's steward and not the submitter |
+| `POST /api/v1/implementation-plans/{id}/sign-off` | `sign_off_plan` | steward scope | caller AID comes from the RBAC context only (body `user_id` fallback removed) |
+| `POST /api/v1/credentials`, `POST /api/v1/sync/credentials` | `store_credential` | any authenticated member | `credentialSubjectPolicy`: non-stewards may only store credentials whose `recipient` (and `userAid`) is their own AID; stewards may store credentials they issued to others |
+| `POST /api/v1/spaces/grant-steward-admin` | `grant_steward_admin` | Operations Steward, Founding Member | — |
+| `POST /api/v1/org/config`, `DELETE /api/v1/org/config` | `save_org_config` | Operations Steward, Founding Member | **bootstrap rule** (below) |
+| `POST /api/v1/identity/set`, `DELETE /api/v1/identity` | `set_identity` | Operations Steward, Founding Member **or** the current identity owner | **bootstrap rule** (below) |
+
+`adminScope` = `{operations_steward, founding_member}` — the same set that may change member roles — is used for every route that grants a role or an ACL permission.
+
+### Bootstrap rule (maintainer decision, 2026-08-26)
+
+`POST /api/v1/org/config` and `POST /api/v1/identity/set` are called during first-run setup before any role exists, so they cannot be unconditionally gated:
+
+- **Org config** (`OrgConfigHandler.withBootstrapRBAC`): while `IsConfigured()` is false (no `org-config.yaml` with an organization AID) the POST/DELETE are accepted without `X-User-AID` — the admins list written by that very request is what `OrgConfigAdminLookup`/`ProfileRoleLookup.SetAdminAIDs` resolve to Founding Member. From the first successful save on, both methods require an authenticated caller with `save_org_config`. The check is per request, so a DELETE puts the backend back into bootstrap (this is how the e2e harness resets; `tests/e2e/utils/mock-config.ts` sends the configured admin AID).
+- **Identity** (`IdentityHandler.withBootstrapRBAC`): while `UserIdentity.IsConfigured()` is false, `identity/set` and `DELETE /identity` are open (onboarding). Once an identity exists the caller must be its **owner** (`X-User-AID` equals the configured AID — the app re-sets its own identity on boot and in the welcome-overlay checks, and a plain Member must be able to do that on their own backend) or hold `set_identity`. Re-pointing a configured backend at a different AID as a non-admin is refused with 403.
+
+The `roleLookup` used by all of the above is the production composite (`profile → org-config admins → cached credentials → own identity`).
+
+### `profileWritePolicy` — `POST /api/v1/profiles`
+
+`POST /profiles` was the unguarded twin of `PUT /members/{aid}/role`: `ProfileRoleLookup` reads `role` from the `CommunityProfile` object that this endpoint writes verbatim. Rules, in order (`backend/internal/api/profiles.go`):
+
+1. A `CommunityProfile` write that **changes the role** — new object with a role other than `Member`, or an existing object whose `role` differs — is a role change and needs `change_member_role`; granting `Founding Member` additionally needs the caller to be a Founding Member. Same rule as `PUT /members/{aid}/role`.
+2. Steward scope may write any profile whose role is unchanged (registration approval by a Community Steward writes `role: 'Member'` over the init-member placeholder; decline/attendance/pending-profile creation run as stewards).
+3. The profile's subject may write their own profile. Subject = existing object's `userAID`/`aid` (existing wins over the payload so a caller cannot relabel someone else's profile), else the incoming payload's, else the object-id convention `<Type>-<aid>[-suffix]`.
+4. Any authenticated member may append to another member's `SharedProfile.endorsements` — the write must leave every other field byte-identical and may only grow the array.
+
+Everything else is 403. The frontend's `createOrUpdateProfile` now sends `X-User-AID` (`frontend/src/lib/api/client.ts`); `useAdminActions.ts` needed no change because all its writes go through that helper.
+
+### `store_credential` scope decision
+
+`POST /api/v1/sync/credentials` is called by a **newly approved member** right after their membership credential arrives (`useCredentialPolling.ts`) — at that point their profile role is `Member`, so scoping the action to steward scope would break the sync flow. The action therefore stays `allRoles` (authenticated) with the `credentialSubjectPolicy` resource check: a non-steward may only store credentials issued **to their own AID** (and `userAid`, if sent, must match), which closes the "seed the credential cache with a role credential for someone else" path while keeping the member self-sync working. Stewards keep the ability to cache credentials they issued.
+
+### Fail-loud wiring
+
+Every `RegisterRoutes(mux, roleLookup)` calls `requireRoleLookup`, which `log.Fatalf`s when the lookup is nil outside `go test` (`testing.Testing()`). Handlers still treat a nil lookup as "RBAC disabled" so unit tests can call them directly, but the production server can no longer start with a guarded route silently fail-open.
 
 ## Role Model & Resolution
 
@@ -92,9 +144,19 @@ Notes: "Financial Steward" and "Treasury Steward" collapse to the same role; "Go
 
 ### 3. Request authentication & role resolution
 
+> **Update (issue #18):** `X-User-AID` is now made trustworthy by a
+> signed-challenge login (`internal/auth`, `SignedAuthMiddleware`). When
+> `MATOU_REQUIRE_SIGNED_AUTH` is set, the middleware ahead of RBAC derives the
+> AID from a verified session token (`Authorization: Bearer`) and strips any
+> client-supplied `X-User-AID`, so roles are only ever resolved for a
+> cryptographically verified AID. The flag defaults **OFF** (bare header still
+> accepted); the e2e config turns it on. See [signed-auth.md](signed-auth.md) for
+> the flow, key-state resolution, revoke-on-rotation, and the machine-client
+> path. The description below reflects the **enforcement-off** behavior.
+
 Flow for an RBAC-wrapped endpoint (note: many mutating endpoints are **not** wrapped at all — see the Implementation Status table):
 
-1. **`X-User-AID` header** — client-supplied, set by the frontend from its own identity store (`frontend/src/lib/api/client.ts:27-41` `authHeaders()`). No signature, no session token, no verification (`rbac.go:31`).
+1. **`X-User-AID` header** — client-supplied, set by the frontend from its own identity store (`frontend/src/lib/api/client.ts:27-41` `authHeaders()`). No signature, no session token, no verification (`rbac.go:31`) — unless signed-auth enforcement is on (see the update note above).
 2. **`RBACMiddleware`** (`rbac.go:29-46`) — 401 if header absent; otherwise resolves roles via the injected `RoleLookup` and stores AID+roles in request context. On lookup *error* it proceeds with empty roles (fail-open into "no roles", rbac.go:37-40). `OptionalRBACMiddleware` (`rbac.go:78-93`) is the same but lets header-less requests through with no roles (used on read routes and on mixed read/write prefixes whose write subroutes then re-check in-handler, e.g. `decision_plans.go:28,39`, `proposals.go:54`).
 3. **`RequireAction`** (`rbac.go:50-60`) — 403 unless `contributions.CanPerformAction(roles, action)` passes against the policy table.
 4. Handlers may additionally call `GetUserAID(r)` / `GetUserRoles(r)` for in-handler checks (e.g. `proposals.go:209-210,226-227,260-261,402-403`, `contributions_handler.go:705,855,892,945`, `decision_plans.go:150-174`).
@@ -721,6 +783,35 @@ No space/sync/trust/org/multisig action constant exists in `contributions/roles.
 - **Admin space (`SpaceTypeAdmin`) is created and its ID is surfaced (`spaces.go:451-482`, `api/identity.go:313`) but no read/write endpoint in this area gates on it.** Its ACL is owner-only (`acl.go:513-522` `AdminACL` → `PermissionNone` default), so protection is again consensus-key possession, not application logic. `ACLPolicyForSpaceType` (`acl.go:524-538`) and `ValidateAccess`/`GrantAccess`/`RevokeAccess` (`acl.go:449-502`) exist but are the older `ACLManager` path — `GrantAccess`'s own comment calls it "the legacy AddToACL path" (`acl.go:477`) — while the live invite/join flow uses `MatouACLManager` (`CreateOpenInvite`/`JoinWithInvite`), so those policy-evaluation helpers are largely parallel/unused for the community flow.
 
 ---
+
+## Peer-Side Write Rules (synced-object validation)
+
+Added by GH#19 (`backend/internal/anysync/write_rules.go`, `proof_verifier.go`, `role_resolver.go`, `state.go BuildStateValidated`, `acl.go AccountAIDMap`, wired in `backend/internal/app/app.go`). Everything above concerns the HTTP layer of *this* node. Any-sync ACLs are space-scoped only, so a modified peer with Writer permission on the community space can write any change to any object — including a forged `signed_off`/`rewarded`/`completed` transition or a plan/proposal sign-off — and every peer's SDK will accept it into the tree. The write rules run when a node reconstructs object state from a tree and **exclude** guarded changes that fail the rule, so forged changes never enter this node's derived state.
+
+| Guarded object (field) | High-stakes values | Legitimacy source | Rule |
+|---|---|---|---|
+| `contribution.status` | `signed_off`, `rewarded` | proof-backed¹ | `ActionSignOffContribution` / `ActionRewardContribution` |
+| `project.status` | `completed` | proof-backed¹ | `ActionApproveProjectCompletion` |
+| `project.status` | `pending_completion` | role-only² | `ActionSubmitProjectCompletion` |
+| `implementation_plan.signed_off` | `true` | proof-backed¹ | `ActionSignOffPlan` |
+| `decision_plan.status` | `signed_off` | proof-backed¹ | `ActionSignOffPlan` |
+| `proposal.status` | `signed_off` | role-only² | `ActionSignOffProposal` |
+| `CommunityProfile.role` | any | role-only² (ACL-enforced³) | operations_steward, founding_member |
+
+**¹ Proof-backed (GH#19 part 2 — meets AC-1).** The change must carry a KERI **action proof** (`sign_off_proof` / `reward_proof` / `proof` field) — a Cigar signature over the canonical message `matou-proof/v1\n<action>\n<subject>\n<space>\n<value>\n<dt>` (single source of truth: `frontend/src/lib/keri/actionProof.ts`). The verifier (`proof_verifier.go`) rebuilds that message from the object's **own** authoritative fields (never a copy on the object) and verifies the signature against the signer AID's KEL signing key using the CESR + ed25519 primitives from GH#18 (`internal/auth`). The signer AID is thus authenticated cryptographically, so the attacker-controlled ACL-join-metadata binding is no longer trusted: a writer-permission forger cannot mint a valid signature, cannot lift a real steward's proof onto a different object (subject binding) or space (space binding), and a proof from a non-current key is rejected (fail-closed). The verified AID's role is then resolved by AID (`RolesForAIDAt`) as of the change's timestamp. Enforcement is gated by `MATOU_REQUIRE_SIGNED_AUTH` (same signal that makes `X-User-AID` trustworthy); when off (dev/test without live KERIA) proof-backed rules fall back to the role-only path so a missing proof never breaks a legitimate action.
+
+**² Role-only (interim, GH#19 part 1).** No frontend proof action exists for these transitions yet, so they keep the part-1 path: author (any-sync account) → AID via the community space's ACL join records walked **in record order, first claim of an AID wins** (`AccountAIDMap`) → role **as of the change's timestamp** from the `CommunityProfile` role history (`HistoryRoleResolver`; org-config admins are a static Founding Member override) → `MapKERIRole` → policy table. Fail-open on an unresolved author. Weaker (the account→AID binding is client-supplied join metadata), retained as defence-in-depth.
+
+**³ ACL-enforced.** `CommunityProfile` lives in the admin-only community-readonly space, so the SDK ACL already blocks non-admin writers; the role change is credential-backed (ACDC revoke/re-issue), not signed via the action-proof path.
+
+Determinism (AC-2): every input is synced tree/ACL data plus the signer's KEL key snapshot (KELs are append-only and eventually consistent), so two honest peers reach the same verdict, and demoting a steward does not retroactively reject their past sign-offs. Snapshots that merely carry a guarded value forward are not re-gated. `UpdateObject` diffs against the same validated baseline so a forged change cannot block the legitimate transition. An object of unknown type (missing from the local index) is an error, not an unguarded pass.
+
+**Remaining follow-ups (do not block AC-1):**
+
+- The proof envelope carries no KEL sequence number, so the Cigar is verified against the AID's **current** signing key from the snapshot rather than the key state as of the signing-time sn. A key rotation therefore invalidates the verifiability of proofs signed with the rotated-away key (fail-closed, the safe direction). Binding to the exact signing-time key state needs the wire format to anchor an sn — a frontend change tracked separately.
+- The signer's role is resolved from the synced `CommunityProfile` role history keyed by the crypto-verified AID. Binding the role check to unrevoked org-**credential** (TEL) state from the synced credential tree is the remaining refinement; the seam (`RoleResolver.RolesForAIDAt`) is in place.
+- Proof enforcement needs a reachable KERIA key-state endpoint to populate the signing-key snapshot; verified by the e2e run (NEEDS LIVE VERIFICATION), not in-sandbox unit tests.
+- `proposal` sign-off, `project` submit-completion, and raw `/transition` endpoints remain on the interim role-only path until they gain a frontend proof action.
 
 ## Appendix: Known Gaps & Design-Doc Drift
 

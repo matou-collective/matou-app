@@ -82,7 +82,7 @@ export function useOrgSetup() {
       console.log('[OrgSetup] Created admin AID:', adminAid.prefix);
 
       // Store admin AID in identity store for credential polling
-      identityStore.setCurrentAID(adminAid);
+      await identityStore.setCurrentAID(adminAid);
 
       // Step 4: Create org AID as group with admin as master
       progress.value = 'Creating organization identity...';
@@ -149,8 +149,12 @@ export function useOrgSetup() {
       progress.value = 'Configuring backend identity...';
       let adminPrivateSpaceId: string | undefined;
 
-      // Clear any stale identity from a previous org setup run
-      await fetch(`${BACKEND_URL}/api/v1/identity`, { method: 'DELETE' }).catch(() => {});
+      // Clear any stale identity from a previous org setup run. RBAC (#17):
+      // allowed when no identity exists, or for the identity owner / an admin.
+      await fetch(`${BACKEND_URL}/api/v1/identity`, {
+        method: 'DELETE',
+        headers: { 'X-User-AID': adminAid.prefix },
+      }).catch(() => {});
 
       try {
         const identityResult = await setBackendIdentity({

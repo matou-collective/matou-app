@@ -13,6 +13,8 @@ import (
 	"sync"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/matou-dao/backend/internal/contributions"
 )
 
 // OrgConfigHandler handles organization configuration endpoints.
@@ -23,6 +25,7 @@ type OrgConfigHandler struct {
 	mu         sync.RWMutex
 	cache      *OrgConfigData
 	onUpdate   func(*OrgConfigData) // Callback when config is updated
+	roleLookup RoleLookup // nil = RBAC disabled (tests only)
 }
 
 // OrgConfigData represents the organization configuration
@@ -215,10 +218,41 @@ func (h *OrgConfigHandler) HandleHealth(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// RegisterRoutes registers org config routes on the mux
-func (h *OrgConfigHandler) RegisterRoutes(mux *http.ServeMux) {
+// RegisterRoutes registers org config routes on the mux.
+// roleLookup gates the mutating routes (POST/DELETE /api/v1/org/config) once
+// an org is configured; pass nil to skip auth (tests only).
+func (h *OrgConfigHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("OrgConfigHandler", roleLookup)
+	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/org/config", CORSHandler(h.handleConfig))
 	mux.HandleFunc("/api/v1/org/health", CORSHandler(h.HandleHealth))
+}
+
+// withBootstrapRBAC applies the bootstrap rule for org-config writes:
+//
+//   - No org configured yet (first-run setup): the request is allowed
+//     without X-User-AID — there are no roles to check against, and the
+//     admin AID that will resolve to Founding Member is defined by this very
+//     write.
+//   - Org configured: the caller must authenticate and hold
+//     ActionSaveOrgConfig (Operations Steward / Founding Member). The admins
+//     list in the config is a role grant (OrgConfigAdminLookup maps it to
+//     Founding Member), so rewriting it is treated like a role change.
+//
+// The configured/not-configured check is evaluated per request so the gate
+// closes the moment the first config is saved.
+func (h *OrgConfigHandler) withBootstrapRBAC(handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !h.IsConfigured() {
+			log.Printf("[OrgConfig] bootstrap: accepting %s %s without RBAC (no org configured yet)", r.Method, r.URL.Path)
+			handler(w, r)
+			return
+		}
+		RBACMiddleware(h.roleLookup, RequireAction(contributions.ActionSaveOrgConfig, handler))(w, r)
+	}
 }
 
 // handleConfig routes to Get (GET), Save (POST), or Delete (DELETE)
@@ -227,9 +261,9 @@ func (h *OrgConfigHandler) handleConfig(w http.ResponseWriter, r *http.Request) 
 	case http.MethodGet:
 		h.HandleGetConfig(w, r)
 	case http.MethodPost:
-		h.HandleSaveConfig(w, r)
+		h.withBootstrapRBAC(h.HandleSaveConfig)(w, r)
 	case http.MethodDelete:
-		h.HandleDeleteConfig(w, r)
+		h.withBootstrapRBAC(h.HandleDeleteConfig)(w, r)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
 			"error": "Method not allowed",

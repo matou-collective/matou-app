@@ -59,10 +59,14 @@ var contributionTransitions = map[ContributionStatus][]ContributionStatus{
 	ContribChanged:     {ContribConfirmed, ContribAssigned},
 	ContribNeedsReview: {ContribApproved, ContribIncomplete, ContribDeclined},
 	ContribIncomplete:  {ContribAssigned},
-	ContribApproved:    {ContribSignedOff},
-	ContribSignedOff:   {ContribRewarded},
-	ContribRewarded:    {ContribArchived},
-	ContribDeclined:    {ContribArchived},
+	// approved→needs_review is deliberately NOT listed here: it only happens
+	// when the assigned contributor edits their submission (Service.EditEvidence),
+	// which clears the voided review as part of the same write. Keeping it out
+	// of the table means POST /transition cannot void an approval.
+	ContribApproved:  {ContribSignedOff},
+	ContribSignedOff: {ContribRewarded},
+	ContribRewarded:  {ContribArchived},
+	ContribDeclined:  {ContribArchived},
 }
 
 func ValidateContributionTransition(from, to ContributionStatus) error {

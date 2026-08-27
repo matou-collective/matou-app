@@ -1827,6 +1827,111 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID st
 	return c, nil
 }
 
+// ErrNotEvidenceOwner is returned by EditEvidence when the caller is not the
+// contribution's assigned contributor. Handlers map it to 403.
+var ErrNotEvidenceOwner = errors.New("only the assigned contributor can edit their submission")
+
+// EditEvidenceResult is what EditEvidence returns: the updated contribution
+// plus the state it replaced, which the handler needs for notifications
+// (the approving reviewer is cleared from the record by the edit itself).
+type EditEvidenceResult struct {
+	Contribution *Contribution
+	// PriorStatus is the status before the edit (needs_review or approved).
+	PriorStatus ContributionStatus
+	// PriorReviewedBy is the reviewer whose approval the edit voided, or ""
+	// when the contribution was still needs_review.
+	PriorReviewedBy string
+}
+
+// EditEvidence lets the assigned contributor amend their submitted evidence
+// before sign-off. Permitted while the contribution is in needs_review, or
+// approved-but-not-yet-signed-off. Only the submission itself (evidence text,
+// links, attachments, actuals) is editable here — contribution metadata stays
+// lead/steward-controlled via the general update path.
+//
+// Ownership: actorAID must equal the contribution's AssignedContributorID.
+// Leads, stewards and admins are deliberately NOT granted this path — an edit
+// is the contributor's own statement about their work.
+//
+// The request is the complete new submission: evidence URLs, acceptance
+// notes, attachments and the time report are replaced wholesale (an omitted
+// or empty list clears the field, so removals in the edit form stick).
+// CompletionNotes is required so a partial payload can never blank it.
+//
+// An edit keeps the contribution at needs_review; if it was approved, the edit
+// drops it back to needs_review and clears the prior review outcome, because
+// the reviewer approved different content and must re-check. That
+// approved→needs_review move is only legal on this path — it is not in the
+// general transition table, so POST /transition cannot void an approval.
+// A last-edited timestamp is recorded. Sign-off remains the immutable boundary.
+//
+// Concurrency: like the rest of this service this is load-mutate-save with no
+// optimistic lock, so an edit racing a review can interleave (last write wins).
+// Accepted for now, consistent with the codebase; a version check on the
+// contribution record would close it.
+func (s *Service) EditEvidence(ctx context.Context, spaceID, contributionID, actorAID string, req SubmitEvidenceRequest) (*EditEvidenceResult, error) {
+	c, err := s.GetContribution(ctx, spaceID, contributionID)
+	if err != nil {
+		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	if actorAID == "" || c.AssignedContributorID == "" || c.AssignedContributorID != actorAID {
+		return nil, ErrNotEvidenceOwner
+	}
+	if c.Status != ContribNeedsReview && c.Status != ContribApproved {
+		return nil, fmt.Errorf("evidence can only be edited before sign-off (needs_review or approved), current: %s", c.Status)
+	}
+	if strings.TrimSpace(req.CompletionNotes) == "" {
+		return nil, fmt.Errorf("completion_notes is required when editing a submission")
+	}
+
+	result := &EditEvidenceResult{
+		PriorStatus:     c.Status,
+		PriorReviewedBy: c.ReviewedBy,
+	}
+
+	c.CompletionNotes = req.CompletionNotes
+	c.EvidenceURLs = req.EvidenceURLs
+	c.AcceptanceNotes = req.AcceptanceNotes
+	if req.ActualDuration > 0 {
+		c.ActualDuration = req.ActualDuration
+	}
+	if req.ActualCost > 0 {
+		c.ActualCost = req.ActualCost
+	}
+	c.TimeReportFile = req.TimeReportFile
+	c.AttachmentFiles = req.AttachmentFiles
+
+	// An approved contribution drops back to needs_review — the reviewer
+	// approved content that has now changed, so their approval is voided.
+	// Done directly rather than via ValidateContributionTransition: this is
+	// the one sanctioned route for approved→needs_review.
+	if c.Status == ContribApproved {
+		c.Status = ContribNeedsReview
+		c.ReviewOutcome = ""
+		c.ReviewFeedback = ""
+		c.ReviewedBy = ""
+		c.ReviewedAt = nil
+	} else {
+		result.PriorReviewedBy = ""
+	}
+
+	now := time.Now()
+	c.EvidenceEditedAt = &now
+	c.UpdatedAt = now
+	if err := s.store.Save(spaceID, c.ID, "contribution", c); err != nil {
+		return nil, fmt.Errorf("saving contribution: %w", err)
+	}
+	// Re-aggregate the parent milestone's actual cost so reporting stays in
+	// sync when the contributor revises their reported actual cost.
+	if c.MilestoneID != "" {
+		if err := s.recomputeMilestoneActualCost(ctx, spaceID, c.MilestoneID); err != nil {
+			log.Printf("[Contributions] recomputeMilestoneActualCost %s: %v", c.MilestoneID, err)
+		}
+	}
+	result.Contribution = c
+	return result, nil
+}
+
 // recomputeMilestoneActualCost sums ActualCost across all non-archived
 // contributions in the milestone and writes it back to the milestone record.
 func (s *Service) recomputeMilestoneActualCost(ctx context.Context, spaceID, milestoneID string) error {
@@ -2627,7 +2732,7 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID, act
 // SubmitProjectCompletion transitions an active project to pending_completion
 // after verifying every contribution is signed off (or archived).
 // Clears any prior rejection_reason.
-func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectID, leadID string) (*Project, error) {
+func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectID, leadID string, callerRoles []Role) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
@@ -2635,6 +2740,12 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 
 	if proj.Status != ProjectActive {
 		return nil, fmt.Errorf("project must be active to submit completion (current: %s)", proj.Status)
+	}
+
+	// Resource-level check: only this project's lead may submit it for
+	// completion. Operations Stewards and Founding Members are exempt.
+	if !IsCompletionExempt(callerRoles) && leadID != proj.ProjectLeadID {
+		return nil, fmt.Errorf("only the project lead may submit this project for completion")
 	}
 
 	contribs, err := s.ListContributionsByProject(ctx, spaceID, projectID)
@@ -2652,6 +2763,7 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 
 	proj.Status = ProjectPendingCompletion
 	proj.RejectionReason = ""
+	proj.SubmittedBy = leadID
 	proj.UpdatedAt = time.Now()
 	if err := s.SaveProject(ctx, spaceID, proj); err != nil {
 		return nil, err
@@ -2659,14 +2771,34 @@ func (s *Service) SubmitProjectCompletion(ctx context.Context, spaceID, projectI
 	return proj, nil
 }
 
+// verifyCompletionReviewer enforces the resource-level checks shared by the
+// approve and reject paths: a non-exempt caller must be this project's steward
+// and may not be the member who submitted the completion. Operations Stewards
+// and Founding Members are exempt from both checks.
+func verifyCompletionReviewer(proj *Project, reviewerID string, callerRoles []Role) error {
+	if IsCompletionExempt(callerRoles) {
+		return nil
+	}
+	if reviewerID == "" || reviewerID != proj.ProjectStewardID {
+		return fmt.Errorf("only this project's steward may review completion")
+	}
+	if reviewerID == proj.SubmittedBy {
+		return fmt.Errorf("the submitter may not review their own completion")
+	}
+	return nil
+}
+
 // ApproveProjectCompletion marks the project completed.
-func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string, proof *Proof) (*Project, error) {
+func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, projectID, stewardID string, callerRoles []Role, proof *Proof) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
 	}
 	if proj.Status != ProjectPendingCompletion {
 		return nil, fmt.Errorf("project must be pending_completion (current: %s)", proj.Status)
+	}
+	if err := verifyCompletionReviewer(proj, stewardID, callerRoles); err != nil {
+		return nil, err
 	}
 	if err := proof.ValidateConsistency("project_completion", projectID, spaceID, "completed", stewardID); err != nil {
 		return nil, err
@@ -2686,13 +2818,16 @@ func (s *Service) ApproveProjectCompletion(ctx context.Context, spaceID, project
 }
 
 // RejectProjectCompletion sends the project back to active with a reason.
-func (s *Service) RejectProjectCompletion(ctx context.Context, spaceID, projectID, reason string) (*Project, error) {
+func (s *Service) RejectProjectCompletion(ctx context.Context, spaceID, projectID, rejectorID, reason string, callerRoles []Role) (*Project, error) {
 	proj, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
 		return nil, err
 	}
 	if proj.Status != ProjectPendingCompletion {
 		return nil, fmt.Errorf("project must be pending_completion (current: %s)", proj.Status)
+	}
+	if err := verifyCompletionReviewer(proj, rejectorID, callerRoles); err != nil {
+		return nil, err
 	}
 	proj.Status = ProjectActive
 	proj.RejectionReason = reason

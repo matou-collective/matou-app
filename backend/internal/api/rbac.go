@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"testing"
 
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/contributions"
@@ -42,6 +43,17 @@ func RBACMiddleware(lookup RoleLookup, next http.HandlerFunc) http.HandlerFunc {
 		ctx := context.WithValue(r.Context(), ctxUserAID, aid)
 		ctx = context.WithValue(ctx, ctxUserRoles, roles)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+// requireRoleLookup fails loud when a handler is wired without a RoleLookup
+// outside of tests. Every handler's withRBAC treats a nil lookup as "skip
+// auth" so unit tests can exercise handlers directly; in the real server a
+// nil lookup would silently turn every guarded route fail-open, so the
+// production wiring must never reach this with nil.
+func requireRoleLookup(handler string, lookup RoleLookup) {
+	if lookup == nil && !testing.Testing() {
+		log.Fatalf("[RBAC] %s.RegisterRoutes called with nil RoleLookup: refusing to start with RBAC disabled", handler)
 	}
 }
 

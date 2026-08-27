@@ -18,6 +18,7 @@ const NOTIFICATION_EVENTS = [
   'contribution:needs_review',
   'contribution:approved',
   'contribution:declined',
+  'contribution:evidence_edited',
   'decision_plan:submitted',
   'decision_plan:signed_off',
 ];
@@ -77,6 +78,7 @@ function formatTitle(type: string): string {
     'contribution:needs_review': 'Contribution Ready for Review',
     'contribution:approved': 'Contribution Approved',
     'contribution:declined': 'Contribution Declined',
+    'contribution:evidence_edited': 'Submission Edited',
     'decision_plan:submitted': 'Decision Plan Submitted',
     'decision_plan:signed_off': 'Decision Plan Signed Off',
   };

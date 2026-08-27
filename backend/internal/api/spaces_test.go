@@ -694,7 +694,7 @@ func TestSpacesHandler_RegisterRoutes(t *testing.T) {
 	handler, _, _ := setupTestSpacesHandler(t)
 
 	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux)
+	handler.RegisterRoutes(mux, nil)
 
 	// Test that routes are registered by making requests
 	testCases := []struct {

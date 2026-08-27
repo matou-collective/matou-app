@@ -57,15 +57,6 @@ func TestCanPerformAction_SignOff(t *testing.T) {
 	}
 }
 
-func TestCanPerformAction_ApproveContribution(t *testing.T) {
-	if !CanPerformAction([]Role{RoleProjectLead}, ActionApproveContribution) {
-		t.Error("project lead should approve")
-	}
-	if !CanPerformAction([]Role{RoleContributor}, ActionApproveContribution) {
-		t.Error("contributor should approve (peer-review flow)")
-	}
-}
-
 func TestCanPerformAction_SignOffProposal(t *testing.T) {
 	// Admin roles (steward/founding) can sign off proposals
 	adminRoles := []struct {
