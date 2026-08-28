@@ -103,19 +103,47 @@ async function restoreIdentity(
   }
 }
 
-export default boot(async ({ router }) => {
+/**
+ * Run the full app initialization sequence: resolve the backend URL/token
+ * (which on mobile boots the embedded Go backend), load client + org config,
+ * and kick off session restore. Extracted from the boot handler so the splash
+ * "Try Again" action can re-run it after a failed attempt.
+ *
+ * A backend-start failure is caught and surfaced as an initialization error
+ * (the same "Connection Error — Try Again" splash the config-server failure
+ * uses) instead of throwing out of boot and leaving a blank WebView.
+ */
+export async function initializeApp(): Promise<void> {
   const identityStore = useIdentityStore();
   const onboardingStore = useOnboardingStore();
   const appStore = useAppStore();
   const keriClient = useKERIClient();
 
+  // Clear any error left over from a previous attempt (retry re-enters here).
+  onboardingStore.setInitializationError(null);
+
   // Step 0a: Resolve backend URL (Electron dynamic port via IPC) and the
   // per-launch API token, then install the fetch wrapper that attaches the
   // token to all backend requests (backend TokenGuard rejects unauthenticated
   // mutations). Must run before any API call.
-  await initBackendUrl();
-  await initApiToken();
-  installBackendAuth();
+  //
+  // On mobile the first backend call boots the embedded Go backend
+  // (Mobile.start); if that fails (e.g. no network path to the any-sync
+  // coordinator) surface the retry splash rather than throwing out of boot
+  // and leaving a blank screen. The native token stays null and the JS memo
+  // does not cache failures, so a later retry genuinely re-attempts the start.
+  try {
+    await initBackendUrl();
+    await initApiToken();
+    installBackendAuth();
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Backend failed to start';
+    console.error('[KERI Boot] Backend start failed:', err);
+    onboardingStore.setInitializationError(errorMessage);
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
 
   // Step 0b: Initialize client config from config server
   // This fetches KERIA URLs, witness OOBIs, and anysync config
@@ -131,7 +159,57 @@ export default boot(async ({ router }) => {
   console.log('[KERI Boot] Fetching organization config...');
   await appStore.loadOrgConfig();
 
-  // Add navigation guard to handle setup redirect and dashboard access
+  // Handle different config states
+  if (appStore.hasConfigError) {
+    // Server unreachable AND no cached config - show error
+    console.error('[KERI Boot] Cannot reach config server and no cached config');
+    onboardingStore.setInitializationError(appStore.configError || 'Cannot connect to config server');
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
+
+  if (appStore.needsSetup) {
+    // Server reachable but not configured - navigation guard will redirect
+    console.log('[KERI Boot] Org not configured, navigation guard will redirect to setup');
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
+
+  // Config is available (from server or cache)
+  console.log('[KERI Boot] Org config loaded:', appStore.orgName);
+
+  // Update KERI client with org AID from config
+  if (appStore.orgAid) {
+    keriClient.setOrgAID(appStore.orgAid);
+  }
+
+  // Step 2: Check for saved user session
+  const savedPasscode = await secureStorage.getItem('matou_passcode');
+
+  if (!savedPasscode) {
+    console.log('[KERI Boot] No saved session found');
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
+
+  // Set checking state and start restore WITHOUT awaiting
+  // This allows Vue to mount and show loading state while restore runs
+  onboardingStore.setAppState('checking');
+
+  // Start restore asynchronously - Vue will mount and observe state changes
+  restoreIdentity(identityStore, onboardingStore);
+}
+
+export default boot(async ({ router }) => {
+  const identityStore = useIdentityStore();
+  const appStore = useAppStore();
+
+  // Add navigation guard to handle setup redirect and dashboard access.
+  // Registered once here (not inside initializeApp) so the splash retry can
+  // re-run initialization without stacking duplicate guards.
   router.beforeEach(async (to, _from, next) => {
     // If org needs setup and we're not already on setup page, redirect
     if (appStore.needsSetup && to.path !== '/setup') {
@@ -186,46 +264,8 @@ export default boot(async ({ router }) => {
     next();
   });
 
-  // Handle different config states
-  if (appStore.hasConfigError) {
-    // Server unreachable AND no cached config - show error
-    console.error('[KERI Boot] Cannot reach config server and no cached config');
-    onboardingStore.setInitializationError(appStore.configError || 'Cannot connect to config server');
-    onboardingStore.setAppState('ready');
-    identityStore.setInitialized();
-    return;
-  }
-
-  if (appStore.needsSetup) {
-    // Server reachable but not configured - navigation guard will redirect
-    console.log('[KERI Boot] Org not configured, navigation guard will redirect to setup');
-    onboardingStore.setAppState('ready');
-    identityStore.setInitialized();
-    return;
-  }
-
-  // Config is available (from server or cache)
-  console.log('[KERI Boot] Org config loaded:', appStore.orgName);
-
-  // Update KERI client with org AID from config
-  if (appStore.orgAid) {
-    keriClient.setOrgAID(appStore.orgAid);
-  }
-
-  // Step 2: Check for saved user session
-  const savedPasscode = await secureStorage.getItem('matou_passcode');
-
-  if (!savedPasscode) {
-    console.log('[KERI Boot] No saved session found');
-    onboardingStore.setAppState('ready');
-    identityStore.setInitialized();
-    return;
-  }
-
-  // Set checking state and start restore WITHOUT awaiting
-  // This allows Vue to mount and show loading state while restore runs
-  onboardingStore.setAppState('checking');
-
-  // Start restore asynchronously - Vue will mount and observe state changes
-  restoreIdentity(identityStore, onboardingStore);
+  // Run the initialization sequence (backend start, config load, session
+  // restore). A backend-start failure inside is caught and surfaced as the
+  // retry splash rather than escaping boot.
+  await initializeApp();
 });

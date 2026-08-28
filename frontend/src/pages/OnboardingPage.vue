@@ -27,6 +27,7 @@ import { computed, watch, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
+import { initializeApp } from 'src/boot/keri';
 
 // Import onboarding screens
 import SplashScreen from 'components/onboarding/SplashScreen.vue';
@@ -250,22 +251,15 @@ const handleShowPhraseAgain = () => {
 };
 
 const handleRetry = async () => {
+  // Re-run the full boot initialization: re-attempt the backend start (which
+  // may have failed at launch and left this splash showing), reload config,
+  // and restore the session. initializeApp() clears the prior error, updates
+  // app state, and — on success with a saved session — kicks off restore so
+  // SplashScreen's watcher routes onward. On a repeated failure it re-sets the
+  // initialization error and the retry splash stays put.
   store.setInitializationError(null);
   store.setAppState('checking');
-
-  try {
-    const result = await identityStore.restore();
-    if (result.success && result.hasAID) {
-      store.navigateTo('pending-approval');
-    } else if (result.error) {
-      store.setInitializationError(result.error);
-    }
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-    store.setInitializationError(errorMessage);
-  } finally {
-    store.setAppState('ready');
-  }
+  await initializeApp();
 };
 
 // Watch for navigation to main app
