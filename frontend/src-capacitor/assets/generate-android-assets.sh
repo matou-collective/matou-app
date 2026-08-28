@@ -36,12 +36,13 @@ declare -A LA=( [mdpi]=48  [hdpi]=72  [xhdpi]=96  [xxhdpi]=144 [xxxhdpi]=192 )
 # Adaptive foreground canvas sizes (108dp per density)
 declare -A FG=( [mdpi]=108 [hdpi]=162 [xhdpi]=216 [xxhdpi]=324 [xxxhdpi]=432 )
 
-# Adaptive foreground master: M at ~60% width, centered in the 108dp safe zone.
+# Adaptive foreground master: M at ~44% of the 108dp canvas (~66% of the visible 72dp
+# safe zone) so it sits inside the icon with a margin instead of touching the edges.
 convert -size 432x432 xc:none \
-  \( "$M" -resize 259x \) -gravity center -composite /tmp/matou_fg_master.png
+  \( "$M" -resize 190x \) -gravity center -composite /tmp/matou_fg_master.png
 # Round legacy master: white M on a solid teal circle.
 convert -size 192x192 xc:none -fill "$TEAL" -draw 'circle 96,96 96,0' \
-  \( "$M" -resize 108x \) -gravity center -composite /tmp/matou_round_master.png
+  \( "$M" -resize 84x \) -gravity center -composite /tmp/matou_round_master.png
 
 for d in "${!LA[@]}"; do
   convert "$SRC"                    -resize ${LA[$d]}x${LA[$d]} "$RES/mipmap-$d/ic_launcher.png"
