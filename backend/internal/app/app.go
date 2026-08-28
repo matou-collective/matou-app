@@ -444,6 +444,11 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
 	contribNotifier := &contribNotifierAdapter{svc: notifService}
 	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
+	// The backend boots before an identity (and its read-only space) exists, so the
+	// captured communityReadOnlySpaceID is empty until a restart. Consult the live
+	// identity so the admin's Founding Member role resolves as soon as the read-only
+	// space is created — e.g. during org-setup's re-set of its own identity (#174).
+	profileRoleLookup.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
 	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
 	credentialRoleLookup := api.NewCredentialRoleLookup(store)
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
