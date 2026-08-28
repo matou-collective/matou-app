@@ -938,7 +938,10 @@ const resources = [
 
 .requirements-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  // auto-fit + minmax lets the three cards sit across one row on wide
+  // viewports but wrap to fewer columns at phone width (~412px css) instead
+  // of overflowing horizontally and clipping the third card (#121).
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
   gap: 0.75rem;
 }
 
