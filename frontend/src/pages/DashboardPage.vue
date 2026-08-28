@@ -10,7 +10,7 @@
       <div class="welcome-content">
         <div class="welcome-text">
           <h1 class="welcome-title">Welcome back</h1>
-          <div class="moon-phase-display" v-if="moonData">
+          <div class="moon-phase-display" v-if="moonPhaseState === 'loaded' && moonData">
             <div class="moon-phase-header">
               <span class="moon-date">{{ formatDate(moonData.date) }}</span>
               <span class="moon-circle">{{ moonData.moon_circle }}</span>
@@ -38,9 +38,11 @@
               <p class="moon-description">{{ moonData.description }}</p>
             </div>
           </div>
-          <div class="moon-phase-loading" v-else>
+          <div class="moon-phase-loading" v-else-if="moonPhaseState === 'loading'">
             Loading moon phase...
           </div>
+          <!-- 'unavailable': render nothing so a terminal fetch failure
+               collapses to hidden rather than a permanent loading string (#122) -->
         </div>
         <div class="stats-row">
           <button
@@ -273,6 +275,7 @@ import { useAdminActions } from 'src/composables/useAdminActions';
 import { useMultisigJoin } from 'src/composables/useMultisigJoin';
 import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSignal';
 import { useEndorsements } from 'src/composables/useEndorsements';
+import { useMoonPhase } from 'src/composables/useMoonPhase';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
@@ -533,32 +536,10 @@ const selectedMemberHasAttended = computed(() => {
 // Dark mode state
 const isDark = ref(false);
 
-// Moon phase data
-interface MoonData {
-  date: string;
-  lunar_day: number;
-  name: string;
-  energy: 'low' | 'medium' | 'high';
-  description: string;
-  moon_circle: string;
-}
-
-const moonData = ref<MoonData | null>(null);
-
-// Fetch moon phase data
-async function fetchMoonPhase() {
-  try {
-    const response = await fetch('https://maramataka-api.matou.nz/');
-    if (response.ok) {
-      const data = await response.json();
-      moonData.value = data;
-    } else {
-      console.error('Failed to fetch moon phase data');
-    }
-  } catch (error) {
-    console.error('Error fetching moon phase:', error);
-  }
-}
+// Moon phase data — lifecycle state (loading / loaded / unavailable) and the
+// fetch live in a composable so a terminal failure collapses to a hidden state
+// instead of a permanent "Loading moon phase..." string (#122).
+const { moonData, moonPhaseState, fetchMoonPhase } = useMoonPhase();
 
 // Format date for display
 function formatDate(dateString: string): string {
