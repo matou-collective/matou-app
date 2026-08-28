@@ -165,12 +165,14 @@ import { useIdentityStore } from 'stores/identity';
 import type { Contribution, CreateContributionRequest } from 'src/lib/api/contributions';
 import {
   applyContributionsView,
+  resolveInitialViewMode,
   SCOPE_FILTERS,
   TYPE_FILTERS,
   SORT_FIELDS,
   type ScopeFilter,
   type SortField,
   type SortDirection,
+  type ViewMode,
 } from 'src/lib/contributionsView';
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionsTimelineView from 'src/pages/Contributions/ContributionsTimelineView.vue';
@@ -189,9 +191,8 @@ const showCreateDialog = ref(false);
 const activeTypeFilter = ref('all');
 
 const VIEW_MODE_STORAGE_KEY = 'matou:contributions:view';
-const storedViewMode = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
-const viewMode = ref<'list' | 'timeline'>(
-  storedViewMode === 'list' ? 'list' : 'timeline',
+const viewMode = ref<ViewMode>(
+  resolveInitialViewMode(localStorage.getItem(VIEW_MODE_STORAGE_KEY)),
 );
 
 watch(viewMode, (v) => {
@@ -430,6 +431,11 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
   border: 1px solid var(--matou-border);
   border-radius: 8px;
   overflow: hidden;
+
+  // On mobile span the full row so the two options render as equal halves.
+  @media (max-width: 767px) {
+    width: 100%;
+  }
 
   :deep(.q-btn) {
     min-width: 140px;

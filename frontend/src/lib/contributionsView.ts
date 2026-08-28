@@ -20,6 +20,19 @@ export type ScopeFilter =
 export type SortField = 'deadline' | 'created' | 'title' | 'priority';
 export type SortDirection = 'asc' | 'desc';
 
+export type ViewMode = 'list' | 'timeline';
+
+/**
+ * Resolve the initial Contributions view mode from a persisted preference.
+ *
+ * Default is List on all platforms: an explicitly stored 'timeline' preference
+ * is honored, while no stored value or any unrecognized value falls back to
+ * 'list'.
+ */
+export function resolveInitialViewMode(stored: string | null): ViewMode {
+  return stored === 'timeline' ? 'timeline' : 'list';
+}
+
 export const SCOPE_FILTERS: { label: string; value: ScopeFilter }[] = [
   { label: 'All', value: 'all' },
   { label: 'Mine', value: 'mine' },

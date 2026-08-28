@@ -5,6 +5,7 @@ import {
   searchContributions,
   sortContributions,
   applyContributionsView,
+  resolveInitialViewMode,
 } from '../../src/lib/contributionsView';
 import type { Contribution } from '../../src/lib/api/contributions';
 
@@ -291,5 +292,24 @@ describe('admin visibility', () => {
     expect(
       applyContributionsView(list, { ...opts, viewerIsAdmin: true }).map((c) => c.id),
     ).toEqual(['other-offer']);
+  });
+});
+
+describe('resolveInitialViewMode', () => {
+  it('defaults to list when no preference is stored', () => {
+    expect(resolveInitialViewMode(null)).toBe('list');
+  });
+
+  it('honors an explicitly stored timeline preference', () => {
+    expect(resolveInitialViewMode('timeline')).toBe('timeline');
+  });
+
+  it('honors an explicitly stored list preference', () => {
+    expect(resolveInitialViewMode('list')).toBe('list');
+  });
+
+  it('falls back to list for an unrecognized stored value', () => {
+    expect(resolveInitialViewMode('grid')).toBe('list');
+    expect(resolveInitialViewMode('')).toBe('list');
   });
 });
