@@ -22,6 +22,14 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    // Package native libs (libgojni.so) uncompressed so they are extracted
+    // page-aligned at install time — a prerequisite for 16 KB page support on
+    // Android 15 alongside the 16 KB link alignment in build-aar.sh (#167).
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
 }
 
 repositories {
