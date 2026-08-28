@@ -952,6 +952,13 @@ function handleRoleUpdated(newRole: string) {
 .welcome-header {
   background: linear-gradient(135deg, var(--matou-primary), rgba(30, 95, 116, 0.9), var(--matou-accent));
   padding: 2rem 1.5rem;
+  // Edge-to-edge mobile: the layout pads the page by the top safe-area inset
+  // so content clears the status bar. Pull this header back up under the
+  // status bar and pad it by the same inset so the status bar sits on the
+  // teal gradient (matching the page) rather than on a bare strip of page
+  // background. env() is 0 on web/Electron, so this is a no-op there.
+  margin-top: calc(-1 * env(safe-area-inset-top));
+  padding-top: calc(2rem + env(safe-area-inset-top));
 }
 
 .welcome-content {
