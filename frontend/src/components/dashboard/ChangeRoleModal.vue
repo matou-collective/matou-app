@@ -150,11 +150,8 @@ const BUILTIN_KERI_NAMES: Record<string, string> = {
   community_steward: 'Community Steward',
   operations_steward: 'Operations Steward',
   founding_member: 'Founding Member',
-  treasury_steward: 'Treasury Steward',
-  tech_steward: 'Technical Steward',
   project_lead: '',    // not directly assignable as a credential role
   project_steward: '', // not directly assignable as a credential role
-  elder_council: '',   // ungrantable builtin — hidden from assignment
 };
 function keriNameForBuiltin(id: string): string {
   return BUILTIN_KERI_NAMES[id] ?? '';

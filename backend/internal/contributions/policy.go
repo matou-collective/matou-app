@@ -75,10 +75,7 @@ func DefaultRolePolicy() *RolePolicy {
 		{ID: string(RoleProjectSteward), DisplayName: "Project Steward", Builtin: true},
 		{ID: string(RoleOperationsSteward), DisplayName: "Operations Steward", Builtin: true},
 		{ID: string(RoleCommunitySteward), DisplayName: "Community Steward", Builtin: true},
-		{ID: string(RoleTechSteward), DisplayName: "Technical Steward", Builtin: true},
-		{ID: string(RoleTreasurySteward), DisplayName: "Treasury Steward", Builtin: true},
 		{ID: string(RoleFoundingMember), DisplayName: "Founding Member", Builtin: true},
-		{ID: string(RoleElderCouncil), DisplayName: "Elder Council", Builtin: true},
 	}
 
 	grants := map[string][]Capability{
@@ -93,12 +90,9 @@ func DefaultRolePolicy() *RolePolicy {
 			CapArchiveWork, CapManageMembers, CapManageGovernance, CapManageComms, CapManageRoles),
 		string(RoleCommunitySteward): append(append([]Capability{}, baseCaps...),
 			CapManageGovernance, CapManageComms),
-		string(RoleTechSteward):     append([]Capability{}, baseCaps...),
-		string(RoleTreasurySteward): append([]Capability{}, baseCaps...),
 		string(RoleFoundingMember): append(append([]Capability{}, baseCaps...),
 			CapAssignWork, CapSignOff, CapReward, CapSubmitCompletion, CapApproveCompletion,
 			CapArchiveWork, CapManageMembers, CapManageGovernance, CapManageComms, CapManageRoles),
-		string(RoleElderCouncil): append([]Capability{}, baseCaps...),
 	}
 
 	return &RolePolicy{Version: 0, Roles: roles, Grants: grants}

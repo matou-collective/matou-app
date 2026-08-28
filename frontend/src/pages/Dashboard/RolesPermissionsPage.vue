@@ -1,24 +1,23 @@
 <!-- frontend/src/pages/Dashboard/RolesPermissionsPage.vue -->
 <template>
-  <div class="roles-page q-pa-md">
-    <div class="row items-center q-mb-md">
-      <h1 class="text-h5 q-my-none">Roles &amp; Permissions</h1>
-      <q-space />
-      <q-btn
-        outline
-        label="New role"
-        icon="add"
-        :disable="!store.canManageRoles"
-        @click="newRoleDialog = true"
-      />
-      <q-btn
-        class="q-ml-sm"
-        color="primary"
-        label="Save changes"
-        :loading="saving"
-        :disable="!dirty || !store.canManageRoles"
-        @click="save"
-      />
+  <div class="roles-page">
+    <div class="roles-header">
+      <div class="roles-header-text">
+        <h2 class="roles-title">Roles &amp; Permissions</h2>
+        <p class="roles-subtitle">Which roles exist and what each one may do</p>
+      </div>
+      <div class="roles-actions">
+        <button class="create-btn" :disabled="!store.canManageRoles" @click="newRoleDialog = true">
+          + New role
+        </button>
+        <button
+          class="save-btn"
+          :disabled="!dirty || !store.canManageRoles || saving"
+          @click="save"
+        >
+          {{ saving ? 'Saving…' : 'Save changes' }}
+        </button>
+      </div>
     </div>
 
     <q-banner v-if="!store.canManageRoles && !store.loading" class="bg-warning text-dark q-mb-md">
@@ -234,6 +233,62 @@ async function save() {
 </script>
 
 <style scoped>
+.roles-page {
+  padding: 24px;
+}
+
+.roles-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.roles-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--matou-foreground);
+}
+
+.roles-subtitle {
+  color: var(--matou-muted-foreground);
+  margin: 4px 0 0;
+}
+
+.roles-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.create-btn,
+.save-btn {
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  border: 2px solid var(--matou-teal, #0d9488);
+}
+
+.create-btn {
+  background: transparent;
+  color: var(--matou-teal, #0d9488);
+}
+
+.save-btn {
+  background: var(--matou-teal, #0d9488);
+  color: white;
+}
+
+.create-btn:disabled,
+.save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .roles-matrix th {
   white-space: nowrap;
 }

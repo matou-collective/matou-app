@@ -114,9 +114,9 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
     await expect(adminPage.getByText(/built-in default policy/i)).toBeVisible();
 
-    // All 10 builtin roles and the 13 capability columns render.
+    // All 7 builtin roles and the 13 capability columns render.
     const matrix = adminPage.locator('.roles-matrix');
-    await expect(matrix.locator('tbody tr')).toHaveCount(10);
+    await expect(matrix.locator('tbody tr')).toHaveCount(7);
     await expect(matrix.locator('thead th')).toHaveCount(14); // Role + 13 caps
     await expect(matrix.getByText('Founding Member')).toBeVisible();
     await expect(matrix.getByText('Manage roles')).toBeVisible();

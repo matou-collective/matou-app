@@ -94,7 +94,7 @@ func TestGetRolePolicyDefault(t *testing.T) {
 	if resp.Source != "default" {
 		t.Errorf("source = %q, want default", resp.Source)
 	}
-	if len(resp.Policy.Roles) != 10 {
+	if len(resp.Policy.Roles) != 7 {
 		t.Errorf("default policy roles = %d, want 10", len(resp.Policy.Roles))
 	}
 	if len(resp.Capabilities) != 13 {

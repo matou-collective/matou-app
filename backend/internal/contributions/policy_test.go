@@ -89,8 +89,8 @@ func TestDefaultPolicyShape(t *testing.T) {
 	if p.Version != 0 {
 		t.Errorf("default policy Version = %d, want 0 (0 = built-in, unsaved)", p.Version)
 	}
-	if len(p.Roles) != 10 {
-		t.Errorf("default policy has %d roles, want the 10 builtins", len(p.Roles))
+	if len(p.Roles) != 7 {
+		t.Errorf("default policy has %d roles, want the 7 builtins", len(p.Roles))
 	}
 	for _, r := range p.Roles {
 		if !r.Builtin {

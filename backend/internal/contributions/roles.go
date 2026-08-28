@@ -12,10 +12,7 @@ const (
 	RoleProjectSteward    Role = "project_steward"
 	RoleOperationsSteward Role = "operations_steward"
 	RoleCommunitySteward  Role = "community_steward"
-	RoleTechSteward       Role = "tech_steward"
-	RoleTreasurySteward   Role = "treasury_steward"
 	RoleFoundingMember    Role = "founding_member"
-	RoleElderCouncil      Role = "elder_council"
 )
 
 // MapKERIRole maps a KERI credential role string (Title Case) to contribution roles.
@@ -33,13 +30,13 @@ func MapKERIRole(keriRole string) []Role {
 	case "Founding Member":
 		return []Role{RoleMember, RoleContributor, RoleFoundingMember, RoleOperationsSteward, RoleProjectSteward, RoleProjectLead}
 	case "Financial Steward":
-		return []Role{RoleMember, RoleContributor, RoleTreasurySteward}
+		return []Role{RoleMember, RoleContributor}
 	case "Governance Steward":
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward}
 	case "Treasury Steward":
-		return []Role{RoleMember, RoleContributor, RoleTreasurySteward}
+		return []Role{RoleMember, RoleContributor}
 	case "Technical Steward":
-		return []Role{RoleMember, RoleContributor, RoleTechSteward, RoleProjectLead}
+		return []Role{RoleMember, RoleContributor, RoleProjectLead}
 	case "Cultural Steward":
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward}
 	default:
@@ -132,8 +129,7 @@ const (
 // live in the service/handler layer.
 var allRoles = []Role{
 	RoleMember, RoleContributor, RoleProjectLead, RoleProjectSteward,
-	RoleCommunitySteward, RoleTechSteward, RoleTreasurySteward,
-	RoleOperationsSteward, RoleFoundingMember, RoleElderCouncil,
+	RoleCommunitySteward, RoleOperationsSteward, RoleFoundingMember,
 }
 
 var stewardScope = []Role{
