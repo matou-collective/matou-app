@@ -9,7 +9,7 @@
     />
 
     <!-- Content -->
-    <div class="flex-1 overflow-y-auto p-6 md:p-8">
+    <div class="flex-1 overflow-y-auto p-6 md:p-8 pb-safe-area">
       <form class="space-y-6 max-w-md mx-auto" @submit.prevent="handleSubmit">
         <div class="space-y-2">
           <label class="text-sm font-medium" for="name">Name *</label>

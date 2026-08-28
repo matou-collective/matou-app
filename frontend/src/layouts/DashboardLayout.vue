@@ -757,6 +757,10 @@ $bottom-nav-height: 64px;
   .main-content {
     margin-left: 0;
     width: 100%;
+    // On mobile there is no top sidebar/header, so page content starts at the
+    // very top of an edge-to-edge WebView — clear the status bar with the top
+    // safe-area inset (0 on web/Electron).
+    padding-top: env(safe-area-inset-top);
     // Keep content clear of the fixed bottom bar (bar height + safe area).
     padding-bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
   }

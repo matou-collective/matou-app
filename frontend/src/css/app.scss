@@ -88,3 +88,30 @@ code {
     overflow-y: auto !important;
   }
 }
+
+// ── Safe-area insets (edge-to-edge mobile / Capacitor Android) ──────────────────
+// Capacitor builds run the WebView edge-to-edge (viewport-fit=cover in
+// index.html), so headers render under the status bar and footers/scroll
+// containers render under the gesture/navigation bar. These helpers add the
+// device inset on top of the onboarding screens' standard `p-6 md:p-8` padding
+// (1.5rem → 2rem) so that content clears those system bars.
+//
+// On web/Electron `env(safe-area-inset-*)` resolves to 0, leaving the padding
+// identical to `p-6 md:p-8` — no visual change. The doubled selector (`.x.x`)
+// raises specificity above Tailwind's `p-6`/`md:p-8` utilities so it wins
+// regardless of stylesheet order.
+.pt-safe-area.pt-safe-area {
+  padding-top: calc(1.5rem + env(safe-area-inset-top));
+
+  @media (min-width: 768px) {
+    padding-top: calc(2rem + env(safe-area-inset-top));
+  }
+}
+
+.pb-safe-area.pb-safe-area {
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+
+  @media (min-width: 768px) {
+    padding-bottom: calc(2rem + env(safe-area-inset-bottom));
+  }
+}
