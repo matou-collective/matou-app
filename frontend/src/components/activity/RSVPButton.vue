@@ -91,6 +91,8 @@ onMounted(() => {
 
 .rsvp-btn {
   flex: 1;
+  min-width: 0;
+  white-space: nowrap;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -132,5 +134,11 @@ onMounted(() => {
 .rsvp-btn.decline.active {
   background: #ef4444;
   border-color: #ef4444;
+}
+
+@media (max-width: 767px) {
+  .rsvp-btn {
+    padding: 0.5rem 0.5rem;
+  }
 }
 </style>
