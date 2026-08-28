@@ -1,5 +1,5 @@
 <template>
-  <div class="dashboard-layout">
+  <div class="dashboard-layout" :class="{ 'keyboard-open': keyboardOpen }">
     <!-- Sidebar -->
     <aside class="sidebar">
       <!-- Logo Header -->
@@ -155,6 +155,7 @@ import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useActivityStore } from 'stores/activity';
 import { useCommentScope } from 'src/composables/useCommentScope';
+import { useKeyboardOpen } from 'src/composables/useKeyboardOpen';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useKERINotificationService } from 'src/composables/useKERINotificationService';
 import { initNotifications, registerNotificationClickHandler } from 'src/lib/notifications';
@@ -183,6 +184,11 @@ const activityStore = useActivityStore();
 const scope = useCommentScope();
 const profileViewer = useProfileViewer();
 const showReportDialog = ref(false);
+
+// Hide the mobile bottom tab bar while the soft keyboard is open so it doesn't
+// float above the keyboard and eat vertical space (#126). Web/Electron never
+// see a keyboard, so the flag stays false there.
+const keyboardOpen = useKeyboardOpen();
 
 const projectsUnreadTotal = computed(() => {
   // Project rollup: own project comments + contribution comments for each
@@ -779,6 +785,16 @@ $bottom-nav-height: 64px;
     z-index: 60;
     background-color: rgba(0, 0, 0, 0.4);
     padding-bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+  }
+
+  // Soft keyboard open (#126): hide the bottom tab bar so it doesn't float
+  // above the keyboard, and reclaim its reserved content padding.
+  .dashboard-layout.keyboard-open .bottom-nav {
+    display: none;
+  }
+
+  .dashboard-layout.keyboard-open .main-content {
+    padding-bottom: 0;
   }
 }
 </style>
