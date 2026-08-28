@@ -48,7 +48,9 @@ func CurrentPolicy() *RolePolicy {
 type StorePolicyProvider struct {
 	store   ObjectStore
 	spaceID string
-	ttl     time.Duration
+	// spaceIDFn, when set, overrides spaceID (see SetSpaceIDResolver).
+	spaceIDFn func() string
+	ttl       time.Duration
 
 	mu        sync.Mutex
 	cached    *RolePolicy
@@ -57,6 +59,27 @@ type StorePolicyProvider struct {
 
 func NewStorePolicyProvider(store ObjectStore, spaceID string, ttl time.Duration) *StorePolicyProvider {
 	return &StorePolicyProvider{store: store, spaceID: spaceID, ttl: ttl}
+}
+
+// SetSpaceIDResolver makes the provider look up the community-readonly space
+// ID on every read instead of using the value captured at construction. The
+// backend starts before an identity (and therefore the space) exists, so the
+// wiring passes the identity's live getter here.
+func (s *StorePolicyProvider) SetSpaceIDResolver(fn func() string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.spaceIDFn = fn
+}
+
+// currentSpaceID returns the resolver's value when set, else the static ID.
+// Callers hold s.mu.
+func (s *StorePolicyProvider) currentSpaceID() string {
+	if s.spaceIDFn != nil {
+		if id := s.spaceIDFn(); id != "" {
+			return id
+		}
+	}
+	return s.spaceID
 }
 
 // Policy returns the synced policy, or nil when none exists / space not
@@ -86,15 +109,19 @@ func (s *StorePolicyProvider) PolicyOrErr() (*RolePolicy, error) {
 // TTL. It returns the store's error unmodified (alongside any still-cached
 // value) so callers can decide whether to fail open or closed.
 func (s *StorePolicyProvider) fetchFromStore() (*RolePolicy, error) {
-	if s.store == nil || s.spaceID == "" {
+	if s.store == nil {
 		return nil, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	spaceID := s.currentSpaceID()
+	if spaceID == "" {
+		return nil, nil
+	}
 	if s.cached != nil && time.Since(s.fetchedAt) < s.ttl {
 		return s.cached, nil
 	}
-	raws, err := s.store.List(s.spaceID, "RolePolicy")
+	raws, err := s.store.List(spaceID, "RolePolicy")
 	if err != nil {
 		return s.cached, err // cached may be nil; err signals the read failed
 	}

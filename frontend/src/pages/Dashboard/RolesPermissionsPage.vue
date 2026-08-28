@@ -1,6 +1,6 @@
 <!-- frontend/src/pages/Dashboard/RolesPermissionsPage.vue -->
 <template>
-  <q-page padding>
+  <div class="roles-page q-pa-md">
     <div class="row items-center q-mb-md">
       <h1 class="text-h5 q-my-none">Roles &amp; Permissions</h1>
       <q-space />
@@ -97,7 +97,7 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
-  </q-page>
+  </div>
 </template>
 
 <script setup lang="ts">

@@ -445,6 +445,10 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	contribNotifier := &contribNotifierAdapter{svc: notifService}
 	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
 	rolePolicyProvider := contributions.NewStorePolicyProvider(contribStoreAdapter, communityReadOnlySpaceID, 5*time.Second)
+	// The read-only space ID is empty until an identity exists (first run /
+	// org setup happens after boot), so resolve it live rather than freezing
+	// the boot-time value.
+	rolePolicyProvider.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
 	contributions.SetPolicyProvider(rolePolicyProvider)
 	rolePolicyHandler := api.NewRolePolicyHandler(
 		rolePolicyProvider,
@@ -453,6 +457,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		communityReadOnlySpaceID,
 		profileRoleLookup.IsAdminAID,
 	)
+	rolePolicyHandler.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
 	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
 	credentialRoleLookup := api.NewCredentialRoleLookup(store)
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)

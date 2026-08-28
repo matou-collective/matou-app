@@ -156,6 +156,7 @@ import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useActivityStore } from 'stores/activity';
 import { useRolePolicyStore } from 'src/stores/rolePolicy';
+import { useIdentityStore } from 'stores/identity';
 import { useCommentScope } from 'src/composables/useCommentScope';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useKERINotificationService } from 'src/composables/useKERINotificationService';
@@ -183,6 +184,7 @@ const projectsStore = useProjectsStore();
 const contributionsStore = useContributionsStore();
 const activityStore = useActivityStore();
 const rolePolicyStore = useRolePolicyStore();
+const identityStore = useIdentityStore();
 const scope = useCommentScope();
 const profileViewer = useProfileViewer();
 const showReportDialog = ref(false);
@@ -375,7 +377,17 @@ onMounted(() => {
   projectsStore.fetchProjects().catch(() => {});
   contributionsStore.fetchContributions().catch(() => {});
   activityStore.loadNotices().catch(() => {});
-  void rolePolicyStore.load();
+  // Role policy drives the admin-only Roles nav entry. callerCapabilities
+  // depend on X-User-AID, which is only sent once the identity store has an
+  // AID — after a recovery login that lands later than mount — so (re)load
+  // whenever the AID changes rather than once.
+  watch(
+    () => identityStore.aidPrefix,
+    () => {
+      void rolePolicyStore.load();
+    },
+    { immediate: true },
+  );
 
   // Load chat data so the unread badge shows on all dashboard pages.
   // Fire-and-forget: don't await, so child routes mount immediately.

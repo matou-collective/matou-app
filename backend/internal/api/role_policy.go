@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"time"
@@ -26,7 +27,27 @@ type RolePolicyHandler struct {
 	writer     PolicyWriter
 	store      contributions.ObjectStore // for custom-role-in-use checks
 	roSpaceID  string
+	roSpaceFn  func() string     // live resolver; overrides roSpaceID when set
 	isAdminAID func(string) bool // org-config admin backstop
+}
+
+// SetSpaceIDResolver makes the handler and its writer resolve the
+// community-readonly space ID per request (the backend starts before the
+// org/identity exists, so the constructor value is often empty).
+func (h *RolePolicyHandler) SetSpaceIDResolver(fn func() string) {
+	h.roSpaceFn = fn
+	if w, ok := h.writer.(*SpacePolicyWriter); ok {
+		w.roSpaceFn = fn
+	}
+}
+
+func (h *RolePolicyHandler) spaceID() string {
+	if h.roSpaceFn != nil {
+		if id := h.roSpaceFn(); id != "" {
+			return id
+		}
+	}
+	return h.roSpaceID
 }
 
 func NewRolePolicyHandler(
@@ -178,6 +199,7 @@ func (h *RolePolicyHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		Grants:    req.Grants,
 	}
 	if err := h.writer.WritePolicy(updated); err != nil {
+		log.Printf("[RolePolicy] write failed (by %s, version %d): %v", aid, updated.Version, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to store policy: %v", err)})
 		return
 	}
@@ -270,7 +292,7 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 	}
 	if len(removed) > 0 && h.store != nil {
 		for _, profileType := range []string{"CommunityProfile", "SharedProfile"} {
-			raws, err := h.store.List(h.roSpaceID, profileType)
+			raws, err := h.store.List(h.spaceID(), profileType)
 			if err != nil {
 				return "", fmt.Errorf("checking custom-role usage in %s: %w", profileType, err)
 			}
@@ -287,28 +309,46 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 	return "", nil
 }
 
-// SpacePolicyWriter writes the RolePolicy singleton into the community-
-// readonly space using the space key set (same write path as profiles).
+// SpacePolicyWriter persists the RolePolicy singleton into the
+// community-readonly space, signed with that space's key set — the same way
+// the profile and notice handlers write there (see profiles.go init-member).
 type SpacePolicyWriter struct {
 	spaceManager *anysync.SpaceManager
 	roSpaceID    string
+	roSpaceFn    func() string
 }
 
 func NewSpacePolicyWriter(sm *anysync.SpaceManager, roSpaceID string) *SpacePolicyWriter {
 	return &SpacePolicyWriter{spaceManager: sm, roSpaceID: roSpaceID}
 }
 
+func (s *SpacePolicyWriter) spaceID() string {
+	if s.roSpaceFn != nil {
+		if id := s.roSpaceFn(); id != "" {
+			return id
+		}
+	}
+	return s.roSpaceID
+}
+
 func (s *SpacePolicyWriter) WritePolicy(p *contributions.RolePolicy) error {
-	if s.roSpaceID == "" {
+	roSpaceID := s.spaceID()
+	if roSpaceID == "" {
 		return fmt.Errorf("community-readonly space not configured")
 	}
 	client := s.spaceManager.GetClient()
 	if client == nil {
 		return fmt.Errorf("any-sync client not available")
 	}
-	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), s.roSpaceID, client.GetSigningKey())
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), roSpaceID, client.GetSigningKey())
 	if err != nil {
 		return fmt.Errorf("loading space keys: %w", err)
+	}
+	ownerKey := ""
+	if keys.SigningKey != nil {
+		if pub, err := keys.SigningKey.GetPublic().Marshall(); err == nil {
+			ownerKey = fmt.Sprintf("%x", pub)
+		}
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
@@ -317,12 +357,13 @@ func (s *SpacePolicyWriter) WritePolicy(p *contributions.RolePolicy) error {
 	payload := &anysync.ObjectPayload{
 		ID:        "RolePolicy",
 		Type:      "RolePolicy",
+		OwnerKey:  ownerKey,
 		Data:      data,
 		Timestamp: time.Now().Unix(),
-		Version:   1,
+		Version:   p.Version,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, err = s.spaceManager.ObjectTreeManager().AddObject(ctx, s.roSpaceID, payload, keys.SigningKey)
+	_, err = s.spaceManager.ObjectTreeManager().AddObject(ctx, roSpaceID, payload, keys.SigningKey)
 	return err
 }
