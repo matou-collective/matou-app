@@ -251,9 +251,6 @@ import {
   Sun,
   Users,
   TrendingUp,
-  CoinsIcon,
-  Vote,
-  Target,
   UserPlus,
   UserRoundPlus,
   MessageCircle,
@@ -265,6 +262,8 @@ import {
 } from 'lucide-vue-next';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useIsMobile } from 'src/composables/useIsMobile';
+import { buildHeaderStats } from 'src/pages/dashboardHeaderStats';
 import { useOrgWitnessState } from 'src/composables/useOrgWitnessState';
 import WitnessAdoptionBanner from 'src/components/dashboard/WitnessAdoptionBanner.vue';
 import { fetchOrgConfig } from 'src/api/config';
@@ -284,6 +283,9 @@ import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
 const { isSteward, canManageMembers, checkAdminStatus, recheckAdminStatus } = useAdminAccess();
+
+// On mobile (≤767px) the three placeholder "coming soon" stat tiles are hidden (#123)
+const isMobile = useIsMobile();
 const {
   pendingRegistrations,
   expiredRegistrations,
@@ -639,18 +641,15 @@ const toggleDarkMode = () => {
   document.documentElement.classList.toggle('dark', isDark.value);
 };
 
-// Stats data - computed to show real pending registration count for stewards only
-const notificationStats = computed(() => [
-  {
-    label: 'Pending Registrations',
-    value: isSteward.value ? pendingRegistrations.value.length : 0,
-    icon: Users,
-    visible: isSteward.value,
-  },
-  { label: 'New Transactions', value: 0, icon: CoinsIcon, visible: true, comingSoon: true },
-  { label: 'Proposal Updates', value: 0, icon: Vote, visible: true, comingSoon: true },
-  { label: 'Contribution Actions', value: 0, icon: Target, visible: true, comingSoon: true },
-]);
+// Stats data - computed to show real pending registration count for stewards
+// only; the three placeholder tiles are hidden on mobile (#123).
+const notificationStats = computed(() =>
+  buildHeaderStats({
+    isSteward: isSteward.value,
+    pendingCount: pendingRegistrations.value.length,
+    isMobile: isMobile.value,
+  })
+);
 
 // Live member data from profiles store (with fallback to static data)
 const allMembers = computed(() => {
