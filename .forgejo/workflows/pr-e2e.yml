@@ -12,7 +12,9 @@ jobs:
   feature-e2e:
     runs-on: matou-workstation
     timeout-minutes: 40
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.pull_request.head.ref, 'agent/issue-')
+    # Every PR: run-pr-e2e.sh resolves the spec from the branch name
+    # (agent/issue-<N>) or the PR body's '**Feature e2e:**' marker, and posts a
+    # verdict comment on the PR either way.
     steps:
       - name: Feature e2e under global lock
         env:
@@ -27,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           exec 9>/tmp/matou-swarm.lock
-          flock -w 1800 9 || { echo "pr-e2e: lock busy for 30min — skipping this run (PR update retriggers)"; exit 0; }
+          flock -w 1800 9 || { echo "pr-e2e: lock busy for 30min — giving up; re-run via workflow_dispatch or push again"; exit 1; }
           workdir="$HOME/swarm-e2e/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
