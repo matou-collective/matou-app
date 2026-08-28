@@ -19,9 +19,12 @@ const viewportHeight = useVisualViewport();
 // and composer shrink together when the soft keyboard opens — otherwise the
 // fixed-100vh column keeps its height and the first messages end up hidden
 // behind the keyboard (#125). Desktop/web keeps the static CSS height.
+// The column starts below DashboardLayout's top safe-area padding, so subtract
+// that inset or the composer overshoots the visible viewport by exactly the
+// status-bar height once the keyboard is open (env() is 0 on web/Electron).
 const pageStyle = computed(() =>
   isMobile.value && viewportHeight.value != null
-    ? { height: `${viewportHeight.value}px` }
+    ? { height: `calc(${viewportHeight.value}px - env(safe-area-inset-top))` }
     : {}
 );
 
