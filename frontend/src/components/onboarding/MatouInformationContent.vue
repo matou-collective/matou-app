@@ -52,10 +52,10 @@
           <li
             v-for="(expectation, index) in displayExpectations"
             :key="index"
-            class="flex items-start gap-2"
+            class="flex flex-nowrap items-start gap-2"
           >
-            <span class="text-primary mt-1">&bull;</span>
-            <span>{{ expectation }}</span>
+            <span class="text-primary mt-1 shrink-0">&bull;</span>
+            <span class="flex-1 min-w-0">{{ expectation }}</span>
           </li>
         </ul>
       </div>
