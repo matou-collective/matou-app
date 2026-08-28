@@ -8,7 +8,7 @@
     />
 
     <!-- Content -->
-    <div class="flex-1 overflow-y-auto p-6 md:p-8 -mt-6">
+    <div class="flex-1 overflow-y-auto p-6 md:p-8 -mt-6 pb-safe-area">
       <div class="max-w-2xl mx-auto space-y-6">
         <!-- Status Card -->
         <div
