@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
@@ -211,17 +212,25 @@ func withVerifiedAID(r *http.Request, aid string) *http.Request {
 // Regardless of the enforcement flag, a request bearing a valid session token
 // has its verified AID recorded on the context (see VerifiedAID).
 //
-// When enabled:
-//   - a request bearing a valid session token has its X-User-AID overwritten
-//     with the cryptographically verified AID from the session;
-//   - a request bearing an invalid/expired token is rejected with 401;
-//   - a request with no token has any client-supplied X-User-AID stripped, so
-//     it reaches RBAC as an anonymous request (protected routes then 401,
-//     public read routes still serve).
+// When enabled, a bearer token falls into one of three cases:
+//   - a valid session token: X-User-AID is overwritten with the
+//     cryptographically verified AID from the session;
+//   - the per-launch API token: treated exactly like "no token" — any
+//     client-supplied X-User-AID is stripped and the request passes through as
+//     anonymous. The API token is a legitimate bearer the app sends on every
+//     backend request before it has a session (boot, first-run, identity/set),
+//     and the outer TokenGuardWithSessions has already accepted it; it must not
+//     be mistaken for an invalid session and 401'd. It cannot assert a trusted
+//     identity, so protected routes still 401 and only public reads serve;
+//   - anything else (an unknown/expired token): rejected with 401.
+//
+// A request with no token has any client-supplied X-User-AID stripped, so it
+// reaches RBAC as an anonymous request (protected routes then 401, public read
+// routes still serve).
 //
 // When disabled (default), X-User-AID behaves as before: the header is passed
 // through untouched and never rejected.
-func SignedAuthMiddleware(sessions *auth.SessionStore, next http.Handler) http.Handler {
+func SignedAuthMiddleware(sessions *auth.SessionStore, apiToken string, next http.Handler) http.Handler {
 	enforced := signedAuthEnabled()
 	if enforced {
 		log.Println("[Security] Signed-request auth ENFORCED (MATOU_REQUIRE_SIGNED_AUTH set)")
@@ -240,13 +249,22 @@ func SignedAuthMiddleware(sessions *auth.SessionStore, next http.Handler) http.H
 			next.ServeHTTP(w, r)
 			return
 		}
+		if apiToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(apiToken)) == 1 {
+			// The per-launch API token is a legitimate anonymous bearer, not an
+			// invalid session: take the same path as "no token".
+			if enforced {
+				r.Header.Del("X-User-AID")
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
 		aid, ok := sessions.Validate(token)
 		if !ok {
 			if enforced {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired session"})
 				return
 			}
-			// Not a session (e.g. the API token) — nothing to verify.
+			// Not a session and not the API token — nothing to verify.
 			next.ServeHTTP(w, r)
 			return
 		}
