@@ -32,11 +32,36 @@ heal_rails "$co" "$pre" && fail "4-file commit passed"
 [ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after file-cap breach"
 pass=$((pass+1))
 
-# 3: >60 changed lines → breach + reset
+# 3: >200 changed non-test lines → breach + reset
 co="$tmp/co3"; pre="$(mkco "$co")"
-( cd "$co" && seq 1 70 > big.txt && git add -A && git commit -qm "rehearsal healer: long" )
-heal_rails "$co" "$pre" && fail "70-line commit passed"
+( cd "$co" && seq 1 210 > big.txt && git add -A && git commit -qm "rehearsal healer: long" )
+heal_rails "$co" "$pre" && fail "210-line commit passed"
 [ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after line-cap breach"
+pass=$((pass+1))
+
+# 3b: 150 lines (over the old 60 cap, under 200) passes — the 2026-08-28 ETXTBSY
+#     heal's shape
+co="$tmp/co3b"; pre="$(mkco "$co")"
+( cd "$co" && seq 1 150 > fix.go && git add -A && git commit -qm "rehearsal healer: real fix" )
+heal_rails "$co" "$pre" || fail "150-line commit rejected"
+pass=$((pass+1))
+
+# 3c: test files don't count toward the line cap: 20 fix lines + 300 lines of
+#     _test.go / .test.ts / .spec.ts pass; the same 300 lines in a non-test
+#     file breach
+co="$tmp/co3c"; pre="$(mkco "$co")"
+( cd "$co" && seq 1 20 > fix.go && seq 1 150 > fix_test.go && seq 1 150 > fix.test.ts \
+  && git add -A && git commit -qm "rehearsal healer: fix with tests" )
+heal_rails "$co" "$pre" || fail "fix+tests (20 non-test lines) rejected"
+co="$tmp/co3d"; pre="$(mkco "$co")"
+( cd "$co" && seq 1 20 > fix.go && seq 1 190 > fix2.go && seq 1 150 > fix.spec.ts \
+  && git add -A && git commit -qm "rehearsal healer: fix without tests" )
+heal_rails "$co" "$pre" && fail "210 non-test lines + spec passed (spec exclusion miscounted?)"
+co="$tmp/co3e"; pre="$(mkco "$co")"
+( cd "$co" && seq 1 210 > helper.go && seq 1 5 > a.spec.ts \
+  && git add -A && git commit -qm "rehearsal healer: big non-test" )
+heal_rails "$co" "$pre" && fail "210 non-test lines passed"
+[ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after non-test line-cap breach"
 pass=$((pass+1))
 
 # 4: touching .sandcastle/rehearsal-* → breach + reset (self-mod guard)

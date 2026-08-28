@@ -36,6 +36,13 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # every writer swallows its exit (the db is a mirror; the verdict artifact stays
 # the dependable record), so a missing python3 never reds a triage run.
 . "$here/swarm-db-lib.sh"
+# shellcheck source=triage-yield-lib.sh
+# The per-repo consecutive-YIELD counter (#110): every pre-work yield below
+# (limit-parked, drive-reserved) bumps it via triage-yield-signal.sh when
+# untriaged issues exist, and a real triage pass resets it — so a repo starving
+# behind other repos' heavy work surfaces a signal instead of a run of green
+# no-op ticks (Matou/coa: 12 untriaged, 12 green yields, 0 triaged).
+. "$here/triage-yield-lib.sh"
 policy_load "${SWARM_POLICY_FILE:-}"
 : "${FORGEJO_TOKEN:?}"
 : "${FORGEJO_API:?}"
@@ -110,6 +117,10 @@ trap 'triage_on_signal SIGINT 130' INT
 # "limit-parked" note so the run list never reads a parked window as green health.
 if claude_limit_parked; then
   echo "run-triage: limit-parked — Claude usage limit window (marker fresh), yielding without calling claude"
+  # A yield with untriaged issues waiting is a starvation signal (#110); a parked
+  # host that keeps yielding while tickets pile up must not read as green health.
+  # Best-effort — the signal never changes this clean exit.
+  bash "$here/triage-yield-signal.sh" limit-parked || true
   exit 0
 fi
 
@@ -126,6 +137,10 @@ TRIAGE_DRIVE_DEFER_COUNT="${TRIAGE_DRIVE_DEFER_COUNT:-/tmp/matou-triage-drive-de
 if host_capacity_drive_wanted; then
   defer_n="$(host_capacity_consumer_defer_bump "$TRIAGE_DRIVE_DEFER_COUNT")"
   echo "run-triage: a rehearsal drive has reserved host capacity (#663) — yielding this run to a ready drive — reservation age $(host_capacity_drive_wanted_age)s — skipped $defer_n consecutive tick(s)"
+  # Same starvation signal (#110): the drive-defer counter above is the DRIVE's
+  # own streak; this is the per-repo triage-queue streak, and it fires a visible
+  # signal once untriaged issues have waited through the threshold. Best-effort.
+  bash "$here/triage-yield-signal.sh" drive-reserved || true
   exit 0
 fi
 host_capacity_consumer_defer_reset "$TRIAGE_DRIVE_DEFER_COUNT"
@@ -134,6 +149,10 @@ verdict_stage "preflight (list untriaged issues)"
 untriaged="$(bash "$here/preflight-triage.sh")"
 n="$(jq 'length' <<<"$untriaged")"
 if [ "$n" -eq 0 ]; then
+  # An empty queue is not starvation — clear any consecutive-yield streak (#110)
+  # so a burst that DID get triaged never leaves a stale count to mis-signal on
+  # the next unlucky yield.
+  triage_yield_reset
   echo "run-triage: nothing to triage"
   exit 0
 fi
@@ -141,8 +160,27 @@ echo "run-triage: $n untriaged issue(s):"
 jq -r '.[] | "  #\(.number) \(.title)"' <<<"$untriaged"
 
 # Open issues currently sitting at a human gate, as "number<TAB>label" lines.
+#
+# Only labels this repo ACTUALLY mints are queried (#104): Forgejo does not 404
+# an unknown `labels=` filter — it silently returns EVERY open issue — so a gate
+# label a consumer never minted (`needs-design` outside a design-tier repo) would
+# otherwise report the whole open backlog as gated, spamming a false
+# ":wave: Triage needs you … → needs-design" digest. Validate against the repo's
+# real label set instead of trusting the filter.
+#
+# `LC_ALL=C sort -u` forces BYTE collation (#104): under the runner's locale
+# `sort` ignores the TAB in "<num>\t<label>", so `62\tx` sorts before `6\tx`.
+# GNU `comm` (below) order-checks with LOCALE collation whenever LC_COLLATE is
+# not C (it only falls back to `memcmp` under C/POSIX), so a byte-sorted input
+# fed to an ambient-locale `comm` is seen as out of order — `comm` aborts the
+# run under `set -euo pipefail` (#106). Both sides must agree on collation, so
+# the `comm` is pinned `LC_ALL=C` too; the check is lazy, so it only bit once
+# triage changed the gated set — exactly when triage did work.
 human_gated() {
+  local existing label
+  existing="$(api "$FORGEJO_API/labels?limit=100" | jq -r '.[].name')"
   for label in ready-for-human needs-design; do
+    grep -qxF "$label" <<<"$existing" || continue
     page=1
     while :; do
       batch="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=$label&limit=50&page=$page")"
@@ -152,9 +190,10 @@ human_gated() {
       [ "$count" -lt 50 ] && break
       page=$((page + 1))
     done
-  done | sort -u
+  done | LC_ALL=C sort -u
 }
 
+verdict_stage "human_gated (before)"
 before="$(human_gated)"
 # Capture the claude output so a limit refusal can be classified after a failed
 # call (#253): the log feeds both the limit detector and the verdict's error
@@ -236,9 +275,22 @@ while :; do
   break
 done
 triage_verdict="triaged"   # the claude call returned clean; the run row closes green
+# A real triage pass ran — reset the per-repo consecutive-yield streak and clear
+# any starvation-signal episode marker (#110), so the next yield counts from 1.
+triage_yield_reset
+
+# Each post-claude stage names ITSELF (#104). verdict_stage was last set to the
+# claude stage WITH the claude log as its errlog; leaving it there meant any
+# failure below (a comm collation abort, a notify error, the recount) was blamed
+# on the claude call AND had verdict_write grep the claude log — whose triage
+# PROSE ("… cannot …") matched the error regex, keying the healer on a triage
+# RULING instead of the real downstream fault (#235's hazard one stage on). No
+# errlog on these stages: the stage name alone keys the signature, never prose.
+verdict_stage "human_gated (after)"
 after="$(human_gated)"
 
-new="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
+verdict_stage "human-gate digest + notify"
+new="$(LC_ALL=C comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
 if [ -n "$new" ]; then
   digest=""
   while IFS=$'\t' read -r num label; do
@@ -260,6 +312,7 @@ if [ -n "$new" ]; then
   fi
 fi
 
+verdict_stage "recount untriaged"
 still="$(bash "$here/preflight-triage.sh" | jq 'length')"
 if [ "$still" -gt 0 ]; then
   echo "run-triage: $still issue(s) still untriaged (next tick retries)" >&2

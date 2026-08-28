@@ -154,8 +154,14 @@ red_run "wide fix temptation"
 bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (cap)"
 [ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "origin moved on cap breach"
 [ "$(git -C "$tmp/co" rev-list --count HEAD)" = "1" ] || fail "checkout not reset on cap breach"
+# The rail-6 marker is keyed on the FAULT (leg + error), not the leg-keyed
+# incident signature (2026-08-28: a leg-keyed counter locked `join` out).
+. "$here/../heal-lib.sh"
 sig_now="$(grep -o 'rehearsal-sig: [a-f0-9]*' "$CURL_LOG" | head -1 | awk '{print $2}')"
-[ "$(cat "$tmp/state/heal-fail-$sig_now" 2>/dev/null)" = "1" ] || fail "mechanical failure not marked"
+fault_now="$(compute_signature "rehearsal-183" "found :: wide fix temptation")"
+[ "$fault_now" != "$sig_now" ] || fail "fault key collapsed onto the leg signature"
+[ "$(cat "$tmp/state/heal-fail-$fault_now" 2>/dev/null)" = "1" ] || fail "mechanical failure not marked under the fault key"
+[ -e "$tmp/state/heal-fail-$sig_now" ] && fail "mechanical failure marked under the leg signature (would lock the leg)"
 grep -q '"title"' "$CURL_LOG" || fail "cap breach did not fall through to filing"
 pass=$((pass+1))
 
@@ -192,13 +198,26 @@ pass=$((pass+1))
 #    attempt entirely (claude still called once, for the classic diagnosis).
 reset_case; export HEAL_MODE=healed-good
 red_run "stubborn sig"
-# pre-mark: same error → same leg → same sig as this run will compute
-. "$here/../heal-lib.sh"; pre_sig="$(compute_signature "rehearsal-183" "found")"
-echo 2 > "$tmp/state/heal-fail-$pre_sig"
+# pre-mark under the FAULT key (leg :: error) this run will compute; a mark
+# under the bare leg signature must NOT trip it (7b below)
+. "$here/../heal-lib.sh"; pre_fault="$(compute_signature "rehearsal-183" "found :: stubborn sig")"
+echo 2 > "$tmp/state/heal-fail-$pre_fault"
 out="$(bash "$here/../rehearsal-report.sh" "$tmp/run" 1)" || fail "reporter exited non-zero (backstop)"
 grep -q 'backstop' <<<"$out" || fail "backstop did not announce"
 [ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "origin moved despite backstop"
 grep -q '"title"' "$CURL_LOG" || fail "backstop did not file"
+pass=$((pass+1))
+
+# 7b: a DIFFERENT fault on the same leg is not locked out by 7's marks — the
+#     leg-keyed lockout of 2026-08-28 (#938/#939 filed with no heal attempt).
+#     Marks under the bare leg signature (the pre-fix key) are ignored too.
+reset_case; export HEAL_MODE=healed-good
+red_run "a different fault on the same leg"
+echo 2 > "$tmp/state/heal-fail-$pre_fault"
+echo 2 > "$tmp/state/heal-fail-$(compute_signature "rehearsal-183" "found")"
+out="$(bash "$here/../rehearsal-report.sh" "$tmp/run" 1)" || fail "reporter exited non-zero (7b)"
+grep -q 'backstop' <<<"$out" && fail "a sibling fault's marks locked the leg out"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "2" ] || fail "sibling fault was not healed"
 pass=$((pass+1))
 
 # 8: TAIL INVARIANT — a fully-healed red leaves #378 alone: no label flip,
