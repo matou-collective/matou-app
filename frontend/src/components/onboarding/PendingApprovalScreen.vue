@@ -99,7 +99,10 @@
           class="aid-card bg-card border border-border rounded-xl p-4 shadow-sm"
         >
           <div class="flex items-center justify-between gap-3">
-            <div class="flex-1 min-w-0">
+            <!-- w-0: the row is a wrapping flex container (Quasar .flex), so the
+                 unbreakable AID string's min-content width would otherwise
+                 propagate up and force the page wider than a phone viewport. -->
+            <div class="flex-1 min-w-0 w-0">
               <span class="text-xs text-muted-foreground">Your Identity Autonomic Identifier (AID)</span>
               <p class="text-sm font-mono truncate">{{ userAID }}</p>
             </div>
