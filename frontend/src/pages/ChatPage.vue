@@ -1,15 +1,29 @@
 <template>
-  <div class="chat-page">
+  <div class="chat-page" :style="pageStyle">
     <ChatLayout />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import ChatLayout from 'src/components/chat/ChatLayout.vue';
 import { useChatStore } from 'stores/chat';
+import { useIsMobile } from 'src/composables/useIsMobile';
+import { useVisualViewport } from 'src/composables/useVisualViewport';
 
 const chatStore = useChatStore();
+const isMobile = useIsMobile();
+const viewportHeight = useVisualViewport();
+
+// On mobile, pin the chat column to the *visible* viewport so the message list
+// and composer shrink together when the soft keyboard opens — otherwise the
+// fixed-100vh column keeps its height and the first messages end up hidden
+// behind the keyboard (#125). Desktop/web keeps the static CSS height.
+const pageStyle = computed(() =>
+  isMobile.value && viewportHeight.value != null
+    ? { height: `${viewportHeight.value}px` }
+    : {}
+);
 
 onUnmounted(() => {
   chatStore.selectChannel(null);
