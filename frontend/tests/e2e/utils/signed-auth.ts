@@ -29,6 +29,9 @@ export interface SessionAuth {
 
 const sessions = new Map<string, string>(); // aid -> session token
 
+// Mirrors backend DevAPIToken / node-fetch-auth.ts DEV_API_TOKEN.
+const DEV_API_TOKEN = 'matou-dev';
+
 /** Register a session token for an AID (for tokens obtained out of band). */
 export function registerSession(aid: string, token: string): void {
   sessions.set(aid, token);
@@ -50,7 +53,11 @@ export function sessionHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = { ...extra, 'X-User-AID': aid };
   const token = sessions.get(aid);
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  // No session registered for this AID: fall back to the dev/test API token
+  // so TokenGuard still admits the call (mirrors node-fetch-auth.ts). Browser
+  // contexts no longer carry a context-level Authorization header (see
+  // setupTestConfig), so page.request.* callers need it set explicitly.
+  headers['Authorization'] = `Bearer ${token ?? DEV_API_TOKEN}`;
   return headers;
 }
 
