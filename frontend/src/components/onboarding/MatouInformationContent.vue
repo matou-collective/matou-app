@@ -54,7 +54,7 @@
             :key="index"
             class="flex items-start gap-2"
           >
-            <span class="text-primary mt-1">&bull;</span>
+            <span class="text-primary mt-1 shrink-0">&bull;</span>
             <span>{{ expectation }}</span>
           </li>
         </ul>
