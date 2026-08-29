@@ -144,6 +144,7 @@ import {
   Hammer,
   Bug,
   Menu,
+  ShieldCheck,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -154,6 +155,8 @@ import { useCommentCursorsStore } from 'stores/commentCursors';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useActivityStore } from 'stores/activity';
+import { useRolePolicyStore } from 'src/stores/rolePolicy';
+import { useIdentityStore } from 'stores/identity';
 import { useCommentScope } from 'src/composables/useCommentScope';
 import { useKeyboardOpen } from 'src/composables/useKeyboardOpen';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
@@ -181,6 +184,8 @@ const commentCursorsStore = useCommentCursorsStore();
 const projectsStore = useProjectsStore();
 const contributionsStore = useContributionsStore();
 const activityStore = useActivityStore();
+const rolePolicyStore = useRolePolicyStore();
+const identityStore = useIdentityStore();
 const scope = useCommentScope();
 const profileViewer = useProfileViewer();
 const showReportDialog = ref(false);
@@ -229,6 +234,7 @@ const NAV_ICONS: Record<string, Component> = {
   proposals: Vote,
   projects: Target,
   contributions: Hammer,
+  'roles-permissions': ShieldCheck,
 };
 
 const navBadges = computed<Record<string, number>>(() => ({
@@ -238,8 +244,12 @@ const navBadges = computed<Record<string, number>>(() => ({
   contributions: contributionsUnreadTotal.value,
 }));
 
+// The Roles & Permissions entry is admin-only: it appears once the role
+// policy store confirms the caller holds manage_roles.
 const navItems = computed(() =>
-  NAV_ITEM_META.map((meta) => ({
+  NAV_ITEM_META.filter(
+    (meta) => meta.name !== 'roles-permissions' || rolePolicyStore.canManageRoles,
+  ).map((meta) => ({
     ...meta,
     icon: NAV_ICONS[meta.name] as Component,
     badge: navBadges.value[meta.name] ?? 0,
@@ -373,6 +383,17 @@ onMounted(() => {
   projectsStore.fetchProjects().catch(() => {});
   contributionsStore.fetchContributions().catch(() => {});
   activityStore.loadNotices().catch(() => {});
+  // Role policy drives the admin-only Roles nav entry. callerCapabilities
+  // depend on X-User-AID, which is only sent once the identity store has an
+  // AID — after a recovery login that lands later than mount — so (re)load
+  // whenever the AID changes rather than once.
+  watch(
+    () => identityStore.aidPrefix,
+    () => {
+      void rolePolicyStore.load();
+    },
+    { immediate: true },
+  );
 
   // Load chat data so the unread badge shows on all dashboard pages.
   // Fire-and-forget: don't await, so child routes mount immediately.
