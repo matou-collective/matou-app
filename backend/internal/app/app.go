@@ -439,6 +439,9 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	fmt.Fprintln(out, "Initializing contributions system...")
 	contribStoreAdapter := anysync.NewObjectStoreAdapter(spaceManager.ObjectTreeManager(), sdkClient, userIdentity)
 	contribService := contributions.NewService(contribStoreAdapter)
+	// Validate proposal writes against the org's persisted Proposal schema
+	// (custom required fields, enum edits) in addition to the built-in checks.
+	contribService.SetRegistry(typeRegistry)
 	notifBroadcaster := notifications.NewSSEBrokerAdapter(eventBroker)
 	notifEmailAdapter := notifications.NewEmailAdapter(emailSender)
 	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
@@ -647,6 +650,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	})
 
 	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
+	proposalsHandler.SetRegistry(typeRegistry)
 	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)
 	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager, contribNotifier)
 	implPlansHandler := api.NewImplementationPlansHandler(contribService, spaceManager)
