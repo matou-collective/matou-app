@@ -343,7 +343,7 @@ echo "ok 10 factory git identity reaches the session"
 reset_case
 : > "$tmp/mm.log"
 out="$(env PATH="$tmp/bin:$PATH" \
-  MATTERMOST_URL=http://chat MATTERMOST_BOT_TOKEN=tok MATTERMOST_CHANNEL_ID=cid \
+  MATTERMOST_URL=http://chat MATTERMOST_BOT_TOKEN=tok MATTERMOST_CHANNEL_ID=cid NOTIFY_ALLOW_PLAIN_HTTP_FORGE=1 \
   FORGEJO_TOKEN=dummy FORGEJO_API=http://fake/api/v1/repos/x/y \
   CURL_LOG="$tmp/curl.log" MM_LOG="$tmp/mm.log" \
   CLAUDE_CALLS="$tmp/claude.calls" CLAUDE_ENV="$tmp/claude.env" FIXTURES_DIR="$tmp/fixtures" \

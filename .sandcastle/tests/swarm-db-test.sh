@@ -450,4 +450,71 @@ echo '{"type":"result","result":"no usage"}' > "$tmp/nouse.json"
 ) || fail "swarmdb_spend_from_result must echo 0 and never fail when python3 is absent"
 pass=$((pass+1))
 
+# --- #113: sweep-orphans finalises SIGKILLed runs, fail-safe on the rest -------
+# A Forgejo-runner CANCEL is a SIGKILL, so a cancelled run's EXIT trap never
+# fires: its `runs` row + `processes` rows stay open forever and the fleet TUI
+# bills the dead row as a busy slot. sweep-orphans is the durable finaliser the
+# dead run's own trap could not be — but it must reap ONLY the provably-dead.
+now=2000000000
+old=$(( now - 20000 ))       # older than the 3h run-lifetime floor
+young=$(( now - 100 ))       # inside a run-lifetime — a possibly-live run
+# a genuinely-dead pid: spawn, kill, reap — its number is now free.
+sleep 300 & deadpid=$!; kill "$deadpid" 2>/dev/null; wait "$deadpid" 2>/dev/null || true
+
+# ORPHAN: old open run, its one open process is a dead pid → swept.
+db run-start --run ORPH --repo Matou/idss --trigger heal --started "$old"
+db attempt   --run ORPH --issue 500 --started "$old"
+db proc-open --run ORPH --kind claude --ref "$deadpid" --started "$old"
+# LIVE: old open run, but its pid ($$) is alive → spared.
+db run-start --run LIVE --repo Matou/idss --trigger issues --started "$old"
+db proc-open --run LIVE --kind claude --ref "$$" --started "$old"
+# YOUNG: dead pid but started inside a run-lifetime → spared (age floor).
+db run-start --run YOUNG --repo Matou/idss --trigger heal --started "$young"
+db proc-open --run YOUNG --kind claude --ref "$deadpid" --started "$young"
+# WEDGE113: old open run whose only ref is a synthetic #435 marker → un-ageable,
+# spared (a wedge marker must survive until a human accounts for it).
+db run-start --run WEDGE113 --repo Matou/idss --trigger label --started "$old"
+db proc-open --run WEDGE113 --kind worker --ref "wedge:WEDGE113" --started "$old"
+# NOPROC: old open run with NO process rows → no pid evidence, left alone.
+db run-start --run NOPROC --repo Matou/idss --trigger cron --started "$old"
+
+out="$(db sweep-orphans --at "$now")"
+grep -q "^swept ORPH heal$" <<<"$out" || fail "sweep-orphans must report the reaped run+trigger: [$out]"
+[ "$(val "SELECT verdict FROM runs WHERE run_id='ORPH'")" = "died-in:heal" ] \
+  || fail "an orphan must be finalised with a died-in:<trigger> verdict"
+[ "$(val "SELECT verdict_source FROM runs WHERE run_id='ORPH'")" = "orphan-sweep" ] \
+  || fail "the finalise must record verdict_source orphan-sweep"
+[ "$(val "SELECT exit_code FROM runs WHERE run_id='ORPH'")" = 137 ] \
+  || fail "a SIGKILLed orphan must record exit 137"
+[ -n "$(val "SELECT ended_at FROM runs WHERE run_id='ORPH'")" ] \
+  || fail "sweep must set ended_at on the orphan run"
+[ -n "$(val "SELECT ended_at FROM attempts WHERE run_id='ORPH'")" ] \
+  || fail "sweep must finalise the orphan's open attempt (kills-finalise)"
+[ -z "$(val "SELECT ref FROM processes WHERE run_id='ORPH' AND ended_at IS NULL")" ] \
+  || fail "sweep must close the orphan's open process row"
+[ "$(val "SELECT status FROM attempts WHERE run_id='ORPH'")" = fail ] \
+  || fail "a swept attempt keeps its default 'fail' — a kill never earns success"
+for spared in LIVE YOUNG WEDGE113 NOPROC; do
+  [ -z "$(val "SELECT ended_at FROM runs WHERE run_id='$spared'")" ] \
+    || fail "sweep-orphans must SPARE $spared (live/young/un-ageable/no-proc)"
+done
+# idempotent: a second sweep finds nothing new to reap.
+[ -z "$(db sweep-orphans --at "$now")" ] \
+  || fail "a second sweep-orphans must be a no-op (idempotent)"
+# the bash wrapper is best-effort and echoes what it swept. It uses the REAL
+# clock (no --at), so age the row against wall-time, not the fixed fixture now.
+realold=$(( $(date +%s) - 20000 ))
+db run-start --run ORPH2 --repo Matou/idss --trigger heal --started "$realold"
+db proc-open --run ORPH2 --kind claude --ref "$deadpid" --started "$realold"
+wrapout="$(SWARM_DB="$SWARM_DB" swarmdb_sweep_orphans)"
+grep -q "ORPH2" <<<"$wrapout" || fail "swarmdb_sweep_orphans wrapper must echo swept runs: [$wrapout]"
+[ -n "$(val "SELECT ended_at FROM runs WHERE run_id='ORPH2'")" ] \
+  || fail "the wrapper must actually finalise the orphan"
+# python absent => the wrapper is a silent no-op, never an error.
+( set -e
+  export PATH="$tmp/emptybin"
+  swarmdb_sweep_orphans >/dev/null || exit 7
+) || fail "swarmdb_sweep_orphans must no-op (return 0) when python3 is absent"
+pass=$((pass+1))
+
 echo "swarm-db: $pass groups passed"

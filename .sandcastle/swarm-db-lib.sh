@@ -41,6 +41,18 @@ swarmdb_run_end() {
   swarmdb run-end --run "$1" --verdict "$2" --source "$3" --exit "$4" --ended "$5"
 }
 
+# swarmdb_sweep_orphans — durably finalise ORPHAN runs (#113): open `runs` rows
+# whose every open process is a provably-dead pid and whose start predates a full
+# run-lifetime. The SIGKILL case heal.sh documents but cannot self-heal (a
+# Forgejo-runner CANCEL kills the tree before the EXIT trap fires), so the next
+# orchestrator tick / the post-run backstop closes it instead. Host-global,
+# age-floored and idempotent — safe to call from every run's exit. Best-effort:
+# echoes each `swept <run_id> <trigger>` line, swallows every failure.
+swarmdb_sweep_orphans() {
+  swarmdb_available || return 0
+  python3 "$_SWARMDB_PY" --db "$SWARM_DB" sweep-orphans 2>/dev/null || true
+}
+
 # swarmdb_event <run_id> <issue|''> <kind> <detail> [evidence]
 swarmdb_event() {
   local run="$1" issue="$2" kind="$3" detail="$4" evidence="${5:-}"

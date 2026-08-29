@@ -203,8 +203,15 @@ try_heal() {
     return 1
   fi
   git -C "$co" clean -qfd >/dev/null 2>&1 || true
-  if [ "$(heal_fail_count "$sig")" -ge 2 ]; then
-    echo "healer: sig $sig failed mechanically twice — filing instead (backstop)"
+  # Rail 6 counts per FAULT (leg + normalised error), not per leg-keyed
+  # signature: the incident signature folds every fault on a leg together
+  # (GOTCHAS #16 by design), so keying the backstop on it locked the `join`
+  # leg out after two unrelated cap breaches (#936/#937 → #938/#939 never got
+  # a heal attempt, 2026-08-28).
+  local fault
+  fault="$(compute_signature "$REHEARSAL_SIGNATURE_NS" "$leg :: $err")"
+  if [ "$(heal_fail_count "$fault")" -ge 2 ]; then
+    echo "healer: fault $fault (sig $sig) failed mechanically twice — filing instead (backstop)"
     return 1
   fi
   local pre_head history out verdict action
@@ -289,7 +296,7 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
     return 1
   fi
   if ! heal_rails "$co" "$pre_head"; then
-    heal_fail_mark "$sig"
+    heal_fail_mark "$fault"
     return 1
   fi
   scrub_commit_message "$co"
@@ -298,10 +305,10 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
   # heal to a non-fast-forward. A conflict / persistent refusal / cap breach on
   # the replayed commit resets and files, preserving the blocked invariant (#460).
   if ! heal_push "$co" "$pre_head" "$run_dir"; then
-    heal_fail_mark "$sig"
+    heal_fail_mark "$fault"
     return 1
   fi
-  heal_fail_clear "$sig"
+  heal_fail_clear "$fault"
   # A heal may fix only the red's PRESENTATION (a hidden bar, a swallowed
   # error) while a distinct substantive fault remains — drive 20260811T165115Z
   # healed the standup bar, NAMED the supply host-key fault in its summary, and
@@ -366,6 +373,21 @@ if [ "${#reds[@]}" -eq 0 ]; then
   err="$(tail -40 "$run_dir"/logs/*.txt 2>/dev/null | grep -m1 -E 'Error|error|FAIL|timed out' || echo 'drive red at wizard — the wizard died before any leg ran')"
   echo "reporter: red drive (rc=$drive_rc) with zero red legs — filing drive-red-at-wizard"
   reds=("$(jq -cn --arg e "$err" '{leg:"wizard", status:"red", ms:0, error:$e}')")
+fi
+
+# Consumer report-guard hook (#931): an OPTIONAL, consumer-OWNED extension
+# point, run once the red set is finalized but BEFORE the per-leg file/heal
+# loop below. A product repo may drop a `report-guard.sh` beside this file — it
+# is NOT vendored (absent by default), so a factory-default consumer sources
+# nothing and behaves byte-for-byte as before. When present it is SOURCED (not
+# exec'd) so it sees the reporter's context in scope ($run_dir, $here, $reds,
+# forgejo_*, the identity layer) and may `exit 0` to short-circuit filing —
+# e.g. re-check a repo-specific staleness gate and route a probable-ghost drive
+# to a park instead of a blocking leg-red. The factory owns the seam; the guard
+# body is the consumer's product knowledge and stays in the consumer's repo.
+if [ -f "$here/report-guard.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$here/report-guard.sh"
 fi
 
 open_issues="$(forgejo_get "/issues?labels=$REHEARSAL_LABEL&state=open&type=issues&limit=50")" || open_issues='[]'

@@ -55,6 +55,15 @@ report_sweep() { # report_sweep <workspace> <repo-slug>
   # housekeeping, no alert. We hold the global lock, so anything this old is dead.
   reaped="$(reap_containers)" || true
   [ -n "$reaped" ] && echo "run-swarm: reaped stale sandcastle-* container(s): $(printf '%s' "$reaped" | tr '\n' ' ')"
+  # #113: close swarm.db ORPHAN runs — open rows a SIGKILLed run (a Forgejo-runner
+  # CANCEL) left behind because its EXIT trap never fired. Host-global, age-floored
+  # and idempotent; the durable finaliser the dead run's own trap could not be.
+  # Guarded so a caller that never sourced swarm-db-lib.sh (an offline report test)
+  # is unaffected. Quiet housekeeping — echo what it swept, no alert.
+  if command -v swarmdb_sweep_orphans >/dev/null 2>&1; then
+    local swept; swept="$(swarmdb_sweep_orphans)" || true
+    [ -n "$swept" ] && echo "run-swarm: swept orphan run(s): $(printf '%s' "$swept" | tr '\n' ' ')"
+  fi
   # #98: prune raw session jsonl already harvested into swarm.db (ingest-then-
   # prune). Bounds .sandcastle/logs/, which Sandcastle grows without limit.
   prune_session_logs "$workspace/.sandcastle/logs" || true
