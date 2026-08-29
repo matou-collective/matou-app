@@ -579,8 +579,8 @@ onBeforeUnmount(() => {
 }
 
 // Mobile bottom tab bar — hidden on desktop, shown only at ≤767px.
-$bottom-nav-height: 64px;
-
+// Height comes from the shared `--bottom-nav-height` token (see App.vue) so the
+// chat view reserves matching space for the composer (#168).
 .bottom-nav {
   display: none;
 }
@@ -762,7 +762,7 @@ $bottom-nav-height: 64px;
     // safe-area inset (0 on web/Electron).
     padding-top: env(safe-area-inset-top);
     // Keep content clear of the fixed bottom bar (bar height + safe area).
-    padding-bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
   }
 
   .bottom-nav {
@@ -771,7 +771,7 @@ $bottom-nav-height: 64px;
     bottom: 0;
     left: 0;
     right: 0;
-    height: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+    height: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
     background-color: var(--matou-sidebar);
     border-top: 1px solid var(--matou-sidebar-border);
@@ -788,7 +788,7 @@ $bottom-nav-height: 64px;
     inset: 0;
     z-index: 60;
     background-color: rgba(0, 0, 0, 0.4);
-    padding-bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
   }
 
   // Soft keyboard open (#126): hide the bottom tab bar so it doesn't float
