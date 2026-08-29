@@ -83,10 +83,12 @@ func TestGetRolePolicyDefault(t *testing.T) {
 		t.Fatalf("GET = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Source             string                     `json:"source"`
-		Policy             contributions.RolePolicy   `json:"policy"`
-		Capabilities       map[string][]string        `json:"capabilities"`
-		CallerCapabilities []contributions.Capability `json:"callerCapabilities"`
+		Source              string                     `json:"source"`
+		Policy              contributions.RolePolicy   `json:"policy"`
+		Capabilities        map[string][]string        `json:"capabilities"`
+		CapabilityOrder     []contributions.Capability `json:"capabilityOrder"`
+		ProjectCapabilities []contributions.Capability `json:"projectCapabilities"`
+		CallerCapabilities  []contributions.Capability `json:"callerCapabilities"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -99,6 +101,18 @@ func TestGetRolePolicyDefault(t *testing.T) {
 	}
 	if len(resp.Capabilities) != 13 {
 		t.Errorf("capabilities = %d entries, want 13", len(resp.Capabilities))
+	}
+	if len(resp.CapabilityOrder) != 13 {
+		t.Errorf("capabilityOrder = %d entries, want 13 (all in AllCapabilities order)", len(resp.CapabilityOrder))
+	}
+	if len(resp.ProjectCapabilities) != 8 {
+		t.Errorf("projectCapabilities = %d entries, want 8", len(resp.ProjectCapabilities))
+	}
+	// Every role carries a non-empty scope so the UI can split the tables.
+	for _, r := range resp.Policy.Roles {
+		if r.Scope != contributions.ScopeCommunity && r.Scope != contributions.ScopeProject {
+			t.Errorf("role %q has scope %q, want community or project", r.ID, r.Scope)
+		}
 	}
 	found := false
 	for _, c := range resp.CallerCapabilities {
@@ -234,6 +248,66 @@ func TestPutRolePolicyValidation(t *testing.T) {
 	bad5["roles"] = roles5
 	if rec := putPolicy(t, mux, "EOpsAID", bad5); rec.Code != http.StatusBadRequest {
 		t.Errorf("renamed builtin: %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A project-scoped role may not hold a community-only capability: the PUT is
+// rejected with 400 (issue #165). Covers both a builtin project role
+// (project_lead) and a custom project role.
+func TestPutRolePolicyProjectRoleCommunityCapRejected(t *testing.T) {
+	h, _, _ := newTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	// Builtin project role project_lead granted manage_governance → 400.
+	bad := validUpdate()
+	grants := bad["grants"].(map[string][]contributions.Capability)
+	grants["project_lead"] = append(grants["project_lead"], contributions.CapManageGovernance)
+	if rec := putPolicy(t, mux, "EOpsAID", bad); rec.Code != http.StatusBadRequest {
+		t.Errorf("project_lead + manage_governance: %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+
+	// A custom project-scoped role granted manage_roles → 400.
+	bad2 := validUpdate()
+	bad2["roles"] = append(bad2["roles"].([]contributions.RoleDef),
+		contributions.RoleDef{ID: "kaimahi", DisplayName: "Kaimahi", Scope: contributions.ScopeProject})
+	bad2["grants"].(map[string][]contributions.Capability)["kaimahi"] =
+		[]contributions.Capability{contributions.CapManageRoles}
+	if rec := putPolicy(t, mux, "EOpsAID", bad2); rec.Code != http.StatusBadRequest {
+		t.Errorf("custom project role + manage_roles: %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+
+	// A custom project-scoped role granted only project caps → 200.
+	ok := validUpdate()
+	ok["roles"] = append(ok["roles"].([]contributions.RoleDef),
+		contributions.RoleDef{ID: "kaimahi", DisplayName: "Kaimahi", Scope: contributions.ScopeProject})
+	ok["grants"].(map[string][]contributions.Capability)["kaimahi"] =
+		[]contributions.Capability{contributions.CapSignOff, contributions.CapReviewWork}
+	if rec := putPolicy(t, mux, "EOpsAID", ok); rec.Code != http.StatusOK {
+		t.Errorf("custom project role + project caps: %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A builtin's scope cannot be flipped: even if the request labels a community
+// builtin as project-scoped, it is normalized back and may still hold its
+// community capabilities (no 400).
+func TestPutRolePolicyBuiltinScopeNotFlippable(t *testing.T) {
+	h, _, _ := newTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	upd := validUpdate()
+	roles := append([]contributions.RoleDef{}, upd["roles"].([]contributions.RoleDef)...)
+	for i, r := range roles {
+		if r.ID == "operations_steward" {
+			roles[i].Scope = contributions.ScopeProject // try to demote it
+		}
+	}
+	upd["roles"] = roles
+	// operations_steward keeps manage_roles/manage_members etc.; if the flip
+	// were honored this would 400, but the builtin scope is forced to community.
+	if rec := putPolicy(t, mux, "EOpsAID", upd); rec.Code != http.StatusOK {
+		t.Errorf("builtin scope flip attempt: %d, want 200 (scope normalized); body %s", rec.Code, rec.Body.String())
 	}
 }
 

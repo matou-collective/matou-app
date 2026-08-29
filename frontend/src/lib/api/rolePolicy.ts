@@ -1,9 +1,15 @@
 import { BACKEND_URL, authHeaders } from './client';
 
+export type RoleScope = 'community' | 'project';
+
 export interface RoleDef {
   id: string;
   displayName: string;
   builtin: boolean;
+  // "community" (who you are) or "project" (what you hold on one project).
+  // A legacy policy saved before the split may omit it; the backend fills it
+  // in on read, so treat it as optional only for forward-compat safety.
+  scope?: RoleScope;
 }
 
 export interface RolePolicy {
@@ -18,6 +24,11 @@ export interface RolePolicyResponse {
   policy: RolePolicy;
   source: 'synced' | 'default';
   capabilities: Record<string, string[]>;
+  // Stable column order (all capabilities) and the project-scoped subset.
+  // The UI uses capabilityOrder for column order and projectCapabilities to
+  // decide which columns a project role may hold.
+  capabilityOrder?: string[];
+  projectCapabilities?: string[];
   callerCapabilities?: string[];
 }
 

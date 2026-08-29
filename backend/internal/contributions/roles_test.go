@@ -63,7 +63,6 @@ func TestCanPerformAction_SignOffProposal(t *testing.T) {
 		name string
 		role Role
 	}{
-		{"project_steward", RoleProjectSteward},
 		{"operations_steward", RoleOperationsSteward},
 		{"community_steward", RoleCommunitySteward},
 		{"founding_member", RoleFoundingMember},
@@ -82,6 +81,11 @@ func TestCanPerformAction_SignOffProposal(t *testing.T) {
 		{"member", RoleMember},
 		{"contributor", RoleContributor},
 		{"project_lead", RoleProjectLead},
+		// project_steward is a project-scoped role (#165): it no longer holds
+		// community-wide governance (manage_governance) on its own. Real users
+		// reach proposal governance via the community steward/founding-member
+		// roles their KERI bundle always pairs with project_steward.
+		{"project_steward", RoleProjectSteward},
 	}
 	for _, tt := range nonAdminRoles {
 		if CanPerformAction([]Role{tt.role}, ActionSignOffProposal) {
@@ -104,7 +108,6 @@ func TestCanPerformAction_RejectProposal(t *testing.T) {
 		name string
 		role Role
 	}{
-		{"project_steward", RoleProjectSteward},
 		{"operations_steward", RoleOperationsSteward},
 		{"community_steward", RoleCommunitySteward},
 		{"founding_member", RoleFoundingMember},
@@ -123,6 +126,11 @@ func TestCanPerformAction_RejectProposal(t *testing.T) {
 		{"member", RoleMember},
 		{"contributor", RoleContributor},
 		{"project_lead", RoleProjectLead},
+		// project_steward is a project-scoped role (#165): it no longer holds
+		// community-wide governance (manage_governance) on its own. Real users
+		// reach proposal governance via the community steward/founding-member
+		// roles their KERI bundle always pairs with project_steward.
+		{"project_steward", RoleProjectSteward},
 	}
 	for _, tt := range nonAdminRoles {
 		if CanPerformAction([]Role{tt.role}, ActionRejectProposal) {
@@ -137,7 +145,6 @@ func TestCanPerformAction_EditProposal(t *testing.T) {
 		name string
 		role Role
 	}{
-		{"project_steward", RoleProjectSteward},
 		{"operations_steward", RoleOperationsSteward},
 		{"community_steward", RoleCommunitySteward},
 		{"founding_member", RoleFoundingMember},
@@ -156,6 +163,11 @@ func TestCanPerformAction_EditProposal(t *testing.T) {
 		{"member", RoleMember},
 		{"contributor", RoleContributor},
 		{"project_lead", RoleProjectLead},
+		// project_steward is a project-scoped role (#165): it no longer holds
+		// community-wide governance (manage_governance) on its own. Real users
+		// reach proposal governance via the community steward/founding-member
+		// roles their KERI bundle always pairs with project_steward.
+		{"project_steward", RoleProjectSteward},
 	}
 	for _, tt := range nonAdminRoles {
 		if CanPerformAction([]Role{tt.role}, ActionEditProposal) {

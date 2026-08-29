@@ -114,13 +114,38 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
     await expect(adminPage.getByText(/built-in default policy/i)).toBeVisible();
 
-    // All 7 builtin roles and the 13 capability columns render.
-    const matrix = adminPage.locator('.roles-matrix');
-    await expect(matrix.locator('tbody tr')).toHaveCount(7);
-    await expect(matrix.locator('thead th')).toHaveCount(14); // Role + 13 caps
-    await expect(matrix.getByText('Founding Member')).toBeVisible();
-    await expect(matrix.getByText('Manage roles')).toBeVisible();
-    await snap(adminPage, 'roles-page-default-policy');
+    // Two tables now: community roles (who you are) and project roles (what
+    // you hold on one project). Both carry the Role column + 13 capabilities.
+    const community = adminPage.locator('.roles-matrix.community-roles');
+    const project = adminPage.locator('.roles-matrix.project-roles');
+    await expect(adminPage.getByRole('heading', { name: 'Community roles' })).toBeVisible();
+    await expect(adminPage.getByRole('heading', { name: 'Project roles' })).toBeVisible();
+
+    // Community table: member, operations/community steward, founding member (4).
+    await expect(community.locator('tbody tr')).toHaveCount(4);
+    await expect(community.locator('thead th')).toHaveCount(14);
+    await expect(community.getByText('Founding Member')).toBeVisible();
+    await expect(community.getByText('Manage roles')).toBeVisible();
+    await snap(adminPage, 'community-roles-default-policy');
+
+    // Project table: contributor, project_lead, project_steward (3). The
+    // contributor row lives here only (issue #165 ruling), not in community.
+    await expect(project.locator('tbody tr')).toHaveCount(3);
+    await expect(project.locator('thead th')).toHaveCount(14);
+    await expect(project.getByText('Contributor')).toBeVisible();
+    await expect(community.getByText('Contributor')).toHaveCount(0);
+    await snap(adminPage, 'project-roles-default-policy-with-contributor');
+
+    // A community-only capability toggle (Manage roles) is disabled on a
+    // project role — defense-in-depth for the 400 the backend returns.
+    const projSteward = project.locator('tbody tr', { hasText: 'Project Steward' });
+    const projHeaders = await project.locator('thead th').allTextContents();
+    const manageRolesCol = projHeaders.findIndex((h) => h.trim().startsWith('Manage roles'));
+    expect(manageRolesCol).toBeGreaterThan(0);
+    await expect(
+      projSteward.locator('td').nth(manageRolesCol).locator('.q-toggle'),
+    ).toHaveAttribute('aria-disabled', 'true');
+    await snap(adminPage, 'project-role-community-only-toggle-disabled');
 
     // Backend agrees: GET reports the default policy and the admin's caps.
     const { status, body } = await apiJson(adminAid, 'GET', '/role-policy');
@@ -133,17 +158,17 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
   test('admin adds a custom role, grants it a capability, and saves', async () => {
     test.setTimeout(TIMEOUT.long);
 
-    await adminPage.getByRole('button', { name: 'New role' }).click();
+    await adminPage.locator('.community-section').getByRole('button', { name: 'New role' }).click();
     const dialog = adminPage.getByRole('dialog');
-    await expect(dialog.getByText('New custom role')).toBeVisible();
+    await expect(dialog.getByText('New community role')).toBeVisible();
     await dialog.getByLabel('Role name').fill(CUSTOM_ROLE_NAME);
     // Copy permissions from Community Steward so the role starts non-empty.
     await dialog.getByLabel('Copy permissions from (optional)').click();
     await adminPage.getByRole('option', { name: 'Community Steward' }).click();
-    await snap(adminPage, 'new-role-dialog');
+    await snap(adminPage, 'new-community-role-dialog');
     await dialog.getByRole('button', { name: 'Add role' }).click();
 
-    const matrix = adminPage.locator('.roles-matrix');
+    const matrix = adminPage.locator('.roles-matrix.community-roles');
     const customRow = matrix.locator('tbody tr', { hasText: CUSTOM_ROLE_NAME });
     await expect(customRow).toBeVisible();
     await expect(customRow.getByText('custom')).toBeVisible();
@@ -174,6 +199,18 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     expect(body.policy.grants[CUSTOM_ROLE_ID]).toEqual(
       expect.arrayContaining(['contribute', 'manage_governance', 'reward']),
     );
+  });
+
+  test('the project table offers its own New-role dialog', async () => {
+    test.setTimeout(TIMEOUT.long);
+    // Open the project section's New role dialog and snap it (cancel without
+    // saving — the persisted policy is asserted by the reload test next).
+    await adminPage.locator('.project-section').getByRole('button', { name: 'New role' }).click();
+    const dialog = adminPage.getByRole('dialog');
+    await expect(dialog.getByText('New project role')).toBeVisible();
+    await dialog.getByLabel('Role name').fill('Kaimahi');
+    await snap(adminPage, 'new-project-role-dialog');
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
   });
 
   test('survives reload and the Change Role modal offers the custom role', async () => {

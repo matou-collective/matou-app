@@ -80,10 +80,17 @@ func (h *RolePolicyHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLo
 }
 
 type rolePolicyResponse struct {
-	Policy             *contributions.RolePolicy                           `json:"policy"`
-	Source             string                                              `json:"source"`
-	Capabilities       map[contributions.Capability][]contributions.Action `json:"capabilities"`
-	CallerCapabilities []contributions.Capability                          `json:"callerCapabilities"`
+	Policy       *contributions.RolePolicy                           `json:"policy"`
+	Source       string                                              `json:"source"`
+	Capabilities map[contributions.Capability][]contributions.Action `json:"capabilities"`
+	// CapabilityOrder is the stable display order of all capabilities
+	// (AllCapabilities()); the UI uses it for column order instead of the
+	// unordered Capabilities map. ProjectCapabilities is the subset a
+	// project-scoped role may hold — the UI disables every other column for a
+	// project role and restricts the project table to these.
+	CapabilityOrder     []contributions.Capability `json:"capabilityOrder"`
+	ProjectCapabilities []contributions.Capability `json:"projectCapabilities"`
+	CallerCapabilities  []contributions.Capability `json:"callerCapabilities"`
 }
 
 func (h *RolePolicyHandler) effective() (*contributions.RolePolicy, string) {
@@ -111,10 +118,16 @@ func (h *RolePolicyHandler) effectiveOrErr() (*contributions.RolePolicy, string,
 
 func (h *RolePolicyHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	policy, source := h.effective()
+	// Fill in scopes so the UI can split the roles into their two tables even
+	// for a legacy policy saved before the scope field existed. effective()
+	// may return a shared/cached policy, so copy before mutating it.
+	policy = normalizedCopy(policy)
 	resp := rolePolicyResponse{
-		Policy:       policy,
-		Source:       source,
-		Capabilities: contributions.CapabilityActions(),
+		Policy:              policy,
+		Source:              source,
+		Capabilities:        contributions.CapabilityActions(),
+		CapabilityOrder:     contributions.AllCapabilities(),
+		ProjectCapabilities: contributions.ProjectScopedCapabilities(),
 	}
 	if roles := GetUserRoles(r); len(roles) > 0 {
 		caller := []contributions.Capability{}
@@ -131,6 +144,15 @@ func (h *RolePolicyHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		resp.CallerCapabilities = appendCapIfMissing(resp.CallerCapabilities, contributions.CapManageRoles)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// normalizedCopy returns a copy of the policy with role scopes normalized,
+// without mutating the (possibly shared/cached) input.
+func normalizedCopy(p *contributions.RolePolicy) *contributions.RolePolicy {
+	cp := *p
+	cp.Roles = append([]contributions.RoleDef(nil), p.Roles...)
+	cp.NormalizeScopes()
+	return &cp
 }
 
 func appendCapIfMissing(caps []contributions.Capability, c contributions.Capability) []contributions.Capability {
@@ -166,6 +188,12 @@ func (h *RolePolicyHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request: %v", err)})
 		return
+	}
+	// Normalize scopes up front: builtins keep their canonical scope, a custom
+	// role's scope is coerced to community/project. Both validation and the
+	// stored policy then work from a trustworthy scope.
+	for i := range req.Roles {
+		req.Roles[i].Scope = contributions.NormalizeScope(req.Roles[i].ID, req.Roles[i].Scope)
 	}
 
 	current, _, err := h.effectiveOrErr()
@@ -252,10 +280,15 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 		}
 	}
 
-	// 2. Grants only reference known roles and known capabilities.
+	// 2. Grants only reference known roles and known capabilities, and a
+	// project-scoped role may hold only project-scoped capabilities.
 	validCaps := map[contributions.Capability]bool{}
 	for _, c := range contributions.AllCapabilities() {
 		validCaps[c] = true
+	}
+	roleScope := map[string]string{}
+	for _, r := range req.Roles {
+		roleScope[r.ID] = r.Scope
 	}
 	for roleID, caps := range req.Grants {
 		if !seen[roleID] {
@@ -264,6 +297,9 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 		for _, c := range caps {
 			if !validCaps[c] {
 				return fmt.Sprintf("unknown capability %q for role %q", c, roleID), nil
+			}
+			if roleScope[roleID] == contributions.ScopeProject && !contributions.IsProjectScopedCapability(c) {
+				return fmt.Sprintf("project role %q cannot hold community-only capability %q", roleID, c), nil
 			}
 		}
 	}

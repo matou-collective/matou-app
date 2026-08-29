@@ -7,9 +7,6 @@
         <p class="roles-subtitle">Which roles exist and what each one may do</p>
       </div>
       <div class="roles-actions">
-        <button class="create-btn" :disabled="!store.canManageRoles" @click="newRoleDialog = true">
-          + New role
-        </button>
         <button
           class="save-btn"
           :disabled="!dirty || !store.canManageRoles || saving"
@@ -31,41 +28,126 @@
       community's first policy version.
     </q-banner>
 
-    <q-markup-table v-if="editableGrants" flat bordered dense class="roles-matrix">
-      <thead>
-        <tr>
-          <th class="text-left">Role</th>
-          <th v-for="cap in capabilityIds" :key="cap" class="text-center">
-            {{ capabilityLabel(cap) }}
-            <q-tooltip>{{ capabilityTooltip(cap) }}</q-tooltip>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="role in roles" :key="role.id">
-          <td class="text-left">
-            {{ role.displayName }}
-            <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
-          </td>
-          <td v-for="cap in capabilityIds" :key="cap" class="text-center">
-            <q-toggle
-              :model-value="hasGrant(role.id, cap)"
-              :disable="!store.canManageRoles || isLockedCell(role.id, cap)"
-              dense
-              @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
+    <!-- Community roles: who you are (membership credential). Full capability set. -->
+    <section v-if="editableGrants" class="roles-section community-section">
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Community roles</h3>
+          <p class="section-subtitle">
+            Who you are in the community, issued as a membership credential. May hold any capability.
+          </p>
+        </div>
+        <button
+          class="create-btn"
+          :disabled="!store.canManageRoles"
+          @click="openNewRoleDialog('community')"
+        >
+          + New role
+        </button>
+      </div>
+      <q-markup-table flat bordered dense class="roles-matrix community-roles">
+        <thead>
+          <tr>
+            <th class="text-left">Role</th>
+            <th v-for="cap in capabilityIds" :key="cap" class="text-center">
+              {{ capabilityLabel(cap) }}
+              <q-tooltip>{{ capabilityTooltip(cap) }}</q-tooltip>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="role in communityRoles" :key="role.id">
+            <td class="text-left">
+              {{ role.displayName }}
+              <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
+            </td>
+            <td v-for="cap in capabilityIds" :key="cap" class="text-center">
+              <q-toggle
+                :model-value="hasGrant(role.id, cap)"
+                :disable="!store.canManageRoles || isLockedCell(role.id, cap)"
+                dense
+                @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
+              >
+                <q-tooltip v-if="isLockedCell(role.id, cap)">
+                  At least one role must keep “Manage roles”.
+                </q-tooltip>
+              </q-toggle>
+            </td>
+          </tr>
+        </tbody>
+      </q-markup-table>
+    </section>
+
+    <!-- Project roles: what you hold on one project. Project-scoped capabilities only. -->
+    <section v-if="editableGrants" class="roles-section project-section">
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Project roles</h3>
+          <p class="section-subtitle">
+            What you hold on a single project, assigned per project. Limited to project-scoped
+            capabilities — community-only capabilities are disabled here.
+          </p>
+        </div>
+        <button
+          class="create-btn"
+          :disabled="!store.canManageRoles"
+          @click="openNewRoleDialog('project')"
+        >
+          + New role
+        </button>
+      </div>
+      <q-markup-table flat bordered dense class="roles-matrix project-roles">
+        <thead>
+          <tr>
+            <th class="text-left">Role</th>
+            <th
+              v-for="cap in capabilityIds"
+              :key="cap"
+              class="text-center"
+              :class="{ 'community-only-col': !isProjectCap(cap) }"
             >
-              <q-tooltip v-if="isLockedCell(role.id, cap)">
-                At least one role must keep “Manage roles”.
+              {{ capabilityLabel(cap) }}
+              <q-tooltip>
+                {{ capabilityTooltip(cap) }}<template v-if="!isProjectCap(cap)">
+                  — community-only</template
+                >
               </q-tooltip>
-            </q-toggle>
-          </td>
-        </tr>
-      </tbody>
-    </q-markup-table>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="role in projectRoles" :key="role.id">
+            <td class="text-left">
+              {{ role.displayName }}
+              <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
+            </td>
+            <td
+              v-for="cap in capabilityIds"
+              :key="cap"
+              class="text-center"
+              :class="{ 'community-only-cell': !isProjectCap(cap) }"
+            >
+              <q-toggle
+                :model-value="hasGrant(role.id, cap)"
+                :disable="!store.canManageRoles || !isProjectCap(cap)"
+                dense
+                @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
+              >
+                <q-tooltip v-if="!isProjectCap(cap)">
+                  Community-only capability — a project role cannot hold it.
+                </q-tooltip>
+              </q-toggle>
+            </td>
+          </tr>
+        </tbody>
+      </q-markup-table>
+    </section>
 
     <q-dialog v-model="newRoleDialog">
       <q-card style="min-width: 360px">
-        <q-card-section class="text-h6">New custom role</q-card-section>
+        <q-card-section class="text-h6">
+          New {{ newRoleScope === 'project' ? 'project' : 'community' }} role
+        </q-card-section>
         <q-card-section>
           <q-input
             v-model="newRoleName"
@@ -103,7 +185,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import { useRolePolicyStore } from 'src/stores/rolePolicy';
-import type { RoleDef } from 'src/lib/api/rolePolicy';
+import type { RoleDef, RoleScope } from 'src/lib/api/rolePolicy';
 
 const $q = useQuasar();
 const store = useRolePolicyStore();
@@ -113,9 +195,20 @@ const editableGrants = ref<Record<string, string[]> | null>(null);
 const saving = ref(false);
 const newRoleDialog = ref(false);
 const newRoleName = ref('');
+const newRoleScope = ref<RoleScope>('community');
 const copyFromRole = ref<string | null>(null);
 
-const capabilityIds = computed(() => Object.keys(store.capabilities));
+const capabilityIds = computed(() => store.capabilityColumns);
+
+// Local scope partitions so freshly-added (unsaved) roles show immediately.
+const communityRoles = computed(() =>
+  roles.value.filter((r) => (r.scope ?? 'community') !== 'project'),
+);
+const projectRoles = computed(() => roles.value.filter((r) => r.scope === 'project'));
+
+function isProjectCap(cap: string): boolean {
+  return store.isProjectCapability(cap);
+}
 
 const CAPABILITY_LABELS: Record<string, string> = {
   contribute: 'Contribute',
@@ -176,8 +269,15 @@ function isLockedCell(roleId: string, cap: string): boolean {
   return holders.length === 1 && holders[0]?.[0] === roleId;
 }
 
+function roleScopeOf(roleId: string): RoleScope {
+  const r = roles.value.find((x) => x.id === roleId);
+  return r?.scope === 'project' ? 'project' : 'community';
+}
+
 function setGrant(roleId: string, cap: string, value: boolean) {
   if (!editableGrants.value) return;
+  // A project role may never hold a community-only capability.
+  if (value && roleScopeOf(roleId) === 'project' && !isProjectCap(cap)) return;
   const caps = editableGrants.value[roleId] ?? [];
   if (value && !caps.includes(cap)) {
     editableGrants.value[roleId] = [...caps, cap];
@@ -194,16 +294,34 @@ const newRoleIdValid = computed(
     /^[a-z][a-z0-9_]{1,39}$/.test(newRoleId.value) &&
     !roles.value.some((r) => r.id === newRoleId.value),
 );
+// Only offer same-scope roles to copy from, so a project role can't inherit
+// community-only grants.
 const roleSelectOptions = computed(() =>
-  roles.value.map((r) => ({ label: r.displayName, value: r.id })),
+  roles.value
+    .filter((r) => roleScopeOf(r.id) === newRoleScope.value)
+    .map((r) => ({ label: r.displayName, value: r.id })),
 );
+
+function openNewRoleDialog(scope: RoleScope) {
+  newRoleScope.value = scope;
+  newRoleName.value = '';
+  copyFromRole.value = null;
+  newRoleDialog.value = true;
+}
 
 function addRole() {
   if (!editableGrants.value) return;
-  roles.value.push({ id: newRoleId.value, displayName: newRoleName.value.trim(), builtin: false });
-  editableGrants.value[newRoleId.value] = copyFromRole.value
-    ? [...(editableGrants.value[copyFromRole.value] ?? [])]
-    : [];
+  const scope = newRoleScope.value;
+  roles.value.push({
+    id: newRoleId.value,
+    displayName: newRoleName.value.trim(),
+    builtin: false,
+    scope,
+  });
+  let caps = copyFromRole.value ? [...(editableGrants.value[copyFromRole.value] ?? [])] : [];
+  // Defensive: a project role only keeps project-scoped capabilities.
+  if (scope === 'project') caps = caps.filter((c) => isProjectCap(c));
+  editableGrants.value[newRoleId.value] = caps;
   newRoleName.value = '';
   copyFromRole.value = null;
 }
@@ -263,6 +381,31 @@ async function save() {
   flex-shrink: 0;
 }
 
+.roles-section {
+  margin-bottom: 32px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.section-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--matou-foreground);
+}
+
+.section-subtitle {
+  color: var(--matou-muted-foreground);
+  margin: 2px 0 0;
+  max-width: 640px;
+}
+
 .create-btn,
 .save-btn {
   border-radius: 10px;
@@ -291,5 +434,15 @@ async function save() {
 
 .roles-matrix th {
   white-space: nowrap;
+}
+
+/* Community-only columns in the project table are visually de-emphasised. */
+.roles-matrix.project-roles th.community-only-col {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.roles-matrix.project-roles td.community-only-cell {
+  background: var(--matou-muted, rgba(0, 0, 0, 0.03));
 }
 </style>
