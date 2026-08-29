@@ -18,6 +18,7 @@
 import { execSync, exec } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { assertLocalCheckoutOwnsE2EPorts } from './checkout-guard';
 
 /** KERI infrastructure endpoint URLs (test network, +1000 port offset) */
 export const keriEndpoints = {
@@ -183,6 +184,12 @@ const serviceGroups: Record<string, { services: string[]; label: string; startCm
  * Call at the start of test.beforeAll() to fail fast with actionable instructions.
  */
 export async function requireAllTestServices(): Promise<void> {
+  // Fail fast if a *different* checkout is already holding the fixed e2e ports
+  // (admin backend 9080 / test dev server 9003). A foreign backend answers the
+  // health check, so this must run before the health probe or the collision is
+  // invisible until it silently corrupts this run (issue #175).
+  assertLocalCheckoutOwnsE2EPorts();
+
   const health = await checkServiceHealth();
   const downServices = Object.entries(health).filter(([, ok]) => !ok).map(([name]) => name);
 
