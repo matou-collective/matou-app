@@ -692,3 +692,61 @@ func TestIsGuardedObjectType(t *testing.T) {
 		t.Error("unguarded types must report false")
 	}
 }
+
+// TestValidateChange_RevokedCredentialRejected pins GH#19 part 3 / #112: with a
+// credential verifier wired, a proof-backed transition is rejected when the
+// signer's role credential is revoked, even though the signature is valid and
+// the synced profile role history still records the steward role (a lagging
+// profile cannot rescue a revoked credential). Control: an unrevoked credential
+// for the same signer is allowed.
+func TestValidateChange_RevokedCredentialRejected(t *testing.T) {
+	s := newSigner(t, "E-steward")
+	keys := NewStaticKeyProvider()
+	keys.Set(s.aid, s.verfer)
+	proof := s.sign("contribution_signoff", "contrib-1", "space-community", "signed_off", "2026-08-27T00:00:00Z")
+	ops := []ChangeOp{
+		setOp("status", string(contributions.ContribSignedOff)),
+		proofOp("sign_off_proof", proof),
+	}
+	// The profile role history still records the steward role (it lags the TEL).
+	resolver := fakeResolver{"E-steward": contributions.MapKERIRole("Operations Steward")}
+	const changeTime = int64(1000)
+
+	// Revoked credential: revoked before the change → transition rejected.
+	revokedCreds := NewSnapshotCredentialVerifier()
+	revokedCreds.Set(s.aid, CredentialRecord{Role: "Operations Steward", IssuedAt: 100, RevokedAt: 500})
+	rec := &recordingRecorder{}
+	revoked := NewWriteRuleValidator(resolver, keys, rec, true).WithCredentialVerifier(revokedCreds)
+	if revoked.ValidateChange("space-community", TypeContribution, "contrib-1", "chg", "acct-x", changeTime, ops, nil) {
+		t.Error("a proof-backed transition with a revoked role credential must be rejected")
+	}
+	if len(rec.rejections) != 1 || rec.rejections[0].Field != "sign_off_proof" {
+		t.Errorf("expected a credential rejection on sign_off_proof, got %+v", rec.rejections)
+	}
+
+	// Control: an unrevoked credential for the same signer is allowed.
+	validCreds := NewSnapshotCredentialVerifier()
+	validCreds.Set(s.aid, CredentialRecord{Role: "Operations Steward", IssuedAt: 100})
+	valid := NewWriteRuleValidator(resolver, keys, &recordingRecorder{}, true).WithCredentialVerifier(validCreds)
+	if !valid.ValidateChange("space-community", TypeContribution, "contrib-1", "chg2", "acct-x", changeTime, ops, nil) {
+		t.Error("a proof-backed transition with a valid unrevoked credential must be allowed")
+	}
+
+	// Signer with no credential record at all → fail closed even under a valid
+	// signature and a permitting profile role.
+	emptyCreds := NewSnapshotCredentialVerifier()
+	rec2 := &recordingRecorder{}
+	noCred := NewWriteRuleValidator(resolver, keys, rec2, true).WithCredentialVerifier(emptyCreds)
+	if noCred.ValidateChange("space-community", TypeContribution, "contrib-1", "chg3", "acct-x", changeTime, ops, nil) {
+		t.Error("a signer with no org credential must fail closed when the credential check is wired")
+	}
+
+	// A revoked credential whose revocation is dated AFTER the change is still
+	// valid as of that change (determinism / as-of semantics).
+	laterRevoke := NewSnapshotCredentialVerifier()
+	laterRevoke.Set(s.aid, CredentialRecord{Role: "Operations Steward", IssuedAt: 100, RevokedAt: changeTime + 1})
+	asOf := NewWriteRuleValidator(resolver, keys, &recordingRecorder{}, true).WithCredentialVerifier(laterRevoke)
+	if !asOf.ValidateChange("space-community", TypeContribution, "contrib-1", "chg4", "acct-x", changeTime, ops, nil) {
+		t.Error("a credential revoked after the change timestamp must still be valid as of the change")
+	}
+}

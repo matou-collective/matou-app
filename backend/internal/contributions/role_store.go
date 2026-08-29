@@ -11,8 +11,9 @@ import (
 // objects from the read-only space and mapping KERI role strings to contribution roles.
 // It also supports a set of known admin AIDs that are always granted community_admin.
 type ProfileRoleLookup struct {
-	store ObjectStore
-	space string // community read-only space ID
+	store         ObjectStore
+	space         string        // community read-only space ID captured at construction
+	spaceResolver func() string // live read-only space ID resolver (preferred over the captured value)
 
 	mu        sync.RWMutex
 	adminAIDs map[string]bool // AIDs that always get community_admin role
@@ -31,6 +32,26 @@ func (l *ProfileRoleLookup) SetAdminAIDs(aids []string) {
 	for _, aid := range aids {
 		l.adminAIDs[aid] = true
 	}
+}
+
+// SetSpaceIDResolver installs a live resolver for the community read-only space ID.
+// The backend boots before an identity (and its read-only space) exists, so the ID
+// captured in NewProfileRoleLookup is empty until a restart. Consulting a resolver on
+// every lookup lets roles resolve from the current read-only space without a restart —
+// mirroring the resolver pattern used elsewhere for role resolution (#157).
+func (l *ProfileRoleLookup) SetSpaceIDResolver(resolver func() string) {
+	l.spaceResolver = resolver
+}
+
+// spaceID returns the live read-only space ID from the resolver when available,
+// falling back to the value captured at construction.
+func (l *ProfileRoleLookup) spaceID() string {
+	if l.spaceResolver != nil {
+		if s := l.spaceResolver(); s != "" {
+			return s
+		}
+	}
+	return l.space
 }
 
 // IsAdminAID reports whether the AID is in the org-config admin list.
@@ -52,19 +73,20 @@ func (l *ProfileRoleLookup) GetUserRoles(aid string) ([]Role, error) {
 		return MapKERIRole("Founding Member"), nil
 	}
 
-	if l.space == "" {
+	space := l.spaceID()
+	if space == "" {
 		log.Printf("[RoleLookup] WARNING: read-only space ID is empty, cannot resolve roles for aid=%s", aid)
 		return []Role{RoleMember}, nil
 	}
 
 	// Search both CommunityProfile and SharedProfile object types
 	for _, profileType := range []string{"CommunityProfile", "SharedProfile"} {
-		profiles, err := l.store.List(l.space, profileType)
+		profiles, err := l.store.List(space, profileType)
 		if err != nil {
-			log.Printf("[RoleLookup] failed to list %s in space %s: %v", profileType, l.space, err)
+			log.Printf("[RoleLookup] failed to list %s in space %s: %v", profileType, space, err)
 			continue
 		}
-		log.Printf("[RoleLookup] found %d %s(s) in space %s, looking for aid=%s", len(profiles), profileType, l.space, aid)
+		log.Printf("[RoleLookup] found %d %s(s) in space %s, looking for aid=%s", len(profiles), profileType, space, aid)
 		for _, raw := range profiles {
 			var profile struct {
 				UserAID string `json:"userAID"`

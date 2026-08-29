@@ -23,6 +23,19 @@ const BACKEND_URL = backendEndpoint;
  * @param target - Page or BrowserContext to setup
  */
 export async function setupTestConfig(target: Page | BrowserContext) {
+  // playwright.config.ts sets `extraHTTPHeaders: { Authorization: Bearer
+  // <api token> }` so the `request` fixture can reach TokenGuard-ed routes.
+  // Context-level extra headers are applied AFTER the page's own headers, so
+  // on browser requests they replace the app's `Authorization: Bearer
+  // <session>` with the API token — and a backend running with
+  // MATOU_REQUIRE_SIGNED_AUTH=1 (every BackendManager backend) rejects that
+  // as an invalid session (401 on identity/set, notifications, ...). Drop the
+  // context-level header here: the app's own fetch wrapper (installBackendAuth)
+  // already attaches the API token or the live session, exactly as in prod.
+  // Node-side calls keep their token via node-fetch-auth.ts / sessionHeaders().
+  if ('setExtraHTTPHeaders' in target) {
+    await target.setExtraHTTPHeaders({});
+  }
   // Intercept config server requests and add X-Test-Config header
   // so the server uses the test config file instead of the dev one.
   await target.route(`${CONFIG_SERVER_URL}/**`, async (route, request) => {

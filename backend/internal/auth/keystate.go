@@ -19,6 +19,16 @@ type KeyStateResolver interface {
 	CurrentKeys(ctx context.Context, aid string) ([]string, error)
 }
 
+// KeyHistoryResolver optionally resolves an AID's full establishment key-state
+// history (one entry per KEL sequence number, ascending). A KeyStateResolver
+// that also implements it lets callers verify a signature against the key state
+// as of a past sequence number — e.g. an action proof that carries its
+// signing-time KEL sn stays verifiable after a later legitimate rotation
+// (GH#19 part 3 / #112).
+type KeyHistoryResolver interface {
+	KeyHistory(ctx context.Context, aid string) ([]EstablishmentKeyState, error)
+}
+
 // ValidAID reports whether s looks like a CESR-qualified KERI identifier
 // prefix: base64url characters only, 44 chars (one-character derivation code
 // over 32 bytes — the "E"/"D"/"B" prefixes signify creates) or 48 chars
@@ -157,6 +167,45 @@ func (r *KERIAResolver) CurrentKeys(ctx context.Context, aid string) ([]string, 
 	if keys, ok := r.cache.get(aid); ok {
 		return keys, nil
 	}
+	body, err := r.fetchKEL(ctx, aid)
+	if err != nil {
+		return nil, err
+	}
+	ks, err := ExtractKeyState(body, aid)
+	if err != nil {
+		return nil, fmt.Errorf("parse KEL for %s: %w", aid, err)
+	}
+	if !ks.SingleKey() {
+		return nil, fmt.Errorf("%w (%d keys, kt=%s)", ErrUnsupportedKeyState, len(ks.Keys), ks.Threshold)
+	}
+	r.cache.set(aid, ks.Keys)
+	return ks.Keys, nil
+}
+
+// KeyHistory implements KeyHistoryResolver: it fetches aid's KEL and returns its
+// full establishment key-state history (one entry per KEL sequence number,
+// ascending), so a proof-backed transition can be verified against the signing
+// keys as of the proof's sn even after a later rotation. Not cached — it is used
+// off the state-reconstruction hot path by the write-rule refresher, which
+// resolves each known member AID periodically. Unlike CurrentKeys it does not
+// reject multi-key states; the caller decides how to use them.
+func (r *KERIAResolver) KeyHistory(ctx context.Context, aid string) ([]EstablishmentKeyState, error) {
+	if !ValidAID(aid) {
+		return nil, fmt.Errorf("invalid AID %q", aid)
+	}
+	body, err := r.fetchKEL(ctx, aid)
+	if err != nil {
+		return nil, err
+	}
+	states, err := ExtractKeyStates(body, aid)
+	if err != nil {
+		return nil, fmt.Errorf("parse KEL for %s: %w", aid, err)
+	}
+	return states, nil
+}
+
+// fetchKEL retrieves aid's KEL as a CESR stream from the configured endpoint.
+func (r *KERIAResolver) fetchKEL(ctx context.Context, aid string) ([]byte, error) {
 	u := strings.ReplaceAll(r.urlTemplate, "{aid}", url.PathEscape(aid))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -174,15 +223,7 @@ func (r *KERIAResolver) CurrentKeys(ctx context.Context, aid string) ([]string, 
 	if err != nil {
 		return nil, fmt.Errorf("read key state for %s: %w", aid, err)
 	}
-	ks, err := ExtractKeyState(body, aid)
-	if err != nil {
-		return nil, fmt.Errorf("parse KEL for %s: %w", aid, err)
-	}
-	if !ks.SingleKey() {
-		return nil, fmt.Errorf("%w (%d keys, kt=%s)", ErrUnsupportedKeyState, len(ks.Keys), ks.Threshold)
-	}
-	r.cache.set(aid, ks.Keys)
-	return ks.Keys, nil
+	return body, nil
 }
 
 // Invalidate drops any cached key state for aid, forcing the next resolution to

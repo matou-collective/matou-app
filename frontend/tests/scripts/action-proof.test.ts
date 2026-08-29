@@ -122,4 +122,24 @@ describe('makeActionProof', () => {
     expect(() => makeActionProof(SIGNOFF, '', 'sig')).toThrow(/aid/);
     expect(() => makeActionProof(SIGNOFF, 'aid', '')).toThrow(/signature/);
   });
+
+  it('carries the KEL sn anchor when provided (survives rotation, #112)', () => {
+    const proof = makeActionProof(SIGNOFF, 'EAsignerAID', '0Bsignaturebytes', 3);
+    expect(proof.sn).toBe(3);
+    // sn 0 (an un-rotated AID) is a real anchor and must be kept.
+    expect(makeActionProof(SIGNOFF, 'EAsignerAID', '0Bsignaturebytes', 0).sn).toBe(0);
+  });
+
+  it('omits sn for a missing or invalid sequence number', () => {
+    expect(makeActionProof(SIGNOFF, 'EAsignerAID', '0Bsignaturebytes')).not.toHaveProperty('sn');
+    expect(makeActionProof(SIGNOFF, 'EAsignerAID', '0Bsignaturebytes', -1)).not.toHaveProperty('sn');
+    expect(makeActionProof(SIGNOFF, 'EAsignerAID', '0Bsignaturebytes', 1.5)).not.toHaveProperty('sn');
+  });
+
+  it('sn is NOT part of the signed message (no version bump needed)', () => {
+    // The canonical message is unchanged by the anchor — the golden vector holds.
+    expect(buildProofMessage(SIGNOFF)).toBe(
+      'matou-proof/v1\ncontribution_signoff\nEContribution0000000000000000000000000000000\nbafyreispace000000000000000000000000000000000000000000000\nsigned_off\n2026-08-14T04:07:43.000Z',
+    );
+  });
 });

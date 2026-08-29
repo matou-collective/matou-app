@@ -22,6 +22,15 @@ type Proof struct {
 	Dt      string `json:"dt"`      // RFC3339 timestamp bound into the signed message
 	AID     string `json:"aid"`     // signer AID prefix
 	Sig     string `json:"sig"`     // qb64 CESR signature over the canonical message
+	// SN is the signer's KEL sequence number at signing time — the
+	// establishment event whose key produced Sig. Optional (older proofs omit
+	// it, and it is a *int64 so sn 0 — an un-rotated AID — is distinguishable
+	// from absent). When present, the peer-side verifier (#19) resolves the
+	// signing key as of this sn so the proof survives a later legitimate
+	// rotation. It is NOT part of the signed canonical message: it only selects
+	// which historical key state to verify against, and a tampered sn simply
+	// resolves a key the signature will not match, so it needs no version bump.
+	SN *int64 `json:"sn,omitempty"` // signer KEL sequence number at signing time
 }
 
 // ValidateConsistency rejects a proof whose envelope fields don't match the

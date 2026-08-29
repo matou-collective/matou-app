@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/matou-dao/backend/internal/auth"
 	"github.com/matou-dao/backend/internal/contributions"
 )
 
@@ -212,5 +213,76 @@ func TestCanonicalProofMessage_GoldenFormat(t *testing.T) {
 		if got := string(canonicalProofMessage(c.action, c.subject, c.space, c.value, c.dt)); got != c.want {
 			t.Errorf("canonical message mismatch:\n got %q\nwant %q", got, c.want)
 		}
+	}
+}
+
+// snPtr is a helper for the optional Proof.SN pointer.
+func snPtr(n int64) *int64 { return &n }
+
+// TestVerifyActionProof_SnAnchoredSurvivesRotation pins GH#19 part 3 / #112: a
+// proof signed under KEL sn N, carrying that sn, still verifies after the AID
+// rotates past N — because the verifier resolves the signing key state as of sn
+// N from the establishment history rather than the current key.
+func TestVerifyActionProof_SnAnchoredSurvivesRotation(t *testing.T) {
+	sn0 := newSigner(t, "E-steward") // key at sn 0 (the key that signs)
+	sn1 := newSigner(t, "E-steward") // key after a rotation to sn 1
+
+	keys := NewStaticKeyProvider()
+	// Current key state is the rotated (sn 1) key...
+	keys.Set(sn0.aid, sn1.verfer)
+	// ...but the full establishment history is known.
+	keys.SetHistory(sn0.aid, []auth.EstablishmentKeyState{
+		{Seq: 0, Keys: []string{sn0.verfer}},
+		{Seq: 1, Keys: []string{sn1.verfer}},
+	})
+
+	// Proof signed with the sn-0 key, anchored at sn 0.
+	p := sn0.sign("contribution_signoff", tSubject, tSpace, "signed_off", tDt)
+	p.SN = snPtr(0)
+
+	aid, ok, reason := verifyActionProof(keys, "contribution_signoff", tSubject, tSpace, "signed_off", p)
+	if !ok {
+		t.Fatalf("sn-anchored proof must verify against the sn-0 key after rotation, got %q", reason)
+	}
+	if aid != sn0.aid {
+		t.Fatalf("verified aid: got %q", aid)
+	}
+
+	// Without the sn anchor, the same proof falls back to current keys (sn 1)
+	// and fails closed — the pre-part-3 behaviour.
+	p.SN = nil
+	if _, ok, _ := verifyActionProof(keys, "contribution_signoff", tSubject, tSpace, "signed_off", p); ok {
+		t.Fatal("an un-anchored proof from a rotated-away key must fail closed")
+	}
+}
+
+// TestVerifyActionProof_SnAnchoredWrongSnFailsClosed: bumping the sn to a state
+// whose key did not sign the proof must not verify (a tampered anchor cannot
+// forge authority).
+func TestVerifyActionProof_SnAnchoredWrongSnFailsClosed(t *testing.T) {
+	sn0 := newSigner(t, "E-steward")
+	sn1 := newSigner(t, "E-steward")
+	keys := NewStaticKeyProvider()
+	keys.SetHistory(sn0.aid, []auth.EstablishmentKeyState{
+		{Seq: 0, Keys: []string{sn0.verfer}},
+		{Seq: 1, Keys: []string{sn1.verfer}},
+	})
+
+	p := sn0.sign("contribution_signoff", tSubject, tSpace, "signed_off", tDt)
+	p.SN = snPtr(1) // claim sn 1, but it was signed by the sn-0 key
+	if _, ok, _ := verifyActionProof(keys, "contribution_signoff", tSubject, tSpace, "signed_off", p); ok {
+		t.Fatal("a proof anchored at a sn whose key did not sign it must fail")
+	}
+}
+
+// TestVerifyActionProof_SnAnchoredUnknownAIDFailsClosed: an sn-carrying proof
+// from an AID with no known history/keys is unverifiable.
+func TestVerifyActionProof_SnAnchoredUnknownAIDFailsClosed(t *testing.T) {
+	s := newSigner(t, "E-unknown")
+	keys := NewStaticKeyProvider() // empty
+	p := s.sign("contribution_signoff", tSubject, tSpace, "signed_off", tDt)
+	p.SN = snPtr(0)
+	if _, ok, reason := verifyActionProof(keys, "contribution_signoff", tSubject, tSpace, "signed_off", p); ok {
+		t.Fatalf("unknown AID must fail closed, got ok (reason %q)", reason)
 	}
 }
