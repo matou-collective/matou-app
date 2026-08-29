@@ -60,6 +60,7 @@ host_capacity_acquire_heavy() {
 # host_capacity_release_heavy — release what host_capacity_acquire_heavy
 # holds, if anything. Idempotent.
 host_capacity_release_heavy() {
+  [ -n "${HOST_CAPACITY_HELD_SLOT:-}" ] && host_capacity_holder_clear "$HOST_CAPACITY_HELD_SLOT"
   [ -n "${HOST_CAPACITY_HELD_FD:-}" ] && exec {HOST_CAPACITY_HELD_FD}>&-
   HOST_CAPACITY_HELD_FD=""
   HOST_CAPACITY_HELD_SLOT=""
@@ -97,6 +98,13 @@ _host_capacity_pool_slot_past_first() {
   return 1
 }
 
+# _host_capacity_is_pool_slot <path> — 0 if <path> is one of HOST_CAPACITY_SLOTS.
+_host_capacity_is_pool_slot() {
+  local slot
+  for slot in $HOST_CAPACITY_SLOTS; do [ "$slot" = "$1" ] && return 0; done
+  return 1
+}
+
 # host_capacity_acquire_exclusive <lock-path>... — non-blocking, all-or-
 # nothing over every path given (the pooled slots AND any sibling locks the
 # caller names, e.g. session-runner's own lock, a repo's healer lock) — so
@@ -104,12 +112,15 @@ _host_capacity_pool_slot_past_first() {
 # One busy lock releases everything already grabbed this call and returns 1
 # — never camp holding partial capacity. Fds live in
 # HOST_CAPACITY_EXCLUSIVE_FDS (space-separated) until
-# host_capacity_release_exclusive. Under HOST_CAPACITY_DRIVE_MODE=single-slot
+# host_capacity_release_exclusive; the pooled slots actually held (a subset
+# of HOST_CAPACITY_SLOTS, excluding sibling locks) live in
+# HOST_CAPACITY_EXCLUSIVE_SLOTS. Under HOST_CAPACITY_DRIVE_MODE=single-slot
 # every pooled slot past the first is skipped (left to the pool) — see the
 # knob's doc above; the acquire is otherwise unchanged.
 host_capacity_acquire_exclusive() {
   local path fd mode="${HOST_CAPACITY_DRIVE_MODE:-exclusive}"
   HOST_CAPACITY_EXCLUSIVE_FDS=""
+  HOST_CAPACITY_EXCLUSIVE_SLOTS=""
   for path in "$@"; do
     if [ "$mode" = single-slot ] && _host_capacity_pool_slot_past_first "$path"; then
       continue
@@ -117,6 +128,9 @@ host_capacity_acquire_exclusive() {
     exec {fd}>"$path"
     if flock -n "$fd"; then
       HOST_CAPACITY_EXCLUSIVE_FDS="$HOST_CAPACITY_EXCLUSIVE_FDS $fd"
+      if _host_capacity_is_pool_slot "$path"; then
+        HOST_CAPACITY_EXCLUSIVE_SLOTS="${HOST_CAPACITY_EXCLUSIVE_SLOTS:+$HOST_CAPACITY_EXCLUSIVE_SLOTS }$path"
+      fi
     else
       exec {fd}>&-
       host_capacity_release_exclusive
@@ -127,13 +141,80 @@ host_capacity_acquire_exclusive() {
 }
 
 # host_capacity_release_exclusive — release every fd
-# host_capacity_acquire_exclusive holds, if any. Idempotent.
+# host_capacity_acquire_exclusive holds, if any, and clear the holder
+# sidecars it recorded in HOST_CAPACITY_EXCLUSIVE_SLOTS. Idempotent.
 host_capacity_release_exclusive() {
-  local fd
+  local fd s
+  for s in ${HOST_CAPACITY_EXCLUSIVE_SLOTS:-}; do host_capacity_holder_clear "$s"; done
+  HOST_CAPACITY_EXCLUSIVE_SLOTS=""
   for fd in ${HOST_CAPACITY_EXCLUSIVE_FDS:-}; do
     exec {fd}>&- 2>/dev/null || true
   done
   HOST_CAPACITY_EXCLUSIVE_FDS=""
+}
+
+# --- Slot-holder sidecar (slot-aware fleet, spec 2026-08-28) -----------------
+#
+# A flock records nothing about its holder, so the fleet monitor could only
+# infer slot use from live swarm runs — a session-runner session (which takes
+# a pooled slot but writes no run row) was invisible. Each acquirer now labels
+# the slot it won with a JSON sidecar, <slot-path>.holder. The sidecar is ONLY
+# the label: flock stays the single truth of held/free, and a reader that finds
+# a sidecar beside a FREE lock ignores it (a crash leaves one behind; the next
+# acquirer overwrites it). It is a sidecar and not the lock file's content
+# because every acquirer opens the lock with `>` — which truncates the file
+# even when the flock then FAILS — so content inside the lock could not
+# survive a losing contender (GOTCHAS: slot-holder). Best-effort like the
+# drive log: jq-gated, and a write that fails never reds the caller.
+
+# host_capacity_holder_path <slot-path> — the sidecar beside a pooled lock.
+host_capacity_holder_path() { printf '%s.holder\n' "$1"; }
+
+# host_capacity_holder_write <slot-path> <kind> <ref> [repo] [worker] [run_id] [mode] [run_dir]
+#   <kind> is one of ticket|session|drive (CONTEXT.md vocabulary); <ref> the
+#   issue number, `run` (a swarm run — the issue is read from swarm.db
+#   attempts), `triage`, or the drive id. Empty optional args record JSON null.
+#   Atomic (tmp + mv) so a concurrent reader never sees partial JSON.
+host_capacity_holder_write() {
+  [ -n "${1:-}" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local slot="$1" kind="$2" ref="$3" repo="${4:-}" worker="${5:-}"
+  local run_id="${6:-}" mode="${7:-}" run_dir="${8:-}"
+  local path tmp
+  path="$(host_capacity_holder_path "$slot")"
+  tmp="$(mktemp "$path.XXXXXX" 2>/dev/null)" || return 0
+  if jq -cn \
+      --arg kind "$kind" --arg ref "$ref" --arg repo "$repo" --arg worker "$worker" \
+      --argjson pid "$$" --arg host "${SWARM_HOST:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)}" \
+      --argjson since "$(date +%s)" --arg run_id "$run_id" --arg mode "$mode" --arg run_dir "$run_dir" \
+      '{kind:$kind, ref:$ref, repo:(if $repo=="" then null else $repo end),
+        worker:(if $worker=="" then null else $worker end), pid:$pid, host:$host, since:$since,
+        run_id:(if $run_id=="" then null else $run_id end),
+        mode:(if $mode=="" then null else $mode end),
+        run_dir:(if $run_dir=="" then null else $run_dir end)}' > "$tmp" 2>/dev/null \
+     && mv -f "$tmp" "$path" 2>/dev/null; then
+    chmod 0644 "$path" 2>/dev/null || true
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# host_capacity_holder_clear <slot-path> — remove the sidecar. Idempotent.
+host_capacity_holder_clear() {
+  [ -n "${1:-}" ] || return 0
+  rm -f "$(host_capacity_holder_path "$1")" 2>/dev/null || true
+  return 0
+}
+
+# host_capacity_holder_clear_held — clear the sidecar of the heavy slot this
+# process holds, and of every pooled slot an exclusive acquire recorded in
+# HOST_CAPACITY_EXCLUSIVE_SLOTS. Safe when nothing is held.
+host_capacity_holder_clear_held() {
+  local s
+  [ -n "${HOST_CAPACITY_HELD_SLOT:-}" ] && host_capacity_holder_clear "$HOST_CAPACITY_HELD_SLOT"
+  for s in ${HOST_CAPACITY_EXCLUSIVE_SLOTS:-}; do host_capacity_holder_clear "$s"; done
+  return 0
 }
 
 # every consumer sees the SAME reservation the drive declared.
@@ -344,6 +425,16 @@ _host_capacity_drive_log_append() {
   printf '%s\n' "$1" >>"$HOST_CAPACITY_DRIVE_LOG" 2>/dev/null || true
 }
 
+# _host_capacity_drive_slots [mode] — the pooled slots a drive holds under
+# <mode>: slot 1 only under single-slot, every pooled slot under exclusive.
+_host_capacity_drive_slots() {
+  local mode="${1:-${HOST_CAPACITY_DRIVE_MODE:-exclusive}}" slot first=1
+  for slot in $HOST_CAPACITY_SLOTS; do
+    if [ "$mode" = single-slot ] && [ "$first" != 1 ]; then break; fi
+    printf '%s\n' "$slot"; first=0
+  done
+}
+
 # host_capacity_drive_log_start <id> <box> <target> [mode] [reservation_window_s]
 #   Record that a drive won the host's heavy capacity and started. <id>
 #   correlates this start with its later end (any stable per-drive token: the
@@ -358,7 +449,10 @@ _host_capacity_drive_log_append() {
 #   BEFORE releasing its reservation and the window is captured automatically).
 #   A non-numeric / absent window records JSON null. Best-effort; never reds the
 #   drive. Requires jq (present on every swarm host); absent, it is a silent
-#   no-op like the swarm.db writers.
+#   no-op like the swarm.db writers. Also labels every pooled slot the mode
+#   holds with a `drive` holder sidecar (slot-aware fleet);
+#   HOST_CAPACITY_DRIVE_RUN_DIR, when the driver exports it, rides into the
+#   record so the fleet monitor can find `artifacts/legs.json`.
 host_capacity_drive_log_start() {
   command -v jq >/dev/null 2>&1 || return 0
   local id="$1" box="$2" target="$3"
@@ -370,6 +464,10 @@ host_capacity_drive_log_start() {
     --arg id "$id" --arg box "$box" --arg target "$target" --arg mode "$mode" \
     --argjson at "$(date +%s)" --argjson res "$window" \
     '{event:"start",id:$id,at:$at,box:$box,target:$target,mode:$mode,reservation_window_s:$res}')"
+  local slot
+  for slot in $(_host_capacity_drive_slots "$mode"); do
+    host_capacity_holder_write "$slot" drive "$id" "$target" executor "" "$mode" "${HOST_CAPACITY_DRIVE_RUN_DIR:-}"
+  done
 }
 
 # host_capacity_drive_log_end <id> [verdict]
@@ -377,10 +475,14 @@ host_capacity_drive_log_start() {
 #   (completed, failed, killed:...); omitted → "ended". This end line is
 #   permanent and independent of the live status file, which the next drive
 #   overwrites (the whole point, #93). Best-effort; jq-gated like _start.
+#   Also clears the `drive` holder sidecars host_capacity_drive_log_start
+#   wrote for the live HOST_CAPACITY_DRIVE_MODE.
 host_capacity_drive_log_end() {
   command -v jq >/dev/null 2>&1 || return 0
   local id="$1" verdict="${2:-ended}"
   _host_capacity_drive_log_append "$(jq -cn \
     --arg id "$id" --arg verdict "$verdict" --argjson at "$(date +%s)" \
     '{event:"end",id:$id,at:$at,verdict:$verdict}')"
+  local slot
+  for slot in $(_host_capacity_drive_slots); do host_capacity_holder_clear "$slot"; done
 }

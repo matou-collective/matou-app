@@ -82,6 +82,7 @@ tests/fence-lib-test.sh
 tests/fixtures/claude-auth-refusal.txt
 tests/fixtures/claude-usage-limit.txt
 tests/fixtures/runs-alwaysred.json
+tests/fixtures/runs-healer-selfred.json
 tests/fixtures/runs-healthy.json
 tests/fixtures/runs-streak.json
 tests/fixtures/secret-empty.txt

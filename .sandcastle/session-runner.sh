@@ -374,6 +374,13 @@ sr_verdict=""       # set at each intentional post-start exit; else derived
 sr_on_exit() {
   local ec=$?
   release_claim
+  # Belt-and-braces (slot-aware fleet): the normal path already clears the
+  # holder sidecar via host_capacity_release_heavy; a limit-park/timeout exit
+  # (line ~472) leaves the process's flock to the kernel but the sidecar FILE
+  # survives it — clear it here too so no exit path orphans a stale holder.
+  # Idempotent (safe when nothing is held) and best-effort, like this trap's
+  # other cleanup.
+  host_capacity_holder_clear_held 2>/dev/null || true
   [ "$session_recorded" = 1 ] || return 0
   local now reason
   now="$(date +%s)"
@@ -423,6 +430,10 @@ swarm_git_identity session-runner
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 log="$SESSION_RUNNER_STATE/logs/run-$pick-$ts.log"
 touch "$SESSION_RUNNER_STATE/attempt-$pick"
+# Label the pooled slot this session holds (slot-aware fleet): the fleet
+# monitor reads <slot>.holder to show what each slot is busy with — a session
+# writes no swarm.db run row, so without this it is invisible there.
+host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" session "$pick" "$REPO_SLUG" session-runner
 prompt="$(cat "$SESSION_RUNNER_PROMPT_FILE")
 
 Ticket #$pick: $title

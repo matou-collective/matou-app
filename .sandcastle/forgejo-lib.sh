@@ -168,6 +168,29 @@ forgejo_merge_pr() { # forgejo_merge_pr <pr-number> [style] -> HTTP code on stdo
   forgejo_post_code "/pulls/$1/merge" "$(jq -cn --arg s "${2:-merge}" '{Do:$s}')"
 }
 
+forgejo_pr_mergeable() { # forgejo_pr_mergeable <pr-number> -> "true"|"false"|"" (unknown) on stdout; rc = curl's on the GET
+  # Forgejo computes .mergeable on the PR object: false once the head branch has
+  # drifted off its base and can no longer merge cleanly (a pnpm-lock.yaml /
+  # STATUS.md conflict, #114). The idle landing sweep reads it to tell a DRIFTED
+  # green PR (close it, re-arm the issue) from a merge POST that failed for a
+  # transient reason (mergeable still true — leave it for the next tick to retry).
+  local resp
+  resp="$(forgejo_get "/pulls/$1")" || return 1
+  # NOT `.mergeable // empty` — jq's `//` treats a literal `false` as absent, so
+  # it would swallow the very "false" this caller keys the close on. Map only a
+  # null/missing field to "" (unknown); pass true/false through verbatim.
+  jq -r 'if .mergeable == null then "" else .mergeable end' <<<"$resp" 2>/dev/null
+}
+
+forgejo_close_pr() { # forgejo_close_pr <pr-number> -> HTTP code on stdout, rc 0 always
+  # PATCH the PR state to closed (Forgejo's editPullRequest). The idle landing
+  # sweep closes a green-but-drifted agent PR (#114) so its issue drops back into
+  # the ready list for a fresh worker on current main. Same "what code did it
+  # get" shape as forgejo_post_code — the caller tolerates the outcome.
+  _forgejo_code -X PATCH -H 'Content-Type: application/json' \
+    "$FORGEJO_API/pulls/$1" -d '{"state":"closed"}'
+}
+
 forgejo_pr_combined_status() { # forgejo_pr_combined_status <pr-number> -> CombinedStatus JSON on stdout; rc non-zero if the head sha is unknown or the GET fails
   # The merge-if-green gate (#15) reads whether every required check on the PR
   # head is `success`. Forgejo's combined-status endpoint keys off a commit, not
