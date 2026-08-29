@@ -47,6 +47,13 @@ echo "build-aar: modernc.org/libc replaced with patched copy for this build" >&2
 
 # 3. Bind.
 mkdir -p "$(dirname "$ANDROID_AAR")"
+# Link every native LOAD segment at a 16 KB max page size so libgojni.so is
+# 16 KB page-aligned (issue #167). Without this the bind links at the default
+# 4 KB page size, which trips Android 15's "not 16 KB compatible … LOAD
+# segment not aligned" compatibility dialog and fails to load on devices
+# booted with 16 KB pages. common-page-size keeps BSS/data segment alignment
+# consistent with max-page-size. Append so any toolchain-set flags survive.
+export CGO_LDFLAGS="${CGO_LDFLAGS:-} -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
 # shellcheck disable=SC1090
 gomobile bind \
     -target="$ANDROID_TARGETS" -androidapi 21 \
