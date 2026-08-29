@@ -119,6 +119,7 @@ The Android app is a Capacitor shell around the same Quasar frontend, with the G
 scripts/android/setup-toolchain.sh   # one-time: JDK 21, Android SDK/NDK, gomobile (~2.9 GB in ~/.matou-android)
 cd backend && make build-android-aar  # gomobile bind → frontend/src-capacitor/android/app/libs/matou.aar
 scripts/android/build-apk.sh          # Quasar Capacitor build → frontend/dist/capacitor/android/apk/debug/app-debug.apk
+scripts/android/build-aab.sh          # signed release bundle for Play → frontend/dist/capacitor/android/bundle/release/app-release.aab (docs/mobile/PLAY_STORE.md)
 ```
 
 ## Environment Variables

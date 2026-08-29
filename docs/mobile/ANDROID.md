@@ -4,6 +4,9 @@ How to build the Matou backend as an Android library (`matou.aar`) with an
 embedded, in-process backend via [gomobile](https://pkg.go.dev/golang.org/x/mobile).
 Validated by the Phase 0 spike: `docs/spikes/2026-08-12-mobile-gomobile-android-spike.md`.
 
+Release builds for Google Play (signed `.aab`, versioning, Console steps) are
+covered separately in [PLAY_STORE.md](PLAY_STORE.md).
+
 ## Prerequisites
 
 One-time host setup (Linux x86_64; ~1.5 GB of downloads):

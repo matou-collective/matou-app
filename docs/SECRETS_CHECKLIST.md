@@ -42,3 +42,21 @@ install -m 0600 /dev/stdin .sandcastle/secrets/mattermost_bot_token <<< "$MATTER
 `DIGITALOCEAN_ACCESS_TOKEN` if this repo's tasks touch clan-lab infra. Org
 secrets are shared across every factory-driven repo already — nothing to
 mint per-repo unless this repo needs a token none of the others use.
+
+## Android / Play Store secrets (this repo only)
+
+Consumed by the `build-aab` job in `.forgejo/workflows/android.yml`
+(#176). Source of truth is the org password manager entry "Play upload key —
+nz.matou.app"; see `docs/mobile/PLAY_STORE.md` for generation.
+
+| Secret | Value |
+| --- | --- |
+| `PROD_CONFIG_URL` | production config-server URL (already used by `build-apk`) |
+| `ANDROID_KEYSTORE_B64` | `base64 -w0 matou-upload.jks` — the Play **upload** keystore, never the app-signing key |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | `matou-upload` |
+| `ANDROID_KEY_PASSWORD` | key password |
+
+The job decodes the keystore into a `mktemp` dir and removes it on exit;
+nothing is written under the checkout. Locally the same values live in
+`frontend/src-capacitor/android/keystore.properties` (git-ignored).

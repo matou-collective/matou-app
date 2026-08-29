@@ -99,6 +99,7 @@ npm run format                # Format with Prettier
 scripts/android/setup-toolchain.sh    # Install JDK 21 + Android SDK/NDK + gomobile into ~/.matou-android (idempotent)
 cd backend && make build-android-aar  # gomobile bind the embedded backend → src-capacitor/android/app/libs/matou.aar
 scripts/android/build-apk.sh          # Build the debug APK (bakes VITE_PROD_CONFIG_URL as the config server URL)
+scripts/android/build-aab.sh          # Signed release App Bundle for Google Play (see docs/mobile/PLAY_STORE.md; CI builds it on v* tags)
 ```
 
 See `docs/mobile/ANDROID.md` for the toolchain layout, gotchas, and the emulator recipe.
