@@ -289,11 +289,66 @@ func (h *ProfilesHandler) HandleListProfiles(w http.ResponseWriter, r *http.Requ
 	// Deduplicate: keep only latest version per ID
 	latest := deduplicateObjects(objects)
 
+	// Apply schema-driven filters. The set of accepted filter parameters comes
+	// from the type's schema (fields whose uiHints mark them filterable), not a
+	// hardcoded list, so an org controls which fields are searchable via its
+	// schema. A query parameter naming a non-filterable field is rejected.
+	filters, badParam := collectFilters(def, r.URL.Query())
+	if badParam != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":            fmt.Sprintf("field %q is not filterable", badParam),
+			"filterableFields": def.FilterableFieldNames(),
+		})
+		return
+	}
+	if len(filters) > 0 {
+		latest = filterProfiles(def, latest, filters)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"profiles": latest,
 		"count":    len(latest),
 		"type":     typeName,
 	})
+}
+
+// collectFilters turns request query parameters into a field→value filter map,
+// keeping only fields the schema marks filterable. It returns the name of the
+// first query parameter that names a known-but-non-filterable field so the
+// caller can reject the request; reserved pagination-style params are ignored.
+func collectFilters(def *types.TypeDefinition, query map[string][]string) (map[string]string, string) {
+	filters := make(map[string]string)
+	for key, vals := range query {
+		if len(vals) == 0 || vals[0] == "" {
+			continue
+		}
+		field, known := def.Field(key)
+		if !known {
+			// Unknown key: ignore rather than reject so pagination/sort params
+			// added later don't break existing clients.
+			continue
+		}
+		if field.UIHints == nil || !field.UIHints.Filterable {
+			return nil, key
+		}
+		filters[key] = vals[0]
+	}
+	return filters, ""
+}
+
+// filterProfiles keeps only the objects whose data satisfies every filter.
+func filterProfiles(def *types.TypeDefinition, objects []*anysync.ObjectPayload, filters map[string]string) []*anysync.ObjectPayload {
+	result := make([]*anysync.ObjectPayload, 0, len(objects))
+	for _, obj := range objects {
+		var data map[string]interface{}
+		if err := json.Unmarshal(obj.Data, &data); err != nil {
+			continue
+		}
+		if types.MatchesFilters(def, data, filters) {
+			result = append(result, obj)
+		}
+	}
+	return result
 }
 
 // handleGetProfile handles GET /api/v1/profiles/{type}/{id}.
@@ -538,6 +593,19 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Validate the assembled profile against the org's schema before writing.
+	// This runs on both the registration submit and the approval re-issue path
+	// (both go through this handler), so a member is never persisted with data
+	// that violates the current CommunityProfile schema (e.g. a custom required
+	// field left empty, or an out-of-enum role).
+	if errs := h.validateProfile("CommunityProfile", dataBytes); len(errs) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":            "CommunityProfile validation failed",
+			"validationErrors": errs,
+		})
+		return
+	}
+
 	// Get signing key for readonly space
 	client := h.spaceManager.GetClient()
 	if client == nil {
@@ -631,6 +699,14 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
 				"error": fmt.Sprintf("failed to marshal SharedProfile data: %v", err),
+			})
+			return
+		}
+
+		if errs := h.validateProfile("SharedProfile", sharedDataBytes); len(errs) > 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"error":            "SharedProfile validation failed",
+				"validationErrors": errs,
 			})
 			return
 		}
@@ -946,6 +1022,22 @@ func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Requ
 }
 
 // resolveSpaceForType returns the space ID for a given type definition.
+// validateProfile validates raw profile data against the named type in the
+// registry. It returns the list of validation errors (empty when valid). If the
+// registry has no such type it returns nil, so callers never fail closed on a
+// type the registry hasn't loaded.
+func (h *ProfilesHandler) validateProfile(typeName string, data json.RawMessage) []string {
+	if h.registry == nil {
+		return nil
+	}
+	errs, err := h.registry.Validate(typeName, data)
+	if err != nil {
+		// Unknown type — nothing to validate against.
+		return nil
+	}
+	return errs
+}
+
 func (h *ProfilesHandler) resolveSpaceForType(def *types.TypeDefinition) string {
 	switch def.Space {
 	case "private":

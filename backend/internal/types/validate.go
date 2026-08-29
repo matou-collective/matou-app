@@ -61,8 +61,25 @@ func validateField(field FieldDef, val interface{}) []string {
 		}
 
 	case "array":
-		if _, ok := val.([]interface{}); !ok {
+		items, ok := val.([]interface{})
+		if !ok {
 			errors = append(errors, fmt.Sprintf("field %q must be an array", field.Name))
+			return errors
+		}
+		// When a Validation.Enum is set on an array field, every element must be
+		// one of the allowed values. This lets an org constrain, for example,
+		// participationInterests to a fixed vocabulary purely from the schema.
+		if field.Validation != nil && len(field.Validation.Enum) > 0 {
+			for i, item := range items {
+				s, ok := item.(string)
+				if !ok {
+					errors = append(errors, fmt.Sprintf("field %q[%d] must be a string", field.Name, i))
+					continue
+				}
+				if !inEnum(s, field.Validation.Enum) {
+					errors = append(errors, fmt.Sprintf("field %q[%d] must be one of %v", field.Name, i, field.Validation.Enum))
+				}
+			}
 		}
 
 	case "object":
@@ -89,20 +106,21 @@ func validateString(name, val string, v *Validation) []string {
 			errors = append(errors, fmt.Sprintf("field %q does not match pattern %q", name, v.Pattern))
 		}
 	}
-	if len(v.Enum) > 0 {
-		found := false
-		for _, e := range v.Enum {
-			if val == e {
-				found = true
-				break
-			}
-		}
-		if !found {
-			errors = append(errors, fmt.Sprintf("field %q must be one of %v", name, v.Enum))
-		}
+	if len(v.Enum) > 0 && !inEnum(val, v.Enum) {
+		errors = append(errors, fmt.Sprintf("field %q must be one of %v", name, v.Enum))
 	}
 
 	return errors
+}
+
+// inEnum reports whether val is one of the allowed enum values.
+func inEnum(val string, enum []string) bool {
+	for _, e := range enum {
+		if val == e {
+			return true
+		}
+	}
+	return false
 }
 
 // validateNumber validates a number field value.
