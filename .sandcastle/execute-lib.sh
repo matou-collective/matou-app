@@ -46,6 +46,16 @@ EXECUTE_AUTH_TTL="${EXECUTE_AUTH_TTL:-3600}"
 # rc 1 (the generic red) so run-swarm's three-way exit is a case, not a guess.
 EXECUTE_RC_STOP=100
 
+# #111: main.mts prints this marker line when the run ended while a rehearsal
+# drive's reservation stood — its 2 s poller mirrored the reservation into the
+# sandbox, list-ready-tasks.sh answered [] and the loop completed after its
+# current task. The run is a SUCCESS (workers ran, work lands as usual); only
+# the exit reason differs, so run-swarm's verdict names the yield rather than
+# `completed`. Set on the success path; empty otherwise.
+EXECUTE_YIELDED_TO_DRIVE=""
+SANDCASTLE_YIELDED_TO_DRIVE_RE='^SANDCASTLE_YIELDED_TO_DRIVE run='
+execute_drive_yield_hit() { grep -qE "$SANDCASTLE_YIELDED_TO_DRIVE_RE" "$1" 2>/dev/null; }
+
 _execute_notify() { bash "$EXECUTE_NOTIFY" "$1" || true; }
 
 # _execute_notice_due <marker> <ttl> — 0 iff a notice should be posted now (and
@@ -123,6 +133,10 @@ execute_sandcastle_run() {
         return 1 ;;
     esac
   done
+  if execute_drive_yield_hit "$log"; then
+    EXECUTE_YIELDED_TO_DRIVE=1
+    echo "run-swarm: a rehearsal drive reserved host capacity mid-run — this run finished its current task and claimed nothing more (#111); the drive fires next, the swarm resumes on its next trigger"
+  fi
   rm -f "$log"
   return 0
 }

@@ -116,10 +116,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue';
+import { ref, reactive, watch, computed } from 'vue';
 import { X, Loader2, CheckCircle2, Circle, XCircle } from 'lucide-vue-next';
 import { updateMemberRole } from 'src/lib/api/client';
 import { useAdminActions } from 'src/composables/useAdminActions';
+import { useRolePolicyStore } from 'src/stores/rolePolicy';
 
 interface Props {
   show: boolean;
@@ -137,20 +138,44 @@ const emit = defineEmits<{
 
 const { upgradeMemberToSteward, reissueMembershipCredential } = useAdminActions();
 
+const rolePolicyStore = useRolePolicyStore();
+void rolePolicyStore.load();
+
 const STEWARD_ROLES = ['Founding Member', 'Community Steward'];
 
-const roles = [
-  'Member',
-  'Contributor',
-  'Community Steward',
-  'Operations Steward',
-  'Founding Member',
-  'Financial Steward',
-  'Governance Steward',
-  'Treasury Steward',
-  'Technical Steward',
-  'Cultural Steward',
-];
+// Map builtin contribution-role IDs back to KERI credential role strings.
+const BUILTIN_KERI_NAMES: Record<string, string> = {
+  member: 'Member',
+  contributor: 'Contributor',
+  community_steward: 'Community Steward',
+  operations_steward: 'Operations Steward',
+  founding_member: 'Founding Member',
+  project_lead: '',    // not directly assignable as a credential role
+  project_steward: '', // not directly assignable as a credential role
+};
+function keriNameForBuiltin(id: string): string {
+  return BUILTIN_KERI_NAMES[id] ?? '';
+}
+
+// Builtin roles use their KERI display names (which equal their credential
+// role strings); custom roles use their policy IDs. Both are valid
+// credential role values (backend isAssignableRole).
+const roles = computed<string[]>(() => {
+  const opts = rolePolicyStore.roleOptions;
+  if (opts.length === 0) {
+    // Policy not loaded yet — builtin fallback, identical to the old list.
+    return [
+      'Member', 'Contributor', 'Community Steward', 'Operations Steward',
+      'Founding Member', 'Financial Steward', 'Governance Steward',
+      'Treasury Steward', 'Technical Steward', 'Cultural Steward',
+    ];
+  }
+  const mapped = opts.map((r) => (r.builtin ? keriNameForBuiltin(r.id) : r.id)).filter((r) => r !== '');
+  for (const extra of ['Financial Steward', 'Governance Steward', 'Cultural Steward']) {
+    if (!mapped.includes(extra)) mapped.push(extra);
+  }
+  return mapped;
+});
 
 interface UpgradeStep {
   id: string;

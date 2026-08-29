@@ -222,6 +222,41 @@ run_close_pr_nopr 444 "$pr_env"; rc=$?
 [ "$rc" -eq 1 ] || fail "pr close with no open PR must exit 1, got $rc"; ok
 grep -q 'no open agent PR' "$FAKE_DIR/forgejo.log" \
   || fail "a no-PR pr close must name the missing PR in the refusal"; ok
+
+# PR-5 (#108) — no OPEN PR, but a MERGED one from agent/issue-444 and the issue
+# already closed by its `closes #444`: a reconcile sweep landed it before this
+# close-report ran. The close is VERIFIED (gates run against main, where the
+# work now is), the comment says so, the claim labels are swept, exit 0.
+run_close_pr_merged() { # run_close_pr_merged <issue> <envelope> [already-closed]
+  FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+  printf 'LANDING=pr\nMERGE_AUTHORITY=agent-after-green\n' > "$FAKE_DIR/swarm-policy.sh"
+  export SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh"
+  printf '[]\n' > "$FAKE_DIR/open-pulls.json"
+  printf '[{"number":5,"head":{"ref":"sandcastle/worker/x"},"merged":false},{"number":6,"head":{"ref":"agent/issue-%s"},"merged":true}]\n' "$1" > "$FAKE_DIR/closed-pulls.json"
+  printf '{"number":6,"head":{"ref":"agent/issue-%s"},"html_url":"u/pr/6"}\n' "$1" > "$FAKE_DIR/pr-6.json"
+  printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"}]\n' > "$FAKE_DIR/labels.json"
+  [ -n "${3:-}" ] && touch "$FAKE_DIR/closed-$1"
+  local ef="$FAKE_DIR/envelope.json"; printf '%s' "$2" > "$ef"
+  ( cd "$repo" && bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
+}
+run_close_pr_merged 444 "$pr_env" closed; rc=$?
+[ "$rc" -eq 0 ] || fail "pr close after an earlier merge must exit 0, got $rc (#108)"; ok
+! grep -q 'no open agent PR' "$FAKE_DIR/forgejo.log" \
+  || fail "a merged PR must NOT be reported as 'no open agent PR' (#108)"; ok
+grep -q 'already merged' "$FAKE_DIR/forgejo.log" \
+  || fail "the comment must say the PR was already merged (#108)"; ok
+! merged_pr || fail "an already-merged PR must not be merged again"; ok
+removed_label 444 40 || fail "the earlier merge's close must sweep agent-working (#108/#22)"; ok
+removed_label 444 36 || fail "the earlier merge's close must sweep ready-for-agent (#108/#22)"; ok
+grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=success ' "$FAKE_DIR/stdout.log" \
+  || fail "an already-merged close must emit outcome=success, not refused (#108)"; ok
+
+# PR-6 (#108) — merged PR but the issue is somehow still OPEN (no closes-ref
+# took): the verified work is on main, so close it directly like push mode.
+run_close_pr_merged 444 "$pr_env"; rc=$?
+[ "$rc" -eq 0 ] || fail "merged-but-open close must exit 0, got $rc (#108)"; ok
+close_stuck 444 || fail "merged-but-open must PATCH the issue closed and verify it (#108)"; ok
+removed_label 444 40 || fail "merged-but-open close must sweep agent-working (#108)"; ok
 unset SWARM_POLICY_FILE
 
 echo "close-report: $pass checks passed"

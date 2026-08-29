@@ -53,6 +53,14 @@ url="${GIT_SETUP_REMOTE_URL:-https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_
 ) > "$git_log" 2>&1
 ec=$?
 cat "$git_log"
+# Wire the factory pre-push drift gate into this real (non-sandbox) swarm/triage
+# workdir so a push that edits a factory-vendored file (FACTORY_MANIFEST, ADR
+# 0180) is blocked BEFORE it lands, not by a red seam on main (idss #932). Same
+# knob the sandbox sets in main.mts. Guarded: hook wiring must never turn a
+# clean checkout into a red git-setup verdict.
+if [ "$ec" -eq 0 ]; then
+  git config core.hooksPath .sandcastle/git-hooks 2>/dev/null || true
+fi
 verdict_write "$ec"
 rm -f "$git_log"
 exit "$ec"

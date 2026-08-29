@@ -4,6 +4,7 @@ package contributions
 import (
 	"encoding/json"
 	"log"
+	"sync"
 )
 
 // ProfileRoleLookup implements RoleLookup by reading CommunityProfile and SharedProfile
@@ -11,9 +12,11 @@ import (
 // It also supports a set of known admin AIDs that are always granted community_admin.
 type ProfileRoleLookup struct {
 	store         ObjectStore
-	space         string          // community read-only space ID captured at construction
-	spaceResolver func() string   // live read-only space ID resolver (preferred over the captured value)
-	adminAIDs     map[string]bool // AIDs that always get community_admin role
+	space         string        // community read-only space ID captured at construction
+	spaceResolver func() string // live read-only space ID resolver (preferred over the captured value)
+
+	mu        sync.RWMutex
+	adminAIDs map[string]bool // AIDs that always get community_admin role
 }
 
 func NewProfileRoleLookup(store ObjectStore, readOnlySpaceID string) *ProfileRoleLookup {
@@ -21,7 +24,11 @@ func NewProfileRoleLookup(store ObjectStore, readOnlySpaceID string) *ProfileRol
 }
 
 // SetAdminAIDs configures AIDs that are always treated as community admins.
+// Called concurrently with GetUserRoles/IsAdminAID from the org-config
+// update callback, so adminAIDs is guarded by mu.
 func (l *ProfileRoleLookup) SetAdminAIDs(aids []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	for _, aid := range aids {
 		l.adminAIDs[aid] = true
 	}
@@ -47,10 +54,22 @@ func (l *ProfileRoleLookup) spaceID() string {
 	return l.space
 }
 
+// IsAdminAID reports whether the AID is in the org-config admin list.
+// Used as the un-lockout backstop: org admins can always edit the role
+// policy regardless of what the policy's grants say.
+func (l *ProfileRoleLookup) IsAdminAID(aid string) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.adminAIDs[aid]
+}
+
 // GetUserRoles reads the user's profile and maps the KERI role to contribution roles.
 func (l *ProfileRoleLookup) GetUserRoles(aid string) ([]Role, error) {
 	// Check admin AID list first (from org config)
-	if l.adminAIDs[aid] {
+	l.mu.RLock()
+	isAdmin := l.adminAIDs[aid]
+	l.mu.RUnlock()
+	if isAdmin {
 		return MapKERIRole("Founding Member"), nil
 	}
 

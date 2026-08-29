@@ -449,6 +449,20 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// identity so the admin's Founding Member role resolves as soon as the read-only
 	// space is created — e.g. during org-setup's re-set of its own identity (#174).
 	profileRoleLookup.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
+	rolePolicyProvider := contributions.NewStorePolicyProvider(contribStoreAdapter, communityReadOnlySpaceID, 5*time.Second)
+	// The read-only space ID is empty until an identity exists (first run /
+	// org setup happens after boot), so resolve it live rather than freezing
+	// the boot-time value.
+	rolePolicyProvider.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
+	contributions.SetPolicyProvider(rolePolicyProvider)
+	rolePolicyHandler := api.NewRolePolicyHandler(
+		rolePolicyProvider,
+		api.NewSpacePolicyWriter(spaceManager, communityReadOnlySpaceID),
+		contribStoreAdapter,
+		communityReadOnlySpaceID,
+		profileRoleLookup.IsAdminAID,
+	)
+	rolePolicyHandler.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
 	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
 	credentialRoleLookup := api.NewCredentialRoleLookup(store)
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
@@ -673,6 +687,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	implPlansHandler.RegisterRoutes(mux, roleLookup)
 	milestonesHandler.RegisterRoutes(mux, roleLookup)
 	contributionsHandler.RegisterRoutes(mux, roleLookup)
+	rolePolicyHandler.RegisterRoutes(mux, roleLookup)
 	orgConfigHandler.RegisterRoutes(mux, roleLookup)
 	clientConfigHandler.RegisterRoutes(mux)
 
@@ -707,7 +722,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// verified X-User-AID before any route/RBAC runs.
 	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(
 		api.TokenGuardWithSessions(opts.APIToken, authHandler.Sessions(),
-			api.SignedAuthMiddleware(authHandler.Sessions(), mux)))))
+			api.SignedAuthMiddleware(authHandler.Sessions(), opts.APIToken, mux)))))
 
 	app := newServing(listener, handler, closers)
 	success = true

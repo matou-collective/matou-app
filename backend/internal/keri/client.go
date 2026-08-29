@@ -146,16 +146,16 @@ func (c *Client) IsOrgIssued(cred *Credential) bool {
 // GetPermissionsForRole returns the permissions for a given role
 func GetPermissionsForRole(role string) []string {
 	permissions := map[string][]string{
-		"Member":              {"read", "comment"},
-		"Contributor":         {"read", "comment", "vote", "contribute"},
-		"Community Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "approve_registrations"},
-		"Operations Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
-		"Founding Member":     {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
-		"Financial Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_finances"},
-		"Governance Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "manage_governance"},
-		"Treasury Steward":    {"read", "comment", "vote", "propose", "moderate", "admin", "manage_treasury"},
-		"Technical Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_technical"},
-		"Cultural Steward":    {"read", "comment", "vote", "propose", "moderate", "admin", "manage_cultural"},
+		"Member":             {"read", "comment"},
+		"Contributor":        {"read", "comment", "vote", "contribute"},
+		"Community Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "approve_registrations"},
+		"Operations Steward": {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
+		"Founding Member":    {"read", "comment", "vote", "propose", "moderate", "admin", "issue_membership", "revoke_membership", "approve_registrations"},
+		"Financial Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "manage_finances"},
+		"Governance Steward": {"read", "comment", "vote", "propose", "moderate", "admin", "manage_governance"},
+		"Treasury Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_treasury"},
+		"Technical Steward":  {"read", "comment", "vote", "propose", "moderate", "admin", "manage_technical"},
+		"Cultural Steward":   {"read", "comment", "vote", "propose", "moderate", "admin", "manage_cultural"},
 	}
 
 	if perms, ok := permissions[role]; ok {
@@ -180,7 +180,9 @@ func ValidRoles() []string {
 	}
 }
 
-// IsValidRole checks if a role is valid
+// IsValidRole checks if a role is one of the 10 builtin membership roles.
+// Custom roles defined in the community RolePolicy are validated separately
+// (api.isAssignableRole) — this function intentionally knows nothing of them.
 func IsValidRole(role string) bool {
 	for _, r := range ValidRoles() {
 		if r == role {

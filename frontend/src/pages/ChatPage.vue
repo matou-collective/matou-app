@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-page" :style="pageStyle">
+  <div class="chat-page" :class="{ 'reserve-tab-bar': reserveTabBar }" :style="pageStyle">
     <ChatLayout />
   </div>
 </template>
@@ -10,10 +10,12 @@ import ChatLayout from 'src/components/chat/ChatLayout.vue';
 import { useChatStore } from 'stores/chat';
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { useVisualViewport } from 'src/composables/useVisualViewport';
+import { useKeyboardOpen } from 'src/composables/useKeyboardOpen';
 
 const chatStore = useChatStore();
 const isMobile = useIsMobile();
 const viewportHeight = useVisualViewport();
+const keyboardOpen = useKeyboardOpen();
 
 // On mobile, pin the chat column to the *visible* viewport so the message list
 // and composer shrink together when the soft keyboard opens — otherwise the
@@ -27,6 +29,12 @@ const pageStyle = computed(() =>
     ? { height: `calc(${viewportHeight.value}px - env(safe-area-inset-top))` }
     : {}
 );
+
+// On mobile the fixed bottom tab bar overlays the viewport, so reserve matching
+// space below the chat column or the composer renders behind it and cannot be
+// tapped (#168). While the keyboard is open the tab bar hides (#126), so drop
+// the reservation to give the list/composer the full visible viewport (#125).
+const reserveTabBar = computed(() => isMobile.value && !keyboardOpen.value);
 
 onUnmounted(() => {
   chatStore.selectChannel(null);
@@ -57,5 +65,15 @@ onMounted(async () => {
   display: flex;
   overflow: hidden;
   width: 100%;
+  box-sizing: border-box;
+}
+
+// Mobile: keep the composer clear of the fixed bottom tab bar + bottom safe
+// area (#168). The height above (100vh or the visual viewport) covers the whole
+// screen including the area the tab bar overlays, so subtract the bar via
+// bottom padding; box-sizing keeps the flex children (list + composer) inside
+// it. Removed while the keyboard is open, when the tab bar is hidden (#126).
+.chat-page.reserve-tab-bar {
+  padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
 }
 </style>

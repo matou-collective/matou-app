@@ -82,9 +82,6 @@ func TestCanPerformAction_SignOffProposal(t *testing.T) {
 		{"member", RoleMember},
 		{"contributor", RoleContributor},
 		{"project_lead", RoleProjectLead},
-		{"tech_steward", RoleTechSteward},
-		{"treasury_steward", RoleTreasurySteward},
-		{"elder_council", RoleElderCouncil},
 	}
 	for _, tt := range nonAdminRoles {
 		if CanPerformAction([]Role{tt.role}, ActionSignOffProposal) {

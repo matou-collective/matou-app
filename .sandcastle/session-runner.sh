@@ -404,6 +404,11 @@ fi
 git -C "$SESSION_RUNNER_CHECKOUT" fetch -q origin || true
 git -C "$SESSION_RUNNER_CHECKOUT" reset -q --hard origin/main || true
 git -C "$SESSION_RUNNER_CHECKOUT" clean -qfd || true
+# Wire the factory pre-push drift gate into this real (non-sandbox) checkout so a
+# session that edits a factory-vendored file (FACTORY_MANIFEST, ADR 0180) is
+# blocked BEFORE the push, not by a red seam on main (idss #932). Same knob the
+# sandbox sets in main.mts. Best-effort: a config hiccup must not fail the tick.
+git -C "$SESSION_RUNNER_CHECKOUT" config core.hooksPath .sandcastle/git-hooks || true
 
 # ── the session: one headless claude, riding the #510 failover ───────────────
 # Stamp the factory git identity (#19) so the session's commits carry

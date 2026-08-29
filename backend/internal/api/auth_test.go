@@ -17,6 +17,10 @@ import (
 // validTestAID is a syntactically valid 44-char AID for handler tests.
 const validTestAID = "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
+// testAPIToken is the per-launch API token the middleware is wired with in
+// tests (mirrors the value plumbed from opts.APIToken in app wiring).
+const testAPIToken = "test-api-token"
+
 // captureAID returns a handler that records the X-User-AID header and the
 // context-verified AID it sees.
 func captureAID(seen *string, verified *string) http.Handler {
@@ -33,7 +37,7 @@ func TestSignedAuthDisabledIsPassthrough(t *testing.T) {
 	t.Setenv("MATOU_REQUIRE_SIGNED_AUTH", "")
 	sessions := auth.NewSessionStore(0)
 	var seen, verified string
-	mw := SignedAuthMiddleware(sessions, captureAID(&seen, &verified))
+	mw := SignedAuthMiddleware(sessions, testAPIToken, captureAID(&seen, &verified))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
 	req.Header.Set("X-User-AID", "Eclaimed")
@@ -64,7 +68,7 @@ func TestSignedAuthDisabledStillVerifiesSessions(t *testing.T) {
 	sessions := auth.NewSessionStore(0)
 	token, _, _ := sessions.Mint("Everified", "h1")
 	var seen, verified string
-	mw := SignedAuthMiddleware(sessions, captureAID(&seen, &verified))
+	mw := SignedAuthMiddleware(sessions, testAPIToken, captureAID(&seen, &verified))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
 	req.Header.Set("X-User-AID", "Espoofed")
@@ -81,7 +85,7 @@ func TestSignedAuthEnabledStripsUnverifiedHeader(t *testing.T) {
 	t.Setenv("MATOU_REQUIRE_SIGNED_AUTH", "1")
 	sessions := auth.NewSessionStore(0)
 	var seen string
-	mw := SignedAuthMiddleware(sessions, captureAID(&seen, nil))
+	mw := SignedAuthMiddleware(sessions, testAPIToken, captureAID(&seen, nil))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
 	req.Header.Set("X-User-AID", "Eclaimed") // spoofed, no token
@@ -99,7 +103,7 @@ func TestSignedAuthEnabledValidToken(t *testing.T) {
 	token, _, _ := sessions.Mint("Everified", "h1")
 
 	var seen, verified string
-	mw := SignedAuthMiddleware(sessions, captureAID(&seen, &verified))
+	mw := SignedAuthMiddleware(sessions, testAPIToken, captureAID(&seen, &verified))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
 	req.Header.Set("X-User-AID", "Espoofed") // must be overridden
@@ -119,7 +123,7 @@ func TestSignedAuthEnabledInvalidToken(t *testing.T) {
 	t.Setenv("MATOU_REQUIRE_SIGNED_AUTH", "1")
 	sessions := auth.NewSessionStore(0)
 
-	mw := SignedAuthMiddleware(sessions, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mw := SignedAuthMiddleware(sessions, testAPIToken, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler must not run for an invalid token")
 	}))
 
@@ -133,11 +137,56 @@ func TestSignedAuthEnabledInvalidToken(t *testing.T) {
 	}
 }
 
+// The per-launch API token is a legitimate anonymous bearer, not an invalid
+// session: under enforcement it must be treated like "no token" — X-User-AID
+// stripped, request passed through — rather than 401'd.
+func TestSignedAuthEnabledAPITokenIsAnonymous(t *testing.T) {
+	t.Setenv("MATOU_REQUIRE_SIGNED_AUTH", "1")
+	sessions := auth.NewSessionStore(0)
+	var seen, verified string
+	mw := SignedAuthMiddleware(sessions, testAPIToken, captureAID(&seen, &verified))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	req.Header.Set("X-User-AID", "Espoofed") // client-supplied, must be stripped
+	req.Header.Set("Authorization", "Bearer "+testAPIToken)
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("API token must not 401, got %d", rr.Code)
+	}
+	if seen != "" {
+		t.Fatalf("API-token request must reach RBAC as anonymous (X-User-AID stripped), got %q", seen)
+	}
+	if verified != "" {
+		t.Fatalf("API token must not assert a verified AID, got %q", verified)
+	}
+}
+
+// A bearer that is neither the API token nor a live session is still rejected
+// with 401 under enforcement.
+func TestSignedAuthEnabledRandomBearerRejected(t *testing.T) {
+	t.Setenv("MATOU_REQUIRE_SIGNED_AUTH", "1")
+	sessions := auth.NewSessionStore(0)
+	mw := SignedAuthMiddleware(sessions, testAPIToken, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler must not run for a random bearer")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	req.Header.Set("Authorization", "Bearer not-the-api-token-and-not-a-session")
+	rr := httptest.NewRecorder()
+	mw.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("random bearer must be 401, got %d", rr.Code)
+	}
+}
+
 func TestSignedAuthEnabledExemptPaths(t *testing.T) {
 	t.Setenv("MATOU_REQUIRE_SIGNED_AUTH", "1")
 	sessions := auth.NewSessionStore(0)
 	var seen string
-	mw := SignedAuthMiddleware(sessions, captureAID(&seen, nil))
+	mw := SignedAuthMiddleware(sessions, testAPIToken, captureAID(&seen, nil))
 
 	for _, path := range []string{"/health", "/api/v1/auth/challenge", "/api/v1/auth/login"} {
 		req := httptest.NewRequest(http.MethodPost, path, nil)

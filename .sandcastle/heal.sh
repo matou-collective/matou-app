@@ -109,7 +109,8 @@ verdict_is_fresh() {
 
 # One healer at a time PER REPO. Our OWN lock — never the swarm's — and
 # per-repo (#238) so idss's healer never blocks matou-app's incident.
-exec 8>"/tmp/matou-healer-$REPO_TAG.lock"
+HEALER_LOCK="${HEALER_LOCK:-/tmp/matou-healer-$REPO_TAG.lock}"
+exec 8>"$HEALER_LOCK"
 flock -n 8 || { echo "heal: another healer holds the lock — exiting"; exit 0; }
 
 # Yield to a ready rehearsal drive (#663 producer / #664 consumer / #30): a
