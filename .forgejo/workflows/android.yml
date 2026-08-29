@@ -60,10 +60,13 @@ jobs:
           # shellcheck disable=SC1090
           . "${MATOU_ANDROID_HOME:-$HOME/.matou-android}/env.sh"
           aar="frontend/src-capacitor/android/app/libs/matou.aar"
-          readelf="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -name llvm-readelf -type f | head -1)"
+          # llvm-readelf is a symlink to llvm-readobj in NDK r27, so don't
+          # restrict to -type f. Runner hosts may lack unzip (see #100);
+          # python3 is guaranteed there.
+          readelf="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" \( -type f -o -type l \) -name llvm-readelf | head -1)"
           [ -n "$readelf" ] || { echo "llvm-readelf not found under NDK" >&2; exit 1; }
           tmp="$(mktemp -d)"
-          unzip -o -q "$aar" 'jni/arm64-v8a/libgojni.so' -d "$tmp"
+          python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extract("jni/arm64-v8a/libgojni.so", sys.argv[2])' "$aar" "$tmp"
           so="$tmp/jni/arm64-v8a/libgojni.so"
           echo "==> LOAD segments in $so:"
           "$readelf" -l "$so" | awk '/LOAD/'
