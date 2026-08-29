@@ -717,7 +717,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// verified X-User-AID before any route/RBAC runs.
 	handler := api.RequestLogger(api.LocalhostGuard(api.CORSMiddleware(
 		api.TokenGuardWithSessions(opts.APIToken, authHandler.Sessions(),
-			api.SignedAuthMiddleware(authHandler.Sessions(), mux)))))
+			api.SignedAuthMiddleware(authHandler.Sessions(), opts.APIToken, mux)))))
 
 	app := newServing(listener, handler, closers)
 	success = true
