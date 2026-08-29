@@ -23,8 +23,8 @@ onMounted(() => {
 <style>
 :root {
   --titlebar-height: 0px;
-  // Height of the mobile bottom tab bar (excluding the bottom safe-area inset).
-  // Shared token so the chat view can reserve matching space (#168).
+  /* Height of the mobile bottom tab bar (excluding the bottom safe-area inset).
+     Shared token so the chat view can reserve matching space (#168). */
   --bottom-nav-height: 64px;
 }
 
