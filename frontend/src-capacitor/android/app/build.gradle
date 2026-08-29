@@ -1,5 +1,51 @@
 apply plugin: 'com.android.application'
 
+// ---------------------------------------------------------------------------
+// Release signing + versioning (#176 — Play Store)
+//
+// Two sources; env vars win over the file so CI and local builds share one
+// code path:
+//   1. env: MATOU_KEYSTORE_FILE, MATOU_KEYSTORE_PASSWORD, MATOU_KEY_ALIAS,
+//           MATOU_KEY_PASSWORD   (CI materialises the keystore from a secret)
+//   2. android/keystore.properties (git-ignored; see keystore.properties.example)
+//      with storeFile, storePassword, keyAlias, keyPassword
+// If neither is present the release build type is left UNSIGNED so
+// `assembleRelease`/`bundleRelease` still work for smoke builds; Play rejects
+// an unsigned bundle, which is the point.
+//
+// Version: MATOU_VERSION_CODE / MATOU_VERSION_NAME env (set by the tag-driven
+// CI job in .forgejo/workflows/android.yml) with fallbacks 1 / package.json.
+// ---------------------------------------------------------------------------
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+def signingValue = { String envName, String propName ->
+    def v = System.getenv(envName)
+    if (v != null && !v.isEmpty()) return v
+    return keystoreProps.getProperty(propName)
+}
+def releaseStoreFile = signingValue('MATOU_KEYSTORE_FILE', 'storeFile')
+def releaseStorePassword = signingValue('MATOU_KEYSTORE_PASSWORD', 'storePassword')
+def releaseKeyAlias = signingValue('MATOU_KEY_ALIAS', 'keyAlias')
+def releaseKeyPassword = signingValue('MATOU_KEY_PASSWORD', 'keyPassword')
+def hasReleaseSigning = releaseStoreFile != null && releaseStorePassword != null &&
+    releaseKeyAlias != null && releaseKeyPassword != null
+
+def packageJsonVersion = {
+    def f = rootProject.file('../../package.json')
+    if (!f.exists()) return '0.0.0'
+    def m = (f.text =~ /"version"\s*:\s*"([^"]+)"/)
+    return m.find() ? m.group(1) : '0.0.0'
+}
+def envOr = { String envName, String fallback ->
+    def v = System.getenv(envName)
+    (v != null && !v.isEmpty()) ? v : fallback
+}
+def matouVersionCode = envOr('MATOU_VERSION_CODE', '1').toInteger()
+def matouVersionName = envOr('MATOU_VERSION_NAME', packageJsonVersion())
+
 android {
     namespace "nz.matou.app"
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,8 +53,8 @@ android {
         applicationId "nz.matou.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode matouVersionCode
+        versionName matouVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,10 +62,28 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                // Relative paths resolve against android/ (where keystore.properties lives).
+                storeFile rootProject.file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
         release {
+            // R8/ProGuard deliberately left off: the gomobile JNI bridge
+            // (go.Seq, matou.*) needs keep rules we haven't validated on-device.
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            } else {
+                logger.warn("matou: no release signing config (MATOU_KEYSTORE_* env or android/keystore.properties) — release build will be UNSIGNED")
+            }
         }
     }
 }

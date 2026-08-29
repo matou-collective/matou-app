@@ -6,7 +6,15 @@ name: android
 # slow; later runs hit that cache and are much faster (acceptance criterion 2).
 # The runner host provides Go, Node/npm and python3 directly (Ben's #76 notes).
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Also build the signed release AAB (Play Store, #176)"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
   pull_request:
     paths:
       - 'backend/**'
@@ -24,6 +32,8 @@ concurrency:
 
 jobs:
   build-apk:
+    # Tag pushes go straight to build-aab below; the debug APK is a PR artefact.
+    if: github.event_name != 'push'
     # Pinned to the one pool host that carries the persistent toolchain. `swarm`
     # is a pool: jobs that land on the other host die in ~20s doing a first
     # install with no go/JDK (tasks 27461/27490/27493/27510 on 2026-08-27).
@@ -89,3 +99,107 @@ jobs:
           apk="frontend/dist/capacitor/android/apk/debug/app-debug.apk"
           bash .sandcastle/notify-mattermost-files.sh \
             ":robot: android debug APK (actions/upload-artifact flaked — attached instead) — $RUN_URL" "$apk"
+
+  # Signed release App Bundle for the Play Store (#176). Runs on `v*` tag
+  # pushes and on manual dispatch with release=true. Produces the .aab as an
+  # artefact; uploading it to Play is manual for now (auto-upload is #202).
+  #
+  # Required repo/org secrets (see docs/SECRETS_CHECKLIST.md):
+  #   ANDROID_KEYSTORE_B64      base64 of the upload keystore (.jks)
+  #   ANDROID_KEYSTORE_PASSWORD
+  #   ANDROID_KEY_ALIAS
+  #   ANDROID_KEY_PASSWORD
+  #   PROD_CONFIG_URL           already used by build-apk
+  build-aab:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')
+    runs-on: matou-workstation
+    timeout-minutes: 90
+    steps:
+      - name: Checkout (raw clone — see build-apk)
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO_SLUG: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          host="${SERVER_URL#https://}"
+          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+          git init -q .
+          git remote add origin "$url" 2>/dev/null || git remote set-url origin "$url"
+          git fetch -q --depth=1 origin "$SHA"
+          git checkout -q -f FETCH_HEAD
+      - name: Derive versionCode / versionName
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          # Tag vX.Y.Z -> versionName X.Y.Z; otherwise package.json version + run id.
+          if [[ "$REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            name="${REF_NAME#v}"
+            # Monotonic, human-decodable: MMMmmmppp (e.g. 0.4.0 -> 4000). Leaves
+            # room for 999 patch releases per minor; Play's max is 2100000000.
+            code=$(( ${BASH_REMATCH[1]} * 1000000 + ${BASH_REMATCH[2]} * 1000 + ${BASH_REMATCH[3]} ))
+          else
+            name="$(sed -n 's/^  "version": "\(.*\)",/\1/p' frontend/package.json)-ci${RUN_NUMBER}"
+            code="$RUN_NUMBER"
+          fi
+          echo "versionName=$name versionCode=$code"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Install Android toolchain (idempotent, cached in $HOME/.matou-android)
+        run: |
+          set -euo pipefail
+          bash scripts/android/setup-toolchain.sh
+      - name: gomobile bind — embedded backend .aar
+        run: |
+          set -euo pipefail
+          make -C backend build-android-aar
+      - name: Install frontend deps
+        run: |
+          set -euo pipefail
+          cd frontend && CI=true npm ci
+      - name: Build signed release AAB
+        env:
+          VITE_PROD_CONFIG_URL: ${{ secrets.PROD_CONFIG_URL }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          MATOU_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MATOU_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MATOU_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          MATOU_VERSION_CODE: ${{ steps.version.outputs.code }}
+          MATOU_VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            echo "ERROR: ANDROID_KEYSTORE_B64 secret is not set — cannot sign" >&2
+            exit 1
+          fi
+          ks="$(mktemp -d)/upload.jks"
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
+          chmod 600 "$ks"
+          trap 'rm -rf "$(dirname "$ks")"' EXIT
+          export MATOU_KEYSTORE_FILE="$ks"
+          bash scripts/android/build-aab.sh
+      - name: Upload app-release.aab
+        id: upload
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ steps.version.outputs.name }}
+          path: frontend/dist/capacitor/android/bundle/release/app-release.aab
+          if-no-files-found: error
+      - name: Fallback — post AAB to Mattermost if artifact upload flaked
+        if: steps.upload.outcome != 'success'
+        env:
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          VERSION: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          aab="frontend/dist/capacitor/android/bundle/release/app-release.aab"
+          bash .sandcastle/notify-mattermost-files.sh \
+            ":robot: android release AAB $VERSION (actions/upload-artifact flaked — attached instead) — $RUN_URL" "$aab"
