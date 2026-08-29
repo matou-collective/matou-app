@@ -46,7 +46,7 @@ jobs:
           # and hang until timeout-minutes kills the job.
           docker run --rm --entrypoint bash -v "$PWD":/work -w /work matou-app-ci -lc '
             set -euo pipefail
-            cd frontend && CI=true npm ci && npm run test:script && npm run lint && cd ..
+            cd frontend && CI=true npm ci && npm run test:script && npm run lint && npm run build && cd ..
             cd backend && go build ./... && make test
           '
       - name: Investigate failure (healer)
