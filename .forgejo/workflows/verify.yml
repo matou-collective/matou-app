@@ -13,6 +13,7 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
           FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
           REPO_SLUG: ${{ github.repository }}
           MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
           MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
@@ -27,16 +28,30 @@ jobs:
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
-          url="https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_SLUG}.git"
-          if [ -d .git ]; then
-            git remote set-url origin "$url"
-            git fetch origin main
-            git checkout -f main
-            git reset --hard origin/main
+          # Route through run-verify.sh (#228) so a git-sync or check-verifications
+          # failure drops a stage/exit/error verdict the healer keys a real
+          # signature on, instead of collapsing every red verify onto the bare
+          # `verify|` signature (the poller writes nothing to worker-logs.txt, so
+          # the healer's legacy degrade path had nothing to grep). A workdir that
+          # hasn't pulled this commit yet (run-verify.sh absent — a fresh clone or
+          # a checkout one fetch behind) falls back to the pre-#228 inline body,
+          # no verdict; the NEXT run (now carrying run-verify.sh) uses the script.
+          # Same one-run-lag shape as triage.yml's git-setup.sh gate (#639).
+          if [ -f .sandcastle/run-verify.sh ]; then
+            bash .sandcastle/run-verify.sh
           else
-            git clone "$url" .
+            host="${SERVER_URL#https://}"
+            url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+            if [ -d .git ]; then
+              git remote set-url origin "$url"
+              git fetch origin main
+              git checkout -f main
+              git reset --hard origin/main
+            else
+              git clone "$url" .
+            fi
+            bash .sandcastle/check-verifications.sh
           fi
-          bash .sandcastle/check-verifications.sh
       - name: Investigate failure (healer)
         if: failure()
         env:

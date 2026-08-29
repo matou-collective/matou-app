@@ -35,8 +35,13 @@
 // (submit-completion, proposal sign-off, and CommunityProfile role changes —
 // the last ACL-enforced by living in the admin-only space) stay on the interim
 // account → AID → role path from part 1, which remains fail-open on an
-// unresolved author. See docs/RBAC.md for the full matrix and the remaining
-// follow-ups (KEL-sn-anchored key state, credential-TEL role binding).
+// unresolved author. See docs/RBAC.md for the full matrix.
+//
+// Part 3 (#112) hardens the proof path further: the proof verifier can resolve
+// the signing key as of the proof's KEL sn (survives rotation, see
+// proof_verifier.go / AnchoredKeyProvider) and, when a CredentialVerifier is
+// wired, the transition additionally requires an unrevoked org credential for a
+// permitted role (see credential_verifier.go).
 package anysync
 
 import (
@@ -344,6 +349,7 @@ func IsGuardedObjectType(objectType string) bool {
 type WriteRuleValidator struct {
 	resolver      RoleResolver
 	keys          KeyProvider
+	creds         CredentialVerifier
 	recorder      RejectionRecorder
 	enforceProofs bool
 }
@@ -366,6 +372,18 @@ type WriteRuleValidator struct {
 //     meeting GH#19 AC-1.
 func NewWriteRuleValidator(resolver RoleResolver, keys KeyProvider, recorder RejectionRecorder, enforceProofs bool) *WriteRuleValidator {
 	return &WriteRuleValidator{resolver: resolver, keys: keys, recorder: recorder, enforceProofs: enforceProofs}
+}
+
+// WithCredentialVerifier binds proof-backed transitions to org-credential / TEL
+// status (GH#19 part 3 / #112): once set, a proof-backed transition additionally
+// requires the crypto-verified signer AID to hold a valid, unrevoked org
+// credential granting a role the transition permits — so a revoked credential is
+// rejected even when the synced profile role history lags. When nil (the
+// default) the credential check is skipped and only the profile-role check
+// applies, preserving part-2 behaviour. Returns the validator for chaining.
+func (v *WriteRuleValidator) WithCredentialVerifier(creds CredentialVerifier) *WriteRuleValidator {
+	v.creds = creds
+	return v
 }
 
 // ValidateChange implements ChangeValidator.
@@ -422,6 +440,28 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 			}
 			if !gv.permit(roles) {
 				return reject("signer role not permitted to set this value", op.Field)
+			}
+			// Credential/TEL binding (#112): when a credential verifier is wired,
+			// the signer must ALSO hold a valid, unrevoked org credential
+			// granting a role the transition permits. This rejects a revoked
+			// credential even when the profile role history still records the
+			// role (a lagging profile cannot rescue a revoked credential).
+			if v.creds != nil {
+				credRoles, credOK, credReason := v.creds.UnrevokedRoles(aid, timestamp)
+				if !credOK {
+					reason := "signer credential state unavailable"
+					if credReason != "" {
+						reason = reason + ": " + credReason
+					}
+					return reject(reason, gv.proofField)
+				}
+				if !gv.permit(credRoles) {
+					reason := "signer holds no unrevoked credential for a permitted role"
+					if credReason != "" {
+						reason = credReason
+					}
+					return reject(reason, gv.proofField)
+				}
 			}
 			continue
 		}

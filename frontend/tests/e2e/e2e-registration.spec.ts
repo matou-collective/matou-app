@@ -253,10 +253,20 @@ test.describe.serial('Registration Approval Flow', () => {
 
     try {
       // A. Set up identity/set listener before registration triggers the call
-      const identitySetResponse = userPage.waitForResponse(
-        resp => resp.url().includes('/api/v1/identity/set') && resp.request().method() === 'POST',
-        { timeout: TIMEOUT.aidCreation },
-      );
+      //    Read the body as soon as the response lands: by the time the pending
+      //    screen is asserted (up to a minute later) Chromium has released the
+      //    resource and response.json() fails with "No resource with given
+      //    identifier found".
+      const identitySetResponse = userPage
+        .waitForResponse(
+          resp => resp.url().includes('/api/v1/identity/set') && resp.request().method() === 'POST',
+          { timeout: TIMEOUT.aidCreation },
+        )
+        .then(async resp => ({
+          status: resp.status(),
+          body: await resp.json(),
+          requestBody: resp.request().postDataJSON(),
+        }));
 
       // 1. User registers with ALL profile fields filled
       //    (inline instead of registerUser() which only fills name/bio)
@@ -319,14 +329,14 @@ test.describe.serial('Registration Approval Flow', () => {
 
       // 2. Verify backend identity was configured during registration
       const idResp = await identitySetResponse;
-      expect(idResp.status()).toBe(200);
-      const idBody = await idResp.json();
+      expect(idResp.status).toBe(200);
+      const idBody = idResp.body;
       expect(idBody.success).toBe(true);
       expect(idBody.peerId).toBeTruthy();
       console.log('[Test] Backend identity set:', idBody.peerId?.slice(0, 16), 'space:', idBody.privateSpaceId);
 
       // 2b. Verify mnemonic was included in the request for deterministic key derivation
-      const idReqBody = idResp.request().postDataJSON();
+      const idReqBody = idResp.requestBody;
       expect(idReqBody.mnemonic).toBeTruthy();
       expect(idReqBody.mnemonic.split(' ')).toHaveLength(12);
       console.log('[Test] Identity/set request included 12-word mnemonic');

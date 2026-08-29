@@ -55,6 +55,10 @@ export default defineConfig({
     // bypasses preflight); any context that skips it must add it. The durable
     // fix — Authorization in the config server's Access-Control-Allow-Headers
     // — ships with matou-infrastructure feat/config-server-auth.
+    // NOTE: this header is for the `request` fixture only. Browser contexts
+    // that go through setupTestConfig() clear it again (it would otherwise
+    // override the app's own session token and 401 under signed-auth
+    // enforcement — see setupTestConfig in tests/e2e/utils/mock-config.ts).
     extraHTTPHeaders: {
       Authorization: 'Bearer matou-dev',
     },

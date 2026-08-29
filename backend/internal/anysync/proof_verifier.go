@@ -25,18 +25,25 @@
 // network call happens under the tree lock. Honest peers converge as their
 // snapshots converge; KEL key state is eventually consistent and append-only.
 //
+// KEL-sn anchoring (GH#19 part 3 / #112): when a proof carries its signing-time
+// KEL sequence number (Proof.SN) and the KeyProvider implements
+// AnchoredKeyProvider, the Cigar is verified against the signing key state *as
+// of that sn* rather than the AID's current key. A proof therefore survives a
+// later legitimate rotation past sn. Proofs without an sn (older wire format)
+// still verify against the current key — fail-closed on rotation, the safe
+// direction. Either way an unresolvable key state returns ok=false.
+//
+// Credential/TEL binding (GH#19 part 3 / #112): the write-rule proof path can
+// additionally require an unrevoked org credential via CredentialVerifier (see
+// write_rules.go / credential_verifier.go). That check lives at the rule layer,
+// not here, because this verifier only authenticates the signer AID; the role
+// and credential authorisation is applied on top of a verified AID.
+//
 // KNOWN LIMITATIONS (documented follow-ups, see docs/RBAC.md):
-//   - The proof envelope carries no KEL sequence number, so this verifies the
-//     Cigar against the AID's *current* signing key(s) from the snapshot rather
-//     than the key state "as of the proof's KEL sn". A key rotation therefore
-//     invalidates the verifiability of proofs signed with the rotated-away key
-//     (fail-closed, the safe direction). Binding to the exact signing-time key
-//     state needs the wire format to anchor an sn — a frontend change tracked
-//     separately.
-//   - The signer's role is resolved from the synced CommunityProfile role
-//     history keyed by the crypto-verified AID (RoleResolver.RolesForAIDAt).
-//     Binding the role check to unrevoked org-credential (TEL) state from the
-//     synced credential tree is the remaining refinement; the seam is in place.
+//   - Populating the sn-anchored key-state history and the credential/TEL
+//     snapshot from live KERIA/synced state is a deployment concern verified by
+//     the e2e run, not in-sandbox unit tests; the seams and fixtures are in
+//     place.
 package anysync
 
 import (
@@ -61,6 +68,17 @@ const proofVersion = "matou-proof/v1"
 // provider must never trigger a synchronous network fetch here.
 type KeyProvider interface {
 	SigningKeys(aid string) (keys []string, ok bool)
+}
+
+// AnchoredKeyProvider is an optional KeyProvider that can also resolve the
+// signing key(s) an AID held as of a specific KEL sequence number. When a proof
+// carries its signing-time sn (Proof.SN), the verifier prefers this so the proof
+// stays valid after a later legitimate rotation. The same fail-closed contract
+// applies: an unresolvable anchor returns ok=false and the proof is treated as
+// unverifiable.
+type AnchoredKeyProvider interface {
+	KeyProvider
+	SigningKeysAt(aid string, sn int64) (keys []string, ok bool)
 }
 
 // canonicalProofMessage rebuilds the exact byte string the frontend signs:
@@ -120,7 +138,23 @@ func verifyActionProof(keys KeyProvider, action, subject, space, value string, p
 	}
 	msg := canonicalProofMessage(action, subject, msgSpace, value, p.Dt)
 
-	signingKeys, resolved := keys.SigningKeys(p.AID)
+	var (
+		signingKeys []string
+		resolved    bool
+	)
+	if p.SN != nil {
+		// The proof anchors the signing-time KEL sn: verify against the key
+		// state as of that sn (survives a later rotation). If the provider
+		// cannot anchor (not an AnchoredKeyProvider), fall back to current keys
+		// — the safe direction, since a rotated-away key won't match anyway.
+		if ap, ok := keys.(AnchoredKeyProvider); ok {
+			signingKeys, resolved = ap.SigningKeysAt(p.AID, *p.SN)
+		} else {
+			signingKeys, resolved = keys.SigningKeys(p.AID)
+		}
+	} else {
+		signingKeys, resolved = keys.SigningKeys(p.AID)
+	}
 	if !resolved || len(signingKeys) == 0 {
 		// Fail-closed: a proof is present but the signer's key state is not
 		// available, so we cannot trust it. (Contrast part 1's fail-open on an
@@ -137,16 +171,22 @@ func verifyActionProof(keys KeyProvider, action, subject, space, value string, p
 
 // StaticKeyProvider serves signing keys from an in-memory map, replaced
 // atomically by a background refresher (see internal/app) and used directly in
-// tests. Safe for concurrent use.
+// tests. It implements AnchoredKeyProvider: alongside the current signing keys
+// it can hold each AID's establishment key-state history, so SigningKeysAt
+// resolves the keys as of a past KEL sn. Safe for concurrent use.
 type StaticKeyProvider struct {
-	mu   sync.RWMutex
-	keys map[string][]string
+	mu      sync.RWMutex
+	keys    map[string][]string
+	history map[string][]auth.EstablishmentKeyState
 }
 
 // NewStaticKeyProvider creates an empty provider. Until Replace/Set is called it
 // resolves nothing (every proof is unverifiable → fail-closed).
 func NewStaticKeyProvider() *StaticKeyProvider {
-	return &StaticKeyProvider{keys: map[string][]string{}}
+	return &StaticKeyProvider{
+		keys:    map[string][]string{},
+		history: map[string][]auth.EstablishmentKeyState{},
+	}
 }
 
 // Set records the signing key(s) for a single AID.
@@ -169,6 +209,27 @@ func (p *StaticKeyProvider) Replace(keys map[string][]string) {
 	p.mu.Unlock()
 }
 
+// SetHistory records aid's establishment key-state history (one entry per KEL
+// sn, any order) so SigningKeysAt can resolve the keys as of a past sn.
+func (p *StaticKeyProvider) SetHistory(aid string, states []auth.EstablishmentKeyState) {
+	p.mu.Lock()
+	if p.history == nil {
+		p.history = map[string][]auth.EstablishmentKeyState{}
+	}
+	p.history[aid] = append([]auth.EstablishmentKeyState(nil), states...)
+	p.mu.Unlock()
+}
+
+// ReplaceHistory atomically swaps in a fresh AID → establishment-history map.
+func (p *StaticKeyProvider) ReplaceHistory(history map[string][]auth.EstablishmentKeyState) {
+	if history == nil {
+		history = map[string][]auth.EstablishmentKeyState{}
+	}
+	p.mu.Lock()
+	p.history = history
+	p.mu.Unlock()
+}
+
 // SigningKeys implements KeyProvider.
 func (p *StaticKeyProvider) SigningKeys(aid string) ([]string, bool) {
 	if aid == "" {
@@ -181,4 +242,35 @@ func (p *StaticKeyProvider) SigningKeys(aid string) ([]string, bool) {
 		return nil, false
 	}
 	return keys, true
+}
+
+// SigningKeysAt implements AnchoredKeyProvider: the keys of the latest
+// establishment event with Seq <= sn from the AID's history. When no history is
+// known for the AID it falls back to the current keys (so a provider populated
+// with current keys only still resolves — matching pre-anchor behaviour, which
+// then fails closed against a rotated-away signature). Returns ok=false when the
+// AID's history is known but has no event at or before sn.
+func (p *StaticKeyProvider) SigningKeysAt(aid string, sn int64) ([]string, bool) {
+	if aid == "" {
+		return nil, false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if hist, ok := p.history[aid]; ok && len(hist) > 0 {
+		var best *auth.EstablishmentKeyState
+		for i := range hist {
+			if hist[i].Seq <= sn && (best == nil || hist[i].Seq > best.Seq) {
+				best = &hist[i]
+			}
+		}
+		if best == nil || len(best.Keys) == 0 {
+			return nil, false
+		}
+		return append([]string(nil), best.Keys...), true
+	}
+	keys, ok := p.keys[aid]
+	if !ok || len(keys) == 0 {
+		return nil, false
+	}
+	return append([]string(nil), keys...), true
 }

@@ -88,6 +88,7 @@ transition):
 | `action` / `subject` / `space` / `value` / `dt` | the signed fields (duplicated so the verifier knows exactly what was signed; it must check each against the object's authoritative field — `space` against the space the object was actually read from) |
 | `aid` | signer AID prefix (the acting member's personal AID) |
 | `sig` | qb64 CESR non-indexed (Cigar) signature over the canonical message bytes |
+| `sn` | **optional** — signer's KEL sequence number at signing time (the establishment event whose key produced `sig`). When present the verifier resolves the signing key **as of this sn**, so the proof survives a later legitimate rotation past it (part 3 / #112). NOT part of the signed message — it only selects which historical key state to check against, so it needs no version bump; a tampered `sn` resolves a key the signature will not match. |
 
 Signing is `keeper.sign` over the message bytes — local ed25519, no
 witness/TEL round-trip, so it works offline whenever the wallet is unlocked.

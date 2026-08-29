@@ -17,15 +17,28 @@ branch="$(jq -r .head.ref <<<"$pr")"
 pr_url="$(jq -r .html_url <<<"$pr")"
 body="$(jq -r '.body // ""' <<<"$pr")"
 
-if ! n="$(derive_issue_from_branch "$branch")"; then
-  echo "run-pr-e2e: branch '$branch' is not agent/issue-<N> — nothing to do"
-  exit 0
+# Which spec? agent/issue-<N> branches imply issue-<N>.spec.ts; any other
+# branch (session/*, feature/*) opts in by naming its spec in the PR body
+# ('**Feature e2e:** tests/e2e/features/issue-<N>.spec.ts'). Every PR gets a
+# verdict comment either way, so a UI PR without screenshots is visible as
+# such on the PR itself.
+spec=""
+if n="$(derive_issue_from_branch "$branch")"; then
+  spec="$(feature_spec_path "$n")"
 fi
-
-spec="$(feature_spec_path "$n")"
+if [ -z "$spec" ]; then
+  spec="$(spec_from_body "$body")"
+  if [ -n "$spec" ] && [ ! -f "$spec" ]; then
+    echo "run-pr-e2e: PR body names $spec but it is not in the checkout" >&2
+    spec=""
+  fi
+  [ -n "$spec" ] && n="$(issue_from_spec "$spec")"
+fi
 if [ -z "$spec" ]; then
   reason="$(skip_reason_from_body "$body")"
-  bash "$here/notify-mattermost.sh" ":camera: **e2e PR #$PR_NUMBER** — no feature spec provided. ${reason:-No skip reason given in the PR body.} $pr_url" || true
+  note="no feature spec provided. ${reason:-No skip reason given in the PR body.}"
+  bash "$here/notify-mattermost.sh" ":camera: **e2e PR #$PR_NUMBER** — $note $pr_url" || true
+  bash "$here/post-pr-screenshots.sh" "$PR_NUMBER" ":camera: **Feature e2e:** $note" >/dev/null || true
   exit 0
 fi
 
@@ -93,10 +106,25 @@ if passed="$(grep -oE '[0-9]+ passed' /tmp/pr-e2e-playwright.log | head -1)"; th
   tests_clause="${passed%% passed} tests, "
 fi
 
-if [ "$rc" -eq 0 ]; then
-  msg=":camera: **e2e PR #$PR_NUMBER** — ✅ passed (${tests_clause}${#shots[@]} screenshots) $pr_url"
-else
-  msg=":camera: **e2e PR #$PR_NUMBER** — ❌ FAILED (${tests_clause}${#shots[@]} screenshots) $pr_url"
+outcome="$(classify_e2e_outcome "$rc" /tmp/pr-e2e-playwright.log)"
+case "$outcome" in
+  passed)
+    msg=":camera: **e2e PR #$PR_NUMBER** — ✅ passed (${tests_clause}${#shots[@]} screenshots) $pr_url"
+    status="✅ **Feature e2e passed** (\`$spec\`, ${tests_clause}${#shots[@]} screenshots)"
+    ;;
+  failed)
+    msg=":camera: **e2e PR #$PR_NUMBER** — ❌ FAILED (${tests_clause}${#shots[@]} screenshots) $pr_url"
+    status="❌ **Feature e2e failed** (\`$spec\`, ${#shots[@]} curated screenshots + Playwright failure captures below). Evidence only — not a merge gate."
+    ;;
+  did-not-run)
+    # Bootstrap (org-setup / registration-member) went red before the feature
+    # spec could run: nothing here says anything about the PR. Report it as
+    # pipeline breakage so the healer investigates, not as a spec failure.
+    msg=":rotating_light: **e2e PR #$PR_NUMBER** — feature spec DID NOT RUN (bootstrap projects failed; 0 screenshots) $pr_url"
+    status="🚨 **Feature e2e did not run** — the org-setup/registration-member bootstrap failed before \`$spec\` started, so there is no evidence for this PR yet. The pipeline (not this PR) is broken; the healer has been notified."
+    ;;
+esac
+if [ "$outcome" != passed ]; then
   # include Playwright's failure screenshots alongside the curated snaps
   shopt -s nullglob globstar
   shots+=(frontend/tests/e2e/results/**/test-failed-*.png)
@@ -104,12 +132,17 @@ else
 fi
 
 root="$(bash "$here/notify-mattermost-files.sh" "$msg" "${shots[@]}")"
-if [ "$rc" -ne 0 ] && [ -n "$root" ]; then
+if [ "$outcome" != passed ] && [ -n "$root" ]; then
   excerpt="$(tail -30 /tmp/pr-e2e-playwright.log | head -c 3000)"
   bash "$here/notify-mattermost.sh" "\`\`\`
 $excerpt
 \`\`\`" "$root" || true
 fi
 
-# Spec verdict is evidence, not a gate.
+# The reviewer's copy: verdict + screenshots on the PR itself.
+bash "$here/post-pr-screenshots.sh" "$PR_NUMBER" "$status" "${shots[@]}" >/dev/null || true
+
+# Spec verdict is evidence, not a gate; a spec that never ran is pipeline
+# breakage and fails the job so the healer step runs.
+[ "$outcome" = did-not-run ] && exit 1
 exit 0
