@@ -85,14 +85,20 @@ jobs:
           fi
           rm -f "$defer_count"
           exec 9>/tmp/matou-swarm.lock
+          held_slot=/tmp/matou-swarm.lock
           if ! flock -n 9; then
             exec 9>&-
             exec 9>/tmp/matou-host-slot-2.lock
+            held_slot=/tmp/matou-host-slot-2.lock
             if ! flock -n 9; then
               echo "triage: both host capacity slots busy — yielding; the cron re-fires"
               exit 0
             fi
           fi
+          # The slot this job won, handed to the script so it can label the
+          # slot with a holder sidecar (slot-aware fleet). The flock itself
+          # stays on fd 9 here, exactly as before.
+          export HOST_CAPACITY_HELD_SLOT="$held_slot"
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"
           # Per-repo-workdir lock (idss #638): a matrix sibling or swarm

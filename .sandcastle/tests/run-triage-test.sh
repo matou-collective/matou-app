@@ -627,4 +627,36 @@ grep -qF "$claudeprose" "$verdict" \
   && fail "104c: a post-claude verdict must NOT quote the claude log, got: $(cat "$verdict")"
 pass=$((pass+1))
 
+# --- ticket holder (triage): written from HOST_CAPACITY_HELD_SLOT, cleared on exit ---
+# This is the LAST case in the suite, so overwriting the fake claude here needs
+# no restore afterwards; extend it with the two `cp` lines guarded so every
+# earlier run_triage call above (which never sets HELD_HOLDER) is unaffected.
+db_reset; rm -f "$marker" "$verdict"
+slot="$tmp/held-slot"; : > "$slot"; seen="$tmp/holder-seen.json"
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${HELD_HOLDER:-}" ] && [ -f "$HELD_HOLDER" ] && cp "$HELD_HOLDER" "${HOLDER_SEEN:?}"
+[ -n "${CLAUDE_ARGV_LOG:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGV_LOG"
+[ -n "${CLAUDE_TOKEN_LOG:-}" ] && printf '%s\n' "${CLAUDE_CODE_OAUTH_TOKEN:-}" >> "$CLAUDE_TOKEN_LOG"
+n=1
+if [ -n "${CLAUDE_COUNT_FILE:-}" ]; then
+  n="$(( $(cat "$CLAUDE_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))"
+  printf '%s' "$n" > "$CLAUDE_COUNT_FILE"
+fi
+if [ "$n" -ge 2 ] && [ -n "${CLAUDE_OUTPUT2+x}" ]; then
+  printf '%s\n' "$CLAUDE_OUTPUT2"
+  exit "${CLAUDE_EXIT2:-0}"
+fi
+printf '%s\n' "${CLAUDE_OUTPUT:-}"
+exit "${CLAUDE_EXIT:-0}"
+SH
+chmod +x "$tmp/bin/claude"
+run_triage HOST_CAPACITY_HELD_SLOT="$slot" HELD_HOLDER="$slot.holder" HOLDER_SEEN="$seen" CLAUDE_EXIT=0 CLAUDE_OUTPUT=ok >/dev/null 2>&1 \
+  || fail "a triage run with a ticket holder must still exit 0"
+[ -s "$seen" ] || fail "triage must label its slot before calling claude"
+[ "$(jq -r .ref "$seen")" = triage ] && [ "$(jq -r .worker "$seen")" = triage ] || fail "triage holder: $(cat "$seen")"
+[ "$(jq -r .repo "$seen")" = x/y ] || fail "triage holder repo must be the computed slug (FORGEJO_API's x/y, REPO_SLUG unset): $(cat "$seen")"
+[ ! -e "$slot.holder" ] || fail "triage_on_exit must clear the holder"
+pass=$((pass+1))
+
 echo "run-triage: $pass scenarios passed"

@@ -413,6 +413,48 @@ if command -v jq >/dev/null 2>&1; then
   [ "$(jq -r '.reservation_window_s' <<<"$s3")" = null ] || fail "d3 with no reservation must record null window: $s3"
   e3="$(jq -c 'select(.event=="end" and .id=="d3")' "$dlog")"
   [ "$(jq -r '.verdict' <<<"$e3")" = ended ] || fail "d3 end must default to 'ended': $e3"
+  # Drive holders: exclusive mode labels EVERY pooled slot; single-slot only slot 1;
+  # _end clears them; HOST_CAPACITY_DRIVE_RUN_DIR rides into run_dir.
+  rm -f "$slot1.holder" "$slot2.holder"
+  HOST_CAPACITY_DRIVE_MODE=exclusive HOST_CAPACITY_DRIVE_RUN_DIR=/runs/d4 \
+    bash -c '. "$1"; host_capacity_drive_log_start d4 box-b Acme/widget' _ "$lib"
+  [ "$(jq -r .kind "$slot1.holder")" = drive ]      || fail "exclusive drive must label slot 1: $(cat "$slot1.holder" 2>&1)"
+  [ "$(jq -r .kind "$slot2.holder")" = drive ]      || fail "exclusive drive must label slot 2: $(cat "$slot2.holder" 2>&1)"
+  [ "$(jq -r .ref "$slot1.holder")" = d4 ]          || fail "drive holder ref must be the drive id"
+  [ "$(jq -r .repo "$slot1.holder")" = Acme/widget ] || fail "drive holder repo must be the target"
+  [ "$(jq -r .worker "$slot1.holder")" = executor ] || fail "drive holder worker must be executor"
+  [ "$(jq -r .mode "$slot1.holder")" = exclusive ]  || fail "drive holder mode must be exclusive"
+  [ "$(jq -r .run_dir "$slot1.holder")" = /runs/d4 ] || fail "drive holder must carry HOST_CAPACITY_DRIVE_RUN_DIR"
+  HOST_CAPACITY_DRIVE_MODE=exclusive bash -c '. "$1"; host_capacity_drive_log_end d4' _ "$lib"
+  [ ! -e "$slot1.holder" ] && [ ! -e "$slot2.holder" ] || fail "drive_log_end must clear every drive holder"
+  HOST_CAPACITY_DRIVE_MODE=single-slot bash -c '. "$1"; host_capacity_drive_log_start d5 box-b 9' _ "$lib"
+  [ "$(jq -r .ref "$slot1.holder")" = d5 ] || fail "single-slot drive must label slot 1"
+  [ ! -e "$slot2.holder" ]                 || fail "single-slot drive must NOT label slot 2"
+  [ "$(jq -r .run_dir "$slot1.holder")" = null ] || fail "no HOST_CAPACITY_DRIVE_RUN_DIR → run_dir null"
+  HOST_CAPACITY_DRIVE_MODE=single-slot bash -c '. "$1"; host_capacity_drive_log_end d5' _ "$lib"
+  [ ! -e "$slot1.holder" ] || fail "drive_log_end (single-slot) must clear slot 1"
+  # acquire_exclusive records the pooled slots it holds (never the sibling lock).
+  out="$(bash -c '. "$1"; host_capacity_acquire_exclusive "$2" "$3" "$4" && echo "$HOST_CAPACITY_EXCLUSIVE_SLOTS"' _ "$lib" "$slot1" "$slot2" "$side")"
+  [ "$out" = " $slot1 $slot2" ] || [ "$out" = "$slot1 $slot2" ] || fail "EXCLUSIVE_SLOTS must list the pooled slots only, got: '$out'"
+  out="$(HOST_CAPACITY_DRIVE_MODE=single-slot bash -c '. "$1"; host_capacity_acquire_exclusive "$2" "$3" "$4" && echo "$HOST_CAPACITY_EXCLUSIVE_SLOTS"' _ "$lib" "$slot1" "$slot2" "$side")"
+  [ "${out// /}" = "$slot1" ] || fail "single-slot EXCLUSIVE_SLOTS must be slot 1 only, got: '$out'"
+  # release_exclusive clears the holders it recorded.
+  bash -c '. "$1"; host_capacity_acquire_exclusive "$2" "$3"; host_capacity_holder_write "$2" drive x; host_capacity_holder_write "$3" drive x; host_capacity_release_exclusive' _ "$lib" "$slot1" "$slot2"
+  [ ! -e "$slot1.holder" ] && [ ! -e "$slot2.holder" ] || fail "release_exclusive must clear recorded holders"
+  # A failed exclusive acquire (slot 2 busy) must leave NO trace: the slot 1
+  # it grabbed before slot 2's flock failed is released AND its holder
+  # sidecar cleared, and HOST_CAPACITY_EXCLUSIVE_SLOTS ends up empty (not
+  # holding a stale entry for the slot it briefly held and gave back).
+  : > "$side"
+  hold "$slot2" "$side"; hbusy=$HOLD_PID
+  trap 'kill "$hbusy" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side"' EXIT
+  wait_ready "$side"
+  rc=0
+  bash -c '. "$1"; host_capacity_holder_write "$2" drive x; host_capacity_acquire_exclusive "$2" "$3"; rc=$?; [ -z "$HOST_CAPACITY_EXCLUSIVE_SLOTS" ] || exit 9; exit $rc' _ "$lib" "$slot1" "$slot2" || rc=$?
+  [ "$rc" -eq 1 ] || fail "a failed exclusive acquire must return 1 with EXCLUSIVE_SLOTS empty, got rc=$rc"
+  [ ! -e "$slot1.holder" ] || fail "a failed exclusive acquire must clear the holder sidecar it had labelled on slot 1"
+  kill "$hbusy" 2>/dev/null || true
+  wait "$hbusy" 2>/dev/null || true
   unset HOST_CAPACITY_DRIVE_LOG HOST_CAPACITY_DRIVE_WANTED HOST_CAPACITY_DRIVE_MODE
   trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
   pass=$((pass+1))
@@ -420,5 +462,93 @@ else
   echo "host-capacity-lib: jq absent — skipping drive-log group" >&2
 fi
 
+
+# --- holder sidecar (slot-aware fleet, spec 2026-08-28): write / clear ---
+if command -v jq >/dev/null 2>&1; then
+  holder="$slot1.holder"
+  rm -f "$holder"
+  out="$(bash -c '. "$1"; host_capacity_holder_path "$2"' _ "$lib" "$slot1")"
+  [ "$out" = "$holder" ] || fail "holder_path must be <slot>.holder, got: $out"
+  bash -c '. "$1"; host_capacity_holder_write "" session 1' _ "$lib"; [ ! -e .holder ] || fail "empty slot path must write nothing"
+  SWARM_HOST=box-t bash -c '. "$1"; host_capacity_holder_write "$2" session 151 Acme/widget session-runner "" "" ""' _ "$lib" "$slot1"
+  [ -f "$holder" ] || fail "holder_write must create $holder"
+  [ "$(jq -r .kind "$holder")" = session ]        || fail "holder kind: $(cat "$holder")"
+  [ "$(jq -r .ref "$holder")" = 151 ]             || fail "holder ref: $(cat "$holder")"
+  [ "$(jq -r .repo "$holder")" = Acme/widget ]    || fail "holder repo: $(cat "$holder")"
+  [ "$(jq -r .worker "$holder")" = session-runner ] || fail "holder worker: $(cat "$holder")"
+  [ "$(jq -r .host "$holder")" = box-t ]          || fail "holder host must follow SWARM_HOST: $(cat "$holder")"
+  [ "$(jq -r .run_id "$holder")" = null ]         || fail "empty run_id must record null: $(cat "$holder")"
+  [ "$(jq -r .mode "$holder")" = null ]           || fail "empty mode must record null: $(cat "$holder")"
+  [ "$(jq -r .run_dir "$holder")" = null ]        || fail "empty run_dir must record null: $(cat "$holder")"
+  jq -e '.pid | type == "number"' "$holder" >/dev/null   || fail "pid must be numeric: $(cat "$holder")"
+  jq -e '.since | type == "number"' "$holder" >/dev/null || fail "since must be numeric: $(cat "$holder")"
+  # No stray temp file beside the sidecar (atomic write leaves nothing behind).
+  [ -z "$(ls "$slot1".holder.* 2>/dev/null)" ] || fail "holder_write left a temp file: $(ls "$slot1".holder.*)"
+  # Rewrite overwrites (the slot's CURRENT work).
+  bash -c '. "$1"; host_capacity_holder_write "$2" ticket run Acme/widget swarm-worker r-42 "" ""' _ "$lib" "$slot1"
+  [ "$(jq -r .run_id "$holder")" = r-42 ] || fail "holder rewrite must replace: $(cat "$holder")"
+  bash -c '. "$1"; host_capacity_holder_clear "$2"' _ "$lib" "$slot1"
+  [ ! -e "$holder" ] || fail "holder_clear must remove the sidecar"
+  # Clearing an absent sidecar is fine (idempotent, rc 0).
+  bash -c '. "$1"; host_capacity_holder_clear "$2"' _ "$lib" "$slot1" || fail "holder_clear on absent file must rc 0"
+  # M1: an empty slot path must not fall through to `rm -f ./.holder` in
+  # whatever the caller's cwd happens to be (host_capacity_holder_path("")
+  # is literally ".holder"). Prove a cwd-local .holder survives untouched.
+  cwd_tmp="$(mktemp -d)"
+  : > "$cwd_tmp/.holder"
+  bash -c 'cd "$1" && . "$2"; host_capacity_holder_clear ""' _ "$cwd_tmp" "$lib" \
+    || fail "holder_clear \"\" must rc 0"
+  [ -e "$cwd_tmp/.holder" ] || fail "holder_clear \"\" must not delete an unrelated cwd .holder"
+  rm -rf "$cwd_tmp"
+  # release_heavy clears what it held (slot1 is free here, so the acquire wins it).
+  bash -c '. "$1"; host_capacity_acquire_heavy; host_capacity_holder_write "$HOST_CAPACITY_HELD_SLOT" session 7; host_capacity_release_heavy' _ "$lib"
+  [ ! -e "$holder" ] || fail "release_heavy left $holder behind"
+  # A LOSING acquire never touches the winner's sidecar.
+  : > "$side"; hold "$slot1" "$side"; h3=$HOLD_PID
+  trap 'kill "$h3" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side" "$slot1.holder" "$slot2.holder"' EXIT
+  wait_ready "$side"
+  bash -c '. "$1"; host_capacity_holder_write "$2" drive d1' _ "$lib" "$slot1"   # the holder's label
+  HOST_CAPACITY_SLOTS="$slot1" bash -c '. "$1"; host_capacity_acquire_heavy' _ "$lib" && fail "setup: slot1 should be held"
+  [ "$(jq -r .ref "$holder")" = d1 ] || fail "a losing acquire_heavy must leave the winner's sidecar alone: $(cat "$holder")"
+  kill "$h3" 2>/dev/null || true; rm -f "$holder"
+  trap 'rm -f "$slot1" "$slot2" "$side" "$slot1.holder" "$slot2.holder"' EXIT
+  pass=$((pass+1))
+else
+  echo "host-capacity-lib: jq absent — skipping holder group" >&2
+fi
+
+# --- holder without jq: silent no-op, rc 0, no file ---
+nojq="$(mktemp -d)"; printf '#!/bin/sh\nexit 127\n' > "$nojq/jq"; chmod +x "$nojq/jq"
+PATH="$nojq:$PATH" bash -c '. "$1"; command -v jq >/dev/null && jq --version >/dev/null 2>&1 && exit 3; host_capacity_holder_write "$2" session 1' _ "$lib" "$slot1" \
+  || fail "holder_write without a working jq must rc 0"
+[ ! -e "$slot1.holder" ] || fail "holder_write without jq must write nothing"
+rm -rf "$nojq"
+pass=$((pass+1))
+
+# --- the workflows hand the won slot to the script (slot-aware fleet) ---
+# Two layouts (GOTCHAS 43). Factory root: the consumer TEMPLATES
+# (onboarding/templates/workflows/*.tmpl — factory-only, never vendored) are
+# the contract, and this repo's own render (.forgejo/workflows/*.yml) must
+# carry it too. Vendored into a consumer (.sandcastle/): the templates are
+# absent, so the contract is that consumer's OWN render one directory up —
+# a pin bump without a workflow re-render is precisely the gap this catches,
+# so a stale render fails loudly and names the fix.
+for wf in swarm triage; do
+  tmpl="$root/onboarding/templates/workflows/$wf.yml.tmpl"
+  if [ -f "$tmpl" ]; then
+    grep -q 'export HOST_CAPACITY_HELD_SLOT=' "$tmpl" \
+      || fail "$wf.yml.tmpl must export HOST_CAPACITY_HELD_SLOT after its inline flock wins"
+    render="$root/.forgejo/workflows/$wf.yml"
+  else
+    render="$root/../.forgejo/workflows/$wf.yml"
+  fi
+  if [ -f "$render" ]; then
+    grep -q 'export HOST_CAPACITY_HELD_SLOT=' "$render" \
+      || fail "$render lacks the HOST_CAPACITY_HELD_SLOT export — the workflow render predates this pin; re-render it from the template (onboard.sh workflows) in the same change as the pin bump"
+  else
+    echo "host-capacity-lib: no $wf.yml render found at $render — export assertion skipped for it" >&2
+  fi
+done
+pass=$((pass+1))
 
 echo "host-capacity-lib: $pass groups passed"

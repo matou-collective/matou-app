@@ -152,12 +152,18 @@ action_is_ticket_only() {
 # and emits "<workflow>\t<kind>" per suspicious workflow:
 #   always-red — every terminal run in the window failed (≥2 runs)
 #   streak     — the two most recent terminal runs both failed
-# The healer workflow is excluded (no self-detection, spec §wiring).
+# The healer workflow is excluded (no self-detection, spec §wiring). The
+# exclusion keys on .workflow_id ("healer.yml"), NOT .name: this endpoint
+# returns the JOB name, and healer.yml's job is called "watchdog", so a filter
+# on .name never matched and the healer detected its OWN redness every sweep
+# (coa #50; same gotcha the sibling schedule-backstop.sh already spells out).
+# .workflow_id is on every row and cannot drift with a job rename; display_title
+# is unsafe (it carries the commit subject for push/issues events).
 watchdog_detect() {
   jq -r '
     [.workflow_runs[]
       | select(.status == "success" or .status == "failure")
-      | select(.name != "healer")
+      | select(.workflow_id != "healer.yml")
       | {name, status, n: .run_number}]
     | group_by(.name)[]
     | (sort_by(-.n)) as $runs

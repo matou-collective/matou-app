@@ -4,6 +4,6 @@
   {"name":"swarm","status":"failure","run_number":108},
   {"name":"triage","status":"success","run_number":107},
   {"name":"swarm","status":"success","run_number":106},
-  {"name":"healer","status":"failure","run_number":105},
-  {"name":"healer","status":"failure","run_number":104}
+  {"name":"watchdog","workflow_id":"healer.yml","status":"failure","run_number":105},
+  {"name":"watchdog","workflow_id":"healer.yml","status":"failure","run_number":104}
 ]}

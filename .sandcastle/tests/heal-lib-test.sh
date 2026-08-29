@@ -205,6 +205,12 @@ out="$(watchdog_detect "$here/fixtures/runs-alwaysred.json")"
 [ "$out" = "$(printf 'seam\talways-red')" ] || fail "always-red fixture should flag seam only, got: $out"
 out="$(watchdog_detect "$here/fixtures/runs-healthy.json")"
 [ -z "$out" ] || fail "healthy fixture should flag nothing, got: $out"
+# self-exclusion keys on the workflow FILE, not the job name: the tasks API
+# returns the JOB name ("watchdog") for healer.yml, so a filter on .name never
+# matched and the healer detected its own redness every sweep (coa #50). A
+# fixture of nothing-but-red healer rows must emit nothing.
+out="$(watchdog_detect "$here/fixtures/runs-healer-selfred.json")"
+[ -z "$out" ] || fail "an all-red healer (job name 'watchdog', workflow_id healer.yml) must be self-excluded, got: $out"
 pass=$((pass+1))
 
 echo "heal-lib: $pass groups passed"

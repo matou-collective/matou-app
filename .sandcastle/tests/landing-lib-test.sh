@@ -39,10 +39,14 @@ case "$url" in
   */pulls?state=closed*) cat "${CLOSED_PULLS:-/dev/null}" 2>/dev/null || echo '[]' ;;
   */pulls/*/merge)     echo "MERGED" >> "$CALLS_LOG"; echo "${MERGE_CODE:-200}" ;;
   */commits/*/status)  cat "${STATUS_JSON:-/dev/null}" 2>/dev/null || echo '{"state":"","statuses":[]}' ;;
-  */pulls/[0-9]*)      prn="${url##*/}"; echo "{\"number\":$prn,\"head\":{\"ref\":\"agent/issue-7\",\"sha\":\"headsha\"}}" ;;
+  */pulls/[0-9]*)
+    prn="${url##*/}"
+    if [ "$method" = PATCH ]; then echo "PR_CLOSED $prn" >> "$CALLS_LOG"; echo 200
+    else echo "{\"number\":$prn,\"head\":{\"ref\":\"agent/issue-7\",\"sha\":\"headsha\"},\"mergeable\":${PR_MERGEABLE:-true}}"; fi ;;
   */pulls)             echo "PR_CREATED" >> "$CALLS_LOG"; echo '{"number":101,"head":{"ref":"agent/issue-7"}}' ;;
   */issues/*/labels)   echo "LABELED" >> "$CALLS_LOG"; echo 201 ;;
   */issues/*/comments) echo 201 ;;
+  */issues/[0-9]*)     echo "{\"labels\":${ISSUE_LABELS:-[]}}" ;;
   */labels*)           echo '[{"id":48,"name":"agent-blocked"}]' ;;
   */api/v1/repos/*)    echo '{"default_merge_style":"merge"}' ;;   # bare repo root — merge-style probe
   *) echo "fake curl: unhandled $url" >&2; exit 22 ;;
@@ -57,6 +61,10 @@ export GIT_PUSHES="$tmp/pushes.log" CALLS_LOG="$tmp/calls.log" BODIES_LOG="$tmp/
 
 # shellcheck source=../landing-lib.sh
 . "$here/../landing-lib.sh"
+# runlog helpers — landing_note_pr_opened (#114) writes a host runlog breadcrumb
+# through them; sourced here as run-swarm.sh does in the live shell.
+# shellcheck source=../runlog-lib.sh
+. "$here/../runlog-lib.sh"
 
 pass=0 fail=0
 check() { if eval "$2"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: $1"; fi; }
@@ -183,6 +191,82 @@ reset
 out="$( SWARM_POLICY_MERGE_AUTHORITY=human OPEN_PULLS=$tmp/open88.json landing_merge_reconcile )"
 check "landing_merge_reconcile is a no-op under MERGE_AUTHORITY=human" '[ -z "$out" ]'
 check "human reconcile makes no merge POST" '! grep -q "^MERGED$" "$CALLS_LOG"'
+
+# ===========================================================================
+# #114 — the ORPHANED green agent PR deadlock. A worker SIGKILLed after opening
+# its PR (before close-report) hides its issue from the ready list, so n==0 and
+# landing_stage's reconcile never runs. landing_sweep_orphans is the idle-path
+# sweep run-swarm.sh fires on the no-ready-tasks tick to break that deadlock.
+# ===========================================================================
+
+# --- landing_note_pr_opened: a provisional pr-opened runlog breadcrumb -------
+reset
+runlog="$tmp/runlog.txt"; : > "$runlog"
+SWARM_RUNLOG="$runlog" landing_note_pr_opened Matou/coa "7,9" 1000
+check "landing_note_pr_opened writes exactly ONE runlog line" '[ "$(wc -l < "$runlog")" = "1" ]'
+check "the breadcrumb reason is pr-opened" 'grep -q "reason=pr-opened" "$runlog"'
+check "the breadcrumb carries the repo + ready set" 'grep -q "repo=Matou/coa ready=\[7,9\]" "$runlog"'
+
+# --- landing_issue_has_live_claim: the janitor-agreeing unclaimed predicate ---
+reset
+CLAIMED='[{"name":"agent-working"},{"name":"ready-for-agent"}]'
+FREE='[{"name":"ready-for-agent"}]'
+check "live claim: agent-working present -> rc 0 (leave the PR alone)" \
+  'ISSUE_LABELS=$CLAIMED landing_issue_has_live_claim 7'
+check "no claim: agent-working absent -> rc 1 (the sweep may act)" \
+  '! ISSUE_LABELS=$FREE landing_issue_has_live_claim 7'
+
+# open agent PR #88 (agent/issue-7); its combined status + claim state drive the sweep.
+# --- landing_sweep_orphans -----------------------------------------------------
+# no-op outside pr + agent-after-green (push-mode / human repos are untouched)
+reset
+out="$( SWARM_POLICY_LANDING=push SWARM_POLICY_MERGE_AUTHORITY=agent-after-green OPEN_PULLS=$tmp/open88.json landing_sweep_orphans )"
+check "sweep is a no-op under push-mode" '[ -z "$out" ]'
+out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=human OPEN_PULLS=$tmp/open88.json landing_sweep_orphans )"
+check "sweep is a no-op under MERGE_AUTHORITY=human" '[ -z "$out" ]'
+
+# an issue that STILL carries a live claim (an in-flight worker) is left alone
+reset
+out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json \
+        ISSUE_LABELS='[{"name":"agent-working"}]' landing_sweep_orphans )"
+check "sweep SKIPS an issue with a live claim (no line emitted)" '[ -z "$out" ]'
+check "sweep makes NO merge on a claimed issue" '! grep -q "^MERGED$" "$CALLS_LOG"'
+
+# green + UNCLAIMED -> merged, and an audit comment records the missing close-report
+reset
+out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json \
+        ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
+check "sweep merges a green UNCLAIMED orphan PR" '[ "$out" = "7 merged 88" ]'
+check "sweep POSTs the merge to pulls/88/merge" 'grep -q "POST .*/pulls/88/merge" "$CALLS_LOG"'
+check "sweep leaves an audit comment naming the sweep" 'grep -q "idle landing sweep (#114)" "$BODIES_LOG"'
+
+# green but DRIFTED (merge POST fails, PR no longer mergeable) -> close the PR so #N re-arms
+reset
+out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json MERGE_CODE=405 PR_MERGEABLE=false \
+        ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
+check "sweep reports closed-drifted for a green-but-unmergeable PR" '[ "$out" = "7 closed-drifted 88" ]'
+check "sweep PATCH-closes the drifted PR #88" 'grep -q "PR_CLOSED 88" "$CALLS_LOG"'
+check "the drift-close comment names the re-arm" 'grep -q "re-arms for a fresh worker" "$BODIES_LOG"'
+
+# a TRANSIENT merge failure (branch still mergeable) is NOT closed — retried next tick
+reset
+out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/green.json MERGE_CODE=500 PR_MERGEABLE=true \
+        ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
+check "a transient merge failure (still mergeable) is left as merge-failed" '[ "$out" = "7 merge-failed 88 500" ]'
+check "no PR close on a transient merge failure" '! grep -q "PR_CLOSED" "$CALLS_LOG"'
+
+# a PENDING unclaimed PR still emits a line — so the caller knows work exists and
+# never reports no-ready-tasks while an unclaimed open agent PR is around
+reset
+out="$( SWARM_POLICY_LANDING=pr SWARM_POLICY_MERGE_AUTHORITY=agent-after-green \
+        OPEN_PULLS=$tmp/open88.json STATUS_JSON=$tmp/pending.json \
+        ISSUE_LABELS='[{"name":"ready-for-agent"}]' landing_sweep_orphans )"
+check "sweep emits a line for a PENDING unclaimed PR (work still exists)" '[ "$out" = "7 pending" ]'
+check "sweep makes no merge on a pending PR" '! grep -q "^MERGED$" "$CALLS_LOG"'
 
 echo "landing-lib: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
