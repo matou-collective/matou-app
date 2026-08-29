@@ -496,6 +496,79 @@ Initialize member profiles (admin operation).
 
 ---
 
+## Notice Endpoints
+
+The community notice board stores each notice in its own object tree. Notices
+follow the configurable schema model: the org's `Notice` type definition (see
+`GET /api/v1/types/Notice`) is the source of truth for which fields exist, which
+are required, their enums, and which may be filtered/sorted on.
+
+### Core vs custom fields
+
+Every `Notice` field carries a `core` flag. **Core** fields (the built-in
+type/title/summary/state/issuer/schedule set) back the fixed handler logic and
+the notice lifecycle state machine. Fields an org **adds** by extending the
+`Notice` schema are non-core (custom); they are validated on write and
+round-trip through the object's `data` map on read:
+
+```json
+{
+  "id": "1724900000000",
+  "type": "announcement",
+  "title": "Working bee",
+  "state": "published",
+  "data": { "marae": "Ōrākei", "headcount": 42 }
+}
+```
+
+Custom keys that are not defined by the schema are dropped; a custom key can
+never shadow a core field.
+
+### Subtype variants
+
+`Notice` declares `variantField: "subtype"`. A schema may attach a `variants`
+map keyed by subtype, each contributing extra field definitions that are
+validated only when a notice's `subtype` matches. This lets one `Notice` type
+carry per-subtype field sets (e.g. a `tangihanga` subtype requiring `location`)
+without a separate type per subtype.
+
+### POST /api/v1/notices
+
+Create a notice. The request body's core fields are mapped to the notice, and
+schema-defined custom fields are captured into `data`. The fully assembled
+notice is validated against the org's `Notice` schema (`registry.Validate`);
+missing required fields (core or custom), failed enums, or type mismatches
+return `400` with a `validationErrors` array. Interaction payloads
+(ack/RSVP/save/comment/reaction) are protocol, not content, and remain fixed —
+they are not schema-validated against `Notice`.
+
+### GET /api/v1/notices
+
+List notices. Query params:
+
+- `view=upcoming|current|past` — board selector (reserved).
+- Any other param is treated as a field-equality filter and is only honoured if
+  the schema marks that field **filterable** (e.g. `type`, `subtype`, `state`,
+  `pinned`); a filter on a non-filterable field returns `400`. Filters match
+  core fields and schema-defined custom fields alike.
+
+### GET /api/v1/notices/{id}
+
+Get a single notice (includes its `data` custom fields).
+
+### Notice lifecycle & interactions
+
+- `POST /api/v1/notices/{id}/publish` — draft → published.
+- `POST /api/v1/notices/{id}/archive` — published → archived.
+- `POST /api/v1/notices/{id}/pin` — toggle pinned.
+- `POST|GET /api/v1/notices/{id}/rsvp` — event RSVP (going/maybe/not_going).
+- `POST|GET /api/v1/notices/{id}/ack` — acknowledgment.
+- `POST /api/v1/notices/{id}/save`, `GET /api/v1/notices/saved` — personal bookmarks.
+- `POST|GET /api/v1/notices/{id}/comments` — comments.
+- `POST|GET /api/v1/notices/{id}/reactions` — emoji reactions.
+
+---
+
 ## File Endpoints
 
 ### POST /api/v1/files/upload

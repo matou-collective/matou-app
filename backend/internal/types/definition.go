@@ -5,21 +5,39 @@ package types
 
 // TypeDefinition describes a type of object that can be stored in a space.
 type TypeDefinition struct {
-	Name        string                `json:"name"`
-	Version     int                   `json:"version"`
-	Description string                `json:"description"`
-	Space       string                `json:"space"` // "private", "community", "community-readonly", "admin"
-	Fields      []FieldDef            `json:"fields"`
-	Layouts     map[string]Layout     `json:"layouts"`    // "card", "detail", "form"
-	Permissions TypePermissions       `json:"permissions"`
+	Name        string            `json:"name"`
+	Version     int               `json:"version"`
+	Description string            `json:"description"`
+	Space       string            `json:"space"` // "private", "community", "community-readonly", "admin"
+	Fields      []FieldDef        `json:"fields"`
+	Layouts     map[string]Layout `json:"layouts"` // "card", "detail", "form"
+	Permissions TypePermissions   `json:"permissions"`
+
+	// VariantField, when set, names the field whose value selects a variant
+	// (e.g. "subtype"). Variants let one type carry per-subtype field sets.
+	VariantField string             `json:"variantField,omitempty"`
+	Variants     map[string]Variant `json:"variants,omitempty"`
+}
+
+// Variant defines a subtype-specific extension to a type: extra fields that
+// apply (and are validated) only when the object's VariantField value matches
+// the variant key.
+type Variant struct {
+	Fields []FieldDef `json:"fields"`
 }
 
 // FieldDef describes a single field in a type definition.
 type FieldDef struct {
-	Name       string      `json:"name"`
-	Type       string      `json:"type"` // "string", "boolean", "array", "object", "number", "datetime", "enum"
-	Required   bool        `json:"required"`
-	ReadOnly   bool        `json:"readOnly"`
+	Name     string `json:"name"`
+	Type     string `json:"type"` // "string", "boolean", "array", "object", "number", "datetime", "enum"
+	Required bool   `json:"required"`
+	ReadOnly bool   `json:"readOnly"`
+	// Core marks a field the backend handlers and state machines depend on.
+	// Core fields live in the fixed Go struct; non-core (custom) fields defined
+	// by an org's schema round-trip through the object's data map.
+	Core bool `json:"core,omitempty"`
+	// Filterable marks a field that list endpoints may filter or sort on.
+	Filterable bool        `json:"filterable,omitempty"`
 	Default    interface{} `json:"default,omitempty"`
 	Validation *Validation `json:"validation,omitempty"`
 	UIHints    *UIHints    `json:"uiHints,omitempty"`

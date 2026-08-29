@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 type NoticesHandler struct {
 	spaceManager *anysync.SpaceManager
 	userIdentity *identity.UserIdentity
+	registry     *types.Registry
 	eventBroker  *EventBroker
 }
 
@@ -24,11 +27,13 @@ type NoticesHandler struct {
 func NewNoticesHandler(
 	spaceManager *anysync.SpaceManager,
 	userIdentity *identity.UserIdentity,
+	registry *types.Registry,
 	eventBroker *EventBroker,
 ) *NoticesHandler {
 	return &NoticesHandler{
 		spaceManager: spaceManager,
 		userIdentity: userIdentity,
+		registry:     registry,
 		eventBroker:  eventBroker,
 	}
 }
@@ -127,7 +132,7 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 // CreateNoticeRequest represents a request to create a notice.
 type CreateNoticeRequest struct {
 	ID           string          `json:"id,omitempty"`
-	Type         string          `json:"type"`     // "event", "update", or "announcement"
+	Type         string          `json:"type"` // "event", "update", or "announcement"
 	Title        string          `json:"title"`
 	Summary      string          `json:"summary"`
 	Body         string          `json:"body,omitempty"`
@@ -158,13 +163,26 @@ func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var req CreateNoticeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": fmt.Sprintf("invalid request: %v", err),
 		})
 		return
 	}
+
+	var req CreateNoticeRequest
+	if err := json.Unmarshal(rawBody, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+
+	// Capture the raw request body so schema-defined custom (non-core) fields
+	// can be carried through to storage.
+	rawReq := map[string]json.RawMessage{}
+	_ = json.Unmarshal(rawBody, &rawReq)
 
 	// Validate required fields
 	if req.Type == "" {
@@ -268,6 +286,22 @@ func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Reque
 		notice.PublishAt = now
 	}
 
+	// Carry schema-defined custom (non-core) fields through to storage. Only
+	// fields the org's Notice schema defines and does not mark core are kept;
+	// truly-unknown keys are dropped.
+	notice.Data = h.extractCustomNoticeFields(rawReq)
+
+	// Validate the fully assembled notice against the org's Notice schema. This
+	// enforces custom required fields and any enum/required changes the org made
+	// on top of the built-in core rules already checked above.
+	if errs := h.validateNoticeAgainstSchema(notice); len(errs) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":            "validation failed",
+			"validationErrors": errs,
+		})
+		return
+	}
+
 	noticeMgr := h.spaceManager.NoticeTreeManager()
 	treeID, err := noticeMgr.CreateNotice(r.Context(), spaceID, notice, keys.SigningKey)
 	if err != nil {
@@ -299,6 +333,90 @@ func (h *NoticesHandler) HandleCreateNotice(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// extractCustomNoticeFields returns the subset of the raw request that the
+// org's Notice schema defines but the fixed core struct does not own. Variant
+// (per-subtype) fields are included when the request's subtype matches. Returns
+// nil when no schema is registered or no custom fields are present.
+func (h *NoticesHandler) extractCustomNoticeFields(rawReq map[string]json.RawMessage) map[string]json.RawMessage {
+	if h.registry == nil || len(rawReq) == 0 {
+		return nil
+	}
+	def, ok := h.registry.Get("Notice")
+	if !ok {
+		return nil
+	}
+
+	// Resolve the active subtype to pull in the right variant fields.
+	subtype := ""
+	if raw, ok := rawReq["subtype"]; ok {
+		_ = json.Unmarshal(raw, &subtype)
+	}
+
+	custom := map[string]json.RawMessage{}
+	consider := func(f types.FieldDef) {
+		if f.Core {
+			return
+		}
+		if v, present := rawReq[f.Name]; present && len(v) > 0 {
+			custom[f.Name] = v
+		}
+	}
+	for _, f := range def.Fields {
+		consider(f)
+	}
+	if def.VariantField != "" && subtype != "" {
+		if variant, ok := def.Variants[subtype]; ok {
+			for _, f := range variant.Fields {
+				consider(f)
+			}
+		}
+	}
+
+	if len(custom) == 0 {
+		return nil
+	}
+	return custom
+}
+
+// validateNoticeAgainstSchema validates the fully assembled notice (core fields
+// plus custom data) against the org's Notice schema. Returns nil when no schema
+// is registered.
+func (h *NoticesHandler) validateNoticeAgainstSchema(notice *anysync.NoticePayload) []string {
+	if h.registry == nil {
+		return nil
+	}
+
+	// Flatten to a single object: core fields at the top level with custom data
+	// merged up alongside them (the schema names all fields at the top level).
+	blob, err := json.Marshal(notice)
+	if err != nil {
+		return []string{fmt.Sprintf("failed to marshal notice: %v", err)}
+	}
+	flat := map[string]json.RawMessage{}
+	if err := json.Unmarshal(blob, &flat); err != nil {
+		return []string{fmt.Sprintf("failed to read notice: %v", err)}
+	}
+	if data, ok := flat["data"]; ok {
+		delete(flat, "data")
+		var custom map[string]json.RawMessage
+		if err := json.Unmarshal(data, &custom); err == nil {
+			for k, v := range custom {
+				flat[k] = v
+			}
+		}
+	}
+
+	merged, err := json.Marshal(flat)
+	if err != nil {
+		return []string{fmt.Sprintf("failed to assemble notice: %v", err)}
+	}
+	errs, err := h.registry.Validate("Notice", merged)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return errs
+}
+
 // HandleListNotices handles GET /api/v1/notices.
 // Supports query params: ?view=upcoming|current|past&type=event|update
 func (h *NoticesHandler) HandleListNotices(w http.ResponseWriter, r *http.Request) {
@@ -306,6 +424,17 @@ func (h *NoticesHandler) HandleListNotices(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
+
+	// Parse and validate query filters before doing any work — a filter on a
+	// non-filterable field is a bad request regardless of space state.
+	q := r.URL.Query()
+	view := q.Get("view")
+	eqFilters, filterErr := h.parseNoticeFilters(q)
+	if filterErr != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": filterErr})
+		return
+	}
+	now := time.Now().UTC()
 
 	var spaceID string
 	if h.spaceManager != nil {
@@ -328,15 +457,10 @@ func (h *NoticesHandler) HandleListNotices(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Apply filters
-	view := r.URL.Query().Get("view")
-	typeFilter := r.URL.Query().Get("type")
-	now := time.Now().UTC()
-
 	var filtered []*anysync.NoticePayload
 	for _, n := range notices {
-		// Type filter
-		if typeFilter != "" && n.Type != typeFilter {
+		// Field equality filters (core or schema-defined custom fields)
+		if len(eqFilters) > 0 && !noticeMatchesFilters(n, eqFilters) {
 			continue
 		}
 
@@ -1077,6 +1201,76 @@ func (h *NoticesHandler) HandleTogglePin(w http.ResponseWriter, r *http.Request,
 		"noticeId": noticeID,
 		"pinned":   newPinned,
 	})
+}
+
+// parseNoticeFilters builds the set of equality filters from query params.
+// Only fields the org's Notice schema marks filterable may be used; "view" is a
+// reserved board selector handled separately. Returns a non-empty error string
+// when a non-filterable field is requested. Without a registered schema it
+// preserves the legacy behaviour of filtering only on "type".
+func (h *NoticesHandler) parseNoticeFilters(q map[string][]string) (map[string]string, string) {
+	eqFilters := map[string]string{}
+	for key, vals := range q {
+		if key == "view" || len(vals) == 0 || vals[0] == "" {
+			continue
+		}
+		if h.registry != nil {
+			if !h.registry.IsFilterable("Notice", key) {
+				return nil, fmt.Sprintf("field %q is not filterable", key)
+			}
+		} else if key != "type" {
+			continue
+		}
+		eqFilters[key] = vals[0]
+	}
+	return eqFilters, ""
+}
+
+// noticeMatchesFilters reports whether a notice satisfies every equality
+// filter. Filters compare against scalar core or custom fields; a filter on a
+// field the notice does not carry as a scalar never matches.
+func noticeMatchesFilters(n *anysync.NoticePayload, eqFilters map[string]string) bool {
+	flat := flattenNoticeScalars(n)
+	for key, want := range eqFilters {
+		got, ok := flat[key]
+		if !ok || got != want {
+			return false
+		}
+	}
+	return true
+}
+
+// flattenNoticeScalars renders a notice's scalar fields — core fields plus any
+// custom fields carried in its data map — as strings keyed by field name.
+func flattenNoticeScalars(n *anysync.NoticePayload) map[string]string {
+	blob, err := json.Marshal(n)
+	if err != nil {
+		return nil
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(blob, &m); err != nil {
+		return nil
+	}
+	if data, ok := m["data"].(map[string]interface{}); ok {
+		delete(m, "data")
+		for k, v := range data {
+			if _, exists := m[k]; !exists {
+				m[k] = v
+			}
+		}
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		switch vv := v.(type) {
+		case string:
+			out[k] = vv
+		case bool:
+			out[k] = strconv.FormatBool(vv)
+		case float64:
+			out[k] = strconv.FormatFloat(vv, 'f', -1, 64)
+		}
+	}
+	return out
 }
 
 // sortNotices sorts notices based on the board view.

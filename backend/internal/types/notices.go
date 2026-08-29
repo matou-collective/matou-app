@@ -22,11 +22,12 @@ func NoticeType() *TypeDefinition {
 	maxURL := 1000
 	maxDisplayName := 100
 
-	return &TypeDefinition{
-		Name:        "Notice",
-		Version:     1,
-		Description: "Community notice board entry (event, update, or announcement)",
-		Space:       "community",
+	def := &TypeDefinition{
+		Name:         "Notice",
+		Version:      1,
+		Description:  "Community notice board entry (event, update, or announcement)",
+		Space:        "community",
+		VariantField: "subtype",
 		Fields: []FieldDef{
 			// Core fields
 			{Name: "type", Type: "string", Required: true,
@@ -136,6 +137,33 @@ func NoticeType() *TypeDefinition {
 			Read:  "community",
 			Write: "admin",
 		},
+	}
+
+	// Every built-in Notice field is core: the fixed NoticePayload struct and
+	// the notice lifecycle state machine depend on all of them. Fields an org
+	// adds by extending this schema are non-core and round-trip through the
+	// object's data map.
+	for i := range def.Fields {
+		def.Fields[i].Core = true
+	}
+
+	// Fields the notice board may filter or sort on.
+	markFilterable(def, "type", "subtype", "state", "pinned",
+		"eventStart", "publishAt", "createdAt", "activeFrom", "activeUntil")
+
+	return def
+}
+
+// markFilterable sets Filterable=true on the named fields of a definition.
+func markFilterable(def *TypeDefinition, names ...string) {
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[n] = true
+	}
+	for i := range def.Fields {
+		if want[def.Fields[i].Name] {
+			def.Fields[i].Filterable = true
+		}
 	}
 }
 
