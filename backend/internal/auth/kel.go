@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -67,25 +68,75 @@ func ExtractCurrentKeys(stream []byte, aid string) ([]string, error) {
 	return ks.Keys, nil
 }
 
+// EstablishmentKeyState is the signing key state established at a specific KEL
+// sequence number — one entry of an AID's key-state history walk.
+type EstablishmentKeyState struct {
+	// Seq is the KEL sequence number of the establishment event.
+	Seq int64
+	// Keys are the qb64 signing keys established at Seq.
+	Keys []string
+	// Threshold is the raw signing threshold ("kt") of that event (see
+	// KeyState.Threshold).
+	Threshold string
+}
+
 // ExtractKeyState parses a CESR event stream and returns the key state of aid's
-// most recent establishment event.
+// most recent establishment event. See ExtractKeyStates for the framing and
+// prefix-binding rules; this returns the latest state.
+func ExtractKeyState(stream []byte, aid string) (*KeyState, error) {
+	states, err := ExtractKeyStates(stream, aid)
+	if err != nil {
+		return nil, err
+	}
+	latest := states[len(states)-1]
+	return &KeyState{Keys: latest.Keys, Threshold: latest.Threshold}, nil
+}
+
+// ExtractKeyStateAt parses a CESR event stream and returns aid's key state as of
+// KEL sequence number sn: the most recent establishment event whose sequence
+// number is <= sn. This is the authoritative signing key state at that point in
+// the log, so an action proof signed under sn stays verifiable against these
+// keys even after a later legitimate rotation past sn (GH#19 part 3 / #112).
+// Returns an error when no establishment event at or before sn exists for aid.
+func ExtractKeyStateAt(stream []byte, aid string, sn int64) (*KeyState, error) {
+	states, err := ExtractKeyStates(stream, aid)
+	if err != nil {
+		return nil, err
+	}
+	var best *EstablishmentKeyState
+	for i := range states {
+		if states[i].Seq > sn {
+			break
+		}
+		best = &states[i]
+	}
+	if best == nil {
+		return nil, fmt.Errorf("no establishment event at or before sn %d for %s", sn, aid)
+	}
+	return &KeyState{Keys: best.Keys, Threshold: best.Threshold}, nil
+}
+
+// ExtractKeyStates parses a CESR event stream and returns aid's establishment
+// key-state history — one entry per KEL sequence number, sorted by sequence
+// number ascending. The last entry is the current key state.
 //
 // Only events whose controller prefix ("i") equals aid are considered. OOBI
 // responses routinely carry other KELs alongside the controller's (witnesses,
 // delegators, the agent), so binding on "i" is what stops a foreign event with
-// a higher sequence number from being taken as the user's key state.
+// a higher sequence number from being taken as the user's key state. On a
+// duplicate sequence number the later event in the stream wins (matching the
+// former ">=" latest-wins rule).
 //
 // KERI JSON events are self-framing: the version string ("KERI10JSON0000fb_")
 // encodes the exact byte length of the serialized event, so each event can be
 // sliced out precisely regardless of the CESR signature material interleaved
 // between events. Only JSON serialization is supported (what signify emits).
-func ExtractKeyState(stream []byte, aid string) (*KeyState, error) {
+func ExtractKeyStates(stream []byte, aid string) ([]EstablishmentKeyState, error) {
 	if aid == "" {
 		return nil, fmt.Errorf("aid is required")
 	}
 	s := string(stream)
-	var best *establishmentEvent
-	bestSeq := int64(-1)
+	bySeq := map[int64]EstablishmentKeyState{}
 
 	for i := 0; i < len(s); {
 		start := strings.Index(s[i:], `{"v":"KERI`)
@@ -116,23 +167,25 @@ func ExtractKeyState(stream []byte, aid string) (*KeyState, error) {
 		if err != nil {
 			continue
 		}
-		if seq >= bestSeq {
-			bestSeq = seq
-			evCopy := ev
-			best = &evCopy
+		if len(ev.Keys) == 0 {
+			continue
+		}
+		bySeq[seq] = EstablishmentKeyState{
+			Seq:       seq,
+			Keys:      ev.Keys,
+			Threshold: strings.TrimSpace(string(ev.Threshold)),
 		}
 	}
 
-	if best == nil {
+	if len(bySeq) == 0 {
 		return nil, fmt.Errorf("no establishment event for %s found in KEL stream", aid)
 	}
-	if len(best.Keys) == 0 {
-		return nil, fmt.Errorf("establishment event has no keys")
+	states := make([]EstablishmentKeyState, 0, len(bySeq))
+	for _, st := range bySeq {
+		states = append(states, st)
 	}
-	return &KeyState{
-		Keys:      best.Keys,
-		Threshold: strings.TrimSpace(string(best.Threshold)),
-	}, nil
+	sort.Slice(states, func(i, j int) bool { return states[i].Seq < states[j].Seq })
+	return states, nil
 }
 
 // eventSize reads the KERI version string at the start of a JSON event and

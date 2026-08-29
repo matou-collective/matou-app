@@ -577,6 +577,35 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 				keySnap[aid] = keys
 			}
 			writeRuleKeys.Replace(keySnap)
+
+			// GH#19 part 3 (#112): when the resolver can serve full KEL history,
+			// snapshot each AID's establishment key states so the proof verifier
+			// can validate a proof against the signing key as of its KEL sn —
+			// surviving a later legitimate rotation (AnchoredKeyProvider). Absent
+			// history, SigningKeysAt falls back to current keys (fail-closed on
+			// rotation), so this is a best-effort enrichment. NEEDS LIVE
+			// VERIFICATION: exercised only against a reachable KERIA endpoint.
+			if hr, ok := keyStateResolver.(auth.KeyHistoryResolver); ok {
+				histSnap := make(map[string][]auth.EstablishmentKeyState, len(aids))
+				for aid := range aids {
+					hist, err := hr.KeyHistory(ctx, aid)
+					if err != nil {
+						log.Printf("[write-rules] key-history refresh failed for %s: %v", aid, err)
+						continue
+					}
+					histSnap[aid] = hist
+				}
+				writeRuleKeys.ReplaceHistory(histSnap)
+			}
+			// Credential/TEL binding (#112) is available as a seam
+			// (WriteRuleValidator.WithCredentialVerifier + SnapshotCredentialVerifier)
+			// and exercised by fixture tests, but is not wired here: there is no
+			// synced representation of credential TEL/revocation status in-repo
+			// yet (revocation happens client-side via KERIA), so a live snapshot
+			// cannot yet distinguish revoked from active credentials. Attaching an
+			// empty/incomplete verifier would fail-closed on legitimate
+			// transitions, so the check stays opt-in until the TEL snapshot source
+			// lands (tracked in docs/RBAC.md).
 		}
 	}
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
