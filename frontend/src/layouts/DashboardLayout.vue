@@ -1,5 +1,5 @@
 <template>
-  <div class="dashboard-layout">
+  <div class="dashboard-layout" :class="{ 'keyboard-open': keyboardOpen }">
     <!-- Sidebar -->
     <aside class="sidebar">
       <!-- Logo Header -->
@@ -144,6 +144,7 @@ import {
   Hammer,
   Bug,
   Menu,
+  ShieldCheck,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -154,7 +155,10 @@ import { useCommentCursorsStore } from 'stores/commentCursors';
 import { useProjectsStore } from 'stores/projects';
 import { useContributionsStore } from 'stores/contributions';
 import { useActivityStore } from 'stores/activity';
+import { useRolePolicyStore } from 'src/stores/rolePolicy';
+import { useIdentityStore } from 'stores/identity';
 import { useCommentScope } from 'src/composables/useCommentScope';
+import { useKeyboardOpen } from 'src/composables/useKeyboardOpen';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useKERINotificationService } from 'src/composables/useKERINotificationService';
 import { initNotifications, registerNotificationClickHandler } from 'src/lib/notifications';
@@ -180,9 +184,16 @@ const commentCursorsStore = useCommentCursorsStore();
 const projectsStore = useProjectsStore();
 const contributionsStore = useContributionsStore();
 const activityStore = useActivityStore();
+const rolePolicyStore = useRolePolicyStore();
+const identityStore = useIdentityStore();
 const scope = useCommentScope();
 const profileViewer = useProfileViewer();
 const showReportDialog = ref(false);
+
+// Hide the mobile bottom tab bar while the soft keyboard is open so it doesn't
+// float above the keyboard and eat vertical space (#126). Web/Electron never
+// see a keyboard, so the flag stays false there.
+const keyboardOpen = useKeyboardOpen();
 
 const projectsUnreadTotal = computed(() => {
   // Project rollup: own project comments + contribution comments for each
@@ -223,6 +234,7 @@ const NAV_ICONS: Record<string, Component> = {
   proposals: Vote,
   projects: Target,
   contributions: Hammer,
+  'roles-permissions': ShieldCheck,
 };
 
 const navBadges = computed<Record<string, number>>(() => ({
@@ -232,8 +244,12 @@ const navBadges = computed<Record<string, number>>(() => ({
   contributions: contributionsUnreadTotal.value,
 }));
 
+// The Roles & Permissions entry is admin-only: it appears once the role
+// policy store confirms the caller holds manage_roles.
 const navItems = computed(() =>
-  NAV_ITEM_META.map((meta) => ({
+  NAV_ITEM_META.filter(
+    (meta) => meta.name !== 'roles-permissions' || rolePolicyStore.canManageRoles,
+  ).map((meta) => ({
     ...meta,
     icon: NAV_ICONS[meta.name] as Component,
     badge: navBadges.value[meta.name] ?? 0,
@@ -367,6 +383,17 @@ onMounted(() => {
   projectsStore.fetchProjects().catch(() => {});
   contributionsStore.fetchContributions().catch(() => {});
   activityStore.loadNotices().catch(() => {});
+  // Role policy drives the admin-only Roles nav entry. callerCapabilities
+  // depend on X-User-AID, which is only sent once the identity store has an
+  // AID — after a recovery login that lands later than mount — so (re)load
+  // whenever the AID changes rather than once.
+  watch(
+    () => identityStore.aidPrefix,
+    () => {
+      void rolePolicyStore.load();
+    },
+    { immediate: true },
+  );
 
   // Load chat data so the unread badge shows on all dashboard pages.
   // Fire-and-forget: don't await, so child routes mount immediately.
@@ -573,8 +600,8 @@ onBeforeUnmount(() => {
 }
 
 // Mobile bottom tab bar — hidden on desktop, shown only at ≤767px.
-$bottom-nav-height: 64px;
-
+// Height comes from the shared `--bottom-nav-height` token (see App.vue) so the
+// chat view reserves matching space for the composer (#168).
 .bottom-nav {
   display: none;
 }
@@ -751,8 +778,12 @@ $bottom-nav-height: 64px;
   .main-content {
     margin-left: 0;
     width: 100%;
+    // On mobile there is no top sidebar/header, so page content starts at the
+    // very top of an edge-to-edge WebView — clear the status bar with the top
+    // safe-area inset (0 on web/Electron).
+    padding-top: env(safe-area-inset-top);
     // Keep content clear of the fixed bottom bar (bar height + safe area).
-    padding-bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
   }
 
   .bottom-nav {
@@ -761,7 +792,7 @@ $bottom-nav-height: 64px;
     bottom: 0;
     left: 0;
     right: 0;
-    height: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+    height: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
     background-color: var(--matou-sidebar);
     border-top: 1px solid var(--matou-sidebar-border);
@@ -778,7 +809,17 @@ $bottom-nav-height: 64px;
     inset: 0;
     z-index: 60;
     background-color: rgba(0, 0, 0, 0.4);
-    padding-bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  // Soft keyboard open (#126): hide the bottom tab bar so it doesn't float
+  // above the keyboard, and reclaim its reserved content padding.
+  .dashboard-layout.keyboard-open .bottom-nav {
+    display: none;
+  }
+
+  .dashboard-layout.keyboard-open .main-content {
+    padding-bottom: 0;
   }
 }
 </style>

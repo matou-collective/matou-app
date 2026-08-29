@@ -30,6 +30,24 @@ set -euo pipefail
 SECONDS=0   # wall-clock for the drive-blocker ordering budget below
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# #111: a rehearsal drive reserved host capacity AFTER this run began. The
+# host gate (schedule_drive_yield) runs once, before the slot is taken; the
+# sandcastle loop then drains up to maxIterations tasks with nothing
+# re-checking the reservation — a queue-draining run held slot 2 for hours
+# while a ready drive skipped 20+ ticks. main.mts mirrors the host's FRESH
+# reservation into every sandbox as /run/host-signals/drive-wanted (a
+# read-only mount, polled every 2 s); when it is there this lister answers
+# [] BEFORE any API call — so claim-next-task.sh claims nothing more and the
+# prompt's "Done" re-check sees an empty set and completes. The run finishes
+# its CURRENT task, lands it, releases the slot, and exits
+# reason=yielded-to-drive; the drive fires and the swarm resumes on its next
+# trigger. Host-side callers never see the mount, so nothing changes there.
+drive_signal="${SWARM_DRIVE_YIELD_SIGNAL:-/run/host-signals/drive-wanted}"
+if [ -e "$drive_signal" ]; then
+  echo "list-ready-tasks: a rehearsal drive has reserved host capacity mid-run (#111) — answering [] so this run claims nothing more and yields after its current task" >&2
+  echo '[]'
+  exit 0
+fi
 # Source .env only when the environment doesn't already provide the token —
 # in CI the workflow sets it, and the materialized .env holds empty values
 # that would clobber it.
@@ -174,6 +192,20 @@ done
 if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
   open_pr_nums="$(api "$FORGEJO_API/pulls?state=open&limit=50" |
     jq -r '.[]? | (.head.ref // "") | select(test("^agent/issue-[0-9]+$")) | sub("^agent/issue-";"")' 2>/dev/null || true)"
+# Forgejo IGNORES an unknown `labels=` filter instead of matching nothing: in a
+# repo with no `standing-drive` label the query above returns EVERY open issue
+# (probed live 2026-08-27 on matou-app — 23 of 23, none carrying the label).
+# That made this block one SERIAL dependencies call per OPEN ISSUE: 25.5s of the
+# lister's 29.7s, which alone blew Sandcastle's 30s shell-expression budget and
+# REDed the tick as `PromptExpansionTimeoutError` (run 7707) — before
+# claim-next-task.sh's CLAIM_NEXT_BUDGET could even be consulted, since that
+# guard lives inside the claim walk this lister runs BEFORE. It also poisoned
+# the ordering it exists to fix, promoting any ready ticket that blocks ANY open
+# issue as a "drive blocker". Re-filter the response CLIENT-side on the label we
+# actually asked for, so a repo with no standing drive does zero extra calls and
+# blocker_nums stays [] (the emit order below is then byte-identical to before —
+# the same fallback this block already documents). A repo that DOES carry the
+# label is unaffected: server filter and client filter agree.
   if [ -n "$open_pr_nums" ]; then
     drop="$(printf '%s\n' $open_pr_nums | jq -Rn '[inputs | select(length > 0) | tonumber]')"
     ready="$(jq --argjson drop "$drop" \
@@ -192,20 +224,6 @@ fi
 # open ones. A failed fetch, no standing drive, or none with open blockers →
 # blocker_nums stays [] and the emit order below is byte-identical to before.
 blocker_nums='[]'
-# Forgejo IGNORES an unknown `labels=` filter instead of matching nothing: in a
-# repo with no `standing-drive` label the query above returns EVERY open issue
-# (probed live 2026-08-27 on matou-app — 23 of 23, none carrying the label).
-# That made this block one SERIAL dependencies call per OPEN ISSUE: 25.5s of the
-# lister's 29.7s, which alone blew Sandcastle's 30s shell-expression budget and
-# REDed the tick as `PromptExpansionTimeoutError` (run 7707) — before
-# claim-next-task.sh's CLAIM_NEXT_BUDGET could even be consulted, since that
-# guard lives inside the claim walk this lister runs BEFORE. It also poisoned
-# the ordering it exists to fix, promoting any ready ticket that blocks ANY open
-# issue as a "drive blocker". Re-filter the response CLIENT-side on the label we
-# actually asked for, so a repo with no standing drive does zero extra calls and
-# blocker_nums stays [] (the emit order below is then byte-identical to before —
-# the same fallback this block already documents). A repo that DOES carry the
-# label is unaffected: server filter and client filter agree.
 if drives="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50")"; then
   for d in $(jq -r '.[]? | select((((.labels // []) | map(.name) | index("standing-drive"))) != null) | .number' <<<"$drives" 2>/dev/null || true); do
     # Wall-clock bound (belt and braces): even a repo with a genuinely deep

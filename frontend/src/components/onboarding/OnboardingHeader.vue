@@ -1,6 +1,6 @@
 <template>
   <div
-    class="header-gradient bg-gradient-to-br from-primary via-primary/95 to-accent p-6 md:p-8 pb-8 rounded-b-3xl"
+    class="header-gradient pt-safe-area bg-gradient-to-br from-primary via-primary/95 to-accent p-6 md:p-8 pb-8 rounded-b-3xl"
   >
     <MBtn
       v-if="showBackButton"

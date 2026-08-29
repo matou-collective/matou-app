@@ -119,7 +119,7 @@
     </div>
 
     <!-- Footer -->
-    <div class="p-6 md:p-8 border-t border-border">
+    <div class="p-6 md:p-8 border-t border-border pb-safe-area">
       <div class="max-w-2xl mx-auto">
         <MBtn
           class="w-full h-12 text-base rounded-xl"

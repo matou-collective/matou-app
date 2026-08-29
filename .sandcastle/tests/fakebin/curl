@@ -92,6 +92,9 @@ case "$url" in
   */pulls\?state=open*)   # open PR set (LANDING=pr, #13) — client filters by head.ref
     cat "$FAKE_DIR/open-pulls.json" 2>/dev/null || echo '[]'
     ;;
+  */pulls\?state=closed*) # closed PR set (#108) — client filters by head.ref + .merged
+    cat "$FAKE_DIR/closed-pulls.json" 2>/dev/null || echo '[]'
+    ;;
   */pulls/*/merge)        # merge a PR; its `closes #N` closes the mapped issue
     printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"
     prn="${url%/merge}"; prn="${prn##*/}"

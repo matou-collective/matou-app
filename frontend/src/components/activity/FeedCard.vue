@@ -54,7 +54,7 @@
         </div>
         <div v-if="notice.eventStart" class="event-detail-row">
           <Clock :size="18" />
-          <span>{{ formatTimeOnly(notice.eventStart) }}<span v-if="notice.eventEnd"> - {{ formatTimeOnly(notice.eventEnd) }}</span><span v-if="notice.timezone"> {{ notice.timezone }}</span></span>
+          <span>{{ formatTimeOnly(notice.eventStart) }}<span v-if="notice.eventEnd"> - {{ formatTimeOnly(notice.eventEnd) }}</span><span v-if="notice.timezone">{{ ' · ' + notice.timezone }}</span></span>
         </div>
         <div v-if="notice.locationText" class="event-detail-row">
           <MapPin :size="18" />
@@ -378,5 +378,31 @@ async function handlePin() {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+/* Phone width: the icon column eats ~40px of a 320px card, so only the header
+   row sits beside the icon — title, body, image, details and RSVP span the
+   full card width. Done as a grid with the content wrapper flattened
+   (display: contents) so the template stays shared with desktop. */
+@media (max-width: 767px) {
+  .feed-card-top {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .feed-card-content {
+    display: contents;
+  }
+
+  .feed-card-content > .feed-card-header {
+    min-width: 0;
+  }
+
+  .feed-card-content > :not(.feed-card-header) {
+    grid-column: span 2;
+    min-width: 0;
+  }
 }
 </style>

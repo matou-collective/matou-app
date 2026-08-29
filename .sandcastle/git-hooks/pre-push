@@ -1,16 +1,101 @@
 #!/usr/bin/env bash
-# Pre-push language gate (issue #198). Runs the pinned Go seam stages over any
-# Go change before it is pushed, so a lint/build/test defect is caught here — a
-# worker-visible failure — instead of on main's seam.
+# Pre-push gates.
 #
-# Active ONLY inside the Sandcastle sandbox (FACTORY_SANDBOX=1, set by
-# .sandcastle/Dockerfile). A human's or the swarm harness's own host push is
-# never gated by it — they already run the full seam through `nix develop`, and
-# run-swarm.sh's reconcile push must not stall on a Go build.
+# Gate 1 — factory-drift gate (idss #932). Runs in EVERY workdir: the real
+# session/swarm host checkouts AND the FACTORY_SANDBOX=1 sandbox. If this push
+# carries an edit to a file this repo vendors from the factory core (a path in
+# .sandcastle/FACTORY_MANIFEST, ADR 0180) that has DRIFTED from FACTORY_REF,
+# block the push HERE — the last revertible moment — rather than let it red the
+# `seam` drift stage on main after it has already landed (#931, commit
+# d0a74a65). A session with .sandcastle/ standing (#445) can edit a vendored
+# file with no other warning: protected-paths-lib.sh intentionally does not fire
+# for a standing session, and the drift check otherwise runs only post-push.
 #
-# Wired via `git config core.hooksPath .sandcastle/git-hooks` from
-# .sandcastle/main.mts's onSandboxReady, so every worker container gets it.
-[ "${FACTORY_SANDBOX:-}" = "1" ] || exit 0
+# Cheap by construction: the network drift check (check-harness-drift.sh, which
+# fetches FACTORY_REF from the factory) runs ONLY when the pushed range actually
+# touches a manifest path — the rare case. An ordinary push, and run-swarm.sh's
+# reconcile push (neither of which carries a vendored-file edit), pay only a
+# local `git diff`. FAIL-OPEN on every infra error (factory unreachable, tools
+# missing, an unexpected fault): the ONLY thing that ever blocks is a CONFIRMED
+# drift, so a network blip can never stall the reconcile rail and any bug here
+# degrades to today's behaviour (seam still catches real drift on main).
+#
+# Gate 2 — Go language gate (#198). Sandbox only (FACTORY_SANDBOX=1), UNCHANGED.
+# A human's or the swarm harness's own host push is never gated by it; they run
+# the full seam through `nix develop`, and reconcile push must not stall on a Go
+# build.
+#
+# Wired via `git config core.hooksPath .sandcastle/git-hooks` — in the sandbox
+# from .sandcastle/main.mts's onSandboxReady, and in real workdirs from
+# session-runner.sh (the dedicated session checkout) and git-setup.sh (the
+# swarm/triage workdir), so the drift gate reaches every real push (#932).
+set -uo pipefail
 
-root="$(git rev-parse --show-toplevel)"
-exec bash "$root/.sandcastle/gate.sh" --prepush
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -n "$root" ] || exit 0
+
+# git's pre-push ref lines arrive on stdin; consume once and replay to both gates.
+_prepush_stdin="$(cat)"
+
+# ── Gate 1: factory-drift (all workdirs; fail-open) ──────────────────────────
+# The whole gate is a function whose ONLY blocking signal is the token
+# DRIFT_BLOCK on stdout, emitted solely after check-harness-drift.sh CONFIRMS
+# drift. Any earlier return (missing files, no manifest path touched, an infra
+# error) yields no token — so the push proceeds. This is what makes the gate
+# fail-open regardless of how it fails.
+_drift_gate() {
+  local mf="$root/.sandcastle/FACTORY_MANIFEST"
+  local drift="$root/.sandcastle/check-harness-drift.sh"
+  local glib="$root/.sandcastle/gate-lib.sh"
+  [ -f "$mf" ] && [ -f "$drift" ] && [ -f "$glib" ] || return 0
+
+  # Changed files across the pushed range (reuses the Go gate's own helper).
+  # shellcheck source=gate-lib.sh
+  . "$glib" 2>/dev/null || return 0
+  local changed
+  changed="$(printf '%s\n' "$_prepush_stdin" | gate_files_from_prepush 2>/dev/null)" || return 0
+  [ -n "$changed" ] || return 0
+
+  # Does the push touch any FACTORY_MANIFEST path (as .sandcastle/<p>)? Cheap,
+  # no network. If not, we are done — the common case (every ordinary push).
+  local p touched=0
+  while IFS= read -r p; do
+    case "$p" in ''|'#'*) continue ;; esac
+    if printf '%s\n' "$changed" | grep -qxF ".sandcastle/$p"; then touched=1; break; fi
+  done <"$mf"
+  [ "$touched" -eq 1 ] || return 0
+
+  # A vendored file is in this push — confirm actual byte-drift from FACTORY_REF.
+  # A DRIFT marker in the output is the only thing that blocks; a non-zero exit
+  # without one (network/tooling failure) falls through to a push (fail-open).
+  local out rc
+  out="$(bash "$drift" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q '^DRIFT:\|^check-harness-drift: FAILED'; then
+    echo "DRIFT_BLOCK"
+  fi
+  return 0
+}
+
+if [ "$(_drift_gate 2>/dev/null | tail -1)" = "DRIFT_BLOCK" ]; then
+  # Re-run the drift check visibly so the operator sees the divergent file(s),
+  # the diff and the pinned ref (the token-capture run above swallowed them).
+  bash "$root/.sandcastle/check-harness-drift.sh" >&2 || true
+  {
+    echo ""
+    echo "pre-push BLOCKED (#932): this push edits a factory-vendored file (ADR 0180)"
+    echo "that has DRIFTED from FACTORY_REF. Vendored .sandcastle/ files are read-only"
+    echo "here — a direct edit only reds the seam drift stage AFTER it lands on main."
+    echo "To change a vendored file:"
+    echo "  1. land the fix in Matou/dev-factory,"
+    echo "  2. bump .sandcastle/FACTORY_REF and re-vendor (onboarding/onboard.sh vendor),"
+    echo "  3. then push. A push with no factory drift is never blocked."
+  } >&2
+  exit 1
+fi
+
+# ── Gate 2: Go language gate (sandbox only; unchanged, #198) ──────────────────
+if [ "${FACTORY_SANDBOX:-}" = "1" ]; then
+  printf '%s\n' "$_prepush_stdin" | bash "$root/.sandcastle/gate.sh" --prepush
+  exit $?
+fi
+exit 0

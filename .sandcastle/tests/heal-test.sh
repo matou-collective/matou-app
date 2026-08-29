@@ -32,6 +32,12 @@ run_heal() {
   # host-global path, so a real rehearsal drive waiting while the suite runs made
   # heal.sh yield at the #663 drive gate before ever reaching the stub agent. Pin
   # it (and the healer's own defer count) into $work too — run_heal_ci must too.
+  # Same class again (#102): the per-repo-tag healer lock defaults to a
+  # host-global /tmp path, so two suite runs on one box (two agents, two
+  # worktrees, a cron tick beside a dev) contended for one file and the loser
+  # exited "another healer holds the lock" with no diagnosis — a red that
+  # depended on who else was on the host. Pin it into $work; the concurrent-lock
+  # block below names its own.
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN_B \
     CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
@@ -44,6 +50,7 @@ run_heal() {
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
     HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
     HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
+    HEALER_LOCK="$work/healer.lock" \
     "$@" bash "$here/../heal.sh" 2>&1
 }
 
@@ -169,6 +176,7 @@ run_heal_ci() {
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
     HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
     HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
+    HEALER_LOCK="$work/healer.lock" \
     "$@" bash "$here/../heal.sh" 2>&1
 }
 printf 'stage=Go: build/vet/test/lint\nexit=1\n--- error lines ---\nwiring_test.go:41:2: err shadows builtin (revive)\n' > "$verdict"
@@ -467,4 +475,24 @@ PY
   rm -f "$swarm_verdict.breadcrumb" "$swarm_verdict"
 fi
 
-echo "heal.sh: 15 scenarios passed"
+# --- #102: the healer lock path is env-overridable, so concurrent suite runs on
+# one host stop contending for a single /tmp file. While one lock is HELD, a
+# healer pointed at the SAME path bails with no diagnosis, but one pointed at a
+# DISTINCT path proceeds and diagnoses — proving distinct paths don't collide.
+# The default still keeps one-healer-per-repo-tag mutual exclusion (the point of
+# the lock); this only makes the path pinnable, exactly like the marker paths.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+held="$work/held.lock"
+exec 9>"$held"; flock -n 9 || fail "test setup could not take the held lock (#102)"
+out="$(run_heal HEALER_LOCK="$held")"
+echo "$out" | grep -q "another healer holds the lock" \
+  || fail "a healer sharing a held lock path must bail (#102, got: $out)"
+echo "$out" | grep -q "CLASS:" && fail "a locked-out healer must post NO diagnosis (#102, got: $out)"
+[ "$(ls "$work/state" | wc -l)" -eq 0 ] || fail "a locked-out healer must not touch the ledger (#102)"
+out="$(run_heal HEALER_LOCK="$work/other.lock")"
+echo "$out" | grep -q "CLASS: harness-infra" \
+  || fail "a healer with a distinct lock path must proceed while another lock is held (#102, got: $out)"
+exec 9>&-
+
+echo "heal.sh: 16 scenarios passed"

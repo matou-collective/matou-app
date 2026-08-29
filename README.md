@@ -111,6 +111,16 @@ See [docs/manual-deployment.md](docs/manual-deployment.md) for instructions on b
 
 See [docs/automated-deployment.md](docs/automated-deployment.md) for instructions on building and releasing automatically using GitHub workflows.
 
+## Mobile (Android)
+
+The Android app is a Capacitor shell around the same Quasar frontend, with the Go backend embedded via gomobile (it runs in-process and listens on loopback). See [docs/mobile/ANDROID.md](docs/mobile/ANDROID.md) for the toolchain, build, and emulator notes.
+
+```bash
+scripts/android/setup-toolchain.sh   # one-time: JDK 21, Android SDK/NDK, gomobile (~2.9 GB in ~/.matou-android)
+cd backend && make build-android-aar  # gomobile bind → frontend/src-capacitor/android/app/libs/matou.aar
+scripts/android/build-apk.sh          # Quasar Capacitor build → frontend/dist/capacitor/android/apk/debug/app-debug.apk
+```
+
 ## Environment Variables
 
 | Variable | Description | Default |

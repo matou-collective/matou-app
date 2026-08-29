@@ -74,8 +74,16 @@ run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-empty"
 [ "$RC" = 0 ] || fail "an empty ready set is a clean exit 0, got $RC:
 $out"
 grep -q 'PREFLIGHT OK: (stub)' <<<"$out" || fail "the preflight gate must have run: $out"
-grep -q 'policy: defaults (LANDING=push MERGE_AUTHORITY=human)' <<<"$out" \
-  || fail "the policy gate must have run and logged its knobs: $out"
+# The policy gate ran and logged its RESOLVED knobs — that is the invariant this
+# whole-script run protects, NOT which branch a particular repo lands on. Whether
+# the line carries the `defaults (` wrapper, and which LANDING/MERGE_AUTHORITY
+# values it resolves, are consumer-owned identity-layer facts: a repo that
+# completes onboarding declares a `swarm-policy.sh` (vendor-EXCLUDED) and takes
+# the present-file branch, so a vendored test may not pin either the wrapper or
+# the values. Match the shape — the gate fired and named a valid knob pair — and
+# leave the branch to the present-file case below. (#101)
+grep -qE 'run-swarm: policy: (defaults \()?LANDING=(push|pr) MERGE_AUTHORITY=(human|agent-after-green)' <<<"$out" \
+  || fail "the policy gate must have run and logged its resolved knobs: $out"
 grep -q 'run-swarm: no ready tasks' <<<"$out" || fail "an empty set must say so: $out"
 [ ! -f "$verdict" ] || fail "a clean exit must leave no verdict: $(cat "$verdict")"
 pass=$((pass+1))
@@ -85,6 +93,32 @@ pass=$((pass+1))
 grep -q 'repo=Acme/widget' "$runlog" || fail "the run must land a runlog line: $(cat "$runlog")"
 grep -q 'reason=no-ready-tasks' "$runlog" || fail "the exit reason must be named, not derived: $(cat "$runlog")"
 grep -q 'exit=0' "$runlog" || fail "the runlog must carry the exit code: $(cat "$runlog")"
+pass=$((pass+1))
+
+# the PRESENT-policy-file branch, given explicit coverage (#101). The whole-script
+# run above exercises whichever branch the .sandcastle under test lands on — the
+# defaults branch in the factory's own copy (no swarm-policy.sh), the present-file
+# branch in any consumer that completed onboarding. So wherever this vendored
+# suite runs, one branch is left untested by that run alone. Drive the gate
+# against a fixture policy file and assert the present-file line (loaded knobs, no
+# `defaults (` wrapper) so BOTH branches are always covered. Sourced in an
+# isolated subshell to match the other stages' subprocess isolation.
+printf 'LANDING=pr\nMERGE_AUTHORITY=agent-after-green\n' > "$tmp/policy-present.sh"
+present_out="$(PATH="$tmp/bin:$PATH" \
+  FORGEJO_TOKEN=dummy FORGEJO_API=http://x/api/v1/repos/Acme/widget \
+  CURL_LOG="$curl_log" \
+  bash -c '
+    set -euo pipefail
+    sc="$1"; policy="$2"
+    . "$sc/verdict-lib.sh"; . "$sc/model-lib.sh"; . "$sc/policy-lib.sh"
+    . "$sc/schedule-lib.sh"; . "$sc/preflight-lib.sh"
+    preflight_policy_gate Acme/widget "$policy"
+  ' _ "$sc" "$tmp/policy-present.sh")" \
+  || fail "a present policy file must pass the gate: $present_out"
+grep -q 'run-swarm: policy: LANDING=pr MERGE_AUTHORITY=agent-after-green' <<<"$present_out" \
+  || fail "the present-file branch must log the loaded knobs: $present_out"
+grep -q 'defaults (' <<<"$present_out" \
+  && fail "the present-file branch must NOT carry the defaults wrapper: $present_out"
 pass=$((pass+1))
 
 # the drive-reservation gate short-circuits BEFORE any of that — no tracker call,

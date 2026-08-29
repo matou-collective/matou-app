@@ -4,7 +4,7 @@ import path from 'path';
 export default defineConfig({
   resolve: {
     alias: {
-      // Resolve 'src/*' imports (mirrors tsconfig paths)
+      // Resolve 'src/*' and 'stores/*' imports (mirrors tsconfig paths)
       src: path.join(__dirname, 'src'),
       // Mirror the remaining tsconfig path aliases so tests can import modules
       // that reference them transitively (e.g. client.ts -> stores/identity).

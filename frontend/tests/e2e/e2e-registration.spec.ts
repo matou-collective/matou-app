@@ -5,6 +5,7 @@ import { test, expect, Page, BrowserContext, request } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
 import { BackendManager, ensureBinaryFresh } from './utils/backend-manager';
+import { assertPortOwnedByThisCheckout } from './utils/checkout-guard';
 import {
   FRONTEND_URL,
   TIMEOUT,
@@ -31,6 +32,11 @@ import {
 async function restartAdminBackend(): Promise<ChildProcess> {
   const backendDir = path.resolve(__dirname, '..', '..', '..', 'backend');
   const dataDir = path.join(backendDir, 'data-test');
+
+  // Refuse to kill a backend that belongs to a DIFFERENT checkout — that is
+  // another e2e run's admin backend, and replacing it mid-test silently
+  // corrupts the other run (issue #175). Fails fast with an actionable error.
+  assertPortOwnedByThisCheckout(9080, 'admin backend', backendDir);
 
   // Kill the LISTENING process on port 9080 (the server binary).
   // IMPORTANT: Use -sTCP:LISTEN to avoid killing Chromium or other clients
