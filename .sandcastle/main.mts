@@ -1,6 +1,7 @@
 import { run, claudeCode } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -130,6 +131,79 @@ if (swarmDbRunId) {
   cancelTimer.unref();
 }
 
+// #111: the mid-run drive yield. run-swarm.sh consults the drive reservation
+// (`/tmp/matou-drive-wanted`, ADR 0184 / #663) ONCE, before taking the host
+// slot; the loop below then drains up to maxIterations tasks, each in a fresh
+// sandbox, with nothing re-checking it — a queue-draining run held slot 2 for
+// hours while a ready rehearsal drive skipped 20+ ticks. Sandcastle offers no
+// between-iteration host hook, and its abort signal kills the in-flight agent,
+// so the reservation is MIRRORED instead: this host-side poller (2 s, like the
+// cancel marker's) writes `drive-wanted` into a run-scoped host dir that every
+// sandbox sees read-only at /run/host-signals; list-ready-tasks.sh answers []
+// when the file is there, so claim-next-task.sh claims nothing more and the
+// prompt's "Done" re-check completes the loop after the CURRENT task. On exit
+// a marker line tells execute-lib.sh the run stood down (reason=yielded-to-
+// drive); the work that was finished lands exactly as a completed run's does.
+const DRIVE_WANTED = process.env.HOST_CAPACITY_DRIVE_WANTED ?? "/tmp/matou-drive-wanted";
+const DRIVE_WANTED_TTL_S = Number(process.env.HOST_CAPACITY_DRIVE_WANTED_TTL ?? "900") || 900;
+const HOST_SIGNALS_DIR =
+  process.env.SWARM_HOST_SIGNALS_DIR ?? `${tmpdir()}/matou-host-signals-${swarmDbRunId ?? String(process.pid)}`;
+const DRIVE_SIGNAL = `${HOST_SIGNALS_DIR}/drive-wanted`;
+mkdirSync(HOST_SIGNALS_DIR, { recursive: true });
+try {
+  rmSync(DRIVE_SIGNAL); // a stale signal from a crashed run must not silence this one
+} catch {
+  // absent
+}
+// The same freshness rule as host_capacity_drive_wanted (host-capacity-lib.sh):
+// present AND mtime younger than the TTL — an expired reservation is not one.
+function driveWantedFresh(): boolean {
+  try {
+    return (Date.now() - statSync(DRIVE_WANTED).mtimeMs) / 1000 < DRIVE_WANTED_TTL_S;
+  } catch {
+    return false;
+  }
+}
+let driveYieldArmed = false;
+const driveTimer = setInterval(() => {
+  if (driveWantedFresh()) {
+    if (driveYieldArmed) return;
+    driveYieldArmed = true;
+    try {
+      writeFileSync(DRIVE_SIGNAL, "");
+    } catch {
+      // best effort — the next tick retries
+      driveYieldArmed = false;
+      return;
+    }
+    console.log(
+      "worker: a rehearsal drive reserved host capacity mid-run (#111) — finishing the current task, then claiming nothing more",
+    );
+  } else if (driveYieldArmed) {
+    driveYieldArmed = false;
+    try {
+      rmSync(DRIVE_SIGNAL);
+    } catch {
+      // already gone
+    }
+    console.log("worker: the drive reservation cleared — claiming resumes");
+  }
+}, 2000);
+driveTimer.unref();
+// driveMirrorStop — on every exit path: stop polling, emit the marker if the
+// run ended while a reservation stood, and remove the run-scoped dir.
+function driveMirrorStop(): void {
+  clearInterval(driveTimer);
+  if (driveYieldArmed) {
+    console.log(`SANDCASTLE_YIELDED_TO_DRIVE run=${swarmDbRunId ?? "unknown"}`);
+  }
+  try {
+    rmSync(HOST_SIGNALS_DIR, { recursive: true, force: true });
+  } catch {
+    // best effort
+  }
+}
+
 let result;
 try {
   result = await run({
@@ -173,6 +247,8 @@ try {
         // from run 1654 on. The git-fence shim (Dockerfile) remains the backstop
         // against workers running `git worktree` admin commands.
         { hostPath: ".sandcastle/worktrees", sandboxPath: `${process.cwd()}/.sandcastle/worktrees`, readonly: false },
+        // #111: the host's drive-reservation mirror — read-only, run-scoped.
+        { hostPath: HOST_SIGNALS_DIR, sandboxPath: "/run/host-signals", readonly: true },
       ],
     }),
 
@@ -242,6 +318,7 @@ try {
   });
 } catch (err) {
   if (cancelTimer) clearInterval(cancelTimer);
+  driveMirrorStop();
   if (cancelController.signal.aborted) {
     // #612: a deliberate operator stop, not a crash. Sandcastle's `signal`
     // contract gives no partial RunResult back on abort ("no
@@ -260,6 +337,7 @@ try {
   throw err;
 }
 if (cancelTimer) clearInterval(cancelTimer);
+driveMirrorStop();
 
 // #574: RunResult capture — this used to be discarded entirely, leaving
 // swarm.db's attempts/spend tables with zero production writers (schema +

@@ -2,13 +2,22 @@
 # Fake curl for ask-human.sh / resume-parked-asks.sh tests. Routes Mattermost
 # and Forgejo API calls to canned JSON under $FAKE_DIR; records created
 # Mattermost posts in $FAKE_DIR/posts.log, Forgejo write bodies in
-# $FAKE_DIR/forgejo.log, and every call as "METHOD URL" in $FAKE_DIR/calls.log.
+# $FAKE_DIR/forgejo.log, every call as "METHOD URL" in $FAKE_DIR/calls.log, and
+# the WHOLE argv of every call in $FAKE_DIR/argv.log (one line per call) — the
+# seam that lets a test assert a caller's timeout flag (#28) rather than only
+# the URL it asked for.
 set -eu
+printf '%s\n' "$*" >>"$FAKE_DIR/argv.log"
 url="" data="" method=GET want_code=
 while [ $# -gt 0 ]; do
   case "$1" in
     -X)
       method="$2"
+      shift 2
+      ;;
+    -m | --max-time)
+      # Value-carrying, so consume BOTH tokens: the generic `-*) shift` arm
+      # below would leave the bare number to be read as the URL.
       shift 2
       ;;
     -w)   # `-w '%{http_code}'` — caller wants the HTTP status, not the body
@@ -32,6 +41,15 @@ done
 if [ "$data" = "@-" ]; then body="$(cat)"; else body="$data"; fi
 [ -n "$body" ] && [ "$method" = GET ] && method=POST
 printf '%s %s\n' "$method" "$url" >>"$FAKE_DIR/calls.log"
+# Hang seam (#28): $FAKE_DIR/api-timeout makes every call answer the way a real
+# `curl --max-time N` answers a server that never replies — rc 28, no body, and
+# `000` for a caller using the -w '%{http_code}' idiom. A caller with NO timeout
+# would instead block forever, which a test cannot express; the ratchet that no
+# harness API reader ships without one lives in actions-endpoint-test.sh.
+if [ -f "$FAKE_DIR/api-timeout" ]; then
+  [ -n "$want_code" ] && echo 000
+  exit 28
+fi
 case "$url" in
   */users/me) echo '{"id":"BOTID"}' ;;
   */api/v4/posts)
@@ -73,6 +91,9 @@ case "$url" in
     ;;
   */pulls\?state=open*)   # open PR set (LANDING=pr, #13) — client filters by head.ref
     cat "$FAKE_DIR/open-pulls.json" 2>/dev/null || echo '[]'
+    ;;
+  */pulls\?state=closed*) # closed PR set (#108) — client filters by head.ref + .merged
+    cat "$FAKE_DIR/closed-pulls.json" 2>/dev/null || echo '[]'
     ;;
   */pulls/*/merge)        # merge a PR; its `closes #N` closes the mapped issue
     printf '%s\n' "$body" >>"$FAKE_DIR/forgejo.log"

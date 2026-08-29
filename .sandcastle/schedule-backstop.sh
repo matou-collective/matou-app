@@ -39,6 +39,35 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── stalest-first ordering (#45) ─────────────────────────────────────────────
+# `schedule-backstop.sh order-repos <owner/repo>...` prints the given repos
+# ordered STALEST-swarm-lastready first — the freed-slot fairness the generated
+# host backstop-tick.sh dispatches in, so a quiet repo whose clock-aligned probes
+# always land inside a busy window is not perpetually outrun by a loud repo's
+# event-driven ones. A repo's staleness is the mtime of its swarm lastready stamp
+# (/tmp/matou-swarm-lastready-<owner>-<repo> — the SAME stamp run-swarm.sh's
+# debounce coalescer writes on every evaluated run, schedule_stamp_path); a
+# MISSING stamp is the stalest of ALL (a repo never evaluated on this host must
+# not be outrun). Pure: reads only stamp mtimes — no token, no network — so any
+# repo's byte-identical copy computes the same order. Ties keep input order
+# (stable sort). SWARM_LASTREADY_PREFIX overrides the stamp-path root (tests).
+if [ "${1:-}" = order-repos ]; then
+  shift
+  prefix="${SWARM_LASTREADY_PREFIX:-/tmp/matou-swarm-lastready-}"
+  for slug in "$@"; do
+    stamp="$prefix${slug//\//-}"
+    if [ -e "$stamp" ]; then
+      mtime="$(stat -c %Y "$stamp" 2>/dev/null || echo 0)"
+      case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+    else
+      mtime=0     # never evaluated → stalest of all
+    fi
+    printf '%s\t%s\n' "$mtime" "$slug"
+  done | sort -s -n -k1,1 | cut -f2-
+  exit 0
+fi
+
 wf="${1:?workflow file, e.g. swarm.yml}"
 window_min="${2:?window in minutes}"
 

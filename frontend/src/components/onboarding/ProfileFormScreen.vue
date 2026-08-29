@@ -44,7 +44,7 @@
     />
 
     <!-- Content -->
-    <div ref="contentArea" class="flex-1 overflow-y-auto p-6 md:p-8">
+    <div ref="contentArea" class="flex-1 overflow-y-auto p-6 md:p-8 pb-safe-area">
       <form class="space-y-6 max-w-2xl mx-auto" @submit.prevent="handleSubmit">
         <!-- Profile Image -->
         <div class="space-y-3 pb-2">

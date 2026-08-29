@@ -16,6 +16,8 @@ export CLAUDE_LIMIT_MARKER="$tmp/claude-limit"
 # at a local path that does not exist (healer inert, no network, no hang).
 export REHEARSAL_CHECKOUT="$tmp/nonexistent"
 export REHEARSAL_HEAL_REPO="$tmp/no-such-origin.git"
+export REHEARSAL_HEAL_PROMPT_FILE="$here/../.sandcastle/rehearsal-heal-prompt.md"
+export REHEARSAL_REPORT_PROMPT_FILE="$here/../.sandcastle/rehearsal-report-prompt.md"
 
 # curl shim: records every call; answers the issue-list query from a fixture
 # file; answers POSTs with a minted number. The dependency POST is answered as
@@ -56,7 +58,9 @@ if $is_lab; then $want_code && echo "${LABEL_CODE:-204}"; exit 0; fi
 if $is_comment_asset || $is_issue_asset; then $want_code && echo "${ASSET_CODE:-201}"; exit 0; fi
 if $is_comment; then echo '{"id": 12345}'; exit 0; fi
 for a in "$@"; do case "$a" in
-  *labels=rehearsal-183*)
+  # The open-issues query, matched by its SHAPE rather than by one drive's
+  # label, so a case that moves REHEARSAL_LABEL (#51) still gets the fixture.
+  *state=open*type=issues*)
     # The open-issues snapshot. #403 defect 3 (stale snapshot): a sig-matched
     # issue can be filed by a concurrent drive DURING the diagnosis, so the
     # reporter re-fetches immediately before filing. When ISSUE_FIXTURE_AFTER is
@@ -79,7 +83,7 @@ chmod +x "$tmp/bin/curl"
 # claude shim: a fixed confident diagnosis.
 cat > "$tmp/bin/claude" <<'SH'
 #!/usr/bin/env bash
-echo '{"title":"rehearsal: pairing never flips on the droplet","body":"diagnosis body","confident":true}'
+echo '{"title":"rehearsal: pairing never flips on the box","body":"diagnosis body","confident":true}'
 SH
 chmod +x "$tmp/bin/claude"
 export CURL_LOG="$tmp/curl.log" ISSUE_FIXTURE="$tmp/issues.json" LIST_COUNT="$tmp/list-count"
@@ -231,7 +235,7 @@ pass=$((pass+1))
 #     a confident bug + ready-for-agent, not a generic ready-for-human (#403 d2).
 cat > "$tmp/bin/claude" <<'SH'
 #!/usr/bin/env bash
-printf '```json\n{"title":"found: droplet never paired","body":"b","confident":true}\n```\n'
+printf '```json\n{"title":"found: box never paired","body":"b","confident":true}\n```\n'
 SH
 chmod +x "$tmp/bin/claude"
 echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
@@ -240,7 +244,7 @@ bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero
 # jq pretty-prints the create payload, so title/labels land on their own log
 # lines: search the (per-case reset) whole log, and match a label id alone.
 grep -q '/issues -d' "$CURL_LOG" || fail "fenced json filed no issue"
-grep -q 'droplet never paired' "$CURL_LOG" || fail "fenced json title not parsed (degraded to the generic fallback title)"
+grep -q 'box never paired' "$CURL_LOG" || fail "fenced json title not parsed (degraded to the generic fallback title)"
 grep -Eq '^[[:space:]]*40,?[[:space:]]*$' "$CURL_LOG" || fail "fenced json confident diagnosis missing bug label (parse silently degraded to a generic filing)"
 grep -Eq '^[[:space:]]*36,?[[:space:]]*$' "$CURL_LOG" || fail "fenced json confident diagnosis missing ready-for-agent"
 pass=$((pass+1))
@@ -289,7 +293,7 @@ pass=$((pass+1))
 #     immediately before filing and APPEND to it, never file a duplicate.
 cat > "$tmp/bin/claude" <<'SH'
 #!/usr/bin/env bash
-echo '{"title":"rehearsal: pairing never flips on the droplet","body":"diagnosis body","confident":true}'
+echo '{"title":"rehearsal: pairing never flips on the box","body":"diagnosis body","confident":true}'
 SH
 chmod +x "$tmp/bin/claude"
 # Capture the leg-keyed sig by filing once against an empty snapshot.
@@ -393,30 +397,38 @@ grep -q '500/dependencies' "$CURL_LOG" || fail "degraded labels must not stop de
 unset LABELS_FAIL_FIRST
 pass=$((pass+1))
 
-# 23 (#540): a droplet IP (arg 3) grants the reporter Bash and adds the live
+# 23 (#540/#53): a box IP (arg 3) grants the reporter Bash and adds the live
 #     door to its prompt — the ssh line names the exact IP. The claude shim
 #     below logs its own argv so the grant + prompt content are checkable.
 cat > "$tmp/bin/claude" <<'SH'
 #!/usr/bin/env bash
 echo "claude $*" >> "${CLAUDE_LOG:?}"
-echo '{"title":"rehearsal: pairing never flips on the droplet","body":"diagnosis body","confident":true}'
+echo '{"title":"rehearsal: pairing never flips on the box","body":"diagnosis body","confident":true}'
 SH
 chmod +x "$tmp/bin/claude"
 export CLAUDE_LOG="$tmp/claude.log"
 echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"; : > "$CLAUDE_LOG"
 red_run "pairing timeout after 900000ms"
 bash "$here/../rehearsal-report.sh" "$tmp/run" 1 "10.0.0.9" || fail "reporter exited non-zero (live door)"
-grep -q -- '--allowedTools Bash' "$CLAUDE_LOG" || fail "a droplet IP must grant the reporter Bash access"
-grep -q 'root@10.0.0.9' "$CLAUDE_LOG" || fail "the live-door prompt must name the droplet IP"
+grep -q -- '--allowedTools Bash' "$CLAUDE_LOG" || fail "a box IP must grant the reporter Bash access"
+grep -q 'root@10.0.0.9' "$CLAUDE_LOG" || fail "the live-door prompt must name the box IP"
+# The section's NAME is contract, not decoration (#53): the reporter skeleton's
+# live-box paragraph tells the diagnosis how to treat a section this SCRIPT
+# writes, so the emitted header and the prompt have to agree — and the name is
+# the box's ROLE, never one provider's product name for one box shape, since
+# this file is vendored byte-identical into consumers whose drives stand up
+# containers, VMs and bare metal (CONTEXT.md: **Box**).
+grep -q 'Live box at 10.0.0.9' "$CLAUDE_LOG" \
+  || fail "the live door must be emitted as a 'Live box at <ip>' section — the name the reporter prompt's live-box paragraph promises"
 pass=$((pass+1))
 
-# 24 (#540): no droplet IP (today's callers, or a manual run) stays text-only
+# 24 (#540): no box IP (today's callers, or a manual run) stays text-only
 #     — no Bash grant, no ssh line — byte-identical to before #540.
 echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"; : > "$CLAUDE_LOG"
 red_run "pairing timeout after 900000ms"
 bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (no live door)"
-grep -q -- '--allowedTools' "$CLAUDE_LOG" && fail "no droplet IP must never grant Bash"
-grep -q 'root@' "$CLAUDE_LOG" && fail "no droplet IP must never add an ssh line"
+grep -q -- '--allowedTools' "$CLAUDE_LOG" && fail "no box IP must never grant Bash"
+grep -q 'root@' "$CLAUDE_LOG" && fail "no box IP must never add an ssh line"
 pass=$((pass+1))
 
 # 25 (#574): verdict.json says red — even with NO drive-rc arg at all (the
@@ -425,7 +437,7 @@ pass=$((pass+1))
 echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
 echo '[]' > "$tmp/run/artifacts/legs.json"
 cat > "$tmp/run/artifacts/verdict.json" <<'EOF'
-{"verdict":"red","target":"droplet","startedAt":"t0","endedAt":"t1","legs":{"total":0,"green":0,"red":0,"skip":0},"firstRedLeg":null}
+{"verdict":"red","target":"selfhosted","startedAt":"t0","endedAt":"t1","legs":{"total":0,"green":0,"red":0,"skip":0},"firstRedLeg":null}
 EOF
 printf 'wizard.ts:117 TimeoutError: locator.click: Timeout 30000ms exceeded\n' > "$tmp/run/logs/e2e.txt"
 bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (verdict.json red, no rc arg)"
@@ -439,7 +451,7 @@ pass=$((pass+1))
 : > "$CURL_LOG"
 echo '[]' > "$tmp/run/artifacts/legs.json"
 cat > "$tmp/run/artifacts/verdict.json" <<'EOF'
-{"verdict":"green","target":"droplet","startedAt":"t0","endedAt":"t1","legs":{"total":5,"green":5,"red":0,"skip":0},"firstRedLeg":null}
+{"verdict":"green","target":"selfhosted","startedAt":"t0","endedAt":"t1","legs":{"total":5,"green":5,"red":0,"skip":0},"firstRedLeg":null}
 EOF
 bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (verdict.json green)"
 [ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -eq 0 ] || fail "verdict.json green must file nothing"
@@ -452,7 +464,7 @@ pass=$((pass+1))
 #     off — the initial body isn't a comment).
 cat > "$tmp/bin/claude" <<'SH'
 #!/usr/bin/env bash
-echo '{"title":"rehearsal: pairing never flips on the droplet","body":"diagnosis body","confident":true}'
+echo '{"title":"rehearsal: pairing never flips on the box","body":"diagnosis body","confident":true}'
 SH
 chmod +x "$tmp/bin/claude"
 mkdir -p "$tmp/run/artifacts/ceremony"
@@ -521,13 +533,186 @@ grep -q 'NO DIAGNOSIS' "$CURL_LOG" \
   || fail "auth refusal must file a NAMED no-diagnosis body, not the generic 'unparseable' wording"
 grep -q 'unparseable' "$CURL_LOG" \
   && fail "an auth refusal must NOT be filed under the generic 'unparseable' wording -- that is the exact silent-cause bug (#632)"
+# #43: the auth alert names the token-source MECHANISM (the host's env file per
+# the host registry), never a product's host env filename baked into this
+# vendored harness. HOST_ENV_FILE is unset here, so the mechanism wording shows.
+grep -q "rehearsal-env.sh" "$CURL_LOG" \
+  && fail "the auth alert must not name a product's host env file -- a vendored harness file carries no product path (#43)"
+grep -q 'host registry' "$CURL_LOG" \
+  || fail "the auth alert must name the token-source mechanism (the host's env file per the host registry) (#43)"
+pass=$((pass+1))
+
+# 31b (#43): when HOST_ENV_FILE IS set (the host-state env emits it from the
+#     registry's `env` directive), the alert names that FACTORY-OWNED path
+#     verbatim -- not a product filename, not the generic mechanism text.
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+HOST_ENV_FILE="$HOME/swarm/host-env.sh" REHEARSAL_HEALER=0 \
+  bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (auth refusal, HOST_ENV_FILE set)"
+grep -q "swarm/host-env.sh" "$CURL_LOG" \
+  || fail "with HOST_ENV_FILE set the alert must name that factory-owned path (#43)"
 pass=$((pass+1))
 
 # Restore the fixed confident-diagnosis shim for anything appended after this.
 cat > "$tmp/bin/claude" <<'SH'
 #!/usr/bin/env bash
-echo '{"title":"rehearsal: pairing never flips on the droplet","body":"diagnosis body","confident":true}'
+echo '{"title":"rehearsal: pairing never flips on the box","body":"diagnosis body","confident":true}'
 SH
 chmod +x "$tmp/bin/claude"
+
+# 32 (#51): the evidence note names the host from the IDENTITY layer, never a
+#     product's box baked into this vendored file (#43's family). SWARM_HOST —
+#     the pool-claim identity, and the only name that survives a container —
+#     heads the chain.
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+SWARM_HOST=probe-claim-host REHEARSAL_HEALER=0 \
+  bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
+  || fail "reporter exited non-zero (evidence host, SWARM_HOST)"
+grep -q 'on probe-claim-host' "$CURL_LOG" \
+  || fail "the evidence note must name the claim host (SWARM_HOST), not a literal (#51)"
+grep -q 'matou-workstation' "$CURL_LOG" \
+  && fail "the evidence note must carry no hardcoded host — a vendored harness file names no product's box (#43/#51)"
+pass=$((pass+1))
+
+# 33 (#51): with no claim identity, the DECLARED answer wins — the repo's own
+#     RUNNER_HOST, not a probe (ADR 0005: capacity and deployment facts are
+#     declared, never guessed; a repo whose drive runs elsewhere overrides).
+#     SWARM_HOST= empties the pool-claim name so the chain falls to RUNNER_HOST —
+#     hermetic to a worker that runs this suite with SWARM_HOST already exported
+#     (this is such a worker), the a76e7e0 inherited-env lesson.
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+SWARM_HOST= RUNNER_HOST=probe-declared-host REHEARSAL_HEALER=0 \
+  bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
+  || fail "reporter exited non-zero (evidence host, RUNNER_HOST)"
+grep -q 'on probe-declared-host' "$CURL_LOG" \
+  || fail "with no SWARM_HOST the evidence note must name the identity layer's RUNNER_HOST (#51)"
+pass=$((pass+1))
+
+# 34 (#51): and an explicit override beats both, for a drive whose evidence
+#     lands somewhere neither name describes.
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+REHEARSAL_EVIDENCE_HOST=probe-override SWARM_HOST=probe-claim-host \
+  RUNNER_HOST=probe-declared-host REHEARSAL_HEALER=0 \
+  bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
+  || fail "reporter exited non-zero (evidence host, override)"
+grep -q 'on probe-override' "$CURL_LOG" \
+  || fail "REHEARSAL_EVIDENCE_HOST must win over both SWARM_HOST and RUNNER_HOST (#51)"
+pass=$((pass+1))
+
+# 35 (#51): the incident-signature NAMESPACE is overridable and follows the
+#     drive's own label. Two repos running a drive would otherwise share one
+#     signature space — the same leg name in both folds to the same sig.
+#     The DEFAULT must reproduce today's signature exactly: every already-filed
+#     issue's dedup marker keys on it, and a moved namespace re-files them all.
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+REHEARSAL_HEALER=0 bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
+  || fail "reporter exited non-zero (sig namespace default)"
+sig_ns_default="$(grep -o 'rehearsal-sig: [a-f0-9]*' "$CURL_LOG" | head -1)"
+[ -n "$sig_ns_default" ] || fail "could not capture the default signature"
+
+: > "$CURL_LOG"; rm -f "$LIST_COUNT"
+REHEARSAL_SIGNATURE_NS=rehearsal-183 REHEARSAL_HEALER=0 \
+  bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
+  || fail "reporter exited non-zero (sig namespace pinned)"
+[ "$(grep -o 'rehearsal-sig: [a-f0-9]*' "$CURL_LOG" | head -1)" = "$sig_ns_default" ] \
+  || fail "the default signature namespace must reproduce today's signature — every open issue's dedup marker keys on it (#51)"
+
+: > "$CURL_LOG"; rm -f "$LIST_COUNT"
+REHEARSAL_LABEL=drive-99 REHEARSAL_HEALER=0 \
+  bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
+  || fail "reporter exited non-zero (sig namespace follows label)"
+[ "$(grep -o 'rehearsal-sig: [a-f0-9]*' "$CURL_LOG" | head -1)" != "$sig_ns_default" ] \
+  || fail "the signature namespace must follow REHEARSAL_LABEL — two drives sharing one namespace collide (#51)"
+
+: > "$CURL_LOG"; rm -f "$LIST_COUNT"
+REHEARSAL_LABEL=drive-99 REHEARSAL_SIGNATURE_NS=rehearsal-183 REHEARSAL_HEALER=0 \
+  bash "$here/../rehearsal-report.sh" "$tmp/run" >/dev/null \
+  || fail "reporter exited non-zero (sig namespace explicit beats label)"
+[ "$(grep -o 'rehearsal-sig: [a-f0-9]*' "$CURL_LOG" | head -1)" = "$sig_ns_default" ] \
+  || fail "an explicit REHEARSAL_SIGNATURE_NS must win over REHEARSAL_LABEL — a repo that renamed its label keeps its filed signatures (#51)"
+pass=$((pass+1))
+
+# 36 (#54): REHEARSAL_DRIVE_ISSUE undeclared is a WRITE path, not a filter —
+#     empty must mean "wire nothing, and say so", never write to issue '' (which
+#     in a consumer's tracker is a real, unrelated issue; the write-path half of
+#     #43's host-fact removal). The blocker still files and floats priority, but
+#     NO dependency is wired, NO drive comment lands, and no malformed /issues//
+#     path is ever emitted — and the run log SAYS the drive was undeclared.
+unset REHEARSAL_DRIVE_ISSUE
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+out32="$(bash "$here/../rehearsal-report.sh" "$tmp/run")" || fail "reporter exited non-zero (no drive declared)"
+grep -q '/issues -d' "$CURL_LOG" || fail "an undeclared drive must not stop the blocker filing"
+grep -q '/dependencies' "$CURL_LOG" && fail "an undeclared drive must wire NO dependency (empty is not issue '')"
+grep -Eq '/issues//' "$CURL_LOG" && fail "an undeclared drive leaked a malformed /issues// write path"
+grep -q 'no REHEARSAL_DRIVE_ISSUE' <<<"$out32" || fail "an undeclared drive must SAY SO, not skip silently (#54)"
+export REHEARSAL_DRIVE_ISSUE=500
+pass=$((pass+1))
+
+# 36b (#54): the blocked-invariant flip is a drive WRITE too — with no drive
+#     declared and nothing filed (claude parked), the reporter flips NO label and
+#     writes to no drive, rather than flipping issue ''.
+date > "$CLAUDE_LIMIT_MARKER"   # fresh marker = host parked (limit-lib)
+unset REHEARSAL_DRIVE_ISSUE
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "yet another brand new fault"
+out32b="$(bash "$here/../rehearsal-report.sh" "$tmp/run")" || fail "reporter exited non-zero (no drive, parked)"
+grep -Eq 'X DELETE.*/labels/36' "$CURL_LOG" && fail "no drive declared — must flip no ready-for-agent label"
+grep -Eq '/issues//' "$CURL_LOG" && fail "undeclared drive leaked a malformed /issues// path (flip branch)"
+grep -q 'no drive to flip' <<<"$out32b" || fail "an undeclared drive with nothing filed must SAY SO (#54)"
+rm -f "$CLAUDE_LIMIT_MARKER"
+export REHEARSAL_DRIVE_ISSUE=500
+pass=$((pass+1))
+
+# 37 (#54): no product issue number is POSTED into a consumer's tracker — a bare
+#     #NNN cannot 404, it MISRESOLVES to a DIFFERENT issue there (the #51
+#     skeleton ratchet, extended to the checkable class of strings a harness .sh
+#     POSTS). The create-issue body (evidence note) and the wiring-failure flip
+#     comment are both tracker writes; the whole wire must carry no bare #NNN.
+export DEP_CODE=404
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (posted-number ratchet)"
+grep -q 'ready-and-undepended' "$CURL_LOG" || fail "flip comment not posted — case guard"
+grep -Eq '#[0-9]' "$CURL_LOG" && fail "a product issue number leaked into a tracker-posted string (#54)"
+unset DEP_CODE
+pass=$((pass+1))
+
+# 38 (#931): the consumer report-guard hook. A report-guard.sh dropped beside
+#     rehearsal-report.sh is SOURCED after the reds are finalized and before the
+#     file/heal loop, with the reporter's context in scope ($run_dir, $reds), and
+#     may `exit 0` to short-circuit filing. Absent by default (every case above
+#     ran with no guard = today's behaviour); present, it can divert the drive.
+#     A consumer that OWNS a real report-guard.sh must not have it clobbered by
+#     this hermetic case, so back up any pre-existing one and restore it after.
+guard="$here/../report-guard.sh"
+guard_bak=""
+if [ -f "$guard" ]; then guard_bak="$tmp/report-guard.sh.real"; cp "$guard" "$guard_bak"; fi
+restore_guard() { if [ -n "$guard_bak" ]; then cp "$guard_bak" "$guard"; else rm -f "$guard"; fi; }
+cat > "$guard" <<'GS'
+echo "GUARD SAW run_dir=$run_dir reds=${#reds[@]}" >> "$GUARD_LOG"
+exit 0
+GS
+export GUARD_LOG="$tmp/guard.log"; : > "$GUARD_LOG"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (report-guard exit 0)"
+grep -q 'GUARD SAW run_dir=' "$GUARD_LOG" || fail "report-guard.sh was not sourced"
+grep -q 'reds=1' "$GUARD_LOG" || fail "report-guard did not see the reporter's \$reds context in scope"
+[ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -eq 0 ] || fail "a guard that exit 0'd must short-circuit filing"
+# swap the stub for a no-op (absent-equivalent) guard -> filing resumes, proving
+# the guard body gated it. A NO-OP file (not deletion) so a consumer that owns a
+# real guard keeps a file here throughout; the real one is restored at the end.
+printf ': # no-op test guard\n' > "$guard"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (no-op guard)"
+grep -q '/issues -d' "$CURL_LOG" || fail "with a no-op guard, filing must resume"
+restore_guard
+pass=$((pass+1))
 
 echo "PASS ($pass cases)"

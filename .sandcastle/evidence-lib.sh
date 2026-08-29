@@ -2,10 +2,11 @@
 # evidence-lib.sh — pick one representative screenshot out of a drive's run
 # dir, for eyeball-rule attachment (#596: evidence was REFERENCED by a host
 # path, never attached, so a tracker-only reader could never see it without
-# SSH). Every driver conforming to the six-clause contract (docs/agents/
-# e2e-driver-contract.md, clause 6) captures screenshot evidence somewhere
-# under <run_dir>/artifacts — "newest *.png in the tree" is therefore a
-# portable heuristic, not an idss-specific path: the last screenshot
+# SSH). Every driver conforming to the six-clause e2e driver contract (clause
+# 6 — named, not linked: the contract doc has not migrated into this repo's
+# docs/ yet, and docs/** is vendor-excluded anyway, #47) captures screenshot
+# evidence somewhere under <run_dir>/artifacts — "newest *.png in the tree" is
+# therefore a portable heuristic, not a per-repo path: the last screenshot
 # written is the journey's last leg on a green, or nearest the fault on a red
 # (Playwright's own on-failure capture lands here too). Factory-shared
 # (ADR 0183 §5, alongside forgejo-lib.sh): no per-repo hardcodes.

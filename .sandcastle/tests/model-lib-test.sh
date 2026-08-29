@@ -17,10 +17,13 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 eq() { [ "$1" = "$2" ] || fail "$3: expected [$2], got [$1]"; pass=$((pass+1)); }
 
-# --- swarm.config is the single source: it defines the default + the map ---
-[ -n "${SWARM_MODEL:-}" ]     || fail "swarm.config must set SWARM_MODEL"
-[ -n "${SWARM_MODEL_MAP:-}" ] || fail "swarm.config must set SWARM_MODEL_MAP"
-pass=$((pass+2))
+# --- swarm.config is the single source: it defines the default + the map,
+#     plus the diagnosis/repair tier (healer + rehearsal reporter) ---
+[ -n "${SWARM_MODEL:-}" ]        || fail "swarm.config must set SWARM_MODEL"
+[ -n "${SWARM_MODEL_MAP:-}" ]    || fail "swarm.config must set SWARM_MODEL_MAP"
+[ -n "${SWARM_HEAL_MODEL:-}" ]   || fail "swarm.config must set SWARM_HEAL_MODEL"
+[ -n "${SWARM_REPORT_MODEL:-}" ] || fail "swarm.config must set SWARM_REPORT_MODEL"
+pass=$((pass+4))
 
 # --- swarm_resolve_model: the default, the label form, the bare suffix ---
 eq "$(swarm_resolve_model "")"            "$SWARM_MODEL"        "empty selector -> fleet default"
@@ -54,20 +57,38 @@ cp "$sc/model-lib.sh" "$tmpdir/model-lib.sh"
 cat > "$tmpdir/swarm.config" <<'CFG'
 SWARM_MODEL=claude-sonnet-4-5
 SWARM_MODEL_MAP="sonnet=claude-sonnet-4-5 haiku=claude-haiku-4-5"
+SWARM_HEAL_MODEL=claude-opus-4-8
+SWARM_REPORT_MODEL=claude-opus-4-8
 CFG
-got="$(unset __SWARM_MODEL_LIB SWARM_MODEL SWARM_MODEL_MAP
+got="$(unset __SWARM_MODEL_LIB SWARM_MODEL SWARM_MODEL_MAP SWARM_HEAL_MODEL SWARM_REPORT_MODEL
        . "$tmpdir/model-lib.sh"; swarm_resolve_model "")"
 eq "$got" "claude-sonnet-4-5" "a changed swarm.config default flows through the resolver"
+heal_got="$(unset __SWARM_MODEL_LIB SWARM_MODEL SWARM_MODEL_MAP SWARM_HEAL_MODEL SWARM_REPORT_MODEL
+       . "$tmpdir/model-lib.sh"; printf %s "$SWARM_HEAL_MODEL")"
+eq "$heal_got" "claude-opus-4-8" "a changed swarm.config heal model flows through too"
 
-# --- both consumers read the shared value; NO hardcoded model id survives ---
+# --- every consumer reads a shared value; NO hardcoded model id and NO
+#     model-less claude launch (silently riding the host CLI default) survives ---
 grep -q 'claudeCode(SWARM_MODEL' "$sc/main.mts" || fail "main.mts must launch on the resolved SWARM_MODEL"
 grep -q 'readFileSync' "$sc/main.mts"            || fail "main.mts must read swarm.config"
 ! grep -Eq 'claude-(opus|sonnet|haiku|fable)-' "$sc/main.mts" \
   || fail "main.mts still hardcodes a model id (#448 AC: grep proves none remains)"
-grep -q -- '--model "\$SWARM_MODEL"' "$sc/heal.sh" || fail "heal.sh must launch on \$SWARM_MODEL"
-! grep -Eq 'model claude-(opus|sonnet|haiku|fable)-' "$sc/heal.sh" \
-  || fail "heal.sh still hardcodes a model id (#448 AC: grep proves none remains)"
-pass=$((pass+5))
+grep -q -- '--model "\$SWARM_HEAL_MODEL"' "$sc/heal.sh" || fail "heal.sh must launch on \$SWARM_HEAL_MODEL"
+grep -q -- '--model "\$SWARM_HEAL_MODEL"' "$sc/rehearsal-report.sh" \
+  || fail "rehearsal-report.sh's heal leg must launch on \$SWARM_HEAL_MODEL"
+grep -q -- '--model "\$SWARM_REPORT_MODEL"' "$sc/rehearsal-report.sh" \
+  || fail "rehearsal-report.sh's diagnosis leg must launch on \$SWARM_REPORT_MODEL"
+grep -q -- '--model "\$SWARM_MODEL"' "$sc/session-runner.sh" \
+  || fail "session-runner.sh must launch on \$SWARM_MODEL (never the host CLI default)"
+grep -q -- '--model "\$SWARM_MODEL"' "$sc/run-triage.sh" \
+  || fail "run-triage.sh must launch on \$SWARM_MODEL (never the host CLI default)"
+grep -q -- '--model "\$SWARM_MODEL"' "$sc/landing-lib.sh" \
+  || fail "landing-lib.sh's rebase rescue must launch on \$SWARM_MODEL (never the host CLI default)"
+for f in heal.sh rehearsal-report.sh session-runner.sh run-triage.sh landing-lib.sh; do
+  ! grep -Eq 'model claude-(opus|sonnet|haiku|fable)-' "$sc/$f" \
+    || fail "$f still hardcodes a model id (#448 AC: grep proves none remains)"
+done
+pass=$((pass+14))
 
 # --- list-ready-tasks.sh surfaces a ticket's model-<name> label as `.model`
 #     (the jq the worker launch reads). Drive the exact transform on a fixture

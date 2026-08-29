@@ -8,7 +8,7 @@
     />
 
     <!-- Content -->
-    <div class="flex-1 overflow-y-auto p-6 md:p-8 -mt-6">
+    <div class="flex-1 overflow-y-auto p-6 md:p-8 -mt-6 pb-safe-area">
       <div class="max-w-2xl mx-auto space-y-6">
         <!-- Status Card -->
         <div
@@ -99,7 +99,10 @@
           class="aid-card bg-card border border-border rounded-xl p-4 shadow-sm"
         >
           <div class="flex items-center justify-between gap-3">
-            <div class="flex-1 min-w-0">
+            <!-- w-0: the row is a wrapping flex container (Quasar .flex), so the
+                 unbreakable AID string's min-content width would otherwise
+                 propagate up and force the page wider than a phone viewport. -->
+            <div class="flex-1 min-w-0 w-0">
               <span class="text-xs text-muted-foreground">Your Identity Autonomic Identifier (AID)</span>
               <p class="text-sm font-mono truncate">{{ userAID }}</p>
             </div>
@@ -938,7 +941,10 @@ const resources = [
 
 .requirements-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  // auto-fit + minmax lets the three cards sit across one row on wide
+  // viewports but wrap to fewer columns at phone width (~412px css) instead
+  // of overflowing horizontally and clipping the third card (#121).
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
   gap: 0.75rem;
 }
 

@@ -56,13 +56,21 @@ export FORGEJO_TOKEN="$token"
 # Landing head (#13): gate 1 checks each commit is reachable from where the
 # ticket LANDS. push mode: main (origin/main / CR_MAIN_HEAD). pr mode: the
 # issue's OWN open PR head — resolve it now (the pr flow lands on agent/issue-<N>
-# and a human, or agent-after-green, merges). No open PR in pr mode means the
-# work never landed as a PR: force a refusal with a clear violation.
+# and a human, or agent-after-green, merges). No open PR in pr mode is NOT yet
+# a refusal (#108): another run's reconcile sweep (landing_merge_reconcile lands
+# EVERY open agent PR, #15) can merge the worker's PR — and close the issue via
+# `closes #N` — in the seconds between its push and this close-report. Then the
+# work HAS landed, on main: gate against main exactly as push mode does, and
+# finish like a merge (sweep the claim labels). Only no-open-AND-no-merged PR
+# means the work never landed as a PR: force a refusal with a clear violation.
 landing="${SWARM_POLICY_LANDING:-push}"
 gate_head="${CR_MAIN_HEAD:-origin/main}"
-pr_number="" pr_no_pr=""
+pr_number="" pr_no_pr="" pr_merged=""
 if [ "$landing" = pr ]; then
-  if pr_number="$(landing_open_pr_for "$issue")"; then
+  if pr_number="$(landing_merged_pr_for "$issue")"; then
+    pr_merged=1
+    git -C "$root" fetch --quiet origin main 2>/dev/null || true   # so main carries the merge
+  elif pr_number="$(landing_open_pr_for "$issue")"; then
     pr_head_sha="$(forgejo_pr_head_sha "$pr_number" || true)"
     if [ -n "$pr_head_sha" ]; then
       # Make the PR head resolvable locally for merge-base (it may be a branch
@@ -164,7 +172,21 @@ if [ "$landing" = pr ]; then
   merge_authority="${SWARM_POLICY_MERGE_AUTHORITY:-human}"
   pr_url="$(forgejo_get "/pulls/$pr_number" 2>/dev/null | jq -r '.html_url // empty' 2>/dev/null || true)"
   pr_link="PR #$pr_number${pr_url:+ ($pr_url)}"
-  if [ "$merge_authority" = agent-after-green ]; then
+  if [ -n "$pr_merged" ]; then
+    # #108: the PR was already merged (a reconcile sweep got there first). If its
+    # `closes #N` closed the issue, record the verified close and release the
+    # claim labels — the merge path's own tail. If the issue is somehow still
+    # open, the verified work IS on main, so fall through to the push-mode close
+    # (PATCH + verify) rather than refuse.
+    state="$(forgejo_get "/issues/$issue" 2>/dev/null | jq -r '.state // "?"' 2>/dev/null || true)"
+    if [ "$state" = closed ]; then
+      post_comment ":white_check_mark: **close-report gates passed** — every claim verified against main; $pr_link was already merged (a reconcile pass landed it before this close-report ran) and the merge closed this issue via \`closes #$issue\`."
+      echo "close-report: issue #$issue already closed via the earlier merge of $pr_link (all claim gates passed)."
+      cr_release_claim_labels "$issue"   # #22: closed by the merge — release the claim labels
+      exit 0
+    fi
+    echo "close-report: $pr_link is merged but #$issue is still open — closing it directly (the work is verified on main)."
+  elif [ "$merge_authority" = agent-after-green ]; then
     # #15: don't merge on the gate's word alone — merge only if the PR's required
     # checks are green. landing_merge_if_green merges a green PR (its `closes #N`
     # closes the issue), leaves a pending one for a later reconcile pass, and
@@ -200,7 +222,7 @@ if [ "$landing" = pr ]; then
     post_comment ":white_check_mark: **close-report gates passed** — every claim verified against the PR head. $pr_link is open and green; a human merges it and the merge closes this issue via \`closes #$issue\` (MERGE_AUTHORITY=human)."
     echo "close-report: gates passed — $pr_link open and green, awaiting human merge; issue #$issue intentionally left OPEN."
   fi
-  exit 0
+  [ -n "$pr_merged" ] || exit 0   # merged-but-open (#108) falls through to the direct close
 fi
 
 # Gates green: close FIRST, VERIFY the state with a GET, and only THEN post the

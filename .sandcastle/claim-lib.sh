@@ -37,7 +37,16 @@
 #     too-new. Any D6 revisit (intra-host parallelism, fast-boot workers)
 #     must re-verify this before relying on arbitration.
 
-_claim_api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
+# Every claim call is BOUNDED (#28). The Actions listing this lib reads is the
+# harness's hottest API read (limit=100, once per claim and once per janitor
+# sweep) and Forgejo's sibling `/actions/runs` stopped answering inside 60 s on
+# the big repos (2026-08-22, GOTCHAS 16) — an untimed curl on a degraded forge
+# does not RED a tick, it stalls one: the claim never returns, the run keeps
+# its host-capacity slot, and the ticket says nothing. 30 s is the timeout
+# schedule-backstop.sh, heal.sh and forgejo-lib.sh already use.
+CLAIM_API_MAX_TIME="${CLAIM_API_MAX_TIME:-30}"
+
+_claim_api() { curl -sf --max-time "$CLAIM_API_MAX_TIME" -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
 claim_label_id() { # claim_label_id <name> -> id | rc 1 (LOUD on miss)
   # Paged (#470 M-2): single-page fetch went silently blind past 50 labels —
@@ -119,8 +128,11 @@ claim_mark_working() { # claim_mark_working <issue> -> rc 0 on a 2xx label write
   # dropped) and page on anything but a 2xx.
   local lid code
   lid="$(claim_label_id agent-working)" || return 1
+  # Timed out like every other claim call (#28) — curl writes `000` for a
+  # timeout, which lands on the same non-2xx page-loudly path as a real 403.
   code="$(jq -n --argjson l "$lid" '{labels: [$l]}' |
-    curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $FORGEJO_TOKEN" \
+    curl -s -o /dev/null -w '%{http_code}' --max-time "$CLAIM_API_MAX_TIME" \
+      -H "Authorization: token $FORGEJO_TOKEN" \
       -X POST -H 'Content-Type: application/json' -d @- \
       "$FORGEJO_API/issues/$1/labels")"
   case "$code" in

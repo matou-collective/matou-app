@@ -11,9 +11,26 @@ msg="${1:?usage: notify-mattermost.sh <message>}"
 if [ -z "${MATTERMOST_BOT_TOKEN:-}" ] && [ -f /run/secrets/mattermost_bot_token ]; then
   MATTERMOST_BOT_TOKEN="$(cat /run/secrets/mattermost_bot_token)"
 fi
+# #109: a fixture invocation must never reach the live channel, whatever the
+# host env carries. Every real forge the harness talks to is https://; every
+# test fixture is `http://x`, `http://fake`, `http://fj.test`… — so a set,
+# non-https FORGEJO_API is the fixture signature and the post degrades to the
+# same would-have-sent line. A consumer on a plain-http forge (a LAN forge)
+# opts out with NOTIFY_ALLOW_PLAIN_HTTP_FORGE=1 — as do the tests that assert
+# on a (shimmed) post.
+if [ -n "${FORGEJO_API:-}" ] && [ "${NOTIFY_ALLOW_PLAIN_HTTP_FORGE:-0}" != 1 ]; then
+  case "$FORGEJO_API" in
+    https://*) ;;
+    *) printf '%s\n' "notify-mattermost: FORGEJO_API '$FORGEJO_API' is not https:// (a test fixture?) — refusing to post to the live channel; would have sent:" >&2
+       printf '%s\n' "$msg" >&2
+       exit 0 ;;
+  esac
+fi
 if [ -z "${MATTERMOST_URL:-}" ] || [ -z "${MATTERMOST_BOT_TOKEN:-}" ] || [ -z "${MATTERMOST_CHANNEL_ID:-}" ]; then
-  echo "notify-mattermost: MATTERMOST_URL/MATTERMOST_BOT_TOKEN/MATTERMOST_CHANNEL_ID unset — would have sent:" >&2
-  echo "$msg" >&2
+  # printf '%s\n', never echo: the message is DATA — a leading '-' or a
+  # ':shortcode:' must reach stderr verbatim, not be read as an echo flag (#27).
+  printf '%s\n' "notify-mattermost: MATTERMOST_URL/MATTERMOST_BOT_TOKEN/MATTERMOST_CHANNEL_ID unset — would have sent:" >&2
+  printf '%s\n' "$msg" >&2
   exit 0
 fi
 root="${2:-}"

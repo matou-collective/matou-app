@@ -49,6 +49,24 @@ forgejo_label_id() { # forgejo_label_id <labels-json> <name> -> id | empty on mi
   jq -r --arg n "$2" '.[]? | select(.name==$n) | .id' <<<"$1" 2>/dev/null | head -1
 }
 
+forgejo_label_applied_at() { # forgejo_label_applied_at <issue-num> <label-name> -> epoch of the label's most-recent ADD on stdout (empty on miss/parse-failure); rc = curl's on the GET
+  # #99 (queue latency): when was a label last applied? The issue TIMELINE is the
+  # only local source — the issue itself carries no label-applied timestamp. A
+  # Forgejo TimelineComment for a label event has type "label", the Label object,
+  # an ISO8601 `created_at`, and `body` "1" for an ADD ("" for a remove), so an
+  # add is (type=="label" and body=="1" and label.name==name). A ticket can cycle
+  # ready→working→ready (a re-arm), so take the LATEST add — that is the state the
+  # caller is timing from. Raw-capture-then-filter (claim-lib.sh finding-1
+  # discipline): never curl|jq in one pipeline. `fromdateiso8601?` drops any
+  # created_at the parser can't read rather than erroring the whole read.
+  local resp
+  resp="$(forgejo_get "/issues/$1/timeline?limit=100")" || return 1
+  jq -r --arg n "$2" '
+    [ .[]? | select(.type=="label" and .body=="1" and (.label.name==$n))
+           | .created_at | fromdateiso8601? ]
+    | (max // empty)' <<<"$resp" 2>/dev/null
+}
+
 forgejo_comment() { # forgejo_comment <issue-num> <body-text> -> rc = curl's
   forgejo_post "/issues/$1/comments" "$(jq -n --arg b "$2" '{body:$b}')" >/dev/null
 }
@@ -82,7 +100,8 @@ forgejo_attach_issue_asset() { # forgejo_attach_issue_asset <issue-num> <file-pa
 forgejo_add_labels() { # forgejo_add_labels <issue-num> <label-ids-csv> -> HTTP code
   # POST /labels ADDS to the set (only PUT replaces) — the label-PATCH-ignored
   # lesson every caller used to re-learn: a `labels` field in a PATCH on the
-  # issue itself is silently ignored (docs/agents/issue-tracker.md).
+  # issue itself is silently ignored (the factory's docs/agents/issue-tracker.md
+  # — a factory doc, not a path in a consumer's checkout; #47).
   forgejo_post_code "/issues/$1/labels" "{\"labels\":[$2]}"
 }
 
@@ -121,6 +140,16 @@ forgejo_open_pr_for() { # forgejo_open_pr_for <head-branch> -> open PR number on
   local branch="$1" resp
   resp="$(forgejo_get "/pulls?state=open&limit=50")" || return 1
   jq -r --arg b "$branch" '.[]? | select(.head.ref==$b) | .number' <<<"$resp" 2>/dev/null | head -1
+}
+
+forgejo_merged_pr_for() { # forgejo_merged_pr_for <head-branch> -> newest MERGED PR number from that branch on stdout (empty if none); rc = curl's on the GET
+  # #108: a PR can be merged by ANOTHER run's reconcile sweep (landing_merge_reconcile
+  # lands every open agent PR, #15) between a worker's push and its close-report,
+  # so "no OPEN PR" alone does not mean the work never landed. Closed-but-unmerged
+  # PRs (the pre-reconcile sandcastle/worker/* one, an abandoned branch) don't count.
+  local branch="$1" resp
+  resp="$(forgejo_get "/pulls?state=closed&limit=50")" || return 1
+  jq -r --arg b "$branch" '[.[]? | select(.head.ref==$b and .merged==true)] | sort_by(.number) | reverse | .[0].number // empty' <<<"$resp" 2>/dev/null
 }
 
 forgejo_create_pr() { # forgejo_create_pr <title> <head> <base> <body> -> response JSON on stdout | rc = curl's

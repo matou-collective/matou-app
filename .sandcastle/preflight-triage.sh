@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Zero-token pre-flight for the triage workflow: list open issues that carry
-# NONE of the triage outcome labels (docs/agents/triage-labels.md) — i.e. the
-# issues /triage still has to rule on. wayfinder:* process tickets, the
-# no-triage escape hatch, agent-blocked issues, deferred rulings (a human
-# ruling with revisit criteria in the body — docs/agents/triage-labels.md),
+# NONE of the triage outcome labels — i.e. the issues /triage still has to rule
+# on. wayfinder:* process tickets, the no-triage escape hatch, agent-blocked
+# issues, deferred rulings (a human ruling with revisit criteria in the body),
 # and ready-for-session issues (already ruled under ADR 0174; swept and
 # reclassified separately, not re-visited by /triage) are excluded.
+#
+# The label STRINGS below are the predicate's authority — this script is what
+# triage.yml runs, so a repo whose vocabulary differs edits them here. The prose
+# that explains each role is per-repo doc (the factory keeps its own copy under
+# docs/agents/); this comment deliberately does not link one, since docs/** is
+# vendor-excluded and a consumer's checkout carries none of it (#47).
 #
 # Output: JSON array of {number, title, url}. [] = nothing to triage.
 # Auth: FORGEJO_TOKEN from the environment, .sandcastle/.env (host runs), or

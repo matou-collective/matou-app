@@ -54,7 +54,11 @@ import { MessageSquare } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
+import { useVisualViewport } from 'src/composables/useVisualViewport';
 import MessageItem from './MessageItem.vue';
+
+// How close (px) to the bottom still counts as "pinned to the latest message".
+const NEAR_BOTTOM_PX = 80;
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -74,6 +78,7 @@ defineEmits<{
 const containerRef = ref<HTMLElement | null>(null);
 const identityStore = useIdentityStore();
 const profilesStore = useProfilesStore();
+const viewportHeight = useVisualViewport();
 
 const currentUserAid = computed(() => identityStore.aidPrefix || '');
 const profilesByAid = computed(() => profilesStore.profilesByAid);
@@ -149,6 +154,22 @@ watch(() => props.messages.length, async (newLen, oldLen) => {
 // array reference on every poll/reload, which would re-trigger scroll-to-divider.
 watch(() => props.lastReadAt, () => {
   initialScrollDone = false;
+});
+
+// Re-pin to the latest message when the visual viewport resizes (the soft
+// keyboard opening/closing on mobile shrinks/restores the scroll container —
+// #125). Only re-pin if the user was already at the bottom, so opening the
+// keyboard while reading history doesn't yank them down. The near-bottom check
+// runs before nextTick, i.e. against the pre-resize layout.
+watch(viewportHeight, async () => {
+  const el = containerRef.value;
+  if (!el) return;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+  if (!nearBottom) return;
+  await nextTick();
+  if (containerRef.value) {
+    containerRef.value.scrollTop = containerRef.value.scrollHeight;
+  }
 });
 </script>
 

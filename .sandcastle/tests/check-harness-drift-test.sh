@@ -80,4 +80,120 @@ run "$tmp/out" "$tmp/err"
 grep -q "NOTE — FACTORY_REF is 1 commit(s) behind" "$tmp/out" || fail "should note the pin is 1 commit behind main (advisory): $(cat "$tmp/out")"
 pass=$((pass+1))
 
+# T6: identity-layer advisory (#31) — swarm-identity.sh is NOT vendored, so a
+# pin can start REQUIRING a newer identity contract than this repo regenerated.
+# The drift check WARNs (never fails a drift-clean run) so it is visible.
+echo 'IDENTITY_CONTRACT=2' >"$factory_src/identity-lib.sh"   # pin needs contract 2
+git -C "$factory_src" add -A && git -C "$factory_src" commit -q -m C
+rev_c="$(git -C "$factory_src" rev-parse HEAD)"
+git -C "$factory_src" update-ref refs/heads/main HEAD
+cp "$factory_src/one.sh" "$factory_src/two.sh" "$factory_src/identity-lib.sh" "$sc/"  # vendored, byte-identical
+printf 'one.sh\ntwo.sh\nidentity-lib.sh\n' >"$sc/FACTORY_MANIFEST"
+printf '%s\n' "$rev_c" >"$sc/FACTORY_REF"
+printf 'SWARM_IDENTITY_CONTRACT=1\n' >"$sc/swarm-identity.sh"  # behind (need 2)
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "a behind identity layer must not fail the drift check: $(cat "$tmp/err")"
+grep -q "^check-harness-drift: OK" "$tmp/out" || fail "T6 should still be drift-clean: $(cat "$tmp/out")"
+grep -q "WARNING: identity layer behind" "$tmp/out" || fail "T6 should warn the identity layer is behind: $(cat "$tmp/out")"
+grep -q "needs identity contract 2" "$tmp/out" || fail "T6 warning should name the required contract: $(cat "$tmp/out")"
+# At/ahead of the required contract -> no warning.
+printf 'SWARM_IDENTITY_CONTRACT=2\n' >"$sc/swarm-identity.sh"
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "an at-contract identity layer must be green: $(cat "$tmp/err")"
+grep -q "WARNING: identity layer behind" "$tmp/out" && fail "an at-contract identity layer must NOT warn: $(cat "$tmp/out")"
+pass=$((pass+1))
+
+# T7: stale-rendered-prompt advisory (#1) — .sandcastle/prompts/*.md (vendored,
+# drift-clean) is the skeleton; .sandcastle/<file>.md is the consumer-rendered
+# output. If the render output no longer matches what the skeleton +
+# identity + enrichments would produce, NOTE it — never fail the check.
+mkdir -p "$sc/prompts" "$sc/prompt-enrichments"
+cp "$here/../prompt-render-lib.sh" "$sc/prompt-render-lib.sh"
+# #14: the render pipeline generates {{HANDOFF_RULES}} from the policy layer,
+# so its two vendored siblings must be beside it (they always are in a real
+# .sandcastle/ — both are in vendor-manifest).
+cp "$here/../policy-lib.sh" "$sc/policy-lib.sh"
+cp "$here/../forgejo-lib.sh" "$sc/forgejo-lib.sh"
+printf 'hello {{REPO_SLUG}}\n{{ENRICH:bit}}\n' >"$sc/prompts/greeting.md"
+printf 'a fact\n' >"$sc/prompt-enrichments/bit.md"
+printf ': "${FORGEJO_API:=https://git.matou.nz/api/v1/repos/Matou/x}"\n: "${REPO_SLUG:=Matou/x}"\n: "${RUNNER_HOST:=some-host}"\n' >"$sc/swarm-identity.sh"
+printf 'one.sh\ntwo.sh\nidentity-lib.sh\nprompts/greeting.md\n' >"$sc/FACTORY_MANIFEST"
+cp "$factory_src/one.sh" "$factory_src/two.sh" "$factory_src/identity-lib.sh" "$sc/"
+mkdir -p "$factory_src/prompts"; cp "$sc/prompts/greeting.md" "$factory_src/prompts/greeting.md"
+git -C "$factory_src" add -A && git -C "$factory_src" commit -q -m D
+rev_d="$(git -C "$factory_src" rev-parse HEAD)"
+git -C "$factory_src" update-ref refs/heads/main HEAD
+printf '%s\n' "$rev_d" >"$sc/FACTORY_REF"
+printf 'one.sh\ntwo.sh\nidentity-lib.sh\nprompts/greeting.md\n' >"$sc/FACTORY_MANIFEST"
+
+# Stale: the rendered greeting.md on disk does not match a fresh render.
+printf 'hello WRONG\na fact\n' >"$sc/greeting.md"
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "a stale rendered prompt must not fail the drift check: $(cat "$tmp/err")"
+grep -q "^check-harness-drift: OK" "$tmp/out" || fail "T7 should still be drift-clean: $(cat "$tmp/out")"
+grep -q "NOTE — rendered prompt(s) stale" "$tmp/out" || fail "T7 should note the stale render: $(cat "$tmp/out")"
+grep -q "greeting.md" "$tmp/out" || fail "T7 should name the stale file: $(cat "$tmp/out")"
+pass=$((pass+1))
+
+# Fresh render -> no advisory.
+printf 'hello Matou/x\na fact\n' >"$sc/greeting.md"
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "a fresh render should stay green: $(cat "$tmp/err")"
+grep -q "NOTE — rendered prompt(s) stale" "$tmp/out" && fail "a fresh render must not be noted as stale: $(cat "$tmp/out")"
+pass=$((pass+1))
+
+# T8: standby-token wiring advisory (#85 / GOTCHAS 30) — a consumer's WORKFLOWS
+# are its own per-repo layer, so no byte-compare can reach them; the drift check
+# is what runs at install and at every pin bump, so it is where a human first
+# sees a park-capable step with no CLAUDE_CODE_OAUTH_TOKEN_B. Advisory only: a
+# drift-clean run must stay green and still exit 0.
+cp "$here/../park-wiring-lib.sh" "$sc/park-wiring-lib.sh"
+repo_root="$(cd "$sc/.." && pwd)"
+mkdir -p "$repo_root/.forgejo/workflows"
+cat > "$repo_root/.forgejo/workflows/triage.yml" <<'YML'
+name: triage
+jobs:
+  triage:
+    steps:
+      - name: Triage under global lock
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: bash .sandcastle/run-triage.sh
+YML
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "a park-token wiring gap must not FAIL the drift check: $(cat "$tmp/err")"
+grep -q "^check-harness-drift: OK" "$tmp/out" || fail "T8 should still be drift-clean: $(cat "$tmp/out")"
+grep -q "WARNING: park-capable workflow step(s) carry no" "$tmp/out" \
+  || fail "T8 should warn about the unwired step: $(cat "$tmp/out")"
+grep -q "triage.yml: Triage under global lock" "$tmp/out" \
+  || fail "T8 warning should name the offending file and step: $(cat "$tmp/out")"
+pass=$((pass+1))
+
+# Wired -> no warning.
+cat > "$repo_root/.forgejo/workflows/triage.yml" <<'YML'
+name: triage
+jobs:
+  triage:
+    steps:
+      - name: Triage under global lock
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN_B: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_B }}
+        run: bash .sandcastle/run-triage.sh
+YML
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "a wired workflow should stay green: $(cat "$tmp/err")"
+grep -q "WARNING: park-capable workflow step" "$tmp/out" \
+  && fail "a wired workflow must NOT warn: $(cat "$tmp/out")"
+pass=$((pass+1))
+
+# No workflows at all -> the check SAYS it had nothing to read. It must never
+# be indistinguishable from a clean result (GOTCHAS 30 is exactly that mistake).
+rm -rf "$repo_root/.forgejo"
+run "$tmp/out" "$tmp/err"
+[ "$rc" -eq 0 ] || fail "no workflow dir must not fail the drift check: $(cat "$tmp/err")"
+grep -q "the standby-token wiring check had nothing to read" "$tmp/out" \
+  || fail "an unreadable workflow set must be announced, not silently green: $(cat "$tmp/out")"
+pass=$((pass+1))
+
 echo "check-harness-drift: $pass passed"

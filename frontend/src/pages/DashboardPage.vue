@@ -10,7 +10,7 @@
       <div class="welcome-content">
         <div class="welcome-text">
           <h1 class="welcome-title">Welcome back</h1>
-          <div class="moon-phase-display" v-if="moonData">
+          <div class="moon-phase-display" v-if="moonPhaseState === 'loaded' && moonData">
             <div class="moon-phase-header">
               <span class="moon-date">{{ formatDate(moonData.date) }}</span>
               <span class="moon-circle">{{ moonData.moon_circle }}</span>
@@ -38,9 +38,11 @@
               <p class="moon-description">{{ moonData.description }}</p>
             </div>
           </div>
-          <div class="moon-phase-loading" v-else>
+          <div class="moon-phase-loading" v-else-if="moonPhaseState === 'loading'">
             Loading moon phase...
           </div>
+          <!-- 'unavailable': render nothing so a terminal fetch failure
+               collapses to hidden rather than a permanent loading string (#122) -->
         </div>
         <div class="stats-row">
           <button
@@ -251,9 +253,6 @@ import {
   Sun,
   Users,
   TrendingUp,
-  CoinsIcon,
-  Vote,
-  Target,
   UserPlus,
   UserRoundPlus,
   MessageCircle,
@@ -265,6 +264,8 @@ import {
 } from 'lucide-vue-next';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
 import { useAdminAccess } from 'src/composables/useAdminAccess';
+import { useIsMobile } from 'src/composables/useIsMobile';
+import { buildHeaderStats } from 'src/pages/dashboardHeaderStats';
 import { useOrgWitnessState } from 'src/composables/useOrgWitnessState';
 import WitnessAdoptionBanner from 'src/components/dashboard/WitnessAdoptionBanner.vue';
 import { fetchOrgConfig } from 'src/api/config';
@@ -273,6 +274,7 @@ import { useAdminActions } from 'src/composables/useAdminActions';
 import { useMultisigJoin } from 'src/composables/useMultisigJoin';
 import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSignal';
 import { useEndorsements } from 'src/composables/useEndorsements';
+import { useMoonPhase } from 'src/composables/useMoonPhase';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
 import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
@@ -284,6 +286,9 @@ import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
 const { isSteward, canManageMembers, checkAdminStatus, recheckAdminStatus } = useAdminAccess();
+
+// On mobile (≤767px) the three placeholder "coming soon" stat tiles are hidden (#123)
+const isMobile = useIsMobile();
 const {
   pendingRegistrations,
   expiredRegistrations,
@@ -533,32 +538,10 @@ const selectedMemberHasAttended = computed(() => {
 // Dark mode state
 const isDark = ref(false);
 
-// Moon phase data
-interface MoonData {
-  date: string;
-  lunar_day: number;
-  name: string;
-  energy: 'low' | 'medium' | 'high';
-  description: string;
-  moon_circle: string;
-}
-
-const moonData = ref<MoonData | null>(null);
-
-// Fetch moon phase data
-async function fetchMoonPhase() {
-  try {
-    const response = await fetch('https://maramataka-api.matou.nz/');
-    if (response.ok) {
-      const data = await response.json();
-      moonData.value = data;
-    } else {
-      console.error('Failed to fetch moon phase data');
-    }
-  } catch (error) {
-    console.error('Error fetching moon phase:', error);
-  }
-}
+// Moon phase data — lifecycle state (loading / loaded / unavailable) and the
+// fetch live in a composable so a terminal failure collapses to a hidden state
+// instead of a permanent "Loading moon phase..." string (#122).
+const { moonData, moonPhaseState, fetchMoonPhase } = useMoonPhase();
 
 // Format date for display
 function formatDate(dateString: string): string {
@@ -639,18 +622,15 @@ const toggleDarkMode = () => {
   document.documentElement.classList.toggle('dark', isDark.value);
 };
 
-// Stats data - computed to show real pending registration count for stewards only
-const notificationStats = computed(() => [
-  {
-    label: 'Pending Registrations',
-    value: isSteward.value ? pendingRegistrations.value.length : 0,
-    icon: Users,
-    visible: isSteward.value,
-  },
-  { label: 'New Transactions', value: 0, icon: CoinsIcon, visible: true, comingSoon: true },
-  { label: 'Proposal Updates', value: 0, icon: Vote, visible: true, comingSoon: true },
-  { label: 'Contribution Actions', value: 0, icon: Target, visible: true, comingSoon: true },
-]);
+// Stats data - computed to show real pending registration count for stewards
+// only; the three placeholder tiles are hidden on mobile (#123).
+const notificationStats = computed(() =>
+  buildHeaderStats({
+    isSteward: isSteward.value,
+    pendingCount: pendingRegistrations.value.length,
+    isMobile: isMobile.value,
+  })
+);
 
 // Live member data from profiles store (with fallback to static data)
 const allMembers = computed(() => {
@@ -912,6 +892,13 @@ function handleRoleUpdated(newRole: string) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  // Edge-to-edge mobile: DashboardLayout pads .main-content by the top
+  // safe-area inset. Pull this page back up by the same amount so the
+  // welcome header (which pads itself by the inset) paints behind the status
+  // bar. The negative margin has to live here, not on .welcome-header,
+  // because this element's overflow:hidden would clip it. env() is 0 on
+  // web/Electron, so this is a no-op there.
+  margin-top: calc(-1 * env(safe-area-inset-top));
 }
 
 .top-bar {
@@ -952,6 +939,10 @@ function handleRoleUpdated(newRole: string) {
 .welcome-header {
   background: linear-gradient(135deg, var(--matou-primary), rgba(30, 95, 116, 0.9), var(--matou-accent));
   padding: 2rem 1.5rem;
+  // Edge-to-edge mobile: .dashboard-page pulls itself up under the status bar
+  // (see above); pad the header by the inset so its content clears the bar
+  // while the gradient paints behind it. env() is 0 on web/Electron.
+  padding-top: calc(2rem + env(safe-area-inset-top));
 }
 
 .welcome-content {

@@ -29,9 +29,16 @@ unset REHEARSAL_DRIVE_ISSUE 2>/dev/null || true
 # issues so the script's pagination loop breaks after one page.
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
+[ -n "${CURL_LOG:-}" ] && echo "$*" >> "$CURL_LOG"
 for a in "$@"; do case "$a" in
-  */dependencies*) echo '[]'; exit 0 ;;
+  */dependencies*)
+    # per-issue blockers when a fixture names them (drive-blocker ordering, #24);
+    # default "no open blockers" so every candidate is unblocked and surfaces.
+    n="${a#*/issues/}"; n="${n%%/*}"
+    if [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ]; then cat "$DEPS_DIR/$n.json"; else echo '[]'; fi
+    exit 0 ;;
   *pulls?state=open*) cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]'; exit 0 ;;
+  *labels=standing-drive*) if [ -n "${DRIVES_FIXTURE:-}" ]; then cat "$DRIVES_FIXTURE"; else echo '[]'; fi; exit 0 ;;
   *labels=ready-for-agent*) cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
 esac; done
 echo '[]'
@@ -198,6 +205,76 @@ if jq -e '.[] | select(.number == 731)' <<<"$out7pr" >/dev/null; then
 fi
 jq -e '.[] | select(.number == 730)' <<<"$out7pr" >/dev/null \
   || fail "pr mode must keep #730 — it has no open agent PR"
+pass=$((pass+1))
+
+# 10 (#24): a ready ticket that is a native Forgejo dependency ("blocked by")
+#    of an OPEN `standing-drive` issue is surfaced AHEAD of ordinary backlog —
+#    even ahead of a `priority` non-blocker and even when its own number is
+#    HIGHER — so the swarm plugs the drive's hole first instead of losing the
+#    "lowest live claim id" race (the swarm-gridlock shape). One GET per standing
+#    drive resolves the blockers.
+export DEPS_DIR="$tmp/deps"; mkdir -p "$DEPS_DIR"
+export DRIVES_FIXTURE="$tmp/drives.json"
+# the standing drive #950 is blocked by #900 (open) — that is the drive blocker.
+printf '%s\n' '[{"number":950,"title":"THE DRIVE","labels":[{"name":"standing-drive"}]}]' > "$DRIVES_FIXTURE"
+printf '%s\n' '[{"number":900,"state":"open"}]' > "$DEPS_DIR/950.json"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 300, "title": "ordinary lower number", "body": "b", "html_url": "u/300", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 400, "title": "priority non-blocker", "body": "b", "html_url": "u/400", "labels": [{"name":"ready-for-agent"},{"name":"priority"}]},
+  {"number": 900, "title": "the drive blocker", "body": "b", "html_url": "u/900", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+out8="$(bash "$here/../list-ready-tasks.sh")" || fail "drive-blocker ordering run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out8")" = "900,400,300" ] \
+  || fail "the drive blocker (#900) must sort first, then priority (#400), then the rest (#300) (got $(jq -c '[.[].number]' <<<"$out8"))"
+jq -e 'all(.[]; keys == ["body","model","number","title","url"])' <<<"$out8" >/dev/null \
+  || fail "emitted shape changed — the blocker helper flag must not leak (expected {body,model,number,title,url})"
+pass=$((pass+1))
+
+# 10b: with NO standing drive (the common case), ordering is byte-identical to
+#      the pre-#24 priority-only order — the drive-blocker query returns [] and
+#      no ticket is promoted. Same fixture as case 10, drives cleared.
+printf '%s\n' '[]' > "$DRIVES_FIXTURE"
+out8b="$(bash "$here/../list-ready-tasks.sh")" || fail "no-drive ordering run exited non-zero"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out8b")" = "400,300,900" ] \
+  || fail "with no standing drive, order is priority-first then tracker order (got $(jq -c '[.[].number]' <<<"$out8b"))"
+unset DEPS_DIR DRIVES_FIXTURE
+pass=$((pass+1))
+
+# 10c (#115): Forgejo IGNORES an unknown `labels=` filter — in a repo with no
+#     `standing-drive` label the drives query returns EVERY open issue, none
+#     carrying the label. The lister must re-filter CLIENT-side: zero
+#     /dependencies calls (one per open issue was 25s of a 30s budget on
+#     matou-app, run 7707) and the order unpromoted, byte-identical to 10b.
+export DEPS_DIR="$tmp/deps" DRIVES_FIXTURE="$tmp/drives.json"
+printf '%s\n' '[{"number":950,"title":"not a drive","labels":[{"name":"bug"}]},{"number":300,"title":"ordinary lower number","labels":[{"name":"ready-for-agent"}]},{"number":951,"title":"unlabelled"}]' > "$DRIVES_FIXTURE"
+: > "$tmp/curl.log"
+out8c="$(CURL_LOG="$tmp/curl.log" bash "$here/../list-ready-tasks.sh")" || fail "unknown-label drives run exited non-zero"
+# (the DAG filter's own per-ready-issue /dependencies reads for #300/#400/#900
+#  are expected; the drive candidates #950/#951 must never be resolved)
+grep -qE '/issues/95[01]/dependencies' "$tmp/curl.log" && fail "an unlabelled drives response must trigger NO drive-blocker /dependencies fan-out (#115): $(grep -E '95[01]/dependencies' "$tmp/curl.log")"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out8c")" = "400,300,900" ] \
+  || fail "with no labelled drive, order must be the unpromoted 10b order (got $(jq -c '[.[].number]' <<<"$out8c"))"
+unset DEPS_DIR DRIVES_FIXTURE
+pass=$((pass+1))
+
+# ── #111: the mid-run drive-yield signal ──────────────────────────────────
+# main.mts mirrors a fresh host reservation into the sandbox as
+# /run/host-signals/drive-wanted; when that file exists the lister answers []
+# BEFORE any API call, so the run claims nothing more and completes after its
+# current task. Absent, everything above still holds (the ready set surfaces).
+: > "$tmp/drive-signal"; : > "$tmp/curl.log"
+outy="$(env -u REHEARSAL_DRIVE_ISSUE SWARM_DRIVE_YIELD_SIGNAL="$tmp/drive-signal" CURL_LOG="$tmp/curl.log" \
+  bash "$here/../list-ready-tasks.sh" 2>"$tmp/yield.err")" || fail "the yield answer must exit 0"
+[ "$outy" = "[]" ] || fail "with the drive signal present the lister must answer [], got: $outy"
+[ ! -s "$tmp/curl.log" ] || fail "the yield answer must come BEFORE any API call: $(cat "$tmp/curl.log")"
+grep -q "reserved host capacity" "$tmp/yield.err" || fail "the yield must say why on stderr: $(cat "$tmp/yield.err")"
+pass=$((pass+1))
+rm -f "$tmp/drive-signal"
+outn="$(env -u REHEARSAL_DRIVE_ISSUE SWARM_DRIVE_YIELD_SIGNAL="$tmp/drive-signal" bash "$here/../list-ready-tasks.sh")" \
+  || fail "script exited non-zero (no signal)"
+jq -e '.[] | select(.number == 400)' <<<"$outn" >/dev/null || fail "with no drive signal the ready set must surface as before"
 pass=$((pass+1))
 
 echo "PASS ($pass cases)"

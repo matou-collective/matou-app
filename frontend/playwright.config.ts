@@ -170,6 +170,16 @@ export default defineConfig({
       testMatch: /e2e-proposal-link-cards\.spec\.ts/,
       use: browserConfig,
     },
+    // Roles & Permissions — admin-managed RBAC (role policy matrix, custom
+    // roles, Change Role integration, member denial). Bootstraps its own org
+    // via org-setup; uses a registered member from test-accounts.json when
+    // present, else seeds one via the admin init-member API.
+    {
+      name: 'roles-permissions',
+      testMatch: /e2e-roles-permissions\.spec\.ts/,
+      use: browserConfig,
+      dependencies: ['org-setup'],
+    },
     // Feature specs authored by swarm agents (one per issue). Bootstrap via
     // the self-sufficient org-setup + registration projects, which create the
     // org and a member and persist tests/e2e/test-accounts.json.
@@ -200,6 +210,7 @@ export default defineConfig({
         /e2e-proposals\.spec\.ts/,
         /e2e-projects-contributions\.spec\.ts/,
         /e2e-proposal-link-cards\.spec\.ts/,
+        /e2e-roles-permissions\.spec\.ts/,
         /features\/issue-\d+\.spec\.ts/,
       ],
     },

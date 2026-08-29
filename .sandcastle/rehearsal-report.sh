@@ -5,11 +5,14 @@
 # max 2 NEW issues per drive, never re-file a signature. Always exits 0 —
 # the DRIVE's exit code is the drive's; a reporter crash must not mask it.
 #
-# Arg 3, the droplet's IP, is the live door (#540): scripts/lib/rehearsal-droplet.sh's
-# oc_droplet_cleanup calls this SCRIPT before teardown destroys the box, so a
-# droplet IP here means the diagnosis can ssh in and ask the box directly
+# Arg 3, the IP of the box the drive stood up, is the live door (#540): the
+# caller's own box-cleanup path calls this SCRIPT before teardown destroys the
+# box, so an IP here means the diagnosis can ssh in and ask the box directly
 # instead of guessing from the harvested logs alone. Omitted (a manual run, or
-# a caller with no droplet) keeps today's text-only diagnosis unchanged.
+# a caller whose drive keeps no reachable box) keeps today's text-only
+# diagnosis unchanged. "Box" is the shape-neutral role (CONTEXT.md): a
+# consumer's drive may stand up a container, a VM, bare metal or a provider's
+# instance, and this file is vendored byte-identical into all of them (#53).
 #
 # Signature keys on the failing LEG, not the raw error line: the leg is the
 # stable dedup axis (one hole per red leg), while run-specific noise in the
@@ -19,6 +22,8 @@
 # the diagnosis body.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REHEARSAL_HEAL_PROMPT_FILE="${REHEARSAL_HEAL_PROMPT_FILE:-$here/rehearsal-heal-prompt.md}"
+REHEARSAL_REPORT_PROMPT_FILE="${REHEARSAL_REPORT_PROMPT_FILE:-$here/rehearsal-report-prompt.md}"
 # shellcheck source=swarm-identity.sh
 . "$here/swarm-identity.sh"   # FORGEJO_API / REPO_SLUG — this repo's identity (ADR 0180 / #571)
 # shellcheck source=forgejo-lib.sh
@@ -29,6 +34,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/heal-lib.sh"    # normalize_error_line, display_error_line, compute_signature
 # shellcheck source=limit-lib.sh
 . "$here/limit-lib.sh"   # claude_limit_parked / _hit / _park
+# shellcheck source=model-lib.sh
+. "$here/model-lib.sh"   # SWARM_HEAL_MODEL / SWARM_REPORT_MODEL — swarm.config is the ONE model source (#448); before this both claude legs passed no --model and ran on the host user's CLI default
 # shellcheck source=rehearsal-heal-lib.sh
 . "$here/rehearsal-heal-lib.sh"   # heal_rails, scrub_commit_message, heal_fail_*
 # The healer (spec 2026-08-10-rehearsal-healer-design): one tool-enabled
@@ -56,17 +63,46 @@ healer_attempted=false
 HEAL_FILE_VERDICT=""
 HEAL_RESIDUAL_VERDICT=""
 
-run_dir="${1:?usage: rehearsal-report.sh <run-dir> [drive-rc] [droplet-ip]}"
-droplet_ip="${3:-}"
+run_dir="${1:?usage: rehearsal-report.sh <run-dir> [drive-rc] [box-ip]}"
+box_ip="${3:-}"
 if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/secrets/forgejo_token" ]; then
   FORGEJO_TOKEN="$(cat "$here/secrets/forgejo_token")"
 fi
 : "${REHEARSAL_LABEL:=rehearsal-183}"
+# The incident-signature NAMESPACE (#51). It used to be the string
+# "rehearsal-183" written into compute_signature at the call site — one drive's
+# number hardcoded in a vendored harness file, so two repos running a drive
+# would share one signature space and the same leg name in both would fold to
+# the same signature. It follows the drive's LABEL, which is already the
+# drive's per-repo name, so today's signatures are unchanged. Overridable on
+# its own for the one case where following the label is wrong: a repo that
+# RENAMES its label after filing pins the old value here, or every open issue's
+# dedup marker orphans and re-files (capped at 2 per drive, but still noise).
+: "${REHEARSAL_SIGNATURE_NS:=$REHEARSAL_LABEL}"
+# Where the evidence bundle SITS, for the note a human reads on the issue
+# (#51 — it used to name one product's workstation literally, #43's family).
+# Order is declared-before-probed, the factory's rule everywhere else (ADR
+# 0005: capacity is declared, never inferred): the claim identity first
+# (SWARM_HOST is the only name that survives a container, where `hostname` is
+# a random id), then the repo's own identity layer, and `hostname` only when a
+# consumer's identity layer predates RUNNER_HOST. A drive whose evidence lands
+# on neither box overrides this directly.
+: "${REHEARSAL_EVIDENCE_HOST:=${SWARM_HOST:-${RUNNER_HOST:-$(hostname 2>/dev/null || echo "the drive host")}}}"
 # The standing drive issue (spec "The cycle"): every red BLOCKS it so the
-# swarm's ready list re-fires the drive only when the plugs land. Re-minting
-# the drive issue updates this default + its siblings (list-ready-tasks.sh,
-# scripts/rehearsal-executor.sh) + .env.example — see #493.
-: "${REHEARSAL_DRIVE_ISSUE:=492}"
+# swarm's ready list re-fires the drive only when the plugs land. A consumer
+# that runs a drive declares its number in the identity/.env layer.
+#
+# Unlike its FILTER-side siblings (list-ready-tasks.sh, session-runner.sh) this
+# script's every REHEARSAL_DRIVE_ISSUE use is a WRITE — a comment, a dependency
+# wire, a ready-for-agent/-human label flip. So an empty value cannot default
+# to any product's number: this is a byte-identical vendored harness file, and
+# #43 already pulled one product's host fact out of it for exactly this reason.
+# The filters default it EMPTY because an empty FILTER filters nothing; here
+# "empty" instead means "wire NOTHING, and say so" — never write to issue ''
+# (which in a consumer's tracker is a real, unrelated issue). drive_issue_set
+# gates every write below (#54).
+: "${REHEARSAL_DRIVE_ISSUE:=}"
+drive_issue_set() { [ -n "$REHEARSAL_DRIVE_ISSUE" ]; }
 
 # match_sig <issues-json> <sig> — the open issue number carrying this incident
 # signature, or empty. One definition for both the pre-diagnosis check (skip an
@@ -130,9 +166,9 @@ claude_auth_announce() { # <who> <run_dir>
   local who="$1" run_dir="$2" acct tok
   acct="$(claude_active_account 2>/dev/null || echo A)"
   tok="${CLAUDE_CODE_OAUTH_TOKEN:-}"
-  local msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token ${tok:+${tok:0:14}…}${tok:-EMPTY}) — $(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is the workstation's rehearsal-env.sh (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
+  local msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token ${tok:+${tok:0:14}…}${tok:-EMPTY}) — $(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is ${HOST_ENV_FILE:-the host's env file (per the host registry's env directive)} (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
   echo "$who: $msg" >&2
-  forgejo_comment "$REHEARSAL_DRIVE_ISSUE" ":rotating_light: @ben $msg" >/dev/null 2>&1 || true
+  drive_issue_set && forgejo_comment "$REHEARSAL_DRIVE_ISSUE" ":rotating_light: @ben $msg" >/dev/null 2>&1
   bash "$here/notify-mattermost.sh" "@ben $msg" >/dev/null 2>&1 || true
 }
 
@@ -149,27 +185,46 @@ try_heal() {
   # there is nothing else that can dirty it between the check and the use.
   if [ ! -d "$co/.git" ]; then
     mkdir -p "$(dirname "$co")"
-    if ! git clone -q "$REHEARSAL_HEAL_REPO" "$co" 2>/dev/null; then
+    if ! git clone -q "$(rehearsal_heal_authed_url "$REHEARSAL_HEAL_REPO")" "$co" 2>/dev/null; then
       echo "healer: clone of $REHEARSAL_HEAL_REPO to $co failed — filing instead"
       return 1
     fi
   fi
+  # #676: a checkout cloned before this fix (or one whose token rotated) is
+  # still carrying a bare, credential-less git.matou.nz origin — refresh it
+  # every heal so `heal_push`'s later `git push origin` never hits the
+  # headless username prompt that stranded e920f9e7. A no-op for the test
+  # fixtures' local bare origins (rehearsal_heal_authed_url passes them
+  # through unchanged).
+  git -C "$co" remote set-url origin "$(rehearsal_heal_authed_url "$(git -C "$co" remote get-url origin 2>/dev/null)")" 2>/dev/null || true
   if ! git -C "$co" fetch -q origin 2>/dev/null \
      || ! git -C "$co" reset -q --hard origin/main 2>/dev/null; then
     echo "healer: could not sync dedicated checkout at $co — filing instead"
     return 1
   fi
   git -C "$co" clean -qfd >/dev/null 2>&1 || true
-  if [ "$(heal_fail_count "$sig")" -ge 2 ]; then
-    echo "healer: sig $sig failed mechanically twice — filing instead (backstop)"
+  # Rail 6 counts per FAULT (leg + normalised error), not per leg-keyed
+  # signature: the incident signature folds every fault on a leg together
+  # (GOTCHAS #16 by design), so keying the backstop on it locked the `join`
+  # leg out after two unrelated cap breaches (#936/#937 → #938/#939 never got
+  # a heal attempt, 2026-08-28).
+  local fault
+  fault="$(compute_signature "$REHEARSAL_SIGNATURE_NS" "$leg :: $err")"
+  if [ "$(heal_fail_count "$fault")" -ge 2 ]; then
+    echo "healer: fault $fault (sig $sig) failed mechanically twice — filing instead (backstop)"
     return 1
   fi
   local pre_head history out verdict action
   pre_head="$(git -C "$co" rev-parse HEAD)"
   # The healer's own recent trail on the drive issue: informed retry judgment
-  # (Ben's ruling: the healer judges each time; history is its memory).
-  history="$(forgejo_get "/issues/$REHEARSAL_DRIVE_ISSUE/comments?limit=50" \
-    | jq -r '[.[]? | select(.body | startswith("rehearsal healer"))][-3:] | .[].body' 2>/dev/null || true)"
+  # (Ben's ruling: the healer judges each time; history is its memory). With no
+  # drive declared there is no trail to read — an empty history, never a
+  # malformed /issues//comments read (#54).
+  history=""
+  if drive_issue_set; then
+    history="$(forgejo_get "/issues/$REHEARSAL_DRIVE_ISSUE/comments?limit=50" \
+      | jq -r '[.[]? | select(.body | startswith("rehearsal healer"))][-3:] | .[].body' 2>/dev/null || true)"
+  fi
   # Flags BEFORE -p, prompt bound directly to it: --allowedTools is variadic
   # and eats following positionals — with flags between -p and the prompt it
   # consumed the PROMPT ITSELF as allow rules (runs 001112Z/071123Z, empty out).
@@ -190,9 +245,9 @@ try_heal() {
   claude_select_token
   local heal_attempt=1
   while :; do
-    out="$(cd "$co" && timeout 1800 claude \
+    out="$(cd "$co" && timeout 1800 claude --model "$SWARM_HEAL_MODEL" \
         --permission-mode acceptEdits --allowedTools "Edit,Write,Bash" \
-        -p "$(cat "$here/rehearsal-heal-prompt.md")
+        -p "$(cat "$REHEARSAL_HEAL_PROMPT_FILE")
 
 Run directory: $run_dir
 Red leg: $leg
@@ -241,7 +296,7 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
     return 1
   fi
   if ! heal_rails "$co" "$pre_head"; then
-    heal_fail_mark "$sig"
+    heal_fail_mark "$fault"
     return 1
   fi
   scrub_commit_message "$co"
@@ -250,14 +305,14 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
   # heal to a non-fast-forward. A conflict / persistent refusal / cap breach on
   # the replayed commit resets and files, preserving the blocked invariant (#460).
   if ! heal_push "$co" "$pre_head" "$run_dir"; then
-    heal_fail_mark "$sig"
+    heal_fail_mark "$fault"
     return 1
   fi
-  heal_fail_clear "$sig"
+  heal_fail_clear "$fault"
   # A heal may fix only the red's PRESENTATION (a hidden bar, a swallowed
   # error) while a distinct substantive fault remains — drive 20260811T165115Z
   # healed the standup bar, NAMED the supply host-key fault in its summary, and
-  # left the drive armed with nothing filed (one paid droplet re-drive per
+  # left the drive armed with nothing filed (one paid re-drive of the box per
   # occurrence). The session may hand that fault back as `residual` (same shape
   # as a file-verdict); the caller routes it through the filing flow.
   HEAL_RESIDUAL_VERDICT="$(jq -c '.residual // empty | select(type=="object")' <<<"$verdict" 2>/dev/null || true)"
@@ -267,9 +322,11 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
   checks="$(jq -r '.checks // "none reported"' <<<"$verdict" 2>/dev/null)"
   armed_note="The drive stays armed; the next tick re-drives."
   [ -n "$HEAL_RESIDUAL_VERDICT" ] && armed_note="The session also named a residual fault — it is being filed and will block the drive."
-  forgejo_comment "$REHEARSAL_DRIVE_ISSUE" \
-    "rehearsal healer: drive \`$stamp\` red at \`$leg\` (sig $sig) self-fixed — commit \`$head\` ($stat); checks: $checks. $armed_note" \
-    2>/dev/null || true
+  if drive_issue_set; then
+    forgejo_comment "$REHEARSAL_DRIVE_ISSUE" \
+      "rehearsal healer: drive \`$stamp\` red at \`$leg\` (sig $sig) self-fixed — commit \`$head\` ($stat); checks: $checks. $armed_note" \
+      2>/dev/null || true
+  fi
   return 0
 }
 
@@ -318,6 +375,21 @@ if [ "${#reds[@]}" -eq 0 ]; then
   reds=("$(jq -cn --arg e "$err" '{leg:"wizard", status:"red", ms:0, error:$e}')")
 fi
 
+# Consumer report-guard hook (#931): an OPTIONAL, consumer-OWNED extension
+# point, run once the red set is finalized but BEFORE the per-leg file/heal
+# loop below. A product repo may drop a `report-guard.sh` beside this file — it
+# is NOT vendored (absent by default), so a factory-default consumer sources
+# nothing and behaves byte-for-byte as before. When present it is SOURCED (not
+# exec'd) so it sees the reporter's context in scope ($run_dir, $here, $reds,
+# forgejo_*, the identity layer) and may `exit 0` to short-circuit filing —
+# e.g. re-check a repo-specific staleness gate and route a probable-ghost drive
+# to a park instead of a blocking leg-red. The factory owns the seam; the guard
+# body is the consumer's product knowledge and stays in the consumer's repo.
+if [ -f "$here/report-guard.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$here/report-guard.sh"
+fi
+
 open_issues="$(forgejo_get "/issues?labels=$REHEARSAL_LABEL&state=open&type=issues&limit=50")" || open_issues='[]'
 # #495: this ONE fetch feeds every label op for the run — filing labels, the
 # priority float, the ready-for-agent/-human flip ids. It used to degrade
@@ -350,10 +422,10 @@ for red in "${reds[@]}"; do
   leg="$(jq -r '.leg' <<<"$red" 2>/dev/null)"
   err="$(jq -r '.error // ""' <<<"$red" 2>/dev/null)"
   # Leg-keyed signature: noise in the error never moves it.
-  sig="$(compute_signature "rehearsal-183" "$leg")"
+  sig="$(compute_signature "$REHEARSAL_SIGNATURE_NS" "$leg")"
   stamp="$(basename "$run_dir")"
   evidence_note="drive \`$stamp\` red at \`$leg\`: \`$(display_error_line "$err")\`
-evidence: \`test-results/…/$stamp/\` on matou-workstation (legs.json, droplet-journal.txt, trace) — a representative screenshot is attached here if one was captured (#596)"
+evidence: \`$run_dir\` on $REHEARSAL_EVIDENCE_HOST (legs.json and whatever else the drive harvested there) — a representative screenshot is attached here if one was captured"
 
   match="$(match_sig "$open_issues" "$sig")"
   if [ -n "$match" ]; then
@@ -404,25 +476,26 @@ evidence: \`test-results/…/$stamp/\` on matou-workstation (legs.json, droplet-
     # (#510): flip to the standby and retry ONCE before deferring.
     claude_select_token
     reporter_attempt=1
-    # The live door (#540): a droplet IP means the box is STILL UP (the
-    # caller runs this before teardown) — grant Bash and hand the diagnosis
-    # an ssh line + a read-only command palette so it can ask the box
-    # directly instead of guessing from the harvested logs alone. No IP
-    # (a non-droplet caller, or a manual run) keeps this text-only, exactly
-    # as before #540 — no Bash grant, no ssh line.
+    # The live door (#540): a box IP means the box is STILL UP (the caller
+    # runs this before teardown) — grant Bash and hand the diagnosis an ssh
+    # line + a read-only command palette so it can ask the box directly
+    # instead of guessing from the harvested logs alone. No IP (a caller with
+    # no reachable box, or a manual run) keeps this text-only, exactly as
+    # before #540 — no Bash grant, no ssh line. The section's NAME is contract:
+    # the reporter prompt's live-box paragraph promises a section by it (#53).
     live_prompt=""; live_tools=()
-    if [ -n "$droplet_ip" ]; then
+    if [ -n "$box_ip" ]; then
       live_prompt="
 
-Live droplet at $droplet_ip — it dies to teardown minutes after you return; READ-ONLY commands only, nothing that mutates state (no restart/stop/reboot/writes):
-  ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=8 root@$droplet_ip '<command>'
+Live box at $box_ip — it dies to teardown minutes after you return; READ-ONLY commands only, nothing that mutates state (no restart/stop/reboot/writes):
+  ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=8 root@$box_ip '<command>'
 Useful: journalctl -u <unit> --no-pager -n 200, systemctl --failed --no-legend, systemctl status <unit> --no-pager -l, ss -tlnp, curl -sS --max-time 5 http://127.0.0.1:<port><path>.
 If ssh is refused (connection refused, timeout, no route), say so plainly in the body and fall back to the harvested logs below — do not retry indefinitely."
       live_tools=(--allowedTools "Bash")
     fi
     while :; do
-      diagnosis="$(cd "$run_dir" && timeout 900 claude "${live_tools[@]}" -p \
-        "$(cat "$here/rehearsal-report-prompt.md")
+      diagnosis="$(cd "$run_dir" && timeout 900 claude --model "$SWARM_REPORT_MODEL" "${live_tools[@]}" -p \
+        "$(cat "$REHEARSAL_REPORT_PROMPT_FILE")
 
 Run directory: $run_dir$live_prompt" 2>"$run_dir/logs/reporter-claude.err" || true)"
       # Save the raw stdout unconditionally (#403 defect 1): on every silent flake
@@ -574,46 +647,56 @@ if [ "${#touched[@]}" -gt 0 ]; then
     done
   fi
 
-  # The IssueMeta dependency body MUST name the target issue's repo — live
-  # Forgejo 404s (IsErrRepoNotExist) a bare {"index": n} (#381).
-  dep_slug="$(forgejo_repo_slug)"
-  dep_owner="${dep_slug%%/*}"; dep_repo="${dep_slug#*/}"
-  wired_all=true
-  for num in "${touched[@]}"; do
-    # Capture the HTTP code (forgejo_post's -f would swallow it): 2xx =
-    # created, 409 = already a blocker (tolerated, not an error). Any other
-    # code means the blocker did NOT land — break the invariant and fall to
-    # the ready-for-human swap below, never swallow it blind (#381 hot loop).
-    code="$(forgejo_add_dependency "$REHEARSAL_DRIVE_ISSUE" "$num" "$dep_owner" "$dep_repo" 2>/dev/null)"
-    case "$code" in
-      2??|409) ;;
-      *) wired_all=false
-         echo "reporter: WARN dependency POST for #$num → HTTP ${code:-000} — blocker did not land"
-         break;;
-    esac
-  done
-  if [ "$wired_all" = true ]; then
-    blockers="$(printf '#%s ' "${touched[@]}")"
-    forgejo_comment "$REHEARSAL_DRIVE_ISSUE" \
-      "drive \`$stamp\` RED — now blocked by: ${blockers}(evidence on each). The drive re-fires when the last blocker closes." \
-      && echo "reporter: drive issue #$REHEARSAL_DRIVE_ISSUE blocked by ${touched[*]}"
-    # Kick the swarm NOW: swarm.yml listens for issue label/close events, but
-    # an issue CREATED with labels inline fires neither, so a fresh blocker
-    # otherwise sits until the :15/:45 cron (which Forgejo's scheduler has
-    # silently dropped before) — up to 30 idle minutes per red. Best-effort
-    # and loud like the label POSTs above: a refused dispatch falls back to
-    # exactly the old cron cadence, never reds the reporter.
-    code="$(forgejo_dispatch_workflow "swarm.yml" "main" 2>/dev/null)"
-    case "$code" in
-      2??) echo "reporter: swarm dispatched for the new blocker(s)" ;;
-      *) echo "reporter: WARN swarm dispatch → HTTP ${code:-000} — blockers wait for the swarm cron" ;;
-    esac
+  # No drive declared: the blockers are filed and priority-floated (above), but
+  # there is no drive issue to wire them onto — writing to issue '' would hit a
+  # real, unrelated issue in the consumer's tracker. Wire nothing, and say so
+  # (#54); a consumer that runs a drive sets REHEARSAL_DRIVE_ISSUE.
+  if ! drive_issue_set; then
+    echo "reporter: no REHEARSAL_DRIVE_ISSUE declared — filed/matched ${touched[*]} but wiring NOTHING onto a drive (empty is not issue ''; #54)"
   else
-    flip_drive_to_human "drive \`$stamp\` RED — issues were filed but a dependency failed to wire onto the drive (see run log); flipped ready-for-human so the drive never sits ready-and-undepended (the #381 hot-loop state). A human wires the blocker(s) and re-arms."
-    echo "reporter: dependency wiring failed — drive issue #$REHEARSAL_DRIVE_ISSUE flipped ready-for-human (blocked invariant)"
+    # The IssueMeta dependency body MUST name the target issue's repo — live
+    # Forgejo 404s (IsErrRepoNotExist) a bare {"index": n}.
+    dep_slug="$(forgejo_repo_slug)"
+    dep_owner="${dep_slug%%/*}"; dep_repo="${dep_slug#*/}"
+    wired_all=true
+    for num in "${touched[@]}"; do
+      # Capture the HTTP code (forgejo_post's -f would swallow it): 2xx =
+      # created, 409 = already a blocker (tolerated, not an error). Any other
+      # code means the blocker did NOT land — break the invariant and fall to
+      # the ready-for-human swap below, never swallow it blind (the hot loop).
+      code="$(forgejo_add_dependency "$REHEARSAL_DRIVE_ISSUE" "$num" "$dep_owner" "$dep_repo" 2>/dev/null)"
+      case "$code" in
+        2??|409) ;;
+        *) wired_all=false
+           echo "reporter: WARN dependency POST for #$num → HTTP ${code:-000} — blocker did not land"
+           break;;
+      esac
+    done
+    if [ "$wired_all" = true ]; then
+      blockers="$(printf '#%s ' "${touched[@]}")"
+      forgejo_comment "$REHEARSAL_DRIVE_ISSUE" \
+        "drive \`$stamp\` RED — now blocked by: ${blockers}(evidence on each). The drive re-fires when the last blocker closes." \
+        && echo "reporter: drive issue #$REHEARSAL_DRIVE_ISSUE blocked by ${touched[*]}"
+      # Kick the swarm NOW: swarm.yml listens for issue label/close events, but
+      # an issue CREATED with labels inline fires neither, so a fresh blocker
+      # otherwise sits until the :15/:45 cron (which Forgejo's scheduler has
+      # silently dropped before) — up to 30 idle minutes per red. Best-effort
+      # and loud like the label POSTs above: a refused dispatch falls back to
+      # exactly the old cron cadence, never reds the reporter.
+      code="$(forgejo_dispatch_workflow "swarm.yml" "main" 2>/dev/null)"
+      case "$code" in
+        2??) echo "reporter: swarm dispatched for the new blocker(s)" ;;
+        *) echo "reporter: WARN swarm dispatch → HTTP ${code:-000} — blockers wait for the swarm cron" ;;
+      esac
+    else
+      flip_drive_to_human "drive \`$stamp\` RED — issues were filed but a dependency failed to wire onto the drive (see run log); flipped ready-for-human so the drive never sits ready-and-undepended (the hot-loop state). A human wires the blocker(s) and re-arms."
+      echo "reporter: dependency wiring failed — drive issue #$REHEARSAL_DRIVE_ISSUE flipped ready-for-human (blocked invariant)"
+    fi
   fi
 elif [ "$healed_any" = true ]; then
-  echo "reporter: red healed in-place — drive issue #$REHEARSAL_DRIVE_ISSUE stays armed, next tick re-drives"
+  echo "reporter: red healed in-place — drive stays armed, next tick re-drives"
+elif ! drive_issue_set; then
+  echo "reporter: red with nothing filed/matched and no REHEARSAL_DRIVE_ISSUE declared — no drive to flip (#54)"
 else
   flip_drive_to_human "drive \`$stamp\` RED but nothing could be filed or matched (cap/limit) — flipped ready-for-human so the drive never hot-loops. A human decides the next drive."
   echo "reporter: red with nothing filed/matched — drive issue #$REHEARSAL_DRIVE_ISSUE flipped ready-for-human (blocked invariant)"
