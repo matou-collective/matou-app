@@ -291,4 +291,8 @@ report_post_summary "$repo_slug" "$repo_web" "$n" "$start_sha" "$ready" \
   "$LANDING_OPENED_PRS" "$LANDING_MERGED_PRS"
 report_self_rearm "$worker_ran"
 
-SWARM_EXIT_REASON="completed"
+if [ -n "${EXECUTE_YIELDED_TO_DRIVE:-}" ]; then
+  SWARM_EXIT_REASON="yielded-to-drive"   # #111: finished its current task, then stood down for the drive
+else
+  SWARM_EXIT_REASON="completed"
+fi

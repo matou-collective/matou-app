@@ -142,6 +142,16 @@ forgejo_open_pr_for() { # forgejo_open_pr_for <head-branch> -> open PR number on
   jq -r --arg b "$branch" '.[]? | select(.head.ref==$b) | .number' <<<"$resp" 2>/dev/null | head -1
 }
 
+forgejo_merged_pr_for() { # forgejo_merged_pr_for <head-branch> -> newest MERGED PR number from that branch on stdout (empty if none); rc = curl's on the GET
+  # #108: a PR can be merged by ANOTHER run's reconcile sweep (landing_merge_reconcile
+  # lands every open agent PR, #15) between a worker's push and its close-report,
+  # so "no OPEN PR" alone does not mean the work never landed. Closed-but-unmerged
+  # PRs (the pre-reconcile sandcastle/worker/* one, an abandoned branch) don't count.
+  local branch="$1" resp
+  resp="$(forgejo_get "/pulls?state=closed&limit=50")" || return 1
+  jq -r --arg b "$branch" '[.[]? | select(.head.ref==$b and .merged==true)] | sort_by(.number) | reverse | .[0].number // empty' <<<"$resp" 2>/dev/null
+}
+
 forgejo_create_pr() { # forgejo_create_pr <title> <head> <base> <body> -> response JSON on stdout | rc = curl's
   forgejo_post "/pulls" \
     "$(jq -n --arg t "$1" --arg h "$2" --arg base "$3" --arg b "$4" '{title:$t, head:$h, base:$base, body:$b}')"

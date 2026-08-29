@@ -6,6 +6,7 @@
  * remain in their respective pages/composables and are NOT part of admin access.
  */
 import { useIdentityStore } from 'stores/identity';
+import { useRolePolicyStore } from 'stores/rolePolicy';
 import { computed } from 'vue';
 
 // Re-export the type from the store
@@ -25,6 +26,7 @@ export function useAdminAccess() {
     canApproveRegistrations: computed(() => identityStore.isAdmin),
     isSteward: computed(() => identityStore.isSteward),
     canManageMembers: computed(() => identityStore.canManageMembers),
+    canManageRoles: computed(() => useRolePolicyStore().canManageRoles),
 
     // Actions — checkAdminStatus returns cached result if already checked
     checkAdminStatus: () => identityStore.checkAdminStatus(),

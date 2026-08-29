@@ -29,6 +29,7 @@ unset REHEARSAL_DRIVE_ISSUE 2>/dev/null || true
 # issues so the script's pagination loop breaks after one page.
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
+[ -n "${CURL_LOG:-}" ] && echo "$*" >> "$CURL_LOG"
 for a in "$@"; do case "$a" in
   */dependencies*)
     # per-issue blockers when a fixture names them (drive-blocker ordering, #24);
@@ -239,6 +240,41 @@ out8b="$(bash "$here/../list-ready-tasks.sh")" || fail "no-drive ordering run ex
 [ "$(jq -r '[.[].number] | join(",")' <<<"$out8b")" = "400,300,900" ] \
   || fail "with no standing drive, order is priority-first then tracker order (got $(jq -c '[.[].number]' <<<"$out8b"))"
 unset DEPS_DIR DRIVES_FIXTURE
+pass=$((pass+1))
+
+# 10c (#115): Forgejo IGNORES an unknown `labels=` filter — in a repo with no
+#     `standing-drive` label the drives query returns EVERY open issue, none
+#     carrying the label. The lister must re-filter CLIENT-side: zero
+#     /dependencies calls (one per open issue was 25s of a 30s budget on
+#     matou-app, run 7707) and the order unpromoted, byte-identical to 10b.
+export DEPS_DIR="$tmp/deps" DRIVES_FIXTURE="$tmp/drives.json"
+printf '%s\n' '[{"number":950,"title":"not a drive","labels":[{"name":"bug"}]},{"number":300,"title":"ordinary lower number","labels":[{"name":"ready-for-agent"}]},{"number":951,"title":"unlabelled"}]' > "$DRIVES_FIXTURE"
+: > "$tmp/curl.log"
+out8c="$(CURL_LOG="$tmp/curl.log" bash "$here/../list-ready-tasks.sh")" || fail "unknown-label drives run exited non-zero"
+# (the DAG filter's own per-ready-issue /dependencies reads for #300/#400/#900
+#  are expected; the drive candidates #950/#951 must never be resolved)
+grep -qE '/issues/95[01]/dependencies' "$tmp/curl.log" && fail "an unlabelled drives response must trigger NO drive-blocker /dependencies fan-out (#115): $(grep -E '95[01]/dependencies' "$tmp/curl.log")"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out8c")" = "400,300,900" ] \
+  || fail "with no labelled drive, order must be the unpromoted 10b order (got $(jq -c '[.[].number]' <<<"$out8c"))"
+unset DEPS_DIR DRIVES_FIXTURE
+pass=$((pass+1))
+
+# ── #111: the mid-run drive-yield signal ──────────────────────────────────
+# main.mts mirrors a fresh host reservation into the sandbox as
+# /run/host-signals/drive-wanted; when that file exists the lister answers []
+# BEFORE any API call, so the run claims nothing more and completes after its
+# current task. Absent, everything above still holds (the ready set surfaces).
+: > "$tmp/drive-signal"; : > "$tmp/curl.log"
+outy="$(env -u REHEARSAL_DRIVE_ISSUE SWARM_DRIVE_YIELD_SIGNAL="$tmp/drive-signal" CURL_LOG="$tmp/curl.log" \
+  bash "$here/../list-ready-tasks.sh" 2>"$tmp/yield.err")" || fail "the yield answer must exit 0"
+[ "$outy" = "[]" ] || fail "with the drive signal present the lister must answer [], got: $outy"
+[ ! -s "$tmp/curl.log" ] || fail "the yield answer must come BEFORE any API call: $(cat "$tmp/curl.log")"
+grep -q "reserved host capacity" "$tmp/yield.err" || fail "the yield must say why on stderr: $(cat "$tmp/yield.err")"
+pass=$((pass+1))
+rm -f "$tmp/drive-signal"
+outn="$(env -u REHEARSAL_DRIVE_ISSUE SWARM_DRIVE_YIELD_SIGNAL="$tmp/drive-signal" bash "$here/../list-ready-tasks.sh")" \
+  || fail "script exited non-zero (no signal)"
+jq -e '.[] | select(.number == 400)' <<<"$outn" >/dev/null || fail "with no drive signal the ready set must surface as before"
 pass=$((pass+1))
 
 echo "PASS ($pass cases)"

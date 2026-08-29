@@ -1,0 +1,267 @@
+import { test, expect, Page } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+import { setupTestConfig } from './utils/mock-config';
+import { requireAllTestServices } from './utils/keri-testnet';
+import { BackendManager } from './utils/backend-manager';
+import {
+  TIMEOUT,
+  setupPageLogging,
+  setupBackendRouting,
+  loginWithMnemonic,
+  loadAccounts,
+  TestAccounts,
+} from './utils/test-helpers';
+
+/**
+ * E2E: Admin-managed RBAC (Roles & Permissions page)
+ *
+ * Covers the in-app role-policy management shipped by the admin-managed-rbac
+ * branch:
+ *   1. Admin sees the Roles nav entry and the default policy matrix.
+ *   2. Admin adds a custom role, toggles a capability, saves → policy v1.
+ *   3. The Change Role modal lists the new custom role for assignment.
+ *   4. Backend gate: a plain member is refused PUT /role-policy (403) and a
+ *      stale-version admin write gets 409; when a registered member account
+ *      exists, its dashboard shows no Roles nav entry.
+ *
+ * Bootstraps via org-setup only. The registration-member project (a real
+ * KERI-registered member) currently fails on main in this harness — the
+ * spawned member backend runs with MATOU_REQUIRE_SIGNED_AUTH and rejects
+ * identity/set with 401 right after minting a session — so when no member
+ * account is persisted, a member profile is seeded through the admin
+ * init-member API instead (enough to drive the Change Role modal).
+ *
+ * Screenshots land in tests/e2e/results/snaps/roles-permissions/ and are
+ * attached to the Playwright report.
+ *
+ * Run: npx playwright test --project=roles-permissions
+ */
+
+const API = 'http://localhost:9080/api/v1';
+const SNAP_DIR = path.join(__dirname, 'results', 'snaps', 'roles-permissions');
+const CUSTOM_ROLE_NAME = 'Kaitiaki';
+const CUSTOM_ROLE_ID = 'kaitiaki';
+const SEEDED_MEMBER_AID = 'ESeededMemberForRolePolicyE2E00000000000000';
+const SEEDED_MEMBER_NAME = 'Seeded Member';
+
+let snapCount = 0;
+async function snap(page: Page, label: string): Promise<void> {
+  fs.mkdirSync(SNAP_DIR, { recursive: true });
+  snapCount++;
+  const name = `${String(snapCount).padStart(2, '0')}-${label.replace(/[^a-z0-9-]/gi, '_')}.png`;
+  const file = path.join(SNAP_DIR, name);
+  await page.screenshot({ path: file, fullPage: true });
+  await test.info().attach(name, { path: file, contentType: 'image/png' });
+}
+
+// A full reload goes through session restore (KERIA reconnect) and lands on
+// the "Enter Community" welcome screen; click through to the dashboard.
+async function reloadIntoDashboard(page: Page): Promise<void> {
+  await page.reload();
+  const enter = page.getByRole('button', { name: /enter community/i });
+  await expect(enter).toBeVisible({ timeout: TIMEOUT.aidCreation });
+  await enter.click();
+  await expect(page.locator('.nav-item', { hasText: 'Home' })).toBeVisible({ timeout: TIMEOUT.aidCreation });
+}
+
+async function apiJson(aid: string, method: string, route: string, body?: unknown) {
+  const res = await fetch(`${API}${route}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', 'X-User-AID': aid },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
+  let accounts: TestAccounts;
+  let adminAid: string;
+  let adminPage: Page;
+  const backends = new BackendManager();
+
+  test.beforeAll(async ({ browser }) => {
+    await requireAllTestServices();
+    accounts = loadAccounts();
+    if (!accounts.admin?.mnemonic) {
+      throw new Error('No admin in test-accounts.json — run --project=roles-permissions so org-setup bootstraps first.');
+    }
+    // org-setup persists the admin mnemonic but not the AID; the backend's
+    // /health reports the org admin AID.
+    const health = await (await fetch('http://localhost:9080/health')).json();
+    adminAid = accounts.admin.aid || (health.admin as string);
+    if (!adminAid) throw new Error('could not determine admin AID from test-accounts.json or /health');
+    const ctx = await browser.newContext();
+    await setupTestConfig(ctx);
+    adminPage = await ctx.newPage();
+    setupPageLogging(adminPage, 'Admin');
+    await loginWithMnemonic(adminPage, accounts.admin.mnemonic);
+  });
+
+  test.afterAll(async () => {
+    await backends.stopAll();
+    await adminPage?.context().close();
+  });
+
+  test('admin sees the Roles nav entry and the default policy matrix', async () => {
+    test.setTimeout(TIMEOUT.long);
+
+    const rolesNav = adminPage.locator('.nav-item', { hasText: 'Roles' });
+    await expect(rolesNav).toBeVisible({ timeout: TIMEOUT.medium });
+    await snap(adminPage, 'admin-dashboard-with-roles-nav');
+
+    await rolesNav.click();
+    await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
+    await expect(adminPage.getByText(/built-in default policy/i)).toBeVisible();
+
+    // All 7 builtin roles and the 13 capability columns render.
+    const matrix = adminPage.locator('.roles-matrix');
+    await expect(matrix.locator('tbody tr')).toHaveCount(7);
+    await expect(matrix.locator('thead th')).toHaveCount(14); // Role + 13 caps
+    await expect(matrix.getByText('Founding Member')).toBeVisible();
+    await expect(matrix.getByText('Manage roles')).toBeVisible();
+    await snap(adminPage, 'roles-page-default-policy');
+
+    // Backend agrees: GET reports the default policy and the admin's caps.
+    const { status, body } = await apiJson(adminAid, 'GET', '/role-policy');
+    expect(status).toBe(200);
+    expect(body.source).toBe('default');
+    expect(body.policy.version).toBe(0);
+    expect(body.callerCapabilities).toContain('manage_roles');
+  });
+
+  test('admin adds a custom role, grants it a capability, and saves', async () => {
+    test.setTimeout(TIMEOUT.long);
+
+    await adminPage.getByRole('button', { name: 'New role' }).click();
+    const dialog = adminPage.getByRole('dialog');
+    await expect(dialog.getByText('New custom role')).toBeVisible();
+    await dialog.getByLabel('Role name').fill(CUSTOM_ROLE_NAME);
+    // Copy permissions from Community Steward so the role starts non-empty.
+    await dialog.getByLabel('Copy permissions from (optional)').click();
+    await adminPage.getByRole('option', { name: 'Community Steward' }).click();
+    await snap(adminPage, 'new-role-dialog');
+    await dialog.getByRole('button', { name: 'Add role' }).click();
+
+    const matrix = adminPage.locator('.roles-matrix');
+    const customRow = matrix.locator('tbody tr', { hasText: CUSTOM_ROLE_NAME });
+    await expect(customRow).toBeVisible();
+    await expect(customRow.getByText('custom')).toBeVisible();
+
+    // Grant the custom role "Reward" (column index = header position).
+    const headers = await matrix.locator('thead th').allTextContents();
+    const rewardCol = headers.findIndex((h) => h.trim().startsWith('Reward'));
+    expect(rewardCol).toBeGreaterThan(0);
+    const rewardToggle = customRow.locator('td').nth(rewardCol).locator('.q-toggle');
+    await expect(rewardToggle).toHaveAttribute('aria-checked', 'false');
+    await rewardToggle.click();
+    await expect(rewardToggle).toHaveAttribute('aria-checked', 'true');
+    await snap(adminPage, 'custom-role-added-reward-granted-unsaved');
+
+    await adminPage.getByRole('button', { name: 'Save changes' }).click();
+    await expect(adminPage.getByText('Role policy saved')).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(adminPage.getByText(/built-in default policy/i)).toHaveCount(0);
+    await expect(adminPage.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    await snap(adminPage, 'policy-saved-v1');
+
+    // Persisted: version bumped, custom role present with the extra grant.
+    const { status, body } = await apiJson(adminAid, 'GET', '/role-policy');
+    expect(status).toBe(200);
+    expect(body.source).toBe('synced');
+    expect(body.policy.version).toBe(1);
+    const custom = body.policy.roles.find((r: { id: string }) => r.id === CUSTOM_ROLE_ID);
+    expect(custom).toMatchObject({ displayName: CUSTOM_ROLE_NAME, builtin: false });
+    expect(body.policy.grants[CUSTOM_ROLE_ID]).toEqual(
+      expect.arrayContaining(['contribute', 'manage_governance', 'reward']),
+    );
+  });
+
+  test('survives reload and the Change Role modal offers the custom role', async () => {
+    test.setTimeout(TIMEOUT.orgSetup);
+
+    // Re-enter the Roles page after a reload so the store re-fetches the
+    // persisted policy from the backend.
+    await reloadIntoDashboard(adminPage);
+    const rolesNav = adminPage.locator('.nav-item', { hasText: 'Roles' });
+    await expect(rolesNav).toBeVisible({ timeout: TIMEOUT.aidCreation });
+    await rolesNav.click();
+    await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible({
+      timeout: TIMEOUT.medium,
+    });
+    await expect(adminPage.locator('.roles-matrix tbody tr', { hasText: CUSTOM_ROLE_NAME })).toBeVisible();
+    await snap(adminPage, 'roles-page-after-reload');
+
+    // Change Role modal: open a member's profile from the dashboard. Use the
+    // registered member when one exists, otherwise seed one via init-member.
+    let memberName = accounts.member?.name;
+    if (!memberName) {
+      const seeded = await apiJson(adminAid, 'POST', '/profiles/init-member', {
+        memberAid: SEEDED_MEMBER_AID,
+        credentialSaid: 'ESeededCredentialSaidForRolePolicyE2E0000000',
+        role: 'Member',
+        status: 'approved',
+        displayName: SEEDED_MEMBER_NAME,
+      });
+      expect(seeded.status, `init-member: ${JSON.stringify(seeded.body)}`).toBe(200);
+      memberName = SEEDED_MEMBER_NAME;
+    }
+    // Reload so the dashboard's member list picks up the (possibly just
+    // seeded) profile from the backend.
+    await reloadIntoDashboard(adminPage);
+    const memberCard = adminPage.locator('.members-list').getByText(memberName, { exact: false }).first();
+    await expect(memberCard).toBeVisible({ timeout: TIMEOUT.medium });
+    await memberCard.click();
+
+    // Role badge inside the profile modal is clickable for admins.
+    const roleBadge = adminPage.locator('span.rounded-full.cursor-pointer').first();
+    await expect(roleBadge).toBeVisible({ timeout: TIMEOUT.medium });
+    await roleBadge.click();
+
+    await expect(adminPage.getByText(/select a new role for/i)).toBeVisible();
+    await expect(adminPage.locator('label', { hasText: CUSTOM_ROLE_ID })).toBeVisible();
+    await expect(adminPage.locator('label', { hasText: 'Founding Member' })).toBeVisible();
+    await snap(adminPage, 'change-role-modal-lists-custom-role');
+    await adminPage.keyboard.press('Escape');
+  });
+
+  test('plain member is refused policy writes and sees no Roles nav', async ({ browser }) => {
+    test.setTimeout(TIMEOUT.orgSetup);
+
+    // API gate, independent of UI: a non-privileged AID cannot PUT.
+    const memberAid = accounts.member?.aid || 'EnonPrivilegedMemberForRolePolicyTest00000000';
+    const current = await apiJson(adminAid, 'GET', '/role-policy');
+    const denied = await apiJson(memberAid, 'PUT', '/role-policy', {
+      version: current.body.policy.version,
+      roles: current.body.policy.roles,
+      grants: current.body.policy.grants,
+    });
+    expect(denied.status).toBe(403);
+    // Stale-version writes from the admin are rejected too (optimistic lock).
+    const stale = await apiJson(adminAid, 'PUT', '/role-policy', {
+      version: 0,
+      roles: current.body.policy.roles,
+      grants: current.body.policy.grants,
+    });
+    expect(stale.status).toBe(409);
+
+    if (!accounts.member?.mnemonic) {
+      test.info().annotations.push({
+        type: 'skipped-step',
+        description: 'no registered member account (registration-member is red on main here) — member UI check skipped',
+      });
+      return;
+    }
+    const memberBackend = await backends.start('rbac-member');
+    const ctx = await browser.newContext();
+    await setupTestConfig(ctx);
+    await setupBackendRouting(ctx, memberBackend.port);
+    const memberPage = await ctx.newPage();
+    setupPageLogging(memberPage, 'Member');
+    await loginWithMnemonic(memberPage, accounts.member.mnemonic);
+
+    await expect(memberPage.locator('.nav-item', { hasText: 'Home' })).toBeVisible({ timeout: TIMEOUT.medium });
+    await expect(memberPage.locator('.nav-item', { hasText: 'Roles' })).toHaveCount(0);
+    await snap(memberPage, 'member-dashboard-no-roles-nav');
+    await ctx.close();
+  });
+});

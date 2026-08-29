@@ -60,7 +60,7 @@ export PATH="$tmp/bin:$PATH" FIXTURES="$tmp" ATTEMPTS="$tmp/attempts"
 
 reset() { rm -f "$tmp"/attempt-* "$tmp/attempts" "$NOTIFY_LOG" "$tmp/db.log" \
                 "$CLAUDE_LIMIT_MARKER" "$CLAUDE_ACTIVE_MARKER" "$EXECUTE_AUTH_MARKER"
-          SWARM_EXIT_REASON=""; }
+          SWARM_EXIT_REASON=""; EXECUTE_YIELDED_TO_DRIVE=""; }
 fixture() { printf '%s\n' "$2" > "$tmp/attempt-$1"; }   # fixture <n> <rc\ntext>
 run() { # run -> sets RC; never aborts the test
   RC=0
@@ -75,6 +75,23 @@ run
 [ "$(cat "$tmp/attempts")" = 1 ] || fail "success must not retry"
 [ ! -f "$tmp/sandcastle.log" ] || fail "a successful run must clean up its log"
 [ ! -s "$NOTIFY_LOG" ] || fail "a successful run must announce nothing: $(cat "$NOTIFY_LOG")"
+[ -z "$EXECUTE_YIELDED_TO_DRIVE" ] || fail "a plain success must not read as a drive yield"
+pass=$((pass+1))
+
+# ── 1b. success that stood down for a drive mid-run (#111) ────────────────
+# main.mts's marker line on an otherwise successful run: still rc 0 (the work
+# lands as usual), log cleaned, but the flag run-swarm turns into
+# reason=yielded-to-drive is set. Never a retry, never a notice here.
+reset; fixture default '0
+iteration 1 done
+SANDCASTLE_YIELDED_TO_DRIVE run=run-1'
+run
+[ "$RC" = 0 ] || fail "a drive-yielded run is a SUCCESS (rc 0), got $RC"
+[ "$EXECUTE_YIELDED_TO_DRIVE" = 1 ] || fail "the marker line must set EXECUTE_YIELDED_TO_DRIVE"
+[ "$(cat "$tmp/attempts")" = 1 ] || fail "a yield must not retry"
+[ ! -f "$tmp/sandcastle.log" ] || fail "a yielded success must clean up its log"
+grep -q 'finished its current task and claimed nothing more' "$tmp/out" || fail "the yield must be narrated on stdout: $(cat "$tmp/out")"
+[ ! -s "$NOTIFY_LOG" ] || fail "a yield posts nothing here: $(cat "$NOTIFY_LOG")"
 pass=$((pass+1))
 
 # ── 2. operator cancel (#612) — clean stop, unalarmed, never a red ─────────

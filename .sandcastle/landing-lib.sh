@@ -53,6 +53,17 @@ landing_open_pr_for() {
   printf '%s\n' "$num"
 }
 
+# landing_merged_pr_for <N> -> echo the PR number and exit 0 iff a MERGED PR from
+# agent/issue-<N> exists; exit 1 (no output) otherwise. The close-report gate's
+# second look (#108): no open PR but a merged one means the work already landed
+# on main — a concurrent run's reconcile sweep beat the worker's close-report.
+landing_merged_pr_for() {
+  local n="${1:?landing_merged_pr_for: issue number required}" num
+  num="$(forgejo_merged_pr_for "$(landing_branch_for "$n")")" || return 1
+  [ -n "$num" ] || return 1
+  printf '%s\n' "$num"
+}
+
 # landing_push <N> [title] [extra-body] -> land HEAD for issue <N>.
 #   push mode: git push origin HEAD:refs/heads/main (today's behaviour; <N> is
 #              ignored). rc = git's.

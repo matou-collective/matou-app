@@ -36,6 +36,7 @@ done
 printf '%s %s\n' "$method" "$url" >> "$CALLS_LOG"
 case "$url" in
   */pulls?state=open*) cat "${OPEN_PULLS:-/dev/null}" 2>/dev/null || echo '[]' ;;
+  */pulls?state=closed*) cat "${CLOSED_PULLS:-/dev/null}" 2>/dev/null || echo '[]' ;;
   */pulls/*/merge)     echo "MERGED" >> "$CALLS_LOG"; echo "${MERGE_CODE:-200}" ;;
   */commits/*/status)  cat "${STATUS_JSON:-/dev/null}" 2>/dev/null || echo '{"state":"","statuses":[]}' ;;
   */pulls/[0-9]*)      prn="${url##*/}"; echo "{\"number\":$prn,\"head\":{\"ref\":\"agent/issue-7\",\"sha\":\"headsha\"}}" ;;
@@ -104,6 +105,17 @@ check "landing_open_pr_for finds the open PR" \
   '[ "$(OPEN_PULLS=$tmp/open.json landing_open_pr_for 7)" = "101" ]'
 check "landing_open_pr_for exits 1 when no PR is open" \
   '! OPEN_PULLS=$tmp/no-pulls.json landing_open_pr_for 7 >/dev/null'
+
+# landing_merged_pr_for (#108) — only a MERGED PR from agent/issue-<N> counts;
+# the newest wins; a closed-unmerged PR (abandoned branch) is ignored.
+printf '%s\n' '[{"number":5,"head":{"ref":"agent/issue-7"},"merged":true},{"number":6,"head":{"ref":"agent/issue-7"},"merged":true},{"number":9,"head":{"ref":"agent/issue-7"},"merged":false},{"number":8,"head":{"ref":"agent/issue-8"},"merged":true}]' > "$tmp/closed.json"
+check "landing_merged_pr_for finds the newest merged PR for the issue" \
+  '[ "$(CLOSED_PULLS=$tmp/closed.json landing_merged_pr_for 7)" = "6" ]'
+printf '%s\n' '[{"number":9,"head":{"ref":"agent/issue-7"},"merged":false}]' > "$tmp/closed-unmerged.json"
+check "landing_merged_pr_for ignores a closed-but-unmerged PR" \
+  '! CLOSED_PULLS=$tmp/closed-unmerged.json landing_merged_pr_for 7 >/dev/null'
+check "landing_merged_pr_for exits 1 when nothing is merged" \
+  '! CLOSED_PULLS=$tmp/no-pulls.json landing_merged_pr_for 7 >/dev/null'
 
 # --- landing_reconcile — one "<N> <pr>" line per opened PR (run-swarm fan-out)
 reset

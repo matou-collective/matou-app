@@ -153,6 +153,34 @@ def _now(v):
     return int(v) if v is not None else int(time.time())
 
 
+# An open `runs` row older than a full run-lifetime is provably from a dead run
+# (sweep-lib.sh's age floor: 3h > swarm.yml's 180-min job timeout). A younger row
+# may be a live run mid-flight (or in the window before it opens its first
+# process) and is spared — fail-safe, exactly like reap_containers/sweep_worktrees.
+ORPHAN_MAX_AGE = 10800
+
+
+def _pid_alive(ref):
+    """Liveness of a `processes.ref`: True/False for a numeric OS pid, None when
+    <ref> is not an ageable pid (a synthetic `wedge:<run>` marker, #435 — a
+    signal cannot age it). A pid owned by another uid still EXISTS (PermissionError,
+    not ProcessLookupError) and reads alive. Mirrors probe.py's copy — swarm-db.py
+    stays self-contained (never imports fleet-tui)."""
+    try:
+        pid = int(str(ref))
+    except (TypeError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OverflowError, OSError):
+        return None
+    return True
+
+
 def cmd_migrate(a):
     migrate(a.db)
 
@@ -266,6 +294,64 @@ def cmd_proc_close(a):
             (_now(a.ended), a.run, a.ref),
         )
     conn.close()
+
+
+def cmd_sweep_orphans(a):
+    """Durably finalise ORPHAN runs — the SIGKILL case heal.sh documents but
+    cannot self-heal (#113). A Forgejo-runner CANCEL terminates the process tree
+    with SIGKILL, so the run's EXIT trap (`run-end`) never fires and its `runs`
+    row plus its `processes` rows stay open forever, billed by the fleet TUI as a
+    busy slot. Something OTHER than the dead run must close it: this is that
+    finaliser, meant to run from the next orchestrator tick / the backstop sweep.
+
+    A run is swept ONLY when ALL hold (fail-safe, like sweep-lib.sh's age floor):
+      * `started_at` predates a full run-lifetime (never reap a live run);
+      * it HAS ≥1 open process row (no pid evidence at all → leave it alone);
+      * EVERY open ref is a PROVABLY-dead pid (a live pid, or an un-ageable
+        `wedge:<run>` marker, spares the whole run).
+    It then mirrors run-end exactly: `died-in:<trigger>` verdict, `orphan-sweep`
+    source, exit 137 (SIGKILL), open attempts + processes closed. Prints one
+    `swept <run_id> <trigger>` line per reaped run. Idempotent and best-effort."""
+    migrate(a.db)
+    now = _now(a.at)
+    max_age = a.max_age if a.max_age is not None else ORPHAN_MAX_AGE
+    floor = now - max_age
+    conn = connect(a.db)
+    swept = []
+    with conn:
+        open_runs = conn.execute(
+            "SELECT run_id, trigger, started_at FROM runs WHERE ended_at IS NULL"
+        ).fetchall()
+        for run_id, trigger, started_at in open_runs:
+            if started_at is None or started_at > floor:
+                continue                       # younger than a run-lifetime
+            refs = [r[0] for r in conn.execute(
+                "SELECT ref FROM processes WHERE run_id=? AND ended_at IS NULL",
+                (run_id,)).fetchall()]
+            if not refs:
+                continue                       # no pid evidence — not our call
+            if not all(_pid_alive(ref) is False for ref in refs):
+                continue                       # a live/un-ageable ref spares it
+            trig = trigger or "unknown"
+            conn.execute(
+                """INSERT INTO runs (run_id, ended_at, verdict, verdict_source, exit_code)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                     ended_at=excluded.ended_at,
+                     verdict=excluded.verdict,
+                     verdict_source=COALESCE(excluded.verdict_source, runs.verdict_source),
+                     exit_code=excluded.exit_code""",
+                (run_id, now, "died-in:" + trig, "orphan-sweep", 137))
+            conn.execute(
+                "UPDATE attempts SET ended_at=? WHERE run_id=? AND ended_at IS NULL",
+                (now, run_id))
+            conn.execute(
+                "UPDATE processes SET ended_at=? WHERE run_id=? AND ended_at IS NULL",
+                (now, run_id))
+            swept.append((run_id, trig))
+    conn.close()
+    for run_id, trig in swept:
+        print("swept %s %s" % (run_id, trig))
 
 
 def cmd_spend(a):
@@ -628,6 +714,10 @@ def build_parser():
     s.add_argument("--run", required=True)
     s.add_argument("--ref", required=True)
     s.add_argument("--ended", type=int)
+
+    s = sub.add_parser("sweep-orphans"); s.set_defaults(func=cmd_sweep_orphans)
+    s.add_argument("--max-age", type=int, dest="max_age")  # override the run-lifetime floor
+    s.add_argument("--at", type=int)                        # `now` override (tests)
 
     s = sub.add_parser("spend"); s.set_defaults(func=cmd_spend)
     s.add_argument("--run", required=True)

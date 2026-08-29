@@ -682,4 +682,37 @@ grep -Eq '#[0-9]' "$CURL_LOG" && fail "a product issue number leaked into a trac
 unset DEP_CODE
 pass=$((pass+1))
 
+# 38 (#931): the consumer report-guard hook. A report-guard.sh dropped beside
+#     rehearsal-report.sh is SOURCED after the reds are finalized and before the
+#     file/heal loop, with the reporter's context in scope ($run_dir, $reds), and
+#     may `exit 0` to short-circuit filing. Absent by default (every case above
+#     ran with no guard = today's behaviour); present, it can divert the drive.
+#     A consumer that OWNS a real report-guard.sh must not have it clobbered by
+#     this hermetic case, so back up any pre-existing one and restore it after.
+guard="$here/../report-guard.sh"
+guard_bak=""
+if [ -f "$guard" ]; then guard_bak="$tmp/report-guard.sh.real"; cp "$guard" "$guard_bak"; fi
+restore_guard() { if [ -n "$guard_bak" ]; then cp "$guard_bak" "$guard"; else rm -f "$guard"; fi; }
+cat > "$guard" <<'GS'
+echo "GUARD SAW run_dir=$run_dir reds=${#reds[@]}" >> "$GUARD_LOG"
+exit 0
+GS
+export GUARD_LOG="$tmp/guard.log"; : > "$GUARD_LOG"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (report-guard exit 0)"
+grep -q 'GUARD SAW run_dir=' "$GUARD_LOG" || fail "report-guard.sh was not sourced"
+grep -q 'reds=1' "$GUARD_LOG" || fail "report-guard did not see the reporter's \$reds context in scope"
+[ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -eq 0 ] || fail "a guard that exit 0'd must short-circuit filing"
+# swap the stub for a no-op (absent-equivalent) guard -> filing resumes, proving
+# the guard body gated it. A NO-OP file (not deletion) so a consumer that owns a
+# real guard keeps a file here throughout; the real one is restored at the end.
+printf ': # no-op test guard\n' > "$guard"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "pairing timeout after 900000ms"
+bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (no-op guard)"
+grep -q '/issues -d' "$CURL_LOG" || fail "with a no-op guard, filing must resume"
+restore_guard
+pass=$((pass+1))
+
 echo "PASS ($pass cases)"

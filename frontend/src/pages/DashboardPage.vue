@@ -892,6 +892,13 @@ function handleRoleUpdated(newRole: string) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  // Edge-to-edge mobile: DashboardLayout pads .main-content by the top
+  // safe-area inset. Pull this page back up by the same amount so the
+  // welcome header (which pads itself by the inset) paints behind the status
+  // bar. The negative margin has to live here, not on .welcome-header,
+  // because this element's overflow:hidden would clip it. env() is 0 on
+  // web/Electron, so this is a no-op there.
+  margin-top: calc(-1 * env(safe-area-inset-top));
 }
 
 .top-bar {
@@ -932,12 +939,9 @@ function handleRoleUpdated(newRole: string) {
 .welcome-header {
   background: linear-gradient(135deg, var(--matou-primary), rgba(30, 95, 116, 0.9), var(--matou-accent));
   padding: 2rem 1.5rem;
-  // Edge-to-edge mobile: the layout pads the page by the top safe-area inset
-  // so content clears the status bar. Pull this header back up under the
-  // status bar and pad it by the same inset so the status bar sits on the
-  // teal gradient (matching the page) rather than on a bare strip of page
-  // background. env() is 0 on web/Electron, so this is a no-op there.
-  margin-top: calc(-1 * env(safe-area-inset-top));
+  // Edge-to-edge mobile: .dashboard-page pulls itself up under the status bar
+  // (see above); pad the header by the inset so its content clears the bar
+  // while the gradient paints behind it. env() is 0 on web/Electron.
   padding-top: calc(2rem + env(safe-area-inset-top));
 }
 

@@ -51,6 +51,87 @@ exit "${CLAUDE_EXIT:-0}"
 SH
 chmod +x "$tmp/bin/curl" "$tmp/bin/claude"
 
+# A `sort` shim that EMULATES glibc's locale collation for #104 (this sandbox
+# has no non-C locale installed, so the real disagreement cannot be reproduced
+# with the stock sort). Under C/POSIX/empty collation it defers to the real
+# byte-order sort; under any OTHER collation it sorts IGNORING the TAB — so
+# `62<TAB>x` sorts BEFORE `6<TAB>x`, the exact misorder that made GNU `comm`
+# (which checks order by bytes) abort the run. It is inert in every other
+# scenario: run-triage's only `sort` is human_gated's, and the fix pins that to
+# `LC_ALL=C sort`, which this shim maps straight to the real sort.
+cat > "$tmp/bin/sort" <<'SH'
+#!/usr/bin/env bash
+selfdir="$(cd "$(dirname "$0")" && pwd)"
+real=/usr/bin/sort
+IFS=: read -ra dirs <<<"$PATH"
+for d in "${dirs[@]}"; do
+  [ "$d" = "$selfdir" ] && continue
+  [ -x "$d/sort" ] && { real="$d/sort"; break; }
+done
+case "${LC_ALL:-${LC_COLLATE:-${LANG:-}}}" in
+  C|C.*|POSIX|"") exec "$real" "$@" ;;
+esac
+uniq_flag=""
+for a in "$@"; do [ "$a" = "-u" ] && uniq_flag=1; done
+awk '{k=$0; gsub(/\t/,"",k); printf "%s\t%s\n", k, $0}' \
+  | LC_ALL=C "$real" -t $'\t' -k1,1 \
+  | cut -f2- \
+  | { if [ -n "$uniq_flag" ]; then uniq; else cat; fi; }
+SH
+chmod +x "$tmp/bin/sort"
+
+# A `comm` shim that EMULATES glibc's locale collation ORDER CHECK for #106.
+# GNU comm order-checks its inputs with locale collation (xmemcoll) whenever
+# LC_COLLATE is not C, falling back to `memcmp` only under C/POSIX — so on this
+# sandbox (no non-C locale installed) the real comm always uses memcmp and the
+# #104 disagreement cannot be reproduced. This shim restores it: under C/POSIX/
+# empty collation it defers to the real byte-order comm; under any OTHER
+# collation it order-checks each input with the SAME tab-ignoring key the sort
+# shim uses (byte-compared) and aborts (rc=1, GNU-style message) when a byte-
+# sorted input is not in that collation order. That is the exact abort #104's
+# `LC_ALL=C sort` moved onto `comm` until #106 pinned this comm `LC_ALL=C` too;
+# with the fix in place the C branch fires and the real comm runs unchanged.
+cat > "$tmp/bin/comm" <<'SH'
+#!/usr/bin/env bash
+selfdir="$(cd "$(dirname "$0")" && pwd)"
+real=/usr/bin/comm
+IFS=: read -ra dirs <<<"$PATH"
+for d in "${dirs[@]}"; do
+  [ "$d" = "$selfdir" ] && continue
+  [ -x "$d/comm" ] && { real="$d/comm"; break; }
+done
+case "${LC_ALL:-${LC_COLLATE:-${LANG:-}}}" in
+  C|C.*|POSIX|"") exec "$real" "$@" ;;
+esac
+# Buffer each file arg to a temp (inputs may be process-substitution pipes, so
+# read them exactly once), order-check the buffers, then run the real comm on
+# them. Flags (run-triage only ever passes bundled shorts like -13) pass through.
+tmps=(); newargs=()
+for a in "$@"; do
+  case "$a" in
+    -*) newargs+=("$a") ;;
+    *)  t="$(mktemp)"; cat "$a" > "$t"; tmps+=("$t"); newargs+=("$t") ;;
+  esac
+done
+fno=0
+for t in "${tmps[@]}"; do
+  fno=$((fno+1))
+  if ! LC_ALL=C awk -v fno="$fno" '
+      { key=$0; gsub(/\t/,"",key)
+        if (NR>1 && key < prev) {
+          printf "comm: file %d is not in sorted order\n", fno > "/dev/stderr"; exit 1 }
+        prev=key }' "$t"; then
+    echo "comm: input is not in sorted order" >&2
+    rm -f "${tmps[@]}"
+    exit 1
+  fi
+done
+"$real" "${newargs[@]}"; rc=$?
+rm -f "${tmps[@]}"
+exit "$rc"
+SH
+chmod +x "$tmp/bin/comm"
+
 active="$tmp/active-marker"           # #510 active-account marker, never the real /tmp one
 db="$tmp/swarm.db"                    # #91 swarm.db trace mirror, never the real host one
 logdir="$tmp/triage-logs"            # #91 durable host-side claude-log home
@@ -65,6 +146,7 @@ run_triage() {
     SWARM_DB="$db" TRIAGE_LOGDIR="$logdir" \
     HOST_CAPACITY_DRIVE_WANTED="$tmp/drive-wanted-absent-by-default" \
     TRIAGE_DRIVE_DEFER_COUNT="$tmp/triage-defer-count" \
+    TRIAGE_YIELD_COUNT="$tmp/triage-yield-count" TRIAGE_YIELD_THRESHOLD=99 \
     "$@" bash "$here/../run-triage.sh"
 }
 
@@ -129,6 +211,65 @@ out3="$(run_triage HOST_CAPACITY_DRIVE_WANTED="$drive" CLAUDE_EXIT=0 CLAUDE_OUTP
 grep -q "TRIAGE-SKILL-RAN" <<<"$out3" || fail "an expired reservation must let the tick proceed to the skill (got: $out3)"
 [ -f "$defer" ] && fail "proceeding past the reservation must reset the consecutive-defer counter"
 rm -f "$drive"
+pass=$((pass+1))
+
+# ── #110: the consecutive-YIELD counter is bumped on a yield, reset on a pass ──
+# A triage yield is exit 0 (green), so a repo starving behind other repos' heavy
+# work is invisible. run-triage.sh calls triage-yield-signal.sh at its pre-work
+# yield gates (which bumps a per-repo counter when untriaged issues exist) and
+# RESETS that counter on any real triage pass — proven here against the counter
+# file directly (the threshold signal itself has its own offline test).
+yield="$tmp/triage-yield-count"
+
+# a drive-yield with untriaged issues present bumps the yield counter (the curl
+# shim above answers preflight with one untriaged issue #999).
+rm -f "$marker" "$verdict" "$yield" "$yield.signalled"
+: > "$drive"
+run_triage HOST_CAPACITY_DRIVE_WANTED="$drive" CLAUDE_EXIT=0 CLAUDE_OUTPUT=ok >/dev/null 2>&1 \
+  || fail "110: a drive-yield must still exit 0"
+[ "$(cat "$yield" 2>/dev/null)" = 1 ] \
+  || fail "110: a yield with untriaged issues must bump the yield counter to 1, got: $(cat "$yield" 2>/dev/null)"
+rm -f "$drive"
+
+# a real triage pass RESETS the counter (and clears any episode marker).
+echo 5 > "$yield"; : > "$yield.signalled"
+rm -f "$marker" "$verdict"
+run_triage CLAUDE_EXIT=0 CLAUDE_OUTPUT="triaged everything" >/dev/null 2>&1 \
+  || fail "110: a healthy triage must exit 0"
+[ ! -e "$yield" ] || fail "110: a real triage pass must reset the yield counter, got: $(cat "$yield" 2>/dev/null)"
+[ ! -e "$yield.signalled" ] || fail "110: a real triage pass must clear the episode marker"
+
+# a nothing-to-triage tick also resets the counter (an empty queue is not
+# starvation) — feed preflight an empty page for this one run.
+echo 4 > "$yield"
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+url="${*: -1}"
+case "$url" in
+  *labels=*) echo '[]' ;;
+  *state=open*) echo '[]' ;;
+  */repos/x/y) echo '{"permissions":{"push":true}}' ;;
+  *) echo '[]' ;;
+esac
+SH
+chmod +x "$tmp/bin/curl"
+rm -f "$marker" "$verdict"
+run_triage CLAUDE_EXIT=0 CLAUDE_OUTPUT=ok >/dev/null 2>&1 \
+  || fail "110: a nothing-to-triage tick must exit 0"
+[ ! -e "$yield" ] || fail "110: a nothing-to-triage tick must reset the yield counter"
+# restore the one-untriaged-issue curl for the scenarios below.
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+url="${*: -1}"
+case "$url" in
+  *labels=*) echo '[]' ;;
+  *state=open*) echo '[{"number":999,"title":"t","html_url":"http://x/999","labels":[]}]' ;;
+  */repos/x/y) echo '{"permissions":{"push":true}}' ;;
+  *) echo '[]' ;;
+esac
+SH
+chmod +x "$tmp/bin/curl"
+rm -f "$yield" "$yield.signalled"
 pass=$((pass+1))
 
 # two-way-door POINTER (#42) — the /triage prompt tells the agent to rule
@@ -364,6 +505,126 @@ run_triage HOST_CAPACITY_DRIVE_WANTED="$tmp/drive-wanted" CLAUDE_EXIT=0 CLAUDE_O
 [ -z "$(dbq "SELECT run_id FROM runs")" ] \
   || fail "91d: a drive-yielded tick must open NO run row (got: $(dbq "SELECT run_id FROM runs"))"
 rm -f "$tmp/drive-wanted"
+pass=$((pass+1))
+
+# ── #104: comm/sort collation + phantom-label gate + stale post-claude stage ──
+# Restore a real claude (the scenarios below drive it through env, not the
+# stateful failover shim), and rebuild curl per scenario.
+
+# (104a) collation — a triage that CHANGES the human-gated set must exit 0.
+# human_gated ends in `LC_ALL=C sort` (byte order); GNU `comm` order-checks with
+# locale COLLATION under a non-C locale, so a byte-sorted input fed to an
+# ambient-locale comm is seen as out of order and aborts the run — the reddening
+# #104 killed on `sort` but left on `comm` (#106). The sort and comm shims above
+# emulate that non-C collation; the fix pins BOTH ends `LC_ALL=C` so they agree.
+# The failure only surfaced with a 6/62-shaped (tab-ignoring-collation-inverting)
+# set that genuinely diverged before/after — exactly when triage did work. Run
+# under a non-C locale, both labels minted so both are queried.
+db_reset; rm -f "$marker" "$verdict"
+gate_call="$tmp/gate-call"; rm -f "$gate_call"
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+url="${*: -1}"
+case "$url" in
+  */labels\?limit=*) echo '[{"name":"ready-for-human"},{"name":"needs-design"},{"name":"bug"}]' ;;
+  *labels=needs-design*) echo '[]' ;;
+  *labels=ready-for-human*)
+    n="$(( $(cat "$GATE_CALL" 2>/dev/null || echo 0) + 1 ))"; printf '%s' "$n" > "$GATE_CALL"
+    # before -> {6,62}; after (2nd human_gated call) -> {6,63}: #62 leaves the
+    # gate, #63 enters. The locale sort misorders 62/6 and 63/6 alike; comm's
+    # BYTE merge then hits `62` vs `63` and detects the disorder — the exact
+    # abort that reddened run 2642. A subset change ({6,62}->{6,62,7}) would NOT
+    # trip comm's lazy check, so the set must genuinely diverge.
+    if [ "$n" -ge 2 ]; then echo '[{"number":6},{"number":63}]'
+    else echo '[{"number":6},{"number":62}]'; fi ;;
+  *state=open*) echo '[{"number":999,"title":"t","html_url":"http://x/999","labels":[]}]' ;;
+  */repos/x/y) echo '{"permissions":{"push":true}}' ;;
+  *) echo '[]' ;;
+esac
+SH
+chmod +x "$tmp/bin/curl"
+out="$(run_triage LC_ALL=en_US.UTF-8 GATE_CALL="$gate_call" \
+  CLAUDE_EXIT=0 CLAUDE_OUTPUT="triaged everything" 2>&1)" \
+  || fail "104a: a triage that changes the 6/62 human-gated set must exit 0 under a non-C locale (got: $out)"
+[ ! -f "$verdict" ] || fail "104a: a clean triage must leave no verdict, got: $(cat "$verdict")"
+pass=$((pass+1))
+
+# (104b) phantom label — human_gated must only report issues that GENUINELY
+# carry a gate label. `needs-design` is not minted here; Forgejo returns EVERY
+# open issue for an unknown `labels=` filter, so without validation an issue that
+# appears mid-run posts a false ":wave: … → needs-design" digest. The label list
+# omits needs-design, so the fix must never query it — no digest at all.
+db_reset; rm -f "$marker" "$verdict"
+nd_call="$tmp/nd-call"; rm -f "$nd_call"
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+url="${*: -1}"
+case "$url" in
+  */labels\?limit=*) echo '[{"name":"ready-for-human"},{"name":"bug"}]' ;;   # NO needs-design
+  *labels=ready-for-human*) echo '[]' ;;
+  *labels=needs-design*)
+    n="$(( $(cat "$ND_CALL" 2>/dev/null || echo 0) + 1 ))"; printf '%s' "$n" > "$ND_CALL"
+    # a real Forgejo returns all open issues for this phantom filter; one MORE
+    # appears mid-run (before != after) — the false-digest trap.
+    if [ "$n" -ge 2 ]; then echo '[{"number":101},{"number":102},{"number":103}]'
+    else echo '[{"number":101},{"number":102}]'; fi ;;
+  *state=open*) echo '[{"number":999,"title":"t","html_url":"http://x/999","labels":[]}]' ;;
+  */repos/x/y) echo '{"permissions":{"push":true}}' ;;
+  *) echo '[]' ;;
+esac
+SH
+chmod +x "$tmp/bin/curl"
+out="$(run_triage ND_CALL="$nd_call" CLAUDE_EXIT=0 CLAUDE_OUTPUT="triaged everything" 2>&1)" \
+  || fail "104b: a triage over a phantom gate label must exit 0 (got: $out)"
+grep -q "needs-design" <<<"$out" \
+  && fail "104b: a gate label the repo never minted must not appear in any digest (got: $out)"
+grep -q "Triage needs you" <<<"$out" \
+  && fail "104b: no false human-gate digest may post when the only matches come from a phantom label filter (got: $out)"
+[ ! -f "$nd_call" ] \
+  || fail "104b: the fix must not query a label absent from the repo's label set (needs-design was queried)"
+pass=$((pass+1))
+
+# (104c) stale post-claude stage — a failure AFTER the claude call must key the
+# verdict on THAT stage and must NOT quote the claude log. verdict_stage was left
+# on the claude stage (with the claude log as its errlog), so a downstream fault
+# was blamed on the claude call and verdict_write grepped triage PROSE (matching
+# the error regex on words like "cannot"), keying the healer on a triage RULING.
+# The testable post-claude stage is the recount: human_gated's failures are
+# swallowed by its `$(...)` command-substitution subshell (set -e does not
+# propagate out), whereas `still="$(preflight | jq)"` reds directly. Fail the
+# RECOUNT preflight (its #20 permission probe returns push:false on the 2nd
+# invocation); the verdict must name `recount untriaged`, never the claude stage,
+# and carry no claude prose.
+db_reset; rm -f "$marker" "$verdict"
+probe="$tmp/probe-call"; rm -f "$probe"
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+url="${*: -1}"
+case "$url" in
+  */labels\?limit=*) echo '[{"name":"ready-for-human"}]' ;;
+  *labels=ready-for-human*) echo '[]' ;;
+  *state=open*) echo '[{"number":999,"title":"t","html_url":"http://x/999","labels":[]}]' ;;
+  */repos/x/y)
+    # the start preflight's probe passes; the recount preflight's (2nd) fails,
+    # reddening the recount stage — a post-claude fault.
+    n="$(( $(cat "$PROBE" 2>/dev/null || echo 0) + 1 ))"; printf '%s' "$n" > "$PROBE"
+    if [ "$n" -ge 2 ]; then echo '{"permissions":{"push":false}}'
+    else echo '{"permissions":{"push":true}}'; fi ;;
+  *) echo '[]' ;;
+esac
+SH
+chmod +x "$tmp/bin/curl"
+claudeprose="Verified: heal.sh cannot pin the lock so concurrent suite runs collide"
+if run_triage PROBE="$probe" CLAUDE_EXIT=0 CLAUDE_OUTPUT="$claudeprose" >/dev/null 2>&1; then
+  fail "104c: a post-claude recount failure must red (non-zero exit)"
+fi
+[ -f "$verdict" ] || fail "104c: a post-claude failure must leave a verdict on disk"
+grep -q "stage=recount untriaged" "$verdict" \
+  || fail "104c: the verdict must name the post-claude stage, got: $(cat "$verdict")"
+grep -q "stage=triage skill" "$verdict" \
+  && fail "104c: the verdict must NOT still blame the claude stage, got: $(cat "$verdict")"
+grep -qF "$claudeprose" "$verdict" \
+  && fail "104c: a post-claude verdict must NOT quote the claude log, got: $(cat "$verdict")"
 pass=$((pass+1))
 
 echo "run-triage: $pass scenarios passed"

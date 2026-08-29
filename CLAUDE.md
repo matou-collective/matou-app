@@ -38,6 +38,8 @@ frontend/src/api/                  # API client code
 backend/internal/api/              # API handlers
 backend/internal/anysync/          # any-sync SDK integration
 backend/internal/keri/             # KERI identity integration
+docs/mobile/ANDROID.md             # Android build guide (gomobile .aar + Capacitor shell)
+frontend/src-capacitor/            # Capacitor Android shell (MatouBackend + SecureStorage plugins)
 ```
 
 ## Common Commands
@@ -90,6 +92,16 @@ npm run build                 # Build for production
 npm run lint                  # Run ESLint
 npm run format                # Format with Prettier
 ```
+
+### Mobile (Android)
+
+```bash
+scripts/android/setup-toolchain.sh    # Install JDK 21 + Android SDK/NDK + gomobile into ~/.matou-android (idempotent)
+cd backend && make build-android-aar  # gomobile bind the embedded backend → src-capacitor/android/app/libs/matou.aar
+scripts/android/build-apk.sh          # Build the debug APK (bakes VITE_PROD_CONFIG_URL as the config server URL)
+```
+
+See `docs/mobile/ANDROID.md` for the toolchain layout, gotchas, and the emulator recipe.
 
 ### Infrastructure
 

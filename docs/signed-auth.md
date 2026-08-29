@@ -32,11 +32,23 @@ Chosen by maintainer decision (2026-08-10) over per-request signing:
      `MATOU_AUTH_SESSION_TTL` to override), recording a hash of the key it was
      minted against.
 4. **Per request** — the client sends `Authorization: Bearer <token>`.
-   `SignedAuthMiddleware` validates the token, records the verified AID on the
-   request context (`api.VerifiedAID`) and rewrites `X-User-AID` to it before
-   RBAC runs. Under enforcement a request with no token has any client-supplied
-   `X-User-AID` **stripped** (so it reaches RBAC anonymously); an invalid/expired
-   token is rejected with 401.
+   `SignedAuthMiddleware` inspects the bearer and, under enforcement, resolves
+   it into one of three cases:
+   - **A valid session token** — the verified AID is recorded on the request
+     context (`api.VerifiedAID`) and `X-User-AID` is rewritten to it before RBAC
+     runs.
+   - **The per-launch API token** — treated exactly like "no token": any
+     client-supplied `X-User-AID` is **stripped** and the request passes through
+     as anonymous (protected routes then 401, public reads serve). The API token
+     is a legitimate bearer the app sends before it has a session (boot,
+     first-run, `identity/set`), and `TokenGuardWithSessions` has already
+     accepted it one layer out; it must not be mistaken for an invalid session.
+     It cannot assert a trusted identity, so this is strictly least-privilege.
+   - **Anything else** (an unknown/expired token) — rejected with 401
+     `{"error":"invalid or expired session"}`.
+
+   A request with **no token** likewise has any client-supplied `X-User-AID`
+   stripped and reaches RBAC anonymously.
 
 **Sharing the Authorization header with the API token.** The per-launch API
 token (issue #16, `TokenGuard`) travels in the same header. `TokenGuardWithSessions`

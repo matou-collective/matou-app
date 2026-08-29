@@ -12,10 +12,7 @@ const (
 	RoleProjectSteward    Role = "project_steward"
 	RoleOperationsSteward Role = "operations_steward"
 	RoleCommunitySteward  Role = "community_steward"
-	RoleTechSteward       Role = "tech_steward"
-	RoleTreasurySteward   Role = "treasury_steward"
 	RoleFoundingMember    Role = "founding_member"
-	RoleElderCouncil      Role = "elder_council"
 )
 
 // MapKERIRole maps a KERI credential role string (Title Case) to contribution roles.
@@ -33,16 +30,21 @@ func MapKERIRole(keriRole string) []Role {
 	case "Founding Member":
 		return []Role{RoleMember, RoleContributor, RoleFoundingMember, RoleOperationsSteward, RoleProjectSteward, RoleProjectLead}
 	case "Financial Steward":
-		return []Role{RoleMember, RoleContributor, RoleTreasurySteward}
+		return []Role{RoleMember, RoleContributor}
 	case "Governance Steward":
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward}
 	case "Treasury Steward":
-		return []Role{RoleMember, RoleContributor, RoleTreasurySteward}
+		return []Role{RoleMember, RoleContributor}
 	case "Technical Steward":
-		return []Role{RoleMember, RoleContributor, RoleTechSteward, RoleProjectLead}
+		return []Role{RoleMember, RoleContributor, RoleProjectLead}
 	case "Cultural Steward":
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward}
 	default:
+		// Custom roles: a credential role string matching a custom role in
+		// the current policy grants [member, <custom-role>].
+		if p := CurrentPolicy(); p.HasCustomRole(keriRole) {
+			return []Role{RoleMember, Role(keriRole)}
+		}
 		return []Role{RoleMember}
 	}
 }
@@ -113,6 +115,9 @@ const (
 	// may reach the handler; resource-level rules (owner / steward / role
 	// change) are applied in api.profileWritePolicy.
 	ActionWriteProfile Action = "write_profile"
+
+	// Role-policy management (the manage_roles meta-permission)
+	ActionManageRolePolicy Action = "manage_role_policy"
 )
 
 // actionPermissions maps each action to the roles that can perform it.
@@ -124,8 +129,7 @@ const (
 // live in the service/handler layer.
 var allRoles = []Role{
 	RoleMember, RoleContributor, RoleProjectLead, RoleProjectSteward,
-	RoleCommunitySteward, RoleTechSteward, RoleTreasurySteward,
-	RoleOperationsSteward, RoleFoundingMember, RoleElderCouncil,
+	RoleCommunitySteward, RoleOperationsSteward, RoleFoundingMember,
 }
 
 var stewardScope = []Role{
@@ -231,18 +235,11 @@ func HasRole(roles []Role, target Role) bool {
 	return false
 }
 
-// CanPerformAction checks if any of the user's roles allows the given action.
+// CanPerformAction checks if any of the user's roles allows the given action
+// under the community's current RolePolicy (synced, or built-in default).
+// The legacy actionPermissions table above is retained as the permanent
+// reference the default policy is proven equivalent to (policy_test.go
+// legacyCan) — do not delete it.
 func CanPerformAction(userRoles []Role, action Action) bool {
-	allowed, ok := actionPermissions[action]
-	if !ok {
-		return false
-	}
-	for _, role := range userRoles {
-		for _, a := range allowed {
-			if role == a {
-				return true
-			}
-		}
-	}
-	return false
+	return CanPerformActionWithPolicy(CurrentPolicy(), userRoles, action)
 }
