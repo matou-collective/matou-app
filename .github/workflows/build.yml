@@ -24,7 +24,41 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      # Single source of truth for every platform job (desktop today; android/ios
+      # per docs/plans/2026-08-31-github-release-builds-spec.md):
+      #   version      = frontend/package.json version, must equal the tag minus 'v'
+      #   build_number = MMMmmmppp from the tag (0.4.1 -> 4001), same scheme as the
+      #                  Forgejo android.yml versionCode; run_number off a tag.
+      version: ${{ steps.version.outputs.version }}
+      build_number: ${{ steps.version.outputs.build_number }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - id: version
+        name: Derive version and build number
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./frontend/package.json').version")"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            TAG="$GITHUB_REF_NAME"
+            if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.]+)?$ ]]; then
+              echo "::error::tag '$TAG' is not vX.Y.Z[-suffix]"
+              exit 1
+            fi
+            if [[ "${TAG#v}" != "$VERSION" ]]; then
+              echo "::error::tag '$TAG' does not match frontend/package.json version '$VERSION' — release with scripts/release.sh"
+              exit 1
+            fi
+            BUILD_NUMBER=$(( 10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]} ))
+          else
+            BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          fi
+          echo "version=$VERSION build_number=$BUILD_NUMBER"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+
       - id: set-matrix
         run: |
           ALL='[{"id":"mac-x64","os":"macos-15-intel","platform":"mac","arch":"x64","make_target":"build-darwin-amd64"},{"id":"mac-arm64","os":"macos-latest","platform":"mac","arch":"arm64","make_target":"build-darwin-arm64"},{"id":"linux","os":"ubuntu-latest","platform":"linux","arch":"amd64","make_target":"build-linux-amd64"},{"id":"windows","os":"windows-2022","platform":"windows","arch":"amd64","make_target":"build-windows-amd64"}]'
@@ -59,12 +93,11 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # Matou App Version
+      # Matou App Version (derived once in `prepare`, validated against the tag)
       - name: Get app version
-        id: version
         shell: bash
         run: |
-          echo "VERSION=$(node -p "require('./frontend/package.json').version")" >> $GITHUB_ENV
+          echo "VERSION=${{ needs.prepare.outputs.version }}" >> "$GITHUB_ENV"
 
       # Install frontend dependencies
       - name: Install frontend dependencies
@@ -78,10 +111,10 @@ jobs:
 
       # Set up Go
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.21
-          cache: false
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
 
       # Backend set up
       - name: Prepare backend modules
@@ -155,10 +188,13 @@ jobs:
       - name: Setup macOS Signing (if mac)
         if: matrix.platform == 'mac'
         shell: bash
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
-          cd frontend
-          # write Apple API key from secret
-          echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          # Write the App Store Connect API key outside the checkout so it can never
+          # land in an artefact upload; the build step points APPLE_API_KEY at it.
+          umask 077
+          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
 
       # Build Electron app
       - name: Build Electron App
@@ -178,7 +214,7 @@ jobs:
           # apple macOS code signing + notarization
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: AuthKey_${{ secrets.APPLE_API_KEY_ID }}.p8
+          APPLE_API_KEY: ${{ runner.temp }}/AuthKey.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
