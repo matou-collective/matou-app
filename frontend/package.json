@@ -26,6 +26,7 @@
     "health": "tsx tests/scripts/health-check.ts",
     "health:test": "TEST_MODE=true tsx tests/scripts/health-check.ts",
     "build": "quasar build",
+    "kit:apply": "node scripts/kit/apply-kit.mjs",
     "postinstall": "patch-package",
     "release": "../scripts/release.sh"
   },
