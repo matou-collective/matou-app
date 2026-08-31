@@ -60,3 +60,26 @@ nz.matou.app"; see `docs/mobile/PLAY_STORE.md` for generation.
 The job decodes the keystore into a `mktemp` dir and removes it on exit;
 nothing is written under the checkout. Locally the same values live in
 `frontend/src-capacitor/android/keystore.properties` (git-ignored).
+
+## Push-relay secrets (deployment, this repo)
+
+Consumed by the standalone push-relay service (`backend/cmd/push-relay`,
+design `docs/architecture/08-push-notifications.md` topology C, slice 2 of
+#177). The relay is the **only** holder of the FCM server credential (design
+§3). Enrolled here per that doc's requirement; see
+`docs/architecture/07-secrets-architecture.md` for the doctrine.
+
+| Secret | Delivered as | Needed if |
+| --- | --- | --- |
+| FCM service-account JSON | a **mounted file**; the relay is pointed at its path via `MATOU_PUSH_RELAY_FCM_CREDENTIALS` (never the JSON inlined into an env var — that reintroduces the `docker inspect` breach vector) | push notifications are deployed |
+
+Non-secret relay config (env): `MATOU_PUSH_RELAY_ADDR`,
+`MATOU_PUSH_RELAY_STORE` (path to the persisted `AID → token` map — plumbing,
+not identity), `MATOU_PUSH_RELAY_TOKEN_TTL`, `MATOU_PUSH_RELAY_KEYSTATE_URL`
+(KERI key-state template for signed-auth verification),
+`MATOU_PUSH_RELAY_COALESCE_WINDOW`. `MATOU_PUSH_RELAY_FCM_DISABLED=1` stubs
+dispatch for dev/dry-run (no credential required).
+
+Where the relay is hosted and who provisions the FCM credential are human
+decisions tracked on #177 (§10 Q1); this entry only reserves the secret's
+place in the inventory.
