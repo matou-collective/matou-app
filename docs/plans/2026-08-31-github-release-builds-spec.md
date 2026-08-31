@@ -88,6 +88,8 @@ Steps:
 
 Reuse, not rewrite: the job is the Forgejo `build-aab` job with the raw-clone step replaced by `actions/checkout` and secrets renamed to the GitHub set (§4). `build-aab.sh` and `build.gradle` are unchanged.
 
+Signing fallback: with no `ANDROID_KEYSTORE_B64` secret a `workflow_dispatch` run still builds **unsigned** artefacts (loud warning, signature checks skipped) so the pipeline can be exercised before the secrets exist; a tag run fails at the signing step instead.
+
 **Done when:** the tag run's draft release carries a signed `.aab` (uploadable to Play internal testing as in `docs/mobile/PLAY_STORE.md`) and a signed `.apk` that installs on a device.
 
 ### WP3 — iOS Phase 0: prove the backend links (unparks Forgejo #29)

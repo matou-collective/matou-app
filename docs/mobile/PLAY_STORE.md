@@ -51,10 +51,13 @@ Then:
 
 1. Put the keystore + both passwords in the org password manager (entry
    "Play upload key — nz.matou.app"). This is the source of truth.
-2. Forgejo → org (or repo) → Settings → Actions → Secrets:
+2. GitHub (`matou-collective/matou-app`, where release builds run) → Settings →
+   Secrets and variables → Actions — and Forgejo → Settings → Actions → Secrets
+   for the manual smoke job:
    - `ANDROID_KEYSTORE_B64` = `base64 -w0 ~/.matou-secrets/matou-upload.jks`
    - `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`matou-upload`),
      `ANDROID_KEY_PASSWORD`
+   (`gh secret set` one-liners in `docs/SECRETS_CHECKLIST.md`.)
 3. For local signed builds, `cp keystore.properties.example keystore.properties`
    in `frontend/src-capacitor/android/` and fill it in.
 
@@ -78,22 +81,26 @@ The script refuses `localhost`/private-network config-server URLs (a Play
 build must only ever talk to production infrastructure) and warns if the
 URL is plain `http://`.
 
-CI: tag and push.
+CI: release through `scripts/release.sh`, which bumps `frontend/package.json`,
+tags, and pushes to Forgejo and GitHub (GitHub is also a push-mirror).
 
 ```sh
-git tag -a v0.4.0 -m "Matou 0.4.0"
-git push origin v0.4.0
+cd frontend && npm run release -- 0.4.0
 ```
+
+The tag runs `.github/workflows/build.yml` on GitHub: its `android` job builds
+the signed `.aab` **and** a signed sideload `.apk`, verifies applicationId /
+versionCode / versionName / signer, and the `release` job attaches both to the
+draft GitHub release next to the desktop installers (spec:
+`docs/plans/2026-08-31-github-release-builds-spec.md`). The workflow fails if
+the tag does not match `package.json`'s version.
 
 `versionName` = tag without `v`; `versionCode` = `MAJOR*1_000_000 + MINOR*1_000 + PATCH`
 (`v0.4.0` → `4000`, `v1.2.3` → `1002003`) so codes are monotonic across
-tags. A manual `workflow_dispatch` with `release=true` on a non-tag ref
-uses `<package.json version>-ci<run>` / `versionCode=<run number>` — fine
-for a smoke build, **do not upload those to Play** (the code would collide
-with or jump ahead of the tag scheme).
-
-The `.aab` lands as the `app-release-<version>` run artefact (Mattermost
-fallback if artefact upload flakes, as with the debug APK).
+tags. A manual `workflow_dispatch` (GitHub `platform=android`, or Forgejo
+`android.yml` with `release=true`) on a non-tag ref uses
+`versionCode=<run number>` — fine for a smoke build, **do not upload those to
+Play** (the code would collide with or jump ahead of the tag scheme).
 
 ## 3. Verify before uploading
 

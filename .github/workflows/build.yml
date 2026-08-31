@@ -14,10 +14,12 @@ on:
         type: choice
         options:
           - all
+          - desktop
           - linux
           - mac-arm64
           - mac-x64
           - windows
+          - android
 
 jobs:
   prepare:
@@ -31,6 +33,8 @@ jobs:
       #                  Forgejo android.yml versionCode; run_number off a tag.
       version: ${{ steps.version.outputs.version }}
       build_number: ${{ steps.version.outputs.build_number }}
+      desktop: ${{ steps.set-matrix.outputs.desktop }}
+      android: ${{ steps.set-matrix.outputs.android }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -64,15 +68,23 @@ jobs:
           ALL='[{"id":"mac-x64","os":"macos-15-intel","platform":"mac","arch":"x64","make_target":"build-darwin-amd64"},{"id":"mac-arm64","os":"macos-latest","platform":"mac","arch":"arm64","make_target":"build-darwin-arm64"},{"id":"linux","os":"ubuntu-latest","platform":"linux","arch":"amd64","make_target":"build-linux-amd64"},{"id":"windows","os":"windows-2022","platform":"windows","arch":"amd64","make_target":"build-windows-amd64"}]'
 
           PLATFORM="${{ inputs.platform || 'all' }}"
-          if [ "$PLATFORM" = "all" ]; then
-            echo "matrix={\"include\":$ALL}" >> "$GITHUB_OUTPUT"
-          else
-            FILTERED=$(echo "$ALL" | jq -c --arg id "$PLATFORM" '[.[] | select(.id == $id)]')
-            echo "matrix={\"include\":$FILTERED}" >> "$GITHUB_OUTPUT"
-          fi
+          case "$PLATFORM" in
+            all|desktop) FILTERED="$ALL" ;;
+            android)     FILTERED='[]' ;;
+            *)           FILTERED=$(echo "$ALL" | jq -c --arg id "$PLATFORM" '[.[] | select(.id == $id)]') ;;
+          esac
+          ANDROID=false
+          case "$PLATFORM" in all|android) ANDROID=true ;; esac
+          DESKTOP=true
+          [ "$FILTERED" = "[]" ] && DESKTOP=false
+          echo "platform=$PLATFORM desktop=$DESKTOP android=$ANDROID"
+          echo "matrix={\"include\":$FILTERED}" >> "$GITHUB_OUTPUT"
+          echo "desktop=$DESKTOP" >> "$GITHUB_OUTPUT"
+          echo "android=$ANDROID" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
+    if: needs.prepare.outputs.desktop == 'true'
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -431,3 +443,203 @@ jobs:
           name: matou-${{ env.VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
           path: frontend/dist/electron/Packaged/**
           if-no-files-found: error
+
+  # Android: signed Play App Bundle + sideload APK (spec WP2). Same recipe as
+  # the Forgejo android.yml build-aab job — setup-toolchain.sh, build-aab.sh and
+  # build.gradle are shared unchanged — so versionCode/versionName come from
+  # `prepare` like every other platform. Signing secrets: docs/SECRETS_CHECKLIST.md
+  # "GitHub release secrets". Without them a workflow_dispatch run still builds
+  # UNSIGNED smoke artefacts (never uploadable to Play); a tag run fails hard.
+  android:
+    needs: prepare
+    if: needs.prepare.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # ~2.9 GB (JDK 21 + SDK/NDK r27c + gomobile) on a cold runner; the script is
+      # idempotent, so a cache hit makes it a no-op.
+      - name: Cache Android toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.matou-android
+          key: matou-android-toolchain-${{ runner.os }}-${{ hashFiles('scripts/android/setup-toolchain.sh') }}
+
+      - name: Install Android toolchain (idempotent, cached in ~/.matou-android)
+        run: bash scripts/android/setup-toolchain.sh
+
+      - name: gomobile bind — embedded backend .aar
+        run: make -C backend build-android-aar
+
+      - name: Verify libgojni.so is 16 KB page-aligned (#167)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          . "$HOME/.matou-android/env.sh"
+          aar="frontend/src-capacitor/android/app/libs/matou.aar"
+          readelf="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" \( -type f -o -type l \) -name llvm-readelf | head -1)"
+          [ -n "$readelf" ] || { echo "::error::llvm-readelf not found under NDK"; exit 1; }
+          tmp="$(mktemp -d)"
+          python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extract("jni/arm64-v8a/libgojni.so", sys.argv[2])' "$aar" "$tmp"
+          so="$tmp/jni/arm64-v8a/libgojni.so"
+          "$readelf" -l "$so" | awk '/LOAD/'
+          bad="$("$readelf" -l "$so" | awk '/LOAD/ && $NF != "0x4000" {print}')"
+          if [ -n "$bad" ]; then
+            echo "::error::libgojni.so has LOAD segments not aligned to 0x4000 (16 KB):"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK: all LOAD segments aligned to 0x4000"
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Build release AAB + APK
+        id: build
+        env:
+          VITE_PROD_CONFIG_URL: ${{ secrets.VITE_PROD_CONFIG_URL }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          MATOU_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MATOU_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MATOU_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          MATOU_VERSION_CODE: ${{ needs.prepare.outputs.build_number }}
+          MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          unsigned_flag=""
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+              echo "::error::ANDROID_KEYSTORE_B64 secret is not set — a tagged release must be signed (docs/SECRETS_CHECKLIST.md)"
+              exit 1
+            fi
+            echo "::warning::ANDROID_KEYSTORE_B64 not set — building UNSIGNED smoke artefacts (workflow_dispatch only, never upload to Play)"
+            unsigned_flag="--allow-unsigned"
+            unset MATOU_KEYSTORE_PASSWORD MATOU_KEY_ALIAS MATOU_KEY_PASSWORD
+            signed=false
+          else
+            ks="$RUNNER_TEMP/upload.jks"
+            printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
+            chmod 600 "$ks"
+            export MATOU_KEYSTORE_FILE="$ks"
+            signed=true
+          fi
+          trap 'rm -f "$RUNNER_TEMP/upload.jks"' EXIT
+
+          bash scripts/android/build-aab.sh $unsigned_flag
+
+          # build-aab.sh leaves the release web assets synced into the Android
+          # project, so the sideload APK is one more gradle task with the same
+          # signing config.
+          # shellcheck disable=SC1090
+          . "$HOME/.matou-android/env.sh"
+          (cd frontend/src-capacitor/android && ./gradlew --no-daemon assembleRelease)
+
+          mkdir -p out
+          cp frontend/dist/capacitor/android/bundle/release/app-release.aab "out/matou-${VERSION}-android.aab"
+          apk="$(ls frontend/src-capacitor/android/app/build/outputs/apk/release/app-release*.apk | head -1)"
+          cp "$apk" "out/matou-${VERSION}-android.apk"
+          ls -la out
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+
+      - name: Verify AAB + APK (applicationId, versionCode, versionName, signer)
+        env:
+          SIGNED: ${{ steps.build.outputs.signed }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          . "$HOME/.matou-android/env.sh"
+          bt="$ANDROID_HOME/build-tools/34.0.0"
+          apk="out/matou-${VERSION}-android.apk"
+          aab="out/matou-${VERSION}-android.aab"
+
+          echo "==> APK badging"
+          badging="$("$bt/aapt2" dump badging "$apk" | head -1)"
+          echo "$badging"
+          echo "$badging" | grep -q "name='nz.matou.app'"            || { echo "::error::applicationId is not nz.matou.app"; exit 1; }
+          echo "$badging" | grep -q "versionCode='${BUILD_NUMBER}'"   || { echo "::error::versionCode != ${BUILD_NUMBER}"; exit 1; }
+          echo "$badging" | grep -q "versionName='${VERSION}'"        || { echo "::error::versionName != ${VERSION}"; exit 1; }
+
+          echo "==> AAB contents"
+          python3 - "$aab" <<'PY'
+          import sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          for want in ("BundleConfig.pb", "base/manifest/AndroidManifest.xml", "base/lib/arm64-v8a/libgojni.so"):
+              if want not in names:
+                  sys.exit(f"missing {want} in bundle")
+          print("bundle ok:", len(names), "entries")
+          PY
+
+          if [ "$SIGNED" = "true" ]; then
+            echo "==> APK signature"
+            "$bt/apksigner" verify --print-certs "$apk"
+            echo "==> AAB signature"
+            jarsigner -verify -verbose:summary -certs "$aab" | grep -E "CN=|jar verified" | sort -u
+          else
+            echo "::warning::unsigned smoke build — signature checks skipped"
+          fi
+
+      - name: Upload Android artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: matou-${{ needs.prepare.outputs.version }}-android
+          path: out/*
+          if-no-files-found: error
+
+  # Attach the mobile installers to the draft release that electron-builder
+  # creates for the desktop targets (spec WP6, mobile half). Tag runs only; the
+  # release stays a draft for a human to publish after checking Play/TestFlight.
+  release:
+    needs: [prepare, build, android]
+    if: always() && github.ref_type == 'tag' && needs.android.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download Android artefacts
+        uses: actions/download-artifact@v4
+        with:
+          name: matou-${{ needs.prepare.outputs.version }}-android
+          path: out
+
+      - name: Attach to the draft release
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Desktop jobs normally create the draft; if they all failed, make it ourselves.
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" out/* --repo "$GITHUB_REPOSITORY" --clobber
+          {
+            echo "### $TAG — mobile installers attached to the draft release"
+            echo
+            echo "| file | size | sha256 |"
+            echo "| --- | --- | --- |"
+            for f in out/*; do
+              echo "| $(basename "$f") | $(du -h "$f" | cut -f1) | \`$(sha256sum "$f" | cut -c1-64)\` |"
+            done
+            echo
+            echo "Desktop assets are uploaded by electron-builder from the desktop jobs."
+          } >> "$GITHUB_STEP_SUMMARY"
