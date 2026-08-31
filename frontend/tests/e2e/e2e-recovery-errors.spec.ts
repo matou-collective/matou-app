@@ -125,7 +125,7 @@ test.describe('Recovery & Error Handling', () => {
       await completeMnemonicVerification(page, mnemonic, /verify and continue/i);
 
       await expect(
-        page.getByText(/application.*review|pending/i).first(),
+        page.getByText(/application received|application.*review|pending/i).first(),
       ).toBeVisible({ timeout: TIMEOUT.short });
       console.log('Reached pending-approval screen');
     });
@@ -136,7 +136,7 @@ test.describe('Recovery & Error Handling', () => {
 
       // Should auto-navigate to pending-approval (not splash)
       await expect(
-        page.getByText(/application.*review|pending/i).first(),
+        page.getByText(/application received|application.*review|pending/i).first(),
       ).toBeVisible({ timeout: TIMEOUT.long });
       console.log('Auto-restored to pending-approval screen');
 

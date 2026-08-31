@@ -7,12 +7,12 @@ import { ref, computed } from 'vue';
 export type OnboardingScreen =
   | 'splash'
   | 'invite-code'
-  | 'invitation-welcome'
+  | 'kit-welcome'
+  | 'info-page'
   | 'profile-form'
   | 'profile-confirmation'
   | 'mnemonic-verification'
   | 'credential-issuance'
-  | 'matou-info'
   | 'pending-approval'
   | 'recovery'
   | 'claim-welcome'
@@ -118,6 +118,9 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   const onboardingPath = ref<OnboardingPath>(null);
   const inviteCode = ref('');
   const inviterName = ref('');
+  // Index of the kit info page currently shown in the register flow
+  // (splash → kit-welcome → info-page × N → profile-form).
+  const infoPageIndex = ref(0);
   const appState = ref<AppState>('initializing');
   const initializationError = ref<string | null>(null);
   const profile = ref<ProfileData>({
@@ -230,6 +233,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     onboardingPath.value = null;
     inviteCode.value = '';
     inviterName.value = '';
+    infoPageIndex.value = 0;
     profile.value = {
       name: '',
       bio: '',
@@ -282,6 +286,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     onboardingPath,
     inviteCode,
     inviterName,
+    infoPageIndex,
     profile,
     userAID,
     claimPasscode,

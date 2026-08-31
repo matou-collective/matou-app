@@ -143,6 +143,7 @@
         <!-- What Happens Next -->
         <div v-if="currentStatus !== 'rejected'">
           <h3 class="mb-4">What happens next?</h3>
+          <p class="text-sm text-muted-foreground mb-4">{{ KIT.onboarding.pending.nextSteps }}</p>
           <div class="space-y-3">
             <!-- Step 1: Book a session -->
             <div
@@ -357,6 +358,7 @@ import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
 import { sendBookingEmail } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { KIT } from 'src/generated/kit';
 
 const { fadeSlideUp, slideInLeft, rotate } = useAnimationPresets();
 const identityStore = useIdentityStore();
@@ -783,8 +785,8 @@ const statusConfig = computed(() => {
     default:
       return {
         icon: Clock,
-        title: 'Your application is under review',
-        description: 'Thank you for your interest in joining Matou! Our admins have been notified of your registration and will review your application soon.',
+        title: KIT.onboarding.pending.heading,
+        description: KIT.onboarding.pending.bodyMarkdown,
         iconClass: 'text-primary',
         bgClass: 'bg-primary/10',
       };
