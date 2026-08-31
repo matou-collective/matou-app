@@ -1,5 +1,8 @@
 name: android
-# Android P1 debug-APK build (matou-app#76). Unlike ci.yml this job runs
+# Android P1 debug-APK build (matou-app#76). The signed release AAB moved to
+# GitHub Actions (.github/workflows/build.yml `android` job, tag-triggered —
+# docs/plans/2026-08-31-github-release-builds-spec.md WP2); build-aab below
+# stays as a manual smoke build only. Unlike ci.yml this job runs
 # DIRECTLY on the swarm runner host (not inside the sandbox container), so the
 # Android toolchain persists in $HOME/.matou-android across runs: the first run
 # on a fresh host installs ~2.9 GB (JDK 21 + Android SDK/NDK + gomobile) and is
@@ -9,12 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Also build the signed release AAB (Play Store, #176)"
+        description: "Also build the signed release AAB here (manual smoke; releases come from GitHub build.yml)"
         type: boolean
         default: false
-  push:
-    tags:
-      - 'v*'
   pull_request:
     paths:
       - 'backend/**'
@@ -32,8 +32,6 @@ concurrency:
 
 jobs:
   build-apk:
-    # Tag pushes go straight to build-aab below; the debug APK is a PR artefact.
-    if: github.event_name != 'push'
     # Pinned to the one pool host that carries the persistent toolchain. `swarm`
     # is a pool: jobs that land on the other host die in ~20s doing a first
     # install with no go/JDK (tasks 27461/27490/27493/27510 on 2026-08-27).
@@ -124,9 +122,10 @@ jobs:
           bash .sandcastle/notify-mattermost-files.sh \
             ":robot: android debug APK (actions/upload-artifact flaked — attached instead) — $RUN_URL" "$apk"
 
-  # Signed release App Bundle for the Play Store (#176). Runs on `v*` tag
-  # pushes and on manual dispatch with release=true. Produces the .aab as an
-  # artefact; uploading it to Play is manual for now (auto-upload is #202).
+  # Signed release App Bundle (#176) — manual dispatch with release=true only.
+  # Release AABs are built on GitHub from `v*` tags (build.yml `android` job),
+  # which keeps one AAB per tag/versionCode; this job is for smoke-building on
+  # the workstation runner. Uploading to Play is manual for now (auto-upload is #202).
   #
   # Required repo/org secrets (see docs/SECRETS_CHECKLIST.md):
   #   ANDROID_KEYSTORE_B64      base64 of the upload keystore (.jks)
@@ -135,7 +134,7 @@ jobs:
   #   ANDROID_KEY_PASSWORD
   #   PROD_CONFIG_URL           already used by build-apk
   build-aab:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
     runs-on: matou-workstation
     timeout-minutes: 90
     steps:
