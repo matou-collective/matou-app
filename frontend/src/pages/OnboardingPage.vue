@@ -28,6 +28,7 @@ import { useRouter } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import { initializeApp } from 'src/boot/keri';
+import { requestPermissionAndRegister } from 'src/composables/usePush';
 
 // Import onboarding screens
 import SplashScreen from 'components/onboarding/SplashScreen.vue';
@@ -142,6 +143,9 @@ const handleContinue = async (data?: unknown) => {
   // All paths: welcome-overlay → dashboard (ensure community access verified first)
   if (current === 'welcome-overlay') {
     await identityStore.verifyCommunityAccess();
+    // Onboarding is complete — request push permission now, never during
+    // onboarding (docs/architecture/08-push-notifications.md §7). No-op off Android.
+    void requestPermissionAndRegister();
     router.push('/dashboard');
     return;
   }
@@ -267,6 +271,9 @@ watch(
   () => store.currentScreen,
   (newScreen) => {
     if (newScreen === 'main') {
+      // Reaching 'main' completes onboarding — request push permission now,
+      // never during onboarding (§7). Idempotent + no-op off Android.
+      void requestPermissionAndRegister();
       router.push('/dashboard');
     } else {
       // Reset scroll position when switching screens
