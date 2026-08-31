@@ -265,6 +265,10 @@ MATOU_ENV=production go run ./cmd/server
 - The active token is written to `{dataDir}/api-token` (0600) so same-user tooling (matou-mcp, scripts) can read it. Reads (GET/HEAD/OPTIONS) need no token.
 - `MATOU_ALLOW_REMOTE=1` — disables the unconditional LocalhostGuard for remote-dev setups.
 
+### Push notifications (Android / FCM)
+
+- `MATOU_PUSH_RELAY_URL` — base URL of the push-relay that wakes backgrounded Android devices with content-free FCM signals (see `docs/architecture/08-push-notifications.md`). Unset (the default) leaves push **dark**: the `/api/v1/push/register` + `/api/v1/push/deregister` routes are not registered and no push sink runs, so dev/test and the Electron build are unaffected. When set, the embedded backend registers device tokens with the relay and, on the sender's own chat writes, asks the relay to wake the channel's other members (minus the sender). Relay calls are authenticated with KERI-signed sessions; failures are logged, never fatal.
+
 The backend reads configuration primarily from the org config api. The following environment variables provide overrides:
 
 ```bash

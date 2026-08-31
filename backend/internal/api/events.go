@@ -18,6 +18,7 @@ type SSEEvent struct {
 type EventBroker struct {
 	mu      sync.RWMutex
 	clients map[chan SSEEvent]struct{}
+	sinks   []func(SSEEvent)
 }
 
 // NewEventBroker creates a new event broker.
@@ -25,6 +26,19 @@ func NewEventBroker() *EventBroker {
 	return &EventBroker{
 		clients: make(map[chan SSEEvent]struct{}),
 	}
+}
+
+// AddSink registers a side-channel that receives every broadcast event beside
+// the SSE clients (e.g. the push-notification relay sink). Sinks are invoked
+// asynchronously so a slow sink — one doing network I/O — never blocks the
+// write-path or the SSE fan-out. Call during setup before Broadcast traffic.
+func (b *EventBroker) AddSink(fn func(SSEEvent)) {
+	if fn == nil {
+		return
+	}
+	b.mu.Lock()
+	b.sinks = append(b.sinks, fn)
+	b.mu.Unlock()
 }
 
 // Subscribe adds a new client channel.
@@ -44,7 +58,7 @@ func (b *EventBroker) Unsubscribe(ch chan SSEEvent) {
 	close(ch)
 }
 
-// Broadcast sends an event to all connected clients.
+// Broadcast sends an event to all connected clients and side-channel sinks.
 func (b *EventBroker) Broadcast(event SSEEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -54,6 +68,9 @@ func (b *EventBroker) Broadcast(event SSEEvent) {
 		default:
 			// Client is slow, skip
 		}
+	}
+	for _, sink := range b.sinks {
+		go sink(event)
 	}
 }
 

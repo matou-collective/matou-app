@@ -28,6 +28,7 @@ import (
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/keri"
 	"github.com/matou-dao/backend/internal/notifications"
+	"github.com/matou-dao/backend/internal/pushrelayclient"
 	bgSync "github.com/matou-dao/backend/internal/sync"
 	matouTypes "github.com/matou-dao/backend/internal/types"
 )
@@ -443,6 +444,39 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	notifEmailAdapter := notifications.NewEmailAdapter(emailSender)
 	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
 	contribNotifier := &contribNotifierAdapter{svc: notifService}
+
+	// Push notifications (docs/architecture/08-push-notifications.md §8): a third
+	// notifications sink beside SSE and email that wakes backgrounded Android
+	// devices via a push-relay. Dark unless MATOU_PUSH_RELAY_URL names the relay,
+	// so dev/test and the Electron build are unaffected. Only the sender's own
+	// node fires a push (PushSender skips p2p-replicated events), and recipients
+	// are the community-space ACL members minus the sender. Relay calls
+	// authenticate with KERI-signed sessions; the concrete signer arrives with
+	// the frontend signing path (later #177 slice), so the client is wired with a
+	// nil signer today — calls fail and are logged, never fatal, until then.
+	var pushHandler *api.PushHandler
+	if relayURL := strings.TrimSpace(os.Getenv("MATOU_PUSH_RELAY_URL")); relayURL != "" {
+		fmt.Fprintf(out, "Push relay configured: %s\n", relayURL)
+		relayClient := pushrelayclient.New(relayURL, nil)
+		memberResolver := notifications.ChannelMembersFunc(func(channelID string) ([]string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			aidMap, err := spaceManager.ACLManager().AccountAIDMap(ctx, communitySpaceID)
+			if err != nil {
+				return nil, err
+			}
+			aids := make([]string, 0, len(aidMap))
+			for _, aid := range aidMap {
+				aids = append(aids, aid)
+			}
+			return aids, nil
+		})
+		pushSender := notifications.NewPushSender(relayClient, memberResolver)
+		eventBroker.AddSink(func(e api.SSEEvent) {
+			pushSender.Broadcast(notifications.SSEEvent{Type: e.Type, Data: e.Data})
+		})
+		pushHandler = api.NewPushHandler(relayClient, userIdentity)
+	}
 	profileRoleLookup := contributions.NewProfileRoleLookup(contribStoreAdapter, communityReadOnlySpaceID)
 	// The backend boots before an identity (and its read-only space) exists, so the
 	// captured communityReadOnlySpaceID is empty until a restart. Consult the live
@@ -709,6 +743,9 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	chatHandler.RegisterRoutes(mux)
 	commentCursorsHandler.Routes(mux)
 	notificationsHandler.RegisterRoutes(mux)
+	if pushHandler != nil {
+		pushHandler.RegisterRoutes(mux)
+	}
 	authHandler.RegisterRoutes(mux)
 	proposalsHandler.RegisterRoutes(mux, roleLookup)
 	projectsHandler.RegisterRoutes(mux, roleLookup)

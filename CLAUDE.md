@@ -144,6 +144,7 @@ curl -s http://localhost:9000 > /dev/null && echo "Running" || echo "Not running
 | `MATOU_REQUIRE_SIGNED_AUTH=1` | Enforce KERI-signed session auth: bare `X-User-AID` is stripped, invalid sessions 401 (default off; see docs/signed-auth.md) |
 | `MATOU_KERIA_KEYSTATE_URL` | Key-state URL template with `{aid}` (default `{cesrUrl}/oobi/{aid}`); plain http only to loopback unless `MATOU_KERIA_KEYSTATE_ALLOW_HTTP=1` |
 | `MATOU_AUTH_SESSION_TTL` | Signed-auth session lifetime (Go duration, default 30m) |
+| `MATOU_PUSH_RELAY_URL` | Push-relay base URL for Android FCM wake signals (docs/architecture/08-push-notifications.md). Unset (default) → push is dark: `/api/v1/push/*` routes are unregistered and no push sink runs, so dev/test/Electron are unaffected. |
 | `MATOU_ENV=production` | Enable production mode (uses client-production.yml) |
 | `MATOU_ANYSYNC_CONFIG` | Path to any-sync client config (optional) |
 | `MATOU_ANYSYNC_INFRA_DIR` | Path to any-sync infrastructure |
