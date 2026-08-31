@@ -1,0 +1,18 @@
+{
+  "appId": "org.matou.app",
+  "productName": "Matou",
+  "artifactBase": "matou",
+  "executableName": "matou",
+  "androidApplicationId": "nz.matou.app",
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "matou-collective",
+      "repo": "matou-app",
+      "releaseType": "draft"
+    }
+  ],
+  "updates": true,
+  "primaryColour": "#1E5F74",
+  "backgroundColour": "#1E5F74"
+}
