@@ -20,6 +20,10 @@ on:
           - mac-x64
           - windows
           - android
+          # WP3 of docs/plans/2026-08-31-github-release-builds-spec.md: prove the
+          # embedded backend links for iOS (gomobile bind on a macOS runner). Runs
+          # nothing else; never runs on tags.
+          - ios-spike
 
 jobs:
   prepare:
@@ -35,6 +39,7 @@ jobs:
       build_number: ${{ steps.version.outputs.build_number }}
       desktop: ${{ steps.set-matrix.outputs.desktop }}
       android: ${{ steps.set-matrix.outputs.android }}
+      ios_spike: ${{ steps.set-matrix.outputs.ios_spike }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,17 +75,20 @@ jobs:
           PLATFORM="${{ inputs.platform || 'all' }}"
           case "$PLATFORM" in
             all|desktop) FILTERED="$ALL" ;;
-            android)     FILTERED='[]' ;;
+            android|ios-spike) FILTERED='[]' ;;
             *)           FILTERED=$(echo "$ALL" | jq -c --arg id "$PLATFORM" '[.[] | select(.id == $id)]') ;;
           esac
           ANDROID=false
           case "$PLATFORM" in all|android) ANDROID=true ;; esac
+          IOS_SPIKE=false
+          [ "$PLATFORM" = "ios-spike" ] && IOS_SPIKE=true
           DESKTOP=true
           [ "$FILTERED" = "[]" ] && DESKTOP=false
-          echo "platform=$PLATFORM desktop=$DESKTOP android=$ANDROID"
+          echo "platform=$PLATFORM desktop=$DESKTOP android=$ANDROID ios_spike=$IOS_SPIKE"
           echo "matrix={\"include\":$FILTERED}" >> "$GITHUB_OUTPUT"
           echo "desktop=$DESKTOP" >> "$GITHUB_OUTPUT"
           echo "android=$ANDROID" >> "$GITHUB_OUTPUT"
+          echo "ios_spike=$IOS_SPIKE" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -608,6 +616,110 @@ jobs:
   # Attach the mobile installers to the draft release that electron-builder
   # creates for the desktop targets (spec WP6, mobile half). Tag runs only; the
   # release stays a draft for a human to publish after checking Play/TestFlight.
+  # iOS Phase 0 (spec WP3, Forgejo #29): does the full backend — any-sync,
+  # quic-go, modernc sqlite, KERI — link through gomobile for ios + iossimulator?
+  # workflow_dispatch(platform=ios-spike) only. Produces Matou.xcframework as an
+  # artefact and prints the generated Objective-C header so MobileStart/MobileStop
+  # can be eyeballed. Nothing downstream consumes it yet (WP4 vendors it into the
+  # Capacitor iOS shell).
+  ios-spike:
+    needs: prepare
+    if: needs.prepare.outputs.ios_spike == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      # Same x/mobile revision as scripts/android/setup-toolchain.sh and go.mod.
+      XMOBILE_VERSION: v0.0.0-20260812174124-2f419b2fb945
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          go version
+
+      - name: Install gomobile + gobind (pinned)
+        run: |
+          set -euo pipefail
+          go install "golang.org/x/mobile/cmd/gomobile@$XMOBILE_VERSION"
+          go install "golang.org/x/mobile/cmd/gobind@$XMOBILE_VERSION"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gomobile" init
+          "$(go env GOPATH)/bin/gomobile" version
+
+      - name: gomobile bind (ios, iossimulator)
+        id: bind
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/Matou.xcframework"
+          IOS_XCFRAMEWORK="$OUT" make -C backend build-ios-xcframework
+          echo "xcframework=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect the xcframework
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.bind.outputs.xcframework }}"
+          echo "== bundle layout"
+          find "$OUT" -maxdepth 2 | sort
+          echo
+          echo "== Info.plist (slices)"
+          plutil -p "$OUT/Info.plist"
+          echo
+          # The device slice: ios-arm64/Matou.framework/Matou
+          DEVICE_FW="$(find "$OUT" -maxdepth 2 -type d -name 'ios-arm64' | head -1)/Matou.framework"
+          SIM_FW="$(find "$OUT" -maxdepth 2 -type d -name 'ios-*simulator' | head -1)/Matou.framework"
+          test -f "$DEVICE_FW/Matou" || { echo "::error::device slice missing at $DEVICE_FW"; exit 1; }
+          test -f "$SIM_FW/Matou" || { echo "::error::simulator slice missing at $SIM_FW"; exit 1; }
+          echo "== lipo -info (device)";    lipo -info "$DEVICE_FW/Matou"
+          echo "== lipo -info (simulator)"; lipo -info "$SIM_FW/Matou"
+          echo "== otool -L (device)";      otool -L "$DEVICE_FW/Matou" || true
+          echo "== vtool -show-build (device)"; xcrun vtool -show-build "$DEVICE_FW/Matou" || true
+          echo "== sizes"; du -sh "$DEVICE_FW/Matou" "$SIM_FW/Matou"
+          echo
+          echo "== generated header (device slice)"
+          HDR="$DEVICE_FW/Headers/Mobile.objc.h"
+          test -f "$HDR" || { echo "::error::Mobile.objc.h not generated"; find "$DEVICE_FW/Headers"; exit 1; }
+          cat "$HDR"
+          # Acceptance: the two entry points the Swift plugin will call.
+          grep -q 'MobileStart(' "$HDR" || { echo "::error::MobileStart missing from header"; exit 1; }
+          grep -q 'MobileStop('  "$HDR" || { echo "::error::MobileStop missing from header"; exit 1; }
+          {
+            echo "## iOS spike — gomobile bind PASSED"
+            echo
+            echo '```'
+            lipo -info "$DEVICE_FW/Matou"; lipo -info "$SIM_FW/Matou"; du -sh "$DEVICE_FW/Matou" "$SIM_FW/Matou"
+            echo '```'
+            echo
+            echo '<details><summary>Mobile.objc.h</summary>'
+            echo; echo '```objc'; cat "$HDR"; echo '```'; echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zip xcframework
+        # ditto keeps the bundle layout (upload-artifact would flatten the top
+        # directory); this is also how xcframeworks are normally distributed.
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.bind.outputs.xcframework }}"
+          ditto -c -k --keepParent "$OUT" "$RUNNER_TEMP/Matou.xcframework.zip"
+          shasum -a 256 "$RUNNER_TEMP/Matou.xcframework.zip" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload xcframework
+        uses: actions/upload-artifact@v4
+        with:
+          name: Matou.xcframework
+          path: ${{ runner.temp }}/Matou.xcframework.zip
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     needs: [prepare, build, android]
     if: always() && github.ref_type == 'tag' && needs.android.result == 'success'
