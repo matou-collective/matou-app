@@ -6,10 +6,11 @@
  * relay over a KERI-signed request. The recipient AID comes from the
  * authenticated session, never the body — the frontend only ever sends the FCM
  * token and platform. The global fetch wrapper (installBackendAuth) attaches
- * the Authorization header, so these calls stay minimal.
+ * the Authorization header; authHeaders() adds the X-User-AID the backend
+ * resolves the recipient from, exactly as every other client call does.
  */
 
-import { BACKEND_URL } from './client';
+import { BACKEND_URL, authHeaders } from './client';
 
 export interface PushRegisterResult {
   success: boolean;
@@ -21,7 +22,7 @@ export async function registerPushToken(token: string): Promise<PushRegisterResu
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/push/register`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ token, platform: 'android' }),
     });
     if (!response.ok) {
@@ -43,7 +44,7 @@ export async function deregisterPushToken(token?: string): Promise<PushRegisterR
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/push/deregister`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(token ? { token } : {}),
     });
     if (!response.ok) {

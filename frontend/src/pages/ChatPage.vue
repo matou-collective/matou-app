@@ -12,6 +12,7 @@ import { useChatStore } from 'stores/chat';
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { useVisualViewport } from 'src/composables/useVisualViewport';
 import { useKeyboardOpen } from 'src/composables/useKeyboardOpen';
+import { useChatDeepLink } from 'src/composables/useChatDeepLink';
 
 const chatStore = useChatStore();
 const route = useRoute();
@@ -42,19 +43,26 @@ onUnmounted(() => {
   chatStore.selectChannel(null);
 });
 
+// Deep-link from a push-notification tap (docs/architecture/
+// 08-push-notifications.md §6): /chat?c=<channelId> selects that channel — on
+// mount, and on every later change of the query so a tap that arrives while
+// this page is already mounted switches channels instead of doing nothing.
+// Query-param form — no router change, does not block on #168.
+const { applyDeepLink } = useChatDeepLink({
+  channelId: () => {
+    const c = route.query.c;
+    return (Array.isArray(c) ? c[0] : c) ?? null;
+  },
+  isKnown: (id) => chatStore.channels.some(c => c.id === id),
+  select: (id) => chatStore.selectChannel(id),
+});
+
 onMounted(async () => {
   await chatStore.loadChannels();
   await chatStore.loadReadCursors();
   await chatStore.loadAllChannelMessages();
 
-  // Deep-link from a push-notification tap (docs/architecture/
-  // 08-push-notifications.md §6): /chat?c=<channelId> selects that channel on
-  // mount. Query-param form — no router change, does not block on #168.
-  const deepLinkChannel = Array.isArray(route.query.c) ? route.query.c[0] : route.query.c;
-  if (deepLinkChannel && chatStore.channels.some(c => c.id === deepLinkChannel)) {
-    await chatStore.selectChannel(deepLinkChannel);
-    return;
-  }
+  if (await applyDeepLink()) return;
 
   // Auto-select: last visited channel (localStorage) > first channel (if no unreads)
   if (!chatStore.currentChannelId && chatStore.channels.length > 0) {

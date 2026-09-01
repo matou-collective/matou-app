@@ -4,29 +4,33 @@
  * Implements the frontend contract of docs/architecture/08-push-notifications.md
  * (§4–§8) against the Capacitor plugin surface, with the plugin injected by the
  * native shell as `window.Capacitor.Plugins.*` (we never bundle @capacitor/*;
- * same doctrine as lib/capacitor.ts). Firebase/plugin wiring lands in the
- * Capacitor slice (#177 task 3) — nothing here depends on a device.
+ * same doctrine as lib/capacitor.ts).
  *
  * Web/Electron are no-ops: push is Android-only for #177.
  *
  * Responsibilities:
- *  - permission AFTER onboarding, never during (§7) — driven by useOnboarding;
- *  - obtain the FCM token → POST /api/v1/push/register; re-register on rotation;
+ *  - permission AFTER onboarding, never during (§7) — the system dialog is only
+ *    ever raised by requestPermissionAndRegister(), which onboarding completion
+ *    and the settings toggle call; every automatic path (restored session, app
+ *    start) goes through registerIfPermitted(), which never prompts;
+ *  - obtain the FCM token → POST /api/v1/push/register; re-register on rotation
+ *    and on every app start so the relay's TTL never prunes a live device;
  *  - deregister on logout / identity switch (§7);
  *  - receipt handler: data payload `{t:"m",c,k,v}` → sync the one channel,
- *    compose a content-free local notification, coalesce bursts, recompute the
- *    launcher badge (§4–§5);
+ *    compose a content-free local notification on the Android channel matching
+ *    the §3 importance tier, coalesce bursts, recompute the badge (§4–§5);
  *  - deep-link on tap → /chat?c=<channelId> (§6).
  *
  * All visible-notification behaviour is gated by the notifications-store `push`
  * preferences (§7).
  */
 
-import { watch } from 'vue';
+import { computed, watch } from 'vue';
 import type { Router } from 'vue-router';
 import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
 import { useIdentityStore } from 'stores/identity';
+import { useOnboardingStore } from 'stores/onboarding';
 import { createLogger } from 'src/lib/logging';
 import { isCapacitor } from 'src/lib/platform';
 import {
@@ -35,8 +39,9 @@ import {
   getPushNotificationsPlugin,
   getLocalNotificationsPlugin,
   getBadgePlugin,
+  type PushNotificationsPlugin,
 } from 'src/lib/capacitor';
-import { registerPushToken, deregisterPushToken } from 'src/lib/api/push';
+import { registerPushToken, deregisterPushToken, type PushRegisterResult } from 'src/lib/api/push';
 
 const log = createLogger('Push');
 
@@ -48,23 +53,59 @@ export interface PushDataPayload {
   v?: string; // schema version
 }
 
+/** Coarse message kind carried by the payload's `k` field (§4). */
+export type MessageKind = 'dm' | 'ch';
+
+/**
+ * Android notification channels registered natively by the Capacitor shell
+ * (MatouNotificationChannels.java). Android 8+ silently DROPS a notification
+ * posted to a channel id that was never created, so these two strings must stay
+ * in lockstep with the native constants. DMs get the high-importance channel
+ * (the §3 "instant" tier); channel traffic gets the quieter default one.
+ */
+export const ANDROID_CHANNEL_DM = 'matou_dm';
+export const ANDROID_CHANNEL_GROUP = 'matou_channel';
+
 /** The visible notification composed on-device after sync. */
 export interface ComposedNotification {
   channelId: string;
   title: string;
+  /** Drives which Android notification channel it is posted on (§3). */
+  kind: MessageKind;
 }
 
-/** Outcome of a permission/registration attempt. */
-export type PermissionOutcome = 'granted' | 'denied' | 'unsupported' | 'unavailable';
+/**
+ * Outcome of a permission/registration attempt.
+ *  - `deferred`  — not attempted: onboarding is still in progress (§7).
+ *  - `disabled`  — the user opted out via the global push toggle (§7).
+ */
+export type PermissionOutcome =
+  | 'granted'
+  | 'denied'
+  | 'unsupported'
+  | 'unavailable'
+  | 'deferred'
+  | 'disabled';
 
 /** Window (ms) within which a burst of messages in one channel coalesces. */
 const COALESCE_WINDOW_MS = 3000;
 
+/** Leading-edge burst state for one channel (§5). */
+interface CoalesceState {
+  timer: ReturnType<typeof setTimeout>;
+  /** Title presented on the leading edge — a trailing update only fires if it changed. */
+  presentedTitle: string;
+  /** Latest notification seen during the window, presented on the trailing edge. */
+  pending: ComposedNotification | null;
+}
+
 // --- Module state (app-lifetime singletons) ---------------------------------
 let router: Router | null = null;
 let currentToken: string | null = null;
+/** AID whose token was registered this launch — dedupes the automatic paths. */
+let registeredAid: string | null = null;
 let listenersRegistered = false;
-const coalesceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const coalesceStates = new Map<string, CoalesceState>();
 
 /** Wire the router used for deep-links. Called from the push boot file. */
 export function setPushRouter(r: Router): void {
@@ -76,8 +117,28 @@ export function isPushPlatform(): boolean {
   return isCapacitor() && getCapacitorPlatform() === 'android';
 }
 
+/** The AID of the active session, or null when signed out. */
+function currentAid(): string | null {
+  return useIdentityStore().aidPrefix ?? null;
+}
+
 /**
- * Register the plugin event listeners + the identity watcher exactly once.
+ * Whether the user is past onboarding, the point from which §7 permits a
+ * permission prompt and an automatic registration.
+ *
+ * Two completion shapes exist: a new member reaches the `main` screen, while a
+ * returning member is routed splash → welcome-overlay → `/dashboard` without
+ * ever passing through `main` (see OnboardingPage `handleContinue`), so being
+ * inside the dashboard counts as complete too.
+ */
+export function isOnboardingComplete(): boolean {
+  if (useOnboardingStore().currentScreen === 'main') return true;
+  const path = router?.currentRoute.value.path ?? null;
+  return path !== null && path.startsWith('/dashboard');
+}
+
+/**
+ * Register the plugin event listeners + the lifecycle watchers exactly once.
  * Safe to call repeatedly (from onboarding completion or the boot file).
  */
 export function ensurePushListeners(): void {
@@ -107,11 +168,40 @@ export function ensurePushListeners(): void {
       void handleIdentityChange(newAid ?? null, oldAid ?? null);
     },
   );
+
+  // Refresh the token whenever an onboarded identity becomes active — which
+  // includes app start, where the session is restored before (or racing) this
+  // boot file, so the null → AID transition alone cannot be relied on. Without
+  // it an already-onboarded user never re-registers, the relay's TTL prunes the
+  // token and push dies silently (§7). `immediate` covers the already-restored
+  // case; registerIfPermitted never prompts, so this cannot fire a dialog.
+  const eligible = computed(() => identity.aidPrefix !== null && isOnboardingComplete());
+  watch(
+    eligible,
+    (isEligible) => {
+      if (isEligible) void registerIfPermitted();
+    },
+    { immediate: true },
+  );
+}
+
+/** Shared tail of both registration paths: remember the AID, ask for a token. */
+async function startRegistration(plugin: PushNotificationsPlugin): Promise<PermissionOutcome> {
+  registeredAid = currentAid();
+  // Fires the `registration` event → handleRegistrationToken → backend register.
+  await plugin.register();
+  return 'granted';
 }
 
 /**
- * Onboarding-completion hook (§7): request permission (never during
- * onboarding), obtain the token, register. Idempotent and a no-op off Android.
+ * Onboarding-completion / settings-toggle hook (§7): request permission —
+ * showing the system dialog when needed — obtain the token, register.
+ * Idempotent and a no-op off Android.
+ *
+ * This is the ONLY function that may raise the permission dialog, and its
+ * callers are exactly the post-onboarding ones (useOnboarding.completeOnboarding,
+ * OnboardingPage, the settings toggle). Automatic paths use
+ * registerIfPermitted() instead.
  */
 export async function requestPermissionAndRegister(): Promise<PermissionOutcome> {
   if (!isPushPlatform()) return 'unsupported';
@@ -119,6 +209,9 @@ export async function requestPermissionAndRegister(): Promise<PermissionOutcome>
   if (!plugin) return 'unavailable';
 
   ensurePushListeners();
+
+  const aid = currentAid();
+  if (aid !== null && aid === registeredAid) return 'granted'; // already registered this launch
 
   let perm = await plugin.checkPermissions();
   if (perm.receive === 'prompt' || perm.receive === 'prompt-with-rationale') {
@@ -129,9 +222,39 @@ export async function requestPermissionAndRegister(): Promise<PermissionOutcome>
     return 'denied';
   }
 
-  // Fires the `registration` event → handleRegistrationToken → backend register.
-  await plugin.register();
-  return 'granted';
+  return startRegistration(plugin);
+}
+
+/**
+ * Re-register the device without ever showing the permission dialog: used by
+ * every automatic path (app start with a restored session, an identity becoming
+ * active). Returns `deferred` while onboarding is still running — the AID is
+ * created mid-flow (ProfileFormScreen), long before §7 allows a prompt — and
+ * `denied` when permission was never granted, since asking for it here is
+ * exactly what §7 forbids.
+ */
+export async function registerIfPermitted(): Promise<PermissionOutcome> {
+  if (!isPushPlatform()) return 'unsupported';
+  const plugin = getPushNotificationsPlugin();
+  if (!plugin) return 'unavailable';
+  if (!isOnboardingComplete()) {
+    log.info('Skipping push registration — onboarding still in progress (§7)');
+    return 'deferred';
+  }
+  if (!useNotificationsStore().pushEnabled) return 'disabled';
+
+  const aid = currentAid();
+  if (aid !== null && aid === registeredAid) return 'granted'; // already registered this launch
+
+  ensurePushListeners();
+
+  const perm = await plugin.checkPermissions();
+  if (perm.receive !== 'granted') {
+    log.info('Not re-registering: push permission is %s (never prompting here)', perm.receive);
+    return 'denied';
+  }
+
+  return startRegistration(plugin);
 }
 
 /** Store the token and register it with the backend (§7 — grant + rotation). */
@@ -141,29 +264,61 @@ export async function handleRegistrationToken(token: string): Promise<void> {
   const notifStore = useNotificationsStore();
   if (!notifStore.pushEnabled) return; // globally opted out — don't register
   log.info('%s FCM token → backend', rotated ? 'Rotated' : 'New');
-  await registerPushToken(token);
-}
-
-/** Deregister the current token (logout / identity switch / opt-out). */
-export async function deregisterPush(): Promise<void> {
-  const token = currentToken;
-  currentToken = null;
-  await deregisterPushToken(token ?? undefined);
+  const result = await registerPushToken(token);
+  if (!result.success) {
+    // Silence here is how push dies unnoticed: no token at the relay means no
+    // doorbell, with nothing in the log to say so.
+    log.error('Push token registration failed: %s', result.error ?? 'unknown error');
+  }
 }
 
 /**
- * Re-register or deregister when the active identity changes. Logout (no new
- * AID) deregisters; a switch deregisters the old mapping then registers the new.
+ * Deregister the current token (logout / identity switch / opt-out).
+ *
+ * MUST run while the KERI-signed session is still valid: under
+ * MATOU_REQUIRE_SIGNED_AUTH the backend 401s once the session token is gone,
+ * and the relay would keep waking a device that no longer holds the AID (§7).
+ * The failure is logged rather than discarded, and returned so callers can act.
+ */
+export async function deregisterPush(): Promise<PushRegisterResult> {
+  const token = currentToken;
+  currentToken = null;
+  registeredAid = null;
+  if (!token && !isPushPlatform()) {
+    return { success: true }; // nothing was ever registered from this platform
+  }
+  const result = await deregisterPushToken(token ?? undefined);
+  if (!result.success) {
+    log.error(
+      'Push deregistration failed (%s) — the relay may keep waking this device',
+      result.error ?? 'unknown error',
+    );
+  }
+  return result;
+}
+
+/**
+ * React to a change of the active identity.
+ *
+ * Logout deregisters (unless the token was already released while the session
+ * was still valid — see stores/identity `disconnect`), and a switch deregisters
+ * the old mapping then registers the new one. A `null → AID` transition
+ * deliberately does NOT register here: that is a first-time member creating
+ * their AID mid-onboarding, and prompting there is what §7 forbids. The
+ * eligibility watcher in ensurePushListeners picks it up once onboarding
+ * completes, without a prompt.
  */
 export async function handleIdentityChange(
   newAid: string | null,
   oldAid: string | null,
 ): Promise<void> {
   if (newAid === oldAid) return;
-  if (oldAid) {
+  if (oldAid && currentToken !== null) {
     await deregisterPush();
   }
-  if (newAid && isPushPlatform()) {
+  if (newAid && oldAid && isPushPlatform()) {
+    // Identity switch: permission was granted for the previous identity, so
+    // this cannot surface a dialog mid-onboarding.
     await requestPermissionAndRegister();
   }
 }
@@ -225,6 +380,8 @@ export async function handlePushReceipt(
 ): Promise<ComposedNotification | null> {
   if (!data || data.t !== 'm' || !data.c) return null;
   const channelId = data.c;
+  // `k` selects the Android channel, and with it the §3 importance tier.
+  const kind: MessageKind = data.k === 'dm' ? 'dm' : 'ch';
 
   const synced = await syncChannel(channelId);
 
@@ -238,24 +395,43 @@ export async function handlePushReceipt(
   // if sync failed or the channel is unknown (§4).
   const channelName = synced ? resolveChannelName(channelId) : null;
   const title = channelName ? `New message in ${channelName}` : 'New messages';
-  const composed: ComposedNotification = { channelId, title };
+  const composed: ComposedNotification = { channelId, title, kind };
 
   presentCoalesced(composed);
   return composed;
 }
 
 /**
- * Present the composed notification, coalescing a burst in one channel into a
- * single visible notification (§5) via a short debounce.
+ * Present the composed notification, coalescing a burst in one channel (§5).
+ *
+ * Leading edge: the first message of a burst rings immediately — a trailing-only
+ * debounce delays every notification by the whole window, and a WebView that
+ * Android suspends right after the wake may never run the timer at all, so the
+ * doorbell would simply never ring. Later messages inside the window are folded
+ * into one trailing update, emitted only when it would actually say something
+ * new (same notification id, so it replaces rather than stacks).
  */
 function presentCoalesced(notif: ComposedNotification): void {
-  const existing = coalesceTimers.get(notif.channelId);
-  if (existing) clearTimeout(existing);
-  const timer = setTimeout(() => {
-    coalesceTimers.delete(notif.channelId);
-    presentLocalNotification(notif);
-  }, COALESCE_WINDOW_MS);
-  coalesceTimers.set(notif.channelId, timer);
+  const state = coalesceStates.get(notif.channelId);
+  if (state) {
+    state.pending = notif;
+    return;
+  }
+  presentLocalNotification(notif);
+  coalesceStates.set(notif.channelId, {
+    timer: setTimeout(() => closeCoalesceWindow(notif.channelId), COALESCE_WINDOW_MS),
+    presentedTitle: notif.title,
+    pending: null,
+  });
+}
+
+/** End of a burst window: emit the trailing update if it changed anything. */
+function closeCoalesceWindow(channelId: string): void {
+  const state = coalesceStates.get(channelId);
+  coalesceStates.delete(channelId);
+  if (!state?.pending) return;
+  if (state.pending.title === state.presentedTitle) return; // nothing new to say
+  presentLocalNotification(state.pending);
 }
 
 /** Emit the on-device notification via the native local-notifications plugin. */
@@ -270,7 +446,7 @@ function presentLocalNotification(notif: ComposedNotification): void {
         id,
         title: notif.title,
         body: '',
-        channelId: 'messages',
+        channelId: notif.kind === 'dm' ? ANDROID_CHANNEL_DM : ANDROID_CHANNEL_GROUP,
         extra: { c: notif.channelId },
       },
     ],
@@ -297,9 +473,10 @@ export function handlePushTap(data: PushDataPayload | undefined): void {
 export function __resetPushForTest(): void {
   router = null;
   currentToken = null;
+  registeredAid = null;
   listenersRegistered = false;
-  coalesceTimers.forEach((t) => clearTimeout(t));
-  coalesceTimers.clear();
+  coalesceStates.forEach((s) => clearTimeout(s.timer));
+  coalesceStates.clear();
 }
 
 /** Ergonomic accessor for components/composables. */
@@ -308,6 +485,7 @@ export function usePush() {
     isPushPlatform,
     ensurePushListeners,
     requestPermissionAndRegister,
+    registerIfPermitted,
     deregisterPush,
     applyPushEnabled,
     handlePushReceipt,
