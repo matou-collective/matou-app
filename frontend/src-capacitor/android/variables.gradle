@@ -14,4 +14,7 @@ ext {
     androidxJunitVersion = '1.2.1'
     androidxEspressoCoreVersion = '3.6.1'
     cordovaAndroidVersion = '10.1.1'
+    // Must match what @capacitor/push-notifications resolves (#177). Setting it
+    // here makes rootProject.ext the single source of truth for app + plugin.
+    firebaseMessagingVersion = '24.1.0'
 }
