@@ -12,8 +12,9 @@
 # seccomp patch (issue #98) is Android-only, and go.mod is used as committed.
 #
 # Env:
-#   IOS_XCFRAMEWORK  output path (default build/ios/Matou.xcframework, gitignored;
-#                    WP4 repoints this at frontend/src-capacitor/ios/App/Frameworks/)
+#   IOS_XCFRAMEWORK  output path (default ../frontend/src-capacitor/ios/App/Frameworks/
+#                    Matou.xcframework — gitignored, where the iOS shell's
+#                    MatouBackend pod links it from)
 #   IOS_TARGETS      gomobile -target value (default ios,iossimulator — device
 #                    arm64 plus arm64+amd64 simulator slices; the simulator slice
 #                    is what any Mac-owning contributor runs locally)
@@ -25,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$BACKEND_DIR"
 
-IOS_XCFRAMEWORK="${IOS_XCFRAMEWORK:-build/ios/Matou.xcframework}"
+IOS_XCFRAMEWORK="${IOS_XCFRAMEWORK:-../frontend/src-capacitor/ios/App/Frameworks/Matou.xcframework}"
 IOS_TARGETS="${IOS_TARGETS:-ios,iossimulator}"
 IOS_MIN_VERSION="${IOS_MIN_VERSION:-15.0}"
 
