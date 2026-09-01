@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -70,8 +71,24 @@ func (b *EventBroker) Broadcast(event SSEEvent) {
 		}
 	}
 	for _, sink := range b.sinks {
-		go sink(event)
+		go b.runSink(sink, event)
 	}
+}
+
+// runSink invokes one sink with its panic contained. Sinks do work well off the
+// write-path — the push sink resolves ACL membership and calls the relay over
+// the network — and an unrecovered panic in a bare goroutine takes the whole
+// backend down with it, breaking the chat write-path a notification sink must
+// never be able to break (docs/architecture/08-push-notifications.md §8). One
+// bad sink is logged and skipped; the other sinks and the SSE fan-out are
+// unaffected.
+func (b *EventBroker) runSink(sink func(SSEEvent), event SSEEvent) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[Events] broadcast sink panicked on %q event: %v", event.Type, rec)
+		}
+	}()
+	sink(event)
 }
 
 // ClientCount returns the number of connected SSE clients.

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -106,12 +107,23 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// mustClient builds a client for a httptest server (loopback http, always
+// accepted) and fails the test if construction is rejected.
+func mustClient(t *testing.T, baseURL string, signer Signer, opts ...Option) *Client {
+	t.Helper()
+	c, err := New(baseURL, signer, opts...)
+	if err != nil {
+		t.Fatalf("New(%q): %v", baseURL, err)
+	}
+	return c
+}
+
 func TestClient_Register_SignsInThenForwards(t *testing.T) {
 	stub := &relayStub{}
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
-	c := New(srv.URL, fakeSigner{aid: "aid-alice"})
+	c := mustClient(t, srv.URL, fakeSigner{aid: "aid-alice"})
 	if err := c.Register(context.Background(), "fcm-tok", "android"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -135,7 +147,7 @@ func TestClient_Register_DefaultsPlatform(t *testing.T) {
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
-	c := New(srv.URL, fakeSigner{aid: "aid-alice"})
+	c := mustClient(t, srv.URL, fakeSigner{aid: "aid-alice"})
 	if err := c.Register(context.Background(), "fcm-tok", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -149,7 +161,7 @@ func TestClient_SessionIsReused(t *testing.T) {
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
-	c := New(srv.URL, fakeSigner{aid: "aid-alice"})
+	c := mustClient(t, srv.URL, fakeSigner{aid: "aid-alice"})
 	ctx := context.Background()
 	if err := c.Register(ctx, "t1", "android"); err != nil {
 		t.Fatal(err)
@@ -168,7 +180,7 @@ func TestClient_ReauthsOn401(t *testing.T) {
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
-	c := New(srv.URL, fakeSigner{aid: "aid-alice"})
+	c := mustClient(t, srv.URL, fakeSigner{aid: "aid-alice"})
 	ctx := context.Background()
 	// Prime a session.
 	if err := c.Register(ctx, "t1", "android"); err != nil {
@@ -192,7 +204,7 @@ func TestClient_Notify_ForwardsRoutingData(t *testing.T) {
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
-	c := New(srv.URL, fakeSigner{aid: "aid-alice"})
+	c := mustClient(t, srv.URL, fakeSigner{aid: "aid-alice"})
 	err := c.Notify(context.Background(), []string{"aid-bob", "aid-carol"}, "chan-1", "dm")
 	if err != nil {
 		t.Fatalf("Notify: %v", err)
@@ -221,7 +233,7 @@ func TestClient_NilSignerErrors(t *testing.T) {
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
-	c := New(srv.URL, nil)
+	c := mustClient(t, srv.URL, nil)
 	if err := c.Register(context.Background(), "t", "android"); err == nil {
 		t.Fatal("expected an error with no signer configured")
 	}
@@ -235,8 +247,66 @@ func TestClient_SignerErrorSurfaced(t *testing.T) {
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
-	c := New(srv.URL, fakeSigner{aid: "aid-alice", err: context.Canceled})
+	c := mustClient(t, srv.URL, fakeSigner{aid: "aid-alice", err: context.Canceled})
 	if err := c.Register(context.Background(), "t", "android"); err == nil {
 		t.Fatal("expected the signer error to surface")
+	}
+}
+
+// TestNew_RejectsPlainHTTPToRemoteHost: a plain-http relay URL to a remote host
+// would put device FCM tokens and full recipient-AID lists on the wire in
+// cleartext, so construction must fail and leave push dark.
+func TestNew_RejectsPlainHTTPToRemoteHost(t *testing.T) {
+	for _, raw := range []string{"http://relay.example.com", "http://203.0.113.7:8080/push"} {
+		c, err := New(raw, fakeSigner{aid: "aid-alice"})
+		if err == nil {
+			t.Fatalf("New(%q) accepted a cleartext remote relay URL (client %v)", raw, c)
+		}
+		if !strings.Contains(err.Error(), "plain-http") {
+			t.Errorf("New(%q) error = %v, want it to name the plain-http refusal", raw, err)
+		}
+	}
+}
+
+// TestNew_AllowsHTTPS and loopback http: the two shapes that are safe by default.
+func TestNew_AllowsHTTPSAndLoopbackHTTP(t *testing.T) {
+	for _, raw := range []string{
+		"https://relay.example.com",
+		"https://relay.example.com/push/",
+		"http://localhost:8791",
+		"http://127.0.0.1:8791",
+		"http://[::1]:8791",
+	} {
+		if _, err := New(raw, nil); err != nil {
+			t.Errorf("New(%q) = %v, want accepted", raw, err)
+		}
+	}
+}
+
+// TestNew_AllowInsecureHTTPEscapeHatch mirrors MATOU_KERIA_KEYSTATE_ALLOW_HTTP:
+// an explicit opt-in re-opens plain http to a remote host for dev setups.
+func TestNew_AllowInsecureHTTPEscapeHatch(t *testing.T) {
+	if _, err := New("http://relay.example.com", nil, AllowInsecureHTTP()); err != nil {
+		t.Fatalf("New with AllowInsecureHTTP = %v, want accepted", err)
+	}
+}
+
+// TestNew_RejectsJunkURLs: no scheme, no host, or a non-http scheme.
+func TestNew_RejectsJunkURLs(t *testing.T) {
+	for _, raw := range []string{"relay.example.com", "", "ftp://relay.example.com", "://nope"} {
+		if _, err := New(raw, nil); err == nil {
+			t.Errorf("New(%q) = nil error, want rejection", raw)
+		}
+	}
+}
+
+// TestNew_TrimsTrailingSlash keeps the request paths well-formed.
+func TestNew_TrimsTrailingSlash(t *testing.T) {
+	c, err := New("https://relay.example.com/push/", nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if c.baseURL != "https://relay.example.com/push" {
+		t.Errorf("baseURL = %q, want the trailing slash trimmed", c.baseURL)
 	}
 }

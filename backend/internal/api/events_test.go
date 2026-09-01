@@ -56,3 +56,49 @@ func TestEventBroker_Broadcast_StillReachesSSEClients(t *testing.T) {
 		t.Fatal("SSE client did not receive the broadcast")
 	}
 }
+
+// TestEventBroker_Broadcast_SurvivesPanickingSink asserts a panicking sink does
+// not take the process down: without the recover in runSink this test crashes
+// the whole test binary (an unrecovered panic in a bare goroutine is fatal), so
+// a green run proves the containment. It also proves the other sinks and the
+// SSE fan-out still run.
+func TestEventBroker_Broadcast_SurvivesPanickingSink(t *testing.T) {
+	b := NewEventBroker()
+	ch := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	b.AddSink(func(SSEEvent) {
+		panic("sink blew up: nil ACL manager")
+	})
+
+	healthy := make(chan SSEEvent, 1)
+	b.AddSink(func(e SSEEvent) { healthy <- e })
+
+	b.Broadcast(SSEEvent{Type: "chat:message:new", Data: map[string]interface{}{"channelId": "c1"}})
+
+	select {
+	case e := <-healthy:
+		if e.Type != "chat:message:new" {
+			t.Fatalf("healthy sink got %q, want chat:message:new", e.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("healthy sink was not invoked after a sibling sink panicked")
+	}
+
+	select {
+	case e := <-ch:
+		if e.Type != "chat:message:new" {
+			t.Fatalf("SSE client got %q, want chat:message:new", e.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE client did not receive the broadcast")
+	}
+
+	// The broker is still usable for subsequent broadcasts.
+	b.Broadcast(SSEEvent{Type: "chat:message:new", Data: map[string]interface{}{"channelId": "c2"}})
+	select {
+	case <-healthy:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker stopped delivering to sinks after a panic")
+	}
+}

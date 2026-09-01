@@ -23,7 +23,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -52,16 +54,66 @@ type Client struct {
 	sessionExp   time.Time
 }
 
+// Option configures a Client.
+type Option func(*options)
+
+type options struct {
+	allowInsecure bool
+}
+
+// AllowInsecureHTTP permits a plain-http relay URL to a non-loopback host. Only
+// for dev setups where the relay sits on a trusted network; it puts device FCM
+// tokens and full recipient-AID lists on the wire in cleartext, which is exactly
+// the routing metadata the content-free design is meant to keep private.
+func AllowInsecureHTTP() Option {
+	return func(o *options) { o.allowInsecure = true }
+}
+
 // New builds a relay client for baseURL, authenticating as signer. A per-request
 // timeout bounds every call so a slow or dead relay never blocks the chat
 // write-path. signer may be nil, in which case any call fails fast with an error
 // (the caller logs and moves on — relay failures are never fatal).
-func New(baseURL string, signer Signer) *Client {
+//
+// baseURL must be https, or plain http to a loopback host unless
+// AllowInsecureHTTP is passed; anything else is rejected with an error so the
+// caller can leave push dark rather than ship tokens in cleartext.
+func New(baseURL string, signer Signer, opts ...Option) (*Client, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("invalid relay URL: %w", err)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("relay URL %q has no host", baseURL)
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !o.allowInsecure && !isLoopbackHost(u.Hostname()) {
+			return nil, fmt.Errorf("refusing plain-http relay URL to non-loopback host %q: device tokens and recipient AIDs would travel in cleartext, use https", u.Hostname())
+		}
+	default:
+		return nil, fmt.Errorf("unsupported relay URL scheme %q", u.Scheme)
+	}
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: trimmed,
 		signer:  signer,
 		http:    &http.Client{Timeout: 10 * time.Second},
+	}, nil
+}
+
+// isLoopbackHost reports whether host is localhost or a loopback IP. Mirrors the
+// same check in internal/auth for the KERIA key-state URL.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
 	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Register maps this device's FCM token to the local AID on the relay. The AID
