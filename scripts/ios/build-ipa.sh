@@ -84,6 +84,33 @@ with open(path, "w") as f:
     f.write("\n")
 PY
 
+# --- ATS exception for a plain-http config server ---------------------------
+# The frontend fetches the config server from JS (see the [Config] lines in the
+# boot log), and a WebView request IS governed by App Transport Security —
+# unlike the Go backend's own fetch. So a plain-http config server needs a
+# per-host exception: the iOS counterpart of Android's network_security_config
+# cleartext entry. Baked from the URL rather than committed, exactly like
+# configServerUrl; when the config server moves to https this becomes a no-op.
+python3 - "$IOS/App/Info.plist" "$VITE_PROD_CONFIG_URL" <<'ATSPY'
+import plistlib, sys
+from urllib.parse import urlparse
+path, url = sys.argv[1], sys.argv[2]
+parsed = urlparse(url)
+with open(path, "rb") as f:
+    pl = plistlib.load(f)
+ats = pl.setdefault("NSAppTransportSecurity", {})
+ats["NSAllowsLocalNetworking"] = True
+domains = ats.setdefault("NSExceptionDomains", {})
+if parsed.scheme == "http" and parsed.hostname:
+    domains[parsed.hostname] = {
+        "NSExceptionAllowsInsecureHTTPLoads": True,
+        "NSIncludesSubdomains": True,
+    }
+    print("==> Baking ATS insecure-HTTP exception for %s into Info.plist" % parsed.hostname)
+with open(path, "wb") as f:
+    plistlib.dump(pl, f)
+ATSPY
+
 # --- versions ---------------------------------------------------------------
 VERSION_NAME="${MATOU_VERSION_NAME:-$(node -p "require('$FRONTEND/package.json').version")}"
 VERSION_CODE="${MATOU_VERSION_CODE:-1}"
@@ -135,14 +162,20 @@ COMMON=(-workspace App.xcworkspace -scheme App -derivedDataPath "$DERIVED"
 # shellcheck disable=SC2086
 case "$MODE" in
   simulator)
+    # Ad-hoc signed, not unsigned: the Keychain rejects every SecItem call with
+    # -34018 unless the app carries a keychain-access-group entitlement, and
+    # entitlements only take effect through a code signature. Ad-hoc ("-") needs
+    # no Apple account, so this still works locally and in CI.
     xcodebuild $XCODEBUILD_FLAGS "${COMMON[@]}" -configuration Debug \
       -destination 'generic/platform=iOS Simulator' \
-      CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" \
+      CODE_SIGN_ENTITLEMENTS=App/App.entitlements build
     APP="$DERIVED/Build/Products/Debug-iphonesimulator/App.app"
     [ -d "$APP" ] || { echo "ERROR: expected app not found at $APP" >&2; exit 1; }
     rm -rf "$OUT/simulator"; mkdir -p "$OUT/simulator"
     cp -R "$APP" "$OUT/simulator/Matou.app"
     check_app "$OUT/simulator/Matou.app"
+    codesign -d --entitlements - "$OUT/simulator/Matou.app" 2>/dev/null | head -20 || true
     echo "==> Simulator app: $OUT/simulator/Matou.app  (xcrun simctl install booted <path>)"
     ;;
   unsigned-archive)

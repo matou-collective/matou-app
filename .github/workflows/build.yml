@@ -814,7 +814,7 @@ jobs:
           CONSOLE_PID=$!
           echo "== installed container"; CONTAINER="$(xcrun simctl get_app_container "$UDID" nz.matou.app 2>/dev/null || true)"
           [ -n "$CONTAINER" ] && { ls -la "$CONTAINER" | head -20; file "$CONTAINER/public"; }
-          oslog() { xcrun simctl spawn "$UDID" log show --style compact --last 10m --predicate 'subsystem == "nz.matou.app"' 2>/dev/null || true; }
+          oslog() { xcrun simctl spawn "$UDID" log show --style compact --info --last 10m --predicate 'subsystem == "nz.matou.app"' 2>/dev/null || true; }
           PORT=""
           for i in $(seq 1 36); do
             sleep 5
@@ -838,6 +838,17 @@ jobs:
           fi
           echo "== backend port $PORT — GET /health from the runner (simulator shares the host loopback)"
           curl -sS --max-time 15 "http://127.0.0.1:$PORT/health" | tee "$EV/health.json"; echo
+          # The Swift plugins must work, not merely load: a Keychain or ATS failure
+          # still leaves the backend up, so assert on the app console too.
+          if grep -q "SecureStorage: .* failed" "$EV/console.log"; then
+            echo "::error::SecureStorage plugin failed at runtime — see the ios-smoke artefact"
+            grep -m3 "SecureStorage: .* failed" "$EV/console.log"
+            exit 1
+          fi
+          if grep -q "All servers unreachable" "$EV/console.log"; then
+            echo "::error::the WebView could not reach the config server (ATS?) — see the ios-smoke artefact"
+            exit 1
+          fi
           {
             echo "## iOS Simulator smoke — backend up on 127.0.0.1:$PORT"
             echo; echo '```'; cat "$EV/health.json"; echo; echo '```'

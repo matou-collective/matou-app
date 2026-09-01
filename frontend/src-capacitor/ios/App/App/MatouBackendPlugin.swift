@@ -58,7 +58,9 @@ public class MatouBackendPlugin: CAPPlugin, CAPBridgedPlugin {
                     }
                     self.port = boundPort
                     self.token = freshToken
-                    os_log("backend up on 127.0.0.1:%d", log: Self.log, type: .info, boundPort)
+                    // .default, not .info: info-level messages are not persisted to the
+                    // log store, so `log show` (and the CI smoke check) never sees them.
+                    os_log("backend up on 127.0.0.1:%d", log: Self.log, type: .default, boundPort)
                 }
                 call.resolve(["port": self.port, "token": self.token ?? ""])
             } catch {
