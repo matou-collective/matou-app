@@ -92,3 +92,26 @@ gh secret set ANDROID_KEY_PASSWORD --repo matou-collective/matou-app        # pr
 Without these a `workflow_dispatch` run with `platform=android` still builds
 **unsigned** smoke artefacts (loud warning; never upload them to Play); a tag
 run fails at the signing step. iOS secrets land with spec WP5.
+
+## Push-relay secrets (deployment, this repo)
+
+Consumed by the standalone push-relay service (`backend/cmd/push-relay`,
+design `docs/architecture/08-push-notifications.md` topology C, slice 2 of
+#177). The relay is the **only** holder of the FCM server credential (design
+§3). Enrolled here per that doc's requirement; see
+`docs/architecture/07-secrets-architecture.md` for the doctrine.
+
+| Secret | Delivered as | Needed if |
+| --- | --- | --- |
+| FCM service-account JSON | a **mounted file**; the relay is pointed at its path via `MATOU_PUSH_RELAY_FCM_CREDENTIALS` (never the JSON inlined into an env var — that reintroduces the `docker inspect` breach vector) | push notifications are deployed |
+
+Non-secret relay config (env): `MATOU_PUSH_RELAY_ADDR`,
+`MATOU_PUSH_RELAY_STORE` (path to the persisted `AID → token` map — plumbing,
+not identity), `MATOU_PUSH_RELAY_TOKEN_TTL`, `MATOU_PUSH_RELAY_KEYSTATE_URL`
+(KERI key-state template for signed-auth verification),
+`MATOU_PUSH_RELAY_COALESCE_WINDOW`. `MATOU_PUSH_RELAY_FCM_DISABLED=1` stubs
+dispatch for dev/dry-run (no credential required).
+
+Where the relay is hosted and who provisions the FCM credential are human
+decisions tracked on #177 (§10 Q1); this entry only reserves the secret's
+place in the inventory.
