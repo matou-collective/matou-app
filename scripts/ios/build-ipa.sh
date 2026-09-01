@@ -118,6 +118,15 @@ cd "$CAP"
 npx cap sync ios
 
 # --- xcodebuild -------------------------------------------------------------
+# Sanity-check a built .app: the web assets and the baked plugin config must be
+# inside the bundle, or the WebView comes up blank with only a console message.
+check_app() {
+  local app="$1"
+  [ -f "$app/public/index.html" ] || { echo "ERROR: $app has no public/index.html — cap sync did not copy the web assets" >&2; exit 1; }
+  [ -f "$app/capacitor.config.json" ] || { echo "ERROR: $app has no capacitor.config.json" >&2; exit 1; }
+  grep -q '"configServerUrl": *"[^"]' "$app/capacitor.config.json" || { echo "ERROR: configServerUrl not baked into $app/capacitor.config.json" >&2; exit 1; }
+  echo "==> $(basename "$app"): $(find "$app/public" -type f | wc -l | tr -d ' ') web files, configServerUrl=$(sed -n 's/.*"configServerUrl": *"\([^"]*\)".*/\1/p' "$app/capacitor.config.json")"
+}
 cd "$IOS"
 mkdir -p "$OUT"
 DERIVED="$OUT/DerivedData"
@@ -133,6 +142,7 @@ case "$MODE" in
     [ -d "$APP" ] || { echo "ERROR: expected app not found at $APP" >&2; exit 1; }
     rm -rf "$OUT/simulator"; mkdir -p "$OUT/simulator"
     cp -R "$APP" "$OUT/simulator/Matou.app"
+    check_app "$OUT/simulator/Matou.app"
     echo "==> Simulator app: $OUT/simulator/Matou.app  (xcrun simctl install booted <path>)"
     ;;
   unsigned-archive)
@@ -140,6 +150,7 @@ case "$MODE" in
     xcodebuild $XCODEBUILD_FLAGS "${COMMON[@]}" -configuration Release \
       -destination 'generic/platform=iOS' -archivePath "$OUT/archive/Matou.xcarchive" \
       CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" archive
+    check_app "$OUT/archive/Matou.xcarchive/Products/Applications/App.app"
     echo "==> Unsigned archive: $OUT/archive/Matou.xcarchive"
     ;;
   ipa)

@@ -802,10 +802,15 @@ jobs:
           UDID="$(xcrun simctl list devices available -j | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.isAvailable and (.name | test("^iPhone")))] | last | .udid')"
           test -n "$UDID" && test "$UDID" != null || { echo "::error::no available iPhone simulator"; xcrun simctl list devices; exit 1; }
           echo "== simulator $UDID"; xcrun simctl list devices available | grep "$UDID"
+          echo "== bundle contents"; ls "$APP"; cat "$APP/capacitor.config.json"; ls "$APP/public" | head
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" "$APP"
-          xcrun simctl launch --stdout="$EV/app.stdout.log" --stderr="$EV/app.stderr.log" "$UDID" nz.matou.app
+          # --console-pty attaches a pty, so Swift `print` (Capacitor's own log
+          # lines and the forwarded WebView console) is line-buffered and lands in
+          # the file as it happens; plain file redirection block-buffers it.
+          xcrun simctl launch --console-pty "$UDID" nz.matou.app > "$EV/console.log" 2>&1 &
+          CONSOLE_PID=$!
           oslog() { xcrun simctl spawn "$UDID" log show --style compact --last 10m --predicate 'subsystem == "nz.matou.app"' 2>/dev/null || true; }
           PORT=""
           for i in $(seq 1 36); do
@@ -820,9 +825,11 @@ jobs:
           sleep 5
           xcrun simctl io "$UDID" screenshot "$EV/screenshot.png"
           oslog > "$EV/oslog.txt"
+          xcrun simctl spawn "$UDID" log show --style compact --last 10m --predicate 'process == "App"' > "$EV/oslog-app-process.txt" 2>/dev/null || true
           echo "== os_log (nz.matou.app)"; tail -40 "$EV/oslog.txt"
-          echo "== backend stderr (tail)"; tail -40 "$EV/app.stderr.log" || true
+          echo "== app console (Capacitor + WebView console + Go stderr, tail)"; tail -80 "$EV/console.log" || true
           if [ -z "$PORT" ]; then
+            echo "== os_log (process App, errors/faults)"; grep -E " (E|F) " "$EV/oslog-app-process.txt" | tail -40 || true
             echo "::error::embedded backend did not report 'backend up' within 3 minutes — see the ios-smoke artefact"
             exit 1
           fi
@@ -833,6 +840,7 @@ jobs:
             echo; echo '```'; cat "$EV/health.json"; echo; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           xcrun simctl terminate "$UDID" nz.matou.app || true
+          kill "$CONSOLE_PID" 2>/dev/null || true
 
       - name: Upload smoke evidence (screenshot, logs)
         if: always()
