@@ -25,7 +25,18 @@ type OrgConfigHandler struct {
 	mu         sync.RWMutex
 	cache      *OrgConfigData
 	onUpdate   func(*OrgConfigData) // Callback when config is updated
-	roleLookup RoleLookup // nil = RBAC disabled (tests only)
+	roleLookup RoleLookup           // nil = RBAC disabled (tests only)
+
+	// Config-server fallback for a cache miss (issue #265). On a fresh mobile
+	// install the WebView cannot reach the remote plain-http config server
+	// (mixed content on both Android and iOS), so the embedded backend fetches
+	// org config from the config server server-side and serves it here — the
+	// same treatment #99 gave client config. Populated by SetConfigServerSource;
+	// when csURL is empty the fallback is disabled and a cache miss stays a 404
+	// (dev/test/desktop, where the frontend can reach the config server itself).
+	csClient *http.Client
+	csURL    string
+	csIsTest bool
 }
 
 // OrgConfigData represents the organization configuration
@@ -126,6 +137,17 @@ func (h *OrgConfigHandler) saveToDisk() error {
 	return nil
 }
 
+// SetConfigServerSource configures the config-server fallback used on a cache
+// miss (issue #265). An empty url disables the fallback. Safe to call before
+// the server starts serving. A nil client falls back to http.DefaultClient.
+func (h *OrgConfigHandler) SetConfigServerSource(client *http.Client, url string, isTest bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.csClient = client
+	h.csURL = url
+	h.csIsTest = isTest
+}
+
 // HandleGetConfig handles GET /api/v1/org/config
 func (h *OrgConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -137,7 +159,27 @@ func (h *OrgConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Reques
 
 	h.mu.RLock()
 	config := h.cache
+	csClient, csURL, csIsTest := h.csClient, h.csURL, h.csIsTest
 	h.mu.RUnlock()
+
+	// Cache miss: fetch org config from the config server server-side so the
+	// WebView never has to reach the remote plain-http host directly (issue
+	// #265; mirrors the #99 client-config flow). The result is cached in
+	// memory; the config server remains the source of truth. A 404 from the
+	// config server (org genuinely not configured yet) is not an error — the
+	// handler stays a 404 so first-run org creation still bootstraps.
+	if config == nil && csURL != "" {
+		fetched, err := FetchFromConfigServer(csClient, csURL, csIsTest)
+		if err != nil {
+			log.Printf("[OrgConfig] config-server fallback fetch failed: %v", err)
+		} else if fetched != nil {
+			h.mu.Lock()
+			h.cache = fetched
+			h.mu.Unlock()
+			config = fetched
+			log.Printf("[OrgConfig] Sourced config from config server for: %s\n", fetched.Organization.Name)
+		}
+	}
 
 	if config == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{
@@ -396,5 +438,47 @@ func MirrorToConfigServer(httpClient *http.Client, configServerURL, token string
 	default:
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("config server returned %d: %s", resp.StatusCode, respBody)
+	}
+}
+
+// FetchFromConfigServer GETs org config from the legacy config server's
+// /api/config endpoint and decodes it. It is the read counterpart to
+// MirrorToConfigServer, used by HandleGetConfig on a cache miss so the WebView
+// never has to reach the plain-http config server directly (issue #265).
+//
+// A 404 (config server reachable but no org configured yet) returns (nil, nil)
+// — a valid "no config" answer, not an error. Any other non-200 or a transport
+// failure returns an error. A nil client uses http.DefaultClient.
+func FetchFromConfigServer(httpClient *http.Client, configServerURL string, isTest bool) (*OrgConfigData, error) {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(configServerURL, "/")+"/api/config", nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	if isTest {
+		req.Header.Set("X-Test-Config", "true")
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var orgData OrgConfigData
+		if err := json.NewDecoder(resp.Body).Decode(&orgData); err != nil {
+			return nil, fmt.Errorf("decoding org config: %w", err)
+		}
+		return &orgData, nil
+	case http.StatusNotFound:
+		return nil, nil
+	default:
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("config server returned %d: %s", resp.StatusCode, respBody)
 	}
 }
