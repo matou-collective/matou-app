@@ -91,7 +91,35 @@ gh secret set ANDROID_KEY_PASSWORD --repo matou-collective/matou-app        # pr
 
 Without these a `workflow_dispatch` run with `platform=android` still builds
 **unsigned** smoke artefacts (loud warning; never upload them to Play); a tag
-run fails at the signing step. iOS secrets land with spec WP5.
+run fails at the signing step.
+
+iOS (`ios` job) — signs the Release archive and uploads to TestFlight. The App
+Store Connect API key is the one the Mac builds already notarize with; it must
+have the **App Manager** role for uploads (notarization needs less, so check).
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_IOS_CERT_B64` | `base64 -w0` of the Apple Distribution `.p12` |
+| `APPLE_IOS_CERT_PASSWORD` | password on that `.p12` |
+| `APPLE_IOS_PROFILE_B64` | `base64 -w0` of the `matou-appstore.mobileprovision` |
+| `APPLE_IOS_PROFILE_NAME` | `matou-appstore` (informational; the job reads the real name out of the profile) |
+
+```sh
+gh secret set APPLE_IOS_CERT_B64 --repo matou-collective/matou-app < ~/.matou-secrets/matou-ios-distribution.p12.b64
+gh secret set APPLE_IOS_CERT_PASSWORD --repo matou-collective/matou-app < ~/.matou-secrets/ios-cert-pass
+gh secret set APPLE_IOS_PROFILE_B64 --repo matou-collective/matou-app < ~/.matou-secrets/matouappstore.mobileprovision.b64
+gh secret set APPLE_IOS_PROFILE_NAME --repo matou-collective/matou-app --body matou-appstore
+```
+
+The certificate and profile were produced **without a Mac** — the CSR is made
+with OpenSSL and everything else is the developer portal. `docs/mobile/IOS.md`
+has the recipe, and `~/.matou-secrets/finish-ios-cert.sh` does the conversion.
+Both expire **2027-09-01**; renewing means a new `.cer` from the same key and
+re-running those two `gh secret set` lines.
+
+Without the iOS secrets a dispatch run falls back to an unsigned archive; a tag
+run fails at the signing step. The team id is read from the provisioning
+profile, so `APPLE_TEAM_ID` is not consulted by the iOS job.
 
 ## Push-relay secrets (deployment, this repo)
 

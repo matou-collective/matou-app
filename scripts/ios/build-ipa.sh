@@ -166,10 +166,47 @@ case "$MODE" in
     ;;
   ipa)
     rm -rf "$OUT/archive" "$OUT/ipa"; mkdir -p "$OUT/archive" "$OUT/ipa"
+    # Scope the signing settings to the App target's Release config. Passing them
+    # to xcodebuild instead would apply them to every target in the workspace, and
+    # the CocoaPods targets would then be asked to sign org.cocoapods.* bundles
+    # with a profile issued for nz.matou.app. project.pbxproj is restored on exit.
+    PBX="$IOS/App.xcodeproj/project.pbxproj"
+    cp "$PBX" "$PBX.signbak"
+    restore_pbx() { mv -f "$PBX.signbak" "$PBX" 2>/dev/null || true; }
+    trap restore_pbx EXIT INT TERM
+    python3 - "$PBX" "$MATOU_IOS_TEAM_ID" "$MATOU_IOS_PROFILE_NAME" "$SIGNING_IDENTITY" <<'SIGNPY'
+import re, sys
+pbx, team, profile, identity = sys.argv[1:5]
+src = open(pbx).read()
+
+# XCBuildConfiguration blocks, in full, so we can pick the App target's Release one.
+block_re = re.compile(r"\t\t[0-9A-F]{24} /\* \w+ \*/ = \{\n\t\t\tisa = XCBuildConfiguration;.*?\n\t\t\};\n", re.S)
+blocks = block_re.findall(src)
+targets = [b for b in blocks
+           if "PRODUCT_BUNDLE_IDENTIFIER = nz.matou.app;" in b and "name = Release;" in b]
+if len(targets) != 1:
+    sys.exit(f"expected exactly one App-target Release configuration, found {len(targets)}")
+block = targets[0]
+
+wanted = {
+    "CODE_SIGN_STYLE": "Manual",
+    "DEVELOPMENT_TEAM": team,
+    "PROVISIONING_PROFILE_SPECIFIER": f'"{profile}"',
+    "CODE_SIGN_IDENTITY": f'"{identity}"',
+}
+new = block
+for key, value in wanted.items():
+    line = f"\t\t\t\t{key} = {value};\n"
+    existing = re.search(rf"\t\t\t\t{key} = [^;]*;\n", new)
+    if existing:
+        new = new.replace(existing.group(0), line)
+    else:  # insert at the top of buildSettings, order inside the dict is irrelevant
+        new = new.replace("\t\t\tbuildSettings = {\n", "\t\t\tbuildSettings = {\n" + line, 1)
+open(pbx, "w").write(src.replace(block, new))
+print(f"build-ipa: signing pinned to the App target — team {team}, profile {profile}", file=sys.stderr)
+SIGNPY
     xcodebuild $XCODEBUILD_FLAGS "${COMMON[@]}" -configuration Release \
       -destination 'generic/platform=iOS' -archivePath "$OUT/archive/Matou.xcarchive" \
-      CODE_SIGN_STYLE=Manual "DEVELOPMENT_TEAM=$MATOU_IOS_TEAM_ID" \
-      "CODE_SIGN_IDENTITY=$SIGNING_IDENTITY" "PROVISIONING_PROFILE_SPECIFIER=$MATOU_IOS_PROFILE_NAME" \
       archive
     EXPORT_PLIST="$OUT/archive/ExportOptions.plist"
     cat > "$EXPORT_PLIST" <<PLIST
@@ -192,5 +229,6 @@ PLIST
     mv -f "$IPA" "$OUT/ipa/matou-${VERSION_NAME}-ios.ipa"
     echo "==> IPA: $OUT/ipa/matou-${VERSION_NAME}-ios.ipa"
     codesign -dv --verbose=2 "$OUT/archive/Matou.xcarchive/Products/Applications/App.app" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier=" | head -5 || true
+    restore_pbx; trap - EXIT INT TERM
     ;;
 esac
