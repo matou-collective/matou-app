@@ -89,11 +89,27 @@ keychain + `altool` upload are §3 / WP5 of the spec; they are not wired yet.
   `src-capacitor/capacitor.config.json` — that is how the baked
   `configServerUrl` reaches `getConfig()`. It is git-ignored; the source file's
   `configServerUrl` is `""` on purpose (the build scripts fill it).
-- **ATS.** `Info.plist` sets `NSAllowsLocalNetworking` so the WebView may talk to
-  `http://127.0.0.1`. The config server (plain `http://awa.matou.nz:3904`) is
-  fetched by Go's `net/http`, which ATS does not govern, so no
-  `NSAllowsArbitraryLoads`. If a device build still blocks loopback, add an
-  `NSExceptionDomains` entry for `127.0.0.1` rather than arbitrary loads.
+- **ATS / cleartext.** `Info.plist` sets `NSAllowsLocalNetworking` so the WebView
+  may talk to `http://127.0.0.1`. Nothing more is opened, deliberately: this
+  mirrors Android's `network_security_config`, which permits cleartext to
+  loopback only. The WebView **cannot** fetch the plain-http config server
+  directly on either platform — `capacitor://localhost` (iOS) and
+  `https://localhost` (Android) are secure origins, so a plain-http subresource
+  is blocked as mixed content no matter what ATS allows. That is why
+  `clientConfig.ts` sources the client config from the embedded backend's
+  loopback endpoint (issue #99); Go's `net/http` is not subject to either
+  policy. Adding an `NSExceptionDomains` entry does **not** work around this and
+  would only put iOS below Android's posture — don't.
+- **"Cannot connect to config server" on a fresh install** is expected today and
+  is not iOS-specific. `fetchOrgConfig()` asks the backend first, and the
+  backend's `/api/v1/org/config` serves only its own cache — it mirrors org
+  config *to* the config server and never fetches *from* it — so a device with
+  no org yet gets a 404 and then falls back to the direct fetch that the
+  paragraph above blocks. Android shows the same screen when pointed at a
+  remote plain-http config server; the dev/e2e recipes avoid it by pointing at
+  a localhost config server (`adb reverse`). Fixing it properly means giving
+  org config the same #99 treatment (proxy it through the backend) or moving
+  the config server to https — an app-level change, tracked separately.
 - **Data dir** is `<Application Support>/matou`, excluded from backup (key
   material + any-sync state; same device-bound posture as Android). Keychain
   items use `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — no iCloud

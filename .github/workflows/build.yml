@@ -838,16 +838,28 @@ jobs:
           fi
           echo "== backend port $PORT — GET /health from the runner (simulator shares the host loopback)"
           curl -sS --max-time 15 "http://127.0.0.1:$PORT/health" | tee "$EV/health.json"; echo
-          # The Swift plugins must work, not merely load: a Keychain or ATS failure
-          # still leaves the backend up, so assert on the app console too.
+          # The Swift plugins must work, not merely load: the backend comes up even
+          # when the Keychain rejects every call, so assert on the app console too.
           if grep -q "SecureStorage: .* failed" "$EV/console.log"; then
             echo "::error::SecureStorage plugin failed at runtime — see the ios-smoke artefact"
             grep -m3 "SecureStorage: .* failed" "$EV/console.log"
             exit 1
           fi
-          if grep -q "All servers unreachable" "$EV/console.log"; then
-            echo "::error::the WebView could not reach the config server (ATS?) — see the ios-smoke artefact"
+          # Proves the whole WebView -> loopback backend -> config server chain, which
+          # is how a Capacitor build sources its client config (issue #99).
+          if ! grep -q "Client config loaded" "$EV/console.log"; then
+            echo "::error::the WebView never loaded its client config through the embedded backend"
             exit 1
+          fi
+          # Expected before an org exists: the backend serves org config from its own
+          # cache only (it mirrors to the config server, never fetches from it), and a
+          # WebView cannot fetch the plain-http config server directly on EITHER mobile
+          # platform — capacitor:// and https://localhost are secure origins, so that
+          # request is mixed content, and Android additionally permits cleartext to
+          # loopback only. Same screen on Android; tracked as an app-level follow-up,
+          # not an iOS shell problem.
+          if grep -q "All servers unreachable" "$EV/console.log"; then
+            echo "::notice::org config unavailable (no org configured yet) — expected on a fresh install, matches Android"
           fi
           {
             echo "## iOS Simulator smoke — backend up on 127.0.0.1:$PORT"

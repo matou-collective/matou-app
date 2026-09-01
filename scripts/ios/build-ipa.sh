@@ -84,33 +84,6 @@ with open(path, "w") as f:
     f.write("\n")
 PY
 
-# --- ATS exception for a plain-http config server ---------------------------
-# The frontend fetches the config server from JS (see the [Config] lines in the
-# boot log), and a WebView request IS governed by App Transport Security —
-# unlike the Go backend's own fetch. So a plain-http config server needs a
-# per-host exception: the iOS counterpart of Android's network_security_config
-# cleartext entry. Baked from the URL rather than committed, exactly like
-# configServerUrl; when the config server moves to https this becomes a no-op.
-python3 - "$IOS/App/Info.plist" "$VITE_PROD_CONFIG_URL" <<'ATSPY'
-import plistlib, sys
-from urllib.parse import urlparse
-path, url = sys.argv[1], sys.argv[2]
-parsed = urlparse(url)
-with open(path, "rb") as f:
-    pl = plistlib.load(f)
-ats = pl.setdefault("NSAppTransportSecurity", {})
-ats["NSAllowsLocalNetworking"] = True
-domains = ats.setdefault("NSExceptionDomains", {})
-if parsed.scheme == "http" and parsed.hostname:
-    domains[parsed.hostname] = {
-        "NSExceptionAllowsInsecureHTTPLoads": True,
-        "NSIncludesSubdomains": True,
-    }
-    print("==> Baking ATS insecure-HTTP exception for %s into Info.plist" % parsed.hostname)
-with open(path, "wb") as f:
-    plistlib.dump(pl, f)
-ATSPY
-
 # --- versions ---------------------------------------------------------------
 VERSION_NAME="${MATOU_VERSION_NAME:-$(node -p "require('$FRONTEND/package.json').version")}"
 VERSION_CODE="${MATOU_VERSION_CODE:-1}"
