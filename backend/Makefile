@@ -39,11 +39,12 @@ build-android-aar:
 		scripts/android/build-aar.sh
 
 # iOS: gomobile bind cmd/mobile into an .xcframework (device arm64 + simulator
-# arm64/amd64). macOS + Xcode only; gomobile/gobind must be on PATH at the same
+# arm64/amd64), dropped where the Capacitor iOS shell's MatouBackend pod links
+# it from (gitignored). macOS + Xcode only; gomobile/gobind must be on PATH at the same
 # XMOBILE_VERSION setup-toolchain.sh pins. No libc replace — the #98 seccomp
 # patch is Android-only. Proven in CI by the `ios-spike` job in
 # .github/workflows/build.yml (WP3 of docs/plans/2026-08-31-github-release-builds-spec.md).
-IOS_XCFRAMEWORK ?= build/ios/Matou.xcframework
+IOS_XCFRAMEWORK ?= ../frontend/src-capacitor/ios/App/Frameworks/Matou.xcframework
 
 build-ios-xcframework:
 	IOS_XCFRAMEWORK="$(IOS_XCFRAMEWORK)" scripts/ios/build-xcframework.sh
