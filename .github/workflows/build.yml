@@ -767,6 +767,7 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           go version
           pod --version
+          df -h /
 
       - name: Install gomobile + gobind (pinned)
         run: |
@@ -877,19 +878,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Unsigned Release device archive
-        env:
-          VITE_PROD_CONFIG_URL: ${{ secrets.VITE_PROD_CONFIG_URL }}
-          MATOU_VERSION_CODE: ${{ needs.prepare.outputs.build_number }}
-          MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          bash scripts/ios/build-ipa.sh --unsigned-archive
-          APP=frontend/dist/capacitor/ios/archive/Matou.xcarchive/Products/Applications/App.app
-          echo "== archive app"; plutil -p "$APP/Info.plist" | grep -E "CFBundle(Identifier|ShortVersionString|Version)\"|MinimumOSVersion"
-          lipo -info "$APP/App"
-          test -f "$APP/PrivacyInfo.xcprivacy" && echo "PrivacyInfo.xcprivacy present"
-
       - name: Zip Simulator app
         run: |
           set -euo pipefail
@@ -903,6 +891,35 @@ jobs:
           path: ${{ runner.temp }}/Matou-simulator.app.zip
           if-no-files-found: error
           retention-days: 14
+
+      # The Debug Simulator build's DerivedData plus the Go and gomobile caches fill
+      # the runner: the Release archive died mid-rsync with "Input/output error"
+      # writing Capacitor.framework (run 33463417761). Everything below is either
+      # already uploaded or rebuilt from scratch by the archive, and nothing after
+      # this point needs Go — only the xcframework, which is kept.
+      - name: Reclaim disk space before the archive
+        run: |
+          set -euo pipefail
+          df -h /
+          xcrun simctl shutdown all || true
+          xcrun simctl delete unavailable || true
+          rm -rf frontend/dist/capacitor/ios/DerivedData frontend/dist/capacitor/ios/simulator
+          go clean -cache -testcache || true
+          go clean -modcache || true
+          df -h /
+
+      - name: Unsigned Release device archive
+        env:
+          VITE_PROD_CONFIG_URL: ${{ secrets.VITE_PROD_CONFIG_URL }}
+          MATOU_VERSION_CODE: ${{ needs.prepare.outputs.build_number }}
+          MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash scripts/ios/build-ipa.sh --unsigned-archive
+          APP=frontend/dist/capacitor/ios/archive/Matou.xcarchive/Products/Applications/App.app
+          echo "== archive app"; plutil -p "$APP/Info.plist" | grep -E "CFBundle(Identifier|ShortVersionString|Version)\"|MinimumOSVersion"
+          lipo -info "$APP/App"
+          test -f "$APP/PrivacyInfo.xcprivacy" && echo "PrivacyInfo.xcprivacy present"
 
   release:
     needs: [prepare, build, android]
