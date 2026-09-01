@@ -45,9 +45,10 @@ mint per-repo unless this repo needs a token none of the others use.
 
 ## Android / Play Store secrets (this repo only)
 
-Consumed by the `build-aab` job in `.forgejo/workflows/android.yml`
-(#176). Source of truth is the org password manager entry "Play upload key —
-nz.matou.app"; see `docs/mobile/PLAY_STORE.md` for generation.
+Consumed by the manual `build-aab` smoke job in `.forgejo/workflows/android.yml`
+(#176) and — for real releases — by the GitHub `android` job below. Source of
+truth is the org password manager entry "Play upload key — nz.matou.app"; see
+`docs/mobile/PLAY_STORE.md` for generation.
 
 | Secret | Value |
 | --- | --- |
@@ -60,6 +61,37 @@ nz.matou.app"; see `docs/mobile/PLAY_STORE.md` for generation.
 The job decodes the keystore into a `mktemp` dir and removes it on exit;
 nothing is written under the checkout. Locally the same values live in
 `frontend/src-capacitor/android/keystore.properties` (git-ignored).
+
+## GitHub release secrets (`github.com/matou-collective/matou-app`)
+
+Release installers are built by GitHub Actions on `v*` tags
+(`.github/workflows/build.yml`; spec: `docs/plans/2026-08-31-github-release-builds-spec.md`).
+GitHub is a push-mirror of this repo, so tags arrive automatically.
+
+Already present (desktop): `GH_TOKEN`, `CSC_LINK`, `CSC_KEY_PASSWORD`,
+`APPLE_API_KEY_CONTENT`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_TEAM_ID`,
+`VITE_PROD_CONFIG_URL`, `VITE_ENV`, `VITE_SMTP_HOST`, `VITE_SMTP_PORT`.
+
+Android (`android` job) — same values as the Forgejo set above; note the
+config URL keeps GitHub's existing `VITE_PROD_CONFIG_URL` name:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_B64` | `base64 -w0 matou-upload.jks` |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | `matou-upload` |
+| `ANDROID_KEY_PASSWORD` | key password |
+
+```sh
+gh secret set ANDROID_KEYSTORE_B64 --repo matou-collective/matou-app --body "$(base64 -w0 ~/.matou-secrets/matou-upload.jks)"
+gh secret set ANDROID_KEYSTORE_PASSWORD --repo matou-collective/matou-app   # prompts
+gh secret set ANDROID_KEY_ALIAS --repo matou-collective/matou-app --body matou-upload
+gh secret set ANDROID_KEY_PASSWORD --repo matou-collective/matou-app        # prompts
+```
+
+Without these a `workflow_dispatch` run with `platform=android` still builds
+**unsigned** smoke artefacts (loud warning; never upload them to Play); a tag
+run fails at the signing step. iOS secrets land with spec WP5.
 
 ## Push-relay secrets (deployment, this repo)
 

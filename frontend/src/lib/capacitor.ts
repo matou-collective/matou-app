@@ -1,8 +1,9 @@
 /**
- * Capacitor (Android) bridge helpers.
+ * Capacitor (Android + iOS) bridge helpers.
  *
  * The native shell injects `window.Capacitor` into the WebView, which is how we
- * reach the MatouBackend plugin (src-capacitor/android/.../MatouBackendPlugin.java)
+ * reach the MatouBackend plugin (src-capacitor/android/.../MatouBackendPlugin.java,
+ * src-capacitor/ios/App/App/MatouBackendPlugin.swift)
  * that boots the embedded Go backend and reports its loopback port and per-launch
  * API token.
  *
@@ -10,7 +11,7 @@
  * not grow a Capacitor dependency, and the injected global is all we need.
  */
 
-/** Result of MatouBackend.getInfo() — mirrors MatouBackendPlugin.java. */
+/** Result of MatouBackend.getInfo() — mirrors MatouBackendPlugin.java / .swift. */
 export interface BackendInfo {
   /** Loopback port the embedded Go backend bound to. */
   port: number;
@@ -23,8 +24,8 @@ interface MatouBackendPlugin {
 }
 
 /**
- * Secure key/value storage backed by EncryptedSharedPreferences on Android.
- * The native side lands in #71; this is the contract the frontend will call.
+ * Secure key/value storage backed by EncryptedSharedPreferences on Android and
+ * the Keychain on iOS (#71). Both native sides implement exactly this contract.
  */
 export interface SecureStoragePlugin {
   getItem(options: { key: string }): Promise<{ value: string | null }>;
