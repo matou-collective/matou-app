@@ -49,7 +49,13 @@ public class MatouBackendPlugin: CAPPlugin, CAPBridgedPlugin {
                     let freshToken = try Self.randomToken()
                     let dataDir = try Self.dataDirectory()
                     var boundPort: Int = 0
-                    try MobileStart(dataDir.path, configServerUrl, freshToken, &boundPort)
+                    // MobileStart is a C function (not an ObjC method), so Swift does
+                    // not bridge its trailing NSError** into `throws`; check by hand.
+                    var startError: NSError?
+                    guard MobileStart(dataDir.path, configServerUrl, freshToken, &boundPort, &startError) else {
+                        throw startError ?? NSError(domain: "go", code: 1,
+                                                    userInfo: [NSLocalizedDescriptionKey: "MobileStart returned false without an error"])
+                    }
                     self.port = boundPort
                     self.token = freshToken
                     os_log("backend up on 127.0.0.1:%d", log: Self.log, type: .info, boundPort)
