@@ -38,6 +38,16 @@ build-android-aar:
 	ANDROID_ENV="$(ANDROID_ENV)" ANDROID_AAR="$(ANDROID_AAR)" \
 		scripts/android/build-aar.sh
 
+# iOS: gomobile bind cmd/mobile into an .xcframework (device arm64 + simulator
+# arm64/amd64). macOS + Xcode only; gomobile/gobind must be on PATH at the same
+# XMOBILE_VERSION setup-toolchain.sh pins. No libc replace — the #98 seccomp
+# patch is Android-only. Proven in CI by the `ios-spike` job in
+# .github/workflows/build.yml (WP3 of docs/plans/2026-08-31-github-release-builds-spec.md).
+IOS_XCFRAMEWORK ?= build/ios/Matou.xcframework
+
+build-ios-xcframework:
+	IOS_XCFRAMEWORK="$(IOS_XCFRAMEWORK)" scripts/ios/build-xcframework.sh
+
 build-all: build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-windows-amd64
 
 run: build
@@ -145,6 +155,7 @@ help:
 	@echo "  make build              - Build the server binary"
 	@echo "  make build-all          - Cross-compile for all platforms (Electron packaging)"
 	@echo "  make build-android-aar  - gomobile bind Android .aar (needs scripts/android/setup-toolchain.sh)"
+	@echo "  make build-ios-xcframework - gomobile bind iOS .xcframework (macOS + Xcode + gomobile on PATH)"
 	@echo "  make run                - Build and run the server"
 	@echo "  make run-test           - Run server in test mode (isolated data)"
 	@echo ""
@@ -173,7 +184,7 @@ help:
 	@echo "  make clean-data-test    - Remove test mode data"
 	@echo "  make clean-all          - Remove build artifacts + all data (dev + test)"
 
-.PHONY: build build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-windows-amd64 build-android-aar build-all \
+.PHONY: build build-darwin-arm64 build-darwin-amd64 build-linux-amd64 build-windows-amd64 build-android-aar build-ios-xcframework build-all \
         run run-test test test-coverage test-integration test-integration-keep test-all \
         testnet-up testnet-down testnet-clean testnet-status testnet-health \
         lint fmt vet clean clean-data clean-data-test clean-all help
