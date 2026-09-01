@@ -20,6 +20,27 @@ const (
 	authLimitBurst = 20
 )
 
+// Rate limit for /notify, per authenticated sender AID. A sender's backend
+// fires one wake signal per chat write, so a few per second sustained is
+// generous; the burst absorbs a backlog flush. Without this a sender can defeat
+// coalescing entirely by varying the channel id on every call (§3/§5).
+const (
+	notifyLimitRate  = 5.0
+	notifyLimitBurst = 60
+)
+
+// maxNotifyRecipients caps the fan-out of a single /notify call. The 1MB body
+// limit alone would admit ~20k recipients, each dispatched to FCM sequentially.
+const maxNotifyRecipients = 512
+
+// maxOpaqueIDLen bounds caller-supplied opaque ids (channel ids are
+// "ChatChannel-<unixnano>", ~30 chars, so this is generous).
+const maxOpaqueIDLen = 128
+
+// maxDeviceTokenLen bounds a device registration token (FCM tokens are ~160-200
+// chars).
+const maxDeviceTokenLen = 512
+
 // Config tunes a relay Server.
 type Config struct {
 	// Verifier drives the signed-challenge login flow the relay reuses from the
@@ -43,6 +64,7 @@ type Server struct {
 	coalescer *coalescer
 	byIP      *auth.RateLimiter
 	byAID     *auth.RateLimiter
+	notifyBy  *auth.RateLimiter
 }
 
 // NewServer wires a relay Server from Config.
@@ -54,6 +76,7 @@ func NewServer(cfg Config) *Server {
 		coalescer: newCoalescer(cfg.CoalesceWindow),
 		byIP:      auth.NewRateLimiter(authLimitRate, authLimitBurst),
 		byAID:     auth.NewRateLimiter(authLimitRate, authLimitBurst),
+		notifyBy:  auth.NewRateLimiter(notifyLimitRate, notifyLimitBurst),
 	}
 }
 
@@ -193,14 +216,24 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token and platform are required"})
 		return
 	}
-	if req.Token == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token is required"})
+	if !validDeviceToken(req.Token) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token is required and must be an opaque device token"})
 		return
 	}
 	if req.Platform == "" {
 		req.Platform = "android"
 	}
+	if !validOpaqueID(req.Platform, 32, false) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "platform must be a short opaque identifier"})
+		return
+	}
 	if err := s.store.Register(verifiedAID(r), req.Token, req.Platform); err != nil {
+		if errors.Is(err, ErrTokenOwnedByOtherAID) {
+			// The token still belongs to another AID: refusing keeps a caller
+			// from stealing another member's device (see store.Register).
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "token is registered to another identity; deregister it first"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register token"})
 		return
 	}
@@ -261,16 +294,35 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	if !s.notifyBy.Allow(verifiedAID(r)) {
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many notify requests, retry later"})
+		return
+	}
 	var req notifyRequest
 	if err := decodeStrict(r, &req); err != nil {
 		// A rejected unknown field lands here: the relay never accepts content.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid notify body"})
 		return
 	}
-	if len(req.Recipients) == 0 || req.Channel == "" {
+	if len(req.Recipients) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "recipients and channel are required"})
 		return
 	}
+	if len(req.Recipients) > maxNotifyRecipients {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "too many recipients"})
+		return
+	}
+	// The channel id is the only caller-supplied string that reaches the device
+	// (FCM data field "c"). Constraining it to an opaque id keeps the payload
+	// content-free: without this a sender could smuggle kilobytes of readable
+	// text onto a recipient's device (§2/§4).
+	if !validOpaqueID(req.Channel, maxOpaqueIDLen, true) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "channel must be an opaque id of up to 128 [A-Za-z0-9_-] characters"})
+		return
+	}
+	// kind is mapped through a strict allow-list, so the "k" field on the wire
+	// is one of two constants and never caller text.
 	priority, kind, ok := priorityForKind(req.Kind)
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "kind must be dm or ch"})
@@ -333,6 +385,55 @@ func priorityForKind(kind string) (priority, normalised string, ok bool) {
 	default:
 		return "", "", false
 	}
+}
+
+// validOpaqueID reports whether v is a plausible opaque identifier: at most
+// maxLen bytes and drawn only from [A-Za-z0-9_-]. Empty is accepted only when
+// required is false. Every caller-supplied string the relay stores or forwards
+// to a device is held to this shape — the relay routes opaque ids, it never
+// carries free text.
+func validOpaqueID(v string, maxLen int, required bool) bool {
+	if v == "" {
+		return !required
+	}
+	if len(v) > maxLen {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if !isOpaqueByte(v[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isOpaqueByte reports whether c is in the opaque-id charset [A-Za-z0-9_-].
+func isOpaqueByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		return true
+	default:
+		return false
+	}
+}
+
+// validDeviceToken reports whether v looks like an FCM registration token: a
+// bounded opaque string. FCM tokens are ~160-200 chars of [A-Za-z0-9_-] plus
+// ":" and "." separators, so the charset is validOpaqueID's widened by those
+// two. The token is echoed into the FCM request body, so it is held to the same
+// no-free-text rule as the channel id.
+func validDeviceToken(v string) bool {
+	if v == "" || len(v) > maxDeviceTokenLen {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c == ':' || c == '.' {
+			continue
+		} else if !isOpaqueByte(c) {
+			return false
+		}
+	}
+	return true
 }
 
 // --- helpers ---

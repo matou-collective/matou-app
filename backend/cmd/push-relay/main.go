@@ -9,7 +9,7 @@
 // Configuration is entirely from the environment:
 //
 //	MATOU_PUSH_RELAY_ADDR              listen address              (default ":8090")
-//	MATOU_PUSH_RELAY_STORE             token-store file path       (default "" = in-memory)
+//	MATOU_PUSH_RELAY_STORE             token-store file path       (required unless MATOU_PUSH_RELAY_FCM_DISABLED)
 //	MATOU_PUSH_RELAY_TOKEN_TTL         untouched-token expiry      (default "720h" = 30d)
 //	MATOU_PUSH_RELAY_COALESCE_WINDOW   burst-coalesce window       (default "10s")
 //	MATOU_PUSH_RELAY_FCM_CREDENTIALS   Google service-account JSON (required unless MATOU_PUSH_RELAY_FCM_DISABLED)
@@ -20,6 +20,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -37,6 +38,10 @@ const shutdownGrace = 10 * time.Second
 func main() {
 	addr := envOr("MATOU_PUSH_RELAY_ADDR", ":8090")
 	storePath := os.Getenv("MATOU_PUSH_RELAY_STORE")
+	fcmDisabled := truthy(os.Getenv("MATOU_PUSH_RELAY_FCM_DISABLED"))
+	if err := checkStorePath(storePath, fcmDisabled); err != nil {
+		log.Fatal(err)
+	}
 	tokenTTL := envDuration("MATOU_PUSH_RELAY_TOKEN_TTL", 720*time.Hour)
 	coalesceWindow := envDuration("MATOU_PUSH_RELAY_COALESCE_WINDOW", 10*time.Second)
 
@@ -58,7 +63,7 @@ func main() {
 		log.Fatalf("open token store: %v", err)
 	}
 
-	fcm, err := resolveFCM()
+	fcm, err := resolveFCM(fcmDisabled)
 	if err != nil {
 		log.Fatalf("FCM: %v", err)
 	}
@@ -111,8 +116,8 @@ func main() {
 // resolveFCM builds the FCM sender from the credential path, or a no-op sender
 // when explicitly disabled (dry-run/dev so the relay can run without the
 // secret).
-func resolveFCM() (pushrelay.FCMSender, error) {
-	if truthy(os.Getenv("MATOU_PUSH_RELAY_FCM_DISABLED")) {
+func resolveFCM(fcmDisabled bool) (pushrelay.FCMSender, error) {
+	if fcmDisabled {
 		log.Println("[push-relay] FCM dispatch DISABLED (MATOU_PUSH_RELAY_FCM_DISABLED set) — running as a no-op")
 		return pushrelay.NoopFCM{}, nil
 	}
@@ -121,6 +126,19 @@ func resolveFCM() (pushrelay.FCMSender, error) {
 		log.Fatal("MATOU_PUSH_RELAY_FCM_CREDENTIALS is required (path to the Google service-account JSON); set MATOU_PUSH_RELAY_FCM_DISABLED=1 to run without dispatch")
 	}
 	return pushrelay.NewFCMClient(credPath)
+}
+
+// checkStorePath enforces that the relay is started with a persistent token
+// store. An empty path yields an in-memory store, so a restart or redeploy
+// would drop every registered device token — and because the app only
+// re-registers on permission grant or FCM token rotation (§7), affected users
+// would silently stop receiving push with nothing to indicate why. The
+// in-memory store stays available for dry-runs, where dispatch is off anyway.
+func checkStorePath(storePath string, fcmDisabled bool) error {
+	if storePath != "" || fcmDisabled {
+		return nil
+	}
+	return errors.New("MATOU_PUSH_RELAY_STORE is required (path to the token-store file); an in-memory store loses every device token on restart. Set MATOU_PUSH_RELAY_FCM_DISABLED=1 for an in-memory dry-run")
 }
 
 func envOr(key, def string) string {

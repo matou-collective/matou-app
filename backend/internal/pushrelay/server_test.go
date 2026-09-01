@@ -6,6 +6,8 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,13 +40,17 @@ type staticToken string
 func (s staticToken) token(context.Context) (string, error) { return string(s), nil }
 
 // mockFCM records the messages it receives and returns UNREGISTERED for tokens
-// in unregistered. It mimics the FCM v1 messages:send endpoint.
+// in unregistered. It mimics the FCM v1 messages:send endpoint. It keeps the
+// RAW request bytes as well as the decoded message: content-free assertions
+// must be made against what actually goes on the wire, not against a struct
+// that cannot represent the forbidden fields.
 type mockFCM struct {
 	server       *httptest.Server
 	unregistered map[string]bool
 
 	mu       sync.Mutex
 	received []fcmV1Message
+	raw      [][]byte
 }
 
 func newMockFCM(unregistered ...string) *mockFCM {
@@ -53,13 +59,19 @@ func newMockFCM(unregistered ...string) *mockFCM {
 		m.unregistered[t] = true
 	}
 	m.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		var msg fcmV1Message
-		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		if err := json.Unmarshal(body, &msg); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		m.mu.Lock()
 		m.received = append(m.received, msg)
+		m.raw = append(m.raw, body)
 		m.mu.Unlock()
 		if m.unregistered[msg.Message.Token] {
 			w.WriteHeader(http.StatusNotFound)
@@ -85,6 +97,13 @@ func (m *mockFCM) messages() []fcmV1Message {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]fcmV1Message(nil), m.received...)
+}
+
+// rawBodies returns the exact bytes the relay POSTed to the FCM endpoint.
+func (m *mockFCM) rawBodies() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][]byte(nil), m.raw...)
 }
 
 func (m *mockFCM) close() { m.server.Close() }
@@ -273,8 +292,11 @@ func TestNotifyFanoutAndPriority(t *testing.T) {
 	}
 }
 
-// Data-only: no notification block ever leaves the relay (content-free).
-func TestNotifyPayloadHasNoNotificationBlock(t *testing.T) {
+// Data-only and content-free: the bytes the relay actually POSTs to FCM carry
+// no notification block and nothing the caller could turn into readable text.
+// Asserting on the RAW body matters — re-marshalling the decoded fcmV1Message
+// would only restate a compile-time fact and could never fail.
+func TestNotifyPayloadIsContentFreeOnTheWire(t *testing.T) {
 	mock := newMockFCM()
 	defer mock.close()
 	srv, res, store := newTestServer(mock.client())
@@ -284,17 +306,87 @@ func TestNotifyPayloadHasNoNotificationBlock(t *testing.T) {
 	alice, _ := testAID(res)
 	_ = store.Register(alice, "alice-1", "android")
 
+	// The channel id is the only caller-controlled value; make it a marker the
+	// assertions below can hunt for, alongside strings the caller must not be
+	// able to place on the wire at all.
 	_ = do(h, http.MethodPost, "/notify", tok, map[string]any{
-		"recipients": []string{alice}, "channel": "c1", "kind": "dm",
+		"recipients": []string{alice}, "channel": "ChatChannel-1756600000000000000", "kind": "dm",
 	})
-	// The wire type has no notification field; assert the raw JSON too.
-	msgs := mock.messages()
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 push, got %d", len(msgs))
+
+	bodies := mock.rawBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("expected 1 push, got %d", len(bodies))
 	}
-	raw, _ := json.Marshal(msgs[0])
-	if strings.Contains(strings.ToLower(string(raw)), "notification") {
+	raw := string(bodies[0])
+
+	// No notification block: Android would render its title/body itself.
+	var wire map[string]any
+	if err := json.Unmarshal(bodies[0], &wire); err != nil {
+		t.Fatalf("FCM body is not JSON: %v", err)
+	}
+	msg, _ := wire["message"].(map[string]any)
+	if msg == nil {
+		t.Fatalf("FCM body has no message member: %s", raw)
+	}
+	if _, ok := msg["notification"]; ok {
 		t.Fatalf("payload must not contain a notification block: %s", raw)
+	}
+	if strings.Contains(strings.ToLower(raw), "notification") {
+		t.Fatalf("payload must not mention notification anywhere: %s", raw)
+	}
+
+	// The data block is exactly the §4 field budget and nothing else.
+	data, _ := msg["data"].(map[string]any)
+	want := map[string]any{"t": "m", "c": "ChatChannel-1756600000000000000", "k": "dm", "v": "1"}
+	if len(data) != len(want) {
+		t.Fatalf("data must carry exactly %d fields, got %+v", len(want), data)
+	}
+	for k, v := range want {
+		if data[k] != v {
+			t.Fatalf("data[%q] = %v, want %v", k, data[k], v)
+		}
+	}
+}
+
+// The relay must not let a sender smuggle readable text onto a device through
+// the one caller-supplied field that reaches it, the channel id (finding 1).
+func TestNotifyRejectsNonOpaqueChannel(t *testing.T) {
+	mock := newMockFCM()
+	defer mock.close()
+	srv, res, store := newTestServer(mock.client())
+	h := srv.Handler()
+	sender, sPriv := testAID(res)
+	tok := login(t, h, sender, sPriv)
+	alice, _ := testAID(res)
+	_ = store.Register(alice, "alice-1", "android")
+
+	for name, channel := range map[string]string{
+		"spaces":      "Ben says: meet me at the pa at 8pm",
+		"punctuation": "c1; DROP TABLE",
+		"newline":     "c1\nsecret",
+		"unicode":     "kia ora e te whanau \u2014 hui at 8",
+		"emptyish":    " ",
+		"tooLong":     strings.Repeat("a", maxOpaqueIDLen+1),
+	} {
+		rec := do(h, http.MethodPost, "/notify", tok, map[string]any{
+			"recipients": []string{alice}, "channel": channel, "kind": "dm",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400 for channel %q, got %d", name, channel, rec.Code)
+		}
+	}
+	if n := len(mock.rawBodies()); n != 0 {
+		t.Fatalf("no FCM call must be made for a rejected channel, got %d", n)
+	}
+
+	// A well-formed opaque id still works.
+	if rec := do(h, http.MethodPost, "/notify", tok, map[string]any{
+		"recipients": []string{alice}, "channel": "ChatChannel-1756600000000000000", "kind": "dm",
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("valid channel id rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := len(mock.rawBodies()); n != 1 {
+		t.Fatalf("expected 1 push for the valid channel, got %d", n)
 	}
 }
 
@@ -429,5 +521,184 @@ func TestHealth(t *testing.T) {
 	rec := do(srv.Handler(), http.MethodGet, "/health", "", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("health: %d", rec.Code)
+	}
+}
+
+// The relay caps fan-out: a 1MB body would otherwise admit thousands of
+// recipients, each dispatched to FCM sequentially (finding 6).
+func TestNotifyRejectsOversizedRecipientList(t *testing.T) {
+	mock := newMockFCM()
+	defer mock.close()
+	srv, res, store := newTestServer(mock.client())
+	h := srv.Handler()
+	sender, sPriv := testAID(res)
+	tok := login(t, h, sender, sPriv)
+	alice, _ := testAID(res)
+	_ = store.Register(alice, "alice-1", "android")
+
+	recipients := make([]string, maxNotifyRecipients+1)
+	for i := range recipients {
+		recipients[i] = alice
+	}
+	rec := do(h, http.MethodPost, "/notify", tok, map[string]any{
+		"recipients": recipients, "channel": "c1", "kind": "dm",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 over the recipient cap, got %d", rec.Code)
+	}
+	if n := len(mock.rawBodies()); n != 0 {
+		t.Fatalf("no push must be dispatched for an oversized fan-out, got %d", n)
+	}
+}
+
+// /notify is rate limited per sender AID: varying the channel id defeats
+// coalescing, so the limiter is the only bound on wake-spam (finding 6).
+func TestNotifyRateLimitedPerAID(t *testing.T) {
+	mock := newMockFCM()
+	defer mock.close()
+	srv, res, store := newTestServer(mock.client())
+	h := srv.Handler()
+	sender, sPriv := testAID(res)
+	tok := login(t, h, sender, sPriv)
+	alice, _ := testAID(res)
+	_ = store.Register(alice, "alice-1", "android")
+
+	limited := false
+	// Each call uses a distinct channel id, so coalescing cannot mask the flood.
+	for i := 0; i < notifyLimitBurst+10; i++ {
+		rec := do(h, http.MethodPost, "/notify", tok, map[string]any{
+			"recipients": []string{alice},
+			"channel":    fmt.Sprintf("ChatChannel-%d", i),
+			"kind":       "dm",
+		})
+		if rec.Code == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("notify %d: unexpected %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if !limited {
+		t.Fatalf("expected /notify to rate limit a sender after %d calls", notifyLimitBurst)
+	}
+
+	// A second sender AID has its own bucket and is unaffected.
+	other, oPriv := testAID(res)
+	otherTok := login(t, h, other, oPriv)
+	if rec := do(h, http.MethodPost, "/notify", otherTok, map[string]any{
+		"recipients": []string{alice}, "channel": "c-other", "kind": "dm",
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("a different sender must not be limited: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Device tokens are echoed into the FCM request, so they are held to the same
+// opaque shape as the channel id.
+func TestRegisterRejectsNonOpaqueToken(t *testing.T) {
+	srv, res, store := newTestServer(NoopFCM{})
+	h := srv.Handler()
+	aid, priv := testAID(res)
+	tok := login(t, h, aid, priv)
+
+	for name, device := range map[string]string{
+		"spaces":  "not a token",
+		"quotes":  `tok"1`,
+		"tooLong": strings.Repeat("a", maxDeviceTokenLen+1),
+		"empty":   "",
+	} {
+		if rec := do(h, http.MethodPost, "/register", tok, map[string]string{"token": device}); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400 for token %q, got %d", name, device, rec.Code)
+		}
+	}
+	// A realistic FCM token (contains ':' and '.') is accepted.
+	real := "cXyZ0-9_a:APA91bH.xyz-123_ABC"
+	if rec := do(h, http.MethodPost, "/register", tok, map[string]string{"token": real}); rec.Code != http.StatusOK {
+		t.Fatalf("realistic FCM token rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := store.TokensForAID(aid); len(got) != 1 || got[0].Token != real {
+		t.Fatalf("expected the valid token stored, got %+v", got)
+	}
+}
+
+// Registering a token another AID already holds is refused (409), so a caller
+// cannot steal a member's device (finding 5).
+func TestRegisterRefusesTokenOwnedByAnotherAID(t *testing.T) {
+	srv, res, store := newTestServer(NoopFCM{})
+	h := srv.Handler()
+	victim, vPriv := testAID(res)
+	attacker, aPriv := testAID(res)
+	vTok := login(t, h, victim, vPriv)
+	aTok := login(t, h, attacker, aPriv)
+
+	if rec := do(h, http.MethodPost, "/register", vTok, map[string]string{"token": "device-1"}); rec.Code != http.StatusOK {
+		t.Fatalf("victim register: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(h, http.MethodPost, "/register", aTok, map[string]string{"token": "device-1"}); rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when claiming another AID's token, got %d %s", rec.Code, rec.Body.String())
+	}
+	if got := store.TokensForAID(victim); len(got) != 1 || got[0].Token != "device-1" {
+		t.Fatalf("victim must keep its token, got %+v", got)
+	}
+	if got := store.TokensForAID(attacker); len(got) != 0 {
+		t.Fatalf("attacker must not hold the token, got %+v", got)
+	}
+
+	// The supported handover: the owner deregisters, then the token is free.
+	if rec := do(h, http.MethodPost, "/deregister", vTok, map[string]string{"token": "device-1"}); rec.Code != http.StatusOK {
+		t.Fatalf("deregister: %d", rec.Code)
+	}
+	if rec := do(h, http.MethodPost, "/register", aTok, map[string]string{"token": "device-1"}); rec.Code != http.StatusOK {
+		t.Fatalf("register after handover: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// An opted-out member whose device re-registers (FCM token rotation, §7) must
+// stay opted out end to end — the rotation is invisible to the user, so it must
+// not be read as consent (finding 4).
+func TestNotifyStaysDroppedAfterReRegistration(t *testing.T) {
+	mock := newMockFCM()
+	defer mock.close()
+	srv, res, store := newTestServer(mock.client())
+	h := srv.Handler()
+	sender, sPriv := testAID(res)
+	senderTok := login(t, h, sender, sPriv)
+
+	alice, aPriv := testAID(res)
+	aliceTok := login(t, h, alice, aPriv)
+	if rec := do(h, http.MethodPost, "/register", aliceTok, map[string]string{"token": "alice-old"}); rec.Code != http.StatusOK {
+		t.Fatalf("register: %d", rec.Code)
+	}
+	if rec := do(h, http.MethodPost, "/optout", aliceTok, map[string]bool{"optOut": true}); rec.Code != http.StatusOK {
+		t.Fatalf("optout: %d", rec.Code)
+	}
+	// FCM rotates the device token; the app re-registers without user action.
+	if rec := do(h, http.MethodPost, "/register", aliceTok, map[string]string{"token": "alice-new"}); rec.Code != http.StatusOK {
+		t.Fatalf("re-register: %d %s", rec.Code, rec.Body.String())
+	}
+	if !store.IsOptedOut(alice) {
+		t.Fatal("re-registration must not clear the opt-out flag")
+	}
+
+	if rec := do(h, http.MethodPost, "/notify", senderTok, map[string]any{
+		"recipients": []string{alice}, "channel": "c1", "kind": "dm",
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("notify: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := len(mock.rawBodies()); n != 0 {
+		t.Fatalf("opted-out member must receive no push, got %d", n)
+	}
+
+	// An explicit opt-in resumes delivery.
+	if rec := do(h, http.MethodPost, "/optout", aliceTok, map[string]bool{"optOut": false}); rec.Code != http.StatusOK {
+		t.Fatalf("opt-in: %d", rec.Code)
+	}
+	if rec := do(h, http.MethodPost, "/notify", senderTok, map[string]any{
+		"recipients": []string{alice}, "channel": "c2", "kind": "dm",
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("notify after opt-in: %d", rec.Code)
+	}
+	if n := len(mock.rawBodies()); n != 2 {
+		t.Fatalf("expected pushes to both devices after opt-in, got %d", n)
 	}
 }

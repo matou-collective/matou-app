@@ -1,6 +1,7 @@
 package pushrelay
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,16 +36,51 @@ func TestStoreDeregisterWrongAID(t *testing.T) {
 	}
 }
 
-// Re-registering a token under a new AID moves it (device handed over).
-func TestStoreTokenRebind(t *testing.T) {
+// A token bound to one AID cannot be claimed by another: rebinding would let a
+// caller that learns a device token cut its owner off from push and steer its
+// own channel ids onto that device.
+func TestStoreRegisterRefusesTokenOwnedByAnotherAID(t *testing.T) {
 	s, _ := NewStore("", time.Hour)
 	_ = s.Register("Ealice", "tok1", "android")
-	_ = s.Register("Ebob", "tok1", "android")
-	if got := s.TokensForAID("Ealice"); len(got) != 0 {
-		t.Fatalf("old AID should no longer hold the rebound token, got %+v", got)
+	if err := s.Register("Ebob", "tok1", "android"); !errors.Is(err, ErrTokenOwnedByOtherAID) {
+		t.Fatalf("expected ErrTokenOwnedByOtherAID, got %v", err)
+	}
+	if got := s.TokensForAID("Ealice"); len(got) != 1 || got[0].Token != "tok1" {
+		t.Fatalf("owner must keep the token, got %+v", got)
+	}
+	if got := s.TokensForAID("Ebob"); len(got) != 0 {
+		t.Fatalf("claimant must not hold the token, got %+v", got)
+	}
+}
+
+// Re-registering one's own token is a refresh, not a conflict (§7 re-registers
+// on every FCM token rotation).
+func TestStoreRegisterOwnTokenRefreshes(t *testing.T) {
+	s, _ := NewStore("", time.Hour)
+	now := time.Unix(1_000_000, 0)
+	s.now = func() time.Time { return now }
+	_ = s.Register("Ealice", "tok1", "android")
+	now = now.Add(10 * time.Minute)
+	if err := s.Register("Ealice", "tok1", "android"); err != nil {
+		t.Fatalf("re-registering own token: %v", err)
+	}
+	got := s.TokensForAID("Ealice")
+	if len(got) != 1 || !got[0].LastSeen.Equal(now) {
+		t.Fatalf("expected refreshed last-seen, got %+v", got)
+	}
+}
+
+// The handover path §7 mandates: the owner deregisters on logout, then the
+// token is free for the next identity on that device.
+func TestStoreRegisterAfterDeregisterAllowsHandover(t *testing.T) {
+	s, _ := NewStore("", time.Hour)
+	_ = s.Register("Ealice", "tok1", "android")
+	_ = s.Deregister("Ealice", "tok1")
+	if err := s.Register("Ebob", "tok1", "android"); err != nil {
+		t.Fatalf("handover after deregister must succeed: %v", err)
 	}
 	if got := s.TokensForAID("Ebob"); len(got) != 1 {
-		t.Fatalf("new AID should hold the token, got %+v", got)
+		t.Fatalf("new owner should hold the token, got %+v", got)
 	}
 }
 
@@ -57,10 +93,27 @@ func TestStoreOptOut(t *testing.T) {
 	if !s.IsOptedOut("Ealice") {
 		t.Fatal("expected opted out")
 	}
-	// Registering is an explicit opt-in and clears the flag.
-	_ = s.Register("Ealice", "tok1", "android")
+	// Only an explicit opt-in clears the flag.
+	_ = s.SetOptOut("Ealice", false)
 	if s.IsOptedOut("Ealice") {
-		t.Fatal("register must clear opt-out")
+		t.Fatal("SetOptOut(false) must clear opt-out")
+	}
+}
+
+// Registration must not resurrect push for a user who opted out: §7 re-registers
+// on every FCM token rotation, which happens with no user action at all.
+func TestStoreRegisterPreservesOptOut(t *testing.T) {
+	s, _ := NewStore("", time.Hour)
+	_ = s.SetOptOut("Ealice", true)
+	if err := s.Register("Ealice", "tok1", "android"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.IsOptedOut("Ealice") {
+		t.Fatal("register (e.g. FCM token rotation) must not clear opt-out")
+	}
+	// The token is still stored — the relay drops the push at send time.
+	if got := s.TokensForAID("Ealice"); len(got) != 1 {
+		t.Fatalf("token should still be registered, got %+v", got)
 	}
 }
 

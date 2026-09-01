@@ -7,6 +7,7 @@ package pushrelay
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,7 +28,10 @@ type TokenRecord struct {
 // server-side state the design permits (§2): push plumbing, not an identity
 // registry. Safe for concurrent use. When path is non-empty the map is
 // persisted to a JSON file on every mutation (atomic write) and loaded on
-// startup; with an empty path the store is in-memory only (used by tests).
+// startup. An empty path makes the store in-memory only, which is for tests and
+// dry-runs: a restart would drop every device token and, since §7 only
+// re-registers on permission grant or FCM token rotation, users would silently
+// lose push. cmd/push-relay therefore requires a store path in normal operation.
 type Store struct {
 	mu       sync.Mutex
 	path     string
@@ -38,8 +42,9 @@ type Store struct {
 	now      func() time.Time
 }
 
-// NewStore creates a Store persisting to path (empty = in-memory only) with the
-// given untouched-token TTL. If a snapshot exists at path it is loaded.
+// NewStore creates a Store persisting to path (empty = in-memory only, tests
+// and dry-runs) with the given untouched-token TTL. If a snapshot exists at
+// path it is loaded.
 func NewStore(path string, ttl time.Duration) (*Store, error) {
 	s := &Store{
 		path:     path,
@@ -133,15 +138,30 @@ func (s *Store) removeIndexLocked(aid, token string) {
 	}
 }
 
-// Register records (or refreshes) a device token for an AID and clears any
-// opt-out flag on that AID — registering is an explicit opt-in. If the token
-// was previously bound to a different AID (device handed to another identity)
-// the old binding is removed.
+// ErrTokenOwnedByOtherAID is returned by Register when the device token is
+// already bound to a different AID.
+var ErrTokenOwnedByOtherAID = errors.New("device token is registered to another AID")
+
+// Register records (or refreshes) a device token for an AID.
+//
+// It deliberately does NOT clear the AID's opt-out flag: §7 mandates
+// re-registration on every FCM token rotation, which happens without the user
+// doing anything, so treating registration as opt-in would silently resurrect
+// pushes for a user who turned them off. Only SetOptOut(aid, false) — an
+// explicit user action — clears the flag.
+//
+// A token already bound to a different AID is refused rather than reassigned.
+// Reassigning is the more dangerous default: any authenticated caller that
+// learns another member's device token could claim it, cutting that member off
+// from push and steering its own channel ids onto their device. The supported
+// handover path is the one §7 already requires — deregister on logout/identity
+// switch frees the token — with TTL expiry as the backstop if a device never
+// logs out cleanly.
 func (s *Store) Register(aid, token, platform string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.tokens[token]; ok && existing.AID != aid {
-		s.removeIndexLocked(existing.AID, token)
+		return ErrTokenOwnedByOtherAID
 	}
 	s.tokens[token] = &TokenRecord{
 		Token:    token,
@@ -150,7 +170,6 @@ func (s *Store) Register(aid, token, platform string) error {
 		LastSeen: s.now(),
 	}
 	s.addIndexLocked(aid, token)
-	delete(s.optedOut, aid)
 	return s.persistLocked()
 }
 
