@@ -166,10 +166,15 @@ case "$MODE" in
     # -34018 unless the app carries a keychain-access-group entitlement, and
     # entitlements only take effect through a code signature. Ad-hoc ("-") needs
     # no Apple account, so this still works locally and in CI.
+    #
+    # CODE_SIGN_ENTITLEMENTS is deliberately NOT passed here: a setting given on
+    # the xcodebuild command line applies to every target in the workspace, so
+    # the Pods targets would look for App/App.entitlements relative to
+    # Pods.xcodeproj and fail ("Build input file cannot be found ... in target
+    # 'CapacitorCordova'"). The App target carries it in project.pbxproj instead.
     xcodebuild $XCODEBUILD_FLAGS "${COMMON[@]}" -configuration Debug \
       -destination 'generic/platform=iOS Simulator' \
-      CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" \
-      CODE_SIGN_ENTITLEMENTS=App/App.entitlements build
+      CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" build
     APP="$DERIVED/Build/Products/Debug-iphonesimulator/App.app"
     [ -d "$APP" ] || { echo "ERROR: expected app not found at $APP" >&2; exit 1; }
     rm -rf "$OUT/simulator"; mkdir -p "$OUT/simulator"
