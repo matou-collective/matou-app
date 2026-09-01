@@ -128,6 +128,13 @@ keychain + `altool` upload are §3 / WP5 of the spec; they are not wired yet.
 - **`PrivacyInfo.xcprivacy`** declares the required-reason APIs Capacitor core
   and the Go runtime touch (file timestamps, UserDefaults, disk space); no
   tracking. Required for App Store submission.
+- **A flaky `xcodebuild archive`.** Run 33463417761 failed with
+  `rsync: Capacitor.framework/...: write: Input/output error` during the pod
+  framework copy. It was **not** disk exhaustion — `df` reported ~96 GiB free
+  on the same runner — and the identical job passed on the next run, so treat a
+  one-off I/O error there as a runner fault and re-dispatch. The Simulator app
+  is zipped and uploaded *before* the archive step so a repeat still leaves you
+  with a testable artefact and the smoke evidence.
 - **CocoaPods, not SPM.** Capacitor 7 supports both; CocoaPods was chosen so the
   xcframework can be linked from a podspec without hand-editing the pbxproj, and
   `pod install` runs inside `cap sync ios`. `App/Pods` is git-ignored.
