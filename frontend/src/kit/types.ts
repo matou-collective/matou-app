@@ -50,7 +50,10 @@ export interface KitBuild {
   productName: string;
   artifactBase: string;
   executableName: string;
+  /** Valid Android package name: slug hyphens → '_', digit-leading segment prefixed with '_'. */
   androidApplicationId: string;
+  /** Custom URL scheme (Capacitor `custom_url_scheme`) — keeps the hyphenated slug; '_' is illegal in a scheme. */
+  urlScheme: string;
   publish: Record<string, unknown>[] | null;
   updates: boolean;
   primaryColour: string;

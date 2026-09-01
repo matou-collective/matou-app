@@ -44,15 +44,24 @@ describe('apply-kit (core)', () => {
   it('a community kit gets coa identities, no publish, no updates', async () => {
     await applyKit(await kitDir({ slug: 'ngati-example', brand: { name: 'Ngāti Example', slug: 'ngati-example', primaryColour: '#0A5C6B', secondaryColour: '#F2B134', contactEmail: 'k@x.nz' } }), root, { icons: false });
     const build = JSON.parse(await readFile(join(root, 'kit.build.json'), 'utf8'));
-    expect(build).toMatchObject({ appId: 'org.matou.coa.ngati-example', productName: 'Ngāti Example', artifactBase: 'ngati-example', executableName: 'ngati-example', androidApplicationId: 'org.matou.coa.ngati-example', publish: null, updates: false });
-    expect(JSON.parse(await readFile(join(root, 'src-capacitor/capacitor.config.json'), 'utf8'))).toMatchObject({ appId: 'org.matou.coa.ngati-example', appName: 'Ngāti Example' });
+    expect(build).toMatchObject({ appId: 'org.matou.coa.ngati-example', productName: 'Ngāti Example', artifactBase: 'ngati-example', executableName: 'ngati-example', androidApplicationId: 'org.matou.coa.ngati_example', urlScheme: 'org.matou.coa.ngati-example', publish: null, updates: false });
+    expect(JSON.parse(await readFile(join(root, 'src-capacitor/capacitor.config.json'), 'utf8'))).toMatchObject({ appId: 'org.matou.coa.ngati_example', appName: 'Ngāti Example' });
     const strings = await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/strings.xml'), 'utf8');
     expect(strings).toContain('<string name="app_name">Ngāti Example</string>');
-    expect(strings).toContain('<string name="package_name">org.matou.coa.ngati-example</string>');
+    expect(strings).toContain('<string name="package_name">org.matou.coa.ngati_example</string>');
     const gradle = await readFile(join(root, 'src-capacitor/android/app/build.gradle'), 'utf8');
     expect(gradle).toContain('namespace "nz.matou.app"');
-    expect(gradle).toContain('applicationId "org.matou.coa.ngati-example"');
+    expect(gradle).toContain('applicationId "org.matou.coa.ngati_example"');
+    // URL schemes may not contain '_' (RFC 3986) — the scheme keeps the hyphenated slug
+    expect(strings).toContain('<string name="custom_url_scheme">org.matou.coa.ngati-example</string>');
     expect(await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8')).toContain('$kit-secondary: #F2B134;');
+  });
+  it('android application id is a valid package name: hyphens → underscores, digit-leading segment prefixed', async () => {
+    await applyKit(await kitDir({ slug: '4winds-trust', brand: { name: '4 Winds', slug: '4winds-trust', primaryColour: '#0A5C6B', secondaryColour: '#F2B134', contactEmail: 'k@x.nz' } }), root, { icons: false });
+    const build = JSON.parse(await readFile(join(root, 'kit.build.json'), 'utf8'));
+    expect(build).toMatchObject({ appId: 'org.matou.coa.4winds-trust', androidApplicationId: 'org.matou.coa._4winds_trust', urlScheme: 'org.matou.coa.4winds-trust' });
+    const gradle = await readFile(join(root, 'src-capacitor/android/app/build.gradle'), 'utf8');
+    expect(gradle).toContain('applicationId "org.matou.coa._4winds_trust"');
   });
   it('rejects a kit with a bad slug or missing brand', async () => {
     await expect(applyKit(await kitDir({ slug: 'Bad Slug' }), root, { icons: false })).rejects.toThrow(/slug/);

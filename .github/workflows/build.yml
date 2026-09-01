@@ -20,6 +20,13 @@ on:
           - mac-x64
           - windows
           - android
+          # WP4 of docs/plans/2026-08-31-github-release-builds-spec.md: build the
+          # Capacitor iOS shell — unsigned simulator app, booted and smoke-tested
+          # on the runner, plus an unsigned device archive. Dispatch-only until
+          # WP5 adds signing + TestFlight and folds it into `all` / tag runs.
+          - ios
+          # WP3: prove the embedded backend links for iOS (gomobile bind only).
+          - ios-spike
 
 jobs:
   prepare:
@@ -35,6 +42,8 @@ jobs:
       build_number: ${{ steps.version.outputs.build_number }}
       desktop: ${{ steps.set-matrix.outputs.desktop }}
       android: ${{ steps.set-matrix.outputs.android }}
+      ios_spike: ${{ steps.set-matrix.outputs.ios_spike }}
+      ios: ${{ steps.set-matrix.outputs.ios }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,17 +79,23 @@ jobs:
           PLATFORM="${{ inputs.platform || 'all' }}"
           case "$PLATFORM" in
             all|desktop) FILTERED="$ALL" ;;
-            android)     FILTERED='[]' ;;
+            android|ios|ios-spike) FILTERED='[]' ;;
             *)           FILTERED=$(echo "$ALL" | jq -c --arg id "$PLATFORM" '[.[] | select(.id == $id)]') ;;
           esac
           ANDROID=false
           case "$PLATFORM" in all|android) ANDROID=true ;; esac
+          IOS_SPIKE=false
+          [ "$PLATFORM" = "ios-spike" ] && IOS_SPIKE=true
+          IOS=false
+          [ "$PLATFORM" = "ios" ] && IOS=true
           DESKTOP=true
           [ "$FILTERED" = "[]" ] && DESKTOP=false
-          echo "platform=$PLATFORM desktop=$DESKTOP android=$ANDROID"
+          echo "platform=$PLATFORM desktop=$DESKTOP android=$ANDROID ios=$IOS ios_spike=$IOS_SPIKE"
           echo "matrix={\"include\":$FILTERED}" >> "$GITHUB_OUTPUT"
           echo "desktop=$DESKTOP" >> "$GITHUB_OUTPUT"
           echo "android=$ANDROID" >> "$GITHUB_OUTPUT"
+          echo "ios_spike=$IOS_SPIKE" >> "$GITHUB_OUTPUT"
+          echo "ios=$IOS" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -608,6 +623,304 @@ jobs:
   # Attach the mobile installers to the draft release that electron-builder
   # creates for the desktop targets (spec WP6, mobile half). Tag runs only; the
   # release stays a draft for a human to publish after checking Play/TestFlight.
+  # iOS Phase 0 (spec WP3, Forgejo #29): does the full backend — any-sync,
+  # quic-go, modernc sqlite, KERI — link through gomobile for ios + iossimulator?
+  # workflow_dispatch(platform=ios-spike) only. Produces Matou.xcframework as an
+  # artefact and prints the generated Objective-C header so MobileStart/MobileStop
+  # can be eyeballed. Nothing downstream consumes it yet (WP4 vendors it into the
+  # Capacitor iOS shell).
+  ios-spike:
+    needs: prepare
+    if: needs.prepare.outputs.ios_spike == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      # Same x/mobile revision as scripts/android/setup-toolchain.sh and go.mod.
+      XMOBILE_VERSION: v0.0.0-20260812174124-2f419b2fb945
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          go version
+
+      - name: Install gomobile + gobind (pinned)
+        run: |
+          set -euo pipefail
+          go install "golang.org/x/mobile/cmd/gomobile@$XMOBILE_VERSION"
+          go install "golang.org/x/mobile/cmd/gobind@$XMOBILE_VERSION"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gomobile" init
+          "$(go env GOPATH)/bin/gomobile" version
+
+      - name: gomobile bind (ios, iossimulator)
+        id: bind
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/Matou.xcframework"
+          IOS_XCFRAMEWORK="$OUT" make -C backend build-ios-xcframework
+          echo "xcframework=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect the xcframework
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.bind.outputs.xcframework }}"
+          echo "== bundle layout"
+          find "$OUT" -maxdepth 2 | sort
+          echo
+          echo "== Info.plist (slices)"
+          plutil -p "$OUT/Info.plist"
+          echo
+          # The device slice: ios-arm64/Matou.framework/Matou
+          DEVICE_FW="$(find "$OUT" -maxdepth 2 -type d -name 'ios-arm64' | head -1)/Matou.framework"
+          SIM_FW="$(find "$OUT" -maxdepth 2 -type d -name 'ios-*simulator' | head -1)/Matou.framework"
+          test -f "$DEVICE_FW/Matou" || { echo "::error::device slice missing at $DEVICE_FW"; exit 1; }
+          test -f "$SIM_FW/Matou" || { echo "::error::simulator slice missing at $SIM_FW"; exit 1; }
+          echo "== lipo -info (device)";    lipo -info "$DEVICE_FW/Matou"
+          echo "== lipo -info (simulator)"; lipo -info "$SIM_FW/Matou"
+          echo "== otool -L (device)";      otool -L "$DEVICE_FW/Matou" || true
+          echo "== vtool -show-build (device)"; xcrun vtool -show-build "$DEVICE_FW/Matou" || true
+          echo "== sizes"; du -sh "$DEVICE_FW/Matou" "$SIM_FW/Matou"
+          echo
+          echo "== generated header (device slice)"
+          HDR="$DEVICE_FW/Headers/Mobile.objc.h"
+          test -f "$HDR" || { echo "::error::Mobile.objc.h not generated"; find "$DEVICE_FW/Headers"; exit 1; }
+          cat "$HDR"
+          # Acceptance: the two entry points the Swift plugin will call.
+          grep -q 'MobileStart(' "$HDR" || { echo "::error::MobileStart missing from header"; exit 1; }
+          grep -q 'MobileStop('  "$HDR" || { echo "::error::MobileStop missing from header"; exit 1; }
+          {
+            echo "## iOS spike — gomobile bind PASSED"
+            echo
+            echo '```'
+            lipo -info "$DEVICE_FW/Matou"; lipo -info "$SIM_FW/Matou"; du -sh "$DEVICE_FW/Matou" "$SIM_FW/Matou"
+            echo '```'
+            echo
+            echo '<details><summary>Mobile.objc.h</summary>'
+            echo; echo '```objc'; cat "$HDR"; echo '```'; echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zip xcframework
+        # ditto keeps the bundle layout (upload-artifact would flatten the top
+        # directory); this is also how xcframeworks are normally distributed.
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.bind.outputs.xcframework }}"
+          ditto -c -k --keepParent "$OUT" "$RUNNER_TEMP/Matou.xcframework.zip"
+          shasum -a 256 "$RUNNER_TEMP/Matou.xcframework.zip" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload xcframework
+        uses: actions/upload-artifact@v4
+        with:
+          name: Matou.xcframework
+          path: ${{ runner.temp }}/Matou.xcframework.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # iOS app (spec WP4): Capacitor shell + Swift plugins around the gomobile
+  # backend. Builds the unsigned Simulator app, boots it on the runner and
+  # checks the embedded backend comes up (os_log "backend up" + GET /health
+  # through the shared loopback), then does an unsigned Release device archive
+  # to prove the arm64 link. WP5 turns this into the signed TestFlight job.
+  ios:
+    needs: prepare
+    if: needs.prepare.outputs.ios == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      XMOBILE_VERSION: v0.0.0-20260812174124-2f419b2fb945
+      VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            frontend/src-capacitor/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          go version
+          pod --version
+          df -h /
+
+      - name: Install gomobile + gobind (pinned)
+        run: |
+          set -euo pipefail
+          go install "golang.org/x/mobile/cmd/gomobile@$XMOBILE_VERSION"
+          go install "golang.org/x/mobile/cmd/gobind@$XMOBILE_VERSION"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gomobile" init
+
+      - name: gomobile bind — embedded backend xcframework
+        run: make -C backend build-ios-xcframework
+
+      - name: Install frontend dependencies
+        run: |
+          (cd frontend && npm ci)
+          (cd frontend/src-capacitor && npm ci)
+
+      - name: Build Simulator app (unsigned)
+        env:
+          VITE_PROD_CONFIG_URL: ${{ secrets.VITE_PROD_CONFIG_URL }}
+          MATOU_VERSION_CODE: ${{ needs.prepare.outputs.build_number }}
+          MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/ios/build-ipa.sh --simulator
+
+      - name: Boot Simulator and smoke-test the embedded backend
+        id: smoke
+        run: |
+          set -euo pipefail
+          APP=frontend/dist/capacitor/ios/simulator/Matou.app
+          EV="$RUNNER_TEMP/ios-smoke"; mkdir -p "$EV"
+          echo "== bundle"
+          plutil -p "$APP/Info.plist" | grep -E "CFBundle(Identifier|ShortVersionString|Version)\""
+          UDID="$(xcrun simctl list devices available -j | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.isAvailable and (.name | test("^iPhone")))] | last | .udid')"
+          test -n "$UDID" && test "$UDID" != null || { echo "::error::no available iPhone simulator"; xcrun simctl list devices; exit 1; }
+          echo "== simulator $UDID"; xcrun simctl list devices available | grep "$UDID"
+          echo "== bundle contents"; ls "$APP"; cat "$APP/capacitor.config.json"; ls "$APP/public" | head
+          file "$APP/public"; test -d "$APP/public" || { echo "::error::public is not a directory in the bundle"; exit 1; }
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$APP"
+          # --console-pty attaches a pty, so Swift `print` (Capacitor's own log
+          # lines and the forwarded WebView console) is line-buffered and lands in
+          # the file as it happens; plain file redirection block-buffers it.
+          xcrun simctl launch --console-pty "$UDID" nz.matou.app > "$EV/console.log" 2>&1 &
+          CONSOLE_PID=$!
+          echo "== installed container"; CONTAINER="$(xcrun simctl get_app_container "$UDID" nz.matou.app 2>/dev/null || true)"
+          [ -n "$CONTAINER" ] && { ls -la "$CONTAINER" | head -20; file "$CONTAINER/public"; }
+          oslog() { xcrun simctl spawn "$UDID" log show --style compact --info --last 10m --predicate 'subsystem == "nz.matou.app"' 2>/dev/null || true; }
+          PORT=""
+          for i in $(seq 1 36); do
+            sleep 5
+            L="$(oslog)"
+            if UP="$(printf '%s\n' "$L" | grep -m1 'backend up on 127.0.0.1:')"; then
+              PORT="${UP##*127.0.0.1:}"; PORT="${PORT%%[^0-9]*}"; break
+            fi
+            if printf '%s\n' "$L" | grep -q 'backend start failed'; then break; fi
+          done
+          # Give the WebView a moment to render whatever it got, then capture evidence.
+          sleep 5
+          xcrun simctl io "$UDID" screenshot "$EV/screenshot.png"
+          oslog > "$EV/oslog.txt"
+          xcrun simctl spawn "$UDID" log show --style compact --last 10m --predicate 'process == "App"' > "$EV/oslog-app-process.txt" 2>/dev/null || true
+          echo "== os_log (nz.matou.app)"; tail -40 "$EV/oslog.txt"
+          echo "== app console (Capacitor + WebView console + Go stderr, tail)"; tail -80 "$EV/console.log" || true
+          if [ -z "$PORT" ]; then
+            echo "== os_log (process App, errors/faults)"; grep -E " (E|F) " "$EV/oslog-app-process.txt" | tail -40 || true
+            echo "::error::embedded backend did not report 'backend up' within 3 minutes — see the ios-smoke artefact"
+            exit 1
+          fi
+          echo "== backend port $PORT — GET /health from the runner (simulator shares the host loopback)"
+          curl -sS --max-time 15 "http://127.0.0.1:$PORT/health" | tee "$EV/health.json"; echo
+          # The Swift plugins must work, not merely load: the backend comes up even
+          # when the Keychain rejects every call, so assert on the app console too.
+          if grep -q "SecureStorage: .* failed" "$EV/console.log"; then
+            echo "::error::SecureStorage plugin failed at runtime — see the ios-smoke artefact"
+            grep -m3 "SecureStorage: .* failed" "$EV/console.log"
+            exit 1
+          fi
+          # Proves the whole WebView -> loopback backend -> config server chain, which
+          # is how a Capacitor build sources its client config (issue #99).
+          if ! grep -q "Client config loaded" "$EV/console.log"; then
+            echo "::error::the WebView never loaded its client config through the embedded backend"
+            exit 1
+          fi
+          # Expected before an org exists: the backend serves org config from its own
+          # cache only (it mirrors to the config server, never fetches from it), and a
+          # WebView cannot fetch the plain-http config server directly on EITHER mobile
+          # platform — capacitor:// and https://localhost are secure origins, so that
+          # request is mixed content, and Android additionally permits cleartext to
+          # loopback only. Same screen on Android; tracked as an app-level follow-up,
+          # not an iOS shell problem.
+          if grep -q "All servers unreachable" "$EV/console.log"; then
+            echo "::notice::org config unavailable (no org configured yet) — expected on a fresh install, matches Android"
+          fi
+          {
+            echo "## iOS Simulator smoke — backend up on 127.0.0.1:$PORT"
+            echo; echo '```'; cat "$EV/health.json"; echo; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          xcrun simctl terminate "$UDID" nz.matou.app || true
+          kill "$CONSOLE_PID" 2>/dev/null || true
+
+      - name: Upload smoke evidence (screenshot, logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-smoke
+          path: ${{ runner.temp }}/ios-smoke
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Zip Simulator app
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent frontend/dist/capacitor/ios/simulator/Matou.app "$RUNNER_TEMP/Matou-simulator.app.zip"
+          shasum -a 256 "$RUNNER_TEMP/Matou-simulator.app.zip" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: matou-${{ needs.prepare.outputs.version }}-ios-simulator
+          path: ${{ runner.temp }}/Matou-simulator.app.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # The Debug Simulator build's DerivedData plus the Go and gomobile caches fill
+      # the runner: the Release archive died mid-rsync with "Input/output error"
+      # writing Capacitor.framework (run 33463417761). Everything below is either
+      # already uploaded or rebuilt from scratch by the archive, and nothing after
+      # this point needs Go — only the xcframework, which is kept.
+      - name: Reclaim disk space before the archive
+        run: |
+          set -euo pipefail
+          df -h /
+          xcrun simctl shutdown all || true
+          xcrun simctl delete unavailable || true
+          rm -rf frontend/dist/capacitor/ios/DerivedData frontend/dist/capacitor/ios/simulator
+          go clean -cache -testcache || true
+          go clean -modcache || true
+          df -h /
+
+      - name: Unsigned Release device archive
+        env:
+          VITE_PROD_CONFIG_URL: ${{ secrets.VITE_PROD_CONFIG_URL }}
+          MATOU_VERSION_CODE: ${{ needs.prepare.outputs.build_number }}
+          MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash scripts/ios/build-ipa.sh --unsigned-archive
+          APP=frontend/dist/capacitor/ios/archive/Matou.xcarchive/Products/Applications/App.app
+          echo "== archive app"; plutil -p "$APP/Info.plist" | grep -E "CFBundle(Identifier|ShortVersionString|Version)\"|MinimumOSVersion"
+          lipo -info "$APP/App"
+          test -f "$APP/PrivacyInfo.xcprivacy" && echo "PrivacyInfo.xcprivacy present"
+
   release:
     needs: [prepare, build, android]
     if: always() && github.ref_type == 'tag' && needs.android.result == 'success'

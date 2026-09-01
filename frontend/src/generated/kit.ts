@@ -94,6 +94,7 @@ export const KIT_BUILD: KitBuild = {
   "artifactBase": "matou",
   "executableName": "matou",
   "androidApplicationId": "nz.matou.app",
+  "urlScheme": "nz.matou.app",
   "publish": [
     {
       "provider": "github",
