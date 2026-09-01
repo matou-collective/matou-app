@@ -409,7 +409,30 @@ export const useIdentityStore = defineStore('identity', () => {
     }
   }
 
+  /**
+   * Release the push token BEFORE the session is torn down.
+   *
+   * POST /api/v1/push/deregister is an authenticated call: once
+   * setSessionToken(null) has run the backend rejects it (401 under
+   * MATOU_REQUIRE_SIGNED_AUTH) and the relay keeps waking a device that no
+   * longer holds this AID (docs/architecture/08-push-notifications.md §7).
+   * Imported dynamically because usePush depends on this store; a failure is
+   * logged and never blocks the logout itself.
+   */
+  async function releasePushToken() {
+    try {
+      const { deregisterPush } = await import('src/composables/usePush');
+      const result = await deregisterPush();
+      if (!result.success) {
+        console.warn('[IdentityStore] Push deregistration failed on logout:', result.error);
+      }
+    } catch (err) {
+      console.warn('[IdentityStore] Push deregistration failed on logout:', err);
+    }
+  }
+
   async function disconnect() {
+    await releasePushToken();
     currentAID.value = null;
     passcode.value = null;
     isConnected.value = false;

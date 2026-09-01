@@ -1,5 +1,6 @@
 import { computed } from 'vue';
 import { useOnboardingStore, type OnboardingScreen } from 'stores/onboarding';
+import { requestPermissionAndRegister } from 'src/composables/usePush';
 
 /**
  * Composable for onboarding navigation and flow logic
@@ -112,10 +113,16 @@ export function useOnboarding() {
   };
 
   /**
-   * Complete onboarding and go to main app
+   * Complete onboarding and go to main app.
+   *
+   * This is the completion signal push registration hooks: permission is
+   * requested only now, never during onboarding (docs/architecture/
+   * 08-push-notifications.md §7). Fire-and-forget and a no-op off Android, so
+   * it never blocks the navigation into the app.
    */
   const completeOnboarding = () => {
     store.navigateTo('main');
+    void requestPermissionAndRegister();
   };
 
   /**
