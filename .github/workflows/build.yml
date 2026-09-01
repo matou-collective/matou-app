@@ -803,6 +803,7 @@ jobs:
           test -n "$UDID" && test "$UDID" != null || { echo "::error::no available iPhone simulator"; xcrun simctl list devices; exit 1; }
           echo "== simulator $UDID"; xcrun simctl list devices available | grep "$UDID"
           echo "== bundle contents"; ls "$APP"; cat "$APP/capacitor.config.json"; ls "$APP/public" | head
+          file "$APP/public"; test -d "$APP/public" || { echo "::error::public is not a directory in the bundle"; exit 1; }
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" "$APP"
@@ -811,6 +812,8 @@ jobs:
           # the file as it happens; plain file redirection block-buffers it.
           xcrun simctl launch --console-pty "$UDID" nz.matou.app > "$EV/console.log" 2>&1 &
           CONSOLE_PID=$!
+          echo "== installed container"; CONTAINER="$(xcrun simctl get_app_container "$UDID" nz.matou.app 2>/dev/null || true)"
+          [ -n "$CONTAINER" ] && { ls -la "$CONTAINER" | head -20; file "$CONTAINER/public"; }
           oslog() { xcrun simctl spawn "$UDID" log show --style compact --last 10m --predicate 'subsystem == "nz.matou.app"' 2>/dev/null || true; }
           PORT=""
           for i in $(seq 1 36); do
