@@ -95,6 +95,9 @@ jobs:
           # build-apk.sh reads VITE_PROD_CONFIG_URL from the env before falling
           # back to frontend/.env.production (Ben's #76 notes).
           VITE_PROD_CONFIG_URL: ${{ secrets.PROD_CONFIG_URL }}
+          # Firebase config for push (#177), base64 of google-services.json.
+          # Unset → build-apk.sh builds without push (plugin skipped).
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
           set -euo pipefail
           bash scripts/android/build-apk.sh
@@ -193,6 +196,9 @@ jobs:
           MATOU_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           MATOU_VERSION_CODE: ${{ steps.version.outputs.code }}
           MATOU_VERSION_NAME: ${{ steps.version.outputs.name }}
+          # Firebase config for push (#177), base64 of google-services.json.
+          # Unset → build-aab.sh builds without push (plugin skipped).
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
           set -euo pipefail
           if [ -z "$ANDROID_KEYSTORE_B64" ]; then

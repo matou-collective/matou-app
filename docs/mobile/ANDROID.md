@@ -107,6 +107,42 @@ unzip -l frontend/src-capacitor/android/app/libs/matou.aar | grep libgojni.so
    `ccgo_linux_amd64.go` and re-derive the substitution table (the `__DATA__`
    block in `patch-libc.sh`) against the new call sites, then rebuild.
 
+## Push notifications (Firebase / FCM, #177)
+
+The Capacitor shell carries the plumbing for content-free push wake signals
+(design: [`docs/architecture/08-push-notifications.md`](../architecture/08-push-notifications.md)).
+Slice 3 (#248) added, in `frontend/src-capacitor`:
+
+- **`@capacitor/push-notifications`** (v7, matching Capacitor core) — pulls in
+  `com.google.firebase:firebase-messaging`. `npx cap sync` wires the Gradle
+  project automatically on build, so no manual `settings.gradle` edits.
+- **`google-services.json`** is a **secret** (Firebase project `matou-app`,
+  package `nz.matou.app`) — treated like the Play keystore: never committed
+  (git-ignored under `android/app/`). CI injects it from the
+  **`GOOGLE_SERVICES_JSON`** Actions secret (value = `base64 -w0` of the file);
+  `scripts/android/build-apk.sh` and `build-aab.sh` decode it, or copy a local
+  file named by `GOOGLE_SERVICES_JSON_FILE`.
+- **Graceful degradation:** with no `google-services.json`, the
+  `com.google.gms.google-services` Gradle plugin is skipped (guarded in
+  `android/app/build.gradle`) and the build still succeeds **without** push —
+  so local dev without a Firebase project is never blocked. To build with push
+  locally: `GOOGLE_SERVICES_JSON_FILE=/path/to/google-services.json
+  scripts/android/build-apk.sh`.
+- **Notification channels + icon:** two channels are created natively
+  (`MatouNotificationChannels`): `matou_dm` (direct messages, high importance)
+  and `matou_channel` (channel messages, default importance). The monochrome
+  status-bar icon is `res/drawable/ic_stat_matou.xml` tinted with
+  `@color/matou_notification`; both are registered as FCM defaults in the
+  manifest.
+- **FCM entry point:** `MatouMessagingService` extends the Capacitor plugin's
+  `MessagingService` (JS delivery unchanged) and is the hook where the
+  background sync-only wake (§5) lands in slice 4. The app manifest drops the
+  plugin's own service so exactly one `FirebaseMessagingService` is registered.
+
+Real-device delivery (a killed app receiving a DM within ~10 s, no message
+content in the FCM payload) is the acceptance slice (#177 slice 5), not covered
+here — this slice only gets the plumbing to compile and deliver an event.
+
 ## Exposed API
 
 `backend/cmd/mobile` is the bind surface (Java package `nz.matou.backend`).

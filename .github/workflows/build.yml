@@ -524,6 +524,9 @@ jobs:
           MATOU_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           MATOU_VERSION_CODE: ${{ needs.prepare.outputs.build_number }}
           MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
+          # Firebase config for push (#177), base64 of google-services.json.
+          # Unset → build-aab.sh builds without push (plugin skipped).
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
           set -euo pipefail
           unsigned_flag=""
