@@ -33,6 +33,13 @@ export function mixWithWhite(colour, weight) {
 }
 const xml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
+// Android package-name segments must be Java identifiers: no '-', no leading digit.
+// (Electron appIds and URL schemes keep the hyphenated slug — '_' is illegal in a scheme.)
+export function androidSegment(slug) {
+  const s = slug.replace(/-/g, '_');
+  return /^[0-9]/.test(s) ? `_${s}` : s;
+}
+
 export function buildInfo(kit) {
   const isMatou = kit.slug === 'matou';
   return {
@@ -40,7 +47,8 @@ export function buildInfo(kit) {
     productName: kit.brand.name,
     artifactBase: isMatou ? 'matou' : kit.slug,
     executableName: isMatou ? 'matou' : kit.slug,
-    androidApplicationId: isMatou ? 'nz.matou.app' : `org.matou.coa.${kit.slug}`,
+    androidApplicationId: isMatou ? 'nz.matou.app' : `org.matou.coa.${androidSegment(kit.slug)}`,
+    urlScheme: isMatou ? 'nz.matou.app' : `org.matou.coa.${kit.slug}`,
     publish: isMatou ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'draft' }] : null,
     updates: isMatou,
     primaryColour: kit.brand.primaryColour,
@@ -87,7 +95,7 @@ async function patchAndroid(root, kit, build) {
   let xmlText = await readFile(strings, 'utf8');
   const set = (name, value) => { xmlText = xmlText.replace(new RegExp(`<string name="${name}">[^<]*</string>`), `<string name="${name}">${xml(value)}</string>`); };
   set('app_name', kit.brand.name); set('title_activity_main', kit.brand.name);
-  set('package_name', build.androidApplicationId); set('custom_url_scheme', build.androidApplicationId);
+  set('package_name', build.androidApplicationId); set('custom_url_scheme', build.urlScheme);
   await writeFile(strings, xmlText);
 
   const gradle = join(root, 'src-capacitor/android/app/build.gradle');
