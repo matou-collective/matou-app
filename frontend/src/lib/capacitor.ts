@@ -1,8 +1,9 @@
 /**
- * Capacitor (Android) bridge helpers.
+ * Capacitor (Android + iOS) bridge helpers.
  *
  * The native shell injects `window.Capacitor` into the WebView, which is how we
- * reach the MatouBackend plugin (src-capacitor/android/.../MatouBackendPlugin.java)
+ * reach the MatouBackend plugin (src-capacitor/android/.../MatouBackendPlugin.java,
+ * src-capacitor/ios/App/App/MatouBackendPlugin.swift)
  * that boots the embedded Go backend and reports its loopback port and per-launch
  * API token.
  *
@@ -10,7 +11,7 @@
  * not grow a Capacitor dependency, and the injected global is all we need.
  */
 
-/** Result of MatouBackend.getInfo() — mirrors MatouBackendPlugin.java. */
+/** Result of MatouBackend.getInfo() — mirrors MatouBackendPlugin.java / .swift. */
 export interface BackendInfo {
   /** Loopback port the embedded Go backend bound to. */
   port: number;
@@ -20,11 +21,100 @@ export interface BackendInfo {
 
 interface MatouBackendPlugin {
   getInfo(): Promise<BackendInfo>;
+  /**
+   * Wake the embedded backend just long enough to sync one channel tree, used
+   * by the push receipt handler (docs/architecture/08-push-notifications.md §5).
+   * Optional: shells built before the push slice don't register it, so callers
+   * must feature-detect. The native, time-boxed implementation lands with the
+   * Capacitor/Firebase slice; until then the frontend calls it when present.
+   */
+  syncChannel?(options: { channelId: string }): Promise<void>;
 }
 
 /**
- * Secure key/value storage backed by EncryptedSharedPreferences on Android.
- * The native side lands in #71; this is the contract the frontend will call.
+ * The `@capacitor/push-notifications` plugin surface this app relies on. We
+ * deliberately do NOT import the package (same doctrine as MatouBackend — the
+ * browser/Electron bundles must not grow a Capacitor dependency); the native
+ * shell injects it as `window.Capacitor.Plugins.PushNotifications`. The real
+ * plugin + Firebase wiring lands in the Capacitor/Firebase slice (#177 task 3);
+ * this is the contract the frontend logic (#177 task 4) builds against.
+ */
+export interface PushPermissionStatus {
+  receive: 'prompt' | 'prompt-with-rationale' | 'granted' | 'denied';
+}
+
+/** Opaque token delivered on the `registration` event. */
+export interface PushRegistrationToken {
+  value: string;
+}
+
+/** A received data-only push — mirrors PushNotificationSchema.data. */
+export interface PushReceivedNotification {
+  data?: Record<string, string>;
+}
+
+/** A notification tap — mirrors ActionPerformed.notification. */
+export interface PushActionPerformed {
+  notification: PushReceivedNotification;
+}
+
+type PushListenerEvent =
+  | 'registration'
+  | 'registrationError'
+  | 'pushNotificationReceived'
+  | 'pushNotificationActionPerformed';
+
+export interface PushNotificationsPlugin {
+  checkPermissions(): Promise<PushPermissionStatus>;
+  requestPermissions(): Promise<PushPermissionStatus>;
+  register(): Promise<void>;
+  addListener(
+    event: 'registration',
+    fn: (token: PushRegistrationToken) => void,
+  ): Promise<unknown> | unknown;
+  addListener(
+    event: 'registrationError',
+    fn: (err: { error: string }) => void,
+  ): Promise<unknown> | unknown;
+  addListener(
+    event: 'pushNotificationReceived',
+    fn: (notification: PushReceivedNotification) => void,
+  ): Promise<unknown> | unknown;
+  addListener(
+    event: 'pushNotificationActionPerformed',
+    fn: (action: PushActionPerformed) => void,
+  ): Promise<unknown> | unknown;
+  addListener(
+    event: PushListenerEvent,
+    fn: (arg: never) => void,
+  ): Promise<unknown> | unknown;
+}
+
+/**
+ * `@capacitor/local-notifications`-style plugin used to present the on-device,
+ * content-free notification composed after sync (§4). Injected by the native
+ * shell; feature-detected like the others.
+ */
+export interface LocalNotificationsPlugin {
+  schedule(options: {
+    notifications: Array<{
+      id: number;
+      title: string;
+      body: string;
+      channelId?: string;
+      extra?: Record<string, string>;
+    }>;
+  }): Promise<unknown>;
+}
+
+/** Launcher unread-badge plugin. `set` with 0 clears the badge. */
+export interface BadgePlugin {
+  set(options: { count: number }): Promise<unknown> | unknown;
+}
+
+/**
+ * Secure key/value storage backed by EncryptedSharedPreferences on Android and
+ * the Keychain on iOS (#71). Both native sides implement exactly this contract.
  */
 export interface SecureStoragePlugin {
   getItem(options: { key: string }): Promise<{ value: string | null }>;
@@ -39,6 +129,9 @@ interface CapacitorGlobal {
   Plugins?: {
     MatouBackend?: MatouBackendPlugin;
     SecureStorage?: SecureStoragePlugin;
+    PushNotifications?: PushNotificationsPlugin;
+    LocalNotifications?: LocalNotificationsPlugin;
+    Badge?: BadgePlugin;
   };
 }
 
@@ -99,4 +192,34 @@ async function requestBackendInfo(): Promise<BackendInfo> {
  */
 export function getSecureStoragePlugin(): SecureStoragePlugin | undefined {
   return capacitorGlobal()?.Plugins?.SecureStorage;
+}
+
+/**
+ * The native platform string (`'android'`, `'ios'`, `'web'`) as reported by the
+ * Capacitor bridge, or undefined when not running under Capacitor. Push is
+ * Android-only for #177, so callers gate on `=== 'android'`.
+ */
+export function getCapacitorPlatform(): string | undefined {
+  const cap = capacitorGlobal();
+  return typeof cap?.getPlatform === 'function' ? cap.getPlatform() : undefined;
+}
+
+/** The MatouBackend plugin, or undefined outside the native shell. */
+export function getMatouBackendPlugin(): MatouBackendPlugin | undefined {
+  return capacitorGlobal()?.Plugins?.MatouBackend;
+}
+
+/** The push-notifications plugin, or undefined when the shell didn't register it. */
+export function getPushNotificationsPlugin(): PushNotificationsPlugin | undefined {
+  return capacitorGlobal()?.Plugins?.PushNotifications;
+}
+
+/** The local-notifications plugin used to present the composed notification. */
+export function getLocalNotificationsPlugin(): LocalNotificationsPlugin | undefined {
+  return capacitorGlobal()?.Plugins?.LocalNotifications;
+}
+
+/** The launcher-badge plugin, or undefined when unavailable. */
+export function getBadgePlugin(): BadgePlugin | undefined {
+  return capacitorGlobal()?.Plugins?.Badge;
 }

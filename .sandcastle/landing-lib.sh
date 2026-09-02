@@ -204,11 +204,100 @@ landing_merge_reconcile() {
   done < <(landing_open_agent_issues)
 }
 
+# landing_issue_has_live_claim <N> -> rc 0 iff issue #N still carries the
+# agent-working label (a LIVE claim). The janitor (schedule_janitor_rearm) runs
+# at the TOP of every tick and strips agent-working off any dead claim, so the
+# label's presence here means an in-flight worker owns the ticket — the idle
+# sweep must leave its PR alone. Reuses the SAME agent-working predicate the
+# janitor and the re-arm agree on (#114). rc 0 (assume claimed) also on an API
+# read failure: the dangerous action is merging/closing an IN-FLIGHT worker's
+# PR, so "can't verify" must skip, never act.
+landing_issue_has_live_claim() {
+  local n="${1:?landing_issue_has_live_claim: issue number required}" resp
+  resp="$(forgejo_get "/issues/$n")" || return 0
+  jq -e '[.labels[]?.name] | index("agent-working") != null' <<<"$resp" >/dev/null 2>&1
+}
+
+# landing_sweep_orphans -> the IDLE-path landing sweep (#114). pr-mode +
+# agent-after-green only; a no-op (echoes nothing, rc 0) otherwise. run-swarm.sh
+# calls it on the no-ready-tasks path, because an ORPHANED green agent PR — a
+# worker SIGKILLed after opening its PR but before close-report (a runner
+# restart) — hides its own issue from the ready list (an open agent PR looks
+# in-flight), so n==0 and the run would otherwise exit before landing_stage's
+# reconcile ever runs. That is the whole deadlock: the one thing that would merge
+# the PR is gated behind having OTHER work to do.
+#
+# For EVERY open agent/issue-<N> PR whose issue carries NO live claim, reconcile
+# it the same way landing_stage's reconcile would:
+#   green + mergeable            -> merge (landing_merge_if_green; `closes #N`
+#                                   closes the issue) + a one-line audit comment
+#                                   noting the worker left no close-report
+#   green + NOT mergeable (drift) -> close the PR so the issue re-arms for a
+#                                   fresh worker on current main
+#   pending                      -> left for a later tick (echoed, so the caller
+#                                   still knows work exists)
+#   red                          -> landing_park_agent_blocked (inside merge-if-green)
+# Echoes one "<N> <result>" line per PR ACTED ON; a PR whose issue still carries
+# a live claim is skipped SILENTLY (no line) so an in-flight worker's own PR is
+# untouched. The caller keys the run's exit reason on whether ANY line was
+# emitted — so a tick with an unclaimed open agent PR never reports
+# no-ready-tasks.
+landing_sweep_orphans() {
+  [ "${SWARM_POLICY_LANDING:-push}" = pr ] || return 0
+  [ "${SWARM_POLICY_MERGE_AUTHORITY:-human}" = agent-after-green ] || return 0
+  local n res pr
+  while read -r n; do
+    [ -n "$n" ] || continue
+    landing_issue_has_live_claim "$n" && continue
+    res="$(landing_merge_if_green "$n")"
+    case "$res" in
+      "merged "*)
+        forgejo_comment "$n" "Landed by the idle landing sweep (#114): this agent PR was green but its worker left no close-report — killed after opening the PR. The sweep merged it; \`closes #$n\` closes the issue." 2>/dev/null || true
+        ;;
+      "merge-failed "*)
+        pr="${res#merge-failed }"; pr="${pr%% *}"
+        # Green, but the merge POST failed. If the branch is no longer mergeable
+        # (drifted off main — pnpm-lock.yaml / STATUS.md), close the PR so #N
+        # drops back into the ready list for a fresh worker on current main. A
+        # merge that failed with the branch STILL mergeable is transient — leave
+        # it as merge-failed for the next tick to retry.
+        if [ "$(forgejo_pr_mergeable "$pr")" = false ]; then
+          forgejo_comment "$n" "Idle landing sweep (#114): this agent PR is green but no longer mergeable — its branch drifted off main. Closing PR #$pr so #$n re-arms for a fresh worker on current main." 2>/dev/null || true
+          forgejo_close_pr "$pr" >/dev/null 2>&1 || true
+          res="closed-drifted $pr"
+        fi
+        ;;
+    esac
+    printf '%s %s\n' "$n" "$res"
+  done < <(landing_open_agent_issues)
+}
+
 # ── the LAND seam of run-swarm.sh (#2) ─────────────────────────────────────
 # The two modes' whole reconcile pass, so the orchestrator carries one call
 # rather than a 45-line rescue ladder inline.
 
 LANDING_NOTIFY="${LANDING_NOTIFY:-$__landing_lib_here/notify-mattermost.sh}"
+
+# landing_note_pr_opened <repo-slug> <ready-nums> [started-epoch] — append a
+# PROVISIONAL host runlog breadcrumb (reason=pr-opened) the MOMENT a run opens/
+# refreshes an agent PR, mirroring verdict_breadcrumb_write's eager-write
+# discipline (#114). A SIGKILL between opening the PR and the worker's
+# close-report — the runner-restart signature — cannot run the EXIT trap, so the
+# run would otherwise leave NO row at all; this line is on disk before the merge
+# pass, so a later kill leaves evidence rather than a missing row. A clean run
+# still appends its terminal reason=completed line from on_exit, so this is an
+# extra breadcrumb, not the final record. Best-effort: never fails the land seam,
+# and a no-op when the runlog helpers aren't sourced (unit-test isolation).
+landing_note_pr_opened() {
+  command -v runlog_append >/dev/null 2>&1 || return 0
+  command -v runlog_line   >/dev/null 2>&1 || return 0
+  local repo_slug="$1" ready_nums="$2" started="${3:-${run_started:-}}" now
+  now="$(date +%s)"
+  [ -n "$started" ] || started="$now"
+  runlog_append "${SWARM_RUNLOG:-$HOME/swarm/logs/run-swarm-verdicts.log}" \
+    "$(runlog_line "$started" "$now" "$repo_slug" "$ready_nums" pr-opened -)"
+}
+
 # The stage's outputs (a bash function returns one rc, and both are consumed by
 # the report seam).
 LANDING_OPENED_PRS=""
@@ -283,6 +372,11 @@ landing_stage() {
         git log --format=%s "$start_sha"..HEAD | grep -oE '#[0-9]+' | tr -d '#' || true; } | sort -un)"
     # shellcheck disable=SC2086 — the number list is deliberately word-split.
     LANDING_OPENED_PRS="$(landing_reconcile $nums || true)"
+    # #114: a provisional pr-opened runlog breadcrumb the instant a PR is
+    # open/refreshed, BEFORE the (possibly slow) merge pass — so a runner-restart
+    # SIGKILL between here and the worker's close-report leaves evidence on disk.
+    [ -n "$LANDING_OPENED_PRS" ] && \
+      landing_note_pr_opened "$repo_slug" "$(jq -r '[.[].number]|join(",")' <<<"$ready" 2>/dev/null)"
     # agent-after-green (#15): merge EVERY open agent PR whose required checks are
     # green — including PRs from EARLIER runs that only went green after their own
     # run ended. A no-op under MERGE_AUTHORITY=human.

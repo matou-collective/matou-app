@@ -1,0 +1,16 @@
+<!--
+  Monochrome status-bar / notification icon for push notifications (#177, §4).
+  Android renders the notification small icon as a silhouette: only the alpha
+  channel is used and the shape is tinted (see the default_notification_color
+  meta-data). Hence a single flat-white "M" glyph on transparent — no colour,
+  no gradients. Density-independent as a vector so it needs no PNG set.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M3,21 L3,3 L7,3 L12,12 L17,3 L21,3 L21,21 L17,21 L17,10.5 L13,17 L11,17 L7,10.5 L7,21 Z" />
+</vector>

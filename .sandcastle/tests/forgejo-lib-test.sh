@@ -76,7 +76,10 @@ case "$url" in
     cat "${STATUS_JSON:-/dev/null}" 2>/dev/null || echo '{"state":"success","statuses":[]}'
     ;;
   */pulls/7)
-    echo '{"number":7,"head":{"ref":"agent/issue-7","sha":"prheadsha7"}}'
+    # PATCH close (forgejo_close_pr, -w) → HTTP code; GET → the PR object,
+    # carrying .mergeable so forgejo_pr_mergeable has a field to read (#114).
+    $want_code && { echo "${CLOSE_CODE:-200}"; exit 0; }
+    echo "{\"number\":7,\"head\":{\"ref\":\"agent/issue-7\",\"sha\":\"prheadsha7\"},\"mergeable\":${PR7_MERGEABLE:-true}}"
     ;;
   */pulls)
     echo '{"number":101,"head":{"ref":"agent/issue-7"}}'
@@ -210,6 +213,20 @@ code="$(MERGE_CODE=200 forgejo_merge_pr 7)"
 check "forgejo_merge_pr returns the HTTP code" '[ "$code" = "200" ]'
 check "forgejo_merge_pr body carries {Do:merge}" '[ "$(jq -r .Do < "$BODIES_LOG")" = "merge" ]'
 check "forgejo_merge_pr hits the merge endpoint" 'grep -q "POST .*/pulls/7/merge" "$CALLS_LOG"'
+
+# forgejo_pr_mergeable (#114) — reads .mergeable off the PR object; the idle
+# landing sweep keys a drift-close on a literal `false` (which jq's `//` would
+# have swallowed — so the impl must NOT use `//`).
+check "forgejo_pr_mergeable passes a true through" \
+  '[ "$(PR7_MERGEABLE=true forgejo_pr_mergeable 7)" = true ]'
+check "forgejo_pr_mergeable passes a false through (not swallowed by //)" \
+  '[ "$(PR7_MERGEABLE=false forgejo_pr_mergeable 7)" = false ]'
+
+# forgejo_close_pr (#114) — PATCH the PR state to closed, HTTP code passthrough
+: > "$CALLS_LOG"
+code="$(CLOSE_CODE=200 forgejo_close_pr 7)"
+check "forgejo_close_pr returns the HTTP code" '[ "$code" = 200 ]'
+check "forgejo_close_pr PATCHes the PR endpoint" 'grep -q "PATCH .*/pulls/7$" "$CALLS_LOG"'
 
 # forgejo_pr_combined_status (#15) — resolves the PR head sha, then GETs the
 # commit's combined status; the caller reads .state / .statuses[].context

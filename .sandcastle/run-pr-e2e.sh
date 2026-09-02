@@ -121,7 +121,7 @@ case "$outcome" in
     # spec could run: nothing here says anything about the PR. Report it as
     # pipeline breakage so the healer investigates, not as a spec failure.
     msg=":rotating_light: **e2e PR #$PR_NUMBER** — feature spec DID NOT RUN (bootstrap projects failed; 0 screenshots) $pr_url"
-    status="🚨 **Feature e2e did not run** — the org-setup/registration-member bootstrap failed before \`$spec\` started, so there is no evidence for this PR yet. The pipeline (not this PR) is broken; the healer has been notified."
+    status="🚨 **Feature e2e did not run** — the org-setup/registration-member bootstrap failed before \`$spec\` started, so there is no evidence for this PR yet. A bootstrap failure is usually the environment (host contention — #268 — or broken infra), not this PR's code, but the cause is NOT determined automatically — do not attribute it either way without checking the run. The healer has been notified."
     ;;
 esac
 if [ "$outcome" != passed ]; then

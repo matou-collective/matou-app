@@ -21,9 +21,9 @@ type FieldDef struct {
 	Required bool   `json:"required"`
 	ReadOnly bool   `json:"readOnly"`
 	// Core marks a field that backend handlers depend on structurally (e.g.
-	// aid, status, displayName, timestamps). Core fields are always present in
-	// every org's schema and may not be removed by admin schema edits. Non-core
-	// fields are optional and removable per org.
+	// id, status, timestamps, voting/decision fields). Core fields are always
+	// present in every org's schema and may not be removed by admin schema
+	// edits. Non-core fields are optional and removable per org.
 	Core       bool        `json:"core,omitempty"`
 	Default    interface{} `json:"default,omitempty"`
 	Validation *Validation `json:"validation,omitempty"`
@@ -47,7 +47,7 @@ type UIHints struct {
 	Placeholder   string `json:"placeholder,omitempty"`
 	Label         string `json:"label,omitempty"`
 	Section       string `json:"section,omitempty"`
-	// Filterable marks a field that profile search/list endpoints accept as a
+	// Filterable marks a field that list/search endpoints accept as a
 	// query-parameter filter. The set of filterable fields is derived from the
 	// schema rather than a hardcoded list, so orgs control it via their schema.
 	Filterable bool `json:"filterable,omitempty"`
@@ -81,8 +81,8 @@ func (d *TypeDefinition) CoreFieldNames() []string {
 }
 
 // FilterableFieldNames returns the names of fields whose uiHints mark them
-// filterable. Profile list/search endpoints derive their accepted filter
-// parameters from this set rather than a hardcoded list.
+// filterable. List/search endpoints derive their accepted filter parameters
+// from this set rather than a hardcoded list.
 func (d *TypeDefinition) FilterableFieldNames() []string {
 	var names []string
 	for _, f := range d.Fields {

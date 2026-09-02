@@ -214,7 +214,7 @@ except sqlite3.OperationalError:
     pass   # no db yet (an empty tick wrote nothing) — no rows
 PY
 }
-reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; : > "$tmp/git.log"; rm -f "$tmp/claude.env" "$tmp/mm.log" "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/owner-lock" "$tmp/hc-slot1" "$tmp/hc-slot2" "$tmp/drive-wanted" "$tmp/hc-drive-defer-count" "$tmp/swarm.db" "$tmp/swarm.db-wal" "$tmp/swarm.db-shm" 2>/dev/null || true; reset_queue; }
+reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; : > "$tmp/git.log"; rm -f "$tmp/claude.env" "$tmp/mm.log" "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/owner-lock" "$tmp/hc-slot1" "$tmp/hc-slot2" "$tmp/hc-slot1.holder" "$tmp/hc-slot2.holder" "$tmp/drive-wanted" "$tmp/hc-drive-defer-count" "$tmp/swarm.db" "$tmp/swarm.db-wal" "$tmp/swarm.db-shm" 2>/dev/null || true; reset_queue; }
 
 # 1: kill switch — env and file both stop pickup before any API call.
 reset_case
@@ -839,4 +839,75 @@ run_runner CLAUDE_MODE=limit >/dev/null
   || fail "20c: a limit-parked (no completed call) session must record no spend (got: $(dbq "SELECT count(*) FROM spend"))"
 echo "ok 20c a limit-parked session records no spend"
 
-echo "session-runner: 20 groups passed"
+# 21: slot-holder sidecar (slot-aware fleet): labelled during the session, cleared after ──
+reset_case
+cat > "$tmp/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+# During the session the held slot must carry a session holder naming the pick.
+h=""
+for s in $HOST_CAPACITY_SLOTS; do [ -f "$s.holder" ] && h="$s.holder"; done
+[ -n "$h" ] || { echo "no holder sidecar during session" >&2; exit 1; }
+cp "$h" "${HOLDER_SNAPSHOT:?}"
+echo "session ok"
+EOF
+chmod +x "$tmp/bin/claude"
+run_runner HOLDER_SNAPSHOT="$tmp/holder.json" >/dev/null 2>&1 || fail "holder: session run failed — see the fake claude's stderr"
+[ -s "$tmp/holder.json" ] || fail "holder: fake claude saw no sidecar during the session"
+[ "$(jq -r .kind "$tmp/holder.json")" = session ]          || fail "holder kind: $(cat "$tmp/holder.json")"
+[ "$(jq -r .worker "$tmp/holder.json")" = session-runner ] || fail "holder worker: $(cat "$tmp/holder.json")"
+jq -e '.ref | test("^[0-9]+$")' "$tmp/holder.json" >/dev/null || fail "holder ref must be the picked issue number: $(cat "$tmp/holder.json")"
+[ ! -e "$tmp/hc-slot1.holder" ] && [ ! -e "$tmp/hc-slot2.holder" ] || fail "holder must be cleared after the session (release_heavy)"
+echo "ok 21 the held pooled slot carries a session holder sidecar during the session, cleared after"
+
+# 22: a limit-parked session exits BEFORE host_capacity_release_heavy runs (it
+#     exits 0 straight from the refusal branch) — the EXIT trap (sr_on_exit)
+#     must still clear the holder sidecar so a limit-park never leaves an
+#     orphan behind. Restore the suite's original fake claude (group 21
+#     replaced it with a session-only stand-in) so CLAUDE_MODE=limit's
+#     built-in refusal branch is available again.
+reset_case
+cat > "$tmp/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "call" >> "${CLAUDE_CALLS:?}"
+{ echo "GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-}"
+  echo "GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-}"
+  echo "GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-}"
+  echo "GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-}"; } > "${CLAUDE_ENV:?}"
+prompt="${*: -1}"
+n="$(grep -oE 'Ticket #[0-9]+' <<<"$prompt" | head -1 | tr -dc 0-9)"
+calls="$(wc -l < "$CLAUDE_CALLS")"
+emit_result() { # <result-text>
+  cat <<JSON
+{"type":"result","subtype":"success","is_error":false,"result":"$1",
+ "session_id":"sess-$n","total_cost_usd":0.01,"num_turns":3,
+ "modelUsage":{"claude-opus-4-8":{"inputTokens":111}},
+ "usage":{"input_tokens":111,"output_tokens":22,
+          "cache_creation_input_tokens":33,"cache_read_input_tokens":44}}
+JSON
+}
+case "${CLAUDE_MODE:-advance}" in
+  advance)
+    jq '.state = "closed"' "${FIXTURES_DIR:?}/issue-$n.json" > "$FIXTURES_DIR/issue-$n.json.new" \
+      && mv "$FIXTURES_DIR/issue-$n.json.new" "$FIXTURES_DIR/issue-$n.json"
+    emit_result "worked #$n" ;;
+  noop)
+    emit_result "did nothing" ;;
+  limit)
+    echo "You've hit your weekly limit · resets Aug 15, 8am (UTC)" ;;
+  limit-then-advance)
+    if [ "$calls" = 1 ]; then
+      echo "You've hit your weekly limit · resets Aug 15, 8am (UTC)"
+    else
+      jq '.state = "closed"' "${FIXTURES_DIR:?}/issue-$n.json" > "$FIXTURES_DIR/issue-$n.json.new" \
+        && mv "$FIXTURES_DIR/issue-$n.json.new" "$FIXTURES_DIR/issue-$n.json"
+      emit_result "worked #$n on the standby"
+    fi ;;
+esac
+EOF
+chmod +x "$tmp/bin/claude"
+run_runner CLAUDE_MODE=limit >/dev/null 2>&1 || fail "22: a limit-parked run must still exit clean"
+[ ! -e "$tmp/hc-slot1.holder" ] && [ ! -e "$tmp/hc-slot2.holder" ] \
+  || fail "22: a limit-park (pre-release_heavy) exit must not orphan the holder sidecar"
+echo "ok 22 a limit-parked exit (before release_heavy runs) still clears the held slot's holder sidecar via the EXIT trap"
+
+echo "session-runner: 22 groups passed"

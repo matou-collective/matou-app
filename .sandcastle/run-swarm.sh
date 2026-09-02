@@ -147,6 +147,11 @@ swarm_trigger="${SWARM_TRIGGER:-${GITHUB_EVENT_NAME:-unknown}}"
 # killed before it lists tasks, leaves a started-but-open trace (finalised by the
 # EXIT trap below). Best-effort; migrates the db idempotently on first touch.
 swarmdb_run_start "$run_db_id" "$repo_slug" "$swarm_trigger" "$run_started"
+# Label the host-capacity slot the workflow won for this run (slot-aware
+# fleet). The workflow holds the flock inline and exports the path; the issue
+# is not known here (claims happen in the sandbox), so ref=run and the fleet
+# monitor reads the issue from this run's swarm.db attempts.
+host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket run "$repo_slug" swarm-worker "$run_db_id"
 
 on_exit() {
   local ec=$?
@@ -162,6 +167,9 @@ on_exit() {
   # attempt (kills-finalise invariant: nothing reads 'running' forever). Runs on
   # EVERY exit path including the SIGTERM/SIGINT route below.
   swarmdb_run_end "$run_db_id" "$reason" "$reason" "$ec" "$(date +%s)"
+  # Release the ticket holder labelled above (slot-aware fleet) — harmless
+  # rm -f when HOST_CAPACITY_HELD_SLOT was never set.
+  host_capacity_holder_clear "${HOST_CAPACITY_HELD_SLOT:-/nonexistent}"
   # Invalidate the debounce stamp when this run wrote a fresh one but never
   # confirmed a worker (#435): a stamp left by a run that died quietly — or one
   # that concluded green-and-empty — would coalesce away the very next genuine
@@ -205,7 +213,10 @@ fi
 
 # ── preflight ───────────────────────────────────────────────────────────────
 preflight_gate "$repo_slug" || exit 1
-preflight_policy_gate "$repo_slug" || exit 1
+# SWARM_POLICY_FILE is the test-only seam the in-sandbox scripts already honour
+# (claim-next-task.sh, list-ready-tasks.sh, close-report.sh); unset in production
+# → the consumer's real swarm-policy.sh.
+preflight_policy_gate "$repo_slug" "${SWARM_POLICY_FILE:-}" || exit 1
 
 # ── schedule ────────────────────────────────────────────────────────────────
 # The janitor runs BEFORE listing so re-armed tickets rejoin this very run's queue.
@@ -223,8 +234,22 @@ rm -f "$ready_file"
 ready_nums="$(schedule_ready_nums "$ready")"
 n="$(schedule_ready_count "$ready")"
 if [ "$n" -eq 0 ]; then
-  echo "run-swarm: no ready tasks"
-  SWARM_EXIT_REASON="no-ready-tasks"
+  # pr-mode + agent-after-green (#114): even with ZERO ready tasks, an orphaned
+  # green agent PR — a worker SIGKILLed after opening its PR, before close-report
+  # — must still land. Its issue is HIDDEN from the ready list (an open agent PR
+  # looks in-flight), so a no-ready-tasks tick is the ONLY tick that can act. The
+  # janitor above already stripped agent-working off dead claims, so the sweep
+  # skips any PR whose issue still carries a live claim. A no-op (empty output)
+  # under push-mode / MERGE_AUTHORITY=human, preserving today's behaviour there.
+  swept="$(landing_sweep_orphans || true)"
+  if [ -n "$swept" ]; then
+    echo "run-swarm: no ready tasks, but the landing sweep acted on unclaimed agent PR(s):"
+    printf '%s\n' "$swept"
+    SWARM_EXIT_REASON="landing-swept"
+  else
+    echo "run-swarm: no ready tasks"
+    SWARM_EXIT_REASON="no-ready-tasks"
+  fi
   exit 0
 fi
 echo "run-swarm: $n ready task(s):"

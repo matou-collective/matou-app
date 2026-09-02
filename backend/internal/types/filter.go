@@ -12,7 +12,8 @@ import (
 //
 // For scalar (string/enum/number/boolean) fields the stored value must equal
 // the filter value. For array fields the filter matches when any element of the
-// array equals the filter value, so ?skills=go returns members who list "go".
+// array equals the filter value, so ?type=technical returns proposals that list
+// "technical".
 func MatchesFilters(def *TypeDefinition, data map[string]interface{}, filters map[string]string) bool {
 	for name, want := range filters {
 		field, ok := def.Field(name)
@@ -61,7 +62,7 @@ func boolString(b bool) string {
 }
 
 func numberString(f float64) string {
-	// Render integers without a trailing ".000000" so ?version=1 matches 1.
+	// Render integers without a trailing ".000000" so ?threshold=2 matches 2.
 	if f == float64(int64(f)) {
 		return strconv.FormatInt(int64(f), 10)
 	}

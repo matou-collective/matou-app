@@ -1,6 +1,16 @@
 import { configure } from 'quasar/wrappers';
 import path from 'path';
 import fs from 'fs';
+import { electronBuilderConfig } from './src-electron/kit-builder-config';
+import type { KitBuild } from './src/kit/types';
+
+// Packaging identity (appId, product name, artifact names, publish target,
+// auto-update gate) is generated from coa-kit/kit.json into kit.build.json by
+// `npm run kit:apply`. quasar.config.ts and electron-main.ts read only that
+// artefact — never coa-kit/ directly. See Matou/coa ADR 0004.
+const kitBuild = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'kit.build.json'), 'utf-8'),
+) as KitBuild;
 
 // Load production env vars for electron main process injection.
 // Reads .env.production file first, then process env vars override
@@ -26,7 +36,7 @@ const prodEnv = loadProdEnv('.env.production');
 
 export default configure(() => {
   return {
-    boot: ['motion', 'keri'],
+    boot: ['motion', 'keri', 'push'],
 
     css: ['app.scss', 'tailwind.css'],
 
@@ -115,44 +125,15 @@ export default configure(() => {
           'process.env.PROD_SMTP_PORT': JSON.stringify(prodEnv.VITE_SMTP_PORT || ''),
           'process.env.QUASAR_ELECTRON_PRELOAD': JSON.stringify('preload/electron-preload.cjs'),
         };
+        // The electron main process imports the generated kit (src/generated/kit)
+        // for brand name, colours and the auto-update gate. Resolve the `src`
+        // alias so esbuild can bundle it, mirroring build.alias for the renderer.
+        esbuildConf.alias = {
+          ...esbuildConf.alias,
+          src: path.join(__dirname, 'src'),
+        };
       },
-      builder: {
-        appId: 'org.matou.app',
-        productName: 'Matou',
-        artifactName: 'matou-${version}-${platform}.${ext}',
-        afterPack: './build/afterPack.cjs',
-        extraResources: [
-          { from: '../backend/bin/', to: 'backend/' },
-          { from: 'src-electron/icons/', to: 'icons/' },
-        ],
-        publish: [{
-          provider: 'github',
-          owner: 'matou-collective',
-          repo: 'matou-app',
-          releaseType: 'draft'
-        }],
-        mac: {
-          target: ['dmg'],
-          artifactName: 'matou-${version}-${platform}-${arch}.${ext}',
-          hardenedRuntime: true,
-          gatekeeperAssess: false,
-          entitlements: 'build/entitlements.mac.plist',
-          entitlementsInherit: 'build/entitlements.mac.plist',
-          icon: 'src-electron/icons/icon.png',
-          
-        },
-        linux: {
-          target: 'AppImage',
-          icon: 'src-electron/icons',
-          category: 'Network',
-          executableName: 'matou',
-          executableArgs: ['--no-sandbox'],
-        },
-        win: {
-          target: 'nsis',
-          icon: 'src-electron/icons/icon.png',
-        },
-      },
+      builder: electronBuilderConfig(kitBuild),
     },
 
     bex: {

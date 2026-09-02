@@ -84,6 +84,9 @@ triage_verdict=""   # set at each intentional post-start exit; else derived
 # block and defeating the whole stage/exit/error verdict.
 triage_on_exit() {
   local ec="$1" now reason dest
+  # Release the ticket holder labelled above (slot-aware fleet) — harmless
+  # rm -f when HOST_CAPACITY_HELD_SLOT was never set.
+  host_capacity_holder_clear "${HOST_CAPACITY_HELD_SLOT:-/nonexistent}"
   verdict_write "$ec"
   if [ "$triage_recorded" = 1 ]; then
     now="$(date +%s)"
@@ -144,6 +147,9 @@ if host_capacity_drive_wanted; then
   exit 0
 fi
 host_capacity_consumer_defer_reset "$TRIAGE_DRIVE_DEFER_COUNT"
+# Label the host-capacity slot the workflow won for this run (slot-aware
+# fleet) — same sidecar convention as run-swarm.sh's ticket holder.
+host_capacity_holder_write "${HOST_CAPACITY_HELD_SLOT:-}" ticket triage "$repo_slug" triage
 
 verdict_stage "preflight (list untriaged issues)"
 untriaged="$(bash "$here/preflight-triage.sh")"

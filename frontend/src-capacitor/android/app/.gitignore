@@ -1,2 +1,6 @@
 /build/*
 !/build/.npmkeep
+
+# Firebase config for push notifications (#177) — a secret, injected by CI from
+# the GOOGLE_SERVICES_JSON secret / a local file. Never commit it.
+/google-services.json

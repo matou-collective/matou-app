@@ -1,6 +1,6 @@
 {
   "name": "matou-frontend",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Matou Community App",
   "productName": "Matou",
   "author": "Matou DAO",
@@ -26,6 +26,7 @@
     "health": "tsx tests/scripts/health-check.ts",
     "health:test": "TEST_MODE=true tsx tests/scripts/health-check.ts",
     "build": "quasar build",
+    "kit:apply": "node scripts/kit/apply-kit.mjs",
     "postinstall": "patch-package",
     "release": "../scripts/release.sh"
   },
@@ -64,6 +65,7 @@
     "postinstall-postinstall": "^2.1.0",
     "prettier": "^3.4.2",
     "sass": "^1.83.1",
+    "sharp": "^0.33.5",
     "tailwindcss": "^3.4.19",
     "tsx": "^4.21.0",
     "typescript": "~5.7.3",

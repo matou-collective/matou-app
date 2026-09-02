@@ -42,6 +42,25 @@ with open(path, "w") as f:
     f.write("\n")
 PY
 
+# --- Firebase google-services.json (push notifications, #177) ----------------
+# Materialised from a base64 secret ($GOOGLE_SERVICES_JSON, as CI injects it —
+# `base64 -w0` of the file) or an explicit local file ($GOOGLE_SERVICES_JSON_FILE).
+# Absent → the google-services Gradle plugin is skipped (see android/app/build.gradle)
+# and the build still succeeds without push, so local dev without Firebase is
+# unaffected.
+GS_DEST="$CAP/android/app/google-services.json"
+if [ -n "${GOOGLE_SERVICES_JSON:-}" ]; then
+  echo "==> Writing google-services.json from GOOGLE_SERVICES_JSON secret"
+  printf '%s' "$GOOGLE_SERVICES_JSON" | base64 -d > "$GS_DEST"
+  chmod 600 "$GS_DEST"
+elif [ -n "${GOOGLE_SERVICES_JSON_FILE:-}" ]; then
+  echo "==> Copying google-services.json from $GOOGLE_SERVICES_JSON_FILE"
+  cp "$GOOGLE_SERVICES_JSON_FILE" "$GS_DEST"
+  chmod 600 "$GS_DEST"
+else
+  echo "==> No google-services.json (GOOGLE_SERVICES_JSON / GOOGLE_SERVICES_JSON_FILE unset) — building WITHOUT push (Firebase Gradle plugin skipped)"
+fi
+
 # --- embedded backend .aar --------------------------------------------------
 # The .aar embeds the Go backend, so a stale one silently ships an old client
 # (issue #130: the phone 404'd on /api/v1/client-config because the AAR predated

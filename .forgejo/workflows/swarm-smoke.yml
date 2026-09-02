@@ -30,8 +30,13 @@ jobs:
           url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
           if [ -d .git ]; then git remote set-url origin "$url"; git fetch origin main; git reset --hard origin/main
           else git clone "$url" .; fi
-          pnpm install --frozen-lockfile
-          pnpm exec sandcastle docker build-image
+          # Heavy work rides a pooled host-capacity slot (#268); the clone
+          # above just reset to origin/main, so the wrapper is present.
+          bash .sandcastle/host-slot-wait.sh 1800 bash -c '
+            set -euo pipefail
+            pnpm install --frozen-lockfile
+            pnpm exec sandcastle docker build-image
+          '
           image="sandcastle:$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
           # -c not -lc: a login shell sources /etc/profile which resets PATH and hides the image's nix profile
           docker run --rm --entrypoint bash "$image" -c 'echo sandbox-boots-OK && command -v nix >/dev/null && echo nix-present-OK'
