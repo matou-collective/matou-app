@@ -1,7 +1,10 @@
 import { defineConfig } from 'vitest/config';
+import vue from '@vitejs/plugin-vue';
 import path from 'path';
 
 export default defineConfig({
+  // Vue plugin so tests can mount SFCs (e.g. kit-chrome.test.ts).
+  plugins: [vue()],
   resolve: {
     alias: {
       // Resolve 'src/*' and 'stores/*' imports (mirrors tsconfig paths)

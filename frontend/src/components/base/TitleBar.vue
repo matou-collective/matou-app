@@ -1,7 +1,7 @@
 <template>
   <div v-if="showTitleBar" class="titlebar">
     <div class="titlebar-drag">
-      <span class="titlebar-title">Mātou</span>
+      <span class="titlebar-title">{{ KIT.brand.name }}</span>
     </div>
     <div class="titlebar-controls">
       <button class="titlebar-btn" @click="minimize" aria-label="Minimize">
@@ -30,6 +30,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
 import { isElectron } from 'src/lib/platform';
+import { KIT } from 'src/generated/kit';
 
 const showTitleBar = isElectron();
 const isMaximized = ref(false);
