@@ -11,7 +11,8 @@ on:
 jobs:
   feature-e2e:
     runs-on: matou-workstation
-    timeout-minutes: 40
+    # Up to 30 min camped on host capacity (#268) + the drive itself.
+    timeout-minutes: 75
     # Every PR: run-pr-e2e.sh resolves the spec from the branch name
     # (agent/issue-<N>) or the PR body's '**Feature e2e:**' marker, and posts a
     # verdict comment on the PR either way.
@@ -28,8 +29,43 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
-          exec 9>/tmp/matou-swarm.lock
-          flock -w 1800 9 || { echo "pr-e2e: lock busy for 30min — giving up; re-run via workflow_dispatch or push again"; exit 1; }
+          # Full-host exclusivity (#268): the drive's bootstrap is timing-
+          # sensitive (keri + any-sync + backend + playwright on the 7 GB
+          # workstation) and was starved by heavy co-runners — CI tasks 40576/
+          # 41257/41484 each failed while an unlocked checks/build-apk job ran
+          # beside it. Holding ONLY slot 1 was never enough: swarm/triage ride
+          # slot 2, and checks/android took no slot at all (they now do, via
+          # .sandcastle/host-slot-wait.sh). So: declare the drive-wanted
+          # reservation (slot claimers stand down, idss #663/#664), then take
+          # EVERY pooled slot all-or-nothing. Bounded camp — this job is
+          # event-driven; nothing re-fires it. Inline (not host-slot-wait.sh)
+          # because it runs before the checkout exists, and the checkout is the
+          # PR head, which may predate the helper. Keep the TTL story in step
+          # with HOST_CAPACITY_DRIVE_WANTED_TTL (900 s): the reservation is
+          # re-touched every poll and removed on every exit path below; a
+          # SIGKILL leaves it to age out within 15 min.
+          drive_res=/tmp/matou-drive-wanted
+          deadline=$(( $(date +%s) + 1800 ))
+          acquired=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            touch "$drive_res"
+            exec 9>/tmp/matou-swarm.lock
+            if flock -n 9; then
+              exec 8>/tmp/matou-host-slot-2.lock
+              if flock -n 8; then acquired=1; break; fi
+              exec 8>&-
+            fi
+            exec 9>&-
+            sleep 20
+          done
+          rm -f "$drive_res"
+          if [ "$acquired" != 1 ]; then
+            echo "pr-e2e: host capacity busy for 30min — giving up; re-run via workflow_dispatch or push again"
+            # Expected contention, not a harness fault: marker tells the healer
+            # step below to stand down instead of spending a claude call (d925814).
+            touch "/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}" || true
+            exit 1
+          fi
           workdir="$HOME/swarm-e2e/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
@@ -59,6 +95,22 @@ jobs:
           # harness-infra repair for real. Set HEAL_DRY_RUN: "1" to return to
           # diagnose-only.
         run: |
+          # Stand down on the expected-contention path (see the lock comment
+          # above): a lost host lock says nothing about this repo's harness, and
+          # investigating it burns a claude call plus a Mattermost page every
+          # time a PR lands during a long swarm worker.
+          marker="/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}"
+          if [ -f "$marker" ]; then
+            rm -f "$marker"
+            echo "pr-e2e: lost /tmp/matou-swarm.lock to a concurrent swarm worker — expected contention, not a fault; healer stands down."
+            if [ -n "$MATTERMOST_BOT_TOKEN" ]; then
+              jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" \
+                --arg message ":hourglass: pr-e2e skipped for \`${{ github.repository }}\` — the host swarm lock was busy for 30min, so the feature spec never ran. Re-run via workflow_dispatch or push again. $RUN_URL" \
+                '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
+                curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" >/dev/null || true
+            fi
+            exit 0
+          fi
           bash "$HOME/swarm-e2e/${{ github.repository }}/.sandcastle/heal.sh" || {
             [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
             jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: pr-e2e failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |

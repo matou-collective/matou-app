@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- SecureStoragePlugin stores identity secrets as Keychain generic
+	     passwords. Without a keychain access group the app has no keychain
+	     identity of its own and every SecItem call fails with -34018
+	     ("A required entitlement isn't present") — which is exactly what an
+	     unsigned Simulator build hits. $(AppIdentifierPrefix) expands to the
+	     team prefix for signed builds and to nothing for the ad-hoc signed
+	     Simulator build, so the same file serves both. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)nz.matou.app</string>
+	</array>
+</dict>
+</plist>

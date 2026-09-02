@@ -13,6 +13,9 @@ import { fileURLToPath } from 'url';
 import net from 'net';
 import fs from 'fs';
 import crypto from 'crypto';
+// Brand identity, colours and the auto-update gate come from the generated kit
+// (produced by `npm run kit:apply` from coa-kit/kit.json). See Matou/coa ADR 0004.
+import { KIT, KIT_BUILD } from 'src/generated/kit';
 
 // Using destructuring to access autoUpdater due to the CommonJS module of 'electron-updater'.
 // It is a workaround for ESM compatibility issues, see https://github.com/electron-userland/electron-builder/issues/7976.
@@ -26,20 +29,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 process.stdout?.on('error', () => {});
 process.stderr?.on('error', () => {});
 
-// Force WM_CLASS to 'matou' so Linux DEs can match it to the .desktop file
+// Force WM_CLASS to the kit executable name so Linux DEs can match it to the
+// .desktop file (StartupWMClass, written in installDesktopIntegration).
 if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('class', 'matou');
-  app.setDesktopName('matou.desktop');
+  app.commandLine.appendSwitch('class', KIT_BUILD.executableName);
+  app.setDesktopName(`${KIT_BUILD.executableName}.desktop`);
 }
 
 // Windows requires AUMID to be set before any Notification is shown, otherwise
 // toasts appear under "electron.app" in the Action Center.
 if (process.platform === 'win32') {
-  app.setAppUserModelId('org.matou.app');
+  app.setAppUserModelId(KIT_BUILD.appId);
 }
 
-// Auto-Updater setup
-const enableAutoUpdate = app.isPackaged;
+// Auto-Updater setup. Only kits with a publish target (KIT_BUILD.updates) ship
+// an app-update.yml, so gate the updater on it — a community kit has none.
+const enableAutoUpdate = app.isPackaged && KIT_BUILD.updates;
 
 autoUpdater.logger = log;
 autoUpdater.logger.transports.file.level = 'info';
@@ -54,7 +59,7 @@ function installDesktopIntegration(): void {
   if (process.platform !== 'linux' || !app.isPackaged) return;
 
   const appsDir = path.join(app.getPath('home'), '.local', 'share', 'applications');
-  const desktopFile = path.join(appsDir, 'matou.desktop');
+  const desktopFile = path.join(appsDir, `${KIT_BUILD.executableName}.desktop`);
 
   // Find the AppImage path from the environment (set by AppImage runtime)
   const appImagePath = process.env.APPIMAGE;
@@ -74,20 +79,20 @@ function installDesktopIntegration(): void {
     if (!fs.existsSync(srcIcon)) continue;
     const destDir = path.join(iconsBase, `${size}x${size}`, 'apps');
     fs.mkdirSync(destDir, { recursive: true });
-    fs.copyFileSync(srcIcon, path.join(destDir, 'matou.png'));
+    fs.copyFileSync(srcIcon, path.join(destDir, `${KIT_BUILD.executableName}.png`));
   }
 
   // Write .desktop file
   fs.mkdirSync(appsDir, { recursive: true });
   const desktopContent = `[Desktop Entry]
-Name=Matou
+Name=${KIT.brand.name}
 Exec="${appImagePath}" %U
 Terminal=false
 Type=Application
-Icon=matou
-StartupWMClass=matou
+Icon=${KIT_BUILD.executableName}
+StartupWMClass=${KIT_BUILD.executableName}
 Categories=Network;
-Comment=Matou Community
+Comment=${KIT.brand.name} Community
 `;
   fs.writeFileSync(desktopFile, desktopContent, { mode: 0o755 });
   console.log('[Electron] Installed desktop integration:', desktopFile);
@@ -285,8 +290,8 @@ function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'Mātou',
-    backgroundColor: '#1e5f74',
+    title: KIT.brand.name,
+    backgroundColor: KIT_BUILD.backgroundColour,
     icon: nativeImage.createFromPath(
       app.isPackaged
         ? path.join(process.resourcesPath, 'icons', '256x256.png')

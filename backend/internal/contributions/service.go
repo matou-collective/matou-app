@@ -126,11 +126,47 @@ type ObjectStore interface {
 
 // Service provides business logic for the contributions system.
 type Service struct {
-	store ObjectStore
+	store    ObjectStore
+	registry SchemaValidator
+}
+
+// SchemaValidator is the subset of *types.Registry the service needs to
+// validate objects against an org's schema. It is optional: when nil, the
+// service falls back to the built-in Go-struct validation only. Kept as an
+// interface so the contributions package does not depend on internal/types.
+type SchemaValidator interface {
+	Validate(typeName string, data json.RawMessage) ([]string, error)
 }
 
 func NewService(store ObjectStore) *Service {
 	return &Service{store: store}
+}
+
+// SetRegistry attaches a schema validator (the type registry). When set, write
+// paths additionally validate objects against the org's persisted schema, so
+// custom required fields, enum changes and other schema edits are enforced
+// without a backend change.
+func (s *Service) SetRegistry(v SchemaValidator) {
+	s.registry = v
+}
+
+// validateAgainstSchema validates the flattened proposal against the org's
+// Proposal schema. Returns nil when no registry is configured or the type is
+// unknown, so environments without a loaded registry keep working.
+func (s *Service) validateAgainstSchema(typeName string, m map[string]interface{}) []string {
+	if s.registry == nil || m == nil {
+		return nil
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return []string{fmt.Sprintf("serializing %s for validation: %v", typeName, err)}
+	}
+	errs, err := s.registry.Validate(typeName, raw)
+	if err != nil {
+		// Unknown type — nothing to validate against.
+		return nil
+	}
+	return errs
 }
 
 func generateID(prefix string) string {
@@ -174,6 +210,8 @@ type CreateProposalRequest struct {
 	ProjectPlan          []ProjectPlanItem `json:"project_plan,omitempty"`
 	Attachments          []Attachment      `json:"attachments,omitempty"`
 	EndorsementThreshold int               `json:"endorsement_threshold,omitempty"`
+	// Data carries org-defined custom fields declared in the Proposal schema.
+	Data map[string]interface{} `json:"data,omitempty"`
 }
 
 func (s *Service) CreateProposal(ctx context.Context, spaceID string, req *CreateProposalRequest) (*Proposal, error) {
@@ -197,6 +235,7 @@ func (s *Service) CreateProposal(ctx context.Context, spaceID string, req *Creat
 		ProjectPlan:          req.ProjectPlan,
 		Attachments:          req.Attachments,
 		EndorsementThreshold: threshold,
+		Data:                 req.Data,
 		Status:               ProposalDraft,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -205,6 +244,12 @@ func (s *Service) CreateProposal(ctx context.Context, spaceID string, req *Creat
 	errs := ValidateProposal(p)
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("validation failed: %v", errs)
+	}
+	// When a schema registry is configured, additionally validate the full
+	// proposal (core fields + custom data) against the org's Proposal schema,
+	// enforcing custom required fields, enum edits and other schema changes.
+	if errs := s.validateAgainstSchema("Proposal", p.SchemaMap()); len(errs) > 0 {
+		return nil, fmt.Errorf("schema validation failed: %v", errs)
 	}
 
 	if err := s.store.Save(spaceID, p.ID, "proposal", p); err != nil {
@@ -272,6 +317,10 @@ type UpdateProposalRequest struct {
 	ProposalLeadID    *string      `json:"proposal_lead_id,omitempty"`
 	ProposalStewardID *string      `json:"proposal_steward_id,omitempty"`
 	Attachments       []Attachment `json:"attachments,omitempty"`
+	// Data replaces the proposal's custom-field map when present. A nil map
+	// leaves existing custom fields untouched (consistent with the other
+	// pointer/slice fields above, which are only applied when supplied).
+	Data map[string]interface{} `json:"data,omitempty"`
 }
 
 func (s *Service) UpdateProposal(ctx context.Context, spaceID, proposalID string, req *UpdateProposalRequest) (*Proposal, error) {
@@ -309,7 +358,15 @@ func (s *Service) UpdateProposal(ctx context.Context, spaceID, proposalID string
 	if req.Attachments != nil {
 		p.Attachments = req.Attachments
 	}
+	if req.Data != nil {
+		p.Data = req.Data
+	}
 	p.UpdatedAt = time.Now()
+	// Re-validate the merged proposal against the org's Proposal schema so an
+	// edit cannot leave the object violating a custom required field or enum.
+	if errs := s.validateAgainstSchema("Proposal", p.SchemaMap()); len(errs) > 0 {
+		return nil, fmt.Errorf("schema validation failed: %v", errs)
+	}
 	if err := s.store.Save(spaceID, p.ID, "proposal", p); err != nil {
 		return nil, err
 	}

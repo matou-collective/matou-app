@@ -140,12 +140,12 @@ func TestNoticeSchema_CoreAndFilterableFlags(t *testing.T) {
 	}
 
 	for _, name := range []string{"type", "subtype", "state", "pinned", "eventStart"} {
-		if !byName[name].Filterable {
+		if !byName[name].IsFilterable() {
 			t.Errorf("field %q should be filterable", name)
 		}
 	}
 	for _, name := range []string{"title", "summary", "body"} {
-		if byName[name].Filterable {
+		if byName[name].IsFilterable() {
 			t.Errorf("field %q should not be filterable", name)
 		}
 	}

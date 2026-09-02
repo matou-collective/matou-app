@@ -42,3 +42,104 @@ install -m 0600 /dev/stdin .sandcastle/secrets/mattermost_bot_token <<< "$MATTER
 `DIGITALOCEAN_ACCESS_TOKEN` if this repo's tasks touch clan-lab infra. Org
 secrets are shared across every factory-driven repo already — nothing to
 mint per-repo unless this repo needs a token none of the others use.
+
+## Android / Play Store secrets (this repo only)
+
+Consumed by the manual `build-aab` smoke job in `.forgejo/workflows/android.yml`
+(#176) and — for real releases — by the GitHub `android` job below. Source of
+truth is the org password manager entry "Play upload key — nz.matou.app"; see
+`docs/mobile/PLAY_STORE.md` for generation.
+
+| Secret | Value |
+| --- | --- |
+| `PROD_CONFIG_URL` | production config-server URL (already used by `build-apk`) |
+| `ANDROID_KEYSTORE_B64` | `base64 -w0 matou-upload.jks` — the Play **upload** keystore, never the app-signing key |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | `matou-upload` |
+| `ANDROID_KEY_PASSWORD` | key password |
+
+The job decodes the keystore into a `mktemp` dir and removes it on exit;
+nothing is written under the checkout. Locally the same values live in
+`frontend/src-capacitor/android/keystore.properties` (git-ignored).
+
+## GitHub release secrets (`github.com/matou-collective/matou-app`)
+
+Release installers are built by GitHub Actions on `v*` tags
+(`.github/workflows/build.yml`; spec: `docs/plans/2026-08-31-github-release-builds-spec.md`).
+GitHub is a push-mirror of this repo, so tags arrive automatically.
+
+Already present (desktop): `GH_TOKEN`, `CSC_LINK`, `CSC_KEY_PASSWORD`,
+`APPLE_API_KEY_CONTENT`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_TEAM_ID`,
+`VITE_PROD_CONFIG_URL`, `VITE_ENV`, `VITE_SMTP_HOST`, `VITE_SMTP_PORT`.
+
+Android (`android` job) — same values as the Forgejo set above; note the
+config URL keeps GitHub's existing `VITE_PROD_CONFIG_URL` name:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_B64` | `base64 -w0 matou-upload.jks` |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | `matou-upload` |
+| `ANDROID_KEY_PASSWORD` | key password |
+
+```sh
+gh secret set ANDROID_KEYSTORE_B64 --repo matou-collective/matou-app --body "$(base64 -w0 ~/.matou-secrets/matou-upload.jks)"
+gh secret set ANDROID_KEYSTORE_PASSWORD --repo matou-collective/matou-app   # prompts
+gh secret set ANDROID_KEY_ALIAS --repo matou-collective/matou-app --body matou-upload
+gh secret set ANDROID_KEY_PASSWORD --repo matou-collective/matou-app        # prompts
+```
+
+Without these a `workflow_dispatch` run with `platform=android` still builds
+**unsigned** smoke artefacts (loud warning; never upload them to Play); a tag
+run fails at the signing step.
+
+iOS (`ios` job) — signs the Release archive and uploads to TestFlight. The App
+Store Connect API key is the one the Mac builds already notarize with; it must
+have the **App Manager** role for uploads (notarization needs less, so check).
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_IOS_CERT_B64` | `base64 -w0` of the Apple Distribution `.p12` |
+| `APPLE_IOS_CERT_PASSWORD` | password on that `.p12` |
+| `APPLE_IOS_PROFILE_B64` | `base64 -w0` of the `matou-appstore.mobileprovision` |
+| `APPLE_IOS_PROFILE_NAME` | `matou-appstore` (informational; the job reads the real name out of the profile) |
+
+```sh
+gh secret set APPLE_IOS_CERT_B64 --repo matou-collective/matou-app < ~/.matou-secrets/matou-ios-distribution.p12.b64
+gh secret set APPLE_IOS_CERT_PASSWORD --repo matou-collective/matou-app < ~/.matou-secrets/ios-cert-pass
+gh secret set APPLE_IOS_PROFILE_B64 --repo matou-collective/matou-app < ~/.matou-secrets/matouappstore.mobileprovision.b64
+gh secret set APPLE_IOS_PROFILE_NAME --repo matou-collective/matou-app --body matou-appstore
+```
+
+The certificate and profile were produced **without a Mac** — the CSR is made
+with OpenSSL and everything else is the developer portal. `docs/mobile/IOS.md`
+has the recipe, and `~/.matou-secrets/finish-ios-cert.sh` does the conversion.
+Both expire **2027-09-01**; renewing means a new `.cer` from the same key and
+re-running those two `gh secret set` lines.
+
+Without the iOS secrets a dispatch run falls back to an unsigned archive; a tag
+run fails at the signing step. The team id is read from the provisioning
+profile, so `APPLE_TEAM_ID` is not consulted by the iOS job.
+
+## Push-relay secrets (deployment, this repo)
+
+Consumed by the standalone push-relay service (`backend/cmd/push-relay`,
+design `docs/architecture/08-push-notifications.md` topology C, slice 2 of
+#177). The relay is the **only** holder of the FCM server credential (design
+§3). Enrolled here per that doc's requirement; see
+`docs/architecture/07-secrets-architecture.md` for the doctrine.
+
+| Secret | Delivered as | Needed if |
+| --- | --- | --- |
+| FCM service-account JSON | a **mounted file**; the relay is pointed at its path via `MATOU_PUSH_RELAY_FCM_CREDENTIALS` (never the JSON inlined into an env var — that reintroduces the `docker inspect` breach vector) | push notifications are deployed |
+
+Non-secret relay config (env): `MATOU_PUSH_RELAY_ADDR`,
+`MATOU_PUSH_RELAY_STORE` (path to the persisted `AID → token` map — plumbing,
+not identity), `MATOU_PUSH_RELAY_TOKEN_TTL`, `MATOU_PUSH_RELAY_KEYSTATE_URL`
+(KERI key-state template for signed-auth verification),
+`MATOU_PUSH_RELAY_COALESCE_WINDOW`. `MATOU_PUSH_RELAY_FCM_DISABLED=1` stubs
+dispatch for dev/dry-run (no credential required).
+
+Where the relay is hosted and who provisions the FCM credential are human
+decisions tracked on #177 (§10 Q1); this entry only reserves the secret's
+place in the inventory.

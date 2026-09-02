@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/matou-dao/backend/internal/contributions"
+	matouTypes "github.com/matou-dao/backend/internal/types"
 )
 
 func TestProposalsHandler_Create(t *testing.T) {
@@ -393,5 +394,71 @@ func TestProposalsHandler_Update_NonInReview_NoRestriction(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 for draft edit without auth, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// createProposalForTest posts a proposal with the given priority and returns nothing;
+// it fails the test if creation does not succeed.
+func createProposalForTest(t *testing.T, h *ProposalsHandler, title, priority string) {
+	t.Helper()
+	body := map[string]interface{}{
+		"proposer_id": "user-1", "title": title, "type": []string{"technical"},
+		"priority": priority, "description": "d", "problem_statement": "p",
+		"solution": "s", "expected_outcomes": []string{"o"},
+		"estimated_budget": "$1", "timeline": "1w",
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	h.HandleCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create %q failed: %d %s", title, w.Code, w.Body.String())
+	}
+}
+
+// The list endpoint filters on schema-marked filterable fields (priority).
+func TestProposalsHandler_ListSchemaFilter(t *testing.T) {
+	handler := setupTestProposalsHandler()
+	reg := matouTypes.NewRegistry()
+	reg.Bootstrap()
+	handler.SetRegistry(reg)
+
+	createProposalForTest(t, handler, "High one", "high")
+	createProposalForTest(t, handler, "Low one", "low")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/proposals?priority=high", nil)
+	w := httptest.NewRecorder()
+	handler.HandleList(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Proposals []map[string]interface{} `json:"proposals"`
+		Total     int                      `json:"total"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Total != 1 {
+		t.Fatalf("expected 1 high-priority proposal, got %d", resp.Total)
+	}
+	if resp.Proposals[0]["priority"] != "high" {
+		t.Fatalf("expected the high-priority proposal, got %v", resp.Proposals[0]["priority"])
+	}
+}
+
+// A query parameter naming a known-but-non-filterable field is rejected.
+func TestProposalsHandler_ListRejectsNonFilterableField(t *testing.T) {
+	handler := setupTestProposalsHandler()
+	reg := matouTypes.NewRegistry()
+	reg.Bootstrap()
+	handler.SetRegistry(reg)
+
+	createProposalForTest(t, handler, "Any", "low")
+
+	// description is defined in the schema but not filterable.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/proposals?description=x", nil)
+	w := httptest.NewRecorder()
+	handler.HandleList(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-filterable field, got %d: %s", w.Code, w.Body.String())
 	}
 }

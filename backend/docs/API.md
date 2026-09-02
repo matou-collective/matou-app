@@ -569,6 +569,58 @@ Get a single notice (includes its `data` custom fields).
 
 ---
 
+## Proposal Endpoints
+
+Proposals are validated and stored against the org's `Proposal` type definition
+(a built-in schema registered at org setup) rather than a fixed Go struct. The
+schema splits fields into two groups:
+
+- **Core fields** (`core: true`) — identity, `status`, the decision/voting and
+  assigned-role fields, timestamps and `endorsement_threshold`. Handlers and the
+  state machine depend on these; admin schema edits may not remove them.
+- **Schema-driven body** — `title`, `description`, `problem_statement`,
+  `solution`, `expected_outcomes`, `estimated_budget`, `timeline`,
+  `project_plan`, `attachments`, plus any org-added custom fields. An org can
+  tighten their validation (lengths, enums), toggle `required`, or add new
+  fields without a backend change.
+
+Custom fields not modelled as typed struct fields are carried in a `data`
+object on create/update and round-trip unchanged in read responses. Fields the
+current schema no longer defines are tolerated on objects written earlier.
+
+### POST /api/v1/proposals
+
+Create a proposal. The request body (core fields at the top level plus any
+custom fields under `data`) is validated against the `Proposal` schema; a
+missing custom `required` field or an out-of-enum value returns `400`.
+
+### GET /api/v1/proposals
+
+List proposals. Results can be filtered with query parameters named after
+schema fields whose `uiHints.filterable` is `true` (e.g. `?priority=high`,
+`?status=approved`, `?type=technical`). The filterable set is derived from the
+schema, not a hardcoded list. Matching is case-insensitive; for array fields
+(e.g. `type`) the filter matches when any element equals the value. A query
+parameter naming a known-but-non-filterable field returns `400` with the
+allowed `filterableFields`; unknown parameters are ignored.
+
+### GET /api/v1/proposals/{id}
+
+Get a proposal, including any custom `data` fields.
+
+### PATCH /api/v1/proposals/{id}
+
+Update a proposal. The merged object is re-validated against the `Proposal`
+schema. Supplying `data` replaces the custom-field map; omitting it leaves the
+existing custom fields untouched.
+
+### POST /api/v1/proposals/{id}/transition
+
+Advance a proposal through its lifecycle (see status enum). Sign-off, rejection
+and withdrawal are role-gated.
+
+---
+
 ## File Endpoints
 
 ### POST /api/v1/files/upload

@@ -32,12 +32,11 @@ type FieldDef struct {
 	Type     string `json:"type"` // "string", "boolean", "array", "object", "number", "datetime", "enum"
 	Required bool   `json:"required"`
 	ReadOnly bool   `json:"readOnly"`
-	// Core marks a field the backend handlers and state machines depend on.
-	// Core fields live in the fixed Go struct; non-core (custom) fields defined
-	// by an org's schema round-trip through the object's data map.
-	Core bool `json:"core,omitempty"`
-	// Filterable marks a field that list endpoints may filter or sort on.
-	Filterable bool        `json:"filterable,omitempty"`
+	// Core marks a field that backend handlers depend on structurally (e.g.
+	// id, status, timestamps, voting/decision fields). Core fields are always
+	// present in every org's schema and may not be removed by admin schema
+	// edits. Non-core fields are optional and removable per org.
+	Core       bool        `json:"core,omitempty"`
 	Default    interface{} `json:"default,omitempty"`
 	Validation *Validation `json:"validation,omitempty"`
 	UIHints    *UIHints    `json:"uiHints,omitempty"`
@@ -60,11 +59,57 @@ type UIHints struct {
 	Placeholder   string `json:"placeholder,omitempty"`
 	Label         string `json:"label,omitempty"`
 	Section       string `json:"section,omitempty"`
+	// Filterable marks a field that list/search endpoints accept as a
+	// query-parameter filter. The set of filterable fields is derived from the
+	// schema rather than a hardcoded list, so orgs control it via their schema.
+	Filterable bool `json:"filterable,omitempty"`
 }
 
 // Layout defines which fields to show and in what order for a given view.
 type Layout struct {
 	Fields []string `json:"fields"`
+}
+
+// Field returns the field definition with the given name, if present.
+func (d *TypeDefinition) Field(name string) (FieldDef, bool) {
+	for _, f := range d.Fields {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return FieldDef{}, false
+}
+
+// CoreFieldNames returns the names of fields marked core:true. These are the
+// fields backend handlers depend on and which admin schema edits may not remove.
+func (d *TypeDefinition) CoreFieldNames() []string {
+	var names []string
+	for _, f := range d.Fields {
+		if f.Core {
+			names = append(names, f.Name)
+		}
+	}
+	return names
+}
+
+// IsFilterable reports whether the field's uiHints mark it filterable — the
+// single home for that check (uiHints.filterable is the schema-level flag all
+// list endpoints honour).
+func (f FieldDef) IsFilterable() bool {
+	return f.UIHints != nil && f.UIHints.Filterable
+}
+
+// FilterableFieldNames returns the names of fields whose uiHints mark them
+// filterable. List/search endpoints derive their accepted filter parameters
+// from this set rather than a hardcoded list.
+func (d *TypeDefinition) FilterableFieldNames() []string {
+	var names []string
+	for _, f := range d.Fields {
+		if f.IsFilterable() {
+			names = append(names, f.Name)
+		}
+	}
+	return names
 }
 
 // TypePermissions defines who can read and write objects of this type.

@@ -154,7 +154,8 @@ func NoticeType() *TypeDefinition {
 	return def
 }
 
-// markFilterable sets Filterable=true on the named fields of a definition.
+// markFilterable marks the named fields filterable via their uiHints (the
+// schema-level convention shared with Proposal/SharedProfile).
 func markFilterable(def *TypeDefinition, names ...string) {
 	want := make(map[string]bool, len(names))
 	for _, n := range names {
@@ -162,7 +163,10 @@ func markFilterable(def *TypeDefinition, names ...string) {
 	}
 	for i := range def.Fields {
 		if want[def.Fields[i].Name] {
-			def.Fields[i].Filterable = true
+			if def.Fields[i].UIHints == nil {
+				def.Fields[i].UIHints = &UIHints{}
+			}
+			def.Fields[i].UIHints.Filterable = true
 		}
 	}
 }
