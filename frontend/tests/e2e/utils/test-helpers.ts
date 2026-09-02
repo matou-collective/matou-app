@@ -107,6 +107,12 @@ export function uniqueSuffix(): string {
  * Filters for KERI, registration, credential, and error messages.
  */
 export function setupPageLogging(page: Page, prefix: string): void {
+  // Uncaught page exceptions (e.g. a Vue render error white-screening the
+  // SPA) never reach the console listener — without this they are invisible
+  // in CI logs and a blank screenshot is the only evidence.
+  page.on('pageerror', (err) => {
+    console.log(`[${prefix}] [PAGEERROR] ${err.message}\n${(err.stack || '').split('\n').slice(0, 8).join('\n')}`);
+  });
   page.on('console', (msg) => {
     const text = msg.text();
     if (
