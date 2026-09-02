@@ -85,7 +85,8 @@
           <h3 class="section-title">Project roles</h3>
           <p class="section-subtitle">
             What you hold on a single project, assigned per project. Limited to project-scoped
-            capabilities — community-only capabilities are disabled here.
+            capabilities — community-only capabilities cannot be granted here
+            (an existing legacy grant can only be switched off).
           </p>
         </div>
         <button
@@ -129,12 +130,15 @@
             >
               <q-toggle
                 :model-value="hasGrant(role.id, cap)"
-                :disable="!store.canManageRoles || !isProjectCap(cap)"
+                :disable="!store.canManageRoles || (!isProjectCap(cap) && !hasGrant(role.id, cap))"
                 dense
                 @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
               >
                 <q-tooltip v-if="!isProjectCap(cap)">
-                  Community-only capability — a project role cannot hold it.
+                  Community-only capability — a project role cannot gain it.
+                  <template v-if="hasGrant(role.id, cap)">
+                    This legacy grant can be switched off, but not back on.
+                  </template>
                 </q-tooltip>
               </q-toggle>
             </td>

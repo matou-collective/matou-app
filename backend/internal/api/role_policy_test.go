@@ -414,3 +414,42 @@ func TestPutRolePolicyCustomRoleCheckStoreFailure(t *testing.T) {
 		t.Errorf("stored policy version = %d, want 1 (unchanged)", stored.Version)
 	}
 }
+
+// Grandfathering (#165→#166 handoff): project_steward's manage_governance is a
+// community-only capability on a project role that the DEFAULT policy grants.
+// It must survive an echo of the current policy, be removable — and once
+// removed, not be re-addable (and never extendable to another project role).
+func TestPutRolePolicyGrandfatheredCommunityCap(t *testing.T) {
+	h, _, _ := newTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	// 1. Echoing the default policy — which still grants project_steward
+	// manage_governance — is accepted (a bare echo must never brick the page).
+	if rec := putPolicy(t, mux, "EOpsAID", validUpdate()); rec.Code != http.StatusOK {
+		t.Fatalf("echo of default policy: %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. Removing the grandfathered grant is accepted.
+	removed := validUpdate()
+	removed["version"] = 1
+	grants := removed["grants"].(map[string][]contributions.Capability)
+	var kept []contributions.Capability
+	for _, c := range grants[string(contributions.RoleProjectSteward)] {
+		if c != contributions.CapManageGovernance {
+			kept = append(kept, c)
+		}
+	}
+	grants[string(contributions.RoleProjectSteward)] = kept
+	if rec := putPolicy(t, mux, "EOpsAID", removed); rec.Code != http.StatusOK {
+		t.Fatalf("removing grandfathered grant: %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+
+	// 3. Re-adding it after removal is rejected — the grandfather is a one-way
+	// door: current policy no longer holds the grant, so it counts as new.
+	readd := validUpdate()
+	readd["version"] = 2
+	if rec := putPolicy(t, mux, "EOpsAID", readd); rec.Code != http.StatusBadRequest {
+		t.Fatalf("re-adding after removal: %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+}

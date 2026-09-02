@@ -178,7 +178,7 @@ func TestProposalsHandler_Transition_SignOff_AdminAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals/"+id+"/transition", bytes.NewReader(b))
 	req.Header.Set("X-User-AID", "steward-aid")
 	// roleLookup is nil in test handler, so roles come from context
-	req = withRBACContext(req, "steward-aid", []contributions.Role{contributions.RoleCommunitySteward})
+	req = withRBACContext(req, "steward-aid", []contributions.Role{contributions.RoleProjectSteward})
 	w := httptest.NewRecorder()
 	handler.HandleTransition(w, req, id)
 
@@ -292,7 +292,7 @@ func TestProposalsHandler_Update_InReview_AdminAllowed(t *testing.T) {
 	b, _ := json.Marshal(map[string]interface{}{"title": "Updated by admin"})
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/proposals/"+id, bytes.NewReader(b))
 	req.Header.Set("X-User-AID", "steward-aid")
-	req = withRBACContext(req, "steward-aid", []contributions.Role{contributions.RoleCommunitySteward})
+	req = withRBACContext(req, "steward-aid", []contributions.Role{contributions.RoleProjectSteward})
 	w := httptest.NewRecorder()
 	handler.HandleUpdate(w, req, id)
 

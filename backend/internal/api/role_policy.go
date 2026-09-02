@@ -290,6 +290,22 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 	for _, r := range req.Roles {
 		roleScope[r.ID] = r.Scope
 	}
+	// Grandfathering: a community-only capability a project role ALREADY holds
+	// in the current policy (today that is project_steward's manage_governance,
+	// present in the defaults) stays legal — the admin can keep or remove it,
+	// but once removed it cannot be re-added, and no project role can gain a
+	// community-only capability it does not already hold. Actually revoking
+	// the legacy grants is enforcement work deferred to #166.
+	currentGrant := map[string]map[contributions.Capability]bool{}
+	if current != nil {
+		for roleID, caps := range current.Grants {
+			m := map[contributions.Capability]bool{}
+			for _, c := range caps {
+				m[c] = true
+			}
+			currentGrant[roleID] = m
+		}
+	}
 	for roleID, caps := range req.Grants {
 		if !seen[roleID] {
 			return fmt.Sprintf("grants reference unknown role %q", roleID), nil
@@ -298,8 +314,9 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 			if !validCaps[c] {
 				return fmt.Sprintf("unknown capability %q for role %q", c, roleID), nil
 			}
-			if roleScope[roleID] == contributions.ScopeProject && !contributions.IsProjectScopedCapability(c) {
-				return fmt.Sprintf("project role %q cannot hold community-only capability %q", roleID, c), nil
+			if roleScope[roleID] == contributions.ScopeProject &&
+				!contributions.IsProjectScopedCapability(c) && !currentGrant[roleID][c] {
+				return fmt.Sprintf("project role %q cannot gain community-only capability %q (existing grants may only be removed)", roleID, c), nil
 			}
 		}
 	}

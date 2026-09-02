@@ -96,13 +96,14 @@ func DefaultRolePolicy() *RolePolicy {
 		string(RoleContributor): append([]Capability{}, baseCaps...),
 		string(RoleProjectLead): append(append([]Capability{}, baseCaps...),
 			CapSubmitCompletion, CapArchiveWork),
-		// project_steward is a project-scoped role, so it holds only
-		// project-scoped capabilities. Proposal governance (manage_governance)
-		// is reproduced via the community roles it always co-occurs with in
-		// every KERI bundle (community/operations steward, founding member),
-		// so dropping it here keeps TestDefaultPolicyEquivalentToLegacyTable.
+		// project_steward keeps manage_governance even though it is
+		// project-scoped: the #165 split is UI + policy model only, and the
+		// default policy must reproduce today's grants exactly. Whether a
+		// project-scoped steward should lose community governance is an
+		// enforcement question deferred to #166. The PUT validation
+		// grandfathers this grant (removable, not re-addable).
 		string(RoleProjectSteward): append(append([]Capability{}, baseCaps...),
-			CapAssignWork, CapSignOff, CapApproveCompletion, CapArchiveWork),
+			CapAssignWork, CapSignOff, CapApproveCompletion, CapArchiveWork, CapManageGovernance),
 		string(RoleOperationsSteward): append(append([]Capability{}, baseCaps...),
 			CapAssignWork, CapSignOff, CapReward, CapSubmitCompletion, CapApproveCompletion,
 			CapArchiveWork, CapManageMembers, CapManageGovernance, CapManageComms, CapManageRoles),

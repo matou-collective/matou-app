@@ -154,10 +154,17 @@ func TestDefaultPolicyRoleScopes(t *testing.T) {
 	}
 }
 
-// The default policy must itself satisfy the project-scope invariant the PUT
-// validation enforces: no project-scoped role may hold a community-only
-// capability. Otherwise the very first save of the default would be rejected.
+// Project-scoped roles in the default policy hold only project-scoped
+// capabilities, with ONE deliberate exception: project_steward keeps
+// manage_governance because the #165 split changes no enforcement — the
+// default must reproduce today's grants exactly. The PUT validation
+// grandfathers that grant (keep/remove, never re-add or extend); actually
+// revoking it is #166's call. If this test fails because a new exception
+// appeared, that is an enforcement change — do not add it silently.
 func TestDefaultPolicyProjectRolesHoldOnlyProjectCaps(t *testing.T) {
+	grandfathered := map[string]map[Capability]bool{
+		string(RoleProjectSteward): {CapManageGovernance: true},
+	}
 	p := DefaultRolePolicy()
 	scope := map[string]string{}
 	for _, r := range p.Roles {
@@ -168,7 +175,7 @@ func TestDefaultPolicyProjectRolesHoldOnlyProjectCaps(t *testing.T) {
 			continue
 		}
 		for _, c := range caps {
-			if !IsProjectScopedCapability(c) {
+			if !IsProjectScopedCapability(c) && !grandfathered[roleID][c] {
 				t.Errorf("project role %q holds community-only capability %q in the default policy", roleID, c)
 			}
 		}
