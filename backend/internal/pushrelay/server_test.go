@@ -293,58 +293,99 @@ func TestNotifyFanoutAndPriority(t *testing.T) {
 }
 
 // Data-only and content-free: the bytes the relay actually POSTs to FCM carry
-// no notification block and nothing the caller could turn into readable text.
+// no notification block and nothing the caller could turn into readable text —
+// for BOTH the DM and channel kinds, across the android AND apns blocks.
 // Asserting on the RAW body matters — re-marshalling the decoded fcmV1Message
 // would only restate a compile-time fact and could never fail.
 func TestNotifyPayloadIsContentFreeOnTheWire(t *testing.T) {
-	mock := newMockFCM()
-	defer mock.close()
-	srv, res, store := newTestServer(mock.client())
+	srv, res, store := newTestServer(nil)
 	h := srv.Handler()
 	sender, sPriv := testAID(res)
 	tok := login(t, h, sender, sPriv)
 	alice, _ := testAID(res)
-	_ = store.Register(alice, "alice-1", "android")
+	_ = store.Register(alice, "alice-1", "ios")
 
-	// The channel id is the only caller-controlled value; make it a marker the
-	// assertions below can hunt for, alongside strings the caller must not be
-	// able to place on the wire at all.
-	_ = do(h, http.MethodPost, "/notify", tok, map[string]any{
-		"recipients": []string{alice}, "channel": "ChatChannel-1756600000000000000", "kind": "dm",
-	})
+	// Both kinds are content-free background wakes: apns-push-type=background,
+	// apns-priority=5 (APNs rejects 10 for a content-only push — see fcm.go and
+	// the ADR 0174 ruling on #272), and an aps dict carrying ONLY
+	// content-available:1. The channel id is the only caller-controlled value.
+	cases := []struct{ kind, channel string }{
+		{"dm", "ChatChannel-1756600000000000001"},
+		{"ch", "ChatChannel-1756600000000000002"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			mock := newMockFCM()
+			defer mock.close()
+			srv.fcm = mock.client()
 
-	bodies := mock.rawBodies()
-	if len(bodies) != 1 {
-		t.Fatalf("expected 1 push, got %d", len(bodies))
-	}
-	raw := string(bodies[0])
+			_ = do(h, http.MethodPost, "/notify", tok, map[string]any{
+				"recipients": []string{alice}, "channel": tc.channel, "kind": tc.kind,
+			})
 
-	// No notification block: Android would render its title/body itself.
-	var wire map[string]any
-	if err := json.Unmarshal(bodies[0], &wire); err != nil {
-		t.Fatalf("FCM body is not JSON: %v", err)
-	}
-	msg, _ := wire["message"].(map[string]any)
-	if msg == nil {
-		t.Fatalf("FCM body has no message member: %s", raw)
-	}
-	if _, ok := msg["notification"]; ok {
-		t.Fatalf("payload must not contain a notification block: %s", raw)
-	}
-	if strings.Contains(strings.ToLower(raw), "notification") {
-		t.Fatalf("payload must not mention notification anywhere: %s", raw)
-	}
+			bodies := mock.rawBodies()
+			if len(bodies) != 1 {
+				t.Fatalf("expected 1 push, got %d", len(bodies))
+			}
+			raw := string(bodies[0])
 
-	// The data block is exactly the §4 field budget and nothing else.
-	data, _ := msg["data"].(map[string]any)
-	want := map[string]any{"t": "m", "c": "ChatChannel-1756600000000000000", "k": "dm", "v": "1"}
-	if len(data) != len(want) {
-		t.Fatalf("data must carry exactly %d fields, got %+v", len(want), data)
-	}
-	for k, v := range want {
-		if data[k] != v {
-			t.Fatalf("data[%q] = %v, want %v", k, data[k], v)
-		}
+			var wire map[string]any
+			if err := json.Unmarshal(bodies[0], &wire); err != nil {
+				t.Fatalf("FCM body is not JSON: %v", err)
+			}
+			msg, _ := wire["message"].(map[string]any)
+			if msg == nil {
+				t.Fatalf("FCM body has no message member: %s", raw)
+			}
+
+			// No notification block; no renderable text anywhere on the wire.
+			if _, ok := msg["notification"]; ok {
+				t.Fatalf("payload must not contain a notification block: %s", raw)
+			}
+			for _, banned := range []string{"notification", "alert", "title", "badge"} {
+				if strings.Contains(strings.ToLower(raw), banned) {
+					t.Fatalf("payload must not mention %q anywhere: %s", banned, raw)
+				}
+			}
+
+			// The data block is exactly the §4 field budget and nothing else.
+			data, _ := msg["data"].(map[string]any)
+			want := map[string]any{"t": "m", "c": tc.channel, "k": tc.kind, "v": "1"}
+			if len(data) != len(want) {
+				t.Fatalf("data must carry exactly %d fields, got %+v", len(want), data)
+			}
+			for k, v := range want {
+				if data[k] != v {
+					t.Fatalf("data[%q] = %v, want %v", k, data[k], v)
+				}
+			}
+
+			// The apns block wakes iOS in the background: push-type background,
+			// content-free priority 5, content-available:1, and an aps dict
+			// carrying nothing else (no alert/title/body/badge).
+			apns, _ := msg["apns"].(map[string]any)
+			if apns == nil {
+				t.Fatalf("payload must carry an apns block to wake iOS in the background: %s", raw)
+			}
+			headers, _ := apns["headers"].(map[string]any)
+			if headers["apns-push-type"] != "background" {
+				t.Fatalf("apns-push-type must be background, got %v: %s", headers["apns-push-type"], raw)
+			}
+			if headers["apns-priority"] != "5" {
+				t.Fatalf("apns-priority must be 5 for a content-free wake, got %v: %s", headers["apns-priority"], raw)
+			}
+			payload, _ := apns["payload"].(map[string]any)
+			aps, _ := payload["aps"].(map[string]any)
+			if aps == nil {
+				t.Fatalf("apns.payload.aps must be present so a data-only push wakes the app: %s", raw)
+			}
+			if aps["content-available"] != float64(1) {
+				t.Fatalf("aps.content-available must be 1, got %v: %s", aps["content-available"], raw)
+			}
+			if len(aps) != 1 {
+				t.Fatalf("aps must carry ONLY content-available (no alert/title/body/badge), got %+v: %s", aps, raw)
+			}
+		})
 	}
 }
 
