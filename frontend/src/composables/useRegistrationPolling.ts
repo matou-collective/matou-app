@@ -26,6 +26,9 @@ import {
   type ExpiredRegistration,
 } from 'src/lib/registrationResolve';
 import type { CustomAnswer } from 'src/kit/profile';
+import { isOpen } from 'src/kit/approval';
+import { KIT } from 'src/generated/kit';
+import { useAdminActions } from './useAdminActions';
 
 export interface PendingRegistration {
   notificationId: string;
@@ -102,6 +105,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
   const keriClient = useKERIClient();
   const notificationService = useKERINotificationService();
   const profilesStore = useProfilesStore();
+  const adminActions = useAdminActions();
 
   // State
   const pendingRegistrations = ref<PendingRegistration[]>([]);
@@ -118,6 +122,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
 
   // Track applicants for whom we've already created a pending SharedProfile
   const createdPendingProfiles = new Set<string>();
+
+  // Registrations auto-approved under an `open` kit — one approval per exnSaid.
+  const autoApprovedExnSaids = new Set<string>();
 
   // Per-applicant OOBI resolution state (backoff bookkeeping for pending rows)
   const resolveStates = new Map<string, ResolveAttemptState>();
@@ -515,6 +522,32 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       }
 
       pendingRegistrations.value = filtered;
+
+      // === 6c. Open-approval auto-approve ===
+      // When the kit's approval mode is `open`, no endorsement/session/admin
+      // gate applies — a steward's client approves each verified registration
+      // the moment it lands, once per exnSaid. Pending (escrowed) rows wait
+      // until they verify; a failed approval (e.g. another action in flight)
+      // clears its guard so the next poll retries.
+      if (isOpen(KIT.onboarding.approval)) {
+        for (const reg of filtered) {
+          if (reg.isPending || autoApprovedExnSaids.has(reg.exnSaid)) continue;
+          autoApprovedExnSaids.add(reg.exnSaid);
+          void adminActions
+            .approveRegistration(reg)
+            .then((ok) => {
+              if (ok) {
+                console.log(`[RegistrationPolling] open approval → auto-approved ${reg.profile.name}`);
+              } else {
+                autoApprovedExnSaids.delete(reg.exnSaid);
+              }
+            })
+            .catch((err) => {
+              autoApprovedExnSaids.delete(reg.exnSaid);
+              console.warn('[RegistrationPolling] open auto-approve failed:', err);
+            });
+        }
+      }
 
       // === 7. Check for MESSAGE REPLY notifications from applicants ===
       const messageReplyNotifications = allNotes.filter(

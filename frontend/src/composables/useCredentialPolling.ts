@@ -82,6 +82,10 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
   const stewardEndorsementVerified = ref(false);
   const sessionAttendanceVerified = ref(false);
 
+  // Total endorsements received (member or steward) — drives the kit's
+  // endorsement requirement card (requiredEndorsements from the approval mode).
+  const endorsementCount = computed(() => endorsementsReceived.value.length);
+
   // Internal state
   let stopWatcher: (() => void) | null = null;
   let isProcessingGrant = false;
@@ -848,6 +852,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
     memberEndorsementVerified,
     stewardEndorsementVerified,
     sessionAttendanceVerified,
+    endorsementCount,
     spaceInviteReceived,
     spaceInviteKey,
     spaceId,

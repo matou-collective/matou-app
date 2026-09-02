@@ -52,7 +52,7 @@ import OnboardingHeader from './OnboardingHeader.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { renderMarkdown } from 'src/lib/markdown';
 import { KIT } from 'src/generated/kit';
-import type { KitApproval } from 'src/kit/types';
+import { approvalWords } from 'src/kit/approval';
 
 const { fadeSlideUp } = useAnimationPresets();
 
@@ -60,21 +60,6 @@ const emit = defineEmits<{
   (e: 'continue'): void;
   (e: 'back'): void;
 }>();
-
-// Local copy of COA's `approvalWords` (templates/src/community-page.ts).
-// Task 8 replaces this with the shared kit helper.
-function approvalWords(a: KitApproval): string {
-  switch (a.mode) {
-    case 'open':
-      return 'Anyone can join straight away.';
-    case 'admin':
-      return 'An admin approves each new member.';
-    case 'endorsements':
-      return `New members need ${a.required} endorsements from existing members.`;
-    case 'endorsements+session':
-      return `New members need ${a.required} endorsements and attend a whakawhanaungatanga session before an admin approves them.`;
-  }
-}
 
 const approvalSentence = computed(() => approvalWords(KIT.onboarding.approval));
 
