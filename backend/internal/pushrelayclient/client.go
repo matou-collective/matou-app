@@ -51,6 +51,7 @@ type Client struct {
 	http    *http.Client
 
 	mu           sync.Mutex
+	sessionAID   string
 	sessionToken string
 	sessionExp   time.Time
 }
@@ -156,18 +157,33 @@ func (c *Client) RelaySession(ctx context.Context, aid, challenge, signature str
 			exp = parsed
 		}
 	}
-	c.SetSession(login.Token, exp)
+	c.SetSession(aid, login.Token, exp)
 	return exp, nil
 }
 
-// SetSession stores the bearer token and expiry the client spends on the authed
-// routes. Held in memory only. Exposed so a session minted out of band (e.g. a
-// test, or a future non-login mint path) can be injected.
-func (c *Client) SetSession(token string, expiresAt time.Time) {
+// SetSession stores the bearer token, the AID it was minted for, and its expiry.
+// Held in memory only. Exposed so a session minted out of band (e.g. a test, or
+// a future non-login mint path) can be injected.
+func (c *Client) SetSession(aid, token string, expiresAt time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.sessionAID = aid
 	c.sessionToken = token
 	c.sessionExp = expiresAt
+}
+
+// SessionAID returns the AID the live session was minted for, or "" when there
+// is no valid session. Callers use it to detect a session left over from a
+// previous identity (an identity switch mid-TTL): spending that session on a
+// register would bind the device token to the OLD AID at the relay, so the API
+// layer refuses the mismatch with a 401 and the frontend mints a fresh session.
+func (c *Client) SessionAID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sessionToken == "" || !time.Now().Before(c.sessionExp) {
+		return ""
+	}
+	return c.sessionAID
 }
 
 // ClearSession drops the in-memory session (logout / identity switch). After it
@@ -175,6 +191,7 @@ func (c *Client) SetSession(token string, expiresAt time.Time) {
 func (c *Client) ClearSession() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.sessionAID = ""
 	c.sessionToken = ""
 	c.sessionExp = time.Time{}
 }

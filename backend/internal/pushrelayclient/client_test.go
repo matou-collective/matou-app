@@ -212,7 +212,7 @@ func TestClient_ExpiredSessionDropsFast(t *testing.T) {
 	defer srv.Close()
 
 	c := mustClient(t, srv.URL)
-	c.SetSession("session-tok", time.Now().Add(-time.Minute))
+	c.SetSession("aid-alice", "session-tok", time.Now().Add(-time.Minute))
 	if err := c.Register(context.Background(), "t", "android"); !errors.Is(err, ErrNoSession) {
 		t.Errorf("expired session Register = %v, want ErrNoSession", err)
 	}

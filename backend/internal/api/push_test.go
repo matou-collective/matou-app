@@ -23,6 +23,7 @@ type fakeRegistrar struct {
 	err          error
 
 	challengeAID string     // AID the handler asked a challenge for
+	sessionAID   string     // AID the live session is minted for (SessionAID)
 	sessions     []sessCall // AID/challenge/signature exchanged for a session
 	challengeErr error      // force RelayChallenge to fail
 	sessionErr   error      // force RelaySession to fail
@@ -54,6 +55,8 @@ func (f *fakeRegistrar) RelaySession(_ context.Context, aid, challenge, signatur
 	f.sessions = append(f.sessions, sessCall{aid: aid, challenge: challenge, signature: signature})
 	return time.Time{}, nil
 }
+
+func (f *fakeRegistrar) SessionAID() string { return f.sessionAID }
 
 func (f *fakeRegistrar) Register(_ context.Context, token, platform string) error {
 	if f.err != nil {
@@ -343,5 +346,34 @@ func TestPushHandler_Register_NoSessionIs401(t *testing.T) {
 	h.HandleRegister(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 when the relay session is missing", rec.Code)
+	}
+}
+
+// TestPushHandler_Register_StaleSessionForOtherAIDIs401: a live relay session
+// minted for a previous identity must not be spent on a register — that would
+// bind the device token to the OLD AID at the relay. The handler answers 401 so
+// the frontend mints a session for the current identity first. (Deregister has
+// no such check on purpose: releasing the old identity's token must spend the
+// old session, since the relay enforces token ownership.)
+func TestPushHandler_Register_StaleSessionForOtherAIDIs401(t *testing.T) {
+	relay := &fakeRegistrar{sessionAID: "aid-old-identity"}
+	h := NewPushHandler(relay, fakeAID{aid: "aid-new-identity"})
+
+	rec := httptest.NewRecorder()
+	h.HandleRegister(rec, httptest.NewRequest(http.MethodPost, "/api/v1/push/register",
+		strings.NewReader(`{"token":"tok-1","platform":"android"}`)))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("register with a session for another AID = %d, want 401", rec.Code)
+	}
+	if len(relay.registered) != 0 {
+		t.Fatalf("the stale session was spent: %+v", relay.registered)
+	}
+
+	// Deregister must still go through — the old token belongs to the old AID.
+	rec = httptest.NewRecorder()
+	h.HandleDeregister(rec, httptest.NewRequest(http.MethodPost, "/api/v1/push/deregister",
+		strings.NewReader(`{"token":"tok-0"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deregister with the old session = %d, want 200", rec.Code)
 	}
 }

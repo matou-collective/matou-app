@@ -20,6 +20,10 @@ import (
 type PushRelay interface {
 	RelayChallenge(ctx context.Context, aid string) (challenge string, expiresAt time.Time, err error)
 	RelaySession(ctx context.Context, aid, challenge, signature string) (expiresAt time.Time, err error)
+	// SessionAID reports which AID the live relay session was minted for ("" when
+	// none) so register can refuse to spend a session left over from a previous
+	// identity.
+	SessionAID() string
 	Register(ctx context.Context, token, platform string) error
 	Deregister(ctx context.Context, token string) error
 }
@@ -79,7 +83,8 @@ func (h *PushHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push notifications not configured"})
 		return
 	}
-	if h.sessionAID(r) == "" {
+	aid := h.sessionAID(r)
+	if aid == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no authenticated identity"})
 		return
 	}
@@ -94,6 +99,16 @@ func (h *PushHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A live session minted for a DIFFERENT AID is stale — left over from before
+	// an identity switch. Spending it would bind this device token to the old AID
+	// at the relay, so refuse with the same 401 the frontend already handles by
+	// minting a fresh session for the current identity. Deregister deliberately
+	// has no such check: releasing a token the old identity owns must spend the
+	// old session (the relay enforces token ownership).
+	if minted := h.relay.SessionAID(); minted != "" && minted != aid {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "push relay session required"})
+		return
+	}
 	if err := h.relay.Register(r.Context(), req.Token, req.Platform); err != nil {
 		if errors.Is(err, pushrelayclient.ErrNoSession) {
 			// No live relay session to spend. Answer 401 so the frontend re-mints
