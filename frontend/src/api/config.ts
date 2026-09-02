@@ -7,7 +7,7 @@
  */
 
 import { secureStorage } from 'src/lib/secureStorage';
-import { getBackendUrl } from 'src/lib/platform';
+import { getBackendUrl, isCapacitor } from 'src/lib/platform';
 import { getConfigUrl, getEnv } from 'src/lib/clientConfig';
 
 // Config server URL from clientConfig (respects VITE_ENV)
@@ -104,7 +104,29 @@ function isUsableConfig(config: OrgConfig | null | undefined): config is OrgConf
   return !!config?.organization?.aid && !!config?.registry?.id;
 }
 
+/**
+ * On Capacitor the remote config server is unreachable from the WebView, so
+ * when the embedded backend can't supply org config the only fallback is the
+ * local secure-storage cache (issue #265).
+ */
+async function capacitorCacheFallback(): Promise<ConfigResult> {
+  const cached = await getCachedConfig();
+  if (cached) {
+    orgConfigCache = cached;
+    orgConfigFetchedAt = Date.now();
+  }
+  return { status: 'server_unreachable', cached };
+}
+
 export async function fetchOrgConfig(): Promise<ConfigResult> {
+  // On Capacitor the embedded backend is the ONLY network source for org
+  // config: the WebView cannot reach the remote plain-http config server
+  // (blocked as mixed content on both Android and iOS), so the backend fetches
+  // it server-side and serves it on /api/v1/org/config (issue #265; mirrors the
+  // #99 client-config flow). We therefore never fall through to a direct
+  // config-server request on Capacitor — only to the local cache.
+  const onCapacitor = isCapacitor();
+
   // Try backend first (new unified endpoint)
   try {
     const backendUrl = await getBackendUrl();
@@ -123,15 +145,31 @@ export async function fetchOrgConfig(): Promise<ConfigResult> {
         console.log('[Config] Fetched config from backend for:', config.organization.name);
         return { status: 'configured', config };
       }
-      console.warn('[Config] Backend returned incomplete config (missing registry); falling through to config server');
+      console.warn('[Config] Backend returned incomplete config (missing registry)');
+      if (onCapacitor) {
+        // The backend already consulted the config server on our behalf; a
+        // direct WebView fetch would only be blocked, so treat this as unset.
+        return { status: 'not_configured' };
+      }
+      console.warn('[Config] Falling through to config server');
     } else if (response.status === 404) {
+      if (onCapacitor) {
+        console.log('[Config] Backend not configured (Capacitor); no direct config-server fallback');
+        return { status: 'not_configured' };
+      }
       console.log('[Config] Backend not configured, trying config server...');
+    } else if (onCapacitor) {
+      return await capacitorCacheFallback();
     }
   } catch (err) {
     console.warn('[Config] Backend unreachable, trying config server:', err);
+    if (onCapacitor) {
+      return await capacitorCacheFallback();
+    }
   }
 
-  // Try config server (primary source for org config in multi-session dev)
+  // Try config server (primary source for org config in multi-session dev).
+  // Never reached on Capacitor — the branches above are terminal there.
   try {
     const response = await fetch(`${CONFIG_SERVER_URL}/api/config`, {
       signal: AbortSignal.timeout(5000),
@@ -274,6 +312,11 @@ export async function isConfigServerReachable(): Promise<boolean> {
   } catch {
     // Backend not reachable, try config server
   }
+
+  // On Capacitor the remote config server is unreachable from the WebView, so
+  // the backend health check above is authoritative — don't attempt a direct
+  // (mixed-content-blocked) request to the config server (issue #265).
+  if (isCapacitor()) return false;
 
   // Fallback to legacy config server
   try {

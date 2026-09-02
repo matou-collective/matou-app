@@ -732,6 +732,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		}
 	})
 
+	// Read counterpart to the mirror: on a cache miss the org-config GET handler
+	// fetches org config from the config server server-side, so a fresh mobile
+	// install reaches onboarding without the WebView ever touching the remote
+	// plain-http host (issue #265; mirrors the #99 client-config flow). The
+	// timeout is kept under the frontend's 5s org-config fetch so the loopback
+	// request doesn't outlive the WebView's own AbortSignal.
+	orgConfigHandler.SetConfigServerSource(&http.Client{Timeout: 4 * time.Second}, opts.ConfigServerURL, opts.IsTest())
+
 	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
 	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)
 	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager, contribNotifier)
