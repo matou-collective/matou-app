@@ -33,13 +33,15 @@ import { requestPermissionAndRegister } from 'src/composables/usePush';
 // Import onboarding screens
 import SplashScreen from 'components/onboarding/SplashScreen.vue';
 import InviteCodeScreen from 'components/onboarding/InviteCodeScreen.vue';
-import InvitationWelcomeScreen from 'components/onboarding/InvitationWelcomeScreen.vue';
-import MatouInformationScreen from 'components/onboarding/MatouInformationScreen.vue';
+import KitWelcomeScreen from 'components/onboarding/KitWelcomeScreen.vue';
+import InfoPagesScreen from 'components/onboarding/InfoPagesScreen.vue';
 import ProfileFormScreen from 'components/onboarding/ProfileFormScreen.vue';
 import ProfileConfirmationScreen from 'components/onboarding/ProfileConfirmationScreen.vue';
 import MnemonicVerificationScreen from 'components/onboarding/MnemonicVerificationScreen.vue';
 import CredentialIssuanceScreen from 'components/onboarding/CredentialIssuanceScreen.vue';
 import PendingApprovalScreen from 'components/onboarding/PendingApprovalScreen.vue';
+import { KIT } from 'src/generated/kit';
+import { nextRegisterScreen, prevRegisterScreen } from 'src/kit/onboarding-flow';
 import RecoveryScreen from 'components/onboarding/RecoveryScreen.vue';
 import ClaimWelcomeScreen from 'components/onboarding/ClaimWelcomeScreen.vue';
 import ClaimProcessingScreen from 'components/onboarding/ClaimProcessingScreen.vue';
@@ -55,8 +57,8 @@ const currentScreen = computed(() => store.currentScreen);
 const screenComponents = {
   splash: SplashScreen,
   'invite-code': InviteCodeScreen,
-  'invitation-welcome': InvitationWelcomeScreen,
-  'matou-info': MatouInformationScreen,
+  'kit-welcome': KitWelcomeScreen,
+  'info-page': InfoPagesScreen,
   'profile-form': ProfileFormScreen,
   'profile-confirmation': ProfileConfirmationScreen,
   'mnemonic-verification': MnemonicVerificationScreen,
@@ -75,8 +77,8 @@ const currentComponent = computed(() => {
 // Props for each screen
 const currentProps = computed(() => {
   switch (currentScreen.value) {
-    case 'invitation-welcome':
-      return { inviterName: store.inviterName };
+    case 'info-page':
+      return { index: store.infoPageIndex };
     case 'mnemonic-verification':
       return {
         mnemonic: store.mnemonic.words,
@@ -128,7 +130,8 @@ const startInviteFlow = () => {
 
 const startRegisterFlow = () => {
   store.setPath('register');
-  store.navigateTo('matou-info');
+  store.infoPageIndex = 0;
+  store.navigateTo('kit-welcome');
 };
 
 const startRecoverFlow = () => {
@@ -155,8 +158,14 @@ const handleContinue = async (data?: unknown) => {
 
   // Navigate to next screen based on path
   if (path === 'register') {
+    // Kit-driven welcome + info pages walk: splash → kit-welcome → info-page × N → profile-form.
+    if (current === 'kit-welcome' || current === 'info-page') {
+      const step = nextRegisterScreen(current, store.infoPageIndex, KIT.onboarding.infoPages.length);
+      store.infoPageIndex = step.index;
+      store.navigateTo(step.screen as typeof store.currentScreen);
+      return;
+    }
     const forwardMap: Record<string, string> = {
-      'matou-info': 'profile-form',
       'profile-form': 'profile-confirmation',
       'profile-confirmation': 'mnemonic-verification',
       'mnemonic-verification': 'pending-approval',
@@ -203,10 +212,20 @@ const handleBack = () => {
   const current = currentScreen.value;
   const path = store.onboardingPath;
 
+  // Kit-driven welcome + info pages walk back: profile-form → info-page × N → kit-welcome → splash.
+  if (path === 'register' && (current === 'kit-welcome' || current === 'info-page' || current === 'profile-form')) {
+    const step = prevRegisterScreen(current, store.infoPageIndex, KIT.onboarding.infoPages.length);
+    if (step.screen === 'splash') {
+      store.reset();
+    } else {
+      store.infoPageIndex = step.index;
+      store.navigateTo(step.screen as typeof store.currentScreen);
+    }
+    return;
+  }
+
   // Define back navigation based on current path
   const backMapRegister: Record<string, string | null> = {
-    'matou-info': 'splash',
-    'profile-form': 'matou-info',
     'profile-confirmation': 'profile-form',
     'mnemonic-verification': 'profile-confirmation',
   };

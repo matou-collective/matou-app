@@ -63,7 +63,15 @@ export default configure(() => {
         viteConf.optimizeDeps.include.push(
           'signify-ts',
           'libsodium-wrappers-sumo',
-          'libsodium-sumo'
+          'libsodium-sumo',
+          // Onboarding imports these statically since #242 (kit welcome/info
+          // markdown). Without pre-bundling, the dev server discovers them on
+          // the FIRST navigation to '/' and does a mid-session "optimized
+          // dependencies changed" full-page reload — which resets the pinia
+          // onboarding store to splash and eats the post-setup mnemonic screen
+          // (deterministic in CI, where npm ci wipes node_modules/.vite).
+          'marked',
+          'dompurify'
         );
         viteConf.optimizeDeps.esbuildOptions = {
           target: 'es2022',

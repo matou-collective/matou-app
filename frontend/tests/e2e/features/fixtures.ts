@@ -27,10 +27,21 @@ function loadAccounts(): TestAccounts {
 type Fixtures = {
   adminPage: Page;
   memberPage: Page;
+  freshPage: Page;
   snap: (page: Page, label: string) => Promise<void>;
 };
 
 export const test = base.extend<Fixtures>({
+  // A config-loaded but unauthenticated page, for pre-registration flows
+  // (splash → register → onboarding welcome/info pages). Does not log in or
+  // register — the spec drives the onboarding UI itself.
+  freshPage: async ({ browser }, use) => {
+    const ctx = await browser.newContext();
+    await setupTestConfig(ctx);
+    const page = await ctx.newPage();
+    await use(page);
+    await ctx.close();
+  },
   adminPage: async ({ browser }, use) => {
     const accounts = loadAccounts();
     if (!accounts.admin?.mnemonic) throw new Error('no admin in test-accounts.json');

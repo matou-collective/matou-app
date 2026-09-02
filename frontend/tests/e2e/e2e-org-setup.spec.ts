@@ -128,7 +128,20 @@ test.describe.serial('Organization Setup', () => {
       console.log('[Test] Admin identity created, redirected');
 
       // --- Mnemonic capture ---
-      await expect(page.getByRole('heading', { name: /identity created/i })).toBeVisible({ timeout: TIMEOUT.short });
+      try {
+        await expect(page.getByRole('heading', { name: /identity created/i })).toBeVisible({ timeout: TIMEOUT.short });
+      } catch (e) {
+        // Diagnostic for the deterministic attempt-1 white screen (#242): name
+        // what actually rendered — empty app root vs splash vs overlay — since
+        // there is no pageerror and no console output on this path.
+        const diag = await page.evaluate(() => ({
+          href: location.href,
+          appHtmlLen: document.getElementById('q-app')?.innerHTML.length ?? -1,
+          bodyText: document.body.innerText.replace(/\s+/g, ' ').slice(0, 300),
+        })).catch(() => ({ evalFailed: true }));
+        console.log('[Diag] post-setup state:', JSON.stringify(diag));
+        throw e;
+      }
       const adminMnemonic = await captureMnemonicWords(page);
       console.log(`[Test] Captured admin mnemonic (${adminMnemonic.length} words)`);
       expect(adminMnemonic).toHaveLength(12);
@@ -151,7 +164,7 @@ test.describe.serial('Organization Setup', () => {
       // Wait for dashboard, pending, or welcome overlay
       const enterCommunityBtn = page.getByRole('button', { name: /enter community/i });
       await Promise.race([
-        expect(page.locator('h1', { hasText: /application is under review/i })).toBeVisible({ timeout: TIMEOUT.long }),
+        expect(page.locator('h1', { hasText: /application received|application is under review/i })).toBeVisible({ timeout: TIMEOUT.long }),
         expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
         expect(enterCommunityBtn).toBeVisible({ timeout: TIMEOUT.long }),
       ]);

@@ -394,7 +394,7 @@ test.describe.serial('Pre-Created Identity Invitation', () => {
       // --- Pending Approval Screen ---
       console.log('[Test] Waiting for pending approval screen...');
       await expect(
-        inviteePage.getByText(/application.*review|pending|under review/i).first(),
+        inviteePage.getByText(/application received|application.*review|pending|under review/i).first(),
       ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
       console.log('[Test] On pending approval screen');
 

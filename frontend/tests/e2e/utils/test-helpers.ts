@@ -107,6 +107,12 @@ export function uniqueSuffix(): string {
  * Filters for KERI, registration, credential, and error messages.
  */
 export function setupPageLogging(page: Page, prefix: string): void {
+  // Uncaught page exceptions (e.g. a Vue render error white-screening the
+  // SPA) never reach the console listener — without this they are invisible
+  // in CI logs and a blank screenshot is the only evidence.
+  page.on('pageerror', (err) => {
+    console.log(`[${prefix}] [PAGEERROR] ${err.message}\n${(err.stack || '').split('\n').slice(0, 8).join('\n')}`);
+  });
   page.on('console', (msg) => {
     const text = msg.text();
     if (
@@ -254,7 +260,12 @@ export async function fillProfileForm(
 
 /**
  * Navigate from splash screen to the profile form:
- * Splash -> Register -> Join Matou -> Profile form.
+ * Splash -> Register -> kit welcome -> info pages (× N) -> Profile form.
+ *
+ * The register flow is now driven by the kit's onboarding copy: a welcome
+ * screen followed by one screen per info page (the default `matou` kit ships
+ * three). Each screen has a "Continue" button; the last info page reads
+ * "I agree, continue to registration".
  */
 export async function navigateToProfileForm(page: Page): Promise<void> {
   await expect(
@@ -262,14 +273,27 @@ export async function navigateToProfileForm(page: Page): Promise<void> {
   ).toBeVisible({ timeout: TIMEOUT.short });
   await page.getByRole('button', { name: /join now/i }).click();
 
+  // Kit welcome screen (heading = kit welcome heading, "Join Matou").
   await expect(
     page.getByRole('heading', { name: /join matou/i }),
   ).toBeVisible({ timeout: TIMEOUT.short });
-  await page.getByRole('button', { name: /continue/i }).click();
+  await page.getByRole('button', { name: /^continue$/i }).click();
 
-  await expect(
-    page.getByRole('heading', { name: /create your profile/i }),
-  ).toBeVisible({ timeout: TIMEOUT.short });
+  // Info pages: click Continue on each until the profile form appears. The
+  // last page's button reads "I agree, continue to registration".
+  const profileHeading = page.getByRole('heading', { name: /create your profile/i });
+  for (let i = 0; i < 10; i++) {
+    if (await profileHeading.isVisible().catch(() => false)) break;
+    const agreeBtn = page.getByRole('button', { name: /continue to registration/i });
+    if (await agreeBtn.isVisible().catch(() => false)) {
+      await agreeBtn.click();
+      break;
+    }
+    await page.getByRole('button', { name: /^continue$/i }).click();
+    await page.waitForTimeout(300);
+  }
+
+  await expect(profileHeading).toBeVisible({ timeout: TIMEOUT.short });
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +333,7 @@ export async function registerUser(
 
   // Wait for pending screen (submission includes OOBI resolution + EXN + IPEX)
   await expect(
-    page.getByText(/application.*review|pending|under review/i).first(),
+    page.getByText(/application received|application.*review|pending|under review/i).first(),
   ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
   console.log(`[${userName}] Registration submitted, on pending screen`);
 
@@ -602,7 +626,7 @@ export async function performOrgSetup(
 
   // Wait for any post-mnemonic state: pending review, approved, welcome overlay, or dashboard
   await Promise.race([
-    expect(page.locator('h1', { hasText: /application is under review/i }))
+    expect(page.locator('h1', { hasText: /application received|application is under review/i }))
       .toBeVisible({ timeout: TIMEOUT.long }),
     expect(page).toHaveURL(/#\/dashboard/, { timeout: TIMEOUT.long }),
     expect(page.getByRole('heading', { name: /membership approved/i }))
