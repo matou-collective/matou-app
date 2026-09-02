@@ -90,6 +90,44 @@ func (r *Registry) Validate(typeName string, data json.RawMessage) ([]string, er
 	return ValidateData(def, data), nil
 }
 
+// IsFilterable reports whether a named type declares the given field as
+// filterable. Unknown types or fields are not filterable.
+func (r *Registry) IsFilterable(typeName, field string) bool {
+	def, ok := r.Get(typeName)
+	if !ok {
+		return false
+	}
+	for _, f := range def.Fields {
+		if f.Name == field {
+			return f.IsFilterable()
+		}
+	}
+	// A variant field may also be filterable.
+	for _, variant := range def.Variants {
+		for _, f := range variant.Fields {
+			if f.Name == field {
+				return f.IsFilterable()
+			}
+		}
+	}
+	return false
+}
+
+// CoreFieldNames returns the set of field names a type marks as core.
+func (r *Registry) CoreFieldNames(typeName string) map[string]bool {
+	def, ok := r.Get(typeName)
+	if !ok {
+		return nil
+	}
+	core := make(map[string]bool)
+	for _, f := range def.Fields {
+		if f.Core {
+			core[f.Name] = true
+		}
+	}
+	return core
+}
+
 // LoadFromSpace reads type_definition objects from a space and registers them.
 // This is called on backend startup to hydrate the registry from persisted data.
 func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, spaceID string) error {

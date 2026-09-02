@@ -431,7 +431,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	eventsHandler := api.NewEventsHandler(eventBroker)
 	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager(), eventBroker)
 	multisigHandler := api.NewMultisigHandler(spaceManager)
-	noticesHandler := api.NewNoticesHandler(spaceManager, userIdentity, eventBroker)
+	noticesHandler := api.NewNoticesHandler(spaceManager, userIdentity, typeRegistry, eventBroker)
 	filesHandler := api.NewFilesHandler(spaceManager.FileManager(), spaceManager)
 	chatHandler := api.NewChatHandler(spaceManager, userIdentity, eventBroker, store, chatListener)
 	commentCursorsHandler := api.NewCommentCursorsHandler(spaceManager, userIdentity)

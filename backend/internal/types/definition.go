@@ -12,6 +12,18 @@ type TypeDefinition struct {
 	Fields      []FieldDef        `json:"fields"`
 	Layouts     map[string]Layout `json:"layouts"` // "card", "detail", "form"
 	Permissions TypePermissions   `json:"permissions"`
+
+	// VariantField, when set, names the field whose value selects a variant
+	// (e.g. "subtype"). Variants let one type carry per-subtype field sets.
+	VariantField string             `json:"variantField,omitempty"`
+	Variants     map[string]Variant `json:"variants,omitempty"`
+}
+
+// Variant defines a subtype-specific extension to a type: extra fields that
+// apply (and are validated) only when the object's VariantField value matches
+// the variant key.
+type Variant struct {
+	Fields []FieldDef `json:"fields"`
 }
 
 // FieldDef describes a single field in a type definition.
@@ -80,13 +92,20 @@ func (d *TypeDefinition) CoreFieldNames() []string {
 	return names
 }
 
+// IsFilterable reports whether the field's uiHints mark it filterable — the
+// single home for that check (uiHints.filterable is the schema-level flag all
+// list endpoints honour).
+func (f FieldDef) IsFilterable() bool {
+	return f.UIHints != nil && f.UIHints.Filterable
+}
+
 // FilterableFieldNames returns the names of fields whose uiHints mark them
 // filterable. List/search endpoints derive their accepted filter parameters
 // from this set rather than a hardcoded list.
 func (d *TypeDefinition) FilterableFieldNames() []string {
 	var names []string
 	for _, f := range d.Fields {
-		if f.UIHints != nil && f.UIHints.Filterable {
+		if f.IsFilterable() {
 			names = append(names, f.Name)
 		}
 	}
