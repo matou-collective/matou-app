@@ -2755,6 +2755,8 @@ export class KERIClient {
       gitlabUrl?: string;
       interests: string[];
       customInterests?: string;
+      /** Answers to the kit's custom questions, carried by label. */
+      customAnswers?: { label: string; value: string | string[] }[];
       avatarFileRef?: string;
       avatarData?: string;
       avatarMimeType?: string;
@@ -2850,6 +2852,7 @@ export class KERIClient {
           gitlabUrl: registrationData.gitlabUrl || '',
           interests: registrationData.interests,
           customInterests: registrationData.customInterests || '',
+          customAnswers: registrationData.customAnswers || [],
           avatarFileRef: registrationData.avatarFileRef || '',
           avatarData: registrationData.avatarData || '',
           avatarMimeType: registrationData.avatarMimeType || '',
@@ -2891,6 +2894,7 @@ export class KERIClient {
               gitlabUrl: registrationData.gitlabUrl || '',
               interests: registrationData.interests,
               customInterests: registrationData.customInterests || '',
+              customAnswers: registrationData.customAnswers || [],
               avatarFileRef: registrationData.avatarFileRef || '',
               avatarData: registrationData.avatarData || '',
               avatarMimeType: registrationData.avatarMimeType || '',

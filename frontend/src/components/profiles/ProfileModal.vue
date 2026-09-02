@@ -110,6 +110,16 @@
                 <p class="field-value">{{ profileFields.customInterests || 'Not provided' }}</p>
               </div>
 
+              <!-- Custom question answers (from the kit) -->
+              <div
+                v-for="(answer, ai) in profileFields.customAnswers"
+                :key="ai"
+                class="profile-field"
+              >
+                <h5 class="field-label">{{ answer.label }}</h5>
+                <p class="field-value">{{ formatCustomAnswer(answer) || 'Not provided' }}</p>
+              </div>
+
               <!-- Social Links -->
               <div class="profile-field">
                 <h5 class="field-label">Social Links</h5>
@@ -400,6 +410,7 @@ import { X, Check, Copy, Loader2, ThumbsUp, CalendarCheck, Pencil } from 'lucide
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { getFileUrl } from 'src/lib/api/client';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
+import type { CustomAnswer } from 'src/kit/profile';
 import ChangeRoleModal from 'src/components/dashboard/ChangeRoleModal.vue';
 
 // Map interest value to human-readable label
@@ -409,6 +420,11 @@ const interestLabelMap: Map<string, string> = new Map(
 
 function getInterestLabel(value: string): string {
   return interestLabelMap.get(value) || value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// Custom question answers render as a plain string; multiselect arrays join with ", ".
+function formatCustomAnswer(answer: CustomAnswer): string {
+  return Array.isArray(answer.value) ? answer.value.join(', ') : answer.value;
 }
 
 interface Props {
@@ -511,6 +527,7 @@ const profileFields = computed(() => {
       joinReason: p.joinReason || '',
       interests: p.interests || [],
       customInterests: p.customInterests || '',
+      customAnswers: p.customAnswers || [],
       facebookUrl: p.facebookUrl || '',
       linkedinUrl: p.linkedinUrl || '',
       twitterUrl: p.twitterUrl || '',
@@ -528,6 +545,7 @@ const profileFields = computed(() => {
     joinReason: (s.joinReason as string) || '',
     interests: (s.participationInterests as string[]) || [],
     customInterests: (s.customInterests as string) || '',
+    customAnswers: (s.customAnswers as CustomAnswer[]) || [],
     facebookUrl: (s.facebookUrl as string) || '',
     linkedinUrl: (s.linkedinUrl as string) || '',
     twitterUrl: (s.twitterUrl as string) || '',
