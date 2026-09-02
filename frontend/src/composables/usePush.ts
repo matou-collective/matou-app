@@ -41,7 +41,14 @@ import {
   getBadgePlugin,
   type PushNotificationsPlugin,
 } from 'src/lib/capacitor';
-import { registerPushToken, deregisterPushToken, type PushRegisterResult } from 'src/lib/api/push';
+import {
+  registerPushToken,
+  deregisterPushToken,
+  getRelayChallenge,
+  postRelaySession,
+  type PushRegisterResult,
+} from 'src/lib/api/push';
+import { useKERIClient } from 'src/lib/keri/client';
 
 const log = createLogger('Push');
 
@@ -90,6 +97,14 @@ export type PermissionOutcome =
 /** Window (ms) within which a burst of messages in one channel coalesces. */
 const COALESCE_WINDOW_MS = 3000;
 
+/**
+ * Re-mint the relay session once it is within this window of expiry. Covers a
+ * foreground refresh (§8, refs #277): a chat message can only be *sent* from a
+ * foregrounded app, and only the sender's node calls /notify, so keeping a live
+ * session across a foreground stint is enough for the backend to spend one.
+ */
+const RELAY_SESSION_REFRESH_SKEW_MS = 5 * 60 * 1000;
+
 /** Leading-edge burst state for one channel (§5). */
 interface CoalesceState {
   timer: ReturnType<typeof setTimeout>;
@@ -104,7 +119,13 @@ let router: Router | null = null;
 let currentToken: string | null = null;
 /** AID whose token was registered this launch — dedupes the automatic paths. */
 let registeredAid: string | null = null;
+/** AID the in-memory relay session was minted for, or null when none is held. */
+let relaySessionAid: string | null = null;
+/** Epoch-ms expiry of the minted relay session, or 0 when unknown/none. */
+let relaySessionExpiresAt = 0;
 let listenersRegistered = false;
+/** Removes the foreground (visibilitychange) listener; null when none is wired. */
+let removeForegroundListener: (() => void) | null = null;
 const coalesceStates = new Map<string, CoalesceState>();
 
 /** Wire the router used for deep-links. Called from the push boot file. */
@@ -120,6 +141,72 @@ export function isPushPlatform(): boolean {
 /** The AID of the active session, or null when signed out. */
 function currentAid(): string | null {
   return useIdentityStore().aidPrefix ?? null;
+}
+
+/** True while the held relay session is for `aid` and not (nearly) expired. */
+function relaySessionFresh(aid: string): boolean {
+  return (
+    relaySessionAid === aid &&
+    relaySessionExpiresAt > Date.now() + RELAY_SESSION_REFRESH_SKEW_MS
+  );
+}
+
+/** Forget the in-memory relay session (identity switch / logout / mint failure). */
+function clearRelaySession(): void {
+  relaySessionAid = null;
+  relaySessionExpiresAt = 0;
+}
+
+/**
+ * Ensure the backend holds a live relay session for the current AID before it
+ * spends one on register/deregister/notify (§8, refs #277).
+ *
+ * The Go backend cannot sign — the AID signing keys live in signify-ts inside
+ * this WebView (docs/signed-auth.md) — so the WebView mints the session: GET the
+ * relay challenge, sign the domain-separated login message `matou-auth:<aid>:
+ * <nonce>` with `signChallenge` (the exact encoding the round-trip test on the
+ * backend pins), POST it back. The bearer token never leaves the backend; the
+ * frontend only tracks the expiry so it knows when to re-mint.
+ *
+ * Best-effort and never throws: a failed mint leaves push dark for this attempt
+ * (the caller logs), it never blocks a send or a lifecycle transition. `force`
+ * re-mints even when a session looks fresh (used on a 401 from the push API,
+ * where the backend's own copy is stale or belongs to a different AID).
+ */
+async function ensureRelaySession(force = false): Promise<boolean> {
+  if (!isPushPlatform()) return false;
+  const aid = currentAid();
+  if (!aid) return false;
+  if (!force && relaySessionFresh(aid)) return true;
+  try {
+    const { challenge } = await getRelayChallenge();
+    const signature = await useKERIClient().signChallenge(challenge, aid);
+    const { expiresAt } = await postRelaySession(challenge, signature);
+    const parsed = expiresAt ? Date.parse(expiresAt) : NaN;
+    relaySessionAid = aid;
+    relaySessionExpiresAt = Number.isFinite(parsed) ? parsed : 0;
+    log.info('Relay session minted (expires %s)', expiresAt ?? 'unknown');
+    return true;
+  } catch (err) {
+    clearRelaySession();
+    log.error('Relay session mint failed: %o', err);
+    return false;
+  }
+}
+
+/**
+ * App-foreground hook (§8, refs #277): re-mint the relay session when it is
+ * within the refresh window of expiry, so the next message the user sends still
+ * has a live token for the backend to spend. A cheap no-op while the session is
+ * fresh, or off the push platform / signed out / globally disabled.
+ */
+export async function handleAppForeground(): Promise<void> {
+  if (!isPushPlatform()) return;
+  const aid = currentAid();
+  if (!aid) return;
+  if (!useNotificationsStore().pushEnabled) return;
+  if (relaySessionFresh(aid)) return;
+  await ensureRelaySession(true);
 }
 
 /**
@@ -183,6 +270,22 @@ export function ensurePushListeners(): void {
     },
     { immediate: true },
   );
+
+  // Re-mint the relay session on app foreground when it is near expiry (§8): the
+  // WebView is the only thing that can sign, and the backend needs a live token
+  // to spend on the next /notify. visibilitychange is the WebView-visible signal
+  // for a Capacitor resume; guarded for the non-DOM unit-test env.
+  if (
+    !removeForegroundListener &&
+    typeof document !== 'undefined' &&
+    typeof document.addEventListener === 'function'
+  ) {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void handleAppForeground();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    removeForegroundListener = () => document.removeEventListener('visibilitychange', onVisible);
+  }
 }
 
 /** Shared tail of both registration paths: remember the AID, ask for a token. */
@@ -264,7 +367,17 @@ export async function handleRegistrationToken(token: string): Promise<void> {
   const notifStore = useNotificationsStore();
   if (!notifStore.pushEnabled) return; // globally opted out — don't register
   log.info('%s FCM token → backend', rotated ? 'Rotated' : 'New');
-  const result = await registerPushToken(token);
+  // The backend can only forward the token to the relay while it holds a live
+  // relay session, and only the WebView can mint one (§8, refs #277).
+  await ensureRelaySession();
+  let result = await registerPushToken(token);
+  if (!result.success && result.status === 401) {
+    // The backend's session is expired, or belongs to a previous identity
+    // (register refuses a stale session, c9f0238). Re-mint and retry once.
+    if (await ensureRelaySession(true)) {
+      result = await registerPushToken(token);
+    }
+  }
   if (!result.success) {
     // Silence here is how push dies unnoticed: no token at the relay means no
     // doorbell, with nothing in the log to say so.
@@ -285,9 +398,14 @@ export async function deregisterPush(): Promise<PushRegisterResult> {
   currentToken = null;
   registeredAid = null;
   if (!token && !isPushPlatform()) {
+    clearRelaySession();
     return { success: true }; // nothing was ever registered from this platform
   }
+  // Spend the still-live relay session on the deregister first, then forget it:
+  // on an identity switch the next register mints a fresh session for the new
+  // AID (the backend refuses a stale one, c9f0238).
   const result = await deregisterPushToken(token ?? undefined);
+  clearRelaySession();
   if (!result.success) {
     log.error(
       'Push deregistration failed (%s) — the relay may keep waking this device',
@@ -474,7 +592,10 @@ export function __resetPushForTest(): void {
   router = null;
   currentToken = null;
   registeredAid = null;
+  clearRelaySession();
   listenersRegistered = false;
+  removeForegroundListener?.();
+  removeForegroundListener = null;
   coalesceStates.forEach((s) => clearTimeout(s.timer));
   coalesceStates.clear();
 }
@@ -488,6 +609,7 @@ export function usePush() {
     registerIfPermitted,
     deregisterPush,
     applyPushEnabled,
+    handleAppForeground,
     handlePushReceipt,
     handlePushTap,
     recomputeBadge,
