@@ -47,6 +47,28 @@ func TestActionCapabilityReverseLookup(t *testing.T) {
 	}
 }
 
+func TestProjectScopedCapabilities(t *testing.T) {
+	got := ProjectScopedCapabilities()
+	want := []Capability{
+		CapContribute, CapManageProjects, CapAssignWork, CapReviewWork,
+		CapSignOff, CapSubmitCompletion, CapApproveCompletion, CapArchiveWork,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ProjectScopedCapabilities() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ProjectScopedCapabilities()[%d] = %q, want %q (must follow AllCapabilities order)", i, got[i], want[i])
+		}
+	}
+	// The community-only capabilities must NOT be project-scoped.
+	for _, c := range []Capability{CapReward, CapManageMembers, CapManageGovernance, CapManageComms, CapManageRoles} {
+		if IsProjectScopedCapability(c) {
+			t.Errorf("%q must be community-only, not project-scoped", c)
+		}
+	}
+}
+
 func TestAllCapabilitiesStable(t *testing.T) {
 	caps := AllCapabilities()
 	if len(caps) != 13 {

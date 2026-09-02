@@ -130,3 +130,71 @@ func TestCanPerformActionWithPolicyUnknownAction(t *testing.T) {
 		t.Error("unknown action must be denied even for founding member")
 	}
 }
+
+// The default policy must assign each builtin the scope the Roles &
+// Permissions split (#165) expects: project for contributor/lead/steward,
+// community for the rest.
+func TestDefaultPolicyRoleScopes(t *testing.T) {
+	want := map[string]string{
+		string(RoleMember):            ScopeCommunity,
+		string(RoleContributor):       ScopeProject,
+		string(RoleProjectLead):       ScopeProject,
+		string(RoleProjectSteward):    ScopeProject,
+		string(RoleOperationsSteward): ScopeCommunity,
+		string(RoleCommunitySteward):  ScopeCommunity,
+		string(RoleFoundingMember):    ScopeCommunity,
+	}
+	for _, r := range DefaultRolePolicy().Roles {
+		if want[r.ID] != r.Scope {
+			t.Errorf("role %q scope = %q, want %q", r.ID, r.Scope, want[r.ID])
+		}
+		if s, ok := BuiltinRoleScope(r.ID); !ok || s != r.Scope {
+			t.Errorf("BuiltinRoleScope(%q) = %q,%v; want %q,true", r.ID, s, ok, r.Scope)
+		}
+	}
+}
+
+// Project-scoped roles in the default policy hold only project-scoped
+// capabilities, with ONE deliberate exception: project_steward keeps
+// manage_governance because the #165 split changes no enforcement — the
+// default must reproduce today's grants exactly. The PUT validation
+// grandfathers that grant (keep/remove, never re-add or extend); actually
+// revoking it is #166's call. If this test fails because a new exception
+// appeared, that is an enforcement change — do not add it silently.
+func TestDefaultPolicyProjectRolesHoldOnlyProjectCaps(t *testing.T) {
+	grandfathered := map[string]map[Capability]bool{
+		string(RoleProjectSteward): {CapManageGovernance: true},
+	}
+	p := DefaultRolePolicy()
+	scope := map[string]string{}
+	for _, r := range p.Roles {
+		scope[r.ID] = r.Scope
+	}
+	for roleID, caps := range p.Grants {
+		if scope[roleID] != ScopeProject {
+			continue
+		}
+		for _, c := range caps {
+			if !IsProjectScopedCapability(c) && !grandfathered[roleID][c] {
+				t.Errorf("project role %q holds community-only capability %q in the default policy", roleID, c)
+			}
+		}
+	}
+}
+
+func TestNormalizeScope(t *testing.T) {
+	// Builtins always resolve to their canonical scope, even if asked otherwise.
+	if got := NormalizeScope(string(RoleProjectSteward), ScopeCommunity); got != ScopeProject {
+		t.Errorf("builtin project_steward normalized to %q, want project", got)
+	}
+	if got := NormalizeScope(string(RoleMember), ScopeProject); got != ScopeCommunity {
+		t.Errorf("builtin member normalized to %q, want community", got)
+	}
+	// Custom roles: empty defaults to community, project is preserved.
+	if got := NormalizeScope("kaitiaki", ""); got != ScopeCommunity {
+		t.Errorf("custom empty scope normalized to %q, want community", got)
+	}
+	if got := NormalizeScope("kaitiaki", ScopeProject); got != ScopeProject {
+		t.Errorf("custom project scope normalized to %q, want project", got)
+	}
+}

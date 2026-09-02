@@ -95,3 +95,41 @@ func AllCapabilities() []Capability {
 		CapManageRoles,
 	}
 }
+
+// projectScopedCaps is the set of capabilities a project-scoped role may hold.
+// A project role ("what you hold on one project" — project_lead,
+// project_steward, contributor, custom project roles) is limited to these; a
+// community role ("who you are") may hold any capability. This mirrors the
+// column set the Roles & Permissions project table exposes (issue #165). It
+// covers the per-project workflow — contributing evidence, managing/assigning/
+// reviewing work, signing off, submitting/approving completion, archiving —
+// but not the community-wide capabilities (reward, manage_members,
+// manage_governance, manage_communications, manage_roles).
+var projectScopedCaps = map[Capability]bool{
+	CapContribute:        true,
+	CapManageProjects:    true,
+	CapAssignWork:        true,
+	CapReviewWork:        true,
+	CapSignOff:           true,
+	CapSubmitCompletion:  true,
+	CapApproveCompletion: true,
+	CapArchiveWork:       true,
+}
+
+// IsProjectScopedCapability reports whether a capability may be held by a
+// project-scoped role.
+func IsProjectScopedCapability(c Capability) bool {
+	return projectScopedCaps[c]
+}
+
+// ProjectScopedCapabilities returns the project-scoped capabilities in
+// AllCapabilities() display order.
+func ProjectScopedCapabilities() []Capability {
+	out := make([]Capability, 0, len(projectScopedCaps))
+	for _, c := range AllCapabilities() {
+		if projectScopedCaps[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}

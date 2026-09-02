@@ -1,13 +1,26 @@
 package contributions
 
+// Role scope constants. A community role ("who you are", issued as a
+// membership credential) may hold any capability; a project role ("what you
+// hold on one project", assigned per project) may hold only project-scoped
+// capabilities (see ProjectScopedCapabilities). The Roles & Permissions page
+// renders one table per scope (issue #165).
+const (
+	ScopeCommunity = "community"
+	ScopeProject   = "project"
+)
+
 // RoleDef is one entry in the RolePolicy role registry. Builtin roles are the
-// 10 contribution-system roles that ship with the app and cannot be deleted
-// or renamed; custom roles are admin-created. A RoleDef's ID doubles as the
-// membership-credential role string for custom roles.
+// contribution-system roles that ship with the app and cannot be deleted,
+// renamed, or re-scoped; custom roles are admin-created. A RoleDef's ID
+// doubles as the membership-credential role string for custom roles. Scope is
+// "community" or "project"; an empty scope on a legacy synced policy is
+// treated as "community" (see NormalizeScope).
 type RoleDef struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	Builtin     bool   `json:"builtin"`
+	Scope       string `json:"scope"`
 }
 
 // RolePolicy is the community's editable RBAC policy: which roles exist and
@@ -69,13 +82,13 @@ var baseCaps = []Capability{CapContribute, CapManageProjects, CapReviewWork}
 // community's first edit.
 func DefaultRolePolicy() *RolePolicy {
 	roles := []RoleDef{
-		{ID: string(RoleMember), DisplayName: "Member", Builtin: true},
-		{ID: string(RoleContributor), DisplayName: "Contributor", Builtin: true},
-		{ID: string(RoleProjectLead), DisplayName: "Project Lead", Builtin: true},
-		{ID: string(RoleProjectSteward), DisplayName: "Project Steward", Builtin: true},
-		{ID: string(RoleOperationsSteward), DisplayName: "Operations Steward", Builtin: true},
-		{ID: string(RoleCommunitySteward), DisplayName: "Community Steward", Builtin: true},
-		{ID: string(RoleFoundingMember), DisplayName: "Founding Member", Builtin: true},
+		{ID: string(RoleMember), DisplayName: "Member", Builtin: true, Scope: ScopeCommunity},
+		{ID: string(RoleContributor), DisplayName: "Contributor", Builtin: true, Scope: ScopeProject},
+		{ID: string(RoleProjectLead), DisplayName: "Project Lead", Builtin: true, Scope: ScopeProject},
+		{ID: string(RoleProjectSteward), DisplayName: "Project Steward", Builtin: true, Scope: ScopeProject},
+		{ID: string(RoleOperationsSteward), DisplayName: "Operations Steward", Builtin: true, Scope: ScopeCommunity},
+		{ID: string(RoleCommunitySteward), DisplayName: "Community Steward", Builtin: true, Scope: ScopeCommunity},
+		{ID: string(RoleFoundingMember), DisplayName: "Founding Member", Builtin: true, Scope: ScopeCommunity},
 	}
 
 	grants := map[string][]Capability{
@@ -83,6 +96,12 @@ func DefaultRolePolicy() *RolePolicy {
 		string(RoleContributor): append([]Capability{}, baseCaps...),
 		string(RoleProjectLead): append(append([]Capability{}, baseCaps...),
 			CapSubmitCompletion, CapArchiveWork),
+		// project_steward keeps manage_governance even though it is
+		// project-scoped: the #165 split is UI + policy model only, and the
+		// default policy must reproduce today's grants exactly. Whether a
+		// project-scoped steward should lose community governance is an
+		// enforcement question deferred to #166. The PUT validation
+		// grandfathers this grant (removable, not re-addable).
 		string(RoleProjectSteward): append(append([]Capability{}, baseCaps...),
 			CapAssignWork, CapSignOff, CapApproveCompletion, CapArchiveWork, CapManageGovernance),
 		string(RoleOperationsSteward): append(append([]Capability{}, baseCaps...),
@@ -96,4 +115,44 @@ func DefaultRolePolicy() *RolePolicy {
 	}
 
 	return &RolePolicy{Version: 0, Roles: roles, Grants: grants}
+}
+
+// builtinScopes maps each builtin role ID to its canonical scope. Built once
+// from the default policy so there is a single source of truth.
+var builtinScopes = func() map[string]string {
+	m := map[string]string{}
+	for _, r := range DefaultRolePolicy().Roles {
+		m[r.ID] = r.Scope
+	}
+	return m
+}()
+
+// BuiltinRoleScope returns the canonical scope of a builtin role and whether
+// the ID names a builtin role.
+func BuiltinRoleScope(id string) (string, bool) {
+	s, ok := builtinScopes[id]
+	return s, ok
+}
+
+// NormalizeScope returns a role's effective scope: a builtin's canonical scope
+// always wins (it cannot be re-scoped), and an empty custom scope — as found on
+// a legacy synced policy written before the community/project split — defaults
+// to community.
+func NormalizeScope(id, scope string) string {
+	if canonical, ok := BuiltinRoleScope(id); ok {
+		return canonical
+	}
+	if scope == ScopeProject {
+		return ScopeProject
+	}
+	return ScopeCommunity
+}
+
+// NormalizeScopes rewrites every role's Scope in place to its effective scope.
+// Applied on read so the UI always sees correct scopes even for a legacy
+// policy that predates the field, and on write so builtins keep their scope.
+func (p *RolePolicy) NormalizeScopes() {
+	for i := range p.Roles {
+		p.Roles[i].Scope = NormalizeScope(p.Roles[i].ID, p.Roles[i].Scope)
+	}
 }
