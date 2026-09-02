@@ -229,6 +229,78 @@ and needs no email list.
 If review rejects on app access, do not improvise a reviewer account —
 see the escalation note in §4.
 
+## 6. Automated publishing (#202)
+
+Once the first upload has been done by hand, a `v*` tag publishes on its
+own: `android.yml`'s `build-aab` job ends with a *Publish to Play open
+testing* step that runs `scripts/android/play-upload.sh`.
+
+The script talks to the Play Developer API v3 with nothing but bash,
+openssl, curl and python3 — no marketplace action (they are fetched from
+data.forgejo.org, which fast-fails intermittently) and no Ruby/fastlane. It
+mints an RS256 JWT from the service-account key, trades it for an access
+token, then `edits.insert` -> `bundles.upload` -> `tracks.patch` ->
+`edits.commit`.
+
+**Tag pushes only.** A `workflow_dispatch` build derives its versionCode
+from the run number, which does not order against the tag scheme
+(`vX.Y.Z` -> `X*1000000 + Y*1000 + Z`), so dispatch builds produce an
+artefact and publish nothing.
+
+### One-time provisioning
+
+The old *Setup -> API access* page **no longer exists** in the Play
+Console (checked 2026-09-02: "Setup" is now "Settings", and it has no API
+section). Create the service account in Google Cloud and grant it in Play
+Console as a user instead:
+
+1. Google Cloud Console, project `matou-app` (already exists from the
+   Firebase/FCM work) -> enable **Google Play Android Developer API**.
+2. **IAM & Admin -> Service accounts** -> create `play-publisher` ->
+   **Keys -> Add key -> JSON** -> download.
+3. Play Console -> **Users and permissions -> Invite new users** -> paste
+   `play-publisher@matou-app.iam.gserviceaccount.com` -> grant **Release
+   manager**, scoped to `nz.matou.app` only.
+4. Store the key JSON as the Forgejo secret `PLAY_SERVICE_ACCOUNT_JSON`
+   (see `docs/SECRETS_CHECKLIST.md`).
+
+Permission propagation is not instant — allow a few minutes before the
+first run.
+
+### Checking it before trusting it
+
+```bash
+export PLAY_SERVICE_ACCOUNT_JSON_FILE=~/.matou-android/secrets/matou-play-service-account.json
+
+# Credentials + permissions only; seconds, no .aab needed.
+scripts/android/play-upload.sh --no-bundle
+
+# Full rehearsal: uploads the bundle, patches the track, validates, then
+# discards the edit. Nothing is published and no versionCode is consumed.
+scripts/android/play-upload.sh --dry-run
+```
+
+Both dry-run modes print the app's real track ids and store-listing
+languages — set `PLAY_TRACK` and `PLAY_RELEASE_NOTES_LANG` from that output
+rather than assuming (`beta` is Play's id for the *open* testing track, and
+the listing language decides whether release notes must be `en-GB` or
+`en-NZ`).
+
+### Knobs
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PLAY_TRACK` | `beta` | `internal`, `alpha` (closed), `beta` (open), `production` |
+| `PLAY_STATUS` | `completed` | `draft` lands it in the Console for a human to release |
+| `PLAY_USER_FRACTION` | – | staged rollout, with `PLAY_STATUS=inProgress` |
+| `PLAY_RELEASE_NOTES` | tag subject, else a generic line | capped at Play's 500 chars |
+| `PLAY_RELEASE_NOTES_LANG` | `en-GB` | must be a language the listing has |
+| `PLAY_PACKAGE_NAME` | `nz.matou.app` | |
+
+The service account cannot create an app's **first** release, and it is
+deliberately not granted anything beyond `nz.matou.app`. Promotion from
+open testing to production stays a human decision in the Console.
+
 ## Policy documents
 
 Play needs public URLs for the privacy policy (and the child-safety
@@ -240,8 +312,9 @@ changes.
 
 ## Blockers / known issues
 
-- #202 — automatic upload to the internal track from CI (needs a Play
-  service account; the *first* upload of an app must be manual regardless).
+- ~~#202 — automatic upload from CI~~ — implemented; see §6. Still needs
+  the `PLAY_SERVICE_ACCOUNT_JSON` secret provisioned before a `v*` tag
+  will publish (the job fails loudly if it is missing).
 - ~~#167 — `libgojni.so` not 16 KB page-aligned~~ — fixed in #171;
   `build-aar.sh` links with `-Wl,-z,max-page-size=16384`. Re-check with
   `unzip -p "$AAB" base/lib/arm64-v8a/libgojni.so > /tmp/l.so && \

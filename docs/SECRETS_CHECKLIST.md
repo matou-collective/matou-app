@@ -56,6 +56,7 @@ nz.matou.app"; see `docs/mobile/PLAY_STORE.md` for generation.
 | `ANDROID_KEYSTORE_PASSWORD` | keystore password |
 | `ANDROID_KEY_ALIAS` | `matou-upload` |
 | `ANDROID_KEY_PASSWORD` | key password |
+| `PLAY_SERVICE_ACCOUNT_JSON` | Play Developer API service-account key JSON, consumed by the *Publish to Play open testing* step (#202). Provision per `PLAY_STORE.md` §6 — created in Google Cloud, granted **Release manager** on `nz.matou.app` via Play Console → Users and permissions |
 
 The job decodes the keystore into a `mktemp` dir and removes it on exit;
 nothing is written under the checkout. Locally the same values live in
