@@ -482,6 +482,15 @@ Create/update a profile object.
 
 List profiles of a type.
 
+Results can be filtered with query parameters named after schema fields whose
+`uiHints.filterable` is `true` (e.g. `?status=approved&location=Wellington`).
+The filterable set is derived from the org's schema, not a hardcoded list, so
+it changes when the schema changes. Matching is case-insensitive; for array
+fields (e.g. `skills`, `participationInterests`) the filter matches when any
+element equals the value. A query parameter naming a known-but-non-filterable
+field returns `400` with the allowed `filterableFields`; unknown parameters are
+ignored.
+
 ### GET /api/v1/profiles/{type}/{id}
 
 Get a specific profile object.
