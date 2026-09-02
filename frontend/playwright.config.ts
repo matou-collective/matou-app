@@ -87,6 +87,11 @@ export default defineConfig({
       name: 'registration-member',
       testMatch: /e2e-registration\.spec\.ts/,
       grep: /admin approves user registration/,
+      // Explicit edge (#282): as a bare sibling in features' dependencies,
+      // Playwright may schedule this BEFORE org-setup — the spec then org-sets-up
+      // through the UI, and a mid-setup failure strands retries at
+      // ENOENT test-accounts.json. org-setup first, always.
+      dependencies: ['org-setup'],
       use: browserConfig,
     },
     // Invitation tests depend on org existing
