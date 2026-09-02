@@ -8,6 +8,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { getOrFetchOrgConfig } from 'src/api/config';
 import { secureStorage } from 'src/lib/secureStorage';
 import { useKERINotificationService } from './useKERINotificationService';
+import { toKeriAlias } from 'src/lib/keri/alias';
 
 const MULTISIG_ROT_ROUTE = '/multisig/rot';
 // When admin pre-rotates between rounds and immediately sends a /multisig/rot,
@@ -49,7 +50,10 @@ export function useMultisigJoin() {
         console.warn('[MultisigJoin] No org config available');
         return false;
       }
-      const orgName = (config.organization.name || 'matou').toLowerCase().replace(/\s+/g, '-');
+      const orgName = toKeriAlias(config.organization.name || 'matou', {
+        lowercase: true,
+        fallback: 'org',
+      });
 
       const notification = notifications[0];
       isJoining.value = true;

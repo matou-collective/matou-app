@@ -12,6 +12,7 @@ import { useIdentityStore } from 'stores/identity';
 import { BACKEND_URL, setBackendIdentity } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { fetchClientConfig } from 'src/lib/clientConfig';
+import { toKeriAlias } from 'src/lib/keri/alias';
 
 export interface OrgSetupConfig {
   orgName: string;
@@ -77,7 +78,7 @@ export function useOrgSetup() {
 
       // Step 3: Create admin AID (personal identity)
       progress.value = 'Creating admin identity...';
-      const adminAidName = `${config.adminName.toLowerCase().replace(/\s+/g, '-')}`;
+      const adminAidName = toKeriAlias(config.adminName, { lowercase: true, fallback: 'admin' });
       const adminAid = await keriClient.createAID(adminAidName, { useWitnesses: true });
       console.log('[OrgSetup] Created admin AID:', adminAid.prefix);
 
@@ -86,7 +87,7 @@ export function useOrgSetup() {
 
       // Step 4: Create org AID as group with admin as master
       progress.value = 'Creating organization identity...';
-      const orgAidName = config.orgName.toLowerCase().replace(/\s+/g, '-');
+      const orgAidName = toKeriAlias(config.orgName, { lowercase: true, fallback: 'org' });
       const orgAid = await keriClient.createGroupAID(orgAidName, adminAidName);
       console.log('[OrgSetup] Created org group AID:', orgAid.prefix);
 
