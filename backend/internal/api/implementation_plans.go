@@ -32,15 +32,6 @@ func (h *ImplementationPlansHandler) SetBroker(broker *EventBroker) {
 	h.broker = broker
 }
 
-// withRBAC applies RBAC middleware when a roleLookup is configured.
-// When roleLookup is nil (tests), the handler is invoked directly.
-func (h *ImplementationPlansHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
-	if h.roleLookup == nil {
-		return handler
-	}
-	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
-}
-
 // RegisterRoutes registers implementation plan routes on the mux.
 // roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
 func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
@@ -71,7 +62,14 @@ func (h *ImplementationPlansHandler) RegisterRoutes(mux *http.ServeMux, roleLook
 			return
 		}
 		if len(parts) == 2 && parts[1] == "sign-off" && r.Method == http.MethodPost {
-			h.withRBAC(contributions.ActionSignOffPlan, func(w http.ResponseWriter, r *http.Request) {
+			resolve := func(r *http.Request, spaceID string) (string, error) {
+				plan, err := h.service.GetImplementationPlan(r.Context(), spaceID, id)
+				if err != nil {
+					return "", err
+				}
+				return plan.ProjectID, nil
+			}
+			projectRBAC(h.roleLookup, contributions.ActionSignOffPlan, h.service, h.spaceManager, resolve, func(w http.ResponseWriter, r *http.Request) {
 				h.HandleSignOff(w, r, id)
 			})(w, r)
 			return
