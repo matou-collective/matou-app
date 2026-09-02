@@ -70,6 +70,18 @@ var (
 // The signature (string args, (int, error) return) is gobind-compatible so
 // gomobile bind exposes it directly to Kotlin/Swift.
 func Start(dataDir, configServerURL, apiToken string) (int, error) {
+	return StartWithEncryptionKey(dataDir, configServerURL, apiToken, "")
+}
+
+// StartWithEncryptionKey is Start plus an at-rest encryption key for the on-disk
+// identity (issue #117). identityEncryptionKey is opaque key material the host
+// reads from the OS trust root (Android Keystore / iOS Keychain) — the same
+// trust root SecureStorage uses — so {dataDir}/identity.json is never written
+// with the mnemonic in plaintext. An empty key preserves the legacy plaintext
+// format, so a host that has not yet been wired keeps working unchanged.
+//
+// The gobind-compatible signature lets gomobile bind expose it to Kotlin/Swift.
+func StartWithEncryptionKey(dataDir, configServerURL, apiToken, identityEncryptionKey string) (int, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -87,16 +99,22 @@ func Start(dataDir, configServerURL, apiToken string) (int, error) {
 		return 0, errors.New("mobile.Start: apiToken is required")
 	}
 
+	var encKey []byte
+	if identityEncryptionKey != "" {
+		encKey = []byte(identityEncryptionKey)
+	}
+
 	// Production Options built in-process — no environment, no log.Fatalf. app.Start
 	// sets MATOU_CORS_MODE=bundled for prod, so bundled CORS applies without env.
 	opts := app.Options{
-		Env:             "production",
-		DataDir:         dataDir,
-		Host:            "127.0.0.1",
-		Port:            0, // random free port; the bound port is returned below
-		APIToken:        apiToken,
-		ConfigServerURL: configServerURL,
-		PrintBanner:     false, // an embedded backend stays silent
+		Env:                   "production",
+		DataDir:               dataDir,
+		Host:                  "127.0.0.1",
+		Port:                  0, // random free port; the bound port is returned below
+		APIToken:              apiToken,
+		IdentityEncryptionKey: encKey,
+		ConfigServerURL:       configServerURL,
+		PrintBanner:           false, // an embedded backend stays silent
 	}
 	opts.AnysyncConfigPath = opts.DefaultAnysyncConfigPath()
 

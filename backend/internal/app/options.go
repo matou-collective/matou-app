@@ -47,6 +47,12 @@ type Options struct {
 	Host string
 	// APIToken is the token TokenGuard requires on mutating requests.
 	APIToken string
+	// IdentityEncryptionKey, when non-empty, encrypts {dataDir}/identity.json at
+	// rest with AES-256-GCM. The shell supplies it at start from the OS trust
+	// root (Android Keystore / iOS Keychain / Electron safeStorage). Empty keeps
+	// the legacy plaintext format, so dev/test and unwired shells are unaffected
+	// (issue #117).
+	IdentityEncryptionKey []byte
 	// ConfigServerURL is the base URL used to fetch any-sync config and to
 	// mirror org config / relay email.
 	ConfigServerURL string
