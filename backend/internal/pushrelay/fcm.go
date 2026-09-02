@@ -119,8 +119,30 @@ func (c *FCMClient) Send(ctx context.Context, msgs []PushMessage) []PushResult {
 	return results
 }
 
+// APNs config constants for the content-free wake. Firebase relays to iOS
+// through APNs; without an apns block an iOS token gets default treatment and
+// is not woken in the background, so the §5 wake-to-sync never runs.
+const (
+	// apnsPushTypeBackground is the only correct push type for this relay: it
+	// never carries renderable text (§4 composes it on-device after sync), so
+	// an "alert" push with no alert payload would neither display nor be
+	// well-formed. content-available:1 in the aps dict is what wakes the app.
+	apnsPushTypeBackground = "background"
+	// apnsPriorityBackground is the apns-priority for a content-free background
+	// push. APNs returns BadPriority for priority 10 when the payload carries
+	// only content-available and no alert (Apple, "Sending notification
+	// requests to APNs"); 10 is legal only alongside a visible alert, which the
+	// content-free guarantee forbids. 5 is the highest legal background
+	// priority, so the Android high/normal distinction has no APNs analogue for
+	// these wakes — DM and channel both go out at 5. (Deviates from #272's
+	// requested "10 for DM"; ruled under ADR 0174 on that issue.)
+	apnsPriorityBackground = "5"
+)
+
 // fcmV1Message is the wire shape POSTed to messages:send. Data-only: there is
-// no "notification" member, by design (§4).
+// no "notification" member, by design (§4). The apns block carries only the
+// content-free background wake (headers + aps.content-available) — never an
+// alert/title/body/badge.
 type fcmV1Message struct {
 	Message struct {
 		Token   string            `json:"token"`
@@ -128,6 +150,17 @@ type fcmV1Message struct {
 		Android struct {
 			Priority string `json:"priority"`
 		} `json:"android"`
+		APNS struct {
+			Headers struct {
+				Priority string `json:"apns-priority"`
+				PushType string `json:"apns-push-type"`
+			} `json:"headers"`
+			Payload struct {
+				APS struct {
+					ContentAvailable int `json:"content-available"`
+				} `json:"aps"`
+			} `json:"payload"`
+		} `json:"apns"`
 	} `json:"message"`
 }
 
@@ -136,6 +169,11 @@ func (c *FCMClient) sendOne(ctx context.Context, access string, m PushMessage) P
 	body.Message.Token = m.Token
 	body.Message.Data = m.Data
 	body.Message.Android.Priority = m.Priority
+	// The apns block is sent for every token; FCM ignores it for Android
+	// devices just as it ignores the android block for iOS ones.
+	body.Message.APNS.Headers.PushType = apnsPushTypeBackground
+	body.Message.APNS.Headers.Priority = apnsPriorityBackground
+	body.Message.APNS.Payload.APS.ContentAvailable = 1
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return PushResult{Token: m.Token, Err: err}

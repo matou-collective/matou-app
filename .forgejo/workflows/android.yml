@@ -221,6 +221,39 @@ jobs:
           trap 'rm -rf "$(dirname "$ks")"' EXIT
           export MATOU_KEYSTORE_FILE="$ks"
           bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/build-aab.sh
+      # Sibling release APK for COA / direct install (#245, kit plan Task 9).
+      # Same signing inputs; cheap on top of the AAB build — gradle reuses the
+      # warm build dir, and cap sync has already run inside build-aab.sh.
+      - name: Build signed release APK
+        env:
+          VITE_PROD_CONFIG_URL: ${{ secrets.PROD_CONFIG_URL }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          MATOU_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MATOU_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MATOU_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          MATOU_VERSION_CODE: ${{ steps.version.outputs.code }}
+          MATOU_VERSION_NAME: ${{ steps.version.outputs.name }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            echo "ERROR: ANDROID_KEYSTORE_B64 secret is not set — cannot sign" >&2
+            exit 1
+          fi
+          ks="$(mktemp -d)/upload.jks"
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
+          chmod 600 "$ks"
+          trap 'rm -rf "$(dirname "$ks")"' EXIT
+          export MATOU_KEYSTORE_FILE="$ks"
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/build-release-apk.sh
+      - name: Upload app-release.apk
+        id: upload_apk
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk-${{ steps.version.outputs.name }}
+          path: frontend/dist/capacitor/android/apk/release/app-release.apk
+          if-no-files-found: error
       - name: Upload app-release.aab
         id: upload
         continue-on-error: true

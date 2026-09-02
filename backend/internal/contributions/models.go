@@ -1,7 +1,10 @@
 // backend/internal/contributions/models.go
 package contributions
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // FileRef represents a file attachment stored via the files service.
 type FileRef struct {
@@ -79,6 +82,31 @@ type Proposal struct {
 	LeadContributionID    string            `json:"lead_contribution_id,omitempty"`
 	StewardContributionID string            `json:"steward_contribution_id,omitempty"`
 	Attachments           []Attachment      `json:"attachments,omitempty"`
+	// Data holds org-defined custom fields declared in the Proposal schema but
+	// not modelled as typed struct fields above. It lets an org extend the
+	// descriptive body without a backend change; unknown-but-schema-defined
+	// fields round-trip through create/update/read unchanged.
+	Data map[string]interface{} `json:"data,omitempty"`
+}
+
+// SchemaMap flattens a proposal into the field→value map used for schema
+// validation and filtering. Typed core/body fields appear under their JSON
+// names and custom fields from Data are merged in at the top level, so a single
+// map can be validated against, or matched by, the Proposal TypeDefinition.
+func (p *Proposal) SchemaMap() map[string]interface{} {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return nil
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	delete(m, "data")
+	for k, v := range p.Data {
+		m[k] = v
+	}
+	return m
 }
 
 type ProjectPlanItem struct {

@@ -440,6 +440,9 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	fmt.Fprintln(out, "Initializing contributions system...")
 	contribStoreAdapter := anysync.NewObjectStoreAdapter(spaceManager.ObjectTreeManager(), sdkClient, userIdentity)
 	contribService := contributions.NewService(contribStoreAdapter)
+	// Validate proposal writes against the org's persisted Proposal schema
+	// (custom required fields, enum edits) in addition to the built-in checks.
+	contribService.SetRegistry(typeRegistry)
 	notifBroadcaster := notifications.NewSSEBrokerAdapter(eventBroker)
 	notifEmailAdapter := notifications.NewEmailAdapter(emailSender)
 	notifService := notifications.NewService(notifBroadcaster, notifEmailAdapter)
@@ -458,10 +461,12 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// so dev/test and the Electron build are unaffected. Only the sender's own
 	// node fires a push (PushSender skips p2p-replicated events), and recipients
 	// are the community-space ACL members that may read the channel (its
-	// AllowedRoles gate, §4), minus the sender. Relay calls authenticate with
-	// KERI-signed sessions; the concrete signer arrives with the frontend signing
-	// path (later #177 slice), so the client is wired with a nil signer today —
-	// calls fail and are logged, never fatal, until then.
+	// AllowedRoles gate, §4), minus the sender. Relay calls authenticate with a
+	// KERI-signed session, but the backend cannot sign: the frontend signs a
+	// relay-issued challenge over the loopback push/relay-challenge+relay-session
+	// endpoints and the backend spends the resulting token (#277). Until the
+	// WebView mints one, register/notify drop with ErrNoSession — logged once,
+	// never fatal.
 	var pushHandler *api.PushHandler
 	if relayURL := strings.TrimSpace(os.Getenv("MATOU_PUSH_RELAY_URL")); relayURL != "" {
 		// The relay carries device FCM tokens and full recipient-AID lists, so
@@ -471,7 +476,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		if os.Getenv("MATOU_PUSH_RELAY_ALLOW_HTTP") == "1" {
 			relayOpts = append(relayOpts, pushrelayclient.AllowInsecureHTTP())
 		}
-		relayClient, err := pushrelayclient.New(relayURL, nil, relayOpts...)
+		relayClient, err := pushrelayclient.New(relayURL, relayOpts...)
 		if err != nil {
 			// Leave push dark rather than crash: every other subsystem is fine
 			// and notifications still reach the app over SSE.
@@ -741,6 +746,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	orgConfigHandler.SetConfigServerSource(&http.Client{Timeout: 4 * time.Second}, opts.ConfigServerURL, opts.IsTest())
 
 	proposalsHandler := api.NewProposalsHandler(contribService, spaceManager, contribNotifier)
+	proposalsHandler.SetRegistry(typeRegistry)
 	projectsHandler := api.NewProjectsHandler(contribService, spaceManager, contribNotifier)
 	decisionPlansHandler := api.NewDecisionPlansHandler(contribService, spaceManager, contribNotifier)
 	implPlansHandler := api.NewImplementationPlansHandler(contribService, spaceManager)

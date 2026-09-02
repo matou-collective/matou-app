@@ -36,7 +36,7 @@ const prodEnv = loadProdEnv('.env.production');
 
 export default configure(() => {
   return {
-    boot: ['motion', 'keri'],
+    boot: ['motion', 'keri', 'push'],
 
     css: ['app.scss', 'tailwind.css'],
 

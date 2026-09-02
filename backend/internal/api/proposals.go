@@ -9,6 +9,7 @@ import (
 
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/contributions"
+	"github.com/matou-dao/backend/internal/types"
 )
 
 // ProposalsHandler handles proposal-related HTTP requests.
@@ -17,6 +18,7 @@ type ProposalsHandler struct {
 	spaceManager *anysync.SpaceManager
 	broker       *EventBroker
 	notifier     ContribNotifier
+	registry     *types.Registry
 }
 
 // NewProposalsHandler creates a new proposals handler.
@@ -32,6 +34,12 @@ func NewProposalsHandler(service *contributions.Service, spaceManager *anysync.S
 // SetBroker sets the event broker for SSE broadcasting.
 func (h *ProposalsHandler) SetBroker(broker *EventBroker) {
 	h.broker = broker
+}
+
+// SetRegistry attaches the type registry so list responses can honour
+// schema-driven filters. When nil, listing is unfiltered.
+func (h *ProposalsHandler) SetRegistry(registry *types.Registry) {
+	h.registry = registry
 }
 
 // RegisterRoutes registers proposal routes on the mux.
@@ -168,10 +176,72 @@ func (h *ProposalsHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Apply schema-driven filters. The set of accepted filter parameters comes
+	// from the Proposal schema (fields whose uiHints mark them filterable), not
+	// a hardcoded list, so an org controls which fields are searchable via its
+	// schema. A query parameter naming a known-but-non-filterable field is
+	// rejected; unknown keys are ignored so unrelated params never break.
+	if def, ok := h.proposalSchema(); ok {
+		filters, badParam := collectProposalFilters(def, r.URL.Query())
+		if badParam != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"error":            fmt.Sprintf("field %q is not filterable", badParam),
+				"filterableFields": def.FilterableFieldNames(),
+			})
+			return
+		}
+		if len(filters) > 0 {
+			proposals = filterProposals(def, proposals, filters)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"proposals": proposals,
 		"total":     len(proposals),
 	})
+}
+
+// proposalSchema returns the registered Proposal type definition, if a registry
+// is configured and knows the type.
+func (h *ProposalsHandler) proposalSchema() (*types.TypeDefinition, bool) {
+	if h.registry == nil {
+		return nil, false
+	}
+	return h.registry.Get("Proposal")
+}
+
+// collectProposalFilters turns request query parameters into a field→value
+// filter map, keeping only fields the schema marks filterable. It returns the
+// name of the first query parameter that names a known-but-non-filterable field
+// so the caller can reject the request; unknown keys are ignored so pagination
+// or other params added later do not break existing clients.
+func collectProposalFilters(def *types.TypeDefinition, query map[string][]string) (map[string]string, string) {
+	filters := make(map[string]string)
+	for key, vals := range query {
+		if len(vals) == 0 || vals[0] == "" {
+			continue
+		}
+		field, known := def.Field(key)
+		if !known {
+			continue
+		}
+		if field.UIHints == nil || !field.UIHints.Filterable {
+			return nil, key
+		}
+		filters[key] = vals[0]
+	}
+	return filters, ""
+}
+
+// filterProposals keeps only the proposals whose fields satisfy every filter.
+func filterProposals(def *types.TypeDefinition, proposals []*contributions.Proposal, filters map[string]string) []*contributions.Proposal {
+	result := make([]*contributions.Proposal, 0, len(proposals))
+	for _, p := range proposals {
+		if types.MatchesFilters(def, p.SchemaMap(), filters) {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 // HandleGet handles GET /api/v1/proposals/{id}
