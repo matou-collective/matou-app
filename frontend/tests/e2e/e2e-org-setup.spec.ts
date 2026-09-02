@@ -114,11 +114,11 @@ test.describe.serial('Organization Setup', () => {
       // Navigate to setup page
       await page.goto(`${FRONTEND_URL}/#/setup`);
       await page.waitForLoadState('networkidle');
-      await expect(page.getByRole('heading', { name: /community setup/i })).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByRole('heading', { name: /set up matou/i })).toBeVisible({ timeout: TIMEOUT.short });
 
-      // Fill form
-      await page.locator('input').first().fill('Matou Community');
-      await page.locator('input').nth(1).fill('Admin User');
+      // Fill form — the org name is fixed by the kit (#241); only the admin
+      // profile is collected, so the first input is the admin display name.
+      await page.locator('input').first().fill('Admin User');
 
       // Submit and wait for KERI operations
       await page.getByRole('button', { name: /create organization/i }).click();
@@ -174,7 +174,8 @@ test.describe.serial('Organization Setup', () => {
       const config = await configResponse.json();
       expect(config.organization).toBeDefined();
       expect(config.organization.aid).toBeTruthy();
-      expect(config.organization.name).toBe('Matou Community');
+      // Org name comes from the kit (KIT.brand.name), not a form field (#241).
+      expect(config.organization.name).toBe('Matou');
       // The canonical admin field is `admins` (plural array) — the backend's
       // OrgConfigData persists only `admins`, and the whole app reads it
       // (useRegistration, identity store, DashboardPage, useCredentialPolling).
