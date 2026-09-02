@@ -1,6 +1,11 @@
 // Matou Design Tokens
 // Ported from matou-design globals.css
 
+// Brand colours (--matou-primary/secondary/secondary-foreground/muted/accent)
+// come from the kit — the generated :root block in kit-tokens.scss. See
+// scripts/kit/apply-kit.mjs and Matou/coa ADR 0004.
+@import './kit-tokens';
+
 :root {
   --font-size: 16px;
 
@@ -13,17 +18,12 @@
   --matou-popover-foreground: #1a2b3a;
 
   // Deep ocean blue
-  --matou-primary: #1e5f74;
   --matou-primary-foreground: #ffffff;
 
   // River foam/mist
-  --matou-secondary: #e8f4f8;
-  --matou-secondary-foreground: #1e5f74;
-  --matou-muted: #e8f4f8;
   --matou-muted-foreground: #5a7b8a;
 
   // Teal accent
-  --matou-accent: #4a9d9c;
   --matou-accent-foreground: #ffffff;
 
   // Status colors

@@ -52,6 +52,8 @@
     "@types/node": "^22.10.5",
     "@typescript-eslint/eslint-plugin": "^8.19.0",
     "@typescript-eslint/parser": "^8.19.0",
+    "@vitejs/plugin-vue": "^6.0.3",
+    "@vue/test-utils": "^2.5.0",
     "autoprefixer": "^10.4.20",
     "electron": "^40.2.1",
     "electron-builder": "^26.7.0",

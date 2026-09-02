@@ -1,9 +1,12 @@
 // Quasar SCSS Variables
 // Override Quasar's default color scheme
 
-$primary: #1e5f74;
-$secondary: #e8f4f8;
-$accent: #4a9d9c;
+// Brand colours come from the kit — see scripts/kit/apply-kit.mjs, ADR 0004.
+@import './kit-tokens';
+
+$primary: $kit-primary;
+$secondary: $kit-secondary;
+$accent: $kit-accent;
 
 $dark: #1a2b3a;
 $dark-page: #0f1a23;

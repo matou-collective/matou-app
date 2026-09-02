@@ -4,20 +4,16 @@
       <!-- Logo -->
       <div v-motion="logoWobble" class="logo-container backdrop-blur-sm rounded-3xl">
         <img
-          src="../../assets/images/matou-logo.svg"
-          alt="Matou Logo"
+          :src="kitLogo"
+          :alt="`${KIT.brand.name} Logo`"
           class="w-[250px] h-[140px]"
         />
       </div>
 
       <!-- Title -->
       <div v-motion="fadeSlideUp(300)" class="text-center">
-        <img
-          src="../../assets/images/matou-text-logo-white.svg"
-          alt="Matou"
-          class="matou-text-logo-white mb-2 mt-0 w-[300px] h-[100px] mx-auto"
-        />
-        <p class="text-white/80 text-base md:text-lg">Connection &middot; Collaboration &middot; Innovation</p>
+        <h1 class="text-white text-4xl font-bold mb-2">{{ KIT.brand.name }}</h1>
+        <p v-if="KIT.brand.tagline" class="text-white/80 text-base md:text-lg">{{ KIT.brand.tagline }}</p>
       </div>
 
       <!-- Loading State -->
@@ -106,6 +102,8 @@ import { useIdentityStore } from 'stores/identity';
 import { useKERIClient } from 'src/lib/keri/client';
 import { MEMBERSHIP_SCHEMA_SAID } from 'src/composables/useAdminActions';
 import { version as appVersion } from '../../../package.json';
+import { KIT } from 'src/generated/kit';
+import kitLogo from 'src/assets/kit/logo.png';
 
 const { fadeSlideUp, fadeScale, logoWobble } = useAnimationPresets();
 const onboardingStore = useOnboardingStore();
@@ -195,10 +193,9 @@ const onRetry = () => {
 .splash-screen {
   position: relative;
   background: linear-gradient(
-    135deg,
+    160deg,
     var(--matou-primary) 0%,
-    rgba(30, 95, 116, 0.9) 50%,
-    var(--matou-accent) 100%
+    color-mix(in srgb, var(--matou-primary) 80%, black) 100%
   );
   min-height: calc(100vh - var(--titlebar-height));
 }
