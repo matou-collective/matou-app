@@ -501,6 +501,7 @@ const selectedMemberRegistration = computed(() => {
         joinReason: (shared.joinReason as string) || '',
         interests: (shared.participationInterests as string[]) || [],
         customInterests: (shared.customInterests as string) || '',
+        customAnswers: (shared.customAnswers as PendingRegistration['profile']['customAnswers']) || [],
         submittedAt: (shared.createdAt as string) || new Date().toISOString(),
       },
     } as PendingRegistration;

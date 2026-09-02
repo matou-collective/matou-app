@@ -25,6 +25,7 @@ import {
   type ResolveAttemptState,
   type ExpiredRegistration,
 } from 'src/lib/registrationResolve';
+import type { CustomAnswer } from 'src/kit/profile';
 
 export interface PendingRegistration {
   notificationId: string;
@@ -46,6 +47,8 @@ export interface PendingRegistration {
     gitlabUrl?: string;
     interests: string[];
     customInterests?: string;
+    /** Answers to the kit's custom questions, carried by label. */
+    customAnswers?: CustomAnswer[];
     avatarFileRef?: string;
     /** Base64-encoded avatar image data */
     avatarData?: string;
@@ -233,6 +236,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               gitlabUrl: (embeddedData.gitlabUrl as string) || undefined,
               interests: (embeddedData.interests as string[]) || [],
               customInterests: (embeddedData.customInterests as string) || undefined,
+              customAnswers: (embeddedData.customAnswers as CustomAnswer[]) || [],
               avatarFileRef: (embeddedData.avatarFileRef as string) || undefined,
               avatarData: (embeddedData.avatarData as string) || undefined,
               avatarMimeType: (embeddedData.avatarMimeType as string) || undefined,
@@ -279,6 +283,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               gitlabUrl: (embeddedData.gitlabUrl as string) || undefined,
               interests: (embeddedData.interests as string[]) || [],
               customInterests: (embeddedData.customInterests as string) || undefined,
+              customAnswers: (embeddedData.customAnswers as CustomAnswer[]) || [],
               avatarFileRef: (embeddedData.avatarFileRef as string) || undefined,
               avatarData: (embeddedData.avatarData as string) || undefined,
               avatarMimeType: (embeddedData.avatarMimeType as string) || undefined,
@@ -329,6 +334,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               gitlabUrl: (attributes.gitlabUrl as string) || undefined,
               interests: (attributes.interests as string[]) || [],
               customInterests: (attributes.customInterests as string) || undefined,
+              customAnswers: (attributes.customAnswers as CustomAnswer[]) || [],
               avatarFileRef: (attributes.avatarFileRef as string) || undefined,
               avatarData: (attributes.avatarData as string) || undefined,
               avatarMimeType: (attributes.avatarMimeType as string) || undefined,
@@ -380,6 +386,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
               gitlabUrl: (attributes.gitlabUrl as string) || undefined,
               interests: (attributes.interests as string[]) || [],
               customInterests: (attributes.customInterests as string) || undefined,
+              customAnswers: (attributes.customAnswers as CustomAnswer[]) || [],
               avatarFileRef: (attributes.avatarFileRef as string) || undefined,
               avatarData: (attributes.avatarData as string) || undefined,
               avatarMimeType: (attributes.avatarMimeType as string) || undefined,
@@ -419,6 +426,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
                 joinReason: (sp.data?.joinReason as string) || undefined,
                 indigenousCommunity: (sp.data?.indigenousCommunity as string) || undefined,
                 interests: (sp.data?.interests as string[]) || [],
+                customAnswers: (sp.data?.customAnswers as CustomAnswer[]) || [],
                 submittedAt: (sp.data?.createdAt as string) || new Date().toISOString(),
               },
               isPending: false,
@@ -702,6 +710,7 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         indigenousCommunity: reg.profile.indigenousCommunity || '',
         participationInterests: reg.profile.interests || [],
         customInterests: reg.profile.customInterests || '',
+        customAnswers: reg.profile.customAnswers || [],
         facebookUrl: reg.profile.facebookUrl || '',
         linkedinUrl: reg.profile.linkedinUrl || '',
         twitterUrl: reg.profile.twitterUrl || '',

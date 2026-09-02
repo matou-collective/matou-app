@@ -242,6 +242,7 @@ async function handleVerify() {
         gitlabUrl: store.profile.gitlabUrl || undefined,
         interests: store.profile.participationInterests,
         customInterests: store.profile.customInterests,
+        customAnswers: store.profile.customAnswers,
         avatarFileRef: store.profile.avatarFileRef || undefined,
         avatarData: store.profile.avatarData || undefined,
         avatarMimeType: store.profile.avatarMimeType || undefined,

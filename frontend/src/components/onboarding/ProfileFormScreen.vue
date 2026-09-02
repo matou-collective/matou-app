@@ -47,7 +47,7 @@
     <div ref="contentArea" class="flex-1 overflow-y-auto p-6 md:p-8 pb-safe-area">
       <form class="space-y-6 max-w-2xl mx-auto" @submit.prevent="handleSubmit">
         <!-- Profile Image -->
-        <div class="space-y-3 pb-2">
+        <div v-if="fields.photo" class="space-y-3 pb-2">
           <label class="text-sm font-medium">Profile Image</label>
           <div class="flex items-center gap-6 min-w-[280px]">
             <div class="relative shrink-0">
@@ -112,7 +112,7 @@
         </div>
 
         <!-- Email -->
-        <div class="space-y-2">
+        <div v-if="fields.email" class="space-y-2">
           <label class="text-sm font-medium" for="email">Email Address</label>
           <MInput
             id="email"
@@ -126,7 +126,7 @@
         </div>
 
         <!-- Bio -->
-        <div class="space-y-2">
+        <div v-if="fields.bio" class="space-y-2">
           <label class="text-sm font-medium" for="bio">Tell us a bit about yourself</label>
           <textarea
             id="bio"
@@ -141,7 +141,7 @@
         </div>
 
         <!-- Location -->
-        <div class="space-y-2">
+        <div v-if="fields.location" class="space-y-2">
           <label class="text-sm font-medium" for="location">Location</label>
           <MInput
             id="location"
@@ -169,7 +169,7 @@
         </div>
 
         <!-- Join Reason -->
-        <div class="space-y-2">
+        <div v-if="fields.whyJoin" class="space-y-2">
           <label class="text-sm font-medium" for="joinReason">Why would you like to join us?</label>
           <textarea
             id="joinReason"
@@ -184,12 +184,12 @@
         </div>
 
         <!-- Participation Interests -->
-        <div class="space-y-3">
+        <div v-if="fields.interests" class="space-y-3">
           <label class="text-sm font-medium">How would you like to participate?</label>
           <p class="text-xs text-muted-foreground">Select all that interest you</p>
           <div class="space-y-2">
             <label
-              v-for="interest in PARTICIPATION_INTERESTS"
+              v-for="interest in interestChoices"
               :key="interest.value"
               class="flex items-start gap-3 p-3 border border-border rounded-lg cursor-pointer hover:bg-secondary/50 transition-colors"
               :class="{ 'border-primary bg-primary/5': formData.participationInterests.includes(interest.value) }"
@@ -202,7 +202,7 @@
               />
               <div class="col">
                 <span class="text-sm font-medium">{{ interest.label }}</span>
-                <p class="text-xs text-muted-foreground">{{ interest.description }}</p>
+                <p v-if="interest.description" class="text-xs text-muted-foreground">{{ interest.description }}</p>
               </div>
             </label>
           </div>
@@ -290,6 +290,65 @@
           </div>
         </div>
 
+        <!-- Custom questions from the kit -->
+        <div v-if="customQuestions.length" class="space-y-4">
+          <label class="text-sm font-medium">A few questions from {{ brandName }}</label>
+          <div
+            v-for="(question, qi) in customQuestions"
+            :key="qi"
+            class="space-y-2"
+          >
+            <label class="text-sm font-medium" :for="`custom-question-${qi}`">{{ question.label }}</label>
+
+            <!-- text -->
+            <template v-if="question.type === 'text'">
+              <textarea
+                :id="`custom-question-${qi}`"
+                :value="answerText(qi)"
+                @input="setAnswerText(qi, $event)"
+                rows="3"
+                maxlength="500"
+                class="m-textarea w-full px-3 py-2 border border-border rounded-lg text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none"
+                placeholder="Your answer..."
+              />
+              <p class="text-xs text-muted-foreground text-right">
+                {{ answerText(qi).length }} / 500
+              </p>
+            </template>
+
+            <!-- select -->
+            <select
+              v-else-if="question.type === 'select'"
+              :id="`custom-question-${qi}`"
+              :value="answerText(qi)"
+              @change="setAnswerText(qi, $event)"
+              class="m-textarea w-full px-3 py-2 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
+            >
+              <option value="">Select an option…</option>
+              <option v-for="opt in question.options" :key="opt" :value="opt">{{ opt }}</option>
+            </select>
+
+            <!-- multiselect -->
+            <div v-else class="space-y-2">
+              <label
+                v-for="opt in question.options"
+                :key="opt"
+                class="flex items-center gap-3 p-3 border border-border rounded-lg cursor-pointer hover:bg-secondary/50 transition-colors"
+                :class="{ 'border-primary bg-primary/5': answerList(qi).includes(opt) }"
+              >
+                <input
+                  type="checkbox"
+                  :value="opt"
+                  :checked="answerList(qi).includes(opt)"
+                  @change="toggleAnswer(qi, opt)"
+                  class="w-4 h-4 rounded border-border text-primary focus:ring-primary/50 shrink-0"
+                />
+                <span class="text-sm">{{ opt }}</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
         <!-- Terms Agreement -->
         <div class="space-y-3 p-4 bg-secondary/50 border border-border rounded-lg">
           <label class="flex items-center gap-3 cursor-pointer">
@@ -337,8 +396,10 @@ import { ArrowLeft, ArrowRight, User, Upload, X, Fingerprint, AlertCircle } from
 import MBtn from '../base/MBtn.vue';
 import MInput from '../base/MInput.vue';
 import OnboardingHeader from './OnboardingHeader.vue';
-import { useOnboardingStore, PARTICIPATION_INTERESTS, type ParticipationInterest } from 'stores/onboarding';
+import { useOnboardingStore, type ParticipationInterest } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
+import { KIT } from 'src/generated/kit';
+import { interestOptions, emptyAnswers, answersValid, type CustomAnswer } from 'src/kit/profile';
 import { KERIClient } from 'src/lib/keri/client';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
@@ -353,6 +414,20 @@ const props = withDefaults(defineProps<{
 const router = useRouter();
 const store = useOnboardingStore();
 const identityStore = useIdentityStore();
+
+// Kit-driven profile config: which built-in fields to show, the interest
+// choices and any custom questions (coa-kit plan Task 7).
+const fields = KIT.onboarding.profile.fields;
+const customQuestions = KIT.onboarding.profile.customQuestions;
+const interestChoices = interestOptions(KIT.onboarding.profile);
+const brandName = KIT.brand.name;
+
+// Custom answers mirror the kit's questions positionally; reuse any answers
+// already captured in the store (e.g. when navigating back to this screen).
+const initialCustomAnswers: CustomAnswer[] =
+  store.profile.customAnswers.length === customQuestions.length
+    ? store.profile.customAnswers.map((a) => ({ label: a.label, value: Array.isArray(a.value) ? [...a.value] : a.value }))
+    : emptyAnswers(customQuestions);
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const contentArea = ref<HTMLElement | null>(null);
@@ -380,6 +455,7 @@ const formData = ref({
   gitlabUrl: store.profile.gitlabUrl,
   participationInterests: [...store.profile.participationInterests] as ParticipationInterest[],
   customInterests: store.profile.customInterests,
+  customAnswers: initialCustomAnswers,
   hasAgreedToTerms: store.profile.hasAgreedToTerms,
 });
 
@@ -400,7 +476,8 @@ const canSubmit = computed(() => {
     formData.value.bio.length <= 500 &&
     formData.value.joinReason.length <= 500 &&
     formData.value.customInterests.length <= 300 &&
-    formData.value.indigenousCommunity.length <= 200
+    formData.value.indigenousCommunity.length <= 200 &&
+    answersValid(customQuestions, formData.value.customAnswers)
   );
 });
 
@@ -435,6 +512,33 @@ watch(() => formData.value.name, () => {
 watch(() => formData.value.hasAgreedToTerms, () => {
   errors.value.terms = '';
 });
+
+// Custom-question answer helpers — `value` is `string | string[]`, so read and
+// write through these type-narrowing accessors instead of casting in the
+// template (which vue-tsc rejects as an assignment target).
+function answerText(qi: number): string {
+  const v = formData.value.customAnswers[qi]?.value;
+  return typeof v === 'string' ? v : '';
+}
+
+function setAnswerText(qi: number, event: Event) {
+  const target = event.target as HTMLTextAreaElement | HTMLSelectElement;
+  const answer = formData.value.customAnswers[qi];
+  if (answer) answer.value = target.value;
+}
+
+function answerList(qi: number): string[] {
+  const v = formData.value.customAnswers[qi]?.value;
+  return Array.isArray(v) ? v : [];
+}
+
+function toggleAnswer(qi: number, option: string) {
+  const answer = formData.value.customAnswers[qi];
+  if (!answer || !Array.isArray(answer.value)) return;
+  const idx = answer.value.indexOf(option);
+  if (idx >= 0) answer.value.splice(idx, 1);
+  else answer.value.push(option);
+}
 
 function triggerFileInput() {
   fileInput.value?.click();
@@ -505,6 +609,7 @@ function saveFormToStore() {
     avatarPreview: avatarPreview.value,
     participationInterests: formData.value.participationInterests,
     customInterests: formData.value.customInterests.trim(),
+    customAnswers: formData.value.customAnswers,
     hasAgreedToTerms: formData.value.hasAgreedToTerms,
   });
 }

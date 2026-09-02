@@ -11,6 +11,7 @@ import { buildSenderOobiFields } from 'src/lib/registrationResolve';
 import { setBackendIdentity, sendRegistrationSubmittedNotification } from 'src/lib/api/client';
 import { useAppStore } from 'stores/app';
 import { secureStorage } from 'src/lib/secureStorage';
+import type { CustomAnswer } from 'src/kit/profile';
 
 export interface RegistrationData {
   name: string;
@@ -27,6 +28,8 @@ export interface RegistrationData {
   gitlabUrl?: string;
   interests: string[];
   customInterests?: string;
+  /** Answers to the kit's custom questions (coa-kit plan Task 7). */
+  customAnswers?: CustomAnswer[];
   avatarFileRef?: string;
   /** Base64-encoded avatar image data (for inclusion in registration message) */
   avatarData?: string;
@@ -144,6 +147,7 @@ export function useRegistration() {
           gitlabUrl: profile.gitlabUrl,
           interests: profile.interests,
           customInterests: profile.customInterests,
+          customAnswers: profile.customAnswers,
           avatarFileRef: profile.avatarFileRef,
           avatarData: profile.avatarData,
           avatarMimeType: profile.avatarMimeType,

@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
+import { KIT } from 'src/generated/kit';
+import { interestOptions, type InterestOption, type CustomAnswer } from 'src/kit/profile';
 
 /**
  * All possible onboarding screens
@@ -21,47 +23,13 @@ export type OnboardingScreen =
   | 'main';
 
 /**
- * Participation interest options
+ * Participation interest options — derived from the kit's interest labels
+ * (coa-kit plan Task 7) so a community can redefine them without a code change.
  */
-export const PARTICIPATION_INTERESTS = [
-  {
-    value: 'research_knowledge',
-    label: 'Research and Knowledge',
-    description: 'Support inquiry, documentation, and knowledge sharing.',
-  },
-  {
-    value: 'coordination_operations',
-    label: 'Coordination and Operations',
-    description: 'Organize efforts, track tasks, and improve processes.',
-  },
-  {
-    value: 'art_design',
-    label: 'Art and Designs',
-    description: 'Create graphics, UI/UX, and brand assets.',
-  },
-  {
-    value: 'discussion_community_input',
-    label: 'Discussions and Community Input',
-    description: 'Participate in conversations and share feedback.',
-  },
-  {
-    value: 'follow_learn',
-    label: 'Follow and Learn',
-    description: 'Stay informed and learn at your own pace.',
-  },
-  {
-    value: 'coding_technical_dev',
-    label: 'Coding and Technical Dev',
-    description: 'Build and maintain software and infrastructure.',
-  },
-  {
-    value: 'cultural_oversight',
-    label: 'Cultural Oversight',
-    description: 'Ensure cultural alignment and respectful practices.',
-  },
-] as const;
+export const PARTICIPATION_INTERESTS: InterestOption[] = interestOptions(KIT.onboarding.profile);
 
-export type ParticipationInterest = typeof PARTICIPATION_INTERESTS[number]['value'];
+/** An interest value is a slugified kit label — no longer a fixed union. */
+export type ParticipationInterest = string;
 
 /**
  * Onboarding flow path
@@ -91,6 +59,8 @@ export interface ProfileData {
   avatarMimeType: string | null; // MIME type of avatar
   participationInterests: ParticipationInterest[];
   customInterests: string;
+  /** Answers to the kit's custom questions, carried by label. */
+  customAnswers: CustomAnswer[];
   hasAgreedToTerms: boolean;
 }
 
@@ -143,6 +113,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     avatarMimeType: null,
     participationInterests: [],
     customInterests: '',
+    customAnswers: [],
     hasAgreedToTerms: false,
   });
   const userAID = ref<string | null>(null);
@@ -254,6 +225,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
       avatarMimeType: null,
       participationInterests: [],
       customInterests: '',
+      customAnswers: [],
       hasAgreedToTerms: false,
     };
     userAID.value = null;
