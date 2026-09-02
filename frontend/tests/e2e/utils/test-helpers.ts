@@ -562,12 +562,13 @@ export async function performOrgSetup(
   // Ensure we're on the setup page
   await page.waitForLoadState('networkidle');
   await expect(
-    page.getByRole('heading', { name: /community setup/i }),
+    page.getByRole('heading', { name: /set up matou/i }),
   ).toBeVisible({ timeout: TIMEOUT.short });
 
   // --- Fill org setup form ---
-  await page.locator('input').first().fill('Matou Community');
-  await page.locator('input').nth(1).fill('Admin User');
+  // The org name is fixed by the kit (#241); only the admin profile is
+  // collected, so the first input is the admin display name.
+  await page.locator('input').first().fill('Admin User');
 
   // --- Submit and wait for KERI operations ---
   await page.getByRole('button', { name: /create organization/i }).click();
@@ -640,7 +641,7 @@ export async function performOrgSetup(
   const communityResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/community`, {
     data: {
       orgAid: config.organization.aid,
-      orgName: config.organization.name || 'Matou Community',
+      orgName: config.organization.name || 'Matou',
     },
   });
   expect(communityResponse.ok(),
