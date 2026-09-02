@@ -1,0 +1,5 @@
+{"workflow_runs":[
+  {"name":"watchdog","workflow_id":"healer.yml","status":"failure","run_number":50},
+  {"name":"watchdog","workflow_id":"healer.yml","status":"failure","run_number":49},
+  {"name":"watchdog","workflow_id":"healer.yml","status":"failure","run_number":48}
+]}

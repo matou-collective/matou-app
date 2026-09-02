@@ -21,8 +21,8 @@
             <!-- Card Header -->
             <div class="flex items-center justify-between mb-4">
               <div class="flex items-center gap-2">
-                <img src="../../assets/images/matou-logo.svg" alt="Matou" class="w-6 h-6 invert opacity-90" />
-                <span class="text-xs font-medium opacity-90">MATOU IDENTITY</span>
+                <img :src="kitLogo" :alt="KIT.brand.name" class="w-6 h-6 opacity-90" />
+                <span class="text-xs font-medium opacity-90">{{ KIT.brand.name.toUpperCase() }} IDENTITY</span>
               </div>
               <div class="flex items-center gap-1">
                 <Shield class="w-3 h-3 opacity-75" />
@@ -148,6 +148,8 @@ import {
   Copy,
 } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
+import { KIT } from 'src/generated/kit';
+import kitLogo from 'src/assets/kit/logo.png';
 import OnboardingHeader from './OnboardingHeader.vue';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
 import { useOnboardingStore } from 'stores/onboarding';

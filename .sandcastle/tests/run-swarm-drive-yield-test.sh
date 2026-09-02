@@ -86,4 +86,34 @@ grep -q "yielding this run to a ready drive" <<<"$out4" && fail "no reservation 
 [ -f "$defer" ] && fail "an absent reservation must reset the consecutive-defer counter (still present: $(cat "$defer"))"
 pass=$((pass+1))
 
+# --- ticket holder: written at start from HOST_CAPACITY_HELD_SLOT, cleared by on_exit ---
+# The suite has no fake pnpm/docker on this host — every prior case here dies
+# BEFORE the toolchain, at preflight_gate's ONE live network call
+# (guard_issue_write_permission -> forgejo_issue_write_probe -> curl), which is
+# the earliest point reached after the ticket holder is written (right after
+# swarmdb_run_start) and before on_exit clears it. Snapshot there instead of
+# in a fake pnpm. Overwriting curl here is safe: tests 1-4 above already ran
+# with the original fake.
+slot="$tmp/held-slot"; : > "$slot"
+seen="$tmp/holder-seen.json"
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+[ -n "${HELD_HOLDER:-}" ] && [ -f "$HELD_HOLDER" ] && cp "$HELD_HOLDER" "${HOLDER_SEEN:?}"
+echo '[]'
+SH
+chmod +x "$tmp/bin/curl"
+run_swarm HOST_CAPACITY_HELD_SLOT="$slot" HELD_HOLDER="$slot.holder" HOLDER_SEEN="$seen" >/dev/null 2>&1 || true
+[ -s "$seen" ] || fail "ticket holder must exist by the time run-swarm reaches its toolchain"
+[ "$(jq -r .kind "$seen")" = ticket ]        || fail "ticket holder kind: $(cat "$seen")"
+[ "$(jq -r .ref "$seen")" = run ]            || fail "ticket holder ref must be 'run': $(cat "$seen")"
+[ "$(jq -r .worker "$seen")" = swarm-worker ] || fail "ticket holder worker: $(cat "$seen")"
+[ "$(jq -r .repo "$seen")" = Acme/widget ]   || fail "ticket holder repo must be the run's REPO_SLUG: $(cat "$seen")"
+jq -e '.run_id | type == "string" and length > 0' "$seen" >/dev/null || fail "ticket holder must carry the run id: $(cat "$seen")"
+[ ! -e "$slot.holder" ] || fail "on_exit must clear the ticket holder"
+# Unset → nothing written, no error.
+rm -f "$seen"
+run_swarm HELD_HOLDER="$slot.holder" HOLDER_SEEN="$seen" >/dev/null 2>&1 || true
+[ ! -e "$seen" ] && [ ! -e "$slot.holder" ] || fail "no HOST_CAPACITY_HELD_SLOT → no holder written"
+pass=$((pass+1))
+
 echo "run-swarm-drive-yield: $pass scenarios passed"

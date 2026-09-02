@@ -59,6 +59,37 @@ directly rather than putting values in `.sandcastle/.env`
 supplying it — there is no `/run/secrets`-compatible option to move it to.
 This is a documented, accepted residual exposure, not an oversight.
 
+## Push-relay FCM credential (deployment secret)
+
+The push-relay service (`backend/cmd/push-relay`, design doc
+`08-push-notifications.md` topology C, slice 2 of #177) introduces one new
+secret: the **Google service-account JSON** that lets the relay send FCM
+messages. Per that design's §3 the relay is the *single* holder of this
+credential — it exists in exactly one place, never on member devices and never
+embedded in the app.
+
+The credential obeys the same **files, not env vars** doctrine as the tokens
+above. The relay reads it from a path, never from an inlined env value:
+
+| Secret | Delivered as | Consumed by | Needed if |
+| --- | --- | --- | --- |
+| FCM service-account JSON | a mounted file referenced by `MATOU_PUSH_RELAY_FCM_CREDENTIALS` (the file *path*, not the JSON) | `push-relay` at startup (`NewFCMClient`) | push notifications are deployed |
+
+Inlining the JSON into an env var would reintroduce exactly the
+`docker inspect .Config.Env` exposure this document exists to close, so the
+relay takes only a path. The relay also holds the `AID → device-token` map
+(push plumbing, not an identity registry — design §2); that map is *not* a
+secret but is enrolled here because it is state the relay persists alongside
+the credential.
+
+Rotation: reissue the service-account key in the Firebase console, replace the
+mounted file, restart the relay. `MATOU_PUSH_RELAY_FCM_DISABLED=1` runs the
+relay with dispatch stubbed out (no credential needed) for dev/dry-run.
+
+Hosting the relay and provisioning this credential are human decisions tracked
+on #177 (§10 Q1) — this entry only reserves the secret's place in the
+inventory.
+
 ## Rotation guidance
 
 - **`FORGEJO_TOKEN` / `MATTERMOST_BOT_TOKEN`:** rotate the org Actions secret

@@ -6,20 +6,16 @@
         <!-- M Logo -->
         <div class="logo-container">
           <img
-            src="../../assets/images/matou-logo.svg"
-            alt="Matou Logo"
+            :src="kitLogo"
+            :alt="`${KIT.brand.name} Logo`"
             class="w-[250px] h-[140px]"
           />
         </div>
 
-        <!-- Text Logo -->
+        <!-- Name + tagline -->
         <div class="text-center">
-          <img
-            src="../../assets/images/matou-text-logo-white.svg"
-            alt="Matou"
-            class="w-[300px] h-[100px] mx-auto"
-          />
-          <p class="text-white/80 text-base md:text-lg">Connection &middot; Collaboration &middot; Innovation</p>
+          <h1 class="text-white text-4xl font-bold mb-2">{{ KIT.brand.name }}</h1>
+          <p v-if="KIT.brand.tagline" class="text-white/80 text-base md:text-lg">{{ KIT.brand.tagline }}</p>
         </div>
 
         <!-- Rotating Indigenous Welcome -->
@@ -33,8 +29,8 @@
         <!-- Logo -->
         <div class="logo-container backdrop-blur-sm rounded-3xl">
           <img
-            src="../../assets/images/matou-logo.svg"
-            alt="Matou Logo"
+            :src="kitLogo"
+            :alt="`${KIT.brand.name} Logo`"
             class="w-[200px] h-[112px]"
           />
         </div>
@@ -42,7 +38,7 @@
         <!-- Welcome Message -->
         <div class="text-center space-y-3">
           <h1 class="text-3xl md:text-4xl font-bold text-white">
-            Welcome to Matou
+            {{ KIT.brand.welcomeText || 'Welcome to ' + KIT.brand.name }}
           </h1>
           <p v-if="displayName" class="text-xl text-white/90">
             {{ displayName }}
@@ -140,6 +136,8 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { setBackendIdentity, getSyncStatus, getProfiles } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { version as appVersion } from '../../../package.json';
+import { KIT } from 'src/generated/kit';
+import kitLogo from 'src/assets/kit/logo.png';
 
 const emit = defineEmits<{
   (e: 'continue'): void;

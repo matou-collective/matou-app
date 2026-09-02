@@ -482,6 +482,15 @@ Create/update a profile object.
 
 List profiles of a type.
 
+Results can be filtered with query parameters named after schema fields whose
+`uiHints.filterable` is `true` (e.g. `?status=approved&location=Wellington`).
+The filterable set is derived from the org's schema, not a hardcoded list, so
+it changes when the schema changes. Matching is case-insensitive; for array
+fields (e.g. `skills`, `participationInterests`) the filter matches when any
+element equals the value. A query parameter naming a known-but-non-filterable
+field returns `400` with the allowed `filterableFields`; unknown parameters are
+ignored.
+
 ### GET /api/v1/profiles/{type}/{id}
 
 Get a specific profile object.
@@ -493,6 +502,131 @@ Get current user's profiles across all spaces.
 ### POST /api/v1/profiles/init-member
 
 Initialize member profiles (admin operation).
+
+---
+
+## Notice Endpoints
+
+The community notice board stores each notice in its own object tree. Notices
+follow the configurable schema model: the org's `Notice` type definition (see
+`GET /api/v1/types/Notice`) is the source of truth for which fields exist, which
+are required, their enums, and which may be filtered/sorted on.
+
+### Core vs custom fields
+
+Every `Notice` field carries a `core` flag. **Core** fields (the built-in
+type/title/summary/state/issuer/schedule set) back the fixed handler logic and
+the notice lifecycle state machine. Fields an org **adds** by extending the
+`Notice` schema are non-core (custom); they are validated on write and
+round-trip through the object's `data` map on read:
+
+```json
+{
+  "id": "1724900000000",
+  "type": "announcement",
+  "title": "Working bee",
+  "state": "published",
+  "data": { "marae": "Ōrākei", "headcount": 42 }
+}
+```
+
+Custom keys that are not defined by the schema are dropped; a custom key can
+never shadow a core field.
+
+### Subtype variants
+
+`Notice` declares `variantField: "subtype"`. A schema may attach a `variants`
+map keyed by subtype, each contributing extra field definitions that are
+validated only when a notice's `subtype` matches. This lets one `Notice` type
+carry per-subtype field sets (e.g. a `tangihanga` subtype requiring `location`)
+without a separate type per subtype.
+
+### POST /api/v1/notices
+
+Create a notice. The request body's core fields are mapped to the notice, and
+schema-defined custom fields are captured into `data`. The fully assembled
+notice is validated against the org's `Notice` schema (`registry.Validate`);
+missing required fields (core or custom), failed enums, or type mismatches
+return `400` with a `validationErrors` array. Interaction payloads
+(ack/RSVP/save/comment/reaction) are protocol, not content, and remain fixed —
+they are not schema-validated against `Notice`.
+
+### GET /api/v1/notices
+
+List notices. Query params:
+
+- `view=upcoming|current|past` — board selector (reserved).
+- Any other param is treated as a field-equality filter and is only honoured if
+  the schema marks that field **filterable** (e.g. `type`, `subtype`, `state`,
+  `pinned`); a filter on a non-filterable field returns `400`. Filters match
+  core fields and schema-defined custom fields alike.
+
+### GET /api/v1/notices/{id}
+
+Get a single notice (includes its `data` custom fields).
+
+### Notice lifecycle & interactions
+
+- `POST /api/v1/notices/{id}/publish` — draft → published.
+- `POST /api/v1/notices/{id}/archive` — published → archived.
+- `POST /api/v1/notices/{id}/pin` — toggle pinned.
+- `POST|GET /api/v1/notices/{id}/rsvp` — event RSVP (going/maybe/not_going).
+- `POST|GET /api/v1/notices/{id}/ack` — acknowledgment.
+- `POST /api/v1/notices/{id}/save`, `GET /api/v1/notices/saved` — personal bookmarks.
+- `POST|GET /api/v1/notices/{id}/comments` — comments.
+- `POST|GET /api/v1/notices/{id}/reactions` — emoji reactions.
+
+---
+
+## Proposal Endpoints
+
+Proposals are validated and stored against the org's `Proposal` type definition
+(a built-in schema registered at org setup) rather than a fixed Go struct. The
+schema splits fields into two groups:
+
+- **Core fields** (`core: true`) — identity, `status`, the decision/voting and
+  assigned-role fields, timestamps and `endorsement_threshold`. Handlers and the
+  state machine depend on these; admin schema edits may not remove them.
+- **Schema-driven body** — `title`, `description`, `problem_statement`,
+  `solution`, `expected_outcomes`, `estimated_budget`, `timeline`,
+  `project_plan`, `attachments`, plus any org-added custom fields. An org can
+  tighten their validation (lengths, enums), toggle `required`, or add new
+  fields without a backend change.
+
+Custom fields not modelled as typed struct fields are carried in a `data`
+object on create/update and round-trip unchanged in read responses. Fields the
+current schema no longer defines are tolerated on objects written earlier.
+
+### POST /api/v1/proposals
+
+Create a proposal. The request body (core fields at the top level plus any
+custom fields under `data`) is validated against the `Proposal` schema; a
+missing custom `required` field or an out-of-enum value returns `400`.
+
+### GET /api/v1/proposals
+
+List proposals. Results can be filtered with query parameters named after
+schema fields whose `uiHints.filterable` is `true` (e.g. `?priority=high`,
+`?status=approved`, `?type=technical`). The filterable set is derived from the
+schema, not a hardcoded list. Matching is case-insensitive; for array fields
+(e.g. `type`) the filter matches when any element equals the value. A query
+parameter naming a known-but-non-filterable field returns `400` with the
+allowed `filterableFields`; unknown parameters are ignored.
+
+### GET /api/v1/proposals/{id}
+
+Get a proposal, including any custom `data` fields.
+
+### PATCH /api/v1/proposals/{id}
+
+Update a proposal. The merged object is re-validated against the `Proposal`
+schema. Supplying `data` replaces the custom-field map; omitting it leaves the
+existing custom fields untouched.
+
+### POST /api/v1/proposals/{id}/transition
+
+Advance a proposal through its lifecycle (see status enum). Sign-off, rejection
+and withdrawal are role-gated.
 
 ---
 

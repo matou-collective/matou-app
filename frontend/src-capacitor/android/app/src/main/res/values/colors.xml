@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Accent colour FCM tints the monochrome status icon with (#177, §4).
+         Matou brand teal, matching the launcher background. -->
+    <color name="matou_notification">#1E5F74</color>
+</resources>

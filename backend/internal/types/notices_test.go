@@ -139,8 +139,8 @@ func TestIsValidNoticeTransition(t *testing.T) {
 	}{
 		{"draft", "published", true},
 		{"published", "archived", true},
-		{"draft", "archived", false},   // skip state not allowed
-		{"published", "draft", false},  // no backward transitions
+		{"draft", "archived", false},     // skip state not allowed
+		{"published", "draft", false},    // no backward transitions
 		{"archived", "published", false}, // terminal state
 		{"archived", "draft", false},
 		{"invalid", "published", false},

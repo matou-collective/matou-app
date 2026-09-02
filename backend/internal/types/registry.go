@@ -37,7 +37,8 @@ func NewRegistry() *Registry {
 }
 
 // Bootstrap registers the hardcoded meta-type (type_definition) and all
-// built-in type definitions (profiles, notices). Call this during org setup.
+// built-in type definitions (profiles, notices, chat, proposals). Call this
+// during org setup.
 func (r *Registry) Bootstrap() {
 	r.Register(MetaTypeDefinition())
 	for _, def := range ProfileTypeDefinitions() {
@@ -47,6 +48,9 @@ func (r *Registry) Bootstrap() {
 		r.Register(def)
 	}
 	for _, def := range ChatTypeDefinitions() {
+		r.Register(def)
+	}
+	for _, def := range ProposalTypeDefinitions() {
 		r.Register(def)
 	}
 }
@@ -84,6 +88,44 @@ func (r *Registry) Validate(typeName string, data json.RawMessage) ([]string, er
 		return nil, fmt.Errorf("unknown type: %s", typeName)
 	}
 	return ValidateData(def, data), nil
+}
+
+// IsFilterable reports whether a named type declares the given field as
+// filterable. Unknown types or fields are not filterable.
+func (r *Registry) IsFilterable(typeName, field string) bool {
+	def, ok := r.Get(typeName)
+	if !ok {
+		return false
+	}
+	for _, f := range def.Fields {
+		if f.Name == field {
+			return f.IsFilterable()
+		}
+	}
+	// A variant field may also be filterable.
+	for _, variant := range def.Variants {
+		for _, f := range variant.Fields {
+			if f.Name == field {
+				return f.IsFilterable()
+			}
+		}
+	}
+	return false
+}
+
+// CoreFieldNames returns the set of field names a type marks as core.
+func (r *Registry) CoreFieldNames(typeName string) map[string]bool {
+	def, ok := r.Get(typeName)
+	if !ok {
+		return nil
+	}
+	core := make(map[string]bool)
+	for _, f := range def.Fields {
+		if f.Core {
+			core[f.Name] = true
+		}
+	}
+	return core
 }
 
 // LoadFromSpace reads type_definition objects from a space and registers them.

@@ -1,15 +1,14 @@
 <template>
   <div class="setup-screen h-full flex flex-col items-center justify-center p-8 md:p-12">
     <div class="flex flex-col items-center gap-8 max-w-md w-full">
-      <!-- Logo/Icon -->
+      <!-- Kit logo -->
       <div class="icon-container bg-white/20 backdrop-blur-sm p-6 rounded-2xl">
-        <Building2 class="w-16 h-16 text-white" />
+        <img :src="kitLogo" :alt="`${KIT.brand.name} Logo`" class="w-16 h-16 object-contain" />
       </div>
 
       <!-- Title -->
       <div class="text-center">
-        <h1 class="text-white text-2xl md:text-3xl font-semibold mb-2">Community Setup</h1>
-        <p class="text-white/80 text-base">Create your organization to get started</p>
+        <h1 class="text-white text-2xl md:text-3xl font-semibold mb-2">Set up {{ KIT.brand.name }}</h1>
       </div>
 
       <!-- Info Notice -->
@@ -17,26 +16,13 @@
         <div class="flex items-start gap-3">
           <Info class="w-5 h-5 text-white/80 flex-shrink-0 mt-0.5" />
           <p class="text-white/80 text-sm">
-            No organization found. Create one to start managing identities and credentials.
+            You're the first admin. Create your admin profile to bring {{ KIT.brand.name }} online.
           </p>
         </div>
       </div>
 
       <!-- Setup Form -->
       <form v-if="!isSubmitting" class="w-full space-y-4" @submit.prevent="handleSubmit">
-        <!-- Organization Name -->
-        <div class="form-group">
-          <label class="text-white/90 text-sm font-medium mb-2 block">
-            Organization Name
-          </label>
-          <MInput
-            v-model="orgName"
-            placeholder="e.g., Matou Community"
-            :disabled="isSubmitting"
-            class="setup-input"
-          />
-        </div>
-
         <!-- Admin Name -->
         <div class="form-group">
           <label class="text-white/90 text-sm font-medium mb-2 block">
@@ -199,18 +185,22 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { Building2, Info, AlertCircle, Rocket, Loader2, CheckCircle2, Circle, User, Upload } from 'lucide-vue-next';
+import { Info, AlertCircle, Rocket, Loader2, CheckCircle2, Circle, User, Upload } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import MInput from '../base/MInput.vue';
 import { useOrgSetup } from 'src/composables/useOrgSetup';
 import { uploadFile } from 'src/lib/api/client';
+import { KIT } from 'src/generated/kit';
+import kitLogo from 'src/assets/kit/logo.png';
 
 const emit = defineEmits<{
   (e: 'setup-complete'): void;
 }>();
 
 // Form state
-const orgName = ref('');
+// The organisation is fixed by the kit — the setup screen only collects the
+// first admin's profile (coa-kit plan Task 5, issue #241).
+const orgName = ref(KIT.brand.name);
 const adminName = ref('');
 const adminEmail = ref('');
 const avatarPreview = ref<string | null>(null);
@@ -225,7 +215,7 @@ const { isSubmitting, error, progress, setupOrg } = useOrgSetup();
 
 // Form validation
 const isFormValid = computed(() => {
-  return orgName.value.trim().length >= 2 && adminName.value.trim().length >= 2;
+  return adminName.value.trim().length >= 2;
 });
 
 // Progress step helpers

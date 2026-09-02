@@ -79,24 +79,18 @@ This builds the frontend, compiles the Electron main process, and packages for t
 
 #### Cross-Platform Builds (from Linux)
 
-To build Windows and macOS packages from a Linux machine, first run the standard build (which compiles the UI and Electron main process), then use electron-builder with the cross-build config:
+To build Windows and macOS packages from a Linux machine, pass the platform flags to `quasar build -m electron` (the same invocation CI uses in `.github/workflows/build.yml`). The electron-builder settings are supplied by `quasar.config.ts`, which reads them from `kit.build.json`:
 
 ```bash
-# 1. Standard build (compiles UI + packages for current platform)
-npx quasar build -m electron
+# Windows installer
+npx quasar build -m electron --win
 
-# 2. Build Windows installer
-npx electron-builder --win --config build/electron-builder-cross.json
-
-# 3. Build macOS zips (one arch at a time to avoid filename collision)
-npx electron-builder --mac zip --x64 --config build/electron-builder-cross.json
-mv dist/electron/Packaged/matou-*.zip dist/electron/Packaged/matou-0.0.1-mac-x64.zip
-
-npx electron-builder --mac zip --arm64 --config build/electron-builder-cross.json
-mv dist/electron/Packaged/matou-*.zip dist/electron/Packaged/matou-0.0.1-mac-arm64.zip
+# macOS zips (one arch at a time to avoid filename collision)
+npx quasar build -m electron --mac --x64
+npx quasar build -m electron --mac --arm64
 ```
 
-The cross-build config (`build/electron-builder-cross.json`) mirrors the settings from `quasar.config.ts` (app ID, product name, extra resources, icons) so that electron-builder can run independently.
+Packaging identity (app ID, product name, artifact names, publish target, auto-update gate) is generated from the active kit into `frontend/kit.build.json` by `npm run kit:apply` and consumed by `quasar.config.ts` (via `src-electron/kit-builder-config.ts`). Edit the kit and re-run `npm run kit:apply` to change it — never hand-edit `kit.build.json`.
 
 Output: `frontend/dist/electron/Packaged/`
 
@@ -160,7 +154,7 @@ The version is used in output filenames (e.g. `matou-0.1.0.AppImage`).
 
 ### Build All Platforms
 
-From a Linux machine, you can build all platforms using the cross-build config:
+From a Linux machine, you can build all platforms. The electron-builder settings come from `quasar.config.ts` (generated from `kit.build.json`):
 
 ```bash
 # Build all backend binaries
@@ -170,12 +164,12 @@ cd backend && make build-all
 cd ../frontend && npm install && npx quasar build -m electron
 
 # Cross-build Windows and macOS
-npx electron-builder --win --config build/electron-builder-cross.json
+npx quasar build -m electron --win
 
-npx electron-builder --mac zip --x64 --config build/electron-builder-cross.json
+npx quasar build -m electron --mac --x64
 mv dist/electron/Packaged/matou-0.1.0.zip dist/electron/Packaged/matou-0.1.0-mac-x64.zip
 
-npx electron-builder --mac zip --arm64 --config build/electron-builder-cross.json
+npx quasar build -m electron --mac --arm64
 mv dist/electron/Packaged/matou-0.1.0.zip dist/electron/Packaged/matou-0.1.0-mac-arm64.zip
 ```
 

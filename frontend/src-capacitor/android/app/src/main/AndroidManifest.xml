@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:allowBackup="true"
@@ -35,9 +36,40 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!-- Push notifications (#177) — content-free FCM wake signals; see
+             docs/architecture/08-push-notifications.md. These FCM defaults are
+             used if a `notification`-block message ever arrives; our own
+             payloads are data-only (§4) and post local notifications instead. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_matou" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/matou_notification" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="matou_dm" />
+
+        <!-- Matou's FCM entry point (§5). Extends the Capacitor plugin's service
+             so JS delivery is unchanged; it is the hook for the background
+             sync-only wake. Registering ours means we drop the plugin's default
+             service so exactly one FirebaseMessagingService handles the event. -->
+        <service
+            android:name=".MatouMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <service
+            android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"
+            tools:node="remove" />
     </application>
 
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 13+ runtime notification permission (requested after onboarding, §7). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

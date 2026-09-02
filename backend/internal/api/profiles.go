@@ -289,11 +289,66 @@ func (h *ProfilesHandler) HandleListProfiles(w http.ResponseWriter, r *http.Requ
 	// Deduplicate: keep only latest version per ID
 	latest := deduplicateObjects(objects)
 
+	// Apply schema-driven filters. The set of accepted filter parameters comes
+	// from the type's schema (fields whose uiHints mark them filterable), not a
+	// hardcoded list, so an org controls which fields are searchable via its
+	// schema. A query parameter naming a non-filterable field is rejected.
+	filters, badParam := collectFilters(def, r.URL.Query())
+	if badParam != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":            fmt.Sprintf("field %q is not filterable", badParam),
+			"filterableFields": def.FilterableFieldNames(),
+		})
+		return
+	}
+	if len(filters) > 0 {
+		latest = filterProfiles(def, latest, filters)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"profiles": latest,
 		"count":    len(latest),
 		"type":     typeName,
 	})
+}
+
+// collectFilters turns request query parameters into a field→value filter map,
+// keeping only fields the schema marks filterable. It returns the name of the
+// first query parameter that names a known-but-non-filterable field so the
+// caller can reject the request; reserved pagination-style params are ignored.
+func collectFilters(def *types.TypeDefinition, query map[string][]string) (map[string]string, string) {
+	filters := make(map[string]string)
+	for key, vals := range query {
+		if len(vals) == 0 || vals[0] == "" {
+			continue
+		}
+		field, known := def.Field(key)
+		if !known {
+			// Unknown key: ignore rather than reject so pagination/sort params
+			// added later don't break existing clients.
+			continue
+		}
+		if field.UIHints == nil || !field.UIHints.Filterable {
+			return nil, key
+		}
+		filters[key] = vals[0]
+	}
+	return filters, ""
+}
+
+// filterProfiles keeps only the objects whose data satisfies every filter.
+func filterProfiles(def *types.TypeDefinition, objects []*anysync.ObjectPayload, filters map[string]string) []*anysync.ObjectPayload {
+	result := make([]*anysync.ObjectPayload, 0, len(objects))
+	for _, obj := range objects {
+		var data map[string]interface{}
+		if err := json.Unmarshal(obj.Data, &data); err != nil {
+			continue
+		}
+		if types.MatchesFilters(def, data, filters) {
+			result = append(result, obj)
+		}
+	}
+	return result
 }
 
 // handleGetProfile handles GET /api/v1/profiles/{type}/{id}.
@@ -538,6 +593,66 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Validate the assembled profile against the org's schema before writing.
+	// This runs on both the registration submit and the approval re-issue path
+	// (both go through this handler), so a member is never persisted with data
+	// that violates the current CommunityProfile schema (e.g. a custom required
+	// field left empty, or an out-of-enum role).
+	if errs := h.validateProfile("CommunityProfile", dataBytes); len(errs) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":            "CommunityProfile validation failed",
+			"validationErrors": errs,
+		})
+		return
+	}
+
+	// Assemble and validate the SharedProfile BEFORE the CommunityProfile write.
+	// Both payloads must pass validation before anything is committed — a 400
+	// returned after the first AddObject would leave state mutated behind an
+	// error response.
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	var sharedDataBytes []byte
+	if communitySpaceID != "" {
+		now2 := time.Now().UTC().Format(time.RFC3339)
+		sharedProfileData := map[string]interface{}{
+			"aid":                    req.MemberAID,
+			"status":                 req.Status,
+			"displayName":            req.DisplayName,
+			"bio":                    req.Bio,
+			"avatar":                 req.Avatar,
+			"publicEmail":            req.Email,
+			"location":               req.Location,
+			"indigenousCommunity":    req.IndigenousCommunity,
+			"joinReason":             req.JoinReason,
+			"facebookUrl":            req.FacebookUrl,
+			"linkedinUrl":            req.LinkedinUrl,
+			"twitterUrl":             req.TwitterUrl,
+			"instagramUrl":           req.InstagramUrl,
+			"githubUrl":              req.GithubUrl,
+			"gitlabUrl":              req.GitlabUrl,
+			"participationInterests": req.Interests,
+			"customInterests":        req.CustomInterests,
+			"lastActiveAt":           now2,
+			"createdAt":              now2,
+			"updatedAt":              now2,
+			"typeVersion":            1,
+		}
+		sharedDataBytes, err = json.Marshal(sharedProfileData)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to marshal SharedProfile data: %v", err),
+			})
+			return
+		}
+		if errs := h.validateProfile("SharedProfile", sharedDataBytes); len(errs) > 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"error":            "SharedProfile validation failed",
+				"validationErrors": errs,
+			})
+			return
+		}
+	}
+
 	// Get signing key for readonly space
 	client := h.spaceManager.GetClient()
 	if client == nil {
@@ -600,41 +715,9 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	// This is BLOCKING — WelcomeOverlay waits for this profile to appear
 	// before allowing the member to continue. If it fails, the frontend
 	// can retry initMemberProfiles (CommunityProfile update is idempotent).
-	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	// Its payload was assembled and validated above, before the
+	// CommunityProfile write.
 	if communitySpaceID != "" {
-		now2 := time.Now().UTC().Format(time.RFC3339)
-		sharedProfileData := map[string]interface{}{
-			"aid":                    req.MemberAID,
-			"status":                 req.Status,
-			"displayName":            req.DisplayName,
-			"bio":                    req.Bio,
-			"avatar":                 req.Avatar,
-			"publicEmail":            req.Email,
-			"location":               req.Location,
-			"indigenousCommunity":    req.IndigenousCommunity,
-			"joinReason":             req.JoinReason,
-			"facebookUrl":            req.FacebookUrl,
-			"linkedinUrl":            req.LinkedinUrl,
-			"twitterUrl":             req.TwitterUrl,
-			"instagramUrl":           req.InstagramUrl,
-			"githubUrl":              req.GithubUrl,
-			"gitlabUrl":              req.GitlabUrl,
-			"participationInterests": req.Interests,
-			"customInterests":        req.CustomInterests,
-			"lastActiveAt":           now2,
-			"createdAt":              now2,
-			"updatedAt":              now2,
-			"typeVersion":            1,
-		}
-
-		sharedDataBytes, err := json.Marshal(sharedProfileData)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": fmt.Sprintf("failed to marshal SharedProfile data: %v", err),
-			})
-			return
-		}
-
 		communityKeys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -943,6 +1026,23 @@ func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Requ
 		"success":   "true",
 		"memberAid": memberAID,
 	})
+}
+
+// validateProfile validates raw profile data against the named type in the
+// registry. It returns the list of validation errors (empty when valid). A nil
+// registry (environments without schema wiring) skips validation; any error
+// from the registry — including an unregistered type — is surfaced as a
+// validation error rather than swallowed, so a registry that failed to load a
+// type cannot silently disable the very validation this path exists for.
+func (h *ProfilesHandler) validateProfile(typeName string, data json.RawMessage) []string {
+	if h.registry == nil {
+		return nil
+	}
+	errs, err := h.registry.Validate(typeName, data)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return errs
 }
 
 // resolveSpaceForType returns the space ID for a given type definition.

@@ -265,6 +265,11 @@ MATOU_ENV=production go run ./cmd/server
 - The active token is written to `{dataDir}/api-token` (0600) so same-user tooling (matou-mcp, scripts) can read it. Reads (GET/HEAD/OPTIONS) need no token.
 - `MATOU_ALLOW_REMOTE=1` — disables the unconditional LocalhostGuard for remote-dev setups.
 
+### Push notifications (Android / FCM)
+
+- `MATOU_PUSH_RELAY_URL` — base URL of the push-relay that wakes backgrounded Android devices with content-free FCM signals (see `docs/architecture/08-push-notifications.md`). Unset (the default) leaves push **dark**: the `/api/v1/push/register` + `/api/v1/push/deregister` routes are not registered and no push sink runs, so dev/test and the Electron build are unaffected. When set, the embedded backend registers device tokens with the relay and, on the sender's own chat writes, asks the relay to wake the channel's other members — those whose roles satisfy the channel's `allowedRoles` gate, minus the sender, so a role-gated channel never wakes members who cannot read it. Relay calls are authenticated with KERI-signed sessions; failures are logged, never fatal.
+- `MATOU_PUSH_RELAY_ALLOW_HTTP=1` — allow a plain-`http://` relay URL to a non-loopback host. By default the relay URL must be `https`, or plain `http` to a loopback host: the relay call carries device FCM tokens and the full recipient-AID list, which is exactly the routing metadata the content-free design keeps private. This is a dev escape hatch for a relay on a trusted network, mirroring `MATOU_KERIA_KEYSTATE_ALLOW_HTTP`. A rejected or malformed `MATOU_PUSH_RELAY_URL` is logged and leaves push dark — it never fails the boot.
+
 The backend reads configuration primarily from the org config api. The following environment variables provide overrides:
 
 ```bash

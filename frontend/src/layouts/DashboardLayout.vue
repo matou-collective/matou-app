@@ -5,9 +5,9 @@
       <!-- Logo Header -->
       <div class="sidebar-header">
         <div class="logo-container">
-          <img src="../assets/images/matou-logo-teal.svg" alt="Matou" class="logo-icon" />
+          <img :src="kitLogo" :alt="KIT.brand.name" class="logo-icon" />
           <div class="logo-text">
-            <span class="logo-title">Matou</span>
+            <span class="logo-title">{{ KIT.brand.name }}</span>
             <span class="logo-subtitle">Community</span>
           </div>
         </div>
@@ -167,6 +167,8 @@ import { getFileUrl } from 'src/lib/api/client';
 import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
 import { useProfileViewer } from 'stores/profileViewer';
+import { KIT } from 'src/generated/kit';
+import kitLogo from 'src/assets/kit/logo.png';
 import {
   NAV_ITEM_META,
   isNavActive as isNavActiveFor,

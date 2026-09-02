@@ -39,7 +39,8 @@ backend/internal/api/              # API handlers
 backend/internal/anysync/          # any-sync SDK integration
 backend/internal/keri/             # KERI identity integration
 docs/mobile/ANDROID.md             # Android build guide (gomobile .aar + Capacitor shell)
-frontend/src-capacitor/            # Capacitor Android shell (MatouBackend + SecureStorage plugins)
+docs/mobile/IOS.md                 # iOS build guide (gomobile .xcframework + Capacitor shell, Simulator/TestFlight)
+frontend/src-capacitor/            # Capacitor Android + iOS shells (MatouBackend + SecureStorage plugins, Java and Swift)
 ```
 
 ## Common Commands
@@ -99,9 +100,18 @@ npm run format                # Format with Prettier
 scripts/android/setup-toolchain.sh    # Install JDK 21 + Android SDK/NDK + gomobile into ~/.matou-android (idempotent)
 cd backend && make build-android-aar  # gomobile bind the embedded backend → src-capacitor/android/app/libs/matou.aar
 scripts/android/build-apk.sh          # Build the debug APK (bakes VITE_PROD_CONFIG_URL as the config server URL)
+scripts/android/build-aab.sh          # Signed release App Bundle for Google Play (see docs/mobile/PLAY_STORE.md; CI builds it on v* tags)
 ```
 
-See `docs/mobile/ANDROID.md` for the toolchain layout, gotchas, and the emulator recipe.
+### Mobile (iOS) — macOS + Xcode only; CI does it on GitHub (`build.yml`, dispatch `platform: ios`)
+
+```bash
+cd backend && make build-ios-xcframework  # gomobile bind → frontend/src-capacitor/ios/App/Frameworks/Matou.xcframework
+scripts/ios/build-ipa.sh --simulator      # Unsigned Simulator app → frontend/dist/capacitor/ios/simulator/Matou.app
+scripts/ios/build-ipa.sh                  # Signed archive + App Store IPA (needs MATOU_IOS_TEAM_ID / MATOU_IOS_PROFILE_NAME)
+```
+
+See `docs/mobile/ANDROID.md` / `docs/mobile/IOS.md` for the toolchain layout, gotchas, and the emulator/simulator recipes.
 
 ### Infrastructure
 
@@ -143,6 +153,8 @@ curl -s http://localhost:9000 > /dev/null && echo "Running" || echo "Not running
 | `MATOU_REQUIRE_SIGNED_AUTH=1` | Enforce KERI-signed session auth: bare `X-User-AID` is stripped, invalid sessions 401 (default off; see docs/signed-auth.md) |
 | `MATOU_KERIA_KEYSTATE_URL` | Key-state URL template with `{aid}` (default `{cesrUrl}/oobi/{aid}`); plain http only to loopback unless `MATOU_KERIA_KEYSTATE_ALLOW_HTTP=1` |
 | `MATOU_AUTH_SESSION_TTL` | Signed-auth session lifetime (Go duration, default 30m) |
+| `MATOU_PUSH_RELAY_URL` | Push-relay base URL for Android FCM wake signals (docs/architecture/08-push-notifications.md). Unset (default) → push is dark: `/api/v1/push/*` routes are unregistered and no push sink runs, so dev/test/Electron are unaffected. |
+| `MATOU_PUSH_RELAY_ALLOW_HTTP=1` | Allow a plain-`http://` `MATOU_PUSH_RELAY_URL` to a non-loopback host (default: https required, plain http only to loopback). Dev escape hatch — device FCM tokens and recipient AID lists travel in cleartext. An invalid URL leaves push dark, it never fails the boot. |
 | `MATOU_ENV=production` | Enable production mode (uses client-production.yml) |
 | `MATOU_ANYSYNC_CONFIG` | Path to any-sync client config (optional) |
 | `MATOU_ANYSYNC_INFRA_DIR` | Path to any-sync infrastructure |

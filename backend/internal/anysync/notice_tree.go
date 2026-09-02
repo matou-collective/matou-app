@@ -18,42 +18,63 @@ import (
 
 // NoticePayload is the API-level representation of a notice.
 type NoticePayload struct {
-	ID               string          `json:"id"`
-	Type             string          `json:"type"`     // "event", "update", or "announcement"
-	Subtype          string          `json:"subtype,omitempty"`
-	Title            string          `json:"title"`
-	Summary          string          `json:"summary"`
-	Body             string          `json:"body,omitempty"`
-	Links            json.RawMessage `json:"links,omitempty"`
-	Images           json.RawMessage `json:"images,omitempty"`
-	Attachments      json.RawMessage `json:"attachments,omitempty"`
-	IssuerType       string          `json:"issuerType"`
-	IssuerID         string          `json:"issuerId"`
-	IssuerName       string          `json:"issuerDisplayName,omitempty"`
-	AudienceMode     string          `json:"audienceMode,omitempty"`
-	AudienceRoleIDs  json.RawMessage `json:"audienceRoleIds,omitempty"`
-	PublishAt        string          `json:"publishAt,omitempty"`
-	ActiveFrom       string          `json:"activeFrom,omitempty"`
-	ActiveUntil      string          `json:"activeUntil,omitempty"`
-	EventStart       string          `json:"eventStart,omitempty"`
-	EventEnd         string          `json:"eventEnd,omitempty"`
-	Timezone         string          `json:"timezone,omitempty"`
-	LocationMode     string          `json:"locationMode,omitempty"`
-	LocationText     string          `json:"locationText,omitempty"`
-	LocationURL      string          `json:"locationUrl,omitempty"`
-	RSVPEnabled      bool            `json:"rsvpEnabled,omitempty"`
-	RSVPRequired     bool            `json:"rsvpRequired,omitempty"`
-	RSVPCapacity     int             `json:"rsvpCapacity,omitempty"`
-	AckRequired      bool            `json:"ackRequired,omitempty"`
-	AckDueAt         string          `json:"ackDueAt,omitempty"`
-	Pinned           bool            `json:"pinned,omitempty"`
-	State            string          `json:"state"` // "draft", "published", "archived"
-	CreatedAt        string          `json:"createdAt"`
-	CreatedBy        string          `json:"createdBy"`
-	PublishedAt      string          `json:"publishedAt,omitempty"`
-	ArchivedAt       string          `json:"archivedAt,omitempty"`
-	AmendsNoticeID   string          `json:"amendsNoticeId,omitempty"`
-	TreeID           string          `json:"treeId,omitempty"`
+	ID              string          `json:"id"`
+	Type            string          `json:"type"` // "event", "update", or "announcement"
+	Subtype         string          `json:"subtype,omitempty"`
+	Title           string          `json:"title"`
+	Summary         string          `json:"summary"`
+	Body            string          `json:"body,omitempty"`
+	Links           json.RawMessage `json:"links,omitempty"`
+	Images          json.RawMessage `json:"images,omitempty"`
+	Attachments     json.RawMessage `json:"attachments,omitempty"`
+	IssuerType      string          `json:"issuerType"`
+	IssuerID        string          `json:"issuerId"`
+	IssuerName      string          `json:"issuerDisplayName,omitempty"`
+	AudienceMode    string          `json:"audienceMode,omitempty"`
+	AudienceRoleIDs json.RawMessage `json:"audienceRoleIds,omitempty"`
+	PublishAt       string          `json:"publishAt,omitempty"`
+	ActiveFrom      string          `json:"activeFrom,omitempty"`
+	ActiveUntil     string          `json:"activeUntil,omitempty"`
+	EventStart      string          `json:"eventStart,omitempty"`
+	EventEnd        string          `json:"eventEnd,omitempty"`
+	Timezone        string          `json:"timezone,omitempty"`
+	LocationMode    string          `json:"locationMode,omitempty"`
+	LocationText    string          `json:"locationText,omitempty"`
+	LocationURL     string          `json:"locationUrl,omitempty"`
+	RSVPEnabled     bool            `json:"rsvpEnabled,omitempty"`
+	RSVPRequired    bool            `json:"rsvpRequired,omitempty"`
+	RSVPCapacity    int             `json:"rsvpCapacity,omitempty"`
+	AckRequired     bool            `json:"ackRequired,omitempty"`
+	AckDueAt        string          `json:"ackDueAt,omitempty"`
+	Pinned          bool            `json:"pinned,omitempty"`
+	State           string          `json:"state"` // "draft", "published", "archived"
+	CreatedAt       string          `json:"createdAt"`
+	CreatedBy       string          `json:"createdBy"`
+	PublishedAt     string          `json:"publishedAt,omitempty"`
+	ArchivedAt      string          `json:"archivedAt,omitempty"`
+	AmendsNoticeID  string          `json:"amendsNoticeId,omitempty"`
+	// Data carries schema-defined custom (non-core) fields. These round-trip
+	// through the object tree so an org that extends the Notice schema keeps its
+	// added fields on read without changing the fixed core struct above.
+	Data   map[string]json.RawMessage `json:"data,omitempty"`
+	TreeID string                     `json:"treeId,omitempty"`
+}
+
+// noticeCoreFields is the set of stored field names owned by the fixed
+// NoticePayload struct. Any other field found on a stored notice is a custom
+// field and is collected into NoticePayload.Data on read.
+var noticeCoreFields = map[string]bool{
+	"type": true, "subtype": true, "title": true, "summary": true, "body": true,
+	"links": true, "images": true, "attachments": true,
+	"issuerType": true, "issuerId": true, "issuerDisplayName": true,
+	"audienceMode": true, "audienceRoleIds": true,
+	"publishAt": true, "activeFrom": true, "activeUntil": true,
+	"eventStart": true, "eventEnd": true, "timezone": true,
+	"locationMode": true, "locationText": true, "locationUrl": true,
+	"rsvpEnabled": true, "rsvpRequired": true, "rsvpCapacity": true,
+	"ackRequired": true, "ackDueAt": true, "pinned": true,
+	"state": true, "createdAt": true, "createdBy": true,
+	"publishedAt": true, "archivedAt": true, "amendsNoticeId": true,
 }
 
 // NoticeAckPayload represents an acknowledgment of a notice.
@@ -903,6 +924,17 @@ func noticeToFields(n *NoticePayload) map[string]json.RawMessage {
 		setField(fields, "amendsNoticeId", n.AmendsNoticeID)
 	}
 
+	// Persist schema-defined custom fields. Core keys always win, so a custom
+	// field can never shadow a field the fixed struct owns.
+	for key, val := range n.Data {
+		if noticeCoreFields[key] {
+			continue
+		}
+		if len(val) > 0 {
+			fields[key] = val
+		}
+	}
+
 	return fields
 }
 
@@ -1016,6 +1048,18 @@ func stateToNotice(state *ObjectState, treeID string) (*NoticePayload, error) {
 	getStringField(state.Fields, "publishedAt", &n.PublishedAt)
 	getStringField(state.Fields, "archivedAt", &n.ArchivedAt)
 	getStringField(state.Fields, "amendsNoticeId", &n.AmendsNoticeID)
+
+	// Collect any non-core stored fields as custom data so schema-defined
+	// custom fields round-trip on read.
+	for key, val := range state.Fields {
+		if noticeCoreFields[key] {
+			continue
+		}
+		if n.Data == nil {
+			n.Data = make(map[string]json.RawMessage)
+		}
+		n.Data[key] = val
+	}
 
 	return n, nil
 }

@@ -210,4 +210,17 @@ for want in 'trap on_exit EXIT' 'on_signal SIGTERM 143' 'on_signal SIGINT 130' \
 done
 pass=$((pass+1))
 
+# the no-ready-tasks exit runs the idle landing sweep BEFORE keying the reason —
+# #114: an orphaned green agent PR hides its issue from the ready list (n==0), so
+# this is the only tick that can land it. The sweep decides between reason=
+# landing-swept (it acted) and reason=no-ready-tasks (nothing to do).
+sweep_ln="$(stage_line landing_sweep_orphans || true)"
+noready_ln="$(grep -n 'SWARM_EXIT_REASON="no-ready-tasks"' "$rs" | head -1 | cut -d: -f1)"
+[ -n "$sweep_ln" ] || fail "run-swarm.sh no longer runs landing_sweep_orphans on the idle path (#114)"
+[ -n "$noready_ln" ] && [ "$sweep_ln" -lt "$noready_ln" ] \
+  || fail "the idle sweep must run BEFORE the no-ready-tasks reason is set (#114)"
+grep -q 'SWARM_EXIT_REASON="landing-swept"' "$rs" \
+  || fail "the idle path must be able to key reason=landing-swept when the sweep acts (#114)"
+pass=$((pass+1))
+
 echo "run-swarm-stages: $pass groups passed"

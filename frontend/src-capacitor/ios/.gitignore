@@ -1,0 +1,21 @@
+App/build
+App/Pods
+App/output
+App/App/public
+DerivedData
+xcuserdata
+
+# Cordova plugins for Capacitor
+capacitor-cordova-ios-plugins
+
+# Generated Config files
+App/App/capacitor.config.json
+App/App/config.xml
+
+# Firebase config for push notifications (#269) — a secret, injected by CI from
+# the GoogleService-Info.plist secret / a local file. Never commit it. Mirrors
+# the android rule in src-capacitor/android/app/.gitignore.
+App/App/GoogleService-Info.plist
+
+# Embedded Go backend, produced by `make -C backend build-ios-xcframework`
+App/Frameworks/*.xcframework

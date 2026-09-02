@@ -1,12 +1,20 @@
 name: android
-# Android P1 debug-APK build (matou-app#76). Unlike ci.yml this job runs
+# Android P1 debug-APK build (matou-app#76). The signed release AAB moved to
+# GitHub Actions (.github/workflows/build.yml `android` job, tag-triggered —
+# docs/plans/2026-08-31-github-release-builds-spec.md WP2); build-aab below
+# stays as a manual smoke build only. Unlike ci.yml this job runs
 # DIRECTLY on the swarm runner host (not inside the sandbox container), so the
 # Android toolchain persists in $HOME/.matou-android across runs: the first run
 # on a fresh host installs ~2.9 GB (JDK 21 + Android SDK/NDK + gomobile) and is
 # slow; later runs hit that cache and are much faster (acceptance criterion 2).
 # The runner host provides Go, Node/npm and python3 directly (Ben's #76 notes).
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Also build the signed release AAB here (manual smoke; releases come from GitHub build.yml)"
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'backend/**'
@@ -30,7 +38,8 @@ jobs:
     runs-on: matou-workstation
     # First run per host downloads the whole toolchain and binds the backend
     # twice (arm64 + amd64); give it room. Cached runs finish well under this.
-    timeout-minutes: 90
+    # Each heavy step may also camp up to 30 min on a host-capacity slot (#268).
+    timeout-minutes: 120
     steps:
       - name: Checkout (raw clone — actions/checkout depends on data.forgejo.org action fetch, which fast-fails intermittently, d18d869)
         env:
@@ -49,11 +58,15 @@ jobs:
       - name: Install Android toolchain (idempotent, cached in $HOME/.matou-android)
         run: |
           set -euo pipefail
-          bash scripts/android/setup-toolchain.sh
+          # Heavy steps ride ONE pooled host-capacity slot each (#268): gradle/
+          # gomobile/npm co-running unlocked with the pr-e2e drive starved its
+          # bootstrap on the 7 GB workstation. Per-step (not per-job) so an
+          # exclusive drive can slip in between steps.
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/setup-toolchain.sh
       - name: gomobile bind — embedded backend .aar
         run: |
           set -euo pipefail
-          make -C backend build-android-aar
+          bash .sandcastle/host-slot-wait.sh 1800 make -C backend build-android-aar
       - name: Verify libgojni.so is 16 KB page-aligned (#167)
         run: |
           set -euo pipefail
@@ -81,15 +94,18 @@ jobs:
       - name: Install frontend deps
         run: |
           set -euo pipefail
-          cd frontend && CI=true npm ci
+          bash .sandcastle/host-slot-wait.sh 1800 bash -c 'cd frontend && CI=true npm ci'
       - name: Build debug APK
         env:
           # build-apk.sh reads VITE_PROD_CONFIG_URL from the env before falling
           # back to frontend/.env.production (Ben's #76 notes).
           VITE_PROD_CONFIG_URL: ${{ secrets.PROD_CONFIG_URL }}
+          # Firebase config for push (#177), base64 of google-services.json.
+          # Unset → build-apk.sh builds without push (plugin skipped).
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
           set -euo pipefail
-          bash scripts/android/build-apk.sh
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/build-apk.sh
       - name: Upload app-debug.apk
         id: upload
         # actions/upload-artifact is fetched from data.forgejo.org, which
@@ -113,3 +129,149 @@ jobs:
           apk="frontend/dist/capacitor/android/apk/debug/app-debug.apk"
           bash .sandcastle/notify-mattermost-files.sh \
             ":robot: android debug APK (actions/upload-artifact flaked — attached instead) — $RUN_URL" "$apk"
+
+  # Signed release App Bundle (#176) — manual dispatch with release=true only.
+  # Release AABs are built on GitHub from `v*` tags (build.yml `android` job),
+  # which keeps one AAB per tag/versionCode; this job is for smoke-building on
+  # the workstation runner. Uploading to Play is manual for now (auto-upload is #202).
+  #
+  # Required repo/org secrets (see docs/SECRETS_CHECKLIST.md):
+  #   ANDROID_KEYSTORE_B64      base64 of the upload keystore (.jks)
+  #   ANDROID_KEYSTORE_PASSWORD
+  #   ANDROID_KEY_ALIAS
+  #   ANDROID_KEY_PASSWORD
+  #   PROD_CONFIG_URL           already used by build-apk
+  build-aab:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
+    runs-on: matou-workstation
+    # See build-apk: room for the toolchain plus host-capacity waits (#268).
+    timeout-minutes: 120
+    steps:
+      - name: Checkout (raw clone — see build-apk)
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO_SLUG: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          host="${SERVER_URL#https://}"
+          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+          git init -q .
+          git remote add origin "$url" 2>/dev/null || git remote set-url origin "$url"
+          git fetch -q --depth=1 origin "$SHA"
+          git checkout -q -f FETCH_HEAD
+      - name: Derive versionCode / versionName
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          # Tag vX.Y.Z -> versionName X.Y.Z; otherwise package.json version + run id.
+          if [[ "$REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            name="${REF_NAME#v}"
+            # Monotonic, human-decodable: MMMmmmppp (e.g. 0.4.0 -> 4000). Leaves
+            # room for 999 patch releases per minor; Play's max is 2100000000.
+            code=$(( ${BASH_REMATCH[1]} * 1000000 + ${BASH_REMATCH[2]} * 1000 + ${BASH_REMATCH[3]} ))
+          else
+            name="$(sed -n 's/^  "version": "\(.*\)",/\1/p' frontend/package.json)-ci${RUN_NUMBER}"
+            code="$RUN_NUMBER"
+          fi
+          echo "versionName=$name versionCode=$code"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+      - name: Install Android toolchain (idempotent, cached in $HOME/.matou-android)
+        run: |
+          set -euo pipefail
+          # Heavy steps ride ONE pooled host-capacity slot each (#268): gradle/
+          # gomobile/npm co-running unlocked with the pr-e2e drive starved its
+          # bootstrap on the 7 GB workstation. Per-step (not per-job) so an
+          # exclusive drive can slip in between steps.
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/setup-toolchain.sh
+      - name: gomobile bind — embedded backend .aar
+        run: |
+          set -euo pipefail
+          bash .sandcastle/host-slot-wait.sh 1800 make -C backend build-android-aar
+      - name: Install frontend deps
+        run: |
+          set -euo pipefail
+          bash .sandcastle/host-slot-wait.sh 1800 bash -c 'cd frontend && CI=true npm ci'
+      - name: Build signed release AAB
+        env:
+          VITE_PROD_CONFIG_URL: ${{ secrets.PROD_CONFIG_URL }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          MATOU_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MATOU_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MATOU_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          MATOU_VERSION_CODE: ${{ steps.version.outputs.code }}
+          MATOU_VERSION_NAME: ${{ steps.version.outputs.name }}
+          # Firebase config for push (#177), base64 of google-services.json.
+          # Unset → build-aab.sh builds without push (plugin skipped).
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            echo "ERROR: ANDROID_KEYSTORE_B64 secret is not set — cannot sign" >&2
+            exit 1
+          fi
+          ks="$(mktemp -d)/upload.jks"
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
+          chmod 600 "$ks"
+          trap 'rm -rf "$(dirname "$ks")"' EXIT
+          export MATOU_KEYSTORE_FILE="$ks"
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/build-aab.sh
+      # Sibling release APK for COA / direct install (#245, kit plan Task 9).
+      # Same signing inputs; cheap on top of the AAB build — gradle reuses the
+      # warm build dir, and cap sync has already run inside build-aab.sh.
+      - name: Build signed release APK
+        env:
+          VITE_PROD_CONFIG_URL: ${{ secrets.PROD_CONFIG_URL }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          MATOU_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MATOU_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MATOU_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          MATOU_VERSION_CODE: ${{ steps.version.outputs.code }}
+          MATOU_VERSION_NAME: ${{ steps.version.outputs.name }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            echo "ERROR: ANDROID_KEYSTORE_B64 secret is not set — cannot sign" >&2
+            exit 1
+          fi
+          ks="$(mktemp -d)/upload.jks"
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
+          chmod 600 "$ks"
+          trap 'rm -rf "$(dirname "$ks")"' EXIT
+          export MATOU_KEYSTORE_FILE="$ks"
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/build-release-apk.sh
+      - name: Upload app-release.apk
+        id: upload_apk
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk-${{ steps.version.outputs.name }}
+          path: frontend/dist/capacitor/android/apk/release/app-release.apk
+          if-no-files-found: error
+      - name: Upload app-release.aab
+        id: upload
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ steps.version.outputs.name }}
+          path: frontend/dist/capacitor/android/bundle/release/app-release.aab
+          if-no-files-found: error
+      - name: Fallback — post AAB to Mattermost if artifact upload flaked
+        if: steps.upload.outcome != 'success'
+        env:
+          MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
+          MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
+          MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          VERSION: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          aab="frontend/dist/capacitor/android/bundle/release/app-release.aab"
+          bash .sandcastle/notify-mattermost-files.sh \
+            ":robot: android release AAB $VERSION (actions/upload-artifact flaked — attached instead) — $RUN_URL" "$aab"

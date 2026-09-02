@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ type SSEEvent struct {
 type EventBroker struct {
 	mu      sync.RWMutex
 	clients map[chan SSEEvent]struct{}
+	sinks   []func(SSEEvent)
 }
 
 // NewEventBroker creates a new event broker.
@@ -25,6 +27,19 @@ func NewEventBroker() *EventBroker {
 	return &EventBroker{
 		clients: make(map[chan SSEEvent]struct{}),
 	}
+}
+
+// AddSink registers a side-channel that receives every broadcast event beside
+// the SSE clients (e.g. the push-notification relay sink). Sinks are invoked
+// asynchronously so a slow sink — one doing network I/O — never blocks the
+// write-path or the SSE fan-out. Call during setup before Broadcast traffic.
+func (b *EventBroker) AddSink(fn func(SSEEvent)) {
+	if fn == nil {
+		return
+	}
+	b.mu.Lock()
+	b.sinks = append(b.sinks, fn)
+	b.mu.Unlock()
 }
 
 // Subscribe adds a new client channel.
@@ -44,7 +59,7 @@ func (b *EventBroker) Unsubscribe(ch chan SSEEvent) {
 	close(ch)
 }
 
-// Broadcast sends an event to all connected clients.
+// Broadcast sends an event to all connected clients and side-channel sinks.
 func (b *EventBroker) Broadcast(event SSEEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -55,6 +70,25 @@ func (b *EventBroker) Broadcast(event SSEEvent) {
 			// Client is slow, skip
 		}
 	}
+	for _, sink := range b.sinks {
+		go b.runSink(sink, event)
+	}
+}
+
+// runSink invokes one sink with its panic contained. Sinks do work well off the
+// write-path — the push sink resolves ACL membership and calls the relay over
+// the network — and an unrecovered panic in a bare goroutine takes the whole
+// backend down with it, breaking the chat write-path a notification sink must
+// never be able to break (docs/architecture/08-push-notifications.md §8). One
+// bad sink is logged and skipped; the other sinks and the SSE fan-out are
+// unaffected.
+func (b *EventBroker) runSink(sink func(SSEEvent), event SSEEvent) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[Events] broadcast sink panicked on %q event: %v", event.Type, rec)
+		}
+	}()
+	sink(event)
 }
 
 // ClientCount returns the number of connected SSE clients.

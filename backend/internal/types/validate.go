@@ -7,6 +7,8 @@ import (
 )
 
 // ValidateData validates data against a type definition's field definitions.
+// If the type declares a VariantField, the fields of the matching variant are
+// merged in before validation, so per-subtype required/enum rules apply.
 // Returns a list of validation errors (empty if valid).
 func ValidateData(def *TypeDefinition, data json.RawMessage) []string {
 	var m map[string]interface{}
@@ -14,8 +16,10 @@ func ValidateData(def *TypeDefinition, data json.RawMessage) []string {
 		return []string{fmt.Sprintf("data is not a valid JSON object: %v", err)}
 	}
 
+	fields := effectiveFields(def, m)
+
 	var errors []string
-	for _, field := range def.Fields {
+	for _, field := range fields {
 		val, exists := m[field.Name]
 		if field.Required && (!exists || val == nil) {
 			errors = append(errors, fmt.Sprintf("field %q is required", field.Name))
@@ -28,6 +32,38 @@ func ValidateData(def *TypeDefinition, data json.RawMessage) []string {
 		errors = append(errors, fieldErrors...)
 	}
 	return errors
+}
+
+// effectiveFields returns the base field set plus, when the type declares a
+// VariantField whose value in the data matches a variant, that variant's
+// fields. Variant fields with a name already present in the base set replace
+// the base definition (so a subtype can tighten a shared field).
+func effectiveFields(def *TypeDefinition, data map[string]interface{}) []FieldDef {
+	if def.VariantField == "" || len(def.Variants) == 0 {
+		return def.Fields
+	}
+	key, _ := data[def.VariantField].(string)
+	if key == "" {
+		return def.Fields
+	}
+	variant, ok := def.Variants[key]
+	if !ok || len(variant.Fields) == 0 {
+		return def.Fields
+	}
+
+	merged := make([]FieldDef, 0, len(def.Fields)+len(variant.Fields))
+	overridden := make(map[string]int, len(variant.Fields))
+	for _, vf := range variant.Fields {
+		overridden[vf.Name] = -1
+	}
+	for _, f := range def.Fields {
+		if _, ok := overridden[f.Name]; ok {
+			continue // replaced by a variant field below
+		}
+		merged = append(merged, f)
+	}
+	merged = append(merged, variant.Fields...)
+	return merged
 }
 
 // validateField validates a single field value against its definition.
@@ -61,8 +97,25 @@ func validateField(field FieldDef, val interface{}) []string {
 		}
 
 	case "array":
-		if _, ok := val.([]interface{}); !ok {
+		items, ok := val.([]interface{})
+		if !ok {
 			errors = append(errors, fmt.Sprintf("field %q must be an array", field.Name))
+			return errors
+		}
+		// When a Validation.Enum is set on an array field, every element must be
+		// one of the allowed values. This lets an org constrain, for example,
+		// participationInterests to a fixed vocabulary purely from the schema.
+		if field.Validation != nil && len(field.Validation.Enum) > 0 {
+			for i, item := range items {
+				s, ok := item.(string)
+				if !ok {
+					errors = append(errors, fmt.Sprintf("field %q[%d] must be a string", field.Name, i))
+					continue
+				}
+				if !inEnum(s, field.Validation.Enum) {
+					errors = append(errors, fmt.Sprintf("field %q[%d] must be one of %v", field.Name, i, field.Validation.Enum))
+				}
+			}
 		}
 
 	case "object":
@@ -89,20 +142,21 @@ func validateString(name, val string, v *Validation) []string {
 			errors = append(errors, fmt.Sprintf("field %q does not match pattern %q", name, v.Pattern))
 		}
 	}
-	if len(v.Enum) > 0 {
-		found := false
-		for _, e := range v.Enum {
-			if val == e {
-				found = true
-				break
-			}
-		}
-		if !found {
-			errors = append(errors, fmt.Sprintf("field %q must be one of %v", name, v.Enum))
-		}
+	if len(v.Enum) > 0 && !inEnum(val, v.Enum) {
+		errors = append(errors, fmt.Sprintf("field %q must be one of %v", name, v.Enum))
 	}
 
 	return errors
+}
+
+// inEnum reports whether val is one of the allowed enum values.
+func inEnum(val string, enum []string) bool {
+	for _, e := range enum {
+		if val == e {
+			return true
+		}
+	}
+	return false
 }
 
 // validateNumber validates a number field value.
