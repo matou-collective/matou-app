@@ -399,16 +399,16 @@ import { ref, computed, watch } from 'vue';
 import { X, Check, Copy, Loader2, ThumbsUp, CalendarCheck, Pencil } from 'lucide-vue-next';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { getFileUrl } from 'src/lib/api/client';
-import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
+import { useParticipationInterests } from 'src/composables/useParticipationInterests';
+import { humanizeInterest } from 'src/lib/participationInterests';
 import ChangeRoleModal from 'src/components/dashboard/ChangeRoleModal.vue';
 
-// Map interest value to human-readable label
-const interestLabelMap: Map<string, string> = new Map(
-  PARTICIPATION_INTERESTS.map(i => [i.value, i.label])
-);
+// Map interest value to human-readable label, sourced from the SharedProfile
+// schema enum (issue #301) with a humanized fallback for unknown values.
+const { labels: interestLabelMap } = useParticipationInterests();
 
 function getInterestLabel(value: string): string {
-  return interestLabelMap.get(value) || value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return interestLabelMap.value[value] || humanizeInterest(value);
 }
 
 interface Props {

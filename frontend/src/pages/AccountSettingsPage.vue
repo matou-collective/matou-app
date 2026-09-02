@@ -156,7 +156,7 @@
           <label class="field-label">Participation Interests</label>
           <div class="interests-chips">
             <button
-              v-for="opt in PARTICIPATION_INTERESTS"
+              v-for="opt in participationInterests"
               :key="opt.value"
               type="button"
               class="interest-chip"
@@ -461,8 +461,8 @@ import { useTypesStore } from 'stores/types';
 import { useIdentityStore } from 'stores/identity';
 import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
-import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 import { getFileUrl, uploadFile } from 'src/lib/api/client';
+import { useParticipationInterests } from 'src/composables/useParticipationInterests';
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { applyPushEnabled } from 'src/composables/usePush';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
@@ -475,6 +475,10 @@ const notificationsStore = useNotificationsStore();
 const chatStore = useChatStore();
 
 const isMobile = useIsMobile();
+
+// Participation interest options come from the SharedProfile schema enum
+// (issue #301), falling back to the built-in vocabulary when types aren't loaded.
+const { options: participationInterests } = useParticipationInterests();
 
 // --- Push notification preferences (§7) ---
 const pushEnabled = computed(() => notificationsStore.pushEnabled);

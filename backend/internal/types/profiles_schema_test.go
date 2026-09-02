@@ -153,6 +153,75 @@ func TestEnumChangeValidated(t *testing.T) {
 	}
 }
 
+// TestParticipationInterestsShippedEnum verifies the shipped SharedProfile
+// schema declares the participationInterests vocabulary as Validation.Enum
+// (issue #301) — the list no longer lives only in frontend code.
+func TestParticipationInterestsShippedEnum(t *testing.T) {
+	def := SharedProfileType()
+	field, ok := def.Field("participationInterests")
+	if !ok {
+		t.Fatal("participationInterests field missing from SharedProfile")
+	}
+	if field.Validation == nil || len(field.Validation.Enum) == 0 {
+		t.Fatal("participationInterests should declare a Validation.Enum")
+	}
+	// The shipped enum must match the exported vocabulary the frontend reads.
+	if got, want := field.Validation.Enum, ParticipationInterests; len(got) != len(want) {
+		t.Fatalf("enum length = %d, want %d", len(got), len(want))
+	}
+	for i, v := range ParticipationInterests {
+		if field.Validation.Enum[i] != v {
+			t.Errorf("enum[%d] = %q, want %q", i, field.Validation.Enum[i], v)
+		}
+	}
+
+	// A shipped value validates; an arbitrary value does not.
+	okData := mustJSON(t, map[string]interface{}{
+		"aid": "E", "status": "approved", "displayName": "Ada",
+		"participationInterests": []string{"research_knowledge", "cultural_oversight"},
+	})
+	if errs := ValidateData(def, okData); len(errs) != 0 {
+		t.Fatalf("shipped enum values should validate, got %v", errs)
+	}
+	badData := mustJSON(t, map[string]interface{}{
+		"aid": "E", "status": "approved", "displayName": "Ada",
+		"participationInterests": []string{"cooking"},
+	})
+	if errs := ValidateData(def, badData); !hasErrorMentioning(errs, "participationInterests") {
+		t.Fatalf("value outside shipped enum should be rejected, got %v", errs)
+	}
+}
+
+// TestParticipationInterestsEnumEdited models an org editing the schema enum:
+// a newly added value is then offered/accepted and a removed value is rejected.
+func TestParticipationInterestsEnumEdited(t *testing.T) {
+	def := SharedProfileType()
+	for i := range def.Fields {
+		if def.Fields[i].Name == "participationInterests" {
+			// Org drops "art_design" and adds "fundraising".
+			def.Fields[i].Validation = &Validation{Enum: []string{"research_knowledge", "fundraising"}}
+		}
+	}
+
+	// The newly added value is accepted.
+	added := mustJSON(t, map[string]interface{}{
+		"aid": "E", "status": "approved", "displayName": "Ada",
+		"participationInterests": []string{"fundraising"},
+	})
+	if errs := ValidateData(def, added); len(errs) != 0 {
+		t.Fatalf("org-added enum value should validate, got %v", errs)
+	}
+
+	// A previously shipped value that the org removed is now rejected.
+	removed := mustJSON(t, map[string]interface{}{
+		"aid": "E", "status": "approved", "displayName": "Ada",
+		"participationInterests": []string{"art_design"},
+	})
+	if errs := ValidateData(def, removed); !hasErrorMentioning(errs, "participationInterests") {
+		t.Fatalf("removed enum value should be rejected, got %v", errs)
+	}
+}
+
 func mustJSON(t *testing.T, v interface{}) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

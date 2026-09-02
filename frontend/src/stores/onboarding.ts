@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
+import type { ParticipationInterest } from 'src/lib/participationInterests';
 
 /**
  * All possible onboarding screens
@@ -21,47 +22,15 @@ export type OnboardingScreen =
   | 'main';
 
 /**
- * Participation interest options
+ * Participation interest options.
+ *
+ * The vocabulary now lives in the SharedProfile schema (backend enum, issue
+ * #301); these are re-exported from src/lib/participationInterests for the
+ * built-in metadata and as a fallback. Prefer useParticipationInterests() to
+ * source the offered options from the org's schema.
  */
-export const PARTICIPATION_INTERESTS = [
-  {
-    value: 'research_knowledge',
-    label: 'Research and Knowledge',
-    description: 'Support inquiry, documentation, and knowledge sharing.',
-  },
-  {
-    value: 'coordination_operations',
-    label: 'Coordination and Operations',
-    description: 'Organize efforts, track tasks, and improve processes.',
-  },
-  {
-    value: 'art_design',
-    label: 'Art and Designs',
-    description: 'Create graphics, UI/UX, and brand assets.',
-  },
-  {
-    value: 'discussion_community_input',
-    label: 'Discussions and Community Input',
-    description: 'Participate in conversations and share feedback.',
-  },
-  {
-    value: 'follow_learn',
-    label: 'Follow and Learn',
-    description: 'Stay informed and learn at your own pace.',
-  },
-  {
-    value: 'coding_technical_dev',
-    label: 'Coding and Technical Dev',
-    description: 'Build and maintain software and infrastructure.',
-  },
-  {
-    value: 'cultural_oversight',
-    label: 'Cultural Oversight',
-    description: 'Ensure cultural alignment and respectful practices.',
-  },
-] as const;
-
-export type ParticipationInterest = typeof PARTICIPATION_INTERESTS[number]['value'];
+export { PARTICIPATION_INTERESTS } from 'src/lib/participationInterests';
+export type { ParticipationInterest } from 'src/lib/participationInterests';
 
 /**
  * Onboarding flow path

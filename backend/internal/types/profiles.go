@@ -1,5 +1,20 @@
 package types
 
+// ParticipationInterests is the built-in vocabulary for the SharedProfile
+// participationInterests field, shipped as its Validation.Enum. It is the
+// single source of truth for the offered options: the frontend reads these
+// values from GET /api/v1/types/SharedProfile, and writes are validated against
+// them. An org customises the vocabulary by editing this enum in its schema.
+var ParticipationInterests = []string{
+	"research_knowledge",
+	"coordination_operations",
+	"art_design",
+	"discussion_community_input",
+	"follow_learn",
+	"coding_technical_dev",
+	"cultural_oversight",
+}
+
 // ProfileTypeDefinitions returns the built-in profile type definitions.
 func ProfileTypeDefinitions() []*TypeDefinition {
 	return []*TypeDefinition{
@@ -77,11 +92,14 @@ func SharedProfileType() *TypeDefinition {
 			{Name: "indigenousCommunity", Type: "string",
 				Validation: &Validation{MaxLength: &maxIndigenousCommunity},
 				UIHints:    &UIHints{InputType: "text", Label: "Indigenous Community", Placeholder: "Indigenous community you connect to", Section: "profile", Filterable: true}},
-			// participationInterests is a free-form tag array by default. An org
-			// can constrain it to a fixed vocabulary purely from the schema by
-			// setting Validation.Enum (enforced per-item by array validation).
+			// participationInterests is constrained to a fixed vocabulary declared
+			// here in the schema (enforced per-item by array validation). An org
+			// can add or remove values purely by editing this enum — the frontend
+			// offers exactly the values the schema declares, and writes carrying a
+			// value outside the enum are rejected.
 			{Name: "participationInterests", Type: "array",
-				UIHints: &UIHints{InputType: "tags", DisplayFormat: "chip-list", Label: "Participation Interests", Section: "interests", Filterable: true}},
+				Validation: &Validation{Enum: ParticipationInterests},
+				UIHints:    &UIHints{InputType: "tags", DisplayFormat: "chip-list", Label: "Participation Interests", Section: "interests", Filterable: true}},
 			{Name: "customInterests", Type: "string",
 				Validation: &Validation{MaxLength: &maxCustomInterests},
 				UIHints:    &UIHints{InputType: "textarea", Label: "Custom Interests", Section: "interests"}},

@@ -189,7 +189,7 @@
           <p class="text-xs text-muted-foreground">Select all that interest you</p>
           <div class="space-y-2">
             <label
-              v-for="interest in PARTICIPATION_INTERESTS"
+              v-for="interest in participationInterests"
               :key="interest.value"
               class="flex items-start gap-3 p-3 border border-border rounded-lg cursor-pointer hover:bg-secondary/50 transition-colors"
               :class="{ 'border-primary bg-primary/5': formData.participationInterests.includes(interest.value) }"
@@ -337,7 +337,8 @@ import { ArrowLeft, ArrowRight, User, Upload, X, Fingerprint, AlertCircle } from
 import MBtn from '../base/MBtn.vue';
 import MInput from '../base/MInput.vue';
 import OnboardingHeader from './OnboardingHeader.vue';
-import { useOnboardingStore, PARTICIPATION_INTERESTS, type ParticipationInterest } from 'stores/onboarding';
+import { useOnboardingStore, type ParticipationInterest } from 'stores/onboarding';
+import { useParticipationInterests } from 'src/composables/useParticipationInterests';
 import { useIdentityStore } from 'stores/identity';
 import { KERIClient } from 'src/lib/keri/client';
 import { generateMnemonic } from '@scure/bip39';
@@ -353,6 +354,10 @@ const props = withDefaults(defineProps<{
 const router = useRouter();
 const store = useOnboardingStore();
 const identityStore = useIdentityStore();
+
+// Participation interest options come from the SharedProfile schema enum
+// (issue #301), falling back to the built-in vocabulary when types aren't loaded.
+const { options: participationInterests } = useParticipationInterests();
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const contentArea = ref<HTMLElement | null>(null);
