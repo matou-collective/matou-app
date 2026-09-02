@@ -295,6 +295,16 @@ function formatDeadline(iso: string): string {
 
   @media (max-width: 767px) {
     min-width: 0;
+    // `.compact-title-meta` is `nowrap` + `flex-shrink: 0`, so at phone widths
+    // the meta row ran past this wrapper's `overflow: hidden` and the due date
+    // was clipped mid-glyph ("Due Nov 04, 202"). Give it its own line.
+    flex-direction: column;
+    // NOT `align-items: flex-start` — that shrink-wraps the children, so
+    // `.compact-title` sizes to its full text and this wrapper hard-clips it
+    // instead of the title ellipsing itself. Stretch is what makes the
+    // ellipsis work.
+    align-items: stretch;
+    gap: 4px;
   }
 }
 
