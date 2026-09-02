@@ -411,6 +411,8 @@ import type { PendingRegistration } from 'src/composables/useRegistrationPolling
 import { getFileUrl } from 'src/lib/api/client';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 import type { CustomAnswer } from 'src/kit/profile';
+import { KIT } from 'src/generated/kit';
+import { needsSession, requiredEndorsements } from 'src/kit/approval';
 import ChangeRoleModal from 'src/components/dashboard/ChangeRoleModal.vue';
 
 // Map interest value to human-readable label
@@ -489,9 +491,10 @@ function handleRoleUpdated(newRole: string) {
 
 // Requirements gate: approve button only shown when applicant has met requirements
 const requirementsMet = computed(() => {
-  const hasEnoughEndorsements = (props.endorsements?.length ?? 0) >= 1 || props.hasEndorsed;
+  const approval = KIT.onboarding.approval;
+  const endorsements = (props.endorsements?.length ?? 0) + (props.hasEndorsed ? 1 : 0);
   const hasAttendance = !!(props.sharedProfile as Record<string, unknown>)?.attendanceRecord || props.hasMarkedAttended;
-  return hasEnoughEndorsements && hasAttendance;
+  return endorsements >= requiredEndorsements(approval) && (!needsSession(approval) || hasAttendance);
 });
 
 // Unified computed properties for both data sources

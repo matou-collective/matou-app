@@ -117,9 +117,17 @@
           </div>
         </div>
 
+        <!-- Open kit: no requirements, just a single waiting line -->
+        <p
+          v-if="currentStatus !== 'rejected' && approvalIsOpen"
+          class="text-sm text-muted-foreground text-center"
+        >
+          Waiting for the community to confirm you.
+        </p>
+
         <!-- Requirement Cards -->
         <div
-          v-if="currentStatus !== 'rejected'"
+          v-else-if="currentStatus !== 'rejected'"
           class="requirements-grid"
         >
           <div
@@ -145,8 +153,9 @@
           <h3 class="mb-4">What happens next?</h3>
           <p class="text-sm text-muted-foreground mb-4">{{ KIT.onboarding.pending.nextSteps }}</p>
           <div class="space-y-3">
-            <!-- Step 1: Book a session -->
+            <!-- Step 1: Book a session (session-based kits only) -->
             <div
+              v-if="showBookingCard"
               v-motion="slideInLeft(300)"
               class="step-card flex items-start gap-4 bg-card border border-border rounded-xl p-4"
             >
@@ -161,6 +170,7 @@
 
             <!-- Booking Component -->
             <div
+              v-if="showBookingCard"
               v-motion="fadeSlideUp(350)"
               class="booking-card bg-card border border-border rounded-xl p-4"
             >
@@ -359,6 +369,7 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { sendBookingEmail } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { KIT } from 'src/generated/kit';
+import { isOpen, needsSession, requiredEndorsements, requirementsFor } from 'src/kit/approval';
 
 const { fadeSlideUp, slideInLeft, rotate } = useAnimationPresets();
 const identityStore = useIdentityStore();
@@ -418,9 +429,9 @@ const {
   credentialReceived,
   credential,
   endorsementReceived,
-  memberEndorsementVerified,
   stewardEndorsementVerified,
   sessionAttendanceVerified,
+  endorsementCount,
   spaceInviteReceived,
   spaceInviteKey,
   spaceId,
@@ -717,11 +728,27 @@ const slotsByDate = computed(() => {
   return groups;
 });
 
-const requirements = computed(() => [
-  { num: 1, title: 'Endorsement', description: 'From a community member or steward', met: memberEndorsementVerified.value },
-  { num: 2, title: 'Confirmation', description: 'From a community admin', met: stewardEndorsementVerified.value },
-  { num: 3, title: 'Attendance', description: 'Whakawhanaunga session', met: sessionAttendanceVerified.value },
-]);
+const approval = KIT.onboarding.approval;
+
+// Requirement cards derived from the kit's approval mode. Each card's met flag
+// maps to the credential-polling verification state: endorsement → total
+// endorsements collected, session → attendance credential, admin → a steward's
+// endorsement (the confirmation gate).
+const requirements = computed(() =>
+  requirementsFor(approval).map((r, i) => ({
+    ...r,
+    num: i + 1,
+    met:
+      r.key === 'endorsement'
+        ? endorsementCount.value >= requiredEndorsements(approval)
+        : r.key === 'session'
+          ? sessionAttendanceVerified.value
+          : stewardEndorsementVerified.value,
+  })),
+);
+
+const approvalIsOpen = computed(() => isOpen(approval));
+const showBookingCard = computed(() => needsSession(approval));
 
 // Format selected slot for display
 function formatSlotDisplay(slot: TimeSlot): string {
