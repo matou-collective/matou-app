@@ -59,17 +59,43 @@ builds the Simulator app, boots a simulator on the runner, waits for
 does an unsigned Release device archive and uploads the Simulator app zip
 (`xcrun simctl install booted Matou.app` after unzipping).
 
-## Signed build / TestFlight (WP5)
+## Signed build / TestFlight
 
-`scripts/ios/build-ipa.sh` with no flag archives with manual signing and
-exports an App Store IPA. Inputs: `MATOU_IOS_TEAM_ID`, `MATOU_IOS_PROFILE_NAME`
-(a distribution profile for `nz.matou.app`), optional
-`MATOU_IOS_SIGNING_IDENTITY` (default `Apple Distribution`) and
-`MATOU_IOS_EXPORT_METHOD` (default `app-store-connect`). `MATOU_VERSION_CODE`
-becomes `CFBundleVersion` and must increase per upload — CI derives it from the
-tag (`MMMmmmppp`, same number as the Android `versionCode`). The one-time Apple
-setup (certificate, profile, App Store Connect record, API key role) and the CI
-keychain + `altool` upload are §3 / WP5 of the spec; they are not wired yet.
+`scripts/ios/build-ipa.sh` with no flag archives with manual signing and exports
+an App Store IPA. Inputs: `MATOU_IOS_TEAM_ID`, `MATOU_IOS_PROFILE_NAME` (a
+distribution profile for `nz.matou.app`), optional `MATOU_IOS_SIGNING_IDENTITY`
+(default `Apple Distribution`) and `MATOU_IOS_EXPORT_METHOD` (default
+`app-store-connect`). `MATOU_VERSION_CODE` becomes `CFBundleVersion` and must
+increase per upload — CI derives it from the tag (`MMMmmmppp`, the same number
+as the Android `versionCode`).
+
+In CI the `ios` job imports the certificate into a throwaway keychain, installs
+the profile, builds the signed IPA, and uploads to TestFlight **on a tag**, or
+on a `workflow_dispatch` with `testflight: true`. A dispatch without that flag
+stops after the IPA, so you can prove signing without publishing to testers.
+Secrets are listed in `docs/SECRETS_CHECKLIST.md`.
+
+### Making the certificate without a Mac
+
+The usual instructions say to create the signing request in Keychain Access.
+You don't need it — the whole chain is OpenSSL plus the developer portal:
+
+```bash
+openssl genrsa -out ios-distribution.key 2048
+openssl req -new -key ios-distribution.key -out matou.certSigningRequest \
+  -subj "/emailAddress=you@example.org/CN=Matou/C=NZ"
+# portal → Certificates → + → Apple Distribution → upload the CSR → download .cer
+# then: cert + key -> .p12 that CI imports
+openssl x509 -inform DER -in distribution.cer -out distribution.pem
+openssl pkcs12 -export -inkey ios-distribution.key -in distribution.pem \
+  -out matou-ios-distribution.p12 \
+  -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+```
+
+The `-keypbe/-certpbe/-macalg` flags matter: OpenSSL 3 defaults to AES-256-CBC,
+which macOS `security import` on the runner can reject. The App ID needs **no
+capabilities** — profiles already carry a `keychain-access-groups` wildcard
+(`TEAMID.*`) that covers the entitlement in `App.entitlements`.
 
 ## Gotchas
 
@@ -135,6 +161,13 @@ keychain + `altool` upload are §3 / WP5 of the spec; they are not wired yet.
   one-off I/O error there as a runner fault and re-dispatch. The Simulator app
   is zipped and uploaded *before* the archive step so a repeat still leaves you
   with a testable artefact and the smoke evidence.
+- **Never pass signing settings to `xcodebuild` on the command line.** A setting
+  given there applies to *every* target in the workspace, so the CocoaPods
+  targets inherit `PROVISIONING_PROFILE_SPECIFIER=matou-appstore` and fail —
+  that profile is for `nz.matou.app`, and a pod's bundle id is
+  `org.cocoapods.*`. (The same trap hit `CODE_SIGN_ENTITLEMENTS` earlier.)
+  `build-ipa.sh` writes the signing settings into the App target's Release
+  configuration in `project.pbxproj` and restores the file afterwards.
 - **CocoaPods, not SPM.** Capacitor 7 supports both; CocoaPods was chosen so the
   xcframework can be linked from a podspec without hand-editing the pbxproj, and
   `pod install` runs inside `cap sync ios`. `App/Pods` is git-ignored.
