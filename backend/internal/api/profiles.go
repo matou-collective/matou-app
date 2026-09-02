@@ -606,6 +606,53 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Assemble and validate the SharedProfile BEFORE the CommunityProfile write.
+	// Both payloads must pass validation before anything is committed — a 400
+	// returned after the first AddObject would leave state mutated behind an
+	// error response.
+	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	var sharedDataBytes []byte
+	if communitySpaceID != "" {
+		now2 := time.Now().UTC().Format(time.RFC3339)
+		sharedProfileData := map[string]interface{}{
+			"aid":                    req.MemberAID,
+			"status":                 req.Status,
+			"displayName":            req.DisplayName,
+			"bio":                    req.Bio,
+			"avatar":                 req.Avatar,
+			"publicEmail":            req.Email,
+			"location":               req.Location,
+			"indigenousCommunity":    req.IndigenousCommunity,
+			"joinReason":             req.JoinReason,
+			"facebookUrl":            req.FacebookUrl,
+			"linkedinUrl":            req.LinkedinUrl,
+			"twitterUrl":             req.TwitterUrl,
+			"instagramUrl":           req.InstagramUrl,
+			"githubUrl":              req.GithubUrl,
+			"gitlabUrl":              req.GitlabUrl,
+			"participationInterests": req.Interests,
+			"customInterests":        req.CustomInterests,
+			"lastActiveAt":           now2,
+			"createdAt":              now2,
+			"updatedAt":              now2,
+			"typeVersion":            1,
+		}
+		sharedDataBytes, err = json.Marshal(sharedProfileData)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to marshal SharedProfile data: %v", err),
+			})
+			return
+		}
+		if errs := h.validateProfile("SharedProfile", sharedDataBytes); len(errs) > 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"error":            "SharedProfile validation failed",
+				"validationErrors": errs,
+			})
+			return
+		}
+	}
+
 	// Get signing key for readonly space
 	client := h.spaceManager.GetClient()
 	if client == nil {
@@ -668,49 +715,9 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	// This is BLOCKING — WelcomeOverlay waits for this profile to appear
 	// before allowing the member to continue. If it fails, the frontend
 	// can retry initMemberProfiles (CommunityProfile update is idempotent).
-	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
+	// Its payload was assembled and validated above, before the
+	// CommunityProfile write.
 	if communitySpaceID != "" {
-		now2 := time.Now().UTC().Format(time.RFC3339)
-		sharedProfileData := map[string]interface{}{
-			"aid":                    req.MemberAID,
-			"status":                 req.Status,
-			"displayName":            req.DisplayName,
-			"bio":                    req.Bio,
-			"avatar":                 req.Avatar,
-			"publicEmail":            req.Email,
-			"location":               req.Location,
-			"indigenousCommunity":    req.IndigenousCommunity,
-			"joinReason":             req.JoinReason,
-			"facebookUrl":            req.FacebookUrl,
-			"linkedinUrl":            req.LinkedinUrl,
-			"twitterUrl":             req.TwitterUrl,
-			"instagramUrl":           req.InstagramUrl,
-			"githubUrl":              req.GithubUrl,
-			"gitlabUrl":              req.GitlabUrl,
-			"participationInterests": req.Interests,
-			"customInterests":        req.CustomInterests,
-			"lastActiveAt":           now2,
-			"createdAt":              now2,
-			"updatedAt":              now2,
-			"typeVersion":            1,
-		}
-
-		sharedDataBytes, err := json.Marshal(sharedProfileData)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": fmt.Sprintf("failed to marshal SharedProfile data: %v", err),
-			})
-			return
-		}
-
-		if errs := h.validateProfile("SharedProfile", sharedDataBytes); len(errs) > 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"error":            "SharedProfile validation failed",
-				"validationErrors": errs,
-			})
-			return
-		}
-
 		communityKeys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), communitySpaceID, client.GetSigningKey())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -1021,23 +1028,24 @@ func (h *ProfilesHandler) HandleRemoveMember(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-// resolveSpaceForType returns the space ID for a given type definition.
 // validateProfile validates raw profile data against the named type in the
-// registry. It returns the list of validation errors (empty when valid). If the
-// registry has no such type it returns nil, so callers never fail closed on a
-// type the registry hasn't loaded.
+// registry. It returns the list of validation errors (empty when valid). A nil
+// registry (environments without schema wiring) skips validation; any error
+// from the registry — including an unregistered type — is surfaced as a
+// validation error rather than swallowed, so a registry that failed to load a
+// type cannot silently disable the very validation this path exists for.
 func (h *ProfilesHandler) validateProfile(typeName string, data json.RawMessage) []string {
 	if h.registry == nil {
 		return nil
 	}
 	errs, err := h.registry.Validate(typeName, data)
 	if err != nil {
-		// Unknown type — nothing to validate against.
-		return nil
+		return []string{err.Error()}
 	}
 	return errs
 }
 
+// resolveSpaceForType returns the space ID for a given type definition.
 func (h *ProfilesHandler) resolveSpaceForType(def *types.TypeDefinition) string {
 	switch def.Space {
 	case "private":
