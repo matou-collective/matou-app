@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -50,6 +51,14 @@ type PushSender struct {
 	// enforced at the relay (§7), but the sender drops opted-out recipients it
 	// already knows about. Nil means no local opt-out state.
 	optedOut func(aid string) bool
+
+	// mu guards notifyErrLogged. errored notifies (chiefly "no relay session":
+	// the frontend has not signed one yet, or it expired) are dropped on the
+	// write path, but logged at most once per gap — logging per chat message
+	// would flood the log while push is dark. A later successful notify resets
+	// the latch so the next gap is reported again.
+	mu              sync.Mutex
+	notifyErrLogged bool
 }
 
 // NewPushSender builds a push sink forwarding to relay and resolving recipients
@@ -128,9 +137,28 @@ func (s *PushSender) Broadcast(event SSEEvent) {
 		}
 	}
 
+	// No valid session makes Notify return immediately (no HTTP round-trip), so
+	// this never blocks the broadcast path even while push is dark; the timeout
+	// only bounds the live-relay case. Never retried on the write path.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := s.relay.Notify(ctx, recipients, channelID, kind); err != nil {
-		log.Printf("[Push] notify relay for channel %s failed: %v", channelID, err)
+	err = s.relay.Notify(ctx, recipients, channelID, kind)
+	s.recordNotify(channelID, err)
+}
+
+// recordNotify logs a notify failure at most once per failure-gap and resets the
+// latch on success, so a persistent condition (chiefly a missing relay session)
+// is reported once rather than once per chat message.
+func (s *PushSender) recordNotify(channelID string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil {
+		s.notifyErrLogged = false
+		return
 	}
+	if s.notifyErrLogged {
+		return
+	}
+	s.notifyErrLogged = true
+	log.Printf("[Push] notify relay for channel %s failed (suppressing repeats until it recovers): %v", channelID, err)
 }

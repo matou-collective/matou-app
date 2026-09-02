@@ -1,10 +1,13 @@
 package notifications
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -85,6 +88,50 @@ func TestPushSender_MapsMessageToNotify(t *testing.T) {
 	want := []string{"aid-bob", "aid-carol"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("recipients = %v, want %v (sender excluded)", got, want)
+	}
+}
+
+// TestPushSender_NoSession_DropsAndLogsOncePerGap: when the relay has no valid
+// session (Notify errors, chiefly ErrNoSession because the frontend has not
+// signed one) every message is still attempted — the broadcast path never blocks
+// — but the failure is logged at most once per gap, not once per message. A
+// later success resets the latch so the next gap is reported again.
+func TestPushSender_NoSession_DropsAndLogsOncePerGap(t *testing.T) {
+	relay := &stubRelay{err: errors.New("push-relay: no active session")}
+	members := membersStub{members: []string{"aid-alice", "aid-bob"}}
+	s := NewPushSender(relay, members)
+
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	// Three messages during the session gap: three drops, one log line.
+	for i := 0; i < 3; i++ {
+		s.Broadcast(msgEvent("chan-1", "aid-alice"))
+	}
+	if relay.count() != 3 {
+		t.Fatalf("expected 3 notify attempts (never blocked/skipped), got %d", relay.count())
+	}
+	if n := strings.Count(buf.String(), "notify relay for channel"); n != 1 {
+		t.Fatalf("expected exactly one log line during the gap, got %d:\n%s", n, buf.String())
+	}
+
+	// The session comes back: a success resets the latch...
+	relay.mu.Lock()
+	relay.err = nil
+	relay.mu.Unlock()
+	s.Broadcast(msgEvent("chan-1", "aid-alice"))
+
+	// ...so the next gap is logged again (once).
+	relay.mu.Lock()
+	relay.err = errors.New("push-relay: no active session")
+	relay.mu.Unlock()
+	buf.Reset()
+	s.Broadcast(msgEvent("chan-1", "aid-alice"))
+	s.Broadcast(msgEvent("chan-1", "aid-alice"))
+	if n := strings.Count(buf.String(), "notify relay for channel"); n != 1 {
+		t.Fatalf("expected the recovered-then-failed gap to log once, got %d:\n%s", n, buf.String())
 	}
 }
 
