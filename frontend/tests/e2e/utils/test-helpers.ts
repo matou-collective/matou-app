@@ -552,7 +552,10 @@ export async function createNotice(
 export async function performOrgSetup(
   page: Page,
   request: APIRequestContext,
+  opts: { orgName?: string; adminName?: string } = {},
 ): Promise<TestAccounts> {
+  const orgName = opts.orgName ?? 'Matou Community';
+  const adminName = opts.adminName ?? 'Admin User';
   // --- Clear any stale test config ---
   await clearTestConfig(request);
 
@@ -566,8 +569,8 @@ export async function performOrgSetup(
   ).toBeVisible({ timeout: TIMEOUT.short });
 
   // --- Fill org setup form ---
-  await page.locator('input').first().fill('Matou Community');
-  await page.locator('input').nth(1).fill('Admin User');
+  await page.locator('input').first().fill(orgName);
+  await page.locator('input').nth(1).fill(adminName);
 
   // --- Submit and wait for KERI operations ---
   await page.getByRole('button', { name: /create organization/i }).click();
@@ -640,7 +643,7 @@ export async function performOrgSetup(
   const communityResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/community`, {
     data: {
       orgAid: config.organization.aid,
-      orgName: config.organization.name || 'Matou Community',
+      orgName: config.organization.name || orgName,
     },
   });
   expect(communityResponse.ok(),
@@ -661,7 +664,7 @@ export async function performOrgSetup(
     admin: {
       mnemonic: adminMnemonic,
       aid: adminAid,
-      name: 'Admin User',
+      name: adminName,
     },
     createdAt: new Date().toISOString(),
   };
