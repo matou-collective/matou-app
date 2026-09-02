@@ -7,7 +7,7 @@
         <div class="logo-container">
           <img
             src="../../assets/images/matou-logo.svg"
-            alt="Matou Logo"
+            alt="Mātou Logo"
             class="w-[250px] h-[140px]"
           />
         </div>
@@ -16,7 +16,7 @@
         <div class="text-center">
           <img
             src="../../assets/images/matou-text-logo-white.svg"
-            alt="Matou"
+            alt="Mātou"
             class="w-[300px] h-[100px] mx-auto"
           />
           <p class="text-white/80 text-base md:text-lg">Connection &middot; Collaboration &middot; Innovation</p>
@@ -34,7 +34,7 @@
         <div class="logo-container backdrop-blur-sm rounded-3xl">
           <img
             src="../../assets/images/matou-logo.svg"
-            alt="Matou Logo"
+            alt="Mātou Logo"
             class="w-[200px] h-[112px]"
           />
         </div>
@@ -42,7 +42,7 @@
         <!-- Welcome Message -->
         <div class="text-center space-y-3">
           <h1 class="text-3xl md:text-4xl font-bold text-white">
-            Welcome to Matou
+            Welcome to Mātou
           </h1>
           <p v-if="displayName" class="text-xl text-white/90">
             {{ displayName }}

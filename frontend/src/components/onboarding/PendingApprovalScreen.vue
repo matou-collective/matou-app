@@ -284,7 +284,7 @@
                 <span class="text-sm font-semibold text-primary">4</span>
               </div>
               <div>
-                <h4 class="mb-1">Welcome to Matou</h4>
+                <h4 class="mb-1">Welcome to Mātou</h4>
                 <p class="text-sm text-muted-foreground">Full access to governance, contributions, and community chat</p>
               </div>
             </div>
@@ -295,7 +295,7 @@
         <div v-if="currentStatus !== 'rejected'" v-motion="fadeSlideUp(700)">
           <h3 class="mb-4">Explore while you wait</h3>
           <p class="text-muted-foreground mb-4">
-            Learn more about Matou by browsing our documentation and resources
+            Learn more about Mātou by browsing our documentation and resources
           </p>
           <div class="grid gap-3 md:grid-cols-2">
             <a
@@ -355,12 +355,18 @@ import { useCredentialPolling } from 'composables/useCredentialPolling';
 import { useKERINotificationService } from 'composables/useKERINotificationService';
 import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
+import { useAppStore } from 'stores/app';
 import { sendBookingEmail } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
 const { fadeSlideUp, slideInLeft, rotate } = useAnimationPresets();
 const identityStore = useIdentityStore();
 const onboardingStore = useOnboardingStore();
+const appStore = useAppStore();
+
+// Name the community the applicant is actually joining, rather than a
+// hardcoded brand string — and keep the macron when config supplies it.
+const communityName = computed(() => appStore.orgName || 'Mātou');
 
 // User's AID for display - check both identity store and onboarding store
 const userAID = computed(() => {
@@ -784,7 +790,7 @@ const statusConfig = computed(() => {
       return {
         icon: Clock,
         title: 'Your application is under review',
-        description: 'Thank you for your interest in joining Matou! Our admins have been notified of your registration and will review your application soon.',
+        description: `Thank you for your interest in joining ${communityName.value}! Our admins have been notified of your registration and will review your application soon.`,
         iconClass: 'text-primary',
         bgClass: 'bg-primary/10',
       };

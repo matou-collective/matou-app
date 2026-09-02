@@ -176,7 +176,7 @@
             v-model="formData.joinReason"
             rows="3"
             class="m-textarea w-full px-3 py-2 border border-border rounded-lg text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary resize-none"
-            placeholder="Share what brings you to Matou and what you hope to contribute..."
+            placeholder="Share what brings you to Mātou and what you hope to contribute..."
           />
           <p class="text-xs text-muted-foreground text-right">
             {{ formData.joinReason.length }} / 500

@@ -3,7 +3,7 @@
     <!-- Header -->
     <OnboardingHeader
       title="Create Your Profile"
-      subtitle="Set up your identity in the Matou ecosystem"
+      subtitle="Set up your identity in the Mātou ecosystem"
       :show-back-button="true"
       @back="onBack"
     />

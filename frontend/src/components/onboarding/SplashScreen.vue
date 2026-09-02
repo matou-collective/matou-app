@@ -5,7 +5,7 @@
       <div v-motion="logoWobble" class="logo-container backdrop-blur-sm rounded-3xl">
         <img
           src="../../assets/images/matou-logo.svg"
-          alt="Matou Logo"
+          alt="Mātou Logo"
           class="w-[250px] h-[140px]"
         />
       </div>
@@ -14,7 +14,7 @@
       <div v-motion="fadeSlideUp(300)" class="text-center">
         <img
           src="../../assets/images/matou-text-logo-white.svg"
-          alt="Matou"
+          alt="Mātou"
           class="matou-text-logo-white mb-2 mt-0 w-[300px] h-[100px] mx-auto"
         />
         <p class="text-white/80 text-base md:text-lg">Connection &middot; Collaboration &middot; Innovation</p>
@@ -76,8 +76,8 @@
 
         <!-- Info Text -->
         <p v-motion="fadeSlideUp(900)" class="text-white/60 text-sm text-center">
-          Join the Matou community to participate in governance, contribute to projects, and
-          connect with others
+          Join the {{ communityName }} community to participate in governance, contribute to
+          projects, and connect with others
         </p>
 
         <!-- Recovery Link -->
@@ -103,6 +103,7 @@ import MBtn from '../base/MBtn.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
+import { useAppStore } from 'stores/app';
 import { useKERIClient } from 'src/lib/keri/client';
 import { MEMBERSHIP_SCHEMA_SAID } from 'src/composables/useAdminActions';
 import { version as appVersion } from '../../../package.json';
@@ -110,6 +111,11 @@ import { version as appVersion } from '../../../package.json';
 const { fadeSlideUp, fadeScale, logoWobble } = useAnimationPresets();
 const onboardingStore = useOnboardingStore();
 const identityStore = useIdentityStore();
+const appStore = useAppStore();
+
+// Name the community from config rather than hardcoding the brand, so the
+// macron survives (the launcher, wordmark and store listing all say "Mātou").
+const communityName = computed(() => appStore.orgName || 'Mātou');
 const keriClient = useKERIClient();
 
 const isLoading = computed(() => onboardingStore.isLoading);

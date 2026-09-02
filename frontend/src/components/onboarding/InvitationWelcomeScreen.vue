@@ -2,7 +2,7 @@
   <div class="invitation-welcome-screen h-full flex flex-col bg-background">
     <!-- Header -->
     <OnboardingHeader
-      title="Welcome to Matou"
+      title="Welcome to Mātou"
       :subtitle="`You've been invited by ${inviterName}`"
       :show-back-button="true"
       @back="onBack"
@@ -23,7 +23,7 @@
             <div>
               <h3 class="mb-1">You've been invited!</h3>
               <p class="text-sm text-muted-foreground">
-                {{ inviterName }} has invited you to join the Matou community. They believe
+                {{ inviterName }} has invited you to join the Mātou community. They believe
                 you'll be a valuable member of our DAO ecosystem.
               </p>
             </div>
@@ -47,7 +47,7 @@
           I agree, continue to profile creation
         </MBtn>
         <p class="text-xs text-muted-foreground text-center mt-3">
-          By continuing, you agree to uphold Matou's values and participate in good faith
+          By continuing, you agree to uphold Mātou's values and participate in good faith
         </p>
       </div>
     </div>

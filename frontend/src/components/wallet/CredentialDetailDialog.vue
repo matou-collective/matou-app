@@ -5,7 +5,7 @@
       <div class="dialog-header">
         <div class="header-left">
           <div class="cred-icon" :class="{ 'matou-icon': isMatouCredential }">
-            <img v-if="isMatouCredential" src="../../assets/images/matou-bird-logo-blue.svg" alt="Matou" class="matou-logo" />
+            <img v-if="isMatouCredential" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="matou-logo" />
             <q-icon v-else :name="iconName" size="22px" />
           </div>
           <div>

@@ -2,9 +2,9 @@
   <div class="matou-information-content space-y-6">
     <!-- About Matou -->
     <div v-if="showAbout" v-motion="animationConfig(200)">
-      <h2 class="mb-4">About Matou</h2>
+      <h2 class="mb-4">About Mātou</h2>
       <p class="text-muted-foreground mb-6">
-        Matou is an indigenous led digital community built for the purpose of open innovation and collaboration to support data sovereignty and community autonomy. 
+        Mātou is an indigenous led digital community built for the purpose of open innovation and collaboration to support data sovereignty and community autonomy. 
         We're creating a space where people can participate in meaningful governance, contribute to projects, and build lasting connections.
       </p>
     </div>
@@ -89,7 +89,7 @@ const props = withDefaults(defineProps<Props>(), {
   useAnimations: false,
   goalsTitle: "Community Goals",
   expectationsTitle: "Member Expectations",
-  expectationsIntro: "As a member of Matou, you'll be expected to:",
+  expectationsIntro: "As a member of Mātou, you'll be expected to:",
 });
 
 const { fadeSlideUp, staggerChildren } = useAnimationPresets();

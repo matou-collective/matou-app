@@ -5,9 +5,9 @@
       <!-- Logo Header -->
       <div class="sidebar-header">
         <div class="logo-container">
-          <img src="../assets/images/matou-logo-teal.svg" alt="Matou" class="logo-icon" />
+          <img src="../assets/images/matou-logo-teal.svg" alt="Mātou" class="logo-icon" />
           <div class="logo-text">
-            <span class="logo-title">Matou</span>
+            <span class="logo-title">Mātou</span>
             <span class="logo-subtitle">Community</span>
           </div>
         </div>

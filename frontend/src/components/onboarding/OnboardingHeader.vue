@@ -14,7 +14,7 @@
 
     <div class="flex items-center gap-8 mb-4">
       <div v-if="!showIcon" class="logo-box bg-white/20 backdrop-blur-sm p-3 rounded-2xl">
-        <img src="../../assets/images/matou-logo.svg" alt="Matou Logo" class="w-12 h-12" />
+        <img src="../../assets/images/matou-logo.svg" alt="Mātou Logo" class="w-12 h-12" />
       </div>
       <div v-else class="icon-box w-10 h-10 rounded-full bg-white/20 flex items-center justify-center shrink-0">
         <component :is="icon" class="w-5 h-5 text-white" />

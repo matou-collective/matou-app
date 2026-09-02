@@ -31,7 +31,7 @@
           </label>
           <MInput
             v-model="orgName"
-            placeholder="e.g., Matou Community"
+            placeholder="e.g., Mātou Community"
             :disabled="isSubmitting"
             class="setup-input"
           />

@@ -2,7 +2,7 @@
   <div class="matou-info-screen h-full flex flex-col bg-background">
     <!-- Header -->
     <OnboardingHeader
-      title="Join Matou"
+      title="Join Mātou"
       subtitle="Learn about our community"
       :show-back-button="true"
       @back="onBack"
@@ -23,7 +23,7 @@
             <div>
               <h3 class="mb-1">Registration Process</h3>
               <p class="text-sm text-muted-foreground">
-                New member registrations require admin approval. You'll have access to Matou
+                New member registrations require admin approval. You'll have access to Mātou
                 documentation while your application is reviewed. This typically takes 1-3
                 days.
               </p>
@@ -43,7 +43,7 @@
           I agree, continue to registration
         </MBtn>
         <p class="text-xs text-muted-foreground text-center mt-3">
-          By continuing, you agree to uphold Matou's values and await admin approval
+          By continuing, you agree to uphold Mātou's values and await admin approval
         </p>
       </div>
     </div>

@@ -19,7 +19,7 @@
           <h2 class="text-2xl font-semibold mb-4">Introduction</h2>
           <section class="bg-card border border-border rounded-xl p-6">
             <p class="text-muted-foreground mb-4">
-              At Matou, we are committed to protecting your privacy and ensuring data sovereignty. This Privacy Policy explains how we collect, use, store, and protect your personal information when you use our platform.
+              At Mātou, we are committed to protecting your privacy and ensuring data sovereignty. This Privacy Policy explains how we collect, use, store, and protect your personal information when you use our platform.
             </p>
             <p class="text-muted-foreground">
               As an indigenous-led community focused on data sovereignty and autonomy, we believe that you should have control over your own data. This policy reflects our commitment to these values.
@@ -32,7 +32,7 @@
           <h2 class="text-2xl font-semibold mb-4">Data Sovereignty</h2>
           <section class="bg-card border border-border rounded-xl p-6">
             <p class="text-muted-foreground">
-              <strong class="text-foreground">You own your data.</strong> Matou is built on principles of data sovereignty, meaning that you maintain ownership and control over your personal information. We provide tools and infrastructure to help you manage your data, but you decide what to share and with whom.
+              <strong class="text-foreground">You own your data.</strong> Mātou is built on principles of data sovereignty, meaning that you maintain ownership and control over your personal information. We provide tools and infrastructure to help you manage your data, but you decide what to share and with whom.
             </p>
           </section>
         </div>
@@ -71,7 +71,7 @@
             <ul class="space-y-3 text-muted-foreground">
               <li class="flex items-start gap-3">
                 <CheckCircle class="w-5 h-5 text-accent shrink-0 mt-0.5" />
-                <span>To provide and maintain the Matou platform and services</span>
+                <span>To provide and maintain the Mātou platform and services</span>
               </li>
               <li class="flex items-start gap-3">
                 <CheckCircle class="w-5 h-5 text-accent shrink-0 mt-0.5" />
@@ -180,7 +180,7 @@
           <h2 class="text-2xl font-semibold mb-4">Children's Privacy</h2>
           <section class="bg-card border border-border rounded-xl p-6">
             <p class="text-muted-foreground">
-              Matou is not intended for individuals under the age of 18. We do not knowingly collect personal information from children. If you believe we have collected information from a child, please contact us immediately.
+              Mātou is not intended for individuals under the age of 18. We do not knowingly collect personal information from children. If you believe we have collected information from a child, please contact us immediately.
             </p>
           </section>
         </div>
@@ -203,7 +203,7 @@
               If you have questions about this Privacy Policy or wish to exercise your rights regarding your personal information, please contact us through the community governance channels or reach out to administrators.
             </p>
             <p class="text-sm text-muted-foreground">
-              For data deletion requests or other privacy-related concerns, please use the appropriate channels in the Matou community platform.
+              For data deletion requests or other privacy-related concerns, please use the appropriate channels in the Mātou community platform.
             </p>
           </section>
         </div>

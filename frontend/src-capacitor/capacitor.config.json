@@ -1,6 +1,6 @@
 {
   "appId": "nz.matou.app",
-  "appName": "Matou",
+  "appName": "Mātou",
   "webDir": "www",
   "plugins": {
     "MatouBackend": {
