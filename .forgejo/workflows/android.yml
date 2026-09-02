@@ -38,7 +38,8 @@ jobs:
     runs-on: matou-workstation
     # First run per host downloads the whole toolchain and binds the backend
     # twice (arm64 + amd64); give it room. Cached runs finish well under this.
-    timeout-minutes: 90
+    # Each heavy step may also camp up to 30 min on a host-capacity slot (#268).
+    timeout-minutes: 120
     steps:
       - name: Checkout (raw clone — actions/checkout depends on data.forgejo.org action fetch, which fast-fails intermittently, d18d869)
         env:
@@ -57,11 +58,15 @@ jobs:
       - name: Install Android toolchain (idempotent, cached in $HOME/.matou-android)
         run: |
           set -euo pipefail
-          bash scripts/android/setup-toolchain.sh
+          # Heavy steps ride ONE pooled host-capacity slot each (#268): gradle/
+          # gomobile/npm co-running unlocked with the pr-e2e drive starved its
+          # bootstrap on the 7 GB workstation. Per-step (not per-job) so an
+          # exclusive drive can slip in between steps.
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/setup-toolchain.sh
       - name: gomobile bind — embedded backend .aar
         run: |
           set -euo pipefail
-          make -C backend build-android-aar
+          bash .sandcastle/host-slot-wait.sh 1800 make -C backend build-android-aar
       - name: Verify libgojni.so is 16 KB page-aligned (#167)
         run: |
           set -euo pipefail
@@ -89,7 +94,7 @@ jobs:
       - name: Install frontend deps
         run: |
           set -euo pipefail
-          cd frontend && CI=true npm ci
+          bash .sandcastle/host-slot-wait.sh 1800 bash -c 'cd frontend && CI=true npm ci'
       - name: Build debug APK
         env:
           # build-apk.sh reads VITE_PROD_CONFIG_URL from the env before falling
@@ -100,7 +105,7 @@ jobs:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
           set -euo pipefail
-          bash scripts/android/build-apk.sh
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/build-apk.sh
       - name: Upload app-debug.apk
         id: upload
         # actions/upload-artifact is fetched from data.forgejo.org, which
@@ -139,7 +144,8 @@ jobs:
   build-aab:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
     runs-on: matou-workstation
-    timeout-minutes: 90
+    # See build-apk: room for the toolchain plus host-capacity waits (#268).
+    timeout-minutes: 120
     steps:
       - name: Checkout (raw clone — see build-apk)
         env:
@@ -178,15 +184,19 @@ jobs:
       - name: Install Android toolchain (idempotent, cached in $HOME/.matou-android)
         run: |
           set -euo pipefail
-          bash scripts/android/setup-toolchain.sh
+          # Heavy steps ride ONE pooled host-capacity slot each (#268): gradle/
+          # gomobile/npm co-running unlocked with the pr-e2e drive starved its
+          # bootstrap on the 7 GB workstation. Per-step (not per-job) so an
+          # exclusive drive can slip in between steps.
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/setup-toolchain.sh
       - name: gomobile bind — embedded backend .aar
         run: |
           set -euo pipefail
-          make -C backend build-android-aar
+          bash .sandcastle/host-slot-wait.sh 1800 make -C backend build-android-aar
       - name: Install frontend deps
         run: |
           set -euo pipefail
-          cd frontend && CI=true npm ci
+          bash .sandcastle/host-slot-wait.sh 1800 bash -c 'cd frontend && CI=true npm ci'
       - name: Build signed release AAB
         env:
           VITE_PROD_CONFIG_URL: ${{ secrets.PROD_CONFIG_URL }}
@@ -210,7 +220,7 @@ jobs:
           chmod 600 "$ks"
           trap 'rm -rf "$(dirname "$ks")"' EXIT
           export MATOU_KEYSTORE_FILE="$ks"
-          bash scripts/android/build-aab.sh
+          bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/build-aab.sh
       - name: Upload app-release.aab
         id: upload
         continue-on-error: true
