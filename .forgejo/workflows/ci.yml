@@ -55,7 +55,12 @@ jobs:
           docker run --rm --entrypoint bash -v "$PWD":/work -w /work matou-app-ci -lc '
             set -euo pipefail
             cd frontend && CI=true npm ci && npm run test:script && npm run lint && npm run build && cd ..
-            cd backend && go build ./... && make test
+            cd backend && go build ./... && make test && cd ..
+            echo "==> kit drift check (#245): generated artefacts must match npm run kit:apply"
+            cd frontend && npm run kit:apply && git diff --exit-code -- src/generated src/css/kit-tokens.scss kit.build.json src-capacitor/capacitor.config.json src-capacitor/android/app/src/main/res/values/strings.xml || {
+              echo "ERROR: generated kit artefacts drifted — run npm run kit:apply and commit the result (icons are excluded: PNG output varies across sharp builds)" >&2
+              exit 1
+            }
           '
       - name: Investigate failure (healer)
         if: failure()
