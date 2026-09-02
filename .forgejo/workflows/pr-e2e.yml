@@ -29,7 +29,18 @@ jobs:
         run: |
           set -euo pipefail
           exec 9>/tmp/matou-swarm.lock
-          flock -w 1800 9 || { echo "pr-e2e: lock busy for 30min — giving up; re-run via workflow_dispatch or push again"; exit 1; }
+          # /tmp/matou-swarm.lock is HOST-global and shared with Matou/idss,
+          # whose `swarm` job may hold it for its full 180-minute timeout —
+          # longer than this job's entire 40-minute budget, so no wait value can
+          # outlast it. Losing the lock is expected contention, NOT a harness
+          # fault: leave a marker so the healer step below stands down instead of
+          # spending a claude call on it, and still fail so the PR shows plainly
+          # that e2e never ran for this head.
+          if ! flock -w 1800 9; then
+            echo "pr-e2e: lock busy for 30min — giving up; re-run via workflow_dispatch or push again"
+            touch "/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}" || true
+            exit 1
+          fi
           workdir="$HOME/swarm-e2e/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
@@ -59,6 +70,22 @@ jobs:
           # harness-infra repair for real. Set HEAL_DRY_RUN: "1" to return to
           # diagnose-only.
         run: |
+          # Stand down on the expected-contention path (see the lock comment
+          # above): a lost host lock says nothing about this repo's harness, and
+          # investigating it burns a claude call plus a Mattermost page every
+          # time a PR lands during a long swarm worker.
+          marker="/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}"
+          if [ -f "$marker" ]; then
+            rm -f "$marker"
+            echo "pr-e2e: lost /tmp/matou-swarm.lock to a concurrent swarm worker — expected contention, not a fault; healer stands down."
+            if [ -n "$MATTERMOST_BOT_TOKEN" ]; then
+              jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" \
+                --arg message ":hourglass: pr-e2e skipped for \`${{ github.repository }}\` — the host swarm lock was busy for 30min, so the feature spec never ran. Re-run via workflow_dispatch or push again. $RUN_URL" \
+                '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
+                curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" >/dev/null || true
+            fi
+            exit 0
+          fi
           bash "$HOME/swarm-e2e/${{ github.repository }}/.sandcastle/heal.sh" || {
             [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
             jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: pr-e2e failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
