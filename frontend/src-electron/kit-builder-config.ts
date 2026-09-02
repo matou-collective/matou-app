@@ -6,7 +6,11 @@ import type { KitBuild } from 'src/kit/types';
 // ADR 0004.
 export function electronBuilderConfig(kit: KitBuild) {
   const v = '${version}',
-    p = '${platform}',
+    // ${os} not ${platform}: electron-builder renders ${platform} as the
+    // Node process.platform value (darwin/win32), so installer names would be
+    // matou-1.0.0-darwin-x64.dmg / -win32.exe. ${os} gives mac/linux/win —
+    // the names COA publishes on community pages (proven in Matou/coa#80).
+    p = '${os}',
     a = '${arch}',
     e = '${ext}';
   return {
