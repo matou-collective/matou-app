@@ -354,6 +354,57 @@
         </div>
       </section> -->
 
+      <!-- Section 6b: Notifications — push preferences (Android). The global
+           toggle drives register/deregister; per-channel mute suppresses the
+           visible notification (docs/architecture/08-push-notifications.md §7). -->
+      <section class="settings-card" data-test="push-settings">
+        <div class="card-header">
+          <h3 class="card-title"><Bell :size="18" /> Notifications</h3>
+        </div>
+
+        <div class="field-group push-toggle-row">
+          <div>
+            <label class="field-label">Push notifications</label>
+            <span class="field-helper">
+              Get notified about new chat messages when the app is closed.
+            </span>
+          </div>
+          <label class="switch">
+            <input
+              type="checkbox"
+              data-test="push-enabled-toggle"
+              :checked="pushEnabled"
+              @change="onPushEnabledChange"
+            />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+
+        <div v-if="pushEnabled && pushChannels.length > 0" class="field-group">
+          <label class="field-label">Muted channels</label>
+          <span class="field-helper">Turn off notifications for specific channels.</span>
+          <div class="push-channel-list">
+            <div
+              v-for="channel in pushChannels"
+              :key="channel.id"
+              class="push-channel-row"
+              :data-test="`push-channel-${channel.id}`"
+            >
+              <span class="push-channel-name">#{{ channel.name }}</span>
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  :data-test="`push-mute-${channel.id}`"
+                  :checked="!isChannelMuted(channel.id)"
+                  @change="toggleChannelMute(channel.id)"
+                />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
            button is hidden on mobile, so surface the same dialog here. -->
       <section v-if="isMobile" class="settings-card">
@@ -402,22 +453,45 @@ import {
   X,
   Loader2,
   Bug,
+  Bell,
 } from 'lucide-vue-next';
 import { useRouter } from 'vue-router';
 import { useProfilesStore } from 'stores/profiles';
 import { useTypesStore } from 'stores/types';
 import { useIdentityStore } from 'stores/identity';
+import { useNotificationsStore } from 'stores/notifications';
+import { useChatStore } from 'stores/chat';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 import { getFileUrl, uploadFile } from 'src/lib/api/client';
 import { useIsMobile } from 'src/composables/useIsMobile';
+import { applyPushEnabled } from 'src/composables/usePush';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
 
 const router = useRouter();
 const profilesStore = useProfilesStore();
 const typesStore = useTypesStore();
 const identityStore = useIdentityStore();
+const notificationsStore = useNotificationsStore();
+const chatStore = useChatStore();
 
 const isMobile = useIsMobile();
+
+// --- Push notification preferences (§7) ---
+const pushEnabled = computed(() => notificationsStore.pushEnabled);
+const pushChannels = computed(() =>
+  chatStore.sortedChannels.filter(c => !c.isArchived),
+);
+function isChannelMuted(channelId: string): boolean {
+  return notificationsStore.isChannelMuted(channelId);
+}
+function toggleChannelMute(channelId: string) {
+  notificationsStore.toggleChannelMute(channelId);
+}
+function onPushEnabledChange(event: Event) {
+  const enabled = (event.target as HTMLInputElement).checked;
+  notificationsStore.setPushEnabled(enabled);
+  void applyPushEnabled(enabled);
+}
 const showReportDialog = ref(false);
 
 const loading = ref(true);
@@ -918,6 +992,10 @@ onMounted(async () => {
     await typesStore.loadDefinitions();
   }
   await profilesStore.loadMyProfiles();
+  // Load channels so the per-channel push-mute list has something to render.
+  if (chatStore.channels.length === 0) {
+    await chatStore.loadChannels();
+  }
   initSharedForm();
   initPrivateForm();
   // Ensure snapshots are set after reactive updates
@@ -1207,6 +1285,77 @@ onMounted(async () => {
 
 .field-group:last-child {
   margin-bottom: 0;
+}
+
+/* Push notification preferences */
+.push-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.push-channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.push-channel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.push-channel-name {
+  font-size: 0.875rem;
+  color: var(--matou-foreground, #111827);
+}
+
+/* Toggle switch */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--matou-muted, #d1d5db);
+  border-radius: 22px;
+  transition: background-color 0.2s;
+}
+
+.switch-slider::before {
+  content: '';
+  position: absolute;
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.switch input:checked + .switch-slider {
+  background-color: var(--matou-primary, #10b981);
+}
+
+.switch input:checked + .switch-slider::before {
+  transform: translateX(18px);
 }
 
 .field-label {
