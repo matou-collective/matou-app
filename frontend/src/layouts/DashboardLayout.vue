@@ -621,10 +621,16 @@ onBeforeUnmount(() => {
   border: none;
   cursor: pointer;
   color: var(--matou-sidebar-foreground);
-  transition: color 0.15s ease;
+  border-radius: 10px;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
 
+  // Selected tab gets the kit secondary wash behind it (matches the sidebar's
+  // .active treatment). Kit-driven via --matou-sidebar-accent. See #337.
   &.active {
     color: var(--matou-sidebar-primary);
+    background-color: var(--matou-sidebar-accent);
   }
 }
 
