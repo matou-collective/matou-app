@@ -161,6 +161,8 @@ jobs:
           git remote add origin "$url" 2>/dev/null || git remote set-url origin "$url"
           git fetch -q --depth=1 origin "$SHA"
           git checkout -q -f FETCH_HEAD
+      - name: Test versionCode helper
+        run: bash scripts/android/version-code-test.sh
       - name: Derive versionCode / versionName
         id: version
         env:
@@ -168,15 +170,20 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
+          # versionCode is MMMmmmppp derived from the app version (helper below),
+          # NOT the CI run number (#321) — a dispatch build of X.Y.Z reports the
+          # same code as the eventual X.Y.Z tag build, so on-device install/
+          # upgrade ordering stays coherent for side-loaded artefacts. The
+          # version->code mapping lives in scripts/android/version-code.sh and
+          # is asserted by scripts/android/version-code-test.sh.
           # Tag vX.Y.Z -> versionName X.Y.Z; otherwise package.json version + run id.
-          if [[ "$REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          if [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             name="${REF_NAME#v}"
-            # Monotonic, human-decodable: MMMmmmppp (e.g. 0.4.0 -> 4000). Leaves
-            # room for 999 patch releases per minor; Play's max is 2100000000.
-            code=$(( ${BASH_REMATCH[1]} * 1000000 + ${BASH_REMATCH[2]} * 1000 + ${BASH_REMATCH[3]} ))
+            code="$(bash scripts/android/version-code.sh "$name")"
           else
-            name="$(sed -n 's/^  "version": "\(.*\)",/\1/p' frontend/package.json)-ci${RUN_NUMBER}"
-            code="$RUN_NUMBER"
+            pkgver="$(sed -n 's/^  "version": "\(.*\)",/\1/p' frontend/package.json)"
+            name="${pkgver}-ci${RUN_NUMBER}"
+            code="$(bash scripts/android/version-code.sh "$pkgver")"
           fi
           echo "versionName=$name versionCode=$code"
           echo "name=$name" >> "$GITHUB_OUTPUT"
