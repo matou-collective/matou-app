@@ -34,7 +34,7 @@
 #   - secrets come from the SAME env the workflows pass (FORGEJO_TOKEN,
 #     DIGITALOCEAN_ACCESS_TOKEN, ...). Never from a prompt, never hard-coded.
 #
-# SHARED-HOST SAFETY: the *test* KERI stack (ports 4901-4903 / witness 7642,
+# SHARED-HOST SAFETY: the *test* KERI stack (ports 4901-4903 / test witness,
 # compose project matou-keri-test, matou-test-* volumes) is ephemeral — the
 # drives bring it up with `clean-test start-and-wait-test` and tear it down
 # after. It is port- and volume-isolated from the *dev* stack a workstation
@@ -59,7 +59,8 @@
 #   MATOU_INFRA_REF          ref to check out on a FRESH clone (default: the
 #                            remote's default branch). An existing checkout's
 #                            branch is never touched.
-#   WITNESS_OOBI_URL         witness OOBI probe URL (default http://localhost:7642/oobi)
+#   WITNESS_OOBI_URL         witness OOBI probe URL (default: WITNESS_PORT_0
+#                            from $INFRA/keri/.env.test, stock 6642)
 #   DIGITALOCEAN_ACCESS_TOKEN  forwarded to sub-makes if set; not required by
 #                            the local KERIA/witness/any-sync stack.
 #   PROVISION_E2E_KEEP_STACK=1  leave a stack this script started up (default:
@@ -77,7 +78,10 @@ REPO_SLUG="${REPO_SLUG:-Matou/matou-app}"
 INFRA="${MATOU_INFRA_DIR:-$HOME/matou/matou-infrastructure}"
 INFRA_REPO="${MATOU_INFRA_REPO:-git@gitlab.com:matou-collective/matou-infrastructure.git}"
 INFRA_REF="${MATOU_INFRA_REF:-}"
-WITNESS_OOBI_URL="${WITNESS_OOBI_URL:-http://localhost:7642/oobi}"
+# Explicit override wins; otherwise resolved at probe time from the infra
+# checkout's committed keri/.env.test (WITNESS_PORT_0, stock 6642) — a fresh
+# host has no drifted .env.test, so a hardcoded port would probe the wrong one.
+WITNESS_OOBI_URL="${WITNESS_OOBI_URL:-}"
 WITNESS_DEMO_IMAGE="weboftrust/keri-witness-demo:1.1.0"
 WORKDIR="$HOME/swarm-e2e/$REPO_SLUG"
 
@@ -118,6 +122,17 @@ note() { echo "provision-e2e-stack:   · $*"; }
 CONVERGED=0
 converged() { CONVERGED=1; }
 
+# _witness_oobi_url — the probe URL: the explicit WITNESS_OOBI_URL override, or
+# the port the infra checkout's test compose will actually bind (WITNESS_PORT_0
+# in keri/.env.test; stock 6642). Resolved at call time because a fresh run
+# clones the infra checkout only in clause 1.
+_witness_oobi_url() {
+  if [ -n "$WITNESS_OOBI_URL" ]; then echo "$WITNESS_OOBI_URL"; return; fi
+  local port
+  port="$(sed -n 's/^WITNESS_PORT_0=//p' "$INFRA/keri/.env.test" 2>/dev/null | head -1)"
+  echo "http://localhost:${port:-6642}/oobi"
+}
+
 # _witness_http_code — the OOBI probe. "Reachable" = the witness answered with
 # ANY HTTP status (000 = nothing listening / connection refused). Mirrors the
 # compose healthcheck (`curl -f .../oobi`) but tolerant of a non-2xx OOBI index.
@@ -126,7 +141,7 @@ _witness_http_code() {
   # on a connection failure — capture stdout only; do NOT `|| echo 000`, which
   # would append a SECOND 000 and read as a (non-000) "reachable" false positive.
   local code
-  code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$WITNESS_OOBI_URL" 2>/dev/null)"
+  code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$(_witness_oobi_url)" 2>/dev/null)"
   echo "${code:-000}"
 }
 _witness_reachable() { [ "$(_witness_http_code)" != 000 ]; }
@@ -253,14 +268,14 @@ _witness_capability_ok() {
 }
 verify_witness() {
   if _witness_reachable; then
-    ok witness "OOBI reachable at $WITNESS_OOBI_URL (HTTP $(_witness_http_code)) — stack already up"
+    ok witness "OOBI reachable at $(_witness_oobi_url) (HTTP $(_witness_http_code)) — stack already up"
     return 0
   fi
   # Passive path (--check, or a full run that changed nothing): verify the host
   # CAN stand the witness up rather than cycling the ephemeral stack.
   if [ "$CHECK_ONLY" = 1 ] || { [ "$CONVERGED" = 0 ] && [ "${PROVISION_E2E_VERIFY_LIVE:-0}" != 1 ]; }; then
     if _witness_capability_ok; then
-      note "witness OOBI not live at $WITNESS_OOBI_URL — expected between drives (the test stack is ephemeral)"
+      note "witness OOBI not live at $(_witness_oobi_url) — expected between drives (the test stack is ephemeral)"
       ok witness "host is capable of standing the witness up (infra + $WITNESS_DEMO_IMAGE present)"
       return 0
     fi
@@ -272,9 +287,9 @@ verify_witness() {
   if make -C "$INFRA/keri" build-test up-test wait-test; then started=1; fi
   local rc=0
   if _witness_reachable; then
-    ok witness "OOBI reachable at $WITNESS_OOBI_URL (HTTP $(_witness_http_code)) — the compose stands a witness up on this host"
+    ok witness "OOBI reachable at $(_witness_oobi_url) (HTTP $(_witness_http_code)) — the compose stands a witness up on this host"
   else
-    echo "provision-e2e-stack: witness did not answer OOBI at $WITNESS_OOBI_URL after bring-up" >&2
+    echo "provision-e2e-stack: witness did not answer OOBI at $(_witness_oobi_url) after bring-up" >&2
     rc=1
   fi
   # Tear down ONLY what we started, unless asked to keep it. `down-test` (never
