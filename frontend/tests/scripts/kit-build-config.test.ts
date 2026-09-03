@@ -7,7 +7,7 @@ describe('electron-builder config from kit.build.json', () => {
   it('maps the default kit to upstream values', () => {
     const c = electronBuilderConfig(JSON.parse(readFileSync(join(__dirname, '../../kit.build.json'), 'utf8')));
     expect(c.appId).toBe('org.matou.app');
-    expect(c.productName).toBe('Mātou');
+    expect(c.productName).toBe('Matou'); // diacritic-folded by apply-kit — packaging name must stay ASCII (userData path!)
     expect(c.artifactName).toBe('matou-${version}-${os}.${ext}');
     expect(c.mac.artifactName).toBe('matou-${version}-${os}-${arch}.${ext}');
     expect(c.linux.executableName).toBe('matou');

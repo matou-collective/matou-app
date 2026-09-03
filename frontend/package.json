@@ -2,7 +2,7 @@
   "name": "matou-frontend",
   "version": "0.6.1",
   "description": "Matou Community App",
-  "productName": "Mātou",
+  "productName": "Matou",
   "author": "Matou DAO",
   "private": true,
   "scripts": {

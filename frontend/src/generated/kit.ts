@@ -90,7 +90,7 @@ export const KIT: Kit = {
 
 export const KIT_BUILD: KitBuild = {
   "appId": "org.matou.app",
-  "productName": "Mātou",
+  "productName": "Matou",
   "artifactBase": "matou",
   "executableName": "matou",
   "androidApplicationId": "nz.matou.app",

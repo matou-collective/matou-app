@@ -44,7 +44,15 @@ export function buildInfo(kit) {
   const isMatou = kit.slug === 'matou';
   return {
     appId: isMatou ? 'org.matou.app' : `org.matou.coa.${kit.slug}`,
-    productName: kit.brand.name,
+    // Display name, but ALSO the packaging identity: electron-builder names
+    // the Windows exe, the mac .app bundle, the DMG volume AND Electron's
+    // userData directory (where the KERI identity + backend data live) after
+    // productName. A rename orphans every existing install's data dir, so
+    // fold diacritics: the brand keeps its macrons everywhere users read
+    // (KIT.brand.name, Android launcher label, store listings); the OS-facing
+    // name stays ASCII. Learned on v0.6.1: "Mātou.exe" broke all three
+    // desktop builds' smoke tests and would have stranded testers' data.
+    productName: kit.brand.name.normalize('NFD').replace(/\p{Diacritic}/gu, ''),
     artifactBase: isMatou ? 'matou' : kit.slug,
     executableName: isMatou ? 'matou' : kit.slug,
     androidApplicationId: isMatou ? 'nz.matou.app' : `org.matou.coa.${androidSegment(kit.slug)}`,
