@@ -30,7 +30,9 @@ func TestServiceProjectRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create contribution: %v", err)
 	}
-	svc.TransitionContribution(ctx, space, c.ID, ContribConfirmed)
+	if _, err := svc.TransitionContribution(ctx, space, c.ID, ContribConfirmed); err != nil {
+		t.Fatalf("transition contribution: %v", err)
+	}
 	if _, err := svc.AssignContributor(ctx, space, c.ID, "aid-contributor"); err != nil {
 		t.Fatalf("assign contributor: %v", err)
 	}
@@ -72,7 +74,9 @@ func TestSubmitEvidenceRequiresAssignedContributor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	svc.TransitionContribution(ctx, space, c.ID, ContribConfirmed)
+	if _, err := svc.TransitionContribution(ctx, space, c.ID, ContribConfirmed); err != nil {
+		t.Fatalf("transition contribution: %v", err)
+	}
 	if _, err := svc.AssignContributor(ctx, space, c.ID, "assignee"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
