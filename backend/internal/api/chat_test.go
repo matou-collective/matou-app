@@ -14,6 +14,7 @@ import (
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree/mock_objecttree"
 	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
 	"go.uber.org/mock/gomock"
 )
@@ -26,6 +27,7 @@ type chatTestEnv struct {
 	eventBroker  *EventBroker
 	chatHandler  *ChatHandler
 	mux          *http.ServeMux
+	roleLookup   *mockRoleLookup
 	cleanup      func()
 }
 
@@ -176,10 +178,16 @@ func setupChatTestEnv(t *testing.T) *chatTestEnv {
 	// Create event broker
 	eventBroker := NewEventBroker()
 
-	// Create chat handler and register routes (nil store = tree-scan fallback, nil listener)
+	// Create chat handler and register routes (nil store = tree-scan fallback, nil listener).
+	// The local test user resolves to Founding Member by default so it holds
+	// every chat capability (send/manage/moderate); individual tests mutate
+	// roleLookup.roles to exercise denial (#316).
 	chatHandler := NewChatHandler(spaceManager, userIdentity, eventBroker, nil, nil)
+	roleLookup := &mockRoleLookup{roles: map[string][]contributions.Role{
+		"ETEST_CHAT_USER01": {contributions.RoleFoundingMember},
+	}}
 	mux := http.NewServeMux()
-	chatHandler.RegisterRoutes(mux)
+	chatHandler.RegisterRoutes(mux, roleLookup)
 
 	cleanup := func() {
 		os.RemoveAll(tmpDir)
@@ -192,6 +200,7 @@ func setupChatTestEnv(t *testing.T) *chatTestEnv {
 		eventBroker:  eventBroker,
 		chatHandler:  chatHandler,
 		mux:          mux,
+		roleLookup:   roleLookup,
 		cleanup:      cleanup,
 	}
 }
@@ -598,6 +607,152 @@ func TestChat_DeleteMessage(t *testing.T) {
 
 	if deleteResp["deleted"] != true {
 		t.Error("expected deleted=true")
+	}
+}
+
+// --- RBAC enforcement tests (#316) ---
+
+// TestChat_CreateChannel_Forbidden: a role without manage_channels (a plain
+// member) cannot create a channel.
+func TestChat_CreateChannel_Forbidden(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	env.roleLookup.roles["ETEST_CHAT_USER01"] = []contributions.Role{contributions.RoleMember}
+
+	body := `{"name":"nope"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/channels", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for member creating a channel, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestChat_UpdateChannel_Forbidden: a member cannot edit a channel.
+func TestChat_UpdateChannel_Forbidden(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	channelID := createTestChannel(t, env, "locked") // created as founding member
+
+	env.roleLookup.roles["ETEST_CHAT_USER01"] = []contributions.Role{contributions.RoleMember}
+
+	body := `{"name":"renamed"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/chat/channels/"+channelID, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for member editing a channel, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestChat_ArchiveChannel_Forbidden: a member cannot archive a channel.
+func TestChat_ArchiveChannel_Forbidden(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	channelID := createTestChannel(t, env, "keep")
+
+	env.roleLookup.roles["ETEST_CHAT_USER01"] = []contributions.Role{contributions.RoleMember}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/chat/channels/"+channelID, nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for member archiving a channel, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestChat_SendMessage_MemberAllowed: send_messages defaults to all member
+// roles, so a plain member may post — enforcement is behaviour-neutral.
+func TestChat_SendMessage_MemberAllowed(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	channelID := createTestChannel(t, env, "member-send")
+
+	env.roleLookup.roles["ETEST_CHAT_USER01"] = []contributions.Role{contributions.RoleMember}
+
+	body := `{"content":"hi from a member"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/channels/"+channelID+"/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for member sending a message, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestChat_SendMessage_Forbidden: a sender stripped of send_messages gets 403.
+func TestChat_SendMessage_Forbidden(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	channelID := createTestChannel(t, env, "silenced")
+
+	// No role holds send_messages (contributor is project-scoped and does not).
+	env.roleLookup.roles["ETEST_CHAT_USER01"] = []contributions.Role{contributions.RoleContributor}
+
+	body := `{"content":"should be blocked"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/channels/"+channelID+"/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for a sender without send_messages, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestChat_DeleteMessage_ModerateForbidden: deleting another member's message
+// without moderate_messages is denied.
+func TestChat_DeleteMessage_ModerateForbidden(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	channelID := createTestChannel(t, env, "mod-deny")
+	messageID := sendTestMessage(t, env, channelID, "authored by USER01")
+
+	// Switch the active identity to a different member (not the message author,
+	// no moderate_messages).
+	env.userIdentity.SetIdentity("EOTHER_MEMBER", "other-mnemonic")
+	env.roleLookup.roles["EOTHER_MEMBER"] = []contributions.Role{contributions.RoleMember}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/chat/messages/"+messageID, nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 deleting another's message without moderate_messages, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestChat_DeleteMessage_ModerateAllowed: a moderator (moderate_messages) may
+// delete another member's message.
+func TestChat_DeleteMessage_ModerateAllowed(t *testing.T) {
+	env := setupChatTestEnv(t)
+	defer env.cleanup()
+
+	channelID := createTestChannel(t, env, "mod-allow")
+	messageID := sendTestMessage(t, env, channelID, "authored by USER01")
+
+	// A different identity that holds moderate_messages (founding member).
+	env.userIdentity.SetIdentity("EMODERATOR", "mod-mnemonic")
+	env.roleLookup.roles["EMODERATOR"] = []contributions.Role{contributions.RoleFoundingMember}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/chat/messages/"+messageID, nil)
+	w := httptest.NewRecorder()
+	env.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a moderator deleting another's message, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

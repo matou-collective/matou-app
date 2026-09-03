@@ -124,6 +124,20 @@ const (
 
 	// Role-policy management (the manage_roles meta-permission)
 	ActionManageRolePolicy Action = "manage_role_policy"
+
+	// Chat actions (#316). Before this slice the chat routes had no action
+	// wiring. send_message is the default-all capability (send_messages) — every
+	// member role holds it, so gating the send endpoint is behaviour-neutral
+	// until an admin narrows it. The channel-management actions map to
+	// manage_channels (create/edit/archive a channel, set its AllowedRoles);
+	// moderate_message maps to moderate_messages (delete another member's
+	// message). Both default to stewards+founder.
+	ActionSendMessage     Action = "send_message"
+	ActionCreateChannel   Action = "create_channel"
+	ActionEditChannel     Action = "edit_channel"
+	ActionArchiveChannel  Action = "archive_channel"
+	ActionSetChannelRoles Action = "set_channel_roles"
+	ActionModerateMessage Action = "moderate_message"
 )
 
 // actionPermissions maps each action to the roles that can perform it.

@@ -6,6 +6,7 @@ import {
   type RolePolicy,
   type RolePolicyUpdate,
   type RoleDef,
+  type CapabilityMeta,
 } from 'src/lib/api/rolePolicy';
 
 interface RolePolicyState {
@@ -15,6 +16,7 @@ interface RolePolicyState {
   capabilityOrder: string[];
   projectCapabilities: string[];
   callerCapabilities: string[];
+  capabilityMeta: CapabilityMeta[];
   loading: boolean;
   error: string | null;
 }
@@ -27,6 +29,7 @@ export const useRolePolicyStore = defineStore('rolePolicy', {
     capabilityOrder: [],
     projectCapabilities: [],
     callerCapabilities: [],
+    capabilityMeta: [],
     loading: false,
     error: null,
   }),
@@ -49,6 +52,18 @@ export const useRolePolicyStore = defineStore('rolePolicy', {
       return state.capabilityOrder.length
         ? state.capabilityOrder
         : Object.keys(state.capabilities);
+    },
+    // Capabilities belonging to a feature-table group (#312), in display
+    // order. Used to render a feature's own permission table. Falls back to an
+    // empty list when the backend does not serve capabilityMeta.
+    capabilitiesInGroup(state): (group: string) => string[] {
+      return (group: string) =>
+        state.capabilityMeta.filter((m) => m.group === group).map((m) => m.id);
+    },
+    // Display name for a capability, from the server metadata (empty if absent).
+    capabilityDisplayName(state): (cap: string) => string {
+      const byId = new Map(state.capabilityMeta.map((m) => [m.id, m.displayName]));
+      return (cap: string) => byId.get(cap) ?? '';
     },
     // Whether a capability may be held by a project-scoped role.
     isProjectCapability(state): (cap: string) => boolean {
@@ -79,6 +94,7 @@ export const useRolePolicyStore = defineStore('rolePolicy', {
         this.capabilityOrder = resp.capabilityOrder ?? [];
         this.projectCapabilities = resp.projectCapabilities ?? [];
         this.callerCapabilities = resp.callerCapabilities ?? [];
+        this.capabilityMeta = resp.capabilityMeta ?? [];
       } catch (e) {
         this.error = e instanceof Error ? e.message : String(e);
       } finally {

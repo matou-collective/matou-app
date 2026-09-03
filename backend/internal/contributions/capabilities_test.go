@@ -22,6 +22,8 @@ func TestEveryActionHasExactlyOneCapability(t *testing.T) {
 		ActionUnassignContribution, ActionEditMilestone,
 		ActionSubmitProjectCompletion, ActionApproveProjectCompletion, ActionRejectProjectCompletion,
 		ActionInitMemberProfile, ActionChangeMemberRole, ActionRemoveMember, ActionManageRolePolicy,
+		ActionSendMessage, ActionCreateChannel, ActionEditChannel, ActionArchiveChannel,
+		ActionSetChannelRoles, ActionModerateMessage,
 	}
 	for _, a := range allActions {
 		count := 0
@@ -90,15 +92,23 @@ func TestAllCapabilitiesStable(t *testing.T) {
 			t.Errorf("retired capability %q must not be in AllCapabilities()", c)
 		}
 	}
-	// The new feature capabilities intentionally gate no action yet — grants can
-	// be configured ahead of the enforcement slices that wire them.
+	// The remaining feature capabilities intentionally gate no action yet —
+	// grants can be configured ahead of the enforcement slices that wire them.
+	// The chat capabilities (send_messages, manage_channels, moderate_messages)
+	// are now wired (#316) and so are excluded from this set.
 	for _, c := range []Capability{
-		CapViewContributionAmounts, CapCreateProposals, CapSendMessages,
-		CapManageChannels, CapModerateMessages, CapPostNotices, CapManageNotices,
+		CapViewContributionAmounts, CapCreateProposals,
+		CapPostNotices, CapManageNotices,
 		CapOpenCommunitySettings, CapManageCommunitySettings,
 	} {
 		if actions := CapabilityActions()[c]; len(actions) != 0 {
 			t.Errorf("%q should map to no actions yet, got %v", c, actions)
+		}
+	}
+	// The chat capabilities are wired (#316).
+	for _, c := range []Capability{CapSendMessages, CapManageChannels, CapModerateMessages} {
+		if actions := CapabilityActions()[c]; len(actions) == 0 {
+			t.Errorf("%q should map to at least one action (#316)", c)
 		}
 	}
 	// Every capability metadata entry corresponds to a toggleable capability and
