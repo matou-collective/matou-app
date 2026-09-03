@@ -18,6 +18,7 @@ func TestEveryActionHasExactlyOneCapability(t *testing.T) {
 		ActionSubmitEvidence, ActionReviewContribution, ActionSignOffPlan,
 		ActionApproveSubContrib,
 		ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal,
+		ActionCreateProposal, ActionSubmitProposal,
 		ActionArchiveProject, ActionArchiveMilestone, ActionArchiveContribution,
 		ActionUnassignContribution, ActionEditMilestone,
 		ActionSubmitProjectCompletion, ActionApproveProjectCompletion, ActionRejectProjectCompletion,
@@ -93,13 +94,17 @@ func TestAllCapabilitiesStable(t *testing.T) {
 	// The new feature capabilities intentionally gate no action yet — grants can
 	// be configured ahead of the enforcement slices that wire them.
 	for _, c := range []Capability{
-		CapViewContributionAmounts, CapCreateProposals, CapSendMessages,
+		CapViewContributionAmounts, CapSendMessages,
 		CapManageChannels, CapModerateMessages, CapPostNotices, CapManageNotices,
 		CapOpenCommunitySettings, CapManageCommunitySettings,
 	} {
 		if actions := CapabilityActions()[c]; len(actions) != 0 {
 			t.Errorf("%q should map to no actions yet, got %v", c, actions)
 		}
+	}
+	// create_proposals is wired to the proposal authoring actions (#315).
+	if actions := CapabilityActions()[CapCreateProposals]; len(actions) != 2 {
+		t.Errorf("create_proposals should gate the create/submit actions, got %v", actions)
 	}
 	// Every capability metadata entry corresponds to a toggleable capability and
 	// carries a group and scope.

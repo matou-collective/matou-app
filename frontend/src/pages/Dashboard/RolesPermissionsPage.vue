@@ -147,6 +147,68 @@
       </q-markup-table>
     </section>
 
+    <!-- Proposals: the proposal feature's own permission table (#315). Both
+         capabilities are community-scoped, so community roles hold them freely;
+         a project role appears only when it grandfather-holds one (per #201,
+         project_steward's manage_governance) — that grant can be switched off
+         but not re-added. -->
+    <section v-if="editableGrants" class="roles-section proposals-section">
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Proposals</h3>
+          <p class="section-subtitle">
+            Who may create and submit proposals, and who governs them (sign off, reject, edit,
+            withdraw). Community roles; a project role shows here only for a grandfathered
+            governance grant that can be removed but not re-added.
+          </p>
+        </div>
+      </div>
+      <q-markup-table flat bordered dense class="roles-matrix proposals-table">
+        <thead>
+          <tr>
+            <th class="text-left">Role</th>
+            <th v-for="cap in proposalCapabilityIds" :key="cap" class="text-center">
+              {{ capabilityLabel(cap) }}
+              <q-tooltip>{{ capabilityTooltip(cap) }}</q-tooltip>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="role in proposalRoles" :key="role.id">
+            <td class="text-left">
+              {{ role.displayName }}
+              <q-badge v-if="role.scope === 'project'" color="primary" class="q-ml-xs"
+                >project</q-badge
+              >
+              <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
+            </td>
+            <td
+              v-for="cap in proposalCapabilityIds"
+              :key="cap"
+              class="text-center"
+              :class="{ 'community-only-cell': role.scope === 'project' }"
+              :data-role="role.id"
+              :data-cap="cap"
+            >
+              <q-toggle
+                :model-value="hasGrant(role.id, cap)"
+                :disable="isProposalCellDisabled(role, cap)"
+                dense
+                @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
+              >
+                <q-tooltip v-if="role.scope === 'project'">
+                  Community-only capability — a project role cannot gain it.
+                  <template v-if="hasGrant(role.id, cap)">
+                    This grandfathered grant can be switched off, but not back on.
+                  </template>
+                </q-tooltip>
+              </q-toggle>
+            </td>
+          </tr>
+        </tbody>
+      </q-markup-table>
+    </section>
+
     <q-dialog v-model="newRoleDialog">
       <q-card style="min-width: 360px">
         <q-card-section class="text-h6">
@@ -202,7 +264,22 @@ const newRoleName = ref('');
 const newRoleScope = ref<RoleScope>('community');
 const copyFromRole = ref<string | null>(null);
 
-const capabilityIds = computed(() => store.capabilityColumns);
+// Proposals is the first feature area lifted out of the shared matrix into its
+// own per-feature table (#315/#312). Its two capabilities are therefore removed
+// from the Community/Project tables below so each capability has exactly one
+// editing surface; the remaining feature areas follow in their own slices.
+const PROPOSAL_CAPABILITY_IDS = ['create_proposals', 'manage_governance'];
+
+// Defensive: only show a proposal column the backend actually advertises.
+const proposalCapabilityIds = computed(() =>
+  PROPOSAL_CAPABILITY_IDS.filter((c) => store.capabilityColumns.includes(c)),
+);
+
+// The shared Community/Project matrices show every capability EXCEPT the ones
+// now owned by a per-feature table.
+const capabilityIds = computed(() =>
+  store.capabilityColumns.filter((c) => !PROPOSAL_CAPABILITY_IDS.includes(c)),
+);
 
 // Local scope partitions so freshly-added (unsaved) roles show immediately.
 const communityRoles = computed(() =>
@@ -210,8 +287,31 @@ const communityRoles = computed(() =>
 );
 const projectRoles = computed(() => roles.value.filter((r) => r.scope === 'project'));
 
+// The Proposals table lists every community role, plus any project role that
+// grandfather-holds a proposal capability (per #201 that is project_steward's
+// manage_governance). A grandfathered grant may be switched off but not re-added
+// — the same rule the Project table applies to community-only capabilities.
+const proposalGrandfatheredRoles = computed(() =>
+  projectRoles.value.filter((r) =>
+    proposalCapabilityIds.value.some((c) => hasGrant(r.id, c)),
+  ),
+);
+const proposalRoles = computed(() => [
+  ...communityRoles.value,
+  ...proposalGrandfatheredRoles.value,
+]);
+
 function isProjectCap(cap: string): boolean {
   return store.isProjectCapability(cap);
+}
+
+// A proposal cell is disabled when the caller can't manage roles, or when a
+// project-scoped role would be gaining a community-only capability it does not
+// already hold (the #201 grandfather: keep/remove, never re-add).
+function isProposalCellDisabled(role: RoleDef, cap: string): boolean {
+  if (!store.canManageRoles) return true;
+  const isProjectRole = role.scope === 'project';
+  return isProjectRole && !isProjectCap(cap) && !hasGrant(role.id, cap);
 }
 
 const CAPABILITY_LABELS: Record<string, string> = {
@@ -225,6 +325,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   approve_completion: 'Approve completion',
   archive_work: 'Archive',
   manage_members: 'Manage members',
+  create_proposals: 'Create proposals',
   manage_governance: 'Governance',
   manage_communications: 'Communications',
   manage_roles: 'Manage roles',
@@ -446,7 +547,8 @@ async function save() {
   font-style: italic;
 }
 
-.roles-matrix.project-roles td.community-only-cell {
+.roles-matrix.project-roles td.community-only-cell,
+.roles-matrix.proposals-table td.community-only-cell {
   background: var(--matou-muted, rgba(0, 0, 0, 0.03));
 }
 </style>

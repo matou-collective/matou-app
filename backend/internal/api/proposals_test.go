@@ -31,6 +31,7 @@ func TestProposalsHandler_Create(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
+	req = asMember(req)
 	w := httptest.NewRecorder()
 
 	handler.HandleCreate(w, req)
@@ -61,6 +62,7 @@ func TestProposalsHandler_List(t *testing.T) {
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
+	req = asMember(req)
 	w := httptest.NewRecorder()
 	handler.HandleCreate(w, req)
 
@@ -86,6 +88,7 @@ func TestProposalsHandler_Transition(t *testing.T) {
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
+	req = asMember(req)
 	w := httptest.NewRecorder()
 	handler.HandleCreate(w, req)
 
@@ -97,6 +100,7 @@ func TestProposalsHandler_Transition(t *testing.T) {
 	transBody := map[string]string{"status": "submitted"}
 	b, _ = json.Marshal(transBody)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/proposals/"+id+"/transition", bytes.NewReader(b))
+	req = asMember(req)
 	w = httptest.NewRecorder()
 	handler.HandleTransition(w, req, id)
 
@@ -110,6 +114,14 @@ func withRBACContext(r *http.Request, aid string, roles []contributions.Role) *h
 	ctx := context.WithValue(r.Context(), ctxUserAID, aid)
 	ctx = context.WithValue(ctx, ctxUserRoles, roles)
 	return r.WithContext(ctx)
+}
+
+// asMember sets the X-User-AID header and a Member role context — the minimum
+// to pass the create_proposals gate (#315), which every member role holds by
+// default. Used by tests that just need a proposal created/submitted.
+func asMember(r *http.Request) *http.Request {
+	r.Header.Set("X-User-AID", "user-1")
+	return withRBACContext(r, "user-1", []contributions.Role{contributions.RoleMember})
 }
 
 // createTestProposalInReview creates a proposal and transitions it to in_review
@@ -126,6 +138,7 @@ func createTestProposalInReview(t *testing.T, handler *ProposalsHandler) string 
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
+	req = asMember(req)
 	w := httptest.NewRecorder()
 	handler.HandleCreate(w, req)
 	if w.Code != http.StatusCreated {
@@ -138,6 +151,7 @@ func createTestProposalInReview(t *testing.T, handler *ProposalsHandler) string 
 	// Transition draft → submitted
 	b, _ = json.Marshal(map[string]string{"status": "submitted"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/proposals/"+id+"/transition", bytes.NewReader(b))
+	req = asMember(req)
 	w = httptest.NewRecorder()
 	handler.HandleTransition(w, req, id)
 	if w.Code != http.StatusOK {
@@ -219,10 +233,37 @@ func TestProposalsHandler_Transition_SignOff_NoAIDUnauthorized(t *testing.T) {
 	}
 }
 
-func TestProposalsHandler_Transition_NonSignOff_NoRBACRequired(t *testing.T) {
-	handler := setupTestProposalsHandler()
+// createDraft creates a proposal as a member and returns its id.
+func createDraft(t *testing.T, handler *ProposalsHandler) string {
+	t.Helper()
+	body := map[string]interface{}{
+		"proposer_id": "user-1", "title": "Test", "type": []string{"technical"},
+		"priority": "low", "description": "d", "problem_statement": "p",
+		"solution": "s", "expected_outcomes": []string{"o"},
+		"estimated_budget": "$1", "timeline": "1w",
+	}
+	b, _ := json.Marshal(body)
+	req := asMember(httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b)))
+	w := httptest.NewRecorder()
+	handler.HandleCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	var created map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &created)
+	return created["id"].(string)
+}
 
-	// Create and transition draft → submitted without any role context
+// Create requires the create_proposals capability (#315), which every member
+// role holds by default — so a member succeeds.
+func TestProposalsHandler_Create_MemberAllowed(t *testing.T) {
+	handler := setupTestProposalsHandler()
+	_ = createDraft(t, handler) // fails the test if the member is refused
+}
+
+// A caller with no AID is refused create (401).
+func TestProposalsHandler_Create_NoAIDUnauthorized(t *testing.T) {
+	handler := setupTestProposalsHandler()
 	body := map[string]interface{}{
 		"proposer_id": "user-1", "title": "Test", "type": []string{"technical"},
 		"priority": "low", "description": "d", "problem_statement": "p",
@@ -233,18 +274,99 @@ func TestProposalsHandler_Transition_NonSignOff_NoRBACRequired(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
 	w := httptest.NewRecorder()
 	handler.HandleCreate(w, req)
-	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
-	id := created["id"].(string)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for missing AID, got %d: %s", w.Code, w.Body.String())
+	}
+}
 
-	// Transition to submitted — no AID, no roles, should still work
-	b, _ = json.Marshal(map[string]string{"status": "submitted"})
+// A role stripped of create_proposals is refused create (403). A bare
+// project-scoped contributor never holds the community-scoped create_proposals
+// capability, so it stands in for a role an org narrowed.
+func TestProposalsHandler_Create_NoCapabilityForbidden(t *testing.T) {
+	handler := setupTestProposalsHandler()
+	body := map[string]interface{}{
+		"proposer_id": "user-1", "title": "Test", "type": []string{"technical"},
+		"priority": "low", "description": "d", "problem_statement": "p",
+		"solution": "s", "expected_outcomes": []string{"o"},
+		"estimated_budget": "$1", "timeline": "1w",
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
+	req = withRBACContext(req, "contributor-aid", []contributions.Role{contributions.RoleContributor})
+	w := httptest.NewRecorder()
+	handler.HandleCreate(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for role without create_proposals, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Submit (draft → submitted) shares the create_proposals gate (#315): a member
+// may submit.
+func TestProposalsHandler_Submit_MemberAllowed(t *testing.T) {
+	handler := setupTestProposalsHandler()
+	id := createDraft(t, handler)
+
+	b, _ := json.Marshal(map[string]string{"status": "submitted"})
+	req := asMember(httptest.NewRequest(http.MethodPost, "/api/v1/proposals/"+id+"/transition", bytes.NewReader(b)))
+	w := httptest.NewRecorder()
+	handler.HandleTransition(w, req, id)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for member submit, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Submit without an AID is refused (401).
+func TestProposalsHandler_Submit_NoAIDUnauthorized(t *testing.T) {
+	handler := setupTestProposalsHandler()
+	id := createDraft(t, handler)
+
+	b, _ := json.Marshal(map[string]string{"status": "submitted"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals/"+id+"/transition", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	handler.HandleTransition(w, req, id)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for submit without AID, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// Submit by a role stripped of create_proposals is refused (403).
+func TestProposalsHandler_Submit_NoCapabilityForbidden(t *testing.T) {
+	handler := setupTestProposalsHandler()
+	id := createDraft(t, handler)
+
+	b, _ := json.Marshal(map[string]string{"status": "submitted"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals/"+id+"/transition", bytes.NewReader(b))
+	req.Header.Set("X-User-AID", "contributor-aid")
+	req = withRBACContext(req, "contributor-aid", []contributions.Role{contributions.RoleContributor})
+	w := httptest.NewRecorder()
+	handler.HandleTransition(w, req, id)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for submit without create_proposals, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// A non-submit, non-governance transition (submitted → in_review) still needs
+// no role gate — only create/submit and the governance transitions are gated.
+func TestProposalsHandler_Transition_InReview_NoRBACRequired(t *testing.T) {
+	handler := setupTestProposalsHandler()
+	id := createDraft(t, handler)
+
+	// Submit as a member first.
+	b, _ := json.Marshal(map[string]string{"status": "submitted"})
+	req := asMember(httptest.NewRequest(http.MethodPost, "/api/v1/proposals/"+id+"/transition", bytes.NewReader(b)))
+	w := httptest.NewRecorder()
+	handler.HandleTransition(w, req, id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("submit failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// submitted → in_review with no AID, no roles — should still work.
+	b, _ = json.Marshal(map[string]string{"status": "in_review"})
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/proposals/"+id+"/transition", bytes.NewReader(b))
 	w = httptest.NewRecorder()
 	handler.HandleTransition(w, req, id)
-
 	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for non-sign-off transition, got %d: %s", w.Code, w.Body.String())
+		t.Errorf("expected 200 for in_review transition, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -379,7 +501,7 @@ func TestProposalsHandler_Update_NonInReview_NoRestriction(t *testing.T) {
 		"estimated_budget": "$1", "timeline": "1w",
 	}
 	b, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
+	req := asMember(httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b)))
 	w := httptest.NewRecorder()
 	handler.HandleCreate(w, req)
 	var created map[string]interface{}
@@ -408,7 +530,7 @@ func createProposalForTest(t *testing.T, h *ProposalsHandler, title, priority st
 		"estimated_budget": "$1", "timeline": "1w",
 	}
 	b, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b))
+	req := asMember(httptest.NewRequest(http.MethodPost, "/api/v1/proposals", bytes.NewReader(b)))
 	w := httptest.NewRecorder()
 	h.HandleCreate(w, req)
 	if w.Code != http.StatusCreated {
