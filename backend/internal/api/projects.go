@@ -17,6 +17,7 @@ type ProjectsHandler struct {
 	spaceManager *anysync.SpaceManager
 	notifier     ContribNotifier
 	broker       *EventBroker
+	roleLookup   RoleLookup
 }
 
 // NewProjectsHandler creates a new projects handler.
@@ -38,6 +39,7 @@ func (h *ProjectsHandler) SetBroker(broker *EventBroker) {
 // roleLookup is used to apply RBAC to mutating endpoints; pass nil to skip auth (tests only).
 func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
 	requireRoleLookup("ProjectsHandler", roleLookup)
+	h.roleLookup = roleLookup
 	createHandler := http.HandlerFunc(h.HandleCreate)
 	if roleLookup != nil {
 		createHandler = RBACMiddleware(roleLookup, RequireAction(contributions.ActionCreateProject, h.HandleCreate))
@@ -67,10 +69,16 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 			switch parts[1] {
 			case "assign-role":
 				if r.Method == http.MethodPost {
+					// The required capability depends on which role is being
+					// assigned (steward vs lead), which is only known after the
+					// body is parsed — so RBACMiddleware only resolves the
+					// caller's roles here and HandleAssignRole enforces the
+					// granular assign_project_steward / assign_project_lead
+					// capability (#314, replacing the coarse assign_project_role).
 					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionAssignProjectRole, func(w http.ResponseWriter, r *http.Request) {
+						RBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 							h.HandleAssignRole(w, r, id)
-						}))(w, r)
+						})(w, r)
 					} else {
 						h.HandleAssignRole(w, r, id)
 					}
@@ -93,7 +101,12 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 				return
 			case "contributions":
 				if r.Method == http.MethodGet {
-					h.HandleListProjectContributions(w, r, id)
+					// Optional RBAC: resolve the caller (when identified) so
+					// contribution amounts can be stripped from callers who lack
+					// view_contribution_amounts and are not the assignee (#314).
+					h.withOptionalRBAC(func(w http.ResponseWriter, r *http.Request) {
+						h.HandleListProjectContributions(w, r, id)
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -286,6 +299,17 @@ func (h *ProjectsHandler) HandleDelete(w http.ResponseWriter, r *http.Request, i
 	writeJSON(w, http.StatusOK, map[string]string{"success": "true"})
 }
 
+// withOptionalRBAC / visibleAmountsList mirror the contributions handler
+// helpers, wiring the shared amount-visibility logic (#314) against this
+// handler's RoleLookup (see contribution_amounts.go).
+func (h *ProjectsHandler) withOptionalRBAC(handler http.HandlerFunc) http.HandlerFunc {
+	return optionalRBAC(h.roleLookup, handler)
+}
+
+func (h *ProjectsHandler) visibleAmountsList(r *http.Request, cs []*contributions.Contribution) []*contributions.Contribution {
+	return visibleContributionAmountsList(h.roleLookup, r, cs)
+}
+
 // HandleListProjectContributions handles GET /api/v1/projects/{id}/contributions
 func (h *ProjectsHandler) HandleListProjectContributions(w http.ResponseWriter, r *http.Request, id string) {
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
@@ -298,6 +322,7 @@ func (h *ProjectsHandler) HandleListProjectContributions(w http.ResponseWriter, 
 	if contribs == nil {
 		contribs = []*contributions.Contribution{}
 	}
+	contribs = h.visibleAmountsList(r, contribs)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"contributions": contribs,
 		"total":         len(contribs),
@@ -321,6 +346,22 @@ func (h *ProjectsHandler) HandleAssignRole(w http.ResponseWriter, r *http.Reques
 	if req.Role != "lead" && req.Role != "steward" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "role must be 'lead' or 'steward'"})
 		return
+	}
+
+	// Enforce the granular assign capability for the role being assigned (#314):
+	// assigning the lead needs assign_project_lead, the steward needs
+	// assign_project_steward — a role granted only one may assign only that
+	// side. Skipped when RBAC is disabled (roleLookup nil, tests).
+	if h.roleLookup != nil {
+		action := contributions.ActionAssignProjectLead
+		if req.Role == "steward" {
+			action = contributions.ActionAssignProjectSteward
+		}
+		if !contributions.CanPerformAction(GetUserRoles(r), action) {
+			log.Printf("[Projects] assign %s denied for %s: requires %s", req.Role, GetUserAID(r), action)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions to assign this project role"})
+			return
+		}
 	}
 
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
