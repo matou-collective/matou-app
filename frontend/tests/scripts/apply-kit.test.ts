@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyKit } from '../../scripts/kit/apply-kit.mjs';
+import { applyKit, isSoftTint, tokensScss } from '../../scripts/kit/apply-kit.mjs';
 
 const REPO = join(__dirname, '..', '..', '..');
 let root: string;
@@ -37,6 +37,14 @@ describe('apply-kit (core)', () => {
     const tokens = await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8');
     expect(tokens).toContain('$kit-primary: #1E5F74;');
     expect(tokens).toContain('--matou-primary: #1E5F74;');
+    // Stock secondary #E8F4F8 is already a pale tint → kept solid (unchanged
+    // look), and the selected-nav / dark values match the pre-#337 hardcodes.
+    expect(tokens).toContain('--matou-secondary: #E8F4F8;');
+    expect(tokens).toContain('--matou-muted: #E8F4F8;');
+    expect(tokens).toContain('--matou-secondary-strong: #E8F4F8;');
+    expect(tokens).toContain('--matou-sidebar-accent: #E8F4F8;');
+    expect(tokens).not.toContain('color-mix');
+    expect(tokens).toMatch(/\.dark\s*\{[^}]*--matou-secondary: #1e3340;/);
     const kitTs = await readFile(join(root, 'src/generated/kit.ts'), 'utf8');
     expect(kitTs).toContain("export const KIT");
     expect(kitTs).toContain('"name": "Mātou"');
@@ -54,7 +62,18 @@ describe('apply-kit (core)', () => {
     expect(gradle).toContain('applicationId "org.matou.coa.ngati_example"');
     // URL schemes may not contain '_' (RFC 3986) — the scheme keeps the hyphenated slug
     expect(strings).toContain('<string name="custom_url_scheme">org.matou.coa.ngati-example</string>');
-    expect(await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8')).toContain('$kit-secondary: #F2B134;');
+    const tokens = await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8');
+    // Full-strength secondary stays available…
+    expect(tokens).toContain('$kit-secondary: #F2B134;');
+    expect(tokens).toContain('--matou-secondary-strong: #F2B134;');
+    // …but the saturated gold lands as a pale translucent wash on the
+    // secondary/muted backgrounds and the selected-nav accent, in both themes.
+    expect(tokens).toContain('--matou-secondary: color-mix(in srgb, #F2B134 12%, transparent);');
+    expect(tokens).toContain('--matou-muted: color-mix(in srgb, #F2B134 12%, transparent);');
+    expect(tokens).toContain('--matou-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-sidebar-accent: color-mix\(in srgb, #F2B134 16%, transparent\);/);
+    // Foreground on the wash stays the primary colour for contrast.
+    expect(tokens).toContain('--matou-secondary-foreground: #0A5C6B;');
   });
   it('android application id is a valid package name: hyphens → underscores, digit-leading segment prefixed', async () => {
     await applyKit(await kitDir({ slug: '4winds-trust', brand: { name: '4 Winds', slug: '4winds-trust', primaryColour: '#0A5C6B', secondaryColour: '#F2B134', contactEmail: 'k@x.nz' } }), root, { icons: false });
@@ -69,5 +88,31 @@ describe('apply-kit (core)', () => {
   it('escapes XML in the app name', async () => {
     await applyKit(await kitDir({ slug: 'a-b', brand: { name: 'Tui & Kea', slug: 'a-b', primaryColour: '#000000', secondaryColour: '#ffffff', contactEmail: 'k@x.nz' } }), root, { icons: false });
     expect(await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/strings.xml'), 'utf8')).toContain('Tui &amp; Kea');
+  });
+});
+
+describe('kit secondary wash (#337)', () => {
+  it('treats pale near-white / low-chroma tints as soft (kept solid)', () => {
+    expect(isSoftTint('#E8F4F8')).toBe(true); // stock secondary
+    expect(isSoftTint('#ffffff')).toBe(true);
+    expect(isSoftTint('#cfe8d0')).toBe(true); // pale green pastel
+  });
+  it('treats saturated or darker brand colours as loud (washed)', () => {
+    expect(isSoftTint('#F2B134')).toBe(false); // gold
+    expect(isSoftTint('#ffee00')).toBe(false); // saturated but light yellow
+    expect(isSoftTint('#1E5F74')).toBe(false); // dark teal
+    expect(isSoftTint('#7a90a0')).toBe(false); // low-chroma but too dark
+  });
+  it('keeps the stock look: a soft tint maps to itself, no wash', () => {
+    const scss = tokensScss({ brand: { primaryColour: '#1E5F74', secondaryColour: '#E8F4F8' } });
+    expect(scss).toContain('--matou-secondary: #E8F4F8;');
+    expect(scss).not.toContain('color-mix');
+  });
+  it('washes a loud secondary and preserves the full-strength value', () => {
+    const scss = tokensScss({ brand: { primaryColour: '#0A5C6B', secondaryColour: '#F2B134' } });
+    expect(scss).toContain('$kit-secondary: #F2B134;');
+    expect(scss).toContain('--matou-secondary-strong: #F2B134;');
+    expect(scss).toContain('--matou-secondary: color-mix(in srgb, #F2B134 12%, transparent);');
+    expect(scss).toContain('--matou-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
   });
 });
