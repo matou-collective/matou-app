@@ -224,7 +224,17 @@ fi
 # open ones. A failed fetch, no standing drive, or none with open blockers →
 # blocker_nums stays [] and the emit order below is byte-identical to before.
 blocker_nums='[]'
-if drives="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50")"; then
+# #120: the budget must bound the WHOLE drive-blocker block, not just the loop
+# body. The `labels=standing-drive` listing call itself was measured at
+# 5.5-12.7s on matou-app (Forgejo IGNORES an unknown labels= filter, dumping
+# every open issue), yet the old guard sat INSIDE `for d in ...` — i.e. after
+# that fetch had already been paid for. Check the budget BEFORE the fetch too,
+# matching this block's own stated intent that ORDERING never eat the whole 30s
+# budget. Skipping the fetch leaves blocker_nums=[] → the emit order below is
+# byte-identical to the documented no-standing-drive fallback.
+if [ "$SECONDS" -ge "${LIST_READY_DRIVE_BUDGET:-8}" ]; then
+  echo "list-ready-tasks: drive-blocker ordering skipped at ${SECONDS}s (budget ${LIST_READY_DRIVE_BUDGET:-8}s) — the standing-drive listing itself would exceed budget; queue emitted unpromoted." >&2
+elif drives="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50")"; then
   for d in $(jq -r '.[]? | select((((.labels // []) | map(.name) | index("standing-drive"))) != null) | .number' <<<"$drives" 2>/dev/null || true); do
     # Wall-clock bound (belt and braces): even a repo with a genuinely deep
     # standing-drive list must not spend the whole 30s budget on ORDERING.

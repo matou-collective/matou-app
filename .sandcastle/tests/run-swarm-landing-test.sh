@@ -75,6 +75,22 @@ grep -qF "[PR #107]($repo_web/pulls/107) (closes #7)" <<<"$sm" || fail "pr summa
 grep -qF "[PR #108]($repo_web/pulls/108) (closes #8)" <<<"$sm" || fail "pr summary must link PR #108 closing #8"
 pass=$((pass+1))
 
+# --- 1b. the fan-out is the CITED set, not the ready batch (matou-app#145):
+#         a run whose commits cite only #7 must NOT touch ready #9/#10 --------
+rm -f "$CALLS"
+SUBJECTS='sandcastle: do a thing (#7)' \
+  SWARM_POLICY_LANDING=pr landing_stage Matou/matou-app '[{"number":7},{"number":9},{"number":10}]' start
+[ "$(cat "$CALLS")" = "7" ] || fail "cited-only fan-out: ready-but-unworked tickets must be left alone; got '$(cat "$CALLS")'"
+pass=$((pass+1))
+
+# --- 1c. nothing cited -> fall back to the ready list (landing_push's
+#         empty-shell guard is what refuses a truly workless push) -----------
+rm -f "$CALLS"
+SUBJECTS='' \
+  SWARM_POLICY_LANDING=pr landing_stage Matou/matou-app '[{"number":7},{"number":9}]' start
+[ "$(cat "$CALLS")" = "7 9" ] || fail "uncited work must still fan over the ready list; got '$(cat "$CALLS")'"
+pass=$((pass+1))
+
 # --- 3. push mode: neither pr branch runs — no landing fan-out, empty summary,
 #        and the push to main happens instead ------------------------------
 rm -f "$CALLS"; : > "$GIT_LOG"

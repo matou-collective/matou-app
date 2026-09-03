@@ -279,7 +279,7 @@ echo "ok 6 limit failover"
 
 # 7: parked host — a fresh limit marker stops pickup quietly.
 reset_case
-touch "$tmp/limit-marker"
+printf 'A' > "$tmp/limit-marker"   # letter-stamped, else a7509a4 distrusts an empty marker
 out="$(run_runner)"
 grep -qi "parked" <<<"$out" || fail "a parked host must be reported"
 [ -s "$tmp/claude.calls" ] && fail "a parked host must not start a session"
@@ -910,4 +910,39 @@ run_runner CLAUDE_MODE=limit >/dev/null 2>&1 || fail "22: a limit-parked run mus
   || fail "22: a limit-park (pre-release_heavy) exit must not orphan the holder sidecar"
 echo "ok 22 a limit-parked exit (before release_heavy runs) still clears the held slot's holder sidecar via the EXIT trap"
 
-echo "session-runner: 22 groups passed"
+# 23: log stamping (#121) — every runner log line carries a leading ISO-8601 UTC
+#     stamp so the fleet monitor's Session tab has a WHEN, while the
+#     `session-runner: ` marker and the picked/outcome SUFFIX shape are kept
+#     byte-intact (the fleet-tui parser and operator greps key on them).
+stamp_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z '
+strip_stamp() { sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z //'; }
+
+# 23a: an advanced tick — every non-empty line is stamped, suffixes intact.
+reset_case
+out="$(run_runner)"
+while IFS= read -r ln; do
+  [ -z "$ln" ] && continue
+  grep -qE "$stamp_re" <<<"$ln" || fail "23a: an unstamped runner line leaked: '$ln'"
+done <<<"$out"
+[ "$(grep 'picked #25' <<<"$out" | strip_stamp)" = "session-runner: picked #25 — ticket 25" ] \
+  || fail "23a: the picked line must keep its exact suffix after the stamp (got: $(grep 'picked #25' <<<"$out"))"
+grep -qE '^session-runner: #25 outcome: advanced \(state=closed' <<<"$(grep 'outcome:' <<<"$out" | strip_stamp)" \
+  || fail "23a: the outcome line must keep its exact suffix after the stamp (got: $(grep 'outcome:' <<<"$out"))"
+echo "ok 23a an advanced tick stamps every line and keeps the picked/outcome suffix shape"
+
+# 23b: the kill-switch line — emitted before any lib is sourced — is stamped too.
+reset_case
+out="$(run_runner SESSION_RUNNER=0)"
+grep -qE "${stamp_re}session-runner: kill switch is on" <<<"$out" \
+  || fail "23b: even the pre-lib kill-switch line must be stamped (got: $out)"
+echo "ok 23b the pre-lib kill-switch line is stamped"
+
+# 23c: SESSION_RUNNER_NO_STAMP=1 is the escape hatch for a caller that stamps
+#      its own layer — the runner emits the bare `session-runner: ` lines.
+reset_case
+out="$(run_runner SESSION_RUNNER_NO_STAMP=1)"
+grep -q '^session-runner: picked #25 — ticket 25$' <<<"$out" \
+  || fail "23c: NO_STAMP=1 must emit the bare unstamped picked line (got: $(grep 'picked #25' <<<"$out"))"
+echo "ok 23c SESSION_RUNNER_NO_STAMP=1 disables the stamp layer"
+
+echo "session-runner: 23 groups passed"

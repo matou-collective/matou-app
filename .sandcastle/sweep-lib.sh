@@ -107,33 +107,76 @@ prune_session_logs() {
 }
 
 # reap_containers [max_age_seconds]
-# Force-remove leaked Sandcastle worker containers (name `sandcastle-*`) older
-# than a run-lifetime. Worker teardown leaks them — by 2026-07-31 three stale
-# `sandcastle-*` containers (44h and 2×2d old) were still up on an 8GB host
-# (#238). run-swarm.sh calls this from its EXIT trap while it still holds the
-# global /tmp/matou-swarm.lock, so no other swarm is live: any container older
-# than a full run-lifetime is dead and safe to remove regardless of its state
-# (the stale ones were "still up", so a stopped-only prune would miss them).
-# The age floor (default 3h > swarm.yml's 180-min timeout) guarantees this
-# run's own just-finished workers are never in range. Prints each reaped
-# container id, one per line. Never fails the caller — no docker, no problem.
+# Force-remove leaked factory containers older than a run-lifetime. Three
+# reap paths, widest-net last (#122):
+#
+#   1. NAME `sandcastle-*` — the worker containers Sandcastle names and leaks on
+#      teardown; by 2026-07-31 three stale ones (44h and 2×2d) were up on an 8GB
+#      host (#238). Aged past `max_age` (default 3h > swarm.yml's 180-min
+#      timeout, so this run's own just-finished workers are never in range).
+#   2. LABEL `matou.factory=<kind>` — the containers OTHER factory `docker run`s
+#      leave behind when the Forgejo runner is cancelled or loses the task and
+#      SIGKILLs only the `docker run` CLIENT: the product ci.yml's checks
+#      container (`kind=ci`), the healer's ad-hoc bisect runs (`kind=heal`).
+#      `--rm` never fires, `bash -lc` as PID 1 ignores SIGTERM, and the
+#      container spins for days (5 leaked over 10 days on elitebook-03, ~3 cores
+#      / ~700 MB swap, idss #1182). Reaped per-kind: an aged heal container past
+#      HEAL_REAP_CEILING (heal.sh caps its agent at `timeout 900`, so 900s +
+#      slack), a ci one past CI_REAP_CEILING (the product's ci `timeout-minutes`
+#      + slack — product-defined, so it defaults to the run-lifetime floor and a
+#      consumer tightens it via env), any other kind past the floor.
+#   3. BELT by IMAGE — a container nobody named or labelled but whose image IS a
+#      factory sandbox (`sandcastle:<repo>` tag, or a product ci image `*-ci`)
+#      older than the floor: no legitimate factory container lives past a
+#      run-lifetime, so this catches a leak that lost both its name and label.
+#
+# run-swarm.sh calls this from its EXIT trap while it holds the global
+# /tmp/matou-swarm.lock; a concurrent slot-2 sibling (#577/ADR 0184) is spared
+# because every ceiling is >= that kind's legitimate max lifetime. A container
+# that is NONE of the three (not a factory container) is never touched. Prints
+# each reaped id, one per line, and logs `id (reason, created …)` to stderr so a
+# recurrence surfaces in the sweep line instead of leaking silently. Never fails
+# the caller — no docker, no problem.
 reap_containers() {
-  local max_age="${1:-10800}"
+  local floor="${1:-10800}"
   command -v docker >/dev/null 2>&1 || return 0
-  local now cutoff id created created_epoch reaped=""
+  local heal_ceiling="${HEAL_REAP_CEILING:-1800}"   # 900s heal timeout + slack
+  local ci_ceiling="${CI_REAP_CEILING:-$floor}"     # product ci timeout + slack
+  local now id created names image kind ceiling reason created_epoch reaped=""
   now="$(date +%s)"
-  cutoff="$(( now - max_age ))"
-  # CreatedAt is a human string like "2026-07-29 21:55:00 +0000 UTC". GNU date
-  # chokes on the trailing timezone-abbreviation token but parses the numeric
-  # offset, so drop the last field before `date -d`. A row that still fails to
-  # parse is left alone (fail-safe: never reap something we can't age).
-  while IFS=$'\t' read -r id created; do
+  # One pass over every container, classified in-shell. CreatedAt is a human
+  # string like "2026-07-29 21:55:00 +0000 UTC"; GNU date chokes on the trailing
+  # timezone-abbreviation token but parses the numeric offset, so drop the last
+  # field before `date -d`. A row that fails to parse (or matches no path) is
+  # left alone (fail-safe: never reap something we can't age or don't own).
+  while IFS=$'\t' read -r id created names image kind; do
     [ -n "$id" ] || continue
+    ceiling=""; reason=""
+    case "$names" in
+      sandcastle-*|/sandcastle-*) ceiling="$floor"; reason="name:$names" ;;
+    esac
+    if [ -z "$ceiling" ] && [ -n "$kind" ]; then
+      case "$kind" in
+        heal) ceiling="$heal_ceiling" ;;
+        ci)   ceiling="$ci_ceiling" ;;
+        *)    ceiling="$floor" ;;
+      esac
+      reason="label:matou.factory=$kind"
+    fi
+    if [ -z "$ceiling" ]; then
+      case "$image" in
+        sandcastle:*|*-ci|*-ci:*) ceiling="$floor"; reason="image:$image" ;;
+      esac
+    fi
+    [ -n "$ceiling" ] || continue
     created_epoch="$(date -d "${created% *}" +%s 2>/dev/null)" || continue
     [ -n "$created_epoch" ] || continue
-    if [ "$created_epoch" -lt "$cutoff" ]; then
-      docker rm -f "$id" >/dev/null 2>&1 && reaped+="$id"$'\n'
+    if [ "$created_epoch" -lt "$(( now - ceiling ))" ]; then
+      if docker rm -f "$id" >/dev/null 2>&1; then
+        reaped+="$id"$'\n'
+        echo "reap_containers: reaped $id ($reason, created $created)" >&2
+      fi
     fi
-  done < <(docker ps -a --filter 'name=^/?sandcastle-' --format '{{.ID}}\t{{.CreatedAt}}' 2>/dev/null)
+  done < <(docker ps -a --format '{{.ID}}\t{{.CreatedAt}}\t{{.Names}}\t{{.Image}}\t{{.Label "matou.factory"}}' 2>/dev/null)
   printf '%s' "$reaped"
 }

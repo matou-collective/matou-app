@@ -68,6 +68,11 @@ case "$url" in
     cat "$FAKE_DIR/thread-$id.json" 2>/dev/null || echo '{"posts":{}}'
     ;;
   */actions/tasks*)
+    # Concurrency seam (#120): stamp the nanosecond this fetch was made so a
+    # test can prove claim_alive_runs runs CONCURRENTLY with the lister (its
+    # stamp precedes a deliberately-slow lister's finish) rather than serially
+    # after it.
+    [ -f "$FAKE_DIR/stamp-tasks" ] && date +%s%N >"$FAKE_DIR/tasks-hit.stamp"
     # Review-finding-1 repro seam: presence of this flag file simulates the
     # tasks API being down (curl -sf's own real failure mode), independent of
     # the JSON fixture below — used to prove claim_alive_runs/janitor_sweep

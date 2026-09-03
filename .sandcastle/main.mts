@@ -296,7 +296,19 @@ try {
           // the host-recorded back-link resolve in the sandbox as-is. Any write to
           // the shared .git/worktrees/ admin from inside the container persists to
           // the host and breaks merge-to-head after the container exits (93c6afb).
-          { command: "CI=true pnpm install --frozen-lockfile --store-dir /home/agent/.pnpm-store" },
+          // timeoutMs sizes the ceiling off the MEASURED right tail, not the
+          // library default. Sandcastle's per-command default is 60_000ms, but
+          // the observed install max across 1019 warm-store setups is 46.5s —
+          // only 1.3x under that cap, so ordinary host contention (the 2-wide
+          // swarm matrix plus concurrent triage/resume/publish jobs share one
+          // workstation and one host-mounted pnpm store) tips a slow-but-healthy
+          // install over the edge and reds the whole run with a HookTimeoutError
+          // (idss #1142; GOTCHAS). 300_000ms (5 min) is ~6x the observed max —
+          // real margin for a contended host while still catching a genuine hang.
+          {
+            command: "CI=true pnpm install --frozen-lockfile --store-dir /home/agent/.pnpm-store",
+            timeoutMs: 300_000,
+          },
           // The pre-push language gate (#198): point git at the tracked hook dir
           // so every worker's push runs the pinned Go seam stages over any Go
           // change before it lands — a lint/build/test defect becomes a

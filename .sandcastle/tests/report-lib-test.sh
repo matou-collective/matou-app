@@ -34,7 +34,7 @@ reap_containers() { printf 'sandcastle-old-1\nsandcastle-old-2\n'; }
 sweep_worktrees()  { printf 'sandcastle/worker/abc\nsandcastle/worker/def\n'; }
 : > "$NOTIFY_LOG"
 out="$(report_sweep /some/workspace Acme/widget)"
-grep -q 'reaped stale sandcastle-\* container(s): sandcastle-old-1 sandcastle-old-2' <<<"$out" \
+grep -q 'reaped stale factory container(s): sandcastle-old-1 sandcastle-old-2' <<<"$out" \
   || fail "reaped containers must be reported quietly to the job log: $out"
 grep -q 'left 2 unmerged' "$NOTIFY_LOG" || fail "unmerged branches must be surfaced: $(cat "$NOTIFY_LOG")"
 grep -q 'NOT deleted' "$NOTIFY_LOG" || fail "the notice must say the branches were not deleted"

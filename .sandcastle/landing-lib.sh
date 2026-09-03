@@ -76,8 +76,20 @@ landing_push() {
     git push origin "HEAD:refs/heads/main"
     return
   fi
-  local branch num resp
+  local branch num resp ahead
   branch="$(landing_branch_for "$n")"
+  # Empty-shell guard (matou-app#145): a worker that dies before committing
+  # still reaches the reconcile with HEAD == origin/main. Pushing that branch
+  # and opening a PR makes a zero-commit shell whose CI runs green (it is main
+  # re-tested), and list-ready-tasks then drops the ticket as "being landed" —
+  # starving it until a human closes the shell. No commits, no branch, no PR.
+  # Fail-open when rev-list itself cannot answer (no origin/main in an odd
+  # checkout): the guard only refuses on a provable empty range.
+  ahead="$(git rev-list --count origin/main..HEAD 2>/dev/null)" || ahead=""
+  if [ "$ahead" = 0 ]; then
+    echo "landing_push: refusing $branch — HEAD has no commits beyond origin/main (empty-shell guard, matou-app#145)" >&2
+    return 1
+  fi
   git push origin "HEAD:refs/heads/$branch" || return 1
   if num="$(landing_open_pr_for "$n")"; then
     printf '%s\n' "$num"   # refresh: branch pushed, its PR is already open
@@ -368,8 +380,16 @@ landing_stage() {
     # out of the command substitution and killed the whole reconcile stage —
     # after the work was already committed. Same class as #21's foreign-`#NN`
     # 404; surfaced by the #2 decomposition's test for this seam.
-    nums="$({ jq -r '.[].number' <<<"$ready";
-        git log --format=%s "$start_sha"..HEAD | grep -oE '#[0-9]+' | tr -d '#' || true; } | sort -un)"
+    # Fan over the issues the run's commits actually CITE (subject #NN — the
+    # claimed ticket by convention, plus any mid-run filed child). The old
+    # pickup-∪-scrape union fanned over the ENTIRE ready batch, so a run that
+    # worked one ticket (or none) pushed its HEAD to every ready ticket's
+    # branch — zero-commit shells and cross-wired PRs that starve the queue
+    # (matou-app#145, 11 junk PRs across three sweeps). Only when NO commit
+    # cites a ticket fall back to the ready list, where landing_push's
+    # empty-shell guard still refuses a workless push.
+    nums="$(git log --format=%s "$start_sha"..HEAD | grep -oE '#[0-9]+' | tr -d '#' | sort -un || true)"
+    [ -n "$nums" ] || nums="$(jq -r '.[].number' <<<"$ready" | sort -un)"
     # shellcheck disable=SC2086 — the number list is deliberately word-split.
     LANDING_OPENED_PRS="$(landing_reconcile $nums || true)"
     # #114: a provisional pr-opened runlog breadcrumb the instant a PR is

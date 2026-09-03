@@ -54,7 +54,7 @@ report_sweep() { # report_sweep <workspace> <repo-slug>
   # Reap leaked worker containers older than a run-lifetime (#238) — quiet
   # housekeeping, no alert. We hold the global lock, so anything this old is dead.
   reaped="$(reap_containers)" || true
-  [ -n "$reaped" ] && echo "run-swarm: reaped stale sandcastle-* container(s): $(printf '%s' "$reaped" | tr '\n' ' ')"
+  [ -n "$reaped" ] && echo "run-swarm: reaped stale factory container(s): $(printf '%s' "$reaped" | tr '\n' ' ')"
   # #113: close swarm.db ORPHAN runs — open rows a SIGKILLed run (a Forgejo-runner
   # CANCEL) left behind because its EXIT trap never fired. Host-global, age-floored
   # and idempotent; the durable finaliser the dead run's own trap could not be.

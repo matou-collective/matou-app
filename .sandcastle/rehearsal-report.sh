@@ -2,7 +2,8 @@
 # The rehearsal ratchet's reporter (spec 2026-08-09-183-vps-rehearsal-ratchet):
 # on a red drive, diagnose the run dir headlessly, dedup by incident signature
 # (heal-lib's normalization), and file/append a rehearsal-183 issue. Caps:
-# max 2 NEW issues per drive, never re-file a signature. Always exits 0 —
+# max REHEARSAL_FILING_CAP NEW issues per drive (default 2), never re-file a
+# signature. Always exits 0 —
 # the DRIVE's exit code is the drive's; a reporter crash must not mask it.
 #
 # Arg 3, the IP of the box the drive stood up, is the live door (#540): the
@@ -58,6 +59,20 @@ REHEARSAL_REPORT_PROMPT_FILE="${REHEARSAL_REPORT_PROMPT_FILE:-$here/rehearsal-re
 : "${REHEARSAL_STATE:=${HOME:-/tmp}/.local/state/${REPO_SLUG##*/}-rehearsal}"
 mkdir -p "$REHEARSAL_STATE" 2>/dev/null || true
 export REHEARSAL_STATE
+# Per-arc filing cap (#1138, the #854 phase-5 retrospective): how many NEW
+# issues one drive may file before it stops — and, if nothing else matched,
+# parks the drive on a human. Lifted out of the loop as an env default so the
+# host's rehearsal-env.sh can raise it for an arc expected to run overnight
+# (more distinct faults tolerated before a park) WITHOUT a code change; unset
+# keeps the historical 2. The park itself pages now (page_silent_park below).
+: "${REHEARSAL_FILING_CAP:=2}"
+# Where the silent-park marker lives — the same test-results/flip-pages/<drive>
+# dir the executor's rehearsal-flip-page-lib writes, so the reporter's IMMEDIATE
+# park page and the executor's next-tick page share ONE marker and never double
+# up (the "one page per flip, not per tick" contract). Defaults to the repo root
+# ($here/..) exactly as the executor derives its own root; a test overrides it to
+# stay hermetic.
+REHEARSAL_FLIP_PAGE_ROOT="${REHEARSAL_FLIP_PAGE_ROOT:-$(cd "$here/.." && pwd)}"
 healed_any=false
 healer_attempted=false
 HEAL_FILE_VERDICT=""
@@ -210,6 +225,19 @@ try_heal() {
   # a heal attempt, 2026-08-28).
   local fault
   fault="$(compute_signature "$REHEARSAL_SIGNATURE_NS" "$leg :: $err")"
+  # Loop-guard (#1144 rail-6): a fault HEALED on a prior drive that has redded
+  # again is a failed heal — file, never a second heal (no heal loops). File it
+  # ourselves with a loop-guard diagnosis so the drive BLOCKS instead of
+  # re-firing into it; no claude call is spent on a fault we already know resists.
+  if [ "$(heal_healed_count "$fault")" -ge 1 ]; then
+    echo "healer: fault $fault (sig $sig) was healed on a prior drive and redded again — loop-guard: filing, no second heal (rail 6)"
+    HEAL_FILE_VERDICT="$(jq -cn --arg leg "$leg" \
+      '{action:"file",
+        title:($leg + " — healer loop-guard: a prior heal did not hold"),
+        body:("A prior drive healed this exact fault (`" + $leg + "` :: same normalised error) and it has redded again. Per rail 6 (no heal loops), the healer refused a second heal and filed this blocker so the drive stops re-firing into it.\n\n**Healer refused: loop-guard rule** — diagnose why the prior heal did not hold before re-arming.\n\n_ticket-on-refusal under the healer-first regime (#1144)_"),
+        confident:false}')"
+    return 1
+  fi
   if [ "$(heal_fail_count "$fault")" -ge 2 ]; then
     echo "healer: fault $fault (sig $sig) failed mechanically twice — filing instead (backstop)"
     return 1
@@ -297,6 +325,20 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
   fi
   if ! heal_rails "$co" "$pre_head"; then
     heal_fail_mark "$fault"
+    # Ticket-on-refusal (#1144): the rails refused this fix — file the blocker
+    # ourselves, naming the rule that fired, reusing the healer's single claude
+    # call (no second diagnosis). SWARMABLE picks the label: a too-big-but-
+    # mechanical fix is swarm-actionable; a would-weaken-a-check / product-
+    # surface refusal needs a session or a design ruling.
+    local hsummary confident_flag
+    hsummary="$(jq -r '.summary // "the healer proposed a fix"' <<<"$verdict" 2>/dev/null)"
+    confident_flag=false; [ "${HEAL_RAIL_SWARMABLE:-false}" = "true" ] && confident_flag=true
+    HEAL_FILE_VERDICT="$(jq -cn --arg leg "$leg" --arg rule "${HEAL_RAIL_REASON:-a refusal rule}" \
+      --arg sum "$hsummary" --argjson conf "$confident_flag" \
+      '{action:"file",
+        title:($leg + " — healer refused (" + $rule + ")"),
+        body:("The healer diagnosed this red and proposed a fix, but a refusal rule fired so **no commit landed** — the rails reverted it.\n\n**Healer refused: " + $rule + "**\n\n**What the healer found:** " + $sum + "\n\nThe healer may never weaken what a check proves, exceed the line cap, or change a product-behaviour surface (#1144). Route this to a swarm worker or a design ruling as the label suggests.\n\n_ticket-on-refusal under the healer-first regime (#1144)_"),
+        confident:$conf}')"
     return 1
   fi
   scrub_commit_message "$co"
@@ -309,6 +351,9 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
     return 1
   fi
   heal_fail_clear "$fault"
+  # Loop-guard bookkeeping (#1144 rail-6): remember we healed this fault so a
+  # re-red on a later drive routes straight to ticket-on-refusal above.
+  heal_healed_mark "$fault"
   # A heal may fix only the red's PRESENTATION (a hidden bar, a swallowed
   # error) while a distinct substantive fault remains — drive 20260811T165115Z
   # healed the standup bar, NAMED the supply host-key fault in its summary, and
@@ -416,6 +461,15 @@ label_id() { forgejo_label_id "$labels_json" "$1"; }
 
 new_filed=0
 touched=()   # issue numbers filed or matched this drive — they block the drive issue
+# ONE fault, ONE ticket (idss #1184): the fault → issue map for THIS run, keyed
+# on the normalised error text, not the leg. A single fault can surface under
+# two leg names (idss drive 20260903T042240Z: `standing` and its nested
+# `wizard-rent` both carried the identical broker refusal), and the leg-keyed
+# signature above is by design blind to that — so the healer's ticket-on-
+# refusal for leg 1 and the reporter's own filing for leg 2 produced two
+# blockers for one fault (#1178 + #1179). The second leg now appends its
+# evidence to the first leg's issue instead of filing.
+declare -A filed_by_fault=()
 # Plain for over the mapfile'd array — a `jq | while` subshell would lose
 # new_filed and the 2-issue cap would never bite (plan Task 7 note).
 for red in "${reds[@]}"; do
@@ -423,19 +477,28 @@ for red in "${reds[@]}"; do
   err="$(jq -r '.error // ""' <<<"$red" 2>/dev/null)"
   # Leg-keyed signature: noise in the error never moves it.
   sig="$(compute_signature "$REHEARSAL_SIGNATURE_NS" "$leg")"
+  fault_key="$(normalize_error_line "$err")"
   stamp="$(basename "$run_dir")"
   evidence_note="drive \`$stamp\` red at \`$leg\`: \`$(display_error_line "$err")\`
 evidence: \`$run_dir\` on $REHEARSAL_EVIDENCE_HOST (legs.json and whatever else the drive harvested there) — a representative screenshot is attached here if one was captured"
 
+  if [ -n "$fault_key" ] && [ -n "${filed_by_fault[$fault_key]:-}" ]; then
+    prior="${filed_by_fault[$fault_key]}"
+    echo "reporter: same fault as #$prior under leg '$leg' — appending evidence, not re-filing (one red, one ticket; idss #1184)"
+    append_evidence "$prior" "$evidence_note" >/dev/null 2>&1 \
+      || echo "reporter: WARN evidence append for leg '$leg' on #$prior did not fully land — the run dir still carries it"
+    continue   # #$prior is already in touched
+  fi
   match="$(match_sig "$open_issues" "$sig")"
   if [ -n "$match" ]; then
     append_evidence "$match" "$evidence_note" \
       && echo "reporter: appended drive evidence to #$match ($sig)"
     touched+=("$match")
+    [ -n "$fault_key" ] && filed_by_fault[$fault_key]="$match"
     continue
   fi
-  if [ "$new_filed" -ge 2 ]; then
-    echo "reporter: cap reached — NOT filing '$leg' ($sig); it files on a future drive if it persists"
+  if [ "$new_filed" -ge "$REHEARSAL_FILING_CAP" ]; then
+    echo "reporter: cap reached ($new_filed/$REHEARSAL_FILING_CAP) — NOT filing '$leg' ($sig); it files on a future drive if it persists"
     continue
   fi
   if claude_limit_parked; then
@@ -466,8 +529,14 @@ evidence: \`$run_dir\` on $REHEARSAL_EVIDENCE_HOST (legs.json and whatever else 
 
   if [ -n "$HEAL_FILE_VERDICT" ]; then
     # The healer session already diagnosed this red — reuse its file-verdict,
-    # never a second claude call.
+    # never a second claude call. Persist it in the run dir too (idss #1184):
+    # the healer's diagnosis is the drive's best artefact and must survive a
+    # refused/failed filing, a cap skip, or a later human reading the run dir.
     diagnosis="$HEAL_FILE_VERDICT"; HEAL_FILE_VERDICT=""
+    if mkdir -p "$run_dir/artifacts" 2>/dev/null \
+       && jq -c --arg leg "$leg" --arg sig "$sig" '. + {leg:$leg, sig:$sig}' <<<"$diagnosis" > "$run_dir/artifacts/healer-refusal.json" 2>/dev/null; then
+      echo "reporter: healer diagnosis for '$leg' saved to artifacts/healer-refusal.json"
+    fi
   else
     # Limit-hit checks BOTH streams: on 2026-08-14 the refusal ("You've hit
     # your weekly limit · resets 8am (UTC)") was claude's STDOUT — .err stayed
@@ -560,6 +629,7 @@ Run directory: $run_dir$live_prompt" 2>"$run_dir/logs/reporter-claude.err" || tr
     append_evidence "$match" "$evidence_note" \
       && echo "reporter: sig appeared during diagnosis — appended to #$match ($sig), not re-filed"
     touched+=("$match")
+    [ -n "$fault_key" ] && filed_by_fault[$fault_key]="$match"
     continue
   fi
 
@@ -589,6 +659,7 @@ $evidence_note
     num="$(jq -r '.number // empty' <<<"$resp" 2>/dev/null)"
     if [ -n "$num" ]; then
       touched+=("$num")
+      [ -n "$fault_key" ] && filed_by_fault[$fault_key]="$num"
       # #596: the body above only NAMES the run dir — attach one
       # representative screenshot directly to the new issue (no prior
       # comment to key off, so this is the issue-asset endpoint, not the
@@ -619,6 +690,36 @@ stamp="$(basename "$run_dir")"
 # onto a human. Reached two ways — nothing could be filed/matched, OR a
 # dependency failed to wire (#381) — both risk leaving the drive
 # ready-and-undepended, the hot-loop state.
+# The silent-park page (#1138, item 3): the reporter flipping the drive to
+# ready-for-human IS the moment a human is needed — page NOW, don't wait for the
+# next executor tick to notice the quiet lane. Shares the executor's
+# one-page-per-flip marker (test-results/flip-pages/<drive>.paged): whichever
+# fires first writes it, the other skips; the executor CLEARS it when the drive
+# is re-armed, so a later re-park pages afresh. A FAILED post writes no marker,
+# so a chat blip retries on the executor's next tick. Best-effort, never blocks
+# the flip. Mirrors the reporter's existing notify-mattermost.sh idiom (the
+# healer-refusal page) rather than sourcing the idss-side lib — this file is
+# vendored byte-identical into every consumer (#53) and must stay layout-agnostic.
+page_silent_park() { # $1 = the flip reason (the drive comment body)
+  drive_issue_set || return 0
+  local reason="$1"
+  local mdir="$REHEARSAL_FLIP_PAGE_ROOT/test-results/flip-pages"
+  local marker="$mdir/$REHEARSAL_DRIVE_ISSUE.paged"
+  [ -f "$marker" ] && return 0
+  mkdir -p "$mdir" 2>/dev/null || true
+  # The issue's browser URL from the API base we already carry — never a second
+  # hardcoded forge; absent FORGEJO_API, no link.
+  local html="" link=""
+  [ -n "${FORGEJO_API:-}" ] && html="${FORGEJO_API/\/api\/v1\/repos\///}"
+  [ -n "$html" ] && link=" $html/issues/$REHEARSAL_DRIVE_ISSUE"
+  if bash "$here/notify-mattermost.sh" ":vertical_traffic_light: drive #$REHEARSAL_DRIVE_ISSUE PARKED on a human (ready-for-human) by the reporter — the lane now reads \"blockers: none\" while NOTHING drives (the silent park that parked #854 three times). Reason: $reason$link" >/dev/null 2>&1; then
+    date -u +%Y%m%dT%H%M%SZ > "$marker" 2>/dev/null || true
+    echo "reporter: silent-park page posted for parked drive #$REHEARSAL_DRIVE_ISSUE"
+  else
+    echo "reporter: WARN silent-park page for #$REHEARSAL_DRIVE_ISSUE failed to post — the executor retries next tick"
+  fi
+}
+
 flip_drive_to_human() { # $1 = comment body
   local rfa_id rfh_id
   rfa_id="$(label_id ready-for-agent)"
@@ -626,6 +727,7 @@ flip_drive_to_human() { # $1 = comment body
   [ -n "$rfa_id" ] && forgejo_remove_label "$REHEARSAL_DRIVE_ISSUE" "$rfa_id" >/dev/null 2>&1
   [ -n "$rfh_id" ] && forgejo_add_labels "$REHEARSAL_DRIVE_ISSUE" "$rfh_id" >/dev/null 2>&1
   forgejo_comment "$REHEARSAL_DRIVE_ISSUE" "$1" 2>/dev/null || true
+  page_silent_park "$1"
 }
 
 if [ "${#touched[@]}" -gt 0 ]; then
