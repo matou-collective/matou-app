@@ -3,7 +3,7 @@
     <!-- Header -->
     <OnboardingHeader
       :title="`Welcome, ${aidInfo?.name || 'Member'}`"
-      subtitle="You've been invited to join Matou"
+      subtitle="You've been invited to join Mātou"
       :show-back-button="true"
       @back="emit('back')"
     />

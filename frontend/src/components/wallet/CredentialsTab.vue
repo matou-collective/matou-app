@@ -63,7 +63,7 @@
       >
         <div class="card-top">
           <div class="card-icon" :class="{ 'matou-icon': isMatouCredential(cred) }">
-            <img v-if="isMatouCredential(cred)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Matou" class="matou-logo" />
+            <img v-if="isMatouCredential(cred)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="matou-logo" />
             <q-icon v-else :name="credentialIconName(cred)" size="20px" />
           </div>
           <div class="card-top-right">
@@ -135,7 +135,7 @@
         :style="{ left: outerNodeX(idx) + 'px', top: outerNodeY(idx) + 'px' }"
       >
         <div class="node-circle issuer" :class="isOrgIssuer(cp.aid) ? '' : issuerAvatarColor(cp.aid)">
-          <img v-if="isOrgIssuer(cp.aid)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Matou" class="node-logo" />
+          <img v-if="isOrgIssuer(cp.aid)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="node-logo" />
           <img v-else-if="issuerAvatarUrl(cp.aid)" :src="issuerAvatarUrl(cp.aid)" alt="Counterparty" class="node-avatar" />
           <span v-else class="node-initials">{{ issuerInitials(cp.aid) }}</span>
         </div>
@@ -339,7 +339,7 @@ function credentialDescription(cred: WalletCredential): string {
       : issuerDisplayName(cred.issuerAid);
     return isIssuedByMe(cred) ? `Issued to ${name}` : `Confirmed by ${name}`;
   }
-  return cred.communityName || 'Matou community';
+  return cred.communityName || 'Mātou community';
 }
 
 const outerNodeRadius = 36; // half of outer node size (72px)

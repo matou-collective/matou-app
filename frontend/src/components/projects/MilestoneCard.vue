@@ -494,4 +494,28 @@ function formatCurrency(n: number): string {
     margin-top: 2px;
   }
 }
+
+/**
+ * Phone layout. `.milestone-header-right` (contribution count, status badge,
+ * row actions) is `flex-shrink: 0`, so at ~360px it squeezed the title group
+ * down to almost nothing: the title wrapped one word per line and the cluster
+ * still overflowed back across it. Give each half its own row instead.
+ */
+@media (max-width: 767px) {
+  .milestone-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .milestone-header-left,
+  .milestone-header-right {
+    width: 100%;
+  }
+
+  .milestone-header-right {
+    flex-wrap: wrap;
+    flex-shrink: 1;
+  }
+}
 </style>

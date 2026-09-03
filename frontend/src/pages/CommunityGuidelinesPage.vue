@@ -3,7 +3,7 @@
     <!-- Header -->
     <OnboardingHeader
       title="Community Guidelines"
-      subtitle="Our shared values and expectations for participation in the Matou community"
+      subtitle="Our shared values and expectations for participation in the Mātou community"
       :show-back-button="true"
       @back="onBack"
     />
@@ -13,9 +13,9 @@
       <div class="prose prose-lg max-w-none space-y-6">
         <!-- Introduction -->
         <section class="p-6">
-          <h2 class="text-2xl font-semibold mb-4">Welcome to Matou</h2>
+          <h2 class="text-2xl font-semibold mb-4">Welcome to Mātou</h2>
           <p class="text-muted-foreground mb-4">
-            Matou is an indigenous-led digital community built for the purpose of open innovation and collaboration to support data sovereignty and community autonomy. We're creating a space where people can participate in meaningful governance, contribute to projects, and build lasting connections.
+            Mātou is an indigenous-led digital community built for the purpose of open innovation and collaboration to support data sovereignty and community autonomy. We're creating a space where people can participate in meaningful governance, contribute to projects, and build lasting connections.
           </p>
         </section>
 
@@ -51,7 +51,7 @@
         <h2 class="text-2xl font-semibold mb-4">Governance Participation</h2>
         <section class="content-card bg-card border border-border rounded-xl p-6">
           <p class="text-muted-foreground mb-4">
-            Matou operates through decentralized governance where community members can propose, discuss, and vote on decisions. Participation in governance is encouraged but not required. When you do participate:
+            Mātou operates through decentralized governance where community members can propose, discuss, and vote on decisions. Participation in governance is encouraged but not required. When you do participate:
           </p>
           <ul class="space-y-2 text-muted-foreground ml-4 list-disc">
             <li>Read proposals thoroughly before voting</li>

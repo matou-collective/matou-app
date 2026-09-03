@@ -576,7 +576,10 @@ export async function createNotice(
 export async function performOrgSetup(
   page: Page,
   request: APIRequestContext,
+  opts: { orgName?: string; adminName?: string } = {},
 ): Promise<TestAccounts> {
+  const orgName = opts.orgName ?? 'Mātou';
+  const adminName = opts.adminName ?? 'Admin User';
   // --- Clear any stale test config ---
   await clearTestConfig(request);
 
@@ -591,8 +594,9 @@ export async function performOrgSetup(
 
   // --- Fill org setup form ---
   // The org name is fixed by the kit (#241); only the admin profile is
-  // collected, so the first input is the admin display name.
-  await page.locator('input').first().fill('Admin User');
+  // collected, so the first input is the admin display name. opts.orgName no
+  // longer reaches the form — it only feeds the config fallback below.
+  await page.locator('input').first().fill(adminName);
 
   // --- Submit and wait for KERI operations ---
   await page.getByRole('button', { name: /create organization/i }).click();
@@ -665,7 +669,7 @@ export async function performOrgSetup(
   const communityResponse = await request.post(`${BACKEND_URL}/api/v1/spaces/community`, {
     data: {
       orgAid: config.organization.aid,
-      orgName: config.organization.name || 'Matou',
+      orgName: config.organization.name || orgName,
     },
   });
   expect(communityResponse.ok(),
@@ -686,7 +690,7 @@ export async function performOrgSetup(
     admin: {
       mnemonic: adminMnemonic,
       aid: adminAid,
-      name: 'Admin User',
+      name: adminName,
     },
     createdAt: new Date().toISOString(),
   };

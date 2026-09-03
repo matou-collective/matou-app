@@ -35,7 +35,7 @@
               </span>
             </div>
             <h2 class="detail-title">{{ proposal.title }}</h2>
-            <p class="detail-proposer">Proposed by {{ proposal.proposer_id }}</p>
+            <p class="detail-proposer">Proposed by {{ proposerLabel }}</p>
           </div>
 
           <!-- Actions -->
@@ -222,6 +222,9 @@ import {
 } from 'src/lib/api/proposals';
 import { useIdentityStore } from 'stores/identity';
 import { useProposalsStore } from 'stores/proposals';
+import { useProfilesStore } from 'stores/profiles';
+import { useAppStore } from 'stores/app';
+import { resolveAidDisplay } from 'src/lib/aidDisplay';
 import EndorseProposalModal from './EndorseProposalModal.vue';
 import UserAvatar from 'components/profiles/UserAvatar.vue';
 
@@ -239,8 +242,18 @@ const router = useRouter();
 const $q = useQuasar();
 const identityStore = useIdentityStore();
 const proposalsStore = useProposalsStore();
+const profilesStore = useProfilesStore();
+const appStore = useAppStore();
 
 const proposal = ref<Proposal | null>(null);
+
+// A raw AID is not a person — resolve it through the shared profile lookup.
+const proposerLabel = computed(() =>
+  resolveAidDisplay(proposal.value?.proposer_id ?? '', profilesStore.profilesByAid, {
+    aid: appStore.orgAid,
+    name: appStore.orgName,
+  }),
+);
 const endorsements = ref<Endorsement[]>([]);
 const comments = ref<ProposalComment[]>([]);
 const loading = ref(false);

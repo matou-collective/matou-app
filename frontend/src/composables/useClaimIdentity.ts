@@ -11,6 +11,7 @@ import { useAppStore } from 'stores/app';
 import { setBackendIdentity, createOrUpdateProfile } from 'src/lib/api/client';
 import { useIdentityStore } from 'stores/identity';
 import { secureStorage } from 'src/lib/secureStorage';
+import { toKeriAlias } from 'src/lib/keri/alias';
 
 // KERIA CESR URL as seen from inside Docker (used for OOBI resolution).
 // OOBI resolution is server-side — KERIA resolves via its Docker network.
@@ -125,7 +126,7 @@ export function useClaimIdentity() {
       const onboardingStore = useOnboardingStore();
       const profileName = onboardingStore.profile.name?.trim();
       if (profileName) {
-        const aidName = profileName.toLowerCase().replace(/\s+/g, '-');
+        const aidName = toKeriAlias(profileName, { lowercase: true, fallback: 'member' });
         if (aidName !== aid.name) {
           progress.value = 'Updating identity name...';
           const updated = await client.identifiers().update(aid.prefix, { name: aidName });

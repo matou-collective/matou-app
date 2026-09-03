@@ -6,6 +6,7 @@ import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinC
 import { secureStorage } from 'src/lib/secureStorage';
 import { fetchOrgConfig } from 'src/api/config';
 import { useAppStore } from 'stores/app';
+import { toKeriAlias } from 'src/lib/keri/alias';
 
 export interface AdminCredentialInfo extends CredentialInfo {
   role?: string;
@@ -187,8 +188,8 @@ export const useIdentityStore = defineStore('identity', () => {
     try {
       // Sanitize name for use as KERIA alias — signify-ts uses the alias
       // directly in URL paths (e.g. /identifiers/{name}/credentials) without
-      // encoding, so slashes and other URL-unsafe characters break API calls.
-      const safeName = name.replace(/[/\\?#%\s]+/g, '-').replace(/^-|-$/g, '').trim();
+      // encoding, so URL-unsafe and non-ASCII characters break API calls.
+      const safeName = toKeriAlias(name, { fallback: 'member' });
       const aid = await keriClient.createAID(safeName, { useWitnesses: options?.useWitnesses ?? false });
       currentAID.value = aid;
       // A first-run user must not spend the whole session tokenless: mint the

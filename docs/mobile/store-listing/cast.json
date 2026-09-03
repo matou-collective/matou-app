@@ -1,0 +1,113 @@
+{
+  "_note": "Fictional community used for store screenshots. No real Matou member's name, likeness or message may appear in the store listing — change names here, never in the captures.",
+  "community": "Mātou",
+  "steward": {
+    "name": "Aroha Mika",
+    "email": "aroha@example.nz"
+  },
+  "member": {
+    "name": "Tama Rewi",
+    "email": "tama@example.nz"
+  },
+  "channels": [
+    {
+      "name": "general",
+      "description": "Everyday kōrero for the whole collective"
+    },
+    {
+      "name": "wānanga",
+      "description": "Learning sessions and shared study"
+    },
+    {
+      "name": "pātaka-kai",
+      "description": "Planning the community garden"
+    }
+  ],
+  "conversation": {
+    "channel": "general",
+    "messages": [
+      {
+        "from": "steward",
+        "text": "Kia ora koutou — the pātaka kai working bee is confirmed for Saturday, 10am at the marae."
+      },
+      {
+        "from": "member",
+        "text": "Ka pai! I can bring the seedlings and a couple of spades."
+      },
+      {
+        "from": "steward",
+        "text": "Perfect, ngā mihi Tama. I'll add you to the roster."
+      },
+      {
+        "from": "member",
+        "text": "Anyone else keen? We could use two more pairs of hands."
+      },
+      {
+        "from": "steward",
+        "text": "I'll put a pānui up so everyone sees it."
+      }
+    ]
+  },
+  "project": {
+    "name": "Pātaka Kai Garden",
+    "description": "Establish a community food garden at the marae, run by members for members.",
+    "plan": {
+      "title": "Pātaka Kai Garden — implementation plan",
+      "milestones": [
+        {
+          "title": "Prepare the site",
+          "description": "Clear, fence and mark out the beds."
+        },
+        {
+          "title": "Build and plant the beds",
+          "description": "Six raised beds, soil, and the first season's seedlings."
+        },
+        {
+          "title": "First harvest and distribution",
+          "description": "Harvest roster and distribution to whānau."
+        }
+      ]
+    },
+    "contributions": [
+      {
+        "title": "Clear and fence the site",
+        "objective": "Make the site safe and ready to build on.",
+        "deliverable": "A cleared, fenced site with a working gate.",
+        "acceptance": "Site cleared, fence posts set, gate hung."
+      },
+      {
+        "title": "Build six raised beds",
+        "objective": "Give the garden its growing space.",
+        "deliverable": "Six raised beds, built to plan and filled with soil.",
+        "acceptance": "Six beds built to plan and filled with soil."
+      },
+      {
+        "title": "Plant the first season",
+        "objective": "Get the first season's kai in the ground.",
+        "deliverable": "All beds planted, with a published watering roster.",
+        "acceptance": "All beds planted and the watering roster published."
+      }
+    ]
+  },
+  "proposal": {
+    "title": "Adopt a monthly working bee roster",
+    "summary": "That the collective adopt a standing monthly working bee, rostered across whānau, to keep the pātaka kai garden and marae grounds maintained without relying on the same few people each time."
+  },
+  "notices": [
+    {
+      "type": "event",
+      "title": "Working bee — pātaka kai garden",
+      "summary": "Bring gloves and a spade if you have one. Kai provided afterwards."
+    },
+    {
+      "type": "announcement",
+      "title": "Nau mai, haere mai to our newest members",
+      "summary": "Three new members were welcomed into the collective this month."
+    },
+    {
+      "type": "update",
+      "title": "Garden plan signed off",
+      "summary": "The pātaka kai implementation plan has been signed off and work starts this month."
+    }
+  ]
+}

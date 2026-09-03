@@ -275,3 +275,26 @@ jobs:
           aab="frontend/dist/capacitor/android/bundle/release/app-release.aab"
           bash .sandcastle/notify-mattermost-files.sh \
             ":robot: android release AAB $VERSION (actions/upload-artifact flaked — attached instead) — $RUN_URL" "$aab"
+
+      # Publish to the Play OPEN testing track (#202). Runs last so a Play-side
+      # failure still leaves the .aab retrievable from the steps above.
+      #
+      # Tag pushes ONLY. A workflow_dispatch build derives versionCode from
+      # $RUN_NUMBER (see "Derive versionCode / versionName"), which does not
+      # order against the tag scheme — uploading one would burn a versionCode
+      # that collides with, or sorts below, a real release.
+      - name: Publish to Play open testing
+        if: github.event_name == 'push'
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          PLAY_TRACK: beta          # Play's id for the open testing track
+          PLAY_STATUS: completed    # live to open testers on commit
+          MATOU_VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PLAY_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "ERROR: PLAY_SERVICE_ACCOUNT_JSON secret is not set — the AAB built" >&2
+            echo "       but nothing was published. See docs/mobile/PLAY_STORE.md §6." >&2
+            exit 1
+          fi
+          bash scripts/android/play-upload.sh

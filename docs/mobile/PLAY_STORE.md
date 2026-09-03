@@ -1,8 +1,8 @@
 # Play Store release guide (Android)
 
 How a signed release App Bundle (`.aab`) of `nz.matou.app` is built and gets
-onto the Google Play internal-testing track. Issue #176; auto-upload from CI
-is a follow-up (#202). For the toolchain and debug builds see
+onto the Google Play internal-testing track, and from there to open testing
+(§5). Issue #176; auto-upload from CI is a follow-up (#202). For the toolchain and debug builds see
 [ANDROID.md](ANDROID.md).
 
 ## Pieces
@@ -139,18 +139,174 @@ First release only:
   - The recovery phrase (mnemonic) stays on the device in
     `EncryptedSharedPreferences` (#71) and is never transmitted.
   - No analytics / crash SDKs, no advertising ID.
-- **Store listing**: app name "Matou", short + full description, icon
-  (512×512), feature graphic (1024×500), ≥ 2 phone screenshots (use the
-  `pr-e2e` screenshot recipe against prod-like data, not test seed data).
+- **Policy → App content → App access**: declare *"All or some
+  functionality is restricted"*. Matou is a members-only community: the
+  Play binary is bound to the single production community published by
+  `config.matou.nz/api/config`, and everything past onboarding lives in that
+  community's encrypted any-sync space. Any account Google could log in with
+  is therefore a real member of the real community — so **do not create a
+  reviewer account by default**. Instead fill the form with instructions,
+  no credentials:
+  - What reviewers can reach unaided: splash → *Register* (profile form,
+    recovery phrase, credential request) → *Pending approval* screen, plus
+    *Recover* and *Have an invite code?* entry points. That is the entire
+    public surface; membership is granted by community stewards and cannot
+    be self-served.
+  - State that the restricted area is a private Indigenous community's
+    space (members' messages and records), that no demo/test community is
+    available in this binary, and give the support address for questions.
+  - If Google rejects with "unable to access" and insists on credentials,
+    escalate here before complying. The only ways in both expose community
+    data to the reviewer: (a) a pre-provisioned identity delivered as an
+    invite code (claim flow — instant, no steward wait), or (b) approving
+    a reviewer registration. If forced, do it time-boxed: name the member
+    "Google Play Review", tell the community, and remove it from the
+    space (and rotate) as soon as the review clears. The proper fix is a
+    review sandbox community served by the config server for a dedicated
+    invite code — file it as a ticket rather than improvising.
+  - Internal testing normally isn't reviewed; this bites at closed →
+    production promotion, so have the text ready before then.
+
+  Ready-to-paste form text. The "other information" field is capped at
+  500 characters (this is exactly 500 — re-count after any edit);
+  username/password fields can't be blank, enter "N/A — see instructions".
+
+  > **Instruction name:** Members-only community — no reviewer credentials
+  >
+  > **Other information:** Matou is a private, members-only app for the Matou community only. There is no password login or demo account: identity is a device-held key (12-word recovery phrase) and membership is granted by community stewards who verify each applicant. We cannot issue a reviewer account: every member joins the community's encrypted space of real members' messages and records. Reviewable: Join Now → profile → recovery phrase → "Pending approval" screen. Questions or supervised walkthrough: sysadmin@matou.nz
+
+- **Store listing**: all text, the 512×512 icon, the 1024×500 feature graphic
+  and the six framed phone screenshots are in `docs/mobile/store-listing/`
+  (`LISTING.md` has the paste blocks, the shot-list and the capture recipe;
+  `scripts/make-assets.py` regenerates the graphics). Upload
+  `store-listing/screenshots/*.png` (`raw/` holds the unframed captures).
 
 Every release:
 
 1. **Testing → Internal testing → Create new release**, upload the `.aab`.
 2. Add release notes (from the tag annotation).
-3. Add testers (email list) → Save → Review release → Start rollout.
-4. Testers get the opt-in link; install from Play (not sideloaded) and
-   re-run the device walkthrough.
-5. Promote internal → closed → production from the Console when happy.
+3. Review release → **Start rollout to Internal testing**. The release must
+   show *Available to internal testers*, not *Draft*, or the opt-in link
+   reports the app as unavailable.
+4. Testers are managed on the **Testers** tab (next to Releases), not on
+   the release: *Create email list* → add Google addresses (≤ 100) → Save.
+   Then under *How testers join your test* → **Copy link**. Play does not
+   notify anyone; send the link yourself.
+5. Each tester opens the link on a phone signed into the listed account →
+   *Become a tester* → *Download it on Google Play*. The app is not in Play
+   search; the link is the only way in. Allow a few minutes after adding an
+   address. Install from Play (not sideloaded) and re-run the device
+   walkthrough.
+6. Promote internal → open/closed → production from the Console when happy.
+
+## 5. Open testing
+
+Internal testing is **not reviewed** by Google. Open testing is: the first
+open-testing release goes through full app review, and the whole *App
+content* section must be complete before the Console will let you send it.
+Budget days, not minutes.
+
+Open testing also means **anyone with the link can install, and the app
+becomes discoverable on Play**. For a members-only app that is a deliberate
+choice — non-members get as far as the *Pending approval* screen and no
+further — but it is the thing that makes review scrutinise the app-access
+declaration above. If public discoverability is not wanted, closed testing
+(email list or Google Group, also reviewed) is the alternative.
+
+Everything below must be green before the Console offers *Send for review*:
+
+- [ ] **Store listing** — name, short + full description, 512×512 icon,
+      1024×500 feature graphic, **≥ 2 phone screenshots**. All of it is in
+      `docs/mobile/store-listing/` (`LISTING.md`).
+- [ ] **App content** — privacy policy URL, app access, ads, content
+      rating (IARC questionnaire), target audience & content, data safety,
+      child-safety standards, plus the "does not apply" declarations
+      (news, health, financial features, government).
+- [ ] **Countries / regions** for the open-testing track.
+- [ ] Store settings: category, contact details.
+
+Then: **Testing → Open testing → Create new release** — either upload the
+`.aab` or *Promote release* from the internal track (promoting reuses the
+reviewed artefact and is the normal path) → release notes → *Review
+release* → *Start rollout to Open testing* → *Send for review*.
+
+Once live, the opt-in link is `https://play.google.com/apps/testing/nz.matou.app`
+and needs no email list.
+
+If review rejects on app access, do not improvise a reviewer account —
+see the escalation note in §4.
+
+## 6. Automated publishing (#202)
+
+Once the first upload has been done by hand, a `v*` tag publishes on its
+own: `android.yml`'s `build-aab` job ends with a *Publish to Play open
+testing* step that runs `scripts/android/play-upload.sh`.
+
+The script talks to the Play Developer API v3 with nothing but bash,
+openssl, curl and python3 — no marketplace action (they are fetched from
+data.forgejo.org, which fast-fails intermittently) and no Ruby/fastlane. It
+mints an RS256 JWT from the service-account key, trades it for an access
+token, then `edits.insert` -> `bundles.upload` -> `tracks.patch` ->
+`edits.commit`.
+
+**Tag pushes only.** A `workflow_dispatch` build derives its versionCode
+from the run number, which does not order against the tag scheme
+(`vX.Y.Z` -> `X*1000000 + Y*1000 + Z`), so dispatch builds produce an
+artefact and publish nothing.
+
+### One-time provisioning
+
+The old *Setup -> API access* page **no longer exists** in the Play
+Console (checked 2026-09-02: "Setup" is now "Settings", and it has no API
+section). Create the service account in Google Cloud and grant it in Play
+Console as a user instead:
+
+1. Google Cloud Console, project `matou-app` (already exists from the
+   Firebase/FCM work) -> enable **Google Play Android Developer API**.
+2. **IAM & Admin -> Service accounts** -> create `play-publisher` ->
+   **Keys -> Add key -> JSON** -> download.
+3. Play Console -> **Users and permissions -> Invite new users** -> paste
+   `play-publisher@matou-app.iam.gserviceaccount.com` -> grant **Release
+   manager**, scoped to `nz.matou.app` only.
+4. Store the key JSON as the Forgejo secret `PLAY_SERVICE_ACCOUNT_JSON`
+   (see `docs/SECRETS_CHECKLIST.md`).
+
+Permission propagation is not instant — allow a few minutes before the
+first run.
+
+### Checking it before trusting it
+
+```bash
+export PLAY_SERVICE_ACCOUNT_JSON_FILE=~/.matou-android/secrets/matou-play-service-account.json
+
+# Credentials + permissions only; seconds, no .aab needed.
+scripts/android/play-upload.sh --no-bundle
+
+# Full rehearsal: uploads the bundle, patches the track, validates, then
+# discards the edit. Nothing is published and no versionCode is consumed.
+scripts/android/play-upload.sh --dry-run
+```
+
+Both dry-run modes print the app's real track ids and store-listing
+languages — set `PLAY_TRACK` and `PLAY_RELEASE_NOTES_LANG` from that output
+rather than assuming (`beta` is Play's id for the *open* testing track, and
+the listing language decides whether release notes must be `en-GB` or
+`en-NZ`).
+
+### Knobs
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PLAY_TRACK` | `beta` | `internal`, `alpha` (closed), `beta` (open), `production` |
+| `PLAY_STATUS` | `completed` | `draft` lands it in the Console for a human to release |
+| `PLAY_USER_FRACTION` | – | staged rollout, with `PLAY_STATUS=inProgress` |
+| `PLAY_RELEASE_NOTES` | tag subject, else a generic line | capped at Play's 500 chars |
+| `PLAY_RELEASE_NOTES_LANG` | `en-GB` | must be a language the listing has |
+| `PLAY_PACKAGE_NAME` | `nz.matou.app` | |
+
+The service account cannot create an app's **first** release, and it is
+deliberately not granted anything beyond `nz.matou.app`. Promotion from
+open testing to production stays a human decision in the Console.
 
 ## Policy documents
 
@@ -163,8 +319,10 @@ changes.
 
 ## Blockers / known issues
 
-- #167 — `libgojni.so` not 16 KB page-aligned: Android 15 warns on launch and
-  Play flags it; must be fixed before a production rollout (internal
-  testing tolerates the warning).
-- #202 — automatic upload to the internal track from CI (needs a Play
-  service account; the *first* upload of an app must be manual regardless).
+- ~~#202 — automatic upload from CI~~ — implemented; see §6. Still needs
+  the `PLAY_SERVICE_ACCOUNT_JSON` secret provisioned before a `v*` tag
+  will publish (the job fails loudly if it is missing).
+- ~~#167 — `libgojni.so` not 16 KB page-aligned~~ — fixed in #171;
+  `build-aar.sh` links with `-Wl,-z,max-page-size=16384`. Re-check with
+  `unzip -p "$AAB" base/lib/arm64-v8a/libgojni.so > /tmp/l.so && \
+  llvm-readelf -l /tmp/l.so | grep LOAD` if the warning ever returns.

@@ -94,7 +94,7 @@
               <div class="community-stat clickable" @click="navigateToNotices('announcement')">
                 <Megaphone class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalAnnouncements }}</span>
-                <span class="community-stat-label">Announcements</span>
+                <span class="community-stat-label">Notices</span>
               </div>
               <div class="community-stat clickable" @click="navigateToNotices('update')">
                 <RefreshCw class="community-stat-icon" />

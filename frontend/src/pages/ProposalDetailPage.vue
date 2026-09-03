@@ -25,7 +25,7 @@
             </span>
           </div>
           <h1 class="detail-title">{{ proposal.title }}</h1>
-          <p class="detail-proposer">Proposed by {{ proposal.proposer_id }}</p>
+          <p class="detail-proposer">Proposed by {{ proposerLabel }}</p>
 
           <!-- Team chips -->
           <div class="team-row">
@@ -551,6 +551,9 @@ import ProjectForm from 'src/components/projects/ProjectForm.vue';
 import { Shield, Users, UserPlus } from 'lucide-vue-next';
 import UserAvatar from 'components/profiles/UserAvatar.vue';
 import { useIdentityStore } from 'stores/identity';
+import { useProfilesStore } from 'stores/profiles';
+import { useAppStore } from 'stores/app';
+import { resolveAidDisplay } from 'src/lib/aidDisplay';
 import { useProjectsStore } from 'stores/projects';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
@@ -565,6 +568,8 @@ const decisionPlansStore = useDecisionPlansStore();
 const projectsStore = useProjectsStore();
 const onboardingStore = useOnboardingStore();
 const identityStore = useIdentityStore();
+const profilesStore = useProfilesStore();
+const appStore = useAppStore();
 const isAdmin = computed(() => identityStore.isAdmin);
 const isSteward = computed(() => identityStore.isSteward);
 const { lastEvent } = useBackendEvents();
@@ -637,6 +642,16 @@ const selectedAction = ref<GovernanceAction | null>(null);
 // ── Derived state ─────────────────────────────────────────────────────────────
 
 const proposal = computed(() => proposalsStore.currentProposal);
+
+// A raw AID is not a person. Resolve the proposer through the shared profile
+// lookup, exactly as the project pages do, and fall back to the AID only when
+// no profile has synced yet.
+const proposerLabel = computed(() =>
+  resolveAidDisplay(proposal.value?.proposer_id ?? '', profilesStore.profilesByAid, {
+    aid: appStore.orgAid,
+    name: appStore.orgName,
+  }),
+);
 
 const endorsementProgress = computed(() => {
   const threshold = proposal.value?.endorsement_threshold || 2;
@@ -1645,6 +1660,34 @@ async function addComment() {
   span {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+}
+
+/**
+ * Phone layout. The header is a single row — back button, content, "View
+ * History" — and both buttons are unshrinkable, so at ~360px the title column
+ * was left roughly 150px and a 1.8rem title wrapped one word per line. Put the
+ * two buttons on their own row and give the title the full width.
+ */
+@media (max-width: 767px) {
+  .detail-header {
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 12px;
+  }
+
+  .history-btn {
+    margin-left: auto;
+  }
+
+  .detail-header-content {
+    // Ordered after both buttons so it wraps onto the second row, not between.
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .detail-title {
+    font-size: 1.35rem;
   }
 }
 </style>

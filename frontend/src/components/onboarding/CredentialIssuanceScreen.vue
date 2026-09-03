@@ -32,7 +32,7 @@
 
         <div>
           <h2 class="mb-2">Syncing to Network</h2>
-          <p class="text-muted-foreground">Synchronizing your credentials with the Matou network...</p>
+          <p class="text-muted-foreground">Synchronizing your credentials with the Mātou network...</p>
         </div>
 
         <div class="flex gap-2">
@@ -54,7 +54,7 @@
         <div>
           <h2 class="mb-2">Credential Issued!</h2>
           <p class="text-muted-foreground mb-4">
-            Your Matou membership credential has been successfully created and stored in your
+            Your Mātou membership credential has been successfully created and stored in your
             wallet.
           </p>
         </div>
@@ -66,7 +66,7 @@
               <Shield class="w-5 h-5 text-accent" />
             </div>
             <div>
-              <h4>Matou Member</h4>
+              <h4>Mātou Member</h4>
               <p class="text-sm text-muted-foreground">Verified Credential</p>
             </div>
           </div>
@@ -105,7 +105,7 @@
           </div>
         </div>
 
-        <MBtn class="w-full" @click="onComplete"> Enter Matou </MBtn>
+        <MBtn class="w-full" @click="onComplete"> Enter Mātou </MBtn>
       </template>
 
       <!-- Error State -->
@@ -193,7 +193,7 @@ async function issueAndSync() {
     // Step 2: Check backend health and sync
     status.value = 'syncing';
     statusMessage.value = 'Syncing to Network';
-    statusDescription.value = 'Synchronizing with the Matou network...';
+    statusDescription.value = 'Synchronizing with the Mātou network...';
 
     const backendAvailable = await healthCheck();
 

@@ -10,6 +10,7 @@ import { KERIClient, useKERIClient } from 'src/lib/keri/client';
 import { extractWitnessAids } from 'src/lib/keri/witnessAssignment';
 import { useIdentityStore } from 'stores/identity';
 import { getOrCreatePersonalRegistry } from 'src/lib/keri/registry';
+import { toKeriAlias } from 'src/lib/keri/alias';
 
 export interface InviteConfig {
   inviteeName: string;
@@ -64,7 +65,7 @@ export function usePreCreatedInvite() {
 
       // Step 3: Create AID in invitee's agent
       progress.value = 'Creating invitee identity...';
-      const aidName = config.inviteeName.toLowerCase().replace(/\s+/g, '-');
+      const aidName = toKeriAlias(config.inviteeName, { lowercase: true, fallback: 'member' });
       // Get witness AIDs from KERIA config iurls (environment-agnostic).
       // iurls also carry schema OOBIs (infra keria-config.json lists the
       // schema-server under iurls); extractWitnessAids keeps only the

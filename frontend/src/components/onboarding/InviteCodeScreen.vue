@@ -2,7 +2,7 @@
   <div class="invite-code-screen h-full flex flex-col bg-background">
     <!-- Header -->
     <OnboardingHeader
-      title="Welcome to Matou"
+      title="Welcome to Mātou"
       subtitle="Enter your invite code to join the community"
       :show-back-button="true"
       @back="onBack"
@@ -33,7 +33,7 @@
           <Info class="w-5 h-5 text-primary shrink-0 mt-0.5" />
           <div class="text-sm">
             <p>
-              Invite codes are provided by Matou administrators when they create an
+              Invite codes are provided by Mātou administrators when they create an
               invitation for you. Paste the full code you received.
             </p>
           </div>
