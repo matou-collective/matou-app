@@ -27,6 +27,18 @@ var legacyActions = []Action{
 	ActionSaveOrgConfig, ActionGrantStewardAdmin, ActionSetIdentity, ActionWriteProfile,
 }
 
+// reHomedSinceLegacy lists actions whose capability home was deliberately moved
+// after the legacy actionPermissions table was frozen, so their enforcement no
+// longer matches the legacy table by design. The equivalence proofs skip them
+// and a focused test pins the new behaviour instead.
+//
+//   - save_org_config: moved from manage_members (adminScope: ops + founder) to
+//     manage_community_settings (founder-only) by #318. See
+//     TestSaveOrgConfigRequiresManageCommunitySettings.
+var reHomedSinceLegacy = map[Action]bool{
+	ActionSaveOrgConfig: true,
+}
+
 // legacyCan checks directly against the legacy actionPermissions table.
 // IMPORTANT: do NOT call CanPerformAction here — Task 3 rewires it to
 // delegate to the policy, which would make this test compare the policy
@@ -53,6 +65,9 @@ func TestDefaultPolicyEquivalentToLegacyTable(t *testing.T) {
 	for _, kr := range keriRoles {
 		bundle := MapKERIRole(kr)
 		for _, action := range legacyActions {
+			if reHomedSinceLegacy[action] {
+				continue // enforcement deliberately diverges from the legacy table
+			}
 			legacy := legacyCan(bundle, action)
 			viaPolicy := CanPerformActionWithPolicy(p, bundle, action)
 			if legacy != viaPolicy {
@@ -60,6 +75,30 @@ func TestDefaultPolicyEquivalentToLegacyTable(t *testing.T) {
 					kr, action, legacy, viaPolicy)
 			}
 		}
+	}
+}
+
+// #318 re-homed save_org_config from manage_members (ops + founder) to
+// manage_community_settings (founder-only). The default policy must therefore
+// allow only the founder to save org config — an operations steward, who still
+// holds manage_members, must be refused.
+func TestSaveOrgConfigRequiresManageCommunitySettings(t *testing.T) {
+	p := DefaultRolePolicy()
+	if !CanPerformActionWithPolicy(p, MapKERIRole("Founding Member"), ActionSaveOrgConfig) {
+		t.Error("Founding Member must be able to save org config (holds manage_community_settings)")
+	}
+	if CanPerformActionWithPolicy(p, MapKERIRole("Operations Steward"), ActionSaveOrgConfig) {
+		t.Error("Operations Steward must NOT save org config — it holds manage_members but not manage_community_settings")
+	}
+	if CanPerformActionWithPolicy(p, MapKERIRole("Member"), ActionSaveOrgConfig) {
+		t.Error("Member must NOT save org config")
+	}
+	// The founder-only default also gates the page-access action.
+	if !CanPerformActionWithPolicy(p, MapKERIRole("Founding Member"), ActionOpenCommunitySettings) {
+		t.Error("Founding Member must hold open_community_settings by default")
+	}
+	if CanPerformActionWithPolicy(p, MapKERIRole("Operations Steward"), ActionOpenCommunitySettings) {
+		t.Error("Operations Steward must NOT hold open_community_settings by default")
 	}
 }
 

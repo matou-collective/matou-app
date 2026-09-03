@@ -195,21 +195,28 @@ var capabilityActions = map[Capability][]Action{
 		ActionUnassignContribution, ActionEditMilestone, ActionLinkProposal,
 	},
 	// adminScope: member roles plus the role-granting bootstrap routes.
-	// save_org_config stays here for now; #312 moves it under
-	// manage_community_settings, but that re-homing changes enforcement (a
-	// founder-only default drops operations_steward, and a partial move risks
-	// resurrecting a removed grant), so it is deferred to the community-settings
-	// enforcement slice.
+	// save_org_config has moved OUT of manage_members into
+	// manage_community_settings (#318) — the community-settings enforcement
+	// slice #313 deferred. This is a deliberate enforcement change: the
+	// founder-only default for manage_community_settings drops operations_steward
+	// from save_org_config, proven by TestSaveOrgConfigRequiresManageCommunitySettings
+	// and the org-config RBAC review test.
 	CapManageMembers: {
 		ActionChangeMemberRole, ActionRemoveMember,
-		ActionSaveOrgConfig, ActionGrantStewardAdmin, ActionSetIdentity,
+		ActionGrantStewardAdmin, ActionSetIdentity,
 	},
 	CapManageGovernance: {ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal},
 	CapManageRoles:      {ActionManageRolePolicy},
 
+	// Community-settings capabilities, wired by #318. open_community_settings
+	// gates the page-access check; manage_community_settings now owns
+	// save_org_config (re-homed from manage_members above).
+	CapOpenCommunitySettings:   {ActionOpenCommunitySettings},
+	CapManageCommunitySettings: {ActionSaveOrgConfig},
+
 	// New feature capabilities that gate no wired action yet — the grants can be
 	// configured ahead of the enforcement slices that wire them (chat, notices,
-	// proposal-create, contribution-amount visibility, community settings).
+	// proposal-create, contribution-amount visibility).
 	CapViewContributionAmounts: {},
 	CapCreateProposals:         {},
 	CapSendMessages:            {},
@@ -217,8 +224,6 @@ var capabilityActions = map[Capability][]Action{
 	CapModerateMessages:        {},
 	CapPostNotices:             {},
 	CapManageNotices:           {},
-	CapOpenCommunitySettings:   {},
-	CapManageCommunitySettings: {},
 }
 
 // actionToCapability is the reverse index, built once at init.

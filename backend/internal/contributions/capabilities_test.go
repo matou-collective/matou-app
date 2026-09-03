@@ -14,6 +14,7 @@ func TestEveryActionHasExactlyOneCapability(t *testing.T) {
 		ActionTransitionContribution, ActionUpdateContribution, ActionEditEvidence,
 		ActionStoreCredential, ActionWriteProfile,
 		ActionSaveOrgConfig, ActionGrantStewardAdmin, ActionSetIdentity,
+		ActionOpenCommunitySettings,
 		ActionShareContribution, ActionOfferContribution, ActionAcceptOffer,
 		ActionSubmitEvidence, ActionReviewContribution, ActionSignOffPlan,
 		ActionApproveSubContrib,
@@ -90,16 +91,25 @@ func TestAllCapabilitiesStable(t *testing.T) {
 			t.Errorf("retired capability %q must not be in AllCapabilities()", c)
 		}
 	}
-	// The new feature capabilities intentionally gate no action yet — grants can
-	// be configured ahead of the enforcement slices that wire them.
+	// The remaining feature capabilities intentionally gate no action yet —
+	// grants can be configured ahead of the enforcement slices that wire them.
+	// The two community-settings capabilities ARE wired now (#318:
+	// open_community_settings → page-access check, manage_community_settings →
+	// save_org_config), so they are excluded here.
 	for _, c := range []Capability{
 		CapViewContributionAmounts, CapCreateProposals, CapSendMessages,
 		CapManageChannels, CapModerateMessages, CapPostNotices, CapManageNotices,
-		CapOpenCommunitySettings, CapManageCommunitySettings,
 	} {
 		if actions := CapabilityActions()[c]; len(actions) != 0 {
 			t.Errorf("%q should map to no actions yet, got %v", c, actions)
 		}
+	}
+	// The community-settings capabilities are wired by #318.
+	if got := CapabilityActions()[CapOpenCommunitySettings]; len(got) != 1 || got[0] != ActionOpenCommunitySettings {
+		t.Errorf("open_community_settings should gate open_community_settings, got %v", got)
+	}
+	if got := CapabilityActions()[CapManageCommunitySettings]; len(got) != 1 || got[0] != ActionSaveOrgConfig {
+		t.Errorf("manage_community_settings should gate save_org_config, got %v", got)
 	}
 	// Every capability metadata entry corresponds to a toggleable capability and
 	// carries a group and scope.
