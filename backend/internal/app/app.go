@@ -171,7 +171,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 
 	// Initialize user identity (per-user mode)
 	fmt.Fprintln(out, "Initializing user identity...")
-	userIdentity := identity.New(opts.DataDir)
+	userIdentity := identity.NewEncrypted(opts.DataDir, opts.IdentityEncryptionKey)
 	if userIdentity.IsConfigured() {
 		fmt.Fprintf(out, "  Identity loaded from disk\n")
 		fmt.Fprintf(out, "   AID: %s\n", userIdentity.GetAID())
