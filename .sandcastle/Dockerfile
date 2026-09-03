@@ -18,6 +18,16 @@ ENV PATH="/usr/local/go/bin:$PATH"
 # `docker run --entrypoint bash ... -lc`) before sourcing profile.d, dropping
 # /usr/local/go/bin. Re-add it there so login shells keep `go` on PATH too.
 RUN echo 'export PATH="/usr/local/go/bin:$PATH"' > /etc/profile.d/00-go.sh
+# golangci-lint pinned by version + sha256 (#346). v2.x is required for Go 1.25.
+# The same binary runs the pre-push gate (go-gate.sh) and ci.yml's lint stage.
+RUN curl -sSfL -o /tmp/gl.tgz https://github.com/golangci/golangci-lint/releases/download/v2.13.2/golangci-lint-2.13.2-linux-amd64.tar.gz \
+  && echo "2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6  /tmp/gl.tgz" | sha256sum -c - \
+  && tar -xzf /tmp/gl.tgz -C /usr/local/bin --strip-components=1 golangci-lint-2.13.2-linux-amd64/golangci-lint \
+  && rm /tmp/gl.tgz
+# The factory pre-push gate (.sandcastle/gate-lib.sh, vendored) runs
+# `nix develop .#go-ci` by default — this repo has no flake and its Go module is
+# backend/, so point the gate at the repo-local stage script instead (#346).
+ENV GATE_GO_CMD="bash .sandcastle/go-gate.sh"
 
 # Issue tracker: Forgejo (git.matou.nz/Matou/matou-app) — spoken to with
 # plain curl + jq; no tracker CLI to install.
