@@ -13,6 +13,14 @@ jobs:
     runs-on: swarm
     # Up to 2 × 30 min camped on a host-capacity slot (#268) + the checks.
     timeout-minutes: 105
+    env:
+      # Give the checks container a stable identity so a cancelled/killed run
+      # (docker CLIENT dies, --rm never fires — #331) can be reaped by name and
+      # by label. run_id+run_attempt is unique per run and identical across the
+      # run step and the always() reap below (run_attempt may resolve empty on
+      # this Forgejo — the name stays valid and run_id alone is unique per run).
+      CI_CONTAINER: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_RUN_ID: ${{ github.run_id }}
     steps:
       - name: Checkout (raw clone — actions/checkout depends on data.forgejo.org action fetch, which fast-fails intermittently, d18d869)
         env:
@@ -51,8 +59,15 @@ jobs:
           # trailing command to that entrypoint's argv instead of replacing
           # it — so this would silently run `sleep infinity bash -lc ...`
           # and hang until timeout-minutes kills the job.
+          # --init gives the container a signal-forwarding/zombie-reaping PID 1
+          # (tini) so a runner SIGTERM on cancel actually stops the tree instead
+          # of being ignored by `bash -lc` (#331). --name/--label let a cancelled
+          # or outage-killed run be reaped by name (always() step below) and by
+          # label (dev-factory#122 sweep) once --rm can no longer fire.
           bash .sandcastle/host-slot-wait.sh 1800 \
-          docker run --rm --entrypoint bash -v "$PWD":/work -w /work matou-app-ci -lc '
+          docker run --rm --init --name "$CI_CONTAINER" \
+            --label matou.factory=ci --label "matou.run=$CI_RUN_ID" \
+            --entrypoint bash -v "$PWD":/work -w /work matou-app-ci -lc '
             set -euo pipefail
             cd frontend && CI=true npm ci && npm run test:script && npm run lint && npm run build && cd ..
             cd backend && go build ./... && make test && cd ..
@@ -84,3 +99,10 @@ jobs:
             jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: ci failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
               curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" || true
           }
+      - name: Reap the checks container (belt — dev-factory#122's label sweep is the braces)
+        # Belt for a clean cancel/failure where --rm did not fire. Whether
+        # forgejo-runner runs always()-steps after a cancel is unconfirmed
+        # (#331), so this cannot be the only line of defence — the label sweep
+        # covers the cancel-kills-the-runner case this step can't reach.
+        if: always()
+        run: docker rm -f "$CI_CONTAINER" >/dev/null 2>&1 || true
