@@ -1145,3 +1145,60 @@ jobs:
               echo "> **iOS:** the \`ios\` job finished as \`${{ needs.ios.result }}\` — no IPA attached and nothing went to TestFlight."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Mirror the release build's completion back to Forgejo as a commit status, so
+  # "did the v* tag build run?" is answerable from git.matou.nz — the host the
+  # swarm and humans watch — via GET /repos/Matou/matou-app/commits/{sha}/status,
+  # without opening the GitHub Actions UI (#339; gap documented in #335). This
+  # fans in with `always()` so it reports each installer job's result even when
+  # one failed, and is independent of the `release` job's android-success gate;
+  # nothing `needs` it, so it can never withhold or fail the release. Guarded
+  # like .sandcastle/notify-mattermost.sh: with FORGEJO_STATUS_TOKEN unset the
+  # step prints what it would have posted and exits 0, so a secret-less run (and
+  # every non-tag build, which skips this job entirely) is byte-for-byte
+  # unaffected. Provision the scoped token per docs/SECRETS_CHECKLIST.md.
+  forgejo-status:
+    needs: [prepare, build, android, ios]
+    if: always() && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror completion status to Forgejo
+        env:
+          FORGEJO_STATUS_TOKEN: ${{ secrets.FORGEJO_STATUS_TOKEN }}
+          FORGEJO_API_BASE: https://git.matou.nz/api/v1/repos/Matou/matou-app
+          SHA: ${{ github.sha }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          R_PREPARE: ${{ needs.prepare.result }}
+          R_BUILD: ${{ needs.build.result }}
+          R_ANDROID: ${{ needs.android.result }}
+          R_IOS: ${{ needs.ios.result }}
+        run: |
+          set -euo pipefail
+          desc="prepare:${R_PREPARE} build:${R_BUILD} android:${R_ANDROID} ios:${R_IOS}"
+          # The release ships on Android success (the `release` job's own gate);
+          # a skipped or failed iOS run is reported in the description but does
+          # not turn the signal red, matching that job's doctrine.
+          if [ "$R_PREPARE" = "success" ] && [ "$R_ANDROID" = "success" ]; then
+            state="success"
+          else
+            state="failure"
+          fi
+          echo "release completion: state=$state $desc (sha=$SHA)"
+          if [ -z "${FORGEJO_STATUS_TOKEN:-}" ]; then
+            echo "::notice::FORGEJO_STATUS_TOKEN unset — release-completion status not mirrored to Forgejo (docs/SECRETS_CHECKLIST.md); would have posted state=$state '$desc'"
+            exit 0
+          fi
+          body="$(jq -cn --arg state "$state" --arg desc "$desc" --arg url "$TARGET_URL" \
+            '{state: $state, description: $desc, target_url: $url, context: "release/build"}')"
+          code="$(curl -sS -o /tmp/forgejo-status.json -w '%{http_code}' -X POST \
+            -H "Authorization: token $FORGEJO_STATUS_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "$body" \
+            "$FORGEJO_API_BASE/statuses/$SHA")" || code="000"
+          echo "Forgejo responded $code"
+          cat /tmp/forgejo-status.json 2>/dev/null || true
+          echo
+          case "$code" in
+            2*) echo "::notice::mirrored release completion status to Forgejo (state=$state)" ;;
+            *)  echo "::warning::Forgejo status POST returned $code — the release build itself is unaffected" ;;
+          esac

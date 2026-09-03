@@ -122,6 +122,17 @@ Without the iOS secrets a dispatch run falls back to an unsigned archive; a tag
 run fails at the signing step. The team id is read from the provisioning
 profile, so `APPLE_TEAM_ID` is not consulted by the iOS job.
 
+Release completion signal (`forgejo-status` job, #339) — mirrors the finished
+`v*` tag build back to Forgejo as a commit status, so
+`GET /repos/Matou/matou-app/commits/{sha}/status` on `git.matou.nz` answers
+"did the release build run?" without the GitHub Actions UI (the gap #335
+documented). Optional: with the token **absent** the job's one step prints what
+it would have posted and exits 0 — the release path is byte-for-byte unaffected.
+
+| Secret | Value |
+| --- | --- |
+| `FORGEJO_STATUS_TOKEN` | **GitHub repo secret** (not Forgejo — the release builds on GitHub): a Forgejo access token scoped to **write:repository** (commit-status write) on `Matou/matou-app`. Mint it on `git.matou.nz` under a bot account's *Settings → Applications → Access tokens*, then `gh secret set FORGEJO_STATUS_TOKEN --repo matou-collective/matou-app` |
+
 ## Push-relay secrets (deployment, this repo)
 
 Consumed by the standalone push-relay service (`backend/cmd/push-relay`,
