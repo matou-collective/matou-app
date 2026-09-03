@@ -37,9 +37,19 @@ const registerPushToken = vi.fn(async (): Promise<{ success: boolean; error?: st
 const deregisterPushToken = vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({
   success: true,
 }));
+const getRelayChallenge = vi.fn(async () => ({
+  aid: 'aid-a',
+  challenge: 'nonce',
+  expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+}));
+const postRelaySession = vi.fn(async () => ({
+  expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+}));
 vi.mock('src/lib/api/push', () => ({
   registerPushToken: (t: string) => registerPushToken(t),
   deregisterPushToken: (t?: string) => deregisterPushToken(t),
+  getRelayChallenge: () => getRelayChallenge(),
+  postRelaySession: (c: string, s: string) => postRelaySession(c, s),
 }));
 
 // --- Chat store: lightweight fake ------------------------------------------
@@ -63,9 +73,14 @@ vi.mock('src/lib/api/client', () => ({
   authHeaders: () => ({ 'Content-Type': 'application/json' }),
   BACKEND_URL: 'http://127.0.0.1:8080',
 }));
+const signChallenge = vi.fn(async () => 'sig');
 vi.mock('src/lib/keri/client', () => ({
   KERIClient: class {},
-  useKERIClient: () => ({ setOrgAID: vi.fn(), getSignifyClient: () => null }),
+  useKERIClient: () => ({
+    setOrgAID: vi.fn(),
+    getSignifyClient: () => null,
+    signChallenge: (c: string, a: string) => signChallenge(c, a),
+  }),
   initKeriConfig: vi.fn(),
 }));
 vi.mock('src/lib/secureStorage', () => ({
@@ -190,6 +205,9 @@ describe('usePush (#249)', () => {
     registerPushToken.mockResolvedValue({ success: true });
     deregisterPushToken.mockClear();
     deregisterPushToken.mockResolvedValue({ success: true });
+    getRelayChallenge.mockClear();
+    postRelaySession.mockClear();
+    signChallenge.mockClear();
     setSessionToken.mockClear();
     chatStoreMock.channels = [];
     chatStoreMock.totalUnreadCount = 0;
@@ -222,7 +240,7 @@ describe('usePush (#249)', () => {
 
       // The plugin then fires the registration event with the FCM token.
       fake.emit('registration', { value: 'fcm-token-1' });
-      await Promise.resolve();
+      await settle();
       expect(registerPushToken).toHaveBeenCalledWith('fcm-token-1');
     });
 
@@ -407,9 +425,9 @@ describe('usePush (#249)', () => {
       await push.requestPermissionAndRegister();
 
       fake.emit('registration', { value: 'token-a' });
-      await Promise.resolve();
+      await settle();
       fake.emit('registration', { value: 'token-b' });
-      await Promise.resolve();
+      await settle();
 
       expect(registerPushToken).toHaveBeenNthCalledWith(1, 'token-a');
       expect(registerPushToken).toHaveBeenNthCalledWith(2, 'token-b');
