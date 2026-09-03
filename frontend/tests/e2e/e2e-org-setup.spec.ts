@@ -114,7 +114,7 @@ test.describe.serial('Organization Setup', () => {
       // Navigate to setup page
       await page.goto(`${FRONTEND_URL}/#/setup`);
       await page.waitForLoadState('networkidle');
-      await expect(page.getByRole('heading', { name: /set up matou/i })).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByRole('heading', { name: /set up mātou/i })).toBeVisible({ timeout: TIMEOUT.short });
 
       // Fill form — the org name is fixed by the kit (#241); only the admin
       // profile is collected, so the first input is the admin display name.
@@ -188,7 +188,7 @@ test.describe.serial('Organization Setup', () => {
       expect(config.organization).toBeDefined();
       expect(config.organization.aid).toBeTruthy();
       // Org name comes from the kit (KIT.brand.name), not a form field (#241).
-      expect(config.organization.name).toBe('Matou');
+      expect(config.organization.name).toBe('Mātou');
       // The canonical admin field is `admins` (plural array) — the backend's
       // OrgConfigData persists only `admins`, and the whole app reads it
       // (useRegistration, identity store, DashboardPage, useCredentialPolling).
@@ -282,7 +282,7 @@ test.describe.serial('Organization Setup', () => {
       console.log('[Test] Dashboard heading visible');
 
       // Verify sidebar branding (name may span multiple text nodes)
-      await expect(page.getByText('Matou').first()).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByText('Mātou').first()).toBeVisible({ timeout: TIMEOUT.short });
 
       // Verify dashboard sections rendered
       await expect(page.getByText('Community Activity').first()).toBeVisible({ timeout: TIMEOUT.short });

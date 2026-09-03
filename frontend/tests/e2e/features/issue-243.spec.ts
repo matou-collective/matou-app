@@ -18,7 +18,7 @@ test.describe('issue-243 kit-driven profile form fields + interests', () => {
     await page.getByRole('button', { name: /join now/i }).click();
 
     // Kit welcome → walk the three info pages to the form.
-    await expect(page.getByRole('heading', { name: /join matou/i })).toBeVisible({
+    await expect(page.getByRole('heading', { name: /join mātou/i })).toBeVisible({
       timeout: 10_000,
     });
     await page.getByRole('button', { name: /^continue$/i }).click();

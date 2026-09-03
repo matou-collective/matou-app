@@ -16,7 +16,7 @@ test.describe('kit chrome — sidebar branding', () => {
 
     const title = adminPage.locator('.sidebar-header .logo-title');
     await expect(title).toBeVisible();
-    await expect(title).toHaveText('Matou');
+    await expect(title).toHaveText('Mātou');
 
     // Logo image sourced from the kit (src/assets/kit/logo.png).
     await expect(adminPage.locator('.sidebar-header .logo-icon')).toBeVisible();
@@ -30,7 +30,7 @@ test.describe('kit chrome — sidebar branding', () => {
       .getByRole('button', { name: /enter community/i })
       .click({ timeout: 15_000 })
       .catch(() => {});
-    await expect(memberPage.locator('.sidebar-header .logo-title')).toHaveText('Matou');
+    await expect(memberPage.locator('.sidebar-header .logo-title')).toHaveText('Mātou');
     await snap(memberPage, 'sidebar-brand-member');
   });
 });

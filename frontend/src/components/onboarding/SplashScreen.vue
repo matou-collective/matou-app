@@ -72,7 +72,7 @@
 
         <!-- Info Text -->
         <p v-motion="fadeSlideUp(900)" class="text-white/60 text-sm text-center">
-          Join the Matou community to participate in governance, contribute to projects, and
+          Join the Mātou community to participate in governance, contribute to projects, and
           connect with others
         </p>
 

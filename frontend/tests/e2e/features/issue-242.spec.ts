@@ -18,14 +18,14 @@ test.describe('issue-242 kit-driven onboarding welcome + info pages', () => {
     await page.getByRole('button', { name: /join now/i }).click();
 
     // Kit welcome screen (heading from KIT.onboarding.welcome.heading)
-    await expect(page.getByRole('heading', { name: /join matou/i })).toBeVisible({
+    await expect(page.getByRole('heading', { name: /join mātou/i })).toBeVisible({
       timeout: 10_000,
     });
     await snap(page, 'kit-welcome');
     await page.getByRole('button', { name: /^continue$/i }).click();
 
     // Info page 1
-    await expect(page.getByRole('heading', { name: /about matou/i })).toBeVisible({
+    await expect(page.getByRole('heading', { name: /about mātou/i })).toBeVisible({
       timeout: 10_000,
     });
     await snap(page, 'info-page-1-about');

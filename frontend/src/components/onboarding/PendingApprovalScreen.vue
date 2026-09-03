@@ -295,7 +295,7 @@
                 <span class="text-sm font-semibold text-primary">4</span>
               </div>
               <div>
-                <h4 class="mb-1">Welcome to Matou</h4>
+                <h4 class="mb-1">Welcome to Mātou</h4>
                 <p class="text-sm text-muted-foreground">Full access to governance, contributions, and community chat</p>
               </div>
             </div>
@@ -306,7 +306,7 @@
         <div v-if="currentStatus !== 'rejected'" v-motion="fadeSlideUp(700)">
           <h3 class="mb-4">Explore while you wait</h3>
           <p class="text-muted-foreground mb-4">
-            Learn more about Matou by browsing our documentation and resources
+            Learn more about Mātou by browsing our documentation and resources
           </p>
           <div class="grid gap-3 md:grid-cols-2">
             <a

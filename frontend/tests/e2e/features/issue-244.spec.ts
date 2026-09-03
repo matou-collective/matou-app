@@ -22,7 +22,7 @@ test.describe('issue-244 kit approval mode drives the welcome copy', () => {
     await page.getByRole('button', { name: /join now/i }).click();
 
     // Kit welcome screen (heading from KIT.onboarding.welcome.heading)
-    await expect(page.getByRole('heading', { name: /join matou/i })).toBeVisible({
+    await expect(page.getByRole('heading', { name: /join mātou/i })).toBeVisible({
       timeout: 10_000,
     });
 

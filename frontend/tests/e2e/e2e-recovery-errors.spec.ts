@@ -60,7 +60,7 @@ test.describe('Recovery & Error Handling', () => {
     await test.step('Clear session', async () => {
       await page.evaluate(() => localStorage.removeItem('matou_passcode'));
       await page.goto(FRONTEND_URL);
-      await expect(page.getByRole('img', { name: 'Matou', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByRole('img', { name: 'Mātou', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
     });
 
     // Recover via mnemonic
@@ -92,7 +92,7 @@ test.describe('Recovery & Error Handling', () => {
 
       // Welcome overlay verifies recovery steps (community checks will fail without org setup)
       await expect(
-        page.getByRole('heading', { name: /welcome to matou/i }),
+        page.getByRole('heading', { name: /welcome to mātou/i }),
       ).toBeVisible({ timeout: TIMEOUT.short });
       await expect(page.getByText(/identity recovered/i).first()).toBeVisible();
       console.log('Welcome overlay confirmed identity recovery');
@@ -159,7 +159,7 @@ test.describe('Recovery & Error Handling', () => {
 
     // Reload
     await page.goto(FRONTEND_URL);
-    await expect(page.getByRole('img', { name: 'Matou', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(page.getByRole('img', { name: 'Mātou', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
 
     // Buttons should be visible immediately
     await expect(

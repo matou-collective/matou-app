@@ -273,9 +273,9 @@ export async function navigateToProfileForm(page: Page): Promise<void> {
   ).toBeVisible({ timeout: TIMEOUT.short });
   await page.getByRole('button', { name: /join now/i }).click();
 
-  // Kit welcome screen (heading = kit welcome heading, "Join Matou").
+  // Kit welcome screen (heading = kit welcome heading, "Join Mātou").
   await expect(
-    page.getByRole('heading', { name: /join matou/i }),
+    page.getByRole('heading', { name: /join mātou/i }),
   ).toBeVisible({ timeout: TIMEOUT.short });
   await page.getByRole('button', { name: /^continue$/i }).click();
 
@@ -589,7 +589,7 @@ export async function performOrgSetup(
   // Ensure we're on the setup page
   await page.waitForLoadState('networkidle');
   await expect(
-    page.getByRole('heading', { name: /set up matou/i }),
+    page.getByRole('heading', { name: /set up mātou/i }),
   ).toBeVisible({ timeout: TIMEOUT.short });
 
   // --- Fill org setup form ---

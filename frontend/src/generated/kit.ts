@@ -8,17 +8,17 @@ export const KIT: Kit = {
   "configUrl": "http://awa.matou.nz:3904",
   "logoFile": "logo.png",
   "brand": {
-    "name": "Matou",
+    "name": "Mātou",
     "slug": "matou",
     "primaryColour": "#1E5F74",
     "secondaryColour": "#E8F4F8",
     "tagline": "Connection · Collaboration · Innovation",
-    "welcomeText": "Welcome to Matou",
+    "welcomeText": "Welcome to Mātou",
     "contactEmail": "contact@matou.nz"
   },
   "onboarding": {
     "welcome": {
-      "heading": "Join Matou",
+      "heading": "Join Mātou",
       "bodyMarkdown": "Learn about our community before you register. New member registrations are reviewed by the community — this typically takes 1–3 days."
     },
     "profile": {
@@ -53,8 +53,8 @@ export const KIT: Kit = {
     },
     "infoPages": [
       {
-        "title": "About Matou",
-        "bodyMarkdown": "Matou is an indigenous led digital community built for the purpose of open innovation and collaboration to support data sovereignty and community autonomy. We're creating a space where people can participate in meaningful governance, contribute to projects, and build lasting connections.\n\n## Our Values\n\n- **Indigenous Sovereignty** — Honoring Indigenous self-determination and autonomy\n- **Community First** — Being community led in all our decisions and actions\n- **Transparency** — Open governance and clear decision-making processes\n- **Collective Wellbeing** — Prioritizing the health and prosperity of the community as a whole"
+        "title": "About Mātou",
+        "bodyMarkdown": "Mātou is an indigenous led digital community built for the purpose of open innovation and collaboration to support data sovereignty and community autonomy. We're creating a space where people can participate in meaningful governance, contribute to projects, and build lasting connections.\n\n## Our Values\n\n- **Indigenous Sovereignty** — Honoring Indigenous self-determination and autonomy\n- **Community First** — Being community led in all our decisions and actions\n- **Transparency** — Open governance and clear decision-making processes\n- **Collective Wellbeing** — Prioritizing the health and prosperity of the community as a whole"
       },
       {
         "title": "Community Goals",
@@ -62,7 +62,7 @@ export const KIT: Kit = {
       },
       {
         "title": "Member Expectations",
-        "bodyMarkdown": "As a member of Matou, you'll be expected to:\n\n- Uphold our values and support our community goals\n- Participate in governance with respect and good faith\n- Contribute to the community in ways that align with collective wellbeing\n- Engage in open and transparent communication"
+        "bodyMarkdown": "As a member of Mātou, you'll be expected to:\n\n- Uphold our values and support our community goals\n- Participate in governance with respect and good faith\n- Contribute to the community in ways that align with collective wellbeing\n- Engage in open and transparent communication"
       }
     ]
   },
@@ -90,7 +90,7 @@ export const KIT: Kit = {
 
 export const KIT_BUILD: KitBuild = {
   "appId": "org.matou.app",
-  "productName": "Matou",
+  "productName": "Mātou",
   "artifactBase": "matou",
   "executableName": "matou",
   "androidApplicationId": "nz.matou.app",
