@@ -155,21 +155,24 @@ api() { # api METHOD URL [json-body-file]
 }
 
 # --- open an edit ------------------------------------------------------------
-EDIT_ID="$(api POST "$API/edits" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+EDIT_JSON="$(api POST "$API/edits")"
+EDIT_ID="$(printf '%s' "$EDIT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 echo "==> edit $EDIT_ID opened on $PKG"
 
 # In a dry run, report what the account actually has so TRACK / NOTES_LANG can
 # be set from evidence instead of guessed.
 if [ "$DRY_RUN" = "1" ]; then
   echo "==> tracks on this app:"
-  api GET "$API/edits/$EDIT_ID/tracks" | python3 -c '
+  TRACKS_JSON="$(api GET "$API/edits/$EDIT_ID/tracks")"
+  printf '%s' "$TRACKS_JSON" | python3 -c '
 import json, sys
 for t in json.load(sys.stdin).get("track", []):
     codes = [c for r in t.get("releases", []) for c in r.get("versionCodes", [])]
     states = ",".join(r.get("status", "?") for r in t.get("releases", [])) or "-"
     print(f"      {t[\"track\"]:<12} versionCodes={codes or []} status={states}")'
   echo "==> store-listing languages:"
-  api GET "$API/edits/$EDIT_ID/listings" | python3 -c '
+  LISTINGS_JSON="$(api GET "$API/edits/$EDIT_ID/listings")"
+  printf '%s' "$LISTINGS_JSON" | python3 -c '
 import json, sys
 langs = [l["language"] for l in json.load(sys.stdin).get("listings", [])]
 print("      " + (", ".join(langs) if langs else "(none)"))'
