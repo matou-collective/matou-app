@@ -115,7 +115,8 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await expect(adminPage.getByText(/built-in default policy/i)).toBeVisible();
 
     // Two tables now: community roles (who you are) and project roles (what
-    // you hold on one project). Both carry the Role column + 13 capabilities.
+    // you hold on one project). Both carry the Role column + 22 capabilities
+    // (#312/#313 registry: 13 original − 2 retired + 11 new).
     const community = adminPage.locator('.roles-matrix.community-roles');
     const project = adminPage.locator('.roles-matrix.project-roles');
     await expect(adminPage.getByRole('heading', { name: 'Community roles' })).toBeVisible();
@@ -123,7 +124,7 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
 
     // Community table: member, operations/community steward, founding member (4).
     await expect(community.locator('tbody tr')).toHaveCount(4);
-    await expect(community.locator('thead th')).toHaveCount(14);
+    await expect(community.locator('thead th')).toHaveCount(23);
     await expect(community.getByText('Founding Member')).toBeVisible();
     await expect(community.getByText('Manage roles')).toBeVisible();
     await snap(adminPage, 'community-roles-default-policy');
@@ -131,7 +132,7 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     // Project table: contributor, project_lead, project_steward (3). The
     // contributor row lives here only (issue #165 ruling), not in community.
     await expect(project.locator('tbody tr')).toHaveCount(3);
-    await expect(project.locator('thead th')).toHaveCount(14);
+    await expect(project.locator('thead th')).toHaveCount(23);
     await expect(project.getByText('Contributor')).toBeVisible();
     await expect(community.getByText('Contributor')).toHaveCount(0);
     await snap(adminPage, 'project-roles-default-policy-with-contributor');

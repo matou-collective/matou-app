@@ -136,6 +136,11 @@ func (s *StorePolicyProvider) fetchFromStore() (*RolePolicy, error) {
 			latest = &p
 		}
 	}
+	// Upgrade a policy saved under an older capability model in memory so
+	// enforcement and the API see current capabilities (retired grants mapped
+	// to successors, new-capability defaults merged). Version is unchanged; the
+	// migration is persisted the next time the policy is saved (#313).
+	NormalizeStoredPolicy(latest)
 	s.cached = latest
 	s.fetchedAt = time.Now()
 	return s.cached, nil

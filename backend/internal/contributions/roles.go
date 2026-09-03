@@ -64,8 +64,14 @@ const (
 	ActionEditProject            Action = "edit_project"
 	ActionDeleteProject          Action = "delete_project"
 	ActionAssignProjectRole      Action = "assign_project_role"
-	ActionLinkProposal           Action = "link_proposal"
-	ActionRegisterInterest       Action = "register_interest"
+	// assign_project_role split (#312/#313): the granular successors. They gate
+	// no endpoint yet — the coarse assign_project_role route stays wired until
+	// the projects enforcement slice splits it — but the capabilities exist so
+	// grants can be configured ahead of enforcement.
+	ActionAssignProjectSteward Action = "assign_project_steward"
+	ActionAssignProjectLead    Action = "assign_project_lead"
+	ActionLinkProposal         Action = "link_proposal"
+	ActionRegisterInterest     Action = "register_interest"
 
 	// Membership & credential actions
 	ActionChangeMemberRole  Action = "change_member_role"
