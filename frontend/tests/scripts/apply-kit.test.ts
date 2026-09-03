@@ -31,7 +31,7 @@ describe('apply-kit (core)', () => {
   it('the default kit reproduces upstream identities', async () => {
     await applyKit(await kitDir(), root, { icons: false });
     const build = JSON.parse(await readFile(join(root, 'kit.build.json'), 'utf8'));
-    expect(build).toMatchObject({ appId: 'org.matou.app', productName: 'Matou', artifactBase: 'matou', executableName: 'matou', androidApplicationId: 'nz.matou.app', updates: true, primaryColour: '#1E5F74' });
+    expect(build).toMatchObject({ appId: 'org.matou.app', productName: 'Mātou', artifactBase: 'matou', executableName: 'matou', androidApplicationId: 'nz.matou.app', updates: true, primaryColour: '#1E5F74' });
     expect(build.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'draft' }]);
     expect(await readFile(join(root, 'src-capacitor/android/app/build.gradle'), 'utf8')).toContain('applicationId "nz.matou.app"');
     const tokens = await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8');
@@ -39,7 +39,7 @@ describe('apply-kit (core)', () => {
     expect(tokens).toContain('--matou-primary: #1E5F74;');
     const kitTs = await readFile(join(root, 'src/generated/kit.ts'), 'utf8');
     expect(kitTs).toContain("export const KIT");
-    expect(kitTs).toContain('"name": "Matou"');
+    expect(kitTs).toContain('"name": "Mātou"');
   });
   it('a community kit gets coa identities, no publish, no updates', async () => {
     await applyKit(await kitDir({ slug: 'ngati-example', brand: { name: 'Ngāti Example', slug: 'ngati-example', primaryColour: '#0A5C6B', secondaryColour: '#F2B134', contactEmail: 'k@x.nz' } }), root, { icons: false });
