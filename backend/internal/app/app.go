@@ -193,6 +193,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// config server directly anyway.
 	clientConfigHandler := api.NewClientConfigHandler()
 
+	// Push-relay URL sourced from the fetched client config (issue #329). The
+	// embedded backend on Android has no process environment, so MATOU_PUSH_RELAY_URL
+	// can't reach it — it learns the relay URL from the same config-server body it
+	// already fetches here. Env still wins in the push block below; this is the
+	// fallback and stays empty when the fetch is skipped (dev/test) or the body
+	// carries no push_relay_url key.
+	var configPushRelayURL string
+
 	// In production, always fetch fresh config from the config server.
 	// For dev/test, fetch only if the config file doesn't exist.
 	shouldFetch := opts.IsProd() || os.IsNotExist(func() error { _, statErr := os.Stat(anysyncConfigPath); return statErr }())
@@ -214,6 +222,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 			}
 		} else {
 			clientConfigHandler.SetRaw(rawConfig)
+			configPushRelayURL = pushRelayURLFromConfig(rawConfig)
 			fmt.Fprintf(out, "  Config saved to %s\n", anysyncConfigPath)
 		}
 	}
@@ -468,7 +477,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// WebView mints one, register/notify drop with ErrNoSession — logged once,
 	// never fatal.
 	var pushHandler *api.PushHandler
-	if relayURL := strings.TrimSpace(os.Getenv("MATOU_PUSH_RELAY_URL")); relayURL != "" {
+	// Env wins (dev/test override); when unset, fall back to the push_relay_url the
+	// backend learned from the fetched client config (issue #329). Both absent →
+	// relayURL is empty and push stays dark.
+	relayURL := strings.TrimSpace(os.Getenv("MATOU_PUSH_RELAY_URL"))
+	if relayURL == "" {
+		relayURL = configPushRelayURL
+	}
+	if relayURL != "" {
 		// The relay carries device FCM tokens and full recipient-AID lists, so
 		// plain http to a non-loopback host is refused unless explicitly opted
 		// into — same rule and escape-hatch shape as the KERIA key-state URL below.
@@ -480,7 +496,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		if err != nil {
 			// Leave push dark rather than crash: every other subsystem is fine
 			// and notifications still reach the app over SSE.
-			log.Printf("[Push] invalid MATOU_PUSH_RELAY_URL %q: %v — push notifications disabled", relayURL, err)
+			log.Printf("[Push] invalid push relay URL %q: %v — push notifications disabled", relayURL, err)
 		} else {
 			fmt.Fprintf(out, "Push relay configured: %s\n", relayURL)
 			aclMembers := notifications.ChannelMembersFunc(func(channelID string) ([]string, error) {
@@ -983,6 +999,24 @@ func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) ([]byte, erro
 	}
 
 	return body, nil
+}
+
+// pushRelayURLFromConfig extracts the top-level "push_relay_url" string from the
+// raw client-config JSON body the backend fetched from the config server (issue
+// #329). It is the embedded-backend fallback for MATOU_PUSH_RELAY_URL, which the
+// Android build can't set. Returns "" when the body is absent, unparseable, or
+// carries no such key — leaving push dark, exactly as before.
+func pushRelayURLFromConfig(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var envelope struct {
+		PushRelayURL string `json:"push_relay_url"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.PushRelayURL)
 }
 
 // eventBrokerAdapter adapts api.EventBroker to anysync.EventBroadcaster.
