@@ -166,10 +166,11 @@ if [ "$DRY_RUN" = "1" ]; then
   TRACKS_JSON="$(api GET "$API/edits/$EDIT_ID/tracks")"
   printf '%s' "$TRACKS_JSON" | python3 -c '
 import json, sys
-for t in json.load(sys.stdin).get("track", []):
+for t in json.load(sys.stdin).get("tracks", []):
     codes = [c for r in t.get("releases", []) for c in r.get("versionCodes", [])]
     states = ",".join(r.get("status", "?") for r in t.get("releases", [])) or "-"
-    print(f"      {t[\"track\"]:<12} versionCodes={codes or []} status={states}")'
+    name = t["track"]
+    print(f"      {name:<12} versionCodes={codes or []} status={states}")'
   echo "==> store-listing languages:"
   LISTINGS_JSON="$(api GET "$API/edits/$EDIT_ID/listings")"
   printf '%s' "$LISTINGS_JSON" | python3 -c '
