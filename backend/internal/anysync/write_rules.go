@@ -581,7 +581,7 @@ func (v *WriteRuleValidator) authorize(gv guardedValue, objectType, objectID, si
 // the object's project_id. Returns ok=false when the project (and thus the
 // signer's role on it) cannot be determined, so the caller falls back to the
 // community-role gate.
-func (v *WriteRuleValidator) signerProjectRoles(objectType, objectID string, current map[string]json.RawMessage, signerAID string) ([]contributions.Role, bool) {
+func (v *WriteRuleValidator) signerProjectRoles(objectType, _ string, current map[string]json.RawMessage, signerAID string) ([]contributions.Role, bool) {
 	switch objectType {
 	case TypeProject:
 		lead := fieldString(current, "project_lead_id")

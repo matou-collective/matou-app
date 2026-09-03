@@ -26,7 +26,7 @@ func (f fakeProjectRoles) ProjectRoles(_ context.Context, _ /*spaceID*/, project
 // target project, returning the HTTP status.
 func serveProjectAction(t *testing.T, community RoleLookup, projects ProjectRoleLookup, action contributions.Action, aid, projectID string) int {
 	t.Helper()
-	next := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
+	next := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
 	resolve := func(*http.Request, string) (string, error) { return projectID, nil }
 	handler := RBACMiddleware(community, RequireProjectAction(action, projects, nil, resolve, next))
 

@@ -1,4 +1,3 @@
-// backend/internal/contributions/project_roles.go
 package contributions
 
 // perProjectRoles are the contribution-system roles that are meaningful only on
