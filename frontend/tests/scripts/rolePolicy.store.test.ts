@@ -21,6 +21,11 @@ const policyResponse = {
   capabilityOrder: ['contribute', 'sign_off', 'manage_roles'],
   projectCapabilities: ['contribute', 'sign_off'],
   callerCapabilities: ['contribute', 'manage_roles'],
+  capabilityMeta: [
+    { id: 'contribute', displayName: 'Contribute', group: 'Projects & Contributions', scope: 'project' },
+    { id: 'sign_off', displayName: 'Sign Off', group: 'Projects & Contributions', scope: 'project' },
+    { id: 'manage_roles', displayName: 'Manage Roles', group: 'Community', scope: 'community' },
+  ],
 };
 
 describe('rolePolicy store', () => {
@@ -46,6 +51,42 @@ describe('rolePolicy store', () => {
     expect(store.capabilityColumns).toEqual(['contribute', 'sign_off', 'manage_roles']);
     expect(store.isProjectCapability('sign_off')).toBe(true);
     expect(store.isProjectCapability('manage_roles')).toBe(false);
+  });
+
+  it('groups capabilities into feature areas for the overview (#319)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(policyResponse), { status: 200 }),
+    ));
+    const store = useRolePolicyStore();
+    await store.load();
+    // One entry per group, in server order, each carrying its capability ids.
+    expect(store.featureGroups).toEqual([
+      { name: 'Projects & Contributions', capabilities: ['contribute', 'sign_off'] },
+      { name: 'Community', capabilities: ['manage_roles'] },
+    ]);
+    // Labels come from the server metadata; unknown ids fall back to the raw id.
+    expect(store.capabilityLabel('manage_roles')).toBe('Manage Roles');
+    expect(store.capabilityLabel('unknown_cap')).toBe('unknown_cap');
+  });
+
+  it('featureGroups is empty when the backend omits capabilityMeta', async () => {
+    const legacy = {
+      policy: {
+        version: 1,
+        roles: [{ id: 'member', displayName: 'Member', builtin: true }],
+        grants: { member: ['contribute', 'manage_roles'] },
+      },
+      source: 'synced',
+      capabilities: { contribute: ['create_contribution'], manage_roles: ['manage_role_policy'] },
+      callerCapabilities: ['manage_roles'],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(legacy), { status: 200 })),
+    );
+    const store = useRolePolicyStore();
+    await store.load();
+    expect(store.featureGroups).toEqual([]);
   });
 
   it('falls back gracefully when the backend omits scope/order fields', async () => {

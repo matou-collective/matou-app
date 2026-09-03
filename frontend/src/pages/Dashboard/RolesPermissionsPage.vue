@@ -28,6 +28,74 @@
       community's first policy version.
     </q-banner>
 
+    <!-- Roles overview: read-only summary of every role's grants per feature
+         area. No toggles — viewing needs no manage_roles (page access is the
+         gate). Reflects unsaved edits live because it reads the same editable
+         grant state the feature tables below mutate. (#319) -->
+    <section
+      v-if="editableGrants && featureGroups.length"
+      class="roles-section overview-section"
+    >
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Roles overview</h3>
+          <p class="section-subtitle">
+            Every role and what it holds in each feature area. Read-only — edit grants in the
+            tables below.
+          </p>
+        </div>
+      </div>
+      <q-markup-table flat bordered dense class="roles-matrix roles-overview">
+        <thead>
+          <tr>
+            <th class="text-left">Role</th>
+            <th v-for="group in featureGroups" :key="group.name" class="text-center">
+              {{ group.name }}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="role in allRoles" :key="role.id">
+            <td class="text-left">
+              {{ role.displayName }}
+              <q-badge
+                :color="role.scope === 'project' ? 'primary' : 'grey-6'"
+                class="q-ml-xs"
+                >{{ role.scope === 'project' ? 'project' : 'community' }}</q-badge
+              >
+              <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
+            </td>
+            <td
+              v-for="group in featureGroups"
+              :key="group.name"
+              class="text-center overview-cell"
+              :data-role="role.id"
+              :data-group="group.name"
+            >
+              <span
+                :class="[
+                  'overview-count',
+                  grantsInGroup(role.id, group.capabilities).length ? 'has-grants' : 'no-grants',
+                ]"
+              >
+                {{ grantsInGroup(role.id, group.capabilities).length }}/{{ group.capabilities.length }}
+              </span>
+              <q-tooltip>
+                <template v-if="grantsInGroup(role.id, group.capabilities).length">
+                  {{
+                    grantsInGroup(role.id, group.capabilities)
+                      .map((c) => store.capabilityLabel(c))
+                      .join(', ')
+                  }}
+                </template>
+                <template v-else>No permissions in {{ group.name }}</template>
+              </q-tooltip>
+            </td>
+          </tr>
+        </tbody>
+      </q-markup-table>
+    </section>
+
     <!-- Community roles: who you are (membership credential). Full capability set. -->
     <section v-if="editableGrants" class="roles-section community-section">
       <div class="section-header">
@@ -209,6 +277,17 @@ const communityRoles = computed(() =>
   roles.value.filter((r) => (r.scope ?? 'community') !== 'project'),
 );
 const projectRoles = computed(() => roles.value.filter((r) => r.scope === 'project'));
+
+// Overview (#319): every role, both scopes, community listed before project.
+const allRoles = computed(() => [...communityRoles.value, ...projectRoles.value]);
+const featureGroups = computed(() => store.featureGroups);
+
+// Which of a feature area's capabilities a role currently holds, read from the
+// live editable grants so the overview reflects unsaved toggles immediately.
+function grantsInGroup(roleId: string, groupCaps: string[]): string[] {
+  const held = editableGrants.value?.[roleId] ?? [];
+  return groupCaps.filter((c) => held.includes(c));
+}
 
 function isProjectCap(cap: string): boolean {
   return store.isProjectCapability(cap);
@@ -438,6 +517,29 @@ async function save() {
 
 .roles-matrix th {
   white-space: nowrap;
+}
+
+.roles-overview .overview-count {
+  display: inline-block;
+  min-width: 2.5rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.roles-overview .overview-count.has-grants {
+  background: var(--matou-teal, #0d9488);
+  color: white;
+}
+
+.roles-overview .overview-count.no-grants {
+  color: var(--matou-muted-foreground);
+  background: var(--matou-muted, rgba(0, 0, 0, 0.04));
+}
+
+.roles-overview .overview-cell {
+  cursor: default;
 }
 
 /* Community-only columns in the project table are visually de-emphasised. */

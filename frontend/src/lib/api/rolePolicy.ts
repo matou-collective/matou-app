@@ -20,6 +20,16 @@ export interface RolePolicy {
   grants: Record<string, string[]>;
 }
 
+// Display/grouping/scope metadata for one capability, exposed by the backend
+// (CapabilityMetadata). The UI groups capabilities into per-feature tables by
+// `group` and uses it to summarize grants in the read-only overview (#312/#319).
+export interface CapabilityMeta {
+  id: string;
+  displayName: string;
+  group: string;
+  scope: RoleScope;
+}
+
 export interface RolePolicyResponse {
   policy: RolePolicy;
   source: 'synced' | 'default';
@@ -30,6 +40,9 @@ export interface RolePolicyResponse {
   capabilityOrder?: string[];
   projectCapabilities?: string[];
   callerCapabilities?: string[];
+  // Display/grouping/scope metadata per capability, in display order — the UI
+  // groups columns into per-feature tables and the overview from it (#312).
+  capabilityMeta?: CapabilityMeta[];
 }
 
 export interface RolePolicyUpdate {
