@@ -40,6 +40,15 @@ matou_hits="$(grep -rn 'matou' $sources 2>/dev/null | grep -v '/tmp/matou-swarm-
 check "matou appears only in limit-lib.sh's verbatim marker paths" \
   '[ -z "$matou_hits" ] || { printf "%s\n" "$matou_hits"; false; }'
 
+# The name `app` is shadowable in production (tui/app.py; the fleet app runs
+# as __main__ under run.sh), so no sibling module may ever import it — the
+# Drive/Usage/Loss blackout shipped exactly this way. fmtlib.py holds what
+# they share (tests/test_prod_imports.py is the venv-side twin of this check).
+# (tests/ are exempt: pytest imports through conftest, whose order is pinned.)
+app_imports="$(grep -rnE '^\s*(from app import|import app\b)' $sources 2>/dev/null | grep -vE "fleet-tui/(app\.py|tests/)" || true)"
+check "no fleet-tui module imports the shadowable name 'app'" \
+  '[ -z "$app_imports" ] || { printf "%s\n" "$app_imports"; false; }'
+
 py=""
 if [ -x "$fleet/.venv/bin/python" ]; then py="$fleet/.venv/bin/python"
 elif [ -x "$repo/tui/.venv/bin/python" ]; then py="$repo/tui/.venv/bin/python"

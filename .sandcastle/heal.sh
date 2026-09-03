@@ -272,6 +272,12 @@ post() { # post <msg> [thread_root] → echoes post id (empty when chat unset)
 
 run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
   local sig="$1" wf="$2" errline="$3" ctx="$EVIDENCE/prompt.txt"
+  # The swarm.db run id (#92), computed BEFORE the prompt so the incident block
+  # can hand it to the agent as the `matou.run` label for every docker run it
+  # issues during a bisect (#123): that label + `matou.factory=heal` is what
+  # lets the container sweep reap a container the agent leaks at
+  # HEAL_REAP_CEILING (#122), instead of waiting out the multi-hour image belt.
+  heal_run_db_id="heal-$REPO_TAG-$(date +%s)-$$"
   {
     cat "$HEAL_PROMPT_FILE"
     echo; echo "## This incident"
@@ -279,6 +285,7 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
     echo "- Workflow: $wf"
     echo "- Run: ${RUN_URL:-n/a}"
     echo "- Signature: $sig"
+    echo "- Heal run id: $heal_run_db_id"
     echo "- Trigger error line: ${errline:-unknown}"
     echo "- Swarm workdir: $WORKDIR"
     echo "- Evidence directory: $EVIDENCE (read every file)"
@@ -301,7 +308,6 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
   # fleet monitor's per-repo reads attribute it), one claude process row (ref the
   # pid — ended_at NULL = believed alive), and one `heal` event pointing at the
   # evidence dir. The verdict is EARNED below and finalised by the EXIT trap.
-  heal_run_db_id="heal-$REPO_TAG-$(date +%s)-$$"
   local heal_started; heal_started="$(date +%s)"
   swarmdb_run_start "$heal_run_db_id" "${REPO_SLUG:-$REPO_TAG}" heal "$heal_started"
   swarmdb proc-open --run "$heal_run_db_id" --kind claude --ref "$$" \
@@ -309,11 +315,17 @@ run_agent() { # <sig> <workflow> <errline> — 0 iff diagnosis.md was produced
   swarmdb_event "$heal_run_db_id" "" heal "investigating $wf ($sig)" "$EVIDENCE"
   while :; do
     status=0
+    # --kill-after (#123): the default SIGTERM at 900s lets the agent's own
+    # cleanup trap run first (the cidfile+`docker rm -f` trap the heal-prompt
+    # tells it to set on every bisect container), THEN a hard SIGKILL 30s later
+    # backstops a wedged agent so it can never camp on the healer lock. A
+    # container the agent still leaks past all of this is caught by the sweep's
+    # `matou.factory=heal` label reap (#122) — belt, braces, and a floor.
     if [ -n "${HEAL_AGENT_CMD:-}" ]; then
       # Test seam: the stub receives the prompt as $1.
-      timeout 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
+      timeout --kill-after=30 900 ${HEAL_AGENT_CMD} "$(cat "$ctx")" > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
     else
-      ( cd "$WORKDIR" && timeout 900 claude -p --model "$SWARM_HEAL_MODEL" \
+      ( cd "$WORKDIR" && timeout --kill-after=30 900 claude -p --model "$SWARM_HEAL_MODEL" \
           --dangerously-skip-permissions "$(cat "$ctx")" ) > "$EVIDENCE/agent-out.log" 2>&1 || status=$?
     fi
     # Shared detector (limit-lib.sh) — see the note in run-swarm.sh's guard. Mid-

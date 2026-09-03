@@ -87,6 +87,24 @@ claude_limit_parked && fail "a STALE marker (older than the TTL) must not read a
 rm -f "$CLAUDE_LIMIT_MARKER"
 pass=$((pass+1))
 
+# --- empty-marker distrust (the 2026-08-30 00:13Z false park): every current
+#     park path stamps the exhausted account letter (#100), so a FRESH-but-EMPTY
+#     marker was written by nothing in this codebase — a stale pin, a stray
+#     touch — and must not park the fleet (it cost #788 a ready-for-human flip
+#     on a red the reporter never diagnosed). parked() distrusts it, SAYS so on
+#     stderr, and reads not-parked; a genuine hit then overwrites the stray file
+#     with the letter and parks exactly as before. ---
+rm -f "$CLAUDE_LIMIT_MARKER"; : > "$CLAUDE_LIMIT_MARKER"   # fresh AND empty
+claude_limit_parked && fail "a FRESH-but-EMPTY marker must be distrusted, not parked on (no current park path writes one)"
+distrust_said="$( { claude_limit_parked || true; } 2>&1 >/dev/null )"
+grep -qi "letter-less" <<<"$distrust_said" \
+  || fail "the distrust must be SAID — stderr names the letter-less marker (got: $distrust_said)"
+claude_limit_park   # a genuine hit overwrites the stray file with the letter
+claude_limit_parked || fail "a genuine park must overwrite the stray empty marker and read parked"
+[ -s "$CLAUDE_LIMIT_MARKER" ] || fail "the genuine park must stamp the account letter over the empty marker"
+rm -f "$CLAUDE_LIMIT_MARKER"
+pass=$((pass+1))
+
 # --- limit-park HISTORY (#100): the park edges are recorded, per account, so the
 #     lost-capacity window survives the live marker clearing. limit-lib carries
 #     no hard swarm-db dependency, so the record is a no-op where swarmdb_event

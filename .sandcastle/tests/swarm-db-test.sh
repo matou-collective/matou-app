@@ -517,4 +517,32 @@ grep -q "ORPH2" <<<"$wrapout" || fail "swarmdb_sweep_orphans wrapper must echo s
 ) || fail "swarmdb_sweep_orphans must no-op (return 0) when python3 is absent"
 pass=$((pass+1))
 
+# --- #116: SWARMDB_ASSERT_UNDER leak tripwire refuses out-of-sandbox writes ----
+# A test suite that sources this lib in host-mode without redirecting SWARM_DB
+# writes fixture rows into the LIVE ~/swarm/state/swarm.db. The tripwire (a
+# test-only env) refuses any write whose SWARM_DB escapes the named sandbox, so
+# a leaking suite fails loud instead of poisoning the Loss telemetry.
+sandbox="$tmp/sandbox"; outside="$tmp/outside"; mkdir -p "$sandbox" "$outside"
+# control: with NO tripwire a write to an outside db lands — the leak this guards
+# against, and proof the write path is live (so the refusals below are the guard,
+# not an inert path).
+( set -e; SWARM_DB="$outside/leak.db" swarmdb migrate )
+[ -f "$outside/leak.db" ] || fail "control: a write with no tripwire must land (proves the guard is what stops it)"
+rm -f "$outside/leak.db"
+# armed + SWARM_DB OUTSIDE the sandbox → write REFUSED, db untouched, loud stderr,
+# breadcrumb recorded for a suite to assert on.
+trip_err="$( SWARMDB_ASSERT_UNDER="$sandbox" SWARM_DB="$outside/leak.db" swarmdb migrate 2>&1 )"
+[ ! -f "$outside/leak.db" ] || fail "the tripwire must REFUSE a write to a db outside SWARMDB_ASSERT_UNDER"
+grep -q "LEAK TRIPWIRE" <<<"$trip_err" || fail "the tripwire must announce itself loudly on stderr, got: $trip_err"
+[ -f "$sandbox/.swarmdb-leak-attempts" ] || fail "the tripwire must record the leak attempt as a breadcrumb"
+grep -q "$outside/leak.db" "$sandbox/.swarmdb-leak-attempts" || fail "the breadcrumb must name the escaped db path"
+# the same guard on the direct-python writers (they bypass swarmdb()).
+( set -e; out="$(SWARMDB_ASSERT_UNDER="$sandbox" SWARM_DB="$outside/leak.db" swarmdb_ingest R '' /nope)"; [ "$out" = "0 0" ] ) \
+  || fail "swarmdb_ingest must honour the tripwire (echo 0 0, no write)"
+[ ! -f "$outside/leak.db" ] || fail "swarmdb_ingest must not write outside the sandbox under the tripwire"
+# armed + SWARM_DB INSIDE the sandbox → write proceeds exactly as normal.
+( set -e; SWARMDB_ASSERT_UNDER="$sandbox" SWARM_DB="$sandbox/ok.db" swarmdb migrate )
+[ -f "$sandbox/ok.db" ] || fail "the tripwire must ALLOW a write whose SWARM_DB is under the sandbox"
+pass=$((pass+1))
+
 echo "swarm-db: $pass groups passed"

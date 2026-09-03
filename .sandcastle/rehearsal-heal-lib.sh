@@ -3,28 +3,149 @@
 # pure functions over an explicit checkout — the PROMPT guides the healer
 # session, these functions are LAW. Sourced by rehearsal-report.sh; unit-tested
 # in isolation (tests/rehearsal-heal-lib-test.sh).
+#
+# HEALER-FIRST REGIME (#1144, Ben ruled 2026-09-02): every red drive goes to the
+# healer before the reporter, with NO signature gate — so the refusal rules ARE
+# the rails. A healer whose goal is "make the drive green" and meets a product
+# defect has one cheap move: weaken the assertion (the #1113 lesson — a red that
+# is inconvenient is not a red that is wrong). The three HARD refusal rules below
+# force those reds onto the ticket path with the paper trail intact. On a
+# refusal heal_rails resets the checkout, names the rule in HEAL_RAIL_REASON, and
+# returns 1; the caller (try_heal) files the blocker itself with that reason as
+# its "healer refused: <rule>" diagnosis (ticket-on-refusal).
+
+# HEAL_RAIL_REASON / HEAL_RAIL_SWARMABLE — set by heal_rails on every refusal so
+# the caller's ticket-on-refusal can name the rule that fired and route the
+# label. SWARMABLE=true means a swarm worker can act without a human ruling (a
+# too-big-but-mechanical fix); false means a session/design ruling is needed
+# (never weaken a check, never change a product surface). Cleared on accept.
+HEAL_RAIL_REASON=""
+HEAL_RAIL_SWARMABLE=""
+
+# The test-file pattern shared by the line cap (tests don't count) and the
+# product-surface rule (test plumbing is fair game). Kept in one place.
+HEAL_TEST_FILE_RE='(_test\.[A-Za-z]+|\.test\.[A-Za-z]+|\.spec\.[A-Za-z]+)$'
+
+# Product-behaviour surfaces (#1144 refusal rule 3): a heal may never change what
+# a community sees or what a deploy does. Path-glob based and CONSUMER-configured
+# — this generic factory file ships them EMPTY (a factory-default consumer has no
+# product surfaces, so the rule is a no-op), and a product repo declares its own
+# via the environment (IDSS: `internal/* app/src/*`). Test files and fixtures are
+# fair game (harness, fixtures, scripts/, wiring and test plumbing), so a changed
+# path that matches a surface glob is still refused ONLY when it is neither a test
+# file nor an exempt (fixture/testdata/stories) path. Newline/space separated.
+HEAL_PRODUCT_SURFACE_GLOBS="${HEAL_PRODUCT_SURFACE_GLOBS:-}"
+HEAL_PRODUCT_SURFACE_EXEMPT_GLOBS="${HEAL_PRODUCT_SURFACE_EXEMPT_GLOBS:-*testdata* *fixtures* *__fixtures__* *.fixture.* *.stories.*}"
+
+# _heal_weakens_check <co> <a> <b> — 0 if the diff a..b would WEAKEN what a check
+# proves: it removes or rewrites an assertion/expectation line, removes a
+# test/leg declaration, or adds a skip/pending marker. This is refusal rule 1 —
+# the #1113 backstop. A heal that ADDS a new assertion (a net-new expect/assert
+# line) is fine; only removed/changed assertion lines and added skips trip it. A
+# selector-drift heal that edits a `page.getByRole(...)`/locator/action line
+# (NOT an `expect(...)` line) is NOT a weakened check and passes — the healer's
+# bread-and-butter mechanical fix stays in-lane.
+_heal_weakens_check() {
+  local co="$1" a="$2" b="$3" diff
+  diff="$(git -C "$co" diff --unified=0 "$a..$b" 2>/dev/null)"
+  # Removed/changed assertion or expectation line (old side: `-` not `---`).
+  if printf '%s\n' "$diff" | grep -qE '^-[^-].*(\bexpect\(|\.toBe|\.toEqual|\.toContain|\.toMatch|\.toHave|\bassert[.(]|\brequire\.(Equal|NoError|Error|True|False|Nil|NotNil|Len|Contains|ElementsMatch)|\bt\.(Fatal|Fatalf|Error|Errorf)\b|\bshould[.(])'; then
+    return 0
+  fi
+  # Removed a test or leg declaration (deleting what a check covers).
+  if printf '%s\n' "$diff" | grep -qE '^-[^-].*(\bfunc Test[A-Z]|\bit\(|\btest\(|\bdescribe\(|\bleg\()'; then
+    return 0
+  fi
+  # Added a skip/pending marker (disabling a check without deleting it).
+  if printf '%s\n' "$diff" | grep -qE '^\+[^+].*(\.skip\(|\bxit\(|\bxdescribe\(|\bit\.skip|\bdescribe\.skip|\btest\.skip|\bt\.Skip(Now)?\()'; then
+    return 0
+  fi
+  return 1
+}
+
+# _heal_touches_product_surface <co> <a> <b> — 0 if a changed file is a product-
+# behaviour surface (refusal rule 3). No-op (always 1) when no surface globs are
+# declared. A changed path trips the rule only when it matches a surface glob AND
+# is neither a test file nor an exempt (fixture/testdata) path.
+_heal_touches_product_surface() {
+  local co="$1" a="$2" b="$3" f g surfaces exempt is_exempt hit=1 had_noglob=1
+  surfaces="${HEAL_PRODUCT_SURFACE_GLOBS:-}"
+  [ -n "${surfaces//[[:space:]]/}" ] || return 1
+  exempt="${HEAL_PRODUCT_SURFACE_EXEMPT_GLOBS:-}"
+  # The globs are `case` patterns, never paths — but `for g in $surfaces`
+  # word-splits AND pathname-expands, so `internal/*` would glob against the
+  # cwd (e.g. a real internal/ dir in the repo the drive runs from) and iterate
+  # actual files instead of the literal pattern, so `case` never matches (the
+  # rule silently no-ops in exactly the product repos it exists for). Disable
+  # pathname expansion around the split; restore the caller's setting.
+  case $- in *f*) had_noglob=0 ;; esac
+  set -f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # Test plumbing is fair game.
+    printf '%s' "$f" | grep -qE "$HEAL_TEST_FILE_RE" && continue
+    # Fixtures/testdata/stories are fair game.
+    is_exempt=false
+    for g in $exempt; do
+      # shellcheck disable=SC2254
+      case "$f" in $g) is_exempt=true; break ;; esac
+    done
+    [ "$is_exempt" = true ] && continue
+    for g in $surfaces; do
+      # shellcheck disable=SC2254
+      case "$f" in $g) hit=0; break ;; esac
+    done
+    [ "$hit" = 0 ] && break
+  done < <(git -C "$co" diff --name-only "$a..$b" 2>/dev/null)
+  [ "$had_noglob" = 0 ] || set +f
+  return "$hit"
+}
 
 # heal_rails <co> <pre_head> — accept HEAD as a healed commit, or reset to
-# <pre_head> and fail. Caps per Ben's rulings: ≤3 files, ≤200 changed
-# NON-TEST lines, exactly 1 commit, never touching the healer's own harness.
-# The line cap was 60 until 2026-08-28: on the #854 device drive it reverted
-# two CORRECT heals (89 and 152 lines, one carrying a red-then-green
-# regression test) that the swarm then re-landed at 155 and 227 lines — every
-# real fix that night was 113–255 lines, while the only heals the cap ever let
-# through were 3, 14 and 50 lines. Test files (`*_test.*`, `*.test.*`,
-# `*.spec.*`) no longer count toward the line cap at all: counting them
-# penalised exactly the disciplined heals. The 3-file cap still bounds the
-# blast radius (GOTCHAS #101).
-HEAL_LINE_CAP="${HEAL_LINE_CAP:-200}"
+# <pre_head>, name the rule in HEAL_RAIL_REASON, and fail. Rules (all reset +
+# fail): exactly 1 commit; ≤3 files; ≤400 changed NON-TEST lines (#1144, raised
+# from 200 — phase-5's real fixes were 113–255 lines and the cap kept reverting
+# correct heals the swarm then re-landed); never touch the healer's own harness;
+# never weaken a check (refusal rule 1); never change a product surface (rule 3).
+# The line cap was 60 until 2026-08-28, then 200 (09d2ea0e), now 400. Test files
+# (`*_test.*`, `*.test.*`, `*.spec.*`) don't count toward the line cap — counting
+# them penalised the disciplined heals. The 3-file cap still bounds blast radius
+# (GOTCHAS #101).
+HEAL_LINE_CAP="${HEAL_LINE_CAP:-400}"
 heal_rails() {
   local co="$1" pre="$2" head files lines
+  HEAL_RAIL_REASON=""; HEAL_RAIL_SWARMABLE=""
   head="$(git -C "$co" rev-parse HEAD)"
   if [ "$head" = "$pre" ]; then
+    HEAL_RAIL_REASON="no commit"; HEAL_RAIL_SWARMABLE=false
     echo "healer: claimed healed but committed nothing"
     return 1
   fi
   if [ "$(git -C "$co" rev-list --count "$pre..$head")" -gt 1 ]; then
+    HEAL_RAIL_REASON="multiple commits"; HEAL_RAIL_SWARMABLE=false
     echo "healer: multiple commits — reverting"
+    git -C "$co" reset --hard "$pre" >/dev/null
+    return 1
+  fi
+  # Self-modification of the harness that judges the heal — a hard refusal.
+  if git -C "$co" diff --name-only "$pre..$head" \
+      | grep -qE '^\.sandcastle/rehearsal-|^\.forgejo/workflows/'; then
+    HEAL_RAIL_REASON="self-modification"; HEAL_RAIL_SWARMABLE=false
+    echo "healer: self-modification attempt — reverting"
+    git -C "$co" reset --hard "$pre" >/dev/null
+    return 1
+  fi
+  # Refusal rule 1: never weaken what a check proves (assertion/leg/skip).
+  if _heal_weakens_check "$co" "$pre" "$head"; then
+    HEAL_RAIL_REASON="assertion rule"; HEAL_RAIL_SWARMABLE=false
+    echo "healer: fix would weaken a check (assertion/leg/skip) — reverting and filing"
+    git -C "$co" reset --hard "$pre" >/dev/null
+    return 1
+  fi
+  # Refusal rule 3: never change a product-behaviour surface.
+  if _heal_touches_product_surface "$co" "$pre" "$head"; then
+    HEAL_RAIL_REASON="product-behaviour surface"; HEAL_RAIL_SWARMABLE=false
+    echo "healer: fix touches a product-behaviour surface — reverting and filing"
     git -C "$co" reset --hard "$pre" >/dev/null
     return 1
   fi
@@ -32,14 +153,15 @@ heal_rails() {
   lines="$(git -C "$co" diff --numstat "$pre..$head" \
     | grep -vE '(_test\.[A-Za-z]+|\.test\.[A-Za-z]+|\.spec\.[A-Za-z]+)$' \
     | awk '{s+=$1+$2} END{print s+0}')"
-  if [ "$files" -gt 3 ] || [ "$lines" -gt "$HEAL_LINE_CAP" ]; then
-    echo "healer: diff cap breach ($files files / $lines non-test lines; cap 3/$HEAL_LINE_CAP) — reverting"
+  if [ "$files" -gt 3 ]; then
+    HEAL_RAIL_REASON="3-file cap"; HEAL_RAIL_SWARMABLE=true
+    echo "healer: diff cap breach ($files files; cap 3) — reverting"
     git -C "$co" reset --hard "$pre" >/dev/null
     return 1
   fi
-  if git -C "$co" diff --name-only "$pre..$head" \
-      | grep -qE '^\.sandcastle/rehearsal-|^\.forgejo/workflows/'; then
-    echo "healer: self-modification attempt — reverting"
+  if [ "$lines" -gt "$HEAL_LINE_CAP" ]; then
+    HEAL_RAIL_REASON="line cap (>$HEAL_LINE_CAP non-test lines)"; HEAL_RAIL_SWARMABLE=true
+    echo "healer: diff cap breach ($lines non-test lines; cap $HEAL_LINE_CAP) — reverting"
     git -C "$co" reset --hard "$pre" >/dev/null
     return 1
   fi
@@ -135,3 +257,15 @@ _heal_fail_file() { echo "${REHEARSAL_STATE:?REHEARSAL_STATE unset}/heal-fail-$1
 heal_fail_count() { local f; f="$(_heal_fail_file "$1")"; [ -f "$f" ] && cat "$f" || echo 0; }
 heal_fail_mark()  { local f; f="$(_heal_fail_file "$1")"; echo "$(( $(heal_fail_count "$1") + 1 ))" > "$f"; }
 heal_fail_clear() { rm -f "$(_heal_fail_file "$1")"; }
+
+# LOOP-GUARD (#1144 rail-6 lockout semantics): a fault that was HEALED on a prior
+# drive and reds again is a failed heal — the second red for one signature goes
+# straight to ticket-on-refusal, never a second heal attempt (no heal loops). A
+# successful heal marks its fault here; the next drive's try_heal refuses to heal
+# a marked fault and files instead. Keyed on the same leg::error fault key as the
+# mechanical counter. Distinct from heal_fail_* (which counts RAILS rejections,
+# not landed-then-reredded heals), so the two never confuse each other.
+_heal_healed_file() { echo "${REHEARSAL_STATE:?REHEARSAL_STATE unset}/heal-healed-$1"; }
+heal_healed_count() { local f; f="$(_heal_healed_file "$1")"; [ -f "$f" ] && cat "$f" || echo 0; }
+heal_healed_mark()  { local f; f="$(_heal_healed_file "$1")"; echo "$(( $(heal_healed_count "$1") + 1 ))" > "$f"; }
+heal_healed_clear() { rm -f "$(_heal_healed_file "$1")"; }

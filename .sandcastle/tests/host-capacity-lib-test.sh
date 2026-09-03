@@ -414,17 +414,25 @@ if command -v jq >/dev/null 2>&1; then
   e3="$(jq -c 'select(.event=="end" and .id=="d3")' "$dlog")"
   [ "$(jq -r '.verdict' <<<"$e3")" = ended ] || fail "d3 end must default to 'ended': $e3"
   # Drive holders: exclusive mode labels EVERY pooled slot; single-slot only slot 1;
-  # _end clears them; HOST_CAPACITY_DRIVE_RUN_DIR rides into run_dir.
+  # _end clears them; HOST_CAPACITY_DRIVE_RUN_DIR rides into run_dir. The repo is
+  # HOST_CAPACITY_DRIVE_REPO and the drive SHAPE is <target> — the two land in
+  # separate holder fields (#118), never both in `repo`.
   rm -f "$slot1.holder" "$slot2.holder"
   HOST_CAPACITY_DRIVE_MODE=exclusive HOST_CAPACITY_DRIVE_RUN_DIR=/runs/d4 \
-    bash -c '. "$1"; host_capacity_drive_log_start d4 box-b Acme/widget' _ "$lib"
+    HOST_CAPACITY_DRIVE_REPO=Acme/widget \
+    bash -c '. "$1"; host_capacity_drive_log_start d4 box-b vm' _ "$lib"
   [ "$(jq -r .kind "$slot1.holder")" = drive ]      || fail "exclusive drive must label slot 1: $(cat "$slot1.holder" 2>&1)"
   [ "$(jq -r .kind "$slot2.holder")" = drive ]      || fail "exclusive drive must label slot 2: $(cat "$slot2.holder" 2>&1)"
   [ "$(jq -r .ref "$slot1.holder")" = d4 ]          || fail "drive holder ref must be the drive id"
-  [ "$(jq -r .repo "$slot1.holder")" = Acme/widget ] || fail "drive holder repo must be the target"
+  [ "$(jq -r .repo "$slot1.holder")" = Acme/widget ] || fail "drive holder repo must be HOST_CAPACITY_DRIVE_REPO: $(cat "$slot1.holder" 2>&1)"
+  [ "$(jq -r .target "$slot1.holder")" = vm ]  || fail "drive holder target must be the drive shape, not the repo: $(cat "$slot1.holder" 2>&1)"
   [ "$(jq -r .worker "$slot1.holder")" = executor ] || fail "drive holder worker must be executor"
   [ "$(jq -r .mode "$slot1.holder")" = exclusive ]  || fail "drive holder mode must be exclusive"
   [ "$(jq -r .run_dir "$slot1.holder")" = /runs/d4 ] || fail "drive holder must carry HOST_CAPACITY_DRIVE_RUN_DIR"
+  # The durable drive-log start line carries repo and target as SEPARATE fields.
+  s4="$(jq -c 'select(.event=="start" and .id=="d4")' "$dlog")"
+  [ "$(jq -r '.repo' <<<"$s4")" = Acme/widget ] || fail "d4 drive-log repo must be HOST_CAPACITY_DRIVE_REPO: $s4"
+  [ "$(jq -r '.target' <<<"$s4")" = vm ]        || fail "d4 drive-log target must be the drive shape (not a repo slug): $s4"
   HOST_CAPACITY_DRIVE_MODE=exclusive bash -c '. "$1"; host_capacity_drive_log_end d4' _ "$lib"
   [ ! -e "$slot1.holder" ] && [ ! -e "$slot2.holder" ] || fail "drive_log_end must clear every drive holder"
   HOST_CAPACITY_DRIVE_MODE=single-slot bash -c '. "$1"; host_capacity_drive_log_start d5 box-b 9' _ "$lib"
@@ -433,6 +441,47 @@ if command -v jq >/dev/null 2>&1; then
   [ "$(jq -r .run_dir "$slot1.holder")" = null ] || fail "no HOST_CAPACITY_DRIVE_RUN_DIR → run_dir null"
   HOST_CAPACITY_DRIVE_MODE=single-slot bash -c '. "$1"; host_capacity_drive_log_end d5' _ "$lib"
   [ ! -e "$slot1.holder" ] || fail "drive_log_end (single-slot) must clear slot 1"
+  # (a) The #118 case: a DRIVE_EXCLUSIVE=slot host acquires via
+  # host_capacity_acquire_heavy and wins slot 2 while a TICKET runs slot 1. The
+  # label follows the FLOCK (HOST_CAPACITY_HELD_SLOT), not the mode prediction:
+  # _start labels ONLY slot 2 and never touches slot 1's ticket holder; _end
+  # (same process → HOST_CAPACITY_DRIVE_HOLDER_SLOTS) clears ONLY slot 2.
+  rm -f "$slot1.holder" "$slot2.holder"
+  : > "$side"; hold "$slot1" "$side"; hheavy=$HOLD_PID
+  trap 'kill "$hheavy" 2>/dev/null || true; rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince" "$slot1.holder" "$slot2.holder"' EXIT
+  wait_ready "$side"
+  bash -c '
+    . "$1"
+    host_capacity_holder_write "$2" ticket 42 Acme/widget swarm-worker r-9   # slot 1: a live ticket
+    host_capacity_acquire_heavy
+    [ "$HOST_CAPACITY_HELD_SLOT" = "$3" ] || { echo "acquire_heavy did not win slot 2 (got $HOST_CAPACITY_HELD_SLOT)"; exit 7; }
+    host_capacity_drive_log_start d6 box-c vm
+    [ "$(jq -r .kind "$3.holder")" = drive ]  || { echo "slot 2 not drive-labelled"; exit 8; }
+    [ "$(jq -r .kind "$2.holder" 2>/dev/null)" = ticket ] || { echo "slot 1 ticket holder trampled by _start"; exit 9; }
+    host_capacity_drive_log_end d6 completed
+    [ ! -e "$3.holder" ] || { echo "_end left slot 2 drive holder"; exit 10; }
+    [ "$(jq -r .kind "$2.holder" 2>/dev/null)" = ticket ] || { echo "slot 1 ticket holder trampled by _end"; exit 11; }
+  ' _ "$lib" "$slot1" "$slot2" || fail "acquire_heavy drive must label ONLY the held slot (rc=$?)"
+  kill "$hheavy" 2>/dev/null || true; wait "$hheavy" 2>/dev/null || true
+  rm -f "$slot1.holder" "$slot2.holder"
+  # (b) An exclusive acquire under single-slot: _start labels exactly the pooled
+  # slots recorded in HOST_CAPACITY_EXCLUSIVE_SLOTS (slot 1 only), not the mode
+  # prediction; _end clears exactly those.
+  rm -f "$slot1.holder" "$slot2.holder"
+  bash -c '
+    . "$1"
+    export HOST_CAPACITY_DRIVE_MODE=single-slot
+    host_capacity_acquire_exclusive "$2" "$3"
+    [ "${HOST_CAPACITY_EXCLUSIVE_SLOTS// /}" = "$2" ] || { echo "exclusive slots not slot 1 only: $HOST_CAPACITY_EXCLUSIVE_SLOTS"; exit 7; }
+    host_capacity_drive_log_start d7 box-d device
+    [ "$(jq -r .kind "$2.holder")" = drive ] || { echo "slot 1 not drive-labelled"; exit 8; }
+    [ ! -e "$3.holder" ] || { echo "single-slot exclusive labelled slot 2"; exit 9; }
+    host_capacity_drive_log_end d7
+    [ ! -e "$2.holder" ] || { echo "_end did not clear slot 1"; exit 10; }
+    host_capacity_release_exclusive
+  ' _ "$lib" "$slot1" "$slot2" || fail "acquire_exclusive single-slot drive must label exactly EXCLUSIVE_SLOTS (rc=$?)"
+  rm -f "$slot1.holder" "$slot2.holder"
+  trap 'rm -f "$slot1" "$slot2" "$side" "$dlog" "$dwanted" "$dsince"' EXIT
   # acquire_exclusive records the pooled slots it holds (never the sibling lock).
   out="$(bash -c '. "$1"; host_capacity_acquire_exclusive "$2" "$3" "$4" && echo "$HOST_CAPACITY_EXCLUSIVE_SLOTS"' _ "$lib" "$slot1" "$slot2" "$side")"
   [ "$out" = " $slot1 $slot2" ] || [ "$out" = "$slot1 $slot2" ] || fail "EXCLUSIVE_SLOTS must list the pooled slots only, got: '$out'"

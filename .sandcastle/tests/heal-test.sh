@@ -8,6 +8,11 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 . "$here/../heal-lib.sh"
 
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+# #116: heal.sh mirrors a heal run row + limit-pause park edges into swarm.db;
+# redirect every host-state path into $work and arm the leak tripwire at the seam
+# (every per-invocation SWARM_DB below stays under $work, so it passes).
+# shellcheck source=test-env.sh
+. "$here/test-env.sh"; test_env_hermetic "$work"
 mkdir -p "$work/wd/.sandcastle/logs" "$work/state"
 git init -q "$work/wd"
 echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
@@ -495,4 +500,37 @@ echo "$out" | grep -q "CLASS: harness-infra" \
   || fail "a healer with a distinct lock path must proceed while another lock is held (#102, got: $out)"
 exec 9>&-
 
-echo "heal.sh: 16 scenarios passed"
+# --- #123: every agent-issued docker run must be reapable -------------------
+# The heal-prompt tells the agent to stamp `--label matou.factory=heal --label
+# matou.run=<heal-run-id>` on every docker run it issues during a bisect, so
+# #122's label reap fires at HEAL_REAP_CEILING instead of waiting out the 3h
+# image belt. heal.sh hands it the concrete run id in the incident block and
+# wraps the agent in `timeout --kill-after` so the agent's cleanup trap runs on
+# SIGTERM before the hard kill. Assert the LIVE prompt carries the label
+# instruction + a concrete `Heal run id`, and that the source uses --kill-after.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+pcap="$work/heal-prompt-capture"
+cat > "$work/prompt-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$1" > "${PCAP:?}"
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: none
+ESCALATE: no
+
+**Root cause** — stub.
+D
+EOF
+chmod +x "$work/prompt-agent.sh"
+run_heal HEAL_AGENT_CMD="bash $work/prompt-agent.sh" PCAP="$pcap" >/dev/null 2>&1 || true
+grep -q -- '--label matou.factory=heal --label matou.run=<heal-run-id>' "$pcap" \
+  || fail "the heal prompt must instruct every docker run to carry matou.factory=heal + matou.run (#123)"
+grep -qE '^- Heal run id: heal-.*-[0-9]+-[0-9]+$' "$pcap" \
+  || fail "the incident block must hand the agent a concrete Heal run id for the matou.run label (#123, got: $(grep -i 'heal run id' "$pcap" 2>/dev/null))"
+grep -q 'timeout --kill-after=30 900' "$here/../heal.sh" \
+  || fail "heal.sh must wrap the agent timeout with --kill-after so a cleanup trap runs before the hard kill (#123)"
+
+echo "heal.sh: 17 scenarios passed"

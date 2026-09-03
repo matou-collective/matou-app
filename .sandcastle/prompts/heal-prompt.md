@@ -28,6 +28,30 @@ headless on the runner host (`{{RUNNER_HOST}}`) as user `dev`.
 
 {{ENRICH:repairs}}
 
+## Every container you start MUST be reapable
+
+Your bisect and verification steps may start throwaway `docker run`
+containers (a fresh-clone build, a repro run). When the Forgejo runner
+cancels or loses the task it SIGKILLs only the `docker run` CLIENT, so a
+container whose `--rm` never fired keeps spinning for days and starves the
+host. The sweep reaps a leaked factory container by its
+`matou.factory` label at the heal ceiling — but only if you stamp it. So
+every `docker run` you issue MUST carry both labels:
+
+    docker run --label matou.factory=heal --label matou.run=<heal-run-id> ...
+
+where `<heal-run-id>` is the "Heal run id" in "This incident" below. That
+label is what lets the sweep reap a container you leak within the heal
+ceiling, instead of waiting out the multi-hour image belt. Equivalently,
+bind the run to a cidfile and a cleanup trap so your own exit removes it:
+
+    cid="$(mktemp -u)"
+    trap 'docker rm -f "$(cat "$cid" 2>/dev/null)" >/dev/null 2>&1; rm -f "$cid"' EXIT
+    docker run --cidfile "$cid" --label matou.factory=heal --label matou.run=<heal-run-id> ...
+
+Never leave a long-lived container without a label or a trap — that is
+exactly the leak the sweep cannot reap before the belt.
+
 ## Forbidden — no exceptions
 
 - Product code changes (file a ticket instead).

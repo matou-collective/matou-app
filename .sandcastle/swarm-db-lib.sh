@@ -21,10 +21,39 @@ swarmdb_available() {
   command -v python3 >/dev/null 2>&1 && [ -f "$_SWARMDB_PY" ]
 }
 
+# ── Test-isolation tripwire (#116) ────────────────────────────────────────────
+# SWARM_DB defaults to the LIVE $HOME/swarm/state/swarm.db, so a test suite that
+# sources this lib in host-mode WITHOUT redirecting SWARM_DB writes fixture rows
+# (phantom limit-pause park edges, x/y run rows) straight into the real
+# telemetry — poisoning the Loss-tab lost-capacity measurement and costing real
+# diagnosis time. SWARMDB_ASSERT_UNDER is a TEST-ONLY tripwire (production never
+# sets it, so this is a pure no-op there): when set, every write whose resolved
+# SWARM_DB is NOT under that directory is REFUSED — the out-of-sandbox db is
+# never touched — announced loudly on stderr, and recorded to a
+# `.swarmdb-leak-attempts` breadcrumb the suite can assert on, so a leaking
+# suite fails loud instead of silently littering the host.
+_swarmdb_abspath() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$(pwd)" "$1" ;; esac; }
+# _swarmdb_assert_ok — 0 iff no tripwire is armed OR $SWARM_DB is under it. On a
+# violation it warns, drops the breadcrumb, and returns non-zero so the caller
+# refuses the write.
+_swarmdb_assert_ok() {
+  [ -n "${SWARMDB_ASSERT_UNDER:-}" ] || return 0
+  local db under
+  db="$(_swarmdb_abspath "$SWARM_DB")"
+  under="$(_swarmdb_abspath "$SWARMDB_ASSERT_UNDER")"
+  case "$db/" in
+    "$under"/*) return 0 ;;
+  esac
+  echo "swarm-db-lib: LEAK TRIPWIRE — refusing a swarm.db write: SWARM_DB=$SWARM_DB is OUTSIDE SWARMDB_ASSERT_UNDER=$SWARMDB_ASSERT_UNDER (test isolation, #116)" >&2
+  printf '%s\n' "$SWARM_DB" >> "$under/.swarmdb-leak-attempts" 2>/dev/null || true
+  return 1
+}
+
 # swarmdb <subcommand> [args...] — the one shell-out. Best-effort: stdout is
 # discarded, a non-zero exit is swallowed, so `set -e` in the caller is safe.
 swarmdb() {
   swarmdb_available || return 0
+  _swarmdb_assert_ok || return 0
   python3 "$_SWARMDB_PY" --db "$SWARM_DB" "$@" >/dev/null 2>&1 || true
 }
 
@@ -50,6 +79,7 @@ swarmdb_run_end() {
 # echoes each `swept <run_id> <trigger>` line, swallows every failure.
 swarmdb_sweep_orphans() {
   swarmdb_available || return 0
+  _swarmdb_assert_ok || return 0
   python3 "$_SWARMDB_PY" --db "$SWARM_DB" sweep-orphans 2>/dev/null || true
 }
 
@@ -72,6 +102,7 @@ swarmdb_event() {
 swarmdb_ingest() {
   local run="$1" issue="$2" session="$3" account="${4:-}"
   swarmdb_available || { echo "0 0"; return 0; }
+  _swarmdb_assert_ok || { echo "0 0"; return 0; }
   local args=(ingest --run "$run" --session "$session")
   [ -n "$issue" ] && args+=(--issue "$issue")
   [ -n "$account" ] && args+=(--account "$account")
@@ -92,6 +123,7 @@ swarmdb_ingest() {
 swarmdb_spend_from_result() {
   local run="$1" issue="$2" account="$3" result="$4"
   swarmdb_available || { echo 0; return 0; }
+  _swarmdb_assert_ok || { echo 0; return 0; }
   [ -n "$result" ] && [ -f "$result" ] || { echo 0; return 0; }
   local usage
   usage="$(jq -c 'if type=="object" and (.usage|type=="object") then .usage else empty end' "$result" 2>/dev/null)" || usage=""

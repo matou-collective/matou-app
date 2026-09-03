@@ -12,6 +12,11 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# #116: run-triage.sh mirrors run rows + limit-pause park edges into swarm.db;
+# redirect every host-state path into $tmp and arm the leak tripwire at the seam
+# (the per-invocation SWARM_DB="$db" below stays under $tmp, so it passes).
+# shellcheck source=test-env.sh
+. "$here/test-env.sh"; test_env_hermetic "$tmp"
 marker="$tmp/limit-marker"            # per-test global marker (never the real /tmp one)
 verdict="$tmp/triage-verdict"
 mkdir -p "$tmp/bin"
@@ -492,7 +497,7 @@ esac
 SH
 chmod +x "$tmp/bin/curl"
 db_reset
-: > "$marker"   # a fresh limit-park marker → the pre-claude limit gate yields
+printf 'A' > "$marker"   # a fresh limit-park marker (letter-stamped, #a7509a4) → the pre-claude limit gate yields
 run_triage CLAUDE_EXIT=0 CLAUDE_OUTPUT=ok >/dev/null 2>&1 \
   || fail "91d: a limit-parked (pre-claude) tick must exit 0"
 [ -z "$(dbq "SELECT run_id FROM runs")" ] \

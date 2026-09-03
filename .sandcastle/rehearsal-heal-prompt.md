@@ -26,42 +26,75 @@ when it got that far) — the two records this harness itself reads — plus
 whatever else that drive harvests beside them, named in the paragraph above.
 Read what exists; say what's absent.
 
-Your job, in order:
+**Your default is to HEAL.** Every red comes to you first; there is no
+signature gate. A mechanical red — a selector that drifted, a fixture wait
+ceiling too low, a wrong constant, a render/quoting slip — is yours to fix
+in-lane, and a fix landed here re-fires the drive on the next tick instead of
+waiting on the swarm queue. Heal it.
+
+But heal ONLY what is genuinely a harness/fixture/wiring defect. A red that is
+inconvenient is not a red that is wrong: the drive earns its keep by
+catching real product defects, and the cheap way to make such a red "green" is
+to weaken what the check proves. That is forbidden. The THREE refusal rules
+below are hard — when any of them would apply to your fix, you MUST refuse (do
+not attempt it) and file instead.
+
+## The three refusal rules — refuse and file if your fix would:
+
+1. **Weaken what a check proves.** Never edit or delete an assertion /
+   expectation line (`expect(...)`, `assert…`, `require.…`, `t.Fatal/Error`,
+   `.toBe/.toEqual/…`), never delete or skip a leg or a test (`func Test…`,
+   `it(`/`test(`/`describe(`, `.skip`, `t.Skip`). Fixing the SELECTOR or action
+   a check drives through (`page.getByRole(...)`, a locator, a click) is fine —
+   changing the value it PROVES is not. If the honest fix is to change what a
+   check asserts, the red is telling you the product changed: file it.
+
+2. **Exceed the line cap.** At most **3 files** and **400 changed non-test
+   lines**, exactly ONE commit. Test files (`*_test.*`, `*.test.*`, `*.spec.*`)
+   don't count toward the line cap. A correct fix that is genuinely bigger than
+   that is swarm work — file it (confident: true; it is mechanical, just large).
+
+3. **Change a product-behaviour surface.** Anything that alters what a
+   community sees or what a deploy does is off limits — that is a design
+   decision, not a heal. Harness, fixtures, `scripts/`, wiring and test
+   plumbing are fair game. When a fix reaches into product behaviour, file it
+   for a ruling.
+
+Also never self-fix: dependency or schema changes, anything touching infra
+state outside this checkout (DNS, the box a drive stands up, secrets),
+multi-commit work, or anything you cannot test here. If your own recent healer
+history (below) shows this same signature already resisted a heal, file.
+
+## Your job, in order
 
 1. **Diagnose.** Read the run evidence and find the defect that made this leg
-   red. Cite files and lines.
+   red. Cite files and lines. This diagnosis is used whether you heal or file,
+   so make it real either way.
 
-2. **Judge.** May you fix it yourself? A self-fix must be ALL of:
-   - small: at most 3 files and ~60 changed lines, ONE commit;
-   - certain: you can name the exact defective line(s) and the fix is
-     mechanical — a wrong selector, a render/quoting slip, a wrong constant,
-     a budget number backed by evidence in this run;
-   - verifiable here: a targeted check exists that you can run on this
-     machine — one of this repo's targeted checks named above, scoped to what
-     you touched, or a seam test. A check you can only describe is not one you
-     have run.
-   NEVER self-fix: dependency or schema changes, design decisions, anything
-   touching infra state outside this checkout (DNS, the box a drive stands up,
-   secrets), multi-commit work, or anything you cannot test here. When in
-   doubt, file.
-   If your own recent healer history (below) shows this same signature
-   already resisted a heal, lean strongly toward filing.
+2. **Decide.** Would the fix trip any refusal rule above? If yes → file. If no,
+   and you can name the exact defective line(s) and run a targeted check on
+   this machine (one of this repo's targeted checks named above, scoped to what
+   you touched) → heal.
 
-3. **If fixing:** edit, run the targeted check, and commit with a message
-   starting `rehearsal healer: ` that names the defect and the signature.
-   NEVER use the words closes/fixes/resolves next to an issue number
-   (Forgejo auto-closes on them — say "advances #N"). Do NOT push — the
-   harness pushes after verifying your commit against its rails. Do NOT
-   touch `.sandcastle/rehearsal-*` or `.forgejo/workflows/` (the harness
-   reverts such commits unconditionally).
+3. **If healing:** edit, run the targeted check, and commit with a message
+   starting `rehearsal healer: ` that names the defect AND the signature in the
+   form `rehearsal healer: <what broke> (sig <signature>)`. NEVER use the words
+   closes/fixes/resolves next to an issue number (Forgejo auto-closes on them —
+   say "advances #N"). Do NOT push — the harness pushes after verifying your
+   commit against its rails (the same three refusal rules, enforced as law: if
+   your commit trips one, the harness reverts it and files with the rule named,
+   so a fix you should have refused costs a paid re-drive — refuse it yourself).
+   Do NOT touch `.sandcastle/rehearsal-*` or `.forgejo/workflows/`.
 
 4. **Answer.** Your FINAL message must be exactly one JSON object, nothing
    else around it:
    - healed: `{"action":"healed","commit":"<the sha you committed>","summary":"<one line: what was broken, what you changed>","checks":"<the check command you ran and its result>"}`
-   - filing: `{"action":"file","title":"<issue title, house style>","body":"<markdown diagnosis: failure, evidence with file:line cites, suspected layer, what plugging it needs>","confident":true|false}`
+   - filing: `{"action":"file","title":"<issue title, house style, starts with the failing leg>","body":"<markdown diagnosis: the failure, the evidence with file:line cites, the suspected layer, and — if you refused — WHICH refusal rule fired and why>","confident":true|false}`
    `confident` means: a swarm worker can act on your body without a human
-   ruling. If you edited anything but are NOT returning "healed", revert
-   your edits first (`git checkout -- .`).
+   ruling. A too-big-but-mechanical refusal (rule 2) is confident:true; a
+   would-weaken-a-check (rule 1) or product-surface (rule 3) refusal needs a
+   ruling — confident:false. If you edited anything but are NOT returning
+   "healed", revert your edits first (`git checkout -- .`).
 
 5. **Healed but a distinct fault remains?** If your fix repaired only how the
    fault PRESENTED (a hidden progress bar, a swallowed error, a wrong budget)

@@ -9,6 +9,14 @@ pass=0
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/run/artifacts" "$tmp/run/logs"
 export PATH="$tmp/bin:$PATH" FORGEJO_TOKEN=t REHEARSAL_STATE="$tmp/state"
+# Silent-park page marker root (#1138) — hermetic under tmp, never the real repo
+# test-results/. Every flip-to-human case writes its marker here.
+export REHEARSAL_FLIP_PAGE_ROOT="$tmp/flip"
+# This offline test drives the REAL notify-mattermost.sh (the flip page, #1138).
+# Strip any host chat creds so it degrades to a stderr "would have sent" and
+# exits 0 — the test must NEVER post to the live channel, and must not depend on
+# whether the host has Mattermost wired.
+unset MATTERMOST_URL MATTERMOST_BOT_TOKEN MATTERMOST_CHANNEL_ID
 # Hermetic claude-limit marker: never touch the host-global one (limit-lib).
 export CLAUDE_LIMIT_MARKER="$tmp/claude-limit"
 # The healer skips cleanly when it cannot clone its dedicated checkout — these
@@ -132,6 +140,37 @@ bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero
 [ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -le 2 ] || fail "cap breached: more than 2 new issues"
 pass=$((pass+1))
 
+# 4b (#1138 clause 2): the cap is per-arc — REHEARSAL_FILING_CAP lowers it. Same
+#     3-red-legs run, cap 1, files at most 1 new issue. (Default unset keeps 2,
+#     pinned by case 4 above; an arc raising it just relaxes this bound.)
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"
+cat > "$tmp/run/artifacts/legs.json" <<'EOF'
+[{"leg":"a","status":"red","ms":1,"error":"alpha fault"},
+ {"leg":"b","status":"red","ms":1,"error":"beta fault"},
+ {"leg":"c","status":"red","ms":1,"error":"gamma fault"}]
+EOF
+REHEARSAL_FILING_CAP=1 bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (cap=1)"
+[ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -le 1 ] || fail "REHEARSAL_FILING_CAP=1 not honoured: more than 1 new issue"
+pass=$((pass+1))
+
+# 4c (idss #1184): ONE fault, ONE ticket — the same fault under TWO leg names
+#     (a leg and its nested sub-leg, idss drive 20260903T042240Z: `standing` +
+#     `wizard-rent`, one broker refusal) files ONE issue and appends the second
+#     leg's evidence to it; run-specific digits in the second copy must not
+#     defeat the match (it keys on the normalised error, not the raw text).
+#     Distinct faults (case 4) still file separately.
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"
+cat > "$tmp/run/artifacts/legs.json" <<'EOF'
+[{"leg":"standing","status":"red","ms":9500,"error":"S4a rent was declined in place by the broker: provider refused: f3:5d are invalid key identifiers for box creation (request 1188)"},
+ {"leg":"wizard-rent","status":"red","ms":8100,"error":"S4a rent was declined in place by the broker: provider refused: f3:5d are invalid key identifiers for box creation (request 2291)"}]
+EOF
+bash "$here/../rehearsal-report.sh" "$tmp/run" > "$tmp/4c.out" || fail "reporter exited non-zero (one fault, two legs)"
+[ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -eq 1 ] || fail "one fault under two legs filed $(grep -c '/issues -d' "$CURL_LOG" || true) issues, expected 1"
+grep -q '991/comments' "$CURL_LOG" || fail "the second leg's evidence was not appended to the first leg's issue"
+grep -q "same fault as #991 under leg 'wizard-rent'" "$tmp/4c.out" || fail "the dedup must say which leg folded into which issue: $(cat "$tmp/4c.out")"
+[ "$(grep -c '991/comments' "$CURL_LOG" || true)" -eq 1 ] || fail "expected exactly one evidence comment for the folded leg"
+pass=$((pass+1))
+
 # 5: the drive-issue loop (Ben's ruling): every red wires its issue as a
 #    native dependency of REHEARSAL_DRIVE_ISSUE and ONE evidence comment
 #    lands there — the blocked invariant that stops a hot loop.
@@ -153,11 +192,28 @@ pass=$((pass+1))
 date > "$CLAUDE_LIMIT_MARKER"   # fresh marker = host parked (limit-lib)
 echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"
 red_run "some entirely new fault"
-bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (invariant)"
+out6="$(bash "$here/../rehearsal-report.sh" "$tmp/run" 2>&1)" || fail "reporter exited non-zero (invariant)"
 grep -q 'X DELETE.*500/labels/36' "$CURL_LOG" || fail "ready-for-agent not removed from the drive issue"
 grep -Eq '500/labels -d.*37' "$CURL_LOG" || fail "ready-for-human not added to the drive issue"
 grep -q '500/dependencies' "$CURL_LOG" && fail "nothing was filed — no dependency should be wired"
-rm -f "$CLAUDE_LIMIT_MARKER"
+pass=$((pass+1))
+
+# 6b (#1138 item 3): the flip PAGES immediately — a silent-park marker is written
+#     under REHEARSAL_FLIP_PAGE_ROOT/test-results/flip-pages/<drive>.paged and the
+#     reporter says it paged. Same marker the executor's flip page shares, so the
+#     two halves never double up.
+grep -q 'silent-park page posted for parked drive #500' <<<"$out6" || fail "flip did not page the parked drive"
+[ -f "$tmp/flip/test-results/flip-pages/500.paged" ] || fail "flip did not write the one-page-per-flip marker"
+pass=$((pass+1))
+
+# 6c (#1138 item 3): one page per FLIP, not per tick — a second flip while the
+#     marker is present must NOT page again (the executor clears the marker on
+#     re-arm; the reporter only ever adds, never re-pages a still-parked drive).
+: > "$CURL_LOG"
+red_run "some entirely new fault"
+out6c="$(bash "$here/../rehearsal-report.sh" "$tmp/run" 2>&1)" || fail "reporter exited non-zero (invariant re-run)"
+grep -q 'silent-park page posted' <<<"$out6c" && fail "re-park with marker present must NOT page again (page storm)"
+rm -f "$CLAUDE_LIMIT_MARKER" "$tmp/flip/test-results/flip-pages/500.paged"
 pass=$((pass+1))
 
 # 7: the dependency POST names the target repo (owner+repo) — the live-Forgejo
