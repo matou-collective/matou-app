@@ -26,10 +26,23 @@
           <span>{{ item.label }}</span>
           <span v-if="item.badge > 0" class="nav-badge">{{ badgeLabel(item.badge) }}</span>
         </button>
-        <button class="nav-item report-issue-btn" @click="showReportDialog = true">
-          <Bug class="nav-icon" />
-          <span>Report an issue</span>
-        </button>
+        <div class="sidebar-nav-bottom">
+          <!-- Community Settings gear — shown only for holders of
+               open_community_settings (founder by default); sits directly above
+               "Report an issue" (#318). -->
+          <button
+            v-if="rolePolicyStore.can('open_community_settings')"
+            class="nav-item community-settings-btn"
+            @click="router.push({ name: 'community-settings' })"
+          >
+            <Settings class="nav-icon" />
+            <span>Community Settings</span>
+          </button>
+          <button class="nav-item report-issue-btn" @click="showReportDialog = true">
+            <Bug class="nav-icon" />
+            <span>Report an issue</span>
+          </button>
+        </div>
       </nav>
 
       <!-- Footer: user profile -->
@@ -144,6 +157,7 @@ import {
   Hammer,
   Bug,
   Menu,
+  Settings,
   ShieldCheck,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
@@ -548,11 +562,20 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--matou-sidebar-border);
 }
 
+// The bottom cluster (Community Settings + Report an issue) is pushed to the
+// foot of the nav column so it keeps its place whether or not the gear shows.
+.sidebar-nav-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.community-settings-btn,
 .report-issue-btn {
   font-size: 0.85rem;
   color: var(--matou-sidebar-foreground);
   opacity: 0.75;
-  margin-top: auto;
   padding: 0.5rem 0.75rem;
   border-radius: 10px;
 

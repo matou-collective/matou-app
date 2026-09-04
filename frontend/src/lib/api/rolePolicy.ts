@@ -20,9 +20,9 @@ export interface RolePolicy {
   grants: Record<string, string[]>;
 }
 
-// CapabilityMeta is the display/grouping/scope metadata for one capability,
-// served alongside the policy. The UI groups columns into per-feature tables
-// (#312) by `group`.
+// Display/grouping/scope metadata for one capability, exposed by the backend
+// (CapabilityMetadata). The UI groups capabilities into per-feature tables by
+// `group` — e.g. the "Projects & Contributions" table (#312/#314).
 export interface CapabilityMeta {
   id: string;
   displayName: string;
@@ -40,7 +40,8 @@ export interface RolePolicyResponse {
   capabilityOrder?: string[];
   projectCapabilities?: string[];
   callerCapabilities?: string[];
-  // Per-capability display/group/scope metadata, in display order.
+  // Display/grouping/scope metadata per capability, in display order — the UI
+  // groups columns into per-feature tables from it (#312).
   capabilityMeta?: CapabilityMeta[];
 }
 

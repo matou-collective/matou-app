@@ -405,6 +405,27 @@
         </div>
       </section>
 
+      <!-- Community Settings (mobile only) — the sidebar gear is hidden on
+           mobile, so surface the same entry here for holders of
+           open_community_settings, mirroring "Report an issue"'s placement
+           rule (#318). -->
+      <section
+        v-if="isMobile && rolePolicyStore.can('open_community_settings')"
+        class="settings-card"
+      >
+        <div class="card-header">
+          <h3 class="card-title"><Settings :size="18" /> Community</h3>
+        </div>
+        <button
+          type="button"
+          class="report-issue-btn"
+          @click="router.push({ name: 'community-settings' })"
+        >
+          <Settings :size="16" />
+          <span>Community Settings</span>
+        </button>
+      </section>
+
       <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
            button is hidden on mobile, so surface the same dialog here. -->
       <section v-if="isMobile" class="settings-card">
@@ -461,6 +482,7 @@ import { useTypesStore } from 'stores/types';
 import { useIdentityStore } from 'stores/identity';
 import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
+import { useRolePolicyStore } from 'src/stores/rolePolicy';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 import { getFileUrl, uploadFile } from 'src/lib/api/client';
 import { useIsMobile } from 'src/composables/useIsMobile';
@@ -473,6 +495,7 @@ const typesStore = useTypesStore();
 const identityStore = useIdentityStore();
 const notificationsStore = useNotificationsStore();
 const chatStore = useChatStore();
+const rolePolicyStore = useRolePolicyStore();
 
 const isMobile = useIsMobile();
 
