@@ -36,11 +36,15 @@ const prodEnv = loadProdEnv('.env.production');
 
 export default configure(() => {
   return {
-    boot: ['motion', 'keri', 'push'],
+    boot: ['fonts', 'motion', 'keri', 'push'],
 
     css: ['app.scss', 'tailwind.css'],
 
-    extras: ['roboto-font', 'material-icons'],
+    // Roboto is self-hosted via the `fonts` boot file (@fontsource/roboto:
+    // woff2 + font-display:swap) so onboarding and in-app screens render the
+    // same font consistently on the Android WebView (#370). Only `material-icons`
+    // stays in extras.
+    extras: ['material-icons'],
 
     build: {
       target: {
