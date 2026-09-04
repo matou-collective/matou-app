@@ -94,6 +94,13 @@ const (
 	ActionRejectProposal   Action = "reject_proposal"
 	ActionEditProposal     Action = "edit_proposal"
 	ActionWithdrawProposal Action = "withdraw_proposal"
+	// ActionCreateProposal and ActionSubmitProposal are the proposal-authoring
+	// actions (create_proposals capability, #315/#312): creating a draft proposal
+	// and submitting it (draft → submitted). Not part of the legacy
+	// actionPermissions table — create/submit had no role gate before, only the
+	// resource layer — so these live solely in capabilityActions.
+	ActionCreateProposal Action = "create_proposal"
+	ActionSubmitProposal Action = "submit_proposal"
 
 	// Archive & lifecycle actions
 	ActionArchiveProject       Action = "archive_project"

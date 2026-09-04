@@ -114,11 +114,12 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
     await expect(adminPage.getByText(/built-in default policy/i)).toBeVisible();
 
-    // The Projects & Contributions feature table (#314) has peeled the 11
-    // project-and-contribution capabilities out of the generic community/project
-    // matrices into its own table, so those two carry the Role column + the
-    // remaining 11 capabilities (22 total − 11 projects). A per-feature table
-    // owns each group as its slice lands; the generic tables shrink accordingly.
+    // The Projects & Contributions (#314, 11 capabilities) and Proposals (#315,
+    // 2 capabilities) feature tables have peeled their columns out of the generic
+    // community/project matrices, so those two carry the Role column + the
+    // remaining 9 capabilities (22 total − 11 projects − 2 proposals). A
+    // per-feature table owns each group as its slice lands; the generic tables
+    // shrink accordingly.
     const community = adminPage.locator('.roles-matrix.community-roles');
     const project = adminPage.locator('.roles-matrix.project-roles');
     const projects = adminPage.locator('.roles-matrix.projects-roles');
@@ -130,7 +131,7 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
 
     // Community table: member, operations/community steward, founding member (4).
     await expect(community.locator('tbody tr')).toHaveCount(4);
-    await expect(community.locator('thead th')).toHaveCount(12);
+    await expect(community.locator('thead th')).toHaveCount(10);
     await expect(community.getByText('Founding Member')).toBeVisible();
     await expect(community.getByText('Manage roles')).toBeVisible();
     await snap(adminPage, 'community-roles-default-policy');
@@ -138,7 +139,7 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     // Project table: contributor, project_lead, project_steward (3). The
     // contributor row lives here only (issue #165 ruling), not in community.
     await expect(project.locator('tbody tr')).toHaveCount(3);
-    await expect(project.locator('thead th')).toHaveCount(12);
+    await expect(project.locator('thead th')).toHaveCount(10);
     await expect(project.getByText('Contributor')).toBeVisible();
     await expect(community.getByText('Contributor')).toHaveCount(0);
     await snap(adminPage, 'project-roles-default-policy-with-contributor');
@@ -244,7 +245,10 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible({
       timeout: TIMEOUT.medium,
     });
-    await expect(adminPage.locator('.roles-matrix tbody tr', { hasText: CUSTOM_ROLE_NAME })).toBeVisible();
+    // Scope to the community table: the role now also appears in every feature table.
+    await expect(
+      adminPage.locator('.roles-matrix.community-roles tbody tr', { hasText: CUSTOM_ROLE_NAME }),
+    ).toBeVisible();
     await snap(adminPage, 'roles-page-after-reload');
 
     // Change Role modal: open a member's profile from the dashboard. Use the
