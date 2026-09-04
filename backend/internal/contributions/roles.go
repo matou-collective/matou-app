@@ -140,6 +140,14 @@ const (
 	// Role-policy management (the manage_roles meta-permission)
 	ActionManageRolePolicy Action = "manage_role_policy"
 
+	// ActionPostNotice gates authoring a notice (create/publish);
+	// ActionManageNotice gates moderation of any member's notice (pin/archive)
+	// (#317). These are new feature actions: they are NOT in the legacy
+	// actionPermissions table — they reach enforcement only via the capability
+	// registry (post_notices / manage_notices) and the synced RolePolicy.
+	ActionPostNotice   Action = "post_notice"
+	ActionManageNotice Action = "manage_notice"
+
 	// ActionSendMessage and the other chat actions (#316). Before this slice the
 	// chat routes had no action wiring. send_message is the default-all capability (send_messages) — every
 	// member role holds it, so gating the send endpoint is behaviour-neutral

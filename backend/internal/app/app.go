@@ -837,7 +837,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	eventsHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux, roleLookup)
 	multisigHandler.RegisterRoutes(mux)
-	noticesHandler.RegisterRoutes(mux)
+	noticesHandler.RegisterRoutes(mux, roleLookup)
 	filesHandler.RegisterRoutes(mux)
 	chatHandler.RegisterRoutes(mux, roleLookup)
 	commentCursorsHandler.Routes(mux)

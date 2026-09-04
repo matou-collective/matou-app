@@ -100,11 +100,18 @@ func TestAllCapabilitiesStable(t *testing.T) {
 	// capabilities (#318) are wired now and so are excluded from this set.
 	for _, c := range []Capability{
 		CapViewContributionAmounts,
-		CapPostNotices, CapManageNotices,
 	} {
 		if actions := CapabilityActions()[c]; len(actions) != 0 {
 			t.Errorf("%q should map to no actions yet, got %v", c, actions)
 		}
+	}
+	// Notices are now wired (#317): post_notices → post_notice, manage_notices
+	// → manage_notice.
+	if actions := CapabilityActions()[CapPostNotices]; len(actions) != 1 || actions[0] != ActionPostNotice {
+		t.Errorf("post_notices should map to [post_notice], got %v", actions)
+	}
+	if actions := CapabilityActions()[CapManageNotices]; len(actions) != 1 || actions[0] != ActionManageNotice {
+		t.Errorf("manage_notices should map to [manage_notice], got %v", actions)
 	}
 	// The community-settings capabilities are wired by #318.
 	if got := CapabilityActions()[CapOpenCommunitySettings]; len(got) != 1 || got[0] != ActionOpenCommunitySettings {

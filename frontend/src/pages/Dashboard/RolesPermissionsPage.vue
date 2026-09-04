@@ -397,6 +397,49 @@
       </q-markup-table>
     </section>
 
+    <!-- Notices feature table (#317): the community-scoped notice-board
+         capabilities (post notices, manage notices) per community role. Notice
+         capabilities are community-only, so project roles are not listed. -->
+    <section v-if="editableGrants" class="roles-section notices-section" data-feature="notices">
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Notices</h3>
+          <p class="section-subtitle">
+            Who can post notices (announcements, updates, events) and who can moderate them
+            (pin, archive, edit others’). Posting is granted to every member role by default;
+            managing defaults to stewards and the founder.
+          </p>
+        </div>
+      </div>
+      <q-markup-table flat bordered dense class="roles-matrix notices-roles">
+        <thead>
+          <tr>
+            <th class="text-left">Role</th>
+            <th v-for="cap in noticesCapabilityIds" :key="cap" class="text-center" :data-cap="cap">
+              {{ capabilityLabel(cap) }}
+              <q-tooltip>{{ capabilityTooltip(cap) }}</q-tooltip>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="role in communityRoles" :key="role.id" :data-role="role.id">
+            <td class="text-left">
+              {{ role.displayName }}
+              <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
+            </td>
+            <td v-for="cap in noticesCapabilityIds" :key="cap" class="text-center" :data-cap="cap">
+              <q-toggle
+                :model-value="hasGrant(role.id, cap)"
+                :disable="!store.canManageRoles"
+                dense
+                @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </q-markup-table>
+    </section>
+
     <q-dialog v-model="newRoleDialog">
       <q-card style="min-width: 360px">
         <q-card-section class="text-h6">
@@ -492,6 +535,15 @@ const chatCapabilityIds = computed(() => {
   return fromMeta.length ? fromMeta : CHAT_CAPABILITY_IDS;
 });
 
+// The Notices feature has its own permission table (#317). Its capability IDs
+// come from the server group metadata, with a fallback to the known IDs so the
+// table still renders against an older backend.
+const NOTICES_CAPABILITY_IDS = ['post_notices', 'manage_notices'];
+const noticesCapabilityIds = computed(() => {
+  const fromMeta = store.capabilitiesInGroup('Notices');
+  return fromMeta.length ? fromMeta : NOTICES_CAPABILITY_IDS;
+});
+
 // Capabilities owned by a per-feature table above; the generic community/project
 // matrices show every capability that does NOT yet have its own feature table.
 const featureOwnedCapabilityIds = computed(
@@ -500,6 +552,7 @@ const featureOwnedCapabilityIds = computed(
       ...projectsCapabilityIds.value,
       ...PROPOSAL_CAPABILITY_IDS,
       ...chatCapabilityIds.value,
+      ...noticesCapabilityIds.value,
     ]),
 );
 const capabilityIds = computed(() =>
@@ -570,6 +623,9 @@ const CAPABILITY_LABELS: Record<string, string> = {
   send_messages: 'Send messages',
   manage_channels: 'Manage channels',
   moderate_messages: 'Moderate messages',
+  // Notices feature (#317).
+  post_notices: 'Post notices',
+  manage_notices: 'Manage notices',
   manage_communications: 'Communications',
   manage_roles: 'Manage roles',
   // Projects & Contributions feature (#314).

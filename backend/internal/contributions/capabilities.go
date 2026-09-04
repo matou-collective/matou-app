@@ -229,12 +229,14 @@ var capabilityActions = map[Capability][]Action{
 	// unchanged until an org narrows it.
 	CapCreateProposals: {ActionCreateProposal, ActionSubmitProposal},
 
-	// New feature capabilities that gate no wired action yet — the grants can be
-	// configured ahead of the enforcement slices that wire them (notices,
-	// contribution-amount visibility).
+	// Notice board (#317): post_notices gates authoring (create/publish);
+	// manage_notices gates moderation of any member's notice (pin/archive).
+	CapPostNotices:   {ActionPostNotice},
+	CapManageNotices: {ActionManageNotice},
+
+	// view_contribution_amounts gates no wired action here — it is enforced as a
+	// read-visibility rule on contribution reads (#314, api.visibleContributionAmounts).
 	CapViewContributionAmounts: {},
-	CapPostNotices:             {},
-	CapManageNotices:           {},
 }
 
 // actionToCapability is the reverse index, built once at init.
