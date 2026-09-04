@@ -41,13 +41,9 @@ func (h *MilestonesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLo
 			switch parts[1] {
 			case "archive":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionArchiveMilestone, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleArchiveMilestone(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionArchiveMilestone, h.service, h.spaceManager, h.milestoneProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleArchiveMilestone(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -57,17 +53,36 @@ func (h *MilestonesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLo
 
 		switch r.Method {
 		case http.MethodPut:
-			if roleLookup != nil {
-				RBACMiddleware(roleLookup, RequireAction(contributions.ActionEditMilestone, func(w http.ResponseWriter, r *http.Request) {
-					h.HandleUpdateMilestone(w, r, id)
-				}))(w, r)
-			} else {
+			projectRBAC(roleLookup, contributions.ActionEditMilestone, h.service, h.spaceManager, h.milestoneProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 				h.HandleUpdateMilestone(w, r, id)
-			}
+			})(w, r)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
 	}))
+}
+
+// milestoneProjectID resolves the project a milestone belongs to for
+// project-scoped RBAC: the milestone's own project_id when set, otherwise via
+// its implementation plan.
+func (h *MilestonesHandler) milestoneProjectID(milestoneID string) ProjectIDResolver {
+	return func(r *http.Request, spaceID string) (string, error) {
+		ms, err := h.service.GetMilestone(r.Context(), spaceID, milestoneID)
+		if err != nil {
+			return "", err
+		}
+		if ms.ProjectID != "" {
+			return ms.ProjectID, nil
+		}
+		if ms.ImplementationPlanID == "" {
+			return "", nil
+		}
+		plan, err := h.service.GetImplementationPlan(r.Context(), spaceID, ms.ImplementationPlanID)
+		if err != nil {
+			return "", err
+		}
+		return plan.ProjectID, nil
+	}
 }
 
 // HandleArchiveMilestone handles POST /api/v1/milestones/{id}/archive

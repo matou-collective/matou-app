@@ -22,7 +22,7 @@ export interface RolePolicy {
 
 // Display/grouping/scope metadata for one capability, exposed by the backend
 // (CapabilityMetadata). The UI groups capabilities into per-feature tables by
-// `group` and uses it to summarize grants in the read-only overview (#312/#319).
+// `group` — e.g. the "Projects & Contributions" table (#312/#314).
 export interface CapabilityMeta {
   id: string;
   displayName: string;
@@ -41,7 +41,7 @@ export interface RolePolicyResponse {
   projectCapabilities?: string[];
   callerCapabilities?: string[];
   // Display/grouping/scope metadata per capability, in display order — the UI
-  // groups columns into per-feature tables and the overview from it (#312).
+  // groups columns into per-feature tables from it (#312).
   capabilityMeta?: CapabilityMeta[];
 }
 

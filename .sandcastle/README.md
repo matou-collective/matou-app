@@ -82,8 +82,16 @@ mounts instead of `.env` values.
   Windows are roughly 1.5–2× each workflow's own cron interval, giving
   Forgejo room to fire normally before the backstop dispatches on top of it.
 - `Dockerfile` — the sandbox image: node 22, the Go toolchain matching
-  `backend/go.mod`, git, curl, jq, make, Claude Code CLI. No doctl/openssh —
-  this repo has no clan-lab spike tasks.
+  `backend/go.mod`, a pinned golangci-lint, git, curl, jq, make, Claude Code
+  CLI. No doctl/openssh — this repo has no clan-lab spike tasks. It is this
+  repo's pinned toolchain (ADR 0040's role, minus nix): ci.yml runs in it too.
+- `go-gate.sh` (repo-local, not vendored) — the Go pre-push gate stages for
+  this repo, wired through `GATE_GO_CMD` in the Dockerfile (#346). The
+  vendored `gate-lib.sh` defaults to `nix develop .#go-ci` over OurCloud's
+  layout; matou-app has no flake and its module is `backend/`. Agents: this
+  is the sanctioned gate, not a bypass — never set `GATE_GO_CMD` ad hoc.
+  Pushing Go from a HOST checkout (matou-workstation) still hits the nix
+  default; export the same `GATE_GO_CMD` there with Go + golangci-lint on PATH.
 - `.env` (git-ignored, from `.env.example`) — Sandcastle forwards every key
   listed there into the sandbox as a `docker run -e` value: only
   `CLAUDE_CODE_OAUTH_TOKEN` and non-secret config (`FORGEJO_API`,
@@ -177,7 +185,8 @@ end-to-end — no laptop required:
 
 A sixth workflow, `ci.yml`, runs on every PR and push to `main` (frontend
 `npm ci && npm run test:script && npm run lint`; backend
-`go build ./... && make test`, both inside the sandbox image) so agent PRs
+`go build ./... && make test && golangci-lint run`, both inside the sandbox
+image) so agent PRs
 aren't reviewed blind — it's part of code review, not the swarm loop.
 
 Secrets arrive as org-level Actions secrets (no `.env` on the runner;

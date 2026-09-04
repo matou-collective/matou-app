@@ -221,6 +221,9 @@ func TestNormalizedLegacyPolicyEnforcementUnchanged(t *testing.T) {
 	for _, kr := range keriRoles {
 		bundle := MapKERIRole(kr)
 		for _, action := range legacyActions {
+			if reHomedSinceLegacy[action] {
+				continue // #318 deliberately re-homes save_org_config; see policy_test.go
+			}
 			legacy := legacyCan(bundle, action)
 			viaPolicy := CanPerformActionWithPolicy(p, bundle, action)
 			if legacy != viaPolicy {
@@ -228,6 +231,16 @@ func TestNormalizedLegacyPolicyEnforcementUnchanged(t *testing.T) {
 					kr, action, legacy, viaPolicy)
 			}
 		}
+	}
+	// After migration a legacy saved policy must also enforce the #318 re-homing:
+	// the founder gains manage_community_settings (new-capability default merge)
+	// and can save org config; the operations steward, which held manage_members
+	// but never the new capability, is refused.
+	if !CanPerformActionWithPolicy(p, MapKERIRole("Founding Member"), ActionSaveOrgConfig) {
+		t.Error("migrated policy: Founding Member must be able to save org config")
+	}
+	if CanPerformActionWithPolicy(p, MapKERIRole("Operations Steward"), ActionSaveOrgConfig) {
+		t.Error("migrated policy: Operations Steward must NOT save org config after the #318 re-homing")
 	}
 }
 

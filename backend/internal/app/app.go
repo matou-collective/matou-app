@@ -381,7 +381,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// interim role-based behaviour and are never broken by a missing proof.
 	writeRuleKeys := anysync.NewStaticKeyProvider()
 	enforceProofs := signedAuthEnforced()
-	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleKeys, writeRuleRecorder, enforceProofs)
+	// Project-scoped write rules (issue #166): a Contribution/Plan sign-off is
+	// gated on the signer's role on the OWNING project, resolved from this
+	// snapshot of per-project assignments (rebuilt by the refresher below,
+	// alongside the role snapshot). A project not yet in the snapshot falls back
+	// to the community-role gate, so no legitimate sign-off is dropped on lag.
+	writeRuleProjects := anysync.NewProjectAssignmentStore()
+	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleKeys, writeRuleRecorder, enforceProofs).
+		WithProjectAssignments(writeRuleProjects)
 	spaceManager.ObjectTreeManager().SetChangeValidator(writeRuleValidator)
 
 	// Create push-based listener for P2P chat changes (replaces polling)
@@ -656,6 +663,16 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		}
 		writeRuleResolver.Replace(anysync.RoleSnapshot{AccountAID: accountAID, History: history, AdminAIDs: adminAIDs})
 
+		// Project-scoped write rules (issue #166): refresh the per-project
+		// assignment snapshot from the community space's Project + Contribution
+		// objects. Best-effort — a failed pass leaves the previous snapshot in
+		// place and the rules fall back to the community-role gate.
+		if assignments, err := spaceManager.ObjectTreeManager().CollectProjectAssignments(ctx, communitySpaceID); err != nil {
+			log.Printf("[write-rules] project-assignment refresh failed: %v", err)
+		} else {
+			writeRuleProjects.Replace(assignments)
+		}
+
 		// GH#19 part 2: when proof enforcement is on, refresh the signing-key
 		// snapshot the proof verifier reads. Resolve each known member/admin
 		// AID's current KEL signing key off the hot path (a network fetch, so
@@ -822,7 +839,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	multisigHandler.RegisterRoutes(mux)
 	noticesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
-	chatHandler.RegisterRoutes(mux)
+	chatHandler.RegisterRoutes(mux, roleLookup)
 	commentCursorsHandler.Routes(mux)
 	notificationsHandler.RegisterRoutes(mux)
 	if pushHandler != nil {
