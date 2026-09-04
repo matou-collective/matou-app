@@ -59,9 +59,16 @@ jobs:
           DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
           SWARM_RUN_ID: ${{ github.run_number }}
+          # #377: forward the runner name so run-swarm.sh stamps host+runner onto
+          # every verdict/runlog/swarm.db row (a multi-host pool needs to say WHICH
+          # box a run executed on). `hostname` is derived below; this is the runner.
+          RUNNER_NAME: ${{ runner.name }}
         run: |
           set -euo pipefail
           export SWARM_HOST="$(hostname)"
+          # #377: echo the executing host + runner at the top of the job so the
+          # Forgejo job log itself carries which pool box this leg ran on.
+          echo "swarm: executing on host=$SWARM_HOST runner=${RUNNER_NAME:-unknown} run=${SWARM_RUN_ID:-?} worker=${{ matrix.worker }}"
           # Host capacity semaphore (idss #577, idss ADR 0184): TWO pooled
           # heavy slots shared by swarm AND triage across every repo on this
           # host — /tmp/matou-swarm.lock (slot 1, kept under its original
@@ -194,11 +201,15 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
           WORKFLOW: swarm
+          RUNNER_NAME: ${{ runner.name }}
           # HEAL_DRY_RUN deliberately NOT set (Ben's ruling 2026-08-21, first applied
           # in Matou/idss): the healer files tickets and makes its ONE bounded
           # harness-infra repair for real. Set HEAL_DRY_RUN: "1" to return to
           # diagnose-only.
         run: |
+          # #377: name the box the healer is investigating FROM at the top of its
+          # own job log — the failing leg above may have run on the other pool host.
+          echo "heal: investigating on host=$(hostname) runner=${RUNNER_NAME:-unknown}"
           bash "$HOME/swarm/${{ github.repository }}/.sandcastle/heal.sh" || {
             [ -z "$MATTERMOST_BOT_TOKEN" ] && exit 0
             jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" --arg message ":rotating_light: swarm failed AND the healer errored in \`${{ github.repository }}\` — $RUN_URL" '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |

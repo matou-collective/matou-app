@@ -143,10 +143,27 @@ SWARM_EXIT_REASON=""     # set at each intentional exit; else derived from the s
 # the Actions run number when present; the pid keeps a cron/host run unique too.
 run_db_id="${repo_tag}-${SWARM_RUN_ID:-$run_started}-$$"
 swarm_trigger="${SWARM_TRIGGER:-${GITHUB_EVENT_NAME:-unknown}}"
+# The executing pool host + runner name (#377). `swarm` is a multi-host runner
+# pool, so every trace this run leaves — the on-failure verdict, the host runlog
+# row, the swarm.db rows — must say WHICH box it ran on: without it a healer on
+# the OTHER host gathers only empty local artefacts and files an undiagnosable
+# ticket (#358). SWARM_HOST is the pool-claim name (it survives a container,
+# where `hostname` is a random id); `hostname` is the bare-host fallback. The
+# runner name comes from the Actions-provided RUNNER_NAME (swarm.yml forwards
+# `runner.name`), else the runner's own .runner registration file, else unknown.
+swarm_exec_host="${SWARM_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+swarm_exec_runner="${RUNNER_NAME:-}"
+[ -z "$swarm_exec_runner" ] && [ -f "${SWARM_RUNNER_FILE:-$HOME/.runner}" ] \
+  && swarm_exec_runner="$(jq -r '.name // empty' "${SWARM_RUNNER_FILE:-$HOME/.runner}" 2>/dev/null || true)"
+[ -n "$swarm_exec_runner" ] || swarm_exec_runner=unknown
 # One row per run — written NOW so even a run that dies in early startup, or is
 # killed before it lists tasks, leaves a started-but-open trace (finalised by the
 # EXIT trap below). Best-effort; migrates the db idempotently on first touch.
 swarmdb_run_start "$run_db_id" "$repo_slug" "$swarm_trigger" "$run_started"
+# Stamp the executing host onto this run's swarm.db trace (#377) so a fleet
+# reader (or a healer on another box) can attribute the run to a host without
+# cross-referencing the Actions job log. Best-effort like every mirror write.
+swarmdb_event "$run_db_id" "" host "host=$swarm_exec_host runner=$swarm_exec_runner"
 # Label the host-capacity slot the workflow won for this run (slot-aware
 # fleet). The workflow holds the flock inline and exports the path; the issue
 # is not known here (claims happen in the sandbox), so ref=run and the fleet
@@ -159,10 +176,24 @@ on_exit() {
   [ -n "$worker_births" ] && rm -f "$worker_births" 2>/dev/null || true
   rm -rf "${VERIFY_PP_BEFORE:-}" "${VERIFY_PP_AFTER:-}" 2>/dev/null || true   # #445 snapshots
   verdict_write "$ec"
+  # Stamp the executing host onto the on-failure verdict (#377). verdict_write
+  # only wrote a file on a NON-zero exit, so a clean run leaves none and this is
+  # a no-op there. Prepend the host/runner lines (BEFORE stage=) so the healer's
+  # stage/error parser — which keys on `stage=` and the `--- error lines ---`
+  # block — is untouched, while a healer that finds this verdict on another pool
+  # host can name the box the fault ran on instead of reading an empty bundle.
+  if [ -s "${VERDICT_PATH:-/nonexistent}" ]; then
+    { echo "host=$swarm_exec_host"; echo "runner=$swarm_exec_runner"; cat "$VERDICT_PATH"; } \
+      > "$VERDICT_PATH.hoststamp" 2>/dev/null \
+      && mv "$VERDICT_PATH.hoststamp" "$VERDICT_PATH" 2>/dev/null \
+      || rm -f "$VERDICT_PATH.hoststamp" 2>/dev/null || true
+  fi
   local reason="${SWARM_EXIT_REASON:-}"
   [ -n "$reason" ] || reason="died-in:${VERDICT_STAGE:-unknown}"
+  # #377: the host runlog row carries the executing host + runner too, appended
+  # after runlog_line's pinned format (so runlog-lib's unit test is unaffected).
   runlog_append "${SWARM_RUNLOG:-$HOME/swarm/logs/run-swarm-verdicts.log}" \
-    "$(runlog_line "$run_started" "$(date +%s)" "$repo_slug" "$ready_nums" "$reason" "$ec")"
+    "$(runlog_line "$run_started" "$(date +%s)" "$repo_slug" "$ready_nums" "$reason" "$ec") host=$swarm_exec_host runner=$swarm_exec_runner"
   # Mirror the finalised verdict into swarm.db, closing the run row and any open
   # attempt (kills-finalise invariant: nothing reads 'running' forever). Runs on
   # EVERY exit path including the SIGTERM/SIGINT route below.

@@ -533,4 +533,48 @@ grep -qE '^- Heal run id: heal-.*-[0-9]+-[0-9]+$' "$pcap" \
 grep -q 'timeout --kill-after=30 900' "$here/../heal.sh" \
   || fail "heal.sh must wrap the agent timeout with --kill-after so a cleanup trap runs before the hard kill (#123)"
 
-echo "heal.sh: 17 scenarios passed"
+# --- #377: a failing leg that ran on the OTHER pool host leaves no local
+# evidence — the healer must say so explicitly, not hand the agent empty files.
+# swarm is a 2-host runner pool; when the fault ran elsewhere gather_evidence
+# finds no fresh worker log and no fresh verdict locally. It must (a) stamp its
+# OWN host into the bundle, and (b) write the explicit "ran on another pool host"
+# line into worker-logs.txt / run-verdict.txt instead of leaving them empty.
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log        # no host-local worker log for this run
+capdir="$work/ev-capture"
+cat > "$work/capture-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+mkdir -p "${CAPDIR:?}"
+cp "$ev/worker-logs.txt" "$ev/run-verdict.txt" "$ev/healer-host.txt" "$CAPDIR/" 2>/dev/null || true
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: none
+ESCALATE: no
+
+**Root cause** — stub.
+D
+EOF
+chmod +x "$work/capture-agent.sh"
+rm -rf "$capdir"
+run_heal HEAL_AGENT_CMD="bash $work/capture-agent.sh" CAPDIR="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#377: worker-logs.txt must carry the explicit 'ran on another pool host' line when no local evidence exists (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "ran on another swarm pool host" "$capdir/run-verdict.txt" 2>/dev/null \
+  || fail "#377: run-verdict.txt must carry the explicit line instead of being empty/absent"
+grep -q "^healer-host: box9$" "$capdir/healer-host.txt" 2>/dev/null \
+  || fail "#377: the bundle must record the healer's own host (got: $(cat "$capdir/healer-host.txt" 2>/dev/null))"
+
+# ...and a run WITH host-local worker logs (executed HERE) is UNCHANGED: no
+# spurious remote line, but the healer-host stamp is still present.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+rm -rf "$capdir"
+run_heal HEAL_AGENT_CMD="bash $work/capture-agent.sh" CAPDIR="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  && fail "#377: a run with host-local worker logs must NOT be flagged as running on another host"
+grep -q "^healer-host: box9$" "$capdir/healer-host.txt" 2>/dev/null \
+  || fail "#377: the healer-host stamp must be present even on a local run"
+
+echo "heal.sh: 19 scenarios passed"

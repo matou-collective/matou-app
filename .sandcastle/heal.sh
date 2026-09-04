@@ -206,8 +206,31 @@ gather_evidence() {
   # The triggering workflow's own verdict artifact (ci/swarm/triage), if the run
   # left a fresh one — so the diagnosis agent sees the same stage/fault the
   # signature keyed on. Copied only when fresh; a stale file is not this run's.
-  local vf; vf="$(verdict_path "$WORKFLOW")"
-  [ -n "$vf" ] && verdict_is_fresh "$vf" && cp "$vf" "$EVIDENCE/run-verdict.txt" 2>/dev/null || true
+  local vf have_local_verdict=""; vf="$(verdict_path "$WORKFLOW")"
+  if [ -n "$vf" ] && verdict_is_fresh "$vf"; then
+    cp "$vf" "$EVIDENCE/run-verdict.txt" 2>/dev/null && have_local_verdict=1 || true
+  fi
+  # Stamp the healer's OWN host into the bundle (#377), always — so the human (and
+  # the diagnosis agent) reading a bundle knows which box gathered it. SWARM_HOST
+  # else `hostname`, exactly like HEAL_EVIDENCE_HOST already resolved up top.
+  echo "healer-host: $HEAL_EVIDENCE_HOST" > "$EVIDENCE/healer-host.txt"
+  # Pool-locality honesty (#377): `swarm` is a multi-host runner pool, so a
+  # failing leg often ran on the OTHER host, where NONE of the host-local
+  # artefacts above exist — every evidence file comes back empty and the healer
+  # files an undiagnosable ticket (#358). When there is no fresh worker log AND no
+  # fresh verdict for this run's window locally, say so explicitly IN the
+  # artefacts the diagnosis agent reads, instead of handing it empty
+  # worker-logs.txt / run-verdict.txt that read like a fault that vanished. A run
+  # that DID execute on this host keeps its real artefacts untouched.
+  if [ "$nfresh" -eq 0 ] && [ -z "$have_local_verdict" ]; then
+    local runid="${RUN_URL##*/}"
+    { [ -n "$runid" ] && [ "$runid" != "${RUN_URL:-}" ]; } || runid="${SWARM_RUN_ID:-watchdog}"
+    local msg="no local evidence for run ${runid} in the last ${RUN_WINDOW}: the failing leg ran on another swarm pool host (healer-host: ${HEAL_EVIDENCE_HOST})"
+    printf '%s\n' "$msg" > "$EVIDENCE/worker-logs.txt"
+    printf '%s\n' "$msg" > "$EVIDENCE/run-verdict.txt"
+    printf '%s\n' "$msg" > "$EVIDENCE/no-local-evidence.txt"
+    echo "heal: $msg"
+  fi
   # GLOBAL by design (#238): the swarm lock serializes one heavy worker per
   # host across both repos, so the healer probes the same shared lock.
   if flock -n /tmp/matou-swarm.lock -c true 2>/dev/null; then

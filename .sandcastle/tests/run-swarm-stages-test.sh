@@ -62,6 +62,7 @@ run_swarm() { # run_swarm [extra env assignments...] -> stdout+stderr, sets RC
     HOST_CAPACITY_DRIVE_WANTED="$tmp/no-such-reservation" \
     SWARM_DRIVE_DEFER_COUNT="$tmp/defer" \
     SWARM_VERDICT_PATH="$verdict" SWARM_RUNLOG="$runlog" \
+    SWARM_RUNNER_FILE="$tmp/no-such-runner" \
     SWARM_DEBOUNCE_STAMP="$tmp/stamp" \
     SWARM_DB="$tmp/swarm.db" \
     PREFLIGHT_SCRIPT="$tmp/preflight" \
@@ -93,6 +94,9 @@ pass=$((pass+1))
 grep -q 'repo=Acme/widget' "$runlog" || fail "the run must land a runlog line: $(cat "$runlog")"
 grep -q 'reason=no-ready-tasks' "$runlog" || fail "the exit reason must be named, not derived: $(cat "$runlog")"
 grep -q 'exit=0' "$runlog" || fail "the runlog must carry the exit code: $(cat "$runlog")"
+# #377: the runlog row names the executing pool host + runner
+grep -q 'host=box1' "$runlog" || fail "the runlog must carry the executing host (#377): $(cat "$runlog")"
+grep -q 'runner=unknown' "$runlog" || fail "the runlog must carry the runner name (#377): $(cat "$runlog")"
 pass=$((pass+1))
 
 # the PRESENT-policy-file branch, given explicit coverage (#101). The whole-script
@@ -147,6 +151,11 @@ grep -q 'reason=preflight-red' "$runlog" || fail "the runlog must name the prefl
 grep -q 'no ready tasks' <<<"$out" && fail "a red preflight must abort BEFORE listing / claiming"
 grep -q '^stage=preflight self-tests' "$verdict" || fail "the verdict must key on the preflight stage:
 $(cat "$verdict")"
+# #377: the on-failure verdict is stamped with the executing host (prepended,
+# so the healer's stage/error parser above still matches), and the runlog row too
+grep -q '^host=box1' "$verdict" || fail "the on-failure verdict must be host-stamped (#377):
+$(cat "$verdict")"
+grep -q 'host=box1' "$runlog" || fail "a red run's runlog row must carry the host (#377): $(cat "$runlog")"
 pass=$((pass+1))
 
 # ── half 2: the orchestrator is still a SEQUENCE, in order ────────────────
