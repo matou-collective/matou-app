@@ -342,9 +342,10 @@ const CAPABILITY_LABELS: Record<string, string> = {
 };
 
 function capabilityLabel(cap: string): string {
-  // Prefer the server-provided display name; fall back to the local map, then
-  // the raw ID.
-  return store.capabilityDisplayName(cap) || CAPABILITY_LABELS[cap] || cap;
+  // Prefer the curated short column label; fall back to the server-provided
+  // display name (so a capability this build does not know still gets a
+  // readable header), then the raw ID.
+  return CAPABILITY_LABELS[cap] || store.capabilityDisplayName(cap) || cap;
 }
 
 function capabilityTooltip(cap: string): string {
