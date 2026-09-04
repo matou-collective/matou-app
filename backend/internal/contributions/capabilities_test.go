@@ -14,6 +14,7 @@ func TestEveryActionHasExactlyOneCapability(t *testing.T) {
 		ActionTransitionContribution, ActionUpdateContribution, ActionEditEvidence,
 		ActionStoreCredential, ActionWriteProfile,
 		ActionSaveOrgConfig, ActionGrantStewardAdmin, ActionSetIdentity,
+		ActionOpenCommunitySettings,
 		ActionShareContribution, ActionOfferContribution, ActionAcceptOffer,
 		ActionSubmitEvidence, ActionReviewContribution, ActionSignOffPlan,
 		ActionApproveSubContrib,
@@ -95,16 +96,22 @@ func TestAllCapabilitiesStable(t *testing.T) {
 	}
 	// The remaining feature capabilities intentionally gate no action yet —
 	// grants can be configured ahead of the enforcement slices that wire them.
-	// The chat capabilities (send_messages, manage_channels, moderate_messages)
-	// are now wired (#316) and so are excluded from this set.
+	// Chat (#316), create_proposals (#315) and the community-settings
+	// capabilities (#318) are wired now and so are excluded from this set.
 	for _, c := range []Capability{
 		CapViewContributionAmounts,
 		CapPostNotices, CapManageNotices,
-		CapOpenCommunitySettings, CapManageCommunitySettings,
 	} {
 		if actions := CapabilityActions()[c]; len(actions) != 0 {
 			t.Errorf("%q should map to no actions yet, got %v", c, actions)
 		}
+	}
+	// The community-settings capabilities are wired by #318.
+	if got := CapabilityActions()[CapOpenCommunitySettings]; len(got) != 1 || got[0] != ActionOpenCommunitySettings {
+		t.Errorf("open_community_settings should gate open_community_settings, got %v", got)
+	}
+	if got := CapabilityActions()[CapManageCommunitySettings]; len(got) != 1 || got[0] != ActionSaveOrgConfig {
+		t.Errorf("manage_community_settings should gate save_org_config, got %v", got)
 	}
 	// The chat capabilities are wired (#316).
 	for _, c := range []Capability{CapSendMessages, CapManageChannels, CapModerateMessages} {

@@ -124,6 +124,14 @@ const (
 	ActionGrantStewardAdmin Action = "grant_steward_admin"
 	ActionSetIdentity       Action = "set_identity"
 
+	// ActionOpenCommunitySettings is the community-settings action (#318). open_community_settings gates the
+	// server-side page-access check (GET /api/v1/community-settings/access) so
+	// the Community Settings area is not merely nav-hidden; save_org_config is
+	// re-homed under manage_community_settings by this slice (see
+	// capabilities.go) — the deferred move #313 flagged. Founder holds both by
+	// default.
+	ActionOpenCommunitySettings Action = "open_community_settings"
+
 	// ActionWriteProfile gates POST /api/v1/profiles. Any authenticated member
 	// may reach the handler; resource-level rules (owner / steward / role
 	// change) are applied in api.profileWritePolicy.

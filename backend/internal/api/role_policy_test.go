@@ -64,9 +64,42 @@ func newTestPolicyHandler(t *testing.T) (*RolePolicyHandler, *contributions.Mock
 
 func lookupForTests() RoleLookup {
 	return staticRoles{
-		"EOpsAID":    contributions.MapKERIRole("Operations Steward"),
-		"EMemberAID": contributions.MapKERIRole("Member"),
-		"EAdminAID":  {}, // org admin with NO policy grants — backstop must let them through
+		"EOpsAID":     contributions.MapKERIRole("Operations Steward"),
+		"EMemberAID":  contributions.MapKERIRole("Member"),
+		"EFounderAID": contributions.MapKERIRole("Founding Member"),
+		"EAdminAID":   {}, // org admin with NO policy grants — backstop must let them through
+	}
+}
+
+// #318: the Community Settings page-access gate. open_community_settings is
+// founder-only by default; the org-admin backstop also passes; everyone else
+// (including an operations steward, who holds manage_members but not
+// open_community_settings) is refused.
+func TestCommunitySettingsAccess(t *testing.T) {
+	h, _, _ := newTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	cases := []struct {
+		aid  string
+		want int
+	}{
+		{"EFounderAID", http.StatusOK},
+		{"EAdminAID", http.StatusOK}, // org-admin backstop
+		{"EOpsAID", http.StatusForbidden},
+		{"EMemberAID", http.StatusForbidden},
+		{"", http.StatusForbidden}, // unauthenticated
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/community-settings/access", nil)
+		if c.aid != "" {
+			req.Header.Set("X-User-AID", c.aid)
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("access aid=%q: got %d, want %d (%s)", c.aid, rec.Code, c.want, rec.Body.String())
+		}
 	}
 }
 
