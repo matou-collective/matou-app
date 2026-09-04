@@ -8,6 +8,29 @@ on:
   pull_request: {}
   workflow_dispatch: {}
 
+# Workflow-level concurrency group keyed on the ref (#361). Without this, a
+# release train that lands several commits on main in a short window (four
+# pushes in seven minutes was observed) had Forgejo cancel the in-flight/queued
+# run of each superseded commit as the next push arrived — and a cancelled run
+# is recorded as `failure` on that commit's status, so a commit that is merged
+# and immediately followed by another merge never gets a green. PR reviewers and
+# the healer then chase phantom red on main.
+# Forgejo Actions honours workflow-level concurrency and, with
+# cancel-in-progress false, QUEUES every superseded run and executes them
+# strictly in sequence — nothing is cancelled, nothing is dropped (verified live
+# on Forgejo v15.0.5, see swarm.yml/#38). Declaring the explicit group also
+# suppresses the implicit cancel-previous-on-push. Keying on github.ref keeps
+# each PR (refs/pull/N/merge) and main (refs/heads/main) in its own lane, so a
+# PR burst never blocks a main run and vice versa.
+# cancel-in-progress MUST stay false — the whole point is that no superseded run
+# is cancelled-and-recorded-as-failure.
+# NOTE: this does not fix the slot-starvation half (#285) — a surviving run can
+# still camp host-slot-wait.sh and time out under swarm load; that is tracked
+# separately and out of scope here.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   checks:
     runs-on: swarm
