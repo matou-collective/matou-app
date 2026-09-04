@@ -94,12 +94,20 @@ func TestAllCapabilitiesStable(t *testing.T) {
 	// be configured ahead of the enforcement slices that wire them.
 	for _, c := range []Capability{
 		CapViewContributionAmounts, CapCreateProposals, CapSendMessages,
-		CapManageChannels, CapModerateMessages, CapPostNotices, CapManageNotices,
+		CapManageChannels, CapModerateMessages,
 		CapOpenCommunitySettings, CapManageCommunitySettings,
 	} {
 		if actions := CapabilityActions()[c]; len(actions) != 0 {
 			t.Errorf("%q should map to no actions yet, got %v", c, actions)
 		}
+	}
+	// Notices are now wired (#317): post_notices → post_notice, manage_notices
+	// → manage_notice.
+	if actions := CapabilityActions()[CapPostNotices]; len(actions) != 1 || actions[0] != ActionPostNotice {
+		t.Errorf("post_notices should map to [post_notice], got %v", actions)
+	}
+	if actions := CapabilityActions()[CapManageNotices]; len(actions) != 1 || actions[0] != ActionManageNotice {
+		t.Errorf("manage_notices should map to [manage_notice], got %v", actions)
 	}
 	// Every capability metadata entry corresponds to a toggleable capability and
 	// carries a group and scope.

@@ -207,16 +207,19 @@ var capabilityActions = map[Capability][]Action{
 	CapManageGovernance: {ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal},
 	CapManageRoles:      {ActionManageRolePolicy},
 
+	// Notice board (#317): post_notices gates authoring (create/publish);
+	// manage_notices gates moderation of any member's notice (pin/archive).
+	CapPostNotices:   {ActionPostNotice},
+	CapManageNotices: {ActionManageNotice},
+
 	// New feature capabilities that gate no wired action yet — the grants can be
-	// configured ahead of the enforcement slices that wire them (chat, notices,
+	// configured ahead of the enforcement slices that wire them (chat,
 	// proposal-create, contribution-amount visibility, community settings).
 	CapViewContributionAmounts: {},
 	CapCreateProposals:         {},
 	CapSendMessages:            {},
 	CapManageChannels:          {},
 	CapModerateMessages:        {},
-	CapPostNotices:             {},
-	CapManageNotices:           {},
 	CapOpenCommunitySettings:   {},
 	CapManageCommunitySettings: {},
 }

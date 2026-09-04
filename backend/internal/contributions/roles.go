@@ -124,6 +124,14 @@ const (
 
 	// Role-policy management (the manage_roles meta-permission)
 	ActionManageRolePolicy Action = "manage_role_policy"
+
+	// ActionPostNotice gates authoring a notice (create/publish);
+	// ActionManageNotice gates moderation of any member's notice (pin/archive)
+	// (#317). These are new feature actions: they are NOT in the legacy
+	// actionPermissions table — they reach enforcement only via the capability
+	// registry (post_notices / manage_notices) and the synced RolePolicy.
+	ActionPostNotice   Action = "post_notice"
+	ActionManageNotice Action = "manage_notice"
 )
 
 // actionPermissions maps each action to the roles that can perform it.
