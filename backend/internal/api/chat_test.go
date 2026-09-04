@@ -722,7 +722,9 @@ func TestChat_DeleteMessage_ModerateForbidden(t *testing.T) {
 
 	// Switch the active identity to a different member (not the message author,
 	// no moderate_messages).
-	env.userIdentity.SetIdentity("EOTHER_MEMBER", "other-mnemonic")
+	if err := env.userIdentity.SetIdentity("EOTHER_MEMBER", "other-mnemonic"); err != nil {
+		t.Fatalf("set identity: %v", err)
+	}
 	env.roleLookup.roles["EOTHER_MEMBER"] = []contributions.Role{contributions.RoleMember}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/chat/messages/"+messageID, nil)
@@ -744,7 +746,9 @@ func TestChat_DeleteMessage_ModerateAllowed(t *testing.T) {
 	messageID := sendTestMessage(t, env, channelID, "authored by USER01")
 
 	// A different identity that holds moderate_messages (founding member).
-	env.userIdentity.SetIdentity("EMODERATOR", "mod-mnemonic")
+	if err := env.userIdentity.SetIdentity("EMODERATOR", "mod-mnemonic"); err != nil {
+		t.Fatalf("set identity: %v", err)
+	}
 	env.roleLookup.roles["EMODERATOR"] = []contributions.Role{contributions.RoleFoundingMember}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/chat/messages/"+messageID, nil)
