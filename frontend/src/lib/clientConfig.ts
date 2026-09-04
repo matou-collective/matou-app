@@ -52,6 +52,11 @@ export interface ClientConfig {
     admin_url: string;
     boot_url: string;
     cesr_url: string;
+    // Public CESR base for building OOBI URLs that KERIA resolves
+    // server-side. Present when the backend serves loopback-proxied KERI
+    // URLs to the Capacitor WebView (#368): cesr_url then points at the
+    // proxy (for direct fetches) and this keeps the network-reachable base.
+    cesr_public_url?: string;
   };
   schema_server_url: string;
   config_server_url: string;
