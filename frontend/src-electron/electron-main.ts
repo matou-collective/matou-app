@@ -16,6 +16,7 @@ import crypto from 'crypto';
 // Brand identity, colours and the auto-update gate come from the generated kit
 // (produced by `npm run kit:apply` from coa-kit/kit.json). See Matou/coa ADR 0004.
 import { KIT, KIT_BUILD } from 'src/generated/kit';
+import { kitUserDataPath } from './kit-paths';
 
 // Using destructuring to access autoUpdater due to the CommonJS module of 'electron-updater'.
 // It is a workaround for ESM compatibility issues, see https://github.com/electron-userland/electron-builder/issues/7976.
@@ -23,6 +24,14 @@ const { autoUpdater } = electronUpdater;
 
 // ESM compatibility: __dirname is not available in ES modules
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Isolate each branded kit's state under its own userData root. At runtime
+// app.getName() falls back to the asar package.json ("Matou"), so without this a
+// kit-branded fork inherits the stock Matou userData dir and its identity +
+// backend data (issue #344). Must run before any app.getPath('userData') read
+// (secureStorePath below, startBackend's dataDir) and before app is ready.
+// Stock Matou's productName is "Matou" → path unchanged, no data orphaned.
+app.setPath('userData', kitUserDataPath(app.getPath('appData'), KIT_BUILD));
 
 // Prevent EPIPE crashes when stdout/stderr pipes are broken
 // (common in packaged AppImage — no terminal attached to receive output)

@@ -250,7 +250,9 @@ func createDraft(t *testing.T, handler *ProposalsHandler) string {
 		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
 	}
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
 	return created["id"].(string)
 }
 
