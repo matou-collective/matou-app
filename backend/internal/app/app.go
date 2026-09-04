@@ -230,7 +230,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 			// endpoint) carry on.
 			servedConfig := rawConfig
 			if rewritten, proxyClosers, proxyErr := api.StartKERIConfigProxies(rawConfig); proxyErr != nil {
-				fmt.Fprintf(out, "  KERI loopback proxies not started (%v) — serving config unproxied\n", proxyErr)
+				_, _ = fmt.Fprintf(out, "  KERI loopback proxies not started (%v) — serving config unproxied\n", proxyErr)
 			} else {
 				servedConfig = rewritten
 				closers = append(closers, proxyClosers...)

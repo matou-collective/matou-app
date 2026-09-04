@@ -42,7 +42,7 @@ func TestLoopbackProxyPreservesRequestVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request through proxy: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	if got == nil {
@@ -70,7 +70,7 @@ func TestLoopbackProxyPreservesRequestVerbatim(t *testing.T) {
 
 func TestStartKERIConfigProxiesRewritesAndRoutes(t *testing.T) {
 	mark := func(name string) *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("X-Upstream", name)
 			_, _ = w.Write([]byte(name))
 		}))
@@ -123,7 +123,7 @@ func TestStartKERIConfigProxiesRewritesAndRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET via %s proxy: %v", key, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if got := resp.Header.Get("X-Upstream"); got != want {
 			t.Errorf("keri.%s routed to %q, want %q", key, got, want)
 		}
@@ -136,7 +136,7 @@ func TestStartKERIConfigProxiesRewritesAndRoutes(t *testing.T) {
 	if resp, err := http.Get(cfg.Witnesses.URLs[0] + "/oobi/W"); err != nil {
 		t.Fatalf("GET via witness proxy: %v", err)
 	} else {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if got := resp.Header.Get("X-Upstream"); got != "witness" {
 			t.Errorf("witness proxy routed to %q", got)
 		}
