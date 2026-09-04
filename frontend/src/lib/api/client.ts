@@ -572,11 +572,20 @@ export async function initMemberProfiles(data: {
   credentialSaid: string;
   role?: string;
   status?: string;
-  displayName?: string;
-  email?: string;
+  // Avatar is resolved server-side (base64 -> fileRef), so it stays a typed
+  // field rather than travelling in the opaque profileData map.
   avatar?: string;
   avatarData?: string;
   avatarMimeType?: string;
+  // profileData is the canonical registration payload — an opaque map keyed by
+  // SharedProfile schema field names (displayName, publicEmail, bio, joinReason,
+  // participationInterests, social URLs, plus any org-added custom field). The
+  // backend validates it against the org schema at submit and re-validates at
+  // approval. The individual typed fields below are still accepted for one
+  // release for backward compatibility.
+  profileData?: Record<string, unknown>;
+  displayName?: string;
+  email?: string;
   bio?: string;
   interests?: string[];
   customInterests?: string;
