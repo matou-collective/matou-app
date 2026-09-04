@@ -18,6 +18,7 @@ func TestEveryActionHasExactlyOneCapability(t *testing.T) {
 		ActionSubmitEvidence, ActionReviewContribution, ActionSignOffPlan,
 		ActionApproveSubContrib,
 		ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal,
+		ActionCreateProposal, ActionSubmitProposal,
 		ActionArchiveProject, ActionArchiveMilestone, ActionArchiveContribution,
 		ActionUnassignContribution, ActionEditMilestone,
 		ActionSubmitProjectCompletion, ActionApproveProjectCompletion, ActionRejectProjectCompletion,
@@ -97,7 +98,7 @@ func TestAllCapabilitiesStable(t *testing.T) {
 	// The chat capabilities (send_messages, manage_channels, moderate_messages)
 	// are now wired (#316) and so are excluded from this set.
 	for _, c := range []Capability{
-		CapViewContributionAmounts, CapCreateProposals,
+		CapViewContributionAmounts,
 		CapPostNotices, CapManageNotices,
 		CapOpenCommunitySettings, CapManageCommunitySettings,
 	} {
@@ -110,6 +111,10 @@ func TestAllCapabilitiesStable(t *testing.T) {
 		if actions := CapabilityActions()[c]; len(actions) == 0 {
 			t.Errorf("%q should map to at least one action (#316)", c)
 		}
+	}
+	// create_proposals is wired to the proposal authoring actions (#315).
+	if actions := CapabilityActions()[CapCreateProposals]; len(actions) != 2 {
+		t.Errorf("create_proposals should gate the create/submit actions, got %v", actions)
 	}
 	// Every capability metadata entry corresponds to a toggleable capability and
 	// carries a group and scope.

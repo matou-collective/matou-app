@@ -28,6 +28,83 @@
       community's first policy version.
     </q-banner>
 
+    <!-- Projects & Contributions feature table (#314): every project-and-
+         contribution capability, one column each. Uniquely, its rows include
+         the project-scoped roles (contributor / lead / steward) alongside the
+         community roles — it is the only table that lists them. Reward is a
+         community-only capability (it appears in this feature area but a project
+         role cannot hold it), so it is disabled on the project rows. -->
+    <section v-if="editableGrants" class="roles-section projects-section" data-feature="projects">
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Projects &amp; Contributions</h3>
+          <p class="section-subtitle">
+            Who can contribute, manage projects, review and sign off work, reward, and assign the
+            per-project lead and steward — and who may see contribution budgets and actual costs.
+            Community and project roles both appear here.
+          </p>
+        </div>
+      </div>
+      <q-markup-table flat bordered dense class="roles-matrix projects-roles">
+        <thead>
+          <tr>
+            <th class="text-left">Role</th>
+            <th
+              v-for="cap in projectsCapabilityIds"
+              :key="cap"
+              class="text-center"
+              :data-cap="cap"
+              :class="{ 'community-only-col': !isProjectCap(cap) }"
+            >
+              {{ capabilityLabel(cap) }}
+              <q-tooltip>
+                {{ capabilityTooltip(cap) }}<template v-if="!isProjectCap(cap)">
+                  — community-only</template
+                >
+              </q-tooltip>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="role in allRoles" :key="role.id" :data-role="role.id">
+            <td class="text-left">
+              {{ role.displayName }}
+              <q-badge
+                :color="role.scope === 'project' ? 'primary' : 'grey-6'"
+                class="q-ml-xs"
+                >{{ role.scope === 'project' ? 'project' : 'community' }}</q-badge
+              >
+              <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
+            </td>
+            <td
+              v-for="cap in projectsCapabilityIds"
+              :key="cap"
+              class="text-center"
+              :data-cap="cap"
+              :class="{ 'community-only-cell': role.scope === 'project' && !isProjectCap(cap) }"
+            >
+              <q-toggle
+                :model-value="hasGrant(role.id, cap)"
+                :disable="
+                  !store.canManageRoles ||
+                  (role.scope === 'project' && !isProjectCap(cap) && !hasGrant(role.id, cap))
+                "
+                dense
+                @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
+              >
+                <q-tooltip v-if="role.scope === 'project' && !isProjectCap(cap)">
+                  Community-only capability — a project role cannot gain it.
+                  <template v-if="hasGrant(role.id, cap)">
+                    This legacy grant can be switched off, but not back on.
+                  </template>
+                </q-tooltip>
+              </q-toggle>
+            </td>
+          </tr>
+        </tbody>
+      </q-markup-table>
+    </section>
+
     <!-- Community roles: who you are (membership credential). Full capability set. -->
     <section v-if="editableGrants" class="roles-section community-section">
       <div class="section-header">
@@ -147,6 +224,68 @@
       </q-markup-table>
     </section>
 
+    <!-- Proposals: the proposal feature's own permission table (#315). Both
+         capabilities are community-scoped, so community roles hold them freely;
+         a project role appears only when it grandfather-holds one (per #201,
+         project_steward's manage_governance) — that grant can be switched off
+         but not re-added. -->
+    <section v-if="editableGrants" class="roles-section proposals-section">
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Proposals</h3>
+          <p class="section-subtitle">
+            Who may create and submit proposals, and who governs them (sign off, reject, edit,
+            withdraw). Community roles; a project role shows here only for a grandfathered
+            governance grant that can be removed but not re-added.
+          </p>
+        </div>
+      </div>
+      <q-markup-table flat bordered dense class="roles-matrix proposals-table">
+        <thead>
+          <tr>
+            <th class="text-left">Role</th>
+            <th v-for="cap in proposalCapabilityIds" :key="cap" class="text-center">
+              {{ capabilityLabel(cap) }}
+              <q-tooltip>{{ capabilityTooltip(cap) }}</q-tooltip>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="role in proposalRoles" :key="role.id">
+            <td class="text-left">
+              {{ role.displayName }}
+              <q-badge v-if="role.scope === 'project'" color="primary" class="q-ml-xs"
+                >project</q-badge
+              >
+              <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
+            </td>
+            <td
+              v-for="cap in proposalCapabilityIds"
+              :key="cap"
+              class="text-center"
+              :class="{ 'community-only-cell': role.scope === 'project' }"
+              :data-role="role.id"
+              :data-cap="cap"
+            >
+              <q-toggle
+                :model-value="hasGrant(role.id, cap)"
+                :disable="isProposalCellDisabled(role, cap)"
+                dense
+                @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
+              >
+                <q-tooltip v-if="role.scope === 'project'">
+                  Community-only capability — a project role cannot gain it.
+                  <template v-if="hasGrant(role.id, cap)">
+                    This grandfathered grant can be switched off, but not back on.
+                  </template>
+                </q-tooltip>
+              </q-toggle>
+            </td>
+          </tr>
+        </tbody>
+      </q-markup-table>
+    </section>
+
     <!-- Chat feature table (#316): the community-scoped chat capabilities
          (send messages, manage channels, moderate messages) per community role.
          Chat capabilities are community-only, so project roles are not listed. -->
@@ -245,6 +384,37 @@ const newRoleName = ref('');
 const newRoleScope = ref<RoleScope>('community');
 const copyFromRole = ref<string | null>(null);
 
+// Proposals has its own per-feature permission table (#315/#312). Its two
+// capabilities are therefore removed from the Community/Project tables below so
+// each capability has exactly one editing surface.
+const PROPOSAL_CAPABILITY_IDS = ['create_proposals', 'manage_governance'];
+
+// Defensive: only show a proposal column the backend actually advertises.
+const proposalCapabilityIds = computed(() =>
+  PROPOSAL_CAPABILITY_IDS.filter((c) => store.capabilityColumns.includes(c)),
+);
+
+// The Projects & Contributions feature has its own permission table (#314). Its
+// capability IDs come from the server group metadata, with a fallback to the
+// known IDs so the table still renders against an older backend.
+const PROJECTS_CAPABILITY_IDS = [
+  'contribute',
+  'manage_projects',
+  'review_work',
+  'sign_off',
+  'reward',
+  'submit_completion',
+  'approve_completion',
+  'archive_work',
+  'view_contribution_amounts',
+  'assign_project_steward',
+  'assign_project_lead',
+];
+const projectsCapabilityIds = computed(() => {
+  const fromMeta = store.capabilitiesInGroup('Projects & Contributions');
+  return fromMeta.length ? fromMeta : PROJECTS_CAPABILITY_IDS;
+});
+
 // The Chat feature has its own permission table (#316). Its capability IDs come
 // from the server group metadata, with a fallback to the known IDs so the table
 // still renders against an older backend.
@@ -254,11 +424,18 @@ const chatCapabilityIds = computed(() => {
   return fromMeta.length ? fromMeta : CHAT_CAPABILITY_IDS;
 });
 
-// The generic community/project matrices show every capability that does not
-// yet have its own feature table — i.e. everything except the Chat columns,
-// which the Chat table below owns.
+// Capabilities owned by a per-feature table above; the generic community/project
+// matrices show every capability that does NOT yet have its own feature table.
+const featureOwnedCapabilityIds = computed(
+  () =>
+    new Set([
+      ...projectsCapabilityIds.value,
+      ...PROPOSAL_CAPABILITY_IDS,
+      ...chatCapabilityIds.value,
+    ]),
+);
 const capabilityIds = computed(() =>
-  store.capabilityColumns.filter((cap) => !chatCapabilityIds.value.includes(cap)),
+  store.capabilityColumns.filter((cap) => !featureOwnedCapabilityIds.value.has(cap)),
 );
 
 // Local scope partitions so freshly-added (unsaved) roles show immediately.
@@ -267,8 +444,35 @@ const communityRoles = computed(() =>
 );
 const projectRoles = computed(() => roles.value.filter((r) => r.scope === 'project'));
 
+// The Proposals table lists every community role, plus any project role that
+// grandfather-holds a proposal capability (per #201 that is project_steward's
+// manage_governance). A grandfathered grant may be switched off but not re-added
+// — the same rule the Project table applies to community-only capabilities.
+const proposalGrandfatheredRoles = computed(() =>
+  projectRoles.value.filter((r) =>
+    proposalCapabilityIds.value.some((c) => hasGrant(r.id, c)),
+  ),
+);
+const proposalRoles = computed(() => [
+  ...communityRoles.value,
+  ...proposalGrandfatheredRoles.value,
+]);
+
+// The Projects & Contributions table lists every role, community rows first then
+// project rows — it is the only table that includes the project-scoped roles.
+const allRoles = computed(() => [...communityRoles.value, ...projectRoles.value]);
+
 function isProjectCap(cap: string): boolean {
   return store.isProjectCapability(cap);
+}
+
+// A proposal cell is disabled when the caller can't manage roles, or when a
+// project-scoped role would be gaining a community-only capability it does not
+// already hold (the #201 grandfather: keep/remove, never re-add).
+function isProposalCellDisabled(role: RoleDef, cap: string): boolean {
+  if (!store.canManageRoles) return true;
+  const isProjectRole = role.scope === 'project';
+  return isProjectRole && !isProjectCap(cap) && !hasGrant(role.id, cap);
 }
 
 const CAPABILITY_LABELS: Record<string, string> = {
@@ -282,19 +486,25 @@ const CAPABILITY_LABELS: Record<string, string> = {
   approve_completion: 'Approve completion',
   archive_work: 'Archive',
   manage_members: 'Manage members',
+  create_proposals: 'Create proposals',
   manage_governance: 'Governance',
-  manage_communications: 'Communications',
-  manage_roles: 'Manage roles',
   // Chat feature (#316).
   send_messages: 'Send messages',
   manage_channels: 'Manage channels',
   moderate_messages: 'Moderate messages',
+  manage_communications: 'Communications',
+  manage_roles: 'Manage roles',
+  // Projects & Contributions feature (#314).
+  view_contribution_amounts: 'View amounts',
+  assign_project_steward: 'Assign steward',
+  assign_project_lead: 'Assign lead',
 };
 
 function capabilityLabel(cap: string): string {
-  // Prefer the server-provided display name; fall back to the local map, then
-  // the raw ID.
-  return store.capabilityDisplayName(cap) || CAPABILITY_LABELS[cap] || cap;
+  // Prefer the curated short column label; fall back to the server-provided
+  // display name (so a capability this build does not know still gets a
+  // readable header), then the raw ID.
+  return CAPABILITY_LABELS[cap] || store.capabilityDisplayName(cap) || cap;
 }
 
 function capabilityTooltip(cap: string): string {
@@ -509,7 +719,20 @@ async function save() {
   font-style: italic;
 }
 
-.roles-matrix.project-roles td.community-only-cell {
+.roles-matrix.project-roles td.community-only-cell,
+.roles-matrix.proposals-table td.community-only-cell {
+  background: var(--matou-muted, rgba(0, 0, 0, 0.03));
+}
+
+/* The Projects & Contributions table (#314): a community-only capability
+   (Reward) is italicised in the header and its project-role cells are shaded,
+   matching the project-table treatment. */
+.roles-matrix.projects-roles th.community-only-col {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.roles-matrix.projects-roles td.community-only-cell {
   background: var(--matou-muted, rgba(0, 0, 0, 0.03));
 }
 </style>

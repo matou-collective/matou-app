@@ -117,6 +117,20 @@ func (r *HistoryRoleResolver) RolesForAuthorAt(account string, at int64) ([]cont
 	return rolesForAIDAt(snap, aid, at)
 }
 
+// AIDForAuthor implements AuthorAIDResolver: it returns the member AID bound to
+// a change author account via the ACL join metadata, so project-scoped role-only
+// write rules can compare the author against a project's assigned lead/steward.
+// ok is false for an unbound account.
+func (r *HistoryRoleResolver) AIDForAuthor(account string) (string, bool) {
+	if account == "" {
+		return "", false
+	}
+	r.mu.RLock()
+	aid, ok := r.snap.AccountAID[account]
+	r.mu.RUnlock()
+	return aid, ok
+}
+
 // RolesForAIDAt implements RoleResolver keyed directly by AID (used by the
 // proof-backed rules, where the AID is cryptographically authenticated). An AID
 // with no ACL binding and no role history resolves ok=false, so a proof from an

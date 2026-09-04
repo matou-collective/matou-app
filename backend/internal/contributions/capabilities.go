@@ -216,11 +216,16 @@ var capabilityActions = map[Capability][]Action{
 	CapManageChannels:   {ActionCreateChannel, ActionEditChannel, ActionArchiveChannel, ActionSetChannelRoles},
 	CapModerateMessages: {ActionModerateMessage},
 
+	// create_proposals gates authoring a proposal: creating the draft and
+	// submitting it (draft → submitted). Enforced at the proposal create/submit
+	// endpoints (#315). Every member role holds it by default, so behaviour is
+	// unchanged until an org narrows it.
+	CapCreateProposals: {ActionCreateProposal, ActionSubmitProposal},
+
 	// New feature capabilities that gate no wired action yet — the grants can be
 	// configured ahead of the enforcement slices that wire them (notices,
-	// proposal-create, contribution-amount visibility, community settings).
+	// contribution-amount visibility, community settings).
 	CapViewContributionAmounts: {},
-	CapCreateProposals:         {},
 	CapPostNotices:             {},
 	CapManageNotices:           {},
 	CapOpenCommunitySettings:   {},
