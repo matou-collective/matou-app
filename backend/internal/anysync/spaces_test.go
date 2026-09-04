@@ -21,14 +21,14 @@ type syncDocCall struct {
 
 // mockAnySyncClient implements AnySyncClient for testing
 type mockAnySyncClient struct {
-	spaces             map[string]*SpaceCreateResult
-	createSpaceErr     error
-	addToACLErr        error
-	syncDocErr         error
-	networkID          string
-	coordinatorURL     string
-	peerID             string
-	syncDocumentCalls  []syncDocCall
+	spaces            map[string]*SpaceCreateResult
+	createSpaceErr    error
+	addToACLErr       error
+	syncDocErr        error
+	networkID         string
+	coordinatorURL    string
+	peerID            string
+	syncDocumentCalls []syncDocCall
 }
 
 func newMockAnySyncClient() *mockAnySyncClient {
@@ -78,18 +78,18 @@ func (m *mockAnySyncClient) SyncDocument(ctx context.Context, spaceID string, do
 }
 
 func (m *mockAnySyncClient) MakeSpaceShareable(_ context.Context, _ string) error { return nil }
-func (m *mockAnySyncClient) GetNetworkID() string      { return m.networkID }
-func (m *mockAnySyncClient) GetCoordinatorURL() string { return m.coordinatorURL }
-func (m *mockAnySyncClient) GetPeerID() string         { return m.peerID }
-func (m *mockAnySyncClient) GetDataDir() string              { return "" }
-func (m *mockAnySyncClient) GetSigningKey() crypto.PrivKey   { return nil }
-func (m *mockAnySyncClient) GetPool() pool.Pool              { return nil }
-func (m *mockAnySyncClient) GetNodeConf() nodeconf.Service   { return nil }
+func (m *mockAnySyncClient) GetNetworkID() string                                 { return m.networkID }
+func (m *mockAnySyncClient) GetCoordinatorURL() string                            { return m.coordinatorURL }
+func (m *mockAnySyncClient) GetPeerID() string                                    { return m.peerID }
+func (m *mockAnySyncClient) GetDataDir() string                                   { return "" }
+func (m *mockAnySyncClient) GetSigningKey() crypto.PrivKey                        { return nil }
+func (m *mockAnySyncClient) GetPool() pool.Pool                                   { return nil }
+func (m *mockAnySyncClient) GetNodeConf() nodeconf.Service                        { return nil }
 func (m *mockAnySyncClient) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
 	return nil
 }
-func (m *mockAnySyncClient) Ping() error { return nil }
-func (m *mockAnySyncClient) Close() error                    { return nil }
+func (m *mockAnySyncClient) Ping() error  { return nil }
+func (m *mockAnySyncClient) Close() error { return nil }
 
 func (m *mockAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *SpaceKeySet) (*SpaceCreateResult, error) {
 	return m.CreateSpace(ctx, ownerAID, spaceType, nil)

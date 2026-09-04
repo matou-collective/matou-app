@@ -26,9 +26,9 @@ import (
 
 // Tree type constants used as ChangeType on tree roots.
 const (
-	ProfileTreeType     = "matou.profile.v1"    // ChangeType on profile tree roots
-	CredentialTreeType  = "matou.credential.v1" // ChangeType on credential tree roots
-	NoticeTreeType      = "matou.notice.v1"     // ChangeType on notice tree roots
+	ProfileTreeType     = "matou.profile.v1"     // ChangeType on profile tree roots
+	CredentialTreeType  = "matou.credential.v1"  // ChangeType on credential tree roots
+	NoticeTreeType      = "matou.notice.v1"      // ChangeType on notice tree roots
 	InteractionTreeType = "matou.interaction.v1" // ChangeType on interaction tree roots (ack, rsvp, save)
 	ChatTreeType        = "matou.chat.v1"        // ChangeType on chat tree roots
 )

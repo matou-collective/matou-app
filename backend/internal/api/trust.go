@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/trust"
 )
 
@@ -32,8 +32,8 @@ func NewTrustHandler(store *anystore.LocalStore, orgAID string, spaceManager *an
 
 // GraphResponse represents the trust graph API response
 type GraphResponse struct {
-	Graph   *trust.Graph         `json:"graph"`
-	Summary *trust.ScoreSummary  `json:"summary,omitempty"`
+	Graph   *trust.Graph        `json:"graph"`
+	Summary *trust.ScoreSummary `json:"summary,omitempty"`
 }
 
 // ScoreResponse represents a single trust score response

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 )
 
 func setupHealthTestHandler(t *testing.T) (*HealthHandler, *anystore.LocalStore, anysync.SpaceStore, func()) {

@@ -78,18 +78,18 @@ func (m *mockAnySyncClient) SyncDocument(ctx context.Context, spaceID string, do
 	return nil
 }
 
-func (m *mockAnySyncClient) GetNetworkID() string        { return m.networkID }
-func (m *mockAnySyncClient) GetCoordinatorURL() string   { return m.coordinatorURL }
-func (m *mockAnySyncClient) GetPeerID() string           { return m.peerID }
-func (m *mockAnySyncClient) GetDataDir() string              { return "" }
-func (m *mockAnySyncClient) GetSigningKey() crypto.PrivKey   { return nil }
-func (m *mockAnySyncClient) GetPool() pool.Pool              { return nil }
+func (m *mockAnySyncClient) GetNetworkID() string          { return m.networkID }
+func (m *mockAnySyncClient) GetCoordinatorURL() string     { return m.coordinatorURL }
+func (m *mockAnySyncClient) GetPeerID() string             { return m.peerID }
+func (m *mockAnySyncClient) GetDataDir() string            { return "" }
+func (m *mockAnySyncClient) GetSigningKey() crypto.PrivKey { return nil }
+func (m *mockAnySyncClient) GetPool() pool.Pool            { return nil }
 func (m *mockAnySyncClient) GetNodeConf() nodeconf.Service { return nil }
 func (m *mockAnySyncClient) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
 	return nil
 }
-func (m *mockAnySyncClient) Ping() error { return nil }
-func (m *mockAnySyncClient) Close() error                    { return nil }
+func (m *mockAnySyncClient) Ping() error  { return nil }
+func (m *mockAnySyncClient) Close() error { return nil }
 
 func (m *mockAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
 	return m.CreateSpace(ctx, ownerAID, spaceType, nil)
@@ -703,7 +703,7 @@ func TestSpacesHandler_RegisterRoutes(t *testing.T) {
 		expected int
 	}{
 		{http.MethodGet, "/api/v1/spaces/community", http.StatusOK},
-		{http.MethodPost, "/api/v1/spaces/private", http.StatusBadRequest}, // No body
+		{http.MethodPost, "/api/v1/spaces/private", http.StatusBadRequest},          // No body
 		{http.MethodPost, "/api/v1/spaces/community/invite", http.StatusBadRequest}, // No body
 	}
 

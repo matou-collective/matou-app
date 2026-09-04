@@ -56,8 +56,8 @@ type MockAnySyncClient struct {
 
 // CreateSpaceCall records a call to CreateSpace
 type CreateSpaceCall struct {
-	OwnerAID  string
-	SpaceType string
+	OwnerAID   string
+	SpaceType  string
 	SigningKey crypto.PrivKey
 }
 

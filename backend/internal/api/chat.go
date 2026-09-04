@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/identity"
 )
 
@@ -907,14 +907,14 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 			channelID = msg.ChannelID
 			existingVersion = msg.Version
 			data = ChatMessageData{
-				ChannelID:   msg.ChannelID,
-				SenderAID:   msg.SenderAID,
-				SenderName:  msg.SenderName,
-				Content:     msg.Content,
-				ReplyTo:     msg.ReplyTo,
-				SentAt:      msg.SentAt,
-				EditedAt:    msg.EditedAt,
-				DeletedAt:   msg.DeletedAt,
+				ChannelID:  msg.ChannelID,
+				SenderAID:  msg.SenderAID,
+				SenderName: msg.SenderName,
+				Content:    msg.Content,
+				ReplyTo:    msg.ReplyTo,
+				SentAt:     msg.SentAt,
+				EditedAt:   msg.EditedAt,
+				DeletedAt:  msg.DeletedAt,
 			}
 			if len(msg.Attachments) > 0 {
 				json.Unmarshal(msg.Attachments, &data.Attachments)
@@ -1060,14 +1060,14 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 			found = true
 			existingVersion = msg.Version
 			data = ChatMessageData{
-				ChannelID:   msg.ChannelID,
-				SenderAID:   msg.SenderAID,
-				SenderName:  msg.SenderName,
-				Content:     msg.Content,
-				ReplyTo:     msg.ReplyTo,
-				SentAt:      msg.SentAt,
-				EditedAt:    msg.EditedAt,
-				DeletedAt:   msg.DeletedAt,
+				ChannelID:  msg.ChannelID,
+				SenderAID:  msg.SenderAID,
+				SenderName: msg.SenderName,
+				Content:    msg.Content,
+				ReplyTo:    msg.ReplyTo,
+				SentAt:     msg.SentAt,
+				EditedAt:   msg.EditedAt,
+				DeletedAt:  msg.DeletedAt,
 			}
 			if len(msg.Attachments) > 0 {
 				json.Unmarshal(msg.Attachments, &data.Attachments)

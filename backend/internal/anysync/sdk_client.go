@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	anystore "github.com/anyproto/any-store"
 	"github.com/anyproto/any-sync/accountservice"
 	"github.com/anyproto/any-sync/app"
 	"github.com/anyproto/any-sync/commonspace"
@@ -42,7 +43,6 @@ import (
 	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/anyproto/any-sync/util/syncqueues"
 	"github.com/anyproto/go-chash"
-	anystore "github.com/anyproto/any-store"
 	"storj.io/drpc"
 )
 
@@ -241,10 +241,10 @@ func (c *SDKClient) CreateSpace(ctx context.Context, ownerAID string, spaceType 
 	}
 
 	keys := &SpaceKeySet{
-		SigningKey:   signingKey,
-		MasterKey:    masterKey,
-		ReadKey:      readKey,
-		MetadataKey:  metadataKey,
+		SigningKey:  signingKey,
+		MasterKey:   masterKey,
+		ReadKey:     readKey,
+		MetadataKey: metadataKey,
 	}
 
 	return c.CreateSpaceWithKeys(ctx, ownerAID, spaceType, keys)

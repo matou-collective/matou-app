@@ -11,30 +11,30 @@ import (
 
 // TestAIDs provides commonly used test AIDs
 var TestAIDs = struct {
-	Org    string
-	Admin  string
-	User1  string
-	User2  string
-	User3  string
+	Org   string
+	Admin string
+	User1 string
+	User2 string
+	User3 string
 }{
-	Org:    "EOrg1234567890abcdefghijklmnopqrstuvwxyz",
-	Admin:  "EAdmin1234567890abcdefghijklmnopqrstuvwxyz",
-	User1:  "EUser1_1234567890abcdefghijklmnopqrstuvwxyz",
-	User2:  "EUser2_1234567890abcdefghijklmnopqrstuvwxyz",
-	User3:  "EUser3_1234567890abcdefghijklmnopqrstuvwxyz",
+	Org:   "EOrg1234567890abcdefghijklmnopqrstuvwxyz",
+	Admin: "EAdmin1234567890abcdefghijklmnopqrstuvwxyz",
+	User1: "EUser1_1234567890abcdefghijklmnopqrstuvwxyz",
+	User2: "EUser2_1234567890abcdefghijklmnopqrstuvwxyz",
+	User3: "EUser3_1234567890abcdefghijklmnopqrstuvwxyz",
 }
 
 // TestMnemonics provides test mnemonics for key derivation
 var TestMnemonics = struct {
-	Valid12   string
-	Valid24   string
-	Invalid   string
-	Empty     string
+	Valid12 string
+	Valid24 string
+	Invalid string
+	Empty   string
 }{
-	Valid12:   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-	Valid24:   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
-	Invalid:   "invalid mnemonic words that should not work at all",
-	Empty:     "",
+	Valid12: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+	Valid24: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+	Invalid: "invalid mnemonic words that should not work at all",
+	Empty:   "",
 }
 
 // TestSchemas provides test credential schema identifiers

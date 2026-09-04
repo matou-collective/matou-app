@@ -51,7 +51,7 @@ func TestProfileRoleLookup_ResolverResolvesAfterSpaceAppears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserRoles failed: %v", err)
 	}
-	if !(len(roles) == 1 && HasRole(roles, RoleMember)) {
+	if len(roles) != 1 || !HasRole(roles, RoleMember) {
 		t.Errorf("expected [member] fallback while space empty, got %v", roles)
 	}
 

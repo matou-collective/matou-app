@@ -190,13 +190,13 @@ func (s *Sender) generateICSWithFrom(startTime, endTime time.Time, attendeeName,
 	b.WriteString("PRODID:-//MATOU//Booking//EN\r\n")
 	b.WriteString("METHOD:REQUEST\r\n")
 	b.WriteString("BEGIN:VEVENT\r\n")
-	b.WriteString(fmt.Sprintf("UID:%s\r\n", uid))
-	b.WriteString(fmt.Sprintf("DTSTAMP:%s\r\n", dtStamp))
-	b.WriteString(fmt.Sprintf("DTSTART:%s\r\n", dtStart))
-	b.WriteString(fmt.Sprintf("DTEND:%s\r\n", dtEnd))
-	b.WriteString(fmt.Sprintf("SUMMARY:Whakawhānaunga Session - %s\r\n", attendeeName))
+	fmt.Fprintf(&b, "UID:%s\r\n", uid)
+	fmt.Fprintf(&b, "DTSTAMP:%s\r\n", dtStamp)
+	fmt.Fprintf(&b, "DTSTART:%s\r\n", dtStart)
+	fmt.Fprintf(&b, "DTEND:%s\r\n", dtEnd)
+	fmt.Fprintf(&b, "SUMMARY:Whakawhānaunga Session - %s\r\n", attendeeName)
 	b.WriteString("DESCRIPTION:A short call to introduce ourselves and get to know each other as part of the MATOU community onboarding process.\r\n")
-	b.WriteString(fmt.Sprintf("ORGANIZER;CN=MĀTOU:mailto:%s\r\n", fromEmail))
+	fmt.Fprintf(&b, "ORGANIZER;CN=MĀTOU:mailto:%s\r\n", fromEmail)
 	b.WriteString("LOCATION:https://meet.jit.si/matou-whakawhanaunga-session\r\n")
 	b.WriteString("STATUS:CONFIRMED\r\n")
 	b.WriteString("END:VEVENT\r\n")
@@ -207,15 +207,15 @@ func (s *Sender) generateICSWithFrom(startTime, endTime time.Time, attendeeName,
 
 // SendRegistrationNotificationRequest contains the data needed to notify onboarding of a new registration
 type SendRegistrationNotificationRequest struct {
-	ApplicantName    string
-	ApplicantEmail   string
-	ApplicantAid     string
-	Bio              string
-	Location         string
-	JoinReason       string
-	Interests        []string
-	CustomInterests  string
-	SubmittedAt      string
+	ApplicantName   string
+	ApplicantEmail  string
+	ApplicantAid    string
+	Bio             string
+	Location        string
+	JoinReason      string
+	Interests       []string
+	CustomInterests string
+	SubmittedAt     string
 }
 
 // SendRegistrationNotification sends a notification email to contact@matou.nz about a new registration
@@ -395,15 +395,15 @@ func (s *Sender) buildMIMEMessageWithCalendarFrom(to, subject, htmlBody, icsCont
 
 	fromHeader := fmt.Sprintf("%s <%s>", s.fromName, fromEmail)
 
-	b.WriteString(fmt.Sprintf("From: %s\r\n", fromHeader))
-	b.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	b.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	fmt.Fprintf(&b, "From: %s\r\n", fromHeader)
+	fmt.Fprintf(&b, "To: %s\r\n", to)
+	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=\"%s\"\r\n", boundary))
+	fmt.Fprintf(&b, "Content-Type: multipart/mixed; boundary=\"%s\"\r\n", boundary)
 	b.WriteString("\r\n")
 
 	// HTML part
-	b.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
 	b.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
 	b.WriteString("Content-Transfer-Encoding: 7bit\r\n")
 	b.WriteString("\r\n")
@@ -411,7 +411,7 @@ func (s *Sender) buildMIMEMessageWithCalendarFrom(to, subject, htmlBody, icsCont
 	b.WriteString("\r\n")
 
 	// Calendar attachment
-	b.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
 	b.WriteString("Content-Type: text/calendar; charset=\"UTF-8\"; method=REQUEST\r\n")
 	b.WriteString("Content-Transfer-Encoding: 7bit\r\n")
 	b.WriteString("Content-Disposition: attachment; filename=\"booking.ics\"\r\n")
@@ -420,7 +420,7 @@ func (s *Sender) buildMIMEMessageWithCalendarFrom(to, subject, htmlBody, icsCont
 	b.WriteString("\r\n")
 
 	// End boundary
-	b.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
 
 	return b.String()
 }
@@ -479,9 +479,9 @@ func (s *Sender) buildMIMEMessage(to, subject, htmlBody string) string {
 
 	fromHeader := fmt.Sprintf("%s <%s>", s.fromName, s.from)
 
-	b.WriteString(fmt.Sprintf("From: %s\r\n", fromHeader))
-	b.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	b.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	fmt.Fprintf(&b, "From: %s\r\n", fromHeader)
+	fmt.Fprintf(&b, "To: %s\r\n", to)
+	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
 	b.WriteString("\r\n")

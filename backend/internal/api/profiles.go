@@ -1195,7 +1195,7 @@ func isProfileOwner(caller, typeName, objectID string, newFields, existingFields
 // isEndorsementAppend reports whether newFields equals existingFields except
 // for an "endorsements" array that only gained entries.
 func isEndorsementAppend(existingFields, newFields map[string]interface{}) bool {
-	if len(newFields) != len(existingFields) && !(len(newFields) == len(existingFields)+1 && existingFields["endorsements"] == nil) {
+	if len(newFields) != len(existingFields) && (len(newFields) != len(existingFields)+1 || existingFields["endorsements"] != nil) {
 		return false
 	}
 	for k, v := range newFields {

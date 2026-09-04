@@ -50,7 +50,7 @@ type AnySyncConfig struct {
 // BootstrapConfig holds bootstrap identity information
 type BootstrapConfig struct {
 	Organization OrganizationConfig `yaml:"organization"`
-	Admin        AdminConfig        `yaml:"admin"`           // Single admin (backward compatible)
+	Admin        AdminConfig        `yaml:"admin"`            // Single admin (backward compatible)
 	Admins       []AdminInfo        `yaml:"admins,omitempty"` // Multiple admins array
 	OrgSpace     OrgSpaceConfig     `yaml:"orgSpace"`
 }
@@ -66,10 +66,10 @@ type OrganizationConfig struct {
 
 // AdminConfig holds admin AID information (single admin - backward compatible)
 type AdminConfig struct {
-	AID          string            `yaml:"aid"`
-	Alias        string            `yaml:"alias"`
-	DelegatedBy  string            `yaml:"delegatedBy"`
-	Credentials  CredentialsConfig `yaml:"credentials"`
+	AID         string            `yaml:"aid"`
+	Alias       string            `yaml:"alias"`
+	DelegatedBy string            `yaml:"delegatedBy"`
+	Credentials CredentialsConfig `yaml:"credentials"`
 }
 
 // AdminInfo holds info for a single admin in the admins array

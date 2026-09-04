@@ -54,15 +54,15 @@ type mockPeer struct {
 	doFn func(ctx context.Context, do func(conn drpc.Conn) error) error
 }
 
-func (p *mockPeer) Id() string                                        { return "mock-file-peer" }
-func (p *mockPeer) Context() context.Context                          { return context.Background() }
+func (p *mockPeer) Id() string                                             { return "mock-file-peer" }
+func (p *mockPeer) Context() context.Context                               { return context.Background() }
 func (p *mockPeer) AcquireDrpcConn(ctx context.Context) (drpc.Conn, error) { return nil, nil }
 func (p *mockPeer) ReleaseDrpcConn(ctx context.Context, conn drpc.Conn)    {}
-func (p *mockPeer) IsClosed() bool                                    { return false }
-func (p *mockPeer) CloseChan() <-chan struct{}                        { return make(chan struct{}) }
-func (p *mockPeer) SetTTL(ttl time.Duration)                          {}
-func (p *mockPeer) TryClose(objectTTL time.Duration) (bool, error)   { return false, nil }
-func (p *mockPeer) Close() error                                      { return nil }
+func (p *mockPeer) IsClosed() bool                                         { return false }
+func (p *mockPeer) CloseChan() <-chan struct{}                             { return make(chan struct{}) }
+func (p *mockPeer) SetTTL(ttl time.Duration)                               {}
+func (p *mockPeer) TryClose(objectTTL time.Duration) (bool, error)         { return false, nil }
+func (p *mockPeer) Close() error                                           { return nil }
 
 func (p *mockPeer) DoDrpc(ctx context.Context, do func(conn drpc.Conn) error) error {
 	if p.doFn != nil {
@@ -75,23 +75,23 @@ type mockNodeConf struct {
 	filePeers []string
 }
 
-func (n *mockNodeConf) Init(a *app.App) error                                       { return nil }
-func (n *mockNodeConf) Name() string                                                { return nodeconf.CName }
-func (n *mockNodeConf) Run(ctx context.Context) error                               { return nil }
-func (n *mockNodeConf) Close(ctx context.Context) error                             { return nil }
-func (n *mockNodeConf) Id() string                                                  { return "mock-conf" }
-func (n *mockNodeConf) Configuration() nodeconf.Configuration                       { return nodeconf.Configuration{} }
-func (n *mockNodeConf) NodeIds(spaceId string) []string                             { return nil }
-func (n *mockNodeConf) IsResponsible(spaceId string) bool                           { return false }
-func (n *mockNodeConf) FilePeers() []string                                         { return n.filePeers }
-func (n *mockNodeConf) ConsensusPeers() []string                                    { return nil }
-func (n *mockNodeConf) CoordinatorPeers() []string                                  { return nil }
-func (n *mockNodeConf) NamingNodePeers() []string                                   { return nil }
-func (n *mockNodeConf) PaymentProcessingNodePeers() []string                        { return nil }
-func (n *mockNodeConf) PeerAddresses(peerId string) ([]string, bool)                { return nil, false }
-func (n *mockNodeConf) CHash() chash.CHash                                          { return nil }
-func (n *mockNodeConf) Partition(spaceId string) int                                { return 0 }
-func (n *mockNodeConf) NodeTypes(nodeId string) []nodeconf.NodeType                 { return nil }
+func (n *mockNodeConf) Init(a *app.App) error                        { return nil }
+func (n *mockNodeConf) Name() string                                 { return nodeconf.CName }
+func (n *mockNodeConf) Run(ctx context.Context) error                { return nil }
+func (n *mockNodeConf) Close(ctx context.Context) error              { return nil }
+func (n *mockNodeConf) Id() string                                   { return "mock-conf" }
+func (n *mockNodeConf) Configuration() nodeconf.Configuration        { return nodeconf.Configuration{} }
+func (n *mockNodeConf) NodeIds(spaceId string) []string              { return nil }
+func (n *mockNodeConf) IsResponsible(spaceId string) bool            { return false }
+func (n *mockNodeConf) FilePeers() []string                          { return n.filePeers }
+func (n *mockNodeConf) ConsensusPeers() []string                     { return nil }
+func (n *mockNodeConf) CoordinatorPeers() []string                   { return nil }
+func (n *mockNodeConf) NamingNodePeers() []string                    { return nil }
+func (n *mockNodeConf) PaymentProcessingNodePeers() []string         { return nil }
+func (n *mockNodeConf) PeerAddresses(peerId string) ([]string, bool) { return nil, false }
+func (n *mockNodeConf) CHash() chash.CHash                           { return nil }
+func (n *mockNodeConf) Partition(spaceId string) int                 { return 0 }
+func (n *mockNodeConf) NodeTypes(nodeId string) []nodeconf.NodeType  { return nil }
 func (n *mockNodeConf) NetworkCompatibilityStatus() nodeconf.NetworkCompatibilityStatus {
 	return nodeconf.NetworkCompatibilityStatusOk
 }
@@ -100,7 +100,7 @@ func (n *mockNodeConf) NetworkCompatibilityStatus() nodeconf.NetworkCompatibilit
 
 type inMemoryFileStore struct {
 	mu     sync.RWMutex
-	blocks map[string][]byte // cid string → data
+	blocks map[string][]byte   // cid string → data
 	binds  map[string][]string // fileId → []cid strings
 }
 

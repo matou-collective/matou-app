@@ -15,8 +15,8 @@ import (
 	"github.com/anyproto/any-sync/net/pool"
 	"github.com/anyproto/any-sync/nodeconf"
 	"github.com/anyproto/any-sync/util/crypto"
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/keri"
 )
 
@@ -66,18 +66,18 @@ func (m *mockSyncAnySyncClient) SyncDocument(ctx context.Context, spaceID string
 	return nil
 }
 
-func (m *mockSyncAnySyncClient) GetNetworkID() string        { return "test-network" }
-func (m *mockSyncAnySyncClient) GetCoordinatorURL() string   { return "http://localhost:1004" }
-func (m *mockSyncAnySyncClient) GetPeerID() string           { return "test-peer-123" }
-func (m *mockSyncAnySyncClient) GetDataDir() string              { return "" }
-func (m *mockSyncAnySyncClient) GetSigningKey() crypto.PrivKey   { return nil }
-func (m *mockSyncAnySyncClient) GetPool() pool.Pool              { return nil }
+func (m *mockSyncAnySyncClient) GetNetworkID() string          { return "test-network" }
+func (m *mockSyncAnySyncClient) GetCoordinatorURL() string     { return "http://localhost:1004" }
+func (m *mockSyncAnySyncClient) GetPeerID() string             { return "test-peer-123" }
+func (m *mockSyncAnySyncClient) GetDataDir() string            { return "" }
+func (m *mockSyncAnySyncClient) GetSigningKey() crypto.PrivKey { return nil }
+func (m *mockSyncAnySyncClient) GetPool() pool.Pool            { return nil }
 func (m *mockSyncAnySyncClient) GetNodeConf() nodeconf.Service { return nil }
 func (m *mockSyncAnySyncClient) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
 	return nil
 }
-func (m *mockSyncAnySyncClient) Ping() error { return nil }
-func (m *mockSyncAnySyncClient) Close() error                    { return nil }
+func (m *mockSyncAnySyncClient) Ping() error  { return nil }
+func (m *mockSyncAnySyncClient) Close() error { return nil }
 
 func (m *mockSyncAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
 	return m.CreateSpace(ctx, ownerAID, spaceType, nil)

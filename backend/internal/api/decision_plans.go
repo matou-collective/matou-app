@@ -237,11 +237,11 @@ func (h *DecisionPlansHandler) HandleAddAction(w http.ResponseWriter, r *http.Re
 // HandleCompleteAction handles POST /api/v1/governance-actions/{id}/complete
 func (h *DecisionPlansHandler) HandleCompleteAction(w http.ResponseWriter, r *http.Request, actionID string) {
 	var req struct {
-		Outcome         string                   `json:"outcome"`
-		CompletionNotes string                   `json:"completion_notes"`
-		CompletionFiles []contributions.FileRef   `json:"completion_files,omitempty"`
-		CompletionLinks []string                  `json:"completion_links,omitempty"`
-		VoterName       string                   `json:"voter_name,omitempty"`
+		Outcome         string                  `json:"outcome"`
+		CompletionNotes string                  `json:"completion_notes"`
+		CompletionFiles []contributions.FileRef `json:"completion_files,omitempty"`
+		CompletionLinks []string                `json:"completion_links,omitempty"`
+		VoterName       string                  `json:"voter_name,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})

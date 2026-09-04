@@ -30,8 +30,8 @@ type mockAclRecordBuilder struct {
 	buildInviteJoinWithoutApproveErr    error
 
 	// Track calls
-	buildInviteAnyoneCalls              []list.AclPermissions
-	buildInviteJoinWithoutApproveCalls  []list.InviteJoinPayload
+	buildInviteAnyoneCalls             []list.AclPermissions
+	buildInviteJoinWithoutApproveCalls []list.InviteJoinPayload
 }
 
 func (m *mockAclRecordBuilder) UnmarshallWithId(rawIdRecord *consensusproto.RawRecordWithId) (rec *list.AclRecord, err error) {
@@ -440,18 +440,18 @@ func (c *testACLClient) SyncDocument(_ context.Context, _ string, _ string, _ []
 	return fmt.Errorf("not implemented")
 }
 func (c *testACLClient) MakeSpaceShareable(_ context.Context, _ string) error { return nil }
-func (c *testACLClient) GetNetworkID() string     { return "" }
-func (c *testACLClient) GetCoordinatorURL() string { return "" }
-func (c *testACLClient) GetPeerID() string         { return "" }
-func (c *testACLClient) GetDataDir() string              { return "" }
-func (c *testACLClient) GetSigningKey() crypto.PrivKey   { return nil }
-func (c *testACLClient) GetPool() pool.Pool              { return nil }
-func (c *testACLClient) GetNodeConf() nodeconf.Service { return nil }
+func (c *testACLClient) GetNetworkID() string                                 { return "" }
+func (c *testACLClient) GetCoordinatorURL() string                            { return "" }
+func (c *testACLClient) GetPeerID() string                                    { return "" }
+func (c *testACLClient) GetDataDir() string                                   { return "" }
+func (c *testACLClient) GetSigningKey() crypto.PrivKey                        { return nil }
+func (c *testACLClient) GetPool() pool.Pool                                   { return nil }
+func (c *testACLClient) GetNodeConf() nodeconf.Service                        { return nil }
 func (c *testACLClient) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
 	return nil
 }
-func (c *testACLClient) Ping() error { return nil }
-func (c *testACLClient) Close() error                    { return nil }
+func (c *testACLClient) Ping() error  { return nil }
+func (c *testACLClient) Close() error { return nil }
 
 // =============================================================================
 // Application-layer ACL policy tests (existing)

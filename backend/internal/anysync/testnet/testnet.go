@@ -32,11 +32,11 @@ import (
 
 // Network represents a running any-sync test network
 type Network struct {
-	ConfigPath    string
+	ConfigPath     string
 	CoordinatorURL string
-	mu            sync.Mutex
-	started       bool
-	keepRunning   bool
+	mu             sync.Mutex
+	started        bool
+	keepRunning    bool
 }
 
 // Config holds test network configuration
