@@ -106,6 +106,22 @@ describe('kit profile form', () => {
     wrapper.unmount();
   });
 
+  it('aligns interest checkboxes with their single-line labels (issue #369)', () => {
+    const wrapper = mountForm();
+    // Kit interest options carry no description, so every row is single-line.
+    // The checkbox must not carry a fixed two-line top margin (mt-5) that
+    // would drop it below the label, and its row must centre the two.
+    const rows = wrapper.findAll('input[type="checkbox"]');
+    const interestBox = rows.find((r) =>
+      (r.element as HTMLInputElement).value === 'kai',
+    );
+    expect(interestBox).toBeTruthy();
+    expect(interestBox!.classes()).not.toContain('mt-5');
+    const row = interestBox!.element.closest('label');
+    expect(row?.className).toContain('items-center');
+    wrapper.unmount();
+  });
+
   it('renders a select custom question with its label', () => {
     const wrapper = mountForm();
     expect(wrapper.text()).toContain('A few questions from Test Community');
