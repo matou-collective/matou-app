@@ -44,7 +44,7 @@ func TestFetchFromConfigServer_ReturnsConfigOn200(t *testing.T) {
 }
 
 func TestFetchFromConfigServer_NotFoundIsNilNoError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
@@ -75,7 +75,7 @@ func TestFetchFromConfigServer_SetsTestConfigHeaderWhenIsTest(t *testing.T) {
 }
 
 func TestFetchFromConfigServer_ServerErrorReturnsError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -97,7 +97,7 @@ func TestHandleGetConfig_FallsBackToConfigServerOnCacheMiss(t *testing.T) {
 	org := testOrgData()
 	org.Organization.Name = "Fallback Org"
 	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
 		_ = json.NewEncoder(w).Encode(org)
 	}))
@@ -135,7 +135,7 @@ func TestHandleGetConfig_FallsBackToConfigServerOnCacheMiss(t *testing.T) {
 // A config server that has no org yet (404) leaves the handler a 404 so
 // first-run org creation still bootstraps.
 func TestHandleGetConfig_ConfigServer404StaysNotConfigured(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()

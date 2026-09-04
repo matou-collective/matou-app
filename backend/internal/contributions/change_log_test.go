@@ -23,7 +23,7 @@ func (f *failingSaveStore) Save(spaceID, objectID, objectType string, data inter
 	return f.MockObjectStore.Save(spaceID, objectID, objectType, data)
 }
 
-func setupPlanWithMilestone(t *testing.T, svc *Service, ctx context.Context, spaceID string) (*Project, *ImplementationPlan, *Milestone) {
+func setupPlanWithMilestone(ctx context.Context, t *testing.T, svc *Service, spaceID string) (*Project, *ImplementationPlan, *Milestone) {
 	t.Helper()
 	proj, err := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
 	if err != nil {
@@ -47,7 +47,7 @@ func TestAddMilestone_RecordsChangeLogEntry(t *testing.T) {
 	svc := NewService(NewMockStore())
 	spaceID := "s"
 
-	_, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+	_, plan, ms := setupPlanWithMilestone(ctx, t, svc, spaceID)
 
 	gotPlan, err := svc.GetImplementationPlan(ctx, spaceID, plan.ID)
 	if err != nil {
@@ -82,7 +82,7 @@ func TestArchiveMilestone_RecordsChangeLogEntry(t *testing.T) {
 	svc := NewService(NewMockStore())
 	spaceID := "s"
 
-	_, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+	_, plan, ms := setupPlanWithMilestone(ctx, t, svc, spaceID)
 
 	if err := svc.ArchiveMilestone(ctx, spaceID, ms.MilestoneID, "archiver-1"); err != nil {
 		t.Fatalf("ArchiveMilestone: %v", err)
@@ -113,7 +113,7 @@ func TestCreateContribution_RecordsChangeLogEntry(t *testing.T) {
 	svc := NewService(NewMockStore())
 	spaceID := "s"
 
-	proj, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+	proj, plan, ms := setupPlanWithMilestone(ctx, t, svc, spaceID)
 
 	contrib, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
 		ProjectID: proj.ID, MilestoneID: ms.MilestoneID, Title: "Build page", Description: "d",
@@ -152,7 +152,7 @@ func TestArchiveContribution_RecordsChangeLogEntry(t *testing.T) {
 	svc := NewService(NewMockStore())
 	spaceID := "s"
 
-	proj, plan, _ := setupPlanWithMilestone(t, svc, ctx, spaceID)
+	proj, plan, _ := setupPlanWithMilestone(ctx, t, svc, spaceID)
 
 	contrib, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
 		ProjectID: proj.ID, Title: "Standalone task", Description: "d",
@@ -185,7 +185,7 @@ func TestSignOffPlan_ClearsChangeLog(t *testing.T) {
 	svc := NewService(NewMockStore())
 	spaceID := "s"
 
-	proj, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+	proj, plan, ms := setupPlanWithMilestone(ctx, t, svc, spaceID)
 	if _, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
 		ProjectID: proj.ID, MilestoneID: ms.MilestoneID, Title: "C", Description: "d",
 		ContributionType: "development", CreatedBy: "u",
@@ -307,7 +307,7 @@ func TestCreateSubContribution_RecordsChangeLogEntryUnderParentMilestone(t *test
 	svc := NewService(NewMockStore())
 	spaceID := "s"
 
-	proj, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+	proj, plan, ms := setupPlanWithMilestone(ctx, t, svc, spaceID)
 
 	parentReq := newTestContributionReq(proj.ID, "Parent Work")
 	parentReq.MilestoneID = ms.MilestoneID
@@ -361,7 +361,7 @@ func TestCreateSubContribution_InvalidatesPlanSignOff(t *testing.T) {
 	svc := NewService(NewMockStore())
 	spaceID := "s"
 
-	proj, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+	proj, plan, ms := setupPlanWithMilestone(ctx, t, svc, spaceID)
 
 	parentReq := newTestContributionReq(proj.ID, "Parent Work")
 	parentReq.MilestoneID = ms.MilestoneID
@@ -400,7 +400,7 @@ func TestArchiveSubContribution_RecordsChangeLogEntryUnderParentMilestone(t *tes
 	svc := NewService(NewMockStore())
 	spaceID := "s"
 
-	proj, plan, ms := setupPlanWithMilestone(t, svc, ctx, spaceID)
+	proj, plan, ms := setupPlanWithMilestone(ctx, t, svc, spaceID)
 
 	parentReq := newTestContributionReq(proj.ID, "Parent Work")
 	parentReq.MilestoneID = ms.MilestoneID

@@ -69,7 +69,7 @@ func (h *TrustHandler) getCommunityCredentials(ctx context.Context) []*anystore.
 	for _, cred := range creds {
 		var data interface{}
 		if cred.Data != nil {
-			json.Unmarshal(cred.Data, &data)
+			_ = json.Unmarshal(cred.Data, &data)
 		}
 		result = append(result, &anystore.CachedCredential{
 			ID:         cred.SAID,

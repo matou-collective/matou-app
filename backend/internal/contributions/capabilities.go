@@ -1,4 +1,3 @@
-// backend/internal/contributions/capabilities.go
 package contributions
 
 // Capability is a human-sized group of Actions, the unit admins toggle in the
@@ -6,6 +5,8 @@ package contributions
 // RolePolicy stores only which roles hold which capabilities.
 type Capability string
 
+// CapContribute and the other Cap* constants are the fixed registry of
+// capabilities that roles can be granted.
 const (
 	CapContribute        Capability = "contribute"
 	CapManageProjects    Capability = "manage_projects"
@@ -19,10 +20,10 @@ const (
 	CapManageGovernance  Capability = "manage_governance"
 	CapManageRoles       Capability = "manage_roles"
 
-	// Feature-scoped capabilities added by the #312 umbrella. The three
-	// project-scoped ones (view_contribution_amounts, assign_project_steward,
-	// assign_project_lead) may be held by a project role; the rest are
-	// community-scoped.
+	// CapViewContributionAmounts and the other feature-scoped capabilities
+	// below were added by the #312 umbrella. The three project-scoped ones
+	// (view_contribution_amounts, assign_project_steward, assign_project_lead)
+	// may be held by a project role; the rest are community-scoped.
 	CapViewContributionAmounts Capability = "view_contribution_amounts"
 	CapAssignProjectSteward    Capability = "assign_project_steward"
 	CapAssignProjectLead       Capability = "assign_project_lead"
@@ -35,9 +36,10 @@ const (
 	CapOpenCommunitySettings   Capability = "open_community_settings"
 	CapManageCommunitySettings Capability = "manage_community_settings"
 
-	// Retired capabilities (#313). These IDs are no longer toggleable and are
-	// absent from AllCapabilities()/the default policy, but the constants
-	// survive as the source of the migration mapping applied on policy read
+	// CapAssignWork and CapManageComms are retired capabilities (#313). These
+	// IDs are no longer toggleable and are absent from
+	// AllCapabilities()/the default policy, but the constants survive as the
+	// source of the migration mapping applied on policy read
 	// (NormalizeStoredPolicy) and as the IDs the PUT handler rejects. assign_work
 	// maps to the two assign capabilities; manage_communications to the two chat
 	// moderation capabilities.
@@ -224,9 +226,9 @@ var capabilityActions = map[Capability][]Action{
 // actionToCapability is the reverse index, built once at init.
 var actionToCapability = func() map[Action]Capability {
 	m := make(map[Action]Capability)
-	for cap, actions := range capabilityActions {
+	for capVal, actions := range capabilityActions {
 		for _, a := range actions {
-			m[a] = cap
+			m[a] = capVal
 		}
 	}
 	return m
@@ -239,8 +241,8 @@ func CapabilityActions() map[Capability][]Action {
 
 // ActionCapability returns the capability an action belongs to.
 func ActionCapability(a Action) (Capability, bool) {
-	cap, ok := actionToCapability[a]
-	return cap, ok
+	capVal, ok := actionToCapability[a]
+	return capVal, ok
 }
 
 // AllCapabilities returns every toggleable capability in stable display order

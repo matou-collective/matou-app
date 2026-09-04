@@ -135,7 +135,7 @@ func (h *EventsHandler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Send initial connection event
 	data, _ := json.Marshal(map[string]string{"status": "connected"})
-	fmt.Fprintf(w, "event: connected\ndata: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: %s\n\n", data)
 	flusher.Flush()
 
 	// Keepalive ticker
@@ -155,10 +155,10 @@ func (h *EventsHandler) HandleEvents(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
 			flusher.Flush()
 		case <-ticker.C:
-			fmt.Fprintf(w, ": keepalive\n\n")
+			_, _ = fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
 	}

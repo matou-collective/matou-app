@@ -93,14 +93,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 
 	switch {
 	case opts.IsTest():
-		fmt.Fprintln(out, "MATOU DAO Backend Server (TEST)")
+		_, _ = fmt.Fprintln(out, "MATOU DAO Backend Server (TEST)")
 	case opts.IsProd():
-		fmt.Fprintln(out, "MATOU DAO Backend Server (PRODUCTION)")
+		_, _ = fmt.Fprintln(out, "MATOU DAO Backend Server (PRODUCTION)")
 	default:
-		fmt.Fprintln(out, "MATOU DAO Backend Server")
+		_, _ = fmt.Fprintln(out, "MATOU DAO Backend Server")
 	}
-	fmt.Fprintln(out, "============================")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "============================")
+	_, _ = fmt.Fprintln(out)
 
 	if opts.ConfigServerToken == "" {
 		log.Println("[Config] WARNING: MATOU_CONFIG_SERVER_TOKEN is not set - " +
@@ -121,7 +121,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}
 
 	// Load server configuration (SMTP, KERI URLs, etc.)
-	fmt.Fprintln(out, "Loading configuration...")
+	_, _ = fmt.Fprintln(out, "Loading configuration...")
 	cfg, err := config.Load("", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
@@ -159,30 +159,30 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		cfg.SetOrgConfig(orgData.Organization.AID, orgData.Organization.Name, admins, orgData.CommunitySpaceID)
 	}
 
-	fmt.Fprintf(out, "  Configuration loaded\n")
+	_, _ = fmt.Fprintf(out, "  Configuration loaded\n")
 	if cfg.IsOrgConfigured() {
-		fmt.Fprintf(out, "   Organization: %s\n", cfg.Bootstrap.Organization.Name)
-		fmt.Fprintf(out, "   Org AID: %s\n", cfg.GetOrgAID())
-		fmt.Fprintf(out, "   Admin AID: %s\n", cfg.GetAdminAID())
+		_, _ = fmt.Fprintf(out, "   Organization: %s\n", cfg.Bootstrap.Organization.Name)
+		_, _ = fmt.Fprintf(out, "   Org AID: %s\n", cfg.GetOrgAID())
+		_, _ = fmt.Fprintf(out, "   Admin AID: %s\n", cfg.GetAdminAID())
 	} else {
-		fmt.Fprintln(out, "   Organization: Not configured (run frontend setup)")
+		_, _ = fmt.Fprintln(out, "   Organization: Not configured (run frontend setup)")
 	}
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 
 	// Initialize user identity (per-user mode)
-	fmt.Fprintln(out, "Initializing user identity...")
+	_, _ = fmt.Fprintln(out, "Initializing user identity...")
 	userIdentity := identity.NewEncrypted(opts.DataDir, opts.IdentityEncryptionKey)
 	if userIdentity.IsConfigured() {
-		fmt.Fprintf(out, "  Identity loaded from disk\n")
-		fmt.Fprintf(out, "   AID: %s\n", userIdentity.GetAID())
-		fmt.Fprintf(out, "   Peer ID: %s\n", userIdentity.GetPeerID())
+		_, _ = fmt.Fprintf(out, "  Identity loaded from disk\n")
+		_, _ = fmt.Fprintf(out, "   AID: %s\n", userIdentity.GetAID())
+		_, _ = fmt.Fprintf(out, "   Peer ID: %s\n", userIdentity.GetPeerID())
 	} else {
-		fmt.Fprintln(out, "  No identity configured yet (will be set via /api/v1/identity/set)")
+		_, _ = fmt.Fprintln(out, "  No identity configured yet (will be set via /api/v1/identity/set)")
 	}
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 
 	// Initialize any-sync client
-	fmt.Fprintln(out, "Initializing any-sync client...")
+	_, _ = fmt.Fprintln(out, "Initializing any-sync client...")
 
 	anysyncConfigPath := opts.AnysyncConfigPath
 
@@ -205,13 +205,13 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// For dev/test, fetch only if the config file doesn't exist.
 	shouldFetch := opts.IsProd() || os.IsNotExist(func() error { _, statErr := os.Stat(anysyncConfigPath); return statErr }())
 	if shouldFetch {
-		fmt.Fprintf(out, "  Fetching any-sync config from config server %s...\n", opts.ConfigServerURL)
+		_, _ = fmt.Fprintf(out, "  Fetching any-sync config from config server %s...\n", opts.ConfigServerURL)
 		rawConfig, fetchErr := fetchAndSaveAnySyncConfig(opts.ConfigServerURL, anysyncConfigPath)
 		if fetchErr != nil {
 			// In production, try using cached config if fetch fails
 			if opts.IsProd() {
 				if _, statErr := os.Stat(anysyncConfigPath); statErr == nil {
-					fmt.Fprintf(out, "  Config server unreachable, using cached config at %s\n", anysyncConfigPath)
+					_, _ = fmt.Fprintf(out, "  Config server unreachable, using cached config at %s\n", anysyncConfigPath)
 				} else {
 					return nil, fmt.Errorf("failed to fetch any-sync config from config server: %w\n\n"+
 						"Ensure the config server is running at %s", fetchErr, opts.ConfigServerURL)
@@ -223,7 +223,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		} else {
 			clientConfigHandler.SetRaw(rawConfig)
 			configPushRelayURL = pushRelayURLFromConfig(rawConfig)
-			fmt.Fprintf(out, "  Config saved to %s\n", anysyncConfigPath)
+			_, _ = fmt.Fprintf(out, "  Config saved to %s\n", anysyncConfigPath)
 		}
 	}
 
@@ -234,7 +234,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}
 	if userIdentity.IsConfigured() {
 		sdkOpts.Mnemonic = userIdentity.GetMnemonic()
-		fmt.Fprintln(out, "  Using mnemonic-derived peer key from persisted identity")
+		_, _ = fmt.Fprintln(out, "  Using mnemonic-derived peer key from persisted identity")
 	}
 
 	sdkClient, err := anysync.NewSDKClient(anysyncConfigPath, sdkOpts)
@@ -244,15 +244,15 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	closers = append(closers, sdkClient.Close)
 	var anysyncClient anysync.AnySyncClient = sdkClient
 
-	fmt.Fprintf(out, "  any-sync client initialized\n")
-	fmt.Fprintf(out, "   Network ID: %s\n", anysyncClient.GetNetworkID())
-	fmt.Fprintf(out, "   Coordinator: %s\n", anysyncClient.GetCoordinatorURL())
-	fmt.Fprintf(out, "   Peer ID: %s\n", anysyncClient.GetPeerID())
+	_, _ = fmt.Fprintf(out, "  any-sync client initialized\n")
+	_, _ = fmt.Fprintf(out, "   Network ID: %s\n", anysyncClient.GetNetworkID())
+	_, _ = fmt.Fprintf(out, "   Coordinator: %s\n", anysyncClient.GetCoordinatorURL())
+	_, _ = fmt.Fprintf(out, "   Peer ID: %s\n", anysyncClient.GetPeerID())
 
 	// Validate any-sync network connectivity
-	fmt.Fprint(out, "  Validating network connectivity...")
+	_, _ = fmt.Fprint(out, "  Validating network connectivity...")
 	if pingErr := sdkClient.Ping(); pingErr != nil {
-		fmt.Fprintln(out, " FAILED")
+		_, _ = fmt.Fprintln(out, " FAILED")
 		configFile := "client-dev.yml"
 		infraSuffix := ""
 		if opts.IsTest() {
@@ -269,11 +269,11 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 			"     To update: cp ../matou-infrastructure/any-sync/etc%s/client.yml config/%s",
 			pingErr, infraSuffix, configFile, infraSuffix, configFile)
 	}
-	fmt.Fprintln(out, " OK")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, " OK")
+	_, _ = fmt.Fprintln(out)
 
 	// Initialize local storage
-	fmt.Fprintln(out, "Initializing local storage (anystore)...")
+	_, _ = fmt.Fprintln(out, "Initializing local storage (anystore)...")
 
 	store, err := anystore.NewLocalStore(anystore.DefaultConfig(opts.DataDir))
 	if err != nil {
@@ -286,9 +286,9 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("failed to create chat indexes: %w", err)
 	}
 
-	fmt.Fprintf(out, "  Local storage initialized (with chat indexes)\n")
-	fmt.Fprintf(out, "   Data directory: %s\n", opts.DataDir)
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  Local storage initialized (with chat indexes)\n")
+	_, _ = fmt.Fprintf(out, "   Data directory: %s\n", opts.DataDir)
+	_, _ = fmt.Fprintln(out)
 
 	// Determine community space ID: prefer runtime config from identity, fall back to org config
 	communitySpaceID := orgConfigHandler.GetCommunitySpaceID()
@@ -311,7 +311,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}
 
 	// Initialize space manager
-	fmt.Fprintln(out, "Initializing space manager...")
+	_, _ = fmt.Fprintln(out, "Initializing space manager...")
 	spaceManager := anysync.NewSpaceManager(anysyncClient, &anysync.SpaceManagerConfig{
 		CommunitySpaceID:         communitySpaceID,
 		CommunityReadOnlySpaceID: communityReadOnlySpaceID,
@@ -320,18 +320,18 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}, sdkClient.GetTreeManager())
 	spaceStore := anystore.NewSpaceStoreAdapter(store)
 
-	fmt.Fprintf(out, "  Space manager initialized\n")
-	fmt.Fprintf(out, "   Community Space ID: %s\n", communitySpaceID)
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  Space manager initialized\n")
+	_, _ = fmt.Fprintf(out, "   Community Space ID: %s\n", communitySpaceID)
+	_, _ = fmt.Fprintln(out)
 
 	// Verify community space (log warning if not configured)
 	if communitySpaceID == "" {
-		fmt.Fprintln(out, "  Warning: Community space ID not configured")
-		fmt.Fprintln(out, "     Memberships will only be stored in private spaces")
+		_, _ = fmt.Fprintln(out, "  Warning: Community space ID not configured")
+		_, _ = fmt.Fprintln(out, "     Memberships will only be stored in private spaces")
 	}
 
 	// Initialize KERI client (config-only, no KERIA connection needed)
-	fmt.Fprintln(out, "Initializing KERI client...")
+	_, _ = fmt.Fprintln(out, "Initializing KERI client...")
 	keriClient, err := keri.NewClient(&keri.Config{
 		OrgAID:   orgConfigHandler.GetOrgAID(),
 		OrgAlias: orgConfigHandler.GetOrgName(), // Use name as alias
@@ -341,19 +341,19 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("failed to create KERI client: %w", err)
 	}
 
-	fmt.Fprintf(out, "  KERI client initialized\n")
+	_, _ = fmt.Fprintf(out, "  KERI client initialized\n")
 	if !orgConfigHandler.IsConfigured() {
-		fmt.Fprintln(out, "   Note: Organization not configured yet - credential validation disabled")
+		_, _ = fmt.Fprintln(out, "   Note: Organization not configured yet - credential validation disabled")
 	}
-	fmt.Fprintf(out, "   Note: Credential issuance handled by frontend (signify-ts)\n")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "   Note: Credential issuance handled by frontend (signify-ts)\n")
+	_, _ = fmt.Fprintln(out)
 
 	// Initialize type registry
-	fmt.Fprintln(out, "Initializing type registry...")
+	_, _ = fmt.Fprintln(out, "Initializing type registry...")
 	typeRegistry := matouTypes.NewRegistry()
 	typeRegistry.Bootstrap()
-	fmt.Fprintf(out, "  Type registry initialized with %d types\n", len(typeRegistry.All()))
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  Type registry initialized with %d types\n", len(typeRegistry.All()))
+	_, _ = fmt.Fprintln(out)
 
 	// Create event broker for SSE
 	eventBroker := api.NewEventBroker()
@@ -412,8 +412,8 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		ctx := context.Background()
 
 		// Fast path: tree is already indexed.
-		if spaceId := utm.SpaceForTree(treeId); spaceId != "" {
-			return utm.BuildFreshTree(ctx, spaceId, treeId)
+		if spaceID := utm.SpaceForTree(treeId); spaceID != "" {
+			return utm.BuildFreshTree(ctx, spaceID, treeId)
 		}
 
 		// Slow path: tree arrived via P2P sync between BuildSpaceIndex runs, so
@@ -422,8 +422,8 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		for _, sid := range utm.KnownSpaceIDs() {
 			_ = utm.BuildSpaceIndex(ctx, sid)
 		}
-		if spaceId := utm.SpaceForTree(treeId); spaceId != "" {
-			return utm.BuildFreshTree(ctx, spaceId, treeId)
+		if spaceID := utm.SpaceForTree(treeId); spaceID != "" {
+			return utm.BuildFreshTree(ctx, spaceID, treeId)
 		}
 		for _, sid := range utm.KnownSpaceIDs() {
 			if tree, err := utm.BuildFreshTree(ctx, sid, treeId); err == nil {
@@ -453,7 +453,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	commentCursorsHandler := api.NewCommentCursorsHandler(spaceManager, userIdentity)
 
 	// Initialize contributions system
-	fmt.Fprintln(out, "Initializing contributions system...")
+	_, _ = fmt.Fprintln(out, "Initializing contributions system...")
 	contribStoreAdapter := anysync.NewObjectStoreAdapter(spaceManager.ObjectTreeManager(), sdkClient, userIdentity)
 	contribService := contributions.NewService(contribStoreAdapter)
 	// Validate proposal writes against the org's persisted Proposal schema
@@ -505,8 +505,8 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 			// and notifications still reach the app over SSE.
 			log.Printf("[Push] invalid push relay URL %q: %v — push notifications disabled", relayURL, err)
 		} else {
-			fmt.Fprintf(out, "Push relay configured: %s\n", relayURL)
-			aclMembers := notifications.ChannelMembersFunc(func(channelID string) ([]string, error) {
+			_, _ = fmt.Fprintf(out, "Push relay configured: %s\n", relayURL)
+			aclMembers := notifications.ChannelMembersFunc(func(_ string) ([]string, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				aidMap, err := spaceManager.ACLManager().AccountAIDMap(ctx, communitySpaceID)
@@ -790,8 +790,8 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	contributionsHandler.SetBroker(eventBroker)
 	projectsHandler.SetBroker(eventBroker)
 	implPlansHandler.SetBroker(eventBroker)
-	fmt.Fprintln(out, "  Contributions system initialized")
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "  Contributions system initialized")
+	_, _ = fmt.Fprintln(out)
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -800,10 +800,10 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	mux.HandleFunc("/health", api.CORSHandler(healthHandler.HandleHealth))
 
 	// Info endpoint
-	mux.HandleFunc("/info", api.CORSHandler(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/info", api.CORSHandler(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{
+		_, _ = fmt.Fprintf(w, `{
 			"organization": {
 				"name": "%s",
 				"aid": "%s",
@@ -865,8 +865,8 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
-	fmt.Fprintf(out, "Starting HTTP server on %s\n", listener.Addr().String())
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "Starting HTTP server on %s\n", listener.Addr().String())
+	_, _ = fmt.Fprintln(out)
 
 	// Start background sync worker
 	syncWorkerConfig := bgSync.DefaultConfig()
@@ -976,7 +976,7 @@ func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) ([]byte, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to reach config server at %s: %w", configServerURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("config server returned status %d", resp.StatusCode)

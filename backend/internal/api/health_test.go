@@ -23,7 +23,7 @@ func setupHealthTestHandler(t *testing.T) (*HealthHandler, *anystore.LocalStore,
 	// Create anystore
 	store, err := anystore.NewLocalStore(anystore.DefaultConfig(tmpDir))
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("failed to create anystore: %v", err)
 	}
 
@@ -31,8 +31,8 @@ func setupHealthTestHandler(t *testing.T) (*HealthHandler, *anystore.LocalStore,
 	spaceStore := anystore.NewSpaceStoreAdapter(store)
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	handler := NewHealthHandler(store, spaceStore, func() string { return "EOrg123456789" }, func() string { return "EAdmin123456789" })
@@ -216,8 +216,8 @@ func TestHandleHealth_WithSpaces(t *testing.T) {
 		CreatedAt: time.Now().UTC(),
 		LastSync:  time.Now().UTC(),
 	}
-	spaceStore.SaveSpace(ctx, space1)
-	spaceStore.SaveSpace(ctx, space2)
+	_ = spaceStore.SaveSpace(ctx, space1)
+	_ = spaceStore.SaveSpace(ctx, space2)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
@@ -379,7 +379,7 @@ func TestHealthResponse_JSONStructure(t *testing.T) {
 		},
 		CachedAt: time.Now().UTC(),
 	}
-	store.StoreCredential(ctx, cred)
+	_ = store.StoreCredential(ctx, cred)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()

@@ -259,7 +259,7 @@ func identityGuardMux(t *testing.T, ui *identity.UserIdentity) *http.ServeMux {
 	h := &IdentityHandler{userIdentity: ui, roleLookup: reviewLookup()}
 	mux := http.NewServeMux()
 	// Exercise the guard around a stub so the test does not need an SDK client.
-	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }
+	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
 	mux.HandleFunc("/api/v1/identity/set", h.withBootstrapRBAC(ok))
 	mux.HandleFunc("/api/v1/identity", h.withBootstrapRBAC(ok))
 	return mux

@@ -189,7 +189,7 @@ func (c *FCMClient) sendOne(ctx context.Context, access string, m PushMessage) P
 	if err != nil {
 		return PushResult{Token: m.Token, Err: err}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode == http.StatusOK {
 		return PushResult{Token: m.Token}
@@ -315,7 +315,7 @@ func (t *saTokenSource) token(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

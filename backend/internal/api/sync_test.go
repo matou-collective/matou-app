@@ -31,7 +31,7 @@ func newMockSyncAnySyncClient() *mockSyncAnySyncClient {
 	}
 }
 
-func (m *mockSyncAnySyncClient) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+func (m *mockSyncAnySyncClient) CreateSpace(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
 	aidPrefix := ownerAID
 	if len(aidPrefix) > 8 {
 		aidPrefix = aidPrefix[:8]
@@ -54,15 +54,15 @@ func (m *mockSyncAnySyncClient) DeriveSpace(ctx context.Context, ownerAID string
 	return m.CreateSpace(ctx, ownerAID, spaceType, signingKey)
 }
 
-func (m *mockSyncAnySyncClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error) {
+func (m *mockSyncAnySyncClient) DeriveSpaceID(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (string, error) {
 	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
 }
 
-func (m *mockSyncAnySyncClient) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
+func (m *mockSyncAnySyncClient) AddToACL(_ context.Context, _ string, _ string, _ []string) error {
 	return nil
 }
 
-func (m *mockSyncAnySyncClient) SyncDocument(ctx context.Context, spaceID string, docID string, data []byte) error {
+func (m *mockSyncAnySyncClient) SyncDocument(_ context.Context, _ string, _ string, _ []byte) error {
 	return nil
 }
 
@@ -73,21 +73,21 @@ func (m *mockSyncAnySyncClient) GetDataDir() string            { return "" }
 func (m *mockSyncAnySyncClient) GetSigningKey() crypto.PrivKey { return nil }
 func (m *mockSyncAnySyncClient) GetPool() pool.Pool            { return nil }
 func (m *mockSyncAnySyncClient) GetNodeConf() nodeconf.Service { return nil }
-func (m *mockSyncAnySyncClient) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
+func (m *mockSyncAnySyncClient) SetAccountFileLimits(_ context.Context, _ string, _ uint64) error {
 	return nil
 }
 func (m *mockSyncAnySyncClient) Ping() error  { return nil }
 func (m *mockSyncAnySyncClient) Close() error { return nil }
 
-func (m *mockSyncAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
+func (m *mockSyncAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, _ *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
 	return m.CreateSpace(ctx, ownerAID, spaceType, nil)
 }
 
-func (m *mockSyncAnySyncClient) GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error) {
+func (m *mockSyncAnySyncClient) GetSpace(_ context.Context, _ string) (commonspace.Space, error) {
 	return nil, fmt.Errorf("mock: GetSpace not supported")
 }
 
-func (m *mockSyncAnySyncClient) MakeSpaceShareable(ctx context.Context, spaceID string) error {
+func (m *mockSyncAnySyncClient) MakeSpaceShareable(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -105,14 +105,14 @@ func setupSyncTestHandler(t *testing.T) (*SyncHandler, *anystore.LocalStore, fun
 		OrgName:  "Test Organization",
 	})
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("failed to create KERI client: %v", err)
 	}
 
 	// Create anystore
 	store, err := anystore.NewLocalStore(anystore.DefaultConfig(tmpDir))
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("failed to create anystore: %v", err)
 	}
 
@@ -129,8 +129,8 @@ func setupSyncTestHandler(t *testing.T) (*SyncHandler, *anystore.LocalStore, fun
 	spaceStore := anystore.NewSpaceStoreAdapter(store)
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	return NewSyncHandler(keriClient, store, spaceManager, spaceStore, nil), store, cleanup

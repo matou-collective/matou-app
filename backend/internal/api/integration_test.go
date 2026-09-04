@@ -33,7 +33,7 @@ func newMockAnySyncClientForIntegration() *mockAnySyncClientForIntegration {
 	}
 }
 
-func (m *mockAnySyncClientForIntegration) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+func (m *mockAnySyncClientForIntegration) CreateSpace(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
 	spaceID := fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8])
 	if existing, ok := m.spaces[spaceID]; ok {
 		return existing, nil
@@ -52,15 +52,15 @@ func (m *mockAnySyncClientForIntegration) DeriveSpace(ctx context.Context, owner
 	return m.CreateSpace(ctx, ownerAID, spaceType, signingKey)
 }
 
-func (m *mockAnySyncClientForIntegration) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error) {
+func (m *mockAnySyncClientForIntegration) DeriveSpaceID(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (string, error) {
 	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
 }
 
-func (m *mockAnySyncClientForIntegration) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
+func (m *mockAnySyncClientForIntegration) AddToACL(_ context.Context, _ string, _ string, _ []string) error {
 	return nil
 }
 
-func (m *mockAnySyncClientForIntegration) SyncDocument(ctx context.Context, spaceID string, docID string, data []byte) error {
+func (m *mockAnySyncClientForIntegration) SyncDocument(_ context.Context, _ string, _ string, _ []byte) error {
 	return nil
 }
 
@@ -71,24 +71,24 @@ func (m *mockAnySyncClientForIntegration) GetDataDir() string            { retur
 func (m *mockAnySyncClientForIntegration) GetSigningKey() crypto.PrivKey { return nil }
 func (m *mockAnySyncClientForIntegration) GetPool() pool.Pool            { return nil }
 func (m *mockAnySyncClientForIntegration) GetNodeConf() nodeconf.Service { return nil }
-func (m *mockAnySyncClientForIntegration) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
+func (m *mockAnySyncClientForIntegration) SetAccountFileLimits(_ context.Context, _ string, _ uint64) error {
 	return nil
 }
 func (m *mockAnySyncClientForIntegration) Ping() error  { return nil }
 func (m *mockAnySyncClientForIntegration) Close() error { return nil }
 
-func (m *mockAnySyncClientForIntegration) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
+func (m *mockAnySyncClientForIntegration) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, _ *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
 	return m.CreateSpace(ctx, ownerAID, spaceType, nil)
 }
 
-func (m *mockAnySyncClientForIntegration) GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error) {
+func (m *mockAnySyncClientForIntegration) GetSpace(_ context.Context, _ string) (commonspace.Space, error) {
 	if m.space != nil {
 		return m.space, nil
 	}
 	return nil, fmt.Errorf("mock: GetSpace not supported")
 }
 
-func (m *mockAnySyncClientForIntegration) MakeSpaceShareable(ctx context.Context, spaceID string) error {
+func (m *mockAnySyncClientForIntegration) MakeSpaceShareable(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -122,14 +122,14 @@ func setupIntegrationEnv(t *testing.T) *IntegrationTestEnv {
 		OrgName:  "Test Organization",
 	})
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("failed to create KERI client: %v", err)
 	}
 
 	// Create anystore
 	store, err := anystore.NewLocalStore(anystore.DefaultConfig(tmpDir))
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("failed to create anystore: %v", err)
 	}
 
@@ -162,8 +162,8 @@ func setupIntegrationEnv(t *testing.T) *IntegrationTestEnv {
 	spacesHandler.RegisterRoutes(mux, nil)
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	return &IntegrationTestEnv{
@@ -669,7 +669,7 @@ func TestIntegration_FullSyncFlow(t *testing.T) {
 	}
 
 	var credSyncResp SyncCredentialsResponse
-	json.NewDecoder(credSyncW.Body).Decode(&credSyncResp)
+	_ = json.NewDecoder(credSyncW.Body).Decode(&credSyncResp)
 
 	if !credSyncResp.Success {
 		t.Errorf("credential sync not successful: %v", credSyncResp.Errors)
@@ -709,7 +709,7 @@ func TestIntegration_FullSyncFlow(t *testing.T) {
 	}
 
 	var kelSyncResp SyncKELResponse
-	json.NewDecoder(kelSyncW.Body).Decode(&kelSyncResp)
+	_ = json.NewDecoder(kelSyncW.Body).Decode(&kelSyncResp)
 
 	if !kelSyncResp.Success {
 		t.Errorf("KEL sync not successful: %s", kelSyncResp.Error)
@@ -729,7 +729,7 @@ func TestIntegration_FullSyncFlow(t *testing.T) {
 	}
 
 	var graphResp GraphResponse
-	json.NewDecoder(graphW.Body).Decode(&graphResp)
+	_ = json.NewDecoder(graphW.Body).Decode(&graphResp)
 
 	// Verify user is in graph with "Contributor" role
 	userNode := graphResp.Graph.GetNode("EUSER001")
@@ -747,7 +747,7 @@ func TestIntegration_FullSyncFlow(t *testing.T) {
 	env.mux.ServeHTTP(membersW, membersReq)
 
 	var membersResp CommunityMembersResponse
-	json.NewDecoder(membersW.Body).Decode(&membersResp)
+	_ = json.NewDecoder(membersW.Body).Decode(&membersResp)
 
 	if membersResp.Total != 1 {
 		t.Errorf("expected 1 member, got %d", membersResp.Total)
@@ -805,7 +805,7 @@ func TestIntegration_SpaceCreationOnFirstSync(t *testing.T) {
 	}
 
 	var syncResp SyncCredentialsResponse
-	json.NewDecoder(syncW.Body).Decode(&syncResp)
+	_ = json.NewDecoder(syncW.Body).Decode(&syncResp)
 
 	// Verify private space was created
 	if syncResp.PrivateSpace == "" {
@@ -960,7 +960,7 @@ func TestIntegration_MixedCredentialTypesRouting(t *testing.T) {
 	}
 
 	var syncResp SyncCredentialsResponse
-	json.NewDecoder(syncW.Body).Decode(&syncResp)
+	_ = json.NewDecoder(syncW.Body).Decode(&syncResp)
 
 	if syncResp.Synced != 4 {
 		t.Errorf("expected 4 synced, got %d", syncResp.Synced)
@@ -973,7 +973,7 @@ func TestIntegration_MixedCredentialTypesRouting(t *testing.T) {
 	env.mux.ServeHTTP(commW, commReq)
 
 	var commResp CommunityCredentialsResponse
-	json.NewDecoder(commW.Body).Decode(&commResp)
+	_ = json.NewDecoder(commW.Body).Decode(&commResp)
 
 	// Should have exactly 2 community-visible credentials
 	if commResp.Total != 2 {
@@ -1048,7 +1048,7 @@ func TestIntegration_TrustScoreCalculation(t *testing.T) {
 	}
 
 	var scoresResp ScoresResponse
-	json.NewDecoder(scoresW.Body).Decode(&scoresResp)
+	_ = json.NewDecoder(scoresW.Body).Decode(&scoresResp)
 
 	// Should have org + 2 users
 	if scoresResp.Total < 2 {

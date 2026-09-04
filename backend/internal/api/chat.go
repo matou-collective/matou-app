@@ -188,7 +188,7 @@ func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request)
 
 	// Always use tree scan — see HandleListMessages for rationale.
 	// Rebuild index to discover P2P-received trees not yet indexed.
-	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
+	_ = h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
 
 	objMgr := h.spaceManager.ObjectTreeManager()
 	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatChannel")
@@ -917,7 +917,7 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 				DeletedAt:  msg.DeletedAt,
 			}
 			if len(msg.Attachments) > 0 {
-				json.Unmarshal(msg.Attachments, &data.Attachments)
+				_ = json.Unmarshal(msg.Attachments, &data.Attachments)
 			}
 		}
 		// If err != nil, senderAID stays empty → falls through to tree scan
@@ -1070,7 +1070,7 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 				DeletedAt:  msg.DeletedAt,
 			}
 			if len(msg.Attachments) > 0 {
-				json.Unmarshal(msg.Attachments, &data.Attachments)
+				_ = json.Unmarshal(msg.Attachments, &data.Attachments)
 			}
 		}
 	}
@@ -1220,7 +1220,7 @@ func (h *ChatHandler) HandleGetThread(w http.ResponseWriter, r *http.Request) {
 
 				var attachments []AttachmentRef
 				if len(m.Attachments) > 0 {
-					json.Unmarshal(m.Attachments, &attachments)
+					_ = json.Unmarshal(m.Attachments, &attachments)
 				}
 
 				result = append(result, MessageResponse{
@@ -1612,7 +1612,7 @@ func (h *ChatHandler) HandleGetReadCursors(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 
 	// Build space index to discover trees
-	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, privateSpaceID)
+	_ = h.spaceManager.TreeManager().BuildSpaceIndex(ctx, privateSpaceID)
 
 	objMgr := h.spaceManager.ObjectTreeManager()
 	objectID := "read-cursors-" + userAID
@@ -1919,7 +1919,7 @@ func (h *ChatHandler) handleListMessagesFallback(w http.ResponseWriter, r *http.
 	objMgr := h.spaceManager.ObjectTreeManager()
 
 	// Rebuild index to discover P2P-received trees not yet indexed
-	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
+	_ = h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
 
 	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatMessage")
 	if err != nil {

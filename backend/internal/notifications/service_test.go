@@ -126,7 +126,7 @@ func TestService_AssignsIDAndTimestamp(t *testing.T) {
 		Message:     "m",
 		Channel:     ChannelInApp,
 	}
-	svc.Notify(n)
+	_ = svc.Notify(n)
 
 	if n.ID == "" {
 		t.Error("expected ID to be set")

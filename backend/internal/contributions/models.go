@@ -1,4 +1,3 @@
-// backend/internal/contributions/models.go
 package contributions
 
 import (
@@ -27,8 +26,11 @@ type InterestedContributor struct {
 
 // --- Proposal ---
 
+// ProposalStatus represents the lifecycle state of a proposal.
 type ProposalStatus string
 
+// ProposalDraft and the other ProposalStatus values enumerate the stages a
+// proposal moves through from creation to completion or withdrawal.
 const (
 	ProposalDraft         ProposalStatus = "draft"
 	ProposalSubmitted     ProposalStatus = "submitted"
@@ -42,8 +44,11 @@ const (
 	ProposalWithdrawn     ProposalStatus = "withdrawn"
 )
 
+// ProposalType categorizes the kind of work or change a proposal describes.
 type ProposalType string
 
+// ProposalTypeTechnical and the other ProposalType values enumerate the
+// categories a proposal can be tagged with.
 const (
 	ProposalTypeTechnical  ProposalType = "technical"
 	ProposalTypeCommunity  ProposalType = "community"
@@ -51,8 +56,11 @@ const (
 	ProposalTypeOperations ProposalType = "operations"
 )
 
+// Priority indicates the urgency of a proposal or contribution.
 type Priority string
 
+// PriorityLow and the other Priority values enumerate the supported urgency
+// levels, from low to critical.
 const (
 	PriorityLow      Priority = "low"
 	PriorityMedium   Priority = "medium"
@@ -60,6 +68,8 @@ const (
 	PriorityCritical Priority = "critical"
 )
 
+// Proposal is a community-submitted plan for work, funding, or governance
+// action that moves through endorsement, review, and sign-off.
 type Proposal struct {
 	ID                    string            `json:"id"`
 	ProposerID            string            `json:"proposer_id"`
@@ -109,17 +119,21 @@ func (p *Proposal) SchemaMap() map[string]interface{} {
 	return m
 }
 
+// ProjectPlanItem is a single step in a proposal's high-level project plan.
 type ProjectPlanItem struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Duration    string `json:"duration"`
 }
 
+// Attachment is a named link attached to a proposal.
 type Attachment struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
 }
 
+// ProposalHistoryEntry records a single change made to a proposal, for the
+// audit trail shown alongside a proposal's detail view.
 type ProposalHistoryEntry struct {
 	ID         string        `json:"id"`
 	ProposalID string        `json:"proposal_id"`
@@ -129,6 +143,8 @@ type ProposalHistoryEntry struct {
 	CreatedAt  time.Time     `json:"created_at"`
 }
 
+// FieldChange records the before/after values of a single field in a
+// ProposalHistoryEntry.
 type FieldChange struct {
 	Field    string `json:"field"`
 	OldValue string `json:"old_value"`
@@ -137,6 +153,7 @@ type FieldChange struct {
 
 // --- Endorsement ---
 
+// Endorsement records a community member's support for a proposal.
 type Endorsement struct {
 	ProposalID string    `json:"proposal_id"`
 	EndorserID string    `json:"endorser_id"`
@@ -146,8 +163,11 @@ type Endorsement struct {
 
 // --- Project ---
 
+// ProjectStatus represents the lifecycle state of a project.
 type ProjectStatus string
 
+// ProjectCreated and the other ProjectStatus values enumerate the stages a
+// project moves through from creation to completion or archival.
 const (
 	ProjectCreated           ProjectStatus = "created"
 	ProjectActive            ProjectStatus = "active"
@@ -156,8 +176,11 @@ const (
 	ProjectArchived          ProjectStatus = "archived"
 )
 
+// ProjectImageType categorizes an image attached to a project.
 type ProjectImageType string
 
+// ImageLogo and the other ProjectImageType values enumerate the supported
+// image roles for a project's media gallery.
 const (
 	ImageLogo       ProjectImageType = "logo"
 	ImageBanner     ProjectImageType = "banner"
@@ -165,6 +188,7 @@ const (
 	ImageOther      ProjectImageType = "other"
 )
 
+// ProjectImage is a single image in a project's media gallery.
 type ProjectImage struct {
 	ImageID    string           `json:"image_id"`
 	URL        string           `json:"url"`
@@ -174,6 +198,8 @@ type ProjectImage struct {
 	UploadedBy string           `json:"uploaded_by"`
 }
 
+// Project is a body of work that groups one or more proposals, an
+// implementation plan, milestones, and contributions.
 type Project struct {
 	ID                    string         `json:"id"`
 	Title                 string         `json:"title"`
@@ -204,14 +230,19 @@ type Project struct {
 
 // --- Decision Plan ---
 
+// DecisionPlanStatus represents the lifecycle state of a decision plan.
 type DecisionPlanStatus string
 
+// DecisionPlanDrafted and the other DecisionPlanStatus values enumerate the
+// stages a decision plan moves through from drafting to sign-off.
 const (
 	DecisionPlanDrafted   DecisionPlanStatus = "drafted"
 	DecisionPlanSubmitted DecisionPlanStatus = "submitted"
 	DecisionPlanSignedOff DecisionPlanStatus = "signed_off"
 )
 
+// DecisionPlan groups the governance actions (discussions, meetings, votes)
+// that a proposal must pass through to reach sign-off.
 type DecisionPlan struct {
 	ID                string             `json:"id"`
 	ProposalID        string             `json:"proposal_id"`
@@ -233,32 +264,45 @@ type DecisionPlan struct {
 
 // --- Governance Action ---
 
+// GovernanceActionStatus represents the lifecycle state of a governance action.
 type GovernanceActionStatus string
 
+// GovActionPlanned and the other GovernanceActionStatus values enumerate the
+// stages a governance action moves through from planning to completion or
+// archival.
 const (
 	GovActionPlanned   GovernanceActionStatus = "planned"
 	GovActionCompleted GovernanceActionStatus = "completed"
 	GovActionArchived  GovernanceActionStatus = "archived"
 )
 
+// HouseType identifies which governance house a GovernanceAction belongs to.
 type HouseType string
 
+// HouseElderCouncil and the other HouseType values enumerate the recognized
+// governance houses.
 const (
 	HouseElderCouncil  HouseType = "elders_council"
 	HouseCommunityReps HouseType = "community_reps"
 	HouseContributors  HouseType = "contributors"
 )
 
+// ActionType categorizes a GovernanceAction.
 type ActionType string
 
+// ActionDiscussion and the other ActionType values enumerate the supported
+// governance action kinds.
 const (
 	ActionDiscussion ActionType = "discussion"
 	ActionDecision   ActionType = "decision"
 	ActionMeeting    ActionType = "meeting"
 )
 
+// OutcomeType represents the result of a vote or decision.
 type OutcomeType string
 
+// OutcomeNoVeto and the other OutcomeType values enumerate the possible
+// outcomes of a governance vote or decision.
 const (
 	OutcomeNoVeto   OutcomeType = "no_veto"
 	OutcomeVeto     OutcomeType = "veto"
@@ -266,6 +310,7 @@ const (
 	OutcomeRejected OutcomeType = "rejected"
 )
 
+// GovernanceAction is a discussion, meeting, or vote within a decision plan.
 type GovernanceAction struct {
 	ID              string                 `json:"id"`
 	DecisionPlanID  string                 `json:"decision_plan_id"`
@@ -290,6 +335,7 @@ type GovernanceAction struct {
 	UpdatedAt       time.Time              `json:"updated_at"`
 }
 
+// Vote records a single participant's decision on a governance action.
 type Vote struct {
 	VoterID   string      `json:"voter_id"`
 	VoterName string      `json:"voter_name"`
@@ -300,6 +346,7 @@ type Vote struct {
 
 // --- Contribution Comments ---
 
+// ContributionComment is a user comment on a contribution.
 type ContributionComment struct {
 	ID             string    `json:"id"`
 	ContributionID string    `json:"contribution_id"`
@@ -311,6 +358,7 @@ type ContributionComment struct {
 
 // --- Project Comments ---
 
+// ProjectComment is a user comment on a project.
 type ProjectComment struct {
 	ID        string    `json:"id"`
 	ProjectID string    `json:"project_id"`
@@ -322,6 +370,9 @@ type ProjectComment struct {
 
 // --- Proposal Comments ---
 
+// ProposalComment is a user comment on a proposal. It may also represent a
+// synthesized event (endorsement, completion, or vote) surfaced in the same
+// comment feed; see the Kind field.
 type ProposalComment struct {
 	ID         string    `json:"id"`
 	ProposalID string    `json:"proposal_id"`
@@ -343,12 +394,16 @@ type ProposalComment struct {
 // PlanStatus represents the lifecycle state of an implementation plan.
 type PlanStatus string
 
+// PlanDraft and the other PlanStatus values enumerate the stages an
+// implementation plan moves through from drafting to archival.
 const (
 	PlanDraft    PlanStatus = "draft"
 	PlanActive   PlanStatus = "active"
 	PlanArchived PlanStatus = "archived"
 )
 
+// ImplementationPlan is the budget, milestones, and sign-off state for
+// carrying out a project.
 type ImplementationPlan struct {
 	ID               string      `json:"id"`
 	ProjectID        string      `json:"project_id"`
@@ -404,6 +459,8 @@ type PlanChangeEntry struct {
 // MilestoneStatus represents the lifecycle state of a milestone.
 type MilestoneStatus string
 
+// MilestonePlanned and the other MilestoneStatus values enumerate the stages
+// a milestone moves through from planning to completion or archival.
 const (
 	MilestonePlanned    MilestoneStatus = "planned"
 	MilestoneInProgress MilestoneStatus = "in_progress"
@@ -412,6 +469,8 @@ const (
 	MilestoneArchived   MilestoneStatus = "archived"
 )
 
+// Milestone is a phase of an implementation plan grouping related
+// contributions.
 type Milestone struct {
 	MilestoneID          string   `json:"milestone_id"`
 	ImplementationPlanID string   `json:"implementation_plan_id"`
@@ -436,8 +495,11 @@ type Milestone struct {
 
 // --- Contribution ---
 
+// ContributionStatus represents the lifecycle state of a contribution.
 type ContributionStatus string
 
+// ContribCreated and the other ContributionStatus values enumerate the
+// stages a contribution moves through from creation to reward or archival.
 const (
 	ContribCreated     ContributionStatus = "created"
 	ContribConfirmed   ContributionStatus = "confirmed"
@@ -454,6 +516,8 @@ const (
 	ContribArchived    ContributionStatus = "archived"
 )
 
+// Contribution is a unit of work within a project, tracked from creation
+// through assignment, review, sign-off, and reward.
 type Contribution struct {
 	ID                     string             `json:"id"`
 	ProjectID              string             `json:"project_id"`

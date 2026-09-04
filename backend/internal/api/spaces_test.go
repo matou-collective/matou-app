@@ -44,7 +44,7 @@ func newMockClient() *mockAnySyncClient {
 	}
 }
 
-func (m *mockAnySyncClient) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+func (m *mockAnySyncClient) CreateSpace(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
 	if m.createSpaceErr != nil {
 		return nil, m.createSpaceErr
 	}
@@ -66,15 +66,15 @@ func (m *mockAnySyncClient) DeriveSpace(ctx context.Context, ownerAID string, sp
 	return m.CreateSpace(ctx, ownerAID, spaceType, signingKey)
 }
 
-func (m *mockAnySyncClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error) {
+func (m *mockAnySyncClient) DeriveSpaceID(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (string, error) {
 	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
 }
 
-func (m *mockAnySyncClient) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
+func (m *mockAnySyncClient) AddToACL(_ context.Context, _ string, _ string, _ []string) error {
 	return m.addToACLErr
 }
 
-func (m *mockAnySyncClient) SyncDocument(ctx context.Context, spaceID string, docID string, data []byte) error {
+func (m *mockAnySyncClient) SyncDocument(_ context.Context, _ string, _ string, _ []byte) error {
 	return nil
 }
 
@@ -85,94 +85,94 @@ func (m *mockAnySyncClient) GetDataDir() string            { return "" }
 func (m *mockAnySyncClient) GetSigningKey() crypto.PrivKey { return nil }
 func (m *mockAnySyncClient) GetPool() pool.Pool            { return nil }
 func (m *mockAnySyncClient) GetNodeConf() nodeconf.Service { return nil }
-func (m *mockAnySyncClient) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
+func (m *mockAnySyncClient) SetAccountFileLimits(_ context.Context, _ string, _ uint64) error {
 	return nil
 }
 func (m *mockAnySyncClient) Ping() error  { return nil }
 func (m *mockAnySyncClient) Close() error { return nil }
 
-func (m *mockAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
+func (m *mockAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, _ *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
 	return m.CreateSpace(ctx, ownerAID, spaceType, nil)
 }
 
-func (m *mockAnySyncClient) GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error) {
+func (m *mockAnySyncClient) GetSpace(_ context.Context, _ string) (commonspace.Space, error) {
 	if m.space != nil {
 		return m.space, nil
 	}
 	return nil, fmt.Errorf("mock: GetSpace not supported")
 }
 
-func (m *mockAnySyncClient) MakeSpaceShareable(ctx context.Context, spaceID string) error {
+func (m *mockAnySyncClient) MakeSpaceShareable(_ context.Context, _ string) error {
 	return nil
 }
 
-// testAclRecordBuilder implements list.AclRecordBuilder for testing invite flow
-type testAclRecordBuilder struct {
+// testACLRecordBuilder implements list.AclRecordBuilder for testing invite flow
+type testACLRecordBuilder struct {
 	buildInviteAnyoneResult list.InviteResult
 	buildInviteAnyoneErr    error
 }
 
-func (m *testAclRecordBuilder) UnmarshallWithId(_ *consensusproto.RawRecordWithId) (*list.AclRecord, error) {
+func (m *testACLRecordBuilder) UnmarshallWithId(_ *consensusproto.RawRecordWithId) (*list.AclRecord, error) { //nolint:revive // method name fixed by list.AclRecordBuilder interface
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) Unmarshall(_ *consensusproto.RawRecord) (*list.AclRecord, error) {
+func (m *testACLRecordBuilder) Unmarshall(_ *consensusproto.RawRecord) (*list.AclRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildRoot(_ list.RootContent) (*consensusproto.RawRecordWithId, error) {
+func (m *testACLRecordBuilder) BuildRoot(_ list.RootContent) (*consensusproto.RawRecordWithId, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildOneToOneRoot(_ list.RootContent, _ *aclrecordproto.AclOneToOneInfo) (*consensusproto.RawRecordWithId, error) {
+func (m *testACLRecordBuilder) BuildOneToOneRoot(_ list.RootContent, _ *aclrecordproto.AclOneToOneInfo) (*consensusproto.RawRecordWithId, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildBatchRequest(_ list.BatchRequestPayload) (list.BatchResult, error) {
+func (m *testACLRecordBuilder) BuildBatchRequest(_ list.BatchRequestPayload) (list.BatchResult, error) {
 	return list.BatchResult{}, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildInvite() (list.InviteResult, error) {
+func (m *testACLRecordBuilder) BuildInvite() (list.InviteResult, error) {
 	return list.InviteResult{}, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildInviteAnyone(_ list.AclPermissions) (list.InviteResult, error) {
+func (m *testACLRecordBuilder) BuildInviteAnyone(_ list.AclPermissions) (list.InviteResult, error) {
 	return m.buildInviteAnyoneResult, m.buildInviteAnyoneErr
 }
-func (m *testAclRecordBuilder) BuildInviteChange(_ list.InviteChangePayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildInviteChange(_ list.InviteChangePayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildInviteRevoke(_ string) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildInviteRevoke(_ string) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildInviteJoinWithoutApprove(_ list.InviteJoinPayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildInviteJoinWithoutApprove(_ list.InviteJoinPayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildRequestJoin(_ list.RequestJoinPayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildRequestJoin(_ list.RequestJoinPayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildRequestAccept(_ list.RequestAcceptPayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildRequestAccept(_ list.RequestAcceptPayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildRequestDecline(_ string) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildRequestDecline(_ string) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildRequestCancel(_ string) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildRequestCancel(_ string) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildRequestRemove() (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildRequestRemove() (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildPermissionChange(_ list.PermissionChangePayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildPermissionChange(_ list.PermissionChangePayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildPermissionChanges(_ list.PermissionChangesPayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildPermissionChanges(_ list.PermissionChangesPayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildOwnershipChange(_ list.OwnershipChangePayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildOwnershipChange(_ list.OwnershipChangePayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildReadKeyChange(_ list.ReadKeyChangePayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildReadKeyChange(_ list.ReadKeyChangePayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildAccountRemove(_ list.AccountRemovePayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildAccountRemove(_ list.AccountRemovePayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testAclRecordBuilder) BuildAccountsAdd(_ list.AccountsAddPayload) (*consensusproto.RawRecord, error) {
+func (m *testACLRecordBuilder) BuildAccountsAdd(_ list.AccountsAddPayload) (*consensusproto.RawRecord, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -188,7 +188,7 @@ func setupMockSpaceForInvite(t *testing.T) commonspace.Space {
 	}
 
 	inviteRec := &consensusproto.RawRecord{Payload: []byte("test-invite-record")}
-	builder := &testAclRecordBuilder{
+	builder := &testACLRecordBuilder{
 		buildInviteAnyoneResult: list.InviteResult{
 			InviteRec: inviteRec,
 			InviteKey: inviteKey,
@@ -196,15 +196,15 @@ func setupMockSpaceForInvite(t *testing.T) commonspace.Space {
 	}
 
 	mockSpace := mock_commonspace.NewMockSpace(ctrl)
-	mockAcl := mock_syncacl.NewMockSyncAcl(ctrl)
-	mockAclClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	mockACLClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
 
-	mockSpace.EXPECT().Acl().Return(mockAcl)
-	mockAcl.EXPECT().Lock()
-	mockAcl.EXPECT().Unlock()
-	mockAcl.EXPECT().RecordBuilder().Return(builder)
-	mockSpace.EXPECT().AclClient().Return(mockAclClient)
-	mockAclClient.EXPECT().AddRecord(gomock.Any(), inviteRec).Return(nil)
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().Lock()
+	mockACL.EXPECT().Unlock()
+	mockACL.EXPECT().RecordBuilder().Return(builder)
+	mockSpace.EXPECT().AclClient().Return(mockACLClient)
+	mockACLClient.EXPECT().AddRecord(gomock.Any(), inviteRec).Return(nil)
 
 	return mockSpace
 }
@@ -220,7 +220,7 @@ func newMockSpaceStore() *mockSpaceStore {
 	}
 }
 
-func (m *mockSpaceStore) GetUserSpace(ctx context.Context, userAID string) (*anysync.Space, error) {
+func (m *mockSpaceStore) GetUserSpace(_ context.Context, userAID string) (*anysync.Space, error) {
 	for _, space := range m.spaces {
 		if space.OwnerAID == userAID && space.SpaceType == anysync.SpaceTypePrivate {
 			return space, nil
@@ -229,12 +229,12 @@ func (m *mockSpaceStore) GetUserSpace(ctx context.Context, userAID string) (*any
 	return nil, nil
 }
 
-func (m *mockSpaceStore) SaveSpace(ctx context.Context, space *anysync.Space) error {
+func (m *mockSpaceStore) SaveSpace(_ context.Context, space *anysync.Space) error {
 	m.spaces[space.SpaceID] = space
 	return nil
 }
 
-func (m *mockSpaceStore) ListAllSpaces(ctx context.Context) ([]*anysync.Space, error) {
+func (m *mockSpaceStore) ListAllSpaces(_ context.Context) ([]*anysync.Space, error) {
 	spaces := make([]*anysync.Space, 0, len(m.spaces))
 	for _, space := range m.spaces {
 		spaces = append(spaces, space)
@@ -343,7 +343,7 @@ func TestHandleCreateCommunity_Idempotent(t *testing.T) {
 
 	// Get the existing space ID from response
 	var resp1 CreateCommunityResponse
-	json.NewDecoder(w1.Body).Decode(&resp1)
+	_ = json.NewDecoder(w1.Body).Decode(&resp1)
 
 	// Since community space was already configured in setup, returns existing
 	if w1.Code != http.StatusOK {
@@ -486,7 +486,7 @@ func TestHandleCreatePrivate_Idempotent(t *testing.T) {
 		SpaceName: "Existing Space",
 		CreatedAt: time.Now(),
 	}
-	mockStore.SaveSpace(context.Background(), existingSpace)
+	_ = mockStore.SaveSpace(context.Background(), existingSpace)
 
 	reqBody := CreatePrivateRequest{
 		UserAID: userAID,
@@ -618,7 +618,7 @@ func TestHandleInvite_InvalidSchema(t *testing.T) {
 	}
 
 	var resp InviteResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 
 	if resp.Success {
 		t.Error("expected success=false")

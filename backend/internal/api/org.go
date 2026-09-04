@@ -430,7 +430,7 @@ func MirrorToConfigServer(httpClient *http.Client, configServerURL, token string
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusConflict:
@@ -466,7 +466,7 @@ func FetchFromConfigServer(httpClient *http.Client, configServerURL string, isTe
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK:

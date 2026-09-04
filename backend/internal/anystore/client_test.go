@@ -14,7 +14,7 @@ func TestNewLocalStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg := &Config{
 		DBPath:    filepath.Join(tmpDir, "test.db"),
@@ -25,7 +25,7 @@ func TestNewLocalStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create local store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify database was created
 	if _, err := os.Stat(cfg.DBPath); os.IsNotExist(err) {
@@ -47,7 +47,7 @@ func TestNewLocalStore_NilConfig(t *testing.T) {
 
 func TestCredentialsCRUD(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -95,7 +95,7 @@ func TestCredentialsCRUD(t *testing.T) {
 
 func TestTrustNodeCRUD(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -138,7 +138,7 @@ func TestTrustNodeCRUD(t *testing.T) {
 
 func TestPreferencesCRUD(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -177,7 +177,7 @@ func TestPreferencesCRUD(t *testing.T) {
 
 func TestCollectionAccess(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -208,7 +208,7 @@ func TestCollectionAccess(t *testing.T) {
 
 func TestClearCache(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -239,7 +239,7 @@ func TestClearCache(t *testing.T) {
 
 func TestStats(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -268,7 +268,7 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestSpaceRecordCRUD(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -311,7 +311,7 @@ func TestSpaceRecordCRUD(t *testing.T) {
 
 func TestGetUserSpaceRecord(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 	userAID := "EUSER987654321"
@@ -350,7 +350,7 @@ func TestGetUserSpaceRecord(t *testing.T) {
 
 func TestListAllSpaceRecords(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -402,7 +402,7 @@ func TestListAllSpaceRecords(t *testing.T) {
 
 func TestUpdateSpaceLastSync(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -441,7 +441,7 @@ func TestUpdateSpaceLastSync(t *testing.T) {
 
 func TestSpacesCollectionAccess(t *testing.T) {
 	store := setupTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -462,7 +462,7 @@ func setupTestStore(t *testing.T) *LocalStore {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
 
 	cfg := &Config{
 		DBPath:    filepath.Join(tmpDir, "test.db"),

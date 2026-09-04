@@ -89,7 +89,7 @@ func TestGetOrCreatePeerKey_CreatesNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	keyPath := filepath.Join(tmpDir, "peer.key")
 
@@ -118,7 +118,7 @@ func TestGetOrCreatePeerKey_LoadsExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	keyPath := filepath.Join(tmpDir, "peer.key")
 
@@ -149,7 +149,7 @@ func TestNewPeerKeyManager_WithMnemonic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
@@ -172,7 +172,7 @@ func TestNewPeerKeyManager_WithoutMnemonic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	mgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath:  filepath.Join(tmpDir, "peer.key"),
@@ -192,7 +192,7 @@ func TestPeerKeyManager_MapAIDToPeerID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	mgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath: filepath.Join(tmpDir, "peer.key"),
@@ -223,7 +223,7 @@ func TestPeerKeyManager_GetPeerIDForAID_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	mgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath: filepath.Join(tmpDir, "peer.key"),
@@ -285,7 +285,7 @@ func TestPeerKeyManager_ExportPeerKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	mgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath: filepath.Join(tmpDir, "peer.key"),
@@ -309,7 +309,7 @@ func TestPeerKeyManager_GetPeerInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	mgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath: filepath.Join(tmpDir, "peer.key"),

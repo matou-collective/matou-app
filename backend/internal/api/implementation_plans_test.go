@@ -27,7 +27,7 @@ func TestImplementationPlansHandler_Create(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["id"] == nil || resp["id"] == "" {
 		t.Error("expected non-empty id in response")
 	}
@@ -63,7 +63,7 @@ func TestImplementationPlansHandler_Get(t *testing.T) {
 	handler.HandleCreate(w, req)
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/implementation-plans/"+id, nil)

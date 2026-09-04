@@ -30,9 +30,9 @@ type MatouACLManager struct {
 	client        AnySyncClient
 	keyManager    *PeerKeyManager
 	joiningClient aclclient.AclJoiningClient // optional, for join-before-open flows
-	// coordAclGet fetches ACL records directly from the coordinator/consensus,
+	// coordACLGet fetches ACL records directly from the coordinator/consensus,
 	// bypassing the sync-node's local replica. Used to recover from stale prev id.
-	coordAclGet func(ctx context.Context, spaceId, aclHead string) ([]*consensusproto.RawRecordWithId, error)
+	coordACLGet func(ctx context.Context, spaceId, aclHead string) ([]*consensusproto.RawRecordWithId, error)
 }
 
 // NewMatouACLManager creates a new MatouACLManager.
@@ -50,11 +50,11 @@ func (m *MatouACLManager) SetJoiningClient(jc aclclient.AclJoiningClient) {
 	m.joiningClient = jc
 }
 
-// SetCoordAclGetter sets the function used to fetch ACL records directly from the
+// SetCoordACLGetter sets the function used to fetch ACL records directly from the
 // coordinator. When set, retry loops can force-sync local ACL state from the
 // authoritative coordinator head after an "incorrect prev id" rejection.
-func (m *MatouACLManager) SetCoordAclGetter(fn func(ctx context.Context, spaceId, aclHead string) ([]*consensusproto.RawRecordWithId, error)) {
-	m.coordAclGet = fn
+func (m *MatouACLManager) SetCoordACLGetter(fn func(ctx context.Context, spaceId, aclHead string) ([]*consensusproto.RawRecordWithId, error)) {
+	m.coordACLGet = fn
 }
 
 // createOpenInviteMaxRetries is the maximum number of retries when the
@@ -117,12 +117,12 @@ func (m *MatouACLManager) CreateOpenInvite(ctx context.Context, spaceID string, 
 				// Force-sync local ACL state from the coordinator — the
 				// sync-node's replica can lag the consensus by minutes,
 				// causing every retry to fail with the same stale head.
-				if m.coordAclGet != nil {
+				if m.coordACLGet != nil {
 					acl := space.Acl()
 					acl.Lock()
 					localHead := acl.Head().Id
 					acl.Unlock()
-					if recs, fetchErr := m.coordAclGet(ctx, spaceID, localHead); fetchErr == nil && len(recs) > 0 {
+					if recs, fetchErr := m.coordACLGet(ctx, spaceID, localHead); fetchErr == nil && len(recs) > 0 {
 						acl.Lock()
 						_ = acl.AddRawRecords(recs)
 						acl.Unlock()
@@ -198,12 +198,12 @@ func (m *MatouACLManager) JoinWithInvite(ctx context.Context, spaceID string, in
 		// Force-sync local ACL from coordinator before each attempt so the
 		// join record is built with the authoritative head, not the stale
 		// sync-node replica.
-		if m.coordAclGet != nil {
+		if m.coordACLGet != nil {
 			acl := space.Acl()
 			acl.Lock()
 			localHead := acl.Head().Id
 			acl.Unlock()
-			if recs, fetchErr := m.coordAclGet(ctx, spaceID, localHead); fetchErr == nil && len(recs) > 0 {
+			if recs, fetchErr := m.coordACLGet(ctx, spaceID, localHead); fetchErr == nil && len(recs) > 0 {
 				acl.Lock()
 				_ = acl.AddRawRecords(recs)
 				acl.Unlock()
@@ -496,6 +496,7 @@ func extractAIDFromMetadata(raw []byte) string {
 // access control at the application layer.
 type ACLPermission string
 
+// Application-layer permission levels, from least to most privileged.
 const (
 	PermissionNone  ACLPermission = "none"
 	PermissionRead  ACLPermission = "read"
@@ -530,6 +531,7 @@ type ACLPolicy struct {
 	OwnerPermission   ACLPermission `json:"ownerPermission"`
 }
 
+// Application-layer ACL policy types used by ACLPolicy.PolicyType.
 const (
 	PolicyTypePrivate   = "private"
 	PolicyTypeCommunity = "community"
@@ -620,7 +622,7 @@ func (m *ACLManager) ValidateAccess(policy *ACLPolicy, aid string, hasCredential
 }
 
 // GrantAccess adds a user to a space's ACL via the legacy AddToACL path.
-func (m *ACLManager) GrantAccess(spaceID string, peerID string, aid string, permission ACLPermission) error {
+func (m *ACLManager) GrantAccess(spaceID string, peerID string, _ string, permission ACLPermission) error {
 	var permissions []string
 	switch permission {
 	case PermissionRead:
@@ -635,7 +637,7 @@ func (m *ACLManager) GrantAccess(spaceID string, peerID string, aid string, perm
 		return fmt.Errorf("cannot grant 'none' permission")
 	}
 
-	return m.client.AddToACL(nil, spaceID, peerID, permissions)
+	return m.client.AddToACL(context.Background(), spaceID, peerID, permissions)
 }
 
 // RevokeAccess removes a user from a space's ACL.

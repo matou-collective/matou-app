@@ -101,7 +101,7 @@ func TestWriteTokenFile(t *testing.T) {
 func TestTokenGuard(t *testing.T) {
 	const token = "secret-token"
 	handlerCalled := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		handlerCalled = true
 		w.WriteHeader(http.StatusOK)
 	})
@@ -167,7 +167,7 @@ func TestTokenGuard(t *testing.T) {
 }
 
 func TestLocalhostGuard(t *testing.T) {
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 

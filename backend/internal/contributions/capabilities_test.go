@@ -39,9 +39,9 @@ func TestEveryActionHasExactlyOneCapability(t *testing.T) {
 }
 
 func TestActionCapabilityReverseLookup(t *testing.T) {
-	cap, ok := ActionCapability(ActionSignOffContribution)
-	if !ok || cap != CapSignOff {
-		t.Errorf("ActionCapability(sign_off_contribution) = %q, %v; want %q, true", cap, ok, CapSignOff)
+	capVal, ok := ActionCapability(ActionSignOffContribution)
+	if !ok || capVal != CapSignOff {
+		t.Errorf("ActionCapability(sign_off_contribution) = %q, %v; want %q, true", capVal, ok, CapSignOff)
 	}
 	if _, ok := ActionCapability(Action("nonexistent")); ok {
 		t.Error("ActionCapability(nonexistent) should return ok=false")

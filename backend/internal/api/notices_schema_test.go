@@ -44,7 +44,7 @@ func TestHandleListNotices_RejectsNonFilterableField(t *testing.T) {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if errMsg, _ := resp["error"].(string); errMsg == "" {
 		t.Errorf("expected an error message, got %v", resp)
 	}

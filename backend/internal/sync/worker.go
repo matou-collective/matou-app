@@ -1,3 +1,5 @@
+// Package sync runs the background worker that polls the credential tree
+// for changes and keeps local caches in sync.
 package sync
 
 import (
@@ -133,7 +135,7 @@ func (w *Worker) syncOnce(ctx context.Context) {
 		// Cache in anystore
 		var data interface{}
 		if cred.Data != nil {
-			json.Unmarshal(cred.Data, &data)
+			_ = json.Unmarshal(cred.Data, &data)
 		}
 
 		cached := &anystore.CachedCredential{

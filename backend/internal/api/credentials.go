@@ -177,7 +177,7 @@ func (h *CredentialsHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// Try to convert from map
 		dataBytes, _ := json.Marshal(cached.Data)
-		json.Unmarshal(dataBytes, &data)
+		_ = json.Unmarshal(dataBytes, &data)
 	}
 
 	cred := &keri.Credential{
@@ -319,7 +319,7 @@ func (h *CredentialsHandler) handleCredentialByID(w http.ResponseWriter, r *http
 }
 
 // handleList handles GET /api/v1/credentials - List all credentials
-func (h *CredentialsHandler) handleList(w http.ResponseWriter, r *http.Request) {
+func (h *CredentialsHandler) handleList(w http.ResponseWriter, _ *http.Request) {
 	ctx := context.Background()
 
 	// Query all credentials from anystore cache
@@ -337,7 +337,7 @@ func (h *CredentialsHandler) handleList(w http.ResponseWriter, r *http.Request) 
 		// Try to convert data to CredentialData
 		var data keri.CredentialData
 		dataBytes, _ := json.Marshal(cached.Data)
-		json.Unmarshal(dataBytes, &data)
+		_ = json.Unmarshal(dataBytes, &data)
 
 		cred := keri.Credential{
 			SAID:      cached.ID,
@@ -359,5 +359,5 @@ func (h *CredentialsHandler) handleList(w http.ResponseWriter, r *http.Request) 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }

@@ -346,7 +346,7 @@ func (s *LocalStore) GetUserSpaceRecord(ctx context.Context, userAID string) (*S
 	if err != nil {
 		return nil, fmt.Errorf("failed to query spaces: %w", err)
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	if !iter.Next() {
 		return nil, fmt.Errorf("space not found for user: %s", userAID)
@@ -376,7 +376,7 @@ func (s *LocalStore) ListAllSpaceRecords(ctx context.Context) ([]*SpaceRecord, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to query spaces: %w", err)
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	var records []*SpaceRecord
 	for iter.Next() {
@@ -417,7 +417,7 @@ func (s *LocalStore) GetAllCredentials(ctx context.Context) ([]*CachedCredential
 	if err != nil {
 		return nil, fmt.Errorf("failed to query credentials: %w", err)
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	var credentials []*CachedCredential
 	for iter.Next() {
@@ -623,7 +623,7 @@ func (s *LocalStore) ListChannels(ctx context.Context) ([]*ChatChannel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("querying channels: %w", err)
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	var channels []*ChatChannel
 	for iter.Next() {
@@ -692,7 +692,7 @@ func (s *LocalStore) ListMessagesByChannel(ctx context.Context, channelID string
 	if err != nil {
 		return nil, fmt.Errorf("querying messages: %w", err)
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	var messages []*ChatMessage
 	for iter.Next() {
@@ -721,7 +721,7 @@ func (s *LocalStore) ListReplies(ctx context.Context, parentMessageID string) ([
 	if err != nil {
 		return nil, fmt.Errorf("querying replies: %w", err)
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	var replies []*ChatMessage
 	for iter.Next() {
@@ -782,7 +782,7 @@ func (s *LocalStore) ListReactionsByMessage(ctx context.Context, messageID strin
 	if err != nil {
 		return nil, fmt.Errorf("querying reactions: %w", err)
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	var reactions []*ChatReaction
 	for iter.Next() {
@@ -822,7 +822,7 @@ func (s *LocalStore) ListReactionsByMessages(ctx context.Context, messageIDs []s
 	if err != nil {
 		return nil, fmt.Errorf("querying reactions: %w", err)
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	for iter.Next() {
 		doc, err := iter.Doc()

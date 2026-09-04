@@ -65,7 +65,7 @@ func NewTestClient(t *testing.T) (*MockAnySyncClient, func()) {
 
 	cleanup := func() {
 		client.Reset()
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	return client, cleanup
@@ -157,7 +157,7 @@ func TempDir(t *testing.T, prefix string) (string, func()) {
 	}
 
 	return tmpDir, func() {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 	}
 }
 

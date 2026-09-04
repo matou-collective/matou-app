@@ -291,7 +291,7 @@ func (c *Client) post(ctx context.Context, path, token string, body any) (int, e
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode, nil
 }
@@ -316,7 +316,7 @@ func (c *Client) postJSON(ctx context.Context, path, token string, body, out any
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))

@@ -1,4 +1,6 @@
-// backend/internal/api/role_policy.go
+// Package api implements the Matou backend's HTTP handlers, covering
+// identity, credentials, sync, trust, spaces, profiles, files, org config,
+// invites, bookings, notifications, events, and role-based access control.
 package api
 
 import (
@@ -50,6 +52,7 @@ func (h *RolePolicyHandler) spaceID() string {
 	return h.roSpaceID
 }
 
+// NewRolePolicyHandler constructs a RolePolicyHandler.
 func NewRolePolicyHandler(
 	provider *contributions.StorePolicyProvider,
 	writer PolicyWriter,
@@ -384,6 +387,7 @@ type SpacePolicyWriter struct {
 	roSpaceFn    func() string
 }
 
+// NewSpacePolicyWriter constructs a SpacePolicyWriter.
 func NewSpacePolicyWriter(sm *anysync.SpaceManager, roSpaceID string) *SpacePolicyWriter {
 	return &SpacePolicyWriter{spaceManager: sm, roSpaceID: roSpaceID}
 }
@@ -397,6 +401,7 @@ func (s *SpacePolicyWriter) spaceID() string {
 	return s.roSpaceID
 }
 
+// WritePolicy persists p into the community-readonly space.
 func (s *SpacePolicyWriter) WritePolicy(p *contributions.RolePolicy) error {
 	roSpaceID := s.spaceID()
 	if roSpaceID == "" {

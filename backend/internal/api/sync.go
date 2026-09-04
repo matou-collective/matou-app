@@ -397,7 +397,7 @@ func (h *SyncHandler) HandleGetCommunityMembers(w http.ResponseWriter, r *http.R
 					}
 					var data keri.CredentialData
 					if cred.Data != nil {
-						json.Unmarshal(cred.Data, &data)
+						_ = json.Unmarshal(cred.Data, &data)
 					}
 					members = append(members, CommunityMember{
 						AID:            cred.Recipient,
@@ -432,7 +432,7 @@ func (h *SyncHandler) HandleGetCommunityMembers(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	for iter.Next() {
 		doc, err := iter.Doc()
@@ -447,7 +447,7 @@ func (h *SyncHandler) HandleGetCommunityMembers(w http.ResponseWriter, r *http.R
 
 		var data keri.CredentialData
 		dataBytes, _ := json.Marshal(cached.Data)
-		json.Unmarshal(dataBytes, &data)
+		_ = json.Unmarshal(dataBytes, &data)
 
 		members = append(members, CommunityMember{
 			AID:            cached.SubjectAID,
@@ -492,7 +492,7 @@ func (h *SyncHandler) HandleGetCommunityCredentials(w http.ResponseWriter, r *ht
 					}
 					var data keri.CredentialData
 					if cred.Data != nil {
-						json.Unmarshal(cred.Data, &data)
+						_ = json.Unmarshal(cred.Data, &data)
 					}
 					credentials = append(credentials, keri.Credential{
 						SAID:      cred.SAID,
@@ -528,7 +528,7 @@ func (h *SyncHandler) HandleGetCommunityCredentials(w http.ResponseWriter, r *ht
 		})
 		return
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	for iter.Next() {
 		doc, err := iter.Doc()
@@ -550,7 +550,7 @@ func (h *SyncHandler) HandleGetCommunityCredentials(w http.ResponseWriter, r *ht
 		// Convert to keri.Credential
 		var data keri.CredentialData
 		dataBytes, _ := json.Marshal(cached.Data)
-		json.Unmarshal(dataBytes, &data)
+		_ = json.Unmarshal(dataBytes, &data)
 
 		credentials = append(credentials, keri.Credential{
 			SAID:      cached.ID,

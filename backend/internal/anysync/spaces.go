@@ -82,8 +82,8 @@ func NewSpaceManager(client AnySyncClient, cfg *SpaceManagerConfig, utm ...*Unif
 	// record to the consensus node before opening the space, so HeadSync
 	// discovers existing trees immediately.
 	if sdkClient, ok := client.(*SDKClient); ok {
-		aclMgr.SetJoiningClient(sdkClient.GetAclJoiningClient())
-		aclMgr.SetCoordAclGetter(sdkClient.CoordAclGetRecords)
+		aclMgr.SetJoiningClient(sdkClient.GetACLJoiningClient())
+		aclMgr.SetCoordACLGetter(sdkClient.CoordACLGetRecords)
 	}
 
 	return &SpaceManager{
@@ -243,7 +243,7 @@ func (m *SpaceManager) GetOrCreatePrivateSpace(ctx context.Context, userAID stri
 }
 
 // GetCommunitySpace returns the MATOU community space
-func (m *SpaceManager) GetCommunitySpace(ctx context.Context) (*Space, error) {
+func (m *SpaceManager) GetCommunitySpace(_ context.Context) (*Space, error) {
 	if m.communitySpaceID == "" {
 		return nil, fmt.Errorf("community space ID not configured")
 	}

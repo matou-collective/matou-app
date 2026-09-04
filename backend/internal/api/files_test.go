@@ -20,8 +20,8 @@ func TestFilesHandler_Upload_NilFileManager(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	part.Write([]byte("fake-image-data"))
-	writer.Close()
+	_, _ = part.Write([]byte("fake-image-data"))
+	_ = writer.Close()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/upload", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -34,7 +34,7 @@ func TestFilesHandler_Upload_NilFileManager(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp["error"] == "" {
 		t.Error("expected error message in response")
 	}
@@ -128,8 +128,8 @@ func TestFilesHandler_Upload_NoCommunitySpace(t *testing.T) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	part, _ := writer.CreateFormFile("file", "test.png")
-	part.Write([]byte("fake-image-data"))
-	writer.Close()
+	_, _ = part.Write([]byte("fake-image-data"))
+	_ = writer.Close()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/upload", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -153,8 +153,8 @@ func TestFilesHandler_Upload_NonImageContentType(t *testing.T) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	part, _ := writer.CreateFormFile("file", "test.txt")
-	part.Write([]byte("not an image"))
-	writer.Close()
+	_, _ = part.Write([]byte("not an image"))
+	_ = writer.Close()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/upload", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())

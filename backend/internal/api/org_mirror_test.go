@@ -16,7 +16,7 @@ func testOrgData() *OrgConfigData {
 
 func TestMirrorToConfigServer_NoTokenIsNoop(t *testing.T) {
 	called := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		called = true
 	}))
 	defer srv.Close()
@@ -100,7 +100,7 @@ func TestMirrorToConfigServer_OmitsTestConfigHeaderByDefault(t *testing.T) {
 }
 
 func TestMirrorToConfigServer_ConflictIsTreatedAsSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 	}))
 	defer srv.Close()
@@ -111,7 +111,7 @@ func TestMirrorToConfigServer_ConflictIsTreatedAsSuccess(t *testing.T) {
 }
 
 func TestMirrorToConfigServer_UnauthorizedReturnsError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 	}))

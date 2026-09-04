@@ -182,7 +182,7 @@ func (h *ProjectsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Notify the creator that their project was created
 	if h.notifier != nil && project.CreatedBy != "" {
-		h.notifier.Notify(&ContribNotification{
+		_ = h.notifier.Notify(&ContribNotification{
 			Type:        "project:created",
 			RecipientID: project.CreatedBy,
 			Title:       "Project Created",

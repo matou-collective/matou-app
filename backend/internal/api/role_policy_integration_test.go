@@ -25,7 +25,7 @@ func TestPolicyEditChangesEnforcement(t *testing.T) {
 	// A representative protected route, wired exactly like production
 	// (RBACMiddleware + RequireAction, cf. contributions_handler withRBAC).
 	protected := RBACMiddleware(lookup, RequireAction(contributions.ActionSignOffProposal,
-		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 
 	call := func(aid string) int {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/proposals/x/sign-off", nil)
@@ -110,7 +110,7 @@ func TestCustomRoleEndToEnd(t *testing.T) {
 	profileLookup := contributions.NewProfileRoleLookup(store, "ro-space")
 
 	protected := RBACMiddleware(profileLookup, RequireAction(contributions.ActionSignOffContribution,
-		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/contributions/x/sign-off", nil)
 	req.Header.Set("X-User-AID", "EKaitiakiUser")
 	recorder := httptest.NewRecorder()

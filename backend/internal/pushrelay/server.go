@@ -124,7 +124,7 @@ func (s *Server) requireSession(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "tokens": s.store.Len()})
 }
 

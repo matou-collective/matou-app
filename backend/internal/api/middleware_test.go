@@ -16,7 +16,7 @@ func TestCORSMiddleware_AllowedOrigin(t *testing.T) {
 
 	for _, origin := range allowedOrigins {
 		t.Run(origin, func(t *testing.T) {
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
 
@@ -45,7 +45,7 @@ func TestCORSMiddleware_DisallowedOrigin(t *testing.T) {
 
 	for _, origin := range disallowedOrigins {
 		t.Run(origin, func(t *testing.T) {
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
 
@@ -68,9 +68,9 @@ func TestCORSMiddleware_DisallowedOrigin(t *testing.T) {
 }
 
 func TestCORSMiddleware_PreflightRequest(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("should not reach here"))
+		_, _ = w.Write([]byte("should not reach here"))
 	})
 
 	wrapped := CORSMiddleware(handler)
@@ -103,7 +103,7 @@ func TestCORSMiddleware_PreflightRequest(t *testing.T) {
 
 func TestCORSMiddleware_PassesToHandler(t *testing.T) {
 	handlerCalled := false
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		handlerCalled = true
 		w.WriteHeader(http.StatusOK)
 	})
@@ -122,7 +122,7 @@ func TestCORSMiddleware_PassesToHandler(t *testing.T) {
 }
 
 func TestCORSHandler_AllowedOrigin(t *testing.T) {
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	handler := func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 
@@ -142,7 +142,7 @@ func TestCORSHandler_AllowedOrigin(t *testing.T) {
 
 func TestCORSHandler_PreflightRequest(t *testing.T) {
 	handlerCalled := false
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	handler := func(w http.ResponseWriter, _ *http.Request) {
 		handlerCalled = true
 		w.WriteHeader(http.StatusOK)
 	}
@@ -179,7 +179,7 @@ func TestCORSMux_HandleFunc(t *testing.T) {
 	mux := NewCORSMux()
 
 	handlerCalled := false
-	mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/test", func(w http.ResponseWriter, _ *http.Request) {
 		handlerCalled = true
 		w.WriteHeader(http.StatusOK)
 	})
@@ -204,7 +204,7 @@ func TestCORSMux_Handle(t *testing.T) {
 	mux := NewCORSMux()
 
 	handlerCalled := false
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		handlerCalled = true
 		w.WriteHeader(http.StatusOK)
 	})
@@ -225,7 +225,7 @@ func TestCORSMux_Handle(t *testing.T) {
 func TestCORSMux_ServeHTTP_PreflightOptions(t *testing.T) {
 	mux := NewCORSMux()
 
-	mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/test", func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("handler should not be called for OPTIONS")
 	})
 
@@ -243,7 +243,7 @@ func TestCORSMux_ServeHTTP_PreflightOptions(t *testing.T) {
 func TestCORSMux_ServeHTTP_AllowsLocalhost(t *testing.T) {
 	mux := NewCORSMux()
 
-	mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/test", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -280,7 +280,7 @@ func TestCORSMux_ServeHTTP_AllowsLocalhost(t *testing.T) {
 }
 
 func TestCORSMiddleware_MaxAge(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -299,7 +299,7 @@ func TestCORSMiddleware_MaxAge(t *testing.T) {
 }
 
 func TestCORSMiddleware_AllowedMethods(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -322,7 +322,7 @@ func TestCORSMiddleware_AllowedMethods(t *testing.T) {
 }
 
 func TestCORSMiddleware_AllowedHeaders(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -349,7 +349,7 @@ func TestCORSMiddleware_AllowedHeaders(t *testing.T) {
 // regression where missing headers in the allow-list silently block requests
 // (the browser never sends the actual request, so no backend error is logged).
 func TestCORSPreflight_CustomHeaders(t *testing.T) {
-	handler := CORSHandler(func(w http.ResponseWriter, r *http.Request) {
+	handler := CORSHandler(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 

@@ -1,6 +1,6 @@
 // Package anysync provides any-sync integration for MATOU.
 // unified_tree_manager.go provides a single source of truth for all tree instances,
-// replacing both the sdkTreeManager cache (keyed by treeId) and TreeCache (keyed by spaceId).
+// replacing both the sdkTreeManager cache (keyed by treeID) and TreeCache (keyed by spaceID).
 // It implements treemanager.TreeManager for the any-sync component system and adds
 // application-level methods for tree-per-object management.
 package anysync
@@ -52,16 +52,16 @@ type ObjectIndexEntry struct {
 type TestTreeFactory func(objectID string) objecttree.ObjectTree
 
 // UnifiedTreeManager is the single source of truth for all tree instances.
-// It replaces both sdkTreeManager.cache (keyed by treeId) and TreeCache (keyed by spaceId).
+// It replaces both sdkTreeManager.cache (keyed by treeID) and TreeCache (keyed by spaceID).
 // Implements treemanager.TreeManager interface (CName: "common.object.treemanager").
 type UnifiedTreeManager struct {
-	trees         sync.Map // treeId → objecttree.ObjectTree (THE single cache)
-	spaceIndex    sync.Map // spaceId → *sync.Map[treeId → ObjectIndexEntry]
-	objectMap     sync.Map // objectId → treeId (fast lookup by object ID)
-	syncStatus    sync.Map // spaceId → *matouSyncStatus (per-space sync metrics)
+	trees         sync.Map // treeID → objecttree.ObjectTree (THE single cache)
+	spaceIndex    sync.Map // spaceID → *sync.Map[treeID → ObjectIndexEntry]
+	objectMap     sync.Map // objectId → treeID (fast lookup by object ID)
+	syncStatus    sync.Map // spaceID → *MatouSyncStatus (per-space sync metrics)
 	a             *app.App
 	listener      updatelistener.UpdateListener
-	testFactories sync.Map // spaceId → TestTreeFactory (test-only)
+	testFactories sync.Map // spaceID → TestTreeFactory (test-only)
 }
 
 // NewUnifiedTreeManager creates a new UnifiedTreeManager.
@@ -71,14 +71,20 @@ func NewUnifiedTreeManager() *UnifiedTreeManager {
 
 // --- treemanager.TreeManager interface ---
 
+// Init implements app.Component, storing the app reference for later component lookups.
 func (u *UnifiedTreeManager) Init(a *app.App) error {
 	u.a = a
 	return nil
 }
 
-func (u *UnifiedTreeManager) Name() string                    { return "common.object.treemanager" }
-func (u *UnifiedTreeManager) Run(ctx context.Context) error   { return nil }
-func (u *UnifiedTreeManager) Close(ctx context.Context) error { return nil }
+// Name implements app.Component, returning the component name used for registration.
+func (u *UnifiedTreeManager) Name() string { return "common.object.treemanager" }
+
+// Run implements app.ComponentRunnable; UnifiedTreeManager has no startup work to do.
+func (u *UnifiedTreeManager) Run(_ context.Context) error { return nil }
+
+// Close implements app.ComponentRunnable; UnifiedTreeManager has no shutdown work to do.
+func (u *UnifiedTreeManager) Close(_ context.Context) error { return nil }
 
 // SetListener sets the UpdateListener that will be passed to BuildTree/PutTree
 // for push-based P2P change notification.
@@ -106,9 +112,9 @@ func (u *UnifiedTreeManager) SetTestTreeFactory(spaceID string, factory TestTree
 	u.testFactories.Store(spaceID, factory)
 }
 
-func (u *UnifiedTreeManager) getSpace(ctx context.Context, spaceId string) (commonspace.Space, error) {
+func (u *UnifiedTreeManager) getSpace(ctx context.Context, spaceID string) (commonspace.Space, error) {
 	resolver := u.a.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
-	return resolver.GetSpace(ctx, spaceId)
+	return resolver.GetSpace(ctx, spaceID)
 }
 
 // GetTree returns a long-lived cached tree if available, otherwise builds one
@@ -124,69 +130,69 @@ func (u *UnifiedTreeManager) getSpace(ctx context.Context, spaceId string) (comm
 // space is fully open with ACL synced. Trees discovered later via TreeSyncer
 // go through ValidateAndPutTree which also caches. The cache is cleared on
 // SDKClient.Reinitialize() to avoid stale keys across identity changes.
-func (u *UnifiedTreeManager) GetTree(ctx context.Context, spaceId, treeId string) (objecttree.ObjectTree, error) {
+func (u *UnifiedTreeManager) GetTree(ctx context.Context, spaceID, treeID string) (objecttree.ObjectTree, error) {
 	// Return cached long-lived tree if available.
-	if cached, ok := u.trees.Load(treeId); ok {
+	if cached, ok := u.trees.Load(treeID); ok {
 		return cached.(objecttree.ObjectTree), nil
 	}
 
 	// In test mode (no app), nothing more to try.
 	if u.a == nil {
-		return nil, fmt.Errorf("tree %s not found (test mode)", treeId)
+		return nil, fmt.Errorf("tree %s not found (test mode)", treeID)
 	}
 
-	sp, err := u.getSpace(ctx, spaceId)
+	sp, err := u.getSpace(ctx, spaceID)
 	if err != nil {
-		log.Printf("[UTM] GetTree space=%s tree=%s getSpace error: %v", spaceId, treeId, err)
+		log.Printf("[UTM] GetTree space=%s tree=%s getSpace error: %v", spaceID, treeID, err)
 		return nil, err
 	}
 
-	tree, err := sp.TreeBuilder().BuildTree(ctx, treeId, objecttreebuilder.BuildTreeOpts{
+	tree, err := sp.TreeBuilder().BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{
 		Listener: u.listener,
 	})
 	if err != nil {
-		log.Printf("[UTM] GetTree space=%s tree=%s BuildTree error: %v", spaceId, treeId, err)
-		return nil, fmt.Errorf("building tree %s: %w", treeId, err)
+		log.Printf("[UTM] GetTree space=%s tree=%s BuildTree error: %v", spaceID, treeID, err)
+		return nil, fmt.Errorf("building tree %s: %w", treeID, err)
 	}
 
 	// Cache for P2P listener continuity.
-	u.trees.Store(treeId, tree)
+	u.trees.Store(treeID, tree)
 
 	// Index newly discovered trees (e.g. fetched from remote peer by TreeSyncer).
 	// This is idempotent — addToIndex is a no-op if already indexed.
-	if entry := u.extractIndexEntry(tree, treeId); entry != nil {
-		u.addToIndex(spaceId, treeId, *entry)
+	if entry := u.extractIndexEntry(tree, treeID); entry != nil {
+		u.addToIndex(spaceID, treeID, *entry)
 	}
 
 	return tree, nil
 }
 
 // ValidateAndPutTree stores an incoming tree from sync and updates the index.
-func (u *UnifiedTreeManager) ValidateAndPutTree(ctx context.Context, spaceId string, payload treestorage.TreeStorageCreatePayload) error {
-	sp, err := u.getSpace(ctx, spaceId)
+func (u *UnifiedTreeManager) ValidateAndPutTree(ctx context.Context, spaceID string, payload treestorage.TreeStorageCreatePayload) error {
+	sp, err := u.getSpace(ctx, spaceID)
 	if err != nil {
 		return err
 	}
 
 	tree, err := sp.TreeBuilder().PutTree(ctx, payload, u.listener)
 	if err != nil {
-		return fmt.Errorf("putting tree in space %s: %w", spaceId, err)
+		return fmt.Errorf("putting tree in space %s: %w", spaceID, err)
 	}
 
-	treeId := tree.Id()
-	u.trees.Store(treeId, tree)
+	treeID := tree.Id()
+	u.trees.Store(treeID, tree)
 
 	// Try to index the tree
-	if entry := u.extractIndexEntry(tree, treeId); entry != nil {
-		u.addToIndex(spaceId, treeId, *entry)
+	if entry := u.extractIndexEntry(tree, treeID); entry != nil {
+		u.addToIndex(spaceID, treeID, *entry)
 	}
 
 	return nil
 }
 
 // MarkTreeDeleted marks a tree as deleted.
-func (u *UnifiedTreeManager) MarkTreeDeleted(ctx context.Context, spaceId, treeId string) error {
-	tree, err := u.GetTree(ctx, spaceId, treeId)
+func (u *UnifiedTreeManager) MarkTreeDeleted(ctx context.Context, spaceID, treeID string) error {
+	tree, err := u.GetTree(ctx, spaceID, treeID)
 	if err != nil {
 		return err
 	}
@@ -194,16 +200,16 @@ func (u *UnifiedTreeManager) MarkTreeDeleted(ctx context.Context, spaceId, treeI
 }
 
 // DeleteTree removes a tree from cache and storage.
-func (u *UnifiedTreeManager) DeleteTree(ctx context.Context, spaceId, treeId string) error {
-	tree, err := u.GetTree(ctx, spaceId, treeId)
+func (u *UnifiedTreeManager) DeleteTree(ctx context.Context, spaceID, treeID string) error {
+	tree, err := u.GetTree(ctx, spaceID, treeID)
 	if err != nil {
 		return err
 	}
 	if err := tree.Delete(); err != nil {
 		return err
 	}
-	u.trees.Delete(treeId)
-	u.removeFromIndex(spaceId, treeId)
+	u.trees.Delete(treeID)
+	u.removeFromIndex(spaceID, treeID)
 	return nil
 }
 
@@ -310,7 +316,7 @@ func (u *UnifiedTreeManager) GetTreesForSpace(spaceID string) []ObjectIndexEntry
 	}
 
 	var entries []ObjectIndexEntry
-	idx.(*sync.Map).Range(func(key, value any) bool {
+	idx.(*sync.Map).Range(func(_, value any) bool {
 		entries = append(entries, value.(ObjectIndexEntry))
 		return true
 	})
@@ -379,14 +385,14 @@ func (u *UnifiedTreeManager) BuildSpaceIndex(ctx context.Context, spaceID string
 		return fmt.Errorf("getting space %s: %w", spaceID, err)
 	}
 
-	storedIds := sp.StoredIds()
+	storedIDs := sp.StoredIds()
 	builder := sp.TreeBuilder()
 	indexed := 0
 
 	// Get existing index for this space to skip already-indexed trees
 	existingIdx, _ := u.spaceIndex.Load(spaceID)
 
-	for _, treeID := range storedIds {
+	for _, treeID := range storedIDs {
 		// Skip if already indexed in the space index
 		if existingIdx != nil {
 			if _, ok := existingIdx.(*sync.Map).Load(treeID); ok {
@@ -413,7 +419,7 @@ func (u *UnifiedTreeManager) BuildSpaceIndex(ctx context.Context, spaceID string
 		}
 	}
 
-	log.Printf("[UTM] BuildSpaceIndex space=%s storedIds=%d indexed=%d", spaceID, len(storedIds), indexed)
+	log.Printf("[UTM] BuildSpaceIndex space=%s storedIds=%d indexed=%d", spaceID, len(storedIDs), indexed)
 	return nil
 }
 
@@ -469,32 +475,32 @@ func (u *UnifiedTreeManager) TreeCount(spaceID string) int {
 }
 
 // RegisterSyncStatus stores a per-space sync status tracker for later retrieval.
-func (u *UnifiedTreeManager) RegisterSyncStatus(spaceID string, status *matouSyncStatus) {
+func (u *UnifiedTreeManager) RegisterSyncStatus(spaceID string, status *MatouSyncStatus) {
 	u.syncStatus.Store(spaceID, status)
 }
 
 // GetSyncStatus returns the sync status tracker for a space, or nil if not registered.
-func (u *UnifiedTreeManager) GetSyncStatus(spaceID string) *matouSyncStatus {
+func (u *UnifiedTreeManager) GetSyncStatus(spaceID string) *MatouSyncStatus {
 	val, ok := u.syncStatus.Load(spaceID)
 	if !ok {
 		return nil
 	}
-	return val.(*matouSyncStatus)
+	return val.(*MatouSyncStatus)
 }
 
 // SpaceForTree returns the space ID that contains the given tree, or empty string.
-func (u *UnifiedTreeManager) SpaceForTree(treeId string) string {
-	var spaceId string
+func (u *UnifiedTreeManager) SpaceForTree(treeID string) string {
+	var spaceID string
 	u.spaceIndex.Range(func(key, value any) bool {
 		if idx, ok := value.(*sync.Map); ok {
-			if _, found := idx.Load(treeId); found {
-				spaceId = key.(string)
+			if _, found := idx.Load(treeID); found {
+				spaceID = key.(string)
 				return false
 			}
 		}
 		return true
 	})
-	return spaceId
+	return spaceID
 }
 
 // KnownSpaceIDs returns all space IDs that have an entry in the space index.
@@ -516,15 +522,15 @@ func (u *UnifiedTreeManager) KnownSpaceIDs() []string {
 // current ACL state, fixing the timing race where the cached tree was built
 // before the joiner's InviteJoin record was applied to the ACL.
 // The fresh tree is ephemeral — not stored in the cache and has no listener.
-func (u *UnifiedTreeManager) BuildFreshTree(ctx context.Context, spaceId, treeId string) (objecttree.ObjectTree, error) {
+func (u *UnifiedTreeManager) BuildFreshTree(ctx context.Context, spaceID, treeID string) (objecttree.ObjectTree, error) {
 	if u.a == nil {
 		return nil, fmt.Errorf("BuildFreshTree: no app (test mode)")
 	}
-	sp, err := u.getSpace(ctx, spaceId)
+	sp, err := u.getSpace(ctx, spaceID)
 	if err != nil {
 		return nil, fmt.Errorf("BuildFreshTree getSpace: %w", err)
 	}
-	tree, err := sp.TreeBuilder().BuildTree(ctx, treeId, objecttreebuilder.BuildTreeOpts{
+	tree, err := sp.TreeBuilder().BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{
 		// No listener — this tree is for reading only, not for sync.
 	})
 	if err != nil {
@@ -604,7 +610,7 @@ func (u *UnifiedTreeManager) extractIndexEntry(tree objecttree.ObjectTree, treeI
 	// Fallback: iterate to find DataType from content changes (legacy trees)
 	var entry *ObjectIndexEntry
 	_ = tree.IterateRoot(
-		func(change *objecttree.Change, decrypted []byte) (any, error) {
+		func(_ *objecttree.Change, _ []byte) (any, error) {
 			return nil, nil
 		},
 		func(change *objecttree.Change) bool {

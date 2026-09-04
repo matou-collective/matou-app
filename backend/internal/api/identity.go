@@ -234,13 +234,13 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 				}
 			}
 			// Persist keys and space record using the actual space ID
-			anysync.PersistSpaceKeySet(client.GetDataDir(), actualID, keys)
-			h.spaceStore.SaveSpace(ctx, &anysync.Space{
+			_ = anysync.PersistSpaceKeySet(client.GetDataDir(), actualID, keys)
+			_ = h.spaceStore.SaveSpace(ctx, &anysync.Space{
 				SpaceID:   actualID,
 				OwnerAID:  req.AID,
 				SpaceType: anysync.SpaceTypePrivate,
 			})
-			h.userIdentity.SetPrivateSpaceID(actualID)
+			_ = h.userIdentity.SetPrivateSpaceID(actualID)
 			privateSpaceID = actualID
 		}
 	}
@@ -272,7 +272,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 				log.Printf("[Identity] Failed to derive community space keys: %v\n", deriveErr)
 			} else {
 				communityKeys.SigningKey = client.GetSigningKey()
-				anysync.PersistSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID, communityKeys)
+				_ = anysync.PersistSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID, communityKeys)
 				log.Printf("[Identity] Re-derived community space keys for %s\n", req.CommunitySpaceID)
 			}
 		}
@@ -295,7 +295,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 				log.Printf("[Identity] Failed to derive read-only space keys: %v\n", deriveErr)
 			} else {
 				roKeys.SigningKey = client.GetSigningKey()
-				anysync.PersistSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID, roKeys)
+				_ = anysync.PersistSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID, roKeys)
 				log.Printf("[Identity] Re-derived read-only space keys for %s\n", req.ReadOnlySpaceID)
 			}
 		}
@@ -318,7 +318,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 				log.Printf("[Identity] Failed to derive admin space keys: %v\n", deriveErr)
 			} else {
 				adminKeys.SigningKey = client.GetSigningKey()
-				anysync.PersistSpaceKeySet(client.GetDataDir(), adminSpaceID, adminKeys)
+				_ = anysync.PersistSpaceKeySet(client.GetDataDir(), adminSpaceID, adminKeys)
 				log.Printf("[Identity] Re-derived admin space keys for %s\n", adminSpaceID)
 			}
 		}

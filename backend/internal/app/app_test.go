@@ -25,7 +25,7 @@ func TestListenPicksFreePortWhenZero(t *testing.T) {
 		func() error { order = append(order, 1); return nil },
 	}
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -42,7 +42,7 @@ func TestListenPicksFreePortWhenZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
 	}
@@ -65,7 +65,7 @@ func TestListenPicksFreePortWhenZero(t *testing.T) {
 	// The port now refuses connections.
 	conn, err := net.DialTimeout("tcp", application.Addr(), 500*time.Millisecond)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Fatalf("expected connection refused on %s after Shutdown", application.Addr())
 	}
 	if !isConnRefused(err) {

@@ -117,10 +117,13 @@ type OrgConfigAdminLookup struct {
 	provider OrgConfigProvider
 }
 
+// NewOrgConfigAdminLookup constructs an OrgConfigAdminLookup.
 func NewOrgConfigAdminLookup(provider OrgConfigProvider) *OrgConfigAdminLookup {
 	return &OrgConfigAdminLookup{provider: provider}
 }
 
+// GetUserRoles returns Founding Member for AIDs in the org config admins
+// list, or an empty slice otherwise.
 func (l *OrgConfigAdminLookup) GetUserRoles(aid string) ([]contributions.Role, error) {
 	cfg := l.provider.GetConfig()
 	if cfg == nil {
@@ -141,10 +144,13 @@ type CredentialRoleLookup struct {
 	store *anystore.LocalStore
 }
 
+// NewCredentialRoleLookup constructs a CredentialRoleLookup.
 func NewCredentialRoleLookup(store *anystore.LocalStore) *CredentialRoleLookup {
 	return &CredentialRoleLookup{store: store}
 }
 
+// GetUserRoles returns roles mapped from the cached credential whose
+// recipient matches aid, or an empty slice if none is found.
 func (l *CredentialRoleLookup) GetUserRoles(aid string) ([]contributions.Role, error) {
 	if l.store == nil {
 		return []contributions.Role{}, nil
@@ -191,10 +197,13 @@ type IdentityRoleLookup struct {
 	provider IdentityAIDProvider
 }
 
+// NewIdentityRoleLookup constructs an IdentityRoleLookup.
 func NewIdentityRoleLookup(provider IdentityAIDProvider) *IdentityRoleLookup {
 	return &IdentityRoleLookup{provider: provider}
 }
 
+// GetUserRoles returns Founding Member when aid matches the backend's own
+// identity AID, or an empty slice otherwise.
 func (l *IdentityRoleLookup) GetUserRoles(aid string) ([]contributions.Role, error) {
 	identityAID := l.provider.GetAID()
 	if identityAID != "" && aid == identityAID {
@@ -209,10 +218,13 @@ type CompositeRoleLookup struct {
 	lookups []RoleLookup
 }
 
+// NewCompositeRoleLookup constructs a CompositeRoleLookup from lookups.
 func NewCompositeRoleLookup(lookups ...RoleLookup) *CompositeRoleLookup {
 	return &CompositeRoleLookup{lookups: lookups}
 }
 
+// GetUserRoles returns the first non-empty role set produced by the chained
+// lookups, trying each in order.
 func (c *CompositeRoleLookup) GetUserRoles(aid string) ([]contributions.Role, error) {
 	for _, l := range c.lookups {
 		roles, err := l.GetUserRoles(aid)

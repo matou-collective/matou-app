@@ -1,10 +1,11 @@
-// backend/internal/contributions/roles.go
 package contributions
 
 // Role represents a contribution-specific role.
 // These are internal to the contributions system and mapped FROM existing KERI roles.
 type Role string
 
+// RoleMember and the other Role constants are the built-in contribution
+// roles mapped from KERI credential roles (see MapKERIRole).
 const (
 	RoleMember            Role = "member"
 	RoleContributor       Role = "contributor"
@@ -52,6 +53,8 @@ func MapKERIRole(keriRole string) []Role {
 // Action represents a permissioned operation in the contributions system.
 type Action string
 
+// ActionCreateContribution and the other Action constants are the
+// permissioned operations gated by actionPermissions/RolePolicy.
 const (
 	ActionCreateContribution     Action = "create_contribution"
 	ActionConfirmContribution    Action = "confirm_contribution"
@@ -64,7 +67,8 @@ const (
 	ActionEditProject            Action = "edit_project"
 	ActionDeleteProject          Action = "delete_project"
 	ActionAssignProjectRole      Action = "assign_project_role"
-	// assign_project_role split (#312/#313): the granular successors. They gate
+	// ActionAssignProjectSteward and ActionAssignProjectLead are the granular
+	// successors from the assign_project_role split (#312/#313). They gate
 	// no endpoint yet — the coarse assign_project_role route stays wired until
 	// the projects enforcement slice splits it — but the capabilities exist so
 	// grants can be configured ahead of enforcement.
@@ -73,13 +77,15 @@ const (
 	ActionLinkProposal         Action = "link_proposal"
 	ActionRegisterInterest     Action = "register_interest"
 
-	// Membership & credential actions
+	// ActionChangeMemberRole and the following are membership & credential
+	// actions.
 	ActionChangeMemberRole  Action = "change_member_role"
 	ActionRemoveMember      Action = "remove_member"
 	ActionInitMemberProfile Action = "init_member_profile"
 	ActionStoreCredential   Action = "store_credential"
 
-	// Workflow actions added in Stage 1
+	// ActionShareContribution and the following are workflow actions added in
+	// Stage 1.
 	ActionShareContribution  Action = "share_contribution"
 	ActionOfferContribution  Action = "offer_contribution"
 	ActionAcceptOffer        Action = "accept_offer"
@@ -89,30 +95,32 @@ const (
 	ActionSignOffPlan        Action = "sign_off_plan"
 	ActionApproveSubContrib  Action = "approve_sub_contribution"
 
-	// Proposal actions
+	// ActionSignOffProposal and the following are proposal actions.
 	ActionSignOffProposal  Action = "sign_off_proposal"
 	ActionRejectProposal   Action = "reject_proposal"
 	ActionEditProposal     Action = "edit_proposal"
 	ActionWithdrawProposal Action = "withdraw_proposal"
 
-	// Archive & lifecycle actions
+	// ActionArchiveProject and the following are archive & lifecycle actions.
 	ActionArchiveProject       Action = "archive_project"
 	ActionArchiveMilestone     Action = "archive_milestone"
 	ActionArchiveContribution  Action = "archive_contribution"
 	ActionUnassignContribution Action = "unassign_contribution"
 	ActionEditMilestone        Action = "edit_milestone"
 
-	// Project completion workflow
+	// ActionSubmitProjectCompletion and the following are project completion
+	// workflow actions.
 	ActionSubmitProjectCompletion  Action = "submit_project_completion"
 	ActionApproveProjectCompletion Action = "approve_project_completion"
 	ActionRejectProjectCompletion  Action = "reject_project_completion"
 
-	// Role-granting / bootstrap routes (issue #17 follow-up). These endpoints
-	// hand out roles indirectly — org config admins resolve to Founding Member,
-	// grant-steward-admin elevates any-sync ACL permissions, identity/set
-	// decides which AID the backend treats as its owner — so they are limited
-	// to adminScope once the backend is past first-run bootstrap (see
-	// docs/RBAC.md "Bootstrap rule").
+	// ActionSaveOrgConfig and the following are role-granting / bootstrap
+	// routes (issue #17 follow-up). These endpoints hand out roles indirectly
+	// — org config admins resolve to Founding Member, grant-steward-admin
+	// elevates any-sync ACL permissions, identity/set decides which AID the
+	// backend treats as its owner — so they are limited to adminScope once
+	// the backend is past first-run bootstrap (see docs/RBAC.md "Bootstrap
+	// rule").
 	ActionSaveOrgConfig     Action = "save_org_config"
 	ActionGrantStewardAdmin Action = "grant_steward_admin"
 	ActionSetIdentity       Action = "set_identity"
@@ -122,7 +130,8 @@ const (
 	// change) are applied in api.profileWritePolicy.
 	ActionWriteProfile Action = "write_profile"
 
-	// Role-policy management (the manage_roles meta-permission)
+	// ActionManageRolePolicy manages role policy (the manage_roles
+	// meta-permission).
 	ActionManageRolePolicy Action = "manage_role_policy"
 )
 

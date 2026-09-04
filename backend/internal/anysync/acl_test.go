@@ -22,7 +22,7 @@ import (
 // Mock AclRecordBuilder (no pre-generated gomock mock exists for this interface)
 // =============================================================================
 
-type mockAclRecordBuilder struct {
+type mockACLRecordBuilder struct {
 	buildInviteAnyoneResult list.InviteResult
 	buildInviteAnyoneErr    error
 
@@ -34,89 +34,90 @@ type mockAclRecordBuilder struct {
 	buildInviteJoinWithoutApproveCalls []list.InviteJoinPayload
 }
 
-func (m *mockAclRecordBuilder) UnmarshallWithId(rawIdRecord *consensusproto.RawRecordWithId) (rec *list.AclRecord, err error) {
+//nolint:revive // method name is fixed by the external list.AclRecordBuilder interface
+func (m *mockACLRecordBuilder) UnmarshallWithId(_ *consensusproto.RawRecordWithId) (rec *list.AclRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) Unmarshall(rawRecord *consensusproto.RawRecord) (rec *list.AclRecord, err error) {
+func (m *mockACLRecordBuilder) Unmarshall(_ *consensusproto.RawRecord) (rec *list.AclRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildRoot(content list.RootContent) (rec *consensusproto.RawRecordWithId, err error) {
+func (m *mockACLRecordBuilder) BuildRoot(_ list.RootContent) (rec *consensusproto.RawRecordWithId, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildOneToOneRoot(content list.RootContent, oneToOneInfo *aclrecordproto.AclOneToOneInfo) (rec *consensusproto.RawRecordWithId, err error) {
+func (m *mockACLRecordBuilder) BuildOneToOneRoot(_ list.RootContent, _ *aclrecordproto.AclOneToOneInfo) (rec *consensusproto.RawRecordWithId, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildBatchRequest(payload list.BatchRequestPayload) (batchResult list.BatchResult, err error) {
+func (m *mockACLRecordBuilder) BuildBatchRequest(_ list.BatchRequestPayload) (batchResult list.BatchResult, err error) {
 	return list.BatchResult{}, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildInvite() (res list.InviteResult, err error) {
+func (m *mockACLRecordBuilder) BuildInvite() (res list.InviteResult, err error) {
 	return list.InviteResult{}, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildInviteAnyone(permissions list.AclPermissions) (res list.InviteResult, err error) {
+func (m *mockACLRecordBuilder) BuildInviteAnyone(permissions list.AclPermissions) (res list.InviteResult, err error) {
 	m.buildInviteAnyoneCalls = append(m.buildInviteAnyoneCalls, permissions)
 	return m.buildInviteAnyoneResult, m.buildInviteAnyoneErr
 }
 
-func (m *mockAclRecordBuilder) BuildInviteChange(inviteChange list.InviteChangePayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildInviteChange(_ list.InviteChangePayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildInviteRevoke(inviteRecordId string) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildInviteRevoke(_ string) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildInviteJoinWithoutApprove(payload list.InviteJoinPayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildInviteJoinWithoutApprove(payload list.InviteJoinPayload) (rawRecord *consensusproto.RawRecord, err error) {
 	m.buildInviteJoinWithoutApproveCalls = append(m.buildInviteJoinWithoutApproveCalls, payload)
 	return m.buildInviteJoinWithoutApproveResult, m.buildInviteJoinWithoutApproveErr
 }
 
-func (m *mockAclRecordBuilder) BuildRequestJoin(payload list.RequestJoinPayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildRequestJoin(_ list.RequestJoinPayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildRequestAccept(payload list.RequestAcceptPayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildRequestAccept(_ list.RequestAcceptPayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildRequestDecline(requestRecordId string) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildRequestDecline(_ string) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildRequestCancel(requestRecordId string) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildRequestCancel(_ string) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildRequestRemove() (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildRequestRemove() (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildPermissionChange(payload list.PermissionChangePayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildPermissionChange(_ list.PermissionChangePayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildPermissionChanges(payload list.PermissionChangesPayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildPermissionChanges(_ list.PermissionChangesPayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildOwnershipChange(ownershipChange list.OwnershipChangePayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildOwnershipChange(_ list.OwnershipChangePayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildReadKeyChange(payload list.ReadKeyChangePayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildReadKeyChange(_ list.ReadKeyChangePayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildAccountRemove(payload list.AccountRemovePayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildAccountRemove(_ list.AccountRemovePayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockAclRecordBuilder) BuildAccountsAdd(payload list.AccountsAddPayload) (rawRecord *consensusproto.RawRecord, err error) {
+func (m *mockACLRecordBuilder) BuildAccountsAdd(_ list.AccountsAddPayload) (rawRecord *consensusproto.RawRecord, err error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -164,9 +165,9 @@ func TestMatouACLManager_CreateOpenInvite(t *testing.T) {
 
 	// Set up mock chain: client -> space -> acl -> builder -> result
 	mockSpace := mock_commonspace.NewMockSpace(ctrl)
-	mockAcl := mock_syncacl.NewMockSyncAcl(ctrl)
-	mockAclClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
-	builder := &mockAclRecordBuilder{
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	mockACLClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
+	builder := &mockACLRecordBuilder{
 		buildInviteAnyoneResult: list.InviteResult{
 			InviteRec: inviteRec,
 			InviteKey: inviteKey,
@@ -179,12 +180,12 @@ func TestMatouACLManager_CreateOpenInvite(t *testing.T) {
 	}
 
 	// Expectations
-	mockSpace.EXPECT().Acl().Return(mockAcl)
-	mockAcl.EXPECT().Lock()
-	mockAcl.EXPECT().Unlock()
-	mockAcl.EXPECT().RecordBuilder().Return(builder)
-	mockSpace.EXPECT().AclClient().Return(mockAclClient)
-	mockAclClient.EXPECT().AddRecord(gomock.Any(), inviteRec).Return(nil)
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().Lock()
+	mockACL.EXPECT().Unlock()
+	mockACL.EXPECT().RecordBuilder().Return(builder)
+	mockSpace.EXPECT().AclClient().Return(mockACLClient)
+	mockACLClient.EXPECT().AddRecord(gomock.Any(), inviteRec).Return(nil)
 
 	mgr := NewMatouACLManager(client, nil)
 	gotKey, err := mgr.CreateOpenInvite(context.Background(), "test-space-id", list.AclPermissionsWriter)
@@ -228,17 +229,17 @@ func TestMatouACLManager_CreateOpenInvite_BuildError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	mockSpace := mock_commonspace.NewMockSpace(ctrl)
-	mockAcl := mock_syncacl.NewMockSyncAcl(ctrl)
-	builder := &mockAclRecordBuilder{
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	builder := &mockACLRecordBuilder{
 		buildInviteAnyoneErr: fmt.Errorf("crypto error"),
 	}
 
 	client := &testACLClient{space: mockSpace}
 
-	mockSpace.EXPECT().Acl().Return(mockAcl)
-	mockAcl.EXPECT().Lock()
-	mockAcl.EXPECT().Unlock()
-	mockAcl.EXPECT().RecordBuilder().Return(builder)
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().Lock()
+	mockACL.EXPECT().Unlock()
+	mockACL.EXPECT().RecordBuilder().Return(builder)
 
 	mgr := NewMatouACLManager(client, nil)
 	_, err := mgr.CreateOpenInvite(context.Background(), "test-space", list.AclPermissionsWriter)
@@ -254,9 +255,9 @@ func TestMatouACLManager_CreateOpenInvite_AddRecordError(t *testing.T) {
 	inviteRec := &consensusproto.RawRecord{Payload: []byte("test")}
 
 	mockSpace := mock_commonspace.NewMockSpace(ctrl)
-	mockAcl := mock_syncacl.NewMockSyncAcl(ctrl)
-	mockAclClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
-	builder := &mockAclRecordBuilder{
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	mockACLClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
+	builder := &mockACLRecordBuilder{
 		buildInviteAnyoneResult: list.InviteResult{
 			InviteRec: inviteRec,
 			InviteKey: inviteKey,
@@ -265,12 +266,12 @@ func TestMatouACLManager_CreateOpenInvite_AddRecordError(t *testing.T) {
 
 	client := &testACLClient{space: mockSpace}
 
-	mockSpace.EXPECT().Acl().Return(mockAcl)
-	mockAcl.EXPECT().Lock()
-	mockAcl.EXPECT().Unlock()
-	mockAcl.EXPECT().RecordBuilder().Return(builder)
-	mockSpace.EXPECT().AclClient().Return(mockAclClient)
-	mockAclClient.EXPECT().AddRecord(gomock.Any(), inviteRec).Return(fmt.Errorf("network error"))
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().Lock()
+	mockACL.EXPECT().Unlock()
+	mockACL.EXPECT().RecordBuilder().Return(builder)
+	mockSpace.EXPECT().AclClient().Return(mockACLClient)
+	mockACLClient.EXPECT().AddRecord(gomock.Any(), inviteRec).Return(fmt.Errorf("network error"))
 
 	mgr := NewMatouACLManager(client, nil)
 	_, err := mgr.CreateOpenInvite(context.Background(), "test-space", list.AclPermissionsWriter)
@@ -286,20 +287,20 @@ func TestMatouACLManager_JoinWithInvite(t *testing.T) {
 	joinRec := &consensusproto.RawRecord{Payload: []byte("join-record")}
 
 	mockSpace := mock_commonspace.NewMockSpace(ctrl)
-	mockAcl := mock_syncacl.NewMockSyncAcl(ctrl)
-	mockAclClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
-	builder := &mockAclRecordBuilder{
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	mockACLClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
+	builder := &mockACLRecordBuilder{
 		buildInviteJoinWithoutApproveResult: joinRec,
 	}
 
 	client := &testACLClient{space: mockSpace}
 
-	mockSpace.EXPECT().Acl().Return(mockAcl)
-	mockAcl.EXPECT().Lock()
-	mockAcl.EXPECT().Unlock()
-	mockAcl.EXPECT().RecordBuilder().Return(builder)
-	mockSpace.EXPECT().AclClient().Return(mockAclClient)
-	mockAclClient.EXPECT().AddRecord(gomock.Any(), joinRec).Return(nil)
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().Lock()
+	mockACL.EXPECT().Unlock()
+	mockACL.EXPECT().RecordBuilder().Return(builder)
+	mockSpace.EXPECT().AclClient().Return(mockACLClient)
+	mockACLClient.EXPECT().AddRecord(gomock.Any(), joinRec).Return(nil)
 
 	mgr := NewMatouACLManager(client, nil)
 	metadata := []byte(`{"aid":"EUser123"}`)
@@ -340,17 +341,17 @@ func TestMatouACLManager_JoinWithInvite_BuildError(t *testing.T) {
 	inviteKey, _, _ := crypto.GenerateRandomEd25519KeyPair()
 
 	mockSpace := mock_commonspace.NewMockSpace(ctrl)
-	mockAcl := mock_syncacl.NewMockSyncAcl(ctrl)
-	builder := &mockAclRecordBuilder{
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	builder := &mockACLRecordBuilder{
 		buildInviteJoinWithoutApproveErr: fmt.Errorf("invalid invite key"),
 	}
 
 	client := &testACLClient{space: mockSpace}
 
-	mockSpace.EXPECT().Acl().Return(mockAcl)
-	mockAcl.EXPECT().Lock()
-	mockAcl.EXPECT().Unlock()
-	mockAcl.EXPECT().RecordBuilder().Return(builder)
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().Lock()
+	mockACL.EXPECT().Unlock()
+	mockACL.EXPECT().RecordBuilder().Return(builder)
 
 	mgr := NewMatouACLManager(client, nil)
 	err := mgr.JoinWithInvite(context.Background(), "test-space", inviteKey, nil)
@@ -380,14 +381,14 @@ func TestMatouACLManager_GetPermissions_NilState(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	mockSpace := mock_commonspace.NewMockSpace(ctrl)
-	mockAcl := mock_syncacl.NewMockSyncAcl(ctrl)
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
 
 	client := &testACLClient{space: mockSpace}
 
-	mockSpace.EXPECT().Acl().Return(mockAcl)
-	mockAcl.EXPECT().RLock()
-	mockAcl.EXPECT().RUnlock()
-	mockAcl.EXPECT().AclState().Return(nil)
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().RLock()
+	mockACL.EXPECT().RUnlock()
+	mockACL.EXPECT().AclState().Return(nil)
 
 	identity, _, _ := crypto.GenerateRandomEd25519KeyPair()
 
@@ -447,7 +448,7 @@ func (c *testACLClient) GetDataDir() string                                   { 
 func (c *testACLClient) GetSigningKey() crypto.PrivKey                        { return nil }
 func (c *testACLClient) GetPool() pool.Pool                                   { return nil }
 func (c *testACLClient) GetNodeConf() nodeconf.Service                        { return nil }
-func (c *testACLClient) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
+func (c *testACLClient) SetAccountFileLimits(_ context.Context, _ string, _ uint64) error {
 	return nil
 }
 func (c *testACLClient) Ping() error  { return nil }

@@ -12,7 +12,7 @@ func TestProfileRoleLookup_GetUserRoles(t *testing.T) {
 		"userAID": "EAbcd1234",
 		"role":    "Operations Steward",
 	}
-	store.Save("readonly-space", "CommunityProfile-EAbcd1234", "CommunityProfile", profile)
+	_ = store.Save("readonly-space", "CommunityProfile-EAbcd1234", "CommunityProfile", profile)
 
 	lookup := NewProfileRoleLookup(store, "readonly-space")
 	roles, err := lookup.GetUserRoles("EAbcd1234")
@@ -37,7 +37,7 @@ func TestProfileRoleLookup_ResolverResolvesAfterSpaceAppears(t *testing.T) {
 		"userAID": "EAdmin1234",
 		"role":    "Founding Member",
 	}
-	store.Save("readonly-space", "CommunityProfile-EAdmin1234", "CommunityProfile", profile)
+	_ = store.Save("readonly-space", "CommunityProfile-EAdmin1234", "CommunityProfile", profile)
 
 	// Constructed with an empty space ID, as at boot before an identity exists.
 	lookup := NewProfileRoleLookup(store, "")

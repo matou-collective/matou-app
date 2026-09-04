@@ -616,7 +616,7 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 		if req.Mnemonic != "" {
 			if client := h.spaceManager.GetClient(); client != nil {
 				if peerKey, peerErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0); peerErr == nil {
-					anysync.PersistUserPeerKey(client.GetDataDir(), req.UserAID, peerKey)
+					_ = anysync.PersistUserPeerKey(client.GetDataDir(), req.UserAID, peerKey)
 				}
 			}
 		}

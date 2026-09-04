@@ -123,7 +123,7 @@ func TestSignedAuthEnabledInvalidToken(t *testing.T) {
 	t.Setenv("MATOU_REQUIRE_SIGNED_AUTH", "1")
 	sessions := auth.NewSessionStore(0)
 
-	mw := SignedAuthMiddleware(sessions, testAPIToken, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mw := SignedAuthMiddleware(sessions, testAPIToken, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler must not run for an invalid token")
 	}))
 
@@ -168,7 +168,7 @@ func TestSignedAuthEnabledAPITokenIsAnonymous(t *testing.T) {
 func TestSignedAuthEnabledRandomBearerRejected(t *testing.T) {
 	t.Setenv("MATOU_REQUIRE_SIGNED_AUTH", "1")
 	sessions := auth.NewSessionStore(0)
-	mw := SignedAuthMiddleware(sessions, testAPIToken, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mw := SignedAuthMiddleware(sessions, testAPIToken, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("handler must not run for a random bearer")
 	}))
 

@@ -109,7 +109,7 @@ func NewMockAnySyncClient() *MockAnySyncClient {
 }
 
 // CreateSpace implements AnySyncClient.CreateSpace
-func (m *MockAnySyncClient) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+func (m *MockAnySyncClient) CreateSpace(_ context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -146,7 +146,7 @@ func (m *MockAnySyncClient) CreateSpace(ctx context.Context, ownerAID string, sp
 }
 
 // DeriveSpace implements AnySyncClient.DeriveSpace
-func (m *MockAnySyncClient) DeriveSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
+func (m *MockAnySyncClient) DeriveSpace(_ context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -184,7 +184,7 @@ func (m *MockAnySyncClient) createSpaceInternal(ownerAID string, spaceType strin
 }
 
 // DeriveSpaceID implements AnySyncClient.DeriveSpaceID
-func (m *MockAnySyncClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error) {
+func (m *MockAnySyncClient) DeriveSpaceID(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -196,7 +196,7 @@ func (m *MockAnySyncClient) DeriveSpaceID(ctx context.Context, ownerAID string, 
 }
 
 // AddToACL implements AnySyncClient.AddToACL
-func (m *MockAnySyncClient) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
+func (m *MockAnySyncClient) AddToACL(_ context.Context, spaceID string, peerID string, permissions []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -223,7 +223,7 @@ func (m *MockAnySyncClient) AddToACL(ctx context.Context, spaceID string, peerID
 }
 
 // SyncDocument implements AnySyncClient.SyncDocument
-func (m *MockAnySyncClient) SyncDocument(ctx context.Context, spaceID string, docID string, data []byte) error {
+func (m *MockAnySyncClient) SyncDocument(_ context.Context, spaceID string, docID string, data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -261,7 +261,7 @@ func (m *MockAnySyncClient) GetPeerID() string {
 }
 
 // MakeSpaceShareable implements AnySyncClient.MakeSpaceShareable
-func (m *MockAnySyncClient) MakeSpaceShareable(ctx context.Context, spaceID string) error {
+func (m *MockAnySyncClient) MakeSpaceShareable(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -283,7 +283,7 @@ func (m *MockAnySyncClient) Close() error {
 }
 
 // CreateSpaceWithKeys implements AnySyncClient.CreateSpaceWithKeys
-func (m *MockAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
+func (m *MockAnySyncClient) CreateSpaceWithKeys(_ context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -319,7 +319,7 @@ func (m *MockAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID st
 }
 
 // GetSpace implements AnySyncClient.GetSpace
-func (m *MockAnySyncClient) GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error) {
+func (m *MockAnySyncClient) GetSpace(_ context.Context, spaceID string) (commonspace.Space, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -352,7 +352,7 @@ func (m *MockAnySyncClient) GetNodeConf() nodeconf.Service {
 }
 
 // SetAccountFileLimits implements AnySyncClient.SetAccountFileLimits
-func (m *MockAnySyncClient) SetAccountFileLimits(ctx context.Context, identity string, limitBytes uint64) error {
+func (m *MockAnySyncClient) SetAccountFileLimits(_ context.Context, _ string, _ uint64) error {
 	return nil
 }
 
@@ -397,7 +397,7 @@ func NewMockSpaceStore() *MockSpaceStore {
 }
 
 // GetUserSpace implements SpaceStore.GetUserSpace
-func (s *MockSpaceStore) GetUserSpace(ctx context.Context, userAID string) (*anysync.Space, error) {
+func (s *MockSpaceStore) GetUserSpace(_ context.Context, userAID string) (*anysync.Space, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -413,7 +413,7 @@ func (s *MockSpaceStore) GetUserSpace(ctx context.Context, userAID string) (*any
 }
 
 // SaveSpace implements SpaceStore.SaveSpace
-func (s *MockSpaceStore) SaveSpace(ctx context.Context, space *anysync.Space) error {
+func (s *MockSpaceStore) SaveSpace(_ context.Context, space *anysync.Space) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -426,7 +426,7 @@ func (s *MockSpaceStore) SaveSpace(ctx context.Context, space *anysync.Space) er
 }
 
 // ListAllSpaces implements SpaceStore.ListAllSpaces
-func (s *MockSpaceStore) ListAllSpaces(ctx context.Context) ([]*anysync.Space, error) {
+func (s *MockSpaceStore) ListAllSpaces(_ context.Context) ([]*anysync.Space, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

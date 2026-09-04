@@ -118,21 +118,21 @@ func setupChatTestEnv(t *testing.T) *chatTestEnv {
 	// Generate and persist key sets for both spaces
 	communityKeys, err := anysync.GenerateSpaceKeySet()
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("generating community keys: %v", err)
 	}
 	if err := anysync.PersistSpaceKeySet(tmpDir, communitySpaceID, communityKeys); err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("persisting community keys: %v", err)
 	}
 
 	roKeys, err := anysync.GenerateSpaceKeySet()
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("generating readonly keys: %v", err)
 	}
 	if err := anysync.PersistSpaceKeySet(tmpDir, roSpaceID, roKeys); err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("persisting readonly keys: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func setupChatTestEnv(t *testing.T) *chatTestEnv {
 
 	// Create user identity
 	userIdentity := identity.New(tmpDir)
-	userIdentity.SetIdentity("ETEST_CHAT_USER01", "test-mnemonic")
+	_ = userIdentity.SetIdentity("ETEST_CHAT_USER01", "test-mnemonic")
 
 	// Create event broker
 	eventBroker := NewEventBroker()
@@ -182,7 +182,7 @@ func setupChatTestEnv(t *testing.T) *chatTestEnv {
 	chatHandler.RegisterRoutes(mux)
 
 	cleanup := func() {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	return &chatTestEnv{
@@ -297,7 +297,7 @@ func TestChat_GetChannel(t *testing.T) {
 	}
 
 	var createResp map[string]interface{}
-	json.NewDecoder(createW.Body).Decode(&createResp)
+	_ = json.NewDecoder(createW.Body).Decode(&createResp)
 	channelID := createResp["channelId"].(string)
 
 	// Get the channel
@@ -334,7 +334,7 @@ func TestChat_UpdateChannel(t *testing.T) {
 	env.mux.ServeHTTP(createW, createReq)
 
 	var createResp map[string]interface{}
-	json.NewDecoder(createW.Body).Decode(&createResp)
+	_ = json.NewDecoder(createW.Body).Decode(&createResp)
 	channelID := createResp["channelId"].(string)
 
 	// Update channel
@@ -354,7 +354,7 @@ func TestChat_UpdateChannel(t *testing.T) {
 	env.mux.ServeHTTP(getW, getReq)
 
 	var channelResp ChannelResponse
-	json.NewDecoder(getW.Body).Decode(&channelResp)
+	_ = json.NewDecoder(getW.Body).Decode(&channelResp)
 
 	if channelResp.Name != "after-update" {
 		t.Errorf("expected name 'after-update', got %s", channelResp.Name)
@@ -376,7 +376,7 @@ func TestChat_ArchiveChannel(t *testing.T) {
 	env.mux.ServeHTTP(createW, createReq)
 
 	var createResp map[string]interface{}
-	json.NewDecoder(createW.Body).Decode(&createResp)
+	_ = json.NewDecoder(createW.Body).Decode(&createResp)
 	channelID := createResp["channelId"].(string)
 
 	// Archive channel
@@ -389,7 +389,7 @@ func TestChat_ArchiveChannel(t *testing.T) {
 	}
 
 	var archiveResp map[string]interface{}
-	json.NewDecoder(deleteW.Body).Decode(&archiveResp)
+	_ = json.NewDecoder(deleteW.Body).Decode(&archiveResp)
 	if archiveResp["archived"] != true {
 		t.Error("expected archived=true")
 	}
@@ -405,7 +405,7 @@ func TestChat_ArchiveChannel(t *testing.T) {
 	}
 
 	var channelResp ChannelResponse
-	json.NewDecoder(getW.Body).Decode(&channelResp)
+	_ = json.NewDecoder(getW.Body).Decode(&channelResp)
 	if !channelResp.IsArchived {
 		t.Error("expected isArchived=true on GetChannel after archive")
 	}
@@ -425,7 +425,7 @@ func createTestChannel(t *testing.T, env *chatTestEnv, name string) string {
 		t.Fatalf("failed to create channel: %d %s", w.Code, w.Body.String())
 	}
 	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 	return resp["channelId"].(string)
 }
 
@@ -446,7 +446,7 @@ func TestChat_SendMessage(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp["success"] != true {
 		t.Errorf("expected success=true, got %v", resp["success"])
 	}
@@ -500,7 +500,7 @@ func TestChat_ListMessages(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 
 	count, ok := resp["count"].(float64)
 	if !ok || count < 2 {
@@ -520,7 +520,7 @@ func sendTestMessage(t *testing.T, env *chatTestEnv, channelID, content string) 
 		t.Fatalf("failed to send message: %d %s", w.Code, w.Body.String())
 	}
 	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 	return resp["messageId"].(string)
 }
 
@@ -543,7 +543,7 @@ func TestChat_EditMessage(t *testing.T) {
 	}
 
 	var editResp map[string]interface{}
-	json.NewDecoder(editW.Body).Decode(&editResp)
+	_ = json.NewDecoder(editW.Body).Decode(&editResp)
 
 	if editResp["editedAt"] == nil || editResp["editedAt"] == "" {
 		t.Error("expected non-empty editedAt")
@@ -563,7 +563,7 @@ func TestChat_EditMessage_WrongOwner(t *testing.T) {
 	messageID := sendTestMessage(t, env, channelID, "My message")
 
 	// Switch identity to a different user
-	env.userIdentity.SetIdentity("EOTHER_USER_999", "other-mnemonic")
+	_ = env.userIdentity.SetIdentity("EOTHER_USER_999", "other-mnemonic")
 
 	// Try to edit — should fail with 403
 	editBody := `{"content":"Hacked!"}`
@@ -594,7 +594,7 @@ func TestChat_DeleteMessage(t *testing.T) {
 	}
 
 	var deleteResp map[string]interface{}
-	json.NewDecoder(deleteW.Body).Decode(&deleteResp)
+	_ = json.NewDecoder(deleteW.Body).Decode(&deleteResp)
 
 	if deleteResp["deleted"] != true {
 		t.Error("expected deleted=true")
@@ -630,7 +630,7 @@ func TestChat_MessageThread(t *testing.T) {
 	}
 
 	var threadResp map[string]interface{}
-	json.NewDecoder(threadW.Body).Decode(&threadResp)
+	_ = json.NewDecoder(threadW.Body).Decode(&threadResp)
 
 	count := threadResp["count"].(float64)
 	if count != 2 {
@@ -661,7 +661,7 @@ func TestChat_AddReaction(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 
 	if resp["success"] != true {
 		t.Errorf("expected success=true, got %v", resp["success"])
@@ -732,7 +732,7 @@ func TestChat_RemoveReaction(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.NewDecoder(removeW.Body).Decode(&resp)
+	_ = json.NewDecoder(removeW.Body).Decode(&resp)
 
 	if resp["success"] != true {
 		t.Errorf("expected success=true, got %v", resp["success"])
@@ -764,7 +764,7 @@ func TestChat_SSEEvents(t *testing.T) {
 	}
 
 	var createResp map[string]interface{}
-	json.NewDecoder(createW.Body).Decode(&createResp)
+	_ = json.NewDecoder(createW.Body).Decode(&createResp)
 	channelID := createResp["channelId"].(string)
 
 	// Check channel creation event

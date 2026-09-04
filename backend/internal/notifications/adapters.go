@@ -1,3 +1,5 @@
+// Package notifications delivers in-app (SSE) and email notifications for
+// governance, contribution, and proposal lifecycle events.
 package notifications
 
 import (

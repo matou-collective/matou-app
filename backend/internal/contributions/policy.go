@@ -46,11 +46,11 @@ func (p *RolePolicy) RoleGrants(roleID string) []Capability {
 	return p.Grants[roleID]
 }
 
-// HasCapability reports whether any of userRoles holds cap under this policy.
-func (p *RolePolicy) HasCapability(userRoles []Role, cap Capability) bool {
+// HasCapability reports whether any of userRoles holds capVal under this policy.
+func (p *RolePolicy) HasCapability(userRoles []Role, capVal Capability) bool {
 	for _, r := range userRoles {
 		for _, c := range p.Grants[string(r)] {
-			if c == cap {
+			if c == capVal {
 				return true
 			}
 		}
@@ -71,11 +71,11 @@ func (p *RolePolicy) HasCustomRole(roleID string) bool {
 // CanPerformActionWithPolicy is the pure policy check: action → capability →
 // grants. Unknown actions are always denied.
 func CanPerformActionWithPolicy(p *RolePolicy, userRoles []Role, action Action) bool {
-	cap, ok := ActionCapability(action)
+	capVal, ok := ActionCapability(action)
 	if !ok {
 		return false
 	}
-	return p.HasCapability(userRoles, cap)
+	return p.HasCapability(userRoles, capVal)
 }
 
 // baseCaps are granted to every builtin role — they cover exactly the

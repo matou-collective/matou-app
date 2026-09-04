@@ -1,3 +1,5 @@
+// Package email sends transactional emails (invites, booking confirmations,
+// registration notifications) via direct SMTP or a config-server relay.
 package email
 
 import (
@@ -87,7 +89,7 @@ func (s *Sender) sendViaRelay(to, subject, htmlBody string) error {
 	if err != nil {
 		return fmt.Errorf("relay request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		Success bool   `json:"success"`
@@ -168,11 +170,6 @@ func (s *Sender) SendBookingConfirmation(to, name string, startTime time.Time, d
 	}
 
 	return nil
-}
-
-// generateICS creates an ICS calendar event
-func (s *Sender) generateICS(startTime, endTime time.Time, attendeeName string) string {
-	return s.generateICSWithFrom(startTime, endTime, attendeeName, s.from)
 }
 
 // generateICSWithFrom creates an ICS calendar event with a specific organizer email
@@ -303,10 +300,10 @@ func (s *Sender) sendMailFromMulti(addr, from string, recipients []string, msg [
 
 	c, err := smtp.NewClient(conn, s.host)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("creating SMTP client: %w", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// STARTTLS with skip-verify for local relay's self-signed cert
 	if ok, _ := c.Extension("STARTTLS"); ok {
@@ -326,52 +323,6 @@ func (s *Sender) sendMailFromMulti(addr, from string, recipients []string, msg [
 		if err := c.Rcpt(rcpt); err != nil {
 			return fmt.Errorf("RCPT TO %s: %w", rcpt, err)
 		}
-	}
-
-	w, err := c.Data()
-	if err != nil {
-		return fmt.Errorf("DATA: %w", err)
-	}
-	if _, err := w.Write(msg); err != nil {
-		return fmt.Errorf("writing message: %w", err)
-	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("closing message: %w", err)
-	}
-
-	return c.Quit()
-}
-
-// sendMailFrom connects to the SMTP server and sends the message with a specific from address
-func (s *Sender) sendMailFrom(addr, from, to string, msg []byte) error {
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("connecting to SMTP server: %w", err)
-	}
-
-	c, err := smtp.NewClient(conn, s.host)
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("creating SMTP client: %w", err)
-	}
-	defer c.Close()
-
-	// STARTTLS with skip-verify for local relay's self-signed cert
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		tlsConfig := &tls.Config{
-			ServerName:         s.host,
-			InsecureSkipVerify: true,
-		}
-		if err := c.StartTLS(tlsConfig); err != nil {
-			return fmt.Errorf("STARTTLS: %w", err)
-		}
-	}
-
-	if err := c.Mail(from); err != nil {
-		return fmt.Errorf("MAIL FROM: %w", err)
-	}
-	if err := c.Rcpt(to); err != nil {
-		return fmt.Errorf("RCPT TO: %w", err)
 	}
 
 	w, err := c.Data()
@@ -436,10 +387,10 @@ func (s *Sender) sendMail(addr, to string, msg []byte) error {
 
 	c, err := smtp.NewClient(conn, s.host)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("creating SMTP client: %w", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// STARTTLS with skip-verify for local relay's self-signed cert
 	if ok, _ := c.Extension("STARTTLS"); ok {

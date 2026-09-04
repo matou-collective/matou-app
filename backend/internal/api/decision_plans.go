@@ -203,7 +203,7 @@ func (h *DecisionPlansHandler) HandleTransition(w http.ResponseWriter, r *http.R
 			}
 		}
 		if notifType != "" && recipientID != "" {
-			h.notifier.Notify(&ContribNotification{
+			_ = h.notifier.Notify(&ContribNotification{
 				Type:        notifType,
 				RecipientID: recipientID,
 				Title:       title,

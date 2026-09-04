@@ -1,3 +1,5 @@
+// Package config loads and validates backend configuration, including
+// environment-specific overrides and any-sync client settings.
 package config
 
 import (

@@ -207,7 +207,7 @@ func (m *NoticeTreeManager) UpdateNoticeState(ctx context.Context, spaceID, noti
 	// Extract current state from fields
 	var currentState string
 	if v, ok := state.Fields["state"]; ok {
-		json.Unmarshal(v, &currentState)
+		_ = json.Unmarshal(v, &currentState)
 	}
 
 	// Build update change
@@ -1128,18 +1128,18 @@ func stateToReaction(state *ObjectState, treeID string) *NoticeReactionPayload {
 
 func getStringField(fields map[string]json.RawMessage, key string, target *string) {
 	if v, ok := fields[key]; ok {
-		json.Unmarshal(v, target)
+		_ = json.Unmarshal(v, target)
 	}
 }
 
 func getBoolField(fields map[string]json.RawMessage, key string, target *bool) {
 	if v, ok := fields[key]; ok {
-		json.Unmarshal(v, target)
+		_ = json.Unmarshal(v, target)
 	}
 }
 
 func getIntField(fields map[string]json.RawMessage, key string, target *int) {
 	if v, ok := fields[key]; ok {
-		json.Unmarshal(v, target)
+		_ = json.Unmarshal(v, target)
 	}
 }

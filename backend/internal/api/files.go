@@ -65,7 +65,7 @@ func (h *FilesHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	contentType := header.Header.Get("Content-Type")
 
@@ -165,12 +165,12 @@ func (h *FilesHandler) HandleDownload(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	_, _ = io.Copy(w, reader)
 }
 
 // uploadBase64Avatar decodes base64-encoded image data and uploads it to the
