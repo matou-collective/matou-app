@@ -2109,7 +2109,7 @@ func setupSubmittedContribution(t *testing.T) (*Service, context.Context, *Contr
 	}
 	svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
 	c, _ = svc.AssignContributor(ctx, "space-1", c.ID, "contributor-1")
-	c, err = svc.SubmitEvidence(ctx, "space-1", c.ID, SubmitEvidenceRequest{
+	c, err = svc.SubmitEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
 		CompletionNotes: "did the thing",
 		EvidenceURLs:    []string{"https://example.com/1"},
 	})

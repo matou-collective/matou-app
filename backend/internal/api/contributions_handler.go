@@ -167,7 +167,7 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				return
 			case "sign-off":
 				if r.Method == http.MethodPost {
-					h.withRBAC(contributions.ActionSignOffContribution, h.HandleSignOff)(w, r)
+					h.withProjectRBAC(contributions.ActionSignOffContribution, id, h.HandleSignOff)(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -188,14 +188,14 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 				return
 			case "archive":
 				if r.Method == http.MethodPost {
-					h.withRBAC(contributions.ActionArchiveContribution, h.HandleArchive)(w, r)
+					h.withProjectRBAC(contributions.ActionArchiveContribution, id, h.HandleArchive)(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "unassign":
 				if r.Method == http.MethodPost {
-					h.withRBAC(contributions.ActionUnassignContribution, h.HandleUnassign)(w, r)
+					h.withProjectRBAC(contributions.ActionUnassignContribution, id, h.HandleUnassign)(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -233,6 +233,24 @@ func (h *ContributionsHandler) withRBAC(action contributions.Action, handler htt
 		return handler
 	}
 	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
+// withProjectRBAC applies project-scoped RBAC for actions whose authorisation
+// depends on the caller's role on the contribution's OWNING project (sign-off,
+// archive, unassign). The target project is resolved by loading the contribution
+// → its project_id. When roleLookup is nil (tests), the handler runs directly.
+func (h *ContributionsHandler) withProjectRBAC(action contributions.Action, contribID string, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	resolve := func(r *http.Request, spaceID string) (string, error) {
+		c, err := h.service.GetContribution(r.Context(), spaceID, contribID)
+		if err != nil {
+			return "", err
+		}
+		return c.ProjectID, nil
+	}
+	return RBACMiddleware(h.roleLookup, RequireProjectAction(action, h.service, h.spaceManager, resolve, handler))
 }
 
 // HandleCreate handles POST /api/v1/contributions
@@ -803,7 +821,7 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 		return
 	}
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
-	contrib, err := h.service.SubmitEvidence(r.Context(), spaceID, id, req)
+	contrib, err := h.service.SubmitEvidence(r.Context(), spaceID, id, GetUserAID(r), req)
 	if err != nil {
 		log.Printf("[Contributions] SubmitEvidence failed for %s: %v", id, err)
 		var blockingErr *contributions.BlockingChildrenError
@@ -814,7 +832,11 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 			})
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		status := http.StatusBadRequest
+		if errors.Is(err, contributions.ErrNotEvidenceOwner) {
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 	log.Printf("[Contributions] evidence submitted for %s", id)

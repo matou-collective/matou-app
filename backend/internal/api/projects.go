@@ -67,26 +67,18 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 			switch parts[1] {
 			case "assign-role":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionAssignProjectRole, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleAssignRole(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionAssignProjectRole, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleAssignRole(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "link-proposal":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionLinkProposal, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleLinkProposal(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionLinkProposal, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleLinkProposal(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -100,52 +92,36 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 				return
 			case "archive":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionArchiveProject, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleArchive(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionArchiveProject, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleArchive(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "submit-completion":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionSubmitProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleSubmitCompletion(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionSubmitProjectCompletion, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleSubmitCompletion(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "approve-completion":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionApproveProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleApproveCompletion(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionApproveProjectCompletion, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleApproveCompletion(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "reject-completion":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionRejectProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleRejectCompletion(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionRejectProjectCompletion, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleRejectCompletion(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
