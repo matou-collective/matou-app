@@ -41,12 +41,28 @@ fi
 
 echo "📝 Updating package.json version → $VERSION"
 
-# Update version using jq
-tmpfile=$(mktemp)
-jq ".version = \"$VERSION\"" package.json > "$tmpfile"
-mv "$tmpfile" package.json
+# Bump the version in every package.json that carries the app version.
+# electron-builder reads the version from frontend/package.json, so it MUST be
+# bumped in lock-step with the root package.json — otherwise installer
+# filenames carry the previous version (see issue #359).
+PACKAGE_FILES=(package.json frontend/package.json)
 
-git add package.json
+for pkg in "${PACKAGE_FILES[@]}"; do
+  tmpfile=$(mktemp)
+  jq ".version = \"$VERSION\"" "$pkg" > "$tmpfile"
+  mv "$tmpfile" "$pkg"
+done
+
+# Guard: every package.json must now agree on the version.
+for pkg in "${PACKAGE_FILES[@]}"; do
+  pkg_version=$(jq -r .version "$pkg")
+  if [ "$pkg_version" != "$VERSION" ]; then
+    echo "❌ $pkg version is $pkg_version, expected $VERSION"
+    exit 1
+  fi
+done
+
+git add "${PACKAGE_FILES[@]}"
 git commit -m "chore(release): v$VERSION"
 
 echo "🏷️  Creating tag $TAG"
