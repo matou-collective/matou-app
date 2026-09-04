@@ -67,12 +67,13 @@ test.describe('Roles overview table (#319)', () => {
     await snap(adminPage, 'overview-new-custom-role');
 
     // Toggle a Proposals capability (Governance) ON for the custom role in the
-    // community feature table, then confirm the overview count rose — no save.
-    const communityTable = adminPage.locator('.roles-matrix.community-roles');
-    const capHeaders = await communityTable.locator('thead th').allTextContents();
+    // Proposals feature table (#315 owns that column now), then confirm the
+    // overview count rose — no save.
+    const proposalsTable = adminPage.locator('.roles-matrix.proposals-table');
+    const capHeaders = await proposalsTable.locator('thead th').allTextContents();
     const govCol = capHeaders.findIndex((h) => h.trim().startsWith('Governance'));
     expect(govCol).toBeGreaterThan(0);
-    const customRow = communityTable.locator('tbody tr', { hasText: CUSTOM_ROLE_NAME });
+    const customRow = proposalsTable.locator('tbody tr', { hasText: CUSTOM_ROLE_NAME });
     await customRow.locator('td').nth(govCol).locator('.q-toggle').click();
 
     await expect(proposalsCell.locator('.overview-count')).toHaveText(/^1\//);
