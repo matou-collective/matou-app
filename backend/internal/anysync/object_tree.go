@@ -107,6 +107,65 @@ func (m *ObjectTreeManager) CollectRoleHistories(ctx context.Context, spaceID st
 	return out, nil
 }
 
+// CollectProjectAssignments reads every Project and Contribution object in
+// spaceID and returns each project's role assignments — its lead/steward AIDs
+// and the set of AIDs assigned as a contributor on any of its contributions —
+// for the project-scoped peer-side write rules (issue #166). It is the single
+// listing pass the write-rule refresher uses to feed a ProjectAssignmentStore.
+func (m *ObjectTreeManager) CollectProjectAssignments(ctx context.Context, spaceID string) (map[string]ProjectAssignment, error) {
+	out := make(map[string]ProjectAssignment)
+
+	projects, err := m.ReadObjectsByType(ctx, spaceID, TypeProject)
+	if err != nil {
+		return nil, fmt.Errorf("reading projects: %w", err)
+	}
+	for _, p := range projects {
+		var pd struct {
+			ID         string `json:"id"`
+			LeadAID    string `json:"project_lead_id"`
+			StewardAID string `json:"project_steward_id"`
+		}
+		if err := json.Unmarshal(p.Data, &pd); err != nil {
+			continue
+		}
+		id := pd.ID
+		if id == "" {
+			id = p.ID
+		}
+		if id == "" {
+			continue
+		}
+		a := out[id]
+		a.LeadAID = pd.LeadAID
+		a.StewardAID = pd.StewardAID
+		out[id] = a
+	}
+
+	contribs, err := m.ReadObjectsByType(ctx, spaceID, TypeContribution)
+	if err != nil {
+		return nil, fmt.Errorf("reading contributions: %w", err)
+	}
+	for _, c := range contribs {
+		var cd struct {
+			ProjectID      string `json:"project_id"`
+			ContributorAID string `json:"assigned_contributor"`
+		}
+		if err := json.Unmarshal(c.Data, &cd); err != nil {
+			continue
+		}
+		if cd.ProjectID == "" || cd.ContributorAID == "" {
+			continue
+		}
+		a := out[cd.ProjectID]
+		if a.Contributors == nil {
+			a.Contributors = make(map[string]bool)
+		}
+		a.Contributors[cd.ContributorAID] = true
+		out[cd.ProjectID] = a
+	}
+	return out, nil
+}
+
 // NewObjectTreeManager creates a new ObjectTreeManager backed by UnifiedTreeManager.
 func NewObjectTreeManager(client AnySyncClient, keyManager *PeerKeyManager, treeManager *UnifiedTreeManager) *ObjectTreeManager {
 	return &ObjectTreeManager{

@@ -781,6 +781,43 @@ func (s *Service) GetProject(ctx context.Context, spaceID, projectID string) (*P
 	return &p, nil
 }
 
+// ProjectRoles returns the per-project roles the given AID holds on projectID,
+// resolved from actual assignments in synced state:
+//   - project_lead     when the AID is the project's assigned lead
+//   - project_steward  when the AID is the project's assigned steward
+//   - contributor      when the AID is the assigned contributor on any
+//     contribution in the project (an accepted/assigned grant)
+//
+// It is the ProjectRoleLookup backing project-scoped RBAC (see
+// contributions.ProjectScopedRoles and the api RequireProjectAction middleware):
+// a project role is honoured only when it is an actual assignment on the target
+// project, never when it merely comes from a community credential bundle. An
+// unresolvable project simply yields no project roles (the caller then falls
+// back to their community-scope grants).
+func (s *Service) ProjectRoles(ctx context.Context, spaceID, projectID, aid string) []Role {
+	if projectID == "" || aid == "" {
+		return nil
+	}
+	var roles []Role
+	if proj, err := s.GetProject(ctx, spaceID, projectID); err == nil && proj != nil {
+		if proj.ProjectLeadID == aid {
+			roles = append(roles, RoleProjectLead)
+		}
+		if proj.ProjectStewardID == aid {
+			roles = append(roles, RoleProjectSteward)
+		}
+	}
+	if contribs, err := s.ListContributionsByProject(ctx, spaceID, projectID); err == nil {
+		for _, c := range contribs {
+			if c != nil && c.AssignedContributorID == aid {
+				roles = append(roles, RoleContributor)
+				break
+			}
+		}
+	}
+	return roles
+}
+
 func (s *Service) ListProjects(ctx context.Context, spaceID string) ([]*Project, error) {
 	raw, err := s.store.List(spaceID, "project")
 	if err != nil {
@@ -1821,10 +1858,19 @@ func (s *Service) AcceptOffer(ctx context.Context, spaceID, contributionID, user
 
 // SubmitEvidence records evidence for an assigned contribution and transitions it to needs_review.
 // All child contributions must be signed_off before the parent can submit evidence.
-func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID string, req SubmitEvidenceRequest) (*Contribution, error) {
+func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID, actorAID string, req SubmitEvidenceRequest) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contributionID)
 	if err != nil {
 		return nil, fmt.Errorf("contribution not found: %w", err)
+	}
+	// Resource-level ownership: only the contribution's assigned contributor may
+	// submit evidence for it (the project `contributor` grant is scoped to their
+	// own submission — see docs/RBAC.md). Mirrors EditEvidence; an unassigned
+	// member or a contributor assigned to a DIFFERENT contribution is 403'd here
+	// rather than by the community-wide RBAC action. actorAID may be "" only in
+	// unit tests that bypass the HTTP layer with no signed identity.
+	if actorAID != "" && (c.AssignedContributorID == "" || c.AssignedContributorID != actorAID) {
+		return nil, ErrNotEvidenceOwner
 	}
 	if c.Status != ContribAssigned {
 		return nil, fmt.Errorf("contribution must be assigned to submit evidence, current: %s", c.Status)
@@ -1884,9 +1930,9 @@ func (s *Service) SubmitEvidence(ctx context.Context, spaceID, contributionID st
 	return c, nil
 }
 
-// ErrNotEvidenceOwner is returned by EditEvidence when the caller is not the
-// contribution's assigned contributor. Handlers map it to 403.
-var ErrNotEvidenceOwner = errors.New("only the assigned contributor can edit their submission")
+// ErrNotEvidenceOwner is returned by SubmitEvidence and EditEvidence when the
+// caller is not the contribution's assigned contributor. Handlers map it to 403.
+var ErrNotEvidenceOwner = errors.New("only the assigned contributor can submit or edit their submission")
 
 // EditEvidenceResult is what EditEvidence returns: the updated contribution
 // plus the state it replaced, which the handler needs for notifications

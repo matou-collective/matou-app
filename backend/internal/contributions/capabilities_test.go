@@ -19,10 +19,13 @@ func TestEveryActionHasExactlyOneCapability(t *testing.T) {
 		ActionSubmitEvidence, ActionReviewContribution, ActionSignOffPlan,
 		ActionApproveSubContrib,
 		ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal,
+		ActionCreateProposal, ActionSubmitProposal,
 		ActionArchiveProject, ActionArchiveMilestone, ActionArchiveContribution,
 		ActionUnassignContribution, ActionEditMilestone,
 		ActionSubmitProjectCompletion, ActionApproveProjectCompletion, ActionRejectProjectCompletion,
 		ActionInitMemberProfile, ActionChangeMemberRole, ActionRemoveMember, ActionManageRolePolicy,
+		ActionSendMessage, ActionCreateChannel, ActionEditChannel, ActionArchiveChannel,
+		ActionSetChannelRoles, ActionModerateMessage,
 	}
 	for _, a := range allActions {
 		count := 0
@@ -93,12 +96,11 @@ func TestAllCapabilitiesStable(t *testing.T) {
 	}
 	// The remaining feature capabilities intentionally gate no action yet —
 	// grants can be configured ahead of the enforcement slices that wire them.
-	// The two community-settings capabilities ARE wired now (#318:
-	// open_community_settings → page-access check, manage_community_settings →
-	// save_org_config), so they are excluded here.
+	// Chat (#316), create_proposals (#315) and the community-settings
+	// capabilities (#318) are wired now and so are excluded from this set.
 	for _, c := range []Capability{
-		CapViewContributionAmounts, CapCreateProposals, CapSendMessages,
-		CapManageChannels, CapModerateMessages, CapPostNotices, CapManageNotices,
+		CapViewContributionAmounts,
+		CapPostNotices, CapManageNotices,
 	} {
 		if actions := CapabilityActions()[c]; len(actions) != 0 {
 			t.Errorf("%q should map to no actions yet, got %v", c, actions)
@@ -110,6 +112,16 @@ func TestAllCapabilitiesStable(t *testing.T) {
 	}
 	if got := CapabilityActions()[CapManageCommunitySettings]; len(got) != 1 || got[0] != ActionSaveOrgConfig {
 		t.Errorf("manage_community_settings should gate save_org_config, got %v", got)
+	}
+	// The chat capabilities are wired (#316).
+	for _, c := range []Capability{CapSendMessages, CapManageChannels, CapModerateMessages} {
+		if actions := CapabilityActions()[c]; len(actions) == 0 {
+			t.Errorf("%q should map to at least one action (#316)", c)
+		}
+	}
+	// create_proposals is wired to the proposal authoring actions (#315).
+	if actions := CapabilityActions()[CapCreateProposals]; len(actions) != 2 {
+		t.Errorf("create_proposals should gate the create/submit actions, got %v", actions)
 	}
 	// Every capability metadata entry corresponds to a toggleable capability and
 	// carries a group and scope.
