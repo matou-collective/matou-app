@@ -72,6 +72,28 @@ export const useRolePolicyStore = defineStore('rolePolicy', {
       // page still functions; the split simply won't disable any column.
       return (cap: string) => set.size === 0 || set.has(cap);
     },
+    // Feature areas in display order, each with its capability IDs — the
+    // read-only overview (#319) renders one column per group and the per-feature
+    // tables (#312) one table per group. Derived from the server capabilityMeta,
+    // preserving its order.
+    featureGroups(state): { name: string; capabilities: string[] }[] {
+      const order: string[] = [];
+      const byGroup: Record<string, string[]> = {};
+      for (const m of state.capabilityMeta) {
+        if (!byGroup[m.group]) {
+          byGroup[m.group] = [];
+          order.push(m.group);
+        }
+        byGroup[m.group]!.push(m.id);
+      }
+      return order.map((name) => ({ name, capabilities: byGroup[name] ?? [] }));
+    },
+    // Human label for a capability, from the server metadata (falls back to the
+    // raw id for an unknown/legacy capability).
+    capabilityLabel(state): (cap: string) => string {
+      const labels = new Map(state.capabilityMeta.map((m) => [m.id, m.displayName]));
+      return (cap: string) => labels.get(cap) ?? cap;
+    },
     // Roles partitioned by scope for the two tables. A missing scope is
     // treated as community (matches the backend's NormalizeScope default).
     communityRoles(state): RoleDef[] {
