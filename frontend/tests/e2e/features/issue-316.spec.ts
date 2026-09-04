@@ -144,11 +144,20 @@ test.describe.serial('Chat RBAC + Chat permission table (#316)', () => {
     });
     expect(before.status).toBe(201);
 
-    // Read the live policy and strip send_messages from founding_member.
+    // Read the live policy and strip send_messages from EVERY role: the admin's
+    // Founding Member credential maps to member + operations_steward +
+    // founding_member (+ project roles), and send_messages is default-all, so
+    // stripping it from founding_member alone would leave the member grant in
+    // force and the send would still succeed.
     const policyRes = await fetch(`${API}/role-policy`, { headers: AUTH });
     const { policy } = await policyRes.json();
-    const original: string[] = [...(policy.grants.founding_member ?? [])];
-    const stripped = original.filter((c) => c !== 'send_messages');
+    const originalGrants: Record<string, string[]> = { ...policy.grants };
+    const strippedGrants = Object.fromEntries(
+      Object.entries(originalGrants).map(([role, caps]) => [
+        role,
+        (caps as string[]).filter((c) => c !== 'send_messages'),
+      ]),
+    );
 
     try {
       const put = await fetch(`${API}/role-policy`, {
@@ -157,7 +166,7 @@ test.describe.serial('Chat RBAC + Chat permission table (#316)', () => {
         body: JSON.stringify({
           version: policy.version,
           roles: policy.roles,
-          grants: { ...policy.grants, founding_member: stripped },
+          grants: strippedGrants,
         }),
       });
       expect(put.ok).toBe(true);
@@ -170,7 +179,7 @@ test.describe.serial('Chat RBAC + Chat permission table (#316)', () => {
       });
       expect(after.status).toBe(403);
     } finally {
-      // Restore the grant so the shared admin policy is left as we found it.
+      // Restore the grants so the shared admin policy is left as we found it.
       const latest = await (await fetch(`${API}/role-policy`, { headers: AUTH })).json();
       await fetch(`${API}/role-policy`, {
         method: 'PUT',
@@ -178,7 +187,7 @@ test.describe.serial('Chat RBAC + Chat permission table (#316)', () => {
         body: JSON.stringify({
           version: latest.policy.version,
           roles: latest.policy.roles,
-          grants: { ...latest.policy.grants, founding_member: original },
+          grants: originalGrants,
         }),
       });
     }
