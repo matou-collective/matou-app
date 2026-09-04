@@ -221,7 +221,21 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 					"Ensure the config server is running at %s", fetchErr, opts.ConfigServerURL)
 			}
 		} else {
-			clientConfigHandler.SetRaw(rawConfig)
+			// The copy served to the Capacitor WebView gets loopback proxies
+			// for the KERI endpoints — the WebView's cleartext policy blocks
+			// plain-http to any non-loopback host, so signify-ts could never
+			// reach KERIA on a device (#368). Backend-internal consumers keep
+			// the original body. Proxy failure is not fatal: serve the
+			// original and let desktop platforms (which never hit the
+			// endpoint) carry on.
+			servedConfig := rawConfig
+			if rewritten, proxyClosers, proxyErr := api.StartKERIConfigProxies(rawConfig); proxyErr != nil {
+				_, _ = fmt.Fprintf(out, "  KERI loopback proxies not started (%v) — serving config unproxied\n", proxyErr)
+			} else {
+				servedConfig = rewritten
+				closers = append(closers, proxyClosers...)
+			}
+			clientConfigHandler.SetRaw(servedConfig)
 			configPushRelayURL = pushRelayURLFromConfig(rawConfig)
 			fmt.Fprintf(out, "  Config saved to %s\n", anysyncConfigPath)
 		}
