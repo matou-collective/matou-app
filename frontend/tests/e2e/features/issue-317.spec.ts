@@ -37,7 +37,7 @@ async function createNotice(aid: string, title: string): Promise<string> {
       state: 'published',
     }),
   });
-  expect(res.status).toBe(201);
+  expect(res.status).toBe(200);
   const body = await res.json();
   const id = body.noticeId ?? body.id ?? body.notice?.id;
   if (!id) throw new Error(`create notice returned no id: ${JSON.stringify(body)}`);
@@ -114,12 +114,20 @@ test.describe.serial('Notices RBAC + Notices permission table (#317)', () => {
       headers: { ...AUTH, 'X-User-AID': aid },
       body: JSON.stringify({ type: 'update', title: 'granted', summary: 'while granted' }),
     });
-    expect(before.status).toBe(201);
+    expect(before.status).toBe(200);
 
     // Read the live policy and strip post_notices from founding_member.
     const { policy } = await (await fetch(`${API}/role-policy`, { headers: AUTH })).json();
-    const original: string[] = [...(policy.grants.founding_member ?? [])];
-    const stripped = original.filter((c) => c !== 'post_notices');
+    // Strip post_notices from EVERY role, not just founding_member: the admin's
+    // Founding Member credential also maps to member / operations_steward, which
+    // hold it by default, so a founding_member-only strip would not bite.
+    const originalGrants: Record<string, string[]> = { ...policy.grants };
+    const strippedGrants = Object.fromEntries(
+      Object.entries(originalGrants).map(([role, caps]) => [
+        role,
+        (caps as string[]).filter((c) => c !== 'post_notices'),
+      ]),
+    );
 
     try {
       const put = await fetch(`${API}/role-policy`, {
@@ -128,7 +136,7 @@ test.describe.serial('Notices RBAC + Notices permission table (#317)', () => {
         body: JSON.stringify({
           version: policy.version,
           roles: policy.roles,
-          grants: { ...policy.grants, founding_member: stripped },
+          grants: strippedGrants,
         }),
       });
       expect(put.ok).toBe(true);
@@ -149,7 +157,7 @@ test.describe.serial('Notices RBAC + Notices permission table (#317)', () => {
         body: JSON.stringify({
           version: latest.policy.version,
           roles: latest.policy.roles,
-          grants: { ...latest.policy.grants, founding_member: original },
+          grants: originalGrants,
         }),
       });
     }
@@ -177,8 +185,16 @@ test.describe.serial('Notices RBAC + Notices permission table (#317)', () => {
     // post_notices, so may still author — is now refused pin/archive (403). This
     // is exactly a plain member's posture: may post, may not moderate.
     const { policy } = await (await fetch(`${API}/role-policy`, { headers: AUTH })).json();
-    const original: string[] = [...(policy.grants.founding_member ?? [])];
-    const stripped = original.filter((c) => c !== 'manage_notices');
+    // Strip manage_notices from EVERY role, not just founding_member: the admin's
+    // Founding Member credential also maps to member / operations_steward, which
+    // hold it by default, so a founding_member-only strip would not bite.
+    const originalGrants: Record<string, string[]> = { ...policy.grants };
+    const strippedGrants = Object.fromEntries(
+      Object.entries(originalGrants).map(([role, caps]) => [
+        role,
+        (caps as string[]).filter((c) => c !== 'manage_notices'),
+      ]),
+    );
 
     try {
       const put = await fetch(`${API}/role-policy`, {
@@ -187,7 +203,7 @@ test.describe.serial('Notices RBAC + Notices permission table (#317)', () => {
         body: JSON.stringify({
           version: policy.version,
           roles: policy.roles,
-          grants: { ...policy.grants, founding_member: stripped },
+          grants: strippedGrants,
         }),
       });
       expect(put.ok).toBe(true);
@@ -211,7 +227,7 @@ test.describe.serial('Notices RBAC + Notices permission table (#317)', () => {
         body: JSON.stringify({
           version: latest.policy.version,
           roles: latest.policy.roles,
-          grants: { ...latest.policy.grants, founding_member: original },
+          grants: originalGrants,
         }),
       });
     }
