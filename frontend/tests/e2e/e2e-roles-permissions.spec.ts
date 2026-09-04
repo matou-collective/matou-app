@@ -245,7 +245,10 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible({
       timeout: TIMEOUT.medium,
     });
-    await expect(adminPage.locator('.roles-matrix tbody tr', { hasText: CUSTOM_ROLE_NAME })).toBeVisible();
+    // Scope to the community table: the role now also appears in every feature table.
+    await expect(
+      adminPage.locator('.roles-matrix.community-roles tbody tr', { hasText: CUSTOM_ROLE_NAME }),
+    ).toBeVisible();
     await snap(adminPage, 'roles-page-after-reload');
 
     // Change Role modal: open a member's profile from the dashboard. Use the
