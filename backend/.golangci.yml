@@ -1,0 +1,16 @@
+# Go Standards linter config — mirrors the factory's linter set (OurCloud
+# .golangci.yml: errcheck, staticcheck, revive, govet, ineffassign, unused) in
+# golangci-lint v2 format. Run by .sandcastle/go-gate.sh (pre-push gate in the
+# sandbox image) and ci.yml. Issue #346.
+version: "2"
+run:
+  timeout: 5m
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - revive
+    - staticcheck
+    - unused

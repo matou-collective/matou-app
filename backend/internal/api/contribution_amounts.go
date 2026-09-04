@@ -1,4 +1,3 @@
-// backend/internal/api/contribution_amounts.go
 package api
 
 import (

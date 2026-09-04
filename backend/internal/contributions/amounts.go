@@ -1,4 +1,3 @@
-// backend/internal/contributions/amounts.go
 package contributions
 
 // Amount-visibility rules for contributions (#314). A contribution's monetary

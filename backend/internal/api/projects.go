@@ -71,10 +71,10 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 				if r.Method == http.MethodPost {
 					// The required capability depends on which role is being
 					// assigned (steward vs lead), which is only known after the
-					// body is parsed — so RBACMiddleware only resolves the
-					// caller's roles here and HandleAssignRole enforces the
-					// granular assign_project_steward / assign_project_lead
-					// capability (#314, replacing the coarse assign_project_role).
+					// body is parsed — so the route only resolves the caller's
+					// roles here and HandleAssignRole applies the project-scoped
+					// (#166) granular assign_project_steward / assign_project_lead
+					// check (#314, replacing the coarse assign_project_role).
 					if roleLookup != nil {
 						RBACMiddleware(roleLookup, func(w http.ResponseWriter, r *http.Request) {
 							h.HandleAssignRole(w, r, id)
@@ -88,13 +88,9 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 				return
 			case "link-proposal":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionLinkProposal, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleLinkProposal(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionLinkProposal, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleLinkProposal(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -113,52 +109,36 @@ func (h *ProjectsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 				return
 			case "archive":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionArchiveProject, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleArchive(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionArchiveProject, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleArchive(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "submit-completion":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionSubmitProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleSubmitCompletion(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionSubmitProjectCompletion, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleSubmitCompletion(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "approve-completion":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionApproveProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleApproveCompletion(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionApproveProjectCompletion, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleApproveCompletion(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			case "reject-completion":
 				if r.Method == http.MethodPost {
-					if roleLookup != nil {
-						RBACMiddleware(roleLookup, RequireAction(contributions.ActionRejectProjectCompletion, func(w http.ResponseWriter, r *http.Request) {
-							h.HandleRejectCompletion(w, r, id)
-						}))(w, r)
-					} else {
+					projectRBAC(roleLookup, contributions.ActionRejectProjectCompletion, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
 						h.HandleRejectCompletion(w, r, id)
-					}
+					})(w, r)
 					return
 				}
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -351,19 +331,25 @@ func (h *ProjectsHandler) HandleAssignRole(w http.ResponseWriter, r *http.Reques
 	// Enforce the granular assign capability for the role being assigned (#314):
 	// assigning the lead needs assign_project_lead, the steward needs
 	// assign_project_steward — a role granted only one may assign only that
-	// side. Skipped when RBAC is disabled (roleLookup nil, tests).
+	// side. The check is project-scoped (#166): a community-wide grant passes
+	// on every project, a project lead/steward grant only counts on THIS
+	// project. Skipped when RBAC is disabled (roleLookup nil, tests).
 	if h.roleLookup != nil {
 		action := contributions.ActionAssignProjectLead
 		if req.Role == "steward" {
 			action = contributions.ActionAssignProjectSteward
 		}
-		if !contributions.CanPerformAction(GetUserRoles(r), action) {
-			log.Printf("[Projects] assign %s denied for %s: requires %s", req.Role, GetUserAID(r), action)
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions to assign this project role"})
-			return
-		}
+		RequireProjectAction(action, h.service, h.spaceManager, staticProjectID(id), func(w http.ResponseWriter, r *http.Request) {
+			h.applyAssignRole(w, r, id, req.Role, req.UserID)
+		})(w, r)
+		return
 	}
+	h.applyAssignRole(w, r, id, req.Role, req.UserID)
+}
 
+// applyAssignRole persists the lead/steward assignment once the caller has been
+// authorised (or RBAC is disabled).
+func (h *ProjectsHandler) applyAssignRole(w http.ResponseWriter, r *http.Request, id, role, userID string) {
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
 	project, err := h.service.GetProject(r.Context(), spaceID, id)
 	if err != nil {
@@ -371,11 +357,11 @@ func (h *ProjectsHandler) HandleAssignRole(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	switch req.Role {
+	switch role {
 	case "lead":
-		project.ProjectLeadID = req.UserID
+		project.ProjectLeadID = userID
 	case "steward":
-		project.ProjectStewardID = req.UserID
+		project.ProjectStewardID = userID
 	}
 	project.UpdatedAt = time.Now()
 
@@ -385,7 +371,7 @@ func (h *ProjectsHandler) HandleAssignRole(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	log.Printf("[Projects] assigned %s to %s on project %s", req.Role, req.UserID, id)
+	log.Printf("[Projects] assigned %s to %s on project %s", role, userID, id)
 	writeJSON(w, http.StatusOK, project)
 }
 

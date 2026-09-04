@@ -34,6 +34,7 @@ Two facts frame every matrix below (details in [Role Model & Resolution](#role-m
 ## Contents
 
 - [Issue #17 enforcement (PR #28)](#issue-17-enforcement-pr-28)
+- [Issue #166 enforcement — project-scoped role resolution](#issue-166-enforcement--project-scoped-role-resolution-authoritative-delta)
 - [Role Model & Resolution](#role-model--resolution)
 - [Projects](#projects)
 - [Contributions Lifecycle](#contributions-lifecycle)
@@ -96,6 +97,26 @@ Everything else is 403. The frontend's `createOrUpdateProfile` now sends `X-User
 ### Fail-loud wiring
 
 Every `RegisterRoutes(mux, roleLookup)` calls `requireRoleLookup`, which `log.Fatalf`s when the lookup is nil outside `go test` (`testing.Testing()`). Handlers still treat a nil lookup as "RBAC disabled" so unit tests can call them directly, but the production server can no longer start with a guarded route silently fail-open.
+
+## Issue #166 enforcement — project-scoped role resolution (authoritative delta)
+
+Added 2026-09-02. **This section supersedes the "backend role checks are community-global, not project-scoped" caveat that appears in the older matrices below** (Contributions §Notes, Plans/Milestones §Notes). Lead/steward-tier actions are now authorised against the caller's role **on the target project**, in both the HTTP middleware and the peer-side write rules. Code: `backend/internal/contributions/project_roles.go` (scope + strip/union helpers), `backend/internal/contributions/service.go` (`ProjectRoles`), `backend/internal/api/rbac_project.go` (`RequireProjectAction` + `projectRBAC`), `backend/internal/anysync/write_rules.go` + `project_assignments.go` (peer-side), tests in `project_roles_test.go`, `rbac_project_test.go`, `write_rules_test.go`, e2e `frontend/tests/e2e/features/issue-166.spec.ts`.
+
+**How a project-scoped action resolves.** For the actions marked project-scoped in `projectScopedActions` (`project_roles.go`) — sign-off (contribution + plan), submit/approve/reject project completion, archive project/milestone/contribution, unassign, edit milestone, link proposal, assign project role — the middleware evaluates:
+
+> `communityRoles` (with per-project roles **stripped**) ∪ `projectRoles(targetProject)`
+
+against the policy. The target project is resolved from the route (`/projects/{id}/…`) or by loading the resource chain (contribution → `project_id`; milestone → plan → `project_id`; plan → `project_id`). `projectRoles(aid, project)` (`Service.ProjectRoles`) returns `project_lead` / `project_steward` from the project's `project_lead_id` / `project_steward_id` and `contributor` when the AID is the assigned contributor on any of the project's contributions.
+
+**Consequences.**
+
+- A project lead/steward on project A is **403'd on project B's** lead/steward-only routes, and passes on A.
+- A **credential-derived** `project_lead` / `project_steward` (e.g. a Technical Steward credential → `project_lead`, or a Community Steward → `project_steward` via `MapKERIRole`) no longer makes the holder lead/steward of *every* project: those roles are stripped before the union, so they count only when they are an actual assignment on the target project. `MapKERIRole` itself is unchanged — the stripping happens in the project-scoped check.
+- **Operations Steward / Founding Member keep their power on every project** because their community-scope grants (`operations_steward` / `founding_member`, which the policy grants the capabilities directly) survive the strip — they never depended on being an implicit project lead/steward.
+- **Evidence** (submit/edit) stays a community `contribute` capability but is gated at the resource level: only the contribution's assigned contributor may submit or edit its evidence (`Service.SubmitEvidence` / `EditEvidence` → `ErrNotEvidenceOwner` → 403). An unassigned member, or a contributor assigned to a *different* contribution, is 403'd.
+- Community-scope capabilities (member roles, proposal governance, rewards, role-policy management, comms) are **unchanged** — they keep evaluating against community roles only.
+
+**Signed-auth dependency.** Project-scoped enforcement is only meaningful when `X-User-AID` is trustworthy, i.e. under `MATOU_REQUIRE_SIGNED_AUTH=1` (see `docs/signed-auth.md`). With bare, unverified `X-User-AID` a caller can still claim any AID; the e2e config for this feature runs with signed auth enforced. The peer-side write rules' project scoping likewise activates on the proof path under enforcement (and on the interim role path when the author→AID binding resolves), falling back to the community-role gate when the project's assignments have not yet replicated — so no legitimate transition is newly rejected during sync lag.
 
 ## Role Model & Resolution
 
@@ -385,8 +406,8 @@ Columns are the contribution-system roles from `roles.go:8-19`. A user's single 
 - **Plan sign-off is not wired through RBAC** despite a restricted `ActionSignOffPlan` policy entry (`roles.go:129`). The handler comment admits it ("no RBAC middleware on this route", `implementation_plans.go:152`) and it accepts `user_id` from the request body (`implementation_plans.go:149-163`). Since contribution sign-off requires a signed-off plan (`service.go:1898-1912`), the sign-off chain's first gate is frontend-only.
 - **Create/edit/assign/register/comments/registrations endpoints have no backend role check at all**, and `POST /api/v1/contributions` requires no header whatsoever — this differs from `POST /api/v1/projects`, which is wired through `RBACMiddleware`+`RequireAction` (`projects.go:42`), though even there the `ActionCreateProject` policy entry is `allRoles`, so the projects gate only requires a resolvable role. Action constants `ActionCreateContribution`, `ActionCreateSubContrib`, `ActionAssignContribution`, `ActionRegisterInterest` exist in the policy table but are never wired to a route.
 - **Most wired actions are `allRoles`** (confirm, share, offer, accept-offer, submit-evidence, review, approve-sub), so the backend check reduces to "AID resolves to ≥1 role." The comment at `roles.go:98-99` documents this as intentional: project-level checks are delegated to the frontend.
-- **Backend role checks are community-global, not project-scoped.** `RequireAction` checks the caller's mapped roles only; per-project `project_lead_id` / `project_steward_id` matching happens exclusively in the frontend (`ContributionDetailPage.vue:310-318`, `useProjectPermissions.ts:16-30`). Any project_steward-role holder can sign off any project's contributions via the API.
-- **Submit-evidence does not verify the assignee** (`service.go:1755-1815`): any recognized member can submit evidence on someone else's assigned contribution; the assignee identity check exists only in `canSubmitEvidence` (frontend).
+- **~~Backend role checks are community-global, not project-scoped.~~** *Superseded by [Issue #166 enforcement](#issue-166-enforcement--project-scoped-role-resolution-authoritative-delta) (2026-09-02):* lead/steward-tier actions (sign-off, completion, archive, unassign, edit-milestone, link-proposal, assign-project-role) now resolve against the caller's role **on the target project** — `RequireProjectAction` evaluates `communityRoles`(project roles stripped) ∪ `projectRoles(project)`. A project_steward can no longer sign off contributions on a project they are not the steward of; a credential-derived `project_lead`/`project_steward` is not lead/steward of every project. Operations Steward / Founding Member still pass everywhere via their community-scope grants.
+- **~~Submit-evidence does not verify the assignee.~~** *Fixed by Issue #166:* `Service.SubmitEvidence` now rejects a caller who is not the contribution's assigned contributor with `ErrNotEvidenceOwner` (handler → 403), mirroring `EditEvidence`.
 - **`shared_with_roles` is decorative.** It is stored (`service.go:1681-1683`) and displayed, but no backend or frontend code filters visibility by it. Design doc §7.1 claims "Members in those roles can now see and register interest" — not implemented; all contributions are visible to everyone via the API, and `RegisterInterest` checks only `status == shared`.
 - **Budget confidentiality and admin-only offer visibility are cosmetic**: `useContributionBudgetAccess` and the `viewerIsAdmin` list filter (`contributionsView.ts:90-103`) run client-side against full data already delivered by unauthenticated GET endpoints.
 - **`elder_council` is unreachable**: `RoleElderCouncil` is defined (`roles.go:18`) and included in `allRoles`, but no branch of `MapKERIRole` (`roles.go:23-48`) ever grants it.
@@ -458,7 +479,7 @@ Enforcement is highly uneven. Only the two standalone milestone endpoints (`PUT 
 - **`sign_off_plan` is a paper policy for implementation plans.** roles.go:129 restricts it to steward roles, but the implementation-plans routes are registered with no RBAC at all (main.go:607); `HandleSignOff` will even take the signing user from the request body when no header is present (implementation_plans.go:155-163). Anyone who can reach the API can sign off any plan as any AID. The same policy IS enforced for decision-plan sign-off (decision_plans.go:157) — the asymmetry is easy to misread as coverage.
 - **Governance voting is completely ungated.** No house-membership, role, or eligibility model exists in code: any AID can cast Community-house votes or Elder Council veto/no-veto (service.go:1082-1128, GovernanceActionModal.vue:292-295), and duplicate-vote protection keys on the caller-supplied `X-User-AID`, so vote stuffing only requires varying the header. `elder_council` exists as a Role (roles.go:18) but `MapKERIRole` never grants it and no house check references it (it appears only in `allRoles`, roles.go:103).
 - **`X-User-AID` is never cryptographically verified** (rbac.go:31 just reads the header), so even the "fully enforced" milestone endpoints are spoofable; and `IdentityRoleLookup` grants Founding Member to the backend owner's own AID (rbac.go:186-192), meaning on a per-user backend the local user passes every `RequireAction` check by construction.
-- **Milestone RBAC is global, not project-scoped.** `leadStewardScope` (roles.go:110-112) checks role membership only; a Technical Steward credential (→ `project_lead`, roles.go:42) can edit milestones on projects they have no relationship with. roles.go:98-99 documents this deliberately: project-level checks "are enforced on the frontend."
+- **~~Milestone RBAC is global, not project-scoped.~~** *Superseded by [Issue #166 enforcement](#issue-166-enforcement--project-scoped-role-resolution-authoritative-delta) (2026-09-02):* `edit_milestone` / `archive_milestone` now resolve the owning project (milestone → plan → `project_id`) and gate on the caller's role on that project via `RequireProjectAction`. A Technical Steward credential (→ `project_lead`) no longer edits milestones on a project they are not assigned to.
 - **Spoofable `X-User-Name` fallback** in decision-plan sign-off: an assigned proposal steward can be impersonated by sending their display name as a header (decision_plans.go:165-167; frontend legitimately sends it at lib/api/decisionPlans.ts:83).
 - **Add-milestone vs edit-milestone inconsistency**: adding a milestone (which creates plan content and can invalidate nothing) has no Action constant and no backend check, while editing/archiving one is RBAC-gated — a caller blocked from `PUT /milestones/{id}` can still `POST /implementation-plans/{id}/milestones`.
 - **Read visibility is unrestricted at the API layer**: implementation plans (incl. budgets in `CreateImplementationPlanRequest.TotalBudget`, milestone `BudgetAllocation`) and decision plans are served on unauthenticated GETs (implementation_plans.go:91-112, decision_plans.go:117-136); the frontend's `canSeeContributionBudget` (useProjectPermissions.ts:75-77) is cosmetic for this data.
@@ -790,10 +811,10 @@ Added by GH#19 (`backend/internal/anysync/write_rules.go`, `proof_verifier.go`, 
 
 | Guarded object (field) | High-stakes values | Legitimacy source | Rule |
 |---|---|---|---|
-| `contribution.status` | `signed_off`, `rewarded` | proof-backed¹ | `ActionSignOffContribution` / `ActionRewardContribution` |
-| `project.status` | `completed` | proof-backed¹ | `ActionApproveProjectCompletion` |
-| `project.status` | `pending_completion` | role-only² | `ActionSubmitProjectCompletion` |
-| `implementation_plan.signed_off` | `true` | proof-backed¹ | `ActionSignOffPlan` |
+| `contribution.status` | `signed_off`, `rewarded` | proof-backed¹ | `ActionSignOffContribution`⁴ / `ActionRewardContribution` |
+| `project.status` | `completed` | proof-backed¹ | `ActionApproveProjectCompletion`⁴ |
+| `project.status` | `pending_completion` | role-only² | `ActionSubmitProjectCompletion`⁴ |
+| `implementation_plan.signed_off` | `true` | proof-backed¹ | `ActionSignOffPlan`⁴ |
 | `decision_plan.status` | `signed_off` | proof-backed¹ | `ActionSignOffPlan` |
 | `proposal.status` | `signed_off` | role-only² | `ActionSignOffProposal` |
 | `CommunityProfile.role` | any | role-only² (ACL-enforced³) | operations_steward, founding_member |
@@ -803,6 +824,8 @@ Added by GH#19 (`backend/internal/anysync/write_rules.go`, `proof_verifier.go`, 
 **² Role-only (interim, GH#19 part 1).** No frontend proof action exists for these transitions yet, so they keep the part-1 path: author (any-sync account) → AID via the community space's ACL join records walked **in record order, first claim of an AID wins** (`AccountAIDMap`) → role **as of the change's timestamp** from the `CommunityProfile` role history (`HistoryRoleResolver`; org-config admins are a static Founding Member override) → `MapKERIRole` → policy table. Fail-open on an unresolved author. Weaker (the account→AID binding is client-supplied join metadata), retained as defence-in-depth.
 
 **³ ACL-enforced.** `CommunityProfile` lives in the admin-only community-readonly space, so the SDK ACL already blocks non-admin writers; the role change is credential-backed (ACDC revoke/re-issue), not signed via the action-proof path.
+
+**⁴ Project-scoped (Issue #166, 2026-09-02).** Contribution sign-off, plan sign-off, and project completion (submit + approve) are now additionally gated on the signer's role **on the owning project**, matching the HTTP layer (see [Issue #166 enforcement](#issue-166-enforcement--project-scoped-role-resolution-authoritative-delta)). For a `project.status` change the lead/steward AID travels in the object's own `current` state; for a `contribution`/`implementation_plan` change the project is resolved from `project_id` via a `ProjectAssignmentResolver` snapshot (`project_assignments.go`, refreshed in `app.go` alongside the role snapshot). The check becomes `contributions.CanPerformProjectAction(signerRoles, projectRoles, action)`, so a `project_steward` may sign off only their own project's contributions while Operations Steward / Founding Member still pass via community-scope grants. When the project's assignments have not yet replicated (snapshot lag), or the author→AID binding is unavailable on the role-only path, the rule falls back to the community-role gate so no legitimate transition is dropped.
 
 Determinism (AC-2): every input is synced tree/ACL data plus the signer's KEL key snapshot (KELs are append-only and eventually consistent), so two honest peers reach the same verdict, and demoting a steward does not retroactively reject their past sign-offs. Snapshots that merely carry a guarded value forward are not re-gated. `UpdateObject` diffs against the same validated baseline so a forged change cannot block the legitimate transition. An object of unknown type (missing from the local index) is an error, not an unguarded pass.
 

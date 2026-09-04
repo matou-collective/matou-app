@@ -169,3 +169,47 @@ func TestAssignProjectRole_GranularCapabilityEnforced(t *testing.T) {
 		t.Errorf("steward_assigner assigning lead: expected 403, got %d", code)
 	}
 }
+
+// TestAssignProjectRole_ProjectScoped verifies that the granular assign check
+// is project-scoped (#166 ∩ #314): a project steward assigned on project A may
+// assign a steward on A but not on B, and a credential-derived project_steward
+// community role does not make the holder steward of every project.
+func TestAssignProjectRole_ProjectScoped(t *testing.T) {
+	contributions.SetPolicyProvider(nil) // built-in default policy
+	store := contributions.NewMockStore()
+	svc := contributions.NewService(store)
+	h := NewProjectsHandler(svc, nil, nil)
+
+	mk := func(title string) *contributions.Project {
+		p, err := svc.CreateProject(context.Background(), "community", &contributions.CreateProjectRequest{
+			Title: title, Description: "A test project", CreatedBy: "EAdmin",
+		})
+		if err != nil {
+			t.Fatalf("create project: %v", err)
+		}
+		return p
+	}
+	a, b := mk("A"), mk("B")
+	a.ProjectStewardID = "EStewardA"
+	if err := svc.SaveProject(context.Background(), "community", a); err != nil {
+		t.Fatalf("save project: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	lookup := &mockRoleLookup{roles: map[string][]contributions.Role{
+		// Credential-derived project_steward: only counts where actually assigned.
+		"EStewardA": {contributions.RoleMember, contributions.RoleProjectSteward},
+		"EMember":   {contributions.RoleMember},
+	}}
+	h.RegisterRoutes(mux, lookup)
+
+	if code := assignRole(t, mux, a.ID, "steward", "EStewardA"); code != http.StatusOK {
+		t.Errorf("steward of A assigning steward on A: expected 200, got %d", code)
+	}
+	if code := assignRole(t, mux, b.ID, "steward", "EStewardA"); code != http.StatusForbidden {
+		t.Errorf("steward of A assigning steward on B: expected 403, got %d", code)
+	}
+	if code := assignRole(t, mux, a.ID, "steward", "EMember"); code != http.StatusForbidden {
+		t.Errorf("plain member assigning steward on A: expected 403, got %d", code)
+	}
+}
