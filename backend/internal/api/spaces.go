@@ -12,8 +12,8 @@ import (
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/matou-dao/backend/internal/anystore"
-	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/types"
 )
@@ -104,12 +104,12 @@ type InviteRequest struct {
 
 // InviteResponse represents the response for space invitation
 type InviteResponse struct {
-	Success                bool   `json:"success"`
-	CommunitySpaceID       string `json:"communitySpaceId,omitempty"`
-	InviteKey              string `json:"inviteKey,omitempty"`              // base64-encoded community invite private key
-	ReadOnlyInviteKey      string `json:"readOnlyInviteKey,omitempty"`      // base64-encoded community-readonly invite key
-	ReadOnlySpaceID        string `json:"readOnlySpaceId,omitempty"`        // community-readonly space ID
-	Error                  string `json:"error,omitempty"`
+	Success           bool   `json:"success"`
+	CommunitySpaceID  string `json:"communitySpaceId,omitempty"`
+	InviteKey         string `json:"inviteKey,omitempty"`         // base64-encoded community invite private key
+	ReadOnlyInviteKey string `json:"readOnlyInviteKey,omitempty"` // base64-encoded community-readonly invite key
+	ReadOnlySpaceID   string `json:"readOnlySpaceId,omitempty"`   // community-readonly space ID
+	Error             string `json:"error,omitempty"`
 }
 
 // GetUserSpacesResponse represents the response for getting a user's spaces
@@ -368,15 +368,17 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	// Seed community space with type definition + admin SharedProfile
 	if req.AdminAID != "" {
 		communityObjects, seedErr := h.seedSpace(ctx, result.SpaceID, types.SharedProfileType(), map[string]interface{}{
-			"aid":         req.AdminAID,
-			"displayName": req.AdminName,
-			"bio":         "",
-			"publicEmail": req.AdminEmail,
-			"avatar":      req.AdminAvatar,
+			"aid":          req.AdminAID,
+			"displayName":  req.AdminName,
+			"bio":          "",
+			"publicEmail":  req.AdminEmail,
+			"avatar":       req.AdminAvatar,
 			"lastActiveAt": time.Now().UTC().Format(time.RFC3339),
 			"createdAt":    time.Now().UTC().Format(time.RFC3339),
 			"updatedAt":    time.Now().UTC().Format(time.RFC3339),
-			"typeVersion":  1,
+			// Stamp the live SharedProfile schema version (#302) rather than a
+			// hardcoded 1, so the seeded admin profile is never born stale.
+			"typeVersion": types.SharedProfileType().Version,
 		}, fmt.Sprintf("SharedProfile-%s", req.AdminAID))
 		if seedErr != nil {
 			log.Printf("Warning: failed to seed community space: %v\n", seedErr)
@@ -420,10 +422,10 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 			if req.AdminAID != "" {
 				now := time.Now().UTC().Format(time.RFC3339)
 				roObjects, seedErr := h.seedSpace(ctx, roResult.SpaceID, types.CommunityProfileType(), map[string]interface{}{
-					"userAID":    req.AdminAID,
-					"credential": req.CredentialSAID,
-					"role":       "Founding Member",
-					"memberSince": now,
+					"userAID":      req.AdminAID,
+					"credential":   req.CredentialSAID,
+					"role":         "Founding Member",
+					"memberSince":  now,
 					"lastActiveAt": now,
 					"credentials":  []string{req.CredentialSAID},
 					"permissions":  []string{"participate", "vote", "propose"},
@@ -837,11 +839,11 @@ func (h *SpacesHandler) HandleInvite(w http.ResponseWriter, r *http.Request) {
 
 // JoinCommunityRequest represents a request to join the community space
 type JoinCommunityRequest struct {
-	UserAID            string `json:"userAid"`
-	InviteKey          string `json:"inviteKey"`                    // base64-encoded invite private key
-	SpaceID            string `json:"spaceId,omitempty"`            // community space ID (fallback if not configured locally)
-	ReadOnlyInviteKey  string `json:"readOnlyInviteKey,omitempty"`  // base64-encoded community-readonly invite key
-	ReadOnlySpaceID    string `json:"readOnlySpaceId,omitempty"`    // community-readonly space ID
+	UserAID           string `json:"userAid"`
+	InviteKey         string `json:"inviteKey"`                   // base64-encoded invite private key
+	SpaceID           string `json:"spaceId,omitempty"`           // community space ID (fallback if not configured locally)
+	ReadOnlyInviteKey string `json:"readOnlyInviteKey,omitempty"` // base64-encoded community-readonly invite key
+	ReadOnlySpaceID   string `json:"readOnlySpaceId,omitempty"`   // community-readonly space ID
 }
 
 // JoinCommunityResponse represents the response for community join
@@ -1162,8 +1164,8 @@ func (h *SpacesHandler) HandleCommunityReadOnlyInvite(w http.ResponseWriter, r *
 	}
 
 	writeJSON(w, http.StatusOK, InviteResponse{
-		Success:         true,
-		ReadOnlySpaceID: roSpaceID,
+		Success:           true,
+		ReadOnlySpaceID:   roSpaceID,
 		ReadOnlyInviteKey: base64.StdEncoding.EncodeToString(inviteKeyBytes),
 	})
 }

@@ -90,6 +90,28 @@ func (r *Registry) Validate(typeName string, data json.RawMessage) ([]string, er
 	return ValidateData(def, data), nil
 }
 
+// ValidateForRead validates stored data tolerantly (grandfathering
+// newly-required fields) against a named type — the read counterpart to
+// Validate. See ValidateForRead.
+func (r *Registry) ValidateForRead(typeName string, data json.RawMessage) ([]string, error) {
+	def, ok := r.Get(typeName)
+	if !ok {
+		return nil, fmt.Errorf("unknown type: %s", typeName)
+	}
+	return ValidateForRead(def, data), nil
+}
+
+// StampVersion stamps the live schema version of a named type into data — the
+// migrate-on-write step. Returns the data unchanged for a type that does not
+// track a typeVersion. See StampVersion.
+func (r *Registry) StampVersion(typeName string, data json.RawMessage) (json.RawMessage, error) {
+	def, ok := r.Get(typeName)
+	if !ok {
+		return nil, fmt.Errorf("unknown type: %s", typeName)
+	}
+	return StampVersion(def, data)
+}
+
 // IsFilterable reports whether a named type declares the given field as
 // filterable. Unknown types or fields are not filterable.
 func (r *Registry) IsFilterable(typeName, field string) bool {

@@ -127,6 +127,19 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Migrate-on-write (#302): stamp the live schema version into the data so a
+	// successful write records the version it was written under. A profile that
+	// predated an admin schema edit is thereby migrated and is no longer stale.
+	// No-op for types that do not track a typeVersion.
+	if stamped, err := h.registry.StampVersion(req.Type, req.Data); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	} else {
+		req.Data = stamped
+	}
+
 	// Determine target space
 	spaceID := req.SpaceID
 	if spaceID == "" && h.spaceManager != nil {
@@ -635,7 +648,7 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 			"lastActiveAt":           now2,
 			"createdAt":              now2,
 			"updatedAt":              now2,
-			"typeVersion":            1,
+			"typeVersion":            h.sharedProfileVersion(),
 		}
 		sharedDataBytes, err = json.Marshal(sharedProfileData)
 		if err != nil {
@@ -1043,6 +1056,19 @@ func (h *ProfilesHandler) validateProfile(typeName string, data json.RawMessage)
 		return []string{err.Error()}
 	}
 	return errs
+}
+
+// sharedProfileVersion returns the live SharedProfile schema version to stamp
+// into a freshly-seeded profile (#302). It reads the version from the registry
+// so an org that has edited its schema seeds at the current version, falling
+// back to the built-in definition when the registry is unavailable.
+func (h *ProfilesHandler) sharedProfileVersion() int {
+	if h.registry != nil {
+		if def, ok := h.registry.Get("SharedProfile"); ok {
+			return def.Version
+		}
+	}
+	return types.SharedProfileType().Version
 }
 
 // resolveSpaceForType returns the space ID for a given type definition.
