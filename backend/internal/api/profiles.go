@@ -467,6 +467,76 @@ type UpdateMemberRoleRequest struct {
 	Role string `json:"role"`
 }
 
+// profileTypeOrBuiltin returns the org's registered definition for a type,
+// falling back to the built-in definition when the registry is absent or the
+// type has not been loaded. The split-on-save follows whichever definition is
+// effective, so org schema customisations drive field→space routing.
+func (h *ProfilesHandler) profileTypeOrBuiltin(name string, builtin func() *types.TypeDefinition) *types.TypeDefinition {
+	if h.registry != nil {
+		if def, ok := h.registry.Get(name); ok && def != nil {
+			return def
+		}
+	}
+	return builtin()
+}
+
+// buildMemberProfileData assembles the CommunityProfile and SharedProfile data
+// maps for a new member from the registration request. Non-core registration
+// fields are routed to whichever destination type's schema declares them
+// (RouteFieldsBySchema), so which fields land in the community-readonly vs the
+// community-writable profile follows the org's type definitions rather than a
+// hardcoded list (issue #300). The core identity/membership fields each
+// profile's handlers structurally depend on are pinned here after routing and
+// therefore cannot be moved to another space by a schema edit.
+func buildMemberProfileData(communityDef, sharedDef *types.TypeDefinition, req *InitMemberProfilesRequest, now string) (community, shared map[string]interface{}) {
+	// User-supplied registration fields keyed by their schema field names.
+	// publicEmail is the SharedProfile field name for req.Email. displayName and
+	// avatar are core SharedProfile fields and so are pinned below, not routed.
+	inputs := map[string]interface{}{
+		"bio":                    req.Bio,
+		"publicEmail":            req.Email,
+		"location":               req.Location,
+		"indigenousCommunity":    req.IndigenousCommunity,
+		"joinReason":             req.JoinReason,
+		"participationInterests": req.Interests,
+		"customInterests":        req.CustomInterests,
+		"facebookUrl":            req.FacebookUrl,
+		"linkedinUrl":            req.LinkedinUrl,
+		"twitterUrl":             req.TwitterUrl,
+		"instagramUrl":           req.InstagramUrl,
+		"githubUrl":              req.GithubUrl,
+		"gitlabUrl":              req.GitlabUrl,
+	}
+	routed := types.RouteFieldsBySchema(inputs, communityDef, sharedDef)
+
+	community = routed[communityDef.Name]
+	if community == nil {
+		community = map[string]interface{}{}
+	}
+	// Core CommunityProfile membership fields — admin-managed, pinned here.
+	community["userAID"] = req.MemberAID
+	community["credential"] = req.CredentialSAID
+	community["role"] = req.Role
+	community["memberSince"] = now
+	community["lastActiveAt"] = now
+	community["credentials"] = []string{req.CredentialSAID}
+
+	shared = routed[sharedDef.Name]
+	if shared == nil {
+		shared = map[string]interface{}{}
+	}
+	// Core SharedProfile identity/display fields — pinned here.
+	shared["aid"] = req.MemberAID
+	shared["status"] = req.Status
+	shared["displayName"] = req.DisplayName
+	shared["avatar"] = req.Avatar
+	shared["lastActiveAt"] = now
+	shared["createdAt"] = now
+	shared["updatedAt"] = now
+	shared["typeVersion"] = 1
+	return community, shared
+}
+
 // HandleInitMemberProfiles handles POST /api/v1/profiles/init-member.
 // Called by admin after credential issuance + space invite to create the
 // member's CommunityProfile in the read-only space.
@@ -529,61 +599,17 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// Build CommunityProfile data
+	// Build the CommunityProfile and SharedProfile data. Which registration
+	// field lands in which profile is read from the org's type definitions
+	// (issue #300): non-core fields route to whichever destination type's schema
+	// declares them, so an admin moving a field between the SharedProfile and
+	// CommunityProfile schemas moves where a new member's value is stored. The
+	// core membership/identity fields each profile's handlers depend on are
+	// pinned by the assembler and cannot be moved out by a schema edit.
 	now := time.Now().UTC().Format(time.RFC3339)
-	communityProfileData := map[string]interface{}{
-		"userAID":      req.MemberAID,
-		"credential":   req.CredentialSAID,
-		"role":         req.Role,
-		"memberSince":  now,
-		"lastActiveAt": now,
-		"credentials":  []string{req.CredentialSAID},
-	}
-	if req.DisplayName != "" {
-		communityProfileData["displayName"] = req.DisplayName
-	}
-	if req.Email != "" {
-		communityProfileData["email"] = req.Email
-	}
-	if req.Avatar != "" {
-		communityProfileData["avatar"] = req.Avatar
-	}
-	if req.Bio != "" {
-		communityProfileData["bio"] = req.Bio
-	}
-	if len(req.Interests) > 0 {
-		communityProfileData["participationInterests"] = req.Interests
-	}
-	if req.CustomInterests != "" {
-		communityProfileData["customInterests"] = req.CustomInterests
-	}
-	if req.Location != "" {
-		communityProfileData["location"] = req.Location
-	}
-	if req.IndigenousCommunity != "" {
-		communityProfileData["indigenousCommunity"] = req.IndigenousCommunity
-	}
-	if req.JoinReason != "" {
-		communityProfileData["joinReason"] = req.JoinReason
-	}
-	if req.FacebookUrl != "" {
-		communityProfileData["facebookUrl"] = req.FacebookUrl
-	}
-	if req.LinkedinUrl != "" {
-		communityProfileData["linkedinUrl"] = req.LinkedinUrl
-	}
-	if req.TwitterUrl != "" {
-		communityProfileData["twitterUrl"] = req.TwitterUrl
-	}
-	if req.InstagramUrl != "" {
-		communityProfileData["instagramUrl"] = req.InstagramUrl
-	}
-	if req.GithubUrl != "" {
-		communityProfileData["githubUrl"] = req.GithubUrl
-	}
-	if req.GitlabUrl != "" {
-		communityProfileData["gitlabUrl"] = req.GitlabUrl
-	}
+	communityDef := h.profileTypeOrBuiltin("CommunityProfile", types.CommunityProfileType)
+	sharedDef := h.profileTypeOrBuiltin("SharedProfile", types.SharedProfileType)
+	communityProfileData, sharedProfileData := buildMemberProfileData(communityDef, sharedDef, &req, now)
 
 	dataBytes, err := json.Marshal(communityProfileData)
 	if err != nil {
@@ -613,30 +639,6 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
 	var sharedDataBytes []byte
 	if communitySpaceID != "" {
-		now2 := time.Now().UTC().Format(time.RFC3339)
-		sharedProfileData := map[string]interface{}{
-			"aid":                    req.MemberAID,
-			"status":                 req.Status,
-			"displayName":            req.DisplayName,
-			"bio":                    req.Bio,
-			"avatar":                 req.Avatar,
-			"publicEmail":            req.Email,
-			"location":               req.Location,
-			"indigenousCommunity":    req.IndigenousCommunity,
-			"joinReason":             req.JoinReason,
-			"facebookUrl":            req.FacebookUrl,
-			"linkedinUrl":            req.LinkedinUrl,
-			"twitterUrl":             req.TwitterUrl,
-			"instagramUrl":           req.InstagramUrl,
-			"githubUrl":              req.GithubUrl,
-			"gitlabUrl":              req.GitlabUrl,
-			"participationInterests": req.Interests,
-			"customInterests":        req.CustomInterests,
-			"lastActiveAt":           now2,
-			"createdAt":              now2,
-			"updatedAt":              now2,
-			"typeVersion":            1,
-		}
 		sharedDataBytes, err = json.Marshal(sharedProfileData)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
