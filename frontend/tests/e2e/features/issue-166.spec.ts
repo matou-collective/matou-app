@@ -121,6 +121,9 @@ test.describe('project-scoped RBAC enforcement (#166)', () => {
       deliverables: ['d'],
       acceptance_criteria: ['a'],
       skill_requirements: ['s'],
+      // Confirming requires a deadline (ConfirmContribution: "must have a due
+      // date"); without it confirm → 400 and the assign below cascades.
+      deadline: '2030-01-01T00:00:00Z',
     });
     const cid = contrib.body?.id as string;
     expect(
@@ -131,7 +134,7 @@ test.describe('project-scoped RBAC enforcement (#166)', () => {
     // Drive it to `assigned` so CONTRIB_AID is its assigned contributor.
     expect(
       await status(admin, 'POST', `/contributions/${cid}/confirm`),
-    ).not.toBe(403);
+    ).toBe(200);
     expect(
       await status(admin, 'POST', `/contributions/${cid}/assign`, {
         user_id: CONTRIB_AID,
