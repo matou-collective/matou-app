@@ -628,6 +628,29 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+      # Auto-publish to the Play OPEN testing track (#202). Tag runs only, and
+      # last: a Play-side failure must not cost us the artefacts above. The
+      # script (bash+openssl+curl+python3, all on ubuntu-latest) does
+      # edits.insert -> bundles.upload -> tracks.patch -> edits.commit and
+      # deletes the edit on failure. Promotion to production stays human.
+      - name: Publish AAB to Play open testing
+        if: github.ref_type == 'tag'
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          PLAY_AAB: out/matou-${{ needs.prepare.outputs.version }}-android.aab
+          MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PLAY_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "::error::PLAY_SERVICE_ACCOUNT_JSON secret is not set — AAB built but NOT published (docs/mobile/PLAY_STORE.md §6)"
+            exit 1
+          fi
+          if [ "${{ steps.build.outputs.signed }}" != "true" ]; then
+            echo "::error::refusing to publish an unsigned bundle"
+            exit 1
+          fi
+          bash scripts/android/play-upload.sh
+
   # Attach the mobile installers to the draft release that electron-builder
   # creates for the desktop targets (spec WP6, mobile half). Tag runs only; the
   # release stays a draft for a human to publish after checking Play/TestFlight.

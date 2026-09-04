@@ -159,19 +159,34 @@ action_is_ticket_only() {
 # (coa #50; same gotcha the sibling schedule-backstop.sh already spells out).
 # .workflow_id is on every row and cannot drift with a job rename; display_title
 # is unsafe (it carries the commit subject for push/issues events).
+#
+# The EMITTED label is the WORKFLOW (from .workflow_id, a ".yml"/".yaml" suffix
+# trimmed), NOT the .name job — for the SAME reason the self-exclusion keys on it.
+# heal.sh's verdict_path cases and the hook-mode WORKFLOW env are BOTH workflow
+# names ("ci", "swarm", "triage"), but this endpoint's .name is the JOB: "seam"
+# for ci.yml, "swarm (1)"/"swarm (2)" for a matrix. Emitting .name made
+# verdict_path miss and error_line fall through to grepping the worker
+# chain-of-thought prose, minting a phantom signature off an unrelated sentence
+# (the #197/#235 phantom-signature class, closed for push/hook mode but left wide
+# open in WATCHDOG mode until this). Grouping stays per-.name (each job keeps its
+# own streak); only the LABEL folds to the workflow, which also collapses a
+# matrix's legs onto one incident instead of one-per-leg. Falls back to .name
+# when .workflow_id is absent (an older/foreign payload shape), so the label is
+# never empty.
 watchdog_detect() {
   jq -r '
     [.workflow_runs[]
       | select(.status == "success" or .status == "failure")
       | select(.workflow_id != "healer.yml")
-      | {name, status, n: .run_number}]
+      | {name, workflow: (.workflow_id // "" | sub("\\.ya?ml$"; "")), status, n: .run_number}]
     | group_by(.name)[]
     | (sort_by(-.n)) as $runs
     | select(($runs | length) >= 2)
+    | (if ($runs[0].workflow | length) > 0 then $runs[0].workflow else $runs[0].name end) as $wf
     | if ([$runs[] | select(.status == "failure")] | length) == ($runs | length)
-        then "\($runs[0].name)\talways-red"
+        then "\($wf)\talways-red"
       elif ($runs[0].status == "failure" and $runs[1].status == "failure")
-        then "\($runs[0].name)\tstreak"
+        then "\($wf)\tstreak"
       else empty end
   ' "$1"
 }

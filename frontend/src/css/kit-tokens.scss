@@ -7,7 +7,15 @@ $kit-primary-foreground: #ffffff;
 :root {
   --matou-primary: #1E5F74;
   --matou-secondary: #E8F4F8;
+  --matou-secondary-strong: #E8F4F8;
   --matou-secondary-foreground: #1E5F74;
   --matou-muted: #E8F4F8;
   --matou-accent: #628f9e;
+  --matou-sidebar-accent: #E8F4F8;
+}
+
+.dark {
+  --matou-secondary: #1e3340;
+  --matou-muted: #1e3340;
+  --matou-sidebar-accent: #1e3340;
 }

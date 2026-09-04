@@ -37,7 +37,9 @@ export async function createNotice(ctx: ToolContext, args: CreateNoticeArgs): Pr
   if (args.rsvpEnabled !== undefined) payload.rsvpEnabled = args.rsvpEnabled;
   if (args.activeFrom) payload.activeFrom = args.activeFrom;
   if (args.activeUntil) payload.activeUntil = args.activeUntil;
-  return ctx.client.post("/api/v1/notices", payload);
+  // post_notices RBAC gate (#317): send the acting AID so the backend can
+  // resolve the caller's roles.
+  return ctx.client.post("/api/v1/notices", payload, { rbac: true });
 }
 
 export function registerNoticeTools(server: McpServer, ctx: ToolContext): void {
@@ -96,6 +98,8 @@ export function registerNoticeTools(server: McpServer, ctx: ToolContext): void {
       mutating: true,
     },
     // NOTE: subpath confirmed via grep of notices.go — case "publish" at line 78.
-    async (args) => ctx.client.post(`/api/v1/notices/${args.notice_id as string}/publish`, {}),
+    // publish is authoring → post_notices RBAC gate (#317); send the acting AID.
+    async (args) =>
+      ctx.client.post(`/api/v1/notices/${args.notice_id as string}/publish`, {}, { rbac: true }),
   );
 }

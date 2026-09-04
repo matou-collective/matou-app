@@ -31,6 +31,16 @@ test_env_hermetic() {
   export SWARM_RUNLOG="$d/host-env/run-swarm-verdicts.log"   # #435 EXIT-trap runlog
   export SWARM_DB="$d/host-env/swarm.db"                     # #447 run/attempt mirror
   export SWARM_VERDICT_PATH="$d/host-env/swarm-verdict.txt"  # #574 per-repo verdict
+  # #116: the HOST-GLOBAL Claude limit markers — a park path both READS the
+  # active-account letter from and WRITES a limit-pause edge for. Left at their
+  # /tmp defaults a host-mode suite stamps the LIVE account letter and mirrors a
+  # phantom park into the real swarm.db. Redirect them into the sandbox too.
+  export CLAUDE_LIMIT_MARKER="$d/host-env/claude-limit-marker"   # limit-lib.sh:52
+  export CLAUDE_ACTIVE_MARKER="$d/host-env/claude-active-marker" # limit-lib.sh:172
+  # #116: arm the swarm.db LEAK TRIPWIRE at the sandbox root, so a write whose
+  # SWARM_DB escapes this dir (a per-invocation override that forgot to redirect)
+  # is REFUSED and recorded instead of silently poisoning the live telemetry.
+  export SWARMDB_ASSERT_UNDER="$d"
   # session-runner's repo-scoped /tmp derivations (lock + drive-defer counter):
   # override the PREFIX, not each path, so a test still exercises the real
   # derivation logic (test 13, #35) inside its own sandbox.
@@ -47,12 +57,16 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 
   # 1: the redirect points every host-state var under the given temp dir.
   test_env_hermetic "$tmp"
-  for v in SWARM_RUNLOG SWARM_DB SWARM_VERDICT_PATH SESSION_RUNNER_TMP; do
+  for v in SWARM_RUNLOG SWARM_DB SWARM_VERDICT_PATH SESSION_RUNNER_TMP \
+           CLAUDE_LIMIT_MARKER CLAUDE_ACTIVE_MARKER SWARMDB_ASSERT_UNDER; do
     case "${!v}" in
-      "$tmp"/*) : ;;
+      "$tmp"|"$tmp"/*) : ;;
       *) fail "$v must resolve under the test temp dir, got: ${!v}" ;;
     esac
   done
+  # the tripwire root must equal the sandbox (a prefix-only match would let a
+  # sibling temp dir through), and SWARM_DB must sit under it (#116).
+  [ "$SWARMDB_ASSERT_UNDER" = "$tmp" ] || fail "SWARMDB_ASSERT_UNDER must be the sandbox root, got: $SWARMDB_ASSERT_UNDER"
   pass=$((pass+1))
 
   # 2: the derived session-runner lock path lands under the redirected prefix,
@@ -63,22 +77,28 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   [ -e "/tmp/matou-session-runner-$slug.lock" ] && fail "the redirect must not touch real /tmp"
   pass=$((pass+1))
 
-  # 3: LINT — every test that EXECS run-swarm.sh / session-runner.sh by path
-  #    must source this helper, so it cannot reach host state unredirected. A
-  #    genuine exec is `bash …/run-swarm.sh` (not a grep, a printf into a fake
-  #    tree, or a comment). This is the guard that keeps the class closed:
-  #    a new host-state-touching test that forgets the helper reds here.
+  # 3: LINT — every test that EXECS a host-state-touching orchestrator by path
+  #    (run-swarm / session-runner / run-triage / heal — the last two added #116,
+  #    which reach swarmdb_event + the limit markers) must source this helper, so
+  #    it cannot reach host state unredirected. A genuine exec is
+  #    `bash "$here/../run-triage.sh"`; a heredoc'd workflow YAML fixture uses the
+  #    checkout-relative `bash .sandcastle/run-triage.sh`, which is NOT a real
+  #    exec — so a matched line that is `.sandcastle/`-prefixed does not count.
+  #    This is the guard that keeps the class closed: a new host-state-touching
+  #    test that forgets the helper reds here.
   self="$(basename "${BASH_SOURCE[0]}")"
   offenders=""
   for t in "$here"/*.sh; do
     b="$(basename "$t")"
     [ "$b" = "$self" ] && continue
-    # Does this test genuinely exec either orchestrator by path?
-    if grep -Eq 'bash[^|]*(run-swarm|session-runner)\.sh' "$t"; then
+    # A genuine by-path exec: a matched `bash … <orchestrator>.sh` line that is
+    # NOT the `.sandcastle/…` form the workflow-YAML fixtures embed.
+    if grep -E 'bash[^|]*(run-swarm|session-runner|run-triage|heal)\.sh' "$t" \
+         | grep -qv '\.sandcastle/'; then
       grep -q 'test-env\.sh' "$t" || offenders="$offenders $b"
     fi
   done
-  [ -z "$offenders" ] || fail "these tests exec run-swarm.sh/session-runner.sh without sourcing test-env.sh (host-state leak, #58):$offenders"
+  [ -z "$offenders" ] || fail "these tests exec a host-state orchestrator (run-swarm/session-runner/run-triage/heal) without sourcing test-env.sh (host-state leak, #58/#116):$offenders"
   pass=$((pass+1))
 
   echo "test-env: $pass checks passed"

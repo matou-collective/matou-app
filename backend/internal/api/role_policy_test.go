@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,9 +64,42 @@ func newTestPolicyHandler(t *testing.T) (*RolePolicyHandler, *contributions.Mock
 
 func lookupForTests() RoleLookup {
 	return staticRoles{
-		"EOpsAID":    contributions.MapKERIRole("Operations Steward"),
-		"EMemberAID": contributions.MapKERIRole("Member"),
-		"EAdminAID":  {}, // org admin with NO policy grants — backstop must let them through
+		"EOpsAID":     contributions.MapKERIRole("Operations Steward"),
+		"EMemberAID":  contributions.MapKERIRole("Member"),
+		"EFounderAID": contributions.MapKERIRole("Founding Member"),
+		"EAdminAID":   {}, // org admin with NO policy grants — backstop must let them through
+	}
+}
+
+// #318: the Community Settings page-access gate. open_community_settings is
+// founder-only by default; the org-admin backstop also passes; everyone else
+// (including an operations steward, who holds manage_members but not
+// open_community_settings) is refused.
+func TestCommunitySettingsAccess(t *testing.T) {
+	h, _, _ := newTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	cases := []struct {
+		aid  string
+		want int
+	}{
+		{"EFounderAID", http.StatusOK},
+		{"EAdminAID", http.StatusOK}, // org-admin backstop
+		{"EOpsAID", http.StatusForbidden},
+		{"EMemberAID", http.StatusForbidden},
+		{"", http.StatusForbidden}, // unauthenticated
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/community-settings/access", nil)
+		if c.aid != "" {
+			req.Header.Set("X-User-AID", c.aid)
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("access aid=%q: got %d, want %d (%s)", c.aid, rec.Code, c.want, rec.Body.String())
+		}
 	}
 }
 
@@ -83,12 +117,13 @@ func TestGetRolePolicyDefault(t *testing.T) {
 		t.Fatalf("GET = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Source              string                     `json:"source"`
-		Policy              contributions.RolePolicy   `json:"policy"`
-		Capabilities        map[string][]string        `json:"capabilities"`
-		CapabilityOrder     []contributions.Capability `json:"capabilityOrder"`
-		ProjectCapabilities []contributions.Capability `json:"projectCapabilities"`
-		CallerCapabilities  []contributions.Capability `json:"callerCapabilities"`
+		Source              string                         `json:"source"`
+		Policy              contributions.RolePolicy       `json:"policy"`
+		Capabilities        map[string][]string            `json:"capabilities"`
+		CapabilityOrder     []contributions.Capability     `json:"capabilityOrder"`
+		ProjectCapabilities []contributions.Capability     `json:"projectCapabilities"`
+		CallerCapabilities  []contributions.Capability     `json:"callerCapabilities"`
+		CapabilityMeta      []contributions.CapabilityMeta `json:"capabilityMeta"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -97,16 +132,20 @@ func TestGetRolePolicyDefault(t *testing.T) {
 		t.Errorf("source = %q, want default", resp.Source)
 	}
 	if len(resp.Policy.Roles) != 7 {
-		t.Errorf("default policy roles = %d, want 10", len(resp.Policy.Roles))
+		t.Errorf("default policy roles = %d, want 7", len(resp.Policy.Roles))
 	}
-	if len(resp.Capabilities) != 13 {
-		t.Errorf("capabilities = %d entries, want 13", len(resp.Capabilities))
+	// 13 original − 2 retired + 11 new = 22 toggleable capabilities.
+	if len(resp.Capabilities) != 22 {
+		t.Errorf("capabilities = %d entries, want 22", len(resp.Capabilities))
 	}
-	if len(resp.CapabilityOrder) != 13 {
-		t.Errorf("capabilityOrder = %d entries, want 13 (all in AllCapabilities order)", len(resp.CapabilityOrder))
+	if len(resp.CapabilityOrder) != 22 {
+		t.Errorf("capabilityOrder = %d entries, want 22 (all in AllCapabilities order)", len(resp.CapabilityOrder))
 	}
-	if len(resp.ProjectCapabilities) != 8 {
-		t.Errorf("projectCapabilities = %d entries, want 8", len(resp.ProjectCapabilities))
+	if len(resp.ProjectCapabilities) != 10 {
+		t.Errorf("projectCapabilities = %d entries, want 10", len(resp.ProjectCapabilities))
+	}
+	if len(resp.CapabilityMeta) != 22 {
+		t.Errorf("capabilityMeta = %d entries, want 22 (one per capability, with group/scope)", len(resp.CapabilityMeta))
 	}
 	// Every role carries a non-empty scope so the UI can split the tables.
 	for _, r := range resp.Policy.Roles {
@@ -122,6 +161,94 @@ func TestGetRolePolicyDefault(t *testing.T) {
 	}
 	if !found {
 		t.Error("ops steward's callerCapabilities must include manage_roles")
+	}
+}
+
+// A PUT that tries to store a retired capability ID is rejected with a clear,
+// successor-naming message (#313). The generic "unknown capability" path would
+// otherwise swallow it in a less helpful error.
+func TestPutRolePolicyRejectsRetiredCapability(t *testing.T) {
+	h, _, _ := newTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	bad := validUpdate()
+	grants := bad["grants"].(map[string][]contributions.Capability)
+	grants[string(contributions.RoleOperationsSteward)] = append(
+		grants[string(contributions.RoleOperationsSteward)], contributions.CapAssignWork)
+	rec := putPolicy(t, mux, "EOpsAID", bad)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("retired capability in PUT: %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "retired") ||
+		!strings.Contains(body, string(contributions.CapAssignProjectSteward)) {
+		t.Errorf("error message should name the retirement and its successor, got %s", body)
+	}
+}
+
+// A legacy policy saved before the #312 capabilities existed (CapModel 0, using
+// the retired assign_work / manage_communications IDs) is served UPGRADED via
+// GET: retired IDs mapped to successors, new-capability defaults merged, no
+// retired ID left in the response.
+func TestGetRolePolicyUpgradesLegacyStoredPolicy(t *testing.T) {
+	h, store, provider := newTestPolicyHandler(t)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, lookupForTests())
+
+	legacy := &contributions.RolePolicy{
+		Version:  4,
+		CapModel: 0,
+		Roles:    contributions.DefaultRolePolicy().Roles,
+		Grants: map[string][]contributions.Capability{
+			string(contributions.RoleMember): {contributions.CapContribute},
+			string(contributions.RoleFoundingMember): {
+				contributions.CapAssignWork, contributions.CapManageComms, contributions.CapManageRoles,
+			},
+		},
+	}
+	if err := store.Save("ro-space", "RolePolicy", "RolePolicy", legacy); err != nil {
+		t.Fatal(err)
+	}
+	provider.Invalidate()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/role-policy", nil)
+	req.Header.Set("X-User-AID", "EOpsAID")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Source string                   `json:"source"`
+		Policy contributions.RolePolicy `json:"policy"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Source != "synced" {
+		t.Errorf("source = %q, want synced", resp.Source)
+	}
+	has := func(roleID string, c contributions.Capability) bool {
+		for _, g := range resp.Policy.Grants[roleID] {
+			if g == c {
+				return true
+			}
+		}
+		return false
+	}
+	fm := string(contributions.RoleFoundingMember)
+	if has(fm, contributions.CapAssignWork) || has(fm, contributions.CapManageComms) {
+		t.Error("upgraded policy still exposes a retired capability")
+	}
+	if !has(fm, contributions.CapAssignProjectSteward) || !has(fm, contributions.CapAssignProjectLead) {
+		t.Error("founding_member should inherit the assign capabilities from assign_work")
+	}
+	if !has(fm, contributions.CapManageChannels) || !has(fm, contributions.CapModerateMessages) {
+		t.Error("founding_member should inherit the chat caps from manage_communications")
+	}
+	// A new default reaches a builtin role even though the saved policy predates it.
+	if !has(string(contributions.RoleMember), contributions.CapCreateProposals) {
+		t.Error("member should gain merged default create_proposals via the upgrade path")
 	}
 }
 

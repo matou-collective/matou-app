@@ -132,12 +132,13 @@ pass=$((pass+1))
 sweep_worktrees "$(mktemp -d)" >/dev/null || fail "non-git dir must be a no-op, not an error"
 pass=$((pass+1))
 
-# --- reap_containers: force-remove leaked sandcastle-* containers older than a
-#     run-lifetime, leave fresh ones alone (#238 AC4) ---
-# A fake `docker` on PATH: `ps` emits canned rows (one stale, one fresh, in
-# docker's real CreatedAt format incl. the trailing tz name); `rm -f` records
-# the id it was asked to remove. This exercises the age arithmetic and the
-# CreatedAt parsing without a real daemon.
+# --- reap_containers: three reap paths — NAME, LABEL(+per-kind ceiling), and
+#     the IMAGE belt (#238 AC4, #122) ---
+# A fake `docker` on PATH: `ps` emits canned rows in the 5-field format the lib
+# now asks for (id, CreatedAt in docker's real shape incl. trailing tz name,
+# Names, Image, the matou.factory label); `rm -f` records the id it was asked to
+# remove. This exercises the age arithmetic, the per-kind ceilings, the belt
+# image match, and CreatedAt parsing without a real daemon.
 bin="$(mktemp -d)"; rmlog="$(mktemp)"; psfile="$(mktemp)"
 export FAKE_RM_LOG="$rmlog" FAKE_PS_FILE="$psfile"
 cat > "$bin/docker" <<'EOF'
@@ -150,15 +151,54 @@ EOF
 chmod +x "$bin/docker"
 
 fmt='+%Y-%m-%d %H:%M:%S %z UTC'   # docker CreatedAt shape, trailing tz name
-printf '%s\t%s\n' stale_old "$(date -u -d '2 days ago' "$fmt")"  >  "$psfile"
-printf '%s\t%s\n' fresh_now "$(date -u "$fmt")"                  >> "$psfile"
+old2d="$(date -u -d '2 days ago' "$fmt")"
+old4h="$(date -u -d '4 hours ago' "$fmt")"
+old1h="$(date -u -d '1 hour ago' "$fmt")"
+new20m="$(date -u -d '20 minutes ago' "$fmt")"
+nownow="$(date -u "$fmt")"
+row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >> "$psfile"; }
+: > "$psfile"
+# 1. NAME path: a sandcastle-* worker older than the 3h floor is reaped; a fresh
+#    one is spared (may be a concurrent slot-2 sibling's live checkout).
+row sc_stale  "$old2d"  sandcastle-old  node:20        ""
+row sc_fresh  "$nownow" sandcastle-new  node:20        ""
+# 2. LABEL path + per-kind ceiling: a heal container (HEAL_REAP_CEILING=1800s)
+#    older than its ceiling is reaped; one within it is spared — proving the
+#    ceiling is per-kind, not the 3h floor (the 1h heal row would be SPARED at
+#    the floor). A ci row (CI_REAP_CEILING defaults to the floor) 2 days old is
+#    reaped. None of these carry a sandcastle-* name.
+row heal_stale "$old1h"  heal-bisect  busybox        heal
+row heal_fresh "$new20m" heal-bisect  busybox        heal
+row ci_stale   "$old2d"  ci-checks    busybox        ci
+# 3. IMAGE belt: an UNLABELLED, non-sandcastle-named container whose image is a
+#    factory sandbox — a product ci image `*-ci` (the matou-app-ci leak, #122) or
+#    the `sandcastle:<repo>` tag — older than the floor is reaped even with no
+#    name and no label. A non-factory image is NEVER touched, whatever its age.
+row belt_ci   "$old4h"  runner-xyz   widget-ci      ""
+row belt_sc   "$old4h"  runner-abc   sandcastle:widget ""
+row foreign   "$old2d"  some-db      postgres:16    ""
 
 reaped="$(PATH="$bin:$PATH" reap_containers 10800)"   # 3h floor
 
-printf '%s' "$reaped" | grep -qx stale_old || fail "the 2-day-old container must be reaped, got: [$reaped]"
-printf '%s' "$reaped" | grep -qx fresh_now && fail "a just-created container must NOT be reaped (in-flight run)"
-grep -qx stale_old "$rmlog" || fail "reap must call docker rm -f on the stale container"
-grep -qx fresh_now "$rmlog" && fail "reap must never rm -f a fresh container"
+for id in sc_stale heal_stale ci_stale belt_ci belt_sc; do
+  printf '%s' "$reaped" | grep -qx "$id" || fail "$id must be reaped, got: [$reaped]"
+  grep -qx "$id" "$rmlog" || fail "reap must call docker rm -f on $id"
+done
+for id in sc_fresh heal_fresh foreign; do
+  printf '%s' "$reaped" | grep -qx "$id" && fail "$id must NOT be reaped, got: [$reaped]"
+  grep -qx "$id" "$rmlog" && fail "reap must never rm -f $id"
+done
+pass=$((pass+1))
+
+# --- CI_REAP_CEILING tightens the ci ceiling below the floor: a ci container
+#     older than the tightened ceiling but younger than the floor is now reaped,
+#     mirroring the product's short ci `timeout-minutes` + slack. ---
+: > "$psfile"; : > "$rmlog"
+row ci_recent "$old1h" ci-checks busybox ci          # 1h old: < 3h floor, > 30m
+reaped="$(CI_REAP_CEILING=1800 PATH="$bin:$PATH" reap_containers 10800)"
+printf '%s' "$reaped" | grep -qx ci_recent || fail "a tightened CI_REAP_CEILING must reap a ci container past it"
+reaped="$(PATH="$bin:$PATH" reap_containers 10800)"  # default ceiling = floor
+printf '%s' "$reaped" | grep -qx ci_recent && fail "at the default ceiling the 1h ci container is spared"
 pass=$((pass+1))
 
 # --- no docker on PATH: a safe no-op, never an error (host without docker) ---

@@ -56,11 +56,23 @@ CLAUDE_LIMIT_MARKER="${CLAUDE_LIMIT_MARKER:-/tmp/matou-swarm-claude-limit}"
 # refusing nothing re-touches it and it goes stale, and the next caller retries.
 CLAUDE_LIMIT_TTL="${CLAUDE_LIMIT_TTL:-3600}"
 
-# claude_limit_parked — 0 iff the host is known-parked: the global marker exists
-# and is fresher than the TTL. A stale marker (the window has likely reset) is
-# ignored, so a caller tries claude again rather than parking forever.
+# claude_limit_parked — 0 iff the host is known-parked: the global marker exists,
+# is fresher than the TTL, AND carries the exhausted account letter. A stale
+# marker (the window has likely reset) is ignored, so a caller tries claude
+# again rather than parking forever. An EMPTY (letter-less) marker is ignored
+# too, loudly: every current park path stamps A/B (#100), so nothing in this
+# codebase writes one — the 2026-08-30 00:13Z marker was a stray writer (a
+# stale pin or a bare touch), and honouring it parked the whole fleet for its
+# TTL on a refusal that never happened (#788 flipped ready-for-human on a red
+# the reporter therefore never diagnosed). A genuine hit overwrites the stray
+# file with the letter (claude_limit_park's parked() gate reads false for it)
+# and parks exactly as before.
 claude_limit_parked() {
   [ -f "$CLAUDE_LIMIT_MARKER" ] || return 1
+  if [ ! -s "$CLAUDE_LIMIT_MARKER" ]; then
+    echo "limit-lib: WARN letter-less limit marker at $CLAUDE_LIMIT_MARKER — no current park path writes one (a stale pin? a stray touch?); distrusting it, NOT parking" >&2
+    return 1
+  fi
   [ $(( $(date +%s) - $(stat -c %Y "$CLAUDE_LIMIT_MARKER") )) -le "$CLAUDE_LIMIT_TTL" ]
 }
 

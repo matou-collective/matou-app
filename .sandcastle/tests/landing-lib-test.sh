@@ -15,6 +15,8 @@ mkdir -p "$tmp/bin"
 cat > "$tmp/bin/git" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = push ]; then printf '%s\n' "$*" >> "$GIT_PUSHES"; fi
+# the empty-shell guard's probe (matou-app#145): $AHEAD commits beyond main
+if [ "${1:-}" = rev-list ]; then printf '%s\n' "${AHEAD:-1}"; fi
 exit 0
 SH
 chmod +x "$tmp/bin/git"
@@ -107,6 +109,24 @@ check "pr mode second run still pushes the branch (refresh)" \
   'grep -q "push origin HEAD:refs/heads/agent/issue-7" "$GIT_PUSHES"'
 check "pr mode second run opens NO duplicate PR" '! grep -q "^PR_CREATED$" "$CALLS_LOG"'
 check "pr mode second run reports the existing PR number" '[ "$prnum" = "101" ]'
+
+# --- pr mode, empty-shell guard (matou-app#145): HEAD==main -> no push, no PR
+reset
+rc=0; AHEAD=0 OPEN_PULLS="$tmp/no-pulls.json" landing_push 7 "fix it (#7)" >/dev/null 2>"$tmp/guard.err" || rc=$?
+check "empty-shell guard refuses to push a workless branch" '[ ! -s "$GIT_PUSHES" ]'
+check "empty-shell guard opens NO PR" '! grep -q "^PR_CREATED$" "$CALLS_LOG"'
+check "empty-shell guard fails the call (rc=1)" '[ "$rc" = 1 ]'
+check "empty-shell guard names the branch and the tracker issue" \
+  'grep -q "agent/issue-7" "$tmp/guard.err" && grep -q "matou-app#145" "$tmp/guard.err"'
+# fail-open: an unanswerable rev-list (no origin/main) must NOT block a landing
+reset
+prnum="$(AHEAD="" OPEN_PULLS="$tmp/no-pulls.json" landing_push 7 "fix it (#7)")"
+check "guard fails open when rev-list cannot answer" '[ "$prnum" = "101" ]'
+# push mode is untouched by the guard (HEAD:main has its own rescue ladder)
+reset
+( unset SWARM_POLICY_LANDING; AHEAD=0 landing_push 7 ) >/dev/null
+check "push mode ignores the empty-shell guard" \
+  'grep -q "push origin HEAD:refs/heads/main" "$GIT_PUSHES"'
 
 # landing_open_pr_for — exit 0 + number when open, exit 1 when none
 check "landing_open_pr_for finds the open PR" \

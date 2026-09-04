@@ -193,6 +193,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// config server directly anyway.
 	clientConfigHandler := api.NewClientConfigHandler()
 
+	// Push-relay URL sourced from the fetched client config (issue #329). The
+	// embedded backend on Android has no process environment, so MATOU_PUSH_RELAY_URL
+	// can't reach it — it learns the relay URL from the same config-server body it
+	// already fetches here. Env still wins in the push block below; this is the
+	// fallback and stays empty when the fetch is skipped (dev/test) or the body
+	// carries no push_relay_url key.
+	var configPushRelayURL string
+
 	// In production, always fetch fresh config from the config server.
 	// For dev/test, fetch only if the config file doesn't exist.
 	shouldFetch := opts.IsProd() || os.IsNotExist(func() error { _, statErr := os.Stat(anysyncConfigPath); return statErr }())
@@ -213,7 +221,22 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 					"Ensure the config server is running at %s", fetchErr, opts.ConfigServerURL)
 			}
 		} else {
-			clientConfigHandler.SetRaw(rawConfig)
+			// The copy served to the Capacitor WebView gets loopback proxies
+			// for the KERI endpoints — the WebView's cleartext policy blocks
+			// plain-http to any non-loopback host, so signify-ts could never
+			// reach KERIA on a device (#368). Backend-internal consumers keep
+			// the original body. Proxy failure is not fatal: serve the
+			// original and let desktop platforms (which never hit the
+			// endpoint) carry on.
+			servedConfig := rawConfig
+			if rewritten, proxyClosers, proxyErr := api.StartKERIConfigProxies(rawConfig); proxyErr != nil {
+				_, _ = fmt.Fprintf(out, "  KERI loopback proxies not started (%v) — serving config unproxied\n", proxyErr)
+			} else {
+				servedConfig = rewritten
+				closers = append(closers, proxyClosers...)
+			}
+			clientConfigHandler.SetRaw(servedConfig)
+			configPushRelayURL = pushRelayURLFromConfig(rawConfig)
 			fmt.Fprintf(out, "  Config saved to %s\n", anysyncConfigPath)
 		}
 	}
@@ -372,7 +395,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// interim role-based behaviour and are never broken by a missing proof.
 	writeRuleKeys := anysync.NewStaticKeyProvider()
 	enforceProofs := signedAuthEnforced()
-	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleKeys, writeRuleRecorder, enforceProofs)
+	// Project-scoped write rules (issue #166): a Contribution/Plan sign-off is
+	// gated on the signer's role on the OWNING project, resolved from this
+	// snapshot of per-project assignments (rebuilt by the refresher below,
+	// alongside the role snapshot). A project not yet in the snapshot falls back
+	// to the community-role gate, so no legitimate sign-off is dropped on lag.
+	writeRuleProjects := anysync.NewProjectAssignmentStore()
+	writeRuleValidator := anysync.NewWriteRuleValidator(writeRuleResolver, writeRuleKeys, writeRuleRecorder, enforceProofs).
+		WithProjectAssignments(writeRuleProjects)
 	spaceManager.ObjectTreeManager().SetChangeValidator(writeRuleValidator)
 
 	// Create push-based listener for P2P chat changes (replaces polling)
@@ -468,7 +498,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// WebView mints one, register/notify drop with ErrNoSession — logged once,
 	// never fatal.
 	var pushHandler *api.PushHandler
-	if relayURL := strings.TrimSpace(os.Getenv("MATOU_PUSH_RELAY_URL")); relayURL != "" {
+	// Env wins (dev/test override); when unset, fall back to the push_relay_url the
+	// backend learned from the fetched client config (issue #329). Both absent →
+	// relayURL is empty and push stays dark.
+	relayURL := strings.TrimSpace(os.Getenv("MATOU_PUSH_RELAY_URL"))
+	if relayURL == "" {
+		relayURL = configPushRelayURL
+	}
+	if relayURL != "" {
 		// The relay carries device FCM tokens and full recipient-AID lists, so
 		// plain http to a non-loopback host is refused unless explicitly opted
 		// into — same rule and escape-hatch shape as the KERIA key-state URL below.
@@ -480,7 +517,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		if err != nil {
 			// Leave push dark rather than crash: every other subsystem is fine
 			// and notifications still reach the app over SSE.
-			log.Printf("[Push] invalid MATOU_PUSH_RELAY_URL %q: %v — push notifications disabled", relayURL, err)
+			log.Printf("[Push] invalid push relay URL %q: %v — push notifications disabled", relayURL, err)
 		} else {
 			fmt.Fprintf(out, "Push relay configured: %s\n", relayURL)
 			aclMembers := notifications.ChannelMembersFunc(func(channelID string) ([]string, error) {
@@ -639,6 +676,16 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 			}
 		}
 		writeRuleResolver.Replace(anysync.RoleSnapshot{AccountAID: accountAID, History: history, AdminAIDs: adminAIDs})
+
+		// Project-scoped write rules (issue #166): refresh the per-project
+		// assignment snapshot from the community space's Project + Contribution
+		// objects. Best-effort — a failed pass leaves the previous snapshot in
+		// place and the rules fall back to the community-role gate.
+		if assignments, err := spaceManager.ObjectTreeManager().CollectProjectAssignments(ctx, communitySpaceID); err != nil {
+			log.Printf("[write-rules] project-assignment refresh failed: %v", err)
+		} else {
+			writeRuleProjects.Replace(assignments)
+		}
 
 		// GH#19 part 2: when proof enforcement is on, refresh the signing-key
 		// snapshot the proof verifier reads. Resolve each known member/admin
@@ -804,9 +851,9 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	eventsHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux, roleLookup)
 	multisigHandler.RegisterRoutes(mux)
-	noticesHandler.RegisterRoutes(mux)
+	noticesHandler.RegisterRoutes(mux, roleLookup)
 	filesHandler.RegisterRoutes(mux)
-	chatHandler.RegisterRoutes(mux)
+	chatHandler.RegisterRoutes(mux, roleLookup)
 	commentCursorsHandler.Routes(mux)
 	notificationsHandler.RegisterRoutes(mux)
 	if pushHandler != nil {
@@ -983,6 +1030,24 @@ func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) ([]byte, erro
 	}
 
 	return body, nil
+}
+
+// pushRelayURLFromConfig extracts the top-level "push_relay_url" string from the
+// raw client-config JSON body the backend fetched from the config server (issue
+// #329). It is the embedded-backend fallback for MATOU_PUSH_RELAY_URL, which the
+// Android build can't set. Returns "" when the body is absent, unparseable, or
+// carries no such key — leaving push dark, exactly as before.
+func pushRelayURLFromConfig(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var envelope struct {
+		PushRelayURL string `json:"push_relay_url"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.PushRelayURL)
 }
 
 // eventBrokerAdapter adapts api.EventBroker to anysync.EventBroadcaster.

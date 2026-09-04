@@ -30,6 +30,21 @@
 # SESSION_RUNNER_HOST=<name> overrides the name this host answers to.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── log stamping (#121): give the fleet monitor's session history a WHEN ──────
+# Every line this runner emits carries an ISO-8601 UTC stamp
+# (`2026-09-02T04:10:11Z session-runner: …`) so the Session tab can interleave
+# and time completed sessions instead of falling back to file mtime. ONE seam,
+# not per-echo edits: route the whole script's stdout+stderr through a
+# `while read` stamper. The stamp is a PREFIX — the `session-runner: ` marker
+# stays intact, so the fleet-tui parser (fleet-tui/sessionq.py session_history,
+# `.search()`) and operator greps still key on it. Off-switch for callers that
+# stamp their own log layer: SESSION_RUNNER_NO_STAMP=1.
+if [ -z "${SESSION_RUNNER_NO_STAMP:-}" ]; then
+  exec > >(while IFS= read -r sr_line; do
+      printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sr_line"
+    done) 2>&1
+fi
 SESSION_RUNNER_PROMPT_FILE="${SESSION_RUNNER_PROMPT_FILE:-$here/session-runner-prompt.md}"
 
 # ── kill switch: before any API call ─────────────────────────────────────────

@@ -161,6 +161,8 @@ jobs:
           git remote add origin "$url" 2>/dev/null || git remote set-url origin "$url"
           git fetch -q --depth=1 origin "$SHA"
           git checkout -q -f FETCH_HEAD
+      - name: Test versionCode helper
+        run: bash scripts/android/version-code-test.sh
       - name: Derive versionCode / versionName
         id: version
         env:
@@ -168,15 +170,20 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
+          # versionCode is MMMmmmppp derived from the app version (helper below),
+          # NOT the CI run number (#321) — a dispatch build of X.Y.Z reports the
+          # same code as the eventual X.Y.Z tag build, so on-device install/
+          # upgrade ordering stays coherent for side-loaded artefacts. The
+          # version->code mapping lives in scripts/android/version-code.sh and
+          # is asserted by scripts/android/version-code-test.sh.
           # Tag vX.Y.Z -> versionName X.Y.Z; otherwise package.json version + run id.
-          if [[ "$REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          if [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             name="${REF_NAME#v}"
-            # Monotonic, human-decodable: MMMmmmppp (e.g. 0.4.0 -> 4000). Leaves
-            # room for 999 patch releases per minor; Play's max is 2100000000.
-            code=$(( ${BASH_REMATCH[1]} * 1000000 + ${BASH_REMATCH[2]} * 1000 + ${BASH_REMATCH[3]} ))
+            code="$(bash scripts/android/version-code.sh "$name")"
           else
-            name="$(sed -n 's/^  "version": "\(.*\)",/\1/p' frontend/package.json)-ci${RUN_NUMBER}"
-            code="$RUN_NUMBER"
+            pkgver="$(sed -n 's/^  "version": "\(.*\)",/\1/p' frontend/package.json)"
+            name="${pkgver}-ci${RUN_NUMBER}"
+            code="$(bash scripts/android/version-code.sh "$pkgver")"
           fi
           echo "versionName=$name versionCode=$code"
           echo "name=$name" >> "$GITHUB_OUTPUT"
@@ -276,25 +283,3 @@ jobs:
           bash .sandcastle/notify-mattermost-files.sh \
             ":robot: android release AAB $VERSION (actions/upload-artifact flaked — attached instead) — $RUN_URL" "$aab"
 
-      # Publish to the Play OPEN testing track (#202). Runs last so a Play-side
-      # failure still leaves the .aab retrievable from the steps above.
-      #
-      # Tag pushes ONLY. A workflow_dispatch build derives versionCode from
-      # $RUN_NUMBER (see "Derive versionCode / versionName"), which does not
-      # order against the tag scheme — uploading one would burn a versionCode
-      # that collides with, or sorts below, a real release.
-      - name: Publish to Play open testing
-        if: github.event_name == 'push'
-        env:
-          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-          PLAY_TRACK: beta          # Play's id for the open testing track
-          PLAY_STATUS: completed    # live to open testers on commit
-          MATOU_VERSION_NAME: ${{ steps.version.outputs.name }}
-        run: |
-          set -euo pipefail
-          if [ -z "${PLAY_SERVICE_ACCOUNT_JSON:-}" ]; then
-            echo "ERROR: PLAY_SERVICE_ACCOUNT_JSON secret is not set — the AAB built" >&2
-            echo "       but nothing was published. See docs/mobile/PLAY_STORE.md §6." >&2
-            exit 1
-          fi
-          bash scripts/android/play-upload.sh

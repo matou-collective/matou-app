@@ -62,7 +62,8 @@
   --matou-sidebar-foreground: #1a2b3a;
   --matou-sidebar-primary: #1e5f74;
   --matou-sidebar-primary-foreground: #ffffff;
-  --matou-sidebar-accent: #e8f4f8;
+  // --matou-sidebar-accent comes from the kit (kit-tokens.scss) so the selected
+  // nav tab follows the kit secondary wash. See scripts/kit/apply-kit.mjs / #337.
   --matou-sidebar-accent-foreground: #1a2b3a;
   --matou-sidebar-border: rgba(30, 95, 116, 0.15);
   --matou-sidebar-ring: #4a9d9c;
@@ -81,9 +82,9 @@
   --matou-primary: #7eb3b8;
   --matou-primary-foreground: #0f1a23;
 
-  --matou-secondary: #1e3340;
+  // --matou-secondary / --matou-muted come from the kit's .dark block
+  // (kit-tokens.scss) so the secondary wash applies in dark mode too. See #337.
   --matou-secondary-foreground: #e8f4f8;
-  --matou-muted: #1e3340;
   --matou-muted-foreground: #8faab5;
 
   // Teal glow
@@ -107,7 +108,7 @@
   --matou-sidebar-foreground: #e8f4f8;
   --matou-sidebar-primary: #7eb3b8;
   --matou-sidebar-primary-foreground: #0f1a23;
-  --matou-sidebar-accent: #1e3340;
+  // --matou-sidebar-accent comes from the kit's .dark block (kit-tokens.scss). #337
   --matou-sidebar-accent-foreground: #e8f4f8;
   --matou-sidebar-border: rgba(126, 179, 184, 0.2);
   --matou-sidebar-ring: #4a9d9c;

@@ -23,9 +23,59 @@ set -euo pipefail
 #      under no such budget). At 30 s = the outer budget, a single stalled call
 #      fires the outer timeout at the very instant it would have failed closed
 #      (#28); a smaller cap lets it fail closed to [] within budget instead.
+#
+# idss #1195 (run 17201): BOTH of those bounds were unsound as a PAIR, and run 17201 red anyway.
+# The outer 30 s is a HARD-CODED library constant
+# (@ai-hero/sandcastle/dist/index.js: `PROMPT_EXPANSION_TIMEOUT_MS = 3e4`) — a
+# shell expression gets no per-expression override the way a lifecycle hook gets
+# `timeoutMs` (main.mts, #1142). So this script has to PROVE it returns first,
+# and the old arithmetic could not:
+#   (a) OVERSHOOT. The `SECONDS >= CLAIM_NEXT_BUDGET` test sat only at the TOP of
+#       each candidate. A candidate admitted at 21 s then spent up to
+#       ~4 x CLAIM_API_MAX_TIME (post + comments + label-id + label-write) with
+#       nothing re-checking the clock: 21 + 10 already exceeds 30. Two candidates
+#       whose claim_post each burned the full 10 s cap is exactly run 17201 —
+#       ~10 s of prefetch, admitted at ~20 s, dead at 30.004 s, and NO claim
+#       comment left on either #1191 or #1192 to show for it.
+#   (b) FAIL-CLOSED ON HEALTHY. CLAIM_API_MAX_TIME=10 was set below the measured
+#       latency of the one endpoint claim_alive_runs must read: this forge answers
+#       `actions/tasks?limit=100&page=1` in 8.5-12.2 s (5 live samples,
+#       2026-09-03; 3 of 5 over 10 s). So the fail-closed arm fired on a
+#       healthy-but-slow forge, not just a stall, and the tick spent its
+#       iteration claiming nothing — the "ready list was empty, but re-running
+#       the lister myself shows 2 tasks" confusion in run 17201's iterations 1-2.
+# The bound is now a DEADLINE plus per-candidate call sizing, so the worst case
+# is arithmetic rather than hope: a candidate is admitted only when the clock
+# left can bound ALL of its calls, i.e. CLAIM_CANDIDATE_CALLS x cap <=
+# CLAIM_NEXT_DEADLINE - SECONDS. The last admitted candidate therefore lands at
+# or before CLAIM_NEXT_DEADLINE, under the library's 30 s, for every path.
 SECONDS=0
-CLAIM_NEXT_BUDGET="${CLAIM_NEXT_BUDGET:-22}"
-: "${CLAIM_API_MAX_TIME:=10}"
+# Self-deadline, held under the library's hard-coded 30 s with margin for the
+# `docker exec` round trip the library clock includes but this script cannot see.
+CLAIM_NEXT_DEADLINE="${CLAIM_NEXT_DEADLINE:-26}"
+# Worst-case bounded calls ONE candidate can make: claim_post, _claim_comments,
+# then either the loser's DELETE or the winner's claim_label_id + label write.
+# 5, not 4, leaves a spare for a second labels page (this repo has 25 labels, so
+# claim_label_id pages once today — the margin is for a consumer that grows past
+# 50 and would otherwise silently un-bound the walk).
+CLAIM_CANDIDATE_CALLS="${CLAIM_CANDIDATE_CALLS:-5}"
+# Below this the derived cap is too tight to be worth a round trip (healthy claim
+# calls on this forge measure 1.0-1.5 s) — stop the walk and emit [] instead.
+CLAIM_CALL_FLOOR="${CLAIM_CALL_FLOOR:-2}"
+# The prefetch leg's cap, sized OVER the measured actions/tasks tail (12.2 s max
+# of 5 samples) rather than under it — see (b). Fail-closed is still the outcome
+# when it genuinely stalls; it is no longer the outcome when the forge is merely
+# slow.
+CLAIM_ALIVE_MAX_TIME="${CLAIM_ALIVE_MAX_TIME:-14}"
+# Wall-clock bound on the lister leg. list-ready-tasks.sh retries each read with
+# backoff at LIST_READY_MAX_TIME (30 s) apiece — a posture tuned for #52's
+# transient 5xx, but one whose worst case (~96 s) is unbounded relative to a 30 s
+# expansion. Bound it from OUTSIDE, leaving #52's retry tuning untouched.
+CLAIM_LISTER_MAX_TIME="${CLAIM_LISTER_MAX_TIME:-12}"
+# An EXPLICIT operator/probe override stays absolute and uncapped (eyes-open, the
+# #77c seam); only the DEFAULT is deadline-derived. `+` form, so `set -u` is safe.
+CLAIM_API_MAX_TIME_EXPLICIT="${CLAIM_API_MAX_TIME+1}"
+: "${CLAIM_API_MAX_TIME:=$CLAIM_ALIVE_MAX_TIME}"
 export CLAIM_API_MAX_TIME
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,7 +126,40 @@ if [ "$run" = "0" ] && [ "${SWARM_CLAIM_FORCE:-0}" != "1" ]; then
   exit 0
 fi
 
-ready="$(bash "$lister")"
+# #120: the lister and claim_alive_runs share no data, yet ran back-to-back —
+# the lister's O(ready-queue) reads (~16-25s) plus the ~11s actions/tasks leg
+# summed past Sandcastle's 30s prompt-expansion budget (matou-app run 11019),
+# REDing the tick as PromptExpansionTimeoutError before CLAIM_NEXT_BUDGET could
+# even be consulted. Kick claim_alive_runs off in the BACKGROUND first so its
+# ~11s overlaps the lister entirely, then reap it. Its stdout goes to a temp
+# file and its rc is captured below so the fail-closed ruling is preserved
+# EXACTLY — the concurrency changes only WHEN the fetch runs, never its outcome.
+alive_file="$(mktemp)"
+trap 'rm -f "$alive_file"' EXIT
+claim_alive_runs >"$alive_file" & alive_pid=$!
+
+# idss#1195: bounded by wall clock from the outside. rc 124 is `timeout`'s "I killed
+# it" — the ONLY rc that gets the graceful [] here. Every other non-zero rc still
+# propagates, preserving #52/GOTCHAS #7: a persistent listing outage must still
+# fail LOUD and be re-keyed to the "list ready tasks" stage, not be laundered
+# into a quiet "nothing to do".
+lister_rc=0
+ready="$(timeout "${CLAIM_LISTER_MAX_TIME}s" bash "$lister")" || lister_rc=$?
+
+# Reap the backgrounded alive-runs fetch, capturing its rc without tripping
+# set -e (a failed fetch must fail CLOSED just below, not abort the reap here).
+# Reaped BEFORE any lister-failure exit below, so no path leaves it orphaned.
+alive_rc=0; wait "$alive_pid" || alive_rc=$?
+
+if [ "$lister_rc" -ne 0 ]; then
+  if [ "$lister_rc" -eq 124 ]; then
+    echo "claim-next-task: the lister exceeded its ${CLAIM_LISTER_MAX_TIME}s wall-clock bound — emitting [] inside the 30s prompt-expansion budget rather than letting its retry schedule run the tick past it; cron/backstop re-fires." >&2
+    echo '[]'
+    exit 0
+  fi
+  exit "$lister_rc"
+fi
+
 n="$(jq length <<<"$ready")"
 [ "$n" -eq 0 ] && { echo '[]'; exit 0; }
 
@@ -88,7 +171,8 @@ n="$(jq length <<<"$ready")"
 # is one cron/self-rearm cycle, not a correctness hole. No claim comment gets
 # posted, so nothing needs cleaning up. (Ben's fail-closed ruling, 2026-08-11,
 # review of commit 68fb911.)
-alive="$(claim_alive_runs)" || { echo '[]'; exit 0; }
+[ "$alive_rc" -eq 0 ] || { echo '[]'; exit 0; }
+alive="$(cat "$alive_file")"
 for i in $(seq 0 $((n - 1))); do
   # #77: stop the walk once our wall-clock budget is spent. $SECONDS already
   # counts the lister + alive-runs fetch, so this also fails closed when those
@@ -96,10 +180,32 @@ for i in $(seq 0 $((n - 1))); do
   # SAME outcome as losing every race — nothing claimed, no Claude tokens — and
   # the cron/backstop re-fires, versus letting the sum run past 30 s and RED the
   # whole tick.
-  if [ "$SECONDS" -ge "$CLAIM_NEXT_BUDGET" ]; then
+  # CLAIM_NEXT_BUDGET is now an OPTIONAL extra ceiling (unset by default): the
+  # deadline test below is the real guard, because a fixed budget checked only
+  # here cannot bound what the candidate does AFTER being admitted (idss#1195 (a)).
+  if [ -n "${CLAIM_NEXT_BUDGET:-}" ] && [ "$SECONDS" -ge "$CLAIM_NEXT_BUDGET" ]; then
     echo "claim-next-task: ${CLAIM_NEXT_BUDGET}s wall-clock budget spent after $i candidate(s) of $n — emitting [] within the 30s prompt-expansion budget; cron/backstop re-fires." >&2
     echo '[]'
     exit 0
+  fi
+
+  # idss#1195: admit this candidate ONLY if the clock left can bound every call it
+  # may make. cap x CLAIM_CANDIDATE_CALLS <= CLAIM_NEXT_DEADLINE - SECONDS, so a
+  # candidate admitted at S finishes by the deadline even when every one of its
+  # calls burns its full cap — the overshoot that REDed run 17201 is now
+  # arithmetically unreachable, not merely unlikely.
+  remaining=$((CLAIM_NEXT_DEADLINE - SECONDS))
+  cap=$((remaining / CLAIM_CANDIDATE_CALLS))
+  if [ "$cap" -lt "$CLAIM_CALL_FLOOR" ]; then
+    echo "claim-next-task: ${remaining}s of the ${CLAIM_NEXT_DEADLINE}s deadline left after $i candidate(s) of $n — too little to bound one candidate's ${CLAIM_CANDIDATE_CALLS} calls at the ${CLAIM_CALL_FLOOR}s floor; emitting [] inside the 30s prompt-expansion budget. cron/backstop re-fires." >&2
+    echo '[]'
+    exit 0
+  fi
+  # Re-derived per candidate: _claim_api reads CLAIM_API_MAX_TIME at CALL time,
+  # so the shrinking cap applies to the calls this candidate is about to make.
+  if [ -z "$CLAIM_API_MAX_TIME_EXPLICIT" ]; then
+    CLAIM_API_MAX_TIME="$cap"
+    export CLAIM_API_MAX_TIME
   fi
   num="$(jq -r ".[$i].number" <<<"$ready")"
   cid="$(claim_post "$num" "$host" "$run")" || continue

@@ -77,6 +77,30 @@ func (h *RolePolicyHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLo
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 	}))
+	// Community Settings page-access gate (#318): the server-side check that the
+	// caller may open the Community Settings area, so page access is enforced by
+	// open_community_settings and not merely hidden in the nav. The page calls
+	// this on mount and shows an access-denied state on 403.
+	mux.HandleFunc("/api/v1/community-settings/access", OptionalRBACMiddleware(roleLookup, h.handleCommunitySettingsAccess))
+}
+
+// handleCommunitySettingsAccess returns 200 when the caller holds
+// open_community_settings (founder by default) or is an org-config admin
+// backstop, and 403 otherwise. It carries no policy data of its own — the page
+// loads the role policy and org config from their existing endpoints once this
+// gate passes.
+func (h *RolePolicyHandler) handleCommunitySettingsAccess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		return
+	}
+	roles := GetUserRoles(r)
+	aid := GetUserAID(r)
+	if !contributions.CanPerformAction(roles, contributions.ActionOpenCommunitySettings) && !h.isAdminAID(aid) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 type rolePolicyResponse struct {
@@ -91,6 +115,10 @@ type rolePolicyResponse struct {
 	CapabilityOrder     []contributions.Capability `json:"capabilityOrder"`
 	ProjectCapabilities []contributions.Capability `json:"projectCapabilities"`
 	CallerCapabilities  []contributions.Capability `json:"callerCapabilities"`
+	// CapabilityMeta is the display/grouping/scope metadata for every
+	// capability, in display order — the UI groups the columns into the
+	// per-feature permission tables from it (#312).
+	CapabilityMeta []contributions.CapabilityMeta `json:"capabilityMeta"`
 }
 
 func (h *RolePolicyHandler) effective() (*contributions.RolePolicy, string) {
@@ -128,6 +156,7 @@ func (h *RolePolicyHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		Capabilities:        contributions.CapabilityActions(),
 		CapabilityOrder:     contributions.AllCapabilities(),
 		ProjectCapabilities: contributions.ProjectScopedCapabilities(),
+		CapabilityMeta:      contributions.CapabilityMetadata(),
 	}
 	if roles := GetUserRoles(r); len(roles) > 0 {
 		caller := []contributions.Capability{}
@@ -225,6 +254,10 @@ func (h *RolePolicyHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Roles:     req.Roles,
 		Grants:    req.Grants,
+		// Stamp the current capability model so the upgrade path (default merge
+		// on read) knows this policy already carries every current capability
+		// and won't re-merge it (#313).
+		CapModel: contributions.CurrentCapModel,
 	}
 	if err := h.writer.WritePolicy(updated); err != nil {
 		log.Printf("[RolePolicy] write failed (by %s, version %d): %v", aid, updated.Version, err)
@@ -311,6 +344,10 @@ func (h *RolePolicyHandler) validate(req *rolePolicyUpdate, current *contributio
 			return fmt.Sprintf("grants reference unknown role %q", roleID), nil
 		}
 		for _, c := range caps {
+			if contributions.IsRetiredCapability(c) {
+				succs := contributions.RetiredCapabilitySuccessors(c)
+				return fmt.Sprintf("capability %q is retired — grant %v instead (role %q)", c, succs, roleID), nil
+			}
 			if !validCaps[c] {
 				return fmt.Sprintf("unknown capability %q for role %q", c, roleID), nil
 			}

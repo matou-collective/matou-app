@@ -28,7 +28,7 @@ mkrepo() { # (re)build $tmp/origin.git + $tmp/co, export REHEARSAL_CHECKOUT
   git init -q "$tmp/co"; (
     cd "$tmp/co"
     git config user.email t@t; git config user.name t
-    echo base > wizard.ts; mkdir -p .sandcastle
+    echo base > wizard.ts; printf 'expect(count).toBe(1)\n' > journey.spec.ts; mkdir -p .sandcastle
     echo guard > .sandcastle/rehearsal-report.sh
     git add -A; git commit -qm base
     git remote add origin "$tmp/origin.git"
@@ -106,6 +106,16 @@ case "${HEAL_MODE:-legacy}" in
     sed -i 's/base/fixed/' wizard.ts
     git commit -aqm "rehearsal healer: bar visibility (sigR)"
     echo "{\"action\":\"healed\",\"commit\":\"$(git rev-parse HEAD)\",\"summary\":\"bar hid the fault\",\"checks\":\"vitest: pass\",\"residual\":{\"title\":\"underlying supply fault\",\"body\":\"the real fault beneath the healed bar\",\"confident\":true}}" ;;
+  healed-assertion)
+    cd "${REHEARSAL_CHECKOUT:?}"
+    sed -i 's/toBe(1)/toBe(2)/' journey.spec.ts
+    git commit -aqm "rehearsal healer: relax assertion (sigA)"
+    echo "{\"action\":\"healed\",\"commit\":\"$(git rev-parse HEAD)\",\"summary\":\"loosened the count assertion\",\"checks\":\"vitest: pass\"}" ;;
+  healed-productsurface)
+    cd "${REHEARSAL_CHECKOUT:?}"
+    mkdir -p internal; echo 'newBehaviour()' > internal/service.go
+    git add -A; git commit -qm "rehearsal healer: change internal behaviour"
+    echo "{\"action\":\"healed\",\"commit\":\"$(git rev-parse HEAD)\",\"summary\":\"changed internal service behaviour\",\"checks\":\"go test: pass\"}" ;;
   legacy)
     echo '{"title":"legacy diagnosis","body":"b","confident":true}' ;;
 esac
@@ -119,7 +129,7 @@ EOF
 }
 reset_case() {
   echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; : > "$CLAUDE_CALLS"
-  rm -f "$LIST_COUNT" "$tmp/state"/heal-fail-*   # fresh backstop state per case
+  rm -f "$LIST_COUNT" "$tmp/state"/heal-fail-* "$tmp/state"/heal-healed-*   # fresh backstop + loop-guard state per case
   mkrepo
 }
 
@@ -145,6 +155,11 @@ grep -q 'healer declined: real defect' "$CURL_LOG" || fail "file-verdict title n
 grep -q 'dependencies' "$CURL_LOG" || fail "decline path did not wire the blocker"
 [ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "origin moved on decline"
 [ "$(wc -l < "$CLAUDE_CALLS")" = "1" ] || fail "decline made a second claude call"
+# idss #1184: the healer's diagnosis is persisted in the run dir as an artifact
+# the reporter (and a later human) can read regardless of the filing's fate.
+[ -f "$tmp/run/artifacts/healer-refusal.json" ] || fail "healer diagnosis not saved to artifacts/healer-refusal.json"
+[ "$(jq -r '.action' "$tmp/run/artifacts/healer-refusal.json")" = file ] || fail "healer-refusal.json is not the file-verdict"
+[ "$(jq -r '.leg' "$tmp/run/artifacts/healer-refusal.json")" = found ] || fail "healer-refusal.json does not name the leg"
 pass=$((pass+1))
 
 # 3: CAP BREACH — reverted, mechanical failure marked, generic issue filed,
@@ -305,6 +320,57 @@ bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-ze
 [ "$(git -C "$tmp/co" rev-list --count HEAD)" = "1" ] || fail "checkout not reset to pre_head after conflict"
 unset RACE_ADVANCE_CMD
 grep -q '"title"' "$CURL_LOG" || fail "conflict did not fall through to filing"
+pass=$((pass+1))
+
+# 13: ASSERTION REFUSAL (#1144 rule 1) — the healer's fix would rewrite an
+#     expect(...) line; the rails refuse, NOTHING commits, and a ticket-on-
+#     refusal names the assertion rule. Exactly one claude call (the healer's
+#     own diagnosis is reused — no second reporter call).
+reset_case; export HEAL_MODE=healed-assertion
+red_run "count assertion inconvenient"
+bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (assertion)"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "origin moved on an assertion-weakening heal"
+grep -q 'healer refused (assertion rule)' "$CURL_LOG" || fail "assertion refusal not filed with the rule"
+grep -q 'dependencies' "$CURL_LOG" || fail "assertion refusal not wired as a blocker"
+[ "$(wc -l < "$CLAUDE_CALLS")" = "1" ] || fail "assertion refusal made a second claude call"
+# a would-weaken-a-check refusal needs a ruling, not the swarm: ready-for-session
+grep -q '"confident":false' "$CURL_LOG" 2>/dev/null || true
+unset HEAL_MODE
+pass=$((pass+1))
+
+# 14: PRODUCT-SURFACE REFUSAL (#1144 rule 3) — the fix changes an internal/
+#     behaviour surface; with the consumer's surface globs declared the rails
+#     refuse and file. Origin untouched.
+reset_case; export HEAL_MODE=healed-productsurface HEAL_PRODUCT_SURFACE_GLOBS='internal/* app/src/*'
+red_run "tempting internal tweak"
+bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (product surface)"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "origin moved on a product-surface heal"
+grep -q 'healer refused (product-behaviour surface)' "$CURL_LOG" || fail "product-surface refusal not filed with the rule"
+[ "$(wc -l < "$CLAUDE_CALLS")" = "1" ] || fail "product-surface refusal made a second claude call"
+unset HEAL_MODE HEAL_PRODUCT_SURFACE_GLOBS
+pass=$((pass+1))
+
+# 15: A SUCCESSFUL HEAL marks its fault for the loop-guard (#1144 Patch C).
+reset_case; export HEAL_MODE=healed-good
+red_run "one-time selector drift"
+bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (mark)"
+. "$here/../heal-lib.sh"; mk_fault="$(compute_signature "rehearsal-183" "found :: one-time selector drift")"
+[ "$(cat "$tmp/state/heal-healed-$mk_fault" 2>/dev/null)" = "1" ] || fail "successful heal did not mark the fault for the loop-guard"
+unset HEAL_MODE
+pass=$((pass+1))
+
+# 16: LOOP-GUARD (#1144 rail-6) — a fault marked healed on a PRIOR drive that
+#     reds again files a loop-guard ticket with NO second heal and NO claude
+#     call spent (the guard fires before the session).
+reset_case; export HEAL_MODE=healed-good
+red_run "the fault a prior heal did not hold"
+. "$here/../heal-lib.sh"; lg_fault="$(compute_signature "rehearsal-183" "found :: the fault a prior heal did not hold")"
+echo 1 > "$tmp/state/heal-healed-$lg_fault"
+bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (loop-guard)"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "origin moved despite the loop-guard"
+grep -q 'loop-guard' "$CURL_LOG" || fail "loop-guard did not file its diagnosis"
+[ "$(wc -l < "$CLAUDE_CALLS")" = "0" ] || fail "loop-guard spent a claude call"
+unset HEAL_MODE
 pass=$((pass+1))
 
 echo "OK: $pass cases"

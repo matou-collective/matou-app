@@ -16,7 +16,16 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+# #116: this suite drives the REAL run-triage.sh / heal.sh, both of which mirror
+# a limit-pause park edge + a run row into swarm.db and read the active-account
+# marker. Redirect every host-state path (SWARM_DB, the markers) into $tmp and
+# arm the leak tripwire, so a classified limit refusal here parks a SANDBOX db,
+# not the live ~/swarm/state/swarm.db (whose Loss telemetry the phantom edges
+# poisoned — the reason for this ticket).
+# shellcheck source=test-env.sh
+. "$here/test-env.sh"; test_env_hermetic "$tmp"
 marker="$tmp/limit-marker"            # per-test global marker (never the real /tmp one)
+active="$tmp/active-marker"           # #116 active-account marker, never the real /tmp one
 mkdir -p "$tmp/bin"
 
 # --- shims on PATH: a curl that feeds preflight one untriaged issue and answers
@@ -45,7 +54,8 @@ run_triage() {
   env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
     PATH="$tmp/bin:$PATH" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://x/api/v1/repos/x/y \
-    CLAUDE_LIMIT_MARKER="$marker" TRIAGE_VERDICT_PATH="$tmp/triage-verdict" \
+    CLAUDE_LIMIT_MARKER="$marker" CLAUDE_ACTIVE_MARKER="$active" \
+    TRIAGE_VERDICT_PATH="$tmp/triage-verdict" \
     CLAUDE_CALLED_LOG="$tmp/claude-called" \
     HOST_CAPACITY_DRIVE_WANTED="$tmp/absent-drive-wanted" \
     TRIAGE_DRIVE_DEFER_COUNT="$tmp/triage-defer-count" \
@@ -54,7 +64,7 @@ run_triage() {
 claude_was_called() { [ -s "$tmp/claude-called" ]; }
 
 # AC1 — fresh marker → yields 0 WITHOUT calling claude, and says so.
-rm -f "$marker"; touch "$marker"
+rm -f "$marker"; printf 'A' > "$marker"   # letter-stamped, else a7509a4 distrusts an empty marker
 if out="$(run_triage 2>&1)"; then ec=0; else ec=$?; fi
 [ "$ec" -eq 0 ]                          || fail "triage: a fresh marker must yield exit 0, got $ec"
 claude_was_called                        && fail "triage: a fresh marker must NOT call claude"
@@ -103,7 +113,7 @@ run_heal() {
     HEAL_MODE=hook WORKFLOW=swarm RUN_URL=http://x/runs/1 \
     HEAL_WORKDIR="$tmp/wd" HEALER_STATE="$tmp/state" \
     SWARM_VERDICT_PATH="$tmp/absent-swarm-verdict" \
-    CLAUDE_LIMIT_MARKER="$marker" \
+    CLAUDE_LIMIT_MARKER="$marker" CLAUDE_ACTIVE_MARKER="$active" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
     HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
     HOST_CAPACITY_DRIVE_WANTED="$tmp/absent-drive-wanted" \
@@ -114,7 +124,7 @@ evidence_of() { sed -n 's/^heal: evidence at \([^ ]*\).*/\1/p' <<<"$1" | head -1
 
 # AC3 — the healer wakes during a limit window (fresh marker) → DEFERS without
 # consuming a ledger attempt, and the evidence dir records "deferred: limit window".
-rm -f "$tmp/state/"*; rm -f "$marker"; touch "$marker"
+rm -f "$tmp/state/"*; rm -f "$marker"; printf 'A' > "$marker"   # letter-stamped (a7509a4)
 if out="$(run_heal HEAL_AGENT_CMD="bash $tmp/bin/limit-agent.sh")"; then ec=0; else ec=$?; fi
 [ "$ec" -eq 0 ]                                   || fail "heal: a limit window must defer with exit 0, got $ec"
 [ "$(ls -A "$tmp/state")" = "" ]                  || fail "heal: a deferred incident must consume NO ledger attempt"
@@ -140,6 +150,14 @@ if out="$(run_heal HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh")"; then ec
 echo "$out" | grep -q "CLASS: harness-infra" || fail "heal: a normal incident must still investigate"
 [ "$(ls "$tmp/state" | wc -l)" -eq 1 ] || fail "heal: a normal incident must still write its ledger"
 [ ! -f "$marker" ]                     || fail "heal: a normal incident must not park the host"
+pass=$((pass+1))
+
+# #116 — the leak tripwire (armed by test_env_hermetic) must have stayed quiet:
+# every park/run path above wrote only the SANDBOX swarm.db, so no attempt to
+# write outside $tmp was ever recorded. A future edit that drops the isolation
+# reds HERE instead of silently poisoning the live host telemetry.
+[ ! -f "$tmp/.swarmdb-leak-attempts" ] \
+  || fail "a swarm.db write escaped the sandbox (#116): $(cat "$tmp/.swarmdb-leak-attempts")"
 pass=$((pass+1))
 
 echo "claude-call-guards: $pass groups passed"

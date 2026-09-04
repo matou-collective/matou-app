@@ -95,6 +95,32 @@ type RoleResolver interface {
 	RolesForAIDAt(aid string, at int64) (roles []contributions.Role, ok bool)
 }
 
+// AuthorAIDResolver optionally exposes the member AID bound to a change author
+// account, so the role-only project-scoped rules can compare the author against
+// a project's assigned lead/steward. HistoryRoleResolver implements it; a
+// resolver that does not is simply treated as "author AID unknown", and
+// project-scoped role-only transitions then fall back to the community-role
+// gate.
+type AuthorAIDResolver interface {
+	AIDForAuthor(account string) (aid string, ok bool)
+}
+
+// ProjectAssignmentResolver resolves the per-project roles an AID holds on a
+// project (project_lead / project_steward from assign-role, contributor from
+// contribution assignment), from synced state, deterministically. It lets the
+// project-scoped write rules gate a Contribution/Plan transition on the signer's
+// role on the object's OWNING project. Mirrors contributions.Service.ProjectRoles
+// on the HTTP side. When nil the project-scoped rules fall back to the
+// community-role gate for those object types.
+//
+// known is false when the project itself is not yet in synced state on this
+// peer (replication lag): the caller then falls back to the community-role gate
+// rather than rejecting, so a legitimate steward's sign-off is not dropped while
+// the project object catches up.
+type ProjectAssignmentResolver interface {
+	ProjectRolesForAID(projectID, aid string) (roles []contributions.Role, known bool)
+}
+
 // RejectedChange describes a change excluded from state by a write rule.
 type RejectedChange struct {
 	ObjectType string `json:"objectType"`
@@ -218,6 +244,28 @@ type guardedValue struct {
 	proofAction string
 	proofField  string
 	proofValue  string
+
+	// action is the contributions.Action this transition maps to. It is set
+	// alongside permit (which is allowAction(action)) so the project-scoped
+	// path can re-evaluate the action against the signer's role ON THE OBJECT'S
+	// PROJECT rather than community-globally.
+	action contributions.Action
+
+	// projectScoped marks a transition whose authorisation depends on the
+	// signer's role on the object's OWNING project (issue #166): a
+	// project_steward may sign off only their own project's contributions, a
+	// project_lead may submit only their own project's completion. When the
+	// signer's project role can be resolved (the Project object carries its
+	// lead/steward AID in `current`; a Contribution/Plan resolves its project
+	// via a ProjectAssignmentResolver), the check becomes
+	// contributions.CanPerformProjectAction(roles, projectRoles, action) — which
+	// strips credential-derived project roles so a community "lead" is not lead
+	// of every project. When the project assignment cannot be resolved (no
+	// assignments recorded yet, or no resolver wired — dev/test), it falls back
+	// to the community-role gate (permit), so no legitimate transition is newly
+	// rejected. Community-scope grants (Operations Steward / Founding Member)
+	// pass on every project either way.
+	projectScoped bool
 }
 
 // objectRule declares the guarded field of one object type and which values of
@@ -252,10 +300,12 @@ var communityWriteRules = map[string]objectRule{
 			// Proof-backed: the frontend signs contribution_signoff /
 			// contribution_reward with the acting steward's AID.
 			string(contributions.ContribSignedOff): {
-				permit:      allowAction(contributions.ActionSignOffContribution),
-				proofAction: "contribution_signoff",
-				proofField:  "sign_off_proof",
-				proofValue:  string(contributions.ContribSignedOff),
+				permit:        allowAction(contributions.ActionSignOffContribution),
+				action:        contributions.ActionSignOffContribution,
+				projectScoped: true,
+				proofAction:   "contribution_signoff",
+				proofField:    "sign_off_proof",
+				proofValue:    string(contributions.ContribSignedOff),
 			},
 			string(contributions.ContribRewarded): {
 				permit:      allowAction(contributions.ActionRewardContribution),
@@ -271,15 +321,20 @@ var communityWriteRules = map[string]objectRule{
 			// Proof-backed: the frontend signs project_completion for the
 			// completion approval.
 			string(contributions.ProjectCompleted): {
-				permit:      allowAction(contributions.ActionApproveProjectCompletion),
-				proofAction: "project_completion",
-				proofField:  "proof",
-				proofValue:  string(contributions.ProjectCompleted),
+				permit:        allowAction(contributions.ActionApproveProjectCompletion),
+				action:        contributions.ActionApproveProjectCompletion,
+				projectScoped: true,
+				proofAction:   "project_completion",
+				proofField:    "proof",
+				proofValue:    string(contributions.ProjectCompleted),
 			},
 			// Role-only: submit-completion has no signed proof; keep the interim
-			// role gate (defence-in-depth, weaker binding).
+			// role gate (defence-in-depth, weaker binding). Project-scoped: the
+			// project's assigned lead (project_lead_id in `current`) submits it.
 			string(contributions.ProjectPendingCompletion): {
-				permit: allowAction(contributions.ActionSubmitProjectCompletion),
+				permit:        allowAction(contributions.ActionSubmitProjectCompletion),
+				action:        contributions.ActionSubmitProjectCompletion,
+				projectScoped: true,
 			},
 		},
 	},
@@ -291,10 +346,12 @@ var communityWriteRules = map[string]objectRule{
 		field: "signed_off",
 		byValue: map[string]guardedValue{
 			"true": {
-				permit:      allowAction(contributions.ActionSignOffPlan),
-				proofAction: "plan_signoff",
-				proofField:  "proof",
-				proofValue:  "signed_off",
+				permit:        allowAction(contributions.ActionSignOffPlan),
+				action:        contributions.ActionSignOffPlan,
+				projectScoped: true,
+				proofAction:   "plan_signoff",
+				proofField:    "proof",
+				proofValue:    "signed_off",
 			},
 		},
 	},
@@ -352,6 +409,7 @@ type WriteRuleValidator struct {
 	creds         CredentialVerifier
 	recorder      RejectionRecorder
 	enforceProofs bool
+	projects      ProjectAssignmentResolver
 }
 
 // NewWriteRuleValidator creates a validator. resolver must be non-nil; keys may
@@ -383,6 +441,18 @@ func NewWriteRuleValidator(resolver RoleResolver, keys KeyProvider, recorder Rej
 // applies, preserving part-2 behaviour. Returns the validator for chaining.
 func (v *WriteRuleValidator) WithCredentialVerifier(creds CredentialVerifier) *WriteRuleValidator {
 	v.creds = creds
+	return v
+}
+
+// WithProjectAssignments wires the resolver that supplies per-project role
+// assignments for project-scoped write rules on Contribution/Plan objects
+// (issue #166). When nil (the default), project-scoped rules for those objects
+// fall back to the community-role gate — no legitimate transition is newly
+// rejected, but cross-project over-grants are only caught for Project objects
+// (whose lead/steward AID travels in the object's own state). Returns the
+// validator for chaining.
+func (v *WriteRuleValidator) WithProjectAssignments(projects ProjectAssignmentResolver) *WriteRuleValidator {
+	v.projects = projects
 	return v
 }
 
@@ -438,7 +508,7 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 			if !resolved {
 				return reject("signer AID has no known role", op.Field)
 			}
-			if !gv.permit(roles) {
+			if !v.authorize(gv, objectType, objectID, aid, roles, current) {
 				return reject("signer role not permitted to set this value", op.Field)
 			}
 			// Credential/TEL binding (#112): when a credential verifier is wired,
@@ -455,7 +525,7 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 					}
 					return reject(reason, gv.proofField)
 				}
-				if !gv.permit(credRoles) {
+				if !v.authorize(gv, objectType, objectID, aid, credRoles, current) {
 					reason := "signer holds no unrevoked credential for a permitted role"
 					if credReason != "" {
 						reason = credReason
@@ -474,11 +544,84 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 		if !resolved {
 			continue
 		}
-		if !gv.permit(roles) {
+		authorAID := ""
+		if ar, ok := v.resolver.(AuthorAIDResolver); ok {
+			authorAID, _ = ar.AIDForAuthor(author)
+		}
+		if !v.authorize(gv, objectType, objectID, authorAID, roles, current) {
 			return reject("author not permitted to set this value", op.Field)
 		}
 	}
 	return true
+}
+
+// authorize applies a guarded transition's role check. For a project-scoped
+// transition whose owning project can be resolved, it evaluates the action
+// against the signer's role ON THAT PROJECT (community roles with credential-
+// derived project roles stripped, unioned with the signer's actual assignment
+// roles) — so a project lead/steward is authorised only on their own project,
+// while community-scope grants (Operations Steward / Founding Member) still pass
+// everywhere. When the transition is not project-scoped, or the project role
+// cannot be resolved (signer AID unknown, no assignments recorded, or no
+// resolver wired), it falls back to the community-role gate so no legitimate
+// transition is newly rejected.
+func (v *WriteRuleValidator) authorize(gv guardedValue, objectType, objectID, signerAID string, roles []contributions.Role, current map[string]json.RawMessage) bool {
+	if gv.projectScoped && gv.action != "" && signerAID != "" {
+		if projectRoles, known := v.signerProjectRoles(objectType, objectID, current, signerAID); known {
+			return contributions.CanPerformProjectAction(roles, projectRoles, gv.action)
+		}
+	}
+	return gv.permit(roles)
+}
+
+// signerProjectRoles resolves the per-project roles signerAID holds on the
+// object's owning project, deterministically from synced state. For a Project
+// object the lead/steward AID travels in the object's own `current` state; for a
+// Contribution/Plan it is resolved via the ProjectAssignmentResolver keyed by
+// the object's project_id. Returns ok=false when the project (and thus the
+// signer's role on it) cannot be determined, so the caller falls back to the
+// community-role gate.
+func (v *WriteRuleValidator) signerProjectRoles(objectType, _ string, current map[string]json.RawMessage, signerAID string) ([]contributions.Role, bool) {
+	switch objectType {
+	case TypeProject:
+		lead := fieldString(current, "project_lead_id")
+		steward := fieldString(current, "project_steward_id")
+		if lead == "" && steward == "" {
+			return nil, false
+		}
+		var roles []contributions.Role
+		if signerAID != "" && signerAID == lead {
+			roles = append(roles, contributions.RoleProjectLead)
+		}
+		if signerAID != "" && signerAID == steward {
+			roles = append(roles, contributions.RoleProjectSteward)
+		}
+		return roles, true
+	case TypeContribution, TypeImplementationPlan:
+		if v.projects == nil {
+			return nil, false
+		}
+		projectID := fieldString(current, "project_id")
+		if projectID == "" {
+			return nil, false
+		}
+		return v.projects.ProjectRolesForAID(projectID, signerAID)
+	default:
+		return nil, false
+	}
+}
+
+// fieldString reads a string-valued field from an object's current field state,
+// returning "" when absent.
+func fieldString(current map[string]json.RawMessage, field string) string {
+	if current == nil {
+		return ""
+	}
+	raw, ok := current[field]
+	if !ok {
+		return ""
+	}
+	return jsonStringValue(raw)
 }
 
 // extractProof pulls the Proof envelope for a proof-backed transition from the

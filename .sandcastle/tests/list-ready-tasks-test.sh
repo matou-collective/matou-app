@@ -259,6 +259,36 @@ grep -qE '/issues/95[01]/dependencies' "$tmp/curl.log" && fail "an unlabelled dr
 unset DEPS_DIR DRIVES_FIXTURE
 pass=$((pass+1))
 
+# 10d (#120): LIST_READY_DRIVE_BUDGET must bound the WHOLE drive-blocker block,
+#     not just its loop body. The `labels=standing-drive` listing call itself is
+#     5.5-12.7s on a repo where Forgejo ignores the unknown filter; the old guard
+#     sat INSIDE the loop, AFTER that fetch was already paid for. With the budget
+#     spent BEFORE the block, the standing-drive listing must not be made at all,
+#     and the queue is emitted unpromoted (byte-identical to the no-drive 10b
+#     order). Same fixture as case 10 (drive #950 blocked by #900) — a promotion
+#     that WOULD happen without the skip, proving the skip is what suppresses it.
+export DEPS_DIR="$tmp/deps" DRIVES_FIXTURE="$tmp/drives.json"
+printf '%s\n' '[{"number":950,"title":"THE DRIVE","labels":[{"name":"standing-drive"}]}]' > "$DRIVES_FIXTURE"
+printf '%s\n' '[{"number":900,"state":"open"}]' > "$DEPS_DIR/950.json"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 300, "title": "ordinary lower number", "body": "b", "html_url": "u/300", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 400, "title": "priority non-blocker", "body": "b", "html_url": "u/400", "labels": [{"name":"ready-for-agent"},{"name":"priority"}]},
+  {"number": 900, "title": "the drive blocker", "body": "b", "html_url": "u/900", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+: > "$tmp/curl.log"
+out8d="$(LIST_READY_DRIVE_BUDGET=0 CURL_LOG="$tmp/curl.log" bash "$here/../list-ready-tasks.sh" 2>"$tmp/8d.err")" \
+  || fail "spent-budget drive-block run exited non-zero"
+grep -q 'labels=standing-drive' "$tmp/curl.log" \
+  && fail "a spent LIST_READY_DRIVE_BUDGET must skip the standing-drive listing call ENTIRELY (#120): $(grep 'labels=standing-drive' "$tmp/curl.log")"
+[ "$(jq -r '[.[].number] | join(",")' <<<"$out8d")" = "400,300,900" ] \
+  || fail "with the drive budget spent, #900 must NOT be promoted — unpromoted 10b order (got $(jq -c '[.[].number]' <<<"$out8d"))"
+grep -q "drive-blocker ordering skipped" "$tmp/8d.err" \
+  || fail "the spent-budget skip must say why on stderr: $(cat "$tmp/8d.err")"
+unset DEPS_DIR DRIVES_FIXTURE
+pass=$((pass+1))
+
 # ── #111: the mid-run drive-yield signal ──────────────────────────────────
 # main.mts mirrors a fresh host reservation into the sandbox as
 # /run/host-signals/drive-wanted; when that file exists the lister answers []

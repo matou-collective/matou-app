@@ -213,4 +213,49 @@ out="$(watchdog_detect "$here/fixtures/runs-healer-selfred.json")"
 [ -z "$out" ] || fail "an all-red healer (job name 'watchdog', workflow_id healer.yml) must be self-excluded, got: $out"
 pass=$((pass+1))
 
+# watchdog emits the WORKFLOW, not the JOB name (idss #1045): this tasks endpoint's
+# .name is the JOB ("seam" for ci.yml), but heal.sh's verdict_path cases and the
+# hook-mode WORKFLOW env are WORKFLOW names ("ci"). Emitting the job made
+# verdict_path miss and error_line fall through to grepping worker prose — the
+# #197/#235 phantom-signature class, closed for push/hook mode but left open in
+# WATCHDOG mode. The emitted label must fold .workflow_id.
+wd_fixture="$(mktemp)"
+cat > "$wd_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"seam","workflow_id":"ci.yml","status":"failure","run_number":14671},
+ {"name":"seam","workflow_id":"ci.yml","status":"failure","run_number":14656},
+ {"name":"deploy-broker","workflow_id":"ci.yml","status":"skipped","run_number":14671}
+]}
+JSON
+out="$(watchdog_detect "$wd_fixture")"
+[ "$out" = "$(printf 'ci\talways-red')" ] || fail "ci.yml's 'seam' job must emit workflow 'ci', not the job name, got: $out"
+
+# a matrix workflow's legs (distinct .name "swarm (1)"/"swarm (2)", one shared
+# .workflow_id) fold onto ONE workflow label, so heal.sh's per-workflow ledger
+# dedup collapses them to a single incident instead of one per leg.
+cat > "$wd_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":200},
+ {"name":"swarm (2)","workflow_id":"swarm.yml","status":"failure","run_number":200},
+ {"name":"swarm (1)","workflow_id":"swarm.yml","status":"failure","run_number":199},
+ {"name":"swarm (2)","workflow_id":"swarm.yml","status":"failure","run_number":199}
+]}
+JSON
+out="$(watchdog_detect "$wd_fixture" | sort -u)"
+[ "$out" = "$(printf 'swarm\talways-red')" ] || fail "a matrix's legs must fold onto the one workflow 'swarm', got: $out"
+
+# an absent .workflow_id (older/foreign payload shape) falls back to the job
+# name so the emitted label is never empty (the null-workflow_id fixtures above
+# prove this path stays byte-identical to the pre-fix output).
+cat > "$wd_fixture" <<'JSON'
+{"workflow_runs":[
+ {"name":"custom","status":"failure","run_number":9},
+ {"name":"custom","status":"failure","run_number":8}
+]}
+JSON
+out="$(watchdog_detect "$wd_fixture")"
+[ "$out" = "$(printf 'custom\talways-red')" ] || fail "absent .workflow_id must fall back to the job name, got: $out"
+rm -f "$wd_fixture"
+pass=$((pass+1))
+
 echo "heal-lib: $pass groups passed"

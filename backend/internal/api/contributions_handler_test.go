@@ -313,7 +313,7 @@ func setupSubmittedForEdit(t *testing.T) (*ContributionsHandler, *recordingNotif
 	}
 	svc.TransitionContribution(ctx, "community", c.ID, contributions.ContribConfirmed)
 	svc.AssignContributor(ctx, "community", c.ID, "contributor-1")
-	if _, err := svc.SubmitEvidence(ctx, "community", c.ID, contributions.SubmitEvidenceRequest{CompletionNotes: "done"}); err != nil {
+	if _, err := svc.SubmitEvidence(ctx, "community", c.ID, "contributor-1", contributions.SubmitEvidenceRequest{CompletionNotes: "done"}); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	approved, err := svc.ReviewContribution(ctx, "community", c.ID, contributions.ReviewRequest{Decision: "approved"})

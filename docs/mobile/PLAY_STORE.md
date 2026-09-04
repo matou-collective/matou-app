@@ -239,8 +239,13 @@ see the escalation note in §4.
 ## 6. Automated publishing (#202)
 
 Once the first upload has been done by hand, a `v*` tag publishes on its
-own: `android.yml`'s `build-aab` job ends with a *Publish to Play open
-testing* step that runs `scripts/android/play-upload.sh`.
+own — from **GitHub Actions**, not Forgejo: release AABs are built by
+`.github/workflows/build.yml`'s `android` job (WP2 of the release-builds
+spec; the tag mirrors from Forgejo to GitHub on commit), and that job ends
+with a *Publish AAB to Play open testing* step running
+`scripts/android/play-upload.sh`. Forgejo's `android.yml` `build-aab` is a
+manual smoke build only and never publishes. Learned the hard way on
+v0.6.0 — see the post-mortem in the actions-observability issue (#335).
 
 The script talks to the Play Developer API v3 with nothing but bash,
 openssl, curl and python3 — no marketplace action (they are fetched from
@@ -268,8 +273,9 @@ Console as a user instead:
 3. Play Console -> **Users and permissions -> Invite new users** -> paste
    `play-publisher@matou-app.iam.gserviceaccount.com` -> grant **Release
    manager**, scoped to `nz.matou.app` only.
-4. Store the key JSON as the Forgejo secret `PLAY_SERVICE_ACCOUNT_JSON`
-   (see `docs/SECRETS_CHECKLIST.md`).
+4. Store the key JSON as the **GitHub** repo secret `PLAY_SERVICE_ACCOUNT_JSON`
+   (`gh secret set PLAY_SERVICE_ACCOUNT_JSON < key.json`); the same value in
+   Forgejo is only needed if a smoke publish is ever wired there.
 
 Permission propagation is not instant — allow a few minutes before the
 first run.

@@ -6,6 +6,7 @@ import {
   type RolePolicy,
   type RolePolicyUpdate,
   type RoleDef,
+  type CapabilityMeta,
 } from 'src/lib/api/rolePolicy';
 
 interface RolePolicyState {
@@ -15,6 +16,7 @@ interface RolePolicyState {
   capabilityOrder: string[];
   projectCapabilities: string[];
   callerCapabilities: string[];
+  capabilityMeta: CapabilityMeta[];
   loading: boolean;
   error: string | null;
 }
@@ -27,6 +29,7 @@ export const useRolePolicyStore = defineStore('rolePolicy', {
     capabilityOrder: [],
     projectCapabilities: [],
     callerCapabilities: [],
+    capabilityMeta: [],
     loading: false,
     error: null,
   }),
@@ -50,12 +53,46 @@ export const useRolePolicyStore = defineStore('rolePolicy', {
         ? state.capabilityOrder
         : Object.keys(state.capabilities);
     },
+    // Capabilities belonging to a feature-table group (#312), in display
+    // order. Used to render a feature's own permission table. Falls back to an
+    // empty list when the backend does not serve capabilityMeta.
+    capabilitiesInGroup(state): (group: string) => string[] {
+      return (group: string) =>
+        state.capabilityMeta.filter((m) => m.group === group).map((m) => m.id);
+    },
+    // Display name for a capability, from the server metadata (empty if absent).
+    capabilityDisplayName(state): (cap: string) => string {
+      const byId = new Map(state.capabilityMeta.map((m) => [m.id, m.displayName]));
+      return (cap: string) => byId.get(cap) ?? '';
+    },
     // Whether a capability may be held by a project-scoped role.
     isProjectCapability(state): (cap: string) => boolean {
       const set = new Set(state.projectCapabilities);
       // Empty set (older backend) → treat every capability as allowed so the
       // page still functions; the split simply won't disable any column.
       return (cap: string) => set.size === 0 || set.has(cap);
+    },
+    // Feature areas in display order, each with its capability IDs — the
+    // read-only overview (#319) renders one column per group and the per-feature
+    // tables (#312) one table per group. Derived from the server capabilityMeta,
+    // preserving its order.
+    featureGroups(state): { name: string; capabilities: string[] }[] {
+      const order: string[] = [];
+      const byGroup: Record<string, string[]> = {};
+      for (const m of state.capabilityMeta) {
+        if (!byGroup[m.group]) {
+          byGroup[m.group] = [];
+          order.push(m.group);
+        }
+        byGroup[m.group]!.push(m.id);
+      }
+      return order.map((name) => ({ name, capabilities: byGroup[name] ?? [] }));
+    },
+    // Human label for a capability, from the server metadata (falls back to the
+    // raw id for an unknown/legacy capability).
+    capabilityLabel(state): (cap: string) => string {
+      const labels = new Map(state.capabilityMeta.map((m) => [m.id, m.displayName]));
+      return (cap: string) => labels.get(cap) ?? cap;
     },
     // Roles partitioned by scope for the two tables. A missing scope is
     // treated as community (matches the backend's NormalizeScope default).
@@ -79,6 +116,7 @@ export const useRolePolicyStore = defineStore('rolePolicy', {
         this.capabilityOrder = resp.capabilityOrder ?? [];
         this.projectCapabilities = resp.projectCapabilities ?? [];
         this.callerCapabilities = resp.callerCapabilities ?? [];
+        this.capabilityMeta = resp.capabilityMeta ?? [];
       } catch (e) {
         this.error = e instanceof Error ? e.message : String(e);
       } finally {
