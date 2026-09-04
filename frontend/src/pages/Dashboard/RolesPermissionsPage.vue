@@ -286,6 +286,49 @@
       </q-markup-table>
     </section>
 
+    <!-- Chat feature table (#316): the community-scoped chat capabilities
+         (send messages, manage channels, moderate messages) per community role.
+         Chat capabilities are community-only, so project roles are not listed. -->
+    <section v-if="editableGrants" class="roles-section chat-section" data-feature="chat">
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Chat</h3>
+          <p class="section-subtitle">
+            Who can post messages, manage channels, and moderate others’ messages. Sending is
+            granted to every member role by default; managing and moderating default to stewards
+            and the founder.
+          </p>
+        </div>
+      </div>
+      <q-markup-table flat bordered dense class="roles-matrix chat-roles">
+        <thead>
+          <tr>
+            <th class="text-left">Role</th>
+            <th v-for="cap in chatCapabilityIds" :key="cap" class="text-center" :data-cap="cap">
+              {{ capabilityLabel(cap) }}
+              <q-tooltip>{{ capabilityTooltip(cap) }}</q-tooltip>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="role in communityRoles" :key="role.id" :data-role="role.id">
+            <td class="text-left">
+              {{ role.displayName }}
+              <q-badge v-if="!role.builtin" color="secondary" class="q-ml-xs">custom</q-badge>
+            </td>
+            <td v-for="cap in chatCapabilityIds" :key="cap" class="text-center" :data-cap="cap">
+              <q-toggle
+                :model-value="hasGrant(role.id, cap)"
+                :disable="!store.canManageRoles"
+                dense
+                @update:model-value="(v: boolean) => setGrant(role.id, cap, v)"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </q-markup-table>
+    </section>
+
     <q-dialog v-model="newRoleDialog">
       <q-card style="min-width: 360px">
         <q-card-section class="text-h6">
@@ -372,10 +415,24 @@ const projectsCapabilityIds = computed(() => {
   return fromMeta.length ? fromMeta : PROJECTS_CAPABILITY_IDS;
 });
 
+// The Chat feature has its own permission table (#316). Its capability IDs come
+// from the server group metadata, with a fallback to the known IDs so the table
+// still renders against an older backend.
+const CHAT_CAPABILITY_IDS = ['send_messages', 'manage_channels', 'moderate_messages'];
+const chatCapabilityIds = computed(() => {
+  const fromMeta = store.capabilitiesInGroup('Chat');
+  return fromMeta.length ? fromMeta : CHAT_CAPABILITY_IDS;
+});
+
 // Capabilities owned by a per-feature table above; the generic community/project
 // matrices show every capability that does NOT yet have its own feature table.
 const featureOwnedCapabilityIds = computed(
-  () => new Set([...projectsCapabilityIds.value, ...PROPOSAL_CAPABILITY_IDS]),
+  () =>
+    new Set([
+      ...projectsCapabilityIds.value,
+      ...PROPOSAL_CAPABILITY_IDS,
+      ...chatCapabilityIds.value,
+    ]),
 );
 const capabilityIds = computed(() =>
   store.capabilityColumns.filter((cap) => !featureOwnedCapabilityIds.value.has(cap)),
@@ -431,6 +488,10 @@ const CAPABILITY_LABELS: Record<string, string> = {
   manage_members: 'Manage members',
   create_proposals: 'Create proposals',
   manage_governance: 'Governance',
+  // Chat feature (#316).
+  send_messages: 'Send messages',
+  manage_channels: 'Manage channels',
+  moderate_messages: 'Moderate messages',
   manage_communications: 'Communications',
   manage_roles: 'Manage roles',
   // Projects & Contributions feature (#314).

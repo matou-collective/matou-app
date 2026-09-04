@@ -207,6 +207,15 @@ var capabilityActions = map[Capability][]Action{
 	CapManageGovernance: {ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal},
 	CapManageRoles:      {ActionManageRolePolicy},
 
+	// Chat enforcement (#316). send_messages gates posting a message (default
+	// all — behaviour-neutral until narrowed); manage_channels gates the channel
+	// lifecycle and setting a channel's AllowedRoles; moderate_messages gates
+	// deleting another member's message. manage_channels/moderate_messages are
+	// also the successors of the retired manage_communications.
+	CapSendMessages:     {ActionSendMessage},
+	CapManageChannels:   {ActionCreateChannel, ActionEditChannel, ActionArchiveChannel, ActionSetChannelRoles},
+	CapModerateMessages: {ActionModerateMessage},
+
 	// create_proposals gates authoring a proposal: creating the draft and
 	// submitting it (draft → submitted). Enforced at the proposal create/submit
 	// endpoints (#315). Every member role holds it by default, so behaviour is
@@ -214,12 +223,9 @@ var capabilityActions = map[Capability][]Action{
 	CapCreateProposals: {ActionCreateProposal, ActionSubmitProposal},
 
 	// New feature capabilities that gate no wired action yet — the grants can be
-	// configured ahead of the enforcement slices that wire them (chat, notices,
+	// configured ahead of the enforcement slices that wire them (notices,
 	// contribution-amount visibility, community settings).
 	CapViewContributionAmounts: {},
-	CapSendMessages:            {},
-	CapManageChannels:          {},
-	CapModerateMessages:        {},
 	CapPostNotices:             {},
 	CapManageNotices:           {},
 	CapOpenCommunitySettings:   {},

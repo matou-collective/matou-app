@@ -839,7 +839,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	multisigHandler.RegisterRoutes(mux)
 	noticesHandler.RegisterRoutes(mux)
 	filesHandler.RegisterRoutes(mux)
-	chatHandler.RegisterRoutes(mux)
+	chatHandler.RegisterRoutes(mux, roleLookup)
 	commentCursorsHandler.Routes(mux)
 	notificationsHandler.RegisterRoutes(mux)
 	if pushHandler != nil {
