@@ -17,6 +17,7 @@ import crypto from 'crypto';
 // (produced by `npm run kit:apply` from coa-kit/kit.json). See Matou/coa ADR 0004.
 import { KIT, KIT_BUILD } from 'src/generated/kit';
 import { kitUserDataPath } from './kit-paths';
+import { resolveIdentityKey } from './identity-key';
 
 // Using destructuring to access autoUpdater due to the CommonJS module of 'electron-updater'.
 // It is a workaround for ESM compatibility issues, see https://github.com/electron-userland/electron-builder/issues/7976.
@@ -115,6 +116,11 @@ let backendPort = 0;
 // blocking other local processes from issuing them.
 let apiToken = '';
 
+// Sealed per-install identity encryption key (issue #117). Lives directly under
+// userData — outside the backend's matou-data dir — so resetting backend data
+// never churns the key that decrypts an existing identity.json.
+const identityKeyPath = path.join(app.getPath('userData'), 'identity-key.enc');
+
 /**
  * Find a free TCP port.
  */
@@ -167,6 +173,12 @@ async function startBackend(): Promise<void> {
   const backendPath = getBackendPath();
   const dataDir = path.join(app.getPath('userData'), 'matou-data');
 
+  // Per-install key that encrypts the backend's identity.json at rest (issue
+  // #117). Sealed with the OS keyring (safeStorage) and stored outside the
+  // backend data dir so a data-dir reset doesn't churn it. Empty when the
+  // keyring is unavailable → backend keeps the legacy plaintext format.
+  const identityKey = resolveIdentityKey(safeStorage, fs, identityKeyPath, log);
+
   // Detect production mode: packaged app or explicit env var
   const isProduction = app.isPackaged || process.env.MATOU_ENV === 'production';
 
@@ -181,6 +193,8 @@ async function startBackend(): Promise<void> {
       MATOU_DATA_DIR: dataDir,
       MATOU_CORS_MODE: 'bundled',
       MATOU_API_TOKEN: apiToken,
+      // Only set when the keyring sealed a key; empty keeps the legacy plaintext path.
+      ...(identityKey !== '' && { MATOU_IDENTITY_KEY: identityKey }),
       ...(isProduction && {
         MATOU_ENV: 'production',
         MATOU_CONFIG_SERVER_URL: process.env.PROD_CONFIG_SERVER_URL,
