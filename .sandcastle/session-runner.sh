@@ -62,6 +62,8 @@ fi
 . "$here/model-lib.sh"        # SWARM_MODEL — swarm.config is the ONE model source (#448); before this the session claude call passed no --model and ran on the host user's CLI default
 # shellcheck source=swarm-db-lib.sh
 . "$here/swarm-db-lib.sh"     # the swarm.db trace mirror (#447): a session it ACTUALLY starts records into the SAME host db the swarm uses, so monitors see it (#81). Best-effort — a mirror it cannot write never reds a tick.
+# shellcheck source=claim-lib.sh
+. "$here/claim-lib.sh"        # cross-host claim arbitration (#125): the swarm's own leader election (claim_post/claim_won/_claim_comments) so two hosts draining one ready-for-session queue don't both spend a full session on one ticket — matching the swarm's bound, not a distributed CAS.
 
 # shellcheck disable=SC1091
 if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$here/.env" ]; then . "$here/.env"; fi
@@ -243,6 +245,11 @@ label_id() {
 aw_id="$(label_id agent-working)"
 ab_id="$(label_id agent-blocked)"
 
+# This host's name (pure, no network) — needed by the stale-claim sweep below to
+# attribute and clean THIS host's own cross-host claim markers (#125), and reused
+# for the pick's host affinity (#89) and the claim arbitration further down.
+sr_host="$(session_host_self)"
+
 # session_runner_escalate <issue-number> <note-sentence> — two attempts without
 # progress: agent-blocked + a ticket comment + one Mattermost line. Shared by the
 # post-session outcome path AND the stale-claim sweep (#63), so a session that
@@ -287,6 +294,16 @@ if [ -n "$sweep_queue" ]; then
     [ $(( sweep_now - $(stat -c %Y "$am") )) -gt "$stale_after" ] || continue   # younger than timeout+slack → a live slow session
     echo "session-runner: #$sn carries a stale agent-working claim (attempt older than ${stale_after}s, no live session) — releasing and counting the failed attempt (#63)"
     api -X DELETE "$FORGEJO_API/issues/$sn/labels/$aw_id" >/dev/null 2>&1 || true
+    # Also drop THIS host's stale cross-host claim marker (#125): releasing
+    # agent-working takes the ticket off every future sweep (the sweep only
+    # visits agent-working tickets), so a `swarm-claim host=<us>` comment left
+    # behind would make every future picker LOSE the lowest-id arbitration to a
+    # dead session and wedge the ticket forever. A peer host's stale marker is
+    # cleaned by that peer's own sweep; agent-working hides the ticket until then.
+    for scid in $(api "$FORGEJO_API/issues/$sn/comments" \
+        | jq -r --arg h "$sr_host" '.[] | select((.body // "") | startswith("swarm-claim host=" + $h + " ")) | .id' 2>/dev/null || true); do
+      api -X DELETE "$FORGEJO_API/issues/comments/$scid" >/dev/null 2>&1 || true
+    done
     sfails=$(( $(cat "$SESSION_RUNNER_STATE/fail-$sn" 2>/dev/null || echo 0) + 1 ))
     echo "$sfails" > "$SESSION_RUNNER_STATE/fail-$sn"
     if [ "$sfails" -ge 2 ]; then
@@ -329,7 +346,6 @@ sr_issue_body() {
   api "$FORGEJO_API/issues/$n" | jq -r '.body // ""' 2>/dev/null || true
 }
 
-sr_host="$(session_host_self)"
 pick=""
 for n in $candidates; do
   # host affinity (#89) FIRST — cheapest check, and the one that must never
@@ -368,8 +384,17 @@ echo "session-runner: picked #$pick — $title"
 
 # ── claim: agent-working, released on every exit path ────────────────────────
 claimed=0
+sr_claim_id=""   # the cross-host claim marker comment id (#125), set at arbitration below
 release_claim() {
   [ "$claimed" = 1 ] || return 0
+  # Drop the cross-host claim marker (#125) first, then the label — so NO exit
+  # path (a lost race, a limit park, a graceful advance, a trapped signal) leaves
+  # an orphan `swarm-claim` comment that would make every future picker lose the
+  # lowest-id arbitration to us.
+  if [ -n "${sr_claim_id:-}" ]; then
+    curl -sf --max-time 30 -X DELETE -H "Authorization: token $FORGEJO_TOKEN" \
+      "$FORGEJO_API/issues/comments/$sr_claim_id" >/dev/null 2>&1 || true
+  fi
   curl -sf --max-time 30 -X DELETE -H "Authorization: token $FORGEJO_TOKEN" \
     "$FORGEJO_API/issues/$pick/labels/$aw_id" >/dev/null 2>&1 || true
   claimed=0
@@ -417,6 +442,44 @@ jq -n --argjson l "$aw_id" '{labels: [$l]}' \
       "$FORGEJO_API/issues/$pick/labels" >/dev/null \
   || { echo "session-runner: could not claim #$pick — quiet tick"; exit 0; }
 claimed=1
+
+# ── cross-host claim arbitration (#125): before the expensive checkout+session ─
+# agent-working is an ADDITIVE label POST, not a compare-and-swap, so two hosts
+# draining one ready-for-session queue can both pick THIS ticket in the same
+# window and both claim it — a full standing session wasted on the loser (it only
+# discovers the collision after its session, on the rebase). Adopt the swarm's
+# own leader election (claim-lib.sh) so both fleets speak ONE claim language:
+# post a `swarm-claim host= run=` marker, re-read every claim on the ticket, and
+# proceed only if OURS is the lowest one. A loser RELEASES (marker + label) and
+# stands down cheaply, BEFORE the clone/reset and the claude call — a lost race
+# is NOT a failed attempt, so no attempt marker, no fail-$n, no escalation, no
+# swarm.db row. The run population here is the session-runners' own, not the
+# swarm's, so every present claim counts as a live contender (a peer session-
+# runner's run= is a pid, never a swarm run number): the arbitration reduces to
+# lowest-comment-id-wins — the host-id/timestamp tiebreak that does not depend on
+# the swarm run population. This shrinks the race to one round-trip; it is not a
+# distributed CAS (unavailable over Forgejo labels — the swarm's own protocol
+# carries the same residual non-atomicity), matching the swarm's bound.
+sr_claim_id="$(claim_post "$pick" "$sr_host" "$$" 2>/dev/null || true)"
+if [ -n "$sr_claim_id" ] && [ "$sr_claim_id" != null ]; then
+  # Alive-set = every run present in the ticket's claim comments, so a peer
+  # session-runner's marker still counts as live and the lowest id wins.
+  sr_alive="$(_claim_comments "$pick" 2>/dev/null | awk 'NF>1{print $2}' \
+    | jq -Rn '[inputs | tonumber]' 2>/dev/null || echo '[]')"
+  if ! claim_won "$pick" "$sr_claim_id" "${sr_alive:-[]}"; then
+    echo "session-runner: #$pick — a peer host's claim outranks ours (#125); standing down before the session (a lost race is not a failed attempt)"
+    release_claim
+    exit 0
+  fi
+  echo "session-runner: #$pick — won the cross-host claim ($sr_claim_id); proceeding (#125)"
+else
+  # claim_post failed (a forge blip): can't arbitrate, so fall back to today's
+  # behaviour and run — the rare unarbitrated race is the pre-#125 status quo,
+  # never a wedge. Normalise the id to empty so release_claim skips the marker
+  # DELETE (there is nothing to delete).
+  sr_claim_id=""
+  echo "session-runner: #$pick — could not post a cross-host claim marker; proceeding unarbitrated (#125)"
+fi
 
 # ── dedicated checkout (NEVER the shared swarm checkout — peers work there) ──
 if [ ! -d "$SESSION_RUNNER_CHECKOUT/.git" ]; then

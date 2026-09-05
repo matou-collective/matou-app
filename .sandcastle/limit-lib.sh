@@ -29,6 +29,27 @@ CLAUDE_LIMIT_RE="hit your .*limit|usage limit reached|cc_cli_limit_message"
 # claude_limit_hit <file> — 0 iff the log shows a subscription-limit refusal.
 claude_limit_hit() { grep -qiE "$CLAUDE_LIMIT_RE" "$1"; }
 
+# TRANSIENT API faults (idss phase-7 "freshness tax" report, finding 5): on
+# 2026-09-03 the in-drive healer's claude call died with `API Error: 529
+# {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`.
+# Nothing classified it — not a limit, not an auth failure — so the call read
+# as an "unparseable verdict", the reporter's headless fallback filed one
+# unparseable ticket and one with its conclusion inverted, and a human session
+# spent its time correcting them before a worker could start. A 529 is a
+# minute of waiting, not a diagnosis: the caller retries ONCE after
+# CLAUDE_TRANSIENT_RETRY_DELAY before falling through. The pattern is the
+# CLI's OWN error framing (`API Error: 5xx`, the API's overloaded_error /
+# api_error types, "Internal server error") — never a bare status number, so
+# a drive log that QUOTES a 503 from the product under test is not a transient
+# (the callers also only consult this when no verdict parsed, belt and braces).
+CLAUDE_TRANSIENT_RE='API Error: 5[0-9]{2}|"type": *"overloaded_error"|"type": *"api_error"|overloaded_error|Internal server error'
+CLAUDE_TRANSIENT_RETRY_DELAY="${CLAUDE_TRANSIENT_RETRY_DELAY:-60}"
+
+# claude_transient_hit <file>... — 0 iff any (non-empty) file shows a transient
+# API fault. Multi-file like claude_auth_failed: the CLI puts the API error on
+# stderr, but on 2026-08-14 a refusal arrived on stdout, so check both.
+claude_transient_hit() { local f; for f in "$@"; do [ -s "$f" ] && grep -qiE "$CLAUDE_TRANSIENT_RE" "$f" && return 0; done; return 1; }
+
 # claude_limit_reset_hint <file> — what to tell the operator. A usage-window
 # refusal carries its own "resets …" tail; a spend limit carries none, so fall
 # back to the limit line itself ("ask your admin to raise it at …") rather

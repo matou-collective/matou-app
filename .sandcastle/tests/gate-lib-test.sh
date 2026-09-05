@@ -66,7 +66,54 @@ printf 'internal/x.go\n' | \
 [ "$rc" -eq 0 ] || fail "the Go stage must run with git's hook env (GIT_DIR/GIT_INDEX_FILE) scrubbed"
 pass=$((pass+1))
 
+# --- per-repo override: an executable .sandcastle/go-gate.sh runs (#126) ------
+# A consumer whose layout/toolchain differs from the nix default drops a per-repo
+# executable at .sandcastle/go-gate.sh; with no GATE_GO_CMD, the Go stage runs it.
+gateroot="$(mktemp -d)"
+mkdir -p "$gateroot/.sandcastle"
+printf '#!/usr/bin/env bash\ntouch %q\n' "$marker" > "$gateroot/.sandcastle/go-gate.sh"
+chmod +x "$gateroot/.sandcastle/go-gate.sh"
+
+rm -f "$marker"
+rc=0
+gate_go_stage "$gateroot" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "an executable .sandcastle/go-gate.sh must run and its exit propagate"
+[ -f "$marker" ] || fail "the Go stage must run .sandcastle/go-gate.sh when no GATE_GO_CMD is set"
+pass=$((pass+1))
+
+# GATE_GO_CMD takes precedence over an executable .sandcastle/go-gate.sh: the
+# script would create the marker; the env override (which does not) must win.
+rm -f "$marker"
+rc=0
+GATE_GO_CMD="true" gate_go_stage "$gateroot" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "GATE_GO_CMD must resolve when set"
+[ ! -f "$marker" ] || fail "GATE_GO_CMD must take precedence over .sandcastle/go-gate.sh"
+pass=$((pass+1))
+
+# The .sandcastle/go-gate.sh branch runs under the same git-env scrub as
+# GATE_GO_CMD — GIT_DIR/GIT_INDEX_FILE must not leak into the per-repo gate.
+printf '#!/usr/bin/env bash\n[ -z "${GIT_DIR:-}${GIT_INDEX_FILE:-}" ] || exit 7\n' \
+  > "$gateroot/.sandcastle/go-gate.sh"
+chmod +x "$gateroot/.sandcastle/go-gate.sh"
+rc=0
+GIT_DIR=/somewhere/.git GIT_INDEX_FILE=/somewhere/.git/index \
+  gate_go_stage "$gateroot" 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail ".sandcastle/go-gate.sh must run with git's hook env scrubbed"
+pass=$((pass+1))
+
+# A non-executable .sandcastle/go-gate.sh is NOT honoured: with no GATE_GO_CMD
+# and no nix it still fails closed (an un-lintable Go change never ships).
+if ! command -v nix >/dev/null 2>&1; then
+  chmod -x "$gateroot/.sandcastle/go-gate.sh"
+  rc=0
+  gate_go_stage "$gateroot" 2>/dev/null || rc=$?
+  [ "$rc" -ne 0 ] || fail "a non-executable .sandcastle/go-gate.sh must not satisfy the gate — fail closed"
+  pass=$((pass+1))
+fi
+rm -rf "$gateroot"
+
 # --- fail-closed: a Go change with no GATE_GO_CMD and no nix blocks the push -
+# (no executable .sandcastle/go-gate.sh here either — none of the three resolve.)
 if ! command -v nix >/dev/null 2>&1; then
   rc=0
   printf 'internal/x.go\n' | gate_run "$PWD" 2>/dev/null || rc=$?

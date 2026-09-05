@@ -326,6 +326,29 @@ grep -Eq '^[[:space:]]*37,?[[:space:]]*$' "$CURL_LOG" && fail "unparseable diagn
 grep -Eq '^[[:space:]]*40,?[[:space:]]*$' "$CURL_LOG" && fail "unparseable diagnosis wrongly marked confident (bug label)"
 pass=$((pass+1))
 
+# 14a (idss freshness-tax finding 5): a TRANSIENT API fault twice in a row on
+#     the reporter's own call (both attempts die with API 529) still files —
+#     the generic fallback, ready-for-session — and the log NAMES the transient
+#     rather than calling it unparseable. Exactly two calls (one retry).
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+echo x >> "${TRANSIENT_CALLS:?}"
+echo 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}' >&2
+exit 1
+SH
+chmod +x "$tmp/bin/claude"
+export TRANSIENT_CALLS="$tmp/transient-calls"; : > "$TRANSIENT_CALLS"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "fault during an api brownout"
+CLAUDE_TRANSIENT_RETRY_DELAY=0 bash "$here/../rehearsal-report.sh" "$tmp/run" > "$tmp/out.14a" || fail "reporter exited non-zero (transient twice)"
+grep -q 'transient fault (5xx/overloaded) — retrying once' "$tmp/out.14a" || fail "the reporter did not retry the transient: $(cat "$tmp/out.14a")"
+grep -q 'transient fault twice in a row — filing the generic fallback' "$tmp/out.14a" || fail "the double transient was not named: $(cat "$tmp/out.14a")"
+[ "$(wc -l < "$TRANSIENT_CALLS")" = 2 ] || fail "expected exactly two reporter claude calls, got $(wc -l < "$TRANSIENT_CALLS")"
+grep -q '/issues -d' "$CURL_LOG" || fail "a double transient must still file (the drive must block)"
+grep -q 'rehearsal drive red at' "$CURL_LOG" || fail "the generic fallback title was not used"
+grep -Eq '^[[:space:]]*38,?[[:space:]]*$' "$CURL_LOG" || fail "the fallback must be ready-for-session"
+pass=$((pass+1))
+
 # 14b (#531): an explicit unconfident diagnosis (valid JSON, "confident":false)
 #     — not just a totally unparseable one — also files ready-for-session, not
 #     ready-for-human. Pins the general branch, not just the unparseable edge.

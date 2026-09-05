@@ -320,6 +320,88 @@ out="$(run_heal_smoke)"
 [ ! -f "$work/state/$smokeprose" ] || fail "the smoke-drive degrade path must NOT grep worker prose"
 echo "$out" | grep -qi "signature degraded to workflow name" || fail "a degraded smoke-drive signature must be flagged in the post"
 
+# --- #127: pr-e2e is a verdict-bearing workflow too --------------------------
+# The reader half of matou-app#294: the consumer's run-pr-e2e.sh writes the same
+# stage/exit marker (via verdict-lib.sh) at /tmp/matou-<tag>-pr-e2e-verdict.txt.
+# verdict_path used to return empty for `pr-e2e`, so a red feature-e2e fell
+# through to the (now-removed) prose grep and keyed the signature on an unrelated
+# swarm worker session (matou-app pr-e2e run 11299 keyed dd2093951aa5 on a
+# sentence from an unrelated SUCCESS). Pin: the marker (the failing spec) keys the
+# signature; the same spec → the same signature, a different spec → a different
+# one; and its absence degrades (never prose), exactly like swarm/smoke-drive.
+rm -f "$work/state/"*
+pre2e_verdict="$work/pr-e2e-verdict.txt"
+run_heal_pre2e() {
+  env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
+    HEAL_MODE=hook WORKFLOW=pr-e2e RUN_URL=http://x/runs/9 \
+    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
+    PR_E2E_VERDICT_PATH="$pre2e_verdict" \
+    CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+    CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
+    HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
+    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+    FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+    HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
+    "$@" bash "$here/../heal.sh" 2>&1
+}
+# a fresh verdict naming the failing spec → the marker-derived signature (AC1)
+printf 'stage=pr-e2e\nexit=1\n--- error lines ---\niterating tree for state: no read key\n' > "$pre2e_verdict"
+pre2esig="$(compute_signature pr-e2e "$(seam_verdict_signal "$pre2e_verdict")")"
+pre2eprose="$(compute_signature pr-e2e "$(grep -hE 'error|Error|ERR|failed|Failed|timed out|fatal' "$work/wd/.sandcastle/logs/x-worker.log" | tail -1)")"
+out="$(run_heal_pre2e)"
+[ -f "$work/state/$pre2esig" ] || fail "pr-e2e signature must key on the run-pr-e2e.sh verdict marker (#127)"
+[ ! -f "$work/state/$pre2eprose" ] || fail "pr-e2e signature must NOT be minted from worker prose (#127)"
+echo "$out" | grep -qi "signature degraded" && fail "a fresh pr-e2e verdict must NOT flag the signature degraded"
+[ "$pre2esig" != "$pre2eprose" ] || fail "test bug: pr-e2e marker and prose signatures must differ to be meaningful"
+# same failing spec on a second red run → the SAME signature (AC2)
+rm -f "$work/state/"*
+out="$(run_heal_pre2e)"
+[ -f "$work/state/$pre2esig" ] || fail "the same pr-e2e failing spec must key the SAME signature (#127 AC2)"
+# a DIFFERENT failing spec → a DIFFERENT signature (AC2)
+rm -f "$work/state/"*
+printf 'stage=pr-e2e\nexit=1\n--- error lines ---\n1) [chromium] › e2e-checkout.spec.ts:88 › guest checkout\n' > "$pre2e_verdict"
+pre2esig2="$(compute_signature pr-e2e "$(seam_verdict_signal "$pre2e_verdict")")"
+[ "$pre2esig2" != "$pre2esig" ] || fail "test bug: the two pr-e2e specs must yield different signatures"
+out="$(run_heal_pre2e)"
+[ -f "$work/state/$pre2esig2" ] || fail "a different pr-e2e failing spec must key a DIFFERENT signature (#127 AC2)"
+[ ! -f "$work/state/$pre2esig" ] || fail "a moved pr-e2e fault must NOT reuse the prior spec's signature (#127 AC2)"
+# no pr-e2e verdict at all → degrade to the workflow name, never prose
+rm -f "$work/state/"* "$pre2e_verdict"
+pre2edeg="$(compute_signature pr-e2e "")"
+out="$(run_heal_pre2e)"
+[ -f "$work/state/$pre2edeg" ] || fail "with no pr-e2e verdict the signature must degrade to the workflow name (#127)"
+[ ! -f "$work/state/$pre2eprose" ] || fail "the pr-e2e degrade path must NOT grep worker prose (#127)"
+echo "$out" | grep -qi "signature degraded to workflow name" || fail "a degraded pr-e2e signature must be flagged in the post"
+
+# --- #127: an UNWIRED workflow keys on a stable no-verdict line, never prose --
+# A workflow with no verdict_path entry at all (a watchdog-detected name, or a
+# runner whose verdict seam is not yet vendored) used to fall through to the
+# prose grep of the swarm worker tail — minting a fresh phantom signature from
+# whatever unrelated "error"/"failed" narration the newest log carried. It now
+# keys on a stable `no verdict for workflow <w>` line, so the signature is
+# constant and unmistakably unwired, and a red never borrows unrelated prose.
+rm -f "$work/state/"*
+printf 'thinking: an unrelated error, Failed, fatal narration from another run\n' \
+  > "$work/wd/.sandcastle/logs/x-worker.log"
+unwiredprose="$(compute_signature feature-lint "$(grep -hE 'error|Error|ERR|failed|Failed|timed out|fatal' "$work/wd/.sandcastle/logs/x-worker.log" | tail -1)")"
+unwiredsig="$(compute_signature feature-lint "no verdict for workflow feature-lint")"
+out="$(env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
+  HEAL_MODE=hook WORKFLOW=feature-lint RUN_URL=http://x/runs/10 \
+  HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
+  CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+  CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
+  HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
+  HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+  FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+  HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+  HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
+  bash "$here/../heal.sh" 2>&1)"
+[ -f "$work/state/$unwiredsig" ] || fail "an unwired workflow must key on the stable no-verdict line (#127)"
+[ ! -f "$work/state/$unwiredprose" ] || fail "an unwired workflow must NOT mint a signature from worker prose (#127)"
+rm -f "$work/wd/.sandcastle/logs/"*.log
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+
 # fresh state; agent that never writes diagnosis.md → healer posts plain alert
 rm -f "$work/state/"* "$work/wd/.sandcastle/logs/"*.log
 echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"

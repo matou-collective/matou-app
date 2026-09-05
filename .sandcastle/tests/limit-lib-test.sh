@@ -248,4 +248,27 @@ rm -f "$empty"
 claude_auth_failed "$tmp" && fail "an empty file must never match"
 pass=$((pass+1))
 
+# --- claude_transient_hit (idss freshness-tax finding 5): the CLI's own 5xx /
+#     overloaded framing is a transient; a product 503 quoted in a drive log,
+#     a bare status number, or an empty file is NOT. ---
+tr_yes() { printf '%s\n' "$1" > "$tmp"; claude_transient_hit "$tmp"; }
+tr_yes 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}' || fail "the 2026-09-03 529 shape"
+tr_yes 'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}' || fail "500 api_error"
+tr_yes 'API Error: 503 Service Unavailable' || fail "bare API Error 503"
+tr_yes '  "type": "overloaded_error",' || fail "pretty-printed overloaded_error"
+for line in \
+  "agent-install: /get?artifact=vm-guest returned 503" \
+  "curl: (22) The requested URL returned error: 503" \
+  "HTTP 529 from the broker" \
+  "API Error: 401 authentication_error" \
+  "API Error: 429 rate_limit_error"
+do
+  tr_yes "$line" && fail "must NOT treat this as a transient API fault: $line"
+done
+: > "$tmp"; claude_transient_hit "$tmp" && fail "an empty file must never match"
+printf '%s\n' 'API Error: 529 overloaded_error' > "$tmp"; empty="$(mktemp)"
+claude_transient_hit "$empty" "$tmp" || fail "must find a match among multiple file args"; rm -f "$empty"
+[ "$CLAUDE_TRANSIENT_RETRY_DELAY" = 60 ] || fail "default retry delay should be 60s, got $CLAUDE_TRANSIENT_RETRY_DELAY"
+pass=$((pass+1))
+
 echo "limit-lib: $pass groups passed"
