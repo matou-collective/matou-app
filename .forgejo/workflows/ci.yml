@@ -37,49 +37,14 @@ jobs:
           git fetch -q --depth=1 origin "$SHA"
           git checkout -q -f FETCH_HEAD
       - name: Frontend + backend checks in the sandbox image
-        run: |
-          set -euo pipefail
-          # AGENT_UID/GID MUST follow the host user (sandcastle build-image does
-          # the same): the image's "agent" defaults to 1000, and the bind-mounted
-          # workspace is owned by whichever uid the runner runs as — 1000 on
-          # matou-workstation, 1500 on elitebook-03. Without this, npm ci dies
-          # with EACCES on node_modules the moment the job lands on a pool host
-          # whose uid differs (dev-factory GOTCHAS 6).
-          # Host-capacity slot (#268): the image build and the checks are the
-          # heavy work — they starved the pr-e2e drive when they co-ran
-          # unlocked. Each rides ONE pooled slot via the bounded-camp wrapper
-          # (event-driven job: a yield would lose the run). Two acquisitions,
-          # not one held across both, so an exclusive drive can slip between.
-          bash .sandcastle/host-slot-wait.sh 1800 \
-          docker build --build-arg AGENT_UID="$(id -u)" --build-arg AGENT_GID="$(id -g)" \
-            -t matou-app-ci -f .sandcastle/Dockerfile .sandcastle
-          # --entrypoint bash is required: the image's ENTRYPOINT is
-          # ["sleep", "infinity"] (for sandcastle's own bind-mount/exec
-          # workflows), and without an override `docker run` appends the
-          # trailing command to that entrypoint's argv instead of replacing
-          # it — so this would silently run `sleep infinity bash -lc ...`
-          # and hang until timeout-minutes kills the job.
-          # --init gives the container a signal-forwarding/zombie-reaping PID 1
-          # (tini) so a runner SIGTERM on cancel actually stops the tree instead
-          # of being ignored by `bash -lc` (#331). --name/--label let a cancelled
-          # or outage-killed run be reaped by name (always() step below) and by
-          # label (dev-factory#122 sweep) once --rm can no longer fire.
-          bash .sandcastle/host-slot-wait.sh 1800 \
-          docker run --rm --init --name "$CI_CONTAINER" \
-            --label matou.factory=ci --label "matou.run=$CI_RUN_ID" \
-            --entrypoint bash -v "$PWD":/work -w /work matou-app-ci -lc '
-            set -euo pipefail
-            cd frontend && CI=true npm ci && npm run test:script && npm run lint && npm run build && cd ..
-            cd backend && go build ./... && make test && cd ..
-            echo "==> Go lint (#346): same stages as the sandbox pre-push gate, findings since origin/main"
-            git fetch -q --depth=1 origin main
-            cd backend && golangci-lint run --new-from-rev origin/main ./... && cd ..
-            echo "==> kit drift check (#245): generated artefacts must match npm run kit:apply"
-            cd frontend && npm run kit:apply && git diff --exit-code -- src/generated src/css/kit-tokens.scss kit.build.json src-capacitor/capacitor.config.json src-capacitor/android/app/src/main/res/values/strings.xml || {
-              echo "ERROR: generated kit artefacts drifted — run npm run kit:apply and commit the result (icons are excluded: PNG output varies across sharp builds)" >&2
-              exit 1
-            }
-          '
+        # Body lives in .sandcastle/run-ci-checks.sh so the run can be wrapped in
+        # the on-failure verdict seam: heal.sh maps `ci` to
+        # /tmp/matou-<repo-tag>-seam-verdict.txt, nothing here ever wrote it, and
+        # every red ci therefore reached the healer as a workflow-name-only
+        # signature with "Trigger error line: unknown" (run 13398).
+        env:
+          REPO_SLUG: ${{ github.repository }}
+        run: bash .sandcastle/run-ci-checks.sh
       - name: Investigate failure (healer)
         if: failure()
         env:
