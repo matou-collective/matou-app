@@ -15,8 +15,13 @@
  * before the Capacitor/Firebase slice).
  */
 
-import { boot } from 'quasar/wrappers';
-import { setPushRouter, ensurePushListeners, isPushPlatform } from 'src/composables/usePush';
+import { boot } from "quasar/wrappers";
+import {
+  setPushRouter,
+  ensurePushListeners,
+  ensureSenderRelaySession,
+  isPushPlatform,
+} from "src/composables/usePush";
 
 export default boot(({ router }) => {
   // Set before the listeners: the eligibility check reads the current route to
@@ -24,5 +29,9 @@ export default boot(({ router }) => {
   setPushRouter(router);
   if (isPushPlatform()) {
     ensurePushListeners();
+  } else {
+    // Desktop/web send DMs too: the backend needs a relay session to notify a
+    // sleeping phone (#250), and only the WebView can sign one into existence.
+    ensureSenderRelaySession();
   }
 });

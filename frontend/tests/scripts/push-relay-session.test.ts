@@ -262,11 +262,58 @@ describe('relay-session minting (#277)', () => {
       expect(postRelaySession.mock.calls.length).toBe(afterRegister);
     });
 
-    it('is a no-op off the push platform', async () => {
+    it('re-mints off the push platform too — desktop senders need a session (#250)', async () => {
+      // No session held → stale → foreground mints one even on web/desktop:
+      // the backend spends it on /notify when this user DMs a phone.
+      installCapacitor(undefined, 'web');
+      const push = await loadPush();
+      const identity = await identityStore();
+      identity.currentAID = aidInfo('aid-a');
+      await push.handleAppForeground();
+      expect(getRelayChallenge).toHaveBeenCalledTimes(1);
+      expect(postRelaySession).toHaveBeenCalledTimes(1);
+    });
+
+    it('is a no-op off the push platform while signed out', async () => {
       installCapacitor(undefined, 'web');
       const push = await loadPush();
       await push.handleAppForeground();
       expect(getRelayChallenge).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sender-side wiring (desktop/web, #250)', () => {
+    it('mints once an onboarded identity is active', async () => {
+      installCapacitor(undefined, 'web');
+      const push = await loadPush();
+      push.ensureSenderRelaySession();
+      await settle();
+      expect(getRelayChallenge).not.toHaveBeenCalled(); // signed out → nothing
+
+      const identity = await identityStore();
+      identity.currentAID = aidInfo('aid-a');
+      const { useOnboardingStore } = await import('../../src/stores/onboarding');
+      useOnboardingStore().currentScreen = 'main';
+      await settle();
+      expect(getRelayChallenge).toHaveBeenCalledTimes(1);
+      expect(signChallenge).toHaveBeenCalledWith('nonce-1', 'aid-a');
+      expect(postRelaySession).toHaveBeenCalledTimes(1);
+    });
+
+    it('a 404 from the relay routes latches push dark — no retry per lifecycle tick', async () => {
+      installCapacitor(undefined, 'web');
+      getRelayChallenge.mockRejectedValueOnce(new Error('relay-challenge failed: HTTP 404'));
+      const push = await loadPush();
+      const identity = await identityStore();
+      identity.currentAID = aidInfo('aid-a');
+      const { useOnboardingStore } = await import('../../src/stores/onboarding');
+      useOnboardingStore().currentScreen = 'main';
+      push.ensureSenderRelaySession();
+      await settle();
+      expect(getRelayChallenge).toHaveBeenCalledTimes(1);
+
+      await push.handleAppForeground(); // latched → no second attempt
+      expect(getRelayChallenge).toHaveBeenCalledTimes(1);
     });
   });
 
