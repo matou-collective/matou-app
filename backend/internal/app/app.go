@@ -405,6 +405,26 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		WithProjectAssignments(writeRuleProjects)
 	spaceManager.ObjectTreeManager().SetChangeValidator(writeRuleValidator)
 
+	// Hydrate the type registry from the community space (#396 slice 3). The
+	// registry was Bootstrap()ed with the hardcoded built-ins above; org-setup
+	// persists per-org schema edits as type_definition objects in the community
+	// space, so without this any admin schema change would silently revert at
+	// restart. LoadFromSpace merges persisted definitions over the built-ins
+	// (persisted wins, but core fields are re-asserted from the built-in) into
+	// the same registry the GET handlers below read, so they serve hydrated
+	// data. Runs after SetChangeValidator so the read validates like any other.
+	// Never fatal: a missing/unreadable stored definition logs and falls back to
+	// the built-ins — the same posture as the push-relay config. The read is
+	// from local any-store, so an org whose schema arrives only later over P2P
+	// hydrates on the next boot (out of scope for this slice).
+	if communitySpaceID != "" {
+		if err := typeRegistry.LoadFromSpace(ctx, typeRegistryReaderAdapter{mgr: spaceManager.ObjectTreeManager()}, communitySpaceID); err != nil {
+			log.Printf("[Types] hydration from community space %s failed, using built-ins: %v", communitySpaceID, err)
+		} else {
+			log.Printf("[Types] registry hydrated from community space %s (%d types)", communitySpaceID, len(typeRegistry.All()))
+		}
+	}
+
 	// Create push-based listener for P2P chat changes (replaces polling)
 	chatListener := anysync.NewTreeUpdateListener(
 		&chatPersisterAdapter{store: store},
@@ -1060,6 +1080,33 @@ func (a *eventBrokerAdapter) Broadcast(event anysync.SSEEvent) {
 		Type: event.Type,
 		Data: event.Data,
 	})
+}
+
+// typeRegistryReaderAdapter adapts anysync.ObjectTreeManager to the
+// types.ObjectReader the registry hydrates from at boot: it maps the manager's
+// []*ObjectPayload onto the registry's []types.ObjectEntry.
+type typeRegistryReaderAdapter struct {
+	mgr *anysync.ObjectTreeManager
+}
+
+func (a typeRegistryReaderAdapter) ReadObjectsByType(ctx context.Context, spaceID, typeName string) ([]matouTypes.ObjectEntry, error) {
+	payloads, err := a.mgr.ReadObjectsByType(ctx, spaceID, typeName)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]matouTypes.ObjectEntry, 0, len(payloads))
+	for _, p := range payloads {
+		if p == nil {
+			continue
+		}
+		entries = append(entries, matouTypes.ObjectEntry{
+			ID:      p.ID,
+			Type:    p.Type,
+			Data:    p.Data,
+			Version: p.Version,
+		})
+	}
+	return entries, nil
 }
 
 // chatPersisterAdapter adapts anystore.LocalStore to anysync.ChatPersister.
