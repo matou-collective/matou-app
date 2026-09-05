@@ -317,7 +317,7 @@ func TestUnifiedTreeManager_RecordBuildFailure_SameTreeDoesNotDoubleCount(t *tes
 	}
 }
 
-func TestUnifiedTreeManager_RecordBuildFailure_NoopWithoutSpacesDir(t *testing.T) {
+func TestUnifiedTreeManager_RecordBuildFailure_NoopWithoutSpacesDir(_ *testing.T) {
 	utm := NewUnifiedTreeManager() // SetSpacesDir never called
 	ioErr := errors.New("disk I/O error")
 	for i := 0; i < treeBuildFailureThreshold+1; i++ {

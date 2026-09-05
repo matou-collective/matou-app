@@ -134,7 +134,7 @@ func probeSpaceStoreHealth(ctx context.Context, dbPath string) error {
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	if err := store.QuickCheck(probeCtx); err != nil {
 		return fmt.Errorf("quick_check: %w", err)

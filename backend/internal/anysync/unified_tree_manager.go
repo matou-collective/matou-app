@@ -111,14 +111,14 @@ func (u *UnifiedTreeManager) SetSpacesDir(dir string) {
 // same space have failed this way, a recovery marker is written so the next
 // boot force-quarantines that space's store even if the boot-time probe
 // happens to pass (the underlying I/O fault may be intermittent).
-func (u *UnifiedTreeManager) recordBuildFailure(spaceId, treeId string, buildErr error) {
+func (u *UnifiedTreeManager) recordBuildFailure(spaceID, treeID string, buildErr error) {
 	if u.spacesDir == "" || !isStoreIOError(buildErr) {
 		return
 	}
 
-	failuresVal, _ := u.buildFailures.LoadOrStore(spaceId, &sync.Map{})
+	failuresVal, _ := u.buildFailures.LoadOrStore(spaceID, &sync.Map{})
 	failures := failuresVal.(*sync.Map)
-	failures.Store(treeId, struct{}{})
+	failures.Store(treeID, struct{}{})
 
 	var count int
 	failures.Range(func(_, _ any) bool {
@@ -128,8 +128,8 @@ func (u *UnifiedTreeManager) recordBuildFailure(spaceId, treeId string, buildErr
 
 	if count == treeBuildFailureThreshold {
 		log.Printf("[UTM] %d distinct trees in space %s failed with storage I/O errors — "+
-			"writing recovery marker to force store quarantine on next boot", count, spaceId)
-		WriteRecoveryMarker(u.spacesDir, spaceId, fmt.Sprintf("%d distinct tree build failures: %v", count, buildErr))
+			"writing recovery marker to force store quarantine on next boot", count, spaceID)
+		WriteRecoveryMarker(u.spacesDir, spaceID, fmt.Sprintf("%d distinct tree build failures: %v", count, buildErr))
 	}
 }
 
