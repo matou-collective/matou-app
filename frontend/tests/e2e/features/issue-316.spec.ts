@@ -8,7 +8,7 @@ import { test, expect, Page } from './fixtures';
 //     setting its AllowedRoles (default: stewards + founder);
 //   • moderate_messages gates deleting another member's message (default:
 //     stewards + founder).
-// The Roles & Permissions page gains a dedicated "Chat" feature table for these
+// Community Settings has a dedicated "Chat" feature table for these
 // three capabilities.
 //
 // Enforcement resolves the local backend identity's roles, so the admin backend
@@ -25,16 +25,17 @@ async function adminAid(): Promise<string> {
   return body.aid as string;
 }
 
-// Navigate to the Roles & Permissions page from wherever login left the app.
+// Navigate to the Community Settings page (home of the permission tables)
+// from wherever login left the app.
 async function openRolesPage(page: Page): Promise<void> {
   const enter = page.getByRole('button', { name: /enter community/i });
   if (await enter.isVisible().catch(() => false)) {
     await enter.click();
   }
-  const rolesNav = page.locator('.nav-item', { hasText: 'Roles' });
-  await expect(rolesNav).toBeVisible({ timeout: 30_000 });
-  await rolesNav.click();
-  await expect(page.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
+  const gear = page.locator('.community-settings-btn');
+  await expect(gear).toBeVisible({ timeout: 30_000 });
+  await gear.click();
+  await expect(page.getByRole('heading', { name: 'Community Settings' })).toBeVisible();
 }
 
 test.describe.serial('Chat RBAC + Chat permission table (#316)', () => {

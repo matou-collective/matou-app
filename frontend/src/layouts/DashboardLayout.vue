@@ -158,7 +158,6 @@ import {
   Bug,
   Menu,
   Settings,
-  ShieldCheck,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -250,7 +249,6 @@ const NAV_ICONS: Record<string, Component> = {
   proposals: Vote,
   projects: Target,
   contributions: Hammer,
-  'roles-permissions': ShieldCheck,
 };
 
 const navBadges = computed<Record<string, number>>(() => ({
@@ -260,12 +258,8 @@ const navBadges = computed<Record<string, number>>(() => ({
   contributions: contributionsUnreadTotal.value,
 }));
 
-// The Roles & Permissions entry is admin-only: it appears once the role
-// policy store confirms the caller holds manage_roles.
 const navItems = computed(() =>
-  NAV_ITEM_META.filter(
-    (meta) => meta.name !== 'roles-permissions' || rolePolicyStore.canManageRoles,
-  ).map((meta) => ({
+  NAV_ITEM_META.map((meta) => ({
     ...meta,
     icon: NAV_ICONS[meta.name] as Component,
     badge: navBadges.value[meta.name] ?? 0,

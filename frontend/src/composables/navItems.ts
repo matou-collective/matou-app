@@ -27,8 +27,6 @@ export const NAV_ITEM_META: readonly NavItemMeta[] = [
   { name: 'chat', label: 'Chat', primary: true },
   { name: 'wallet', label: 'Wallet', primary: false },
   { name: 'activity', label: 'Notices', primary: true },
-  // Admin-only (manage_roles); DashboardLayout filters it out for everyone else.
-  { name: 'roles-permissions', label: 'Roles', primary: false },
   { name: 'proposals', label: 'Proposals', primary: false },
   { name: 'projects', label: 'Projects', primary: false },
   { name: 'contributions', label: 'Contributions', aliases: ['contribution-detail'], primary: true },
