@@ -72,6 +72,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useActivityStore } from 'stores/activity';
 import { useIdentityStore } from 'stores/identity';
 import { useBackendEvents } from 'src/composables/useBackendEvents';
+import { noticeFilters } from 'src/composables/noticeTypes';
 import FeedCard from 'src/components/activity/FeedCard.vue';
 import CreateNoticeDialog from 'src/components/activity/CreateNoticeDialog.vue';
 
@@ -82,12 +83,7 @@ const { lastEvent } = useBackendEvents();
 
 const showCreateDialog = ref(false);
 
-const filters = [
-  { label: 'All', value: 'all' as const },
-  { label: 'Events', value: 'event' as const },
-  { label: 'Announcements', value: 'announcement' as const },
-  { label: 'Updates', value: 'update' as const },
-];
+const filters = noticeFilters();
 
 watch(lastEvent, (event) => {
   if (event && (event.type === 'notice_created' || event.type === 'notice_published' || event.type === 'notice_archived')) {
