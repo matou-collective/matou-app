@@ -26,9 +26,9 @@ import (
 
 // Tree type constants used as ChangeType on tree roots.
 const (
-	ProfileTreeType     = "matou.profile.v1"    // ChangeType on profile tree roots
-	CredentialTreeType  = "matou.credential.v1" // ChangeType on credential tree roots
-	NoticeTreeType      = "matou.notice.v1"     // ChangeType on notice tree roots
+	ProfileTreeType     = "matou.profile.v1"     // ChangeType on profile tree roots
+	CredentialTreeType  = "matou.credential.v1"  // ChangeType on credential tree roots
+	NoticeTreeType      = "matou.notice.v1"      // ChangeType on notice tree roots
 	InteractionTreeType = "matou.interaction.v1" // ChangeType on interaction tree roots (ack, rsvp, save)
 	ChatTreeType        = "matou.chat.v1"        // ChangeType on chat tree roots
 )
@@ -62,6 +62,17 @@ type UnifiedTreeManager struct {
 	a             *app.App
 	listener      updatelistener.UpdateListener
 	testFactories sync.Map // spaceId → TestTreeFactory (test-only)
+
+	// spacesDir is {dataDir}/spaces, used by the tree-build dead-man's latch
+	// (see recordBuildFailure) to write a recovery marker next to a space's
+	// store directory. Empty in test mode, where the latch is a no-op.
+	spacesDir string
+	// buildFailures tracks, per space, the set of distinct tree IDs that have
+	// failed to build/fetch with a storage I/O-type error during this process's
+	// lifetime. If a space crosses treeBuildFailureThreshold, a recovery marker
+	// is written so the store is force-quarantined on the next boot even if
+	// the boot-time health probe happens to pass (e.g. an intermittent fault).
+	buildFailures sync.Map // spaceId → *sync.Map[treeId]struct{}
 }
 
 // NewUnifiedTreeManager creates a new UnifiedTreeManager.
@@ -84,6 +95,42 @@ func (u *UnifiedTreeManager) Close(ctx context.Context) error { return nil }
 // for push-based P2P change notification.
 func (u *UnifiedTreeManager) SetListener(l updatelistener.UpdateListener) {
 	u.listener = l
+}
+
+// SetSpacesDir records {dataDir}/spaces so the tree-build dead-man's latch
+// (recordBuildFailure) knows where to write recovery markers. Must be called
+// once, before any tree builds happen. Not required for tests that never
+// exercise the latch.
+func (u *UnifiedTreeManager) SetSpacesDir(dir string) {
+	u.spacesDir = dir
+}
+
+// recordBuildFailure implements the dead-man's latch: if a tree build/fetch
+// fails with a storage I/O-type error (see isStoreIOError), it is recorded
+// against its space. Once treeBuildFailureThreshold distinct trees in the
+// same space have failed this way, a recovery marker is written so the next
+// boot force-quarantines that space's store even if the boot-time probe
+// happens to pass (the underlying I/O fault may be intermittent).
+func (u *UnifiedTreeManager) recordBuildFailure(spaceId, treeId string, buildErr error) {
+	if u.spacesDir == "" || !isStoreIOError(buildErr) {
+		return
+	}
+
+	failuresVal, _ := u.buildFailures.LoadOrStore(spaceId, &sync.Map{})
+	failures := failuresVal.(*sync.Map)
+	failures.Store(treeId, struct{}{})
+
+	var count int
+	failures.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+
+	if count == treeBuildFailureThreshold {
+		log.Printf("[UTM] %d distinct trees in space %s failed with storage I/O errors — "+
+			"writing recovery marker to force store quarantine on next boot", count, spaceId)
+		WriteRecoveryMarker(u.spacesDir, spaceId, fmt.Sprintf("%d distinct tree build failures: %v", count, buildErr))
+	}
 }
 
 // ClearTreeCache removes all cached tree instances. Must be called during
@@ -146,6 +193,7 @@ func (u *UnifiedTreeManager) GetTree(ctx context.Context, spaceId, treeId string
 	})
 	if err != nil {
 		log.Printf("[UTM] GetTree space=%s tree=%s BuildTree error: %v", spaceId, treeId, err)
+		u.recordBuildFailure(spaceId, treeId, err)
 		return nil, fmt.Errorf("building tree %s: %w", treeId, err)
 	}
 
