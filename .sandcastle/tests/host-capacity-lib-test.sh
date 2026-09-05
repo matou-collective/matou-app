@@ -504,6 +504,34 @@ if command -v jq >/dev/null 2>&1; then
   [ ! -e "$slot1.holder" ] || fail "a failed exclusive acquire must clear the holder sidecar it had labelled on slot 1"
   kill "$hbusy" 2>/dev/null || true
   wait "$hbusy" 2>/dev/null || true
+  # --- Drive-tab timeline seams (2026-09-04): run_dir in the start line,
+  # step events, action in the end line — all ADDITIVE (older readers ignore
+  # unknown keys; a missing key reads null).
+  HOST_CAPACITY_DRIVE_RUN_DIR=/runs/d8 bash -c '
+    . "$1"
+    host_capacity_drive_log_start d8 box-c unit
+    host_capacity_drive_log_step d8 "sync main"
+    host_capacity_drive_log_step d8 "eval gate"
+    host_capacity_drive_log_end d8 red "report → blocks Acme/widget#7"
+  ' _ "$lib"
+  s6="$(jq -c 'select(.event=="start" and .id=="d8")' "$dlog")"
+  [ "$(jq -r '.run_dir' <<<"$s6")" = /runs/d8 ] || fail "start line must carry HOST_CAPACITY_DRIVE_RUN_DIR: $s6"
+  s5="$(jq -c 'select(.event=="start" and .id=="d5")' "$dlog")"
+  [ "$(jq -r '.run_dir' <<<"$s5")" = null ] || fail "no run dir at start → run_dir null: $s5"
+  nsteps="$(jq -c 'select(.event=="step" and .id=="d8")' "$dlog" | wc -l)"
+  [ "$nsteps" -eq 2 ] || fail "expected 2 step events for d8, got $nsteps"
+  st1="$(jq -c 'select(.event=="step" and .id=="d8")' "$dlog" | head -1)"
+  [ "$(jq -r '.step' <<<"$st1")" = "sync main" ] || fail "step event must carry the step name: $st1"
+  case "$(jq -r '.at' <<<"$st1")" in ''|null|*[!0-9]*) fail "step event must carry a numeric at: $st1" ;; esac
+  e6="$(jq -c 'select(.event=="end" and .id=="d8")' "$dlog")"
+  [ "$(jq -r '.verdict' <<<"$e6")" = red ] || fail "d8 end verdict: $e6"
+  [ "$(jq -r '.action' <<<"$e6")" = "report → blocks Acme/widget#7" ] || fail "end line must carry the action: $e6"
+  e5="$(jq -c 'select(.event=="end" and .id=="d5")' "$dlog")"
+  [ "$(jq -r '.action' <<<"$e5")" = null ] || fail "no action arg → null: $e5"
+  # a step for a drive that never started still appends (append-only, never
+  # reds the caller) — the reader is the one that correlates.
+  bash -c '. "$1"; host_capacity_drive_log_step d9 "orphan step"' _ "$lib" || fail "step must never red the caller"
+
   unset HOST_CAPACITY_DRIVE_LOG HOST_CAPACITY_DRIVE_WANTED HOST_CAPACITY_DRIVE_MODE
   trap 'rm -f "$slot1" "$slot2" "$side"' EXIT
   pass=$((pass+1))

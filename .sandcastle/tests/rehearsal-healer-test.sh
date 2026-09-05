@@ -62,6 +62,26 @@ chmod +x "$tmp/bin/curl"
 cat > "$tmp/bin/claude" <<'SH'
 #!/usr/bin/env bash
 echo x >> "${CLAUDE_CALLS:?}"
+# Transient API faults (idss freshness-tax finding 5): the call count drives
+# the shape — a 529 on the first healer call, then a real heal; or 529 on the
+# healer's two calls AND the reporter's first, then a real diagnosis.
+n="$(wc -l < "$CLAUDE_CALLS")"
+api529='API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
+case "${HEAL_MODE:-}" in
+  transient-then-heal)
+    case "$n" in
+      1) echo "$api529" >&2; exit 1 ;;
+      2) cd "${REHEARSAL_CHECKOUT:?}"; sed -i 's/base/fixed/' wizard.ts
+         git commit -aqm "rehearsal healer: S5 selector drift (sigT)"
+         echo "{\"action\":\"healed\",\"commit\":\"$(git rev-parse HEAD)\",\"summary\":\"selector\",\"checks\":\"vitest wizard: pass\"}"; exit 0 ;;
+      *) echo '{"title":"post-heal diagnosis","body":"b","confident":false}'; exit 0 ;;
+    esac ;;
+  transient-twice)
+    case "$n" in
+      1|2|3) echo "$api529" >&2; exit 1 ;;
+      *) echo '{"title":"diagnosis after the transient","body":"b","confident":true}'; exit 0 ;;
+    esac ;;
+esac
 # Only the FIRST call is the tool-enabled healer session; any later call is
 # the classic tool-less diagnosis and must not mutate the checkout.
 if [ "$(wc -l < "$CLAUDE_CALLS")" != "1" ]; then
@@ -144,6 +164,35 @@ grep -q 'rehearsal healer:' "$CURL_LOG" || fail "healer comment body missing pre
 grep -q '"title"' "$CURL_LOG" && fail "an issue was filed on the healed path"
 grep -q 'dependencies' "$CURL_LOG" && fail "a dependency was wired on the healed path"
 [ "$(wc -l < "$CLAUDE_CALLS")" = "1" ] || fail "more than one claude call"
+pass=$((pass+1))
+
+# 1b: TRANSIENT THEN HEAL (idss freshness-tax finding 5) — the healer's first
+#     claude call dies with API 529; the healer waits once and retries, the
+#     retry heals, NO ticket. Exactly two claude calls; never "unparseable".
+reset_case; export HEAL_MODE=transient-then-heal CLAUDE_TRANSIENT_RETRY_DELAY=0
+red_run "click timeout on continue"
+bash "$here/../rehearsal-report.sh" "$tmp/run" 1 > "$tmp/out.1b" || fail "reporter exited non-zero (transient-then-heal)"
+grep -q 'transient fault (5xx/overloaded) — retrying once' "$tmp/out.1b" || fail "the transient retry was not announced: $(cat "$tmp/out.1b")"
+grep -q 'unparseable verdict' "$tmp/out.1b" && fail "a 529 must never read as an unparseable verdict"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "2" ] || fail "the retried heal did not reach origin"
+grep -q '"title"' "$CURL_LOG" && fail "an issue was filed although the retry healed"
+[ "$(wc -l < "$CLAUDE_CALLS")" = "2" ] || fail "expected exactly two claude calls (529 + retry), got $(wc -l < "$CLAUDE_CALLS")"
+pass=$((pass+1))
+
+# 1c: TRANSIENT TWICE — the healer's retry also dies with 529: it stops (no
+#     third healer call), names the cause, and the REPORTER's own call — which
+#     also hits a 529 once — retries once and files the real diagnosis, never
+#     the generic fallback. Origin untouched.
+reset_case; export HEAL_MODE=transient-twice CLAUDE_TRANSIENT_RETRY_DELAY=0
+red_run "genuinely hard defect"
+bash "$here/../rehearsal-report.sh" "$tmp/run" 1 > "$tmp/out.1c" || fail "reporter exited non-zero (transient-twice)"
+grep -q 'healer: Claude API transient fault twice in a row' "$tmp/out.1c" || fail "the healer's double transient was not named: $(cat "$tmp/out.1c")"
+grep -q 'reporter: Claude API transient fault (5xx/overloaded) — retrying once' "$tmp/out.1c" || fail "the reporter did not retry its own transient"
+grep -q 'diagnosis after the transient' "$CURL_LOG" || fail "the real diagnosis (after the reporter's retry) was not filed"
+grep -q 'rehearsal drive red at' "$CURL_LOG" && fail "the generic fallback was filed although the retry produced a diagnosis"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "origin moved on a transient-twice"
+[ "$(wc -l < "$CLAUDE_CALLS")" = "4" ] || fail "expected 4 claude calls (healer 529+529, reporter 529+diagnosis), got $(wc -l < "$CLAUDE_CALLS")"
+unset CLAUDE_TRANSIENT_RETRY_DELAY
 pass=$((pass+1))
 
 # 2: DECLINE with a file-verdict — issue filed from the session's verdict,

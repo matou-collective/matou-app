@@ -73,7 +73,9 @@ NOW="$(date +%s)"
 # log API, so a well-known host path is how a run's real fault reaches the healer:
 # `ci` via scripts/seam-smoke.sh (#197), `swarm`/`triage` via verdict-lib.sh
 # (#235), `smoke-drive` via the consumer's smoke driver (#10 — the reader half
-# of matou-app#46; without it a red smoke lap degraded to stale worker prose).
+# of matou-app#46; without it a red smoke lap degraded to stale worker prose),
+# `pr-e2e` via the consumer's run-pr-e2e.sh (#127 — the reader half of
+# matou-app#294; without it a red feature-e2e keyed on unrelated swarm prose).
 # Same repo-tagged defaults those scripts write to (#574) — REPO_TAG is
 # already computed above from FORGEJO_API, same formula seam-smoke.sh derives
 # from `git remote get-url origin` and run-swarm.sh/run-triage.sh derive from
@@ -82,6 +84,7 @@ SEAM_VERDICT="${SEAM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-seam-verdict.txt}"
 SWARM_VERDICT="${SWARM_VERDICT_PATH:-/tmp/matou-$REPO_TAG-swarm-verdict.txt}"
 TRIAGE_VERDICT="${TRIAGE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-triage-verdict.txt}"
 SMOKE_DRIVE_VERDICT="${SMOKE_DRIVE_VERDICT_PATH:-/tmp/matou-$REPO_TAG-smoke-drive-verdict.txt}"
+PR_E2E_VERDICT="${PR_E2E_VERDICT_PATH:-/tmp/matou-$REPO_TAG-pr-e2e-verdict.txt}"
 
 # How fresh a verdict or worker log must be to count as evidence for THIS
 # incident's run. Older artifacts (the stale 03:38 worker log that minted phantom
@@ -97,6 +100,7 @@ verdict_path() {
     swarm)  printf '%s' "$SWARM_VERDICT" ;;
     triage) printf '%s' "$TRIAGE_VERDICT" ;;
     smoke-drive) printf '%s' "$SMOKE_DRIVE_VERDICT" ;;
+    pr-e2e) printf '%s' "$PR_E2E_VERDICT" ;;
   esac
 }
 
@@ -220,7 +224,7 @@ gather_evidence() {
 # The signature's raw material.
 #
 # For every workflow that drops a verdict artifact — `ci` (#197), `swarm` and
-# `triage` (#235), `smoke-drive` (#10) — key the signature on the run's OWN
+# `triage` (#235), `smoke-drive` (#10), `pr-e2e` (#127) — key the signature on the run's OWN
 # failing stage + first error line, so the incident signature tracks the
 # ACTUAL fault. A moved fault → a new signature → a fresh investigation,
 # instead of collapsing every failure within the cooldown onto one degraded
@@ -233,9 +237,14 @@ gather_evidence() {
 # With no fresh verdict, degrade to the workflow name alone (empty line) but
 # leave a marker so every post says the "still failing" line is unverified (AC1).
 #
-# For any other workflow (e.g. a watchdog-detected name with no runner verdict):
-# unchanged — the newest error-ish worker-log line, now already scoped to the
-# run window by gather_evidence.
+# For any other workflow with no wired verdict artifact (e.g. a watchdog-detected
+# name, or a runner whose verdict seam is not yet vendored): key on a STABLE
+# `no verdict for workflow <w>` line, never the worker-prose grep. The Sandcastle
+# worker tail is saturated with "error"/"failed" narration from unrelated runs, so
+# grepping it minted a fresh phantom signature on every red — the #127 garbage this
+# fixes (matou-app pr-e2e run 11299 keyed on a sentence from an unrelated success).
+# A per-workflow constant instead makes the signature stable and unmistakably
+# "unwired", so ledger recurrence tracking stays meaningful.
 error_line() { # <workflow>
   local wf="${1:-$WORKFLOW}" vf sv bc bstage
   vf="$(verdict_path "$wf")"
@@ -261,7 +270,7 @@ error_line() { # <workflow>
     : > "$EVIDENCE/seam-degraded"   # marker read by handle_incident's posts
     return 0
   fi
-  grep -hE "error|Error|ERR|failed|Failed|timed out|fatal" "$EVIDENCE/worker-logs.txt" 2>/dev/null | tail -1 || true
+  printf 'no verdict for workflow %s' "$wf"
 }
 
 post() { # post <msg> [thread_root] → echoes post id (empty when chat unset)

@@ -271,7 +271,7 @@ try_heal() {
       | sed -E 's/^((CLAUDE|ANTHROPIC)[A-Z_]*(TOKEN|KEY)[A-Z_]*=.{14}).*/\1…/'; } \
     > "$run_dir/logs/claude-env.txt" 2>&1 || true
   claude_select_token
-  local heal_attempt=1
+  local heal_attempt=1 heal_transient=0
   while :; do
     out="$(cd "$co" && timeout 1800 claude --model "$SWARM_HEAL_MODEL" \
         --permission-mode acceptEdits --allowedTools "Edit,Write,Bash" \
@@ -305,6 +305,25 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
       claude_limit_park
       echo "healer: claude limit hit — parking, filing instead"
       git -C "$co" reset --hard "$pre_head" >/dev/null 2>&1 || true
+      return 1
+    fi
+    # Transient API fault (idss freshness-tax finding 5): NO verdict came back
+    # AND the CLI reported a 5xx/overloaded error — wait once, retry once. Only
+    # when nothing parsed: a healed verdict whose narrative quotes an API error
+    # is still a verdict. A second transient in a row falls through to filing,
+    # named as such (never "unparseable").
+    if ! parse_diagnosis "$out" >/dev/null 2>&1 \
+       && claude_transient_hit "$run_dir/logs/healer-claude.err" "$run_dir/logs/healer-claude.out"; then
+      if [ "$heal_transient" = 0 ]; then
+        heal_transient=1
+        echo "healer: Claude API transient fault (5xx/overloaded) — retrying once in ${CLAUDE_TRANSIENT_RETRY_DELAY}s (a 529 is a minute of waiting, not a diagnosis)"
+        git -C "$co" reset --hard "$pre_head" >/dev/null 2>&1 || true
+        sleep "$CLAUDE_TRANSIENT_RETRY_DELAY"
+        continue
+      fi
+      echo "healer: Claude API transient fault twice in a row — reverting and filing (raw in logs/healer-claude.out)"
+      git -C "$co" reset --hard "$pre_head" >/dev/null 2>&1 || true
+      HEAL_TRANSIENT=1
       return 1
     fi
     break
@@ -545,6 +564,7 @@ evidence: \`$run_dir\` on $REHEARSAL_EVIDENCE_HOST (legs.json and whatever else 
     # (#510): flip to the standby and retry ONCE before deferring.
     claude_select_token
     reporter_attempt=1
+    reporter_transient=0
     # The live door (#540): a box IP means the box is STILL UP (the caller
     # runs this before teardown) — grant Bash and hand the diagnosis an ssh
     # line + a read-only command palette so it can ask the box directly
@@ -595,6 +615,19 @@ Run directory: $run_dir$live_prompt" 2>"$run_dir/logs/reporter-claude.err" || tr
         # continue 2: the retry loop added one nesting level — this targets the
         # enclosing per-leg loop, exactly where the old `continue` went.
         continue 2
+      fi
+      # Transient API fault (idss freshness-tax finding 5): no diagnosis AND the
+      # CLI reported a 5xx/overloaded error — wait once, retry once; a second
+      # in a row falls through to the generic filing, named as such.
+      if ! parse_diagnosis "$diagnosis" >/dev/null 2>&1 \
+         && claude_transient_hit "$run_dir/logs/reporter-claude.err" "$run_dir/logs/reporter-claude.out"; then
+        if [ "$reporter_transient" = 0 ]; then
+          reporter_transient=1
+          echo "reporter: Claude API transient fault (5xx/overloaded) — retrying once in ${CLAUDE_TRANSIENT_RETRY_DELAY}s"
+          sleep "$CLAUDE_TRANSIENT_RETRY_DELAY"
+          continue
+        fi
+        echo "reporter: Claude API transient fault twice in a row — filing the generic fallback (raw in logs/reporter-claude.out)"
       fi
       break
     done
