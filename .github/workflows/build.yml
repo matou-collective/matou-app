@@ -106,520 +106,84 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.desktop == 'true'
     runs-on: ${{ matrix.os }}
-    env:
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
-      # Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup Node.js
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      # The whole desktop recipe (toolchains, backend build + verify, Electron
+      # packaging, smoke test) lives in .github/actions/build-desktop so that
+      # matou-collective/coa-builds runs the identical steps against any
+      # matou-app ref (#261). Secrets reach the action as env, never as inputs:
+      # GH_TOKEN for --publish=always (electron-builder's draft release),
+      # CSC_*/APPLE_* for macOS signing + notarization, VITE_SMTP_* for Vite.
+      # Publishing is tag-only, like Play and TestFlight: a branch dispatch
+      # must never overwrite a release's assets.
+      - name: Build ${{ matrix.platform }}-${{ matrix.arch }} installer
+        uses: ./.github/actions/build-desktop
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      # Matou App Version (derived once in `prepare`, validated against the tag)
-      - name: Get app version
-        shell: bash
-        run: |
-          echo "VERSION=${{ needs.prepare.outputs.version }}" >> "$GITHUB_ENV"
-
-      # Install frontend dependencies
-      - name: Install frontend dependencies
-        run: |
-          cd frontend
-          npm ci
-
-      # Install Quasar CLI
-      - name: Install Quasar CLI
-        run: npm install -g @quasar/cli
-
-      # Set up Go
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
-
-      # Backend set up
-      - name: Prepare backend modules
-        run: |
-          cd backend
-          go mod tidy
-
-      # Build backend
-      - name: Build backend
-        shell: bash {0}
-        run: |
-          cd backend
-          make ${{ matrix.make_target }}
-
-      # Verify backend binary
-      - name: Verify backend binary
-        shell: bash
-        run: |
-          cd backend
-
-          # Determine expected binary path from make_target
-          case "${{ matrix.make_target }}" in
-            build-darwin-arm64)  BIN="bin/darwin-arm64/matou-backend" ;;
-            build-darwin-amd64)  BIN="bin/darwin-amd64/matou-backend" ;;
-            build-linux-amd64)   BIN="bin/linux-amd64/matou-backend" ;;
-            build-windows-amd64) BIN="bin/windows-amd64/matou-backend.exe" ;;
-          esac
-
-          # 1. Verify binary exists
-          if [ ! -f "$BIN" ]; then
-            echo "::error::Backend binary not found at $BIN"
-            exit 1
-          fi
-          echo "Binary found: $BIN ($(stat --format='%s' "$BIN" 2>/dev/null || stat -f '%z' "$BIN") bytes)"
-
-          # 2. Verify binary format matches target platform
-          FILE_INFO=$(file "$BIN")
-          echo "File type: $FILE_INFO"
-
-          case "${{ matrix.make_target }}" in
-            build-darwin-arm64)  echo "$FILE_INFO" | grep -qi "Mach-O.*arm64" || { echo "::error::Expected Mach-O arm64 binary"; exit 1; } ;;
-            build-darwin-amd64)  echo "$FILE_INFO" | grep -qi "Mach-O.*x86_64" || { echo "::error::Expected Mach-O x86_64 binary"; exit 1; } ;;
-            build-linux-amd64)   echo "$FILE_INFO" | grep -qi "ELF.*x86-64" || { echo "::error::Expected ELF x86-64 binary"; exit 1; } ;;
-            build-windows-amd64) echo "$FILE_INFO" | grep -qi "PE32\+\|x86-64\|Windows" || { echo "::error::Expected PE32+ Windows binary"; exit 1; } ;;
-          esac
-          echo "Binary format verified"
-
-          # 3. On native platform, run the binary briefly to verify it executes
-          #    The binary will print its banner then crash on missing config — that's fine,
-          #    we just need to confirm it's a working executable.
-          if [[ "${{ matrix.platform }}" != "windows" ]]; then
-            chmod +x "$BIN"
-            ./"$BIN" > /tmp/backend-output.txt 2>&1 &
-            BIN_PID=$!
-            sleep 5
-            kill $BIN_PID 2>/dev/null || true
-            wait $BIN_PID 2>/dev/null || true
-            OUTPUT=$(cat /tmp/backend-output.txt)
-            if echo "$OUTPUT" | grep -q "MATOU DAO Backend Server"; then
-              echo "Binary executes correctly (startup banner detected)"
-            else
-              echo "::error::Binary did not produce expected startup banner"
-              echo "Output was: $OUTPUT"
-              exit 1
-            fi
-          else
-            echo "Skipping execution test on Windows (cross-platform binary check only)"
-          fi
-
-      # Setup macOS Signing
-      - name: Setup macOS Signing (if mac)
-        if: matrix.platform == 'mac'
-        shell: bash
+          platform: ${{ matrix.platform }}
+          arch: ${{ matrix.arch }}
+          make_target: ${{ matrix.make_target }}
+          config_url: ${{ secrets.VITE_PROD_CONFIG_URL }}
+          vite_env: ${{ secrets.VITE_ENV || 'prod' }}
+          publish: ${{ github.ref_type == 'tag' && 'always' || 'never' }}
+          sign: ${{ matrix.platform == 'mac' }}
         env:
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-        run: |
-          # Write the App Store Connect API key outside the checkout so it can never
-          # land in an artefact upload; the build step points APPLE_API_KEY at it.
-          umask 077
-          printf '%s\n' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
-
-      # Build Electron app
-      - name: Build Electron App
-        shell: bash {0}
-        run: |
-          cd frontend
-          
-          if [[ "${{ matrix.platform }}" == "mac" ]]; then
-            npx quasar build -m electron --mac --${{ matrix.arch }} --publish=always
-          else
-            npx quasar build -m electron --publish=always
-          fi
-        env:
-          # electron releasing and publishing
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-
-          # apple macOS code signing + notarization
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ runner.temp }}/AuthKey.p8
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-          # vite
-          VITE_PROD_CONFIG_URL: ${{ secrets.VITE_PROD_CONFIG_URL }}
-          VITE_ENV: ${{ secrets.VITE_ENV }}
           VITE_SMTP_HOST: ${{ secrets.VITE_SMTP_HOST }}
           VITE_SMTP_PORT: ${{ secrets.VITE_SMTP_PORT }}
 
-
-      # Smoke test - verify the packaged app contains the backend and is runnable
-      - name: Smoke test - AppImage packaging (Linux)
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update && sudo apt-get install -y xvfb
-
-          APPIMAGE=$(find frontend/dist/electron/Packaged -name '*.AppImage' | head -1)
-          if [ -z "$APPIMAGE" ]; then
-            echo "::error::No AppImage found in build output"
-            exit 1
-          fi
-          echo "Found AppImage: $APPIMAGE"
-          chmod +x "$APPIMAGE"
-
-          # Extract (no FUSE in CI runners)
-          "$APPIMAGE" --appimage-extract > /dev/null 2>&1
-          echo "AppImage extracted to squashfs-root/"
-
-          # Verify the wrapper script exists (afterPack.cjs creates this for --no-sandbox)
-          if [ -f "squashfs-root/matou" ]; then
-            if grep -q "no-sandbox" "squashfs-root/matou"; then
-              echo "Sandbox wrapper script verified"
-            else
-              echo "::warning::Wrapper script exists but missing --no-sandbox flag"
-            fi
-          fi
-
-          # Verify backend binary is bundled at the expected path
-          BACKEND_BIN="squashfs-root/resources/backend/linux-amd64/matou-backend"
-          if [ ! -f "$BACKEND_BIN" ]; then
-            echo "::error::Backend binary not found in package at $BACKEND_BIN"
-            echo "Contents of resources/backend/:"
-            find squashfs-root/resources/backend/ -type f 2>/dev/null || echo "(directory not found)"
-            exit 1
-          fi
-          echo "Backend binary found in package: $BACKEND_BIN"
-
-          # Verify the backend binary executes inside the package
-          chmod +x "$BACKEND_BIN"
-          "$BACKEND_BIN" > /tmp/pkg-backend-output.txt 2>&1 &
-          PKG_PID=$!
-          sleep 5
-          kill $PKG_PID 2>/dev/null || true
-          wait $PKG_PID 2>/dev/null || true
-          OUTPUT=$(cat /tmp/pkg-backend-output.txt)
-          if echo "$OUTPUT" | grep -q "MATOU DAO Backend Server"; then
-            echo "Packaged backend binary executes correctly"
-          else
-            echo "::error::Packaged backend binary did not produce startup banner"
-            echo "Output was: $OUTPUT"
-            exit 1
-          fi
-
-          # Launch the full Electron app briefly to verify it starts
-          xvfb-run --auto-servernum ./squashfs-root/matou --no-sandbox &
-          APP_PID=$!
-          sleep 10
-
-          # Check the process is still alive (didn't crash immediately)
-          if kill -0 $APP_PID 2>/dev/null; then
-            echo "Electron app process is running after 10s (PID $APP_PID)"
-            kill $APP_PID 2>/dev/null || true
-            wait $APP_PID 2>/dev/null || true
-          else
-            echo "::error::Electron app process died within 10s"
-            exit 1
-          fi
-
-          rm -rf squashfs-root/
-
-      - name: Smoke test - DMG packaging (macOS)
-        if: matrix.platform == 'mac'
-        run: |
-          DMG=$(find frontend/dist/electron/Packaged -name '*.dmg' | head -1)
-          if [ -z "$DMG" ]; then
-            echo "::error::No DMG found in build output"
-            exit 1
-          fi
-          echo "Found DMG: $DMG"
-
-          # Mount the DMG
-          hdiutil attach "$DMG" -nobrowse -quiet
-          MOUNT=$(find /Volumes -maxdepth 1 -name 'Matou*' | head -1)
-          if [ -z "$MOUNT" ]; then
-            echo "::error::DMG mounted but Matou volume not found"
-            exit 1
-          fi
-          echo "DMG mounted at: $MOUNT"
-
-          # Verify the .app bundle exists
-          APP_BUNDLE=$(find "$MOUNT" -maxdepth 1 -name '*.app' | head -1)
-          if [ -z "$APP_BUNDLE" ]; then
-            echo "::error::No .app bundle found in DMG"
-            hdiutil detach "$MOUNT" -quiet
-            exit 1
-          fi
-          echo "App bundle: $APP_BUNDLE"
-
-          # Map runner arch to binary directory
-          case "${{ matrix.arch }}" in
-            arm64) ARCH_DIR="darwin-arm64" ;;
-            x64)   ARCH_DIR="darwin-amd64" ;;
-          esac
-
-          # Verify backend binary is bundled at the expected path
-          BACKEND_BIN="$APP_BUNDLE/Contents/Resources/backend/$ARCH_DIR/matou-backend"
-          if [ ! -f "$BACKEND_BIN" ]; then
-            echo "::error::Backend binary not found in app bundle at $BACKEND_BIN"
-            echo "Contents of Resources/backend/:"
-            find "$APP_BUNDLE/Contents/Resources/backend/" -type f 2>/dev/null || echo "(directory not found)"
-            hdiutil detach "$MOUNT" -quiet
-            exit 1
-          fi
-          echo "Backend binary found in app bundle"
-
-          # Verify the backend binary executes
-          "$BACKEND_BIN" > /tmp/dmg-backend-output.txt 2>&1 &
-          DMG_PID=$!
-          sleep 5
-          kill $DMG_PID 2>/dev/null || true
-          wait $DMG_PID 2>/dev/null || true
-          OUTPUT=$(cat /tmp/dmg-backend-output.txt)
-          if echo "$OUTPUT" | grep -q "MATOU DAO Backend Server"; then
-            echo "Packaged backend binary executes correctly"
-          else
-            echo "::error::Packaged backend binary did not produce startup banner"
-            echo "Output was: $OUTPUT"
-            hdiutil detach "$MOUNT" -quiet
-            exit 1
-          fi
-
-          # Verify code signing (macOS-specific)
-          if codesign --verify --deep --strict "$APP_BUNDLE" 2>/dev/null; then
-            echo "Code signature verified"
-          else
-            echo "::warning::Code signature verification failed (may be expected without signing secrets)"
-          fi
-
-          hdiutil detach "$MOUNT" -quiet
-
-      - name: Smoke test - NSIS installer (Windows)
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem -Path frontend/dist/electron/Packaged -Filter '*.exe' -Recurse | Select-Object -First 1
-          if (-not $exe) {
-            Write-Error "No .exe installer found in build output"
-            exit 1
-          }
-          Write-Host "Found installer: $($exe.FullName)"
-
-          # Run the NSIS installer silently
-          $installDir = "$env:TEMP\MatouSmokeTest"
-          Write-Host "Installing to: $installDir"
-          $proc = Start-Process $exe.FullName -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
-          if ($proc.ExitCode -ne 0) {
-            Write-Error "Installer exited with code $($proc.ExitCode)"
-            exit 1
-          }
-
-          # Verify installation directory exists
-          if (-not (Test-Path $installDir)) {
-            Write-Error "Installation directory not found at $installDir"
-            exit 1
-          }
-
-          # Verify backend binary is bundled
-          $backendBin = Get-ChildItem -Path "$installDir\resources\backend\windows-amd64" -Filter 'matou-backend.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $backendBin) {
-            Write-Error "Backend binary not found in installed app"
-            Write-Host "Contents of resources\backend\:"
-            Get-ChildItem "$installDir\resources\backend\" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-            exit 1
-          }
-          Write-Host "Backend binary found: $($backendBin.FullName)"
-
-          # Verify the backend binary executes
-          $output = & $backendBin.FullName 2>&1 | Out-String
-          if ($output -match "MATOU DAO Backend Server") {
-            Write-Host "Packaged backend binary executes correctly"
-          } else {
-            Write-Error "Packaged backend binary did not produce startup banner"
-            Write-Host "Output was: $output"
-            exit 1
-          }
-
-          # Verify main Electron executable exists
-          $mainExe = Get-ChildItem -Path $installDir -Filter 'Matou.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($mainExe) {
-            Write-Host "Main executable found: $($mainExe.FullName)"
-          } else {
-            Write-Error "Main Matou.exe not found in installation"
-            exit 1
-          }
-
-          # All checks passed
-          exit 0
-
-      # Upload artifacts
       - name: Upload ${{ matrix.platform }} artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: matou-${{ env.VERSION }}-${{ matrix.platform }}-${{ matrix.arch }}
+          name: matou-${{ needs.prepare.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}
           path: frontend/dist/electron/Packaged/**
           if-no-files-found: error
 
-  # Android: signed Play App Bundle + sideload APK (spec WP2). Same recipe as
-  # the Forgejo android.yml build-aab job — setup-toolchain.sh, build-aab.sh and
-  # build.gradle are shared unchanged — so versionCode/versionName come from
-  # `prepare` like every other platform. Signing secrets: docs/SECRETS_CHECKLIST.md
-  # "GitHub release secrets". Without them a workflow_dispatch run still builds
-  # UNSIGNED smoke artefacts (never uploadable to Play); a tag run fails hard.
+  # Android: signed Play App Bundle + sideload APK (spec WP2). The recipe —
+  # setup-toolchain.sh, gomobile .aar (+ 16 KB alignment check), build-aab.sh,
+  # verification — is .github/actions/build-android, shared with coa-builds
+  # (#261); versionCode/versionName come from `prepare` like every other
+  # platform. Signing secrets: docs/SECRETS_CHECKLIST.md "GitHub release
+  # secrets". Without them a workflow_dispatch run still builds UNSIGNED smoke
+  # artefacts (never uploadable to Play); a tag run fails hard.
   android:
     needs: prepare
     if: needs.prepare.outputs.android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      VERSION: ${{ needs.prepare.outputs.version }}
-      BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
-
-      # ~2.9 GB (JDK 21 + SDK/NDK r27c + gomobile) on a cold runner; the script is
-      # idempotent, so a cache hit makes it a no-op.
-      - name: Cache Android toolchain
-        uses: actions/cache@v4
-        with:
-          path: ~/.matou-android
-          key: matou-android-toolchain-${{ runner.os }}-${{ hashFiles('scripts/android/setup-toolchain.sh') }}
-
-      - name: Install Android toolchain (idempotent, cached in ~/.matou-android)
-        run: bash scripts/android/setup-toolchain.sh
-
-      - name: gomobile bind — embedded backend .aar
-        run: make -C backend build-android-aar
-
-      - name: Verify libgojni.so is 16 KB page-aligned (#167)
-        run: |
-          set -euo pipefail
-          # shellcheck disable=SC1090
-          . "$HOME/.matou-android/env.sh"
-          aar="frontend/src-capacitor/android/app/libs/matou.aar"
-          readelf="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" \( -type f -o -type l \) -name llvm-readelf | head -1)"
-          [ -n "$readelf" ] || { echo "::error::llvm-readelf not found under NDK"; exit 1; }
-          tmp="$(mktemp -d)"
-          python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extract("jni/arm64-v8a/libgojni.so", sys.argv[2])' "$aar" "$tmp"
-          so="$tmp/jni/arm64-v8a/libgojni.so"
-          "$readelf" -l "$so" | awk '/LOAD/'
-          bad="$("$readelf" -l "$so" | awk '/LOAD/ && $NF != "0x4000" {print}')"
-          if [ -n "$bad" ]; then
-            echo "::error::libgojni.so has LOAD segments not aligned to 0x4000 (16 KB):"
-            echo "$bad"
-            exit 1
-          fi
-          echo "OK: all LOAD segments aligned to 0x4000"
-
-      - name: Install frontend dependencies
-        run: |
-          cd frontend
-          npm ci
-
       - name: Build release AAB + APK
         id: build
-        env:
-          VITE_PROD_CONFIG_URL: ${{ secrets.VITE_PROD_CONFIG_URL }}
-          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-          MATOU_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          MATOU_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          MATOU_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          MATOU_VERSION_CODE: ${{ needs.prepare.outputs.build_number }}
-          MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
+        uses: ./.github/actions/build-android
+        with:
+          config_url: ${{ secrets.VITE_PROD_CONFIG_URL }}
+          version_name: ${{ needs.prepare.outputs.version }}
+          version_code: ${{ needs.prepare.outputs.build_number }}
+          bundle: "true"
+          keystore_b64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          keystore_password: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          key_alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          key_password: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # A tagged release must be signed; a dispatch may smoke-build unsigned.
+          allow_unsigned: ${{ github.ref_type != 'tag' }}
           # Firebase config for push (#177), base64 of google-services.json.
           # Unset → build-aab.sh builds without push (plugin skipped).
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
-        run: |
-          set -euo pipefail
-          unsigned_flag=""
-          if [ -z "$ANDROID_KEYSTORE_B64" ]; then
-            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-              echo "::error::ANDROID_KEYSTORE_B64 secret is not set — a tagged release must be signed (docs/SECRETS_CHECKLIST.md)"
-              exit 1
-            fi
-            echo "::warning::ANDROID_KEYSTORE_B64 not set — building UNSIGNED smoke artefacts (workflow_dispatch only, never upload to Play)"
-            unsigned_flag="--allow-unsigned"
-            unset MATOU_KEYSTORE_PASSWORD MATOU_KEY_ALIAS MATOU_KEY_PASSWORD
-            signed=false
-          else
-            ks="$RUNNER_TEMP/upload.jks"
-            printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
-            chmod 600 "$ks"
-            export MATOU_KEYSTORE_FILE="$ks"
-            signed=true
-          fi
-          trap 'rm -f "$RUNNER_TEMP/upload.jks"' EXIT
-
-          bash scripts/android/build-aab.sh $unsigned_flag
-
-          # build-aab.sh leaves the release web assets synced into the Android
-          # project, so the sideload APK is one more gradle task with the same
-          # signing config.
-          # shellcheck disable=SC1090
-          . "$HOME/.matou-android/env.sh"
-          (cd frontend/src-capacitor/android && ./gradlew --no-daemon assembleRelease)
-
-          mkdir -p out
-          cp frontend/dist/capacitor/android/bundle/release/app-release.aab "out/matou-${VERSION}-android.aab"
-          apk="$(ls frontend/src-capacitor/android/app/build/outputs/apk/release/app-release*.apk | head -1)"
-          cp "$apk" "out/matou-${VERSION}-android.apk"
-          ls -la out
-          echo "signed=$signed" >> "$GITHUB_OUTPUT"
-
-      - name: Verify AAB + APK (applicationId, versionCode, versionName, signer)
-        env:
-          SIGNED: ${{ steps.build.outputs.signed }}
-        run: |
-          set -euo pipefail
-          # shellcheck disable=SC1090
-          . "$HOME/.matou-android/env.sh"
-          bt="$ANDROID_HOME/build-tools/34.0.0"
-          apk="out/matou-${VERSION}-android.apk"
-          aab="out/matou-${VERSION}-android.aab"
-
-          echo "==> APK badging"
-          badging="$("$bt/aapt2" dump badging "$apk" | head -1)"
-          echo "$badging"
-          echo "$badging" | grep -q "name='nz.matou.app'"            || { echo "::error::applicationId is not nz.matou.app"; exit 1; }
-          echo "$badging" | grep -q "versionCode='${BUILD_NUMBER}'"   || { echo "::error::versionCode != ${BUILD_NUMBER}"; exit 1; }
-          echo "$badging" | grep -q "versionName='${VERSION}'"        || { echo "::error::versionName != ${VERSION}"; exit 1; }
-
-          echo "==> AAB contents"
-          python3 - "$aab" <<'PY'
-          import sys, zipfile
-          names = zipfile.ZipFile(sys.argv[1]).namelist()
-          for want in ("BundleConfig.pb", "base/manifest/AndroidManifest.xml", "base/lib/arm64-v8a/libgojni.so"):
-              if want not in names:
-                  sys.exit(f"missing {want} in bundle")
-          print("bundle ok:", len(names), "entries")
-          PY
-
-          if [ "$SIGNED" = "true" ]; then
-            echo "==> APK signature"
-            "$bt/apksigner" verify --print-certs "$apk"
-            echo "==> AAB signature"
-            jarsigner -verify -verbose:summary -certs "$aab" | grep -E "CN=|jar verified" | sort -u
-          else
-            echo "::warning::unsigned smoke build — signature checks skipped"
-          fi
+          google_services_json: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          artifact_basename: matou-${{ needs.prepare.outputs.version }}
 
       - name: Upload Android artefacts
         uses: actions/upload-artifact@v4
@@ -637,7 +201,7 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-          PLAY_AAB: out/matou-${{ needs.prepare.outputs.version }}-android.aab
+          PLAY_AAB: ${{ steps.build.outputs.aab }}
           MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
