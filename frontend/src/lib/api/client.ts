@@ -439,6 +439,11 @@ export interface FieldDef {
   type: string;
   required?: boolean;
   readOnly?: boolean;
+  // Core marks a field backend handlers depend on structurally. The built-in
+  // profile/notice/proposal UIs render core (and other well-known built-in)
+  // fields themselves; schema-driven surfaces render the remaining, admin-added
+  // custom fields.
+  core?: boolean;
   default?: unknown;
   validation?: {
     minLength?: number;
@@ -454,6 +459,9 @@ export interface FieldDef {
     placeholder?: string;
     label?: string;
     section?: string;
+    // Filterable marks a field that list endpoints accept as a query-param
+    // filter (schema-driven; see backend types.FieldDef.IsFilterable).
+    filterable?: boolean;
   };
 }
 
@@ -521,11 +529,28 @@ export async function createOrUpdateProfile(
 }
 
 /**
- * Get profiles of a specific type
+ * Get profiles of a specific type, optionally filtered.
+ *
+ * `filters` keys must name fields the type marks filterable (uiHints.filterable);
+ * the backend rejects a non-filterable field with 400. Array values match if the
+ * stored array contains the value (case-insensitive). Empty/undefined values are
+ * dropped so callers can pass a partially-filled filter object.
  */
-export async function getProfiles(typeName: string): Promise<ObjectPayload[]> {
+export async function getProfiles(
+  typeName: string,
+  filters?: Record<string, string | undefined>,
+): Promise<ObjectPayload[]> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/v1/profiles/${encodeURIComponent(typeName)}`);
+    let url = `${BACKEND_URL}/api/v1/profiles/${encodeURIComponent(typeName)}`;
+    if (filters) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(filters)) {
+        if (v !== undefined && v !== null && v !== '') params.set(k, v);
+      }
+      const qs = params.toString();
+      if (qs) url += `?${qs}`;
+    }
+    const response = await fetch(url);
     if (!response.ok) return [];
     const data = await response.json();
     return data.profiles ?? [];
@@ -864,6 +889,9 @@ export interface Notice {
   archivedAt?: string;
   amendsNoticeId?: string;
   treeId?: string;
+  // Schema-defined custom (non-core) fields, round-tripped through the notice's
+  // data map by the backend (see anysync.NoticePayload.Data).
+  data?: Record<string, unknown>;
 }
 
 export interface NoticeRSVP {
@@ -944,6 +972,9 @@ export interface CreateNoticeRequest {
   images?: string[];
   attachments?: { name: string; fileRef: string; mimeType: string; size: number }[];
   links?: { label: string; url: string }[];
+  // Schema-defined custom (non-core) fields. Sent flat at the top level of the
+  // request body, where the backend's schema-driven extractor picks them up.
+  data?: Record<string, unknown>;
 }
 
 export async function getNotices(params?: { view?: string; type?: string }): Promise<Notice[]> {
@@ -973,10 +1004,14 @@ export async function getNotice(id: string): Promise<Notice | null> {
 
 export async function createNotice(req: CreateNoticeRequest): Promise<{ success: boolean; noticeId?: string; error?: string }> {
   try {
+    // Custom fields travel flat alongside the core fields — the backend's
+    // schema extractor reads them from the top level of the request body.
+    const { data, ...core } = req;
+    const body = data ? { ...core, ...data } : core;
     const response = await fetch(`${BACKEND_URL}/api/v1/notices`, {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify(req),
+      body: JSON.stringify(body),
     });
     return response.json();
   } catch {

@@ -1,5 +1,9 @@
 <template>
-  <form @submit.prevent="handleSubmit" class="typed-form">
+  <component
+    :is="embedded ? 'div' : 'form'"
+    @submit="!embedded && handleFormSubmit($event)"
+    class="typed-form"
+  >
     <div v-for="field in visibleFields" :key="field.name" class="form-field">
       <label :for="field.name" class="field-label">
         {{ field.uiHints?.label || field.name }}
@@ -102,16 +106,16 @@
       <p v-if="errors[field.name]" class="field-error">{{ errors[field.name] }}</p>
     </div>
 
-    <div class="form-actions">
+    <div v-if="!embedded" class="form-actions">
       <button type="submit" :disabled="submitting" class="submit-btn">
         {{ submitting ? 'Saving...' : 'Save' }}
       </button>
     </div>
-  </form>
+  </component>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useTypesStore } from 'stores/types';
 import { uploadFile, getFileUrl, type FieldDef } from 'src/lib/api/client';
 
@@ -119,12 +123,20 @@ const props = withDefaults(defineProps<{
   typeName: string;
   layout?: string;
   initialData?: Record<string, unknown>;
+  // Explicit subset of field names to render (in order). Overrides the layout.
+  // Used to render only the schema's custom fields alongside a bespoke form.
+  fields?: string[];
+  // Embedded mode: render the fields only (no <form> wrapper, no submit button)
+  // and two-way bind the values through v-model, so a parent form owns save.
+  embedded?: boolean;
+  modelValue?: Record<string, unknown>;
 }>(), {
   layout: 'form',
 });
 
 const emit = defineEmits<{
   (e: 'submit', data: Record<string, unknown>): void;
+  (e: 'update:modelValue', data: Record<string, unknown>): void;
 }>();
 
 const typesStore = useTypesStore();
@@ -136,6 +148,13 @@ const submitting = ref(false);
 const visibleFields = computed(() => {
   const def = typesStore.getDefinition(props.typeName);
   if (!def) return [];
+
+  // Explicit field subset wins (used to render only custom fields).
+  if (props.fields) {
+    return props.fields
+      .map(name => def.fields.find(f => f.name === name))
+      .filter((f): f is FieldDef => !!f);
+  }
 
   const layoutFields = def.layouts?.[props.layout]?.fields;
   if (layoutFields) {
@@ -204,7 +223,8 @@ function validate(): boolean {
   if (!def) return false;
 
   let valid = true;
-  for (const field of def.fields) {
+  // Only validate the fields we actually render.
+  for (const field of visibleFields.value) {
     const val = formData.value[field.name];
     if (field.required && (val === undefined || val === null || val === '')) {
       errors.value[field.name] = `${field.uiHints?.label || field.name} is required`;
@@ -222,6 +242,11 @@ function validate(): boolean {
   return valid;
 }
 
+function handleFormSubmit(event: Event) {
+  event.preventDefault();
+  void handleSubmit();
+}
+
 async function handleSubmit() {
   if (!validate()) return;
   submitting.value = true;
@@ -232,27 +257,40 @@ async function handleSubmit() {
   }
 }
 
-onMounted(() => {
-  // Initialize form data from initial data or defaults
-  const def = typesStore.getDefinition(props.typeName);
-  if (def) {
-    for (const field of def.fields) {
-      if (props.initialData?.[field.name] !== undefined) {
-        formData.value[field.name] = props.initialData[field.name];
-      } else if (field.default !== undefined) {
-        formData.value[field.name] = field.default;
-      } else if (field.type === 'array') {
-        formData.value[field.name] = [];
-      } else if (field.type === 'boolean') {
-        formData.value[field.name] = false;
-      } else if (field.type === 'object') {
-        formData.value[field.name] = {};
-      } else {
-        formData.value[field.name] = '';
-      }
+function initFormData() {
+  // Seed only the fields we render, from the bound model / initial data or the
+  // field defaults, so an embedded subset never clobbers a parent's other keys.
+  const seed = props.modelValue ?? props.initialData;
+  for (const field of visibleFields.value) {
+    if (seed?.[field.name] !== undefined) {
+      formData.value[field.name] = seed[field.name];
+    } else if (field.default !== undefined) {
+      formData.value[field.name] = field.default;
+    } else if (field.type === 'array') {
+      formData.value[field.name] = [];
+    } else if (field.type === 'boolean') {
+      formData.value[field.name] = false;
+    } else if (field.type === 'object') {
+      formData.value[field.name] = {};
+    } else {
+      formData.value[field.name] = '';
     }
   }
+}
+
+onMounted(initFormData);
+// Re-seed once definitions arrive (they may load after mount).
+watch(visibleFields, (fields, prev) => {
+  if (prev.length === 0 && fields.length > 0) initFormData();
 });
+
+// Embedded mode: two-way bind values up to the parent form.
+watch(formData, (val) => {
+  if (props.embedded) emit('update:modelValue', { ...val });
+}, { deep: true });
+
+// Expose validate/submit so a parent-owned save can gate on client validation.
+defineExpose({ validate, submit: handleSubmit });
 </script>
 
 <style scoped>

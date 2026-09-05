@@ -102,6 +102,17 @@
           </div>
         </div>
 
+        <!-- Schema-driven custom (admin-added) fields -->
+        <div v-if="customFieldNames.length > 0" class="form-section" data-test="custom-notice-fields">
+          <h3 class="form-section-title">Additional Information</h3>
+          <TypedForm
+            embedded
+            type-name="Notice"
+            :fields="customFieldNames"
+            v-model="customFieldData"
+          />
+        </div>
+
         <div v-if="submitError" class="form-error">{{ submitError }}</div>
 
         <div class="form-actions">
@@ -115,13 +126,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, computed } from 'vue';
+import { ref, reactive, watch, computed, onMounted } from 'vue';
 import { X, Calendar, Megaphone, FileText } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
+import { useTypesStore } from 'stores/types';
 import FileUploadInput from './FileUploadInput.vue';
+import TypedForm from 'src/components/profiles/TypedForm.vue';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 const activityStore = useActivityStore();
+const typesStore = useTypesStore();
+
+// Notice's built-in fields are all `core`, so the schema's non-core fields are
+// exactly the org-added custom ones.
+const customFieldNames = computed(() => typesStore.customFieldNames('Notice'));
+const customFieldData = ref<Record<string, unknown>>({});
+
+onMounted(() => {
+  if (!typesStore.loaded) void typesStore.loadDefinitions();
+});
 
 const form = reactive({
   type: 'event' as 'event' | 'update' | 'announcement',
@@ -201,6 +224,7 @@ async function handleSubmit() {
     images: form.images.length > 0 ? form.images : undefined,
     attachments: form.attachments.length > 0 ? form.attachments : undefined,
     links: validLinks.length > 0 ? validLinks : undefined,
+    data: Object.keys(customFieldData.value).length > 0 ? customFieldData.value : undefined,
   });
 
   submitting.value = false;
