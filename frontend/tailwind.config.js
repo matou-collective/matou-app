@@ -1,5 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  // Matches the `.dark` class toggled on <html> by src/boot/theme.ts —
+  // see docs on dark-mode-by-default for mobile.
+  darkMode: 'class',
   content: [
     './index.html',
     './src/**/*.{vue,js,ts,jsx,tsx}',

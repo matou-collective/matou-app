@@ -276,6 +276,7 @@ import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSi
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useMoonPhase } from 'src/composables/useMoonPhase';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
+import { applyTheme, persistTheme } from 'src/boot/theme';
 import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
 import { useActivityStore } from 'stores/activity';
@@ -620,7 +621,8 @@ watch(hasJoinedMultisig, async (joined) => {
 
 const toggleDarkMode = () => {
   isDark.value = !isDark.value;
-  document.documentElement.classList.toggle('dark', isDark.value);
+  applyTheme(isDark.value);
+  persistTheme(isDark.value ? 'dark' : 'light');
 };
 
 // Stats data - computed to show real pending registration count for stewards
