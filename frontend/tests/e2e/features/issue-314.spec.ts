@@ -1,7 +1,7 @@
 import { test, expect, Page } from './fixtures';
 
 // Feature (#314, rbac-tables 2/7): a "Projects & Contributions" permission table
-// on the Roles & Permissions page. It has one column per project-and-
+// on the Community Settings page. It has one column per project-and-
 // contribution capability (11 columns, incl. the new View amounts / Assign
 // steward / Assign lead) and — uniquely among the feature tables — its rows
 // include the project-scoped roles (contributor / lead / steward) alongside the
@@ -46,16 +46,17 @@ async function apiJson(aid: string, method: string, route: string, body?: unknow
 }
 
 // Login lands on the "Enter Community" welcome screen or straight on the
-// dashboard; get to the Roles & Permissions page either way.
+// dashboard; get to the Community Settings page (home of the permission
+// tables) either way.
 async function openRolesPage(page: Page): Promise<void> {
   const enter = page.getByRole('button', { name: /enter community/i });
   if (await enter.isVisible().catch(() => false)) {
     await enter.click();
   }
-  const rolesNav = page.locator('.nav-item', { hasText: 'Roles' });
-  await expect(rolesNav).toBeVisible({ timeout: 30_000 });
-  await rolesNav.click();
-  await expect(page.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
+  const gear = page.locator('.community-settings-btn');
+  await expect(gear).toBeVisible({ timeout: 30_000 });
+  await gear.click();
+  await expect(page.getByRole('heading', { name: 'Community Settings' })).toBeVisible();
 }
 
 test.describe('Projects & Contributions permission table (#314)', () => {
