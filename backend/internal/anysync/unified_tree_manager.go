@@ -26,9 +26,9 @@ import (
 
 // Tree type constants used as ChangeType on tree roots.
 const (
-	ProfileTreeType     = "matou.profile.v1"    // ChangeType on profile tree roots
-	CredentialTreeType  = "matou.credential.v1" // ChangeType on credential tree roots
-	NoticeTreeType      = "matou.notice.v1"     // ChangeType on notice tree roots
+	ProfileTreeType     = "matou.profile.v1"     // ChangeType on profile tree roots
+	CredentialTreeType  = "matou.credential.v1"  // ChangeType on credential tree roots
+	NoticeTreeType      = "matou.notice.v1"      // ChangeType on notice tree roots
 	InteractionTreeType = "matou.interaction.v1" // ChangeType on interaction tree roots (ack, rsvp, save)
 	ChatTreeType        = "matou.chat.v1"        // ChangeType on chat tree roots
 )
@@ -62,7 +62,19 @@ type UnifiedTreeManager struct {
 	a             *app.App
 	listener      updatelistener.UpdateListener
 	testFactories sync.Map // spaceId → TestTreeFactory (test-only)
+
+	// recoverMu guards recoverAttempts, which bounds corrupt-tree recovery
+	// (see tree_recovery.go / #129) to once per tree per recoveryBackoffWindow
+	// so a tree no peer can serve does not thrash the missing-tree workers.
+	recoverMu       sync.Mutex
+	recoverAttempts map[string]time.Time
 }
+
+// recoveryBackoffWindow bounds how often a single tree may be recovered from a
+// first-persist corruption. Recovery drops the tree's local rows and lets the
+// next HeadSync cycle (~5s) re-fetch; this window ensures at most one attempt
+// per tree per window so a tree the peer cannot serve doesn't loop.
+const recoveryBackoffWindow = 30 * time.Second
 
 // NewUnifiedTreeManager creates a new UnifiedTreeManager.
 func NewUnifiedTreeManager() *UnifiedTreeManager {
@@ -531,6 +543,66 @@ func (u *UnifiedTreeManager) BuildFreshTree(ctx context.Context, spaceId, treeId
 		return nil, fmt.Errorf("BuildFreshTree BuildTree: %w", err)
 	}
 	return tree, nil
+}
+
+// shouldAttemptRecovery reports whether treeId may be recovered right now,
+// recording the attempt time. It returns false when the tree was already
+// recovered within recoveryBackoffWindow, bounding recovery to once per tree
+// per window under the concurrent missing-tree workers.
+func (u *UnifiedTreeManager) shouldAttemptRecovery(treeID string) bool {
+	u.recoverMu.Lock()
+	defer u.recoverMu.Unlock()
+	now := time.Now()
+	if u.recoverAttempts == nil {
+		u.recoverAttempts = make(map[string]time.Time)
+	}
+	if last, ok := u.recoverAttempts[treeID]; ok && now.Sub(last) < recoveryBackoffWindow {
+		return false
+	}
+	u.recoverAttempts[treeID] = now
+	return true
+}
+
+// RecoverCorruptTree handles a tree whose first persist failed, leaving orphan
+// change rows and a missing/corrupt head-storage entry that sends the SDK into
+// a permanent rebuild loop (#129). It drops the tree's local any-store rows
+// (changes + head entry) and evicts it from the cache and index, so a clean
+// copy is re-fetched from a responsible peer instead of retrying the same
+// broken local state forever. Bounded to once per tree per recoveryBackoffWindow.
+// Returns true when it acted.
+//
+// Why this re-fetches without a restart: in the #129 scenario the head-storage
+// entry is absent, so the live HeadSync diff (built from head storage) never
+// lists the tree locally and keeps classifying it as "missing" against the
+// peer that advertises it. The retry looped only because the leftover orphan
+// change rows blocked the re-fetch's CreateStorage (a duplicate-row insert) or
+// the rebuild's CommonSnapshot lookup. Clearing those rows lets the very next
+// missing-tree fetch persist cleanly. Evicting u.trees is sufficient because
+// that map is the only tree-instance cache in the stack — the SDK objectManager
+// registered as the treemanager component delegates straight through to this
+// UnifiedTreeManager with no cache of its own, and objecttreebuilder rebuilds
+// from storage on every BuildTree.
+func (u *UnifiedTreeManager) RecoverCorruptTree(ctx context.Context, spaceID, treeID string) bool {
+	if u.a == nil {
+		return false // test mode — no real storage to drop
+	}
+	if !u.shouldAttemptRecovery(treeID) {
+		return false
+	}
+	sp, err := u.getSpace(ctx, spaceID)
+	if err != nil {
+		log.Printf("[UTM] RecoverCorruptTree tree=%s space=%s getSpace failed: %v", treeID, spaceID, err)
+		return false
+	}
+	ss := sp.Storage()
+	if err := dropTreeRows(ctx, ss.AnyStore(), ss.HeadStorage(), treeID); err != nil {
+		log.Printf("[UTM] RecoverCorruptTree tree=%s space=%s drop failed: %v", treeID, spaceID, err)
+		return false
+	}
+	u.trees.Delete(treeID)
+	u.removeFromIndex(spaceID, treeID)
+	log.Printf("[UTM] RecoverCorruptTree tree=%s space=%s: dropped orphan change rows + head entry, evicted cache — will re-fetch from a peer on next HeadSync", treeID, spaceID)
+	return true
 }
 
 // --- Internal helpers ---
