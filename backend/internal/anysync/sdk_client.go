@@ -5,6 +5,7 @@ package anysync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	anystore "github.com/anyproto/any-store"
 	"github.com/anyproto/any-sync/accountservice"
 	"github.com/anyproto/any-sync/app"
 	"github.com/anyproto/any-sync/commonspace"
@@ -42,7 +44,6 @@ import (
 	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/anyproto/any-sync/util/syncqueues"
 	"github.com/anyproto/go-chash"
-	anystore "github.com/anyproto/any-store"
 	"storj.io/drpc"
 )
 
@@ -241,10 +242,10 @@ func (c *SDKClient) CreateSpace(ctx context.Context, ownerAID string, spaceType 
 	}
 
 	keys := &SpaceKeySet{
-		SigningKey:   signingKey,
-		MasterKey:    masterKey,
-		ReadKey:      readKey,
-		MetadataKey:  metadataKey,
+		SigningKey:  signingKey,
+		MasterKey:   masterKey,
+		ReadKey:     readKey,
+		MetadataKey: metadataKey,
 	}
 
 	return c.CreateSpaceWithKeys(ctx, ownerAID, spaceType, keys)
@@ -961,10 +962,33 @@ func newSDKStorageProvider(rootPath string) *sdkStorageProvider {
 	return &sdkStorageProvider{rootPath: rootPath}
 }
 
-func (p *sdkStorageProvider) Init(a *app.App) error           { return nil }
-func (p *sdkStorageProvider) Name() string                    { return spacestorage.CName }
-func (p *sdkStorageProvider) Run(ctx context.Context) error   { return nil }
-func (p *sdkStorageProvider) Close(ctx context.Context) error { return nil }
+func (p *sdkStorageProvider) Init(_ *app.App) error       { return nil }
+func (p *sdkStorageProvider) Name() string                { return spacestorage.CName }
+func (p *sdkStorageProvider) Run(_ context.Context) error { return nil }
+
+// Close closes every cached per-space any-store handle and clears the cache.
+// spaceStorage.Close is itself a no-op, so the underlying anystore.DB (and its
+// sqlite connections/fds) leaks on every app.Close — including a clean Stop()
+// and Reinitialize() — unless we close the handles here. This runs during
+// app.Close, before Reinitialize's initFullSDK reopens the same data.db files,
+// so the store is always closed before it is reopened.
+func (p *sdkStorageProvider) Close(_ context.Context) error {
+	var errs []error
+	p.spaces.Range(func(key, value any) bool {
+		p.spaces.Delete(key)
+		storage, ok := value.(spacestorage.SpaceStorage)
+		if !ok {
+			return true
+		}
+		if store := storage.AnyStore(); store != nil {
+			if err := store.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("closing space storage %v: %w", key, err))
+			}
+		}
+		return true
+	})
+	return errors.Join(errs...)
+}
 
 func (p *sdkStorageProvider) WaitSpaceStorage(ctx context.Context, id string) (spacestorage.SpaceStorage, error) {
 	if s, ok := p.spaces.Load(id); ok {
