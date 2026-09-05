@@ -11,13 +11,12 @@ import {
 } from '../../src/composables/navItems';
 
 describe('navItems metadata', () => {
-  it('exposes the 8 nav entries in order', () => {
+  it('exposes the 7 nav entries in order', () => {
     expect(NAV_ITEM_META.map((i) => i.name)).toEqual([
       'dashboard',
       'chat',
       'wallet',
       'activity',
-      'roles-permissions',
       'proposals',
       'projects',
       'contributions',
@@ -40,10 +39,9 @@ describe('navItems metadata', () => {
     ]);
   });
 
-  it('collapses the remaining entries into the More sheet (Wallet · Roles & Permissions · Proposals · Projects)', () => {
+  it('collapses the remaining entries into the More sheet (Wallet · Proposals · Projects)', () => {
     expect(OVERFLOW_NAV_ITEMS.map((i) => i.name)).toEqual([
       'wallet',
-      'roles-permissions',
       'proposals',
       'projects',
     ]);
@@ -104,15 +102,14 @@ describe('applyFeatureNav (coa phase 4, spec §3.4)', () => {
       ...ALL_ON, order: ['proposals', 'chat', 'projects', 'notices', 'events'],
     });
     expect(nav.map((i) => i.name)).toEqual([
-      'dashboard', 'proposals', 'wallet', 'chat', 'roles-permissions',
-      'projects', 'activity', 'contributions',
+      'dashboard', 'proposals', 'wallet', 'chat', 'projects', 'activity', 'contributions',
     ]);
   });
 
   it('disabled entries vanish without shifting fixed entries', () => {
     const nav = applyFeatureNav(NAV_ITEM_META, { ...ALL_ON, chat: false, projects: false });
     expect(nav.map((i) => i.name)).toEqual([
-      'dashboard', 'activity', 'wallet', 'proposals', 'roles-permissions', 'contributions',
+      'dashboard', 'activity', 'wallet', 'proposals', 'contributions',
     ]);
   });
 

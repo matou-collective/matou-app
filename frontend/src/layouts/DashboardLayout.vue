@@ -167,7 +167,6 @@ import {
   Bug,
   Menu,
   Settings,
-  Users,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -256,7 +255,6 @@ const NAV_ICONS: Record<string, Component> = {
   chat: MessageSquare,
   wallet: Wallet,
   activity: Bell,
-  'roles-permissions': Users,
   proposals: Vote,
   projects: Target,
   contributions: Hammer,
