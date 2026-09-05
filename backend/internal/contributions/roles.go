@@ -132,6 +132,15 @@ const (
 	// default.
 	ActionOpenCommunitySettings Action = "open_community_settings"
 
+	// ActionManageSchema gates PUT /api/v1/types/{name} — editing an org's
+	// per-type schema (#399, part of the #396 customisable-schemas umbrella). It
+	// is homed under manage_community_settings alongside save_org_config, so a
+	// schema edit is gated by the same founder-default capability as the rest of
+	// Community Settings. Like the other #31x feature actions it is NOT in the
+	// legacy actionPermissions table — enforcement reaches it only via the
+	// capability registry and the synced RolePolicy.
+	ActionManageSchema Action = "manage_schema"
+
 	// ActionWriteProfile gates POST /api/v1/profiles. Any authenticated member
 	// may reach the handler; resource-level rules (owner / steward / role
 	// change) are applied in api.profileWritePolicy.

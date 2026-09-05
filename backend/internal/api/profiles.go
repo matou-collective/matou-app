@@ -24,6 +24,15 @@ type ProfilesHandler struct {
 	fileManager  *anysync.FileManager
 	eventBroker  *EventBroker
 	roleLookup   RoleLookup
+	schemaWriter SchemaWriter
+}
+
+// SchemaWriter persists an updated type definition to the community space.
+// The production implementation (spaceSchemaWriter) writes a type_definition
+// object signed with the community space key set — the same way org setup
+// seeds them (see spaces.go seedSpace); tests inject a fake.
+type SchemaWriter interface {
+	WriteTypeDefinition(ctx context.Context, def *types.TypeDefinition) error
 }
 
 // NewProfilesHandler creates a new profiles handler.
@@ -40,6 +49,7 @@ func NewProfilesHandler(
 		registry:     registry,
 		fileManager:  fileManager,
 		eventBroker:  eventBroker,
+		schemaWriter: &spaceSchemaWriter{spaceManager: spaceManager},
 	}
 }
 
@@ -77,6 +87,92 @@ func (h *ProfilesHandler) HandleGetType(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, def)
+}
+
+// HandleUpdateType handles PUT /api/v1/types/{name} — replace a type's
+// definition with an admin-supplied one (#399, part of #396).
+//
+// The core-field invariant is enforced against the built-in (Bootstrap)
+// definition: every field the built-in marks core:true must stay present and
+// unchanged in name/type; custom fields may be freely added, edited, or
+// removed. Unknown type names are 404; structurally invalid or hostile
+// definitions (core-field violation, bad field name/type, over the field cap,
+// dangling variantField) are 400. A stale definition Version is 409 (optimistic
+// locking, mirroring the role-policy PUT); on success the version is bumped, the
+// definition persisted to the community space, and the in-memory registry
+// updated atomically. RBAC is applied by the route (ActionManageSchema →
+// manage_community_settings).
+func (h *ProfilesHandler) HandleUpdateType(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, "/api/v1/types/")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "type name is required"})
+		return
+	}
+
+	current, ok := h.registry.Get(name)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("type %q not found", name)})
+		return
+	}
+
+	var incoming types.TypeDefinition
+	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request: %v", err)})
+		return
+	}
+
+	// The path is the source of truth for the name; an empty body name inherits
+	// it, a mismatched one is rejected so a PUT can't rename or retarget a type.
+	if incoming.Name == "" {
+		incoming.Name = name
+	}
+	if incoming.Name != name {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("type name %q in body does not match %q in path", incoming.Name, name),
+		})
+		return
+	}
+
+	// Optimistic locking: the client must have edited the version it last read.
+	if incoming.Version != current.Version {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"error":          "type definition was modified by someone else — reload and retry",
+			"currentVersion": current.Version,
+		})
+		return
+	}
+
+	// Core-field invariant + structural validation against the built-in shape.
+	builtin, _ := types.BuiltinDefinition(name)
+	if msg := types.ValidateSchemaUpdate(builtin, &incoming); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+		return
+	}
+
+	// Bump the version for the persisted + registered copy, then write-through:
+	// persist to the community space first so a storage failure surfaces as 500
+	// and never leaves the registry ahead of the durable copy.
+	updated := incoming
+	updated.Version = current.Version + 1
+
+	if h.schemaWriter != nil {
+		if err := h.schemaWriter.WriteTypeDefinition(r.Context(), &updated); err != nil {
+			log.Printf("[Types] failed to persist definition %q (version %d): %v", name, updated.Version, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to store type definition: %v", err),
+			})
+			return
+		}
+	}
+	h.registry.Register(&updated)
+
+	log.Printf("[Types] updated definition %q to version %d by %s", name, updated.Version, GetUserAID(r))
+	writeJSON(w, http.StatusOK, updated)
 }
 
 // CreateProfileRequest represents a request to create or update a profile.
@@ -1243,7 +1339,7 @@ func (h *ProfilesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 	requireRoleLookup("ProfilesHandler", roleLookup)
 	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/types", h.handleTypes)
-	mux.HandleFunc("/api/v1/types/", h.HandleGetType)
+	mux.HandleFunc("/api/v1/types/", h.handleTypeByName)
 	mux.HandleFunc("/api/v1/profiles", h.handleProfiles)
 	mux.HandleFunc("/api/v1/profiles/", h.HandleListProfiles)
 	mux.HandleFunc("/api/v1/profiles/me", h.HandleMyProfiles)
@@ -1276,6 +1372,68 @@ func (h *ProfilesHandler) handleMembers(w http.ResponseWriter, r *http.Request) 
 // handleTypes routes /api/v1/types requests.
 func (h *ProfilesHandler) handleTypes(w http.ResponseWriter, r *http.Request) {
 	h.HandleListTypes(w, r)
+}
+
+// handleTypeByName routes /api/v1/types/{name} requests: GET reads a definition
+// (open), PUT edits it behind the manage_community_settings capability (#399).
+func (h *ProfilesHandler) handleTypeByName(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.HandleGetType(w, r)
+	case http.MethodPut:
+		h.withRBAC(contributions.ActionManageSchema, h.HandleUpdateType)(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+	}
+}
+
+// spaceSchemaWriter persists a type definition into the community space,
+// signed with that space's key set — the same object shape org setup seeds
+// (type "type_definition"; see spaces.go seedSpace). A stable object ID
+// (typedef-<name>) means an edit supersedes the prior definition rather than
+// accumulating duplicates.
+type spaceSchemaWriter struct {
+	spaceManager *anysync.SpaceManager
+}
+
+func (s *spaceSchemaWriter) WriteTypeDefinition(ctx context.Context, def *types.TypeDefinition) error {
+	if s.spaceManager == nil {
+		return fmt.Errorf("space manager not available")
+	}
+	spaceID := s.spaceManager.GetCommunitySpaceID()
+	if spaceID == "" {
+		return fmt.Errorf("community space not configured")
+	}
+	client := s.spaceManager.GetClient()
+	if client == nil {
+		return fmt.Errorf("any-sync client not available")
+	}
+	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
+	if err != nil {
+		return fmt.Errorf("loading space keys: %w", err)
+	}
+	ownerKey := ""
+	if keys.SigningKey != nil {
+		if pub, err := keys.SigningKey.GetPublic().Marshall(); err == nil {
+			ownerKey = fmt.Sprintf("%x", pub)
+		}
+	}
+	data, err := json.Marshal(def)
+	if err != nil {
+		return fmt.Errorf("marshaling type definition: %w", err)
+	}
+	payload := &anysync.ObjectPayload{
+		ID:        fmt.Sprintf("typedef-%s", def.Name),
+		Type:      "type_definition",
+		OwnerKey:  ownerKey,
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+		Version:   def.Version,
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	_, err = s.spaceManager.ObjectTreeManager().AddObject(writeCtx, spaceID, payload, keys.SigningKey)
+	return err
 }
 
 // handleProfiles routes /api/v1/profiles requests.

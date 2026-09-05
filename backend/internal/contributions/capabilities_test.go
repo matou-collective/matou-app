@@ -117,8 +117,11 @@ func TestAllCapabilitiesStable(t *testing.T) {
 	if got := CapabilityActions()[CapOpenCommunitySettings]; len(got) != 1 || got[0] != ActionOpenCommunitySettings {
 		t.Errorf("open_community_settings should gate open_community_settings, got %v", got)
 	}
-	if got := CapabilityActions()[CapManageCommunitySettings]; len(got) != 1 || got[0] != ActionSaveOrgConfig {
-		t.Errorf("manage_community_settings should gate save_org_config, got %v", got)
+	// manage_community_settings gates save_org_config and, since #399, the
+	// per-type schema write (manage_schema).
+	if got := CapabilityActions()[CapManageCommunitySettings]; len(got) != 2 ||
+		got[0] != ActionSaveOrgConfig || got[1] != ActionManageSchema {
+		t.Errorf("manage_community_settings should gate [save_org_config manage_schema], got %v", got)
 	}
 	// The chat capabilities are wired (#316).
 	for _, c := range []Capability{CapSendMessages, CapManageChannels, CapModerateMessages} {

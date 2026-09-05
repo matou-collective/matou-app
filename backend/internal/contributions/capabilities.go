@@ -211,8 +211,11 @@ var capabilityActions = map[Capability][]Action{
 	// Community-settings capabilities, wired by #318. open_community_settings
 	// gates the page-access check; manage_community_settings now owns
 	// save_org_config (re-homed from manage_members above).
-	CapOpenCommunitySettings:   {ActionOpenCommunitySettings},
-	CapManageCommunitySettings: {ActionSaveOrgConfig},
+	CapOpenCommunitySettings: {ActionOpenCommunitySettings},
+	// manage_community_settings owns both org-config saves and per-type schema
+	// edits (#399): editing an org's schema is part of managing community
+	// settings, so it rides the same founder-default capability.
+	CapManageCommunitySettings: {ActionSaveOrgConfig, ActionManageSchema},
 
 	// Chat enforcement (#316). send_messages gates posting a message (default
 	// all — behaviour-neutral until narrowed); manage_channels gates the channel
