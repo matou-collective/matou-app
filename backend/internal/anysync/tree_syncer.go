@@ -11,9 +11,12 @@ package anysync
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/anyproto/any-sync/app"
+	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 	"github.com/anyproto/any-sync/commonspace/object/tree/synctree"
 	"github.com/anyproto/any-sync/commonspace/object/treemanager"
 	"github.com/anyproto/any-sync/commonspace/object/treesyncer"
@@ -32,7 +35,163 @@ const (
 
 	// syncQueueSize is the buffer size for the work channels.
 	syncQueueSize = 256
+
+	// backoffBase is the delay after the first failed fetch of a missing tree.
+	// Each subsequent consecutive failure doubles the delay (5s → 10s → 20s …).
+	backoffBase = 5 * time.Second
+
+	// backoffMax caps the per-tree retry delay. Without this, HeadSync re-queues
+	// a permanently-failing tree every ~5s forever (see #129).
+	backoffMax = 5 * time.Minute
+
+	// parkThreshold is the number of consecutive failures after which a tree is
+	// considered "parked": the noisy ERROR log is suppressed and the tree is only
+	// retried at backoffMax cadence until it succeeds again.
+	parkThreshold = 5
 )
+
+// treeGetter is the subset of treemanager.TreeManager the tree syncer needs.
+// Narrowing the dependency lets tests drive the workers with a fake that only
+// implements GetTree.
+type treeGetter interface {
+	GetTree(ctx context.Context, spaceID, treeID string) (objecttree.ObjectTree, error)
+}
+
+// treeBackoff holds the retry state for a single missing tree.
+type treeBackoff struct {
+	failures  int       // consecutive failure count, reset on success
+	nextRetry time.Time // earliest time the tree may be re-queued
+	inFlight  bool      // a worker is currently processing this tree
+	parked    bool      // failures >= parkThreshold (noisy log suppressed)
+}
+
+// backoffTracker gates re-queuing of missing trees with per-tree exponential
+// backoff and a failure cap. HeadSync calls SyncAll every ~5s with the same
+// missing set; without gating, a persistently-failing tree burns CPU/battery in
+// a tight retry loop. The clock is injectable for deterministic tests.
+type backoffTracker struct {
+	mu    sync.Mutex
+	now   func() time.Time
+	state map[string]*treeBackoff
+}
+
+func newBackoffTracker() *backoffTracker {
+	return &backoffTracker{
+		now:   time.Now,
+		state: make(map[string]*treeBackoff),
+	}
+}
+
+// claim marks a tree in-flight if it is eligible to be fetched now. It returns
+// false when the tree is already being processed or is still within its backoff
+// window, in which case the caller must not queue it. A claimed tree must be
+// resolved with recordSuccess / recordFailure, or released with release.
+func (b *backoffTracker) claim(treeID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	st := b.state[treeID]
+	if st == nil {
+		st = &treeBackoff{}
+		b.state[treeID] = st
+	}
+	if st.inFlight {
+		return false
+	}
+	if b.now().Before(st.nextRetry) {
+		return false
+	}
+	st.inFlight = true
+	return true
+}
+
+// release clears the in-flight flag without changing the failure state. Used
+// when a claimed item could not be queued (e.g. the sync cycle was canceled).
+func (b *backoffTracker) release(treeID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if st := b.state[treeID]; st != nil {
+		st.inFlight = false
+	}
+}
+
+// recordFailure increments the consecutive-failure counter, schedules the next
+// retry with exponential backoff capped at backoffMax, and reports the chosen
+// delay plus whether the tree just crossed the park threshold (justParked, so
+// the caller logs the park line exactly once) and whether it is now parked (so
+// the caller suppresses the per-failure ERROR log).
+func (b *backoffTracker) recordFailure(treeID string) (delay time.Duration, justParked, parked bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	st := b.state[treeID]
+	if st == nil {
+		st = &treeBackoff{}
+		b.state[treeID] = st
+	}
+	st.inFlight = false
+	st.failures++
+
+	// delay = backoffBase * 2^(failures-1), capped. Cap the shift first so the
+	// multiplication can never overflow int64.
+	shift := st.failures - 1
+	if shift > 20 {
+		shift = 20
+	}
+	delay = backoffBase << shift
+	if delay <= 0 || delay > backoffMax {
+		delay = backoffMax
+	}
+	st.nextRetry = b.now().Add(delay)
+
+	if st.failures >= parkThreshold {
+		parked = true
+		if !st.parked {
+			st.parked = true
+			justParked = true
+		}
+	}
+	return delay, justParked, parked
+}
+
+// recordSuccess clears all backoff state for a tree and reports whether it had
+// been parked (so the caller can log the recovery as a state change).
+func (b *backoffTracker) recordSuccess(treeID string) (wasParked bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if st := b.state[treeID]; st != nil {
+		wasParked = st.parked
+		delete(b.state, treeID)
+	}
+	return wasParked
+}
+
+// anyInFlight reports whether any tree is currently claimed (queued or being
+// processed by a worker). A tree stays in-flight from claim until the worker
+// resolves it via recordSuccess/recordFailure. Used by tests to know when a
+// sync cycle has fully drained.
+func (b *backoffTracker) anyInFlight() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, st := range b.state {
+		if st.inFlight {
+			return true
+		}
+	}
+	return false
+}
+
+// parkedTrees returns the sorted ids of trees currently parked.
+func (b *backoffTracker) parkedTrees() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for id, st := range b.state {
+		if st.parked {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // syncWorkItem represents a single tree sync operation queued for a worker.
 type syncWorkItem struct {
@@ -49,7 +208,10 @@ type syncWorkItem struct {
 type matouTreeSyncer struct {
 	spaceId     string
 	utm         *UnifiedTreeManager
-	treeManager treemanager.TreeManager
+	treeManager treeGetter
+
+	// backoff gates re-queuing of persistently-failing missing trees (#129).
+	backoff *backoffTracker
 
 	// Persistent worker pools
 	missingCh  chan syncWorkItem
@@ -62,6 +224,7 @@ func newMatouTreeSyncer(spaceId string, utm *UnifiedTreeManager) *matouTreeSynce
 	return &matouTreeSyncer{
 		spaceId:    spaceId,
 		utm:        utm,
+		backoff:    newBackoffTracker(),
 		missingCh:  make(chan syncWorkItem, syncQueueSize),
 		existingCh: make(chan syncWorkItem, syncQueueSize),
 	}
@@ -123,7 +286,7 @@ func (t *matouTreeSyncer) missingWorker() {
 		ctx := peer.CtxWithPeerId(context.Background(), item.peerId)
 		tr, err := t.treeManager.GetTree(ctx, t.spaceId, item.treeId)
 		if err != nil {
-			log.Printf("[TreeSyncer] missingWorker: FAILED to get tree %s: %v", item.treeId, err)
+			t.recordMissingFailure(item.treeId, err)
 			continue
 		}
 		log.Printf("[TreeSyncer] missingWorker: got tree %s, isSyncTree=%v", item.treeId, func() bool { _, ok := tr.(synctree.SyncTree); return ok }())
@@ -135,11 +298,32 @@ func (t *matouTreeSyncer) missingWorker() {
 
 		if st, ok := tr.(synctree.SyncTree); ok {
 			if err := st.SyncWithPeer(ctx, item.peer); err != nil {
-				log.Printf("[TreeSyncer] missingWorker: SyncWithPeer failed for tree %s: %v", item.treeId, err)
-			} else {
-				log.Printf("[TreeSyncer] missingWorker: SyncWithPeer OK for tree %s", item.treeId)
+				t.recordMissingFailure(item.treeId, err)
+				continue
 			}
+			log.Printf("[TreeSyncer] missingWorker: SyncWithPeer OK for tree %s", item.treeId)
 		}
+
+		if t.backoff.recordSuccess(item.treeId) {
+			log.Printf("[TreeSyncer] missingWorker: tree %s recovered, resuming normal sync", item.treeId)
+		}
+	}
+}
+
+// recordMissingFailure updates the per-tree backoff after a failed fetch/sync of
+// a missing tree and logs proportionally: a per-failure ERROR while the tree is
+// still retrying quickly, a single "parked" line when it crosses the failure
+// cap, then silence until it recovers (see #129).
+func (t *matouTreeSyncer) recordMissingFailure(treeID string, cause error) {
+	delay, justParked, parked := t.backoff.recordFailure(treeID)
+	switch {
+	case justParked:
+		log.Printf("[TreeSyncer] missingWorker: tree %s parked after %d consecutive failures, retrying every %s (last error: %v)",
+			treeID, parkThreshold, backoffMax, cause)
+	case parked:
+		// Already parked — stay quiet to keep the log from filling.
+	default:
+		log.Printf("[TreeSyncer] missingWorker: FAILED to get tree %s: %v (retry in %s)", treeID, cause, delay)
 	}
 }
 
@@ -178,11 +362,18 @@ func (t *matouTreeSyncer) SyncAll(ctx context.Context, p peer.Peer, existing, mi
 
 	peerId := p.Id()
 
-	// Queue missing trees for the missing-tree worker pool
+	// Queue missing trees for the missing-tree worker pool. HeadSync re-feeds the
+	// same missing set every ~5s; the backoff tracker skips any tree still inside
+	// its retry window (or already in flight) so a persistently-failing tree no
+	// longer loops forever (#129).
 	for _, id := range missing {
+		if !t.backoff.claim(id) {
+			continue
+		}
 		select {
 		case t.missingCh <- syncWorkItem{treeId: id, peer: p, peerId: peerId}:
 		case <-ctx.Done():
+			t.backoff.release(id)
 			return ctx.Err()
 		}
 	}
