@@ -85,6 +85,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # The kit path is relative to the workspace, but apply-kit runs from frontend/.
+        case "$KIT_DIR" in /*) ;; *) KIT_DIR="$GITHUB_WORKSPACE/$KIT_DIR" ;; esac
         cd frontend
         # icons.mjs arrived with kit plan Task 2 (#238); older refs apply tokens/ids only.
         if [ -f scripts/kit/icons.mjs ]; then npm run kit:apply -- "$KIT_DIR"
