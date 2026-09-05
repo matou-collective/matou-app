@@ -37,6 +37,8 @@ var projectScopedActions = map[Action]bool{
 	ActionEditMilestone:            true,
 	ActionLinkProposal:             true,
 	ActionAssignProjectRole:        true,
+	ActionAssignProjectSteward:     true,
+	ActionAssignProjectLead:        true,
 }
 
 // IsProjectScopedAction reports whether action is authorised against the

@@ -8,13 +8,12 @@ import {
 } from '../../src/composables/navItems';
 
 describe('navItems metadata', () => {
-  it('exposes the 8 nav entries in order', () => {
+  it('exposes the 7 nav entries in order', () => {
     expect(NAV_ITEM_META.map((i) => i.name)).toEqual([
       'dashboard',
       'chat',
       'wallet',
       'activity',
-      'roles-permissions',
       'proposals',
       'projects',
       'contributions',
@@ -37,11 +36,9 @@ describe('navItems metadata', () => {
     ]);
   });
 
-  it('collapses the remaining entries into the More sheet (Wallet · Roles · Proposals · Projects)', () => {
-    // roles-permissions is admin-only; DashboardLayout hides it unless manage_roles.
+  it('collapses the remaining entries into the More sheet (Wallet · Proposals · Projects)', () => {
     expect(OVERFLOW_NAV_ITEMS.map((i) => i.name)).toEqual([
       'wallet',
-      'roles-permissions',
       'proposals',
       'projects',
     ]);

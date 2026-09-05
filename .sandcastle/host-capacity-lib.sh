@@ -488,11 +488,14 @@ host_capacity_drive_log_start() {
   local window="${5:-}" repo="${HOST_CAPACITY_DRIVE_REPO:-}"
   [ -n "$window" ] || window="$(host_capacity_drive_wanted_window 2>/dev/null || true)"
   case "$window" in ''|*[!0-9]*) window=null ;; esac
+  local run_dir="${HOST_CAPACITY_DRIVE_RUN_DIR:-}"
   _host_capacity_drive_log_append "$(jq -cn \
     --arg id "$id" --arg box "$box" --arg target "$target" --arg mode "$mode" \
-    --arg repo "$repo" --argjson at "$(date +%s)" --argjson res "$window" \
+    --arg repo "$repo" --arg rd "$run_dir" \
+    --argjson at "$(date +%s)" --argjson res "$window" \
     '{event:"start",id:$id,at:$at,box:$box,target:$target,mode:$mode,
-      repo:(if $repo=="" then null else $repo end),reservation_window_s:$res}')"
+      repo:(if $repo=="" then null else $repo end),
+      run_dir:(if $rd=="" then null else $rd end),reservation_window_s:$res}')"
   # Label the slots the flock actually won, not the mode prediction (#118).
   local slots slot
   if [ -n "${HOST_CAPACITY_EXCLUSIVE_SLOTS:-}" ]; then
@@ -518,12 +521,30 @@ host_capacity_drive_log_start() {
 #   drive that held only slot 2 never wipes a ticket worker's slot-1 holder, #118).
 #   When that variable is unset (a process that only ends, never started, the
 #   drive here) it falls back to the live-mode prediction.
+# host_capacity_drive_log_step <id> <step> — append one timeline event: the
+# drive's prep/act phase named <step> STARTS now (its duration is the gap to
+# the next event with the same id — the reader's arithmetic, not ours).
+# Append-only, best-effort, never reds the caller; a step whose start line is
+# missing still appends (the reader correlates by id).
+host_capacity_drive_log_step() {
+  command -v jq >/dev/null 2>&1 || return 0
+  local id="$1" step="$2"
+  _host_capacity_drive_log_append "$(jq -cn \
+    --arg id "$id" --arg step "$step" --argjson at "$(date +%s)" \
+    '{event:"step",id:$id,at:$at,step:$step}')"
+}
+
+# host_capacity_drive_log_end <id> [verdict] [action] — [action] is the human
+# sentence for WHAT WAS DONE about the verdict ("report → blocks <repo>#N",
+# "park-staleness", "green — closed #N"); null when the caller has none.
 host_capacity_drive_log_end() {
   command -v jq >/dev/null 2>&1 || return 0
-  local id="$1" verdict="${2:-ended}"
+  local id="$1" verdict="${2:-ended}" action="${3:-}"
   _host_capacity_drive_log_append "$(jq -cn \
-    --arg id "$id" --arg verdict "$verdict" --argjson at "$(date +%s)" \
-    '{event:"end",id:$id,at:$at,verdict:$verdict}')"
+    --arg id "$id" --arg verdict "$verdict" --arg action "$action" \
+    --argjson at "$(date +%s)" \
+    '{event:"end",id:$id,at:$at,verdict:$verdict,
+      action:(if $action=="" then null else $action end)}')"
   local slots slot
   slots="${HOST_CAPACITY_DRIVE_HOLDER_SLOTS:-}"
   [ -n "$slots" ] || slots="$(_host_capacity_drive_slots)"

@@ -42,9 +42,15 @@ const routes: RouteRecordRaw[] = [
         component: () => import('pages/ActivityPage.vue'),
       },
       {
+        // The Roles & Permissions page merged into Community Settings; keep old
+        // links working.
         path: 'roles',
-        name: 'roles-permissions',
-        component: () => import('pages/Dashboard/RolesPermissionsPage.vue'),
+        redirect: { name: 'community-settings' },
+      },
+      {
+        path: 'community-settings',
+        name: 'community-settings',
+        component: () => import('pages/Dashboard/CommunitySettingsPage.vue'),
       },
       {
         path: 'projects',

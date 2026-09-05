@@ -63,7 +63,7 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 	mux.HandleFunc("/api/v1/contributions", CORSHandler(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			h.HandleList(w, r)
+			h.withOptionalRBAC(h.HandleList)(w, r)
 		case http.MethodPost:
 			h.withRBAC(contributions.ActionCreateContribution, h.HandleCreate)(w, r)
 		default:
@@ -215,7 +215,9 @@ func (h *ContributionsHandler) RegisterRoutes(mux *http.ServeMux, roleLookup Rol
 
 		switch r.Method {
 		case http.MethodGet:
-			h.HandleGet(w, r, id)
+			h.withOptionalRBAC(func(w http.ResponseWriter, r *http.Request) {
+				h.HandleGet(w, r, id)
+			})(w, r)
 		case http.MethodPut:
 			h.withRBAC(contributions.ActionUpdateContribution, func(w http.ResponseWriter, r *http.Request) {
 				h.HandleUpdate(w, r, id)
@@ -233,6 +235,24 @@ func (h *ContributionsHandler) withRBAC(action contributions.Action, handler htt
 		return handler
 	}
 	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
+}
+
+// withOptionalRBAC resolves the caller's AID and roles into the request context
+// when an X-User-AID header is present, without rejecting anonymous reads. Read
+// handlers use it so contribution-amount visibility (#314) can be enforced per
+// caller. A nil roleLookup (tests) passes through untouched — no stripping.
+func (h *ContributionsHandler) withOptionalRBAC(handler http.HandlerFunc) http.HandlerFunc {
+	return optionalRBAC(h.roleLookup, handler)
+}
+
+// visibleAmounts / visibleAmountsList strip a contribution's budget/actuals from
+// callers who may not see them (see contribution_amounts.go).
+func (h *ContributionsHandler) visibleAmounts(r *http.Request, c *contributions.Contribution) *contributions.Contribution {
+	return visibleContributionAmounts(h.roleLookup, r, c)
+}
+
+func (h *ContributionsHandler) visibleAmountsList(r *http.Request, cs []*contributions.Contribution) []*contributions.Contribution {
+	return visibleContributionAmountsList(h.roleLookup, r, cs)
 }
 
 // withProjectRBAC applies project-scoped RBAC for actions whose authorisation
@@ -279,6 +299,7 @@ func (h *ContributionsHandler) HandleList(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	contribs = h.visibleAmountsList(r, contribs)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"contributions": contribs, "total": len(contribs)})
 }
 
@@ -290,7 +311,7 @@ func (h *ContributionsHandler) HandleGet(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "contribution not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, contrib)
+	writeJSON(w, http.StatusOK, h.visibleAmounts(r, contrib))
 }
 
 // HandleTransition handles POST /api/v1/contributions/{id}/transition

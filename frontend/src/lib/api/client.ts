@@ -975,7 +975,7 @@ export async function createNotice(req: CreateNoticeRequest): Promise<{ success:
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/notices`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(req),
     });
     return response.json();
@@ -988,6 +988,7 @@ export async function publishNotice(id: string): Promise<{ success: boolean; err
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(id)}/publish`, {
       method: 'POST',
+      headers: authHeaders(),
     });
     return response.json();
   } catch {
@@ -999,6 +1000,7 @@ export async function archiveNotice(id: string): Promise<{ success: boolean; err
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(id)}/archive`, {
       method: 'POST',
+      headers: authHeaders(),
     });
     return response.json();
   } catch {
@@ -1122,6 +1124,7 @@ export async function toggleNoticePin(noticeId: string): Promise<{ success: bool
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/pin`, {
       method: 'POST',
+      headers: authHeaders(),
     });
     return response.json();
   } catch {

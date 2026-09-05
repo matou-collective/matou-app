@@ -52,10 +52,16 @@ export async function initKeriConfig(): Promise<ClientConfig> {
  * Get KERIA URLs from cached config or defaults
  */
 function getKeriaUrls() {
+  const cesrFetchUrl = clientConfig?.keri.cesr_url || 'http://localhost:3902';
   return {
     adminUrl: clientConfig?.keri.admin_url || 'http://localhost:3901',
     bootUrl: clientConfig?.keri.boot_url || 'http://localhost:3903',
-    cesrUrl: clientConfig?.keri.cesr_url || 'http://localhost:3902',
+    // OOBI base: URLs built from this are resolved by KERIA server-side, so
+    // when the backend loopback-proxies the KERI endpoints for the WebView
+    // (#368) this must stay the public base, not the phone-local proxy.
+    cesrUrl: clientConfig?.keri.cesr_public_url || cesrFetchUrl,
+    // Direct-fetch base (KEL-push streams): the proxied URL on Capacitor.
+    cesrFetchUrl,
   };
 }
 
@@ -81,6 +87,10 @@ export class KERIClient {
   }
   private get cesrUrl(): string {
     return getKeriaUrls().cesrUrl;
+  }
+  // CESR base for fetches made by the WebView itself (not OOBI building).
+  private get cesrFetchUrl(): string {
+    return getKeriaUrls().cesrFetchUrl;
   }
   // Docker internal CESR URL — KERIA resolves OOBIs from inside Docker,
   // so localhost URLs must be converted to the container hostname.
@@ -632,7 +642,9 @@ export class KERIClient {
     aidPrefix: string,
     destinationAid: string,
   ): Promise<{ pushed: number; failed: number }> {
-    const base = this.cesrUrl.replace(/\/+$/, '');
+    // Fetched/POSTed directly from the WebView — use the fetchable base
+    // (the loopback proxy on Capacitor), not the OOBI base (#368).
+    const base = this.cesrFetchUrl.replace(/\/+$/, '');
     let pushed = 0;
     let failed = 0;
     try {
