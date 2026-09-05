@@ -64,8 +64,10 @@ onMounted(async () => {
 
   if (await applyDeepLink()) return;
 
-  // Auto-select: last visited channel (localStorage) > first channel (if no unreads)
-  if (!chatStore.currentChannelId && chatStore.channels.length > 0) {
+  // Auto-select: last visited channel (localStorage) > first channel (if no
+  // unreads). Skipped on mobile so the chat tab opens on the channels list —
+  // deep links above still open their channel there.
+  if (!isMobile.value && !chatStore.currentChannelId && chatStore.channels.length > 0) {
     const lastChannelId = localStorage.getItem('matou:lastChannelId');
     const lastExists = lastChannelId && chatStore.channels.some(c => c.id === lastChannelId);
 

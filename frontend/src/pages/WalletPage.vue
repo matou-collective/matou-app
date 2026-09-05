@@ -198,4 +198,60 @@ onMounted(() => {
   width: 100%;
   overflow-y: auto;
 }
+
+@media (max-width: 767px) {
+  .wallet-body {
+    margin-left: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .wallet-sidebar {
+    position: static;
+    left: auto;
+    top: auto;
+    bottom: auto;
+    width: 100%;
+    height: auto;
+    padding-top: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--matou-sidebar-border);
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: visible;
+  }
+
+  .wallet-sidebar-header {
+    display: none;
+  }
+
+  .wallet-sidebar-nav {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    padding: 0.5rem;
+    gap: 0.5rem;
+  }
+
+  .wallet-nav-item {
+    width: auto;
+    white-space: nowrap;
+    border-radius: 10px;
+  }
+
+  .wallet-nav-item.active {
+    border-left: none;
+    padding-left: 0.75rem;
+    border-bottom: 3px solid var(--matou-sidebar-primary);
+  }
+
+  .wallet-nav-coming-soon {
+    display: none;
+  }
+
+  .tab-content {
+    padding: 1rem;
+    padding-top: 1rem;
+  }
+}
 </style>

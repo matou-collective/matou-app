@@ -990,23 +990,37 @@ function handleRoleUpdated(newRole: string) {
   gap: 0.75rem;
   flex-wrap: wrap;
   flex-shrink: 0;
+
+  @media (max-width: 767px) {
+    // Keep date + moon + name on a single line rather than letting them
+    // separate onto their own lines when the header is narrow.
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    width: 100%;
+  }
 }
 
 .moon-date {
   font-size: 0.875rem;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .moon-circle {
   font-size: 1.5rem;
   line-height: 1;
+  // The API returns an emoji glyph rendered via the system emoji font, so
+  // `color` has no effect — desaturate + brighten it to read as white on the
+  // gradient header (light or dark theme) instead of its native yellow.
+  filter: grayscale(1) brightness(1.9);
 }
 
 .moon-name {
   font-size: 1rem;
   color: rgba(255, 255, 255, 0.95);
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .moon-phase-details {

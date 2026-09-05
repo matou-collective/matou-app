@@ -1,5 +1,5 @@
 <template>
-  <div class="message-list" ref="containerRef">
+  <div class="message-list" ref="containerRef" @scroll="handleScroll">
     <!-- Load more button -->
     <div v-if="hasMore && !loading" class="load-more">
       <button class="load-more-btn" @click="$emit('loadMore')">
@@ -14,7 +14,7 @@
     </div>
 
     <!-- Messages -->
-    <div class="messages">
+    <div class="messages" ref="messagesRef">
       <template v-for="item in displayMessages" :key="item.id">
         <div
           v-if="item.type === 'divider'"
@@ -49,7 +49,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { MessageSquare } from 'lucide-vue-next';
 import type { ChatMessage } from 'src/lib/api/chat';
 import { useIdentityStore } from 'stores/identity';
@@ -76,6 +76,7 @@ defineEmits<{
 }>();
 
 const containerRef = ref<HTMLElement | null>(null);
+const messagesRef = ref<HTMLElement | null>(null);
 const identityStore = useIdentityStore();
 const profilesStore = useProfilesStore();
 const viewportHeight = useVisualViewport();
@@ -125,6 +126,24 @@ const displayMessages = computed((): DisplayItem[] => {
 
 let initialScrollDone = false;
 
+// Whether the view is currently "pinned" to the latest message — true once
+// scrolled to the bottom (no divider, or a new message arrived), false while
+// showing the unread divider or once the user has scrolled up to read
+// history. Drives the ResizeObserver re-pin below so it doesn't fight a user
+// who's deliberately scrolled away from the bottom.
+const atBottom = ref(true);
+
+function scrollToBottom() {
+  const el = containerRef.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+function handleScroll() {
+  const el = containerRef.value;
+  if (!el) return;
+  atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+}
+
 // Auto-scroll when messages change
 watch(() => props.messages.length, async (newLen, oldLen) => {
   await nextTick();
@@ -132,7 +151,8 @@ watch(() => props.messages.length, async (newLen, oldLen) => {
 
   // New messages arrived — always scroll to bottom so the user sees them.
   if (oldLen !== undefined && newLen > oldLen) {
-    containerRef.value.scrollTop = containerRef.value.scrollHeight;
+    scrollToBottom();
+    atBottom.value = true;
     initialScrollDone = true;
     return;
   }
@@ -142,12 +162,35 @@ watch(() => props.messages.length, async (newLen, oldLen) => {
     const dividerEl = containerRef.value.querySelector('.new-messages-divider');
     if (dividerEl) {
       dividerEl.scrollIntoView({ block: 'center' });
+      atBottom.value = false;
     } else {
-      containerRef.value.scrollTop = containerRef.value.scrollHeight;
+      scrollToBottom();
+      atBottom.value = true;
     }
     initialScrollDone = true;
   }
 }, { immediate: true });
+
+// Avatars/attachments load asynchronously and can grow the message list after
+// the scroll above already ran, landing the view short of the true bottom.
+// Re-pin whenever the rendered content's size changes, but only while the
+// user is meant to be at the bottom — otherwise this would yank them back
+// down while reading history.
+let resizeObserver: ResizeObserver | null = null;
+
+onMounted(() => {
+  if (messagesRef.value && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      if (atBottom.value) scrollToBottom();
+    });
+    resizeObserver.observe(messagesRef.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+});
 
 // Reset scroll state only on channel switch (lastReadAt changes).
 // Do NOT reset on props.messages replacement — loadMessages() replaces the
@@ -167,9 +210,7 @@ watch(viewportHeight, async () => {
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
   if (!nearBottom) return;
   await nextTick();
-  if (containerRef.value) {
-    containerRef.value.scrollTop = containerRef.value.scrollHeight;
-  }
+  scrollToBottom();
 });
 </script>
 
@@ -235,7 +276,7 @@ watch(viewportHeight, async () => {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  flex: 1;
+  margin-top: auto;
 }
 
 .empty-state {
