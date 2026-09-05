@@ -47,6 +47,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('pages/Dashboard/RolesPermissionsPage.vue'),
       },
       {
+        path: 'community-settings',
+        name: 'community-settings',
+        component: () => import('pages/Dashboard/CommunitySettingsPage.vue'),
+      },
+      {
         path: 'projects',
         name: 'projects',
         component: () => import('pages/ProjectsPage.vue'),

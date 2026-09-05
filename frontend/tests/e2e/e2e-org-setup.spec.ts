@@ -121,7 +121,7 @@ test.describe.serial('Organization Setup', () => {
       await page.locator('input').first().fill('Admin User');
 
       // Submit and wait for KERI operations
-      await page.getByRole('button', { name: /create organization/i }).click();
+      await page.getByRole('button', { name: /launch app/i }).click();
       console.log('[Test] Creating admin identity...');
 
       await expect(page).toHaveURL(/#\/$/, { timeout: TIMEOUT.orgSetup });
