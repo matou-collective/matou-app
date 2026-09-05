@@ -28,6 +28,26 @@ jobs:
           workdir="$HOME/swarm/$REPO_SLUG"
           mkdir -p "$workdir"
           cd "$workdir"
+          # Un-wedge a workdir whose `.git` carries core.bare=true while a real
+          # working tree is present (matou-app run 9093, again run 12813). The
+          # git-sync step below — inline here or inside run-verify.sh — then dies
+          # at `git checkout -f main` with "fatal: this operation must be run in a
+          # work tree" (exit 128) on EVERY tick that wins the swarm lock, and no
+          # fix shipped inside .sandcastle/ can ever reach the workdir because the
+          # checkout that would refresh it is the very thing failing. swarm.yml and
+          # triage.yml already carry this guard; verify.yml was the last workdir
+          # consumer without it, so a wedge cleared by a swarm/triage tick would
+          # silently re-red verify alone. Forgejo reads this workflow server-side,
+          # not from the workdir, so the guard has to live here to land at all.
+          # Idempotent, and scoped to the provably-invalid state (bare flag +
+          # a `.git` SUBDIRECTORY, which a genuinely bare repo never has), so it
+          # can never fire on a real bare repo and is a no-op on a healthy
+          # workdir. Never fails the job: a repo we cannot read is left as-is for
+          # run-verify.sh to verdict on.
+          if [ -d .git ] && [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = true ]; then
+            echo "verify: workdir .git has core.bare=true but a working tree is present — clearing it (checkout would exit 128)"
+            git config --bool core.bare false || true
+          fi
           # Route through run-verify.sh (#228) so a git-sync or check-verifications
           # failure drops a stage/exit/error verdict the healer keys a real
           # signature on, instead of collapsing every red verify onto the bare

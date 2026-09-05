@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/types"
 )
@@ -21,6 +22,7 @@ type NoticesHandler struct {
 	userIdentity *identity.UserIdentity
 	registry     *types.Registry
 	eventBroker  *EventBroker
+	roleLookup   RoleLookup
 }
 
 // NewNoticesHandler creates a new notices handler.
@@ -38,11 +40,26 @@ func NewNoticesHandler(
 	}
 }
 
-// RegisterRoutes registers notice routes on the mux.
-func (h *NoticesHandler) RegisterRoutes(mux *http.ServeMux) {
+// RegisterRoutes registers notice routes on the mux. roleLookup gates the
+// mutating notice-board routes (#317): authoring (create/publish) requires
+// post_notices; moderation (pin/archive) requires manage_notices. Reads,
+// RSVPs, acks, saves, comments and reactions are unchanged.
+func (h *NoticesHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("NoticesHandler", roleLookup)
+	h.roleLookup = roleLookup
 	mux.HandleFunc("/api/v1/notices", h.handleNotices)
 	mux.HandleFunc("/api/v1/notices/saved", h.HandleListSaved)
 	mux.HandleFunc("/api/v1/notices/", h.handleNoticeByID)
+}
+
+// withRBAC applies RBAC middleware when a roleLookup is configured. When
+// roleLookup is nil (unit tests), the handler is invoked directly so handlers
+// can be exercised without a role backend.
+func (h *NoticesHandler) withRBAC(action contributions.Action, handler http.HandlerFunc) http.HandlerFunc {
+	if h.roleLookup == nil {
+		return handler
+	}
+	return RBACMiddleware(h.roleLookup, RequireAction(action, handler))
 }
 
 // handleNotices routes /api/v1/notices requests.
@@ -51,7 +68,7 @@ func (h *NoticesHandler) handleNotices(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		h.HandleListNotices(w, r)
 	case http.MethodPost:
-		h.HandleCreateNotice(w, r)
+		h.withRBAC(contributions.ActionPostNotice, h.HandleCreateNotice)(w, r)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	}
@@ -81,9 +98,15 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 	action := parts[1]
 	switch action {
 	case "publish":
-		h.HandlePublishNotice(w, r, noticeID)
+		// Publishing a notice is an authoring action → post_notices.
+		h.withRBAC(contributions.ActionPostNotice, func(w http.ResponseWriter, r *http.Request) {
+			h.HandlePublishNotice(w, r, noticeID)
+		})(w, r)
 	case "archive":
-		h.HandleArchiveNotice(w, r, noticeID)
+		// Archiving any member's notice is moderation → manage_notices.
+		h.withRBAC(contributions.ActionManageNotice, func(w http.ResponseWriter, r *http.Request) {
+			h.HandleArchiveNotice(w, r, noticeID)
+		})(w, r)
 	case "rsvp":
 		switch r.Method {
 		case http.MethodPost:
@@ -123,7 +146,10 @@ func (h *NoticesHandler) handleNoticeByID(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 	case "pin":
-		h.HandleTogglePin(w, r, noticeID)
+		// Pinning any member's notice is moderation → manage_notices.
+		h.withRBAC(contributions.ActionManageNotice, func(w http.ResponseWriter, r *http.Request) {
+			h.HandleTogglePin(w, r, noticeID)
+		})(w, r)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown action"})
 	}

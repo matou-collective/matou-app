@@ -124,6 +124,22 @@ func isRoleClaimOnly(req *contributions.UpdateProposalRequest) bool {
 
 // HandleCreate handles POST /api/v1/proposals
 func (h *ProposalsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
+	// create_proposals capability gate (#315). The collection route runs behind
+	// RBACMiddleware, so X-User-AID is present and roles are resolved here; a role
+	// stripped of create_proposals is refused. The default policy grants it to
+	// every member role, so behaviour is unchanged until an org narrows it.
+	aid := GetUserAID(r)
+	if aid == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+		return
+	}
+	roles := GetUserRoles(r)
+	if !contributions.CanPerformAction(roles, contributions.ActionCreateProposal) {
+		log.Printf("[Proposals] create denied: aid=%s roles=%v", aid, roles)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: create_proposals required"})
+		return
+	}
+
 	var req contributions.CreateProposalRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[Proposals] failed to decode request: %v", err)
@@ -281,6 +297,24 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 		if !contributions.CanPerformAction(roles, contributions.ActionRejectProposal) {
 			log.Printf("[Proposals] %s denied for proposal %s: aid=%s roles=%v", req.Status, id, aid, roles)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: admin role required"})
+			return
+		}
+	}
+
+	// Submission (draft → submitted) requires create_proposals (#315). This
+	// transition previously had no role gate at all; it now shares the create
+	// capability. The route uses OptionalRBACMiddleware, so require the AID
+	// explicitly, mirroring the reject/sign-off/withdraw blocks.
+	if targetStatus == contributions.ProposalSubmitted {
+		aid := r.Header.Get("X-User-AID")
+		if aid == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "X-User-AID header required"})
+			return
+		}
+		roles := GetUserRoles(r)
+		if !contributions.CanPerformAction(roles, contributions.ActionSubmitProposal) {
+			log.Printf("[Proposals] submit denied for proposal %s: aid=%s roles=%v", id, aid, roles)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions: create_proposals required"})
 			return
 		}
 	}

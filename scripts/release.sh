@@ -18,6 +18,13 @@ fi
 TAG="v$VERSION"
 BRANCH="main"
 
+# Operate on the checkout this script lives in, from frontend/ (whose
+# package.json carries the app version the tag build verifies) — regardless
+# of the caller's cwd. v0.6.3 was tagged with the ROOT package.json bumped
+# because the script trusted its cwd, and the tag build failed the version
+# guard having shipped nothing.
+cd "$(dirname "$0")/../frontend"
+
 echo "🚀 Releasing version $VERSION"
 
 # Ensure clean working tree
