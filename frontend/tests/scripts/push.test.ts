@@ -132,12 +132,26 @@ interface FakePlugins {
 }
 
 function installCapacitor(
-  opts: { platform?: string; native?: boolean } & FakePlugins = {},
+  opts: {
+    platform?: string;
+    native?: boolean;
+    /** MatouBackend.isPushAvailable() result — the Firebase-present signal (#384). */
+    pushAvailable?: boolean;
+    /** Omit isPushAvailable entirely — a shell that predates the check (#384). */
+    omitPushAvailability?: boolean;
+  } & FakePlugins = {},
 ) {
-  const { platform = 'android', native = true } = opts;
+  const { platform = 'android', native = true, pushAvailable = true } = opts;
   const Plugins: Record<string, unknown> = {};
   if (opts.push) Plugins.PushNotifications = opts.push;
-  if (opts.syncChannel) Plugins.MatouBackend = { syncChannel: opts.syncChannel };
+  // The MatouBackend plugin carries both syncChannel and the push-availability
+  // check; ship it whenever either is exercised.
+  const matouBackend: Record<string, unknown> = {};
+  if (opts.syncChannel) matouBackend.syncChannel = opts.syncChannel;
+  if (opts.push && !opts.omitPushAvailability) {
+    matouBackend.isPushAvailable = vi.fn(async () => ({ available: pushAvailable }));
+  }
+  if (Object.keys(matouBackend).length > 0) Plugins.MatouBackend = matouBackend;
   if (opts.schedule) Plugins.LocalNotifications = { schedule: opts.schedule };
   if (opts.badgeSet) Plugins.Badge = { set: opts.badgeSet };
   (globalThis as unknown as { window: unknown }).window = {
@@ -315,6 +329,62 @@ describe('usePush (#249)', () => {
       await settle();
 
       expect(fake.requestPermissions).toHaveBeenCalledTimes(1);
+      expect(fake.register).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Firebase availability gate (#384)', () => {
+    it('never calls register() on a config-less build (Firebase unavailable)', async () => {
+      // The push plugin is compiled in, but no google-services.json was baked,
+      // so the default FirebaseApp never initialised. Calling native register()
+      // would throw a fatal IllegalStateException and kill the process — the JS
+      // must short-circuit to 'unavailable' before ever reaching it.
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, pushAvailable: false });
+      const push = await loadPush();
+
+      expect(await push.requestPermissionAndRegister()).toBe('unavailable');
+      expect(await push.registerIfPermitted()).toBe('unavailable');
+      expect(fake.requestPermissions).not.toHaveBeenCalled();
+      expect(fake.register).not.toHaveBeenCalled();
+      expect(registerPushToken).not.toHaveBeenCalled();
+    });
+
+    it('fails safe to unavailable when the bridge check is absent', async () => {
+      // A shell built before MatouBackend.isPushAvailable landed must degrade to
+      // unavailable rather than assume push is safe to register.
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, omitPushAvailability: true });
+      const push = await loadPush();
+
+      expect(await push.requestPermissionAndRegister()).toBe('unavailable');
+      expect(await push.registerIfPermitted()).toBe('unavailable');
+      expect(fake.register).not.toHaveBeenCalled();
+    });
+
+    it('the app-start watcher does not register on a config-less build', async () => {
+      // The identity-active watcher (boot session-restore) funnels through
+      // registerIfPermitted; it too must no-op rather than crash (#384).
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, pushAvailable: false });
+      const identity = await identityStore();
+      identity.currentAID = aidInfo('EAID-returning');
+      (await onboardingStore()).navigateTo('main');
+
+      const push = await loadPush();
+      push.ensurePushListeners();
+      await settle();
+
+      expect(fake.register).not.toHaveBeenCalled();
+      expect(registerPushToken).not.toHaveBeenCalled();
+    });
+
+    it('registers as before when Firebase is available', async () => {
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, pushAvailable: true });
+      const push = await loadPush();
+
+      expect(await push.requestPermissionAndRegister()).toBe('granted');
       expect(fake.register).toHaveBeenCalledTimes(1);
     });
   });

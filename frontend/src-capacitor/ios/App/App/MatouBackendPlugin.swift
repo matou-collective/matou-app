@@ -21,6 +21,7 @@ public class MatouBackendPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "MatouBackend"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "getInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "isPushAvailable", returnType: CAPPluginReturnPromise),
     ]
 
     private static let log = OSLog(subsystem: "nz.matou.app", category: "MatouBackend")
@@ -68,6 +69,20 @@ public class MatouBackendPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("MatouBackend: backend start failed: \(error.localizedDescription)", nil, error)
             }
         }
+    }
+
+    /// Whether push notifications can be registered on this build — the iOS
+    /// counterpart of the Android check (#384). On Android a config-less build
+    /// carries the push plugin but no Firebase resources, so `register()` throws
+    /// a fatal, uncatchable `IllegalStateException`; the frontend consults this
+    /// before calling `register()`. iOS push rides APNs, which needs no baked-in
+    /// config file and fails gracefully via the app delegate rather than
+    /// crashing, so this reports `true`. It is preparatory: iOS has no push
+    /// register path today (the frontend's `isPushPlatform()` is Android-only),
+    /// so nothing calls this yet — it can be refined to reflect the
+    /// aps-environment entitlement if/when that path lands.
+    @objc func isPushAvailable(_ call: CAPPluginCall) {
+        call.resolve(["available": true])
     }
 
     /// `<Application Support>/matou` — the iOS counterpart of Android's

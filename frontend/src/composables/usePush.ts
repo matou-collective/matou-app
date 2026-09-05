@@ -138,6 +138,33 @@ export function isPushPlatform(): boolean {
   return isCapacitor() && getCapacitorPlatform() === 'android';
 }
 
+/**
+ * Whether push can actually be registered on this build — beyond the platform +
+ * plugin-presence test, Android needs the Firebase resources that only a build
+ * with google-services.json carries. A config-less build (the Play beta that
+ * shipped with the secret missing, and every coa tenant build by design)
+ * compiles the push slice but has no default FirebaseApp, so calling the native
+ * `register()` throws an uncaught IllegalStateException on the CapacitorPlugins
+ * thread that kills the process — a JS try/catch cannot prevent it (#384).
+ *
+ * MatouBackend.isPushAvailable() reports whether the default Firebase app
+ * initialised (the check itself never throws when Firebase is absent). We fail
+ * safe to unavailable when the bridge method is missing or throws, so no
+ * `register()` ever fires on a build that would crash.
+ */
+async function isPushAvailable(): Promise<boolean> {
+  if (!isPushPlatform()) return false;
+  const backend = getMatouBackendPlugin();
+  if (!backend?.isPushAvailable) return false; // fail safe: unavailable, never assume
+  try {
+    const { available } = await backend.isPushAvailable();
+    return available === true;
+  } catch (err) {
+    log.error('Push availability check failed — treating push as unavailable: %o', err);
+    return false;
+  }
+}
+
 /** The AID of the active session, or null when signed out. */
 function currentAid(): string | null {
   return useIdentityStore().aidPrefix ?? null;
@@ -291,8 +318,19 @@ export function ensurePushListeners(): void {
 /** Shared tail of both registration paths: remember the AID, ask for a token. */
 async function startRegistration(plugin: PushNotificationsPlugin): Promise<PermissionOutcome> {
   registeredAid = currentAid();
-  // Fires the `registration` event → handleRegistrationToken → backend register.
-  await plugin.register();
+  try {
+    // Fires the `registration` event → handleRegistrationToken → backend register.
+    await plugin.register();
+  } catch (err) {
+    // Belt-and-braces: on a config-less build the native register() throw is
+    // normally uncatchable (it kills the process on the CapacitorPlugins thread),
+    // and the isPushAvailable() gate above keeps us from reaching here on such a
+    // build. This catch degrades any JS-surfaced rejection to 'unavailable'
+    // rather than leaving a rejected promise unhandled (#384).
+    registeredAid = null;
+    log.error('Push register() failed — treating push as unavailable: %o', err);
+    return 'unavailable';
+  }
   return 'granted';
 }
 
@@ -310,6 +348,9 @@ export async function requestPermissionAndRegister(): Promise<PermissionOutcome>
   if (!isPushPlatform()) return 'unsupported';
   const plugin = getPushNotificationsPlugin();
   if (!plugin) return 'unavailable';
+  // A config-less build has the push plugin but no Firebase — register() would
+  // crash the process (#384). Short-circuit before prompting or registering.
+  if (!(await isPushAvailable())) return 'unavailable';
 
   ensurePushListeners();
 
@@ -340,6 +381,9 @@ export async function registerIfPermitted(): Promise<PermissionOutcome> {
   if (!isPushPlatform()) return 'unsupported';
   const plugin = getPushNotificationsPlugin();
   if (!plugin) return 'unavailable';
+  // See requestPermissionAndRegister: never reach register() on a build with no
+  // Firebase, or the native throw kills the process (#384).
+  if (!(await isPushAvailable())) return 'unavailable';
   if (!isOnboardingComplete()) {
     log.info('Skipping push registration — onboarding still in progress (§7)');
     return 'deferred';

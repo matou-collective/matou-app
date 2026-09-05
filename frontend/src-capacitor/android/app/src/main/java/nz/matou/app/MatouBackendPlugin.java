@@ -7,6 +7,7 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.google.firebase.FirebaseApp;
 
 import java.io.File;
 import java.security.SecureRandom;
@@ -70,6 +71,31 @@ public class MatouBackendPlugin extends Plugin {
                 call.reject("MatouBackend: backend start failed: " + e.getMessage(), e);
             }
         });
+    }
+
+    /**
+     * Whether push notifications can actually be registered on this build.
+     *
+     * The push slice (@capacitor/push-notifications) is compiled into every
+     * Android build unconditionally, but the Firebase Gradle plugin — and with it
+     * the generated resources that let FirebaseInitProvider auto-initialise the
+     * default FirebaseApp — is applied only when google-services.json is present
+     * at build time (app/build.gradle). A config-less build (the Play beta that
+     * shipped with the secret missing, and every coa tenant build by design) thus
+     * carries the push plugin but no default FirebaseApp, so
+     * PushNotifications.register() throws an uncaught IllegalStateException on the
+     * native plugins thread and kills the process (#384). The frontend consults
+     * this before ever calling register().
+     *
+     * FirebaseApp.getApps() returns the initialised apps (empty when none) and
+     * does not throw when Firebase was never configured, so the check is safe.
+     */
+    @PluginMethod
+    public void isPushAvailable(PluginCall call) {
+        boolean available = !FirebaseApp.getApps(getContext()).isEmpty();
+        JSObject ret = new JSObject();
+        ret.put("available", available);
+        call.resolve(ret);
     }
 
     /** 32 random bytes, hex-encoded — mirrors the Electron launcher's per-launch API token. */
