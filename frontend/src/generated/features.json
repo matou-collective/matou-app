@@ -1,0 +1,10 @@
+{
+  "identity": true,
+  "chat": true,
+  "projects": true,
+  "proposals": true,
+  "notices": true,
+  "events": true,
+  "maramataka": true,
+  "order": ["chat", "notices", "proposals", "projects", "events"]
+}

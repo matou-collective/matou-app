@@ -22,6 +22,12 @@ export function validateKit(kit) {
   assert(kit.onboarding && Array.isArray(kit.onboarding.infoPages) && kit.onboarding.infoPages.length <= 3, 'onboarding.infoPages ≤ 3');
   assert(kit.onboarding.profile && Array.isArray(kit.onboarding.profile.interestOptions), 'onboarding.profile.interestOptions required');
   assert(kit.onboarding.approval && typeof kit.onboarding.approval.mode === 'string', 'onboarding.approval.mode required');
+  const f = kit.features;
+  assert(f && f.identity === true, 'features.identity must be true');
+  for (const k of ['chat', 'projects', 'proposals', 'notices', 'events', 'maramataka'])
+    assert(typeof f[k] === 'boolean', `features.${k} must be boolean`);
+  assert(Array.isArray(f.order) && f.order.length === 5 && new Set(f.order).size === 5,
+    'features.order must list every toggleable feature once');
   return kit;
 }
 
@@ -160,6 +166,7 @@ export async function applyKit(kitDir, root = FRONTEND, opts = { icons: true }) 
 
   await out('kit.build.json', JSON.stringify(build, null, 2) + '\n');
   await out('src/generated/kit.ts', kitTs(kit, build));
+  await out('src/generated/features.json', JSON.stringify(kit.features, null, 2) + '\n');
   await out('src/css/kit-tokens.scss', tokensScss(kit));
   written.push(...(await patchAndroid(root, kit, build)));
 
