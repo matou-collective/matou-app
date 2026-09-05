@@ -38,10 +38,19 @@ jobs:
           git checkout -q -f FETCH_HEAD
       - name: Frontend + backend checks in the sandbox image
         # Body lives in .sandcastle/run-ci-checks.sh so the run can be wrapped in
-        # the on-failure verdict seam: heal.sh maps `ci` to
+        # the on-failure verdict seam: the healer maps `ci` to
         # /tmp/matou-<repo-tag>-seam-verdict.txt, nothing here ever wrote it, and
         # every red ci therefore reached the healer as a workflow-name-only
         # signature with "Trigger error line: unknown" (run 13398).
+        #
+        # Say "the healer", never that script's bare basename, in THIS step:
+        # the park-token-wiring guard (park-wiring-lib.sh, #85) matches its
+        # park-capable entry-point basenames against a step's WHOLE block,
+        # comments included, and reds the swarm preflight CLOSED if the naming
+        # step lacks CLAUDE_CODE_OAUTH_TOKEN_B. Prose alone did exactly that
+        # (swarm run 13413). This step spawns no agent and cannot park; the
+        # park-capable step is the healer one below, which carries the standby
+        # token. Same rule for the other entry points in that guard's list.
         env:
           REPO_SLUG: ${{ github.repository }}
         run: bash .sandcastle/run-ci-checks.sh
