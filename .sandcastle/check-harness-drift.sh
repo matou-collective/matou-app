@@ -31,6 +31,25 @@ ref_file="$here/FACTORY_REF"
 manifest="$here/FACTORY_MANIFEST"
 : "${FACTORY_REPO:=https://git.matou.nz/Matou/dev-factory.git}"
 
+# Scrub git's leaked hook environment (#129 / matou-app#232,#233). When this
+# script is reached from git-hooks/pre-push (gate 1, the #932 drift gate) it
+# runs inside git's own hook environment, where GIT_DIR is exported — and in a
+# sandbox worker it points at the host's linked-worktree admin dir. Left set,
+# `git init "$work"` IGNORES "$work" and re-initialises GIT_DIR's repository
+# (writing core.bare=true into the consumer's shared .git, breaking every later
+# checkout), and every `git -C "$work"` here targets GIT_DIR's repo instead of
+# the temp checkout. This script only ever operates on the throwaway "$work"
+# repo, never the real one, so scrubbing the whole leaked env once up front is
+# both safe and complete. Prefer gate-lib.sh's canonical gate_scrub_git_env()
+# when the vendored sibling is present; fall back to an inline unset otherwise.
+if [ -f "$here/gate-lib.sh" ]; then
+  # shellcheck source=gate-lib.sh
+  . "$here/gate-lib.sh" && gate_scrub_git_env
+else
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
+        GIT_OBJECT_DIRECTORY GIT_QUARANTINE_PATH GIT_INTERNAL_GITDIR 2>/dev/null || true
+fi
+
 if [ ! -f "$ref_file" ]; then
   echo "check-harness-drift: no $ref_file — this repo does not vendor the factory core; nothing to enforce."
   exit 0

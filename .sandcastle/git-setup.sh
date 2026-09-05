@@ -43,6 +43,16 @@ url="${GIT_SETUP_REMOTE_URL:-https://swarm:${FORGEJO_TOKEN}@git.matou.nz/${REPO_
 (
   set -e
   if [ -d .git ]; then
+    # Defensive recovery (#129 / matou-app#232,#233): a pre-push drift gate run
+    # under a leaked GIT_DIR could have re-initialised this shared repo as bare
+    # (core.bare=true), after which every `git checkout` here fails with
+    # `fatal: this operation must be run in a work tree` (exit 128). If the
+    # workdir's own .git is flagged bare, clear it before proceeding — matou-app
+    # carried this inline in swarm.yml/triage.yml since 6fd69e6; upstreamed here
+    # so those YAML copies can go once consumers re-vendor.
+    if [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = true ]; then
+      git config --bool core.bare false
+    fi
     git remote set-url origin "$url"
     git fetch origin main
     git checkout -f main

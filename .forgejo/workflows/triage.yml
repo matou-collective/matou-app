@@ -117,25 +117,6 @@ jobs:
             exit 0
           fi
           cd "$workdir"
-          # Un-wedge a workdir whose `.git` carries core.bare=true while a real
-          # working tree is present (matou-app run 9093). git-setup.sh's
-          # `git checkout -f main` then dies with "fatal: this operation must be
-          # run in a work tree" (exit 128) on EVERY subsequent run — and because
-          # the checkout is what refreshes .sandcastle/, a fix shipped in
-          # git-setup.sh itself can never reach the wedged workdir. Forgejo reads
-          # this workflow from the repo server-side, not from the workdir, so the
-          # guard has to live here to be able to land at all. Idempotent, and
-          # scoped to the provably-invalid state (bare flag + tracked files on
-          # disk); runs under the workdir lock taken just above, so nothing else
-          # is touching .git. The condition is self-contradictory by construction —
-          # a genuinely bare repo has no `.git` SUBDIRECTORY — so this can never
-          # fire on a real bare repo, and it is a no-op on a healthy workdir.
-          # Never fails the job: a repo we cannot read is left as-is for
-          # git-setup.sh to verdict on.
-          if [ -d .git ] && [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = true ]; then
-            echo "triage: workdir .git has core.bare=true but a working tree is present — clearing it (checkout would exit 128)"
-            git config --bool core.bare false || true
-          fi
           # idss #639: once a prior run has checked out .sandcastle/git-setup.sh,
           # route through it so a git-setup failure — before run-triage.sh even
           # starts and can verdict_begin its own stages — still drops a

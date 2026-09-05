@@ -77,4 +77,17 @@ rm -f "$verdict" "$triage_verdict"
     bash .sandcastle/git-setup.sh ) >/dev/null 2>&1 && fail "expected the triage git-setup call to fail too"
 [ -f "$triage_verdict" ] || fail "triage's own verdict path must be written"
 
-echo "git-setup: 4 scenarios passed"
+# --- 5) a workdir left bare recovers instead of exiting 128 (#129) -------------
+# A pre-push drift gate run under a leaked GIT_DIR (matou-app#232,#233) can
+# re-init this shared repo as bare — after which `git checkout` fails with exit
+# 128 ("must be run in a work tree"). git-setup.sh must clear core.bare and
+# recover, not wedge the workdir forever.
+rm -f "$verdict"
+git -C "$workdir" config --bool core.bare true
+if ! run_git_setup "$origin" >/dev/null 2>&1; then
+  fail "a workdir with .git/ + core.bare=true must recover, not exit 128: $(git -C "$workdir" config --get core.bare)"
+fi
+[ "$(git -C "$workdir" config --get core.bare)" = false ] || fail "git-setup must clear the stray core.bare flag"
+[ -f "$verdict" ] && fail "a recovered git-setup run must leave no verdict"
+
+echo "git-setup: 5 scenarios passed"
