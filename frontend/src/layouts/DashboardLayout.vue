@@ -167,6 +167,7 @@ import {
   Bug,
   Menu,
   Settings,
+  Users,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -192,7 +193,7 @@ import { useProfileViewer } from 'stores/profileViewer';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
 import {
-  NAV_ITEM_META,
+  FEATURE_NAV_ITEMS,
   isNavActive as isNavActiveFor,
   badgeLabel,
   type NavItemMeta,
@@ -255,6 +256,7 @@ const NAV_ICONS: Record<string, Component> = {
   chat: MessageSquare,
   wallet: Wallet,
   activity: Bell,
+  'roles-permissions': Users,
   proposals: Vote,
   projects: Target,
   contributions: Hammer,
@@ -268,7 +270,7 @@ const navBadges = computed<Record<string, number>>(() => ({
 }));
 
 const navItems = computed(() =>
-  NAV_ITEM_META.map((meta) => ({
+  FEATURE_NAV_ITEMS.map((meta) => ({
     ...meta,
     icon: NAV_ICONS[meta.name] as Component,
     badge: navBadges.value[meta.name] ?? 0,
