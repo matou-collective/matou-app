@@ -322,7 +322,7 @@ onMounted(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: #ccc;
+  background-color: var(--matou-switch-background, #ccc);
   border-radius: 1.25rem;
   transition: 0.2s;
 }
@@ -334,7 +334,7 @@ onMounted(() => {
   width: 1rem;
   left: 0.125rem;
   bottom: 0.125rem;
-  background-color: white;
+  background-color: var(--matou-switch-thumb, white);
   border-radius: 50%;
   transition: 0.2s;
 }
@@ -385,6 +385,8 @@ onMounted(() => {
   border: 1px solid var(--matou-border, #d1d5db);
   border-radius: 10px;
   font-size: 0.75rem;
+  background: var(--matou-surface, #fff);
+  color: var(--matou-text, #1f2937);
 }
 
 .field-image-upload {

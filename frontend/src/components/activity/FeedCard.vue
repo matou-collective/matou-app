@@ -252,6 +252,10 @@ async function handlePin() {
 .notice-type-badge.update { background: #d1fae5; color: #065f46; }
 .notice-type-badge.announcement { background: #d1fae5; color: #065f46; }
 
+.dark .notice-type-badge.event { background: #065f46; color: #d1fae5; }
+.dark .notice-type-badge.update { background: #065f46; color: #d1fae5; }
+.dark .notice-type-badge.announcement { background: #065f46; color: #d1fae5; }
+
 .notice-state-badge {
   font-size: 0.75rem;
   font-weight: 500;
@@ -262,6 +266,10 @@ async function handlePin() {
 .notice-state-badge.draft { background: #fef3c7; color: #92400e; }
 .notice-state-badge.published { background: #d1fae5; color: #065f46; }
 .notice-state-badge.archived { background: #f3f4f6; color: #6b7280; }
+
+.dark .notice-state-badge.draft { background: #92400e; color: #fef3c7; }
+.dark .notice-state-badge.published { background: #065f46; color: #d1fae5; }
+.dark .notice-state-badge.archived { background: var(--matou-surface-alt, #374151); color: var(--matou-text-secondary, #d1d5db); }
 
 .feed-card-time {
   font-size: 0.8rem;
@@ -359,12 +367,12 @@ async function handlePin() {
 }
 
 .admin-btn.archive {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--matou-surface-alt, #f3f4f6);
+  color: var(--matou-text-secondary, #6b7280);
 }
 
 .card-section.card-section-white {
-  background: white;
+  background: var(--matou-surface-alt, white);
   padding: 0.75rem 1rem;
   border-radius: var(--matou-radius, 8px);
   display: flex;
