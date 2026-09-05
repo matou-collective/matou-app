@@ -87,11 +87,25 @@ func GetOrCreatePeerKey(keyPath string) (crypto.PrivKey, error) {
 		return nil, fmt.Errorf("creating key directory: %w", err)
 	}
 
-	// Try to load existing key
-	if data, err := os.ReadFile(keyPath); err == nil {
+	// Try to load existing key. The peer key is sealed at rest under the
+	// shell-supplied key when one is registered for this data directory; a
+	// legacy plaintext key is accepted transparently and migrated to sealed
+	// form below.
+	if raw, err := os.ReadFile(keyPath); err == nil {
+		data, wasSealed, oerr := openBytes(dir, raw)
+		if oerr != nil {
+			return nil, fmt.Errorf("opening peer key: %w", oerr)
+		}
 		privKey, err := crypto.UnmarshalEd25519PrivateKeyProto(data)
 		if err != nil {
 			return nil, fmt.Errorf("unmarshaling existing key: %w", err)
+		}
+		if shouldMigrate(dir, wasSealed) {
+			if sealed, serr := sealBytes(dir, data); serr == nil {
+				if werr := os.WriteFile(keyPath, sealed, 0600); werr != nil {
+					fmt.Printf("Warning: failed to migrate peer.key to sealed form: %v\n", werr)
+				}
+			}
 		}
 		return privKey, nil
 	}
@@ -102,13 +116,18 @@ func GetOrCreatePeerKey(keyPath string) (crypto.PrivKey, error) {
 		return nil, fmt.Errorf("generating key: %w", err)
 	}
 
-	// Save to file
+	// Save to file, sealed at rest when a key is registered.
 	data, err := privKey.Marshall()
 	if err != nil {
 		return nil, fmt.Errorf("marshaling key: %w", err)
 	}
 
-	if err := os.WriteFile(keyPath, data, 0600); err != nil {
+	sealed, err := sealBytes(dir, data)
+	if err != nil {
+		return nil, fmt.Errorf("sealing key: %w", err)
+	}
+
+	if err := os.WriteFile(keyPath, sealed, 0600); err != nil {
 		return nil, fmt.Errorf("saving key: %w", err)
 	}
 
@@ -184,9 +203,9 @@ func ComputeReplicationKey(signingKey crypto.PrivKey) (uint64, error) {
 
 // AIDMapping represents a stored AID-to-PeerID mapping
 type AIDMapping struct {
-	AID      string `json:"aid"`
-	PeerID   string `json:"peerId"`
-	SpaceID  string `json:"spaceId,omitempty"`
+	AID       string `json:"aid"`
+	PeerID    string `json:"peerId"`
+	SpaceID   string `json:"spaceId,omitempty"`
 	CreatedAt string `json:"createdAt"`
 }
 
@@ -227,15 +246,23 @@ func PersistUserPeerKey(dataDir, userAID string, key crypto.PrivKey) error {
 	if err != nil {
 		return fmt.Errorf("marshaling peer key: %w", err)
 	}
-	return os.WriteFile(filepath.Join(userDir, "peer.key"), data, 0600)
+	sealed, err := sealBytes(dataDir, data)
+	if err != nil {
+		return fmt.Errorf("sealing user peer key: %w", err)
+	}
+	return os.WriteFile(filepath.Join(userDir, "peer.key"), sealed, 0600)
 }
 
 // LoadUserPeerKey loads a previously stored user peer key.
 func LoadUserPeerKey(dataDir, userAID string) (crypto.PrivKey, error) {
 	keyPath := filepath.Join(dataDir, "users", userAID, "peer.key")
-	data, err := os.ReadFile(keyPath)
+	raw, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading user peer key: %w", err)
+	}
+	data, _, err := openBytes(dataDir, raw)
+	if err != nil {
+		return nil, fmt.Errorf("opening user peer key: %w", err)
 	}
 	return crypto.UnmarshalEd25519PrivateKeyProto(data)
 }

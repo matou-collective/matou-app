@@ -243,8 +243,9 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 
 	// If identity is persisted with mnemonic, derive peer key for SDK initialization
 	sdkOpts := &anysync.ClientOptions{
-		DataDir:     opts.DataDir,
-		PeerKeyPath: opts.DataDir + "/peer.key",
+		DataDir:       opts.DataDir,
+		PeerKeyPath:   opts.DataDir + "/peer.key",
+		EncryptionKey: opts.IdentityEncryptionKey,
 	}
 	if userIdentity.IsConfigured() {
 		sdkOpts.Mnemonic = userIdentity.GetMnemonic()

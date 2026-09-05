@@ -14,15 +14,6 @@ import (
 	"github.com/anyproto/any-sync/util/crypto"
 )
 
-// writeJSONFile marshals v to JSON and writes it to path
-func writeJSONFile(path string, v interface{}) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling JSON: %w", err)
-	}
-	return os.WriteFile(path, data, 0644)
-}
-
 // parseJSONFile unmarshals JSON data into v
 func parseJSONFile(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
@@ -63,10 +54,10 @@ func GenerateSpaceKeySet() (*SpaceKeySet, error) {
 	}
 
 	return &SpaceKeySet{
-		SigningKey:   signingKey,
-		MasterKey:    masterKey,
-		ReadKey:      readKey,
-		MetadataKey:  metadataKey,
+		SigningKey:  signingKey,
+		MasterKey:   masterKey,
+		ReadKey:     readKey,
+		MetadataKey: metadataKey,
 	}, nil
 }
 
@@ -106,19 +97,19 @@ func DeriveSpaceKeySet(mnemonic string, spaceIndex uint32) (*SpaceKeySet, error)
 	}
 
 	return &SpaceKeySet{
-		SigningKey:   sigResult.Identity,
-		MasterKey:    masterResult.Identity,
-		ReadKey:      readKey,
-		MetadataKey:  metaResult.Identity,
+		SigningKey:  sigResult.Identity,
+		MasterKey:   masterResult.Identity,
+		ReadKey:     readKey,
+		MetadataKey: metaResult.Identity,
 	}, nil
 }
 
 // spaceKeyBundle is the on-disk format for a persisted SpaceKeySet.
 type spaceKeyBundle struct {
-	SigningKey   []byte `json:"signingKey"`
-	MasterKey    []byte `json:"masterKey"`
-	ReadKey      []byte `json:"readKey"`
-	MetadataKey  []byte `json:"metadataKey"`
+	SigningKey  []byte `json:"signingKey"`
+	MasterKey   []byte `json:"masterKey"`
+	ReadKey     []byte `json:"readKey"`
+	MetadataKey []byte `json:"metadataKey"`
 }
 
 // PersistSpaceKeySet marshals each key and writes them to
@@ -156,14 +147,21 @@ func PersistSpaceKeySet(dataDir, spaceID string, keys *SpaceKeySet) error {
 		MetadataKey: metaBytes,
 	}
 
-	keyPath := filepath.Join(keysDir, spaceID+".keys")
-	if err := writeJSONFile(keyPath, bundle); err != nil {
-		return fmt.Errorf("writing key bundle: %w", err)
+	data, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling key bundle: %w", err)
 	}
 
-	// Restrict permissions
-	if err := os.Chmod(keyPath, 0600); err != nil {
-		return fmt.Errorf("setting key file permissions: %w", err)
+	// Seal at rest under the shell-supplied key when one is registered for this
+	// data directory; otherwise the bytes are written as legacy plaintext.
+	sealed, err := sealBytes(dataDir, data)
+	if err != nil {
+		return fmt.Errorf("sealing key bundle: %w", err)
+	}
+
+	keyPath := filepath.Join(keysDir, spaceID+".keys")
+	if err := os.WriteFile(keyPath, sealed, 0600); err != nil {
+		return fmt.Errorf("writing key bundle: %w", err)
 	}
 
 	return nil
@@ -210,9 +208,16 @@ func LoadOrCreateSpaceKeySet(dataDir, spaceID string, signingKey crypto.PrivKey)
 func LoadSpaceKeySet(dataDir, spaceID string) (*SpaceKeySet, error) {
 	keyPath := filepath.Join(dataDir, "keys", spaceID+".keys")
 
-	data, err := os.ReadFile(keyPath)
+	raw, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading key file: %w", err)
+	}
+
+	// Open the sealed-at-rest form (or accept legacy plaintext). A missing key
+	// or wrong key fails closed here rather than returning a corrupt bundle.
+	data, wasSealed, err := openBytes(dataDir, raw)
+	if err != nil {
+		return nil, fmt.Errorf("opening key file: %w", err)
 	}
 
 	var bundle spaceKeyBundle
@@ -240,10 +245,20 @@ func LoadSpaceKeySet(dataDir, spaceID string) (*SpaceKeySet, error) {
 		return nil, fmt.Errorf("unmarshaling metadata key: %w", err)
 	}
 
-	return &SpaceKeySet{
-		SigningKey:   signingKey,
-		MasterKey:    masterKey,
-		ReadKey:      readKey,
-		MetadataKey:  metadataKey,
-	}, nil
+	keySet := &SpaceKeySet{
+		SigningKey:  signingKey,
+		MasterKey:   masterKey,
+		ReadKey:     readKey,
+		MetadataKey: metadataKey,
+	}
+
+	// Migrate a legacy plaintext bundle to sealed form the first time it is
+	// opened with a key registered, mirroring the identity.json migration.
+	if shouldMigrate(dataDir, wasSealed) {
+		if err := PersistSpaceKeySet(dataDir, spaceID, keySet); err != nil {
+			fmt.Printf("Warning: failed to migrate %s.keys to sealed form: %v\n", spaceID, err)
+		}
+	}
+
+	return keySet, nil
 }

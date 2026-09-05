@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	anystore "github.com/anyproto/any-store"
 	"github.com/anyproto/any-sync/accountservice"
 	"github.com/anyproto/any-sync/app"
 	"github.com/anyproto/any-sync/commonspace"
@@ -42,7 +43,6 @@ import (
 	"github.com/anyproto/any-sync/util/crypto"
 	"github.com/anyproto/any-sync/util/syncqueues"
 	"github.com/anyproto/go-chash"
-	anystore "github.com/anyproto/any-store"
 	"storj.io/drpc"
 )
 
@@ -97,6 +97,13 @@ func NewSDKClient(clientConfigPath string, opts *ClientOptions) (*SDKClient, err
 		coordinatorURL: coordinatorURL,
 		dataDir:        dataDir,
 		utm:            NewUnifiedTreeManager(),
+	}
+
+	// Register the at-rest encryption key for this data directory so the
+	// package-level key persistence helpers seal keys/*.keys and peer.key under
+	// it (issue #117). An empty key registers the legacy plaintext behaviour.
+	if opts != nil {
+		RegisterDataDirKey(dataDir, opts.EncryptionKey)
 	}
 
 	// Initialize peer key manager
@@ -241,10 +248,10 @@ func (c *SDKClient) CreateSpace(ctx context.Context, ownerAID string, spaceType 
 	}
 
 	keys := &SpaceKeySet{
-		SigningKey:   signingKey,
-		MasterKey:    masterKey,
-		ReadKey:      readKey,
-		MetadataKey:  metadataKey,
+		SigningKey:  signingKey,
+		MasterKey:   masterKey,
+		ReadKey:     readKey,
+		MetadataKey: metadataKey,
 	}
 
 	return c.CreateSpaceWithKeys(ctx, ownerAID, spaceType, keys)
@@ -670,7 +677,11 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling derived key: %w", err)
 	}
-	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+	sealed, err := sealBytes(c.dataDir, keyData)
+	if err != nil {
+		return fmt.Errorf("sealing peer.key: %w", err)
+	}
+	if err := os.WriteFile(keyPath, sealed, 0600); err != nil {
 		return fmt.Errorf("writing peer.key: %w", err)
 	}
 
