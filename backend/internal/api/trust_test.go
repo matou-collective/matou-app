@@ -24,13 +24,13 @@ func setupTrustTestStore(t *testing.T) (*anystore.LocalStore, func()) {
 	config := anystore.DefaultConfig(tmpDir)
 	store, err := anystore.NewLocalStore(config)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	return store, cleanup
@@ -89,7 +89,7 @@ func TestHandleGetGraph_WithCredentials(t *testing.T) {
 	ctx := context.Background()
 
 	// Add test credentials
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -99,7 +99,7 @@ func TestHandleGetGraph_WithCredentials(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID002",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER2",
@@ -123,7 +123,7 @@ func TestHandleGetGraph_WithCredentials(t *testing.T) {
 	}
 
 	var result GraphResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	_ = json.NewDecoder(resp.Body).Decode(&result)
 
 	if result.Graph.NodeCount() != 3 { // org + 2 users
 		t.Errorf("expected 3 nodes, got %d", result.Graph.NodeCount())
@@ -138,7 +138,7 @@ func TestHandleGetGraph_WithSummary(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -157,7 +157,7 @@ func TestHandleGetGraph_WithSummary(t *testing.T) {
 	handler.HandleGetGraph(w, req)
 
 	var result GraphResponse
-	json.NewDecoder(w.Result().Body).Decode(&result)
+	_ = json.NewDecoder(w.Result().Body).Decode(&result)
 
 	if result.Summary == nil {
 		t.Error("expected summary when summary=true")
@@ -174,7 +174,7 @@ func TestHandleGetGraph_WithAIDFilter(t *testing.T) {
 	ctx := context.Background()
 
 	// Chain: Org -> User1 -> User2 -> User3
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -184,7 +184,7 @@ func TestHandleGetGraph_WithAIDFilter(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID002",
 		IssuerAID:  "EUSER1",
 		SubjectAID: "EUSER2",
@@ -194,7 +194,7 @@ func TestHandleGetGraph_WithAIDFilter(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID003",
 		IssuerAID:  "EUSER2",
 		SubjectAID: "EUSER3",
@@ -214,7 +214,7 @@ func TestHandleGetGraph_WithAIDFilter(t *testing.T) {
 	handler.HandleGetGraph(w, req)
 
 	var result GraphResponse
-	json.NewDecoder(w.Result().Body).Decode(&result)
+	_ = json.NewDecoder(w.Result().Body).Decode(&result)
 
 	// Should have User1, Org, User2 (not User3)
 	if result.Graph.GetNode("EUSER1") == nil {
@@ -246,7 +246,7 @@ func TestHandleGetScore(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -271,7 +271,7 @@ func TestHandleGetScore(t *testing.T) {
 	}
 
 	var result ScoreResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	_ = json.NewDecoder(resp.Body).Decode(&result)
 
 	if result.Score == nil {
 		t.Fatal("expected score in response")
@@ -326,7 +326,7 @@ func TestHandleGetScores(t *testing.T) {
 	ctx := context.Background()
 
 	// Add multiple users
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -336,7 +336,7 @@ func TestHandleGetScores(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID002",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER2",
@@ -347,7 +347,7 @@ func TestHandleGetScores(t *testing.T) {
 		},
 	})
 	// Give User1 extra credential
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID003",
 		IssuerAID:  "EUSER2",
 		SubjectAID: "EUSER1",
@@ -371,7 +371,7 @@ func TestHandleGetScores(t *testing.T) {
 	}
 
 	var result ScoresResponse
-	json.NewDecoder(resp.Body).Decode(&result)
+	_ = json.NewDecoder(resp.Body).Decode(&result)
 
 	if len(result.Scores) != 3 { // org + 2 users
 		t.Errorf("expected 3 scores, got %d", len(result.Scores))
@@ -397,7 +397,7 @@ func TestHandleGetScores_WithLimit(t *testing.T) {
 
 	// Add 5 users
 	for i := 1; i <= 5; i++ {
-		store.StoreCredential(ctx, &anystore.CachedCredential{
+		_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 			ID:         "ESAID00" + string(rune('0'+i)),
 			IssuerAID:  "EORG123",
 			SubjectAID: "EUSER" + string(rune('0'+i)),
@@ -417,7 +417,7 @@ func TestHandleGetScores_WithLimit(t *testing.T) {
 	handler.HandleGetScores(w, req)
 
 	var result ScoresResponse
-	json.NewDecoder(w.Result().Body).Decode(&result)
+	_ = json.NewDecoder(w.Result().Body).Decode(&result)
 
 	if len(result.Scores) != 3 {
 		t.Errorf("expected 3 scores (limited), got %d", len(result.Scores))
@@ -431,7 +431,7 @@ func TestHandleGetSummary(t *testing.T) {
 	ctx := context.Background()
 
 	// Org -> User1 <-> User2
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -441,7 +441,7 @@ func TestHandleGetSummary(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID002",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER2",
@@ -451,7 +451,7 @@ func TestHandleGetSummary(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID003",
 		IssuerAID:  "EUSER1",
 		SubjectAID: "EUSER2",
@@ -461,7 +461,7 @@ func TestHandleGetSummary(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID004",
 		IssuerAID:  "EUSER2",
 		SubjectAID: "EUSER1",
@@ -485,7 +485,7 @@ func TestHandleGetSummary(t *testing.T) {
 	}
 
 	var summary trust.ScoreSummary
-	json.NewDecoder(resp.Body).Decode(&summary)
+	_ = json.NewDecoder(resp.Body).Decode(&summary)
 
 	if summary.TotalNodes != 3 {
 		t.Errorf("expected 3 nodes, got %d", summary.TotalNodes)

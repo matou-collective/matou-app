@@ -74,8 +74,8 @@ func TestService_AddEndorsement(t *testing.T) {
 	})
 
 	// Move to endorsing
-	svc.TransitionProposal(ctx, "space-1", p.ID, ProposalSubmitted)
-	svc.TransitionProposal(ctx, "space-1", p.ID, ProposalEndorsing)
+	_, _ = svc.TransitionProposal(ctx, "space-1", p.ID, ProposalSubmitted)
+	_, _ = svc.TransitionProposal(ctx, "space-1", p.ID, ProposalEndorsing)
 
 	_, err := svc.AddEndorsement(ctx, "space-1", p.ID, &Endorsement{
 		EndorserID: "user-2",
@@ -192,7 +192,7 @@ func TestService_GetProjectByProposalID(t *testing.T) {
 	proj, _ := svc.CreateProject(ctx, "space-1", &CreateProjectRequest{
 		Title: "Project", Description: "Test", CreatedBy: "admin-1",
 	})
-	svc.LinkProposalToProject(ctx, "space-1", proj.ID, "proposal-1")
+	_, _ = svc.LinkProposalToProject(ctx, "space-1", proj.ID, "proposal-1")
 
 	// Should find the linked project
 	found, err := svc.GetProjectByProposalID(ctx, "space-1", "proposal-1")
@@ -340,15 +340,15 @@ func TestService_AddGovernanceAction(t *testing.T) {
 	}
 }
 
-func transitionToVotingProcess(t *testing.T, svc *Service, ctx context.Context, spaceID string, prop *Proposal) {
+func transitionToVotingProcess(ctx context.Context, t *testing.T, svc *Service, spaceID string, prop *Proposal) {
 	t.Helper()
-	svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalSubmitted)
-	svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalEndorsing)
-	svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalInReview)
+	_, _ = svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalSubmitted)
+	_, _ = svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalEndorsing)
+	_, _ = svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalInReview)
 	// Assign lead+steward (required for sign-off)
 	lead := "lead-1"
 	steward := "steward-1"
-	svc.UpdateProposal(ctx, spaceID, prop.ID, &UpdateProposalRequest{
+	_, _ = svc.UpdateProposal(ctx, spaceID, prop.ID, &UpdateProposalRequest{
 		ProposalLeadID: &lead, ProposalStewardID: &steward,
 	})
 	if _, err := svc.TransitionProposal(ctx, spaceID, prop.ID, ProposalSignedOff); err != nil {
@@ -369,7 +369,7 @@ func TestService_CompleteGovernanceAction(t *testing.T) {
 		Priority: PriorityLow, Description: "d", ProblemStatement: "p",
 		Solution: "s", ExpectedOutcomes: []string{"o"}, EstimatedBudget: "$1", Timeline: "1w",
 	})
-	transitionToVotingProcess(t, svc, ctx, "space-1", prop)
+	transitionToVotingProcess(ctx, t, svc, "space-1", prop)
 
 	dp, _ := svc.CreateDecisionPlan(ctx, "space-1", &CreateDecisionPlanRequest{
 		ProposalID: prop.ID, Title: "Test", Description: "d",
@@ -430,7 +430,7 @@ func TestService_CompleteGovernanceAction_BlockedBeforeDecisionPlanSignoff(t *te
 		Priority: PriorityLow, Description: "d", ProblemStatement: "p",
 		Solution: "s", ExpectedOutcomes: []string{"o"}, EstimatedBudget: "$1", Timeline: "1w",
 	})
-	transitionToVotingProcess(t, svc, ctx, "space-1", prop)
+	transitionToVotingProcess(ctx, t, svc, "space-1", prop)
 
 	dp, _ := svc.CreateDecisionPlan(ctx, "space-1", &CreateDecisionPlanRequest{
 		ProposalID: prop.ID, Title: "Test", Description: "d",
@@ -615,8 +615,8 @@ func TestService_RegisterInterest(t *testing.T) {
 		SkillRequirements: []string{"s"},
 	})
 	// Move to confirmed then shared (eligible for interest registration)
-	svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
-	svc.TransitionContribution(ctx, "space-1", c.ID, ContribShared)
+	_, _ = svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
+	_, _ = svc.TransitionContribution(ctx, "space-1", c.ID, ContribShared)
 
 	reg, err := svc.RegisterInterest(ctx, "space-1", c.ID, "user-2", "I have frontend experience")
 	if err != nil {
@@ -665,9 +665,9 @@ func TestService_AssignFromRegistration(t *testing.T) {
 		SkillRequirements: []string{"s"},
 	})
 	// Move to confirmed then shared so that RegisterInterest is valid
-	svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
-	svc.TransitionContribution(ctx, "space-1", c.ID, ContribShared)
-	svc.RegisterInterest(ctx, "space-1", c.ID, "user-2", "Interested")
+	_, _ = svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
+	_, _ = svc.TransitionContribution(ctx, "space-1", c.ID, ContribShared)
+	_, _ = svc.RegisterInterest(ctx, "space-1", c.ID, "user-2", "Interested")
 
 	updated, err := svc.AssignContributor(ctx, "space-1", c.ID, "user-2")
 	if err != nil {
@@ -1095,7 +1095,7 @@ func TestRejectProjectCompletion_RevertsToActive(t *testing.T) {
 
 // signedOffProject builds a pending_completion-ready active project with one
 // signed-off contribution, assigned lead/steward, for resource-check tests.
-func signedOffProject(t *testing.T, ctx context.Context, svc *Service, spaceID, lead, steward string) *Project {
+func signedOffProject(ctx context.Context, t *testing.T, svc *Service, spaceID, lead, steward string) *Project {
 	t.Helper()
 	proj, _ := svc.CreateProject(ctx, spaceID, &CreateProjectRequest{Title: "P", Description: "d", CreatedBy: "u"})
 	proj.Status = ProjectActive
@@ -1115,7 +1115,7 @@ func TestSubmitProjectCompletion_NonLeadRejected(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMockStore())
 	spaceID := "s"
-	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+	proj := signedOffProject(ctx, t, svc, spaceID, "lead-aid", "steward-aid")
 
 	// A plain contributor who is not this project's lead is rejected.
 	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "someone-else", []Role{RoleContributor}); err == nil {
@@ -1131,7 +1131,7 @@ func TestApproveProjectCompletion_RejectsSubmitterAndNonSteward(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMockStore())
 	spaceID := "s"
-	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+	proj := signedOffProject(ctx, t, svc, spaceID, "lead-aid", "steward-aid")
 
 	// Lead submits (exempt not needed — lead matches).
 	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "lead-aid", []Role{RoleProjectLead}); err != nil {
@@ -1145,7 +1145,7 @@ func TestApproveProjectCompletion_RejectsSubmitterAndNonSteward(t *testing.T) {
 
 	// The submitter cannot approve their own completion, even if they are the
 	// project steward (make lead==steward to test the submitter guard).
-	proj2 := signedOffProject(t, ctx, svc, spaceID, "dual-aid", "dual-aid")
+	proj2 := signedOffProject(ctx, t, svc, spaceID, "dual-aid", "dual-aid")
 	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj2.ID, "dual-aid", []Role{RoleProjectLead, RoleProjectSteward}); err != nil {
 		t.Fatalf("submit dual: %v", err)
 	}
@@ -1163,7 +1163,7 @@ func TestApproveProjectCompletion_FoundingMemberExempt(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(NewMockStore())
 	spaceID := "s"
-	proj := signedOffProject(t, ctx, svc, spaceID, "lead-aid", "steward-aid")
+	proj := signedOffProject(ctx, t, svc, spaceID, "lead-aid", "steward-aid")
 
 	// Founding member submits and approves their own completion — exempt.
 	if _, err := svc.SubmitProjectCompletion(ctx, spaceID, proj.ID, "fm-aid", []Role{RoleFoundingMember}); err != nil {
@@ -1649,7 +1649,7 @@ func TestApproveSubContribution_AllowsReApprovalFromChanged(t *testing.T) {
 
 // createUnassignedChild is a test helper that creates a child contribution with no
 // assignee and returns it. Callers must check the error themselves.
-func createUnassignedChild(t *testing.T, svc *Service, ctx context.Context, spaceID, parentID string) *Contribution {
+func createUnassignedChild(ctx context.Context, t *testing.T, svc *Service, spaceID, parentID string) *Contribution {
 	t.Helper()
 	c, err := svc.CreateContribution(ctx, spaceID, &CreateContributionRequest{
 		ProjectID:            "proj-1",
@@ -1698,7 +1698,7 @@ func TestAssignContributor_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 	}
 
 	// Create a child with no assignee (starts in ContribCreated).
-	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	child := createUnassignedChild(ctx, t, svc, spaceID, parent.ID)
 
 	// Assign the parent.
 	if _, err := svc.AssignContributor(ctx, spaceID, parent.ID, "user-A"); err != nil {
@@ -1806,7 +1806,7 @@ func TestAcceptOffer_PropagatesAssigneeToCreatedChildren(t *testing.T) {
 	}
 
 	// Create a child with no assignee.
-	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	child := createUnassignedChild(ctx, t, svc, spaceID, parent.ID)
 
 	// Offer the parent to "user-A" then accept.
 	if _, err := svc.OfferContribution(ctx, spaceID, parent.ID, "user-A", "User A"); err != nil {
@@ -1869,7 +1869,7 @@ func TestConfirmContribution_PropagatesAssigneeOnChangedToAssigned(t *testing.T)
 	// the child picks up the parent's assignee. Clear it directly to simulate the edge case
 	// where the child is unassigned at the moment the parent re-confirms (e.g., assignee
 	// cleared via an update before re-confirmation).
-	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	child := createUnassignedChild(ctx, t, svc, spaceID, parent.ID)
 	child.AssignedContributorID = ""
 	child.OfferedTo = ""
 	if err := svc.store.Save(spaceID, child.ID, "contribution", child); err != nil {
@@ -1920,7 +1920,7 @@ func TestConfirmContribution_DoesNotPropagateOnCreatedToConfirmed(t *testing.T) 
 	}
 
 	// Create a child with no assignee.
-	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	child := createUnassignedChild(ctx, t, svc, spaceID, parent.ID)
 
 	// Confirm the parent: created → confirmed. No propagation should occur.
 	if _, err := svc.ConfirmContribution(ctx, spaceID, parent.ID); err != nil {
@@ -2019,7 +2019,7 @@ func TestPropagateOfferToChildren_SkipsAlreadyAssignedChild(t *testing.T) {
 	}
 
 	// Child already assigned to someone else; force the state.
-	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	child := createUnassignedChild(ctx, t, svc, spaceID, parent.ID)
 	child.Status = ContribAssigned
 	child.AssignedContributorID = "other-user"
 	if err := svc.SaveContribution(ctx, spaceID, child); err != nil {
@@ -2067,7 +2067,7 @@ func TestPropagateOfferToChildren_SkipsAlreadyOfferedChild(t *testing.T) {
 		t.Fatalf("confirm parent: %v", err)
 	}
 
-	child := createUnassignedChild(t, svc, ctx, spaceID, parent.ID)
+	child := createUnassignedChild(ctx, t, svc, spaceID, parent.ID)
 	if _, err := svc.ConfirmContribution(ctx, spaceID, child.ID); err != nil {
 		t.Fatalf("confirm child: %v", err)
 	}
@@ -2107,7 +2107,7 @@ func setupSubmittedContribution(t *testing.T) (*Service, context.Context, *Contr
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
+	_, _ = svc.TransitionContribution(ctx, "space-1", c.ID, ContribConfirmed)
 	c, _ = svc.AssignContributor(ctx, "space-1", c.ID, "contributor-1")
 	c, err = svc.SubmitEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
 		CompletionNotes: "did the thing",
@@ -2163,7 +2163,7 @@ func TestEditEvidence_Approved_DropsBackToNeedsReview(t *testing.T) {
 	// Record who approved so the handler can notify them after the edit
 	// clears the field.
 	c.ReviewedBy = "reviewer-1"
-	svc.store.Save("space-1", c.ID, "contribution", c)
+	_ = svc.store.Save("space-1", c.ID, "contribution", c)
 
 	res, err := svc.EditEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
 		CompletionNotes: "changed after approval",
@@ -2210,7 +2210,7 @@ func TestEditEvidence_RemovalsStick(t *testing.T) {
 	c.AttachmentFiles = []FileRef{{FileName: "a.pdf"}}
 	c.TimeReportFile = &FileRef{FileName: "time.csv"}
 	c.AcceptanceNotes = []string{"note"}
-	svc.store.Save("space-1", c.ID, "contribution", c)
+	_ = svc.store.Save("space-1", c.ID, "contribution", c)
 
 	// Edit form sends the full submission with the lists emptied / file removed.
 	res, err := svc.EditEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{
@@ -2256,7 +2256,7 @@ func TestEditEvidence_ApprovedToNeedsReviewNotGloballyLegal(t *testing.T) {
 		t.Error("approved→needs_review must not be a generic transition")
 	}
 	svc, ctx, c := setupSubmittedContribution(t)
-	svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"})
+	_, _ = svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"})
 	if _, err := svc.TransitionContribution(ctx, "space-1", c.ID, ContribNeedsReview); err == nil {
 		t.Error("TransitionContribution approved→needs_review should be rejected")
 	}
@@ -2273,18 +2273,18 @@ func TestEditEvidence_RejectsSignedOffAndAssigned(t *testing.T) {
 		Deliverables: []string{"d"}, AcceptanceCriteria: []string{"a"},
 		SkillRequirements: []string{"s"},
 	})
-	svc.TransitionContribution(ctx, "space-1", fresh.ID, ContribConfirmed)
+	_, _ = svc.TransitionContribution(ctx, "space-1", fresh.ID, ContribConfirmed)
 	fresh, _ = svc.AssignContributor(ctx, "space-1", fresh.ID, "contributor-1")
 	if _, err := svc.EditEvidence(ctx, "space-1", fresh.ID, "contributor-1", SubmitEvidenceRequest{CompletionNotes: "x"}); err == nil {
 		t.Error("expected error editing evidence while assigned")
 	}
 
 	// Drive the submitted one all the way to signed_off, then attempt an edit.
-	svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"})
+	_, _ = svc.ReviewContribution(ctx, "space-1", c.ID, ReviewRequest{Decision: "approved"})
 	// SignOff requires a signed-off plan; force status directly for this guard test.
 	signed, _ := svc.GetContribution(ctx, "space-1", c.ID)
 	signed.Status = ContribSignedOff
-	svc.store.Save("space-1", signed.ID, "contribution", signed)
+	_ = svc.store.Save("space-1", signed.ID, "contribution", signed)
 	if _, err := svc.EditEvidence(ctx, "space-1", c.ID, "contributor-1", SubmitEvidenceRequest{CompletionNotes: "x"}); err == nil {
 		t.Error("expected error editing evidence after sign-off")
 	}

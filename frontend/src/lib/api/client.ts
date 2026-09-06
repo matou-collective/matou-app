@@ -439,6 +439,10 @@ export interface FieldDef {
   type: string;
   required?: boolean;
   readOnly?: boolean;
+  // Core marks a structural field the backend depends on (id, status,
+  // timestamps, …). Custom fields are org-added and omit this. Backend uses
+  // `json:"core,omitempty"`, so absent means false.
+  core?: boolean;
   default?: unknown;
   validation?: {
     minLength?: number;

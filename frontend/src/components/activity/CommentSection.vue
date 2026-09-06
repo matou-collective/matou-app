@@ -174,7 +174,7 @@ function relativeTime(dateStr: string): string {
   flex: 1;
   min-width: 0;
   padding: 0.5rem 0.75rem;
-  background: white;
+  background: var(--matou-surface-alt, white);
   border-radius: var(--matou-radius, 6px);
 }
 
@@ -237,6 +237,10 @@ function relativeTime(dateStr: string): string {
 .comment-input:focus {
   outline: none;
   border-color: var(--matou-primary);
+}
+
+.comment-input::placeholder {
+  color: var(--matou-muted-foreground, #9ca3af);
 }
 
 .comment-send {
