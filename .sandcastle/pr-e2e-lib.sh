@@ -52,6 +52,23 @@ classify_e2e_outcome() { # classify_e2e_outcome <rc> <playwright-log>
 # place instead of stacking a new comment per push.
 PR_E2E_COMMENT_MARKER='<!-- pr-e2e -->'
 
+# Machine-readable metadata the pr-e2e sweep (pr-e2e-sweep.sh, #278) keys on:
+# which head sha this comment's verdict is for, and whether it is a real verdict
+# (state=done) or a contention give-up placeholder awaiting a retry
+# (state=pending). The give-up path in .forgejo/workflows/pr-e2e.yml emits the
+# SAME tag inline — it runs before any checkout exists, so it cannot source this
+# — keep the two shapes in step.
+pr_e2e_meta_tag() { printf '<!-- pr-e2e-meta sha=%s state=%s -->' "${1:?}" "${2:?}"; }
+
+# True iff <comments-json> (a Forgejo issues/comments array) already carries a
+# real (state=done) pr-e2e verdict for <sha> — the sweep's "this head already
+# has evidence" test. A pending placeholder, or a done verdict for a stale sha,
+# is NOT evidence for <sha>.
+pr_e2e_has_verdict_for() { # <comments-json> <sha>
+  local tag; tag="$(pr_e2e_meta_tag "${2:?}" done)"
+  jq -e --arg t "$tag" 'any(.[]?; (.body // "") | contains($t))' >/dev/null 2>&1 <<<"${1:?}"
+}
+
 # Human label for a screenshot path: curated snaps are NN-label.png (label with
 # underscores → spaces); anything else (Playwright's test-failed-N.png) is
 # prefixed with its result directory so the reviewer can tell which test.
@@ -66,9 +83,17 @@ screenshot_label() {
 }
 
 # build_pr_comment <status-markdown> [label<TAB>url ...] → comment body on stdout.
+#
+# When PR_E2E_HEAD_SHA is set (run-pr-e2e.sh exports the PR's head sha), a
+# machine-readable pr_e2e_meta_tag line is emitted right after the marker so the
+# sweep can tell which head this verdict covers. State defaults to done (this
+# path always writes a real verdict); PR_E2E_META_STATE overrides it.
 build_pr_comment() {
   local status="${1:?}"; shift || true
-  printf '%s\n%s\n' "$PR_E2E_COMMENT_MARKER" "$status"
+  printf '%s\n' "$PR_E2E_COMMENT_MARKER"
+  [ -n "${PR_E2E_HEAD_SHA:-}" ] && \
+    printf '%s\n' "$(pr_e2e_meta_tag "$PR_E2E_HEAD_SHA" "${PR_E2E_META_STATE:-done}")"
+  printf '%s\n' "$status"
   if [ "$#" -gt 0 ]; then
     printf '\n<details open><summary>%d screenshot(s)</summary>\n\n' "$#"
     local pair label url

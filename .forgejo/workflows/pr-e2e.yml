@@ -24,6 +24,7 @@ jobs:
           REPO_SLUG: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
           MATTERMOST_URL: ${{ secrets.MATTERMOST_URL }}
           MATTERMOST_BOT_TOKEN: ${{ secrets.MATTERMOST_BOT_TOKEN }}
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
@@ -61,6 +62,28 @@ jobs:
           rm -f "$drive_res"
           if [ "$acquired" != 1 ]; then
             echo "pr-e2e: host capacity busy for 30min — giving up; re-run via workflow_dispatch or push again"
+            # Loud (#278): say it ON THE PR, not only in the run log + Mattermost,
+            # so the missing evidence is visible where the review happens. The
+            # comment carries the SAME pr-e2e-meta tag shape as pr-e2e-lib.sh
+            # (pr_e2e_meta_tag "$sha" pending) — kept in step by hand because this
+            # runs before any checkout exists to source the lib. state=pending is
+            # what the pr-e2e-sweep keys on to re-dispatch this head once free;
+            # run-pr-e2e.sh later edits this SAME <!-- pr-e2e --> comment in place
+            # with the real state=done verdict.
+            sha="${HEAD_SHA:-}"
+            if [ -z "$sha" ]; then
+              sha="$(curl -sf --max-time 30 -H "Authorization: token $FORGEJO_TOKEN" "$FORGEJO_API/pulls/$PR_NUMBER" | jq -r '.head.sha // ""' || true)"
+            fi
+            if [ -n "$PR_NUMBER" ] && [ -n "$sha" ]; then
+              body="$(printf '<!-- pr-e2e -->\n<!-- pr-e2e-meta sha=%s state=pending -->\n⏳ **Feature e2e did not run** for `%s`: host busy for 30 min, will be retried by the sweep (#278). Push again or re-run via workflow_dispatch to force it sooner.' "$sha" "${sha:0:12}")"
+              payload="$(jq -n --arg b "$body" '{body:$b}')"
+              existing="$(curl -sf --max-time 60 -H "Authorization: token $FORGEJO_TOKEN" "$FORGEJO_API/issues/$PR_NUMBER/comments?limit=100" | jq -r '[.[] | select(.body | contains("<!-- pr-e2e -->"))] | last | .id // empty' || true)"
+              if [ -n "$existing" ]; then
+                curl -sf --max-time 60 -X PATCH -H "Authorization: token $FORGEJO_TOKEN" -H 'Content-Type: application/json' -d "$payload" "$FORGEJO_API/issues/comments/$existing" >/dev/null || true
+              else
+                curl -sf --max-time 60 -X POST -H "Authorization: token $FORGEJO_TOKEN" -H 'Content-Type: application/json' -d "$payload" "$FORGEJO_API/issues/$PR_NUMBER/comments" >/dev/null || true
+              fi
+            fi
             # Expected contention, not a harness fault: marker tells the healer
             # step below to stand down instead of spending a claude call (d925814).
             touch "/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}" || true
