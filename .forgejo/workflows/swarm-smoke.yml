@@ -8,7 +8,7 @@ on:
 
 jobs:
   smoke:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 45
     steps:
       - name: Smoke the swarm toolchain
