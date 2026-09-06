@@ -829,8 +829,17 @@ onBeforeUnmount(() => {
   // Chat manages its own bottom-nav inset (ChatPage.vue's reserve-tab-bar),
   // so this layout must not double up or the page ends up taller than the
   // viewport and over-scrolling reveals empty space below the composer.
+  // Beyond dropping the padding, hard-lock the route to the viewport height:
+  // the chat column sizes itself to the visual viewport, and any drift (a
+  // stale keyboard height, inset rounding) must never make the page itself
+  // scrollable — over-scrolling past the chat log revealed keyboard-sized
+  // empty space beneath it on device.
   .main-content.is-chat-route {
     padding-bottom: 0;
+    height: calc(100dvh - var(--titlebar-height));
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
   }
 
   .bottom-nav {
