@@ -99,8 +99,21 @@ if [ -z "${CONFIG_ADMIN_TOKEN:-}" ] && [ -f "$INFRA/keri/.env.test" ]; then
 fi
 export CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}" MATOU_CONFIG_SERVER_TOKEN="${CONFIG_ADMIN_TOKEN:-}"
 
-verdict_stage "backend build (cd backend && make build)"
-( cd backend && make build )
+# cgo stays OFF (#294 follow-up). Unlike `checks`, which builds inside the
+# sandbox image, the drive builds the backend BARE on the workstation — and the
+# workstation has no C compiler. Go's native default (CGO_ENABLED=1) pulls
+# runtime/cgo in for the net / os-user resolvers, so `make build` died with
+# `cgo: C compiler "gcc" not found` and exit 2 with an empty error block. The
+# backend is cgo-free by contract (docs/mobile/ANDROID.md:81; backend/Makefile's
+# build-linux-amd64 already ships CGO_ENABLED=0), so pinning it off here builds
+# the SAME binary shape we package for Linux — no product change, and the drive
+# stops depending on a host package the healer is not allowed to install.
+# tee'd to a log so the next failure reaches the healer with the compiler's own
+# words instead of a bare stage name.
+backend_build_log=/tmp/pr-e2e-backend-build.log
+rm -f "$backend_build_log"
+verdict_stage "backend build (cd backend && make build)" "$backend_build_log"
+( cd backend && CGO_ENABLED=0 make build ) 2>&1 | tee "$backend_build_log"
 ( cd backend && MATOU_ENV=test exec ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
 backend_pid=$!
 verdict_stage "backend health (localhost:9080)" /tmp/pr-e2e-backend.log
