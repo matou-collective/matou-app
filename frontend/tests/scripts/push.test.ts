@@ -802,6 +802,44 @@ describe('usePush (#249)', () => {
       expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-9' } });
     });
 
+    it('stashes the channel on a cold-start tap (router still on the gate) and the gate replays it (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      // Router still on the splash/onboarding gate — not a /dashboard route.
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-cold' });
+
+      // The gate-exit navigation consumes the stash → chat route for the channel.
+      expect(push.consumePushDeepLinkTarget()).toEqual({
+        name: 'chat',
+        query: { c: 'chan-cold' },
+      });
+      // Consumed exactly once: a later gate exit falls through to the dashboard.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('does not stash when already on a dashboard route (alive/backgrounded tap) (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/dashboard/projects');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-alive' });
+
+      // Immediate deep-link, and nothing left for the gate to replay.
+      expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-alive' } });
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('gate exit with no pending deep-link targets the dashboard (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      // No tap happened this boot → nothing stashed → gate lands on dashboard.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
     it('survives a shell whose LocalNotifications plugin has no addListener', async () => {
       const fake = makePush('granted');
       installCapacitor({ push: fake, schedule: vi.fn() });
