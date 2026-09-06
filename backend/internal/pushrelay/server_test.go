@@ -653,11 +653,11 @@ func TestRegisterRejectsNonOpaqueToken(t *testing.T) {
 		}
 	}
 	// A realistic FCM token (contains ':' and '.') is accepted.
-	real := "cXyZ0-9_a:APA91bH.xyz-123_ABC"
-	if rec := do(h, http.MethodPost, "/register", tok, map[string]string{"token": real}); rec.Code != http.StatusOK {
+	realToken := "cXyZ0-9_a:APA91bH.xyz-123_ABC"
+	if rec := do(h, http.MethodPost, "/register", tok, map[string]string{"token": realToken}); rec.Code != http.StatusOK {
 		t.Fatalf("realistic FCM token rejected: %d %s", rec.Code, rec.Body.String())
 	}
-	if got := store.TokensForAID(aid); len(got) != 1 || got[0].Token != real {
+	if got := store.TokensForAID(aid); len(got) != 1 || got[0].Token != realToken {
 		t.Fatalf("expected the valid token stored, got %+v", got)
 	}
 }

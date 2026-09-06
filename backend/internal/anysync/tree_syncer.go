@@ -36,9 +36,9 @@ const (
 
 // syncWorkItem represents a single tree sync operation queued for a worker.
 type syncWorkItem struct {
-	treeId string
+	treeID string
 	peer   peer.Peer
-	peerId string // peer ID to inject into fresh context (avoids stale DiffSyncer ctx)
+	peerID string // peer ID to inject into fresh context (avoids stale DiffSyncer ctx)
 }
 
 // matouTreeSyncer implements treesyncer.TreeSyncer using persistent worker pools.
@@ -47,7 +47,7 @@ type syncWorkItem struct {
 // persist for the lifetime of the space, avoiding goroutine creation/destruction
 // on each HeadSync cycle (~5 seconds).
 type matouTreeSyncer struct {
-	spaceId     string
+	spaceID     string
 	utm         *UnifiedTreeManager
 	treeManager treemanager.TreeManager
 
@@ -58,9 +58,9 @@ type matouTreeSyncer struct {
 	closeOnce  sync.Once
 }
 
-func newMatouTreeSyncer(spaceId string, utm *UnifiedTreeManager) *matouTreeSyncer {
+func newMatouTreeSyncer(spaceID string, utm *UnifiedTreeManager) *matouTreeSyncer {
 	return &matouTreeSyncer{
-		spaceId:    spaceId,
+		spaceID:    spaceID,
 		utm:        utm,
 		missingCh:  make(chan syncWorkItem, syncQueueSize),
 		existingCh: make(chan syncWorkItem, syncQueueSize),
@@ -78,10 +78,10 @@ func (t *matouTreeSyncer) Init(a *app.App) error {
 	return nil
 }
 
-func (t *matouTreeSyncer) Name() string                  { return treesyncer.CName }
-func (t *matouTreeSyncer) Run(ctx context.Context) error { return nil }
+func (t *matouTreeSyncer) Name() string                { return treesyncer.CName }
+func (t *matouTreeSyncer) Run(_ context.Context) error { return nil }
 
-func (t *matouTreeSyncer) Close(ctx context.Context) error {
+func (t *matouTreeSyncer) Close(_ context.Context) error {
 	t.closeOnce.Do(func() {
 		close(t.missingCh)
 		close(t.existingCh)
@@ -93,9 +93,9 @@ func (t *matouTreeSyncer) Close(ctx context.Context) error {
 // StartSync and StopSync are declared by the treesyncer.TreeSyncer interface
 // but are never called by the any-sync SDK. Worker pools are managed by
 // Init()/Close() instead.
-func (t *matouTreeSyncer) StartSync()                    {}
-func (t *matouTreeSyncer) StopSync()                     {}
-func (t *matouTreeSyncer) ShouldSync(peerId string) bool { return true }
+func (t *matouTreeSyncer) StartSync()               {}
+func (t *matouTreeSyncer) StopSync()                {}
+func (t *matouTreeSyncer) ShouldSync(_ string) bool { return true }
 
 // startWorkers launches the persistent worker goroutines for both pools.
 func (t *matouTreeSyncer) startWorkers() {
@@ -116,28 +116,28 @@ func (t *matouTreeSyncer) startWorkers() {
 func (t *matouTreeSyncer) missingWorker() {
 	defer t.wg.Done()
 	for item := range t.missingCh {
-		log.Printf("[TreeSyncer] missingWorker: fetching tree %s in space %s from peer %s", item.treeId, t.spaceId, item.peerId)
+		log.Printf("[TreeSyncer] missingWorker: fetching tree %s in space %s from peer %s", item.treeID, t.spaceID, item.peerID)
 		// Create a fresh context with the peer ID. The DiffSyncer's original context
 		// is canceled when the sync cycle ends (~5s), but BuildSyncTreeOrGetRemote
 		// needs a live context to fetch the tree from the remote peer.
-		ctx := peer.CtxWithPeerId(context.Background(), item.peerId)
-		tr, err := t.treeManager.GetTree(ctx, t.spaceId, item.treeId)
+		ctx := peer.CtxWithPeerId(context.Background(), item.peerID)
+		tr, err := t.treeManager.GetTree(ctx, t.spaceID, item.treeID)
 		if err != nil {
-			log.Printf("[TreeSyncer] missingWorker: FAILED to get tree %s: %v", item.treeId, err)
+			log.Printf("[TreeSyncer] missingWorker: FAILED to get tree %s: %v", item.treeID, err)
 			continue
 		}
-		log.Printf("[TreeSyncer] missingWorker: got tree %s, isSyncTree=%v", item.treeId, func() bool { _, ok := tr.(synctree.SyncTree); return ok }())
+		log.Printf("[TreeSyncer] missingWorker: got tree %s, isSyncTree=%v", item.treeID, func() bool { _, ok := tr.(synctree.SyncTree); return ok }())
 
 		// Update UTM index for the newly fetched tree so it appears in GetTreesForSpace
 		if t.utm != nil {
-			t.utm.IndexTree(tr, t.spaceId, item.treeId)
+			t.utm.IndexTree(tr, t.spaceID, item.treeID)
 		}
 
 		if st, ok := tr.(synctree.SyncTree); ok {
 			if err := st.SyncWithPeer(ctx, item.peer); err != nil {
-				log.Printf("[TreeSyncer] missingWorker: SyncWithPeer failed for tree %s: %v", item.treeId, err)
+				log.Printf("[TreeSyncer] missingWorker: SyncWithPeer failed for tree %s: %v", item.treeID, err)
 			} else {
-				log.Printf("[TreeSyncer] missingWorker: SyncWithPeer OK for tree %s", item.treeId)
+				log.Printf("[TreeSyncer] missingWorker: SyncWithPeer OK for tree %s", item.treeID)
 			}
 		}
 	}
@@ -149,15 +149,15 @@ func (t *matouTreeSyncer) existingWorker() {
 	for item := range t.existingCh {
 		// Use a fresh context — the DiffSyncer's context may be canceled by the time
 		// the worker picks up this item.
-		ctx := peer.CtxWithPeerId(context.Background(), item.peerId)
-		tr, err := t.treeManager.GetTree(ctx, t.spaceId, item.treeId)
+		ctx := peer.CtxWithPeerId(context.Background(), item.peerID)
+		tr, err := t.treeManager.GetTree(ctx, t.spaceID, item.treeID)
 		if err != nil {
 			continue
 		}
 		if st, ok := tr.(synctree.SyncTree); ok {
 			if err := st.SyncWithPeer(ctx, item.peer); err != nil {
 				log.Printf("[TreeSyncer] Warning: failed to sync existing tree %s with peer %s: %v",
-					item.treeId, item.peer.Id(), err)
+					item.treeID, item.peer.Id(), err)
 			}
 		}
 	}
@@ -173,15 +173,15 @@ func (t *matouTreeSyncer) existingWorker() {
 // "context canceled" before they can fetch/sync trees.
 func (t *matouTreeSyncer) SyncAll(ctx context.Context, p peer.Peer, existing, missing []string) error {
 	if len(missing) > 0 || len(existing) > 0 {
-		log.Printf("[TreeSyncer] SyncAll space=%s peer=%s missing=%d existing=%d", t.spaceId, p.Id(), len(missing), len(existing))
+		log.Printf("[TreeSyncer] SyncAll space=%s peer=%s missing=%d existing=%d", t.spaceID, p.Id(), len(missing), len(existing))
 	}
 
-	peerId := p.Id()
+	peerID := p.Id()
 
 	// Queue missing trees for the missing-tree worker pool
 	for _, id := range missing {
 		select {
-		case t.missingCh <- syncWorkItem{treeId: id, peer: p, peerId: peerId}:
+		case t.missingCh <- syncWorkItem{treeID: id, peer: p, peerID: peerID}:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -190,7 +190,7 @@ func (t *matouTreeSyncer) SyncAll(ctx context.Context, p peer.Peer, existing, mi
 	// Queue existing trees for the existing-tree worker pool
 	for _, id := range existing {
 		select {
-		case t.existingCh <- syncWorkItem{treeId: id, peer: p, peerId: peerId}:
+		case t.existingCh <- syncWorkItem{treeID: id, peer: p, peerID: peerID}:
 		case <-ctx.Done():
 			return ctx.Err()
 		}

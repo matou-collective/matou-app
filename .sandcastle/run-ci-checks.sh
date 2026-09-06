@@ -96,10 +96,9 @@ run_stage "frontend + backend checks" \
     echo "==> stage: go build"; go build ./...
     echo "==> stage: go test (make test)"; make test
     cd ..
-    echo "==> stage: go lint (golangci-lint --new-from-rev origin/main)"
-    echo "==> Go lint (#346): same stages as the sandbox pre-push gate, findings since origin/main"
-    git fetch -q --depth=1 origin main
-    cd backend && golangci-lint run --new-from-rev origin/main ./... && cd ..
+    echo "==> stage: go lint (golangci-lint, whole module)"
+    echo "==> Go lint (#346): same stages as the sandbox pre-push gate, whole-module"
+    cd backend && golangci-lint run ./... && cd ..
     echo "==> stage: kit drift (npm run kit:apply)"
     echo "==> kit drift check (#245): generated artefacts must match npm run kit:apply"
     cd frontend && npm run kit:apply && git diff --exit-code -- src/generated src/css/kit-tokens.scss kit.build.json src-capacitor/capacitor.config.json src-capacitor/android/app/src/main/res/values/strings.xml || {

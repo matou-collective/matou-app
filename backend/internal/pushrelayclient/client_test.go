@@ -37,7 +37,7 @@ type loginReq struct {
 
 func (s *relayStub) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth/challenge", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/auth/challenge", func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		s.challenges++
 		s.mu.Unlock()

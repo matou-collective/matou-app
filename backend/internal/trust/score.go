@@ -190,13 +190,13 @@ func (c *Calculator) GetTopScores(graph *Graph, limit int) []*Score {
 
 // ScoreSummary provides a summary of trust scores in the graph
 type ScoreSummary struct {
-	TotalNodes     int     `json:"totalNodes"`
-	TotalEdges     int     `json:"totalEdges"`
-	AverageScore   float64 `json:"averageScore"`
-	MaxScore       float64 `json:"maxScore"`
-	MinScore       float64 `json:"minScore"`
-	MedianDepth    int     `json:"medianDepth"`
-	BidirectionalCount int `json:"bidirectionalCount"`
+	TotalNodes         int     `json:"totalNodes"`
+	TotalEdges         int     `json:"totalEdges"`
+	AverageScore       float64 `json:"averageScore"`
+	MaxScore           float64 `json:"maxScore"`
+	MinScore           float64 `json:"minScore"`
+	MedianDepth        int     `json:"medianDepth"`
+	BidirectionalCount int     `json:"bidirectionalCount"`
 }
 
 // CalculateSummary calculates a summary of trust scores

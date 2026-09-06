@@ -1,3 +1,5 @@
+// Package trust builds and scores a trust graph from cached KERI
+// credentials, tracking membership, invitation, and steward relationships.
 package trust
 
 import (
@@ -87,7 +89,7 @@ func (b *Builder) getAllCredentials(ctx context.Context) ([]*anystore.CachedCred
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	var credentials []*anystore.CachedCredential
 	for iter.Next() {

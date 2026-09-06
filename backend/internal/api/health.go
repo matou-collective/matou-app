@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/trust"
 )
 
