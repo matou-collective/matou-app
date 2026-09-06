@@ -19,7 +19,7 @@ on:
 
 jobs:
   smoke-drive:
-    runs-on: matou-workstation
+    runs-on: swarm
     timeout-minutes: 45
     steps:
       - name: Smoke drive under global lock

@@ -10,7 +10,7 @@ on:
 
 jobs:
   feature-e2e:
-    runs-on: matou-workstation
+    runs-on: swarm
     # Up to 30 min camped on host capacity (#268) + the drive itself.
     timeout-minutes: 75
     # Every PR: run-pr-e2e.sh resolves the spec from the branch name
