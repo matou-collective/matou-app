@@ -287,6 +287,7 @@ func (t *matouTreeSyncer) missingWorker() {
 		tr, err := t.treeManager.GetTree(ctx, t.spaceID, item.treeID)
 		if err != nil {
 			t.recordMissingFailure(item.treeID, err)
+			t.recoverIfCorrupt(ctx, item.treeID, err)
 			continue
 		}
 		log.Printf("[TreeSyncer] missingWorker: got tree %s, isSyncTree=%v", item.treeID, func() bool { _, ok := tr.(synctree.SyncTree); return ok }())
@@ -299,6 +300,7 @@ func (t *matouTreeSyncer) missingWorker() {
 		if st, ok := tr.(synctree.SyncTree); ok {
 			if err := st.SyncWithPeer(ctx, item.peer); err != nil {
 				t.recordMissingFailure(item.treeID, err)
+				t.recoverIfCorrupt(ctx, item.treeID, err)
 				continue
 			}
 			log.Printf("[TreeSyncer] missingWorker: SyncWithPeer OK for tree %s", item.treeID)
@@ -336,15 +338,29 @@ func (t *matouTreeSyncer) existingWorker() {
 		ctx := peer.CtxWithPeerId(context.Background(), item.peerID)
 		tr, err := t.treeManager.GetTree(ctx, t.spaceID, item.treeID)
 		if err != nil {
+			t.recoverIfCorrupt(ctx, item.treeID, err)
 			continue
 		}
 		if st, ok := tr.(synctree.SyncTree); ok {
 			if err := st.SyncWithPeer(ctx, item.peer); err != nil {
 				log.Printf("[TreeSyncer] Warning: failed to sync existing tree %s with peer %s: %v",
 					item.treeID, item.peer.Id(), err)
+				t.recoverIfCorrupt(ctx, item.treeID, err)
 			}
 		}
 	}
+}
+
+// recoverIfCorrupt detects the #129 first-persist-failure signature (an orphan
+// change set with a missing head entry that sends the SDK into a permanent
+// rebuild loop) on an error from GetTree/SyncWithPeer and, when it matches,
+// asks the UnifiedTreeManager to drop the tree's broken local rows so the next
+// HeadSync cycle re-fetches a clean copy from a peer instead of looping.
+func (t *matouTreeSyncer) recoverIfCorrupt(ctx context.Context, treeID string, err error) {
+	if t.utm == nil || !isFirstPersistCorruption(err) {
+		return
+	}
+	t.utm.RecoverCorruptTree(ctx, t.spaceID, treeID)
 }
 
 // SyncAll queues existing and missing trees for sync with a peer.
