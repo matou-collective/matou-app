@@ -29,6 +29,7 @@ import { computed, watch } from "vue";
 import type { Router } from "vue-router";
 import { useNotificationsStore } from "stores/notifications";
 import { useChatStore } from "stores/chat";
+import { getMessages } from "src/lib/api/chat";
 import { useIdentityStore } from "stores/identity";
 import { useOnboardingStore } from "stores/onboarding";
 import { createLogger } from "src/lib/logging";
@@ -77,6 +78,12 @@ export const ANDROID_CHANNEL_GROUP = "matou_channel";
 export interface ComposedNotification {
   channelId: string;
   title: string;
+  /**
+   * Message preview shown in the expanded notification. Composed ON-DEVICE
+   * from local state after the sync — the FCM payload itself stays
+   * content-free (§4). Empty when the message could not be resolved.
+   */
+  body: string;
   /** Drives which Android notification channel it is posted on (§3). */
   kind: MessageKind;
 }
@@ -108,8 +115,8 @@ const RELAY_SESSION_REFRESH_SKEW_MS = 5 * 60 * 1000;
 /** Leading-edge burst state for one channel (§5). */
 interface CoalesceState {
   timer: ReturnType<typeof setTimeout>;
-  /** Title presented on the leading edge — a trailing update only fires if it changed. */
-  presentedTitle: string;
+  /** Content presented on the leading edge — a trailing update only fires if it changed. */
+  presentedKey: string;
   /** Latest notification seen during the window, presented on the trailing edge. */
   pending: ComposedNotification | null;
 }
@@ -589,7 +596,8 @@ export async function handlePushReceipt(
   // if sync failed or the channel is unknown (§4).
   const channelName = synced ? resolveChannelName(channelId) : null;
   const title = channelName ? `New message in ${channelName}` : "New messages";
-  const composed: ComposedNotification = { channelId, title, kind };
+  const body = synced ? await resolveLatestMessagePreview(channelId) : "";
+  const composed: ComposedNotification = { channelId, title, body, kind };
 
   presentCoalesced(composed);
   return composed;
@@ -617,7 +625,7 @@ function presentCoalesced(notif: ComposedNotification): void {
       () => closeCoalesceWindow(notif.channelId),
       COALESCE_WINDOW_MS,
     ),
-    presentedTitle: notif.title,
+    presentedKey: coalesceKey(notif),
     pending: null,
   });
 }
@@ -627,8 +635,37 @@ function closeCoalesceWindow(channelId: string): void {
   const state = coalesceStates.get(channelId);
   coalesceStates.delete(channelId);
   if (!state?.pending) return;
-  if (state.pending.title === state.presentedTitle) return; // nothing new to say
+  if (coalesceKey(state.pending) === state.presentedKey) return; // nothing new to say
   presentLocalNotification(state.pending);
+}
+
+/** What the user would actually see — the trailing coalesced update only fires when this changes. */
+function coalesceKey(notif: ComposedNotification): string {
+  return `${notif.title}\n${notif.body}`;
+}
+
+/** Longest preview shown in the expanded notification body. */
+const PREVIEW_MAX_CHARS = 140;
+
+/**
+ * Best-effort preview of the channel's newest message for the notification
+ * body, read from the just-synced local store (§4 keeps the wire payload
+ * content-free; this never leaves the device). "" keeps the notification
+ * title-only, exactly as before.
+ */
+async function resolveLatestMessagePreview(channelId: string): Promise<string> {
+  try {
+    const res = await getMessages(channelId, { limit: 3 });
+    const msg = res.messages?.find((m) => !m.deletedAt && m.content);
+    if (!msg) return "";
+    const text =
+      msg.content.length > PREVIEW_MAX_CHARS
+        ? `${msg.content.slice(0, PREVIEW_MAX_CHARS - 1)}\u2026`
+        : msg.content;
+    return msg.senderName ? `${msg.senderName}: ${text}` : text;
+  } catch {
+    return "";
+  }
 }
 
 /** Emit the on-device notification via the native local-notifications plugin. */
@@ -642,7 +679,7 @@ function presentLocalNotification(notif: ComposedNotification): void {
       {
         id,
         title: notif.title,
-        body: "",
+        body: notif.body,
         channelId:
           notif.kind === "dm" ? ANDROID_CHANNEL_DM : ANDROID_CHANNEL_GROUP,
         extra: { c: notif.channelId },

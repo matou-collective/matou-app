@@ -52,6 +52,19 @@ vi.mock('src/lib/api/push', () => ({
   postRelaySession: (c: string, s: string) => postRelaySession(c, s),
 }));
 
+// --- Chat API: newest-message preview source (notification body) -----------
+const getMessages = vi.fn(async () => ({
+  messages: [
+    { id: 'm1', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'kia ora!', sentAt: 't', version: 1 },
+  ],
+  count: 1,
+  nextCursor: '',
+  hasMore: false,
+}));
+vi.mock('src/lib/api/chat', () => ({
+  getMessages: (c: string, o?: unknown) => getMessages(c, o),
+}));
+
 // --- Chat store: lightweight fake ------------------------------------------
 const chatStoreMock: {
   channels: Array<{ id: string; name: string; isArchived?: boolean }>;
@@ -585,7 +598,12 @@ describe('usePush (#249)', () => {
 
       const composed = await push.handlePushReceipt({ t: 'm', c: 'chan-1', k: 'ch', v: '1' });
       expect(syncChannel).toHaveBeenCalledWith({ channelId: 'chan-1' });
-      expect(composed).toEqual({ channelId: 'chan-1', title: 'New message in general', kind: 'ch' });
+      expect(composed).toEqual({
+        channelId: 'chan-1',
+        title: 'New message in general',
+        body: 'Aroha: kia ora!',
+        kind: 'ch',
+      });
     });
 
     it('falls back to a generic notification when sync fails', async () => {
@@ -595,8 +613,45 @@ describe('usePush (#249)', () => {
       installCapacitor({ syncChannel });
       const push = await loadPush();
 
+      getMessages.mockClear();
       const composed = await push.handlePushReceipt({ t: 'm', c: 'chan-1' });
-      expect(composed).toEqual({ channelId: 'chan-1', title: 'New messages', kind: 'ch' });
+      // No preview either — a failed sync means local state has nothing new.
+      expect(composed).toEqual({ channelId: 'chan-1', title: 'New messages', body: '', kind: 'ch' });
+      expect(getMessages).not.toHaveBeenCalled();
+    });
+
+    it('puts the newest message preview in the scheduled notification body', async () => {
+      const syncChannel = vi.fn(async () => undefined);
+      const schedule = vi.fn(async () => undefined);
+      installCapacitor({ syncChannel, schedule });
+      const push = await loadPush();
+
+      await push.handlePushReceipt({ t: 'm', c: 'chan-1', k: 'dm' });
+      expect(getMessages).toHaveBeenCalledWith('chan-1', { limit: 3 });
+      expect(schedule.mock.calls[0]?.[0].notifications[0].body).toBe('Aroha: kia ora!');
+    });
+
+    it('skips deleted messages and keeps the body empty when the preview fails', async () => {
+      const syncChannel = vi.fn(async () => undefined);
+      const schedule = vi.fn(async () => undefined);
+      installCapacitor({ syncChannel, schedule });
+      getMessages.mockResolvedValueOnce({
+        messages: [
+          { id: 'm2', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'gone', sentAt: 't', version: 1, deletedAt: 't2' },
+          { id: 'm1', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'still here', sentAt: 't', version: 1 },
+        ],
+        count: 2,
+        nextCursor: '',
+        hasMore: false,
+      } as never);
+      const push = await loadPush();
+      await push.handlePushReceipt({ t: 'm', c: 'chan-1' });
+      expect(schedule.mock.calls[0]?.[0].notifications[0].body).toBe('Aroha: still here');
+
+      getMessages.mockRejectedValueOnce(new Error('backend gone'));
+      await push.handlePushReceipt({ t: 'm', c: 'chan-2' });
+      const second = schedule.mock.calls[1]?.[0].notifications[0];
+      expect(second.body).toBe('');
     });
 
     it('ignores non-message payloads', async () => {
