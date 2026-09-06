@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -128,25 +129,88 @@ func (r *Registry) CoreFieldNames(typeName string) map[string]bool {
 	return core
 }
 
-// LoadFromSpace reads type_definition objects from a space and registers them.
-// This is called on backend startup to hydrate the registry from persisted data.
+// LoadFromSpace reads persisted type_definition objects from a space and merges
+// them over the built-in definitions already registered by Bootstrap. Call it
+// once the community space is available at boot, after Bootstrap.
+//
+// Merge semantics: a persisted definition wins for its type, but every field the
+// matching built-in marks core is re-asserted from the built-in — defense in
+// depth against a corrupted or hand-edited stored definition dropping or
+// redefining a field backend handlers depend on (the same invariant the schema
+// PUT handler enforces). A definition with no matching built-in is registered
+// as-is (an org may persist entirely new types).
+//
+// An unparseable or nameless stored definition is skipped, never fatal: the
+// built-in stays in force. A read error is returned so the caller can log and
+// fall back to the built-ins (the same never-fatal posture the boot path uses).
 func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, spaceID string) error {
 	entries, err := reader.ReadObjectsByType(ctx, spaceID, "type_definition")
 	if err != nil {
 		return fmt.Errorf("reading type definitions from space %s: %w", spaceID, err)
 	}
 
+	loaded := 0
 	for _, entry := range entries {
 		var def TypeDefinition
 		if err := json.Unmarshal(entry.Data, &def); err != nil {
-			fmt.Printf("Warning: skipping invalid type definition %s: %v\n", entry.ID, err)
+			log.Printf("[Types] skipping invalid type definition %s: %v", entry.ID, err)
 			continue
 		}
+		if def.Name == "" {
+			log.Printf("[Types] skipping type definition %s: empty name", entry.ID)
+			continue
+		}
+		if builtin, ok := r.Get(def.Name); ok {
+			reassertCoreFields(builtin, &def)
+		}
 		r.Register(&def)
+		loaded++
 	}
 
-	fmt.Printf("[Types] Loaded %d type definitions from space %s\n", len(entries), spaceID)
+	log.Printf("[Types] Loaded %d of %d persisted type definitions from space %s", loaded, len(entries), spaceID)
 	return nil
+}
+
+// reassertCoreFields overwrites, in persisted, every field the built-in marks
+// core with the built-in's own field definition, and appends any core field the
+// persisted definition dropped (preserving built-in order for the appended
+// ones). Non-core fields — and the ordering of the fields the persisted
+// definition kept — are left untouched, so an org can still extend or reshape
+// the customisable part of its schema. Core fields are the ones backend handlers
+// depend on structurally; they can never be removed or redefined by a stored
+// definition, corrupted or otherwise.
+func reassertCoreFields(builtin, persisted *TypeDefinition) {
+	if builtin == nil || persisted == nil {
+		return
+	}
+	coreOrder := make([]FieldDef, 0)
+	coreByName := make(map[string]FieldDef)
+	for _, f := range builtin.Fields {
+		if f.Core {
+			coreOrder = append(coreOrder, f)
+			coreByName[f.Name] = f
+		}
+	}
+	if len(coreByName) == 0 {
+		return
+	}
+
+	merged := make([]FieldDef, 0, len(persisted.Fields)+len(coreOrder))
+	seen := make(map[string]bool, len(coreByName))
+	for _, f := range persisted.Fields {
+		if core, ok := coreByName[f.Name]; ok {
+			merged = append(merged, core) // re-assert the built-in definition
+			seen[f.Name] = true
+			continue
+		}
+		merged = append(merged, f)
+	}
+	for _, core := range coreOrder {
+		if !seen[core.Name] {
+			merged = append(merged, core)
+		}
+	}
+	persisted.Fields = merged
 }
 
 // MetaTypeDefinition returns the type_definition meta-type used to store
