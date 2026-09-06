@@ -20,9 +20,17 @@
 # driver at scripts/smoke-drive/run-smoke-drive.sh):
 #   1. the matou-infrastructure checkout (the KERIA/witness + any-sync compose)
 #   2. docker + the KERIA/witness images the test compose boots
-#   3. the ~/swarm-e2e/<slug> checkout the drives run from
-#   4. chromium for Playwright
-#   5. proof the compose actually stands a witness up here (OOBI reachable)
+#   3. the any-sync test network config (generate-config-test → .env.test et al
+#      + the any-sync images). run-pr-e2e's `make clean-test setup-test` runs
+#      clean-test FIRST and clean-test needs .env.test, which only a prior
+#      generate-config-test creates — a first-run host is chicken-and-egg
+#      without it (matou-app#437).
+#   4. the ~/swarm-e2e/<slug> checkout the drives run from
+#   5. chromium for Playwright
+#   6. a Go toolchain to build the backend — on PATH or at ~/go-sdk/go, the
+#      deterministic fallback run-pr-e2e.sh uses when the runner unit's
+#      non-login PATH omits a nix-profile go the login shell sees (matou-app#437)
+#   7. proof the compose actually stands a witness up here (OOBI reachable)
 #
 # CONTRACT (matou-app#57):
 #   - idempotent: safe on every host enrolment AND every re-run; it converges,
@@ -84,11 +92,19 @@ INFRA_REF="${MATOU_INFRA_REF:-}"
 WITNESS_OOBI_URL="${WITNESS_OOBI_URL:-}"
 WITNESS_DEMO_IMAGE="weboftrust/keri-witness-demo:1.1.0"
 WORKDIR="$HOME/swarm-e2e/$REPO_SLUG"
+ANYSYNC="$INFRA/any-sync"
+ANYSYNC_ENV="$ANYSYNC/.env.test"
+# The deterministic Go toolchain path run-pr-e2e.sh falls back to when `go` is
+# not on the (runner unit's, non-login) PATH: `export PATH="$HOME/go-sdk/go/bin"`.
+GO_SDK="$HOME/go-sdk/go"
+# Go version to auto-install ONLY if none is found on the box to link. Matches
+# backend/go.mod's `go` directive floor; override with PROVISION_GO_VERSION.
+GO_VERSION="${PROVISION_GO_VERSION:-1.25.5}"
 
 CHECK_ONLY=0
 case "${1:-}" in
   --check) CHECK_ONLY=1 ;;
-  -h|--help) sed -n '2,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "") ;;
   *) echo "provision-e2e-stack: unknown arg '$1' (use --check or --help)" >&2; exit 2 ;;
 esac
@@ -197,7 +213,50 @@ ensure_docker_images() {
   fi
 }
 
-# ── clause 3: the ~/swarm-e2e/<slug> checkout the drives run from ───────────
+# ── clause 3: the any-sync test network config (matou-app#437) ──────────────
+# run-pr-e2e.sh runs `make -C any-sync clean-test setup-test`; clean-test runs
+# FIRST and reads .env.test, which only a prior generate-config-test creates
+# (setup-test → generate-config-test → scripts/generate-config.sh). A bare host
+# has no .env.test, no storage-test network id and ZERO any-sync images, so the
+# very first drive dies in clean-test. generate-config-test is idempotent and
+# stands up both the config AND the any-sync images as a unit, so .env.test's
+# presence is the honest gate: no host has it without having pulled the images.
+#
+# It also runs BEFORE verify_witness on purpose: keri/docker-compose.yml
+# bind-mounts ../any-sync/etc-test, and Docker auto-creates that path root-owned
+# if it is absent when the keri stack comes up — the leftover that blocked the
+# next unprivileged clean-config in run 13605. Generating the config here makes
+# etc-test exist (swarm-owned) before anything mounts it.
+_fix_etc_test_owner() {
+  # Reclaim a root-owned etc-test/ (top dir only — its generated subdirs are
+  # root-owned by design; any-sync's Makefile chowns them on `start`). Converge
+  # only: --check probes, never mutates.
+  [ "$CHECK_ONLY" = 1 ] && return 0
+  local d="$ANYSYNC/etc-test"
+  [ -d "$d" ] || return 0
+  local owner me; owner="$(stat -c '%U' "$d" 2>/dev/null)"; me="$(id -un 2>/dev/null)"
+  [ -z "$owner" ] || [ "$owner" = "$me" ] && return 0
+  note "etc-test/ is owned by '$owner', not '$me' — reclaiming top dir (sudo -n chown)"
+  sudo -n chown "$me:$(id -gn)" "$d" 2>/dev/null \
+    || note "could not chown $d without a password — if a drive's clean-config fails, a human must: sudo chown -R $me $d"
+}
+ensure_anysync_config() {
+  _fix_etc_test_owner
+  if [ -f "$ANYSYNC_ENV" ]; then
+    ok anysync "test network config present ($ANYSYNC_ENV)"
+    return 0
+  fi
+  if [ "$CHECK_ONLY" = 1 ]; then
+    fail anysync "no any-sync test config at $ANYSYNC_ENV — generate-config-test has never run on this host (so no .env.test, no network id, no any-sync images), and run-pr-e2e's \`make clean-test setup-test\` dies in clean-test without it. Run without --check to generate it."
+  fi
+  converged; note "generating the any-sync test network config + images (make -C $ANYSYNC generate-config-test)"
+  make -C "$ANYSYNC" generate-config-test || fail anysync "make -C $ANYSYNC generate-config-test failed"
+  [ -f "$ANYSYNC_ENV" ] || fail anysync "generate-config-test ran but $ANYSYNC_ENV is still absent"
+  _fix_etc_test_owner
+  ok anysync "test network config generated ($ANYSYNC_ENV)"
+}
+
+# ── clause 4: the ~/swarm-e2e/<slug> checkout the drives run from ───────────
 ensure_workdir() {
   if [ -d "$WORKDIR/.git" ]; then
     ok workdir "checkout present at $WORKDIR"
@@ -216,7 +275,7 @@ ensure_workdir() {
   ok workdir "cloned at $WORKDIR"
 }
 
-# ── clause 4: chromium for Playwright ──────────────────────────────────────
+# ── clause 5: chromium for Playwright ──────────────────────────────────────
 # Probe: `npx playwright --version` resolves AND a chromium browser is in the
 # shared ~/.cache/ms-playwright. Converge from the e2e checkout's frontend (the
 # same tree the drives run `npx playwright install chromium` in), so the browser
@@ -250,7 +309,83 @@ ensure_playwright() {
   ok playwright "$(cd "$fe" && npx --no-install playwright --version 2>/dev/null), chromium installed"
 }
 
-# ── clause 5: the compose actually stands a witness up here (OOBI) ──────────
+# ── clause 6: a Go toolchain to build the backend (matou-app#437) ───────────
+# run-pr-e2e.sh builds the backend with:
+#     command -v go >/dev/null 2>&1 || export PATH="$HOME/go-sdk/go/bin:$PATH"
+# so the drive needs go on the runner's PATH OR a toolchain at ~/go-sdk/go/bin.
+# Probe EXACTLY that pair — the runner unit's non-login PATH can omit a
+# nix-profile go the login shell resolves, so a login-shell probe would pass a
+# host the drive then fails on. Converge prefers LINKING an existing go (a
+# nix/system install the runner PATH just doesn't export) into ~/go-sdk/go, and
+# only downloads a pinned toolchain there when the box has none.
+_go_binary() {
+  command -v go 2>/dev/null && return 0
+  [ -x "$GO_SDK/bin/go" ] && { echo "$GO_SDK/bin/go"; return 0; }
+  return 1
+}
+_find_any_go() {
+  # A go on the box the runner's PATH may not export. Common install roots +
+  # the login shell's own resolution (nix profile, ben's exact case on -03).
+  local c
+  for c in "$HOME/.nix-profile/bin/go" /nix/var/nix/profiles/default/bin/go \
+           /usr/local/go/bin/go /usr/lib/go/bin/go /usr/bin/go /snap/bin/go; do
+    [ -x "$c" ] && { echo "$c"; return 0; }
+  done
+  c="$(bash -lc 'command -v go' 2>/dev/null)"
+  [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
+  return 1
+}
+_link_go() {  # <go-binary> — symlink its GOROOT into the ~/go-sdk fallback path
+  local gobin="$1" goroot
+  goroot="$("$gobin" env GOROOT 2>/dev/null)"
+  [ -n "$goroot" ] && [ -x "$goroot/bin/go" ] || return 1
+  mkdir -p "$(dirname "$GO_SDK")"
+  ln -sfn "$goroot" "$GO_SDK" || return 1
+  [ -x "$GO_SDK/bin/go" ]
+}
+_install_go() {
+  local os arch m tmp url
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"; m="$(uname -m)"
+  case "$m" in
+    x86_64|amd64) arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) fail go "unsupported arch '$m' for Go auto-install — link or install a toolchain at $GO_SDK/bin manually" ;;
+  esac
+  url="https://go.dev/dl/go${GO_VERSION}.${os}-${arch}.tar.gz"
+  tmp="$(mktemp -d)"
+  note "downloading Go $GO_VERSION ($os-$arch) from $url"
+  curl -fsSL "$url" -o "$tmp/go.tgz" || { rm -rf "$tmp"; fail go "download of $url failed — link or install a toolchain at $GO_SDK/bin manually"; }
+  tar -C "$tmp" -xzf "$tmp/go.tgz"    || { rm -rf "$tmp"; fail go "extract of the Go tarball failed"; }
+  mkdir -p "$(dirname "$GO_SDK")"; rm -rf "$GO_SDK"
+  mv "$tmp/go" "$GO_SDK" || { rm -rf "$tmp"; fail go "could not move the Go toolchain into $GO_SDK"; }
+  rm -rf "$tmp"
+}
+ensure_go() {
+  local gobin
+  if gobin="$(_go_binary)"; then
+    ok go "toolchain present ($("$gobin" version 2>/dev/null | awk '{print $3}') at $gobin)"
+    # Belt-and-suspenders: also populate the deterministic fallback run-pr-e2e
+    # uses (~/go-sdk/go), so a runner job whose stripped PATH can't see THIS go
+    # still builds the backend. Cheap, idempotent, converge-only.
+    if [ "$CHECK_ONLY" != 1 ] && [ "$gobin" != "$GO_SDK/bin/go" ] && [ ! -e "$GO_SDK/bin/go" ]; then
+      _link_go "$gobin" && note "also linked $GO_SDK for the runner fallback"
+    fi
+    return 0
+  fi
+  if [ "$CHECK_ONLY" = 1 ]; then
+    fail go "no Go on the runner's PATH and none at $GO_SDK/bin — run-pr-e2e.sh cannot build the backend. Run without --check to link or install one."
+  fi
+  local found
+  if found="$(_find_any_go)" && _link_go "$found"; then
+    converged; ok go "linked toolchain ($("$GO_SDK/bin/go" version 2>/dev/null | awk '{print $3}')) at $GO_SDK (go found at $found, off the runner PATH)"
+    return 0
+  fi
+  converged; _install_go
+  [ -x "$GO_SDK/bin/go" ] || fail go "installed but $GO_SDK/bin/go is still not executable"
+  ok go "installed toolchain ($("$GO_SDK/bin/go" version 2>/dev/null | awk '{print $3}')) at $GO_SDK"
+}
+
+# ── clause 7: the compose actually stands a witness up here (OOBI) ──────────
 # The headline proof: a witness answering OOBI on this host means docker + the
 # images + the compose + the port map all work. The test stack is ephemeral, so
 # between drives nothing is resident — that is expected, NOT a failure.
@@ -305,8 +440,10 @@ verify_witness() {
 # ── run every clause in dependency order ───────────────────────────────────
 ensure_infra
 ensure_docker_images
+ensure_anysync_config
 ensure_workdir
 ensure_playwright
+ensure_go
 verify_witness
 
 echo "provision-e2e-stack: OK ($mode) — the e2e stack is ready on $(hostname 2>/dev/null || echo this host)."
