@@ -228,6 +228,25 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 	// Get tree ID for the response
 	treeID := objMgr.GetTreeIDForObject(objectID)
 
+	// Broadcast a profile-refresh signal so already-authorised clients converge
+	// on the new write without a manual reload. The admin approval flow updates
+	// a member's CommunityProfile (role + real credential SAID) and flips their
+	// SharedProfile to "approved" through this handler; without this event the
+	// only refresh signal was the single debounced one emitted by init-member,
+	// so a missed/late broadcast left the just-approved member's role badge
+	// hidden (issue #383). Mirrors the init-member handler's pattern; the
+	// frontend's profile:updated listener debounces and reloads both profile
+	// stores, so the exact payload is only informational.
+	if h.eventBroker != nil {
+		h.eventBroker.Broadcast(SSEEvent{
+			Type: "profile:updated",
+			Data: map[string]interface{}{
+				"profileId": objectID,
+				"type":      req.Type,
+			},
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,
 		"objectId": objectID,
