@@ -24,6 +24,12 @@ public final class MatouNotificationChannels {
     public static final String DM = "matou_dm";
     /** Channel / group messages — default importance, quieter (Doze-deferrable). */
     public static final String CHANNEL = "matou_channel";
+    /**
+     * Silent minimal channel for the headless wake's pre-Android-12
+     * foreground-service notification (#421 — WorkManager expedited work runs
+     * as a short foreground service below API 31, which must show something).
+     */
+    public static final String SYNC = "matou_sync";
 
     private MatouNotificationChannels() {}
 
@@ -43,7 +49,12 @@ public final class MatouNotificationChannels {
             CHANNEL, "Channel messages", NotificationManager.IMPORTANCE_DEFAULT);
         channel.setDescription("New messages in channels you belong to");
 
+        NotificationChannel sync = new NotificationChannel(
+            SYNC, "Message sync", NotificationManager.IMPORTANCE_MIN);
+        sync.setDescription("Brief background check for new messages");
+
         nm.createNotificationChannel(dm);
         nm.createNotificationChannel(channel);
+        nm.createNotificationChannel(sync);
     }
 }

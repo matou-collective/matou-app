@@ -52,6 +52,19 @@ vi.mock('src/lib/api/push', () => ({
   postRelaySession: (c: string, s: string) => postRelaySession(c, s),
 }));
 
+// --- Chat API: newest-message preview source (notification body) -----------
+const getMessages = vi.fn(async () => ({
+  messages: [
+    { id: 'm1', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'kia ora!', sentAt: 't', version: 1 },
+  ],
+  count: 1,
+  nextCursor: '',
+  hasMore: false,
+}));
+vi.mock('src/lib/api/chat', () => ({
+  getMessages: (c: string, o?: unknown) => getMessages(c, o),
+}));
+
 // --- Chat store: lightweight fake ------------------------------------------
 const chatStoreMock: {
   channels: Array<{ id: string; name: string; isArchived?: boolean }>;
@@ -128,6 +141,8 @@ interface FakePlugins {
   push?: FakePush;
   syncChannel?: ReturnType<typeof vi.fn>;
   schedule?: ReturnType<typeof vi.fn>;
+  /** When set, LocalNotifications gains addListener storing listeners here. */
+  localListeners?: Record<string, Listener>;
   badgeSet?: ReturnType<typeof vi.fn>;
 }
 
@@ -138,7 +153,17 @@ function installCapacitor(
   const Plugins: Record<string, unknown> = {};
   if (opts.push) Plugins.PushNotifications = opts.push;
   if (opts.syncChannel) Plugins.MatouBackend = { syncChannel: opts.syncChannel };
-  if (opts.schedule) Plugins.LocalNotifications = { schedule: opts.schedule };
+  if (opts.schedule || opts.localListeners) {
+    const local: Record<string, unknown> = {};
+    if (opts.schedule) local.schedule = opts.schedule;
+    if (opts.localListeners) {
+      const store = opts.localListeners;
+      local.addListener = vi.fn((event: string, fn: Listener) => {
+        store[event] = fn;
+      });
+    }
+    Plugins.LocalNotifications = local;
+  }
   if (opts.badgeSet) Plugins.Badge = { set: opts.badgeSet };
   (globalThis as unknown as { window: unknown }).window = {
     Capacitor: {
@@ -585,7 +610,12 @@ describe('usePush (#249)', () => {
 
       const composed = await push.handlePushReceipt({ t: 'm', c: 'chan-1', k: 'ch', v: '1' });
       expect(syncChannel).toHaveBeenCalledWith({ channelId: 'chan-1' });
-      expect(composed).toEqual({ channelId: 'chan-1', title: 'New message in general', kind: 'ch' });
+      expect(composed).toEqual({
+        channelId: 'chan-1',
+        title: 'New message in general',
+        body: 'Aroha: kia ora!',
+        kind: 'ch',
+      });
     });
 
     it('falls back to a generic notification when sync fails', async () => {
@@ -595,8 +625,45 @@ describe('usePush (#249)', () => {
       installCapacitor({ syncChannel });
       const push = await loadPush();
 
+      getMessages.mockClear();
       const composed = await push.handlePushReceipt({ t: 'm', c: 'chan-1' });
-      expect(composed).toEqual({ channelId: 'chan-1', title: 'New messages', kind: 'ch' });
+      // No preview either — a failed sync means local state has nothing new.
+      expect(composed).toEqual({ channelId: 'chan-1', title: 'New messages', body: '', kind: 'ch' });
+      expect(getMessages).not.toHaveBeenCalled();
+    });
+
+    it('puts the newest message preview in the scheduled notification body', async () => {
+      const syncChannel = vi.fn(async () => undefined);
+      const schedule = vi.fn(async () => undefined);
+      installCapacitor({ syncChannel, schedule });
+      const push = await loadPush();
+
+      await push.handlePushReceipt({ t: 'm', c: 'chan-1', k: 'dm' });
+      expect(getMessages).toHaveBeenCalledWith('chan-1', { limit: 3 });
+      expect(schedule.mock.calls[0]?.[0].notifications[0].body).toBe('Aroha: kia ora!');
+    });
+
+    it('skips deleted messages and keeps the body empty when the preview fails', async () => {
+      const syncChannel = vi.fn(async () => undefined);
+      const schedule = vi.fn(async () => undefined);
+      installCapacitor({ syncChannel, schedule });
+      getMessages.mockResolvedValueOnce({
+        messages: [
+          { id: 'm2', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'gone', sentAt: 't', version: 1, deletedAt: 't2' },
+          { id: 'm1', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'still here', sentAt: 't', version: 1 },
+        ],
+        count: 2,
+        nextCursor: '',
+        hasMore: false,
+      } as never);
+      const push = await loadPush();
+      await push.handlePushReceipt({ t: 'm', c: 'chan-1' });
+      expect(schedule.mock.calls[0]?.[0].notifications[0].body).toBe('Aroha: still here');
+
+      getMessages.mockRejectedValueOnce(new Error('backend gone'));
+      await push.handlePushReceipt({ t: 'm', c: 'chan-2' });
+      const second = schedule.mock.calls[1]?.[0].notifications[0];
+      expect(second.body).toBe('');
     });
 
     it('ignores non-message payloads', async () => {
@@ -714,6 +781,33 @@ describe('usePush (#249)', () => {
 
       push.handlePushTap({ t: 'm' });
       expect(router.push).not.toHaveBeenCalled();
+    });
+
+    it('routes on a LOCAL notification tap — the event our posted notifications fire (#421)', async () => {
+      // Both the JS-scheduled notification and the Android headless wake's
+      // native twin carry the channel id in notification.extra.c, and their
+      // taps arrive as localNotificationActionPerformed (never
+      // pushNotificationActionPerformed, since §4 payloads are data-only).
+      const fake = makePush('granted');
+      const localListeners: Record<string, Listener> = {};
+      installCapacitor({ push: fake, localListeners });
+      const push = await loadPush();
+      const router = makeRouter();
+      push.setPushRouter(router as never);
+      push.ensurePushListeners();
+
+      const listener = localListeners['localNotificationActionPerformed'];
+      expect(listener).toBeDefined();
+      listener!({ actionId: 'tap', notification: { id: 7, extra: { c: 'chan-9' } } });
+      expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-9' } });
+    });
+
+    it('survives a shell whose LocalNotifications plugin has no addListener', async () => {
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, schedule: vi.fn() });
+      const push = await loadPush();
+      // Must not throw while wiring listeners against the reduced surface.
+      push.ensurePushListeners();
     });
   });
 });

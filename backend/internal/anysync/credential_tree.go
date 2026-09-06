@@ -183,16 +183,16 @@ func stateToCredential(state *ObjectState, treeID string) (*CredentialPayload, e
 	}
 
 	if v, ok := state.Fields["said"]; ok {
-		json.Unmarshal(v, &cred.SAID)
+		_ = json.Unmarshal(v, &cred.SAID)
 	}
 	if v, ok := state.Fields["issuer"]; ok {
-		json.Unmarshal(v, &cred.Issuer)
+		_ = json.Unmarshal(v, &cred.Issuer)
 	}
 	if v, ok := state.Fields["recipient"]; ok {
-		json.Unmarshal(v, &cred.Recipient)
+		_ = json.Unmarshal(v, &cred.Recipient)
 	}
 	if v, ok := state.Fields["schema"]; ok {
-		json.Unmarshal(v, &cred.Schema)
+		_ = json.Unmarshal(v, &cred.Schema)
 	}
 	if v, ok := state.Fields["data"]; ok {
 		cred.Data = v

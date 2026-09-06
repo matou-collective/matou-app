@@ -189,7 +189,7 @@ func aidIsBound(snap RoleSnapshot, aid string) bool {
 // the tree lock. An empty aid means the tree carried no profile AID.
 func RoleHistoryFromTree(tree objecttree.ReadableObjectTree) (aid string, history []RoleAt) {
 	_ = tree.IterateRoot(
-		func(change *objecttree.Change, decrypted []byte) (any, error) {
+		func(_ *objecttree.Change, decrypted []byte) (any, error) {
 			if len(decrypted) == 0 {
 				return nil, nil
 			}

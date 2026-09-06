@@ -1,4 +1,6 @@
-// backend/internal/contributions/service.go
+// Package contributions implements the proposals, projects, decision plans,
+// governance actions, and contributions workflows for a Matou space, along
+// with role- and capability-based access control for those workflows.
 package contributions
 
 import (
@@ -14,6 +16,7 @@ import (
 	"time"
 )
 
+// ErrNotFound is returned when a requested object does not exist in the store.
 var ErrNotFound = errors.New("not found")
 
 // maxPlanChangeLogEntries caps ImplementationPlan.ChangeLog to avoid unbounded
@@ -138,6 +141,7 @@ type SchemaValidator interface {
 	Validate(typeName string, data json.RawMessage) ([]string, error)
 }
 
+// NewService creates a Service backed by store.
 func NewService(store ObjectStore) *Service {
 	return &Service{store: store}
 }
@@ -196,6 +200,7 @@ func ParseDeadline(s string) *time.Time {
 
 // --- Proposals ---
 
+// CreateProposalRequest is the input to Service.CreateProposal.
 type CreateProposalRequest struct {
 	ProposerID           string            `json:"proposer_id"`
 	Title                string            `json:"title"`
@@ -214,7 +219,8 @@ type CreateProposalRequest struct {
 	Data map[string]interface{} `json:"data,omitempty"`
 }
 
-func (s *Service) CreateProposal(ctx context.Context, spaceID string, req *CreateProposalRequest) (*Proposal, error) {
+// CreateProposal creates and persists a new Proposal in spaceID.
+func (s *Service) CreateProposal(_ context.Context, spaceID string, req *CreateProposalRequest) (*Proposal, error) {
 	now := time.Now()
 	threshold := req.EndorsementThreshold
 	if threshold <= 0 {
@@ -258,7 +264,8 @@ func (s *Service) CreateProposal(ctx context.Context, spaceID string, req *Creat
 	return p, nil
 }
 
-func (s *Service) GetProposal(ctx context.Context, spaceID, proposalID string) (*Proposal, error) {
+// GetProposal fetches a single proposal by ID.
+func (s *Service) GetProposal(_ context.Context, spaceID, proposalID string) (*Proposal, error) {
 	var p Proposal
 	if err := s.store.Get(spaceID, proposalID, &p); err != nil {
 		return nil, err
@@ -266,7 +273,8 @@ func (s *Service) GetProposal(ctx context.Context, spaceID, proposalID string) (
 	return &p, nil
 }
 
-func (s *Service) ListProposals(ctx context.Context, spaceID string) ([]*Proposal, error) {
+// ListProposals returns all proposals in spaceID.
+func (s *Service) ListProposals(_ context.Context, spaceID string) ([]*Proposal, error) {
 	raw, err := s.store.List(spaceID, "proposal")
 	if err != nil {
 		return nil, err
@@ -281,6 +289,7 @@ func (s *Service) ListProposals(ctx context.Context, spaceID string) ([]*Proposa
 	return proposals, nil
 }
 
+// TransitionProposal moves a proposal to newStatus, validating the transition.
 func (s *Service) TransitionProposal(ctx context.Context, spaceID, proposalID string, newStatus ProposalStatus) (*Proposal, error) {
 	p, err := s.GetProposal(ctx, spaceID, proposalID)
 	if err != nil {
@@ -306,6 +315,8 @@ func (s *Service) TransitionProposal(ctx context.Context, spaceID, proposalID st
 	return p, nil
 }
 
+// UpdateProposalRequest is the input to Service.UpdateProposal. Fields are
+// pointers so the handler can distinguish "not provided" from "cleared".
 type UpdateProposalRequest struct {
 	Title             *string      `json:"title,omitempty"`
 	Description       *string      `json:"description,omitempty"`
@@ -323,6 +334,7 @@ type UpdateProposalRequest struct {
 	Data map[string]interface{} `json:"data,omitempty"`
 }
 
+// UpdateProposal applies req's non-nil fields to an existing proposal.
 func (s *Service) UpdateProposal(ctx context.Context, spaceID, proposalID string, req *UpdateProposalRequest) (*Proposal, error) {
 	p, err := s.GetProposal(ctx, spaceID, proposalID)
 	if err != nil {
@@ -373,13 +385,15 @@ func (s *Service) UpdateProposal(ctx context.Context, spaceID, proposalID string
 	return p, nil
 }
 
-func (s *Service) AddHistoryEntry(ctx context.Context, spaceID string, entry *ProposalHistoryEntry) error {
+// AddHistoryEntry records a ProposalHistoryEntry for a proposal's audit trail.
+func (s *Service) AddHistoryEntry(_ context.Context, spaceID string, entry *ProposalHistoryEntry) error {
 	entry.ID = generateID("hist")
 	entry.CreatedAt = time.Now()
 	return s.store.Save(spaceID, entry.ID, "proposal_history", entry)
 }
 
-func (s *Service) ListHistory(ctx context.Context, spaceID, proposalID string) ([]*ProposalHistoryEntry, error) {
+// ListHistory returns the audit trail entries for a proposal.
+func (s *Service) ListHistory(_ context.Context, spaceID, proposalID string) ([]*ProposalHistoryEntry, error) {
 	raw, err := s.store.List(spaceID, "proposal_history")
 	if err != nil {
 		return nil, err
@@ -402,12 +416,15 @@ func endorsementKey(proposalID, endorserID string) string {
 	return fmt.Sprintf("endorse_%s_%s", proposalID, endorserID)
 }
 
+// EndorsementResult is the outcome of Service.AddEndorsement.
 type EndorsementResult struct {
 	Endorsement  *Endorsement `json:"endorsement"`
 	ThresholdMet bool         `json:"threshold_met"`
 	NewStatus    string       `json:"new_status,omitempty"`
 }
 
+// AddEndorsement records an endorsement for a proposal, auto-transitioning
+// it to signed-off once the endorsement threshold is met.
 func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string, e *Endorsement) (*EndorsementResult, error) {
 	p, err := s.GetProposal(ctx, spaceID, proposalID)
 	if err != nil {
@@ -444,7 +461,7 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 				// Auto-create role contributions
 				s.CreateRoleContributions(ctx, spaceID, p)
 				// Record history
-				s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+				_ = s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
 					ProposalID: proposalID,
 					UserID:     "system",
 					Action:     "Endorsement threshold met - moved to In Review",
@@ -458,6 +475,7 @@ func (s *Service) AddEndorsement(ctx context.Context, spaceID, proposalID string
 
 // --- Contribution Comments ---
 
+// AddContributionComment persists a comment on a contribution.
 func (s *Service) AddContributionComment(ctx context.Context, spaceID string, comment *ContributionComment) (*ContributionComment, error) {
 	comment.ID = generateID("ccmt")
 	comment.CreatedAt = time.Now()
@@ -471,7 +489,8 @@ func (s *Service) AddContributionComment(ctx context.Context, spaceID string, co
 	return comment, nil
 }
 
-func (s *Service) ListContributionComments(ctx context.Context, spaceID, contributionID string) ([]*ContributionComment, error) {
+// ListContributionComments returns comments on a contribution.
+func (s *Service) ListContributionComments(_ context.Context, spaceID, contributionID string) ([]*ContributionComment, error) {
 	raw, err := s.store.List(spaceID, "contribution_comment")
 	if err != nil {
 		return nil, err
@@ -493,6 +512,7 @@ func (s *Service) ListContributionComments(ctx context.Context, spaceID, contrib
 
 // --- Project Comments ---
 
+// AddProjectComment persists a comment on a project.
 func (s *Service) AddProjectComment(ctx context.Context, spaceID string, comment *ProjectComment) (*ProjectComment, error) {
 	comment.ID = generateID("prjcmt")
 	comment.CreatedAt = time.Now()
@@ -506,7 +526,8 @@ func (s *Service) AddProjectComment(ctx context.Context, spaceID string, comment
 	return comment, nil
 }
 
-func (s *Service) ListProjectComments(ctx context.Context, spaceID, projectID string) ([]*ProjectComment, error) {
+// ListProjectComments returns comments on a project.
+func (s *Service) ListProjectComments(_ context.Context, spaceID, projectID string) ([]*ProjectComment, error) {
 	raw, err := s.store.List(spaceID, "project_comment")
 	if err != nil {
 		return nil, err
@@ -528,7 +549,8 @@ func (s *Service) ListProjectComments(ctx context.Context, spaceID, projectID st
 
 // --- Proposal Comments ---
 
-func (s *Service) AddProposalComment(ctx context.Context, spaceID string, comment *ProposalComment) (*ProposalComment, error) {
+// AddProposalComment persists a comment on a proposal.
+func (s *Service) AddProposalComment(_ context.Context, spaceID string, comment *ProposalComment) (*ProposalComment, error) {
 	comment.ID = generateID("pcmt")
 	comment.CreatedAt = time.Now()
 	if err := s.store.Save(spaceID, comment.ID, "proposal_comment", comment); err != nil {
@@ -537,6 +559,7 @@ func (s *Service) AddProposalComment(ctx context.Context, spaceID string, commen
 	return comment, nil
 }
 
+// ListProposalComments returns comments (and synthesized events) for a proposal.
 func (s *Service) ListProposalComments(ctx context.Context, spaceID, proposalID string) ([]*ProposalComment, error) {
 	raw, err := s.store.List(spaceID, "proposal_comment")
 	if err != nil {
@@ -648,6 +671,9 @@ func formatOutcomeTitle(o OutcomeType) string {
 	return titleCase(strings.ReplaceAll(string(o), "_", " "))
 }
 
+// CreateRoleContributions creates the lead/steward contributions for a
+// signed-off proposal's assigned roles. Best-effort: failures are logged, not
+// returned, since role assignment already succeeded.
 func (s *Service) CreateRoleContributions(ctx context.Context, spaceID string, proposal *Proposal) {
 	// Create Proposal Lead contribution
 	leadID := generateID("ctr")
@@ -692,22 +718,23 @@ func (s *Service) CreateRoleContributions(ctx context.Context, spaceID string, p
 	}
 
 	// Save updated proposal with contribution IDs
-	s.store.Save(spaceID, proposal.ID, "proposal", proposal)
+	_ = s.store.Save(spaceID, proposal.ID, "proposal", proposal)
 
 	// Record history
-	s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+	_ = s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
 		ProposalID: proposal.ID,
 		UserID:     "system",
 		Action:     "Created Proposal Lead contribution request",
 	})
-	s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+	_ = s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
 		ProposalID: proposal.ID,
 		UserID:     "system",
 		Action:     "Created Proposal Steward contribution request",
 	})
 }
 
-func (s *Service) GetEndorsements(ctx context.Context, spaceID, proposalID string) ([]*Endorsement, error) {
+// GetEndorsements returns the endorsements recorded for a proposal.
+func (s *Service) GetEndorsements(_ context.Context, spaceID, proposalID string) ([]*Endorsement, error) {
 	raw, err := s.store.List(spaceID, "endorsement")
 	if err != nil {
 		return nil, err
@@ -726,6 +753,7 @@ func (s *Service) GetEndorsements(ctx context.Context, spaceID, proposalID strin
 
 // --- Projects ---
 
+// CreateProjectRequest is the input to Service.CreateProject.
 type CreateProjectRequest struct {
 	Title       string         `json:"title"`
 	Description string         `json:"description"`
@@ -737,6 +765,7 @@ type CreateProjectRequest struct {
 	CreatedBy   string         `json:"created_by"`
 }
 
+// UpdateProjectRequest is the input to Service.UpdateProject.
 type UpdateProjectRequest struct {
 	Title       string         `json:"title,omitempty"`
 	Description string         `json:"description,omitempty"`
@@ -747,7 +776,8 @@ type UpdateProjectRequest struct {
 	EndDate     *string        `json:"end_date,omitempty"`
 }
 
-func (s *Service) CreateProject(ctx context.Context, spaceID string, req *CreateProjectRequest) (*Project, error) {
+// CreateProject creates and persists a new Project in spaceID.
+func (s *Service) CreateProject(_ context.Context, spaceID string, req *CreateProjectRequest) (*Project, error) {
 	now := time.Now()
 	p := &Project{
 		ID:          generateID("proj"),
@@ -773,7 +803,8 @@ func (s *Service) CreateProject(ctx context.Context, spaceID string, req *Create
 	return p, nil
 }
 
-func (s *Service) GetProject(ctx context.Context, spaceID, projectID string) (*Project, error) {
+// GetProject fetches a single project by ID.
+func (s *Service) GetProject(_ context.Context, spaceID, projectID string) (*Project, error) {
 	var p Project
 	if err := s.store.Get(spaceID, projectID, &p); err != nil {
 		return nil, err
@@ -818,7 +849,8 @@ func (s *Service) ProjectRoles(ctx context.Context, spaceID, projectID, aid stri
 	return roles
 }
 
-func (s *Service) ListProjects(ctx context.Context, spaceID string) ([]*Project, error) {
+// ListProjects returns all projects in spaceID.
+func (s *Service) ListProjects(_ context.Context, spaceID string) ([]*Project, error) {
 	raw, err := s.store.List(spaceID, "project")
 	if err != nil {
 		return nil, err
@@ -833,6 +865,7 @@ func (s *Service) ListProjects(ctx context.Context, spaceID string) ([]*Project,
 	return projects, nil
 }
 
+// UpdateProject applies req's non-nil fields to an existing project.
 func (s *Service) UpdateProject(ctx context.Context, spaceID, projectID string, req *UpdateProjectRequest) (*Project, error) {
 	p, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
@@ -867,10 +900,11 @@ func (s *Service) UpdateProject(ctx context.Context, spaceID, projectID string, 
 }
 
 // SaveProject persists a project that was modified externally (e.g. role assignment).
-func (s *Service) SaveProject(ctx context.Context, spaceID string, p *Project) error {
+func (s *Service) SaveProject(_ context.Context, spaceID string, p *Project) error {
 	return s.store.Save(spaceID, p.ID, "project", p)
 }
 
+// DeleteProject removes a project.
 func (s *Service) DeleteProject(ctx context.Context, spaceID, projectID string) error {
 	p, err := s.GetProject(ctx, spaceID, projectID)
 	if err != nil {
@@ -898,6 +932,7 @@ func (s *Service) GetProjectByProposalID(ctx context.Context, spaceID, proposalI
 	return nil, nil
 }
 
+// LinkProposalToProject associates a proposal with a project.
 func (s *Service) LinkProposalToProject(ctx context.Context, spaceID, projectID, proposalID string) (*Project, error) {
 	// Prevent a proposal from being linked to multiple projects.
 	existing, err := s.GetProjectByProposalID(ctx, spaceID, proposalID)
@@ -925,6 +960,8 @@ func (s *Service) LinkProposalToProject(ctx context.Context, spaceID, projectID,
 	return p, nil
 }
 
+// AutoCreateProjectForProposal creates a project seeded from an approved
+// proposal and links the proposal to it.
 func (s *Service) AutoCreateProjectForProposal(ctx context.Context, spaceID, proposalID, createdBy string) (*Project, error) {
 	prop, err := s.GetProposal(ctx, spaceID, proposalID)
 	if err != nil {
@@ -943,6 +980,7 @@ func (s *Service) AutoCreateProjectForProposal(ctx context.Context, spaceID, pro
 
 // --- Decision Plans ---
 
+// CreateDecisionPlanRequest is the input to Service.CreateDecisionPlan.
 type CreateDecisionPlanRequest struct {
 	ProposalID        string   `json:"proposal_id"`
 	Title             string   `json:"title"`
@@ -953,7 +991,8 @@ type CreateDecisionPlanRequest struct {
 	ProposalStewardID string   `json:"proposal_steward_id"`
 }
 
-func (s *Service) CreateDecisionPlan(ctx context.Context, spaceID string, req *CreateDecisionPlanRequest) (*DecisionPlan, error) {
+// CreateDecisionPlan creates and persists a new DecisionPlan in spaceID.
+func (s *Service) CreateDecisionPlan(_ context.Context, spaceID string, req *CreateDecisionPlanRequest) (*DecisionPlan, error) {
 	now := time.Now()
 	dp := &DecisionPlan{
 		ID:                generateID("dp"),
@@ -974,7 +1013,8 @@ func (s *Service) CreateDecisionPlan(ctx context.Context, spaceID string, req *C
 	return dp, nil
 }
 
-func (s *Service) GetDecisionPlan(ctx context.Context, spaceID, dpID string) (*DecisionPlan, error) {
+// GetDecisionPlan fetches a single decision plan by ID.
+func (s *Service) GetDecisionPlan(_ context.Context, spaceID, dpID string) (*DecisionPlan, error) {
 	var dp DecisionPlan
 	if err := s.store.Get(spaceID, dpID, &dp); err != nil {
 		return nil, err
@@ -983,7 +1023,8 @@ func (s *Service) GetDecisionPlan(ctx context.Context, spaceID, dpID string) (*D
 	return &dp, nil
 }
 
-func (s *Service) ListDecisionPlans(ctx context.Context, spaceID string) ([]*DecisionPlan, error) {
+// ListDecisionPlans returns all decision plans in spaceID.
+func (s *Service) ListDecisionPlans(_ context.Context, spaceID string) ([]*DecisionPlan, error) {
 	raw, err := s.store.List(spaceID, "decision_plan")
 	if err != nil {
 		return nil, err
@@ -1016,6 +1057,8 @@ func (s *Service) hydrateDecisionPlanActions(spaceID string, dp *DecisionPlan) {
 	dp.GovernanceActions = actions
 }
 
+// TransitionDecisionPlan moves a decision plan to newStatus, validating the
+// transition and, for sign-off, attaching the supplied proof.
 func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID string, newStatus DecisionPlanStatus, userID string, proof *Proof) (*DecisionPlan, error) {
 	dp, err := s.GetDecisionPlan(ctx, spaceID, dpID)
 	if err != nil {
@@ -1047,8 +1090,8 @@ func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID stri
 			if err := ValidateProposalTransition(p.Status, ProposalVotingProcess); err == nil {
 				p.Status = ProposalVotingProcess
 				p.UpdatedAt = time.Now()
-				s.store.Save(spaceID, p.ID, "proposal", p)
-				s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+				_ = s.store.Save(spaceID, p.ID, "proposal", p)
+				_ = s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
 					ProposalID: dp.ProposalID,
 					UserID:     "system",
 					Action:     "Decision plan signed off - moved to voting process",
@@ -1062,6 +1105,7 @@ func (s *Service) TransitionDecisionPlan(ctx context.Context, spaceID, dpID stri
 
 // --- Governance Actions ---
 
+// CreateGovernanceActionRequest is the input to Service.AddGovernanceAction.
 type CreateGovernanceActionRequest struct {
 	DecisionPlanID  string     `json:"decision_plan_id"`
 	House           HouseType  `json:"house"`
@@ -1076,7 +1120,9 @@ type CreateGovernanceActionRequest struct {
 	VotingEndTime   string     `json:"voting_end_time,omitempty"`
 }
 
-func (s *Service) AddGovernanceAction(ctx context.Context, spaceID string, req *CreateGovernanceActionRequest) (*GovernanceAction, error) {
+// AddGovernanceAction creates and persists a new governance action within a
+// decision plan.
+func (s *Service) AddGovernanceAction(_ context.Context, spaceID string, req *CreateGovernanceActionRequest) (*GovernanceAction, error) {
 	if req.ActionType == ActionDecision && req.LinkedActionID == "" {
 		return nil, fmt.Errorf("decision actions must be linked to a meeting or discussion")
 	}
@@ -1104,7 +1150,8 @@ func (s *Service) AddGovernanceAction(ctx context.Context, spaceID string, req *
 	return action, nil
 }
 
-func (s *Service) GetGovernanceAction(ctx context.Context, spaceID, actionID string) (*GovernanceAction, error) {
+// GetGovernanceAction fetches a single governance action by ID.
+func (s *Service) GetGovernanceAction(_ context.Context, spaceID, actionID string) (*GovernanceAction, error) {
 	var action GovernanceAction
 	if err := s.store.Get(spaceID, actionID, &action); err != nil {
 		return nil, err
@@ -1112,6 +1159,8 @@ func (s *Service) GetGovernanceAction(ctx context.Context, spaceID, actionID str
 	return &action, nil
 }
 
+// CompleteGovernanceAction records the outcome and completion details for a
+// governance action and marks it completed.
 func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionID string, outcome OutcomeType, completionNotes string, completionFiles []FileRef, completionLinks []string, completedBy string, voterName string) (*GovernanceAction, error) {
 	action, err := s.GetGovernanceAction(ctx, spaceID, actionID)
 	if err != nil {
@@ -1156,12 +1205,14 @@ func (s *Service) CompleteGovernanceAction(ctx context.Context, spaceID, actionI
 
 	// If this was a decision action, check if all decisions are now complete
 	if action.ActionType == ActionDecision && dp.ProposalID != "" {
-		s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
+		_ = s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
 	}
 
 	return action, nil
 }
 
+// ArchiveGovernanceAction marks a governance action archived, recording
+// completion details.
 func (s *Service) ArchiveGovernanceAction(ctx context.Context, spaceID, actionID string, completionNotes string, completionFiles []FileRef, completionLinks []string, completedBy string) (*GovernanceAction, error) {
 	action, err := s.GetGovernanceAction(ctx, spaceID, actionID)
 	if err != nil {
@@ -1183,6 +1234,7 @@ func (s *Service) ArchiveGovernanceAction(ctx context.Context, spaceID, actionID
 	return action, nil
 }
 
+// CastVote records a voter's decision on a governance action.
 func (s *Service) CastVote(ctx context.Context, spaceID, actionID string, voterID, voterName string, decision OutcomeType, comment string) (*GovernanceAction, error) {
 	action, err := s.GetGovernanceAction(ctx, spaceID, actionID)
 	if err != nil {
@@ -1231,6 +1283,8 @@ func (s *Service) CastVote(ctx context.Context, spaceID, actionID string, voterI
 	return action, nil
 }
 
+// ResolveDecision tallies votes on a decision-type governance action and
+// records the resulting outcome.
 func (s *Service) ResolveDecision(ctx context.Context, spaceID, actionID string) (*GovernanceAction, error) {
 	action, err := s.GetGovernanceAction(ctx, spaceID, actionID)
 	if err != nil {
@@ -1288,7 +1342,7 @@ func (s *Service) ResolveDecision(ctx context.Context, spaceID, actionID string)
 	// Check if all decisions are now complete
 	dp, err := s.GetDecisionPlan(ctx, spaceID, action.DecisionPlanID)
 	if err == nil && dp.ProposalID != "" {
-		s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
+		_ = s.EvaluateGovernanceOutcome(ctx, spaceID, dp.ProposalID)
 	}
 
 	return action, nil
@@ -1296,6 +1350,7 @@ func (s *Service) ResolveDecision(ctx context.Context, spaceID, actionID string)
 
 // --- Implementation Plans ---
 
+// CreateImplementationPlanRequest is the input to Service.CreateImplementationPlan.
 type CreateImplementationPlanRequest struct {
 	ProjectID        string `json:"project_id"`
 	TotalBudget      string `json:"total_budget"`
@@ -1303,7 +1358,9 @@ type CreateImplementationPlanRequest struct {
 	ProjectStewardID string `json:"project_steward_id"`
 }
 
-func (s *Service) CreateImplementationPlan(ctx context.Context, spaceID string, req *CreateImplementationPlanRequest) (*ImplementationPlan, error) {
+// CreateImplementationPlan creates and persists a new implementation plan
+// for a project.
+func (s *Service) CreateImplementationPlan(_ context.Context, spaceID string, req *CreateImplementationPlanRequest) (*ImplementationPlan, error) {
 	now := time.Now()
 	ip := &ImplementationPlan{
 		ID:               generateID("ip"),
@@ -1321,7 +1378,8 @@ func (s *Service) CreateImplementationPlan(ctx context.Context, spaceID string, 
 	return ip, nil
 }
 
-func (s *Service) GetImplementationPlan(ctx context.Context, spaceID, ipID string) (*ImplementationPlan, error) {
+// GetImplementationPlan fetches a single implementation plan by ID.
+func (s *Service) GetImplementationPlan(_ context.Context, spaceID, ipID string) (*ImplementationPlan, error) {
 	var ip ImplementationPlan
 	if err := s.store.Get(spaceID, ipID, &ip); err != nil {
 		return nil, err
@@ -1329,7 +1387,8 @@ func (s *Service) GetImplementationPlan(ctx context.Context, spaceID, ipID strin
 	return &ip, nil
 }
 
-func (s *Service) ListImplementationPlans(ctx context.Context, spaceID string) ([]*ImplementationPlan, error) {
+// ListImplementationPlans returns all implementation plans in spaceID.
+func (s *Service) ListImplementationPlans(_ context.Context, spaceID string) ([]*ImplementationPlan, error) {
 	raw, err := s.store.List(spaceID, "implementation_plan")
 	if err != nil {
 		return nil, err
@@ -1346,6 +1405,7 @@ func (s *Service) ListImplementationPlans(ctx context.Context, spaceID string) (
 
 // --- Milestones ---
 
+// CreateMilestoneRequest is the input to Service.AddMilestone.
 type CreateMilestoneRequest struct {
 	ImplementationPlanID string   `json:"implementation_plan_id"`
 	Title                string   `json:"title"`
@@ -1387,7 +1447,8 @@ func (s *Service) AddMilestone(ctx context.Context, spaceID, actorID string, req
 	return ms, nil
 }
 
-func (s *Service) GetMilestone(ctx context.Context, spaceID, msID string) (*Milestone, error) {
+// GetMilestone fetches a single milestone by ID.
+func (s *Service) GetMilestone(_ context.Context, spaceID, msID string) (*Milestone, error) {
 	var ms Milestone
 	if err := s.store.Get(spaceID, msID, &ms); err != nil {
 		return nil, err
@@ -1411,6 +1472,7 @@ func (s *Service) HydratePlan(ctx context.Context, spaceID string, plan *Impleme
 
 // --- Contributions ---
 
+// CreateContributionRequest is the input to Service.CreateContribution.
 type CreateContributionRequest struct {
 	ProjectID             string       `json:"project_id"`
 	Title                 string       `json:"title"`
@@ -1431,6 +1493,7 @@ type CreateContributionRequest struct {
 	Tags                  []string     `json:"tags,omitempty"`
 }
 
+// CreateContribution creates and persists a new Contribution in spaceID.
 func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *CreateContributionRequest) (*Contribution, error) {
 	now := time.Now()
 
@@ -1566,7 +1629,8 @@ func (s *Service) CreateContribution(ctx context.Context, spaceID string, req *C
 	return c, nil
 }
 
-func (s *Service) GetContribution(ctx context.Context, spaceID, contribID string) (*Contribution, error) {
+// GetContribution fetches a single contribution by ID.
+func (s *Service) GetContribution(_ context.Context, spaceID, contribID string) (*Contribution, error) {
 	var c Contribution
 	if err := s.store.Get(spaceID, contribID, &c); err != nil {
 		return nil, err
@@ -1574,7 +1638,8 @@ func (s *Service) GetContribution(ctx context.Context, spaceID, contribID string
 	return &c, nil
 }
 
-func (s *Service) ListContributions(ctx context.Context, spaceID string) ([]*Contribution, error) {
+// ListContributions returns all contributions in spaceID.
+func (s *Service) ListContributions(_ context.Context, spaceID string) ([]*Contribution, error) {
 	raw, err := s.store.List(spaceID, "contribution")
 	if err != nil {
 		return nil, err
@@ -1589,6 +1654,8 @@ func (s *Service) ListContributions(ctx context.Context, spaceID string) ([]*Con
 	return contribs, nil
 }
 
+// TransitionContribution moves a contribution to newStatus, validating the
+// transition.
 func (s *Service) TransitionContribution(ctx context.Context, spaceID, contribID string, newStatus ContributionStatus) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contribID)
 	if err != nil {
@@ -1623,6 +1690,7 @@ func (s *Service) TransitionContribution(ctx context.Context, spaceID, contribID
 
 // --- Contribution Registration ---
 
+// RegisterInterest records a contributor's interest in a shared contribution.
 func (s *Service) RegisterInterest(ctx context.Context, spaceID, contribID, userID, statement string) (*ContributionRegistration, error) {
 	c, err := s.GetContribution(ctx, spaceID, contribID)
 	if err != nil {
@@ -1644,7 +1712,8 @@ func (s *Service) RegisterInterest(ctx context.Context, spaceID, contribID, user
 	return reg, nil
 }
 
-func (s *Service) ListRegistrations(ctx context.Context, spaceID, contribID string) ([]*ContributionRegistration, error) {
+// ListRegistrations returns the interest registrations for a contribution.
+func (s *Service) ListRegistrations(_ context.Context, spaceID, contribID string) ([]*ContributionRegistration, error) {
 	raw, err := s.store.List(spaceID, "contribution_registration")
 	if err != nil {
 		return nil, err
@@ -1695,6 +1764,7 @@ func (s *Service) propagateOfferToChildren(ctx context.Context, spaceID string, 
 	return nil
 }
 
+// AssignContributor assigns a contributor to a contribution.
 func (s *Service) AssignContributor(ctx context.Context, spaceID, contribID, userID string) (*Contribution, error) {
 	c, err := s.GetContribution(ctx, spaceID, contribID)
 	if err != nil {
@@ -2287,13 +2357,13 @@ func (s *Service) ListContributionsByProject(ctx context.Context, spaceID, proje
 }
 
 // SaveContribution persists a contribution after external updates (e.g., evidence, review feedback).
-func (s *Service) SaveContribution(ctx context.Context, spaceID string, c *Contribution) error {
+func (s *Service) SaveContribution(_ context.Context, spaceID string, c *Contribution) error {
 	c.UpdatedAt = time.Now()
 	return s.store.Save(spaceID, c.ID, "contribution", c)
 }
 
 // SaveImplementationPlan persists an implementation plan after external updates.
-func (s *Service) SaveImplementationPlan(ctx context.Context, spaceID string, ip *ImplementationPlan) error {
+func (s *Service) SaveImplementationPlan(_ context.Context, spaceID string, ip *ImplementationPlan) error {
 	return s.store.Save(spaceID, ip.ID, "implementation_plan", ip)
 }
 
@@ -2466,15 +2536,15 @@ func (s *Service) EvaluateGovernanceOutcome(ctx context.Context, spaceID, propos
 
 	// All decision actions completed - determine outcome
 	if allFavorable {
-		s.TransitionProposal(ctx, spaceID, proposalID, ProposalApproved)
-		s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+		_, _ = s.TransitionProposal(ctx, spaceID, proposalID, ProposalApproved)
+		_ = s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
 			ProposalID: proposalID,
 			UserID:     "system",
 			Action:     "All governance votes favorable - proposal approved",
 		})
 	} else {
-		s.TransitionProposal(ctx, spaceID, proposalID, ProposalRejected)
-		s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
+		_, _ = s.TransitionProposal(ctx, spaceID, proposalID, ProposalRejected)
+		_ = s.AddHistoryEntry(ctx, spaceID, &ProposalHistoryEntry{
 			ProposalID: proposalID,
 			UserID:     "system",
 			Action:     "Governance vote unfavorable - proposal rejected",

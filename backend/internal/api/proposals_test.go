@@ -41,7 +41,7 @@ func TestProposalsHandler_Create(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["id"] == nil || resp["id"] == "" {
 		t.Error("expected non-empty id in response")
 	}
@@ -93,7 +93,7 @@ func TestProposalsHandler_Transition(t *testing.T) {
 	handler.HandleCreate(w, req)
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	// Transition to submitted
@@ -145,7 +145,7 @@ func createTestProposalInReview(t *testing.T, handler *ProposalsHandler) string 
 		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
 	}
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	// Transition draft → submitted
@@ -507,7 +507,7 @@ func TestProposalsHandler_Update_NonInReview_NoRestriction(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.HandleCreate(w, req)
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	// Edit without any auth — should succeed for draft
@@ -560,7 +560,7 @@ func TestProposalsHandler_ListSchemaFilter(t *testing.T) {
 		Proposals []map[string]interface{} `json:"proposals"`
 		Total     int                      `json:"total"`
 	}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Total != 1 {
 		t.Fatalf("expected 1 high-priority proposal, got %d", resp.Total)
 	}

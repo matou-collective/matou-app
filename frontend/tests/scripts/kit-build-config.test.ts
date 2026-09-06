@@ -11,7 +11,7 @@ describe('electron-builder config from kit.build.json', () => {
     expect(c.artifactName).toBe('matou-${version}-${os}.${ext}');
     expect(c.mac.artifactName).toBe('matou-${version}-${os}-${arch}.${ext}');
     expect(c.linux.executableName).toBe('matou');
-    expect(c.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'draft' }]);
+    expect(c.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]);
   });
   it('maps a community kit to coa values and publish null', () => {
     const c = electronBuilderConfig({ appId: 'org.matou.coa.x-y', productName: 'X Y', artifactBase: 'x-y', executableName: 'x-y', androidApplicationId: 'org.matou.coa.x-y', urlScheme: 'org.matou.coa.x-y', publish: null, updates: false, primaryColour: '#000000', backgroundColour: '#000000' });

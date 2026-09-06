@@ -61,7 +61,7 @@
     </aside>
 
     <!-- Main Content (nested route) -->
-    <main class="main-content">
+    <main class="main-content" :class="{ 'is-chat-route': route.name === 'chat' }">
       <router-view />
     </main>
 
@@ -130,6 +130,15 @@
             </span>
             <span class="more-sheet-label">{{ userName }}</span>
           </button>
+          <button
+            class="more-sheet-item more-sheet-item-separated"
+            @click="showMoreSheet = false; showReportDialog = true"
+          >
+            <span class="more-sheet-icon-wrap">
+              <Bug class="more-sheet-icon" />
+            </span>
+            <span class="more-sheet-label">Report an issue</span>
+          </button>
         </div>
       </div>
     </Transition>
@@ -183,7 +192,7 @@ import { useProfileViewer } from 'stores/profileViewer';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
 import {
-  NAV_ITEM_META,
+  FEATURE_NAV_ITEMS,
   isNavActive as isNavActiveFor,
   badgeLabel,
   type NavItemMeta,
@@ -259,7 +268,7 @@ const navBadges = computed<Record<string, number>>(() => ({
 }));
 
 const navItems = computed(() =>
-  NAV_ITEM_META.map((meta) => ({
+  FEATURE_NAV_ITEMS.map((meta) => ({
     ...meta,
     icon: NAV_ICONS[meta.name] as Component,
     badge: navBadges.value[meta.name] ?? 0,
@@ -730,6 +739,12 @@ onBeforeUnmount(() => {
   }
 }
 
+.more-sheet-item-separated {
+  margin-top: 4px;
+  border-top: 1px solid var(--matou-sidebar-border);
+  padding-top: calc(0.75rem + 4px);
+}
+
 .more-sheet-icon-wrap {
   display: flex;
   align-items: center;
@@ -809,6 +824,22 @@ onBeforeUnmount(() => {
     padding-top: env(safe-area-inset-top);
     // Keep content clear of the fixed bottom bar (bar height + safe area).
     padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  // Chat manages its own bottom-nav inset (ChatPage.vue's reserve-tab-bar),
+  // so this layout must not double up or the page ends up taller than the
+  // viewport and over-scrolling reveals empty space below the composer.
+  // Beyond dropping the padding, hard-lock the route to the viewport height:
+  // the chat column sizes itself to the visual viewport, and any drift (a
+  // stale keyboard height, inset rounding) must never make the page itself
+  // scrollable — over-scrolling past the chat log revealed keyboard-sized
+  // empty space beneath it on device.
+  .main-content.is-chat-route {
+    padding-bottom: 0;
+    height: calc(100dvh - var(--titlebar-height));
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
   }
 
   .bottom-nav {
