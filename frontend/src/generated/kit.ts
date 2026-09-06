@@ -76,9 +76,9 @@ export const KIT: Kit = {
     "maramataka": true,
     "order": [
       "chat",
-      "projects",
-      "proposals",
       "notices",
+      "proposals",
+      "projects",
       "events"
     ]
   },

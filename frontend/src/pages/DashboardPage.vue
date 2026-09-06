@@ -81,22 +81,22 @@
                 <span class="community-stat-value">{{ liveMembers.length }}</span>
                 <span class="community-stat-label">Members</span>
               </div>
-              <div class="community-stat clickable" @click="router.push({ name: 'chat' })">
+              <div v-if="chatEnabled" class="community-stat clickable" @click="router.push({ name: 'chat' })">
                 <MessageCircle class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalChannels }}</span>
                 <span class="community-stat-label">Channels</span>
               </div>
-              <div class="community-stat clickable" @click="navigateToNotices('event')">
+              <div v-if="noticesEnabled && eventsFeatureEnabled" class="community-stat clickable" @click="navigateToNotices('event')">
                 <CalendarDays class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalEvents }}</span>
                 <span class="community-stat-label">Events</span>
               </div>
-              <div class="community-stat clickable" @click="navigateToNotices('announcement')">
+              <div v-if="noticesEnabled" class="community-stat clickable" @click="navigateToNotices('announcement')">
                 <Megaphone class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalAnnouncements }}</span>
                 <span class="community-stat-label">Notices</span>
               </div>
-              <div class="community-stat clickable" @click="navigateToNotices('update')">
+              <div v-if="noticesEnabled" class="community-stat clickable" @click="navigateToNotices('update')">
                 <RefreshCw class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalUpdates }}</span>
                 <span class="community-stat-label">Updates</span>
@@ -276,6 +276,8 @@ import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSi
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useMoonPhase } from 'src/composables/useMoonPhase';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
+import { eventsEnabled } from 'src/composables/noticeTypes';
+import { KIT } from 'src/generated/kit';
 import { applyTheme, persistTheme } from 'src/boot/theme';
 import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
@@ -287,6 +289,13 @@ import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
 const { isSteward, canManageMembers, checkAdminStatus, recheckAdminStatus } = useAdminAccess();
+
+// Community-stat tiles that link into build-time-optional modules must not
+// render (or navigate) when the module is disabled — the target route
+// doesn't exist in that build (coa phase 4).
+const chatEnabled = KIT.features.chat;
+const noticesEnabled = KIT.features.notices;
+const eventsFeatureEnabled = eventsEnabled();
 
 // On mobile (≤767px) the three placeholder "coming soon" stat tiles are hidden (#123)
 const isMobile = useIsMobile();

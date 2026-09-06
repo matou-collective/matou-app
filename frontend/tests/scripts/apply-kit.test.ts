@@ -121,3 +121,23 @@ describe('kit secondary wash (#337)', () => {
     expect(scss).toContain('--matou-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
   });
 });
+
+describe('apply-kit (features, phase 4)', () => {
+  const FEATURES = {
+    identity: true, chat: false, projects: true, proposals: true,
+    notices: true, events: false, maramataka: true,
+    order: ['projects', 'chat', 'proposals', 'notices', 'events'],
+  };
+
+  it('writes src/generated/features.json verbatim from the kit', async () => {
+    await applyKit(await kitDir({ features: FEATURES }), root, { icons: false });
+    const f = JSON.parse(await readFile(join(root, 'src/generated/features.json'), 'utf8'));
+    expect(f).toEqual(FEATURES);
+  });
+
+  it('rejects a kit with a malformed features block', async () => {
+    await expect(
+      applyKit(await kitDir({ features: { identity: true } }), root, { icons: false }),
+    ).rejects.toThrow(/features/);
+  });
+});

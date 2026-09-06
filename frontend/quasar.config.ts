@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { electronBuilderConfig } from './src-electron/kit-builder-config';
 import type { KitBuild } from './src/kit/types';
+import { featureDefines } from './scripts/kit/feature-flags.mjs';
 
 // Packaging identity (appId, product name, artifact names, publish target,
 // auto-update gate) is generated from coa-kit/kit.json into kit.build.json by
@@ -57,6 +58,11 @@ export default configure(() => {
         stores: path.join(__dirname, 'src/stores'),
       },
       extendViteConf(viteConf) {
+        const kitFeatures = JSON.parse(
+          fs.readFileSync(path.join(__dirname, 'src/generated/features.json'), 'utf8'),
+        );
+        viteConf.define = { ...viteConf.define, ...featureDefines(kitFeatures) };
+
         // Handle signify-ts dependencies that need special bundling
         viteConf.optimizeDeps = viteConf.optimizeDeps || {};
         viteConf.optimizeDeps.include = viteConf.optimizeDeps.include || [];
