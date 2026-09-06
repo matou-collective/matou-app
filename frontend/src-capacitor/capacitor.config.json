@@ -5,6 +5,9 @@
   "plugins": {
     "MatouBackend": {
       "configServerUrl": ""
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_matou"
     }
   }
 }

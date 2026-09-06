@@ -61,7 +61,7 @@
     </aside>
 
     <!-- Main Content (nested route) -->
-    <main class="main-content">
+    <main class="main-content" :class="{ 'is-chat-route': route.name === 'chat' }">
       <router-view />
     </main>
 
@@ -129,6 +129,15 @@
               </span>
             </span>
             <span class="more-sheet-label">{{ userName }}</span>
+          </button>
+          <button
+            class="more-sheet-item more-sheet-item-separated"
+            @click="showMoreSheet = false; showReportDialog = true"
+          >
+            <span class="more-sheet-icon-wrap">
+              <Bug class="more-sheet-icon" />
+            </span>
+            <span class="more-sheet-label">Report an issue</span>
           </button>
         </div>
       </div>
@@ -730,6 +739,12 @@ onBeforeUnmount(() => {
   }
 }
 
+.more-sheet-item-separated {
+  margin-top: 4px;
+  border-top: 1px solid var(--matou-sidebar-border);
+  padding-top: calc(0.75rem + 4px);
+}
+
 .more-sheet-icon-wrap {
   display: flex;
   align-items: center;
@@ -809,6 +824,13 @@ onBeforeUnmount(() => {
     padding-top: env(safe-area-inset-top);
     // Keep content clear of the fixed bottom bar (bar height + safe area).
     padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  // Chat manages its own bottom-nav inset (ChatPage.vue's reserve-tab-bar),
+  // so this layout must not double up or the page ends up taller than the
+  // viewport and over-scrolling reveals empty space below the composer.
+  .main-content.is-chat-route {
+    padding-bottom: 0;
   }
 
   .bottom-nav {

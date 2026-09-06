@@ -36,7 +36,7 @@ const prodEnv = loadProdEnv('.env.production');
 
 export default configure(() => {
   return {
-    boot: ['motion', 'keri', 'push'],
+    boot: ['theme', 'motion', 'keri', 'push'],
 
     css: ['app.scss', 'tailwind.css'],
 
@@ -102,7 +102,7 @@ export default configure(() => {
 
     framework: {
       config: {},
-      plugins: ['Notify', 'Dialog'],
+      plugins: ['Notify', 'Dialog', 'Dark'],
     },
 
     animations: [],

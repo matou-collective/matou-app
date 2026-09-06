@@ -37,6 +37,26 @@
   --matou-switch-background: #b0cbd5;
   --matou-ring: #4a9d9c;
 
+  // Surfaces & text (referenced with light fallbacks across profile
+  // components before dark mode existed — defined here so `.dark` below can
+  // actually override them instead of the fallback always winning).
+  --matou-surface: #ffffff;
+  --matou-surface-alt: #f3f4f6;
+  --matou-text: #1f2937;
+  --matou-text-secondary: #6b7280;
+  --matou-primary-light: rgba(37, 99, 235, 0.08);
+
+  // "Tinted field" style used by read-only/editable field boxes and chips
+  // (AccountSettingsPage) — previously hardcoded, now tokenised so dark mode
+  // can override them.
+  --matou-field-tint-bg: #f0f9fa;
+  --matou-field-tint-border: #d1e7ea;
+  --matou-field-tint-hover-border: #a8d4da;
+  --matou-field-tint-focus-border: #1a4f5e;
+  --matou-field-tint-focus-shadow: rgba(26, 79, 94, 0.1);
+  --matou-field-tint-placeholder: #9ca3af;
+  --matou-switch-thumb: #ffffff;
+
   // Typography weights
   --matou-font-weight-medium: 500;
   --matou-font-weight-normal: 400;
@@ -96,7 +116,28 @@
 
   --matou-border: rgba(126, 179, 184, 0.2);
   --matou-input: #1e3340;
+  --matou-input-background: #1e3340;
+  --matou-switch-background: #3d5a6b;
   --matou-ring: #4a9d9c;
+
+  // --matou-secondary-strong comes from the kit's :root block only
+  // (kit-tokens.scss) — override it here so the "strong" secondary wash
+  // doesn't stay stuck at the light kit color in dark mode. See #337.
+  --matou-secondary-strong: #22384a;
+
+  --matou-surface: #1a2b3a;
+  --matou-surface-alt: #22384a;
+  --matou-text: #e8f4f8;
+  --matou-text-secondary: #8faab5;
+  --matou-primary-light: rgba(126, 179, 184, 0.18);
+
+  --matou-field-tint-bg: #1e3340;
+  --matou-field-tint-border: #2c4a5c;
+  --matou-field-tint-hover-border: #3d5a6b;
+  --matou-field-tint-focus-border: #7eb3b8;
+  --matou-field-tint-focus-shadow: rgba(126, 179, 184, 0.18);
+  --matou-field-tint-placeholder: #6b8a99;
+  --matou-switch-thumb: #e8f4f8;
 
   --matou-chart-1: #7eb3b8;
   --matou-chart-2: #4a9d9c;

@@ -25,14 +25,14 @@
  * preferences (§7).
  */
 
-import { computed, watch } from 'vue';
-import type { Router } from 'vue-router';
-import { useNotificationsStore } from 'stores/notifications';
-import { useChatStore } from 'stores/chat';
-import { useIdentityStore } from 'stores/identity';
-import { useOnboardingStore } from 'stores/onboarding';
-import { createLogger } from 'src/lib/logging';
-import { isCapacitor } from 'src/lib/platform';
+import { computed, watch } from "vue";
+import type { Router } from "vue-router";
+import { useNotificationsStore } from "stores/notifications";
+import { useChatStore } from "stores/chat";
+import { useIdentityStore } from "stores/identity";
+import { useOnboardingStore } from "stores/onboarding";
+import { createLogger } from "src/lib/logging";
+import { isCapacitor } from "src/lib/platform";
 import {
   getCapacitorPlatform,
   getMatouBackendPlugin,
@@ -40,17 +40,17 @@ import {
   getLocalNotificationsPlugin,
   getBadgePlugin,
   type PushNotificationsPlugin,
-} from 'src/lib/capacitor';
+} from "src/lib/capacitor";
 import {
   registerPushToken,
   deregisterPushToken,
   getRelayChallenge,
   postRelaySession,
   type PushRegisterResult,
-} from 'src/lib/api/push';
-import { useKERIClient } from 'src/lib/keri/client';
+} from "src/lib/api/push";
+import { useKERIClient } from "src/lib/keri/client";
 
-const log = createLogger('Push');
+const log = createLogger("Push");
 
 /** Data-only FCM payload shape (§4). */
 export interface PushDataPayload {
@@ -61,7 +61,7 @@ export interface PushDataPayload {
 }
 
 /** Coarse message kind carried by the payload's `k` field (§4). */
-export type MessageKind = 'dm' | 'ch';
+export type MessageKind = "dm" | "ch";
 
 /**
  * Android notification channels registered natively by the Capacitor shell
@@ -70,8 +70,8 @@ export type MessageKind = 'dm' | 'ch';
  * in lockstep with the native constants. DMs get the high-importance channel
  * (the §3 "instant" tier); channel traffic gets the quieter default one.
  */
-export const ANDROID_CHANNEL_DM = 'matou_dm';
-export const ANDROID_CHANNEL_GROUP = 'matou_channel';
+export const ANDROID_CHANNEL_DM = "matou_dm";
+export const ANDROID_CHANNEL_GROUP = "matou_channel";
 
 /** The visible notification composed on-device after sync. */
 export interface ComposedNotification {
@@ -87,12 +87,12 @@ export interface ComposedNotification {
  *  - `disabled`  — the user opted out via the global push toggle (§7).
  */
 export type PermissionOutcome =
-  | 'granted'
-  | 'denied'
-  | 'unsupported'
-  | 'unavailable'
-  | 'deferred'
-  | 'disabled';
+  | "granted"
+  | "denied"
+  | "unsupported"
+  | "unavailable"
+  | "deferred"
+  | "disabled";
 
 /** Window (ms) within which a burst of messages in one channel coalesces. */
 const COALESCE_WINDOW_MS = 3000;
@@ -135,7 +135,7 @@ export function setPushRouter(r: Router): void {
 
 /** True only on the Android Capacitor shell — the one platform push targets. */
 export function isPushPlatform(): boolean {
-  return isCapacitor() && getCapacitorPlatform() === 'android';
+  return isCapacitor() && getCapacitorPlatform() === "android";
 }
 
 /** The AID of the active session, or null when signed out. */
@@ -150,6 +150,12 @@ function relaySessionFresh(aid: string): boolean {
     relaySessionExpiresAt > Date.now() + RELAY_SESSION_REFRESH_SKEW_MS
   );
 }
+
+/**
+ * Latched when the backend answers 404 for the relay routes (no relay
+ * configured): every later mint attempt is skipped for this launch.
+ */
+let relayUnavailable = false;
 
 /** Forget the in-memory relay session (identity switch / logout / mint failure). */
 function clearRelaySession(): void {
@@ -172,9 +178,15 @@ function clearRelaySession(): void {
  * (the caller logs), it never blocks a send or a lifecycle transition. `force`
  * re-mints even when a session looks fresh (used on a 401 from the push API,
  * where the backend's own copy is stale or belongs to a different AID).
+ *
+ * Runs on EVERY platform, not just Android: the session is what the backend's
+ * PushSender spends on /notify when THIS user messages someone, so a desktop or
+ * web sender needs one exactly as much as a phone does — without it a desktop
+ * DM never wakes the recipient's phone (#250). Only register/deregister are
+ * push-platform-only.
  */
 async function ensureRelaySession(force = false): Promise<boolean> {
-  if (!isPushPlatform()) return false;
+  if (relayUnavailable) return false;
   const aid = currentAid();
   if (!aid) return false;
   if (!force && relaySessionFresh(aid)) return true;
@@ -185,11 +197,21 @@ async function ensureRelaySession(force = false): Promise<boolean> {
     const parsed = expiresAt ? Date.parse(expiresAt) : NaN;
     relaySessionAid = aid;
     relaySessionExpiresAt = Number.isFinite(parsed) ? parsed : 0;
-    log.info('Relay session minted (expires %s)', expiresAt ?? 'unknown');
+    log.info("Relay session minted (expires %s)", expiresAt ?? "unknown");
     return true;
   } catch (err) {
     clearRelaySession();
-    log.error('Relay session mint failed: %o', err);
+    if (err instanceof Error && err.message.includes("HTTP 404")) {
+      // The backend has no push routes — push is dark by design on this
+      // backend (MATOU_PUSH_RELAY_URL unset). Latch so dev/test launches
+      // don't retry (and log) on every lifecycle transition.
+      relayUnavailable = true;
+      log.info(
+        "Push relay not configured on this backend — relay session skipped",
+      );
+    } else {
+      log.error("Relay session mint failed: %o", err);
+    }
     return false;
   }
 }
@@ -201,10 +223,12 @@ async function ensureRelaySession(force = false): Promise<boolean> {
  * fresh, or off the push platform / signed out / globally disabled.
  */
 export async function handleAppForeground(): Promise<void> {
-  if (!isPushPlatform()) return;
   const aid = currentAid();
   if (!aid) return;
-  if (!useNotificationsStore().pushEnabled) return;
+  // On the push platform the user's push toggle gates the whole feature;
+  // sender-side platforms (desktop/web) always keep a session so their
+  // outbound notifies work (#250).
+  if (isPushPlatform() && !useNotificationsStore().pushEnabled) return;
   if (relaySessionFresh(aid)) return;
   await ensureRelaySession(true);
 }
@@ -219,9 +243,9 @@ export async function handleAppForeground(): Promise<void> {
  * inside the dashboard counts as complete too.
  */
 export function isOnboardingComplete(): boolean {
-  if (useOnboardingStore().currentScreen === 'main') return true;
+  if (useOnboardingStore().currentScreen === "main") return true;
   const path = router?.currentRoute.value.path ?? null;
-  return path !== null && path.startsWith('/dashboard');
+  return path !== null && path.startsWith("/dashboard");
 }
 
 /**
@@ -234,16 +258,16 @@ export function ensurePushListeners(): void {
   if (!plugin) return; // no native plugin yet (pre-slice-3 shell / non-Android)
   listenersRegistered = true;
 
-  void plugin.addListener('registration', (token) => {
+  void plugin.addListener("registration", (token) => {
     void handleRegistrationToken(token.value);
   });
-  void plugin.addListener('registrationError', (err) => {
-    log.error('FCM registration error: %s', err.error);
+  void plugin.addListener("registrationError", (err) => {
+    log.error("FCM registration error: %s", err.error);
   });
-  void plugin.addListener('pushNotificationReceived', (notification) => {
+  void plugin.addListener("pushNotificationReceived", (notification) => {
     void handlePushReceipt(notification.data as PushDataPayload | undefined);
   });
-  void plugin.addListener('pushNotificationActionPerformed', (action) => {
+  void plugin.addListener("pushNotificationActionPerformed", (action) => {
     handlePushTap(action.notification.data as PushDataPayload | undefined);
   });
 
@@ -262,7 +286,9 @@ export function ensurePushListeners(): void {
   // it an already-onboarded user never re-registers, the relay's TTL prunes the
   // token and push dies silently (§7). `immediate` covers the already-restored
   // case; registerIfPermitted never prompts, so this cannot fire a dialog.
-  const eligible = computed(() => identity.aidPrefix !== null && isOnboardingComplete());
+  const eligible = computed(
+    () => identity.aidPrefix !== null && isOnboardingComplete(),
+  );
   watch(
     eligible,
     (isEligible) => {
@@ -277,23 +303,67 @@ export function ensurePushListeners(): void {
   // for a Capacitor resume; guarded for the non-DOM unit-test env.
   if (
     !removeForegroundListener &&
-    typeof document !== 'undefined' &&
-    typeof document.addEventListener === 'function'
+    typeof document !== "undefined" &&
+    typeof document.addEventListener === "function"
   ) {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void handleAppForeground();
+      if (document.visibilityState === "visible") void handleAppForeground();
     };
-    document.addEventListener('visibilitychange', onVisible);
-    removeForegroundListener = () => document.removeEventListener('visibilitychange', onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    removeForegroundListener = () =>
+      document.removeEventListener("visibilitychange", onVisible);
+  }
+}
+
+/** Whether the desktop/web sender-side relay wiring is already installed. */
+let senderWiringInstalled = false;
+
+/**
+ * Sender-side relay wiring for platforms that never receive push (desktop /
+ * web) — the counterpart of ensurePushListeners' lifecycle watcher. The
+ * backend's PushSender still needs a live relay session to notify the relay
+ * when THIS user messages a phone (#250), so: mint once an onboarded identity
+ * is active (watching the AID itself so an identity switch re-mints), and
+ * re-mint on window focus when the held session is near expiry. Safe to call
+ * repeatedly; a no-op on the push platform, whose wiring lives in
+ * ensurePushListeners.
+ */
+export function ensureSenderRelaySession(): void {
+  if (isPushPlatform() || senderWiringInstalled) return;
+  senderWiringInstalled = true;
+
+  const identity = useIdentityStore();
+  const eligibleAid = computed(() =>
+    identity.aidPrefix !== null && isOnboardingComplete()
+      ? identity.aidPrefix
+      : null,
+  );
+  watch(
+    eligibleAid,
+    (aid) => {
+      if (aid) void ensureRelaySession();
+    },
+    { immediate: true },
+  );
+
+  if (
+    typeof document !== "undefined" &&
+    typeof document.addEventListener === "function"
+  ) {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") void handleAppForeground();
+    });
   }
 }
 
 /** Shared tail of both registration paths: remember the AID, ask for a token. */
-async function startRegistration(plugin: PushNotificationsPlugin): Promise<PermissionOutcome> {
+async function startRegistration(
+  plugin: PushNotificationsPlugin,
+): Promise<PermissionOutcome> {
   registeredAid = currentAid();
   // Fires the `registration` event → handleRegistrationToken → backend register.
   await plugin.register();
-  return 'granted';
+  return "granted";
 }
 
 /**
@@ -307,22 +377,22 @@ async function startRegistration(plugin: PushNotificationsPlugin): Promise<Permi
  * registerIfPermitted() instead.
  */
 export async function requestPermissionAndRegister(): Promise<PermissionOutcome> {
-  if (!isPushPlatform()) return 'unsupported';
+  if (!isPushPlatform()) return "unsupported";
   const plugin = getPushNotificationsPlugin();
-  if (!plugin) return 'unavailable';
+  if (!plugin) return "unavailable";
 
   ensurePushListeners();
 
   const aid = currentAid();
-  if (aid !== null && aid === registeredAid) return 'granted'; // already registered this launch
+  if (aid !== null && aid === registeredAid) return "granted"; // already registered this launch
 
   let perm = await plugin.checkPermissions();
-  if (perm.receive === 'prompt' || perm.receive === 'prompt-with-rationale') {
+  if (perm.receive === "prompt" || perm.receive === "prompt-with-rationale") {
     perm = await plugin.requestPermissions();
   }
-  if (perm.receive !== 'granted') {
-    log.info('Push permission not granted: %s', perm.receive);
-    return 'denied';
+  if (perm.receive !== "granted") {
+    log.info("Push permission not granted: %s", perm.receive);
+    return "denied";
   }
 
   return startRegistration(plugin);
@@ -337,24 +407,27 @@ export async function requestPermissionAndRegister(): Promise<PermissionOutcome>
  * exactly what §7 forbids.
  */
 export async function registerIfPermitted(): Promise<PermissionOutcome> {
-  if (!isPushPlatform()) return 'unsupported';
+  if (!isPushPlatform()) return "unsupported";
   const plugin = getPushNotificationsPlugin();
-  if (!plugin) return 'unavailable';
+  if (!plugin) return "unavailable";
   if (!isOnboardingComplete()) {
-    log.info('Skipping push registration — onboarding still in progress (§7)');
-    return 'deferred';
+    log.info("Skipping push registration — onboarding still in progress (§7)");
+    return "deferred";
   }
-  if (!useNotificationsStore().pushEnabled) return 'disabled';
+  if (!useNotificationsStore().pushEnabled) return "disabled";
 
   const aid = currentAid();
-  if (aid !== null && aid === registeredAid) return 'granted'; // already registered this launch
+  if (aid !== null && aid === registeredAid) return "granted"; // already registered this launch
 
   ensurePushListeners();
 
   const perm = await plugin.checkPermissions();
-  if (perm.receive !== 'granted') {
-    log.info('Not re-registering: push permission is %s (never prompting here)', perm.receive);
-    return 'denied';
+  if (perm.receive !== "granted") {
+    log.info(
+      "Not re-registering: push permission is %s (never prompting here)",
+      perm.receive,
+    );
+    return "denied";
   }
 
   return startRegistration(plugin);
@@ -366,7 +439,7 @@ export async function handleRegistrationToken(token: string): Promise<void> {
   currentToken = token;
   const notifStore = useNotificationsStore();
   if (!notifStore.pushEnabled) return; // globally opted out — don't register
-  log.info('%s FCM token → backend', rotated ? 'Rotated' : 'New');
+  log.info("%s FCM token → backend", rotated ? "Rotated" : "New");
   // The backend can only forward the token to the relay while it holds a live
   // relay session, and only the WebView can mint one (§8, refs #277).
   await ensureRelaySession();
@@ -381,7 +454,10 @@ export async function handleRegistrationToken(token: string): Promise<void> {
   if (!result.success) {
     // Silence here is how push dies unnoticed: no token at the relay means no
     // doorbell, with nothing in the log to say so.
-    log.error('Push token registration failed: %s', result.error ?? 'unknown error');
+    log.error(
+      "Push token registration failed: %s",
+      result.error ?? "unknown error",
+    );
   }
 }
 
@@ -408,8 +484,8 @@ export async function deregisterPush(): Promise<PushRegisterResult> {
   clearRelaySession();
   if (!result.success) {
     log.error(
-      'Push deregistration failed (%s) — the relay may keep waking this device',
-      result.error ?? 'unknown error',
+      "Push deregistration failed (%s) — the relay may keep waking this device",
+      result.error ?? "unknown error",
     );
   }
   return result;
@@ -468,7 +544,7 @@ async function syncChannel(channelId: string): Promise<boolean> {
     await backend.syncChannel({ channelId });
     return true;
   } catch (err) {
-    log.error('Channel sync failed for %s: %o', channelId, err);
+    log.error("Channel sync failed for %s: %o", channelId, err);
     return false;
   }
 }
@@ -496,10 +572,10 @@ export function recomputeBadge(): void {
 export async function handlePushReceipt(
   data: PushDataPayload | undefined,
 ): Promise<ComposedNotification | null> {
-  if (!data || data.t !== 'm' || !data.c) return null;
+  if (!data || data.t !== "m" || !data.c) return null;
   const channelId = data.c;
   // `k` selects the Android channel, and with it the §3 importance tier.
-  const kind: MessageKind = data.k === 'dm' ? 'dm' : 'ch';
+  const kind: MessageKind = data.k === "dm" ? "dm" : "ch";
 
   const synced = await syncChannel(channelId);
 
@@ -512,7 +588,7 @@ export async function handlePushReceipt(
   // Content-free default: resolve the name locally, fall back to generic text
   // if sync failed or the channel is unknown (§4).
   const channelName = synced ? resolveChannelName(channelId) : null;
-  const title = channelName ? `New message in ${channelName}` : 'New messages';
+  const title = channelName ? `New message in ${channelName}` : "New messages";
   const composed: ComposedNotification = { channelId, title, kind };
 
   presentCoalesced(composed);
@@ -537,7 +613,10 @@ function presentCoalesced(notif: ComposedNotification): void {
   }
   presentLocalNotification(notif);
   coalesceStates.set(notif.channelId, {
-    timer: setTimeout(() => closeCoalesceWindow(notif.channelId), COALESCE_WINDOW_MS),
+    timer: setTimeout(
+      () => closeCoalesceWindow(notif.channelId),
+      COALESCE_WINDOW_MS,
+    ),
     presentedTitle: notif.title,
     pending: null,
   });
@@ -563,8 +642,9 @@ function presentLocalNotification(notif: ComposedNotification): void {
       {
         id,
         title: notif.title,
-        body: '',
-        channelId: notif.kind === 'dm' ? ANDROID_CHANNEL_DM : ANDROID_CHANNEL_GROUP,
+        body: "",
+        channelId:
+          notif.kind === "dm" ? ANDROID_CHANNEL_DM : ANDROID_CHANNEL_GROUP,
         extra: { c: notif.channelId },
       },
     ],
@@ -584,7 +664,7 @@ function hashChannelId(channelId: string): number {
 export function handlePushTap(data: PushDataPayload | undefined): void {
   const channelId = data?.c;
   if (!channelId || !router) return;
-  void router.push({ name: 'chat', query: { c: channelId } });
+  void router.push({ name: "chat", query: { c: channelId } });
 }
 
 /** Reset module state — test-only seam. */

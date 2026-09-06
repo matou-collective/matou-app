@@ -91,6 +91,21 @@ func NewSDKClient(clientConfigPath string, opts *ClientOptions) (*SDKClient, err
 		return nil, fmt.Errorf("creating spaces directory: %w", err)
 	}
 
+	// Health-check every existing space store BEFORE the storage provider or
+	// space service are wired up. A store can be left in a state where reads
+	// and appends to already-loaded trees work but every new-tree write fails
+	// with a SQLite disk I/O error (e.g. after repeated hard process kills).
+	// Since all space content is re-syncable from the network, damaged stores
+	// are quarantined here so a fresh one gets created and re-populated by
+	// HeadSync, rather than leaving the space permanently broken.
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if quarantined, err := RecoverDamagedSpaceStores(probeCtx, spacesDir); err != nil {
+		log.Printf("[anysync] WARNING: space store recovery scan failed: %v", err)
+	} else if len(quarantined) > 0 {
+		log.Printf("[anysync] recovered %d damaged space store(s): %v", len(quarantined), quarantined)
+	}
+	probeCancel()
+
 	client := &SDKClient{
 		config:         clientConfig,
 		networkID:      clientConfig.NetworkID,
@@ -98,6 +113,7 @@ func NewSDKClient(clientConfigPath string, opts *ClientOptions) (*SDKClient, err
 		dataDir:        dataDir,
 		utm:            NewUnifiedTreeManager(),
 	}
+	client.utm.SetSpacesDir(spacesDir)
 
 	// Initialize peer key manager
 	keyPath := filepath.Join(dataDir, "peer.key")
