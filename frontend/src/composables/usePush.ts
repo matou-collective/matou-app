@@ -271,6 +271,21 @@ export function ensurePushListeners(): void {
     handlePushTap(action.notification.data as PushDataPayload | undefined);
   });
 
+  // Taps on the notifications this app actually posts — LocalNotifications
+  // scheduled by presentLocalNotification, or the Android headless wake's
+  // native twin (#421) — arrive as localNotificationActionPerformed with the
+  // channel id in `extra.c`. pushNotificationActionPerformed above only fires
+  // for FCM-rendered notifications, which a data-only §4 payload never
+  // produces, so without this listener a tap opened the app but never
+  // deep-linked (§6). Feature-detected: older shells inject a schedule-only
+  // plugin surface.
+  const local = getLocalNotificationsPlugin();
+  if (local?.addListener) {
+    void local.addListener("localNotificationActionPerformed", (action) => {
+      handlePushTap({ t: "m", c: action.notification?.extra?.c });
+    });
+  }
+
   // Deregister on logout, deregister+re-register on identity switch (§7).
   const identity = useIdentityStore();
   watch(

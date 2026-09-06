@@ -128,6 +128,8 @@ interface FakePlugins {
   push?: FakePush;
   syncChannel?: ReturnType<typeof vi.fn>;
   schedule?: ReturnType<typeof vi.fn>;
+  /** When set, LocalNotifications gains addListener storing listeners here. */
+  localListeners?: Record<string, Listener>;
   badgeSet?: ReturnType<typeof vi.fn>;
 }
 
@@ -138,7 +140,17 @@ function installCapacitor(
   const Plugins: Record<string, unknown> = {};
   if (opts.push) Plugins.PushNotifications = opts.push;
   if (opts.syncChannel) Plugins.MatouBackend = { syncChannel: opts.syncChannel };
-  if (opts.schedule) Plugins.LocalNotifications = { schedule: opts.schedule };
+  if (opts.schedule || opts.localListeners) {
+    const local: Record<string, unknown> = {};
+    if (opts.schedule) local.schedule = opts.schedule;
+    if (opts.localListeners) {
+      const store = opts.localListeners;
+      local.addListener = vi.fn((event: string, fn: Listener) => {
+        store[event] = fn;
+      });
+    }
+    Plugins.LocalNotifications = local;
+  }
   if (opts.badgeSet) Plugins.Badge = { set: opts.badgeSet };
   (globalThis as unknown as { window: unknown }).window = {
     Capacitor: {
@@ -714,6 +726,33 @@ describe('usePush (#249)', () => {
 
       push.handlePushTap({ t: 'm' });
       expect(router.push).not.toHaveBeenCalled();
+    });
+
+    it('routes on a LOCAL notification tap — the event our posted notifications fire (#421)', async () => {
+      // Both the JS-scheduled notification and the Android headless wake's
+      // native twin carry the channel id in notification.extra.c, and their
+      // taps arrive as localNotificationActionPerformed (never
+      // pushNotificationActionPerformed, since §4 payloads are data-only).
+      const fake = makePush('granted');
+      const localListeners: Record<string, Listener> = {};
+      installCapacitor({ push: fake, localListeners });
+      const push = await loadPush();
+      const router = makeRouter();
+      push.setPushRouter(router as never);
+      push.ensurePushListeners();
+
+      const listener = localListeners['localNotificationActionPerformed'];
+      expect(listener).toBeDefined();
+      listener!({ actionId: 'tap', notification: { id: 7, extra: { c: 'chan-9' } } });
+      expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-9' } });
+    });
+
+    it('survives a shell whose LocalNotifications plugin has no addListener', async () => {
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, schedule: vi.fn() });
+      const push = await loadPush();
+      // Must not throw while wiring listeners against the reduced surface.
+      push.ensurePushListeners();
     });
   });
 });
