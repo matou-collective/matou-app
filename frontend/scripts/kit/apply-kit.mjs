@@ -74,7 +74,7 @@ export function buildInfo(kit) {
     executableName: isMatou ? 'matou' : kit.slug,
     androidApplicationId: isMatou ? 'nz.matou.app' : `org.matou.coa.${androidSegment(kit.slug)}`,
     urlScheme: isMatou ? 'nz.matou.app' : `org.matou.coa.${kit.slug}`,
-    publish: isMatou ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'draft' }] : null,
+    publish: isMatou ? [{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }] : null,
     updates: isMatou,
     primaryColour: kit.brand.primaryColour,
     backgroundColour: kit.brand.primaryColour,

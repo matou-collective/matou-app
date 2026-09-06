@@ -100,7 +100,7 @@ export const KIT_BUILD: KitBuild = {
       "provider": "github",
       "owner": "matou-collective",
       "repo": "matou-app",
-      "releaseType": "draft"
+      "releaseType": "release"
     }
   ],
   "updates": true,
