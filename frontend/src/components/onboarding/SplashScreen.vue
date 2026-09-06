@@ -194,8 +194,8 @@ const onRetry = () => {
   position: relative;
   background: linear-gradient(
     160deg,
-    var(--matou-primary) 0%,
-    color-mix(in srgb, var(--matou-primary) 80%, black) 100%
+    var(--matou-brand) 0%,
+    color-mix(in srgb, var(--matou-brand) 80%, black) 100%
   );
   min-height: calc(100vh - var(--titlebar-height));
 }
@@ -209,7 +209,7 @@ const onRetry = () => {
 
 .invite-btn {
   background-color: #ffffff !important;
-  color: var(--matou-primary) !important;
+  color: var(--matou-brand) !important;
   height: 3.5rem !important;
   border-radius: 10px !important;
 
@@ -232,7 +232,7 @@ const onRetry = () => {
 
 .retry-btn {
   background-color: #ffffff !important;
-  color: var(--matou-primary) !important;
+  color: var(--matou-brand) !important;
   height: 3.5rem !important;
   border-radius: 10px !important;
 

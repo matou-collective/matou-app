@@ -13,6 +13,12 @@ import (
 )
 
 // AnySyncClient is the common interface implemented by SDKClient.
+//
+// Renaming this to Client would fix the anysync.AnySyncClient stutter, but the name is
+// depended on widely outside this package (internal/api, internal/app, and their tests);
+// that broad cross-package rename is beyond this mechanical lint-debt sweep (#349).
+//
+//nolint:revive // stutter rename deferred — see comment above
 type AnySyncClient interface {
 	// CreateSpace creates a new space
 	CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*SpaceCreateResult, error)

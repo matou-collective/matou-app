@@ -131,7 +131,7 @@ func TestPersistAndLoadSpaceKeySet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Generate keys
 	original, err := GenerateSpaceKeySet()
@@ -193,7 +193,7 @@ func TestLoadSpaceKeySet_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	_, err = LoadSpaceKeySet(tmpDir, "nonexistent-space")
 	if err == nil {
@@ -210,7 +210,7 @@ func TestLoadOrCreateSpaceKeySet_SelfHeal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	peerPriv, _, err := crypto.GenerateRandomEd25519KeyPair()
 	if err != nil {
@@ -241,7 +241,7 @@ func TestLoadOrCreateSpaceKeySet_NoPeerKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	_, err = LoadOrCreateSpaceKeySet(tmpDir, "any-space", nil)
 	if err == nil {
@@ -269,7 +269,7 @@ func TestMnemonicRecovery_PeerKeyAndSigningKeyMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Step 1: Derive the peer key (same as Reinitialize does)
 	peerKey, err := DeriveKeyFromMnemonic(mnemonic, 0)
@@ -436,7 +436,7 @@ func TestMnemonicRecovery_PeerKeyFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Derive peer key
 	derivedKey, err := DeriveKeyFromMnemonic(mnemonic, 0)
@@ -495,7 +495,7 @@ func TestMnemonicRecovery_UserPeerKeyPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Derive peer key
 	peerKey, err := DeriveKeyFromMnemonic(mnemonic, 0)

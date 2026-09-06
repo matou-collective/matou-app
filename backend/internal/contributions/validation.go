@@ -1,4 +1,3 @@
-// backend/internal/contributions/validation.go
 package contributions
 
 import "fmt"
@@ -35,6 +34,8 @@ var proposalTransitions = map[ProposalStatus][]ProposalStatus{
 	ProposalApproved:      {ProposalCompleted},
 }
 
+// ValidateProposalTransition reports an error if moving a proposal from
+// status from to status to is not an allowed transition.
 func ValidateProposalTransition(from, to ProposalStatus) error {
 	allowed, ok := proposalTransitions[from]
 	if !ok {
@@ -69,6 +70,8 @@ var contributionTransitions = map[ContributionStatus][]ContributionStatus{
 	ContribDeclined:  {ContribArchived},
 }
 
+// ValidateContributionTransition reports an error if moving a contribution
+// from status from to status to is not an allowed transition.
 func ValidateContributionTransition(from, to ContributionStatus) error {
 	allowed, ok := contributionTransitions[from]
 	if !ok {
@@ -90,6 +93,8 @@ var decisionPlanTransitions = map[DecisionPlanStatus][]DecisionPlanStatus{
 	DecisionPlanSignedOff: {DecisionPlanSubmitted},
 }
 
+// ValidateDecisionPlanTransition reports an error if moving a decision plan
+// from status from to status to is not an allowed transition.
 func ValidateDecisionPlanTransition(from, to DecisionPlanStatus) error {
 	allowed, ok := decisionPlanTransitions[from]
 	if !ok {
@@ -110,6 +115,8 @@ var govActionTransitions = map[GovernanceActionStatus][]GovernanceActionStatus{
 	GovActionCompleted: {GovActionArchived},
 }
 
+// ValidateGovernanceActionTransition reports an error if moving a governance
+// action from status from to status to is not an allowed transition.
 func ValidateGovernanceActionTransition(from, to GovernanceActionStatus) error {
 	allowed, ok := govActionTransitions[from]
 	if !ok {
@@ -125,6 +132,8 @@ func ValidateGovernanceActionTransition(from, to GovernanceActionStatus) error {
 
 // --- Field validation ---
 
+// ValidateProposal checks a proposal's required fields and returns a list of
+// validation error messages, empty when the proposal is valid.
 func ValidateProposal(p *Proposal) []string {
 	var errs []string
 	if p.ID == "" {
@@ -160,6 +169,8 @@ func ValidateProposal(p *Proposal) []string {
 	return errs
 }
 
+// ValidateProject checks a project's required fields and returns a list of
+// validation error messages, empty when the project is valid.
 func ValidateProject(p *Project) []string {
 	var errs []string
 	if p.ID == "" {
@@ -177,6 +188,8 @@ func ValidateProject(p *Project) []string {
 	return errs
 }
 
+// ValidateContribution checks a contribution's required fields and returns a
+// list of validation error messages, empty when the contribution is valid.
 func ValidateContribution(c *Contribution) []string {
 	var errs []string
 	if c.ID == "" {
@@ -243,7 +256,7 @@ func ValidateNoCyclicDependency(contribID, depID string, deps map[string][]strin
 // assignment flow but every individual contribution still has to be confirmed
 // before it can be assigned and completed. The frontend prompts the user to
 // confirm when signing off with unconfirmed contributions present.
-func ValidatePlanSignOff(plan *ImplementationPlan, milestones []Milestone, contributions []Contribution) error {
+func ValidatePlanSignOff(_ *ImplementationPlan, milestones []Milestone, contributions []Contribution) error {
 	active := make([]Milestone, 0, len(milestones))
 	for _, m := range milestones {
 		if m.Status != MilestoneArchived {

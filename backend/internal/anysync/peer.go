@@ -184,9 +184,9 @@ func ComputeReplicationKey(signingKey crypto.PrivKey) (uint64, error) {
 
 // AIDMapping represents a stored AID-to-PeerID mapping
 type AIDMapping struct {
-	AID      string `json:"aid"`
-	PeerID   string `json:"peerId"`
-	SpaceID  string `json:"spaceId,omitempty"`
+	AID       string `json:"aid"`
+	PeerID    string `json:"peerId"`
+	SpaceID   string `json:"spaceId,omitempty"`
 	CreatedAt string `json:"createdAt"`
 }
 

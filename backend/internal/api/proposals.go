@@ -168,7 +168,7 @@ func (h *ProposalsHandler) HandleCreate(w http.ResponseWriter, r *http.Request) 
 
 	// Notify proposer that their proposal was submitted
 	if h.notifier != nil && proposal.ProposerID != "" {
-		h.notifier.Notify(&ContribNotification{
+		_ = h.notifier.Notify(&ContribNotification{
 			Type:        "proposal:submitted",
 			RecipientID: proposal.ProposerID,
 			Title:       "Proposal Submitted",
@@ -386,7 +386,7 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 	if req.Reason != "" {
 		action = fmt.Sprintf("Transitioned to %s - %s", req.Status, req.Reason)
 	}
-	h.service.AddHistoryEntry(r.Context(), spaceID, &contributions.ProposalHistoryEntry{
+	_ = h.service.AddHistoryEntry(r.Context(), spaceID, &contributions.ProposalHistoryEntry{
 		ProposalID: id,
 		UserID:     r.Header.Get("X-User-AID"),
 		Action:     action,
@@ -417,7 +417,7 @@ func (h *ProposalsHandler) HandleTransition(w http.ResponseWriter, r *http.Reque
 			message = "Your proposal was not approved: " + proposal.Title
 		}
 		if notifType != "" {
-			h.notifier.Notify(&ContribNotification{
+			_ = h.notifier.Notify(&ContribNotification{
 				Type:        notifType,
 				RecipientID: proposal.ProposerID,
 				Title:       title,

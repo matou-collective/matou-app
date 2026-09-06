@@ -484,7 +484,7 @@ func (m *ObjectTreeManager) GetTreeIDForObject(objectID string) string {
 }
 
 // HasObjectTree returns true if any profile trees exist for the given space.
-func (m *ObjectTreeManager) HasObjectTree(ctx context.Context, spaceID string) bool {
+func (m *ObjectTreeManager) HasObjectTree(_ context.Context, spaceID string) bool {
 	entries := m.treeManager.GetTreesByChangeType(spaceID, ProfileTreeType)
 	if len(entries) > 0 {
 		return true
@@ -508,7 +508,7 @@ func (m *ObjectTreeManager) getIndexEntry(objectID string) ObjectIndexEntry {
 	// Search space index for this tree
 	var found ObjectIndexEntry
 	m.treeManager.spaceIndex.Range(func(_, idx any) bool {
-		idx.(*sync.Map).Range(func(key, value any) bool {
+		idx.(*sync.Map).Range(func(_, value any) bool {
 			entry := value.(ObjectIndexEntry)
 			if entry.TreeID == treeID {
 				found = entry
