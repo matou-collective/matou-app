@@ -7,8 +7,31 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$here/pr-e2e-lib.sh"
+# shellcheck source=verdict-lib.sh
+. "$here/verdict-lib.sh"
 : "${FORGEJO_TOKEN:?}" "${FORGEJO_API:?}" "${PR_NUMBER:?}"
 INFRA="${MATOU_INFRA_DIR:-$HOME/matou/matou-infrastructure}"
+
+# Drop a stage/exit verdict on failure (#235 seam). heal.sh's verdict_path()
+# already reads the `pr-e2e` case, but nothing wrote the file: every red pr-e2e
+# reached the healer with `seam-degraded`, no run-verdict.txt and an "unknown"
+# trigger error line, so the signature degraded to the bare workflow name and
+# the investigation started blind. Same repo_tag formula as run-swarm.sh /
+# run-triage.sh / heal.sh — one runner serves several repos (#238, #574).
+repo_slug="${REPO_SLUG:-${FORGEJO_API##*/repos/}}"
+repo_tag="${repo_slug//\//-}"
+verdict_begin "${PR_E2E_VERDICT_PATH:-/tmp/matou-$repo_tag-pr-e2e-verdict.txt}"
+# One EXIT trap, verdict FIRST: teardown's `make down-test` chatter must not
+# displace the real failing stage. teardown is only defined once the bootstrap
+# section is reached, so an early exit (unreachable Forgejo API, no feature
+# spec) skips it instead of dying inside the trap.
+pr_e2e_on_exit() {
+  verdict_write "$1"
+  if declare -F teardown >/dev/null; then teardown; fi
+}
+trap 'pr_e2e_on_exit $?' EXIT
+
+verdict_stage "resolve PR + feature spec"
 
 api() { curl -sf -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
@@ -49,13 +72,15 @@ teardown() {
   make -C "$INFRA/any-sync" down-test >/dev/null 2>&1 || true
   make -C "$INFRA/keri" down-test >/dev/null 2>&1 || true
 }
-trap teardown EXIT
 
 echo "run-pr-e2e: PR #$PR_NUMBER issue #$n spec $spec"
+verdict_stage "clean test data (scripts/clean-test.sh)"
 bash scripts/clean-test.sh
+verdict_stage "keri infra (make clean-test start-and-wait-test)"
 make -C "$INFRA/keri" clean-test start-and-wait-test
 # any-sync clean-test wipes the generated network config (etc-test/), which
 # bare start can't recreate — setup-test regenerates it before starting.
+verdict_stage "any-sync infra (make clean-test setup-test)"
 make -C "$INFRA/any-sync" clean-test setup-test
 
 # Runner shells are non-login: pick up a user-local Go toolchain if go isn't
@@ -74,17 +99,21 @@ if [ -z "${CONFIG_ADMIN_TOKEN:-}" ] && [ -f "$INFRA/keri/.env.test" ]; then
 fi
 export CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-}" MATOU_CONFIG_SERVER_TOKEN="${CONFIG_ADMIN_TOKEN:-}"
 
+verdict_stage "backend build (cd backend && make build)"
 ( cd backend && make build )
 ( cd backend && MATOU_ENV=test exec ./bin/server ) >/tmp/pr-e2e-backend.log 2>&1 &
 backend_pid=$!
+verdict_stage "backend health (localhost:9080)" /tmp/pr-e2e-backend.log
 for _ in $(seq 1 60); do
   curl -sf http://localhost:9080/health >/dev/null && break
   sleep 2
 done
-curl -sf http://localhost:9080/health >/dev/null || { echo "backend never became healthy" >&2; exit 1; }
+curl -sf http://localhost:9080/health >/dev/null || { echo "backend never became healthy" >&2; verdict_error "backend never became healthy on :9080 after 120s"; exit 1; }
 
+verdict_stage "frontend deps (npm ci + playwright install)"
 ( cd frontend && npm ci && npx playwright install chromium )
 
+verdict_stage "feature spec ($spec)" /tmp/pr-e2e-playwright.log
 set +e
 # The e2e utils locate infra as a sibling of the repo root, which doesn't hold
 # for this checkout (~/swarm-e2e/<slug>) — point them at $INFRA explicitly.
@@ -107,6 +136,7 @@ if passed="$(grep -oE '[0-9]+ passed' /tmp/pr-e2e-playwright.log | head -1)"; th
 fi
 
 outcome="$(classify_e2e_outcome "$rc" /tmp/pr-e2e-playwright.log)"
+verdict_stage "report + notify ($outcome)" /tmp/pr-e2e-playwright.log
 case "$outcome" in
   passed)
     msg=":camera: **e2e PR #$PR_NUMBER** — ✅ passed (${tests_clause}${#shots[@]} screenshots) $pr_url"
@@ -144,5 +174,8 @@ bash "$here/post-pr-screenshots.sh" "$PR_NUMBER" "$status" "${shots[@]}" >/dev/n
 
 # Spec verdict is evidence, not a gate; a spec that never ran is pipeline
 # breakage and fails the job so the healer step runs.
-[ "$outcome" = did-not-run ] && exit 1
+if [ "$outcome" = did-not-run ]; then
+  verdict_stage "bootstrap projects (feature spec did not run)" /tmp/pr-e2e-playwright.log
+  exit 1
+fi
 exit 0
