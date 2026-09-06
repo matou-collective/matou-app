@@ -34,7 +34,7 @@ describe('apply-kit (core)', () => {
     // productName is the OS-facing packaging identity and is diacritic-folded to ASCII
     // (apply-kit.mjs), while brand.name keeps its macrons everywhere users read.
     expect(build).toMatchObject({ appId: 'org.matou.app', productName: 'Matou', artifactBase: 'matou', executableName: 'matou', androidApplicationId: 'nz.matou.app', updates: true, primaryColour: '#1E5F74' });
-    expect(build.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'draft' }]);
+    expect(build.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]);
     expect(await readFile(join(root, 'src-capacitor/android/app/build.gradle'), 'utf8')).toContain('applicationId "nz.matou.app"');
     const tokens = await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8');
     expect(tokens).toContain('$kit-primary: #1E5F74;');
