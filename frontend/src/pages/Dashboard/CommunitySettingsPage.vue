@@ -20,7 +20,8 @@
           Community-wide administration — roles, permissions and org details
         </p>
       </div>
-      <div class="cs-actions" v-if="accessAllowed">
+      <!-- Save changes belongs to the Roles section only (#398). Hidden on Data. -->
+      <div class="cs-actions" v-if="accessAllowed && section === 'roles'">
         <button
           class="cs-btn primary"
           :disabled="!dirty || !store.canManageRoles || saving"
@@ -30,6 +31,24 @@
         </button>
       </div>
     </div>
+
+    <!-- Nested sub-nav (#398): Roles | Data, active section carried in the URL
+         (?section=) so reload and deep links keep the section. Fronted by the
+         same #318 access gate as the page body below. -->
+    <q-btn-toggle
+      v-if="accessAllowed"
+      :model-value="section"
+      no-caps
+      toggle-color="primary"
+      color="white"
+      text-color="primary"
+      class="cs-subnav"
+      :options="[
+        { label: 'Roles', value: 'roles' },
+        { label: 'Data', value: 'data' },
+      ]"
+      @update:model-value="selectSection"
+    />
 
     <div v-if="checkingAccess" class="cs-loading">Checking access…</div>
 
@@ -41,6 +60,9 @@
     </q-banner>
 
     <template v-else>
+      <!-- Roles section (#398): the permission tables + org details. Kept
+           mounted (v-show) so switching tabs never drops unsaved edits. -->
+      <div v-show="section === 'roles'" class="cs-roles">
       <q-banner
         v-if="!store.canManageRoles && !store.loading"
         class="bg-warning text-dark q-mb-md"
@@ -610,6 +632,64 @@
           />
         </div>
       </section>
+      </div>
+
+      <!-- Data section (#398): placeholder home for the schema editor (slice 4,
+           #396). Until it lands, list the type definitions read-only from the
+           types store — name, field count, and the core/custom split — so the
+           tab is useful immediately. -->
+      <div v-show="section === 'data'" class="cs-data">
+        <section class="cs-section data-types-section">
+          <div class="section-header">
+            <div>
+              <h3 class="section-title">Data types</h3>
+              <p class="section-subtitle">
+                The object types defined for this community. Editing schemas
+                arrives in a later release — this is a read-only overview for
+                now.
+              </p>
+            </div>
+          </div>
+
+          <div v-if="typesStore.loading" class="cs-loading">
+            Loading type definitions…
+          </div>
+          <q-banner
+            v-else-if="dataTypes.length === 0"
+            class="bg-info text-white q-mb-md"
+          >
+            No type definitions are available.
+          </q-banner>
+          <q-markup-table
+            v-else
+            flat
+            bordered
+            dense
+            class="roles-matrix data-types-table"
+          >
+            <thead>
+              <tr>
+                <th class="text-left">Type</th>
+                <th class="text-center">Fields</th>
+                <th class="text-center">Core</th>
+                <th class="text-center">Custom</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="t in dataTypes"
+                :key="t.name"
+                :data-type="t.name"
+              >
+                <td class="text-left">{{ t.name }}</td>
+                <td class="text-center">{{ t.total }}</td>
+                <td class="text-center">{{ t.core }}</td>
+                <td class="text-center">{{ t.custom }}</td>
+              </tr>
+            </tbody>
+          </q-markup-table>
+        </section>
+      </div>
     </template>
 
     <q-dialog v-model="newRoleDialog">
@@ -653,16 +733,45 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
+import { useRoute, useRouter } from "vue-router";
 import { useRolePolicyStore } from "src/stores/rolePolicy";
+import { useTypesStore } from "src/stores/types";
 import type { RoleDef, RoleScope } from "src/lib/api/rolePolicy";
 import { checkCommunitySettingsAccess } from "src/lib/api/communitySettings";
 import { fetchOrgConfig, saveOrgConfig, type OrgConfig } from "src/api/config";
 
 const $q = useQuasar();
+const route = useRoute();
+const router = useRouter();
 const store = useRolePolicyStore();
+const typesStore = useTypesStore();
 
 const checkingAccess = ref(true);
 const accessAllowed = ref(false);
+
+// --- Nested sub-nav (#398) --------------------------------------------------
+// Two sections, Roles (default) and Data, carried in the URL (?section=) so a
+// reload or deep link lands on the same tab.
+type Section = "roles" | "data";
+function normalizeSection(v: unknown): Section {
+  return v === "data" ? "data" : "roles";
+}
+const section = ref<Section>(normalizeSection(route.query.section));
+
+function selectSection(next: Section) {
+  const value = normalizeSection(next);
+  section.value = value;
+  // Keep the URL in sync without stacking history entries.
+  void router.replace({ query: { ...route.query, section: value } });
+}
+
+// Follow external URL changes (back/forward, deep links) into the active tab.
+watch(
+  () => route.query.section,
+  (v) => {
+    section.value = normalizeSection(v);
+  },
+);
 
 // The four Community-group capability columns (backend group "Community",
 // display order). Held here rather than derived from the server so the table is
@@ -951,6 +1060,19 @@ async function save() {
   }
 }
 
+// --- Data section state (#398) ---------------------------------------------
+// Read-only overview of the type definitions: name, field count, and the
+// core/custom split (core = structural fields the backend depends on).
+const dataTypes = computed(() =>
+  [...typesStore.definitions.values()]
+    .map((def) => {
+      const total = def.fields?.length ?? 0;
+      const core = (def.fields ?? []).filter((f) => f.core).length;
+      return { name: def.name, total, core, custom: total - core };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name)),
+);
+
 // --- Org settings state ----------------------------------------------------
 const orgConfig = ref<OrgConfig | null>(null);
 const orgName = ref("");
@@ -1005,6 +1127,8 @@ onMounted(async () => {
   await store.load();
   resetFromStore();
   await loadOrg();
+  // Feed the Data tab's read-only type overview (idempotent load).
+  if (!typesStore.loaded) void typesStore.loadDefinitions();
 });
 watch(() => store.policy?.version, resetFromStore);
 </script>
@@ -1038,6 +1162,12 @@ watch(() => store.policy?.version, resetFromStore);
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.cs-subnav {
+  margin-bottom: 20px;
+  border: 1px solid var(--matou-border, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
 }
 
 .cs-loading {
