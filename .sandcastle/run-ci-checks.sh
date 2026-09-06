@@ -98,10 +98,22 @@ run_stage "frontend + backend checks" \
     cd ..
     echo "==> stage: go lint (golangci-lint, whole module)"
     echo "==> Go lint (#346): same stages as the sandbox pre-push gate, whole-module"
-    cd backend && golangci-lint run ./... && cd ..
+    # Subshell, NOT `cd backend && golangci-lint ... && cd ..`: `set -e` is
+    # IGNORED for every command of an AND-OR list but the last, so a lint failure
+    # in that form did not fail its own stage — and because `cd ..` then never
+    # ran, the next stage `cd frontend` resolved to /work/backend/frontend, blew
+    # up, and got reported as "generated kit artefacts drifted". Every red
+    # whole-module lint therefore reached the healer stamped `kit drift`
+    # (run 13542), sending agents to re-run kit:apply for a Go lint fault. A
+    # subshell restores cwd on any exit and DOES trip errexit.
+    ( cd backend && golangci-lint run ./... )
     echo "==> stage: kit drift (npm run kit:apply)"
     echo "==> kit drift check (#245): generated artefacts must match npm run kit:apply"
-    cd frontend && npm run kit:apply && git diff --exit-code -- src/generated src/css/kit-tokens.scss kit.build.json src-capacitor/capacitor.config.json src-capacitor/android/app/src/main/res/values/strings.xml || {
+    # One command per line for the same reason: only the `git diff` may claim
+    # "drifted". A failing `cd` or a broken kit:apply now fails as itself.
+    cd frontend
+    npm run kit:apply
+    git diff --exit-code -- src/generated src/css/kit-tokens.scss kit.build.json src-capacitor/capacitor.config.json src-capacitor/android/app/src/main/res/values/strings.xml || {
       echo "ERROR: generated kit artefacts drifted — run npm run kit:apply and commit the result (icons are excluded: PNG output varies across sharp builds)" >&2
       exit 1
     }
