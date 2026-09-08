@@ -612,7 +612,13 @@ export function useAdminActions() {
       // coordination race for nothing. This is the resume path after an
       // interrupted upgrade — e.g. 2026-09-07, when the rounds finished but the
       // credential re-issue never ran because KERIA hung mid-flow.
-      const groupState = (orgAid?.state ?? {}) as { k?: string[]; n?: string[]; s?: string };
+      // identifiers().list() returns name/prefix only (KERIA info(full=False));
+      // key state is ONLY on identifiers().get(). Reading `.state` off the list
+      // entry silently yields [] and the pre-checks below all fall through to
+      // the full rounds (2026-09-08 01:43: that burned two more admin keys).
+      const orgFull = await client.identifiers().get(orgName);
+      const adminFull = await client.identifiers().get(personalAid.name);
+      const groupState = (orgFull?.state ?? {}) as { k?: string[]; n?: string[]; s?: string };
       const groupKeys = groupState.k ?? [];
       const groupNextDigs = groupState.n ?? [];
       const stewardKeys = stewardState?.k ?? [];
@@ -622,9 +628,12 @@ export function useAdminActions() {
       // and then died before the matching group rotation, the group still
       // lists admin's PREVIOUS key: every group-signed op (credential revoke /
       // issue below) would fail with "Invalid signing index = -1".
-      const adminState = ((personalAid as { state?: unknown }).state ?? {}) as { k?: string[]; s?: string };
+      const adminState = (adminFull?.state ?? {}) as { k?: string[]; s?: string };
       const adminKeys = adminState.k ?? [];
       const adminInGroup = adminKeys.some(k => groupKeys.includes(k));
+      if (groupKeys.length === 0 || adminKeys.length === 0) {
+        throw new Error(`Could not read key state for ${orgName} / ${personalAid.name} — refusing to guess the multisig state`);
+      }
       if (alreadySigner && adminInGroup) {
         console.log(`[AdminActions] steward ${stewardAid.slice(0, 12)}... is already a signer of ${orgName} (group sn=${groupState.s}); skipping multisig rounds`);
         onStep?.('Inviting steward (round 1)...');
