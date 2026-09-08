@@ -1779,13 +1779,21 @@ export class KERIClient {
     newMemberAidPrefix: string,
     masterAidName: string,
     expectedMemberSn?: string,
+    opts: { preRotate?: boolean } = {},
   ): Promise<void> {
     if (!this.client) throw new Error('Not initialized');
     await this.ensureConnected();
-    console.log(`[KERIClient] addMemberRound2: ${newMemberAidPrefix.slice(0, 12)} -> ${groupName} (expectedMemberSn=${expectedMemberSn ?? 'latest'})`);
+    const preRotate = opts.preRotate ?? true;
+    console.log(`[KERIClient] addMemberRound2: ${newMemberAidPrefix.slice(0, 12)} -> ${groupName} (expectedMemberSn=${expectedMemberSn ?? 'latest'}, preRotate=${preRotate})`);
 
-    // (a) Pre-rotate master again.
-    await this.rotatePersonalAid(masterAidName);
+    // (a) Pre-rotate master again — unless the caller is re-aligning after an
+    //     interrupted run in which master ALREADY rotated to the key the group
+    //     committed as next (see useAdminActions.upgradeMemberToSteward).
+    //     Rotating once more there would move past the committed next key and
+    //     the group rotation below would be rejected.
+    if (preRotate) {
+      await this.rotatePersonalAid(masterAidName);
+    }
 
     // (a.5) Signal the member to query us at the new sn before we send the
     // EXN. Replaces the prior 8s fixed sleep — see MULTISIG-POC-FINDINGS.md
@@ -1933,6 +1941,74 @@ export class KERIClient {
       `[KERIClient] waitForGroupSignerReady: timed out after ${timeoutMs}ms — group signing may still fail with index -1`,
     );
     return false;
+  }
+
+  /**
+   * Co-sign a group rotation proposed by another member when WE ARE ALREADY a
+   * member of the group (our alias for `gid` exists locally).
+   *
+   * KERIA's /multisig/join endpoint 400s ("already used alias or prefix") for
+   * an existing member, so `joinGroup` cannot be used here. The member path
+   * is the group's own /events endpoint: rebuild the identical rotation from
+   * the members' key states (signify's group rotate is deterministic given
+   * the same states/rstates) and submit it with OUR signature. Our agent then
+   * forwards the signed event to witnesses and the other members.
+   *
+   * Needed when the admin's personal key rotated past the key the group
+   * commits (interrupted upgrade): only a member whose current key is still
+   * pre-committed in the group's `n` can validly sign the next rotation.
+   *
+   * @returns the group prefix
+   */
+  async coSignGroupRotation(groupName: string, notificationSaid: string): Promise<string> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+
+    const exchResp = await this.client.exchanges().get(notificationSaid);
+    const exn = (exchResp?.exn ?? {}) as Record<string, unknown>;
+    const attrs = (exn.a ?? {}) as { gid?: string; smids?: string[]; rmids?: string[] };
+    const embedded = ((exn.e ?? {}) as { rot?: { d?: string; k?: string[]; n?: string[]; s?: string } }).rot;
+    const gid = attrs.gid;
+    const smids = attrs.smids ?? [];
+    const rmids = attrs.rmids ?? [];
+    if (!gid || !embedded || smids.length === 0) {
+      throw new Error('coSignGroupRotation: notification is not a /multisig/rot with an embedded rotation');
+    }
+    console.log(`[KERIClient] coSignGroupRotation: gid=${gid.slice(0, 12)} rot=${embedded.d?.slice(0, 12)} sn=${embedded.s}`);
+
+    const keyState = async (pre: string): Promise<Record<string, unknown>> => {
+      const op = await this.client!.keyStates().query(pre, undefined, undefined);
+      const res = await this.client!.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+      return res.response as Record<string, unknown>;
+    };
+    const states = await Promise.all(smids.map(keyState));
+    const rstates = await Promise.all(rmids.map(keyState));
+
+    // Only sign what the admin actually proposed: our reconstruction must
+    // reproduce the same keys / next digests, otherwise a member rotated
+    // again in between and this event can no longer be completed.
+    const keys = states.map(st => (st.k as string[])[0]);
+    const ndigs = rstates.map(st => (st.n as string[])[0]);
+    if (JSON.stringify(keys) !== JSON.stringify(embedded.k) || JSON.stringify(ndigs) !== JSON.stringify(embedded.n)) {
+      throw new Error(
+        `coSignGroupRotation: member key states no longer match the proposed rotation ` +
+        `(keys ${JSON.stringify(keys)} vs ${JSON.stringify(embedded.k)}) — cannot co-sign`,
+      );
+    }
+
+    const result = await this.client.identifiers().rotate(groupName, { states, rstates });
+    const said = (result.serder as unknown as { sad?: { d?: string } }).sad?.d;
+    if (said !== embedded.d) {
+      console.warn(`[KERIClient] coSignGroupRotation: rebuilt rotation ${said?.slice(0, 12)} differs from proposed ${embedded.d?.slice(0, 12)} — submitted anyway (valid on its own if our key is pre-committed)`);
+    }
+    const op = await result.op();
+    try {
+      await this.client.operations().wait(op, { signal: AbortSignal.timeout(120000) });
+      console.log(`[KERIClient] coSignGroupRotation: group ${gid.slice(0, 12)} rotation ${said?.slice(0, 12)} complete`);
+    } catch (err) {
+      console.warn('[KERIClient] coSignGroupRotation: signature submitted but op did not complete in time (witnesses/peers may still be catching up):', err);
+    }
+    return gid;
   }
 
   async joinGroup(groupName: string, notificationSaid: string): Promise<string> {

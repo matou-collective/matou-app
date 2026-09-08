@@ -86,6 +86,26 @@ export function useMultisigJoin() {
           if (!adminPrefix) throw new Error('round-2 EXN missing admin prefix');
           const cesrUrl = keriClient.getCesrUrl();
           await keriClient.resolveOOBI(`${cesrUrl}/oobi/${adminPrefix}`, undefined, 30000);
+
+          // Already a member of this group? Then this is a subsequent group
+          // rotation we must CO-SIGN, not a join: KERIA's /multisig/join 400s
+          // for an existing alias ("already used alias or prefix"), which
+          // used to leave the notification unread and retried every cycle.
+          const gidFromExn = (exn as { a?: { gid?: string } }).a?.gid;
+          let existingGroup: { prefix?: string } | null = null;
+          try {
+            existingGroup = await client.identifiers().get(orgName) as { prefix?: string };
+          } catch {
+            existingGroup = null;
+          }
+          if (existingGroup?.prefix && existingGroup.prefix === gidFromExn) {
+            console.log(`[MultisigJoin] already a member of ${gidFromExn.slice(0, 12)} — co-signing the proposed rotation`);
+            await keriClient.coSignGroupRotation(orgName, notification.a.d);
+            await keriClient.markNotificationRead(notification.i);
+            console.log('[MultisigJoin] co-signed group rotation');
+            return false; // keep watcher running
+          }
+
           const gid = await keriClient.joinGroup(orgName, notification.a.d);
           await secureStorage.setItem('matou_org_aid', gid);
           keriClient.setOrgAID(gid);
