@@ -54,7 +54,7 @@ type AnySyncClient interface {
 	// GetPeerID returns the client's peer ID
 	GetPeerID() string
 
-	// GetSigningKey returns the client's signing private key (peer key)
+	// GetSigningKey returns the client's mnemonic-derived signing (ACL identity) key
 	GetSigningKey() crypto.PrivKey
 
 	// GetDataDir returns the data directory path
