@@ -56,6 +56,9 @@ type SetIdentityResponse struct {
 	PeerID         string `json:"peerId,omitempty"`
 	PrivateSpaceID string `json:"privateSpaceId,omitempty"`
 	Error          string `json:"error,omitempty"`
+	// Retryable marks a failure the caller should wait out and retry rather
+	// than treat as terminal. Set on link-mode 503s (space not yet reachable).
+	Retryable bool `json:"retryable,omitempty"`
 }
 
 // GetIdentityResponse is the response for GET /api/v1/identity.
@@ -178,71 +181,48 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// 5. Recover or create the user's private space with mnemonic-derived keys
+	// 5. Recover, adopt (link) or create the user's private space with
+	// mnemonic-derived keys.
 	var privateSpaceID string
 	ctx := r.Context()
 	client := h.sdkClient
-	isClaim := req.Mode == "claim"
+	isClaim := req.Mode == modeClaim
+	isLink := req.Mode == modeLink
 
 	keys, err := anysync.DeriveSpaceKeySet(req.Mnemonic, 0)
 	if err != nil {
 		log.Printf("[Identity] Failed to derive private space keys: %v", err)
 	} else {
-		// Derive deterministic space ID from keys (used for recovery lookups)
-		derivedID, err := client.DeriveSpaceIDWithKeys(ctx, req.AID, anysync.SpaceTypePrivate, keys)
-		if err != nil {
-			log.Printf("[Identity] Failed to derive private space ID: %v", err)
-		} else {
-			// actualID tracks the space ID to use for all downstream operations.
-			// After CreateSpaceWithKeys we use its result (the coordinator-assigned
-			// ID) instead of derivedID, matching the pattern used by community
-			// space creation.
-			actualID := derivedID
-
-			if isClaim {
-				// Claim mode: create directly, treat failure as hard error
-				log.Printf("[Identity] Claim mode: creating private space directly")
-				result, createErr := client.CreateSpaceWithKeys(ctx, req.AID, anysync.SpaceTypePrivate, keys)
-				if createErr != nil {
-					writeJSON(w, http.StatusInternalServerError, SetIdentityResponse{
-						Error: fmt.Sprintf("failed to create private space: %v", createErr),
-					})
-					return
-				}
-				actualID = result.SpaceID
-				if actualID != derivedID {
-					log.Printf("[Identity] Warning: derived ID %s != created ID %s, using created ID\n", derivedID, actualID)
-				}
-			} else {
-				// Recovery mode: try to recover existing space, fall back to create.
-				// Use a short timeout so a slow/unreachable network doesn't block the response.
-				recoverCtx, recoverCancel := context.WithTimeout(ctx, 10*time.Second)
-				_, getErr := client.GetSpace(recoverCtx, derivedID)
-				recoverCancel()
-				if getErr != nil {
-					log.Printf("[Identity] Private space not on network, creating new: %v", getErr)
-					result, createErr := client.CreateSpaceWithKeys(ctx, req.AID, anysync.SpaceTypePrivate, keys)
-					if createErr != nil {
-						writeJSON(w, http.StatusInternalServerError, SetIdentityResponse{
-							Error: fmt.Sprintf("failed to create private space: %v", createErr),
-						})
-						return
-					}
-					actualID = result.SpaceID
-				} else {
-					log.Printf("[Identity] Recovered private space from network: %s", derivedID)
-				}
-			}
-			// Persist keys and space record using the actual space ID
-			_ = anysync.PersistSpaceKeySet(client.GetDataDir(), actualID, keys)
-			_ = h.spaceStore.SaveSpace(ctx, &anysync.Space{
-				SpaceID:   actualID,
-				OwnerAID:  req.AID,
-				SpaceType: anysync.SpaceTypePrivate,
+		outcome, resolveErr := resolvePrivateSpace(ctx, client, req.AID, keys, req.Mode)
+		if resolveErr != nil {
+			writeJSON(w, http.StatusInternalServerError, SetIdentityResponse{
+				Error: fmt.Sprintf("failed to resolve private space: %v", resolveErr),
 			})
-			_ = h.userIdentity.SetPrivateSpaceID(actualID)
-			privateSpaceID = actualID
+			return
 		}
+		if outcome.unreachable {
+			// Link mode only: never create a forked private space. Persist
+			// nothing for this space and tell the caller to wait and retry.
+			log.Printf("[Identity] Link: private space not reachable, adopting nothing")
+			writeJSON(w, http.StatusServiceUnavailable, SetIdentityResponse{
+				Error:     "private space not reachable",
+				Retryable: true,
+			})
+			return
+		}
+		// actualID is the coordinator-assigned ID for claim/recovery-create, or
+		// the deterministic ID for an adopted (recovered/linked) space.
+		actualID := outcome.spaceID
+		// Persist keys and space record using the actual space ID. A successful
+		// link run writes exactly the same files here as a recovery run.
+		_ = anysync.PersistSpaceKeySet(client.GetDataDir(), actualID, keys)
+		_ = h.spaceStore.SaveSpace(ctx, &anysync.Space{
+			SpaceID:   actualID,
+			OwnerAID:  req.AID,
+			SpaceType: anysync.SpaceTypePrivate,
+		})
+		_ = h.userIdentity.SetPrivateSpaceID(actualID)
+		privateSpaceID = actualID
 	}
 
 	if privateSpaceID != "" {
@@ -258,78 +238,32 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// 6. Recover community space (if configured) — skip in claim mode.
-	// If keys don't exist locally, re-derive them from the mnemonic (same
-	// indices used during space creation) so the recovered admin can write
-	// to the space immediately. The read key will differ from the original
-	// random one, but any-sync recovers the real read key from ACL state
-	// during tree sync (readKeysFromAclState).
-	const spaceRecoverTimeout = 10 * time.Second
-	if req.CommunitySpaceID != "" && !isClaim {
-		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID); keyErr != nil {
-			// Re-derive keys from mnemonic (index 1, matching community space creation)
-			if communityKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 1); deriveErr != nil {
-				log.Printf("[Identity] Failed to derive community space keys: %v\n", deriveErr)
-			} else {
-				communityKeys.SigningKey = client.GetSigningKey()
-				_ = anysync.PersistSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID, communityKeys)
-				log.Printf("[Identity] Re-derived community space keys for %s\n", req.CommunitySpaceID)
-			}
+	// 6-8. Adopt the shared spaces (community / read-only / admin) — skip in
+	// claim mode. In link mode an unreachable shared space 503s (retryable) and
+	// persists nothing, never creating; in recovery mode it re-derives keys and
+	// tolerates a sync miss (unchanged behaviour).
+	if !isClaim {
+		type sharedSpace struct {
+			id         string
+			mnemonicIx uint32
+			label      string
 		}
-		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.CommunitySpaceID); keyErr == nil {
-			communityCtx, communityCancel := context.WithTimeout(ctx, spaceRecoverTimeout)
-			_, err := client.GetSpace(communityCtx, req.CommunitySpaceID)
-			communityCancel()
-			if err != nil {
-				log.Printf("[Identity] Failed to sync community space %s: %v\n", req.CommunitySpaceID, err)
-			} else {
-				log.Printf("[Identity] Recovered community space: %s\n", req.CommunitySpaceID)
-			}
+		shared := []sharedSpace{
+			{req.CommunitySpaceID, 1, "community"},
+			{req.ReadOnlySpaceID, 2, "read-only"},
+			{h.spaceManager.GetAdminSpaceID(), 3, "admin"},
 		}
-	}
-
-	// 7. Recover read-only space (if configured) — skip in claim mode
-	if req.ReadOnlySpaceID != "" && !isClaim {
-		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID); keyErr != nil {
-			if roKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 2); deriveErr != nil {
-				log.Printf("[Identity] Failed to derive read-only space keys: %v\n", deriveErr)
-			} else {
-				roKeys.SigningKey = client.GetSigningKey()
-				_ = anysync.PersistSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID, roKeys)
-				log.Printf("[Identity] Re-derived read-only space keys for %s\n", req.ReadOnlySpaceID)
+		for _, s := range shared {
+			if s.id == "" {
+				continue
 			}
-		}
-		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), req.ReadOnlySpaceID); keyErr == nil {
-			roCtx, roCancel := context.WithTimeout(ctx, spaceRecoverTimeout)
-			_, err := client.GetSpace(roCtx, req.ReadOnlySpaceID)
-			roCancel()
-			if err != nil {
-				log.Printf("[Identity] Failed to sync read-only space %s: %v\n", req.ReadOnlySpaceID, err)
-			} else {
-				log.Printf("[Identity] Recovered read-only space: %s\n", req.ReadOnlySpaceID)
-			}
-		}
-	}
-
-	// 8. Recover admin space (if configured) — skip in claim mode
-	if adminSpaceID := h.spaceManager.GetAdminSpaceID(); adminSpaceID != "" && !isClaim {
-		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), adminSpaceID); keyErr != nil {
-			if adminKeys, deriveErr := anysync.DeriveSpaceKeySet(req.Mnemonic, 3); deriveErr != nil {
-				log.Printf("[Identity] Failed to derive admin space keys: %v\n", deriveErr)
-			} else {
-				adminKeys.SigningKey = client.GetSigningKey()
-				_ = anysync.PersistSpaceKeySet(client.GetDataDir(), adminSpaceID, adminKeys)
-				log.Printf("[Identity] Re-derived admin space keys for %s\n", adminSpaceID)
-			}
-		}
-		if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), adminSpaceID); keyErr == nil {
-			adminCtx, adminCancel := context.WithTimeout(ctx, spaceRecoverTimeout)
-			_, err := client.GetSpace(adminCtx, adminSpaceID)
-			adminCancel()
-			if err != nil {
-				log.Printf("[Identity] Failed to sync admin space %s: %v\n", adminSpaceID, err)
-			} else {
-				log.Printf("[Identity] Recovered admin space: %s\n", adminSpaceID)
+			if unreachable := h.recoverSharedSpace(ctx, s.id, req.Mnemonic, s.mnemonicIx, s.label, isLink); unreachable {
+				log.Printf("[Identity] Link: %s space %s not reachable, adopting nothing", s.label, s.id)
+				writeJSON(w, http.StatusServiceUnavailable, SetIdentityResponse{
+					Error:     fmt.Sprintf("%s space not reachable", s.label),
+					Retryable: true,
+				})
+				return
 			}
 		}
 	}

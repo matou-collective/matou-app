@@ -126,6 +126,27 @@ type SpaceInfo struct {
 	SpaceName     string    `json:"spaceName"`
 	CreatedAt     time.Time `json:"createdAt"`
 	KeysAvailable bool      `json:"keysAvailable"`
+	// SpaceAccess is "ok" once the local account can read the space, or
+	// "pending" while an adopted space still waits for its read key to arrive
+	// via ACL state (a linked/recovered device before sync completes). Empty
+	// for spaces with no local keys yet.
+	SpaceAccess string `json:"spaceAccess,omitempty"`
+}
+
+// spaceAccessProbeTimeout bounds the per-space read-key probe in
+// HandleGetUserSpaces so a not-yet-synced space cannot stall the response.
+// Package var so tests can shrink it.
+var spaceAccessProbeTimeout = 3 * time.Second
+
+// spaceAccessState returns the read-key access state for an adopted space,
+// bounded by spaceAccessProbeTimeout.
+func (h *SpacesHandler) spaceAccessState(ctx context.Context, spaceID string) string {
+	accCtx, cancel := context.WithTimeout(ctx, spaceAccessProbeTimeout)
+	defer cancel()
+	if h.spaceManager.SpaceReadKeyReady(accCtx, spaceID) {
+		return anysync.SpaceAccessOK
+	}
+	return anysync.SpaceAccessPending
 }
 
 // HandleGetUserSpaces handles GET /api/v1/spaces/user?aid=<prefix>
@@ -166,6 +187,9 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 				info.KeysAvailable = true
 			}
 		}
+		if info.KeysAvailable {
+			info.SpaceAccess = h.spaceAccessState(ctx, privateSpace.SpaceID)
+		}
 		resp.PrivateSpace = info
 	}
 
@@ -182,6 +206,9 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 				info.KeysAvailable = true
 			}
 		}
+		if info.KeysAvailable {
+			info.SpaceAccess = h.spaceAccessState(ctx, communitySpace.SpaceID)
+		}
 		resp.CommunitySpace = info
 	}
 
@@ -197,6 +224,9 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 				info.KeysAvailable = true
 			}
 		}
+		if info.KeysAvailable {
+			info.SpaceAccess = h.spaceAccessState(ctx, roSpaceID)
+		}
 		resp.CommunityReadOnlySpace = info
 	}
 
@@ -211,6 +241,9 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 			if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), adminSpaceID); keyErr == nil {
 				info.KeysAvailable = true
 			}
+		}
+		if info.KeysAvailable {
+			info.SpaceAccess = h.spaceAccessState(ctx, adminSpaceID)
 		}
 		resp.AdminSpace = info
 	}
