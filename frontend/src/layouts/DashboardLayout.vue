@@ -5,7 +5,9 @@
       <!-- Logo Header -->
       <div class="sidebar-header">
         <div class="logo-container">
-          <img :src="kitLogo" :alt="KIT.brand.name" class="logo-icon" />
+          <div class="logo-badge">
+            <img :src="kitLogo" :alt="KIT.brand.name" class="logo-icon" />
+          </div>
           <div class="logo-text">
             <span class="logo-title">{{ KIT.brand.name }}</span>
             <span class="logo-subtitle">Community</span>
@@ -478,9 +480,25 @@ onBeforeUnmount(() => {
   gap: 0.75rem;
 }
 
+/* Round brand badge: the kit logo is a wide mark (512x282), so it sits
+   centred inside a solid primary circle instead of being stretched square. */
+.logo-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--matou-sidebar-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
 .logo-icon {
-  width: 60px;
-  height: 60px;
+  width: 28px;
+  height: auto;
+  max-height: 28px;
+  object-fit: contain;
+  display: block;
 }
 
 .logo-text {
