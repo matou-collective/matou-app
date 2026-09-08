@@ -76,13 +76,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	client, err := anysync.NewSDKClient(*cfg, &anysync.ClientOptions{DataDir: tmp, PeerKeyPath: *peerKey})
 	if err != nil {
 		log.Fatalf("sdk client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	fmt.Printf("owner identity (peer id): %s\n", client.GetPeerID())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -93,24 +93,24 @@ func main() {
 	keys := accountdata.New(owner, owner)
 
 	// 1. Resolve the member's identity from the source space ACL.
-	srcAcl, err := fetchAcl(ctx, nc, keys, *fromSpace)
+	srcACL, err := fetchACL(ctx, nc, keys, *fromSpace)
 	if err != nil {
 		log.Fatalf("source ACL: %v", err)
 	}
-	member, srcPerms, err := findByAID(srcAcl.AclState(), *aid)
+	member, srcPerms, err := findByAID(srcACL.AclState(), *aid)
 	if err != nil {
 		log.Fatalf("source ACL: %v", err)
 	}
 	fmt.Printf("member %s → identity %s, permissions in %s: %s\n", *aid, member.Account(), short(*fromSpace), permName(srcPerms))
 
 	// 2. Check the target ACL.
-	dstAcl, err := fetchAcl(ctx, nc, keys, *space)
+	dstACL, err := fetchACL(ctx, nc, keys, *space)
 	if err != nil {
 		log.Fatalf("target ACL: %v", err)
 	}
-	st := dstAcl.AclState()
+	st := dstACL.AclState()
 	fmt.Printf("target %s: head %s, %d accounts, owner permissions: %s\n",
-		short(*space), dstAcl.Head().Id, len(st.CurrentAccounts()), permName(st.Permissions(keys.SignKey.GetPublic())))
+		short(*space), dstACL.Head().Id, len(st.CurrentAccounts()), permName(st.Permissions(keys.SignKey.GetPublic())))
 	if cur := st.Permissions(member); !cur.NoPermissions() {
 		log.Fatalf("member already in target ACL with permissions %s — nothing to do (use grant-steward-admin to change level)", permName(cur))
 	}
@@ -125,7 +125,7 @@ func main() {
 	}
 
 	// 3. Build and submit the AccountsAdd record as the owner.
-	rec, err := dstAcl.RecordBuilder().BuildAccountsAdd(list.AccountsAddPayload{Additions: []list.AccountAdd{{
+	rec, err := dstACL.RecordBuilder().BuildAccountsAdd(list.AccountsAddPayload{Additions: []list.AccountAdd{{
 		Identity:    member,
 		Permissions: permissions,
 		Metadata:    metadata,
@@ -133,25 +133,25 @@ func main() {
 	if err != nil {
 		log.Fatalf("build accounts-add: %v", err)
 	}
-	withId, err := nc.AclAddRecord(ctx, *space, rec)
+	withID, err := nc.AclAddRecord(ctx, *space, rec)
 	if err != nil {
 		log.Fatalf("submit accounts-add: %v", err)
 	}
-	fmt.Printf("accounts-add accepted: new ACL head %s\n", withId.Id)
+	fmt.Printf("accounts-add accepted: new ACL head %s\n", withID.Id)
 
 	// 4. Re-read and confirm.
-	dstAcl, err = fetchAcl(ctx, nc, keys, *space)
+	dstACL, err = fetchACL(ctx, nc, keys, *space)
 	if err != nil {
 		log.Fatalf("re-read target ACL: %v", err)
 	}
-	got, gotPerms, err := findByAID(dstAcl.AclState(), *aid)
+	got, gotPerms, err := findByAID(dstACL.AclState(), *aid)
 	if err != nil {
 		log.Fatalf("verify: %v", err)
 	}
 	fmt.Printf("verified: %s is in %s as %s (identity %s)\n", *aid, short(*space), permName(gotPerms), got.Account())
 }
 
-func fetchAcl(ctx context.Context, nc nodeclient.NodeClient, keys *accountdata.AccountKeys, spaceID string) (list.AclList, error) {
+func fetchACL(ctx context.Context, nc nodeclient.NodeClient, keys *accountdata.AccountKeys, spaceID string) (list.AclList, error) {
 	recs, err := nc.AclGetRecords(ctx, spaceID, "")
 	if err != nil {
 		return nil, fmt.Errorf("get records for %s: %w", spaceID, err)
