@@ -625,6 +625,12 @@ func (c *SDKClient) GetTreeManager() *UnifiedTreeManager {
 	return c.utm
 }
 
+// GetNodeClient returns the SDK node client (ACL record get/add against the
+// consensus node without opening the space locally). Used by repair tooling.
+func (c *SDKClient) GetNodeClient() nodeclient.NodeClient {
+	return c.app.MustComponent(nodeclient.CName).(nodeclient.NodeClient)
+}
+
 // GetACLJoiningClient returns the ACL joining client for join-before-open flows.
 // The joining client talks to consensus nodes directly without opening a space,
 // which is required so the user is authorized before HeadSync starts.
