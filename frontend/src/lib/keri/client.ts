@@ -1779,13 +1779,21 @@ export class KERIClient {
     newMemberAidPrefix: string,
     masterAidName: string,
     expectedMemberSn?: string,
+    opts: { preRotate?: boolean } = {},
   ): Promise<void> {
     if (!this.client) throw new Error('Not initialized');
     await this.ensureConnected();
-    console.log(`[KERIClient] addMemberRound2: ${newMemberAidPrefix.slice(0, 12)} -> ${groupName} (expectedMemberSn=${expectedMemberSn ?? 'latest'})`);
+    const preRotate = opts.preRotate ?? true;
+    console.log(`[KERIClient] addMemberRound2: ${newMemberAidPrefix.slice(0, 12)} -> ${groupName} (expectedMemberSn=${expectedMemberSn ?? 'latest'}, preRotate=${preRotate})`);
 
-    // (a) Pre-rotate master again.
-    await this.rotatePersonalAid(masterAidName);
+    // (a) Pre-rotate master again — unless the caller is re-aligning after an
+    //     interrupted run in which master ALREADY rotated to the key the group
+    //     committed as next (see useAdminActions.upgradeMemberToSteward).
+    //     Rotating once more there would move past the committed next key and
+    //     the group rotation below would be rejected.
+    if (preRotate) {
+      await this.rotatePersonalAid(masterAidName);
+    }
 
     // (a.5) Signal the member to query us at the new sn before we send the
     // EXN. Replaces the prior 8s fixed sleep — see MULTISIG-POC-FINDINGS.md
