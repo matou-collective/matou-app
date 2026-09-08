@@ -2002,6 +2002,31 @@ export class KERIClient {
       console.warn(`[KERIClient] coSignGroupRotation: rebuilt rotation ${said?.slice(0, 12)} differs from proposed ${embedded.d?.slice(0, 12)} — submitted anyway (valid on its own if our key is pre-committed)`);
     }
     const op = await result.op();
+
+    // Hand our signature straight to the other members: their agents hold
+    // this event in the partially-signed escrow and only complete it when
+    // they see our indexed signature. Witness propagation alone can leave
+    // the proposer stuck (2026-09-08: admin's escrow spun for an hour after
+    // the member had co-signed).
+    const aids = await this.client.identifiers().list();
+    const personal = aids?.aids?.find((a: { prefix: string }) => smids.includes(a.prefix) || rmids.includes(a.prefix));
+    const others = [...new Set([...smids, ...rmids])].filter(m => m !== personal?.prefix);
+    if (personal && others.length > 0) {
+      try {
+        await this.sendMultisigRotExn(
+          personal.name,
+          groupName,
+          gid,
+          { serder: result.serder, sigs: result.sigs },
+          smids,
+          rmids,
+          others,
+        );
+      } catch (err) {
+        console.warn('[KERIClient] coSignGroupRotation: failed to send our signature to the other members:', err);
+      }
+    }
+
     try {
       await this.client.operations().wait(op, { signal: AbortSignal.timeout(120000) });
       console.log(`[KERIClient] coSignGroupRotation: group ${gid.slice(0, 12)} rotation ${said?.slice(0, 12)} complete`);
