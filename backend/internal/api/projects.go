@@ -287,7 +287,7 @@ func (h *ProjectsHandler) withOptionalRBAC(handler http.HandlerFunc) http.Handle
 }
 
 func (h *ProjectsHandler) visibleAmountsList(r *http.Request, cs []*contributions.Contribution) []*contributions.Contribution {
-	return visibleContributionAmountsList(h.roleLookup, r, cs)
+	return visibleContributionAmountsList(h.roleLookup, h.service, h.spaceManager, r, cs)
 }
 
 // HandleListProjectContributions handles GET /api/v1/projects/{id}/contributions

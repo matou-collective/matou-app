@@ -187,6 +187,170 @@ func TestNewPeerKeyManager_WithoutMnemonic(t *testing.T) {
 	}
 }
 
+const testMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+// TestNewPeerKeyManager_TwoDistinctKeys verifies that with a mnemonic the manager
+// holds two distinct keys: a random device (peer) key and the mnemonic-derived
+// sign key. The sign key must equal DeriveKeyFromMnemonic (the ACL identity).
+func TestNewPeerKeyManager_TwoDistinctKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mgr, err := NewPeerKeyManager(&PeerKeyConfig{
+		KeyPath:  filepath.Join(tmpDir, "peer.key"),
+		Mnemonic: testMnemonic,
+	})
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+
+	peerBytes, _ := mgr.GetPeerKey().Marshall()
+	signBytes, _ := mgr.GetSigningKey().Marshall()
+	if string(peerBytes) == string(signBytes) {
+		t.Fatal("device peer key and sign key must be distinct")
+	}
+
+	derived, err := DeriveKeyFromMnemonic(testMnemonic, 0)
+	if err != nil {
+		t.Fatalf("derive failed: %v", err)
+	}
+	derivedBytes, _ := derived.Marshall()
+	if string(signBytes) != string(derivedBytes) {
+		t.Error("sign key must equal the mnemonic-derived key")
+	}
+
+	// GetPeerID reports the device key's peer id.
+	if mgr.GetPeerID() != mgr.GetPeerKey().GetPublic().PeerId() {
+		t.Error("GetPeerID must report the device (peer) key peer id")
+	}
+	if mgr.GetPeerID() == derived.GetPublic().PeerId() {
+		t.Error("device peer id must differ from the mnemonic-derived key peer id")
+	}
+}
+
+// TestNewPeerKeyManager_KeysStableAcrossRestarts verifies both keys are stable
+// when the same data dir + mnemonic are reused (simulating a process restart).
+func TestNewPeerKeyManager_KeysStableAcrossRestarts(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "peer.key")
+
+	mgr1, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: keyPath, Mnemonic: testMnemonic})
+	if err != nil {
+		t.Fatalf("first manager: %v", err)
+	}
+	mgr2, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: keyPath, Mnemonic: testMnemonic})
+	if err != nil {
+		t.Fatalf("second manager: %v", err)
+	}
+
+	if mgr1.GetPeerID() != mgr2.GetPeerID() {
+		t.Error("device peer key must be stable across restarts")
+	}
+	s1, _ := mgr1.GetSigningKey().Marshall()
+	s2, _ := mgr2.GetSigningKey().Marshall()
+	if string(s1) != string(s2) {
+		t.Error("sign key must be stable across restarts")
+	}
+}
+
+// TestNewPeerKeyManager_PeerKeyDiffersAcrossDataDirs verifies that two installs
+// (distinct data dirs) sharing one mnemonic get different device peer keys but
+// the same sign key — the core #468 fix so two devices don't evict each other.
+func TestNewPeerKeyManager_PeerKeyDiffersAcrossDataDirs(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+
+	mgrA, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: filepath.Join(dirA, "peer.key"), Mnemonic: testMnemonic})
+	if err != nil {
+		t.Fatalf("manager A: %v", err)
+	}
+	mgrB, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: filepath.Join(dirB, "peer.key"), Mnemonic: testMnemonic})
+	if err != nil {
+		t.Fatalf("manager B: %v", err)
+	}
+
+	if mgrA.GetPeerID() == mgrB.GetPeerID() {
+		t.Error("two installs with the same mnemonic must present different peer ids")
+	}
+	sA, _ := mgrA.GetSigningKey().Marshall()
+	sB, _ := mgrB.GetSigningKey().Marshall()
+	if string(sA) != string(sB) {
+		t.Error("two installs with the same mnemonic must share the same sign key")
+	}
+}
+
+// TestNewPeerKeyManager_MigratesLegacyPeerKey verifies the pre-#468 migration:
+// a peer.key holding the mnemonic-derived key is replaced by a fresh random
+// device key, while the sign key (ACL identity) value is preserved.
+func TestNewPeerKeyManager_MigratesLegacyPeerKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "peer.key")
+
+	// Seed the legacy layout: peer.key == mnemonic-derived key.
+	derived, err := DeriveKeyFromMnemonic(testMnemonic, 0)
+	if err != nil {
+		t.Fatalf("derive failed: %v", err)
+	}
+	derivedBytes, _ := derived.Marshall()
+	if err := os.WriteFile(keyPath, derivedBytes, 0600); err != nil {
+		t.Fatalf("seed legacy peer.key: %v", err)
+	}
+
+	mgr, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: keyPath, Mnemonic: testMnemonic})
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+
+	// Sign key unchanged (still the ACL identity the network trusts).
+	signBytes, _ := mgr.GetSigningKey().Marshall()
+	if string(signBytes) != string(derivedBytes) {
+		t.Error("migration must preserve the mnemonic-derived sign key")
+	}
+
+	// Device key is now fresh & random, distinct from the sign key.
+	peerBytes, _ := mgr.GetPeerKey().Marshall()
+	if string(peerBytes) == string(derivedBytes) {
+		t.Error("migration must mint a fresh device key distinct from the sign key")
+	}
+
+	// peer.key on disk was overwritten with the new device key.
+	onDisk, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read peer.key: %v", err)
+	}
+	if string(onDisk) == string(derivedBytes) {
+		t.Error("legacy peer.key must be overwritten with the new device key")
+	}
+	if string(onDisk) != string(peerBytes) {
+		t.Error("peer.key on disk must match the manager's device key")
+	}
+
+	// The migrated device key is stable on the next load (no re-migration).
+	mgr2, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: keyPath, Mnemonic: testMnemonic})
+	if err != nil {
+		t.Fatalf("second manager: %v", err)
+	}
+	if mgr2.GetPeerID() != mgr.GetPeerID() {
+		t.Error("migrated device key must be stable across restarts")
+	}
+}
+
+// TestNewPeerKeyManager_WithoutMnemonic_PeerEqualsSign verifies that without a
+// mnemonic (dev/test with no identity) the device key doubles as the sign key.
+func TestNewPeerKeyManager_WithoutMnemonic_PeerEqualsSign(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mgr, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: filepath.Join(tmpDir, "peer.key")})
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+
+	peerBytes, _ := mgr.GetPeerKey().Marshall()
+	signBytes, _ := mgr.GetSigningKey().Marshall()
+	if string(peerBytes) != string(signBytes) {
+		t.Error("without a mnemonic the device key must double as the sign key")
+	}
+}
+
 func TestPeerKeyManager_MapAIDToPeerID(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "peer_test_*")
 	if err != nil {

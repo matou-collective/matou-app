@@ -293,6 +293,12 @@ export interface SpaceInfo {
   spaceName: string;
   createdAt: string;
   keysAvailable: boolean;
+  /**
+   * 'ok' | 'pending' — 'pending' means the space was adopted but its read
+   * key is not yet available from ACL (data still syncing). Optional for
+   * backward compatibility with older backend responses.
+   */
+  spaceAccess?: 'ok' | 'pending';
 }
 
 export interface UserSpacesResponse {
@@ -375,6 +381,10 @@ export interface SetBackendIdentityResponse {
   peerId?: string;
   privateSpaceId?: string;
   error?: string;
+  /** True when the failure is transient (e.g. 503 "private space not reachable") and the caller should retry. */
+  retryable?: boolean;
+  /** HTTP status code of the response, when available. */
+  status?: number;
 }
 
 export interface GetBackendIdentityResponse {
@@ -401,9 +411,10 @@ export async function setBackendIdentity(
       method: 'POST',
       headers: authHeaders({ 'X-User-AID': request.aid }),
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(65000),
     });
-    return response.json();
+    const body = (await response.json()) as SetBackendIdentityResponse;
+    return { ...body, status: response.status, retryable: body.retryable ?? false };
   } catch {
     return { success: false, error: 'Network error' };
   }

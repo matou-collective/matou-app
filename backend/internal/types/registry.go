@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 )
 
@@ -140,6 +141,13 @@ func (r *Registry) CoreFieldNames(typeName string) map[string]bool {
 // PUT handler enforces). A definition with no matching built-in is registered
 // as-is (an org may persist entirely new types).
 //
+// Duplicate defence: if the space holds more than one type_definition with the
+// same Name (a write path can leave stale copies behind), only the highest
+// Version one is registered. Registration is therefore deterministic across
+// boots regardless of the order ReadObjectsByType enumerates entries. Ties on
+// Version keep the first entry seen (no created/updated stamp is carried on an
+// ObjectEntry to break them further); the duplicates are logged.
+//
 // An unparseable or nameless stored definition is skipped, never fatal: the
 // built-in stays in force. A read error is returned so the caller can log and
 // fall back to the built-ins (the same never-fatal posture the boot path uses).
@@ -149,7 +157,14 @@ func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, space
 		return fmt.Errorf("reading type definitions from space %s: %w", spaceID, err)
 	}
 
-	loaded := 0
+	// Group parseable entries by type name, preserving first-seen order so that
+	// registration and logging are deterministic.
+	type candidate struct {
+		def   *TypeDefinition
+		entry ObjectEntry
+	}
+	groups := make(map[string][]candidate)
+	order := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		var def TypeDefinition
 		if err := json.Unmarshal(entry.Data, &def); err != nil {
@@ -160,14 +175,37 @@ func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, space
 			log.Printf("[Types] skipping type definition %s: empty name", entry.ID)
 			continue
 		}
-		if builtin, ok := r.Get(def.Name); ok {
-			reassertCoreFields(builtin, &def)
+		if _, seen := groups[def.Name]; !seen {
+			order = append(order, def.Name)
 		}
-		r.Register(&def)
+		groups[def.Name] = append(groups[def.Name], candidate{def: &def, entry: entry})
+	}
+
+	loaded := 0
+	for _, name := range order {
+		cands := groups[name]
+		winner := cands[0]
+		if len(cands) > 1 {
+			// Highest Version wins; ties keep the first entry seen.
+			ids := make([]string, 0, len(cands))
+			for _, c := range cands {
+				ids = append(ids, fmt.Sprintf("%s(v%d)", c.entry.ID, c.def.Version))
+				if c.def.Version > winner.def.Version {
+					winner = c
+				}
+			}
+			log.Printf("[Types] %d duplicate %q type definitions in space %s [%s]; registering highest-version %s(v%d)",
+				len(cands), name, spaceID, strings.Join(ids, ", "), winner.entry.ID, winner.def.Version)
+		}
+		def := winner.def
+		if builtin, ok := r.Get(def.Name); ok {
+			reassertCoreFields(builtin, def)
+		}
+		r.Register(def)
 		loaded++
 	}
 
-	log.Printf("[Types] Loaded %d of %d persisted type definitions from space %s", loaded, len(entries), spaceID)
+	log.Printf("[Types] Loaded %d type definitions from %d entries in space %s", loaded, len(entries), spaceID)
 	return nil
 }
 

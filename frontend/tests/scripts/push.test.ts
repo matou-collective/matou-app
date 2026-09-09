@@ -802,6 +802,78 @@ describe('usePush (#249)', () => {
       expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-9' } });
     });
 
+    it('stashes the channel on a cold-start tap (router still on the gate) and the gate replays it (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      // Router still on the splash/onboarding gate — not a /dashboard route.
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-cold' });
+
+      // The gate-exit navigation consumes the stash → chat route for the channel.
+      expect(push.consumePushDeepLinkTarget()).toEqual({
+        name: 'chat',
+        query: { c: 'chan-cold' },
+      });
+      // Consumed exactly once: a later gate exit falls through to the dashboard.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('does not stash when already on a dashboard route (alive/backgrounded tap) (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/dashboard/projects');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-alive' });
+
+      // Immediate deep-link, and nothing left for the gate to replay.
+      expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-alive' } });
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('gate exit with no pending deep-link targets the dashboard (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      // No tap happened this boot → nothing stashed → gate lands on dashboard.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('drops a stashed cold-start target on logout — no stale replay for the next identity (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      // A cold-start tap for the previously signed-in identity stashes a
+      // target before the app finishes restoring their session.
+      push.handlePushTap({ t: 'm', c: 'chan-stale' });
+
+      // The identity is torn down (logout) before the gate ever consumes it —
+      // e.g. session restore failed and a fresh registration starts instead.
+      await push.handleIdentityChange(null, 'EAID-old');
+
+      // The stash must not survive to be replayed for whoever signs in next.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('drops a stashed cold-start target on an identity switch — no stale replay for the new identity (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-stale' });
+
+      // Switching straight to a different identity (no intervening logout)
+      // must invalidate the stash just the same — it was never meant for
+      // whichever identity is now signed in.
+      await push.handleIdentityChange('EAID-new', 'EAID-old');
+
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
     it('survives a shell whose LocalNotifications plugin has no addListener', async () => {
       const fake = makePush('granted');
       installCapacitor({ push: fake, schedule: vi.fn() });

@@ -17,12 +17,13 @@ type fakePolicyProvider struct{ p *contributions.RolePolicy }
 
 func (f fakePolicyProvider) Policy() *contributions.RolePolicy { return f.p }
 
-// seedContribution creates a contribution under the "community" space (the
-// nil-SpaceManager default) with a budget and an assignee, returning its ID.
-func seedContribution(t *testing.T, svc *contributions.Service, budget, assignee string) string {
+// seedContribution creates a contribution in the given project under the
+// "community" space (the nil-SpaceManager default) with a budget and an
+// assignee, returning its ID.
+func seedContribution(t *testing.T, svc *contributions.Service, projectID, budget, assignee string) string {
 	t.Helper()
 	c, err := svc.CreateContribution(context.Background(), "community", &contributions.CreateContributionRequest{
-		ProjectID:             "proj1",
+		ProjectID:             projectID,
 		Title:                 "Build the thing",
 		Description:           "A seeded contribution",
 		Objectives:            []string{"obj"},
@@ -36,6 +37,26 @@ func seedContribution(t *testing.T, svc *contributions.Service, budget, assignee
 		t.Fatalf("seed contribution: %v", err)
 	}
 	return c.ID
+}
+
+// seedProjectWithSteward creates a project under the "community" space and, when
+// steward is non-empty, assigns it as the project's steward (mirroring an
+// assign-role grant), returning the project ID.
+func seedProjectWithSteward(t *testing.T, svc *contributions.Service, title, steward string) string {
+	t.Helper()
+	p, err := svc.CreateProject(context.Background(), "community", &contributions.CreateProjectRequest{
+		Title: title, Description: "A test project", CreatedBy: "EAdmin",
+	})
+	if err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if steward != "" {
+		p.ProjectStewardID = steward
+		if err := svc.SaveProject(context.Background(), "community", p); err != nil {
+			t.Fatalf("save project steward: %v", err)
+		}
+	}
+	return p.ID
 }
 
 // getContributionBudget drives GET /api/v1/contributions/{id} as the given
@@ -59,14 +80,17 @@ func getContributionBudget(t *testing.T, mux *http.ServeMux, id, aid string) (in
 // TestContributionAmounts_StrippedForCallersWithoutCapability verifies the
 // view_contribution_amounts enforcement on contribution reads (#314): a plain
 // member (and an anonymous caller) get the budget stripped, while a steward
-// (role grant) and the assigned contributor (resource-level rule) see it.
+// (role grant) and the assigned contributor (resource-level rule) see it. Under
+// #373 the steward's grant is now resolved against the contribution's OWNING
+// project, so ESteward is assigned as steward on that project.
 func TestContributionAmounts_StrippedForCallersWithoutCapability(t *testing.T) {
 	contributions.SetPolicyProvider(nil) // built-in default policy
 	store := contributions.NewMockStore()
 	svc := contributions.NewService(store)
 	h := NewContributionsHandler(svc, nil, nil)
 
-	id := seedContribution(t, svc, "5000", "EAssignee")
+	projID := seedProjectWithSteward(t, svc, "Proj", "ESteward")
+	id := seedContribution(t, svc, projID, "5000", "EAssignee")
 
 	mux := http.NewServeMux()
 	lookup := &mockRoleLookup{roles: map[string][]contributions.Role{
@@ -98,6 +122,55 @@ func TestContributionAmounts_StrippedForCallersWithoutCapability(t *testing.T) {
 	t.Run("assignee: visible", func(t *testing.T) {
 		if _, budget := getContributionBudget(t, mux, id, "EAssignee"); budget != "5000" {
 			t.Errorf("assigned contributor should see the budget on their own contribution, got %q", budget)
+		}
+	})
+}
+
+// TestContributionAmounts_ProjectScoped verifies that view_contribution_amounts
+// is resolved per project (#373): a steward assigned on project A sees amounts on
+// A's contribution but they are redacted on B's, and a plain member sees amounts
+// only on contributions they are the assignee of. A credential-derived
+// project_steward community role does not reveal amounts on projects the caller
+// is not actually assigned to.
+func TestContributionAmounts_ProjectScoped(t *testing.T) {
+	contributions.SetPolicyProvider(nil) // built-in default policy
+	store := contributions.NewMockStore()
+	svc := contributions.NewService(store)
+	h := NewContributionsHandler(svc, nil, nil)
+
+	// EStewardA is steward of A only; B has no assigned steward.
+	projA := seedProjectWithSteward(t, svc, "A", "EStewardA")
+	projB := seedProjectWithSteward(t, svc, "B", "")
+	idA := seedContribution(t, svc, projA, "5000", "EAssigneeA")
+	idB := seedContribution(t, svc, projB, "9000", "EAssigneeB")
+
+	mux := http.NewServeMux()
+	lookup := &mockRoleLookup{roles: map[string][]contributions.Role{
+		// Credential-derived project_steward: under #373 counts only where actually assigned.
+		"EStewardA":  {contributions.RoleMember, contributions.RoleProjectSteward},
+		"EMember":    {contributions.RoleMember},
+		"EAssigneeB": {contributions.RoleMember},
+	}}
+	h.RegisterRoutes(mux, lookup)
+
+	t.Run("steward of A sees amounts on A", func(t *testing.T) {
+		if _, budget := getContributionBudget(t, mux, idA, "EStewardA"); budget != "5000" {
+			t.Errorf("steward of A should see A's budget, got %q", budget)
+		}
+	})
+	t.Run("steward of A redacted on B", func(t *testing.T) {
+		if _, budget := getContributionBudget(t, mux, idB, "EStewardA"); budget != "" {
+			t.Errorf("steward of A must not see B's budget, got %q", budget)
+		}
+	})
+	t.Run("plain member redacted on A", func(t *testing.T) {
+		if _, budget := getContributionBudget(t, mux, idA, "EMember"); budget != "" {
+			t.Errorf("plain member must not see A's budget, got %q", budget)
+		}
+	})
+	t.Run("plain member sees own contribution amounts", func(t *testing.T) {
+		if _, budget := getContributionBudget(t, mux, idB, "EAssigneeB"); budget != "9000" {
+			t.Errorf("assignee should see amounts on their own contribution, got %q", budget)
 		}
 	})
 }
