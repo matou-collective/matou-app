@@ -64,9 +64,21 @@ pr_e2e_meta_tag() { printf '<!-- pr-e2e-meta sha=%s state=%s -->' "${1:?}" "${2:
 # real (state=done) pr-e2e verdict for <sha> — the sweep's "this head already
 # has evidence" test. A pending placeholder, or a done verdict for a stale sha,
 # is NOT evidence for <sha>.
+#
+# A LEGACY verdict — a PR_E2E_COMMENT_MARKER comment with no pr-e2e-meta tag at
+# all — DOES count as evidence. The dispatched pr-e2e run checks out the PR
+# head and runs THAT head's run-pr-e2e.sh (pr-e2e.yml), so a branch that
+# predates the meta tag can only ever write an untagged verdict; treating that
+# as "no evidence" would re-dispatch the same oldest legacy PRs every tick,
+# forever (review of #440: 29 of 31 open PRs were legacy at the time). The
+# cost is the pre-#278 gap staying open for those branches until they rebase —
+# a pull_request push still fires pr-e2e for them as before.
 pr_e2e_has_verdict_for() { # <comments-json> <sha>
   local tag; tag="$(pr_e2e_meta_tag "${2:?}" done)"
-  jq -e --arg t "$tag" 'any(.[]?; (.body // "") | contains($t))' >/dev/null 2>&1 <<<"${1:?}"
+  jq -e --arg t "$tag" --arg m "$PR_E2E_COMMENT_MARKER" --arg meta '<!-- pr-e2e-meta ' '
+    any(.[]?; (.body // "") as $b
+      | ($b | contains($t))
+        or (($b | contains($m)) and (($b | contains($meta)) | not)))' >/dev/null 2>&1 <<<"${1:?}"
 }
 
 # Human label for a screenshot path: curated snaps are NN-label.png (label with

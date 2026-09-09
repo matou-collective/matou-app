@@ -101,6 +101,18 @@ run_sweep "stale verdict"
 [ "$(dispatched_prs)" = "10 " ] || fail "a done verdict for a stale sha must NOT count as evidence (got: $(dispatched_prs))"
 pass=$((pass+1))
 
+# --- legacy heads: an untagged marker comment is evidence -> NOT re-dispatched
+# The dispatched run executes the PR head's own run-pr-e2e.sh; a head that
+# predates the meta tag writes an untagged verdict every time, so without this
+# the sweep would fire the same oldest legacy PRs every tick forever.
+echo "$no_inflight" > "$tmp/tasks.json"
+echo '[{"number":20,"head":{"sha":"legacy1"}},{"number":21,"head":{"sha":"new1"}}]' > "$tmp/pulls.json"
+printf '%s' '[{"body":"<!-- pr-e2e -->\n:camera: **Feature e2e:** skipped"}]' > "$tmp/comments/20.json"
+echo '[]' > "$tmp/comments/21.json"
+run_sweep "legacy verdict"
+[ "$(dispatched_prs)" = "21 " ] || fail "a legacy untagged verdict must count as evidence (got: $(dispatched_prs))"
+pass=$((pass+1))
+
 # --- per-tick cap: oldest first, at most PR_E2E_SWEEP_MAX --------------------
 echo "$no_inflight" > "$tmp/tasks.json"
 # pulls listing is sort=oldest, so the shim returns them oldest-first already.

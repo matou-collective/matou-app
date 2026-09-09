@@ -74,5 +74,12 @@ pr_e2e_has_verdict_for "$done_json" abc123 || fail "done verdict for sha is evid
 pr_e2e_has_verdict_for "$pend_json" abc123 && fail "pending placeholder is NOT evidence"
 pr_e2e_has_verdict_for "$done_json" other9 && fail "done verdict for a different sha is NOT evidence"
 pr_e2e_has_verdict_for '[]' abc123 && fail "no comments is NOT evidence"
+# A legacy verdict (marker, no meta tag — written by a PR head that predates
+# #278) IS evidence: the dispatched run uses the head's own run-pr-e2e.sh, so
+# re-dispatching could never produce a tagged verdict and would loop forever.
+legacy_json='[{"body":"<!-- pr-e2e -->\n:camera: **Feature e2e:** skipped"}]'
+pr_e2e_has_verdict_for "$legacy_json" abc123 || fail "legacy untagged verdict IS evidence (no re-dispatch loop)"
+unrelated_json='[{"body":"just a review comment"}]'
+pr_e2e_has_verdict_for "$unrelated_json" abc123 && fail "a non-marker comment is NOT evidence"
 
-echo "pr-e2e-lib: 34 checks passed"
+echo "pr-e2e-lib: 36 checks passed"
