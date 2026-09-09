@@ -173,11 +173,11 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 		h.spaceManager.SetAdminSpaceID(req.AdminSpaceID)
 	}
 
-	// 4. Also persist the user's peer key for future join operations
-	peerKey := h.sdkClient.GetSigningKey()
-	if peerKey != nil {
-		if err := anysync.PersistUserPeerKey(h.sdkClient.GetDataDir(), req.AID, peerKey); err != nil {
-			log.Printf("Warning: failed to persist user peer key: %v\n", err)
+	// 4. Also persist the user's sign key (ACL identity) for future join operations
+	signKey := h.sdkClient.GetSigningKey()
+	if signKey != nil {
+		if err := anysync.PersistUserSignKey(h.sdkClient.GetDataDir(), req.AID, signKey); err != nil {
+			log.Printf("Warning: failed to persist user sign key: %v\n", err)
 		}
 	}
 
