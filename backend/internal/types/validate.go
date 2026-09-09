@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // ValidateData validates data against a type definition's field definitions.
@@ -21,7 +22,13 @@ func ValidateData(def *TypeDefinition, data json.RawMessage) []string {
 	var errors []string
 	for _, field := range fields {
 		val, exists := m[field.Name]
-		if field.Required && (!exists || val == nil) {
+		// A required field is unsatisfied when absent, null, or — for the
+		// string-shaped types (string/datetime/enum) — present as an empty or
+		// whitespace-only value. Treating a blank string as absent means a
+		// required text field cannot be satisfied by "" or "   ". Non-string
+		// required types (number/boolean/array/object) are unaffected, so
+		// false/0/[] remain valid values.
+		if field.Required && (!exists || val == nil || isBlankString(val)) {
 			errors = append(errors, fmt.Sprintf("field %q is required", field.Name))
 			continue
 		}
@@ -32,6 +39,13 @@ func ValidateData(def *TypeDefinition, data json.RawMessage) []string {
 		errors = append(errors, fieldErrors...)
 	}
 	return errors
+}
+
+// isBlankString reports whether val is a string that is empty or contains only
+// whitespace. Used to treat a present-but-blank required text field as absent.
+func isBlankString(val interface{}) bool {
+	s, ok := val.(string)
+	return ok && strings.TrimSpace(s) == ""
 }
 
 // effectiveFields returns the base field set plus, when the type declares a

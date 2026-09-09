@@ -1,4 +1,6 @@
-// backend/internal/api/role_policy.go
+// Package api implements the Matou backend's HTTP handlers, covering
+// identity, credentials, sync, trust, spaces, profiles, files, org config,
+// invites, bookings, notifications, events, and role-based access control.
 package api
 
 import (
@@ -50,6 +52,7 @@ func (h *RolePolicyHandler) spaceID() string {
 	return h.roSpaceID
 }
 
+// NewRolePolicyHandler constructs a RolePolicyHandler.
 func NewRolePolicyHandler(
 	provider *contributions.StorePolicyProvider,
 	writer PolicyWriter,
@@ -77,6 +80,30 @@ func (h *RolePolicyHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLo
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		}
 	}))
+	// Community Settings page-access gate (#318): the server-side check that the
+	// caller may open the Community Settings area, so page access is enforced by
+	// open_community_settings and not merely hidden in the nav. The page calls
+	// this on mount and shows an access-denied state on 403.
+	mux.HandleFunc("/api/v1/community-settings/access", OptionalRBACMiddleware(roleLookup, h.handleCommunitySettingsAccess))
+}
+
+// handleCommunitySettingsAccess returns 200 when the caller holds
+// open_community_settings (founder by default) or is an org-config admin
+// backstop, and 403 otherwise. It carries no policy data of its own — the page
+// loads the role policy and org config from their existing endpoints once this
+// gate passes.
+func (h *RolePolicyHandler) handleCommunitySettingsAccess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		return
+	}
+	roles := GetUserRoles(r)
+	aid := GetUserAID(r)
+	if !contributions.CanPerformAction(roles, contributions.ActionOpenCommunitySettings) && !h.isAdminAID(aid) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 type rolePolicyResponse struct {
@@ -384,6 +411,7 @@ type SpacePolicyWriter struct {
 	roSpaceFn    func() string
 }
 
+// NewSpacePolicyWriter constructs a SpacePolicyWriter.
 func NewSpacePolicyWriter(sm *anysync.SpaceManager, roSpaceID string) *SpacePolicyWriter {
 	return &SpacePolicyWriter{spaceManager: sm, roSpaceID: roSpaceID}
 }
@@ -397,6 +425,7 @@ func (s *SpacePolicyWriter) spaceID() string {
 	return s.roSpaceID
 }
 
+// WritePolicy persists p into the community-readonly space.
 func (s *SpacePolicyWriter) WritePolicy(p *contributions.RolePolicy) error {
 	roSpaceID := s.spaceID()
 	if roSpaceID == "" {

@@ -37,7 +37,7 @@ rather than redo):
 - [ ] Privacy policy URL — `https://matou.nz/privacy` (live, verified 2026-09-04;
       `/terms` also live)
 - [ ] App access — the members-only declaration drafted in
-      `PLAY_STORE.md` §Policy. See 1.3.
+      `PLAY_STORE.md` §4 (*Policy → App content → App access*). See 1.3.
 - [ ] Ads declaration (none)
 - [ ] Content rating (IARC questionnaire)
 - [ ] Target audience & content
@@ -75,7 +75,7 @@ In dependency order. Items 2.1 and 2.3 have lead time — start them first.
 
 ### 2.1 Convert the Apple account: Individual → Organization
 
-The account (team `N6M9P5C7LU`) is **Individual** — the public App Store
+The account (the team behind `MATOU_IOS_TEAM_ID`) is **Individual** — the public App Store
 seller name would be a person's name, not Mātou. Conversion is far easier
 **before** the first App Store submission. Needs a **D-U-N-S number** for the
 Mātou legal entity; the whole process takes days to weeks. TestFlight is not
@@ -88,17 +88,19 @@ encryption" answer would be untrue. Decide the classification (standard /
 open-source published algorithms typically qualify for the mass-market /
 exemption path, with a US BIS annual self-classification report), then bake
 `ITSAppUsesNonExemptEncryption` (+ compliance code if applicable) into
-Info.plist. This also unblocks TestFlight **external** testing — 
-`scripts/ios/testflight-release.sh` deliberately stalls on missing
-compliance.
+Info.plist. This also unblocks TestFlight **external** testing —
+`scripts/ios/testflight-release.sh` (the open-beta automation) deliberately
+stalls on missing compliance.
 
 ### 2.3 In-app account deletion — product gap, hard requirement
 
 Guideline 5.1.1(v) is strictly enforced: an app with account creation must
 offer account **deletion in the app** — email/support flows are explicitly
 not acceptable. The backend endpoint exists
-(`backend/internal/api/identity.go` — `DELETE /api/v1/identity`) but
-**no frontend surface calls it**. Needed before submission: a settings-screen
+(`backend/internal/api/identity.go` — `DELETE /api/v1/identity`) but the
+only frontend caller is org-setup housekeeping (`useOrgSetup.ts` clears a
+stale identity before configuring the admin's); **there is no user-facing
+deletion flow**. Needed before submission: a settings-screen
 "Delete my identity / leave community" flow (confirmation + recovery-phrase
 warning + what happens to already-shared community records). Design note:
 device-held KERI identity means "deletion" = destroy local keys + remove
@@ -133,7 +135,7 @@ Everything Play already has, in Apple's shape:
 ### 2.6 Submission — first one manual, then automate
 
 The App Store Connect API cannot create the app-record/listing anyway, so do
-the first submission by hand in the Console. After that, the
+the first submission by hand in App Store Connect. After that, the
 `testflight-release.sh` bash+openssl pattern extends naturally to
 `appStoreVersions` submission if we ever want tag-triggered App Store
 releases (probably not — production stays human on Android too).

@@ -23,6 +23,7 @@ func TestIsProjectScopedAction(t *testing.T) {
 		ActionApproveProjectCompletion, ActionRejectProjectCompletion, ActionArchiveProject,
 		ActionArchiveMilestone, ActionArchiveContribution, ActionUnassignContribution,
 		ActionEditMilestone, ActionLinkProposal, ActionAssignProjectRole,
+		ActionAssignProjectSteward, ActionAssignProjectLead,
 	}
 	for _, a := range scoped {
 		if !IsProjectScopedAction(a) {

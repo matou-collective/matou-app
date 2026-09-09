@@ -3,7 +3,7 @@
     <!-- Header -->
     <OnboardingHeader
       :title="`Welcome, ${aidInfo?.name || 'Member'}`"
-      subtitle="You've been invited to join Mātou"
+      :subtitle="`You've been invited to join ${KIT.brand.name}`"
       :show-back-button="true"
       @back="emit('back')"
     />
@@ -67,6 +67,7 @@
 </template>
 
 <script setup lang="ts">
+import { KIT } from 'src/generated/kit';
 import { ArrowRight, Fingerprint, Info } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import MatouInformationContent from './MatouInformationContent.vue';

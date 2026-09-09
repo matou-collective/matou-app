@@ -64,4 +64,20 @@ describe('useMoonPhase', () => {
     const { fetchMoonPhase } = useMoonPhase();
     await expect(fetchMoonPhase()).resolves.toBeUndefined();
   });
+
+  it('is unavailable and never fetches when the kit disables maramataka', async () => {
+    vi.resetModules();
+    vi.doMock('src/generated/kit', () => ({
+      KIT: { features: { maramataka: false } },
+      KIT_BUILD: {},
+    }));
+    const { useMoonPhase } = await import('../../src/composables/useMoonPhase');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { moonPhaseState, fetchMoonPhase } = useMoonPhase();
+    expect(moonPhaseState.value).toBe('unavailable');
+    await fetchMoonPhase();
+    expect(moonPhaseState.value).toBe('unavailable');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.doUnmock('src/generated/kit');
+  });
 });

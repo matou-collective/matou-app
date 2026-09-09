@@ -69,11 +69,11 @@ func TestKERIAResolverCurrentKeys(t *testing.T) {
 		switch aid {
 		case testAID:
 			// Witness KEL first (higher seq), then the user's.
-			w.Write(makeEventFor(t, foreignAID, "rot", "5", "1", []string{"BwitnessKey"}))
-			w.Write([]byte("-AABAAsig"))
-			w.Write(makeEventFor(t, testAID, "icp", "0", "1", []string{"DuserKey"}))
+			_, _ = w.Write(makeEventFor(t, foreignAID, "rot", "5", "1", []string{"BwitnessKey"}))
+			_, _ = w.Write([]byte("-AABAAsig"))
+			_, _ = w.Write(makeEventFor(t, testAID, "icp", "0", "1", []string{"DuserKey"}))
 		case "DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA":
-			w.Write(makeEventFor(t, aid, "icp", "0", "2", []string{"Dk1", "Dk2"}))
+			_, _ = w.Write(makeEventFor(t, aid, "icp", "0", "2", []string{"Dk1", "Dk2"}))
 		default:
 			http.NotFound(w, r)
 		}
