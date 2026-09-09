@@ -22,13 +22,13 @@ func setupTestStore(t *testing.T) (*anystore.LocalStore, func()) {
 	config := anystore.DefaultConfig(tmpDir)
 	store, err := anystore.NewLocalStore(config)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	return store, cleanup
@@ -172,8 +172,8 @@ func TestBuilder_Build_WithInvitations(t *testing.T) {
 		},
 	}
 
-	store.StoreCredential(ctx, cred1)
-	store.StoreCredential(ctx, cred2)
+	_ = store.StoreCredential(ctx, cred1)
+	_ = store.StoreCredential(ctx, cred2)
 
 	builder := NewBuilder(store, "EORG123")
 	graph, err := builder.Build(ctx)
@@ -205,7 +205,7 @@ func TestBuilder_Build_BidirectionalRelations(t *testing.T) {
 	ctx := context.Background()
 
 	// Org -> User1, Org -> User2
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -215,7 +215,7 @@ func TestBuilder_Build_BidirectionalRelations(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID002",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER2",
@@ -227,7 +227,7 @@ func TestBuilder_Build_BidirectionalRelations(t *testing.T) {
 	})
 
 	// User1 <-> User2 (bidirectional invitations)
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID003",
 		IssuerAID:  "EUSER1",
 		SubjectAID: "EUSER2",
@@ -237,7 +237,7 @@ func TestBuilder_Build_BidirectionalRelations(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID004",
 		IssuerAID:  "EUSER2",
 		SubjectAID: "EUSER1",
@@ -279,7 +279,7 @@ func TestBuilder_BuildForAID(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a chain: Org -> User1 -> User2 -> User3
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -289,7 +289,7 @@ func TestBuilder_BuildForAID(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID002",
 		IssuerAID:  "EUSER1",
 		SubjectAID: "EUSER2",
@@ -299,7 +299,7 @@ func TestBuilder_BuildForAID(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID003",
 		IssuerAID:  "EUSER2",
 		SubjectAID: "EUSER3",
@@ -342,7 +342,7 @@ func TestBuilder_BuildForAID_Depth2(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a chain: Org -> User1 -> User2 -> User3
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID001",
 		IssuerAID:  "EORG123",
 		SubjectAID: "EUSER1",
@@ -352,7 +352,7 @@ func TestBuilder_BuildForAID_Depth2(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID002",
 		IssuerAID:  "EUSER1",
 		SubjectAID: "EUSER2",
@@ -362,7 +362,7 @@ func TestBuilder_BuildForAID_Depth2(t *testing.T) {
 			"role": "Member",
 		},
 	})
-	store.StoreCredential(ctx, &anystore.CachedCredential{
+	_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 		ID:         "ESAID003",
 		IssuerAID:  "EUSER2",
 		SubjectAID: "EUSER3",
@@ -427,7 +427,7 @@ func TestBuilder_Build_StoresPersistently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	ctx := context.Background()
 
@@ -439,7 +439,7 @@ func TestBuilder_Build_StoresPersistently(t *testing.T) {
 			t.Fatalf("Failed to create store: %v", err)
 		}
 
-		store.StoreCredential(ctx, &anystore.CachedCredential{
+		_ = store.StoreCredential(ctx, &anystore.CachedCredential{
 			ID:         "ESAID001",
 			IssuerAID:  "EORG123",
 			SubjectAID: "EUSER1",
@@ -450,7 +450,7 @@ func TestBuilder_Build_StoresPersistently(t *testing.T) {
 			},
 		})
 
-		store.Close()
+		_ = store.Close()
 	}
 
 	// Verify database file exists
@@ -466,7 +466,7 @@ func TestBuilder_Build_StoresPersistently(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create store: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		builder := NewBuilder(store, "EORG123")
 		graph, err := builder.Build(ctx)

@@ -52,6 +52,6 @@
       }
     ]
   },
-  "features": { "identity": true, "chat": true, "projects": true, "proposals": true, "notices": true, "events": true, "maramataka": true, "order": ["chat", "projects", "proposals", "notices", "events"] },
+  "features": { "identity": true, "chat": true, "projects": true, "proposals": true, "notices": true, "events": true, "maramataka": true, "order": ["chat", "notices", "proposals", "projects", "events"] },
   "backend": { "kind": "self-hosted", "configServerUrl": "http://awa.matou.nz:3904" }
 }

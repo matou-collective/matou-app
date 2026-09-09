@@ -1,4 +1,5 @@
 import { ref } from 'vue';
+import { KIT } from 'src/generated/kit';
 
 // Moon phase data returned by the maramataka API. The API serves cultural
 // content (day name, energy, description of the Māori lunar calendar), not a
@@ -23,9 +24,15 @@ export const MARAMATAKA_API_URL = 'https://maramataka-api.matou.nz/';
 
 export function useMoonPhase() {
   const moonData = ref<MoonData | null>(null);
-  const moonPhaseState = ref<MoonPhaseState>('loading');
+
+  // A kit that switches maramataka off gets no widget and no network call
+  // (coa phase-4 spec §3.3). 'unavailable' is the state the dashboard already
+  // hides completely.
+  const enabled = KIT.features.maramataka;
+  const moonPhaseState = ref<MoonPhaseState>(enabled ? 'loading' : 'unavailable');
 
   async function fetchMoonPhase() {
+    if (!enabled) return;
     try {
       const response = await fetch(MARAMATAKA_API_URL);
       if (response.ok) {

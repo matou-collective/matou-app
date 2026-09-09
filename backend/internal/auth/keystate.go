@@ -215,7 +215,7 @@ func (r *KERIAResolver) fetchKEL(ctx context.Context, aid string) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("fetch key state for %s: %w", aid, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("key-state endpoint returned %d for %s", resp.StatusCode, aid)
 	}

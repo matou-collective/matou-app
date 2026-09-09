@@ -4,9 +4,10 @@
 //
 // These tests verify that files can be uploaded and downloaded through the
 // real any-sync filenode (Docker container). They exercise the full path:
-//   FileManager.AddFile → FileHandler chunks → RemoteBlockStore.Add (dRPC BlockPush)
-//   → BlocksBind → filenode stores in MinIO
-//   FileManager.GetFile → RemoteBlockStore.Get (dRPC BlockGet) → FileHandler reassembles
+//
+//	FileManager.AddFile → FileHandler chunks → RemoteBlockStore.Add (dRPC BlockPush)
+//	→ BlocksBind → filenode stores in MinIO
+//	FileManager.GetFile → RemoteBlockStore.Get (dRPC BlockGet) → FileHandler reassembles
 //
 // Run with:
 //

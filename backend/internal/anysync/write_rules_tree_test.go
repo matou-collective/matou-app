@@ -25,7 +25,7 @@ import (
 // twoWriterACL builds an ACL where "a" is the owner (the steward) and "b" is an
 // added writer (the member). Join metadata carries each account's claimed AID,
 // exactly as HandleJoinCommunity writes it, so AccountAIDMap can be exercised.
-func twoWriterACL(t *testing.T) (ownerAcl list.AclList, owner, member *list.TestAclState) {
+func twoWriterACL(t *testing.T) (ownerACL list.AclList, owner, member *list.TestAclState) {
 	t.Helper()
 	exec := list.NewAclExecutor("space-test")
 	for _, cmd := range []string{

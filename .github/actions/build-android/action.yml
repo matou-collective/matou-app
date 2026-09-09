@@ -1,0 +1,254 @@
+# build-android — build the Android release artefacts from a matou-app
+# checkout: Node + Go, the cached ~/.matou-android toolchain, the gomobile
+# backend .aar (16 KB page-alignment verified, #167), optional COA kit, then a
+# signed release APK and, when `bundle=true`, the Play App Bundle too.
+# Verifies applicationId / versionCode / versionName / signer on the result.
+# Shared by this repo's release workflow (build.yml) and by
+# matou-collective/coa-builds (#261).
+#
+# Signing material is passed as inputs (GitHub masks secret-derived inputs in
+# logs). Leave `keystore_b64` empty with `allow_unsigned=true` for an unsigned
+# smoke build; with `allow_unsigned=false` (the tag-release posture) a missing
+# keystore fails the build. The checkout must already exist.
+name: Build Android release
+description: gomobile .aar + signed release APK (and optionally AAB), verified
+
+inputs:
+  config_url:
+    description: VITE_PROD_CONFIG_URL baked into capacitor.config.json
+    required: true
+  version_name:
+    description: MATOU_VERSION_NAME (versionName)
+    required: true
+  version_code:
+    description: MATOU_VERSION_CODE (versionCode, integer)
+    required: true
+  bundle:
+    description: "true = build the Play AAB (bundleRelease) as well as the APK; false = APK only"
+    required: false
+    default: "false"
+  keystore_b64:
+    description: base64 of the upload keystore (.jks); empty = unsigned (see allow_unsigned)
+    required: false
+    default: ""
+  keystore_password:
+    required: false
+    default: ""
+  key_alias:
+    required: false
+    default: ""
+  key_password:
+    required: false
+    default: ""
+  allow_unsigned:
+    description: "true = an empty keystore_b64 builds UNSIGNED smoke artefacts; false = it fails"
+    required: false
+    default: "false"
+  google_services_json:
+    description: base64 of google-services.json for push (#177); empty = build without push
+    required: false
+    default: ""
+  kit_dir:
+    description: Path to a COA kit directory to apply before building (empty = stock Matou branding)
+    required: false
+    default: ""
+  out_dir:
+    description: Directory to place the named artefacts in
+    required: false
+    default: out
+  artifact_basename:
+    description: Artefact file stem, e.g. matou-0.6.4 → matou-0.6.4-android.apk / .aab
+    required: true
+
+outputs:
+  apk:
+    description: Path of the release APK
+    value: ${{ steps.build.outputs.apk }}
+  aab:
+    description: Path of the release AAB (empty unless bundle=true)
+    value: ${{ steps.build.outputs.aab }}
+  signed:
+    description: "true when the artefacts were signed with the supplied keystore"
+    value: ${{ steps.build.outputs.signed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: backend/go.mod
+        cache-dependency-path: backend/go.sum
+
+    # ~2.9 GB (JDK 21 + SDK/NDK r27c + gomobile) on a cold runner; the script is
+    # idempotent, so a cache hit makes it a no-op.
+    - name: Cache Android toolchain
+      uses: actions/cache@v4
+      with:
+        path: ~/.matou-android
+        key: matou-android-toolchain-${{ runner.os }}-${{ hashFiles('scripts/android/setup-toolchain.sh') }}
+
+    - name: Install Android toolchain (idempotent, cached in ~/.matou-android)
+      shell: bash
+      run: bash scripts/android/setup-toolchain.sh
+
+    - name: gomobile bind — embedded backend .aar
+      shell: bash
+      run: make -C backend build-android-aar
+
+    - name: Verify libgojni.so is 16 KB page-aligned (#167)
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC1090
+        . "$HOME/.matou-android/env.sh"
+        aar="frontend/src-capacitor/android/app/libs/matou.aar"
+        readelf="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" \( -type f -o -type l \) -name llvm-readelf | head -1)"
+        [ -n "$readelf" ] || { echo "::error::llvm-readelf not found under NDK"; exit 1; }
+        tmp="$(mktemp -d)"
+        python3 -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extract("jni/arm64-v8a/libgojni.so", sys.argv[2])' "$aar" "$tmp"
+        so="$tmp/jni/arm64-v8a/libgojni.so"
+        "$readelf" -l "$so" | awk '/LOAD/'
+        bad="$("$readelf" -l "$so" | awk '/LOAD/ && $NF != "0x4000" {print}')"
+        if [ -n "$bad" ]; then
+          echo "::error::libgojni.so has LOAD segments not aligned to 0x4000 (16 KB):"
+          echo "$bad"
+          exit 1
+        fi
+        echo "OK: all LOAD segments aligned to 0x4000"
+
+    - name: Install frontend dependencies
+      shell: bash
+      run: cd frontend && CI=true npm ci
+
+    - name: Apply the COA kit
+      if: inputs.kit_dir != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The kit path is relative to the workspace, but apply-kit runs from frontend/.
+        case "$KIT_DIR" in /*) ;; *) KIT_DIR="$GITHUB_WORKSPACE/$KIT_DIR" ;; esac
+        cd frontend
+        # icons.mjs arrived with kit plan Task 2 (#238); older refs apply tokens/ids only.
+        if [ -f scripts/kit/icons.mjs ]; then npm run kit:apply -- "$KIT_DIR"
+        else npm run kit:apply -- "$KIT_DIR" --no-icons; fi
+      env:
+        KIT_DIR: ${{ inputs.kit_dir }}
+
+    - name: Build release APK (+ AAB)
+      id: build
+      shell: bash
+      env:
+        VITE_PROD_CONFIG_URL: ${{ inputs.config_url }}
+        ANDROID_KEYSTORE_B64: ${{ inputs.keystore_b64 }}
+        MATOU_KEYSTORE_PASSWORD: ${{ inputs.keystore_password }}
+        MATOU_KEY_ALIAS: ${{ inputs.key_alias }}
+        MATOU_KEY_PASSWORD: ${{ inputs.key_password }}
+        MATOU_VERSION_NAME: ${{ inputs.version_name }}
+        MATOU_VERSION_CODE: ${{ inputs.version_code }}
+        GOOGLE_SERVICES_JSON: ${{ inputs.google_services_json }}
+        BUNDLE: ${{ inputs.bundle }}
+        ALLOW_UNSIGNED: ${{ inputs.allow_unsigned }}
+        OUT_DIR: ${{ inputs.out_dir }}
+        BASENAME: ${{ inputs.artifact_basename }}
+      run: |
+        set -euo pipefail
+        unsigned_flag=""
+        if [ -z "$ANDROID_KEYSTORE_B64" ]; then
+          if [ "$ALLOW_UNSIGNED" != "true" ]; then
+            echo "::error::keystore_b64 is empty and allow_unsigned=false — a release build must be signed (docs/SECRETS_CHECKLIST.md)"
+            exit 1
+          fi
+          echo "::warning::keystore_b64 empty — building UNSIGNED smoke artefacts (never upload to Play)"
+          unsigned_flag="--allow-unsigned"
+          unset MATOU_KEYSTORE_PASSWORD MATOU_KEY_ALIAS MATOU_KEY_PASSWORD
+          signed=false
+        else
+          ks="$RUNNER_TEMP/upload.jks"
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$ks"
+          chmod 600 "$ks"
+          export MATOU_KEYSTORE_FILE="$ks"
+          signed=true
+        fi
+        trap 'rm -f "$RUNNER_TEMP/upload.jks"' EXIT
+        # shellcheck disable=SC1090
+        . "$HOME/.matou-android/env.sh"
+
+        mkdir -p "$OUT_DIR"
+        aab=""
+        if [ "$BUNDLE" = "true" ]; then
+          bash scripts/android/build-aab.sh $unsigned_flag
+          # build-aab.sh leaves the release web assets synced into the Android
+          # project, so the sideload APK is one more gradle task with the same
+          # signing config.
+          (cd frontend/src-capacitor/android && ./gradlew --no-daemon assembleRelease)
+          aab="$OUT_DIR/$BASENAME-android.aab"
+          cp frontend/dist/capacitor/android/bundle/release/app-release.aab "$aab"
+          built_apk="$(ls frontend/src-capacitor/android/app/build/outputs/apk/release/app-release*.apk | head -1)"
+        else
+          bash scripts/android/build-release-apk.sh $unsigned_flag
+          built_apk=frontend/dist/capacitor/android/apk/release/app-release.apk
+        fi
+        [ -f "$built_apk" ] || { echo "::error::no release APK at $built_apk"; exit 1; }
+        apk="$OUT_DIR/$BASENAME-android.apk"
+        cp "$built_apk" "$apk"
+        ls -la "$OUT_DIR"
+        {
+          echo "apk=$apk"
+          echo "aab=$aab"
+          echo "signed=$signed"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Verify APK/AAB (applicationId, versionCode, versionName, signer)
+      shell: bash
+      env:
+        APK: ${{ steps.build.outputs.apk }}
+        AAB: ${{ steps.build.outputs.aab }}
+        SIGNED: ${{ steps.build.outputs.signed }}
+        VERSION_NAME: ${{ inputs.version_name }}
+        VERSION_CODE: ${{ inputs.version_code }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC1090
+        . "$HOME/.matou-android/env.sh"
+        bt="$ANDROID_HOME/build-tools/34.0.0"
+        # The expected applicationId is whatever the (possibly kit-rewritten)
+        # Capacitor config says — nz.matou.app for stock Matou.
+        app_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["appId"])' frontend/src-capacitor/capacitor.config.json)"
+
+        echo "==> APK badging"
+        badging="$("$bt/aapt2" dump badging "$APK" | head -1)"
+        echo "$badging"
+        echo "$badging" | grep -q "name='${app_id}'"                || { echo "::error::applicationId is not ${app_id}"; exit 1; }
+        echo "$badging" | grep -q "versionCode='${VERSION_CODE}'"   || { echo "::error::versionCode != ${VERSION_CODE}"; exit 1; }
+        echo "$badging" | grep -q "versionName='${VERSION_NAME}'"   || { echo "::error::versionName != ${VERSION_NAME}"; exit 1; }
+
+        if [ -n "$AAB" ]; then
+          echo "==> AAB contents"
+          python3 - "$AAB" <<'PY'
+        import sys, zipfile
+        names = zipfile.ZipFile(sys.argv[1]).namelist()
+        for want in ("BundleConfig.pb", "base/manifest/AndroidManifest.xml", "base/lib/arm64-v8a/libgojni.so"):
+            if want not in names:
+                sys.exit(f"missing {want} in bundle")
+        print("bundle ok:", len(names), "entries")
+        PY
+        fi
+
+        if [ "$SIGNED" = "true" ]; then
+          echo "==> APK signature"
+          "$bt/apksigner" verify --print-certs "$APK"
+          if [ -n "$AAB" ]; then
+            echo "==> AAB signature"
+            jarsigner -verify -verbose:summary -certs "$AAB" | grep -E "CN=|jar verified" | sort -u
+          fi
+        else
+          echo "::warning::unsigned smoke build — signature checks skipped"
+        fi

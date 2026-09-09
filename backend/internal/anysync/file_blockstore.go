@@ -22,7 +22,7 @@ import (
 var _ fileblockstore.BlockStoreLocal = (*RemoteBlockStore)(nil)
 
 // RemoteBlockStore implements fileblockstore.BlockStoreLocal by proxying
-// block operations to the any-sync filenode via dRPC. The spaceId and fileId
+// block operations to the any-sync filenode via dRPC. The spaceID and fileID
 // are stored as fields (set by FileManager before calling FileHandler) because
 // the IPFS DAG builder internally uses context.TODO(), dropping any context
 // values set via fileblockstore.CtxWithSpaceId/CtxWithFileId.
@@ -31,8 +31,8 @@ type RemoteBlockStore struct {
 	nodeConf nodeconf.Service
 
 	mu      sync.RWMutex
-	spaceId string
-	fileId  string
+	spaceID string
+	fileID  string
 }
 
 // NewRemoteBlockStore creates a new RemoteBlockStore.
@@ -53,36 +53,36 @@ func (s *RemoteBlockStore) RefreshTransport(p pool.Pool, nc nodeconf.Service) {
 	s.nodeConf = nc
 }
 
-// SetContext sets the spaceId and fileId for subsequent blockstore operations.
+// SetContext sets the spaceID and fileID for subsequent blockstore operations.
 // Must be called before FileHandler.AddFile/GetFile since the IPFS DAG builder
 // does not propagate the caller's context.
-func (s *RemoteBlockStore) SetContext(spaceId, fileId string) {
+func (s *RemoteBlockStore) SetContext(spaceID, fileID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.spaceId = spaceId
-	s.fileId = fileId
+	s.spaceID = spaceID
+	s.fileID = fileID
 }
 
-// getSpaceId returns the current spaceId, preferring the context value if set,
+// getSpaceID returns the current spaceID, preferring the context value if set,
 // falling back to the stored field.
-func (s *RemoteBlockStore) getSpaceId(ctx context.Context) string {
+func (s *RemoteBlockStore) getSpaceID(ctx context.Context) string {
 	if id := fileblockstore.CtxGetSpaceId(ctx); id != "" {
 		return id
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.spaceId
+	return s.spaceID
 }
 
-// getFileId returns the current fileId, preferring the context value if set,
+// getFileID returns the current fileID, preferring the context value if set,
 // falling back to the stored field.
-func (s *RemoteBlockStore) getFileId(ctx context.Context) string {
+func (s *RemoteBlockStore) getFileID(ctx context.Context) string {
 	if id := fileblockstore.CtxGetFileId(ctx); id != "" {
 		return id
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.fileId
+	return s.fileID
 }
 
 // getFilePeer returns a connected peer from the configured file nodes.
@@ -101,7 +101,7 @@ func (s *RemoteBlockStore) getFilePeer(ctx context.Context) (peer.Peer, error) {
 
 // Get fetches a single block from the filenode by CID.
 func (s *RemoteBlockStore) Get(ctx context.Context, k cid.Cid) (blocks.Block, error) {
-	spaceId := s.getSpaceId(ctx)
+	spaceID := s.getSpaceID(ctx)
 
 	p, err := s.getFilePeer(ctx)
 	if err != nil {
@@ -112,7 +112,7 @@ func (s *RemoteBlockStore) Get(ctx context.Context, k cid.Cid) (blocks.Block, er
 	err = p.DoDrpc(ctx, func(conn drpc.Conn) error {
 		client := fileproto.NewDRPCFileClient(conn)
 		resp, err := client.BlockGet(ctx, &fileproto.BlockGetRequest{
-			SpaceId: spaceId,
+			SpaceId: spaceID,
 			Cid:     k.Bytes(),
 			Wait:    true,
 		})
@@ -149,12 +149,12 @@ func (s *RemoteBlockStore) GetMany(ctx context.Context, ks []cid.Cid) <-chan blo
 	return ch
 }
 
-// Add pushes blocks to the filenode via dRPC BlockPush. The spaceId and fileId
+// Add pushes blocks to the filenode via dRPC BlockPush. The spaceID and fileID
 // are read from the stored fields (set by FileManager.SetContext), with context
 // values as fallback.
 func (s *RemoteBlockStore) Add(ctx context.Context, bs []blocks.Block) error {
-	spaceId := s.getSpaceId(ctx)
-	fileId := s.getFileId(ctx)
+	spaceID := s.getSpaceID(ctx)
+	fileID := s.getFileID(ctx)
 
 	p, err := s.getFilePeer(ctx)
 	if err != nil {
@@ -165,8 +165,8 @@ func (s *RemoteBlockStore) Add(ctx context.Context, bs []blocks.Block) error {
 		client := fileproto.NewDRPCFileClient(conn)
 		for _, b := range bs {
 			_, err := client.BlockPush(ctx, &fileproto.BlockPushRequest{
-				SpaceId: spaceId,
-				FileId:  fileId,
+				SpaceId: spaceID,
+				FileId:  fileID,
 				Cid:     b.Cid().Bytes(),
 				Data:    b.RawData(),
 			})
@@ -179,13 +179,13 @@ func (s *RemoteBlockStore) Add(ctx context.Context, bs []blocks.Block) error {
 }
 
 // Delete is a no-op — the filenode manages block deletion via FilesDelete.
-func (s *RemoteBlockStore) Delete(ctx context.Context, c cid.Cid) error {
+func (s *RemoteBlockStore) Delete(_ context.Context, _ cid.Cid) error {
 	return nil
 }
 
 // ExistsCids checks which CIDs exist on the filenode via BlocksCheck.
 func (s *RemoteBlockStore) ExistsCids(ctx context.Context, ks []cid.Cid) ([]cid.Cid, error) {
-	spaceId := s.getSpaceId(ctx)
+	spaceID := s.getSpaceID(ctx)
 
 	p, err := s.getFilePeer(ctx)
 	if err != nil {
@@ -201,7 +201,7 @@ func (s *RemoteBlockStore) ExistsCids(ctx context.Context, ks []cid.Cid) ([]cid.
 	err = p.DoDrpc(ctx, func(conn drpc.Conn) error {
 		client := fileproto.NewDRPCFileClient(conn)
 		resp, err := client.BlocksCheck(ctx, &fileproto.BlocksCheckRequest{
-			SpaceId: spaceId,
+			SpaceId: spaceID,
 			Cids:    cidBytes,
 		})
 		if err != nil {

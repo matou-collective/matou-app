@@ -466,6 +466,19 @@ Check space sync readiness.
 
 ## Profile & Type Endpoints
 
+### Required-field validation
+
+All schema-validated entities (SharedProfile, Notice, Proposal, and any
+org-added custom type) share one validator (`types.ValidateData`). A field
+marked `required: true` is unsatisfied — reported as `field "<name>" is
+required` — when it is absent, `null`, or, for the string-shaped types
+(`string`, `datetime`, `enum`), present but **empty or whitespace-only**. So a
+required text field cannot be satisfied by `""` or `"   "`. This lives in the
+shared validator rather than per-schema `minLength: 1`, so custom required
+fields inherit the rule automatically. Non-string required types
+(`number`/`boolean`/`array`/`object`) are unaffected: `0`, `false`, and `[]`
+remain valid values.
+
 ### GET /api/v1/types
 
 List all type definitions.
