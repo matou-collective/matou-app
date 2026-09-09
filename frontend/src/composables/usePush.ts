@@ -535,6 +535,13 @@ export async function handleIdentityChange(
   oldAid: string | null,
 ): Promise<void> {
   if (newAid === oldAid) return;
+  // A stashed cold-start deep-link target (#445) is scoped to whichever
+  // identity was signed in when the tap fired. On any identity change —
+  // logout, switch, or a fresh registration racing a stale tap for a
+  // previous identity on this device — drop it rather than let the new
+  // identity's onboarding-complete gate replay a target that was never
+  // meant for them.
+  pendingDeepLinkChannelId = null;
   if (oldAid && currentToken !== null) {
     await deregisterPush();
   }
