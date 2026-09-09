@@ -3,6 +3,7 @@ import {
   claimNotification,
   grantCredentialSaid,
   isGrantAlreadyAdmitted,
+  isCredentialAlreadyIssued,
   isAlreadyGroupSigner,
   type ClaimableNote,
 } from 'src/lib/keri/notifications';
@@ -137,6 +138,62 @@ describe('isGrantAlreadyAdmitted (IPEX admit idempotency, issue #470)', () => {
     const client = credClient([], { throws: true });
 
     expect(await isGrantAlreadyAdmitted(client, grantOf('ECRED123'))).toBe(false);
+  });
+});
+
+// --- isCredentialAlreadyIssued ----------------------------------------------
+
+const SCHEMA = 'ESCHEMA_membership';
+const ISSUEE = 'DAPPLICANT';
+
+function issuedCredClient(
+  creds: Array<{ sad?: { d?: string; s?: string; a?: { i?: string } } }>,
+  opts: { throws?: boolean } = {},
+) {
+  const list = vi.fn(async () => {
+    if (opts.throws) throw new Error('KERIA unreachable');
+    return creds;
+  });
+  return { list, credentials: () => ({ list }) };
+}
+
+describe('isCredentialAlreadyIssued (approval idempotency, issue #480)', () => {
+  it('is true when a credential of the schema is already issued to the applicant → skip issuance', async () => {
+    const client = issuedCredClient([
+      { sad: { d: 'EX', s: 'EOTHER', a: { i: ISSUEE } } },
+      { sad: { d: 'EY', s: SCHEMA, a: { i: ISSUEE } } },
+    ]);
+
+    expect(await isCredentialAlreadyIssued(client, SCHEMA, ISSUEE)).toBe(true);
+  });
+
+  it('is false when no credential matches BOTH schema and issuee → issuance proceeds', async () => {
+    const client = issuedCredClient([
+      { sad: { d: 'EX', s: SCHEMA, a: { i: 'DOTHERAPPLICANT' } } },
+      { sad: { d: 'EY', s: 'EOTHER', a: { i: ISSUEE } } },
+    ]);
+
+    expect(await isCredentialAlreadyIssued(client, SCHEMA, ISSUEE)).toBe(false);
+  });
+
+  it('is false when the wallet is empty → first approval proceeds', async () => {
+    const client = issuedCredClient([]);
+
+    expect(await isCredentialAlreadyIssued(client, SCHEMA, ISSUEE)).toBe(false);
+  });
+
+  it('is false (proceeds) without listing when schema or issuee is blank', async () => {
+    const client = issuedCredClient([{ sad: { d: 'EY', s: SCHEMA, a: { i: ISSUEE } } }]);
+
+    expect(await isCredentialAlreadyIssued(client, '', ISSUEE)).toBe(false);
+    expect(await isCredentialAlreadyIssued(client, SCHEMA, '')).toBe(false);
+    expect(client.list).not.toHaveBeenCalled();
+  });
+
+  it('never throws and proceeds when the credential list fails', async () => {
+    const client = issuedCredClient([], { throws: true });
+
+    expect(await isCredentialAlreadyIssued(client, SCHEMA, ISSUEE)).toBe(false);
   });
 });
 

@@ -45,7 +45,7 @@ export interface NotificationClient {
 /** The subset of `SignifyClient` the credential idempotency check depends on. */
 export interface CredentialListClient {
   credentials(): {
-    list(): Promise<Array<{ sad?: { d?: string }; d?: string }>>;
+    list(): Promise<Array<{ sad?: { d?: string; s?: string; a?: { i?: string } }; d?: string }>>;
   };
 }
 
@@ -119,6 +119,44 @@ export async function isGrantAlreadyAdmitted(
     return already;
   } catch (err) {
     log.debug('credential list failed during admit idempotency check; proceeding', err);
+    return false;
+  }
+}
+
+/**
+ * Approval idempotency for the write-bearing steward path (issue #480, #466):
+ * `true` when a credential of `schemaSaid` has already been issued to
+ * `issueeAid` in this wallet, so a second issuance must be skipped. On a shared
+ * KERIA agent both linked steward devices see the same wallet, so this catches
+ * an applicant already approved on another device (or from a stale pending
+ * list). Unlike {@link isGrantAlreadyAdmitted} — keyed by the credential SAID
+ * we are about to admit — the issuer does not yet know the SAID, so we match on
+ * schema + issuee AID (the org is the only issuer of membership credentials).
+ *
+ * Best-effort: a client-side wallet lookup, not a server-side compare-and-set,
+ * so a truly simultaneous double-issue across two devices can still race (spec
+ * §3.5). Never throws — a failed list resolves to `false` (proceed), leaving
+ * issuance's own handling in charge.
+ */
+export async function isCredentialAlreadyIssued(
+  client: CredentialListClient,
+  schemaSaid: string,
+  issueeAid: string,
+): Promise<boolean> {
+  if (!schemaSaid || !issueeAid) return false;
+  try {
+    const creds = await client.credentials().list();
+    const already = (creds ?? []).some(
+      (c) => c?.sad?.s === schemaSaid && c?.sad?.a?.i === issueeAid,
+    );
+    if (already) {
+      log.debug(
+        `credential ${schemaSaid.slice(0, 12)} already issued to ${issueeAid.slice(0, 12)} — skipping issuance`,
+      );
+    }
+    return already;
+  } catch (err) {
+    log.debug('credential list failed during issuance idempotency check; proceeding', err);
     return false;
   }
 }
