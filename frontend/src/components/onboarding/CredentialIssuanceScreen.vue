@@ -32,7 +32,7 @@
 
         <div>
           <h2 class="mb-2">Syncing to Network</h2>
-          <p class="text-muted-foreground">Synchronizing your credentials with the Mātou network...</p>
+          <p class="text-muted-foreground">Synchronizing your credentials with the {{ KIT.brand.name }} network...</p>
         </div>
 
         <div class="flex gap-2">
@@ -54,7 +54,7 @@
         <div>
           <h2 class="mb-2">Credential Issued!</h2>
           <p class="text-muted-foreground mb-4">
-            Your Mātou membership credential has been successfully created and stored in your
+            Your {{ KIT.brand.name }} membership credential has been successfully created and stored in your
             wallet.
           </p>
         </div>
@@ -66,7 +66,7 @@
               <Shield class="w-5 h-5 text-accent" />
             </div>
             <div>
-              <h4>Mātou Member</h4>
+              <h4>{{ KIT.brand.name }} Member</h4>
               <p class="text-sm text-muted-foreground">Verified Credential</p>
             </div>
           </div>
@@ -105,7 +105,7 @@
           </div>
         </div>
 
-        <MBtn class="w-full" @click="onComplete"> Enter Mātou </MBtn>
+        <MBtn class="w-full" @click="onComplete"> Enter {{ KIT.brand.name }} </MBtn>
       </template>
 
       <!-- Error State -->
@@ -128,6 +128,7 @@
 </template>
 
 <script setup lang="ts">
+import { KIT } from 'src/generated/kit';
 import { ref, computed, onMounted } from 'vue';
 import { Shield, CheckCircle2, Cloud, AlertCircle } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
@@ -193,7 +194,7 @@ async function issueAndSync() {
     // Step 2: Check backend health and sync
     status.value = 'syncing';
     statusMessage.value = 'Syncing to Network';
-    statusDescription.value = 'Synchronizing with the Mātou network...';
+    statusDescription.value = `Synchronizing with the ${KIT.brand.name} network...`;
 
     const backendAvailable = await healthCheck();
 

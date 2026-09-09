@@ -1,3 +1,6 @@
+// Package keri provides KERI configuration and credential validation
+// utilities. It is config-only: the backend does not connect to KERIA
+// over the network.
 package keri
 
 import (

@@ -15,7 +15,7 @@
         </svg>
         <svg v-else width="12" height="12" viewBox="0 0 12 12">
           <rect x="3" y="0.5" width="8.5" height="8.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" />
-          <rect x="0.5" y="3" width="8.5" height="8.5" rx="1" fill="#003141" stroke="currentColor" stroke-width="1.2" />
+          <rect x="0.5" y="3" width="8.5" height="8.5" rx="1" fill="var(--matou-brand)" stroke="currentColor" stroke-width="1.2" />
         </svg>
       </button>
       <button class="titlebar-btn titlebar-btn-close" @click="close" aria-label="Close">
@@ -83,7 +83,10 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   height: 36px;
-  background: #003141;
+  /* Brand primary from the kit — theme-invariant like the splash and home
+     header (design-tokens --matou-brand), so the window chrome matches the
+     community, not stock Mātou navy. */
+  background: var(--matou-brand);
   color: #ffffff;
   font-size: 16px;
   font-weight: 500;

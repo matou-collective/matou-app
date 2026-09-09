@@ -34,11 +34,25 @@ const UNREACHABLE_MIN_ATTEMPTS = 5;
  * Ordered OOBI candidates for an applicant, most reliable first:
  * 1. bare OOBI on our own KERIA (`cesrUrl`) — stable across agent re-boots,
  *    and the documented de-escrow trigger (see useClaimIdentity),
- * 2. bare OOBI derived from the recorded OOBI's host (covers applicants on a
- *    different KERIA than ours),
+ * 2. bare OOBI derived from the recorded OOBI's CESR base — everything before
+ *    `/oobi/`, which keeps a reverse-proxy prefix such as `/keria/cesr`
+ *    (covers applicants on a different KERIA than ours),
  * 3. the recorded OOBI verbatim (agent form; breaks when the agent is
  *    re-created, so it goes last).
  */
+/**
+ * The CESR base an OOBI was minted from: everything before its `/oobi/`
+ * segment. Unlike `new URL(oobi).origin` this keeps a reverse-proxy path
+ * prefix (`https://host/keria/cesr/oobi/E…` → `https://host/keria/cesr`),
+ * which the coa-shared proxied layout relies on (Matou/coa#141).
+ */
+export function cesrBaseOf(oobi: string): string | null {
+  const idx = oobi.indexOf('/oobi/');
+  if (idx <= 0) return null;
+  const base = oobi.slice(0, idx).replace(/\/+$/, '');
+  return /^https?:\/\/[^/]+/.test(base) ? base : null;
+}
+
 export function buildOobiCandidates(params: {
   applicantAid: string;
   recordedOobi?: string | undefined;
@@ -55,8 +69,9 @@ export function buildOobiCandidates(params: {
 
   if (recordedOobi) {
     try {
-      const url = new URL(recordedOobi);
-      candidates.push(`${url.origin}/oobi/${applicantAid}`);
+      new URL(recordedOobi);
+      const base = cesrBaseOf(recordedOobi);
+      if (base) candidates.push(`${base}/oobi/${applicantAid}`);
       candidates.push(recordedOobi);
     } catch {
       // Malformed recorded OOBI — nothing to derive from it.
@@ -92,12 +107,9 @@ export function buildSenderOobiFields(params: {
   if (cesrUrl) {
     senderOOBI = `${cesrUrl.replace(/\/+$/, '')}/oobi/${prefix}`;
   } else if (agentOobi) {
-    try {
-      senderOOBI = `${new URL(agentOobi).origin}/oobi/${prefix}`;
-    } catch {
-      // Unparseable recorded OOBI — better than recording nothing.
-      senderOOBI = agentOobi;
-    }
+    const base = cesrBaseOf(agentOobi);
+    // No `/oobi/` segment to derive from — better than recording nothing.
+    senderOOBI = base ? `${base}/oobi/${prefix}` : agentOobi;
   }
   if (!senderOOBI) return null;
 

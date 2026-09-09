@@ -57,7 +57,7 @@ func TestProjectsHandler_Update(t *testing.T) {
 	handler.HandleCreate(w, req)
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	update, _ := json.Marshal(map[string]string{"title": "New Title"})
@@ -82,7 +82,7 @@ func TestProjectsHandler_ListByProposalID(t *testing.T) {
 	handler.HandleCreate(w, req)
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	linkBody, _ := json.Marshal(map[string]string{"proposal_id": "prop-abc"})
@@ -102,7 +102,7 @@ func TestProjectsHandler_ListByProposalID(t *testing.T) {
 		Projects []map[string]interface{} `json:"projects"`
 		Total    int                      `json:"total"`
 	}
-	json.Unmarshal(w.Body.Bytes(), &result)
+	_ = json.Unmarshal(w.Body.Bytes(), &result)
 	if result.Total != 1 {
 		t.Errorf("expected 1 project, got %d", result.Total)
 	}
@@ -115,7 +115,7 @@ func TestProjectsHandler_ListByProposalID(t *testing.T) {
 	w = httptest.NewRecorder()
 	handler.HandleList(w, req)
 
-	json.Unmarshal(w.Body.Bytes(), &result)
+	_ = json.Unmarshal(w.Body.Bytes(), &result)
 	if result.Total != 0 {
 		t.Errorf("expected 0 projects for unknown proposal, got %d", result.Total)
 	}
@@ -132,7 +132,7 @@ func TestProjectsHandler_Delete(t *testing.T) {
 	handler.HandleCreate(w, req)
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/v1/projects/"+id, nil)

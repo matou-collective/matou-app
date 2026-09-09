@@ -12,7 +12,7 @@ func TestProfileRoleLookup_GetUserRoles(t *testing.T) {
 		"userAID": "EAbcd1234",
 		"role":    "Operations Steward",
 	}
-	store.Save("readonly-space", "CommunityProfile-EAbcd1234", "CommunityProfile", profile)
+	_ = store.Save("readonly-space", "CommunityProfile-EAbcd1234", "CommunityProfile", profile)
 
 	lookup := NewProfileRoleLookup(store, "readonly-space")
 	roles, err := lookup.GetUserRoles("EAbcd1234")
@@ -37,7 +37,7 @@ func TestProfileRoleLookup_ResolverResolvesAfterSpaceAppears(t *testing.T) {
 		"userAID": "EAdmin1234",
 		"role":    "Founding Member",
 	}
-	store.Save("readonly-space", "CommunityProfile-EAdmin1234", "CommunityProfile", profile)
+	_ = store.Save("readonly-space", "CommunityProfile-EAdmin1234", "CommunityProfile", profile)
 
 	// Constructed with an empty space ID, as at boot before an identity exists.
 	lookup := NewProfileRoleLookup(store, "")
@@ -51,7 +51,7 @@ func TestProfileRoleLookup_ResolverResolvesAfterSpaceAppears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserRoles failed: %v", err)
 	}
-	if !(len(roles) == 1 && HasRole(roles, RoleMember)) {
+	if len(roles) != 1 || !HasRole(roles, RoleMember) {
 		t.Errorf("expected [member] fallback while space empty, got %v", roles)
 	}
 

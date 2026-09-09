@@ -56,6 +56,32 @@ run "$tmp/out" "$tmp/err"
 grep -q "^check-harness-drift: OK" "$tmp/out" || fail "in-sync copies should print OK: $(cat "$tmp/out")"
 pass=$((pass+1))
 
+# T2b: leaked GIT_DIR (#129 / matou-app#232,#233). Reached from git-hooks/pre-push
+# the script runs inside git's hook environment with GIT_DIR exported — in a
+# sandbox worker it points at a linked-worktree admin dir (no work tree). With it
+# left set, `git init "$work"` IGNORES "$work" and re-initialises GIT_DIR's repo,
+# writing core.bare=true into the shared parent .git and breaking every later
+# checkout. Fabricate that admin dir by hand (git worktree add is fenced in the
+# sandbox, #239) and prove the run leaves the parent repo's core.bare untouched
+# AND still completes its own drift check against $work.
+parent="$tmp/parent"
+git init -q "$parent"
+git -C "$parent" config user.email t@t.test
+git -C "$parent" config user.name t
+echo hi >"$parent/f"; git -C "$parent" add -A; git -C "$parent" commit -q -m seed
+# A linked-worktree admin dir under the shared common .git, with no work tree.
+wtadmin="$parent/.git/worktrees/wt"
+mkdir -p "$wtadmin"
+printf '%s\n' "$parent/.git" >"$wtadmin/commondir"
+printf '%s\n' "$parent/wt/.git" >"$wtadmin/gitdir"
+printf 'ref: refs/heads/main\n' >"$wtadmin/HEAD"
+[ "$(git -C "$parent" config --get core.bare)" = false ] || fail "T2b precondition: parent must start non-bare"
+( cd "$sc" && export GIT_DIR="$wtadmin" && bash ./check-harness-drift.sh ) >"$tmp/out" 2>"$tmp/err" || true
+bare="$(git -C "$parent" config --get core.bare 2>/dev/null || echo unset)"
+[ "$bare" != true ] || fail "T2b: a leaked GIT_DIR must not re-init the parent repo as bare (core.bare=$bare): $(cat "$tmp/err")"
+grep -q "^check-harness-drift: OK" "$tmp/out" || fail "T2b: the drift check must still run against its own \$work under a leaked GIT_DIR: $(cat "$tmp/out")$(cat "$tmp/err")"
+pass=$((pass+1))
+
 # T3: a vendored file hand-edited locally -> red, names the file
 echo 'echo tampered' >>"$sc/two.sh"
 run "$tmp/out" "$tmp/err"

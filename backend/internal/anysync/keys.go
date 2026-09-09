@@ -63,10 +63,10 @@ func GenerateSpaceKeySet() (*SpaceKeySet, error) {
 	}
 
 	return &SpaceKeySet{
-		SigningKey:   signingKey,
-		MasterKey:    masterKey,
-		ReadKey:      readKey,
-		MetadataKey:  metadataKey,
+		SigningKey:  signingKey,
+		MasterKey:   masterKey,
+		ReadKey:     readKey,
+		MetadataKey: metadataKey,
 	}, nil
 }
 
@@ -106,19 +106,19 @@ func DeriveSpaceKeySet(mnemonic string, spaceIndex uint32) (*SpaceKeySet, error)
 	}
 
 	return &SpaceKeySet{
-		SigningKey:   sigResult.Identity,
-		MasterKey:    masterResult.Identity,
-		ReadKey:      readKey,
-		MetadataKey:  metaResult.Identity,
+		SigningKey:  sigResult.Identity,
+		MasterKey:   masterResult.Identity,
+		ReadKey:     readKey,
+		MetadataKey: metaResult.Identity,
 	}, nil
 }
 
 // spaceKeyBundle is the on-disk format for a persisted SpaceKeySet.
 type spaceKeyBundle struct {
-	SigningKey   []byte `json:"signingKey"`
-	MasterKey    []byte `json:"masterKey"`
-	ReadKey      []byte `json:"readKey"`
-	MetadataKey  []byte `json:"metadataKey"`
+	SigningKey  []byte `json:"signingKey"`
+	MasterKey   []byte `json:"masterKey"`
+	ReadKey     []byte `json:"readKey"`
+	MetadataKey []byte `json:"metadataKey"`
 }
 
 // PersistSpaceKeySet marshals each key and writes them to
@@ -241,9 +241,9 @@ func LoadSpaceKeySet(dataDir, spaceID string) (*SpaceKeySet, error) {
 	}
 
 	return &SpaceKeySet{
-		SigningKey:   signingKey,
-		MasterKey:    masterKey,
-		ReadKey:      readKey,
-		MetadataKey:  metadataKey,
+		SigningKey:  signingKey,
+		MasterKey:   masterKey,
+		ReadKey:     readKey,
+		MetadataKey: metadataKey,
 	}, nil
 }

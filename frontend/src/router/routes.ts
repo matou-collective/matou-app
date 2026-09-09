@@ -26,21 +26,29 @@ const routes: RouteRecordRaw[] = [
         name: 'account-settings',
         component: () => import('pages/AccountSettingsPage.vue'),
       },
-      {
-        path: 'chat',
-        name: 'chat',
-        component: () => import('pages/ChatPage.vue'),
-      },
+      ...(__KIT_CHAT__
+        ? [
+            {
+              path: 'chat',
+              name: 'chat',
+              component: () => import('pages/ChatPage.vue'),
+            },
+          ]
+        : []),
       {
         path: 'wallet',
         name: 'wallet',
         component: () => import('pages/WalletPage.vue'),
       },
-      {
-        path: 'activity',
-        name: 'activity',
-        component: () => import('pages/ActivityPage.vue'),
-      },
+      ...(__KIT_NOTICES__
+        ? [
+            {
+              path: 'activity',
+              name: 'activity',
+              component: () => import('pages/ActivityPage.vue'),
+            },
+          ]
+        : []),
       {
         // The Roles & Permissions page merged into Community Settings; keep old
         // links working.
@@ -52,26 +60,34 @@ const routes: RouteRecordRaw[] = [
         name: 'community-settings',
         component: () => import('pages/Dashboard/CommunitySettingsPage.vue'),
       },
-      {
-        path: 'projects',
-        name: 'projects',
-        component: () => import('pages/ProjectsPage.vue'),
-      },
-      {
-        path: 'proposals',
-        name: 'proposals',
-        component: () => import('pages/ProposalsPage.vue'),
-      },
-      {
-        path: 'projects/:id',
-        name: 'project-detail',
-        component: () => import('pages/Projects/ProjectDetailPage.vue'),
-      },
-      {
-        path: 'proposals/:id',
-        name: 'proposal-detail',
-        component: () => import('pages/ProposalDetailPage.vue'),
-      },
+      ...(__KIT_PROJECTS__
+        ? [
+            {
+              path: 'projects',
+              name: 'projects',
+              component: () => import('pages/ProjectsPage.vue'),
+            },
+            {
+              path: 'projects/:id',
+              name: 'project-detail',
+              component: () => import('pages/Projects/ProjectDetailPage.vue'),
+            },
+          ]
+        : []),
+      ...(__KIT_PROPOSALS__
+        ? [
+            {
+              path: 'proposals',
+              name: 'proposals',
+              component: () => import('pages/ProposalsPage.vue'),
+            },
+            {
+              path: 'proposals/:id',
+              name: 'proposal-detail',
+              component: () => import('pages/ProposalDetailPage.vue'),
+            },
+          ]
+        : []),
       {
         path: 'contributions',
         name: 'contributions',
