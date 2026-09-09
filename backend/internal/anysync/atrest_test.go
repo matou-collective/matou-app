@@ -310,3 +310,111 @@ func TestUserSignKey_SealedRoundTrip(t *testing.T) {
 		t.Fatal("expected error loading user sign key with wrong key")
 	}
 }
+
+// TestNewPeerKeyManager_UnreadableSealedDeviceKeyRecovers proves a sealed
+// peer.key that cannot be opened (shell key lost/rotated, or a launch with no
+// key at all) does not lock the node out: the unreadable file is moved aside
+// byte-for-byte, a fresh random device key is minted, and the manager comes
+// up. The device key is a random per-install transport key (#468), so a new
+// one only changes the peer id; identity/set re-persists it. Space read keys
+// stay fail-closed (TestLoadSpaceKeySet_WrongKeyFailsClosed).
+func TestNewPeerKeyManager_UnreadableSealedDeviceKeyRecovers(t *testing.T) {
+	seed := func(t *testing.T) (dir, keyPath string, sealedRaw []byte) {
+		t.Helper()
+		dir = t.TempDir()
+		keyPath = filepath.Join(dir, "peer.key")
+		RegisterDataDirKey(dir, testEncKey)
+		if _, err := GetOrCreatePeerKey(keyPath); err != nil {
+			t.Fatalf("seeding sealed peer.key: %v", err)
+		}
+		sealedRaw, err := os.ReadFile(keyPath)
+		if err != nil {
+			t.Fatalf("reading seeded peer.key: %v", err)
+		}
+		if !identity.IsSealed(sealedRaw) {
+			t.Fatal("precondition: seeded peer.key must be sealed")
+		}
+		return dir, keyPath, sealedRaw
+	}
+
+	assertMovedAside := func(t *testing.T, dir string, sealedRaw []byte) {
+		t.Helper()
+		matches, err := filepath.Glob(filepath.Join(dir, "peer.key.unreadable-*"))
+		if err != nil {
+			t.Fatalf("glob: %v", err)
+		}
+		if len(matches) != 1 {
+			t.Fatalf("expected exactly one peer.key.unreadable-* file, got %v", matches)
+		}
+		preserved, err := os.ReadFile(matches[0])
+		if err != nil {
+			t.Fatalf("reading preserved file: %v", err)
+		}
+		if !bytes.Equal(preserved, sealedRaw) {
+			t.Error("moved-aside file must preserve the original sealed bytes")
+		}
+	}
+
+	t.Run("no key registered", func(t *testing.T) {
+		dir, keyPath, sealedRaw := seed(t)
+		RegisterDataDirKey(dir, nil)
+
+		mgr, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: keyPath})
+		if err != nil {
+			t.Fatalf("NewPeerKeyManager must recover from an unreadable sealed peer.key: %v", err)
+		}
+		assertMovedAside(t, dir, sealedRaw)
+
+		raw, err := os.ReadFile(keyPath)
+		if err != nil {
+			t.Fatalf("reading new peer.key: %v", err)
+		}
+		if identity.IsSealed(raw) {
+			t.Error("with no key registered the fresh peer.key must be plaintext")
+		}
+		fresh, err := crypto.UnmarshalEd25519PrivateKeyProto(raw)
+		if err != nil {
+			t.Fatalf("fresh peer.key must be a valid key: %v", err)
+		}
+		if fresh.GetPublic().PeerId() != mgr.GetPeerID() {
+			t.Error("peer.key on disk must match the manager's device key")
+		}
+	})
+
+	t.Run("wrong key registered, with mnemonic", func(t *testing.T) {
+		dir, keyPath, sealedRaw := seed(t)
+		RegisterDataDirKey(dir, []byte("rotated-shell-key"))
+		defer RegisterDataDirKey(dir, nil)
+
+		mgr, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: keyPath, Mnemonic: testMnemonic})
+		if err != nil {
+			t.Fatalf("NewPeerKeyManager must recover from a peer.key sealed under another key: %v", err)
+		}
+		assertMovedAside(t, dir, sealedRaw)
+
+		// Sign key is still the mnemonic-derived ACL identity.
+		derived, _ := DeriveKeyFromMnemonic(testMnemonic, 0)
+		if !privKeysEqual(mgr.GetSigningKey(), derived) {
+			t.Error("recovery must not touch the mnemonic-derived sign key")
+		}
+		if privKeysEqual(mgr.GetPeerKey(), derived) {
+			t.Error("fresh device key must be distinct from the sign key")
+		}
+
+		// The fresh device key is sealed under the now-current key and stable.
+		raw, err := os.ReadFile(keyPath)
+		if err != nil {
+			t.Fatalf("reading new peer.key: %v", err)
+		}
+		if !identity.IsSealed(raw) {
+			t.Error("fresh peer.key must be sealed under the registered key")
+		}
+		mgr2, err := NewPeerKeyManager(&PeerKeyConfig{KeyPath: keyPath, Mnemonic: testMnemonic})
+		if err != nil {
+			t.Fatalf("second manager: %v", err)
+		}
+		if mgr2.GetPeerID() != mgr.GetPeerID() {
+			t.Error("recovered device key must be stable across restarts")
+		}
+	})
+}

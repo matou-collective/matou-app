@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/anyproto/any-sync/util/crypto"
 )
@@ -157,7 +159,19 @@ func loadOrCreateDeviceKey(keyPath string, signKey crypto.PrivKey) (crypto.PrivK
 	dir := filepath.Dir(keyPath)
 	data, wasSealed, err := openBytes(dir, raw)
 	if err != nil {
-		return nil, fmt.Errorf("opening device key: %w", err)
+		// The file is sealed but cannot be opened: the shell key was lost or
+		// rotated, or this launch has no key at all (identity.json is then
+		// unreadable too and the node boots unconfigured). The device key is a
+		// random per-install transport key, so failing closed here would only
+		// turn a recoverable "unconfigured" boot into a hard lockout. Move the
+		// unreadable file aside (preserved for forensics) and mint a fresh one;
+		// identity/set re-persists the new peer id.
+		aside := fmt.Sprintf("%s.unreadable-%d", keyPath, time.Now().Unix())
+		if rerr := os.Rename(keyPath, aside); rerr != nil {
+			return nil, fmt.Errorf("opening device key: %w (and moving it aside failed: %v)", err, rerr)
+		}
+		log.Printf("[anysync] Warning: device key %s could not be opened (%v); moved aside to %s and minting a fresh device key", keyPath, err, aside)
+		return generateAndSaveKey(keyPath)
 	}
 
 	existing, err := crypto.UnmarshalEd25519PrivateKeyProto(data)
