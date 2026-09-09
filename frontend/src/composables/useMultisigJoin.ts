@@ -9,6 +9,7 @@ import { getOrFetchOrgConfig } from 'src/api/config';
 import { secureStorage } from 'src/lib/secureStorage';
 import { useKERINotificationService } from './useKERINotificationService';
 import { toKeriAlias } from 'src/lib/keri/alias';
+import { isAlreadyGroupSigner } from 'src/lib/keri/notifications';
 
 const MULTISIG_ROT_ROUTE = '/multisig/rot';
 // When admin pre-rotates between rounds and immediately sends a /multisig/rot,
@@ -104,6 +105,36 @@ export function useMultisigJoin() {
             await keriClient.markNotificationRead(notification.i);
             console.log('[MultisigJoin] co-signed group rotation');
             return false; // keep watcher running
+          }
+
+          // Idempotency (issue #470): two signify clients on one agent both see
+          // this round-2 /multisig/rot. If the group already commits our current
+          // signing key we have already joined (agent-global identifiers, but
+          // another client may have joined in this very window) — a second join
+          // would duplicate our signature. Best-effort: a failed key-state read
+          // falls through to the join (single-client behaviour unchanged).
+          if (gidFromExn) {
+            try {
+              const readKeys = async (pre: string): Promise<string[]> => {
+                const st = await client.keyStates().get(pre);
+                const one = (Array.isArray(st) ? st[0] : st) as { k?: string[] } | undefined;
+                return one?.k ?? [];
+              };
+              const [groupKeys, myKeys] = await Promise.all([
+                readKeys(gidFromExn).catch(() => [] as string[]),
+                readKeys(me).catch(() => [] as string[]),
+              ]);
+              if (isAlreadyGroupSigner(groupKeys, myKeys)) {
+                console.debug(`[MultisigJoin] already a signer of ${gidFromExn.slice(0, 12)} — skipping join (idempotent)`);
+                await secureStorage.setItem('matou_org_aid', gidFromExn);
+                keriClient.setOrgAID(gidFromExn);
+                await keriClient.markNotificationRead(notification.i);
+                hasJoined.value = true;
+                return true;
+              }
+            } catch (idemErr) {
+              console.warn('[MultisigJoin] round-2 signer idempotency check failed; proceeding to join', idemErr);
+            }
           }
 
           const gid = await keriClient.joinGroup(orgName, notification.a.d);
