@@ -2,6 +2,7 @@ package anysync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -29,9 +30,13 @@ type mockACLRecordBuilder struct {
 	buildInviteJoinWithoutApproveResult *consensusproto.RawRecord
 	buildInviteJoinWithoutApproveErr    error
 
+	buildAccountsAddResult *consensusproto.RawRecord
+	buildAccountsAddErr    error
+
 	// Track calls
 	buildInviteAnyoneCalls             []list.AclPermissions
 	buildInviteJoinWithoutApproveCalls []list.InviteJoinPayload
+	buildAccountsAddCalls              []list.AccountsAddPayload
 }
 
 //nolint:revive // method name is fixed by the external list.AclRecordBuilder interface
@@ -117,8 +122,12 @@ func (m *mockACLRecordBuilder) BuildAccountRemove(_ list.AccountRemovePayload) (
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *mockACLRecordBuilder) BuildAccountsAdd(_ list.AccountsAddPayload) (rawRecord *consensusproto.RawRecord, err error) {
-	return nil, fmt.Errorf("not implemented")
+func (m *mockACLRecordBuilder) BuildAccountsAdd(payload list.AccountsAddPayload) (rawRecord *consensusproto.RawRecord, err error) {
+	m.buildAccountsAddCalls = append(m.buildAccountsAddCalls, payload)
+	if m.buildAccountsAddErr != nil {
+		return nil, m.buildAccountsAddErr
+	}
+	return m.buildAccountsAddResult, nil
 }
 
 // =============================================================================
@@ -277,6 +286,118 @@ func TestMatouACLManager_CreateOpenInvite_AddRecordError(t *testing.T) {
 	_, err := mgr.CreateOpenInvite(context.Background(), "test-space", list.AclPermissionsWriter)
 	if err == nil {
 		t.Fatal("expected error when AddRecord fails")
+	}
+}
+
+// TestMatouACLManager_AddAccount proves the readonly-miss self-heal step of
+// grant-steward-admin: AddAccount builds an AccountsAdd record granting the
+// target identity Admin with the supplied {aid, joinedAt} metadata, and submits
+// it via the space's AclClient. This is the record the handler writes to the
+// community-readonly ACL instead of 404ing.
+func TestMatouACLManager_AddAccount(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	_, identity, err := crypto.GenerateRandomEd25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating identity: %v", err)
+	}
+	addRec := &consensusproto.RawRecord{Payload: []byte("accounts-add-record")}
+	metadata := []byte(`{"aid":"EAN-a8gok9NE","joinedAt":"2026-09-08T00:00:00Z"}`)
+
+	mockSpace := mock_commonspace.NewMockSpace(ctrl)
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	mockACLClient := mock_aclclient.NewMockAclSpaceClient(ctrl)
+	builder := &mockACLRecordBuilder{buildAccountsAddResult: addRec}
+
+	client := &testACLClient{space: mockSpace}
+
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().Lock()
+	mockACL.EXPECT().Unlock()
+	mockACL.EXPECT().RecordBuilder().Return(builder)
+	mockSpace.EXPECT().AclClient().Return(mockACLClient)
+	mockACLClient.EXPECT().AddRecord(gomock.Any(), addRec).Return(nil)
+
+	mgr := NewMatouACLManager(client, nil)
+	if err := mgr.AddAccount(context.Background(), "readonly-space", identity, list.AclPermissionsAdmin, metadata); err != nil {
+		t.Fatalf("AddAccount error: %v", err)
+	}
+
+	if len(builder.buildAccountsAddCalls) != 1 {
+		t.Fatalf("expected 1 BuildAccountsAdd call, got %d", len(builder.buildAccountsAddCalls))
+	}
+	adds := builder.buildAccountsAddCalls[0].Additions
+	if len(adds) != 1 {
+		t.Fatalf("expected 1 addition, got %d", len(adds))
+	}
+	if adds[0].Permissions != list.AclPermissionsAdmin {
+		t.Errorf("expected Admin permission, got %v", adds[0].Permissions)
+	}
+	if string(adds[0].Metadata) != string(metadata) {
+		t.Errorf("metadata not passed through: got %q want %q", adds[0].Metadata, metadata)
+	}
+	gotRaw, _ := adds[0].Identity.Raw()
+	wantRaw, _ := identity.Raw()
+	if string(gotRaw) != string(wantRaw) {
+		t.Error("identity passed to BuildAccountsAdd does not match")
+	}
+}
+
+func TestMatouACLManager_AddAccount_GetSpaceError(t *testing.T) {
+	_, identity, _ := crypto.GenerateRandomEd25519KeyPair()
+	client := &testACLClient{getSpaceErr: fmt.Errorf("space not found")}
+
+	mgr := NewMatouACLManager(client, nil)
+	err := mgr.AddAccount(context.Background(), "missing-space", identity, list.AclPermissionsAdmin, nil)
+	if err == nil {
+		t.Fatal("expected error when GetSpace fails")
+	}
+}
+
+func TestMatouACLManager_AddAccount_BuildError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	_, identity, _ := crypto.GenerateRandomEd25519KeyPair()
+	mockSpace := mock_commonspace.NewMockSpace(ctrl)
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	builder := &mockACLRecordBuilder{buildAccountsAddErr: fmt.Errorf("crypto error")}
+
+	client := &testACLClient{space: mockSpace}
+
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().Lock()
+	mockACL.EXPECT().Unlock()
+	mockACL.EXPECT().RecordBuilder().Return(builder)
+
+	mgr := NewMatouACLManager(client, nil)
+	err := mgr.AddAccount(context.Background(), "readonly-space", identity, list.AclPermissionsAdmin, nil)
+	if err == nil {
+		t.Fatal("expected error when BuildAccountsAdd fails")
+	}
+}
+
+// TestMatouACLManager_FindAccountByAID_NilState confirms FindAccountByAID
+// surfaces a non-miss error (nil ACL state) rather than a sentinel miss, so
+// grant-steward-admin does not treat a transport/state failure as "unknown AID".
+func TestMatouACLManager_FindAccountByAID_NilState(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockSpace := mock_commonspace.NewMockSpace(ctrl)
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	client := &testACLClient{space: mockSpace}
+
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().RLock()
+	mockACL.EXPECT().RUnlock()
+	mockACL.EXPECT().AclState().Return(nil)
+
+	mgr := NewMatouACLManager(client, nil)
+	_, _, err := mgr.FindAccountByAID(context.Background(), "space", "EAID")
+	if err == nil {
+		t.Fatal("expected error when ACL state is nil")
+	}
+	if errors.Is(err, ErrAccountNotFoundForAID) {
+		t.Error("nil-state error must not be classified as an AID miss")
 	}
 }
 
