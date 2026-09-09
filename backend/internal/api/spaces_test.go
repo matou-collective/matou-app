@@ -760,3 +760,20 @@ func TestInviteRequest(t *testing.T) {
 		t.Errorf("Schema mismatch")
 	}
 }
+
+// spaceAccessState (#469 slice S2, spec §3.6) had zero test coverage. This
+// pins the "pending" mapping — the state a linked/recovered device reports
+// while its read key hasn't arrived from ACL yet — against the plumbing that
+// actually calls SpaceManager.SpaceReadKeyReady, not just the lower-level
+// function in package anysync. The mock client's default GetSpace errors, so
+// this is the "space open but no read key" / "space not yet reachable" case;
+// the "ok" case needs a real ACL with a delivered read key (out of scope for
+// a unit test, per the PR's own "needs live verification" note).
+func TestSpaceAccessState_PendingWhenSpaceUnreachable(t *testing.T) {
+	handler, _, _ := setupTestSpacesHandler(t)
+
+	got := handler.spaceAccessState(context.Background(), "space-1")
+	if got != anysync.SpaceAccessPending {
+		t.Errorf("spaceAccessState = %q, want %q (SpaceReadKeyReady must default to pending, never ok, on a GetSpace error)", got, anysync.SpaceAccessPending)
+	}
+}
