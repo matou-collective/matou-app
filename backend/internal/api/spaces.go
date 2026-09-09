@@ -126,6 +126,27 @@ type SpaceInfo struct {
 	SpaceName     string    `json:"spaceName"`
 	CreatedAt     time.Time `json:"createdAt"`
 	KeysAvailable bool      `json:"keysAvailable"`
+	// SpaceAccess is "ok" once the local account can read the space, or
+	// "pending" while an adopted space still waits for its read key to arrive
+	// via ACL state (a linked/recovered device before sync completes). Empty
+	// for spaces with no local keys yet.
+	SpaceAccess string `json:"spaceAccess,omitempty"`
+}
+
+// spaceAccessProbeTimeout bounds the per-space read-key probe in
+// HandleGetUserSpaces so a not-yet-synced space cannot stall the response.
+// Package var so tests can shrink it.
+var spaceAccessProbeTimeout = 3 * time.Second
+
+// spaceAccessState returns the read-key access state for an adopted space,
+// bounded by spaceAccessProbeTimeout.
+func (h *SpacesHandler) spaceAccessState(ctx context.Context, spaceID string) string {
+	accCtx, cancel := context.WithTimeout(ctx, spaceAccessProbeTimeout)
+	defer cancel()
+	if h.spaceManager.SpaceReadKeyReady(accCtx, spaceID) {
+		return anysync.SpaceAccessOK
+	}
+	return anysync.SpaceAccessPending
 }
 
 // HandleGetUserSpaces handles GET /api/v1/spaces/user?aid=<prefix>
@@ -166,6 +187,9 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 				info.KeysAvailable = true
 			}
 		}
+		if info.KeysAvailable {
+			info.SpaceAccess = h.spaceAccessState(ctx, privateSpace.SpaceID)
+		}
 		resp.PrivateSpace = info
 	}
 
@@ -182,6 +206,9 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 				info.KeysAvailable = true
 			}
 		}
+		if info.KeysAvailable {
+			info.SpaceAccess = h.spaceAccessState(ctx, communitySpace.SpaceID)
+		}
 		resp.CommunitySpace = info
 	}
 
@@ -197,6 +224,9 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 				info.KeysAvailable = true
 			}
 		}
+		if info.KeysAvailable {
+			info.SpaceAccess = h.spaceAccessState(ctx, roSpaceID)
+		}
 		resp.CommunityReadOnlySpace = info
 	}
 
@@ -211,6 +241,9 @@ func (h *SpacesHandler) HandleGetUserSpaces(w http.ResponseWriter, r *http.Reque
 			if _, keyErr := anysync.LoadSpaceKeySet(client.GetDataDir(), adminSpaceID); keyErr == nil {
 				info.KeysAvailable = true
 			}
+		}
+		if info.KeysAvailable {
+			info.SpaceAccess = h.spaceAccessState(ctx, adminSpaceID)
 		}
 		resp.AdminSpace = info
 	}
@@ -311,9 +344,10 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Use the peer key as the space signing key so the SDK client's account
-	// identity (peer key) matches the ACL owner. This ensures ACL operations
-	// like BuildInviteAnyone succeed when the admin creates invites later.
+	// Use the client's sign key (ACL identity) as the space signing key so the
+	// SDK client's account identity matches the ACL owner. This ensures ACL
+	// operations like BuildInviteAnyone succeed when the admin creates invites
+	// later. The sign key is mnemonic-derived and distinct from the device key.
 	keys.SigningKey = client.GetSigningKey()
 
 	result, err := client.CreateSpaceWithKeys(ctx, req.OrgAID, anysync.SpaceTypeCommunity, keys)
@@ -611,12 +645,12 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 	// Check if space already exists
 	existingSpace, err := h.spaceStore.GetUserSpace(ctx, req.UserAID)
 	if err == nil && existingSpace != nil {
-		// Even if space exists, persist peer key if mnemonic is provided
-		// (handles upgrades where peer key wasn't stored on initial creation)
+		// Even if space exists, persist the sign key (ACL identity) if a mnemonic
+		// is provided (handles upgrades where it wasn't stored on initial creation)
 		if req.Mnemonic != "" {
 			if client := h.spaceManager.GetClient(); client != nil {
-				if peerKey, peerErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0); peerErr == nil {
-					_ = anysync.PersistUserPeerKey(client.GetDataDir(), req.UserAID, peerKey)
+				if signKey, signErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0); signErr == nil {
+					_ = anysync.PersistUserSignKey(client.GetDataDir(), req.UserAID, signKey)
 				}
 			}
 		}
@@ -656,13 +690,13 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		// Derive and persist user's peer key for future operations (e.g. JoinWithInvite)
-		peerKey, peerErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0)
-		if peerErr != nil {
-			log.Printf("Warning: failed to derive peer key: %v\n", peerErr)
+		// Derive and persist user's sign key (ACL identity) for future operations (e.g. JoinWithInvite)
+		signKey, signErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0)
+		if signErr != nil {
+			log.Printf("Warning: failed to derive sign key: %v\n", signErr)
 		} else {
-			if persistErr := anysync.PersistUserPeerKey(client.GetDataDir(), req.UserAID, peerKey); persistErr != nil {
-				log.Printf("Warning: failed to persist peer key: %v\n", persistErr)
+			if persistErr := anysync.PersistUserSignKey(client.GetDataDir(), req.UserAID, signKey); persistErr != nil {
+				log.Printf("Warning: failed to persist sign key: %v\n", persistErr)
 			}
 		}
 
@@ -914,7 +948,7 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// In per-user mode the SDK client already has the user's peer key
+	// In per-user mode the SDK client already has the user's sign key
 	// (set via HandleSetIdentity → Reinitialize), so we use it directly.
 	client := h.spaceManager.GetClient()
 	if client == nil {
@@ -955,8 +989,8 @@ func (h *SpacesHandler) HandleJoinCommunity(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
-	// Use the peer key as the signing key so ObjectTree writes are authorized
-	// by the ACL (which registered the peer key during JoinWithInvite).
+	// Use the sign key (ACL identity) as the signing key so ObjectTree writes are
+	// authorized by the ACL (which registered this identity during JoinWithInvite).
 	communityKeys.SigningKey = client.GetSigningKey()
 	if err := anysync.PersistSpaceKeySet(dataDir, communitySpace.SpaceID, communityKeys); err != nil {
 		writeJSON(w, http.StatusInternalServerError, JoinCommunityResponse{
@@ -1080,14 +1114,14 @@ func (h *SpacesHandler) HandleVerifyAccess(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// Step 2: Check via user peer key against ACL (joined member).
-	userPeerKey, err := anysync.LoadUserPeerKey(dataDir, aid)
+	// Step 2: Check via user sign key (ACL identity) against ACL (joined member).
+	userSignKey, err := anysync.LoadUserSignKey(dataDir, aid)
 	if err != nil {
 		writeJSON(w, http.StatusOK, VerifyAccessResponse{HasAccess: false})
 		return
 	}
 
-	perms, err := aclMgr.GetPermissions(ctx, communitySpace.SpaceID, userPeerKey.GetPublic())
+	perms, err := aclMgr.GetPermissions(ctx, communitySpace.SpaceID, userSignKey.GetPublic())
 	if err != nil {
 		writeJSON(w, http.StatusOK, VerifyAccessResponse{HasAccess: false})
 		return

@@ -157,16 +157,13 @@ watch(() => props.messages.length, async (newLen, oldLen) => {
     return;
   }
 
-  // Initial load or channel switch — scroll to divider if present, else bottom.
+  // Initial load or channel switch — always open pinned to the latest message.
+  // The unread divider stays rendered inline as a marker the user can scroll
+  // up to; scrolling TO it on open meant a channel with any unreads never
+  // opened at the bottom of the log, which read as broken on mobile.
   if (!initialScrollDone) {
-    const dividerEl = containerRef.value.querySelector('.new-messages-divider');
-    if (dividerEl) {
-      dividerEl.scrollIntoView({ block: 'center' });
-      atBottom.value = false;
-    } else {
-      scrollToBottom();
-      atBottom.value = true;
-    }
+    scrollToBottom();
+    atBottom.value = true;
     initialScrollDone = true;
   }
 }, { immediate: true });
@@ -218,6 +215,9 @@ watch(viewportHeight, async () => {
 .message-list {
   flex: 1;
   overflow-y: auto;
+  // Don't chain an at-the-bottom swipe into the page scroller — on mobile
+  // that scrolled the whole chat column up and exposed empty space below it.
+  overscroll-behavior: contain;
   padding: 1rem;
   display: flex;
   flex-direction: column;

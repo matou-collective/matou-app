@@ -194,6 +194,115 @@ func TestLoadFromSpace_NewType(t *testing.T) {
 	}
 }
 
+// TestLoadFromSpace_DuplicateHighestVersionWins: when the space holds two
+// same-name definitions, the highest-Version one is registered regardless of the
+// order ReadObjectsByType enumerates them, and core-field reassertion still
+// applies to the winner.
+func TestLoadFromSpace_DuplicateHighestVersionWins(t *testing.T) {
+	builtin := func() *TypeDefinition {
+		r := NewRegistry()
+		r.Bootstrap()
+		b, _ := r.Get("Proposal")
+		return b
+	}()
+
+	// Low-version copy carries a marker custom field; high-version copy carries a
+	// different one and also drops a core field to prove reassertion runs.
+	low := cloneDef(builtin)
+	low.Version = builtin.Version + 1
+	low.Fields = append(low.Fields, FieldDef{Name: "from_low", Type: "string"})
+
+	high := cloneDef(builtin)
+	high.Version = builtin.Version + 2
+	high.Fields = append(high.Fields, FieldDef{Name: "from_high", Type: "string"})
+	// Drop every core field from the high copy so reassertion has something to do.
+	kept := []FieldDef{}
+	for _, f := range high.Fields {
+		if !f.Core {
+			kept = append(kept, f)
+		}
+	}
+	high.Fields = kept
+
+	coreNames := builtin.CoreFieldNames()
+	if len(coreNames) == 0 {
+		t.Fatal("test needs a built-in with core fields")
+	}
+
+	for _, tc := range []struct {
+		name    string
+		entries []ObjectEntry
+	}{
+		{"low-then-high", []ObjectEntry{mustEntry(t, "low", low), mustEntry(t, "high", high)}},
+		{"high-then-low", []ObjectEntry{mustEntry(t, "high", high), mustEntry(t, "low", low)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRegistry()
+			r.Bootstrap()
+
+			if err := r.LoadFromSpace(context.Background(), fakeReader{entries: tc.entries}, "space"); err != nil {
+				t.Fatalf("LoadFromSpace: %v", err)
+			}
+
+			got, ok := r.Get("Proposal")
+			if !ok {
+				t.Fatal("Proposal missing after hydration")
+			}
+			if got.Version != builtin.Version+2 {
+				t.Errorf("version: got %d, want %d (the higher-version duplicate)", got.Version, builtin.Version+2)
+			}
+			if _, ok := got.Field("from_high"); !ok {
+				t.Error("expected the high-version duplicate's field to win")
+			}
+			if _, ok := got.Field("from_low"); ok {
+				t.Error("the low-version duplicate should not have been registered")
+			}
+			// Core-field reassertion still applies to the winner.
+			for _, name := range coreNames {
+				builtinField, _ := builtin.Field(name)
+				gotField, ok := got.Field(name)
+				if !ok {
+					t.Errorf("core field %q was dropped by hydration of the winner", name)
+					continue
+				}
+				if gotField.Type != builtinField.Type || !gotField.Core {
+					t.Errorf("core field %q not re-asserted on the winner: got %+v", name, gotField)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadFromSpace_DuplicateTieKeepsFirst: same-name duplicates on an identical
+// Version keep the first entry seen (no stamp is carried to break the tie).
+func TestLoadFromSpace_DuplicateTieKeepsFirst(t *testing.T) {
+	r := NewRegistry()
+	r.Bootstrap()
+	builtin, _ := r.Get("Proposal")
+
+	first := cloneDef(builtin)
+	first.Version = builtin.Version + 1
+	first.Fields = append(first.Fields, FieldDef{Name: "from_first", Type: "string"})
+
+	second := cloneDef(builtin)
+	second.Version = builtin.Version + 1 // same version → tie
+	second.Fields = append(second.Fields, FieldDef{Name: "from_second", Type: "string"})
+
+	if err := r.LoadFromSpace(context.Background(), fakeReader{
+		entries: []ObjectEntry{mustEntry(t, "first", first), mustEntry(t, "second", second)},
+	}, "space"); err != nil {
+		t.Fatalf("LoadFromSpace: %v", err)
+	}
+
+	got, _ := r.Get("Proposal")
+	if _, ok := got.Field("from_first"); !ok {
+		t.Error("tie should keep the first entry seen")
+	}
+	if _, ok := got.Field("from_second"); ok {
+		t.Error("the second tied entry should not have won")
+	}
+}
+
 // cloneDef returns a shallow copy of def with a fresh Fields slice so tests can
 // mutate the copy without touching the registry's built-in.
 func cloneDef(def *TypeDefinition) *TypeDefinition {

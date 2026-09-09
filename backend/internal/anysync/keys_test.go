@@ -293,18 +293,23 @@ func TestMnemonicRecovery_PeerKeyAndSigningKeyMatch(t *testing.T) {
 		t.Fatalf("NewPeerKeyManager failed: %v", err)
 	}
 
-	// The PeerKeyManager's key must match the directly-derived peer key
-	mgrPeerID := mgr.GetPeerID()
-	if mgrPeerID != peerPeerID {
-		t.Errorf("PeerKeyManager PeerID doesn't match DeriveKeyFromMnemonic:\n  manager: %s\n  direct:  %s", mgrPeerID, peerPeerID)
+	// The PeerKeyManager's sign key (ACL identity) must match the
+	// directly-derived mnemonic key. The device (peer) key is a separate
+	// per-install random key, so GetPeerID() is expected to differ.
+	mgrSignPeerID := mgr.GetSigningKey().GetPublic().PeerId()
+	if mgrSignPeerID != peerPeerID {
+		t.Errorf("PeerKeyManager sign key doesn't match DeriveKeyFromMnemonic:\n  manager: %s\n  direct:  %s", mgrSignPeerID, peerPeerID)
+	}
+	if mgr.GetPeerID() == peerPeerID {
+		t.Error("device peer key must differ from the mnemonic-derived sign key")
 	}
 
-	mgrPubBytes, err := mgr.GetPrivKey().GetPublic().Marshall()
+	mgrPubBytes, err := mgr.GetSigningKey().GetPublic().Marshall()
 	if err != nil {
-		t.Fatalf("failed to marshal manager public key: %v", err)
+		t.Fatalf("failed to marshal manager sign public key: %v", err)
 	}
 	if string(mgrPubBytes) != string(peerPubBytes) {
-		t.Error("PeerKeyManager public key bytes don't match DeriveKeyFromMnemonic")
+		t.Error("PeerKeyManager sign public key bytes don't match DeriveKeyFromMnemonic")
 	}
 
 	// Step 3: For each space index, derive keys, override signing key, persist, load, verify
@@ -485,46 +490,85 @@ func TestMnemonicRecovery_PeerKeyFileRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMnemonicRecovery_UserPeerKeyPersistence verifies that PersistUserPeerKey
-// and LoadUserPeerKey correctly round-trip the mnemonic-derived peer key.
-func TestMnemonicRecovery_UserPeerKeyPersistence(t *testing.T) {
+// TestMnemonicRecovery_UserSignKeyPersistence verifies that PersistUserSignKey
+// and LoadUserSignKey correctly round-trip the mnemonic-derived sign key.
+func TestMnemonicRecovery_UserSignKeyPersistence(t *testing.T) {
 	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 	userAID := "EAdmin123456789"
 
-	tmpDir, err := os.MkdirTemp("", "user_peer_*")
+	tmpDir, err := os.MkdirTemp("", "user_sign_*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Derive peer key
-	peerKey, err := DeriveKeyFromMnemonic(mnemonic, 0)
+	// Derive sign key
+	signKey, err := DeriveKeyFromMnemonic(mnemonic, 0)
 	if err != nil {
 		t.Fatalf("DeriveKeyFromMnemonic failed: %v", err)
 	}
 
-	// Persist as user peer key
-	if err := PersistUserPeerKey(tmpDir, userAID, peerKey); err != nil {
-		t.Fatalf("PersistUserPeerKey failed: %v", err)
+	// Persist as user sign key
+	if err := PersistUserSignKey(tmpDir, userAID, signKey); err != nil {
+		t.Fatalf("PersistUserSignKey failed: %v", err)
 	}
 
 	// Load it back
-	loadedKey, err := LoadUserPeerKey(tmpDir, userAID)
+	loadedKey, err := LoadUserSignKey(tmpDir, userAID)
 	if err != nil {
-		t.Fatalf("LoadUserPeerKey failed: %v", err)
+		t.Fatalf("LoadUserSignKey failed: %v", err)
 	}
 
 	// Compare
-	origPeerID := peerKey.GetPublic().PeerId()
+	origPeerID := signKey.GetPublic().PeerId()
 	loadedPeerID := loadedKey.GetPublic().PeerId()
 	if origPeerID != loadedPeerID {
-		t.Errorf("user peer key PeerID mismatch:\n  original: %s\n  loaded:   %s", origPeerID, loadedPeerID)
+		t.Errorf("user sign key PeerID mismatch:\n  original: %s\n  loaded:   %s", origPeerID, loadedPeerID)
 	}
 
-	origPrivBytes, _ := peerKey.Marshall()
+	origPrivBytes, _ := signKey.Marshall()
 	loadedPrivBytes, _ := loadedKey.Marshall()
 	if string(origPrivBytes) != string(loadedPrivBytes) {
-		t.Error("user peer key private bytes changed after round-trip")
+		t.Error("user sign key private bytes changed after round-trip")
+	}
+}
+
+// TestLoadUserSignKey_LegacyPeerKeyFallback verifies LoadUserSignKey falls back
+// to the pre-#468 users/{aid}/peer.key filename when sign.key is absent.
+func TestLoadUserSignKey_LegacyPeerKeyFallback(t *testing.T) {
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+	userAID := "ELegacy123456789"
+
+	tmpDir, err := os.MkdirTemp("", "user_sign_legacy_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	signKey, err := DeriveKeyFromMnemonic(mnemonic, 0)
+	if err != nil {
+		t.Fatalf("DeriveKeyFromMnemonic failed: %v", err)
+	}
+
+	// Write the legacy peer.key file (no sign.key present).
+	userDir := filepath.Join(tmpDir, "users", userAID)
+	if err := os.MkdirAll(userDir, 0700); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	data, err := signKey.Marshall()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "peer.key"), data, 0600); err != nil {
+		t.Fatalf("write legacy peer.key failed: %v", err)
+	}
+
+	loadedKey, err := LoadUserSignKey(tmpDir, userAID)
+	if err != nil {
+		t.Fatalf("LoadUserSignKey (legacy fallback) failed: %v", err)
+	}
+	if loadedKey.GetPublic().PeerId() != signKey.GetPublic().PeerId() {
+		t.Error("legacy peer.key fallback did not resolve the stored sign key")
 	}
 }
 

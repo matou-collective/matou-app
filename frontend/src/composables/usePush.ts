@@ -26,9 +26,10 @@
  */
 
 import { computed, watch } from "vue";
-import type { Router } from "vue-router";
+import type { RouteLocationRaw, Router } from "vue-router";
 import { useNotificationsStore } from "stores/notifications";
 import { useChatStore } from "stores/chat";
+import { getMessages } from "src/lib/api/chat";
 import { useIdentityStore } from "stores/identity";
 import { useOnboardingStore } from "stores/onboarding";
 import { createLogger } from "src/lib/logging";
@@ -77,6 +78,12 @@ export const ANDROID_CHANNEL_GROUP = "matou_channel";
 export interface ComposedNotification {
   channelId: string;
   title: string;
+  /**
+   * Message preview shown in the expanded notification. Composed ON-DEVICE
+   * from local state after the sync — the FCM payload itself stays
+   * content-free (§4). Empty when the message could not be resolved.
+   */
+  body: string;
   /** Drives which Android notification channel it is posted on (§3). */
   kind: MessageKind;
 }
@@ -108,8 +115,8 @@ const RELAY_SESSION_REFRESH_SKEW_MS = 5 * 60 * 1000;
 /** Leading-edge burst state for one channel (§5). */
 interface CoalesceState {
   timer: ReturnType<typeof setTimeout>;
-  /** Title presented on the leading edge — a trailing update only fires if it changed. */
-  presentedTitle: string;
+  /** Content presented on the leading edge — a trailing update only fires if it changed. */
+  presentedKey: string;
   /** Latest notification seen during the window, presented on the trailing edge. */
   pending: ComposedNotification | null;
 }
@@ -124,6 +131,12 @@ let relaySessionAid: string | null = null;
 /** Epoch-ms expiry of the minted relay session, or 0 when unknown/none. */
 let relaySessionExpiresAt = 0;
 let listenersRegistered = false;
+/**
+ * Channel id from a cold-start notification tap that arrived before the app
+ * cleared the onboarding/auth gate — replayed by the gate-exit navigation
+ * (consumePushDeepLinkTarget). Null when there is nothing pending.
+ */
+let pendingDeepLinkChannelId: string | null = null;
 /** Removes the foreground (visibilitychange) listener; null when none is wired. */
 let removeForegroundListener: (() => void) | null = null;
 const coalesceStates = new Map<string, CoalesceState>();
@@ -270,6 +283,21 @@ export function ensurePushListeners(): void {
   void plugin.addListener("pushNotificationActionPerformed", (action) => {
     handlePushTap(action.notification.data as PushDataPayload | undefined);
   });
+
+  // Taps on the notifications this app actually posts — LocalNotifications
+  // scheduled by presentLocalNotification, or the Android headless wake's
+  // native twin (#421) — arrive as localNotificationActionPerformed with the
+  // channel id in `extra.c`. pushNotificationActionPerformed above only fires
+  // for FCM-rendered notifications, which a data-only §4 payload never
+  // produces, so without this listener a tap opened the app but never
+  // deep-linked (§6). Feature-detected: older shells inject a schedule-only
+  // plugin surface.
+  const local = getLocalNotificationsPlugin();
+  if (local?.addListener) {
+    void local.addListener("localNotificationActionPerformed", (action) => {
+      handlePushTap({ t: "m", c: action.notification?.extra?.c });
+    });
+  }
 
   // Deregister on logout, deregister+re-register on identity switch (§7).
   const identity = useIdentityStore();
@@ -507,6 +535,13 @@ export async function handleIdentityChange(
   oldAid: string | null,
 ): Promise<void> {
   if (newAid === oldAid) return;
+  // A stashed cold-start deep-link target (#445) is scoped to whichever
+  // identity was signed in when the tap fired. On any identity change —
+  // logout, switch, or a fresh registration racing a stale tap for a
+  // previous identity on this device — drop it rather than let the new
+  // identity's onboarding-complete gate replay a target that was never
+  // meant for them.
+  pendingDeepLinkChannelId = null;
   if (oldAid && currentToken !== null) {
     await deregisterPush();
   }
@@ -589,7 +624,8 @@ export async function handlePushReceipt(
   // if sync failed or the channel is unknown (§4).
   const channelName = synced ? resolveChannelName(channelId) : null;
   const title = channelName ? `New message in ${channelName}` : "New messages";
-  const composed: ComposedNotification = { channelId, title, kind };
+  const body = synced ? await resolveLatestMessagePreview(channelId) : "";
+  const composed: ComposedNotification = { channelId, title, body, kind };
 
   presentCoalesced(composed);
   return composed;
@@ -617,7 +653,7 @@ function presentCoalesced(notif: ComposedNotification): void {
       () => closeCoalesceWindow(notif.channelId),
       COALESCE_WINDOW_MS,
     ),
-    presentedTitle: notif.title,
+    presentedKey: coalesceKey(notif),
     pending: null,
   });
 }
@@ -627,8 +663,37 @@ function closeCoalesceWindow(channelId: string): void {
   const state = coalesceStates.get(channelId);
   coalesceStates.delete(channelId);
   if (!state?.pending) return;
-  if (state.pending.title === state.presentedTitle) return; // nothing new to say
+  if (coalesceKey(state.pending) === state.presentedKey) return; // nothing new to say
   presentLocalNotification(state.pending);
+}
+
+/** What the user would actually see — the trailing coalesced update only fires when this changes. */
+function coalesceKey(notif: ComposedNotification): string {
+  return `${notif.title}\n${notif.body}`;
+}
+
+/** Longest preview shown in the expanded notification body. */
+const PREVIEW_MAX_CHARS = 140;
+
+/**
+ * Best-effort preview of the channel's newest message for the notification
+ * body, read from the just-synced local store (§4 keeps the wire payload
+ * content-free; this never leaves the device). "" keeps the notification
+ * title-only, exactly as before.
+ */
+async function resolveLatestMessagePreview(channelId: string): Promise<string> {
+  try {
+    const res = await getMessages(channelId, { limit: 3 });
+    const msg = res.messages?.find((m) => !m.deletedAt && m.content);
+    if (!msg) return "";
+    const text =
+      msg.content.length > PREVIEW_MAX_CHARS
+        ? `${msg.content.slice(0, PREVIEW_MAX_CHARS - 1)}\u2026`
+        : msg.content;
+    return msg.senderName ? `${msg.senderName}: ${text}` : text;
+  } catch {
+    return "";
+  }
 }
 
 /** Emit the on-device notification via the native local-notifications plugin. */
@@ -642,7 +707,7 @@ function presentLocalNotification(notif: ComposedNotification): void {
       {
         id,
         title: notif.title,
-        body: "",
+        body: notif.body,
         channelId:
           notif.kind === "dm" ? ANDROID_CHANNEL_DM : ANDROID_CHANNEL_GROUP,
         extra: { c: notif.channelId },
@@ -660,11 +725,39 @@ function hashChannelId(channelId: string): number {
   return Math.abs(h) % 2147483647;
 }
 
+/** True while the router sits on a route where a chat deep-link survives the
+ *  auth guard (any /dashboard route). On the splash/onboarding gate it does
+ *  not — boot/keri.ts bounces a /dashboard push back to '/'. */
+function isOnDeepLinkableRoute(): boolean {
+  return (router?.currentRoute.value.path ?? "").startsWith("/dashboard");
+}
+
 /** Deep-link a notification tap to the target channel (§6): /chat?c=<id>. */
 export function handlePushTap(data: PushDataPayload | undefined): void {
   const channelId = data?.c;
   if (!channelId || !router) return;
+  // A cold-start tap replays this listener while the app is still on the
+  // splash/onboarding gate. A direct push to the chat route is bounced to '/'
+  // by the auth guard, so stash the channel for the gate-exit navigation to
+  // replay (consumePushDeepLinkTarget). When already on a dashboard route
+  // (alive/backgrounded) the push below deep-links immediately — no stash.
+  if (!isOnDeepLinkableRoute()) {
+    pendingDeepLinkChannelId = channelId;
+  }
   void router.push({ name: "chat", query: { c: channelId } });
+}
+
+/**
+ * Consume a channel id stashed by a cold-start notification tap and return the
+ * chat route to deep-link to, or null when there is none (or chat isn't in this
+ * build). Clears the stash, so the onboarding gate deep-links at most once per
+ * boot. The gate calls `router.push(consumePushDeepLinkTarget() ?? '/dashboard')`.
+ */
+export function consumePushDeepLinkTarget(): RouteLocationRaw | null {
+  const channelId = pendingDeepLinkChannelId;
+  pendingDeepLinkChannelId = null;
+  if (!channelId || !__KIT_CHAT__) return null;
+  return { name: "chat", query: { c: channelId } };
 }
 
 /** Reset module state — test-only seam. */
@@ -674,6 +767,7 @@ export function __resetPushForTest(): void {
   registeredAid = null;
   clearRelaySession();
   listenersRegistered = false;
+  pendingDeepLinkChannelId = null;
   removeForegroundListener?.();
   removeForegroundListener = null;
   coalesceStates.forEach((s) => clearTimeout(s.timer));
@@ -692,6 +786,7 @@ export function usePush() {
     handleAppForeground,
     handlePushReceipt,
     handlePushTap,
+    consumePushDeepLinkTarget,
     recomputeBadge,
   };
 }

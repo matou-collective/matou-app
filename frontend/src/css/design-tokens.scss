@@ -35,6 +35,12 @@
   --matou-input: transparent;
   --matou-input-background: #f0f7f9;
   --matou-switch-background: #b0cbd5;
+
+  // Theme-INVARIANT brand surface colours (splash, home welcome header):
+  // deliberately identical in dark mode — these surfaces keep the light-mode
+  // brand look, so no .dark override exists for them.
+  --matou-brand: #{$kit-primary};
+  --matou-brand-accent: #{$kit-accent};
   --matou-ring: #4a9d9c;
 
   // Surfaces & text (referenced with light fallbacks across profile

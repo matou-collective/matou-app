@@ -154,6 +154,16 @@ func OptionsFromEnv() (Options, error) {
 	// else the fixed dev constant (see api.ResolveAPIToken).
 	o.APIToken = api.ResolveAPIToken()
 
+	// Identity at-rest encryption key: MATOU_IDENTITY_KEY holds opaque key
+	// material the shell reads from the OS trust root (Electron safeStorage /
+	// Android Keystore / iOS Keychain) and hands over at spawn. deriveKey
+	// hashes it to a fixed AES-256 key, so any length is fine. Empty (unset)
+	// keeps the legacy plaintext identity.json, so dev/test/CI are unaffected
+	// (issue #117).
+	if key := os.Getenv("MATOU_IDENTITY_KEY"); key != "" {
+		o.IdentityEncryptionKey = []byte(key)
+	}
+
 	// Signed-auth key-state URL template (issue #18); empty derives from config.
 	o.KeyStateURL = os.Getenv("MATOU_KERIA_KEYSTATE_URL")
 	if ttlStr := os.Getenv("MATOU_AUTH_SESSION_TTL"); ttlStr != "" {

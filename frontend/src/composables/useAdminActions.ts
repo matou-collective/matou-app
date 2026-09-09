@@ -622,25 +622,89 @@ export function useAdminActions() {
       // pre-rotation key — the cause of the flaky "Invalid signing index = -1".
       const snOp = await client.keyStates().query(stewardAid, undefined, undefined);
       const snRes = await client.operations().wait(snOp, { signal: AbortSignal.timeout(30000) });
-      const stewardSn0 = parseInt(((snRes.response as { s?: string })?.s ?? '0'), 16);
-      const expectedStewardSn = (stewardSn0 + 1).toString(16);
-      console.log(`[AdminActions] steward at sn=${stewardSn0}; expecting sn=${expectedStewardSn} after round-1 rotation`);
+      const stewardState = snRes.response as { s?: string; k?: string[] };
+      const stewardSn0 = parseInt((stewardState?.s ?? '0'), 16);
 
-      // --- Step 2a: Round 1 — admin pre-rotates, group rotation adds member to rstates ---
-      processingStep.value = 'Inviting steward (round 1)...';
-      onStep?.('Inviting steward (round 1)...');
-      await keriClient.addMemberRound1(orgName, stewardAid, personalAid.name);
+      // Idempotency / resume: if the steward's CURRENT signing key is already
+      // one of the group's current signing keys, both multisig rounds have
+      // completed (round 2 is what puts the member into `k`). Re-running them
+      // would rotate admin + group twice more and re-open the round-1/round-2
+      // coordination race for nothing. This is the resume path after an
+      // interrupted upgrade — e.g. 2026-09-07, when the rounds finished but the
+      // credential re-issue never ran because KERIA hung mid-flow.
+      // identifiers().list() returns name/prefix only (KERIA info(full=False));
+      // key state is ONLY on identifiers().get(). Reading `.state` off the list
+      // entry silently yields [] and the pre-checks below all fall through to
+      // the full rounds (2026-09-08 01:43: that burned two more admin keys).
+      const orgFull = await client.identifiers().get(orgName);
+      const adminFull = await client.identifiers().get(personalAid.name);
+      const groupState = (orgFull?.state ?? {}) as { k?: string[]; n?: string[]; s?: string };
+      const groupKeys = groupState.k ?? [];
+      const groupNextDigs = groupState.n ?? [];
+      const stewardKeys = stewardState?.k ?? [];
+      const alreadySigner = stewardKeys.length > 0 && stewardKeys.some(k => groupKeys.includes(k));
+      // Admin's own key must ALSO still be the one the group commits. If an
+      // earlier run rotated admin's personal AID (round 1 / round 2 step (a))
+      // and then died before the matching group rotation, the group still
+      // lists admin's PREVIOUS key: every group-signed op (credential revoke /
+      // issue below) would fail with "Invalid signing index = -1".
+      const adminState = (adminFull?.state ?? {}) as { k?: string[]; s?: string };
+      const adminKeys = adminState.k ?? [];
+      const adminInGroup = adminKeys.some(k => groupKeys.includes(k));
+      if (groupKeys.length === 0 || adminKeys.length === 0) {
+        throw new Error(`Could not read key state for ${orgName} / ${personalAid.name} — refusing to guess the multisig state`);
+      }
+      if (alreadySigner && adminInGroup) {
+        console.log(`[AdminActions] steward ${stewardAid.slice(0, 12)}... is already a signer of ${orgName} (group sn=${groupState.s}); skipping multisig rounds`);
+        onStep?.('Inviting steward (round 1)...');
+        onStep?.('Waiting for steward to accept...');
+        onStep?.('Promoting steward to signer (round 2)...');
+      } else if (alreadySigner && !adminInGroup) {
+        // Re-align: the group pre-committed admin's CURRENT key as a next key
+        // (its `n` holds the digest of the key admin has since rotated to), so
+        // one group rotation committing [admin-current, steward-current] is
+        // valid and restores admin as a signer. This is round 2 WITHOUT its
+        // pre-rotation step — rotating admin again would move past the
+        // committed next key and KERIA would reject the group rotation.
+        const signify = await import('signify-ts');
+        const adminNextMatch = adminKeys.some((k) => {
+          const dig = new signify.Diger({ code: signify.MtrDex.Blake3_256 }, new signify.Verfer({ qb64: k }).qb64b);
+          return groupNextDigs.includes(dig.qb64);
+        });
+        if (!adminNextMatch) {
+          throw new Error(
+            `Org group ${orgName} commits neither admin's current key nor its digest as a next key ` +
+            `(admin sn=${adminState.s}, group sn=${groupState.s}). ` +
+            'The group cannot be re-aligned automatically — manual KERI recovery needed.',
+          );
+        }
+        console.log(`[AdminActions] steward already a signer but admin rotated past the group's committed key; re-aligning ${orgName} with one group rotation (no pre-rotation)`);
+        onStep?.('Inviting steward (round 1)...');
+        onStep?.('Waiting for steward to accept...');
+        processingStep.value = 'Promoting steward to signer (round 2)...';
+        onStep?.('Promoting steward to signer (round 2)...');
+        await keriClient.addMemberRound2(orgName, stewardAid, personalAid.name, stewardSn0.toString(16), { preRotate: false });
+        console.log('[AdminActions] Org group re-aligned with admin key state');
+      } else {
+        const expectedStewardSn = (stewardSn0 + 1).toString(16);
+        console.log(`[AdminActions] steward at sn=${stewardSn0}; expecting sn=${expectedStewardSn} after round-1 rotation`);
 
-      // --- Step 2b: Wait for the steward's frontend to accept and rotate ---
-      processingStep.value = 'Waiting for steward to accept...';
-      onStep?.('Waiting for steward to accept...');
-      await keriClient.waitForMemberRotation(stewardAid, expectedStewardSn, { timeoutMs: 5 * 60_000 });
+        // --- Step 2a: Round 1 — admin pre-rotates, group rotation adds member to rstates ---
+        processingStep.value = 'Inviting steward (round 1)...';
+        onStep?.('Inviting steward (round 1)...');
+        await keriClient.addMemberRound1(orgName, stewardAid, personalAid.name);
 
-      // --- Step 2c: Round 2 — admin pre-rotates again, member becomes signer ---
-      processingStep.value = 'Promoting steward to signer (round 2)...';
-      onStep?.('Promoting steward to signer (round 2)...');
-      await keriClient.addMemberRound2(orgName, stewardAid, personalAid.name, expectedStewardSn);
-      console.log('[AdminActions] Steward added to org multisig');
+        // --- Step 2b: Wait for the steward's frontend to accept and rotate ---
+        processingStep.value = 'Waiting for steward to accept...';
+        onStep?.('Waiting for steward to accept...');
+        await keriClient.waitForMemberRotation(stewardAid, expectedStewardSn, { timeoutMs: 5 * 60_000 });
+
+        // --- Step 2c: Round 2 — admin pre-rotates again, member becomes signer ---
+        processingStep.value = 'Promoting steward to signer (round 2)...';
+        onStep?.('Promoting steward to signer (round 2)...');
+        await keriClient.addMemberRound2(orgName, stewardAid, personalAid.name, expectedStewardSn);
+        console.log('[AdminActions] Steward added to org multisig');
+      }
 
       // --- Steps 3-4: Revoke the old credential + issue a new one with the
       // updated role, and update the profile. Shared with the non-steward

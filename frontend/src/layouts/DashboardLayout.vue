@@ -5,7 +5,9 @@
       <!-- Logo Header -->
       <div class="sidebar-header">
         <div class="logo-container">
-          <img :src="kitLogo" :alt="KIT.brand.name" class="logo-icon" />
+          <div class="logo-badge">
+            <img :src="kitLogo" :alt="KIT.brand.name" class="logo-icon" />
+          </div>
           <div class="logo-text">
             <span class="logo-title">{{ KIT.brand.name }}</span>
             <span class="logo-subtitle">Community</span>
@@ -192,7 +194,7 @@ import { useProfileViewer } from 'stores/profileViewer';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
 import {
-  NAV_ITEM_META,
+  FEATURE_NAV_ITEMS,
   isNavActive as isNavActiveFor,
   badgeLabel,
   type NavItemMeta,
@@ -268,7 +270,7 @@ const navBadges = computed<Record<string, number>>(() => ({
 }));
 
 const navItems = computed(() =>
-  NAV_ITEM_META.map((meta) => ({
+  FEATURE_NAV_ITEMS.map((meta) => ({
     ...meta,
     icon: NAV_ICONS[meta.name] as Component,
     badge: navBadges.value[meta.name] ?? 0,
@@ -478,9 +480,25 @@ onBeforeUnmount(() => {
   gap: 0.75rem;
 }
 
+/* Round brand badge: the kit logo is a wide mark (512x282), so it sits
+   centred inside a solid primary circle instead of being stretched square. */
+.logo-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--matou-sidebar-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
 .logo-icon {
-  width: 60px;
-  height: 60px;
+  width: 28px;
+  height: auto;
+  max-height: 28px;
+  object-fit: contain;
+  display: block;
 }
 
 .logo-text {
@@ -829,8 +847,17 @@ onBeforeUnmount(() => {
   // Chat manages its own bottom-nav inset (ChatPage.vue's reserve-tab-bar),
   // so this layout must not double up or the page ends up taller than the
   // viewport and over-scrolling reveals empty space below the composer.
+  // Beyond dropping the padding, hard-lock the route to the viewport height:
+  // the chat column sizes itself to the visual viewport, and any drift (a
+  // stale keyboard height, inset rounding) must never make the page itself
+  // scrollable — over-scrolling past the chat log revealed keyboard-sized
+  // empty space beneath it on device.
   .main-content.is-chat-route {
     padding-bottom: 0;
+    height: calc(100dvh - var(--titlebar-height));
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
   }
 
   .bottom-nav {
