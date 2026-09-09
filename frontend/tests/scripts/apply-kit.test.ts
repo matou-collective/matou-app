@@ -34,7 +34,7 @@ describe('apply-kit (core)', () => {
     // productName is the OS-facing packaging identity and is diacritic-folded to ASCII
     // (apply-kit.mjs), while brand.name keeps its macrons everywhere users read.
     expect(build).toMatchObject({ appId: 'org.matou.app', productName: 'Matou', artifactBase: 'matou', executableName: 'matou', androidApplicationId: 'nz.matou.app', updates: true, primaryColour: '#1E5F74' });
-    expect(build.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'draft' }]);
+    expect(build.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]);
     expect(await readFile(join(root, 'src-capacitor/android/app/build.gradle'), 'utf8')).toContain('applicationId "nz.matou.app"');
     const tokens = await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8');
     expect(tokens).toContain('$kit-primary: #1E5F74;');
@@ -119,5 +119,25 @@ describe('kit secondary wash (#337)', () => {
     expect(scss).toContain('--matou-secondary-strong: #F2B134;');
     expect(scss).toContain('--matou-secondary: color-mix(in srgb, #F2B134 12%, transparent);');
     expect(scss).toContain('--matou-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
+  });
+});
+
+describe('apply-kit (features, phase 4)', () => {
+  const FEATURES = {
+    identity: true, chat: false, projects: true, proposals: true,
+    notices: true, events: false, maramataka: true,
+    order: ['projects', 'chat', 'proposals', 'notices', 'events'],
+  };
+
+  it('writes src/generated/features.json verbatim from the kit', async () => {
+    await applyKit(await kitDir({ features: FEATURES }), root, { icons: false });
+    const f = JSON.parse(await readFile(join(root, 'src/generated/features.json'), 'utf8'));
+    expect(f).toEqual(FEATURES);
+  });
+
+  it('rejects a kit with a malformed features block', async () => {
+    await expect(
+      applyKit(await kitDir({ features: { identity: true } }), root, { icons: false }),
+    ).rejects.toThrow(/features/);
   });
 });

@@ -26,20 +26,20 @@ func setupTestHandler(t *testing.T) (*CredentialsHandler, func()) {
 		OrgName:  "Test Organization",
 	})
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("failed to create KERI client: %v", err)
 	}
 
 	// Create anystore
 	store, err := anystore.NewLocalStore(anystore.DefaultConfig(tmpDir))
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("failed to create anystore: %v", err)
 	}
 
 	cleanup := func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}
 
 	return NewCredentialsHandler(keriClient, store), cleanup

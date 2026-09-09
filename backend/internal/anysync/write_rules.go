@@ -150,13 +150,13 @@ type LoggingRejectionRecorder struct {
 	max    int
 }
 
-// NewLoggingRejectionRecorder creates a recorder that retains up to max recent
-// distinct rejections (max <= 0 defaults to 100).
-func NewLoggingRejectionRecorder(max int) *LoggingRejectionRecorder {
-	if max <= 0 {
-		max = 100
+// NewLoggingRejectionRecorder creates a recorder that retains up to maxN recent
+// distinct rejections (maxN <= 0 defaults to 100).
+func NewLoggingRejectionRecorder(maxN int) *LoggingRejectionRecorder {
+	if maxN <= 0 {
+		maxN = 100
 	}
-	return &LoggingRejectionRecorder{max: max, seen: make(map[string]struct{})}
+	return &LoggingRejectionRecorder{max: maxN, seen: make(map[string]struct{})}
 }
 
 // RecordRejection logs the rejection and appends it to the bounded ring,
