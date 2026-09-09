@@ -1,4 +1,3 @@
-// backend/internal/contributions/proof.go
 package contributions
 
 import "fmt"

@@ -1,4 +1,3 @@
-// backend/internal/contributions/capabilities.go
 package contributions
 
 // Capability is a human-sized group of Actions, the unit admins toggle in the
@@ -6,6 +5,8 @@ package contributions
 // RolePolicy stores only which roles hold which capabilities.
 type Capability string
 
+// CapContribute and the other Cap* constants are the fixed registry of
+// capabilities that roles can be granted.
 const (
 	CapContribute        Capability = "contribute"
 	CapManageProjects    Capability = "manage_projects"
@@ -19,10 +20,10 @@ const (
 	CapManageGovernance  Capability = "manage_governance"
 	CapManageRoles       Capability = "manage_roles"
 
-	// Feature-scoped capabilities added by the #312 umbrella. The three
-	// project-scoped ones (view_contribution_amounts, assign_project_steward,
-	// assign_project_lead) may be held by a project role; the rest are
-	// community-scoped.
+	// CapViewContributionAmounts and the other feature-scoped capabilities
+	// below were added by the #312 umbrella. The three project-scoped ones
+	// (view_contribution_amounts, assign_project_steward, assign_project_lead)
+	// may be held by a project role; the rest are community-scoped.
 	CapViewContributionAmounts Capability = "view_contribution_amounts"
 	CapAssignProjectSteward    Capability = "assign_project_steward"
 	CapAssignProjectLead       Capability = "assign_project_lead"
@@ -35,9 +36,10 @@ const (
 	CapOpenCommunitySettings   Capability = "open_community_settings"
 	CapManageCommunitySettings Capability = "manage_community_settings"
 
-	// Retired capabilities (#313). These IDs are no longer toggleable and are
-	// absent from AllCapabilities()/the default policy, but the constants
-	// survive as the source of the migration mapping applied on policy read
+	// CapAssignWork and CapManageComms are retired capabilities (#313). These
+	// IDs are no longer toggleable and are absent from
+	// AllCapabilities()/the default policy, but the constants survive as the
+	// source of the migration mapping applied on policy read
 	// (NormalizeStoredPolicy) and as the IDs the PUT handler rejects. assign_work
 	// maps to the two assign capabilities; manage_communications to the two chat
 	// moderation capabilities.
@@ -195,38 +197,56 @@ var capabilityActions = map[Capability][]Action{
 		ActionUnassignContribution, ActionEditMilestone, ActionLinkProposal,
 	},
 	// adminScope: member roles plus the role-granting bootstrap routes.
-	// save_org_config stays here for now; #312 moves it under
-	// manage_community_settings, but that re-homing changes enforcement (a
-	// founder-only default drops operations_steward, and a partial move risks
-	// resurrecting a removed grant), so it is deferred to the community-settings
-	// enforcement slice.
+	// save_org_config has moved OUT of manage_members into
+	// manage_community_settings (#318) — the community-settings enforcement
+	// slice #313 deferred. This is a deliberate enforcement change: the
+	// founder-only default for manage_community_settings drops operations_steward
+	// from save_org_config, proven by TestSaveOrgConfigRequiresManageCommunitySettings
+	// and the org-config RBAC review test.
 	CapManageMembers: {
 		ActionChangeMemberRole, ActionRemoveMember,
-		ActionSaveOrgConfig, ActionGrantStewardAdmin, ActionSetIdentity,
+		ActionGrantStewardAdmin, ActionSetIdentity,
 	},
 	CapManageGovernance: {ActionSignOffProposal, ActionRejectProposal, ActionEditProposal, ActionWithdrawProposal},
 	CapManageRoles:      {ActionManageRolePolicy},
 
-	// New feature capabilities that gate no wired action yet — the grants can be
-	// configured ahead of the enforcement slices that wire them (chat, notices,
-	// proposal-create, contribution-amount visibility, community settings).
+	// Community-settings capabilities, wired by #318. open_community_settings
+	// gates the page-access check; manage_community_settings now owns
+	// save_org_config (re-homed from manage_members above).
+	CapOpenCommunitySettings:   {ActionOpenCommunitySettings},
+	CapManageCommunitySettings: {ActionSaveOrgConfig},
+
+	// Chat enforcement (#316). send_messages gates posting a message (default
+	// all — behaviour-neutral until narrowed); manage_channels gates the channel
+	// lifecycle and setting a channel's AllowedRoles; moderate_messages gates
+	// deleting another member's message. manage_channels/moderate_messages are
+	// also the successors of the retired manage_communications.
+	CapSendMessages:     {ActionSendMessage},
+	CapManageChannels:   {ActionCreateChannel, ActionEditChannel, ActionArchiveChannel, ActionSetChannelRoles},
+	CapModerateMessages: {ActionModerateMessage},
+
+	// create_proposals gates authoring a proposal: creating the draft and
+	// submitting it (draft → submitted). Enforced at the proposal create/submit
+	// endpoints (#315). Every member role holds it by default, so behaviour is
+	// unchanged until an org narrows it.
+	CapCreateProposals: {ActionCreateProposal, ActionSubmitProposal},
+
+	// Notice board (#317): post_notices gates authoring (create/publish);
+	// manage_notices gates moderation of any member's notice (pin/archive).
+	CapPostNotices:   {ActionPostNotice},
+	CapManageNotices: {ActionManageNotice},
+
+	// view_contribution_amounts gates no wired action here — it is enforced as a
+	// read-visibility rule on contribution reads (#314, api.visibleContributionAmounts).
 	CapViewContributionAmounts: {},
-	CapCreateProposals:         {},
-	CapSendMessages:            {},
-	CapManageChannels:          {},
-	CapModerateMessages:        {},
-	CapPostNotices:             {},
-	CapManageNotices:           {},
-	CapOpenCommunitySettings:   {},
-	CapManageCommunitySettings: {},
 }
 
 // actionToCapability is the reverse index, built once at init.
 var actionToCapability = func() map[Action]Capability {
 	m := make(map[Action]Capability)
-	for cap, actions := range capabilityActions {
+	for capVal, actions := range capabilityActions {
 		for _, a := range actions {
-			m[a] = cap
+			m[a] = capVal
 		}
 	}
 	return m
@@ -239,8 +259,8 @@ func CapabilityActions() map[Capability][]Action {
 
 // ActionCapability returns the capability an action belongs to.
 func ActionCapability(a Action) (Capability, bool) {
-	cap, ok := actionToCapability[a]
-	return cap, ok
+	capVal, ok := actionToCapability[a]
+	return capVal, ok
 }
 
 // AllCapabilities returns every toggleable capability in stable display order

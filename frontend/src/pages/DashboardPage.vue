@@ -81,22 +81,22 @@
                 <span class="community-stat-value">{{ liveMembers.length }}</span>
                 <span class="community-stat-label">Members</span>
               </div>
-              <div class="community-stat clickable" @click="router.push({ name: 'chat' })">
+              <div v-if="chatEnabled" class="community-stat clickable" @click="router.push({ name: 'chat' })">
                 <MessageCircle class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalChannels }}</span>
                 <span class="community-stat-label">Channels</span>
               </div>
-              <div class="community-stat clickable" @click="navigateToNotices('event')">
+              <div v-if="noticesEnabled && eventsFeatureEnabled" class="community-stat clickable" @click="navigateToNotices('event')">
                 <CalendarDays class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalEvents }}</span>
                 <span class="community-stat-label">Events</span>
               </div>
-              <div class="community-stat clickable" @click="navigateToNotices('announcement')">
+              <div v-if="noticesEnabled" class="community-stat clickable" @click="navigateToNotices('announcement')">
                 <Megaphone class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalAnnouncements }}</span>
                 <span class="community-stat-label">Notices</span>
               </div>
-              <div class="community-stat clickable" @click="navigateToNotices('update')">
+              <div v-if="noticesEnabled" class="community-stat clickable" @click="navigateToNotices('update')">
                 <RefreshCw class="community-stat-icon" />
                 <span class="community-stat-value">{{ totalUpdates }}</span>
                 <span class="community-stat-label">Updates</span>
@@ -276,6 +276,9 @@ import { useMultisigRotationSignal } from 'src/composables/useMultisigRotationSi
 import { useEndorsements } from 'src/composables/useEndorsements';
 import { useMoonPhase } from 'src/composables/useMoonPhase';
 import { useEventAttendance } from 'src/composables/useEventAttendance';
+import { eventsEnabled } from 'src/composables/noticeTypes';
+import { KIT } from 'src/generated/kit';
+import { applyTheme, persistTheme } from 'src/boot/theme';
 import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
 import { useActivityStore } from 'stores/activity';
@@ -286,6 +289,13 @@ import ProfileModal from 'src/components/profiles/ProfileModal.vue';
 
 // Admin functionality
 const { isSteward, canManageMembers, checkAdminStatus, recheckAdminStatus } = useAdminAccess();
+
+// Community-stat tiles that link into build-time-optional modules must not
+// render (or navigate) when the module is disabled — the target route
+// doesn't exist in that build (coa phase 4).
+const chatEnabled = KIT.features.chat;
+const noticesEnabled = KIT.features.notices;
+const eventsFeatureEnabled = eventsEnabled();
 
 // On mobile (≤767px) the three placeholder "coming soon" stat tiles are hidden (#123)
 const isMobile = useIsMobile();
@@ -620,7 +630,8 @@ watch(hasJoinedMultisig, async (joined) => {
 
 const toggleDarkMode = () => {
   isDark.value = !isDark.value;
-  document.documentElement.classList.toggle('dark', isDark.value);
+  applyTheme(isDark.value);
+  persistTheme(isDark.value ? 'dark' : 'light');
 };
 
 // Stats data - computed to show real pending registration count for stewards
@@ -938,7 +949,7 @@ function handleRoleUpdated(newRole: string) {
 
 // Welcome Header
 .welcome-header {
-  background: linear-gradient(135deg, var(--matou-primary), rgba(30, 95, 116, 0.9), var(--matou-accent));
+  background: linear-gradient(135deg, var(--matou-brand), rgba(30, 95, 116, 0.9), var(--matou-brand-accent));
   padding: 2rem 1.5rem;
   // Edge-to-edge mobile: .dashboard-page pulls itself up under the status bar
   // (see above); pad the header by the inset so its content clears the bar
@@ -990,23 +1001,37 @@ function handleRoleUpdated(newRole: string) {
   gap: 0.75rem;
   flex-wrap: wrap;
   flex-shrink: 0;
+
+  @media (max-width: 767px) {
+    // Keep date + moon + name on a single line rather than letting them
+    // separate onto their own lines when the header is narrow.
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    width: 100%;
+  }
 }
 
 .moon-date {
   font-size: 0.875rem;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .moon-circle {
   font-size: 1.5rem;
   line-height: 1;
+  // The API returns an emoji glyph rendered via the system emoji font, so
+  // `color` has no effect — desaturate + brighten it to read as white on the
+  // gradient header (light or dark theme) instead of its native yellow.
+  filter: grayscale(1) brightness(1.9);
 }
 
 .moon-name {
   font-size: 1rem;
   color: rgba(255, 255, 255, 0.95);
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .moon-phase-details {

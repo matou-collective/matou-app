@@ -37,9 +37,9 @@ for a in "$@"; do case "$a" in
     n="${a#*/issues/}"; n="${n%%/*}"
     if [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ]; then cat "$DEPS_DIR/$n.json"; else echo '[]'; fi
     exit 0 ;;
-  *pulls?state=open*) cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]'; exit 0 ;;
-  *labels=standing-drive*) if [ -n "${DRIVES_FIXTURE:-}" ]; then cat "$DRIVES_FIXTURE"; else echo '[]'; fi; exit 0 ;;
-  *labels=ready-for-agent*) cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
+  *pulls?state=open*) sleep "${LEG_SLEEP:-0}"; cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]'; exit 0 ;;
+  *labels=standing-drive*) sleep "${LEG_SLEEP:-0}"; if [ -n "${DRIVES_FIXTURE:-}" ]; then cat "$DRIVES_FIXTURE"; else echo '[]'; fi; exit 0 ;;
+  *labels=ready-for-agent*) sleep "${LEG_SLEEP:-0}"; cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
 esac; done
 echo '[]'
 SH
@@ -288,6 +288,75 @@ grep -q "drive-blocker ordering skipped" "$tmp/8d.err" \
   || fail "the spent-budget skip must say why on stderr: $(cat "$tmp/8d.err")"
 unset DEPS_DIR DRIVES_FIXTURE
 pass=$((pass+1))
+
+# 11 (#128, matou-app#286): the /pulls (LANDING=pr) and standing-drive listings
+# run in the BACKGROUND, overlapping the issues-page fetch, instead of serially
+# after it. Prove it with a shim that sleeps LEG_SLEEP on each of the three
+# independent listing legs (never on /dependencies): serial cost is ~3x
+# LEG_SLEEP, overlapped ~1x. The queue must still come out correct.
+printf '%s\n' 'LANDING=pr' > "$tmp/overlap-policy.sh"
+printf '%s\n' '[]' > "$tmp/overlap-pulls.json"
+printf '%s\n' '[{"number":960,"title":"THE DRIVE","labels":[{"name":"standing-drive"}]}]' > "$tmp/overlap-drives.json"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 800, "title": "a ready task", "body": "b", "html_url": "u/800", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+t0="$(date +%s)"
+out9="$(SWARM_POLICY_FILE="$tmp/overlap-policy.sh" PULLS_FIXTURE="$tmp/overlap-pulls.json" \
+  DRIVES_FIXTURE="$tmp/overlap-drives.json" LEG_SLEEP=2 bash "$here/../list-ready-tasks.sh")" \
+  || fail "overlap run exited non-zero"
+elapsed=$(( $(date +%s) - t0 ))
+[ "$(jq -r '.[0].number' <<<"$out9")" = "800" ] \
+  || fail "overlap run must still surface the ready task (got $(jq -c '[.[].number]' <<<"$out9"))"
+[ "$elapsed" -le 4 ] \
+  || fail "the /pulls + standing-drive listings must OVERLAP the issues fetch (serial 3x2s vs overlapped ~2s) — took ${elapsed}s"
+pass=$((pass+1))
+
+# 11b (#128): the /pulls fetch stays fail-OPEN — a non-zero fetch drops nothing.
+# Simulate a failing /pulls by pointing the shim at a curl that exits 22 on the
+# pulls leg; the ready task must still surface (not be dropped by a phantom PR).
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CURL_LOG:-}" ] && echo "$*" >> "$CURL_LOG"
+for a in "$@"; do case "$a" in
+  */dependencies*) echo '[]'; exit 0 ;;
+  *pulls?state=open*) exit 22 ;;
+  *labels=standing-drive*) echo '[]'; exit 0 ;;
+  *labels=ready-for-agent*) cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
+esac; done
+echo '[]'
+SH
+chmod +x "$tmp/bin/curl"
+out9b="$(SWARM_POLICY_FILE="$tmp/overlap-policy.sh" LIST_READY_RETRIES=1 bash "$here/../list-ready-tasks.sh")" \
+  || fail "fail-open /pulls run exited non-zero"
+jq -e '.[] | select(.number == 800)' <<<"$out9b" >/dev/null \
+  || fail "a failed /pulls fetch must drop NOTHING (fail-open) — #800 must still surface"
+pass=$((pass+1))
+
+# Restore the default shim and a #400-bearing fixture for the yield cases below.
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CURL_LOG:-}" ] && echo "$*" >> "$CURL_LOG"
+for a in "$@"; do case "$a" in
+  */dependencies*)
+    n="${a#*/issues/}"; n="${n%%/*}"
+    if [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ]; then cat "$DEPS_DIR/$n.json"; else echo '[]'; fi
+    exit 0 ;;
+  *pulls?state=open*) sleep "${LEG_SLEEP:-0}"; cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]'; exit 0 ;;
+  *labels=standing-drive*) sleep "${LEG_SLEEP:-0}"; if [ -n "${DRIVES_FIXTURE:-}" ]; then cat "$DRIVES_FIXTURE"; else echo '[]'; fi; exit 0 ;;
+  *labels=ready-for-agent*) sleep "${LEG_SLEEP:-0}"; cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
+esac; done
+echo '[]'
+SH
+chmod +x "$tmp/bin/curl"
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 300, "title": "ordinary lower number", "body": "b", "html_url": "u/300", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 400, "title": "priority non-blocker", "body": "b", "html_url": "u/400", "labels": [{"name":"ready-for-agent"},{"name":"priority"}]},
+  {"number": 900, "title": "the drive blocker", "body": "b", "html_url": "u/900", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
 
 # ── #111: the mid-run drive-yield signal ──────────────────────────────────
 # main.mts mirrors a fresh host reservation into the sandbox as

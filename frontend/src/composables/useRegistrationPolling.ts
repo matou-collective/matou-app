@@ -14,6 +14,7 @@
 import { ref, watch, onUnmounted } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useKERINotificationService } from './useKERINotificationService';
+import { claimNotification } from 'src/lib/keri/notifications';
 import { createOrUpdateProfile, getProfiles, uploadFile } from 'src/lib/api/client';
 import { useProfilesStore } from 'stores/profiles';
 import {
@@ -572,8 +573,10 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
             console.log('[RegistrationPolling] New applicant message received from:', exn.i);
           }
 
-          // Mark as read
-          await keriClient.markNotificationRead(notification.i);
+          // Mark as read (issue #470: shared claim helper — a fresh re-list
+          // confirms the state on a shared agent; recording above is idempotent
+          // via the existingIds dedup).
+          await claimNotification(client, notification);
         } catch (msgErr) {
           console.warn('[RegistrationPolling] Failed to fetch message reply:', notification.a.d, msgErr);
         }
@@ -664,7 +667,14 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
    */
   async function dismissExpired(notificationId: string): Promise<void> {
     try {
-      await keriClient.markNotificationRead(notificationId);
+      // issue #470: claim via the shared helper (mark + fresh re-list) so a
+      // second signify client on this agent sees the dismissal.
+      const client = keriClient.getSignifyClient();
+      if (client) {
+        await claimNotification(client, { i: notificationId, r: false });
+      } else {
+        await keriClient.markNotificationRead(notificationId);
+      }
     } catch (err) {
       console.warn('[RegistrationPolling] Failed to mark expired notification read:', err);
     }

@@ -12,6 +12,7 @@ import { setBackendIdentity, createOrUpdateProfile } from 'src/lib/api/client';
 import { useIdentityStore } from 'stores/identity';
 import { secureStorage } from 'src/lib/secureStorage';
 import { toKeriAlias } from 'src/lib/keri/alias';
+import { isGrantAlreadyAdmitted } from 'src/lib/keri/notifications';
 
 // KERIA CESR URL as seen from inside Docker (used for OOBI resolution).
 // OOBI resolution is server-side — KERIA resolves via its Docker network.
@@ -184,6 +185,16 @@ export function useClaimIdentity() {
         try {
           const grantExn = await client.exchanges().get(grant.a.d);
           const grantSender = grantExn.exn.i;
+
+          // Idempotency (issue #470): skip if this grant's credential is
+          // already in the wallet — a second signify client on this agent may
+          // have admitted it. Avoids a redundant admit on an already-admitted
+          // grant.
+          if (await isGrantAlreadyAdmitted(client, grantExn)) {
+            await client.notifications().mark(grant.i);
+            console.debug(`[ClaimIdentity] Grant ${grant.a.d} already admitted — skipping (idempotent)`);
+            continue;
+          }
 
           // Submit admit with empty embeds. KERIA's sendAdmit() for single-sig
           // AIDs does not process path labels — the Admitter background task
