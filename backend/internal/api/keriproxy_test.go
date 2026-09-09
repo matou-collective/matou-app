@@ -68,6 +68,35 @@ func TestLoopbackProxyPreservesRequestVerbatim(t *testing.T) {
 	}
 }
 
+// TestLoopbackProxyPrependsUpstreamPrefix covers the coa-shared proxied
+// layout (Matou/coa#141): upstreams such as https://host/keria/admin carry a
+// path prefix that the TLS reverse proxy strips again, so the loopback proxy
+// must prepend it while leaving the client's own path and query untouched.
+func TestLoopbackProxyPrependsUpstreamPrefix(t *testing.T) {
+	var gotPath, gotRawQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotRawQuery = r.URL.Path, r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	for _, base := range []string{upstream.URL + "/keria/admin", upstream.URL + "/keria/admin/"} {
+		proxyBase, closer, err := startLoopbackProxy(base)
+		if err != nil {
+			t.Fatalf("startLoopbackProxy(%s): %v", base, err)
+		}
+		resp, err := http.Get(proxyBase + "/identifiers/aid1?type=ixn")
+		if err != nil {
+			t.Fatalf("request through proxy: %v", err)
+		}
+		_ = resp.Body.Close()
+		_ = closer()
+		if gotPath != "/keria/admin/identifiers/aid1" || gotRawQuery != "type=ixn" {
+			t.Errorf("upstream %s: got %s?%s, want /keria/admin/identifiers/aid1?type=ixn", base, gotPath, gotRawQuery)
+		}
+	}
+}
+
 func TestStartKERIConfigProxiesRewritesAndRoutes(t *testing.T) {
 	mark := func(name string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

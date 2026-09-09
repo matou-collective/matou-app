@@ -56,6 +56,7 @@ type SDKClient struct {
 	coordinator     coordinatorclient.CoordinatorClient
 	storageProvider spacestorage.SpaceStorageProvider
 	peerKeyManager  *PeerKeyManager
+	peerKeyPath     string              // path to the per-install device (peer) key file
 	utm             *UnifiedTreeManager // single UTM, persists across reinits
 	dataDir         string
 	networkID       string
@@ -129,6 +130,8 @@ func NewSDKClient(clientConfigPath string, opts *ClientOptions) (*SDKClient, err
 		keyIndex = opts.KeyIndex
 	}
 
+	client.peerKeyPath = keyPath
+
 	peerMgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath:  keyPath,
 		Mnemonic: mnemonic,
@@ -154,8 +157,8 @@ func (c *SDKClient) initFullSDK() error {
 
 	// 1. Create account service with our keys
 	accountKeys := accountdata.New(
-		c.peerKeyManager.GetPrivKey(), // peer/device key
-		c.peerKeyManager.GetPrivKey(), // sign key
+		c.peerKeyManager.GetPeerKey(),    // per-install device (transport) key
+		c.peerKeyManager.GetSigningKey(), // mnemonic-derived ACL identity (sign) key
 	)
 	accountSvc := &sdkAccountService{keys: accountKeys}
 
@@ -237,7 +240,7 @@ func (c *SDKClient) initFullSDK() error {
 func (c *SDKClient) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*SpaceCreateResult, error) {
 	if signingKey == nil {
 		c.mu.RLock()
-		signingKey = c.peerKeyManager.GetPrivKey()
+		signingKey = c.peerKeyManager.GetSigningKey()
 		c.mu.RUnlock()
 	}
 
@@ -349,7 +352,7 @@ func (c *SDKClient) DeriveSpace(ctx context.Context, ownerAID string, spaceType 
 	}
 
 	if signingKey == nil {
-		signingKey = c.peerKeyManager.GetPrivKey()
+		signingKey = c.peerKeyManager.GetSigningKey()
 	}
 
 	masterKey, _, err := crypto.GenerateRandomEd25519KeyPair()
@@ -389,7 +392,7 @@ func (c *SDKClient) DeriveSpaceID(ctx context.Context, ownerAID string, _ string
 	}
 
 	if signingKey == nil {
-		signingKey = c.peerKeyManager.GetPrivKey()
+		signingKey = c.peerKeyManager.GetSigningKey()
 	}
 
 	masterKey, _, err := crypto.GenerateRandomEd25519KeyPair()
@@ -625,6 +628,12 @@ func (c *SDKClient) GetTreeManager() *UnifiedTreeManager {
 	return c.utm
 }
 
+// GetNodeClient returns the SDK node client (ACL record get/add against the
+// consensus node without opening the space locally). Used by repair tooling.
+func (c *SDKClient) GetNodeClient() nodeclient.NodeClient {
+	return c.app.MustComponent(nodeclient.CName).(nodeclient.NodeClient)
+}
+
 // GetACLJoiningClient returns the ACL joining client for join-before-open flows.
 // The joining client talks to consensus nodes directly without opening a space,
 // which is required so the user is authorized before HeadSync starts.
@@ -646,23 +655,26 @@ func (c *SDKClient) CoordACLGetRecords(ctx context.Context, spaceID, aclHead str
 }
 
 // GetSigningKey returns the client's signing key (used as the ACL identity).
-// This is the peer's Ed25519 private key, which signs ObjectTree changes.
+// This is the mnemonic-derived Ed25519 private key, which signs ObjectTree
+// changes and is the stable identity the ACL records trust. It is distinct
+// from the per-install device (peer) key used for transport.
 func (c *SDKClient) GetSigningKey() crypto.PrivKey {
 	if c.peerKeyManager != nil {
-		return c.peerKeyManager.GetPrivKey()
+		return c.peerKeyManager.GetSigningKey()
 	}
 	return nil
 }
 
-// Reinitialize shuts down all any-sync components, overwrites the peer key
-// with a mnemonic-derived key, and restarts the SDK with the new identity.
-// This is called by POST /api/v1/identity/set when the user's identity is
-// established (org setup, registration, or claim flow).
+// Reinitialize shuts down all any-sync components, re-derives the ACL sign key
+// from the mnemonic, and restarts the SDK. The per-install device (peer) key at
+// {dataDir}/peer.key is preserved untouched — only the sign-key material is
+// re-derived. This is called by POST /api/v1/identity/set when the user's
+// identity is established (org setup, registration, or claim flow).
 func (c *SDKClient) Reinitialize(mnemonic string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	log.Println("[any-sync SDK] Reinitializing with mnemonic-derived peer key...")
+	log.Println("[any-sync SDK] Reinitializing sign key from mnemonic (device peer key preserved)...")
 
 	// 1. Shut down the current app
 	if c.app != nil {
@@ -675,23 +687,14 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 		c.initialized = false
 	}
 
-	// 2. Derive new peer key from mnemonic
-	privKey, err := DeriveKeyFromMnemonic(mnemonic, 0)
-	if err != nil {
-		return fmt.Errorf("deriving key from mnemonic: %w", err)
+	// 2. Rebuild the peer key manager: sign key re-derived from the mnemonic,
+	// device (transport) peer key loaded from the existing peer.key. The device
+	// key is never regenerated or overwritten here — NewPeerKeyManager only
+	// migrates a legacy peer.key that still holds the mnemonic-derived value.
+	keyPath := c.peerKeyPath
+	if keyPath == "" {
+		keyPath = filepath.Join(c.dataDir, "peer.key")
 	}
-
-	// 3. Overwrite {dataDir}/peer.key with the derived key
-	keyPath := filepath.Join(c.dataDir, "peer.key")
-	keyData, err := privKey.Marshall()
-	if err != nil {
-		return fmt.Errorf("marshaling derived key: %w", err)
-	}
-	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
-		return fmt.Errorf("writing peer.key: %w", err)
-	}
-
-	// 4. Create new PeerKeyManager with the derived key
 	peerMgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath:  keyPath,
 		Mnemonic: mnemonic,
@@ -702,13 +705,13 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 	}
 	c.peerKeyManager = peerMgr
 
-	// 5. Restart the SDK
+	// 3. Restart the SDK
 	if err := c.initFullSDK(); err != nil {
 		return fmt.Errorf("reinitializing SDK: %w", err)
 	}
 
 	c.initialized = true
-	log.Printf("[any-sync SDK] Reinitialized with new peer ID: %s", c.peerKeyManager.GetPeerID())
+	log.Printf("[any-sync SDK] Reinitialized. device peer ID: %s", c.peerKeyManager.GetPeerID())
 	return nil
 }
 

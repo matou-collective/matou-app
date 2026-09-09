@@ -7,6 +7,7 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { getOrFetchOrgConfig } from 'src/api/config';
 import { useKERINotificationService, type KERINotification } from './useKERINotificationService';
+import { claimNotification, isGrantAlreadyAdmitted } from 'src/lib/keri/notifications';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { isSelfAgentOobi } from 'src/lib/selfAgentOobi';
@@ -464,9 +465,10 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             reason: (payload.reason as string) || 'Your registration has been declined.',
             declinedAt: (payload.declinedAt as string) || new Date().toISOString(),
           };
-          // Mark as read if not already
+          // Mark as read if not already (issue #470: via the shared claim
+          // helper so a fresh re-list confirms the state on a shared agent).
           if (!rejectionsToProcess[0].r) {
-            await client.notifications().mark(rejectionsToProcess[0].i);
+            await claimNotification(client, rejectionsToProcess[0]);
           }
           // Persist rejection state for future sessions
           await saveRejectionState();
@@ -498,8 +500,8 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             console.log('[CredentialPolling] New admin message received');
           }
 
-          // Mark as read
-          await client.notifications().mark(msgNotification.i);
+          // Mark as read (issue #470: shared claim helper)
+          await claimNotification(client, msgNotification);
         } catch (msgErr) {
           console.warn('[CredentialPolling] Failed to fetch message:', msgErr);
         }
@@ -519,7 +521,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           spaceId.value = payload.spaceId as string;
           readOnlyInviteKey.value = (payload.readOnlyInviteKey as string) || null;
           readOnlySpaceId.value = (payload.readOnlySpaceId as string) || null;
-          await client.notifications().mark(spaceInvites[0].i);
+          await claimNotification(client, spaceInvites[0]); // issue #470
           console.log('[CredentialPolling] Space invite received');
         } catch (inviteErr) {
           console.warn('[CredentialPolling] Failed to fetch space invite:', inviteErr);
@@ -566,6 +568,16 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       // Get the grant exchange message to find the sender
       const grantExn = await client.exchanges().get(grant.a.d);
       const grantSender = grantExn.exn.i; // Issuer of the grant message
+
+      // Idempotency (issue #470): two signify clients on one agent both see
+      // this grant. If the credential is already in the wallet the other
+      // client (or a prior cycle) has admitted it — a second admit would be a
+      // redundant IPEX admit on an already-admitted grant. Mark read and stop.
+      if (await isGrantAlreadyAdmitted(client, grantExn)) {
+        await client.notifications().mark(grant.i);
+        console.debug('[CredentialPolling] Grant already admitted — skipping (idempotent)');
+        return;
+      }
 
       // Submit admit with empty embeds. KERIA's sendAdmit() for single-sig
       // AIDs does not process path labels — the Admitter background task
