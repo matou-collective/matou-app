@@ -26,7 +26,7 @@
  */
 
 import { computed, watch } from "vue";
-import type { Router } from "vue-router";
+import type { RouteLocationRaw, Router } from "vue-router";
 import { useNotificationsStore } from "stores/notifications";
 import { useChatStore } from "stores/chat";
 import { getMessages } from "src/lib/api/chat";
@@ -131,6 +131,12 @@ let relaySessionAid: string | null = null;
 /** Epoch-ms expiry of the minted relay session, or 0 when unknown/none. */
 let relaySessionExpiresAt = 0;
 let listenersRegistered = false;
+/**
+ * Channel id from a cold-start notification tap that arrived before the app
+ * cleared the onboarding/auth gate — replayed by the gate-exit navigation
+ * (consumePushDeepLinkTarget). Null when there is nothing pending.
+ */
+let pendingDeepLinkChannelId: string | null = null;
 /** Removes the foreground (visibilitychange) listener; null when none is wired. */
 let removeForegroundListener: (() => void) | null = null;
 const coalesceStates = new Map<string, CoalesceState>();
@@ -529,6 +535,13 @@ export async function handleIdentityChange(
   oldAid: string | null,
 ): Promise<void> {
   if (newAid === oldAid) return;
+  // A stashed cold-start deep-link target (#445) is scoped to whichever
+  // identity was signed in when the tap fired. On any identity change —
+  // logout, switch, or a fresh registration racing a stale tap for a
+  // previous identity on this device — drop it rather than let the new
+  // identity's onboarding-complete gate replay a target that was never
+  // meant for them.
+  pendingDeepLinkChannelId = null;
   if (oldAid && currentToken !== null) {
     await deregisterPush();
   }
@@ -712,11 +725,39 @@ function hashChannelId(channelId: string): number {
   return Math.abs(h) % 2147483647;
 }
 
+/** True while the router sits on a route where a chat deep-link survives the
+ *  auth guard (any /dashboard route). On the splash/onboarding gate it does
+ *  not — boot/keri.ts bounces a /dashboard push back to '/'. */
+function isOnDeepLinkableRoute(): boolean {
+  return (router?.currentRoute.value.path ?? "").startsWith("/dashboard");
+}
+
 /** Deep-link a notification tap to the target channel (§6): /chat?c=<id>. */
 export function handlePushTap(data: PushDataPayload | undefined): void {
   const channelId = data?.c;
   if (!channelId || !router) return;
+  // A cold-start tap replays this listener while the app is still on the
+  // splash/onboarding gate. A direct push to the chat route is bounced to '/'
+  // by the auth guard, so stash the channel for the gate-exit navigation to
+  // replay (consumePushDeepLinkTarget). When already on a dashboard route
+  // (alive/backgrounded) the push below deep-links immediately — no stash.
+  if (!isOnDeepLinkableRoute()) {
+    pendingDeepLinkChannelId = channelId;
+  }
   void router.push({ name: "chat", query: { c: channelId } });
+}
+
+/**
+ * Consume a channel id stashed by a cold-start notification tap and return the
+ * chat route to deep-link to, or null when there is none (or chat isn't in this
+ * build). Clears the stash, so the onboarding gate deep-links at most once per
+ * boot. The gate calls `router.push(consumePushDeepLinkTarget() ?? '/dashboard')`.
+ */
+export function consumePushDeepLinkTarget(): RouteLocationRaw | null {
+  const channelId = pendingDeepLinkChannelId;
+  pendingDeepLinkChannelId = null;
+  if (!channelId || !__KIT_CHAT__) return null;
+  return { name: "chat", query: { c: channelId } };
 }
 
 /** Reset module state — test-only seam. */
@@ -726,6 +767,7 @@ export function __resetPushForTest(): void {
   registeredAid = null;
   clearRelaySession();
   listenersRegistered = false;
+  pendingDeepLinkChannelId = null;
   removeForegroundListener?.();
   removeForegroundListener = null;
   coalesceStates.forEach((s) => clearTimeout(s.timer));
@@ -744,6 +786,7 @@ export function usePush() {
     handleAppForeground,
     handlePushReceipt,
     handlePushTap,
+    consumePushDeepLinkTarget,
     recomputeBadge,
   };
 }
