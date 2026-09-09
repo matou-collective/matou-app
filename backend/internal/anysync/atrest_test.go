@@ -272,9 +272,9 @@ func TestGetOrCreatePeerKey_Migration(t *testing.T) {
 	}
 }
 
-// TestUserPeerKey_SealedRoundTrip proves PersistUserPeerKey / LoadUserPeerKey
+// TestUserSignKey_SealedRoundTrip proves PersistUserSignKey / LoadUserSignKey
 // seal at rest and round-trip, and fail closed on the wrong key.
-func TestUserPeerKey_SealedRoundTrip(t *testing.T) {
+func TestUserSignKey_SealedRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	RegisterDataDirKey(dir, testEncKey)
 
@@ -283,30 +283,30 @@ func TestUserPeerKey_SealedRoundTrip(t *testing.T) {
 		t.Fatalf("generating key: %v", err)
 	}
 	const aid = "EAID123"
-	if err := PersistUserPeerKey(dir, aid, priv); err != nil {
-		t.Fatalf("PersistUserPeerKey: %v", err)
+	if err := PersistUserSignKey(dir, aid, priv); err != nil {
+		t.Fatalf("PersistUserSignKey: %v", err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(dir, "users", aid, "peer.key"))
+	raw, err := os.ReadFile(filepath.Join(dir, "users", aid, "sign.key"))
 	if err != nil {
-		t.Fatalf("reading user peer key: %v", err)
+		t.Fatalf("reading user sign key: %v", err)
 	}
 	if !identity.IsSealed(raw) {
-		t.Fatal("expected user peer.key to be sealed at rest")
+		t.Fatal("expected user sign.key to be sealed at rest")
 	}
 
-	loaded, err := LoadUserPeerKey(dir, aid)
+	loaded, err := LoadUserSignKey(dir, aid)
 	if err != nil {
-		t.Fatalf("LoadUserPeerKey: %v", err)
+		t.Fatalf("LoadUserSignKey: %v", err)
 	}
 	if loaded.GetPublic().PeerId() != priv.GetPublic().PeerId() {
-		t.Error("user peer key mismatch after round-trip")
+		t.Error("user sign key mismatch after round-trip")
 	}
 
 	// Wrong key fails closed.
 	RegisterDataDirKey(dir, []byte("wrong-key"))
 	defer RegisterDataDirKey(dir, nil)
-	if _, err := LoadUserPeerKey(dir, aid); err == nil {
-		t.Fatal("expected error loading user peer key with wrong key")
+	if _, err := LoadUserSignKey(dir, aid); err == nil {
+		t.Fatal("expected error loading user sign key with wrong key")
 	}
 }

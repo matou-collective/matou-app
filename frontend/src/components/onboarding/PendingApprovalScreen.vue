@@ -86,7 +86,7 @@
             If you believe this was a mistake or have additional information to share,
             you can contact the community admins for clarification.
           </p>
-          <a href="mailto:contact@matou.nz" class="block">
+          <a :href="`mailto:${KIT.brand.contactEmail}`" class="block">
             <MBtn variant="outline" class="w-full">
               Contact Support
             </MBtn>
@@ -286,7 +286,7 @@
               </div>
             </div>
 
-            <!-- Step 4: Welcome to Matou -->
+            <!-- Step 4: Welcome to the community -->
             <div
               v-motion="slideInLeft(600)"
               class="step-card flex items-start gap-4 bg-card border border-border rounded-xl p-4"
@@ -295,8 +295,8 @@
                 <span class="text-sm font-semibold text-primary">4</span>
               </div>
               <div>
-                <h4 class="mb-1">Welcome to Mātou</h4>
-                <p class="text-sm text-muted-foreground">Full access to governance, contributions, and community chat</p>
+                <h4 class="mb-1">Welcome to {{ KIT.brand.name }}</h4>
+                <p class="text-sm text-muted-foreground">Full access to the community</p>
               </div>
             </div>
           </div>
@@ -346,7 +346,7 @@
             If you have questions about your application or the review process, please contact
             our support team.
           </p>
-          <a href="mailto:contact@matou.nz" class="block">
+          <a :href="`mailto:${KIT.brand.contactEmail}`" class="block">
             <MBtn variant="outline" class="w-full">Contact Support</MBtn>
           </a>
         </div>

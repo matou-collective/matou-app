@@ -34,7 +34,7 @@ func TestEventBroker_AddSink_ReceivesBroadcasts(t *testing.T) {
 	}
 }
 
-func TestEventBroker_AddSink_NilIgnored(t *testing.T) {
+func TestEventBroker_AddSink_NilIgnored(_ *testing.T) {
 	b := NewEventBroker()
 	b.AddSink(nil) // must not panic
 	b.Broadcast(SSEEvent{Type: "noop"})

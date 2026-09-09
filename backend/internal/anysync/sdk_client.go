@@ -5,6 +5,7 @@ package anysync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -55,6 +56,7 @@ type SDKClient struct {
 	coordinator     coordinatorclient.CoordinatorClient
 	storageProvider spacestorage.SpaceStorageProvider
 	peerKeyManager  *PeerKeyManager
+	peerKeyPath     string              // path to the per-install device (peer) key file
 	utm             *UnifiedTreeManager // single UTM, persists across reinits
 	dataDir         string
 	networkID       string
@@ -91,6 +93,21 @@ func NewSDKClient(clientConfigPath string, opts *ClientOptions) (*SDKClient, err
 		return nil, fmt.Errorf("creating spaces directory: %w", err)
 	}
 
+	// Health-check every existing space store BEFORE the storage provider or
+	// space service are wired up. A store can be left in a state where reads
+	// and appends to already-loaded trees work but every new-tree write fails
+	// with a SQLite disk I/O error (e.g. after repeated hard process kills).
+	// Since all space content is re-syncable from the network, damaged stores
+	// are quarantined here so a fresh one gets created and re-populated by
+	// HeadSync, rather than leaving the space permanently broken.
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if quarantined, err := RecoverDamagedSpaceStores(probeCtx, spacesDir); err != nil {
+		log.Printf("[anysync] WARNING: space store recovery scan failed: %v", err)
+	} else if len(quarantined) > 0 {
+		log.Printf("[anysync] recovered %d damaged space store(s): %v", len(quarantined), quarantined)
+	}
+	probeCancel()
+
 	client := &SDKClient{
 		config:         clientConfig,
 		networkID:      clientConfig.NetworkID,
@@ -98,6 +115,7 @@ func NewSDKClient(clientConfigPath string, opts *ClientOptions) (*SDKClient, err
 		dataDir:        dataDir,
 		utm:            NewUnifiedTreeManager(),
 	}
+	client.utm.SetSpacesDir(spacesDir)
 
 	// Register the at-rest encryption key for this data directory so the
 	// package-level key persistence helpers seal keys/*.keys and peer.key under
@@ -118,6 +136,8 @@ func NewSDKClient(clientConfigPath string, opts *ClientOptions) (*SDKClient, err
 		mnemonic = opts.Mnemonic
 		keyIndex = opts.KeyIndex
 	}
+
+	client.peerKeyPath = keyPath
 
 	peerMgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath:  keyPath,
@@ -144,8 +164,8 @@ func (c *SDKClient) initFullSDK() error {
 
 	// 1. Create account service with our keys
 	accountKeys := accountdata.New(
-		c.peerKeyManager.GetPrivKey(), // peer/device key
-		c.peerKeyManager.GetPrivKey(), // sign key
+		c.peerKeyManager.GetPeerKey(),    // per-install device (transport) key
+		c.peerKeyManager.GetSigningKey(), // mnemonic-derived ACL identity (sign) key
 	)
 	accountSvc := &sdkAccountService{keys: accountKeys}
 
@@ -227,7 +247,7 @@ func (c *SDKClient) initFullSDK() error {
 func (c *SDKClient) CreateSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*SpaceCreateResult, error) {
 	if signingKey == nil {
 		c.mu.RLock()
-		signingKey = c.peerKeyManager.GetPrivKey()
+		signingKey = c.peerKeyManager.GetSigningKey()
 		c.mu.RUnlock()
 	}
 
@@ -339,7 +359,7 @@ func (c *SDKClient) DeriveSpace(ctx context.Context, ownerAID string, spaceType 
 	}
 
 	if signingKey == nil {
-		signingKey = c.peerKeyManager.GetPrivKey()
+		signingKey = c.peerKeyManager.GetSigningKey()
 	}
 
 	masterKey, _, err := crypto.GenerateRandomEd25519KeyPair()
@@ -370,7 +390,7 @@ func (c *SDKClient) DeriveSpace(ctx context.Context, ownerAID string, spaceType 
 }
 
 // DeriveSpaceID returns the deterministic space ID without creating the space
-func (c *SDKClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error) {
+func (c *SDKClient) DeriveSpaceID(ctx context.Context, ownerAID string, _ string, signingKey crypto.PrivKey) (string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -379,7 +399,7 @@ func (c *SDKClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceTyp
 	}
 
 	if signingKey == nil {
-		signingKey = c.peerKeyManager.GetPrivKey()
+		signingKey = c.peerKeyManager.GetSigningKey()
 	}
 
 	masterKey, _, err := crypto.GenerateRandomEd25519KeyPair()
@@ -405,7 +425,7 @@ func (c *SDKClient) DeriveSpaceID(ctx context.Context, ownerAID string, spaceTyp
 // DeriveSpaceIDWithKeys computes the deterministic space ID for an owner+type
 // using the provided key set. Unlike DeriveSpaceID, this uses the KeySet's
 // master key instead of generating a random one, making it fully deterministic.
-func (c *SDKClient) DeriveSpaceIDWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *SpaceKeySet) (string, error) {
+func (c *SDKClient) DeriveSpaceIDWithKeys(ctx context.Context, ownerAID string, _ string, keys *SpaceKeySet) (string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -428,7 +448,7 @@ func (c *SDKClient) DeriveSpaceIDWithKeys(ctx context.Context, ownerAID string, 
 	return spaceID, nil
 }
 
-// Deprecated: AddToACL builds raw JSON as a proto record which is rejected by the
+// AddToACL is deprecated: it builds raw JSON as a proto record which is rejected by the
 // consensus node. Use MatouACLManager.CreateOpenInvite/JoinWithInvite instead.
 func (c *SDKClient) AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error {
 	c.mu.Lock()
@@ -615,44 +635,53 @@ func (c *SDKClient) GetTreeManager() *UnifiedTreeManager {
 	return c.utm
 }
 
-// GetAclJoiningClient returns the ACL joining client for join-before-open flows.
+// GetNodeClient returns the SDK node client (ACL record get/add against the
+// consensus node without opening the space locally). Used by repair tooling.
+func (c *SDKClient) GetNodeClient() nodeclient.NodeClient {
+	return c.app.MustComponent(nodeclient.CName).(nodeclient.NodeClient)
+}
+
+// GetACLJoiningClient returns the ACL joining client for join-before-open flows.
 // The joining client talks to consensus nodes directly without opening a space,
 // which is required so the user is authorized before HeadSync starts.
-func (c *SDKClient) GetAclJoiningClient() aclclient.AclJoiningClient {
+func (c *SDKClient) GetACLJoiningClient() aclclient.AclJoiningClient {
 	return c.app.MustComponent(aclclient.CName).(aclclient.AclJoiningClient)
 }
 
-// CoordAclGetRecords fetches ACL records directly from the coordinator/consensus
+// CoordACLGetRecords fetches ACL records directly from the coordinator/consensus
 // node, bypassing the sync-node's local replica. Use this to force-sync ACL state
 // after an "incorrect prev id" rejection — the coordinator always has the
 // authoritative head, even when the sync-node's replica is stale.
-func (c *SDKClient) CoordAclGetRecords(ctx context.Context, spaceId, aclHead string) ([]*consensusproto.RawRecordWithId, error) {
+func (c *SDKClient) CoordACLGetRecords(ctx context.Context, spaceID, aclHead string) ([]*consensusproto.RawRecordWithId, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if !c.initialized {
 		return nil, fmt.Errorf("client not initialized")
 	}
-	return c.coordinator.AclGetRecords(ctx, spaceId, aclHead)
+	return c.coordinator.AclGetRecords(ctx, spaceID, aclHead)
 }
 
 // GetSigningKey returns the client's signing key (used as the ACL identity).
-// This is the peer's Ed25519 private key, which signs ObjectTree changes.
+// This is the mnemonic-derived Ed25519 private key, which signs ObjectTree
+// changes and is the stable identity the ACL records trust. It is distinct
+// from the per-install device (peer) key used for transport.
 func (c *SDKClient) GetSigningKey() crypto.PrivKey {
 	if c.peerKeyManager != nil {
-		return c.peerKeyManager.GetPrivKey()
+		return c.peerKeyManager.GetSigningKey()
 	}
 	return nil
 }
 
-// Reinitialize shuts down all any-sync components, overwrites the peer key
-// with a mnemonic-derived key, and restarts the SDK with the new identity.
-// This is called by POST /api/v1/identity/set when the user's identity is
-// established (org setup, registration, or claim flow).
+// Reinitialize shuts down all any-sync components, re-derives the ACL sign key
+// from the mnemonic, and restarts the SDK. The per-install device (peer) key at
+// {dataDir}/peer.key is preserved untouched — only the sign-key material is
+// re-derived. This is called by POST /api/v1/identity/set when the user's
+// identity is established (org setup, registration, or claim flow).
 func (c *SDKClient) Reinitialize(mnemonic string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	log.Println("[any-sync SDK] Reinitializing with mnemonic-derived peer key...")
+	log.Println("[any-sync SDK] Reinitializing sign key from mnemonic (device peer key preserved)...")
 
 	// 1. Shut down the current app
 	if c.app != nil {
@@ -665,27 +694,14 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 		c.initialized = false
 	}
 
-	// 2. Derive new peer key from mnemonic
-	privKey, err := DeriveKeyFromMnemonic(mnemonic, 0)
-	if err != nil {
-		return fmt.Errorf("deriving key from mnemonic: %w", err)
+	// 2. Rebuild the peer key manager: sign key re-derived from the mnemonic,
+	// device (transport) peer key loaded from the existing peer.key. The device
+	// key is never regenerated or overwritten here — NewPeerKeyManager only
+	// migrates a legacy peer.key that still holds the mnemonic-derived value.
+	keyPath := c.peerKeyPath
+	if keyPath == "" {
+		keyPath = filepath.Join(c.dataDir, "peer.key")
 	}
-
-	// 3. Overwrite {dataDir}/peer.key with the derived key
-	keyPath := filepath.Join(c.dataDir, "peer.key")
-	keyData, err := privKey.Marshall()
-	if err != nil {
-		return fmt.Errorf("marshaling derived key: %w", err)
-	}
-	sealed, err := sealBytes(c.dataDir, keyData)
-	if err != nil {
-		return fmt.Errorf("sealing peer.key: %w", err)
-	}
-	if err := os.WriteFile(keyPath, sealed, 0600); err != nil {
-		return fmt.Errorf("writing peer.key: %w", err)
-	}
-
-	// 4. Create new PeerKeyManager with the derived key
 	peerMgr, err := NewPeerKeyManager(&PeerKeyConfig{
 		KeyPath:  keyPath,
 		Mnemonic: mnemonic,
@@ -696,13 +712,13 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 	}
 	c.peerKeyManager = peerMgr
 
-	// 5. Restart the SDK
+	// 3. Restart the SDK
 	if err := c.initFullSDK(); err != nil {
 		return fmt.Errorf("reinitializing SDK: %w", err)
 	}
 
 	c.initialized = true
-	log.Printf("[any-sync SDK] Reinitialized with new peer ID: %s", c.peerKeyManager.GetPeerID())
+	log.Printf("[any-sync SDK] Reinitialized. device peer ID: %s", c.peerKeyManager.GetPeerID())
 	return nil
 }
 
@@ -739,7 +755,7 @@ type sdkAccountService struct {
 	keys *accountdata.AccountKeys
 }
 
-func (s *sdkAccountService) Init(a *app.App) error { return nil }
+func (s *sdkAccountService) Init(_ *app.App) error { return nil }
 func (s *sdkAccountService) Name() string          { return accountservice.CName }
 func (s *sdkAccountService) Account() *accountdata.AccountKeys {
 	return s.keys
@@ -754,7 +770,7 @@ func newSDKConfig(cc *ClientConfig) *sdkConfig {
 	return &sdkConfig{clientConfig: cc}
 }
 
-func (c *sdkConfig) Init(a *app.App) error { return nil }
+func (c *sdkConfig) Init(_ *app.App) error { return nil }
 func (c *sdkConfig) Name() string          { return "config" }
 
 // GetSpace implements config.ConfigGetter for commonspace
@@ -832,33 +848,33 @@ func (r *sdkSpaceResolver) spaceService() commonspace.SpaceService {
 	return r.a.MustComponent(commonspace.CName).(commonspace.SpaceService)
 }
 
-func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceId string) (commonspace.Space, error) {
-	if val, ok := r.cache.Load(spaceId); ok {
+func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error) {
+	if val, ok := r.cache.Load(spaceID); ok {
 		return val.(commonspace.Space), nil
 	}
 	// Resolve the UnifiedTreeManager from the parent app for space deps
 	utm := r.a.MustComponent("common.object.treemanager").(*UnifiedTreeManager)
-	sp, err := r.spaceService().NewSpace(ctx, spaceId, newSpaceDeps(spaceId, utm))
+	sp, err := r.spaceService().NewSpace(ctx, spaceID, newSpaceDeps(spaceID, utm))
 	if err != nil {
 		return nil, err
 	}
 	if err := sp.Init(ctx); err != nil {
 		return nil, err
 	}
-	r.cache.Store(spaceId, sp)
+	r.cache.Store(spaceID, sp)
 	// Index existing trees in this space
 	go func() {
 		indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := utm.BuildSpaceIndex(indexCtx, spaceId); err != nil {
-			fmt.Printf("[SpaceResolver] Warning: BuildSpaceIndex for %s: %v\n", spaceId, err)
+		if err := utm.BuildSpaceIndex(indexCtx, spaceID); err != nil {
+			fmt.Printf("[SpaceResolver] Warning: BuildSpaceIndex for %s: %v\n", spaceID, err)
 		}
 	}()
 	return sp, nil
 }
 
-func (r *sdkSpaceResolver) StoreSpace(spaceId string, space commonspace.Space) {
-	r.cache.Store(spaceId, space)
+func (r *sdkSpaceResolver) StoreSpace(spaceID string, space commonspace.Space) {
+	r.cache.Store(spaceID, space)
 }
 
 // sdkNodeConf implements nodeconf.Service with full configuration
@@ -887,11 +903,11 @@ func newSDKNodeConf(cc *ClientConfig) *sdkNodeConf {
 	}
 }
 
-func (n *sdkNodeConf) Init(a *app.App) error           { return nil }
-func (n *sdkNodeConf) Name() string                    { return nodeconf.CName }
-func (n *sdkNodeConf) Run(ctx context.Context) error   { return nil }
-func (n *sdkNodeConf) Close(ctx context.Context) error { return nil }
-func (n *sdkNodeConf) Id() string                      { return n.conf.Id }
+func (n *sdkNodeConf) Init(_ *app.App) error         { return nil }
+func (n *sdkNodeConf) Name() string                  { return nodeconf.CName }
+func (n *sdkNodeConf) Run(_ context.Context) error   { return nil }
+func (n *sdkNodeConf) Close(_ context.Context) error { return nil }
+func (n *sdkNodeConf) Id() string                    { return n.conf.Id } //nolint:revive // method name fixed by nodeconf.NodeConf interface
 func (n *sdkNodeConf) Configuration() nodeconf.Configuration {
 	return n.conf
 }
@@ -900,11 +916,12 @@ func (n *sdkNodeConf) NetworkCompatibilityStatus() nodeconf.NetworkCompatibility
 	return nodeconf.NetworkCompatibilityStatusOk
 }
 
-func (n *sdkNodeConf) NodeIds(spaceId string) []string {
-	return n.nodeIdsByType(nodeconf.NodeTypeTree)
+//nolint:revive // method name fixed by nodeconf.NodeConf interface
+func (n *sdkNodeConf) NodeIds(_ string) []string {
+	return n.nodeIDsByType(nodeconf.NodeTypeTree)
 }
 
-func (n *sdkNodeConf) nodeIdsByType(tp nodeconf.NodeType) []string {
+func (n *sdkNodeConf) nodeIDsByType(tp nodeconf.NodeType) []string {
 	var ids []string
 	for _, node := range n.conf.Nodes {
 		for _, t := range node.Types {
@@ -917,40 +934,40 @@ func (n *sdkNodeConf) nodeIdsByType(tp nodeconf.NodeType) []string {
 }
 
 func (n *sdkNodeConf) CoordinatorPeers() []string {
-	return n.nodeIdsByType(nodeconf.NodeTypeCoordinator)
+	return n.nodeIDsByType(nodeconf.NodeTypeCoordinator)
 }
 
 func (n *sdkNodeConf) ConsensusPeers() []string {
-	return n.nodeIdsByType(nodeconf.NodeTypeConsensus)
+	return n.nodeIDsByType(nodeconf.NodeTypeConsensus)
 }
 
 func (n *sdkNodeConf) FilePeers() []string {
-	return n.nodeIdsByType(nodeconf.NodeTypeFile)
+	return n.nodeIDsByType(nodeconf.NodeTypeFile)
 }
 
 func (n *sdkNodeConf) NamingNodePeers() []string {
-	return n.nodeIdsByType(nodeconf.NodeTypeNamingNode)
+	return n.nodeIDsByType(nodeconf.NodeTypeNamingNode)
 }
 
 func (n *sdkNodeConf) PaymentProcessingNodePeers() []string {
-	return n.nodeIdsByType(nodeconf.NodeTypePaymentProcessingNode)
+	return n.nodeIDsByType(nodeconf.NodeTypePaymentProcessingNode)
 }
 
-func (n *sdkNodeConf) IsResponsible(spaceId string) bool { return false }
-func (n *sdkNodeConf) Partition(spaceId string) int      { return 0 }
+func (n *sdkNodeConf) IsResponsible(_ string) bool { return false }
+func (n *sdkNodeConf) Partition(_ string) int      { return 0 }
 
-func (n *sdkNodeConf) NodeTypes(nodeId string) []nodeconf.NodeType {
+func (n *sdkNodeConf) NodeTypes(nodeID string) []nodeconf.NodeType {
 	for _, node := range n.conf.Nodes {
-		if node.PeerId == nodeId {
+		if node.PeerId == nodeID {
 			return node.Types
 		}
 	}
 	return nil
 }
 
-func (n *sdkNodeConf) PeerAddresses(peerId string) ([]string, bool) {
+func (n *sdkNodeConf) PeerAddresses(peerID string) ([]string, bool) {
 	for _, node := range n.conf.Nodes {
-		if node.PeerId == peerId {
+		if node.PeerId == peerID {
 			return node.Addresses, true
 		}
 	}
@@ -968,14 +985,37 @@ type sdkStorageProvider struct {
 }
 
 func newSDKStorageProvider(rootPath string) *sdkStorageProvider {
-	os.MkdirAll(rootPath, 0755)
+	_ = os.MkdirAll(rootPath, 0755)
 	return &sdkStorageProvider{rootPath: rootPath}
 }
 
-func (p *sdkStorageProvider) Init(a *app.App) error           { return nil }
-func (p *sdkStorageProvider) Name() string                    { return spacestorage.CName }
-func (p *sdkStorageProvider) Run(ctx context.Context) error   { return nil }
-func (p *sdkStorageProvider) Close(ctx context.Context) error { return nil }
+func (p *sdkStorageProvider) Init(_ *app.App) error       { return nil }
+func (p *sdkStorageProvider) Name() string                { return spacestorage.CName }
+func (p *sdkStorageProvider) Run(_ context.Context) error { return nil }
+
+// Close closes every cached per-space any-store handle and clears the cache.
+// spaceStorage.Close is itself a no-op, so the underlying anystore.DB (and its
+// sqlite connections/fds) leaks on every app.Close — including a clean Stop()
+// and Reinitialize() — unless we close the handles here. This runs during
+// app.Close, before Reinitialize's initFullSDK reopens the same data.db files,
+// so the store is always closed before it is reopened.
+func (p *sdkStorageProvider) Close(_ context.Context) error {
+	var errs []error
+	p.spaces.Range(func(key, value any) bool {
+		p.spaces.Delete(key)
+		storage, ok := value.(spacestorage.SpaceStorage)
+		if !ok {
+			return true
+		}
+		if store := storage.AnyStore(); store != nil {
+			if err := store.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("closing space storage %v: %w", key, err))
+			}
+		}
+		return true
+	})
+	return errors.Join(errs...)
+}
 
 func (p *sdkStorageProvider) WaitSpaceStorage(ctx context.Context, id string) (spacestorage.SpaceStorage, error) {
 	if s, ok := p.spaces.Load(id); ok {
@@ -995,7 +1035,7 @@ func (p *sdkStorageProvider) WaitSpaceStorage(ctx context.Context, id string) (s
 
 	storage, err := spacestorage.New(ctx, id, store)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("loading space storage %s: %w", id, err)
 	}
 
@@ -1008,13 +1048,13 @@ func (p *sdkStorageProvider) SpaceStorage(id string) (spacestorage.SpaceStorage,
 }
 
 func (p *sdkStorageProvider) CreateSpaceStorage(ctx context.Context, payload spacestorage.SpaceStorageCreatePayload) (spacestorage.SpaceStorage, error) {
-	spaceId := payload.SpaceHeaderWithId.Id
+	spaceID := payload.SpaceHeaderWithId.Id
 
-	if _, ok := p.spaces.Load(spaceId); ok {
+	if _, ok := p.spaces.Load(spaceID); ok {
 		return nil, spacestorage.ErrSpaceStorageExists
 	}
 
-	spacePath := filepath.Join(p.rootPath, spaceId)
+	spacePath := filepath.Join(p.rootPath, spaceID)
 	if err := os.MkdirAll(spacePath, 0755); err != nil {
 		return nil, fmt.Errorf("creating space directory: %w", err)
 	}
@@ -1027,11 +1067,11 @@ func (p *sdkStorageProvider) CreateSpaceStorage(ctx context.Context, payload spa
 
 	storage, err := spacestorage.Create(ctx, store, payload)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("creating space storage: %w", err)
 	}
 
-	p.spaces.Store(spaceId, storage)
+	p.spaces.Store(spaceID, storage)
 	return storage, nil
 }
 
@@ -1063,9 +1103,9 @@ func (p *sdkPeerManagerProvider) Init(a *app.App) error {
 
 func (p *sdkPeerManagerProvider) Name() string { return peermanager.CName }
 
-func (p *sdkPeerManagerProvider) NewPeerManager(ctx context.Context, spaceId string) (peermanager.PeerManager, error) {
+func (p *sdkPeerManagerProvider) NewPeerManager(_ context.Context, spaceID string) (peermanager.PeerManager, error) {
 	return &sdkPeerManager{
-		spaceId:    spaceId,
+		spaceID:    spaceID,
 		nodeConf:   p.nodeConf,
 		pool:       p.pool,
 		streamPool: p.streamPool,
@@ -1076,19 +1116,19 @@ func (p *sdkPeerManagerProvider) NewPeerManager(ctx context.Context, spaceId str
 // It uses the node configuration's consistent hash ring to find responsible
 // tree-node peers and the stream pool for broadcasting HeadUpdate messages.
 type sdkPeerManager struct {
-	spaceId    string
+	spaceID    string
 	nodeConf   nodeconf.Service
 	pool       pool.Pool
 	streamPool streampool.StreamPool
 }
 
-func (m *sdkPeerManager) Init(a *app.App) error { return nil }
+func (m *sdkPeerManager) Init(_ *app.App) error { return nil }
 func (m *sdkPeerManager) Name() string          { return peermanager.CName }
 
 func (m *sdkPeerManager) GetResponsiblePeers(ctx context.Context) ([]peer.Peer, error) {
-	nodeIds := m.nodeConf.NodeIds(m.spaceId)
+	nodeIDs := m.nodeConf.NodeIds(m.spaceID)
 	var peers []peer.Peer
-	for _, id := range nodeIds {
+	for _, id := range nodeIDs {
 		p, err := m.pool.Get(ctx, id)
 		if err != nil {
 			continue // skip unreachable peers
@@ -1106,9 +1146,9 @@ func (m *sdkPeerManager) BroadcastMessage(ctx context.Context, msg drpc.Message)
 	return m.streamPool.Send(ctx, msg, m.GetResponsiblePeers)
 }
 
-func (m *sdkPeerManager) SendMessage(ctx context.Context, peerId string, msg drpc.Message) error {
+func (m *sdkPeerManager) SendMessage(ctx context.Context, peerID string, msg drpc.Message) error {
 	return m.streamPool.Send(ctx, msg, func(ctx context.Context) ([]peer.Peer, error) {
-		p, err := m.pool.Get(ctx, peerId)
+		p, err := m.pool.Get(ctx, peerID)
 		if err != nil {
 			return nil, err
 		}
@@ -1116,7 +1156,7 @@ func (m *sdkPeerManager) SendMessage(ctx context.Context, peerId string, msg drp
 	})
 }
 
-func (m *sdkPeerManager) KeepAlive(ctx context.Context) {}
+func (m *sdkPeerManager) KeepAlive(_ context.Context) {}
 
 // NOTE: sdkTreeManager has been replaced by UnifiedTreeManager.
 // See unified_tree_manager.go for the treemanager.TreeManager implementation.
@@ -1154,14 +1194,14 @@ func (s *sdkStreamHandler) OpenStream(ctx context.Context, p peer.Peer) (drpc.St
 	return stream, nil, 200, nil
 }
 
-func (s *sdkStreamHandler) HandleMessage(ctx context.Context, peerId string, msg drpc.Message) error {
+func (s *sdkStreamHandler) HandleMessage(ctx context.Context, _ string, msg drpc.Message) error {
 	headUpdate, ok := msg.(*objectmessages.HeadUpdate)
 	if !ok {
 		return fmt.Errorf("unexpected message type %T", msg)
 	}
 
-	spaceId := headUpdate.SpaceId()
-	if spaceId == "" {
+	spaceID := headUpdate.SpaceId()
+	if spaceID == "" {
 		// Subscription message — handle tag add/remove
 		var sub spacesyncproto.SpaceSubscription
 		if err := sub.UnmarshalVT(headUpdate.Bytes); err != nil {
@@ -1174,9 +1214,9 @@ func (s *sdkStreamHandler) HandleMessage(ctx context.Context, peerId string, msg
 	}
 
 	// Route to the space's sync handler via shared resolver
-	space, err := s.resolver.GetSpace(ctx, spaceId)
+	space, err := s.resolver.GetSpace(ctx, spaceID)
 	if err != nil {
-		return fmt.Errorf("getting space %s: %w", spaceId, err)
+		return fmt.Errorf("getting space %s: %w", spaceID, err)
 	}
 	return space.HandleMessage(ctx, headUpdate)
 }
@@ -1262,7 +1302,7 @@ func (p *sdkCredentialProvider) GetCredential(ctx context.Context, spaceHeader *
 }
 
 // newSpaceDeps creates the Deps required by SpaceService.NewSpace.
-// Uses matouTreeSyncer for real P2P tree sync and matouSyncStatus for tracking.
+// Uses matouTreeSyncer for real P2P tree sync and MatouSyncStatus for tracking.
 // The sync status is registered on the UnifiedTreeManager for API observability.
 func newSpaceDeps(spaceID string, utm *UnifiedTreeManager) commonspace.Deps {
 	status := newMatouSyncStatus()
@@ -1274,4 +1314,4 @@ func newSpaceDeps(spaceID string, utm *UnifiedTreeManager) commonspace.Deps {
 }
 
 // NOTE: matouTreeSyncer has been extracted to tree_syncer.go.
-// NOTE: matouSyncStatus has been extracted to sync_status.go.
+// NOTE: MatouSyncStatus has been extracted to sync_status.go.

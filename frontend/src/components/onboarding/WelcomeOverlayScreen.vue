@@ -48,8 +48,24 @@
           </p>
         </div>
 
+        <!-- Waiting for sync state (retryable backend 503 / pending space access) -->
+        <div v-if="waitingForSync" class="w-full space-y-3">
+          <div class="status-item flex items-center gap-3 bg-white/10 rounded-xl px-4 py-3">
+            <Loader2 class="w-5 h-5 text-white/70 shrink-0 animate-spin" />
+            <span class="text-white/90 text-sm">Waiting for your data to sync&hellip;</span>
+          </div>
+          <MBtn
+            class="w-full retry-btn"
+            size="lg"
+            @click="retrySync"
+          >
+            <RefreshCw class="w-5 h-5 mr-2" />
+            Retry
+          </MBtn>
+        </div>
+
         <!-- Sync Status (register path) -->
-        <div v-if="isRegisterFlow" class="w-full space-y-3">
+        <div v-else-if="isRegisterFlow" class="w-full space-y-3">
           <div
             v-for="check in syncChecks"
             :key="check.id"
@@ -110,6 +126,7 @@
 
       <!-- Continue Button -->
       <MBtn
+        v-if="!waitingForSync"
         class="w-full continue-btn"
         size="lg"
         :disabled="!allChecksPassed"
@@ -127,7 +144,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import { CheckCircle2, XCircle, Circle, ArrowRight, Loader2 } from 'lucide-vue-next';
+import { CheckCircle2, XCircle, Circle, ArrowRight, Loader2, RefreshCw } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
@@ -213,6 +230,9 @@ const isReturningFlow = computed(() => onboardingStore.onboardingPath === 'retur
 const isRegisterFlow = computed(() => onboardingStore.onboardingPath === 'register');
 
 const subtitle = computed(() => {
+  if (waitingForSync.value) {
+    return 'Waiting for your data to sync…';
+  }
   if (isRegisterFlow.value) {
     return syncReady.value
       ? 'Your community spaces are ready!'
@@ -239,6 +259,12 @@ const checks = reactive<StatusCheck[]>([
   { id: 'community', label: 'Community space access', status: 'pending', error: null },
   { id: 'credential', label: 'Membership credential', status: 'pending', error: null },
 ]);
+
+// True when a check hit a retryable condition (backend 503 "private space not
+// reachable", or an adopted space still has spaceAccess:'pending') — data is
+// still syncing on the backend. We show a Retry button instead of failing the
+// check or letting the user through to a dashboard that can't read its data.
+const waitingForSync = ref(false);
 
 // Sync state (for register path — polls sync/status after community join)
 const communityReady = ref(false);
@@ -361,6 +387,12 @@ async function runRecoveryChecks() {
     });
     if (result.success) {
       backendCheck.status = 'passed';
+    } else if (result.retryable) {
+      // Transient 503 ("private space not reachable") — data is still
+      // syncing on the backend. Don't fail the check or continue on; let the
+      // user retry from the top once their data is reachable.
+      waitingForSync.value = true;
+      return;
     } else {
       backendCheck.status = 'failed';
       backendCheck.error = result.error || 'Backend identity setup failed';
@@ -382,6 +414,11 @@ async function runRecoveryChecks() {
     for (let attempt = 0; attempt < 6; attempt++) {
       if (attempt > 0) await sleep(2000);
       await identityStore.fetchUserSpaces();
+      if (identityStore.hasPendingSpaceAccess) {
+        // Space was adopted but its read key isn't available from ACL yet.
+        waitingForSync.value = true;
+        return;
+      }
       hasAccess = await identityStore.verifyCommunityAccess();
       if (hasAccess) break;
     }
@@ -466,6 +503,12 @@ async function runReturningChecks() {
     });
     if (result.success) {
       backendCheck.status = 'passed';
+    } else if (result.retryable) {
+      // Transient 503 ("private space not reachable") — data is still
+      // syncing on the backend. Don't fail the check or route to the
+      // dashboard; let the user retry once their data is reachable.
+      waitingForSync.value = true;
+      return;
     } else {
       backendCheck.status = 'failed';
       backendCheck.error = result.error || 'Backend identity setup failed';
@@ -510,6 +553,11 @@ async function runReturningChecks() {
   communityCheck.status = 'checking';
   try {
     await identityStore.fetchUserSpaces();
+    if (identityStore.hasPendingSpaceAccess) {
+      // Space was adopted but its read key isn't available from ACL yet.
+      waitingForSync.value = true;
+      return;
+    }
     const hasAccess = await identityStore.verifyCommunityAccess();
     if (hasAccess) {
       communityCheck.status = 'passed';
@@ -526,6 +574,28 @@ async function runReturningChecks() {
 function markAllPassed() {
   for (const check of checks) {
     check.status = 'passed';
+  }
+}
+
+function resetChecks() {
+  waitingForSync.value = false;
+  for (const check of checks) {
+    check.status = 'pending';
+    check.error = null;
+  }
+}
+
+/**
+ * Re-run the checks from the top after a retryable backend 503 or a
+ * spaceAccess:'pending' space was hit. Only meaningful for the recovery and
+ * returning flows — the register/claim flows don't use waitingForSync.
+ */
+async function retrySync() {
+  resetChecks();
+  if (isRecoveryFlow.value) {
+    await runRecoveryChecks();
+  } else if (isReturningFlow.value) {
+    await runReturningChecks();
   }
 }
 

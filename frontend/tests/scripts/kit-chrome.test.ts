@@ -15,6 +15,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { mount } from '@vue/test-utils';
 import TitleBar from 'src/components/base/TitleBar.vue';
 import { KIT } from 'src/generated/kit';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 beforeAll(() => {
   // TitleBar renders only when isElectron() — give it a minimal Electron shim.
@@ -29,5 +31,17 @@ describe('chrome from kit', () => {
     const wrapper = mount(TitleBar);
     expect(wrapper.text()).toContain(KIT.brand.name);
     wrapper.unmount();
+  });
+
+  // The window chrome colour comes from the kit too: --matou-brand is the
+  // theme-invariant brand primary (design-tokens.scss), the same token the
+  // splash and home header use. happy-dom cannot compute styles, so assert on
+  // the SFC source: no stock-Mātou navy, brand token for the bar and the
+  // maximize glyph's inner fill.
+  it('TitleBar paints with the kit brand primary, not a hard-coded colour', () => {
+    const sfc = readFileSync(join(__dirname, '../../src/components/base/TitleBar.vue'), 'utf8');
+    expect(sfc).not.toMatch(/#003141/i);
+    expect(sfc).toMatch(/\.titlebar\s*{[^}]*background:\s*var\(--matou-brand\)/);
+    expect(sfc).toMatch(/fill="var\(--matou-brand\)"/);
   });
 });

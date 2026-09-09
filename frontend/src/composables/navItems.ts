@@ -1,3 +1,6 @@
+import kitFeatures from 'src/generated/features.json';
+import type { KitFeatures } from 'src/kit/types';
+
 /**
  * Navigation entries, shared by the desktop sidebar and the mobile bottom tab
  * bar (DashboardLayout.vue). Keeping the metadata (route name, label, active
@@ -32,11 +35,48 @@ export const NAV_ITEM_META: readonly NavItemMeta[] = [
   { name: 'contributions', label: 'Contributions', aliases: ['contribution-detail'], primary: true },
 ];
 
+/** COA toggleable feature → nav entry name. `events` is a notice type, not a module —
+    it has no nav slot (coa spec §3.3). */
+const FEATURE_NAV = {
+  chat: 'chat',
+  projects: 'projects',
+  proposals: 'proposals',
+  notices: 'activity',
+} as const;
+
+/**
+ * Apply a kit's feature selection to the nav skeleton (coa phase-4 spec §3.4):
+ * fixed entries keep their positions; the toggleable entries' slots are filled
+ * left-to-right with the ENABLED features in the kit's `order`; leftover slots
+ * drop. `primary` (mobile tab membership) travels with the entry.
+ */
+export function applyFeatureNav(meta: readonly NavItemMeta[], features: KitFeatures): NavItemMeta[] {
+  const toggleable = new Set<string>(Object.values(FEATURE_NAV));
+  const byName = new Map(meta.map((m) => [m.name, m]));
+  const ordered = features.order
+    .filter((f): f is keyof typeof FEATURE_NAV => f in FEATURE_NAV && features[f as keyof typeof FEATURE_NAV])
+    .map((f) => byName.get(FEATURE_NAV[f]))
+    .filter((m): m is NavItemMeta => m !== undefined);
+  const out: NavItemMeta[] = [];
+  let next = 0;
+  for (const m of meta) {
+    if (!toggleable.has(m.name)) out.push(m);
+    else if (next < ordered.length) out.push(ordered[next++]!);
+  }
+  return out;
+}
+
+/** The nav this build actually shows — the kit skeleton with features applied. */
+export const FEATURE_NAV_ITEMS: readonly NavItemMeta[] = applyFeatureNav(
+  NAV_ITEM_META,
+  kitFeatures as KitFeatures,
+);
+
 /** Entries shown as their own tab in the mobile bottom bar, in order. */
-export const PRIMARY_NAV_ITEMS: readonly NavItemMeta[] = NAV_ITEM_META.filter((i) => i.primary);
+export const PRIMARY_NAV_ITEMS: readonly NavItemMeta[] = FEATURE_NAV_ITEMS.filter((i) => i.primary);
 
 /** Entries collapsed into the mobile "More" sheet, in order. */
-export const OVERFLOW_NAV_ITEMS: readonly NavItemMeta[] = NAV_ITEM_META.filter((i) => !i.primary);
+export const OVERFLOW_NAV_ITEMS: readonly NavItemMeta[] = FEATURE_NAV_ITEMS.filter((i) => !i.primary);
 
 /**
  * Whether a nav entry should render as active for the current route name.

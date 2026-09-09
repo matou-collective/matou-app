@@ -17,4 +17,6 @@ ext {
     // Must match what @capacitor/push-notifications resolves (#177). Setting it
     // here makes rootProject.ext the single source of truth for app + plugin.
     firebaseMessagingVersion = '24.1.0'
+    // WorkManager for the headless push wake (#421 — expedited work).
+    androidxWorkVersion = '2.9.1'
 }

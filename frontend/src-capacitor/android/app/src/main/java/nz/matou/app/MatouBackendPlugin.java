@@ -8,12 +8,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import java.io.File;
-import java.security.SecureRandom;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
-import nz.matou.backend.mobile.Mobile;
 
 /**
  * Boots the embedded Go backend (gomobile .aar, see backend/cmd/mobile) and
@@ -26,6 +22,12 @@ import nz.matou.backend.mobile.Mobile;
  * TokenGuard requires on mutating requests. configServerUrl comes from the
  * plugin config in capacitor.config.json, baked from VITE_PROD_CONFIG_URL by
  * scripts/android/build-apk.sh.
+ *
+ * The actual start (and the port/token state) lives in
+ * {@link MatouBackendRunner}, shared with the headless push wake (#421): if a
+ * wake already booted the backend when the user opens the app, getInfo adopts
+ * that instance — same port, same token — instead of racing Mobile.start's
+ * idempotency with a token the Go side would ignore.
  */
 @CapacitorPlugin(name = "MatouBackend")
 public class MatouBackendPlugin extends Plugin {
@@ -37,11 +39,6 @@ public class MatouBackendPlugin extends Plugin {
     // concurrent getInfo() calls from the WebView.
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    // Start once per process; Mobile.start is idempotent on the Go side, but the
-    // token must stay stable across getInfo() calls so every caller can auth.
-    private long port = 0;
-    private String token = null;
-
     @PluginMethod
     public void getInfo(PluginCall call) {
         String configServerUrl = getConfig().getString("configServerUrl", "");
@@ -52,32 +49,16 @@ public class MatouBackendPlugin extends Plugin {
 
         executor.execute(() -> {
             try {
-                synchronized (this) {
-                    if (token == null) {
-                        String freshToken = randomToken();
-                        File dataDir = new File(getContext().getFilesDir(), "matou");
-                        port = Mobile.start(dataDir.getAbsolutePath(), configServerUrl, freshToken);
-                        token = freshToken;
-                        Log.i(TAG, "backend up on 127.0.0.1:" + port);
-                    }
-                }
+                MatouBackendRunner.Info info = MatouBackendRunner.get()
+                    .start(getContext(), configServerUrl, /* fromApp= */ true);
                 JSObject ret = new JSObject();
-                ret.put("port", port);
-                ret.put("token", token);
+                ret.put("port", info.port);
+                ret.put("token", info.token);
                 call.resolve(ret);
             } catch (Exception e) {
                 Log.e(TAG, "backend start failed", e);
                 call.reject("MatouBackend: backend start failed: " + e.getMessage(), e);
             }
         });
-    }
-
-    /** 32 random bytes, hex-encoded — mirrors the Electron launcher's per-launch API token. */
-    private static String randomToken() {
-        byte[] raw = new byte[32];
-        new SecureRandom().nextBytes(raw);
-        StringBuilder hex = new StringBuilder(raw.length * 2);
-        for (byte b : raw) hex.append(String.format("%02x", b));
-        return hex.toString();
     }
 }
