@@ -22,10 +22,14 @@ import (
 // network: one verbatim loopback reverse proxy per KERI endpoint, and the
 // client config served over /api/v1/client-config points at them.
 //
-// The proxies preserve the request path and query untouched: signify-ts signs
-// each request over the URL *pathname* and KERIA verifies that signature
-// against the path it receives, so any path rewriting would 401 every signed
-// call. Only scheme/host are swapped.
+// The proxies preserve the request path and query the WebView sent: signify-ts
+// signs each request over the KERIA-relative *pathname* and KERIA verifies
+// that signature against the path it receives, so the client's path is never
+// rewritten. The upstream's own path prefix (a base such as
+// https://coa-infra.matou.nz/keria/admin — the coa-shared "proxied layout",
+// where a TLS reverse proxy strips /keria/admin before KERIA sees the
+// request; Matou/coa#141) is prepended so the request reaches the right
+// route: 127.0.0.1:P/identifiers -> <base>/keria/admin/identifiers.
 //
 // cesr_url needs special care: the WebView fetches from it directly (KEL
 // push), but it is also the base for OOBI URLs that KERIA resolves
@@ -55,13 +59,20 @@ func startLoopbackProxy(upstream string) (string, func() error, error) {
 		return "", nil, fmt.Errorf("listen loopback: %w", err)
 	}
 
+	prefix := strings.TrimSuffix(u.Path, "/")
+	rawPrefix := strings.TrimSuffix(u.EscapedPath(), "/")
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = u.Scheme
 			pr.Out.URL.Host = u.Host
 			pr.Out.Host = u.Host
-			// Path and query stay exactly as the client sent them — see the
-			// signature note in the package comment above.
+			// The client's path and query stay exactly as sent (see the
+			// signature note in the package comment); only the upstream's own
+			// prefix is put in front of them.
+			if prefix != "" {
+				pr.Out.URL.Path = prefix + pr.In.URL.Path
+				pr.Out.URL.RawPath = rawPrefix + pr.In.URL.EscapedPath()
+			}
 		},
 		// KERIA responses are small; flush as they arrive rather than buffering.
 		FlushInterval: -1,

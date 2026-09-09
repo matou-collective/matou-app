@@ -549,12 +549,12 @@ type InitMemberProfilesRequest struct {
 	Location            string          `json:"location,omitempty"`
 	IndigenousCommunity string          `json:"indigenousCommunity,omitempty"`
 	JoinReason          string          `json:"joinReason,omitempty"`
-	FacebookUrl         string          `json:"facebookUrl,omitempty"`
-	LinkedinUrl         string          `json:"linkedinUrl,omitempty"`
-	TwitterUrl          string          `json:"twitterUrl,omitempty"`
-	InstagramUrl        string          `json:"instagramUrl,omitempty"`
-	GithubUrl           string          `json:"githubUrl,omitempty"`
-	GitlabUrl           string          `json:"gitlabUrl,omitempty"`
+	FacebookURL         string          `json:"facebookUrl,omitempty"`
+	LinkedinURL         string          `json:"linkedinUrl,omitempty"`
+	TwitterURL          string          `json:"twitterUrl,omitempty"`
+	InstagramURL        string          `json:"instagramUrl,omitempty"`
+	GithubURL           string          `json:"githubUrl,omitempty"`
+	GitlabURL           string          `json:"gitlabUrl,omitempty"`
 	ProfileData         json.RawMessage `json:"profileData,omitempty"` // Optional registration data
 }
 
@@ -662,23 +662,23 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	if req.JoinReason != "" {
 		communityProfileData["joinReason"] = req.JoinReason
 	}
-	if req.FacebookUrl != "" {
-		communityProfileData["facebookUrl"] = req.FacebookUrl
+	if req.FacebookURL != "" {
+		communityProfileData["facebookUrl"] = req.FacebookURL
 	}
-	if req.LinkedinUrl != "" {
-		communityProfileData["linkedinUrl"] = req.LinkedinUrl
+	if req.LinkedinURL != "" {
+		communityProfileData["linkedinUrl"] = req.LinkedinURL
 	}
-	if req.TwitterUrl != "" {
-		communityProfileData["twitterUrl"] = req.TwitterUrl
+	if req.TwitterURL != "" {
+		communityProfileData["twitterUrl"] = req.TwitterURL
 	}
-	if req.InstagramUrl != "" {
-		communityProfileData["instagramUrl"] = req.InstagramUrl
+	if req.InstagramURL != "" {
+		communityProfileData["instagramUrl"] = req.InstagramURL
 	}
-	if req.GithubUrl != "" {
-		communityProfileData["githubUrl"] = req.GithubUrl
+	if req.GithubURL != "" {
+		communityProfileData["githubUrl"] = req.GithubURL
 	}
-	if req.GitlabUrl != "" {
-		communityProfileData["gitlabUrl"] = req.GitlabUrl
+	if req.GitlabURL != "" {
+		communityProfileData["gitlabUrl"] = req.GitlabURL
 	}
 
 	dataBytes, err := json.Marshal(communityProfileData)
@@ -720,12 +720,12 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 			"location":               req.Location,
 			"indigenousCommunity":    req.IndigenousCommunity,
 			"joinReason":             req.JoinReason,
-			"facebookUrl":            req.FacebookUrl,
-			"linkedinUrl":            req.LinkedinUrl,
-			"twitterUrl":             req.TwitterUrl,
-			"instagramUrl":           req.InstagramUrl,
-			"githubUrl":              req.GithubUrl,
-			"gitlabUrl":              req.GitlabUrl,
+			"facebookUrl":            req.FacebookURL,
+			"linkedinUrl":            req.LinkedinURL,
+			"twitterUrl":             req.TwitterURL,
+			"instagramUrl":           req.InstagramURL,
+			"githubUrl":              req.GithubURL,
+			"gitlabUrl":              req.GitlabURL,
 			"participationInterests": req.Interests,
 			"customInterests":        req.CustomInterests,
 			"lastActiveAt":           now2,
@@ -1291,7 +1291,7 @@ func isProfileOwner(caller, typeName, objectID string, newFields, existingFields
 // isEndorsementAppend reports whether newFields equals existingFields except
 // for an "endorsements" array that only gained entries.
 func isEndorsementAppend(existingFields, newFields map[string]interface{}) bool {
-	if len(newFields) != len(existingFields) && !(len(newFields) == len(existingFields)+1 && existingFields["endorsements"] == nil) {
+	if len(newFields) != len(existingFields) && (len(newFields) != len(existingFields)+1 || existingFields["endorsements"] != nil) {
 		return false
 	}
 	for k, v := range newFields {

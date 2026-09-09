@@ -77,7 +77,7 @@ func BuildStateValidated(tree objecttree.ReadableObjectTree, spaceID, objectID, 
 
 	err := tree.IterateRoot(
 		// convert: decrypted bytes → ObjectChange
-		func(change *objecttree.Change, decrypted []byte) (any, error) {
+		func(_ *objecttree.Change, decrypted []byte) (any, error) {
 			if len(decrypted) == 0 {
 				return nil, nil
 			}

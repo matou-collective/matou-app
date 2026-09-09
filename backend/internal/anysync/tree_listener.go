@@ -301,7 +301,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			EditedAt   string `json:"editedAt,omitempty"`
 			DeletedAt  string `json:"deletedAt,omitempty"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 
 		if !existed && data.DeletedAt == "" {
 			l.broker.Broadcast(SSEEvent{
@@ -345,7 +345,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Emoji       string   `json:"emoji"`
 			ReactorAIDs []string `json:"reactorAids"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 
 		l.broker.Broadcast(SSEEvent{
 			Type: "chat:reaction:update",
@@ -363,7 +363,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Title  string `json:"title"`
 			Status string `json:"status"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 
 		// Prefer "name" field; fall back to "title" for backward compatibility.
 		name := data.Name
@@ -388,7 +388,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			ProjectID string `json:"project_id"`
 			Status    string `json:"status"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 
 		l.broker.Broadcast(SSEEvent{
 			Type: "plan_updated",
@@ -408,7 +408,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Title     string `json:"title"`
 			Status    string `json:"status"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 
 		l.broker.Broadcast(SSEEvent{
 			Type: "contribution_updated",
@@ -430,7 +430,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Title                string `json:"title"`
 			Status               string `json:"status"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 
 		l.broker.Broadcast(SSEEvent{
 			Type: "milestone_updated",
@@ -451,7 +451,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Title  string `json:"title"`
 			Status string `json:"status"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "proposal_updated",
 			Data: map[string]interface{}{
@@ -469,7 +469,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			ProposalID string `json:"proposal_id"`
 			Status     string `json:"status"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "decision_plan_updated",
 			Data: map[string]interface{}{
@@ -497,7 +497,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		var data struct {
 			ProposalID string `json:"proposal_id"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "proposal:endorsed",
 			Data: map[string]interface{}{
@@ -514,7 +514,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			DisplayName string `json:"displayName"`
 			Status      string `json:"status"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "profile:updated",
 			Data: map[string]interface{}{
@@ -535,7 +535,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Round           string `json:"round"`
 			GroupAid        string `json:"groupAid"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "multisig:rotation-signal",
 			Data: map[string]interface{}{
@@ -555,7 +555,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			AdminSn  string `json:"adminSn"`
 			AckBy    string `json:"ackBy"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "multisig:rotation-ack",
 			Data: map[string]interface{}{
@@ -571,7 +571,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		var data struct {
 			ProposalID string `json:"proposal_id"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "proposal:comment_added",
 			Data: map[string]interface{}{
@@ -587,7 +587,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		var data struct {
 			ContributionID string `json:"contribution_id"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "contribution:comment_added",
 			Data: map[string]interface{}{
@@ -603,7 +603,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		var data struct {
 			ProjectID string `json:"project_id"`
 		}
-		json.Unmarshal(p.Data, &data)
+		_ = json.Unmarshal(p.Data, &data)
 		l.broker.Broadcast(SSEEvent{
 			Type: "project:comment_added",
 			Data: map[string]interface{}{

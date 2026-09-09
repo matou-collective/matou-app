@@ -1,12 +1,12 @@
 //go:build integration
 
-// Sync metrics integration tests for matouSyncStatus + UnifiedTreeManager.
+// Sync metrics integration tests for MatouSyncStatus + UnifiedTreeManager.
 //
-// These tests verify that P2P sync activity is tracked by matouSyncStatus and
+// These tests verify that P2P sync activity is tracked by MatouSyncStatus and
 // exposed via UnifiedTreeManager.GetSyncStatus(). They exercise the full path:
 //
 //	Client A creates space → adds credential → HeadUpdate propagates →
-//	Client B's matouSyncStatus records HeadsReceive/HeadsApply →
+//	Client B's MatouSyncStatus records HeadsReceive/HeadsApply →
 //	GetSyncStatus() returns non-zero metrics
 //
 // Run with:
@@ -31,7 +31,7 @@ func TestIntegration_SyncMetrics_LocalChangesTracked(t *testing.T) {
 
 	client := newTestSDKClient(t)
 
-	// Create a space — this opens the space and registers a matouSyncStatus
+	// Create a space — this opens the space and registers a MatouSyncStatus
 	// via newSpaceDeps → utm.RegisterSyncStatus
 	result, err := client.CreateSpace(ctx, "ETestMetrics_Local", SpaceTypePrivate, nil)
 	if err != nil {

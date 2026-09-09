@@ -48,13 +48,21 @@ public class MatouBackendPlugin: CAPPlugin, CAPBridgedPlugin {
                 if self.token == nil {
                     let freshToken = try Self.randomToken()
                     let dataDir = try Self.dataDirectory()
+                    // Per-install at-rest encryption key for {dataDir}/identity.json
+                    // (issue #117). Generated once and held in the Keychain, read
+                    // back verbatim on every later launch. Empty selects the
+                    // backend's legacy plaintext path when the Keychain is
+                    // unavailable, so the app still boots. Never logged.
+                    let identityKey = Self.identityEncryptionKey()
                     var boundPort: Int = 0
-                    // MobileStart is a C function (not an ObjC method), so Swift does
-                    // not bridge its trailing NSError** into `throws`; check by hand.
+                    // MobileStartWithEncryptionKey is a C function (not an ObjC method),
+                    // so Swift does not bridge its trailing NSError** into `throws`;
+                    // check by hand. (gomobile exports StartWithEncryptionKey as
+                    // MobileStartWithEncryptionKey — see backend/cmd/mobile/mobile.go.)
                     var startError: NSError?
-                    guard MobileStart(dataDir.path, configServerUrl, freshToken, &boundPort, &startError) else {
+                    guard MobileStartWithEncryptionKey(dataDir.path, configServerUrl, freshToken, identityKey, &boundPort, &startError) else {
                         throw startError ?? NSError(domain: "go", code: 1,
-                                                    userInfo: [NSLocalizedDescriptionKey: "MobileStart returned false without an error"])
+                                                    userInfo: [NSLocalizedDescriptionKey: "MobileStartWithEncryptionKey returned false without an error"])
                     }
                     self.port = boundPort
                     self.token = freshToken
@@ -95,5 +103,80 @@ public class MatouBackendPlugin: CAPPlugin, CAPBridgedPlugin {
                           userInfo: [NSLocalizedDescriptionKey: "SecRandomCopyBytes failed (\(status))"])
         }
         return raw.map { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: - Identity encryption key (issue #117)
+
+    /// Keychain service + account the per-install identity-encryption key lives
+    /// under. Same service and accessibility posture as SecureStoragePlugin
+    /// (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — device-bound, never
+    /// synced to iCloud), so the key shares the identity trust root.
+    private static let keychainService = "nz.matou.app"
+    private static let identityKeyAccount = "backend_identity_key"
+
+    /// The at-rest identity-encryption key passed to StartWithEncryptionKey.
+    /// Read from the Keychain; generated once (32 random bytes, hex-encoded) and
+    /// stored on first launch. Returns "" — the backend's legacy plaintext path —
+    /// whenever the Keychain is unavailable, so the app still boots. The key is
+    /// never logged.
+    private static func identityEncryptionKey() -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: identityKeyAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
+                os_log("identity key: stored value unreadable — using legacy plaintext identity", log: log, type: .default)
+                return ""
+            }
+            return key
+        case errSecItemNotFound:
+            return generateAndStoreIdentityKey()
+        default:
+            // A genuine Keychain fault (e.g. device not unlocked since boot). Do
+            // NOT mint a fresh key — that would orphan an already-encrypted
+            // identity.json. Fall back to the legacy plaintext path this launch.
+            os_log("identity key: Keychain read failed (%{public}@) — using legacy plaintext identity",
+                   log: log, type: .default, describe(status))
+            return ""
+        }
+    }
+
+    /// Generate the identity key once and persist it under the Keychain. Returns
+    /// "" (legacy plaintext path) if generation or the Keychain write fails.
+    private static func generateAndStoreIdentityKey() -> String {
+        let key: String
+        do {
+            key = try randomToken()
+        } catch {
+            os_log("identity key: generation failed (%{public}@) — using legacy plaintext identity",
+                   log: log, type: .default, error.localizedDescription)
+            return ""
+        }
+        let attrs: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: identityKeyAccount,
+            kSecValueData as String: Data(key.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let status = SecItemAdd(attrs as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            os_log("identity key: Keychain store failed (%{public}@) — using legacy plaintext identity",
+                   log: log, type: .default, describe(status))
+            return ""
+        }
+        return key
+    }
+
+    private static func describe(_ status: OSStatus) -> String {
+        if let msg = SecCopyErrorMessageString(status, nil) as String? { return "\(msg) (\(status))" }
+        return "OSStatus \(status)"
     }
 }
