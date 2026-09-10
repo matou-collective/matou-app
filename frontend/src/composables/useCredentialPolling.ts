@@ -10,6 +10,7 @@ import { useKERINotificationService, type KERINotification } from './useKERINoti
 import { claimNotification, isGrantAlreadyAdmitted } from 'src/lib/keri/notifications';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { isSelfAgentOobi } from 'src/lib/selfAgentOobi';
 
 const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
 const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
@@ -179,6 +180,16 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         return;
       }
 
+      // On a single-agent org setup the org/admin OOBIs are the agent-role form
+      // (`…/oobi/<AID>/agent/<AGENT_EID>`) hosted by *our own* KERIA agent.
+      // Resolving those is dead weight: KERIA refuses to verify the loc-scheme
+      // reply it authored for its own agent and the resolve polls until the
+      // client's signal times out (~30 s each). We already hold current key
+      // state for anything our agent hosts, so skip them (issue #450). Foreign
+      // OOBIs (schema, or any org/admin hosted by a different agent) still
+      // resolve exactly as before.
+      const ownAgentAid = keriClient.getSignifyClient()?.agent?.pre ?? null;
+
       // Resolve schema OOBI (required for credential verification)
       // The schema SAID is defined in the org setup
       const schemaOOBI = config.schema?.oobi;
@@ -205,7 +216,9 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       // Resolve org OOBI (for receiving credentials)
       // The org OOBI is stored at config.organization.oobi
       const orgOOBI = config.organization?.oobi;
-      if (orgOOBI) {
+      if (orgOOBI && isSelfAgentOobi(orgOOBI, ownAgentAid)) {
+        console.log('[CredentialPolling] Skipping org OOBI resolve — hosted by our own agent:', orgOOBI.slice(0, 50) + '...');
+      } else if (orgOOBI) {
         try {
           await keriClient.resolveOOBI(orgOOBI, undefined, 30000);
           console.log('[CredentialPolling] Resolved org OOBI:', orgOOBI.slice(0, 50) + '...');
@@ -219,7 +232,9 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       // Resolve admin OOBIs (for receiving messages/rejections)
       if (config.admins?.length) {
         for (const admin of config.admins) {
-          if (admin.oobi) {
+          if (admin.oobi && isSelfAgentOobi(admin.oobi, ownAgentAid)) {
+            console.log(`[CredentialPolling] Skipping admin OOBI resolve — hosted by our own agent: ${admin.aid?.slice(0, 12)}...`);
+          } else if (admin.oobi) {
             try {
               await keriClient.resolveOOBI(admin.oobi, undefined, 30000);
               console.log(`[CredentialPolling] Resolved admin OOBI: ${admin.aid?.slice(0, 12)}...`);
