@@ -9,17 +9,17 @@ import (
 // Registration notification template (sent to contact@matou.nz)
 
 type registrationNotificationTemplateData struct {
-	ApplicantName string
-	ApplicantEmail string
-	ApplicantAid  string
-	Bio           string
-	Location      string
-	JoinReason    string
-	Interests     string
+	ApplicantName   string
+	ApplicantEmail  string
+	ApplicantAid    string
+	Bio             string
+	Location        string
+	JoinReason      string
+	Interests       string
 	CustomInterests string
-	SubmittedAt   string
-	LogoURL       template.URL
-	TextURL       template.URL
+	SubmittedAt     string
+	LogoURL         template.URL
+	TextURL         template.URL
 }
 
 const registrationNotificationHTML = `<!DOCTYPE html>

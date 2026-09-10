@@ -118,6 +118,39 @@ api() {
   done
 }
 
+# #128 (matou-app#286): the /pulls listing (LANDING=pr) and the standing-drive
+# listing share no data with each other or with the issues-page + dependency
+# fan-out below — yet ran SERIALLY after it, summing to 15-26s of the lister's
+# runtime (the /pulls leg alone ~1.4s per open PR). Kick both independent
+# listings off in the BACKGROUND here so they overlap the main loop, and reap
+# them at their use sites; setup collapses to max(legs) (~13s with 7 open PRs,
+# was 26s). Each fetch's rc is captured at the reap (off `wait`, never tripping
+# set -e), so its prior ruling is preserved EXACTLY: /pulls fail-OPEN (a failed
+# fetch drops nothing), the standing-drive listing fail-to-UNPROMOTED
+# (blocker_nums stays []). Background jobs can't write a command substitution, so
+# each streams to a temp file reaped by an EXIT trap.
+bg_files=""
+cleanup_bg() { [ -n "$bg_files" ] && rm -f $bg_files; return 0; }
+trap cleanup_bg EXIT
+
+pulls_pid=""
+if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
+  pulls_file="$(mktemp)"; bg_files="$bg_files $pulls_file"
+  api "$FORGEJO_API/pulls?state=open&limit=50" >"$pulls_file" & pulls_pid=$!
+fi
+
+# The standing-drive listing is backgrounded only when the drive-blocker budget
+# is not already spent at t=0 — i.e. always in production (default 8s), but a
+# consumer that DISABLES drive-blocker ordering with LIST_READY_DRIVE_BUDGET=0
+# pays zero listing cost (the #120 guarantee, now "don't even start the fetch"
+# rather than "skip it after paying for it"). SECONDS is ~0 here, so this gate
+# fires only for a <=0 budget.
+drives_pid=""
+if [ "$SECONDS" -lt "${LIST_READY_DRIVE_BUDGET:-8}" ]; then
+  drives_file="$(mktemp)"; bg_files="$bg_files $drives_file"
+  api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50" >"$drives_file" & drives_pid=$!
+fi
+
 ready='[]'
 page=1
 while :; do
@@ -190,8 +223,16 @@ done
 # In push mode (default) this whole block is skipped: no /pulls call is made and
 # the queue is byte-identical.
 if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then
-  open_pr_nums="$(api "$FORGEJO_API/pulls?state=open&limit=50" |
-    jq -r '.[]? | (.head.ref // "") | select(test("^agent/issue-[0-9]+$")) | sub("^agent/issue-";"")' 2>/dev/null || true)"
+  # #128: reap the /pulls fetch kicked off at the top. fail-OPEN preserved — a
+  # non-zero fetch (rc captured off `wait`, never tripping set -e) yields an
+  # empty PR list that drops nothing, exactly as the old `|| true` did.
+  pulls_rc=0; wait "$pulls_pid" || pulls_rc=$?
+  if [ "$pulls_rc" -eq 0 ]; then
+    open_pr_nums="$(jq -r '.[]? | (.head.ref // "") | select(test("^agent/issue-[0-9]+$")) | sub("^agent/issue-";"")' \
+      <"$pulls_file" 2>/dev/null || true)"
+  else
+    open_pr_nums=""
+  fi
 # Forgejo IGNORES an unknown `labels=` filter instead of matching nothing: in a
 # repo with no `standing-drive` label the query above returns EVERY open issue
 # (probed live 2026-08-27 on matou-app — 23 of 23, none carrying the label).
@@ -224,17 +265,18 @@ fi
 # open ones. A failed fetch, no standing drive, or none with open blockers →
 # blocker_nums stays [] and the emit order below is byte-identical to before.
 blocker_nums='[]'
-# #120: the budget must bound the WHOLE drive-blocker block, not just the loop
-# body. The `labels=standing-drive` listing call itself was measured at
-# 5.5-12.7s on matou-app (Forgejo IGNORES an unknown labels= filter, dumping
-# every open issue), yet the old guard sat INSIDE `for d in ...` — i.e. after
-# that fetch had already been paid for. Check the budget BEFORE the fetch too,
-# matching this block's own stated intent that ORDERING never eat the whole 30s
-# budget. Skipping the fetch leaves blocker_nums=[] → the emit order below is
-# byte-identical to the documented no-standing-drive fallback.
-if [ "$SECONDS" -ge "${LIST_READY_DRIVE_BUDGET:-8}" ]; then
-  echo "list-ready-tasks: drive-blocker ordering skipped at ${SECONDS}s (budget ${LIST_READY_DRIVE_BUDGET:-8}s) — the standing-drive listing itself would exceed budget; queue emitted unpromoted." >&2
-elif drives="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=standing-drive&limit=50")"; then
+# #120/#128: the budget must bound the WHOLE drive-blocker block. #120 measured
+# the `labels=standing-drive` listing call at 5.5-12.7s on matou-app (Forgejo
+# IGNORES an unknown labels= filter, dumping every open issue) and gated it
+# BEFORE the fetch; #128 moves that fetch to the BACKGROUND at the top so its
+# cost overlaps the main loop entirely. The gate now decides at t=0 whether to
+# START the fetch (`drives_pid` set ⇔ budget > 0) — a spent/zero budget skips
+# the listing exactly as before, leaving blocker_nums=[] and the emit order
+# byte-identical to the documented no-standing-drive fallback. The per-drive
+# dependency fan-out below is still bounded by the same wall clock.
+if [ -z "$drives_pid" ]; then
+  echo "list-ready-tasks: drive-blocker ordering skipped (budget ${LIST_READY_DRIVE_BUDGET:-8}s) — the standing-drive listing was not started; queue emitted unpromoted." >&2
+elif drives_rc=0; wait "$drives_pid" || drives_rc=$?; [ "$drives_rc" -eq 0 ] && drives="$(cat "$drives_file")"; then
   for d in $(jq -r '.[]? | select((((.labels // []) | map(.name) | index("standing-drive"))) != null) | .number' <<<"$drives" 2>/dev/null || true); do
     # Wall-clock bound (belt and braces): even a repo with a genuinely deep
     # standing-drive list must not spend the whole 30s budget on ORDERING.

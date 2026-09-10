@@ -5,7 +5,9 @@
       <!-- Logo Header -->
       <div class="sidebar-header">
         <div class="logo-container">
-          <img :src="kitLogo" :alt="KIT.brand.name" class="logo-icon" />
+          <div class="logo-badge">
+            <img :src="kitLogo" :alt="KIT.brand.name" class="logo-icon" />
+          </div>
           <div class="logo-text">
             <span class="logo-title">{{ KIT.brand.name }}</span>
             <span class="logo-subtitle">Community</span>
@@ -26,10 +28,23 @@
           <span>{{ item.label }}</span>
           <span v-if="item.badge > 0" class="nav-badge">{{ badgeLabel(item.badge) }}</span>
         </button>
-        <button class="nav-item report-issue-btn" @click="showReportDialog = true">
-          <Bug class="nav-icon" />
-          <span>Report an issue</span>
-        </button>
+        <div class="sidebar-nav-bottom">
+          <!-- Community Settings gear — shown only for holders of
+               open_community_settings (founder by default); sits directly above
+               "Report an issue" (#318). -->
+          <button
+            v-if="rolePolicyStore.can('open_community_settings')"
+            class="nav-item community-settings-btn"
+            @click="router.push({ name: 'community-settings' })"
+          >
+            <Settings class="nav-icon" />
+            <span>Community Settings</span>
+          </button>
+          <button class="nav-item report-issue-btn" @click="showReportDialog = true">
+            <Bug class="nav-icon" />
+            <span>Report an issue</span>
+          </button>
+        </div>
       </nav>
 
       <!-- Footer: user profile -->
@@ -48,7 +63,7 @@
     </aside>
 
     <!-- Main Content (nested route) -->
-    <main class="main-content">
+    <main class="main-content" :class="{ 'is-chat-route': route.name === 'chat' }">
       <router-view />
     </main>
 
@@ -117,6 +132,15 @@
             </span>
             <span class="more-sheet-label">{{ userName }}</span>
           </button>
+          <button
+            class="more-sheet-item more-sheet-item-separated"
+            @click="showMoreSheet = false; showReportDialog = true"
+          >
+            <span class="more-sheet-icon-wrap">
+              <Bug class="more-sheet-icon" />
+            </span>
+            <span class="more-sheet-label">Report an issue</span>
+          </button>
         </div>
       </div>
     </Transition>
@@ -144,7 +168,7 @@ import {
   Hammer,
   Bug,
   Menu,
-  ShieldCheck,
+  Settings,
 } from 'lucide-vue-next';
 import { useRouter, useRoute } from 'vue-router';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -170,7 +194,7 @@ import { useProfileViewer } from 'stores/profileViewer';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
 import {
-  NAV_ITEM_META,
+  FEATURE_NAV_ITEMS,
   isNavActive as isNavActiveFor,
   badgeLabel,
   type NavItemMeta,
@@ -236,7 +260,6 @@ const NAV_ICONS: Record<string, Component> = {
   proposals: Vote,
   projects: Target,
   contributions: Hammer,
-  'roles-permissions': ShieldCheck,
 };
 
 const navBadges = computed<Record<string, number>>(() => ({
@@ -246,12 +269,8 @@ const navBadges = computed<Record<string, number>>(() => ({
   contributions: contributionsUnreadTotal.value,
 }));
 
-// The Roles & Permissions entry is admin-only: it appears once the role
-// policy store confirms the caller holds manage_roles.
 const navItems = computed(() =>
-  NAV_ITEM_META.filter(
-    (meta) => meta.name !== 'roles-permissions' || rolePolicyStore.canManageRoles,
-  ).map((meta) => ({
+  FEATURE_NAV_ITEMS.map((meta) => ({
     ...meta,
     icon: NAV_ICONS[meta.name] as Component,
     badge: navBadges.value[meta.name] ?? 0,
@@ -461,9 +480,25 @@ onBeforeUnmount(() => {
   gap: 0.75rem;
 }
 
+/* Round brand badge: the kit logo is a wide mark (512x282), so it sits
+   centred inside a solid primary circle instead of being stretched square. */
+.logo-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--matou-sidebar-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
 .logo-icon {
-  width: 60px;
-  height: 60px;
+  width: 28px;
+  height: auto;
+  max-height: 28px;
+  object-fit: contain;
+  display: block;
 }
 
 .logo-text {
@@ -548,11 +583,20 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--matou-sidebar-border);
 }
 
+// The bottom cluster (Community Settings + Report an issue) is pushed to the
+// foot of the nav column so it keeps its place whether or not the gear shows.
+.sidebar-nav-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.community-settings-btn,
 .report-issue-btn {
   font-size: 0.85rem;
   color: var(--matou-sidebar-foreground);
   opacity: 0.75;
-  margin-top: auto;
   padding: 0.5rem 0.75rem;
   border-radius: 10px;
 
@@ -713,6 +757,12 @@ onBeforeUnmount(() => {
   }
 }
 
+.more-sheet-item-separated {
+  margin-top: 4px;
+  border-top: 1px solid var(--matou-sidebar-border);
+  padding-top: calc(0.75rem + 4px);
+}
+
 .more-sheet-icon-wrap {
   display: flex;
   align-items: center;
@@ -792,6 +842,22 @@ onBeforeUnmount(() => {
     padding-top: env(safe-area-inset-top);
     // Keep content clear of the fixed bottom bar (bar height + safe area).
     padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
+  }
+
+  // Chat manages its own bottom-nav inset (ChatPage.vue's reserve-tab-bar),
+  // so this layout must not double up or the page ends up taller than the
+  // viewport and over-scrolling reveals empty space below the composer.
+  // Beyond dropping the padding, hard-lock the route to the viewport height:
+  // the chat column sizes itself to the visual viewport, and any drift (a
+  // stale keyboard height, inset rounding) must never make the page itself
+  // scrollable — over-scrolling past the chat log revealed keyboard-sized
+  // empty space beneath it on device.
+  .main-content.is-chat-route {
+    padding-bottom: 0;
+    height: calc(100dvh - var(--titlebar-height));
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
   }
 
   .bottom-nav {

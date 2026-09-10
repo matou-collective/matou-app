@@ -53,4 +53,33 @@ grep -q '!\[sorted\](http://x/b.png)' <<<"$c" || fail "comment image b"
 c0="$(build_pr_comment "skipped")"
 grep -q 'screenshot(s)' <<<"$c0" && fail "no-shot comment must have no details block"
 
-echo "pr-e2e-lib: 24 checks passed"
+# pr_e2e_meta_tag: exact shape the sweep + the pr-e2e.yml give-up path share.
+[ "$(pr_e2e_meta_tag deadbeef done)" = '<!-- pr-e2e-meta sha=deadbeef state=done -->' ] || fail "meta tag done"
+[ "$(pr_e2e_meta_tag cafe pending)" = '<!-- pr-e2e-meta sha=cafe state=pending -->' ] || fail "meta tag pending"
+
+# build_pr_comment embeds the meta tag only when PR_E2E_HEAD_SHA is set; state
+# defaults to done, PR_E2E_META_STATE overrides it. Marker still comes first.
+cm="$(PR_E2E_HEAD_SHA=abc123 build_pr_comment "✅ passed")"
+[[ "$cm" == "<!-- pr-e2e -->"* ]] || fail "meta comment still starts with marker"
+grep -qF '<!-- pr-e2e-meta sha=abc123 state=done -->' <<<"$cm" || fail "meta tag embedded (done default)"
+cp="$(PR_E2E_HEAD_SHA=abc123 PR_E2E_META_STATE=pending build_pr_comment "⏳ pending")"
+grep -qF '<!-- pr-e2e-meta sha=abc123 state=pending -->' <<<"$cp" || fail "meta state override"
+grep -qF 'pr-e2e-meta' <<<"$c" && fail "no meta tag when PR_E2E_HEAD_SHA unset"
+
+# pr_e2e_has_verdict_for: the sweep's evidence test. A done verdict for the sha
+# counts; a pending placeholder or a done verdict for a different sha does not.
+done_json='[{"body":"unrelated"},{"body":"<!-- pr-e2e -->\n<!-- pr-e2e-meta sha=abc123 state=done -->\n✅"}]'
+pend_json='[{"body":"<!-- pr-e2e -->\n<!-- pr-e2e-meta sha=abc123 state=pending -->\n⏳"}]'
+pr_e2e_has_verdict_for "$done_json" abc123 || fail "done verdict for sha is evidence"
+pr_e2e_has_verdict_for "$pend_json" abc123 && fail "pending placeholder is NOT evidence"
+pr_e2e_has_verdict_for "$done_json" other9 && fail "done verdict for a different sha is NOT evidence"
+pr_e2e_has_verdict_for '[]' abc123 && fail "no comments is NOT evidence"
+# A legacy verdict (marker, no meta tag — written by a PR head that predates
+# #278) IS evidence: the dispatched run uses the head's own run-pr-e2e.sh, so
+# re-dispatching could never produce a tagged verdict and would loop forever.
+legacy_json='[{"body":"<!-- pr-e2e -->\n:camera: **Feature e2e:** skipped"}]'
+pr_e2e_has_verdict_for "$legacy_json" abc123 || fail "legacy untagged verdict IS evidence (no re-dispatch loop)"
+unrelated_json='[{"body":"just a review comment"}]'
+pr_e2e_has_verdict_for "$unrelated_json" abc123 && fail "a non-marker comment is NOT evidence"
+
+echo "pr-e2e-lib: 36 checks passed"

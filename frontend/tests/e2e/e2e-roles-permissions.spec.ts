@@ -14,16 +14,17 @@ import {
 } from './utils/test-helpers';
 
 /**
- * E2E: Admin-managed RBAC (Roles & Permissions page)
+ * E2E: Admin-managed RBAC (Community Settings permission tables)
  *
  * Covers the in-app role-policy management shipped by the admin-managed-rbac
  * branch:
- *   1. Admin sees the Roles nav entry and the default policy matrix.
+ *   1. Admin opens Community Settings (sidebar gear) and sees the default
+ *      policy matrix.
  *   2. Admin adds a custom role, toggles a capability, saves → policy v1.
  *   3. The Change Role modal lists the new custom role for assignment.
  *   4. Backend gate: a plain member is refused PUT /role-policy (403) and a
  *      stale-version admin write gets 409; when a registered member account
- *      exists, its dashboard shows no Roles nav entry.
+ *      exists, its dashboard shows no Community Settings gear.
  *
  * Bootstraps via org-setup only. The registration-member project (a real
  * KERI-registered member) currently fails on main in this harness — the
@@ -103,48 +104,73 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await adminPage?.context().close();
   });
 
-  test('admin sees the Roles nav entry and the default policy matrix', async () => {
+  test('admin opens Community Settings and sees the default policy matrix', async () => {
     test.setTimeout(TIMEOUT.long);
 
-    const rolesNav = adminPage.locator('.nav-item', { hasText: 'Roles' });
-    await expect(rolesNav).toBeVisible({ timeout: TIMEOUT.medium });
-    await snap(adminPage, 'admin-dashboard-with-roles-nav');
+    const gear = adminPage.locator('.community-settings-btn');
+    await expect(gear).toBeVisible({ timeout: TIMEOUT.medium });
+    await snap(adminPage, 'admin-dashboard-with-settings-gear');
 
-    await rolesNav.click();
-    await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
+    await gear.click();
+    await expect(adminPage.getByRole('heading', { name: 'Community Settings' })).toBeVisible();
     await expect(adminPage.getByText(/built-in default policy/i)).toBeVisible();
 
-    // Two tables now: community roles (who you are) and project roles (what
-    // you hold on one project). Both carry the Role column + 22 capabilities
-    // (#312/#313 registry: 13 original − 2 retired + 11 new).
+    // Every capability lives in exactly one feature table: Community (#318, 4
+    // admin capabilities), Projects & Contributions (#314, 11), Proposals
+    // (#315, 2), Chat (#316, 3) and Notices (#317, 2) — 22 total. The generic
+    // community/project role tables therefore carry only the Role column; they
+    // remain the home of the role rows and the New-role dialogs.
+    const communityPerms = adminPage.locator('.roles-matrix.community-permissions-table');
     const community = adminPage.locator('.roles-matrix.community-roles');
     const project = adminPage.locator('.roles-matrix.project-roles');
+    const projects = adminPage.locator('.roles-matrix.projects-roles');
+    await expect(adminPage.getByRole('heading', { name: 'Community', exact: true })).toBeVisible();
     await expect(adminPage.getByRole('heading', { name: 'Community roles' })).toBeVisible();
     await expect(adminPage.getByRole('heading', { name: 'Project roles' })).toBeVisible();
+    await expect(
+      adminPage.getByRole('heading', { name: 'Projects & Contributions' }),
+    ).toBeVisible();
 
-    // Community table: member, operations/community steward, founding member (4).
+    // Community permission table: the 4 community roles × Role + 4 admin columns.
+    await expect(communityPerms.locator('tbody tr')).toHaveCount(4);
+    await expect(communityPerms.locator('thead th')).toHaveCount(5);
+    await expect(communityPerms.getByText('Founding Member')).toBeVisible();
+    await expect(communityPerms.getByText('Manage roles')).toBeVisible();
+
+    // Community roles table: member, operations/community steward, founding
+    // member (4); Role column only.
     await expect(community.locator('tbody tr')).toHaveCount(4);
-    await expect(community.locator('thead th')).toHaveCount(23);
+    await expect(community.locator('thead th')).toHaveCount(1);
     await expect(community.getByText('Founding Member')).toBeVisible();
-    await expect(community.getByText('Manage roles')).toBeVisible();
+    // Chat capabilities are not columns here — they live in the Chat table.
+    await expect(community.getByText('Send messages')).toHaveCount(0);
     await snap(adminPage, 'community-roles-default-policy');
 
     // Project table: contributor, project_lead, project_steward (3). The
     // contributor row lives here only (issue #165 ruling), not in community.
     await expect(project.locator('tbody tr')).toHaveCount(3);
-    await expect(project.locator('thead th')).toHaveCount(23);
+    await expect(project.locator('thead th')).toHaveCount(1);
     await expect(project.getByText('Contributor')).toBeVisible();
     await expect(community.getByText('Contributor')).toHaveCount(0);
     await snap(adminPage, 'project-roles-default-policy-with-contributor');
 
-    // A community-only capability toggle (Manage roles) is disabled on a
-    // project role — defense-in-depth for the 400 the backend returns.
-    const projSteward = project.locator('tbody tr', { hasText: 'Project Steward' });
-    const projHeaders = await project.locator('thead th').allTextContents();
-    const manageRolesCol = projHeaders.findIndex((h) => h.trim().startsWith('Manage roles'));
-    expect(manageRolesCol).toBeGreaterThan(0);
+    // Projects & Contributions table: 11 project columns + Role, rows for both
+    // scopes (it is the only table with project-scoped rows).
+    await expect(projects.locator('thead th')).toHaveCount(12);
+    await expect(projects.locator('tbody tr', { hasText: 'Contributor' })).toBeVisible();
+    await expect(projects.locator('tbody tr', { hasText: 'Founding Member' })).toBeVisible();
+    await snap(adminPage, 'projects-contributions-table-default-policy');
+
+    // A community-only capability toggle (Reward) is disabled on a project
+    // role that doesn't hold it — defense-in-depth for the 400 the backend
+    // returns. The generic project table has no capability columns any more,
+    // so the check runs against the Projects & Contributions table.
+    const contributorRow = projects.locator('tbody tr', { hasText: 'Contributor' });
+    const projHeaders = await projects.locator('thead th').allTextContents();
+    const rewardIdx = projHeaders.findIndex((h) => h.trim().startsWith('Reward'));
+    expect(rewardIdx).toBeGreaterThan(0);
     await expect(
-      projSteward.locator('td').nth(manageRolesCol).locator('.q-toggle'),
+      contributorRow.locator('td').nth(rewardIdx).locator('.q-toggle'),
     ).toHaveAttribute('aria-disabled', 'true');
     await snap(adminPage, 'project-role-community-only-toggle-disabled');
 
@@ -174,11 +200,16 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await expect(customRow).toBeVisible();
     await expect(customRow.getByText('custom')).toBeVisible();
 
-    // Grant the custom role "Reward" (column index = header position).
-    const headers = await matrix.locator('thead th').allTextContents();
+    // Grant the custom role "Reward" — a Projects & Contributions capability, so
+    // it is now toggled in that feature table (#314). The community-scoped custom
+    // role appears there as a community row, where Reward is enabled.
+    const projects = adminPage.locator('.roles-matrix.projects-roles');
+    const projCustomRow = projects.locator('tbody tr', { hasText: CUSTOM_ROLE_NAME });
+    await expect(projCustomRow).toBeVisible();
+    const headers = await projects.locator('thead th').allTextContents();
     const rewardCol = headers.findIndex((h) => h.trim().startsWith('Reward'));
     expect(rewardCol).toBeGreaterThan(0);
-    const rewardToggle = customRow.locator('td').nth(rewardCol).locator('.q-toggle');
+    const rewardToggle = projCustomRow.locator('td').nth(rewardCol).locator('.q-toggle');
     await expect(rewardToggle).toHaveAttribute('aria-checked', 'false');
     await rewardToggle.click();
     await expect(rewardToggle).toHaveAttribute('aria-checked', 'true');
@@ -217,16 +248,19 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
   test('survives reload and the Change Role modal offers the custom role', async () => {
     test.setTimeout(TIMEOUT.orgSetup);
 
-    // Re-enter the Roles page after a reload so the store re-fetches the
+    // Re-enter Community Settings after a reload so the store re-fetches the
     // persisted policy from the backend.
     await reloadIntoDashboard(adminPage);
-    const rolesNav = adminPage.locator('.nav-item', { hasText: 'Roles' });
-    await expect(rolesNav).toBeVisible({ timeout: TIMEOUT.aidCreation });
-    await rolesNav.click();
-    await expect(adminPage.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible({
+    const gear = adminPage.locator('.community-settings-btn');
+    await expect(gear).toBeVisible({ timeout: TIMEOUT.aidCreation });
+    await gear.click();
+    await expect(adminPage.getByRole('heading', { name: 'Community Settings' })).toBeVisible({
       timeout: TIMEOUT.medium,
     });
-    await expect(adminPage.locator('.roles-matrix tbody tr', { hasText: CUSTOM_ROLE_NAME })).toBeVisible();
+    // Scope to the community table: the role now also appears in every feature table.
+    await expect(
+      adminPage.locator('.roles-matrix.community-roles tbody tr', { hasText: CUSTOM_ROLE_NAME }),
+    ).toBeVisible();
     await snap(adminPage, 'roles-page-after-reload');
 
     // Change Role modal: open a member's profile from the dashboard. Use the
@@ -262,7 +296,7 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await adminPage.keyboard.press('Escape');
   });
 
-  test('plain member is refused policy writes and sees no Roles nav', async ({ browser }) => {
+  test('plain member is refused policy writes and sees no Community Settings gear', async ({ browser }) => {
     test.setTimeout(TIMEOUT.orgSetup);
 
     // API gate, independent of UI: a non-privileged AID cannot PUT.
@@ -298,8 +332,8 @@ test.describe.serial('Roles & Permissions (admin-managed RBAC)', () => {
     await loginWithMnemonic(memberPage, accounts.member.mnemonic);
 
     await expect(memberPage.locator('.nav-item', { hasText: 'Home' })).toBeVisible({ timeout: TIMEOUT.medium });
-    await expect(memberPage.locator('.nav-item', { hasText: 'Roles' })).toHaveCount(0);
-    await snap(memberPage, 'member-dashboard-no-roles-nav');
+    await expect(memberPage.locator('.community-settings-btn')).toHaveCount(0);
+    await snap(memberPage, 'member-dashboard-no-settings-gear');
     await ctx.close();
   });
 });

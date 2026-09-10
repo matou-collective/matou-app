@@ -213,7 +213,7 @@ func TestIdentityRoleLookup_LiveUpdate(t *testing.T) {
 func TestOptionalRBACMiddleware_WithoutAID(t *testing.T) {
 	lookup := &mockRoleLookup{roles: map[string][]contributions.Role{}}
 	var called bool
-	handler := OptionalRBACMiddleware(lookup, func(w http.ResponseWriter, r *http.Request) {
+	handler := OptionalRBACMiddleware(lookup, func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
