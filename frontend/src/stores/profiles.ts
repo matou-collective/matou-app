@@ -22,10 +22,12 @@ export const useProfilesStore = defineStore('profiles', () => {
     }
   }
 
-  async function loadCommunityProfiles(): Promise<void> {
+  async function loadCommunityProfiles(
+    filters?: Record<string, string | undefined>,
+  ): Promise<void> {
     loading.value = true;
     try {
-      communityProfiles.value = await getProfiles('SharedProfile');
+      communityProfiles.value = await getProfiles('SharedProfile', filters);
       console.log(`[ProfilesStore] Loaded ${communityProfiles.value.length} SharedProfiles`);
     } catch (err) {
       console.warn('[ProfilesStore] Failed to load community profiles:', err);

@@ -123,8 +123,12 @@ About 140 characters; renders at QR version 6–7, comfortably scannable.
 1. Scanner generates an ephemeral X25519 key pair.
 2. Both sides compute `shared = X25519(ownEph, peerPub)`.
 3. `K = HKDF-SHA256(ikm = shared, salt = pairSecret, info = "matou-pair-v1")`.
-4. `code = decimal(HMAC-SHA256(K, "sas"))[0:6]` — the 6-digit code shown on
-   both screens.
+4. `code = zeropad6(HMAC-SHA256(K, "sas") as big-endian integer mod 10^6)` —
+   the 6-digit code shown on both screens. Reducing mod 10^6 keeps the code
+   uniform over all one million values (`000000` is legal and must be
+   displayed with its leading zeros); taking the leading decimal digits of
+   the MAC would never start with 0 and would over-represent `10xxxx` /
+   `11xxxx`.
 
 Because `pairSecret` is only ever in the QR image, a mailbox that swaps the
 scanner's public key in transit computes a different `K` and every later
@@ -137,7 +141,7 @@ integrity.
 | --- | --- |
 | `PUT /api/pair/{id}/{slot}` | store one blob (≤ 8 KB, `application/octet-stream`). `409` if the slot is already filled. Slots: `a` (scanner → displayer), `b` (displayer → scanner). |
 | `GET /api/pair/{id}/{slot}?wait=25` | long-poll up to 25 s; returns the blob and **deletes it** (single read). `204` on a quiet timeout, `404` once the pairing's TTL has passed. |
-| `DELETE /api/pair/{id}` | best-effort cleanup on cancel. |
+| `DELETE /api/pair/{id}` | best-effort cleanup on cancel. The other side's next long-poll then gets `404`, which its backend reports as session state `expired` — a peer's cancel is indistinguishable from TTL expiry on the far side, so UI copy should say "The pairing ended on the other device or timed out", not "expired". |
 
 - TTL 5 minutes from first write; in-memory only; no auth; per-IP rate
   limit (reuse `_check_issue_rate_limit`'s shape); CORS closed like the

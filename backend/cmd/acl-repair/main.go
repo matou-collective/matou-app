@@ -43,6 +43,7 @@ import (
 	"github.com/anyproto/any-sync/util/crypto"
 
 	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/identity"
 )
 
 func main() {
@@ -77,6 +78,14 @@ func main() {
 		log.Fatal(err)
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
+
+	// Refuse a peer.key that is sealed at rest before the SDK sees it: with no
+	// encryption key registered the SDK treats an unopenable device key as
+	// unreadable and replaces it, which would rotate the owner's real
+	// install's device key from a mis-run ops tool.
+	if err := checkPeerKeyReadable(*peerKey); err != nil {
+		log.Fatalf("-peer-key: %v", err)
+	}
 
 	client, err := anysync.NewSDKClient(*cfg, &anysync.ClientOptions{DataDir: tmp, PeerKeyPath: *peerKey})
 	if err != nil {
@@ -149,6 +158,20 @@ func main() {
 		log.Fatalf("verify: %v", err)
 	}
 	fmt.Printf("verified: %s is in %s as %s (identity %s)\n", *aid, short(*space), permName(gotPerms), got.Account())
+}
+
+// checkPeerKeyReadable reports an error when path does not exist or holds a
+// peer key sealed at rest (#117), which this tool cannot open — it has no
+// encryption key — and must not hand to the SDK (see main).
+func checkPeerKeyReadable(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if identity.IsSealed(raw) {
+		return fmt.Errorf("%s is encrypted at rest (#117); acl-repair cannot open it — export a plaintext copy from an unlocked app, or run with the app's identity key support once added", path)
+	}
+	return nil
 }
 
 func fetchACL(ctx context.Context, nc nodeclient.NodeClient, keys *accountdata.AccountKeys, spaceID string) (list.AclList, error) {

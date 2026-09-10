@@ -286,6 +286,20 @@
         </div>
       </section>
 
+      <!-- Section 4b: Additional Information (schema-driven custom fields) -->
+      <section v-if="customFieldNames.length > 0" class="settings-card" data-test="custom-fields-section">
+        <div class="card-header">
+          <h3 class="card-title"><FileText :size="18" /> Additional Information</h3>
+        </div>
+        <TypedForm
+          ref="typedFormRef"
+          embedded
+          type-name="SharedProfile"
+          :fields="customFieldNames"
+          v-model="customFieldData"
+        />
+      </section>
+
       <!-- Section 5: Membership (CommunityProfile - read-only) -->
       <!-- <section class="settings-card" v-if="communityProfileData">
         <div class="card-header">
@@ -478,7 +492,7 @@ import {
 } from 'lucide-vue-next';
 import { useRouter } from 'vue-router';
 import { useProfilesStore } from 'stores/profiles';
-import { useTypesStore } from 'stores/types';
+import { useTypesStore, emptyFieldValue } from 'stores/types';
 import { useIdentityStore } from 'stores/identity';
 import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
@@ -488,6 +502,7 @@ import { getFileUrl, uploadFile } from 'src/lib/api/client';
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { applyPushEnabled } from 'src/composables/usePush';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
+import TypedForm from 'src/components/profiles/TypedForm.vue';
 
 const router = useRouter();
 const profilesStore = useProfilesStore();
@@ -658,6 +673,19 @@ const SHARED_FORM_KEYS = [
 
 const PRIVATE_FORM_KEYS = ['privacySettings', 'appPreferences'] as const;
 
+// Schema-driven custom (admin-added) SharedProfile fields: everything the type
+// definition declares that this bespoke form doesn't already render itself.
+// `avatar` is handled separately (image upload), the rest are the SHARED_FORM_KEYS.
+const BUILTIN_SHARED_FIELDS = [...SHARED_FORM_KEYS, 'avatar'];
+const customFieldNames = computed(() =>
+  typesStore.customFieldNames('SharedProfile', BUILTIN_SHARED_FIELDS)
+);
+const customFieldData = ref<Record<string, unknown>>({});
+const initialCustomSnapshot = ref<string>('');
+// Template ref on the embedded TypedForm so the save can run its client-side
+// validation (required / min / max length) and surface inline errors.
+const typedFormRef = ref<InstanceType<typeof TypedForm>>();
+
 const initialSharedSnapshot = ref<Record<string, string>>({});
 const initialPrivateSnapshot = ref<Record<string, string>>({});
 
@@ -675,6 +703,11 @@ function getPrivateSnapshot() {
   }, {} as Record<string, string>);
 }
 
+const isCustomDirty = computed(() =>
+  initialCustomSnapshot.value !== '' &&
+  JSON.stringify(customFieldData.value) !== initialCustomSnapshot.value
+);
+
 const isSharedDirty = computed(() => {
   const init = initialSharedSnapshot.value;
   if (Object.keys(init).length === 0) return false;
@@ -683,7 +716,7 @@ const isSharedDirty = computed(() => {
     const initial = String(init[k] ?? '');
     return current !== initial;
   });
-  return hasChanges;
+  return hasChanges || isCustomDirty.value;
 });
 
 const isPrivateDirty = computed(() => {
@@ -781,6 +814,17 @@ function initSharedForm() {
   for (const field of arrayFields) {
     sharedForm[field] = asArray(d[field]).join(', ');
   }
+  // Seed schema-driven custom fields from the stored data map. An unset field
+  // takes the same empty value TypedForm seeds it with, so the form's initial
+  // v-model emission matches the snapshot and the page is not dirty on load.
+  const def = typesStore.getDefinition('SharedProfile');
+  const cd: Record<string, unknown> = {};
+  for (const name of customFieldNames.value) {
+    const field = def?.fields.find((f) => f.name === name);
+    cd[name] = d[name] !== undefined ? d[name] : field ? emptyFieldValue(field) : '';
+  }
+  customFieldData.value = cd;
+  initialCustomSnapshot.value = JSON.stringify(cd);
   // Set snapshot after form is initialized
   initialSharedSnapshot.value = getSharedSnapshot();
 }
@@ -821,6 +865,10 @@ function buildSharedData(): Record<string, unknown> {
     const val = sharedForm[field];
     data[field] = val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
   }
+  // Overlay schema-driven custom fields.
+  for (const name of customFieldNames.value) {
+    data[name] = customFieldData.value[name];
+  }
   return data;
 }
 
@@ -837,6 +885,12 @@ function buildPrivateData(): Record<string, unknown> {
 
 async function saveSharedProfile() {
   saveError.value = '';
+  // Client-side validation of the schema-driven custom fields: an invalid one
+  // shows its inline error and the save is not attempted.
+  if (typedFormRef.value && !typedFormRef.value.validate()) {
+    saveError.value = 'Please fix the highlighted fields in Additional Information';
+    return;
+  }
   const data = buildSharedData();
   const existing = profilesStore.getMyProfile('SharedProfile');
   const result = await profilesStore.saveProfile('SharedProfile', data, {
@@ -847,6 +901,7 @@ async function saveSharedProfile() {
     setTimeout(() => { saveSuccess.value = false; }, 2000);
     // Update snapshot to reflect saved state
     initialSharedSnapshot.value = getSharedSnapshot();
+    initialCustomSnapshot.value = JSON.stringify(customFieldData.value);
   } else {
     saveError.value = result.error || 'Failed to save profile';
   }
@@ -891,6 +946,10 @@ function discardChanges() {
     SHARED_FORM_KEYS.forEach((k) => {
       sharedForm[k] = s[k] ?? '';
     });
+  }
+  // Restore custom fields from their snapshot
+  if (initialCustomSnapshot.value !== '') {
+    customFieldData.value = JSON.parse(initialCustomSnapshot.value);
   }
   // Restore private form from snapshot
   if (Object.keys(p).length > 0) {

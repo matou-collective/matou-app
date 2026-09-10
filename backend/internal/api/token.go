@@ -98,28 +98,39 @@ type SessionValidator interface {
 // mint sessions are themselves mutating requests guarded by the API token, so
 // every session holder already proved possession of it. sessions may be nil.
 func TokenGuardWithSessions(token string, sessions SessionValidator, next http.Handler) http.Handler {
+	authorized := BearerAuthorizer(token, sessions)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		got := bearerToken(r.Header.Get("Authorization"))
-		if got == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing API token"})
-			return
-		}
-		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
+		if authorized(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if sessions != nil {
-			if _, ok := sessions.Validate(got); ok {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing API token"})
 	})
+}
+
+// BearerAuthorizer returns the check TokenGuardWithSessions applies to
+// mutating requests, so a read route that hands out secret material (the
+// pairing identity GET) can demand the same proof regardless of HTTP method.
+// sessions may be nil.
+func BearerAuthorizer(token string, sessions SessionValidator) func(r *http.Request) bool {
+	return func(r *http.Request) bool {
+		got := bearerToken(r.Header.Get("Authorization"))
+		if got == "" {
+			return false
+		}
+		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
+			return true
+		}
+		if sessions != nil {
+			if _, ok := sessions.Validate(got); ok {
+				return true
+			}
+		}
+		return false
+	}
 }
