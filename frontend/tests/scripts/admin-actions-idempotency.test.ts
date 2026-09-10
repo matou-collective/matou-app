@@ -1,16 +1,19 @@
 /**
- * Cross-device approval idempotency (issue #480, follow-up to #470 / #466).
+ * Cross-device approval idempotency (issue #480 / #488, follow-up to #470 / #466).
  *
  * `approveRegistration`'s `isProcessing` guard is per-JS-instance, so two linked
  * steward devices sharing one KERIA agent can both reach Approve for the same
  * applicant. On a shared agent both devices see the same wallet, so the guard
- * added in #480 re-checks the wallet before issuing: if the membership
- * credential is already present, the second approval bails without issuing a
- * second ACDC / TEL event / grant.
+ * added in #480 re-checks the wallet before issuing: if an ACTIVE membership
+ * credential is already present, the second approval must NOT mint a duplicate
+ * ACDC / TEL event.
  *
- * This exercises the real `isCredentialAlreadyIssued` guard inside
- * `approveRegistration` against a mocked signify client whose wallet gains the
- * credential after the first issuance — proving exactly one `issueCredential`.
+ * #488 sharpens the outcome: instead of bailing (which left an applicant stuck
+ * with an issued-but-never-granted credential when a prior run died between
+ * issue and grant), the second run RE-GRANTS the existing SAID and still runs
+ * the profile flip. So the invariant is "exactly one issuance, and the applicant
+ * ends up granted + approved" — proven here against a mocked signify client
+ * whose wallet gains the credential after the first issuance.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -49,11 +52,16 @@ const signifyClient = {
   }),
 };
 
+// Re-grant of an already-issued SAID (#488): delivers the existing credential
+// without minting a new ACDC, so it never touches the wallet.
+const grantCredential = vi.fn(async (_issuer: string, said: string) => ({ said }));
+
 const keriClientMock = {
   getSignifyClient: () => signifyClient,
   getCesrUrl: () => 'http://cesr',
   resolveOOBIWithReason: vi.fn(async () => ({ ok: true, reason: '' })),
   issueCredential,
+  grantCredential,
   pushKelToAgent: vi.fn(async () => ({ pushed: 1, failed: 0 })),
   listNotifications: vi.fn(async () => []),
   markNotificationRead: vi.fn(async () => {}),
@@ -110,6 +118,11 @@ vi.stubGlobal(
 
 // Imported AFTER the mocks are registered.
 import { useAdminActions, MEMBERSHIP_SCHEMA_SAID } from 'composables/useAdminActions';
+import { createOrUpdateProfile, getProfileById, initMemberProfiles } from 'src/lib/api/client';
+
+const createOrUpdateProfileMock = vi.mocked(createOrUpdateProfile);
+const getProfileByIdMock = vi.mocked(getProfileById);
+const initMemberProfilesMock = vi.mocked(initMemberProfiles);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const registration: any = {
@@ -124,11 +137,16 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
   beforeEach(() => {
     wallet.length = 0;
     issueCredential.mockClear();
+    grantCredential.mockClear();
     listCredentials.mockClear();
     notifyCreate.mockClear();
+    createOrUpdateProfileMock.mockClear();
+    getProfileByIdMock.mockReset().mockResolvedValue(null);
+    initMemberProfilesMock.mockClear();
+    vi.mocked(fetch).mockClear();
   });
 
-  it('issues the membership credential exactly once across two devices', async () => {
+  it('issues exactly once across two devices, and device B re-grants the existing SAID', async () => {
     // Two composable instances = two linked devices, each with its own
     // per-JS-instance isProcessing ref, but the same shared KERIA wallet.
     const deviceA = useAdminActions();
@@ -137,16 +155,27 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
     const firstOk = await deviceA.approveRegistration(registration);
     expect(firstOk).toBe(true);
     expect(issueCredential).toHaveBeenCalledTimes(1);
+    expect(grantCredential).not.toHaveBeenCalled();
+    const issuedSaid = wallet[0]!.sad.d;
 
     // Device B approves the same (now-stale) pending entry: the wallet already
-    // holds the credential, so it must bail without a second issuance.
+    // holds the credential, so it must NOT re-issue — but it MUST re-grant that
+    // exact SAID (#488) rather than bail, otherwise a run that died between
+    // issue and grant leaves the applicant never credentialed.
     const secondOk = await deviceB.approveRegistration(registration);
     expect(secondOk).toBe(true);
     expect(issueCredential).toHaveBeenCalledTimes(1);
+    expect(grantCredential).toHaveBeenCalledTimes(1);
+    expect(grantCredential).toHaveBeenCalledWith(
+      expect.anything(),
+      issuedSaid,
+      'DAPPLICANT',
+      expect.anything(),
+    );
 
     expect(notifyCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: expect.stringContaining('already approved on another device'),
+        message: expect.stringContaining('already issued a membership credential on another device'),
       }),
     );
   });
@@ -181,7 +210,10 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
 
     expect(await deviceA.approveRegistration(registration)).toBe(true);
     expect(await deviceB.approveRegistration(registration)).toBe(true);
+    // Guard fires on device B: exactly one issuance, and B re-grants (does not
+    // re-issue) despite the applicant's credential landing past page 1.
     expect(issueCredential).toHaveBeenCalledTimes(1);
+    expect(grantCredential).toHaveBeenCalledTimes(1);
     expect(listCredentials).toHaveBeenCalledWith(
       expect.objectContaining({
         filter: expect.objectContaining({ '-a-i': 'DAPPLICANT', '-s': MEMBERSHIP_SCHEMA_SAID }),
@@ -189,7 +221,7 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
     );
   });
 
-  it('re-issues for an applicant whose earlier membership credential was REVOKED (removed member re-applies)', async () => {
+  it('re-issues (does not re-grant) for an applicant whose earlier credential was REVOKED (removed member re-applies)', async () => {
     wallet.push({
       sad: { d: 'EREVOKED', s: MEMBERSHIP_SCHEMA_SAID, a: { i: 'DAPPLICANT' } },
       status: { et: 'rev', s: '1' },
@@ -200,8 +232,103 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
 
     expect(ok).toBe(true);
     expect(issueCredential).toHaveBeenCalledTimes(1);
+    expect(grantCredential).not.toHaveBeenCalled();
     expect(notifyCreate).not.toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining('already approved') }),
+      expect.objectContaining({ message: expect.stringContaining('already issued') }),
+    );
+  });
+
+  it('FULLY-approved member on a stale pending list: keeps the #483 no-op (no re-grant, no init-member, no profile rewrite)', async () => {
+    // Device B still shows the applicant as pending, but device A finished the
+    // whole approval: the wallet holds the credential AND the profiles already
+    // record it (SharedProfile status approved, CommunityProfile credential =
+    // that SAID). Re-running the flow would rewrite the member's profiles and
+    // mint a second invite for nothing — so this must stay a no-op.
+    wallet.push({
+      sad: { d: 'EPRIOR', s: MEMBERSHIP_SCHEMA_SAID, a: { i: 'DAPPLICANT' } },
+      status: { et: 'iss', s: '0' },
+    });
+    getProfileByIdMock.mockImplementation(async (typeName: string): Promise<any> => {
+      if (typeName === 'SharedProfile') return { id: 'SharedProfile-DAPPLICANT', data: { aid: 'DAPPLICANT', status: 'approved' } };
+      if (typeName === 'CommunityProfile') return { id: 'CommunityProfile-DAPPLICANT', data: { userAID: 'DAPPLICANT', credential: 'EPRIOR' } };
+      return null;
+    });
+
+    const deviceB = useAdminActions();
+    const ok = await deviceB.approveRegistration(registration);
+
+    expect(ok).toBe(true);
+    expect(issueCredential).not.toHaveBeenCalled();
+    expect(grantCredential).not.toHaveBeenCalled();
+    expect(initMemberProfilesMock).not.toHaveBeenCalled();
+    expect(createOrUpdateProfileMock).not.toHaveBeenCalled();
+    // No space invite minted either.
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+      expect.stringContaining('/spaces/community/invite'),
+      expect.anything(),
+    );
+    expect(notifyCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('already approved on another device') }),
+    );
+    expect(notifyCreate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('re-sent') }),
+    );
+  });
+
+  it('approved status but a placeholder credential on the CommunityProfile still takes the re-grant path (#488 partial run)', async () => {
+    // A prior run died between the grant and step 6b: SharedProfile may read
+    // approved only if 6c ran, but the CommunityProfile still carries the
+    // 'pending' placeholder — not fully approved, so re-grant + repair it.
+    wallet.push({
+      sad: { d: 'EPRIOR', s: MEMBERSHIP_SCHEMA_SAID, a: { i: 'DAPPLICANT' } },
+      status: { et: 'iss', s: '0' },
+    });
+    getProfileByIdMock.mockImplementation(async (typeName: string): Promise<any> => {
+      if (typeName === 'SharedProfile') return { id: 'SharedProfile-DAPPLICANT', data: { aid: 'DAPPLICANT', status: 'approved' } };
+      if (typeName === 'CommunityProfile') return { id: 'CommunityProfile-DAPPLICANT', data: { userAID: 'DAPPLICANT', credential: 'pending' } };
+      return null;
+    });
+
+    const admin = useAdminActions();
+    expect(await admin.approveRegistration(registration)).toBe(true);
+    expect(issueCredential).not.toHaveBeenCalled();
+    expect(grantCredential).toHaveBeenCalledTimes(1);
+    expect(createOrUpdateProfileMock).toHaveBeenCalledWith(
+      'CommunityProfile',
+      expect.objectContaining({ credential: 'EPRIOR' }),
+      expect.objectContaining({ id: 'CommunityProfile-DAPPLICANT' }),
+    );
+  });
+
+  it('re-grants the existing SAID with zero issuances and still flips SharedProfile to approved (#488)', async () => {
+    // Steward device retries after a prior run died between issue and grant:
+    // the wallet already holds an ACTIVE membership credential for the
+    // applicant. The retry must perform ZERO issuances, exactly ONE grant of
+    // that SAID, and still flip the SharedProfile to approved.
+    wallet.push({
+      sad: { d: 'EPRIOR', s: MEMBERSHIP_SCHEMA_SAID, a: { i: 'DAPPLICANT' } },
+      status: { et: 'iss', s: '0' },
+    });
+
+    const admin = useAdminActions();
+    const ok = await admin.approveRegistration(registration);
+
+    expect(ok).toBe(true);
+    expect(issueCredential).not.toHaveBeenCalled();
+    expect(grantCredential).toHaveBeenCalledTimes(1);
+    expect(grantCredential).toHaveBeenCalledWith(
+      expect.anything(),
+      'EPRIOR',
+      'DAPPLICANT',
+      expect.anything(),
+    );
+
+    // The SharedProfile flip (pending -> approved) still runs so the applicant
+    // leaves the pending list.
+    expect(createOrUpdateProfileMock).toHaveBeenCalledWith(
+      'SharedProfile',
+      expect.objectContaining({ aid: 'DAPPLICANT', status: 'approved' }),
+      expect.objectContaining({ id: 'SharedProfile-DAPPLICANT' }),
     );
   });
 });
