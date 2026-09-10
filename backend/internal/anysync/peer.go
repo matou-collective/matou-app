@@ -342,22 +342,42 @@ func PersistUserSignKey(dataDir, userAID string, key crypto.PrivKey) error {
 // filename peer.key so existing installs keep resolving access. Either file
 // may be sealed at rest (#117); a sealed file that cannot be opened fails
 // closed.
+//
+// A plaintext file (either name) is migrated on first keyed open to a sealed
+// sign.key; a plaintext legacy peer.key is removed once the sealed sign.key is
+// in place so the ACL identity does not linger on disk in the clear.
 func LoadUserSignKey(dataDir, userAID string) (crypto.PrivKey, error) {
 	userDir := filepath.Join(dataDir, "users", userAID)
+	legacyPath := filepath.Join(userDir, "peer.key")
+	fromLegacy := false
 	raw, err := os.ReadFile(filepath.Join(userDir, "sign.key"))
 	if err != nil {
 		// Fall back to the legacy filename (pre-#468).
-		legacy, legacyErr := os.ReadFile(filepath.Join(userDir, "peer.key"))
+		legacy, legacyErr := os.ReadFile(legacyPath)
 		if legacyErr != nil {
 			return nil, fmt.Errorf("reading user sign key: %w", err)
 		}
 		raw = legacy
+		fromLegacy = true
 	}
-	data, _, err := openBytes(dataDir, raw)
+	data, wasSealed, err := openBytes(dataDir, raw)
 	if err != nil {
 		return nil, fmt.Errorf("opening user sign key: %w", err)
 	}
-	return crypto.UnmarshalEd25519PrivateKeyProto(data)
+	key, err := crypto.UnmarshalEd25519PrivateKeyProto(data)
+	if err != nil {
+		return nil, err
+	}
+	if shouldMigrate(dataDir, wasSealed) {
+		if perr := PersistUserSignKey(dataDir, userAID, key); perr != nil {
+			log.Printf("[anysync] Warning: failed to migrate users/%s sign key to sealed form: %v", userAID, perr)
+		} else if fromLegacy {
+			if rerr := os.Remove(legacyPath); rerr != nil {
+				log.Printf("[anysync] Warning: failed to remove plaintext legacy users/%s/peer.key after migration: %v", userAID, rerr)
+			}
+		}
+	}
+	return key, nil
 }
 
 // ExportPeerKey exports the device (peer) key in a portable format

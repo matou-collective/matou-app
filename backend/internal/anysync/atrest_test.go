@@ -541,3 +541,141 @@ func TestMigrationWarnings_GoToLog(t *testing.T) {
 		t.Errorf("space key migration warning not written via log: %q", out)
 	}
 }
+
+// TestLoadUserSignKey_LegacyAndMigration covers the users/{aid} read path
+// under #468's sign.key layout:
+//   - a sealed legacy users/{aid}/peer.key is opened through the fallback;
+//   - a plaintext key (sign.key or legacy peer.key) is migrated on first keyed
+//     open to a sealed sign.key, and a plaintext legacy peer.key is removed once
+//     the sealed sign.key exists — the ACL identity must not stay on disk in
+//     the clear after the rest of the key material is sealed.
+func TestLoadUserSignKey_LegacyAndMigration(t *testing.T) {
+	const aid = "EAIDLEGACY"
+	newKey := func(t *testing.T) (crypto.PrivKey, []byte) {
+		t.Helper()
+		priv, _, err := crypto.GenerateRandomEd25519KeyPair()
+		if err != nil {
+			t.Fatalf("generating key: %v", err)
+		}
+		raw, err := priv.Marshall()
+		if err != nil {
+			t.Fatalf("marshalling key: %v", err)
+		}
+		return priv, raw
+	}
+	writeUserFile := func(t *testing.T, dir, name string, data []byte) string {
+		t.Helper()
+		userDir := filepath.Join(dir, "users", aid)
+		if err := os.MkdirAll(userDir, 0700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		p := filepath.Join(userDir, name)
+		if err := os.WriteFile(p, data, 0600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	t.Run("sealed legacy peer.key is read via fallback", func(t *testing.T) {
+		dir := t.TempDir()
+		RegisterDataDirKey(dir, testEncKey)
+		t.Cleanup(func() { RegisterDataDirKey(dir, nil) })
+		priv, raw := newKey(t)
+		sealed, err := identity.Seal(raw, testEncKey)
+		if err != nil {
+			t.Fatalf("seal: %v", err)
+		}
+		writeUserFile(t, dir, "peer.key", sealed)
+
+		loaded, err := LoadUserSignKey(dir, aid)
+		if err != nil {
+			t.Fatalf("LoadUserSignKey via sealed legacy file: %v", err)
+		}
+		if !privKeysEqual(loaded, priv) {
+			t.Error("loaded key does not match the sealed legacy key")
+		}
+	})
+
+	t.Run("plaintext legacy peer.key migrates to sealed sign.key", func(t *testing.T) {
+		dir := t.TempDir()
+		priv, raw := newKey(t)
+		legacyPath := writeUserFile(t, dir, "peer.key", raw)
+
+		RegisterDataDirKey(dir, testEncKey)
+		t.Cleanup(func() { RegisterDataDirKey(dir, nil) })
+
+		loaded, err := LoadUserSignKey(dir, aid)
+		if err != nil {
+			t.Fatalf("LoadUserSignKey: %v", err)
+		}
+		if !privKeysEqual(loaded, priv) {
+			t.Error("loaded key does not match the legacy key")
+		}
+
+		signRaw, err := os.ReadFile(filepath.Join(dir, "users", aid, "sign.key"))
+		if err != nil {
+			t.Fatalf("sign.key must exist after migration: %v", err)
+		}
+		if !identity.IsSealed(signRaw) {
+			t.Error("migrated sign.key must be sealed")
+		}
+		if bytes.Contains(signRaw, raw) {
+			t.Error("migrated sign.key leaks raw key bytes")
+		}
+		if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+			t.Errorf("plaintext legacy peer.key must be removed after migration (stat err=%v)", err)
+		}
+
+		again, err := LoadUserSignKey(dir, aid)
+		if err != nil {
+			t.Fatalf("LoadUserSignKey after migration: %v", err)
+		}
+		if !privKeysEqual(again, priv) {
+			t.Error("post-migration key mismatch")
+		}
+	})
+
+	t.Run("plaintext sign.key migrates in place", func(t *testing.T) {
+		dir := t.TempDir()
+		priv, raw := newKey(t)
+		signPath := writeUserFile(t, dir, "sign.key", raw)
+
+		RegisterDataDirKey(dir, testEncKey)
+		t.Cleanup(func() { RegisterDataDirKey(dir, nil) })
+
+		loaded, err := LoadUserSignKey(dir, aid)
+		if err != nil {
+			t.Fatalf("LoadUserSignKey: %v", err)
+		}
+		if !privKeysEqual(loaded, priv) {
+			t.Error("loaded key mismatch")
+		}
+		signRaw, err := os.ReadFile(signPath)
+		if err != nil {
+			t.Fatalf("read sign.key: %v", err)
+		}
+		if !identity.IsSealed(signRaw) {
+			t.Error("sign.key must be sealed after first keyed open")
+		}
+	})
+
+	t.Run("no key registered leaves plaintext files untouched", func(t *testing.T) {
+		dir := t.TempDir()
+		priv, raw := newKey(t)
+		legacyPath := writeUserFile(t, dir, "peer.key", raw)
+
+		loaded, err := LoadUserSignKey(dir, aid)
+		if err != nil {
+			t.Fatalf("LoadUserSignKey: %v", err)
+		}
+		if !privKeysEqual(loaded, priv) {
+			t.Error("loaded key mismatch")
+		}
+		if _, err := os.Stat(legacyPath); err != nil {
+			t.Errorf("legacy peer.key must be left in place without a key: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "users", aid, "sign.key")); !os.IsNotExist(err) {
+			t.Error("no sign.key must be written without a key registered")
+		}
+	})
+}
