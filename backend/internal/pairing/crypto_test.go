@@ -329,3 +329,32 @@ func TestRetryStopsAtSessionExpiry(t *testing.T) {
 		t.Fatalf("pollSlot under permanent 429 = %v, want errMailboxExpired", err)
 	}
 }
+
+// TestSASCodeKnownAnswer pins the SAS derivation (spec §2): HMAC-SHA256(K,"sas")
+// as a big-endian integer mod 10^6, zero-padded to six digits. The vectors were
+// cross-checked against an independent Python computation; both sides of the
+// protocol are this package, so a change here silently breaks pairing between
+// app versions.
+func TestSASCodeKnownAnswer(t *testing.T) {
+	k := make([]byte, keySize)
+	for i := range k {
+		k[i] = byte(i) // 000102…1f
+	}
+	if got := sasCode(k); got != "590449" {
+		t.Fatalf("sasCode(00..1f) = %s, want 590449", got)
+	}
+	// A code may start with 0 and must keep its leading zero: K = 04 00…00.
+	k0 := make([]byte, keySize)
+	k0[0] = 4
+	if got := sasCode(k0); got != "044175" {
+		t.Fatalf("sasCode(04 00..00) = %s, want 044175", got)
+	}
+	// Always exactly six digits.
+	for i := 0; i < 200; i++ {
+		rk, _ := randomBytes(keySize)
+		c := sasCode(rk)
+		if len(c) != codeDigits || strings.Trim(c, "0123456789") != "" {
+			t.Fatalf("sasCode = %q, want 6 decimal digits", c)
+		}
+	}
+}

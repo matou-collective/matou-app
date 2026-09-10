@@ -81,22 +81,20 @@ func deriveK(own *ecdh.PrivateKey, peer *ecdh.PublicKey, pairSecret []byte) ([]b
 }
 
 // sasCode derives the 6-digit confirmation code shown on both screens:
-// decimal(HMAC-SHA256(K, "sas"))[0:6]. Both devices compute an identical K, so
-// they show an identical code; a device that photographed the QR from across
-// the room but sits on a different session key shows a different code.
+// HMAC-SHA256(K, "sas") read as a big-endian integer, mod 10^6, zero-padded to
+// six digits (so "000000" is a legal code). Reducing mod 10^6 keeps the code
+// uniform over all million values; taking the leading decimal digits instead
+// would never yield a leading 0 and would over-represent 10xxxx/11xxxx. Both
+// devices compute an identical K, so they show an identical code; a device
+// that photographed the QR from across the room but sits on a different
+// session key shows a different code.
 func sasCode(k []byte) string {
 	mac := hmac.New(sha256.New, k)
 	mac.Write([]byte("sas"))
 	sum := mac.Sum(nil)
-	dec := new(big.Int).SetBytes(sum).String()
-	if len(dec) < codeDigits {
-		// Astronomically unlikely (top bytes all zero); pad so the code is
-		// always codeDigits wide and both sides still agree.
-		for len(dec) < codeDigits {
-			dec = "0" + dec
-		}
-	}
-	return dec[:codeDigits]
+	mod := new(big.Int).Exp(big.NewInt(10), big.NewInt(codeDigits), nil)
+	n := new(big.Int).Mod(new(big.Int).SetBytes(sum), mod)
+	return fmt.Sprintf("%0*d", codeDigits, n.Int64())
 }
 
 // seal encrypts plaintext under K: output is a 12-byte random nonce followed by
