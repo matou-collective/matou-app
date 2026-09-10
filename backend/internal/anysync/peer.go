@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/anyproto/any-sync/util/crypto"
 )
@@ -98,18 +100,11 @@ func DeriveKeyFromMnemonic(mnemonic string, index uint32) (crypto.PrivKey, error
 }
 
 // GetOrCreatePeerKey loads an existing peer key from file or generates a new one.
-// The key is stored in a file for persistence across restarts.
+// The key is stored in a file for persistence across restarts. It is the
+// no-mnemonic form of loadOrCreateDeviceKey and shares its sealed-at-rest
+// read/write path (#117).
 func GetOrCreatePeerKey(keyPath string) (crypto.PrivKey, error) {
-	// Try to load existing key
-	if data, err := os.ReadFile(keyPath); err == nil {
-		privKey, err := crypto.UnmarshalEd25519PrivateKeyProto(data)
-		if err != nil {
-			return nil, fmt.Errorf("unmarshaling existing key: %w", err)
-		}
-		return privKey, nil
-	}
-
-	return generateAndSaveKey(keyPath)
+	return loadOrCreateDeviceKey(keyPath, nil)
 }
 
 // generateAndSaveKey generates a fresh random Ed25519 key and writes it to
@@ -125,12 +120,18 @@ func generateAndSaveKey(keyPath string) (crypto.PrivKey, error) {
 		return nil, fmt.Errorf("generating key: %w", err)
 	}
 
+	// Save to file, sealed at rest when a key is registered.
 	data, err := privKey.Marshall()
 	if err != nil {
 		return nil, fmt.Errorf("marshaling key: %w", err)
 	}
 
-	if err := os.WriteFile(keyPath, data, 0600); err != nil {
+	sealed, err := sealBytes(dir, data)
+	if err != nil {
+		return nil, fmt.Errorf("sealing key: %w", err)
+	}
+
+	if err := os.WriteFile(keyPath, sealed, 0600); err != nil {
 		return nil, fmt.Errorf("saving key: %w", err)
 	}
 
@@ -146,9 +147,30 @@ func generateAndSaveKey(keyPath string) (crypto.PrivKey, error) {
 // random device key is minted and written over it. The sign key value the ACL
 // already trusts is preserved separately as signKey by the caller.
 func loadOrCreateDeviceKey(keyPath string, signKey crypto.PrivKey) (crypto.PrivKey, error) {
-	data, err := os.ReadFile(keyPath)
+	raw, err := os.ReadFile(keyPath)
 	if err != nil {
 		// No device key yet — mint a fresh random one.
+		return generateAndSaveKey(keyPath)
+	}
+
+	// The device key is sealed at rest under the shell-supplied key when one
+	// is registered for this data directory (#117); a legacy plaintext key is
+	// accepted transparently and migrated to sealed form below.
+	dir := filepath.Dir(keyPath)
+	data, wasSealed, err := openBytes(dir, raw)
+	if err != nil {
+		// The file is sealed but cannot be opened: the shell key was lost or
+		// rotated, or this launch has no key at all (identity.json is then
+		// unreadable too and the node boots unconfigured). The device key is a
+		// random per-install transport key, so failing closed here would only
+		// turn a recoverable "unconfigured" boot into a hard lockout. Move the
+		// unreadable file aside (preserved for forensics) and mint a fresh one;
+		// identity/set re-persists the new peer id.
+		aside := fmt.Sprintf("%s.unreadable-%d", keyPath, time.Now().Unix())
+		if rerr := os.Rename(keyPath, aside); rerr != nil {
+			return nil, fmt.Errorf("opening device key: %w (and moving it aside failed: %v)", err, rerr)
+		}
+		log.Printf("[anysync] Warning: device key %s could not be opened (%v); moved aside to %s and minting a fresh device key", keyPath, err, aside)
 		return generateAndSaveKey(keyPath)
 	}
 
@@ -160,6 +182,14 @@ func loadOrCreateDeviceKey(keyPath string, signKey crypto.PrivKey) (crypto.PrivK
 	if signKey != nil && privKeysEqual(existing, signKey) {
 		// Legacy layout: peer.key == the mnemonic-derived ACL key. Migrate.
 		return generateAndSaveKey(keyPath)
+	}
+
+	if shouldMigrate(dir, wasSealed) {
+		if sealed, serr := sealBytes(dir, data); serr == nil {
+			if werr := os.WriteFile(keyPath, sealed, 0600); werr != nil {
+				log.Printf("[anysync] Warning: failed to migrate peer.key to sealed form: %v", werr)
+			}
+		}
 	}
 
 	return existing, nil
@@ -300,24 +330,54 @@ func PersistUserSignKey(dataDir, userAID string, key crypto.PrivKey) error {
 	if err != nil {
 		return fmt.Errorf("marshaling sign key: %w", err)
 	}
-	return os.WriteFile(filepath.Join(userDir, "sign.key"), data, 0600)
+	sealed, err := sealBytes(dataDir, data)
+	if err != nil {
+		return fmt.Errorf("sealing user sign key: %w", err)
+	}
+	return os.WriteFile(filepath.Join(userDir, "sign.key"), sealed, 0600)
 }
 
 // LoadUserSignKey loads a previously stored user sign key (the ACL identity).
 // It reads {dataDir}/users/{userAID}/sign.key, falling back to the pre-#468
-// filename peer.key so existing installs keep resolving access.
+// filename peer.key so existing installs keep resolving access. Either file
+// may be sealed at rest (#117); a sealed file that cannot be opened fails
+// closed.
+//
+// A plaintext file (either name) is migrated on first keyed open to a sealed
+// sign.key; a plaintext legacy peer.key is removed once the sealed sign.key is
+// in place so the ACL identity does not linger on disk in the clear.
 func LoadUserSignKey(dataDir, userAID string) (crypto.PrivKey, error) {
 	userDir := filepath.Join(dataDir, "users", userAID)
-	data, err := os.ReadFile(filepath.Join(userDir, "sign.key"))
+	legacyPath := filepath.Join(userDir, "peer.key")
+	fromLegacy := false
+	raw, err := os.ReadFile(filepath.Join(userDir, "sign.key"))
 	if err != nil {
 		// Fall back to the legacy filename (pre-#468).
-		legacy, legacyErr := os.ReadFile(filepath.Join(userDir, "peer.key"))
+		legacy, legacyErr := os.ReadFile(legacyPath)
 		if legacyErr != nil {
 			return nil, fmt.Errorf("reading user sign key: %w", err)
 		}
-		data = legacy
+		raw = legacy
+		fromLegacy = true
 	}
-	return crypto.UnmarshalEd25519PrivateKeyProto(data)
+	data, wasSealed, err := openBytes(dataDir, raw)
+	if err != nil {
+		return nil, fmt.Errorf("opening user sign key: %w", err)
+	}
+	key, err := crypto.UnmarshalEd25519PrivateKeyProto(data)
+	if err != nil {
+		return nil, err
+	}
+	if shouldMigrate(dataDir, wasSealed) {
+		if perr := PersistUserSignKey(dataDir, userAID, key); perr != nil {
+			log.Printf("[anysync] Warning: failed to migrate users/%s sign key to sealed form: %v", userAID, perr)
+		} else if fromLegacy {
+			if rerr := os.Remove(legacyPath); rerr != nil {
+				log.Printf("[anysync] Warning: failed to remove plaintext legacy users/%s/peer.key after migration: %v", userAID, rerr)
+			}
+		}
+	}
+	return key, nil
 }
 
 // ExportPeerKey exports the device (peer) key in a portable format
