@@ -29,7 +29,7 @@ new_host() {
   export WITNESS_OOBI_URL="http://localhost:7642/oobi"
   export FORGEJO_TOKEN="tkn"
   unset MATOU_INFRA_REF PROVISION_E2E_KEEP_STACK DIGITALOCEAN_ACCESS_TOKEN \
-        SHIM_SUDO_NOPASS SHIM_MAKE_FAIL 2>/dev/null || true
+        SHIM_SUDO_NOPASS SHIM_SUDO_APT_FAIL SHIM_MAKE_FAIL 2>/dev/null || true
   _write_shims
 }
 TMP_ROOTS=(); cleanup() { for d in "${TMP_ROOTS[@]:-}"; do rm -rf "$d"; done; }
@@ -112,6 +112,24 @@ SH
 #!/usr/bin/env bash
 exit 0
 SH
+  # sudo: password required unless SHIM_SUDO_NOPASS=1 (real sudo -n: exit 1 +
+  # "a password is required"). A passwordless `apt-get install build-essential`
+  # drops a gcc onto the RUNNER PATH; SHIM_SUDO_APT_FAIL=1 makes apt fail.
+  cat >"$SHIMBIN/sudo" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >>"$SHIM_STATE/sudo.log"
+[ "${SHIM_SUDO_NOPASS:-0}" = 1 ] || { echo "sudo: a password is required" >&2; exit 1; }
+case "$*" in
+  *"apt-get install"*build-essential*)
+    [ "${SHIM_SUDO_APT_FAIL:-0}" = 1 ] && { echo "E: Unable to locate package build-essential" >&2; exit 100; }
+    printf '#!/bin/sh\nexit 0\n' >"$RUNNERBIN/gcc"; chmod +x "$RUNNERBIN/gcc" ;;
+esac
+exit 0
+SH
+  cat >"$SHIMBIN/apt-get" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
   chmod +x "$SHIMBIN"/* "$FAKE_GOROOT/bin/go"
 }
 
@@ -127,8 +145,10 @@ have_go_login()  { cp "$FAKE_GOROOT/bin/go" "$SHIMBIN/go"; }    # go on the invo
 have_go_runner() { cp "$FAKE_GOROOT/bin/go" "$RUNNERBIN/go"; }  # go on the runner unit's PATH
 have_go_sdk()    { mkdir -p "$HOME/go-sdk"; ln -s "$FAKE_GOROOT" "$HOME/go-sdk/go"; }   # run-pr-e2e's fallback
 have_go()        { have_go_runner; }
+have_cc()        { printf '#!/bin/sh\nexit 0\n' >"$RUNNERBIN/gcc"; chmod +x "$RUNNERBIN/gcc"; }   # gcc on the runner's PATH
+have_cc_login()  { printf '#!/bin/sh\nexit 0\n' >"$SHIMBIN/gcc"; chmod +x "$SHIMBIN/gcc"; }      # gcc the login shell sees only
 # Everything a drive needs; individual checks knock one clause out of this.
-ready_host()    { have_infra; have_anysync; have_workdir; have_chromium; have_images; have_go; }
+ready_host()    { have_infra; have_anysync; have_workdir; have_chromium; have_images; have_go; have_cc; }
 
 # ── 1. --help exits 0 and prints usage ─────────────────────────────────────
 new_host
@@ -177,7 +197,7 @@ grep -q "FAILED clause \[playwright\]" <<<"$err" || fail "missing chromium must 
 #      the any-sync test config, installs chromium, links the box's go into
 #      ~/go-sdk/go, stands the witness up, verifies OOBI, tears down what it
 #      started. (The box has a go the login shell sees — ben's -03 case.)
-new_host; have_go_login   # nothing else present at all
+new_host; have_go_login; export SHIM_SUDO_NOPASS=1   # nothing else present at all; sudo is passwordless
 out="$(run 2>&1)" || fail "full run on a bare host must converge to success (got: $out)"
 [ -f "$MATOU_INFRA_DIR/keri/Makefile" ] || fail "full run must clone the infra checkout"
 [ -d "$HOME/swarm-e2e/$REPO_SLUG/.git" ] || fail "full run must clone the e2e checkout"
@@ -186,6 +206,8 @@ grep -q "generate-config-test" "$SHIM_STATE/make.log" || fail "full run must gen
 [ -f "$MATOU_INFRA_DIR/any-sync/.env.test" ] || fail "full run must leave .env.test behind"
 [ -d "$HOME/.cache/ms-playwright/chromium-1234" ] || fail "full run must install chromium"
 [ -x "$HOME/go-sdk/go/bin/go" ] || fail "full run must populate ~/go-sdk/go (run-pr-e2e's fallback)"
+grep -q -- "-n apt-get install -y build-essential" "$SHIM_STATE/sudo.log" || fail "full run must install build-essential via sudo -n"
+[ -x "$RUNNERBIN/gcc" ] || fail "full run must leave a C compiler on the runner PATH"
 grep -q "up-test" "$SHIM_STATE/make.log" || fail "full run must bring the test stack up"
 grep -q "down-test" "$SHIM_STATE/make.log" || fail "full run must tear down the stack it started"
 [ -f "$SHIM_STATE/witness_up" ] && fail "after teardown the shimmed stack must be down"
@@ -313,4 +335,51 @@ out="$(run --check 2>&1)" || true
 grep -q "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" <<<"$out" || fail "without a unit the probe must use the stripped default PATH (got: $out)"
 grep -q "$SHIMBIN/go" <<<"$out" && fail "the stripped probe must never resolve the login-shell go (got: $out)"
 
-echo "provision-e2e-stack: 22 checks passed"
+# ── 23. --check, no gcc/cc on the runner's PATH → loud [cc] (ben, #437 comment
+#       3: `make build` died with 'cgo: C compiler "gcc" not found' right after
+#       go was sorted) — the message carries the exact apt line for a human ───
+new_host; ready_host; rm -f "$RUNNERBIN/gcc"
+err="$(run --check 2>&1)" && fail "--check must fail when no C compiler is on the runner PATH"
+grep -q "FAILED clause \[cc\]" <<<"$err" || fail "missing gcc must name [cc] (got: $err)"
+grep -q "sudo apt-get install -y build-essential" <<<"$err" || fail "the [cc] failure must print the exact apt line (got: $err)"
+[ -f "$SHIM_STATE/sudo.log" ] && fail "--check must never touch sudo"
+
+# ── 24. --check passes with gcc on the runner PATH (ready_host) and with `cc`
+#       only (a non-gcc toolchain still satisfies cgo) ───────────────────────
+new_host; ready_host
+out="$(run --check 2>&1)" || fail "--check must pass with gcc on the runner PATH (got: $out)"
+grep -q "\[cc\] C compiler present ($RUNNERBIN/gcc)" <<<"$out" || fail "[cc] must report the gcc it found (got: $out)"
+new_host; ready_host; mv "$RUNNERBIN/gcc" "$RUNNERBIN/cc"
+out="$(run --check 2>&1)" || fail "--check must pass with only cc on the runner PATH (got: $out)"
+grep -q "\[cc\] C compiler present ($RUNNERBIN/cc)" <<<"$out" || fail "[cc] must accept cc when gcc is absent (got: $out)"
+
+# ── 25. gcc only on the login shell's PATH → still [cc]: same runner-PATH rule
+#       as go (everything in --check probes what the job actually gets) ──────
+new_host; ready_host; rm -f "$RUNNERBIN/gcc"; have_cc_login
+err="$(run --check 2>&1)" && fail "--check must not accept a gcc only the login shell sees"
+grep -q "FAILED clause \[cc\]" <<<"$err" || fail "login-only gcc must name [cc] (got: $err)"
+
+# ── 26. converge, no gcc, PASSWORDLESS sudo → `sudo -n apt-get install -y
+#       build-essential`, then the probe is re-run and passes ────────────────
+new_host; ready_host; rm -f "$RUNNERBIN/gcc"; export SHIM_SUDO_NOPASS=1
+out="$(run 2>&1)" || fail "converge with passwordless sudo must install build-essential and pass (got: $out)"
+grep -q -- "^-n apt-get install -y build-essential$" "$SHIM_STATE/sudo.log" || fail "converge must run exactly 'sudo -n apt-get install -y build-essential' (sudo.log: $(cat "$SHIM_STATE/sudo.log"))"
+grep -q "\[cc\] C compiler installed ($RUNNERBIN/gcc)" <<<"$out" || fail "[cc] must re-probe after the install (got: $out)"
+# and a --check straight after is green
+run --check >/dev/null 2>&1 || fail "--check after the cc converge must pass"
+
+# ── 27. converge, no gcc, sudo NEEDS A PASSWORD (the swarm user on -03) → loud
+#       [cc] with the exact apt line, and apt-get is never attempted ─────────
+new_host; ready_host; rm -f "$RUNNERBIN/gcc"   # SHIM_SUDO_NOPASS unset
+err="$(run 2>&1)" && fail "converge without passwordless sudo must fail [cc], not silently pass"
+grep -q "FAILED clause \[cc\]" <<<"$err" || fail "no-sudo converge must name [cc] (got: $err)"
+grep -q "sudo apt-get install -y build-essential" <<<"$err" || fail "no-sudo [cc] must print the exact apt line for a human (got: $err)"
+grep -q "apt-get" "$SHIM_STATE/sudo.log" && fail "must not attempt apt-get when sudo needs a password (sudo.log: $(cat "$SHIM_STATE/sudo.log"))"
+[ -e "$RUNNERBIN/gcc" ] && fail "nothing may be installed without sudo"
+
+# ── 28. converge, passwordless sudo but apt-get install fails → loud [cc] ────
+new_host; ready_host; rm -f "$RUNNERBIN/gcc"; export SHIM_SUDO_NOPASS=1 SHIM_SUDO_APT_FAIL=1
+err="$(run 2>&1)" && fail "a failing apt-get install must fail the run"
+grep -q "FAILED clause \[cc\]" <<<"$err" || fail "a failing apt-get must name [cc] (got: $err)"
+
+echo "provision-e2e-stack: 28 checks passed"

@@ -31,7 +31,11 @@
 #      invoking shell's: a nix-profile go the login shell sees is invisible to
 #      a runner job) or at ~/go-sdk/go, the deterministic fallback
 #      run-pr-e2e.sh uses (matou-app#437)
-#   7. proof the compose actually stands a witness up here (OOBI reachable)
+#   7. a C compiler (gcc/cc) on the runner unit's PATH — cgo pulls one in for
+#      any `make build` that does not pin CGO_ENABLED=0 (the smoke driver, a
+#      human replay); elitebook-03 had none and died with
+#      `cgo: C compiler "gcc" not found` right after Go was sorted (matou-app#437)
+#   8. proof the compose actually stands a witness up here (OOBI reachable)
 #
 # CONTRACT (matou-app#57):
 #   - idempotent: safe on every host enrolment AND every re-run; it converges,
@@ -76,7 +80,7 @@
 #                            tear down what we started, so the host is left as
 #                            found and a re-run stays a no-op).
 #   PROVISION_RUNNER_PATH    the PATH a runner JOB gets, used to probe the
-#                            toolchains (go). Default: the forgejo-runner unit's
+#                            toolchains (go, cc). Default: the forgejo-runner unit's
 #                            Environment=PATH (systemctl show), else systemd's
 #                            service default — never the invoking shell's PATH.
 set -uo pipefail
@@ -435,7 +439,46 @@ ensure_go() {
   ok go "installed toolchain ($("$GO_SDK/bin/go" version 2>/dev/null | awk '{print $3}')) at $GO_SDK"
 }
 
-# ── clause 7: the compose actually stands a witness up here (OOBI) ──────────
+# ── clause 7: a C compiler for cgo (matou-app#437) ──────────────────────────
+# Go's native default is CGO_ENABLED=1, which pulls runtime/cgo in for the
+# net / os-user resolvers, so a `make build` that does not pin CGO_ENABLED=0
+# (the smoke driver at scripts/smoke-drive, a human replaying the drive) dies
+# with `cgo: C compiler "gcc" not found` on a box with no C toolchain — exactly
+# what happened on elitebook-03 right after Go was sorted (run 13656).
+# matou-workstation has build-essential; a bare pool host has nothing. Probe
+# gcc OR cc under the RUNNER JOB's PATH (same rule as go). Converge installs
+# build-essential only when sudo is passwordless; otherwise it fails loudly
+# with the exact apt line a human must run (the swarm user on -03 has no sudo).
+CC_APT_LINE="sudo apt-get install -y build-essential"
+_cc_binary() {
+  local p
+  p="$(_on_runner_path gcc)" && [ -n "$p" ] && { echo "$p"; return 0; }
+  p="$(_on_runner_path cc)"  && [ -n "$p" ] && { echo "$p"; return 0; }
+  return 1
+}
+ensure_cc() {
+  local cc
+  _resolve_runner_path
+  if cc="$(_cc_binary)"; then
+    ok cc "C compiler present ($cc)"
+    return 0
+  fi
+  if [ "$CHECK_ONLY" = 1 ]; then
+    fail cc "no C compiler (gcc or cc) on the runner job's PATH ($RUNNER_PATH) — cgo builds die with 'C compiler \"gcc\" not found'. Run without --check to install build-essential (needs passwordless sudo), or a human must run: $CC_APT_LINE"
+  fi
+  command -v apt-get >/dev/null 2>&1 \
+    || fail cc "no C compiler on the runner job's PATH ($RUNNER_PATH) and no apt-get on this host — install a C toolchain by hand (Debian/Ubuntu: $CC_APT_LINE)"
+  if ! sudo -n true >/dev/null 2>&1; then
+    fail cc "no C compiler on the runner job's PATH ($RUNNER_PATH) and sudo needs a password for $(id -un 2>/dev/null) — a human must run: $CC_APT_LINE"
+  fi
+  converged; note "installing build-essential (sudo -n apt-get install -y build-essential)"
+  sudo -n apt-get install -y build-essential \
+    || fail cc "apt-get install build-essential failed — a human must run (after apt-get update): $CC_APT_LINE"
+  cc="$(_cc_binary)" || fail cc "build-essential installed but neither gcc nor cc is on the runner job's PATH ($RUNNER_PATH)"
+  ok cc "C compiler installed ($cc)"
+}
+
+# ── clause 8: the compose actually stands a witness up here (OOBI) ──────────
 # The headline proof: a witness answering OOBI on this host means docker + the
 # images + the compose + the port map all work. The test stack is ephemeral, so
 # between drives nothing is resident — that is expected, NOT a failure.
@@ -494,6 +537,7 @@ ensure_anysync_config
 ensure_workdir
 ensure_playwright
 ensure_go
+ensure_cc
 verify_witness
 
 echo "provision-e2e-stack: OK ($mode) — the e2e stack is ready on $(hostname 2>/dev/null || echo this host)."
