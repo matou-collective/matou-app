@@ -12,6 +12,9 @@ public class MainActivity extends BridgeActivity {
         MatouAppState.onActivityCreated();
         registerPlugin(MatouBackendPlugin.class);
         registerPlugin(SecureStoragePlugin.class);
+        // @capacitor-mlkit/barcode-scanning (#473, linked-device sign-in) ships
+        // as an npm package, so — like @capacitor/push-notifications — it
+        // auto-registers from capacitor.plugins.json; no registerPlugin() here.
         // The @capacitor/push-notifications plugin auto-registers from
         // capacitor.plugins.json; we only need the channels to exist up front
         // (#177 §4) so a notification can be posted the moment one arrives.
