@@ -29,6 +29,18 @@ interface MatouBackendPlugin {
    * Capacitor/Firebase slice; until then the frontend calls it when present.
    */
   syncChannel?(options: { channelId: string }): Promise<void>;
+  /**
+   * Whether push notifications can actually be registered on this build. Android
+   * needs the Firebase resources that only a build with google-services.json
+   * carries; a config-less build (Play beta with the secret missing, every coa
+   * tenant build by design) compiles the push plugin but has no default
+   * FirebaseApp, so PushNotifications.register() throws a fatal, uncatchable
+   * native IllegalStateException that kills the process (#384). usePush consults
+   * this before every register() call. Optional for the same reason as
+   * syncChannel — a shell built before it degrades gracefully; usePush fails
+   * safe to "unavailable" when it is absent.
+   */
+  isPushAvailable?(): Promise<{ available: boolean }>;
 }
 
 /**

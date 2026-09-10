@@ -106,6 +106,30 @@ jobs:
         run: |
           set -euo pipefail
           bash .sandcastle/host-slot-wait.sh 1800 bash scripts/android/build-apk.sh
+      - name: JVM unit tests (app module — MatouBackendRunnerTest, matou-app#389)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1090
+          . "${MATOU_ANDROID_HOME:-$HOME/.matou-android}/env.sh"
+          # Deliberately AFTER the APK build: `quasar build -m capacitor` runs
+          # `cap sync`, which generates capacitor-cordova-android-plugins/ (a
+          # gradle subproject; without it gradle cannot even configure), and
+          # the gradle daemon and compiled app classes are already warm, so the
+          # pure-JVM tests under app/src/test add seconds, not minutes. They
+          # need no device and no Keystore (the KeyBacking seam), but compiling
+          # the app module needs libs/matou.aar from the bind step.
+          bash .sandcastle/host-slot-wait.sh 1800 bash -c 'cd frontend/src-capacitor/android && ./gradlew testDebugUnitTest'
+          echo "==> unit test results:"
+          python3 - <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+          files = glob.glob("frontend/src-capacitor/android/app/build/test-results/testDebugUnitTest/*.xml")
+          if not files:
+              print("ERROR: no JUnit result files — did testDebugUnitTest run?", file=sys.stderr)
+              sys.exit(1)
+          for f in sorted(files):
+              r = ET.parse(f).getroot()
+              print(f"{r.get('name')}: tests={r.get('tests')} failures={r.get('failures')} errors={r.get('errors')} skipped={r.get('skipped')}")
+          PY
       - name: Upload app-debug.apk
         id: upload
         # actions/upload-artifact is fetched from data.forgejo.org, which
