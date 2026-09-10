@@ -7,6 +7,7 @@ import { Notify } from 'quasar';
 import { useKERIClient } from 'src/lib/keri/client';
 import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
+import { useProfilesStore } from 'stores/profiles';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
@@ -23,6 +24,7 @@ export const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvk
 export function useAdminActions() {
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
+  const profilesStore = useProfilesStore();
 
   // State
   const isProcessing = ref(false);
@@ -456,6 +458,24 @@ export function useAdminActions() {
       processingStep.value = 'Finalising...';
       // (handles both IPEX and custom EXN notifications)
       await markAllApplicantNotificationsRead(registration.applicantAid);
+
+      // 9. Refresh the community-profiles stores so the just-approved member —
+      //    and their role — appears in the UI immediately, without a manual
+      //    page reload and without relying solely on the SSE profile:updated
+      //    broadcast converging (issue #383). The role badge reads from
+      //    CommunityProfile (read-only space), the member list from
+      //    SharedProfile, so both stores are reloaded. Belt-and-suspenders,
+      //    mirroring the decline/remove-member handlers. Non-fatal: the
+      //    credential is already issued, so a refresh failure must not fail the
+      //    approval — the SSE broadcast remains as a fallback.
+      try {
+        await Promise.all([
+          profilesStore.loadCommunityProfiles(),
+          profilesStore.loadCommunityReadOnlyProfiles(),
+        ]);
+      } catch (refreshErr) {
+        console.warn('[AdminActions] Post-approval profile refresh failed:', refreshErr);
+      }
 
       lastAction.value = {
         type: 'approve',
