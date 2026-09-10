@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -307,13 +308,30 @@ func (m *MatouACLManager) ChangePermissions(ctx context.Context, spaceID string,
 	return fmt.Errorf("adding permission change record after %d retries: %w", createOpenInviteMaxRetries, lastErr)
 }
 
+// ErrAccountNotFoundForAID is returned (wrapped) when no ACL account in a space
+// declares the requested KERI AID in its join metadata. Callers use errors.Is to
+// tell a genuine "unknown AID" miss from a transport/state error, e.g. so
+// grant-steward-admin can self-heal a readonly-space miss instead of 404ing on
+// every failure.
+var ErrAccountNotFoundForAID = errors.New("no account found for AID")
+
 // FindAccountPubKeyByAID iterates a space's ACL accounts and returns the pubkey
 // of the account whose join-request metadata contains the given KERI AID.
 // Metadata is written by HandleJoinCommunity as `{"aid":"...","joinedAt":"..."}`.
 func (m *MatouACLManager) FindAccountPubKeyByAID(ctx context.Context, spaceID string, aid string) (crypto.PubKey, error) {
+	pubKey, _, err := m.FindAccountByAID(ctx, spaceID, aid)
+	return pubKey, err
+}
+
+// FindAccountByAID is FindAccountPubKeyByAID that also returns the account's
+// decrypted join metadata (the plaintext `{"aid":…,"joinedAt":…}` bytes). The
+// metadata is reused verbatim when copying an account into another space's ACL
+// (see AddAccount), so the same {aid, joinedAt} resolves there afterwards. On a
+// genuine miss the error wraps ErrAccountNotFoundForAID.
+func (m *MatouACLManager) FindAccountByAID(ctx context.Context, spaceID string, aid string) (crypto.PubKey, []byte, error) {
 	space, err := m.client.GetSpace(ctx, spaceID)
 	if err != nil {
-		return nil, fmt.Errorf("getting space %s: %w", spaceID, err)
+		return nil, nil, fmt.Errorf("getting space %s: %w", spaceID, err)
 	}
 
 	acl := space.Acl()
@@ -322,7 +340,7 @@ func (m *MatouACLManager) FindAccountPubKeyByAID(ctx context.Context, spaceID st
 
 	state := acl.AclState()
 	if state == nil {
-		return nil, fmt.Errorf("ACL state not available for space %s", spaceID)
+		return nil, nil, fmt.Errorf("ACL state not available for space %s", spaceID)
 	}
 
 	for _, account := range state.CurrentAccounts() {
@@ -338,10 +356,65 @@ func (m *MatouACLManager) FindAccountPubKeyByAID(ctx context.Context, spaceID st
 			}
 		}
 		if bytes.Contains(raw, []byte(`"aid":"`+aid+`"`)) {
-			return account.PubKey, nil
+			return account.PubKey, raw, nil
 		}
 	}
-	return nil, fmt.Errorf("no account found for AID %s in space %s", aid, spaceID)
+	return nil, nil, fmt.Errorf("%w %s in space %s", ErrAccountNotFoundForAID, aid, spaceID)
+}
+
+// AddAccount submits an AccountsAdd record inserting the given identity into the
+// space's ACL with the specified permissions and join metadata. The SDK encrypts
+// the plaintext metadata with the space's current metadata key, so pass the same
+// `{"aid":…,"joinedAt":…}` plaintext that FindAccountByAID returns; the AID then
+// resolves in the target space too. Only the space owner / accounts with
+// CanManageAccounts can call this successfully — the SDK enforces it at the
+// consensus layer. Retries on stale prev id, matching ChangePermissions.
+func (m *MatouACLManager) AddAccount(ctx context.Context, spaceID string, identity crypto.PubKey, permissions list.AclPermissions, metadata []byte) error {
+	space, err := m.client.GetSpace(ctx, spaceID)
+	if err != nil {
+		return fmt.Errorf("getting space %s: %w", spaceID, err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= createOpenInviteMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt) * time.Second
+			log.Printf("[ACL] AddAccount retry %d/%d for space %s (waiting %v)",
+				attempt, createOpenInviteMaxRetries, spaceID, delay)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+			case <-time.After(delay):
+			}
+		}
+
+		acl := space.Acl()
+		acl.Lock()
+		builder := acl.RecordBuilder()
+		rec, buildErr := builder.BuildAccountsAdd(list.AccountsAddPayload{
+			Additions: []list.AccountAdd{{
+				Identity:    identity,
+				Permissions: permissions,
+				Metadata:    metadata,
+			}},
+		})
+		acl.Unlock()
+		if buildErr != nil {
+			return fmt.Errorf("building accounts-add: %w", buildErr)
+		}
+
+		aclClient := space.AclClient()
+		if err := aclClient.AddRecord(ctx, rec); err != nil {
+			if strings.Contains(err.Error(), "incorrect prev id") {
+				lastErr = err
+				continue
+			}
+			return fmt.Errorf("adding accounts-add record: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("adding accounts-add record after %d retries: %w", createOpenInviteMaxRetries, lastErr)
 }
 
 // AccountAIDMap returns a deterministic mapping from every current ACL

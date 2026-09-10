@@ -89,8 +89,8 @@ open-source published algorithms typically qualify for the mass-market /
 exemption path, with a US BIS annual self-classification report), then bake
 `ITSAppUsesNonExemptEncryption` (+ compliance code if applicable) into
 Info.plist. This also unblocks TestFlight **external** testing —
-`scripts/ios/testflight-release.sh` (lands with PR #456, the open-beta
-automation) deliberately stalls on missing compliance.
+`scripts/ios/testflight-release.sh` (the open-beta automation) deliberately
+stalls on missing compliance.
 
 ### 2.3 In-app account deletion — product gap, hard requirement
 

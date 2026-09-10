@@ -638,6 +638,25 @@ jobs:
           echo "::notice::uploaded $VERSION ($BUILD_NUMBER) to TestFlight — processing takes a few minutes before it appears"
           echo "### iOS $VERSION ($BUILD_NUMBER) uploaded to TestFlight" >> "$GITHUB_STEP_SUMMARY"
 
+      # The TestFlight counterpart of the Android "Publish AAB to Play open
+      # testing" step: wait for Apple to process the upload, then submit it
+      # for Beta App Review and hand it to the open external group. Same
+      # gating as the upload — a plain dispatch never reaches real testers.
+      - name: Publish to TestFlight open testing
+        if: steps.signing.outputs.signed == 'true' && (github.ref_type == 'tag' || inputs.testflight)
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          MATOU_VERSION_NAME: ${{ needs.prepare.outputs.version }}
+          MATOU_VERSION_CODE: ${{ needs.prepare.outputs.build_number }}
+          # The external group as named in App Store Connect (created 2026-09-07).
+          TESTFLIGHT_GROUP: Matou
+        run: |
+          set -euo pipefail
+          bash scripts/ios/testflight-release.sh
+          echo "### iOS $VERSION ($BUILD_NUMBER) published to TestFlight open testing (pending Beta App Review)" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Unsigned Release device archive (no signing secrets)
         if: steps.signing.outputs.signed != 'true'
         env:
