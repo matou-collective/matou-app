@@ -218,8 +218,16 @@ func (h *ProfilesHandler) HandleUpdateType(w http.ResponseWriter, r *http.Reques
 	}
 	h.registry.Register(&updated)
 
-	log.Printf("[Types] updated definition %q to version %d by %s", name, updated.Version, GetUserAID(r))
-	writeJSON(w, http.StatusOK, updated)
+	// Version bumps on every PUT (optimistic lock); schemaChanged tells the
+	// client whether the edit affects what data validates (#302) — an
+	// advisory flag: existing profiles are grandfathered on read and re-stamped
+	// on their next write either way.
+	schemaChanged := types.SchemaChanged(current, &updated)
+	log.Printf("[Types] updated definition %q to version %d (schemaChanged=%v) by %s", name, updated.Version, schemaChanged, GetUserAID(r))
+	writeJSON(w, http.StatusOK, struct {
+		*types.TypeDefinition
+		SchemaChanged bool `json:"schemaChanged"`
+	}{&updated, schemaChanged})
 }
 
 // CreateProfileRequest represents a request to create or update a profile.
@@ -296,20 +304,26 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Resource-level authorization (RBAC active only). POST /profiles is the
-	// same write path as PUT /members/{aid}/role for role-bearing
-	// CommunityProfiles, so it applies the same rule; see profileWritePolicy.
-	if h.roleLookup != nil {
-		var existingData json.RawMessage
-		if existing != nil {
-			existingData = existing.Data
-		}
-		if reason := profileWritePolicy(GetUserAID(r), GetUserRoles(r), req.Type, objectID, req.Data, existingData); reason != "" {
-			log.Printf("[Profiles] write of %s/%s denied for %s: %s", req.Type, objectID, GetUserAID(r), reason)
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
-			return
-		}
+	// Resource-level authorization (RBAC active only), then migrate-on-write
+	// stamping of the live schema version (#302). See
+	// authorizeAndStampProfileWrite for why the order matters.
+	var existingData json.RawMessage
+	if existing != nil {
+		existingData = existing.Data
 	}
+	stamped, reason, err := h.authorizeAndStampProfileWrite(r, req.Type, objectID, req.Data, existingData)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+	if reason != "" {
+		log.Printf("[Profiles] write of %s/%s denied for %s: %s", req.Type, objectID, GetUserAID(r), reason)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
+		return
+	}
+	req.Data = stamped
 
 	if spaceID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
@@ -689,7 +703,7 @@ func buildMemberProfileData(communityDef, sharedDef *types.TypeDefinition, req *
 	}
 
 	// SharedProfile: routed fields, then the pinned identity/system fields.
-	shared = buildSharedProfileData(routed[sharedDef.Name], req.MemberAID, req.Status, now)
+	shared = buildSharedProfileData(routed[sharedDef.Name], req.MemberAID, req.Status, now, sharedDef.Version)
 	for _, k := range memberProfilePinnedDisplayKeys {
 		if v, ok := merged[k]; ok {
 			shared[k] = v
@@ -1034,7 +1048,9 @@ func buildCommunityProfileData(req *InitMemberProfilesRequest, now string) map[s
 // buildSharedProfileData composes the SharedProfile payload from the opaque
 // profile map plus the system-managed fields. The system fields are applied
 // last so a caller can never override aid/status/timestamps through the map.
-func buildSharedProfileData(merged map[string]interface{}, aid, status, now string) map[string]interface{} {
+// typeVersion is the live SharedProfile schema version (#302): a freshly
+// seeded profile is stamped at the current version so it is never born stale.
+func buildSharedProfileData(merged map[string]interface{}, aid, status, now string, typeVersion int) map[string]interface{} {
 	shared := make(map[string]interface{}, len(merged)+6)
 	for k, v := range merged {
 		shared[k] = v
@@ -1044,7 +1060,7 @@ func buildSharedProfileData(merged map[string]interface{}, aid, status, now stri
 	shared["lastActiveAt"] = now
 	shared["createdAt"] = now
 	shared["updatedAt"] = now
-	shared["typeVersion"] = 1
+	shared["typeVersion"] = typeVersion
 	return shared
 }
 
@@ -1318,6 +1334,29 @@ func (h *ProfilesHandler) validateProfile(typeName string, data json.RawMessage)
 		return []string{err.Error()}
 	}
 	return errs
+}
+
+// authorizeAndStampProfileWrite applies the resource-level write policy (RBAC
+// active only; POST /profiles is the same write path as PUT /members/{aid}/role
+// for role-bearing CommunityProfiles — see profileWritePolicy) and, only if
+// the write is allowed, stamps the live schema version into the data
+// (migrate-on-write, #302). The policy must see the data exactly as the client
+// sent it: stamping first would make an endorsement append onto a profile
+// written under an older schema version differ from the existing object in
+// typeVersion, so isEndorsementAppend would refuse it after any schema bump.
+// Returns the stamped data, or a non-empty denial reason, or an error when the
+// data cannot be stamped (not a JSON object).
+func (h *ProfilesHandler) authorizeAndStampProfileWrite(r *http.Request, typeName, objectID string, data, existingData json.RawMessage) (json.RawMessage, string, error) {
+	if h.roleLookup != nil {
+		if reason := profileWritePolicy(GetUserAID(r), GetUserRoles(r), typeName, objectID, data, existingData); reason != "" {
+			return nil, reason, nil
+		}
+	}
+	stamped, err := h.registry.StampVersion(typeName, data)
+	if err != nil {
+		return nil, "", err
+	}
+	return stamped, "", nil
 }
 
 // resolveSpaceForType returns the space ID for a given type definition.

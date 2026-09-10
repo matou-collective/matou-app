@@ -99,7 +99,7 @@ func TestCustomRequiredField_RejectedAtSubmit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedProfileData: %v", err)
 	}
-	shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z")
+	shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z", 1)
 	data, _ := json.Marshal(shared)
 
 	errs := h.validateProfile("SharedProfile", data)
@@ -121,7 +121,7 @@ func TestCustomRequiredField_SurvivesSubmitToStored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedProfileData: %v", err)
 	}
-	shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z")
+	shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z", 1)
 	data, _ := json.Marshal(shared)
 
 	if errs := h.validateProfile("SharedProfile", data); len(errs) > 0 {
@@ -145,7 +145,7 @@ func TestSchemaChangeReValidated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedProfileData: %v", err)
 	}
-	shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z")
+	shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z", 1)
 	data, _ := json.Marshal(shared)
 	if errs := h.validateProfile("SharedProfile", data); len(errs) > 0 {
 		t.Fatalf("payload should pass under v1 schema, got %v", errs)
@@ -217,7 +217,7 @@ func TestBothRequestShapesValidate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("shape %d: mergedProfileData: %v", i, err)
 		}
-		shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z")
+		shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z", 1)
 		data, _ := json.Marshal(shared)
 		if errs := h.validateProfile("SharedProfile", data); len(errs) > 0 {
 			t.Fatalf("shape %d rejected by SharedProfile schema: %v", i, errs)
@@ -241,7 +241,7 @@ func TestSystemFieldsCannotBeOverriddenViaProfileData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedProfileData: %v", err)
 	}
-	shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z")
+	shared := buildSharedProfileData(merged, req.MemberAID, req.Status, "2026-09-04T00:00:00Z", 1)
 	if shared["aid"] != "EMember123" || shared["status"] != "pending" || shared["createdAt"] != "2026-09-04T00:00:00Z" || shared["typeVersion"] != 1 {
 		t.Errorf("system fields overridden via profileData: %v", shared)
 	}
