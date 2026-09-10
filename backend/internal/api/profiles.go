@@ -234,10 +234,14 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 	// SharedProfile to "approved" through this handler; without this event the
 	// only refresh signal was the single debounced one emitted by init-member,
 	// so a missed/late broadcast left the just-approved member's role badge
-	// hidden (issue #383). Mirrors the init-member handler's pattern; the
-	// frontend's profile:updated listener debounces and reloads both profile
-	// stores, so the exact payload is only informational.
-	if h.eventBroker != nil {
+	// hidden (issue #383). The local any-sync AddContent path never fires the
+	// tree listener (only peer-delivered changes do), so this is the only local
+	// refresh signal for these writes. Scoped to the two member-profile types
+	// the frontend's profile:updated listener reloads (same filter as
+	// tree_listener.go) so unrelated writes routed through this generic
+	// endpoint don't trigger a reload of both community-profile stores; the
+	// listener debounces, so the exact payload is only informational.
+	if h.eventBroker != nil && (req.Type == "SharedProfile" || req.Type == "CommunityProfile") {
 		h.eventBroker.Broadcast(SSEEvent{
 			Type: "profile:updated",
 			Data: map[string]interface{}{
