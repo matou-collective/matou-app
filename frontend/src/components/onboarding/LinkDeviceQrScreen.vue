@@ -73,7 +73,18 @@
           </div>
         </div>
 
-        <!-- Holder desktop after approval: identity is on its way to the phone -->
+        <!-- Holder desktop after Approve: the identity is on its way; the phone
+             has not confirmed yet (spec §2 message 4 — done{ok,error}) -->
+        <div
+          v-else-if="phase === 'sending'"
+          class="state-card bg-card border border-border rounded-xl p-6 text-center"
+        >
+          <div class="w-12 h-12 rounded-full border-4 border-primary/20 border-t-primary animate-spin mx-auto mb-4" />
+          <h3 class="text-base font-semibold mb-1">Sending your identity to {{ peerDeviceName || 'your phone' }}…</h3>
+          <p class="text-sm text-muted-foreground">Keep this window open until your phone finishes signing in.</p>
+        </div>
+
+        <!-- Holder desktop once the phone confirmed (done{ok:true}) -->
         <div
           v-else-if="phase === 'sent'"
           class="state-card bg-accent/10 border border-accent/30 rounded-xl p-6 text-center"
@@ -124,7 +135,12 @@ import {
 import MBtn from '../base/MBtn.vue';
 import OnboardingHeader from './OnboardingHeader.vue';
 import { useOnboardingStore } from 'stores/onboarding';
-import { usePairing, type PairingOutcome, type SessionStatus } from 'src/composables/usePairing';
+import {
+  usePairing,
+  PairingError,
+  type PairingOutcome,
+  type SessionStatus,
+} from 'src/composables/usePairing';
 import { useRecoverIdentity } from 'src/composables/useRecoverIdentity';
 
 type Phase =
@@ -132,10 +148,19 @@ type Phase =
   | 'waiting'
   | 'awaiting-approval'
   | 'approve'
+  | 'sending'
   | 'sent'
   | 'receiving'
   | 'message'
   | 'error';
+
+/** Status poll cadence. The backend also pushes `pairing:state` over SSE, but
+ *  the QR screen is reached before the app has an identity/SSE session, so it
+ *  polls. */
+const POLL_INTERVAL_MS = 1500;
+
+const ENDED_TITLE = 'Pairing ended';
+const ENDED_BODY = 'The pairing ended on the other device or timed out. Start over to try again.';
 
 const onboardingStore = useOnboardingStore();
 const pairing = usePairing();
@@ -160,7 +185,11 @@ const now = ref(Date.now());
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let clockTimer: ReturnType<typeof setInterval> | null = null;
+/** Set once the screen is leaving; every in-flight poll bails out. */
 let stopped = false;
+/** Set once the backend session is over (done / continued / cancelled) so the
+ *  teardown on back/unmount does not fire a pointless cancel. */
+let finished = false;
 
 const countdown = computed(() => {
   if (!expiresAt.value) return '';
@@ -169,6 +198,14 @@ const countdown = computed(() => {
   const s = secs % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
 });
+
+/** The name the phone shows in "Sign in on ‹device name›?". */
+function deviceName(): string {
+  const platform = (window as unknown as { electronAPI?: { platform?: string } }).electronAPI?.platform;
+  const os =
+    platform === 'darwin' ? 'Mac' : platform === 'win32' ? 'Windows' : platform === 'linux' ? 'Linux' : '';
+  return os ? `${os} computer` : 'Computer';
+}
 
 function stopPolling() {
   if (pollTimer) {
@@ -184,10 +221,33 @@ function showMessage(title: string, body: string) {
   stopPolling();
 }
 
+/** User-facing copy for a failed pairing request. Never echoes a payload. */
+function describeError(err: unknown, fallback: string): string {
+  if (err instanceof PairingError) {
+    if (err.code === 'identity-present') {
+      return (
+        'This computer already has an identity' +
+        (err.aid ? ` (${err.aid})` : '') +
+        '. Linking never replaces it — sign out first to use a different identity here.'
+      );
+    }
+    if (err.code === 'config-server-mismatch') {
+      return 'Your phone is set up for a different Matou server than this computer. Both devices must use the same server.';
+    }
+    if (err.status === 410) return 'This code expired before your phone finished. Start over to show a new one.';
+    if (err.status === 404) {
+      return 'This pairing session is no longer available (the app may have restarted). Start over to show a new code.';
+    }
+    return err.message;
+  }
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 /** Map a terminal / refusal outcome or state to the user-facing message. */
 function handleTerminal(status: SessionStatus): boolean {
   const outcome = status.outcome as PairingOutcome;
   if (outcome === 'neither') {
+    finished = true;
     showMessage(
       'Neither device has an identity yet',
       'Create or recover an identity on one of your devices first, then try linking again.',
@@ -195,10 +255,12 @@ function handleTerminal(status: SessionStatus): boolean {
     return true;
   }
   if (outcome === 'already-linked') {
+    finished = true;
     showMessage('These devices are already linked', 'Your phone and this computer already share the same identity.');
     return true;
   }
   if (outcome === 'conflict') {
+    finished = true;
     showMessage(
       'These devices hold different identities',
       'Linking never replaces an identity that is already here. To use a different identity on this computer, sign out first.',
@@ -206,10 +268,12 @@ function handleTerminal(status: SessionStatus): boolean {
     return true;
   }
   if (status.state === 'expired' || status.state === 'cancelled') {
-    showMessage('Pairing ended', 'The pairing ended on the other device or timed out. Start over to try again.');
+    finished = true;
+    showMessage(ENDED_TITLE, ENDED_BODY);
     return true;
   }
   if (status.state === 'failed') {
+    finished = true;
     showMessage('Pairing failed', status.error || 'Something went wrong during pairing. Start over to try again.');
     return true;
   }
@@ -217,15 +281,20 @@ function handleTerminal(status: SessionStatus): boolean {
 }
 
 async function poll() {
-  if (stopped || !sessionId.value) return;
+  const id = sessionId.value;
+  if (stopped || !id) return;
   let status: SessionStatus;
   try {
-    status = await pairing.getStatus(sessionId.value);
-  } catch {
-    // Transient — the session may have been torn down by a backend restart.
-    showMessage('Pairing ended', 'The pairing ended on the other device or timed out. Start over to try again.');
+    status = await pairing.getStatus(id);
+  } catch (err) {
+    // A poll that outlived its session (back / start over) must not touch the
+    // screen; otherwise a 404/410 means the backend dropped the session.
+    if (stopped || sessionId.value !== id) return;
+    finished = true;
+    showMessage(ENDED_TITLE, describeError(err, ENDED_BODY));
     return;
   }
+  if (stopped || sessionId.value !== id) return;
 
   if (handleTerminal(status)) return;
 
@@ -243,15 +312,25 @@ async function poll() {
     // This desktop holds; the phone is fresh. Confirm the code and approve.
     code.value = status.code;
     peerDeviceName.value = status.peerDeviceName;
-    if (status.state === 'identity-sent' || status.state === 'done') {
-      phase.value = 'sent';
+    if (status.state === 'done') {
+      // The phone's done{ok,error} landed: ok → Linked, otherwise its error.
       stopPolling();
+      finished = true;
+      if (status.error) {
+        showMessage('Sign-in failed on your phone', status.error);
+      } else {
+        phase.value = 'sent';
+      }
       return;
     }
-    if (phase.value !== 'approve' && phase.value !== 'receiving') phase.value = 'approve';
+    if (status.state === 'approved' || status.state === 'identity-sent') {
+      phase.value = 'sending';
+    } else if (phase.value !== 'sending') {
+      phase.value = 'approve';
+    }
   }
 
-  pollTimer = setTimeout(() => void poll(), 1500);
+  pollTimer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
 }
 
 async function receiveIdentity() {
@@ -266,16 +345,18 @@ async function receiveIdentity() {
       orgAid: identity.orgAid,
     });
     if (!result.success) {
+      finished = true;
       showMessage('Sign-in failed', result.error || 'Could not restore your identity on this computer.');
       return;
     }
     // The receiving device is now indistinguishable from a recovered one:
     // welcome-overlay runs the backend identity setup in link mode → dashboard.
+    finished = true;
     onboardingStore.setPath('link');
     emit('continue');
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Could not restore your identity on this computer.';
-    showMessage('Sign-in failed', message);
+    finished = true;
+    showMessage('Sign-in failed', describeError(err, 'Could not restore your identity on this computer.'));
   }
 }
 
@@ -284,10 +365,12 @@ async function onApprove() {
   busy.value = true;
   try {
     await pairing.approve(sessionId.value);
-    // Keep polling; the state moves to identity-sent → done.
+    // Approve is idempotent on the backend, but the button must go away: the
+    // state moves approved → identity-sent → done (or failed) from here.
+    phase.value = 'sending';
     if (!pollTimer) pollTimer = setTimeout(() => void poll(), 800);
   } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Approval failed';
+    errorMessage.value = describeError(err, 'Approval failed');
     phase.value = 'error';
   } finally {
     busy.value = false;
@@ -296,38 +379,41 @@ async function onApprove() {
 
 async function start() {
   stopPolling();
+  finished = false;
   phase.value = 'loading';
+  sessionId.value = null;
   qrDataUrl.value = null;
   code.value = '';
   peerDeviceName.value = '';
   errorMessage.value = '';
   try {
-    const session = await pairing.createSession();
+    const session = await pairing.createSession(deviceName());
+    if (stopped) return;
     sessionId.value = session.sessionId;
     expiresAt.value = Date.parse(session.expiresAt) || null;
     qrDataUrl.value = await QRCode.toDataURL(session.qrPayload, { margin: 1, width: 256 });
     phase.value = 'waiting';
-    pollTimer = setTimeout(() => void poll(), 1500);
+    pollTimer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
   } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Could not reach the backend to start pairing.';
+    errorMessage.value = describeError(err, 'Could not reach the backend to start pairing.');
     phase.value = 'error';
   }
 }
 
-async function cancelSession() {
+/** Best-effort backend teardown; skipped once the session is already over. */
+function cancelSession() {
   const id = sessionId.value;
-  if (!id) return;
-  try {
-    await pairing.cancel(id);
-  } catch {
+  if (!id || finished) return;
+  finished = true;
+  pairing.cancel(id).catch(() => {
     // Best-effort teardown.
-  }
+  });
 }
 
 function onBack() {
   stopped = true;
   stopPolling();
-  void cancelSession();
+  cancelSession();
   emit('back');
 }
 
@@ -341,7 +427,13 @@ onMounted(() => {
 onUnmounted(() => {
   stopped = true;
   stopPolling();
-  if (clockTimer) clearInterval(clockTimer);
+  if (clockTimer) {
+    clearInterval(clockTimer);
+    clockTimer = null;
+  }
+  // Leaving the screen any other way (route change, app reload) must not
+  // leave a live QR session on the backend.
+  cancelSession();
 });
 </script>
 

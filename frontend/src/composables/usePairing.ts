@@ -159,8 +159,9 @@ export function usePairing() {
 
   /**
    * GET /api/v1/pairing/sessions/{id}/identity — the fresh side fetches the
-   * received identity exactly once. Returns null on 409 identity-present
-   * (this backend already has an identity — linking never overwrites).
+   * received identity exactly once (the backend wipes it after the read).
+   * Throws a PairingError with code `identity-present` (409) when this backend
+   * already has an identity — linking never overwrites.
    */
   async function fetchIdentity(sessionId: string): Promise<PairingIdentity> {
     const response = await fetch(
