@@ -547,14 +547,7 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	// vacuous (they aren't in the schema, so validation silently skipped them
 	// and only credential/role were ever really checked).
 	now := time.Now().UTC().Format(time.RFC3339)
-	communityProfileData := map[string]interface{}{
-		"userAID":      req.MemberAID,
-		"credential":   req.CredentialSAID,
-		"role":         req.Role,
-		"memberSince":  now,
-		"lastActiveAt": now,
-		"credentials":  []string{req.CredentialSAID},
-	}
+	communityProfileData := buildCommunityProfileData(&req, now)
 
 	dataBytes, err := json.Marshal(communityProfileData)
 	if err != nil {
@@ -768,6 +761,21 @@ func (req *InitMemberProfilesRequest) mergedProfileData() (map[string]interface{
 		}
 	}
 	return merged, nil
+}
+
+// buildCommunityProfileData composes the CommunityProfile payload: the
+// admin-managed membership record for the community-readonly space. It carries
+// only the fields the CommunityProfile schema declares — none of the
+// registration display/social answers, which live on the SharedProfile.
+func buildCommunityProfileData(req *InitMemberProfilesRequest, now string) map[string]interface{} {
+	return map[string]interface{}{
+		"userAID":      req.MemberAID,
+		"credential":   req.CredentialSAID,
+		"role":         req.Role,
+		"memberSince":  now,
+		"lastActiveAt": now,
+		"credentials":  []string{req.CredentialSAID},
+	}
 }
 
 // buildSharedProfileData composes the SharedProfile payload from the opaque
