@@ -18,7 +18,8 @@
 // the mnemonic-derived SIGN key, which is distinct from the per-install device
 // (transport) peer.key. Since #479 the {dataDir}/peer.key file is a random
 // per-install key used only for the transport peer id — it is NOT an ACL owner.
-// The owner identity must therefore be supplied explicitly with -mnemonic (the
+// The owner identity must therefore be supplied explicitly: the mnemonic (via
+// -mnemonic-stdin, the MATOU_OWNER_MNEMONIC env var, or -mnemonic on argv — the
 // same derivation NewPeerKeyManager uses) or -sign-key (a users/{aid}/sign.key
 // file, plaintext or MATOU_IDENTITY_KEY-sealed). -peer-key is kept for the
 // transport peer key only. Without an owner-identity source the tool exits with
@@ -26,13 +27,17 @@
 //
 // Nothing is opened locally: ACL records are fetched from and submitted to the
 // consensus node through the SDK node client, using a throwaway data dir and
-// the owner's transport peer key. Run it with the owner's app CLOSED — a second
-// client with the same peer id would fight the running one for node connections.
+// the owner's transport peer key. The peer key is staged as a plaintext copy in
+// the throwaway dir (unsealing it under MATOU_IDENTITY_KEY when the install is
+// sealed at rest, #117/#411) so the SDK never opens the real install's file —
+// an unopenable device key would otherwise be moved aside and replaced, rotating
+// the install's peer id. Run it with the owner's app CLOSED — a second client
+// with the same peer id would fight the running one for node connections.
 //
 //	go run ./cmd/acl-repair \
 //	  -config ~/.config/Matou/matou-data/client-production.yml \
 //	  -peer-key ~/.config/Matou/matou-data/peer.key \
-//	  -mnemonic '<12 words>' \
+//	  -mnemonic-stdin \
 //	  -from-space <communitySpaceId> -space <readOnlySpaceId> \
 //	  -aid <memberAID> -permissions admin [-dry-run]
 //
@@ -47,17 +52,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/anyproto/any-sync/commonspace/object/accountdata"
@@ -70,11 +76,22 @@ import (
 	"github.com/matou-dao/backend/internal/identity"
 )
 
+// Environment variables read by the tool.
+const (
+	// envOwnerMnemonic supplies the owner mnemonic without putting it on argv
+	// (argv is world-readable via ps and lands in shell history).
+	envOwnerMnemonic = "MATOU_OWNER_MNEMONIC"
+	// envIdentityKey is the at-rest key the app was launched with (#117/#411);
+	// needed to open a sealed sign.key / peer.key.
+	envIdentityKey = "MATOU_IDENTITY_KEY"
+)
+
 func main() {
 	cfg := flag.String("config", "", "any-sync client config yml (e.g. {dataDir}/client-production.yml)")
-	peerKey := flag.String("peer-key", "", "owner transport peer.key path (e.g. {dataDir}/peer.key) — device peer id only, NOT the ACL owner identity")
-	mnemonic := flag.String("mnemonic", "", "owner BIP39 mnemonic — the ACL owner identity (derived the same way as the app); alternative to -sign-key")
-	signKeyPath := flag.String("sign-key", "", "path to the owner sign key file (e.g. {dataDir}/users/{ownerAID}/sign.key), plaintext or MATOU_IDENTITY_KEY-sealed; alternative to -mnemonic")
+	peerKey := flag.String("peer-key", "", "owner transport peer.key path (e.g. {dataDir}/peer.key) — device peer id only, NOT the ACL owner identity; plaintext or MATOU_IDENTITY_KEY-sealed")
+	mnemonic := flag.String("mnemonic", "", "owner BIP39 mnemonic on argv (visible in ps/shell history — prefer -mnemonic-stdin or "+envOwnerMnemonic+"); the ACL owner identity, derived the same way as the app")
+	mnemonicStdin := flag.Bool("mnemonic-stdin", false, "read the owner BIP39 mnemonic from the first line of stdin")
+	signKeyPath := flag.String("sign-key", "", "path to the owner sign key file (e.g. {dataDir}/users/{ownerAID}/sign.key, or peer.key on a pre-#479 install), plaintext or MATOU_IDENTITY_KEY-sealed; alternative to the mnemonic")
 	keyIndex := flag.Uint("key-index", 0, "mnemonic derivation index (default 0)")
 	fromSpace := flag.String("from-space", "", "space whose ACL already holds the member (community space id)")
 	space := flag.String("space", "", "space to add the member to (community-readonly space id)")
@@ -103,7 +120,11 @@ func main() {
 	// Resolve the ACL owner identity (sign key) from an explicit source. After
 	// #479 the transport peer.key is a random per-install key and is never an
 	// ACL owner, so an owner-identity source is mandatory.
-	ownerSign, ownerDesc, err := resolveOwnerSignKey(*mnemonic, *signKeyPath, uint32(*keyIndex))
+	ownerMnemonic, mnemonicSrc, err := readMnemonic(*mnemonic, *mnemonicStdin, os.Getenv(envOwnerMnemonic), os.Stdin)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	ownerSign, ownerDesc, err := resolveOwnerSignKey(ownerMnemonic, mnemonicSrc, *signKeyPath, uint32(*keyIndex))
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -114,15 +135,16 @@ func main() {
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 
-	// Refuse a peer.key that is sealed at rest before the SDK sees it: with no
-	// encryption key registered the SDK treats an unopenable device key as
-	// unreadable and replaces it, which would rotate the owner's real
-	// install's device key from a mis-run ops tool.
-	if err := checkPeerKeyReadable(*peerKey); err != nil {
+	// Stage a plaintext copy of the transport peer key in the throwaway dir
+	// before the SDK sees it (see stagePeerKey): a sealed peer.key that the
+	// SDK cannot open would be moved aside and replaced, rotating the owner's
+	// real install's device key from a mis-run ops tool.
+	stagedPeerKey, err := stagePeerKey(*peerKey, tmp)
+	if err != nil {
 		log.Fatalf("-peer-key: %v", err)
 	}
 
-	client, err := anysync.NewSDKClient(*cfg, &anysync.ClientOptions{DataDir: tmp, PeerKeyPath: *peerKey})
+	client, err := anysync.NewSDKClient(*cfg, &anysync.ClientOptions{DataDir: tmp, PeerKeyPath: stagedPeerKey})
 	if err != nil {
 		log.Fatalf("sdk client: %v", err)
 	}
@@ -201,27 +223,71 @@ func main() {
 	fmt.Printf("verified: %s is in %s as %s (identity %s)\n", *aid, short(*space), permName(gotPerms), got.Account())
 }
 
+// readMnemonic gathers the owner mnemonic from exactly one of: the -mnemonic
+// flag (argv), -mnemonic-stdin (first line of stdin), or the
+// MATOU_OWNER_MNEMONIC environment variable. It returns the mnemonic and a
+// description of the source for messages; the mnemonic itself is never
+// included in any error or output. An empty result with a nil error means no
+// mnemonic source was given (the caller may still have -sign-key).
+func readMnemonic(flagVal string, fromStdin bool, envVal string, stdin io.Reader) (mnemonic, source string, err error) {
+	given := 0
+	if flagVal != "" {
+		given++
+	}
+	if fromStdin {
+		given++
+	}
+	if envVal != "" {
+		given++
+	}
+	if given > 1 {
+		return "", "", errors.New("provide only one mnemonic source: -mnemonic, -mnemonic-stdin or " + envOwnerMnemonic)
+	}
+	switch {
+	case fromStdin:
+		line, rerr := bufio.NewReader(stdin).ReadString('\n')
+		if rerr != nil && !errors.Is(rerr, io.EOF) {
+			return "", "", fmt.Errorf("reading mnemonic from stdin: %w", rerr)
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return "", "", errors.New("-mnemonic-stdin: no mnemonic on the first line of stdin")
+		}
+		return line, "-mnemonic-stdin", nil
+	case envVal != "":
+		return strings.TrimSpace(envVal), envOwnerMnemonic, nil
+	case flagVal != "":
+		return strings.TrimSpace(flagVal), "-mnemonic", nil
+	}
+	return "", "", nil
+}
+
 // resolveOwnerSignKey resolves the ACL owner identity (sign key) from exactly
 // one explicit source: a BIP39 mnemonic (derived the same way NewPeerKeyManager
-// derives the app's sign key) or a stored sign key file. It returns the key and
-// a human-readable description of where it came from (used in error messages).
+// derives the app's sign key) or a stored sign key file. mnemonicSrc names
+// where the mnemonic came from (see readMnemonic). It returns the key and a
+// human-readable description of where it came from (used in error messages);
+// the description never contains the mnemonic.
 //
 // It is intentionally strict: after #479 the transport peer.key is a random
 // per-install key that is never an ACL owner, so falling back to it would only
 // produce a confusing "not an owner" failure at submit time.
-func resolveOwnerSignKey(mnemonic, signKeyPath string, keyIndex uint32) (crypto.PrivKey, string, error) {
+func resolveOwnerSignKey(mnemonic, mnemonicSrc, signKeyPath string, keyIndex uint32) (crypto.PrivKey, string, error) {
 	switch {
 	case mnemonic != "" && signKeyPath != "":
-		return nil, "", errors.New("provide only one owner-identity source: -mnemonic OR -sign-key, not both")
+		return nil, "", errors.New("provide only one owner-identity source: a mnemonic OR -sign-key, not both")
 	case mnemonic != "":
+		if mnemonicSrc == "" {
+			mnemonicSrc = "-mnemonic"
+		}
 		if err := anysync.ValidateMnemonic(mnemonic); err != nil {
-			return nil, "", fmt.Errorf("invalid -mnemonic: %w", err)
+			return nil, "", fmt.Errorf("invalid mnemonic from %s: %w", mnemonicSrc, err)
 		}
 		key, err := anysync.DeriveKeyFromMnemonic(mnemonic, keyIndex)
 		if err != nil {
-			return nil, "", fmt.Errorf("deriving owner sign key from -mnemonic: %w", err)
+			return nil, "", fmt.Errorf("deriving owner sign key from %s: %w", mnemonicSrc, err)
 		}
-		return key, fmt.Sprintf("-mnemonic (index %d)", keyIndex), nil
+		return key, fmt.Sprintf("%s (index %d)", mnemonicSrc, keyIndex), nil
 	case signKeyPath != "":
 		key, err := loadSignKeyFile(signKeyPath)
 		if err != nil {
@@ -229,33 +295,66 @@ func resolveOwnerSignKey(mnemonic, signKeyPath string, keyIndex uint32) (crypto.
 		}
 		return key, fmt.Sprintf("-sign-key %s", signKeyPath), nil
 	default:
-		return nil, "", errors.New("an owner-identity source is required: pass -mnemonic '<12 words>' or -sign-key <path to users/{ownerAID}/sign.key>. " +
+		return nil, "", errors.New("an owner-identity source is required: pass -mnemonic-stdin (or " + envOwnerMnemonic + ", or -mnemonic '<12 words>') or -sign-key <path to users/{ownerAID}/sign.key>. " +
 			"After #479 the device peer.key is a random per-install key (transport peer id only) and is NOT the ACL owner, so it cannot sign the repair")
 	}
 }
 
-// loadSignKeyFile reads a stored owner sign key. The file is the marshalled
-// Ed25519 private key written by anysync.PersistUserSignKey, optionally sealed
-// at rest under MATOU_IDENTITY_KEY (the same MATOU-IDENC1 AES-256-GCM scheme as
-// internal/identity; sealing of sign.key arrives with #411). A sealed blob with
-// MATOU_IDENTITY_KEY unset yields an actionable error rather than a cryptic
-// unmarshal failure.
+// loadSignKeyFile reads a stored owner sign key: the marshalled Ed25519 private
+// key written by anysync.PersistUserSignKey (or, on a pre-#479 install, the
+// mnemonic-derived peer.key), optionally sealed at rest under
+// MATOU_IDENTITY_KEY (#117/#411).
 func loadSignKeyFile(path string) (crypto.PrivKey, error) {
+	data, err := readKeyFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return crypto.UnmarshalEd25519PrivateKeyProto(data)
+}
+
+// stagePeerKey reads the owner's transport peer.key (plaintext or
+// MATOU_IDENTITY_KEY-sealed, #117/#411), checks it parses as an Ed25519 key, and
+// writes a plaintext copy to {tmpDir}/peer.key for the SDK to load. The SDK is
+// never pointed at the real install's file: with no encryption key registered
+// it treats an unopenable device key as unreadable and replaces it, which
+// would rotate the owner's real install's device key from a mis-run ops tool.
+func stagePeerKey(path, tmpDir string) (string, error) {
+	data, err := readKeyFile(path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := crypto.UnmarshalEd25519PrivateKeyProto(data); err != nil {
+		return "", fmt.Errorf("%s is not an Ed25519 peer key: %w", path, err)
+	}
+	staged := filepath.Join(tmpDir, "peer.key")
+	if err := os.WriteFile(staged, data, 0600); err != nil {
+		return "", fmt.Errorf("staging peer key copy: %w", err)
+	}
+	return staged, nil
+}
+
+// readKeyFile reads a key file that may be sealed at rest under
+// MATOU_IDENTITY_KEY (the MATOU-IDENC1 AES-256-GCM scheme of internal/identity,
+// #117/#411) and returns the plaintext bytes. A sealed file with
+// MATOU_IDENTITY_KEY unset yields an actionable error rather than a cryptic
+// unmarshal failure; legacy plaintext files are returned unchanged.
+func readKeyFile(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if isSealed(data) {
-		keyMaterial := os.Getenv("MATOU_IDENTITY_KEY")
-		if keyMaterial == "" {
-			return nil, errors.New("sign key file is sealed but MATOU_IDENTITY_KEY is not set — export the same key material the app was launched with")
-		}
-		data, err = unseal(data, []byte(keyMaterial))
-		if err != nil {
-			return nil, fmt.Errorf("decrypting sealed sign key (wrong MATOU_IDENTITY_KEY or corrupt file): %w", err)
-		}
+	if !identity.IsSealed(data) {
+		return data, nil
 	}
-	return crypto.UnmarshalEd25519PrivateKeyProto(data)
+	keyMaterial := os.Getenv(envIdentityKey)
+	if keyMaterial == "" {
+		return nil, fmt.Errorf("%s is sealed at rest (#117) but %s is not set — export the same key material the app was launched with", path, envIdentityKey)
+	}
+	plain, err := identity.Open(data, []byte(keyMaterial))
+	if err != nil {
+		return nil, fmt.Errorf("decrypting sealed key file %s (wrong %s or corrupt file): %w", path, envIdentityKey, err)
+	}
+	return plain, nil
 }
 
 // ensureCanManageAccounts fails loudly, naming which key was tried, when the
@@ -266,50 +365,8 @@ func ensureCanManageAccounts(perms list.AclPermissions, ownerDesc, account, spac
 		return nil
 	}
 	return fmt.Errorf("signing identity %s (from %s) has permissions %q in target ACL %s — an AccountsAdd needs admin/owner and would be rejected. "+
-		"After #479 the device peer.key is not the ACL owner; supply the mnemonic-derived identity via -mnemonic or -sign-key {dataDir}/users/{ownerAID}/sign.key",
+		"After #479 the device peer.key is not the ACL owner; supply the mnemonic-derived identity via -mnemonic-stdin / "+envOwnerMnemonic+" or -sign-key {dataDir}/users/{ownerAID}/sign.key",
 		account, ownerDesc, permName(perms), short(space))
-}
-
-// sealMagic mirrors internal/identity.encMagic: the prefix and GCM additional
-// authenticated data of a MATOU at-rest encrypted blob.
-var sealMagic = []byte("MATOU-IDENC1\n")
-
-func isSealed(data []byte) bool {
-	return len(data) >= len(sealMagic) && bytes.Equal(data[:len(sealMagic)], sealMagic)
-}
-
-// unseal reverses internal/identity.encrypt: sealMagic || nonce || GCM(ciphertext),
-// keyed by sha256(keyMaterial) with sealMagic as the AAD.
-func unseal(data, keyMaterial []byte) ([]byte, error) {
-	key := sha256.Sum256(keyMaterial)
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	body := data[len(sealMagic):]
-	if len(body) < gcm.NonceSize() {
-		return nil, errors.New("sealed blob is truncated")
-	}
-	nonce, ciphertext := body[:gcm.NonceSize()], body[gcm.NonceSize():]
-	return gcm.Open(nil, nonce, ciphertext, sealMagic)
-}
-
-// checkPeerKeyReadable reports an error when path does not exist or holds a
-// peer key sealed at rest (#117), which this tool cannot open — it has no
-// encryption key — and must not hand to the SDK (see main).
-func checkPeerKeyReadable(path string) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	if identity.IsSealed(raw) {
-		return fmt.Errorf("%s is encrypted at rest (#117); acl-repair cannot open it — export a plaintext copy from an unlocked app, or run with the app's identity key support once added", path)
-	}
-	return nil
 }
 
 func fetchACL(ctx context.Context, nc nodeclient.NodeClient, keys *accountdata.AccountKeys, spaceID string) (list.AclList, error) {
