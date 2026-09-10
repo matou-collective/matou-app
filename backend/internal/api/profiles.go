@@ -624,7 +624,7 @@ type InitMemberProfilesRequest struct {
 	InstagramURL        string          `json:"instagramUrl,omitempty"`
 	GithubURL           string          `json:"githubUrl,omitempty"`
 	GitlabURL           string          `json:"gitlabUrl,omitempty"`
-	ProfileData         json.RawMessage `json:"profileData,omitempty"` // Optional registration data
+	ProfileData         json.RawMessage `json:"profileData,omitempty"` // Opaque registration payload (canonical); typed fields above kept for one-release compat, merged under it — see mergedProfileData
 }
 
 // UpdateMemberRoleRequest represents a request to update a member's role.
@@ -694,61 +694,25 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// Build CommunityProfile data
+	// Assemble the opaque registration profile. The canonical payload is the
+	// profileData map (keyed by SharedProfile schema field names); the legacy
+	// typed request fields are still accepted for one release for backward
+	// compatibility and form the base that profileData overlays. Building from
+	// the map — instead of copying ~18 named fields — lets an org-added custom
+	// field flow through registration untouched.
+	merged, err := req.mergedProfileData()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Build CommunityProfile data. This is the admin-managed membership record:
+	// it carries only the fields the CommunityProfile schema declares. The
+	// display/social fields live on the SharedProfile — writing them here was
+	// vacuous (they aren't in the schema, so validation silently skipped them
+	// and only credential/role were ever really checked).
 	now := time.Now().UTC().Format(time.RFC3339)
-	communityProfileData := map[string]interface{}{
-		"userAID":      req.MemberAID,
-		"credential":   req.CredentialSAID,
-		"role":         req.Role,
-		"memberSince":  now,
-		"lastActiveAt": now,
-		"credentials":  []string{req.CredentialSAID},
-	}
-	if req.DisplayName != "" {
-		communityProfileData["displayName"] = req.DisplayName
-	}
-	if req.Email != "" {
-		communityProfileData["email"] = req.Email
-	}
-	if req.Avatar != "" {
-		communityProfileData["avatar"] = req.Avatar
-	}
-	if req.Bio != "" {
-		communityProfileData["bio"] = req.Bio
-	}
-	if len(req.Interests) > 0 {
-		communityProfileData["participationInterests"] = req.Interests
-	}
-	if req.CustomInterests != "" {
-		communityProfileData["customInterests"] = req.CustomInterests
-	}
-	if req.Location != "" {
-		communityProfileData["location"] = req.Location
-	}
-	if req.IndigenousCommunity != "" {
-		communityProfileData["indigenousCommunity"] = req.IndigenousCommunity
-	}
-	if req.JoinReason != "" {
-		communityProfileData["joinReason"] = req.JoinReason
-	}
-	if req.FacebookURL != "" {
-		communityProfileData["facebookUrl"] = req.FacebookURL
-	}
-	if req.LinkedinURL != "" {
-		communityProfileData["linkedinUrl"] = req.LinkedinURL
-	}
-	if req.TwitterURL != "" {
-		communityProfileData["twitterUrl"] = req.TwitterURL
-	}
-	if req.InstagramURL != "" {
-		communityProfileData["instagramUrl"] = req.InstagramURL
-	}
-	if req.GithubURL != "" {
-		communityProfileData["githubUrl"] = req.GithubURL
-	}
-	if req.GitlabURL != "" {
-		communityProfileData["gitlabUrl"] = req.GitlabURL
-	}
+	communityProfileData := buildCommunityProfileData(&req, now)
 
 	dataBytes, err := json.Marshal(communityProfileData)
 	if err != nil {
@@ -759,10 +723,11 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	}
 
 	// Validate the assembled profile against the org's schema before writing.
-	// This runs on both the registration submit and the approval re-issue path
-	// (both go through this handler), so a member is never persisted with data
-	// that violates the current CommunityProfile schema (e.g. a custom required
-	// field left empty, or an out-of-enum role).
+	// The same handler runs on the registration submit (status "pending") and
+	// again when the profile is (re-)initialised, so a member is never persisted
+	// with data that violates the current CommunityProfile schema (e.g. an
+	// out-of-enum role). The approval status flip re-validates via POST
+	// /profiles, catching a schema that changed between submit and approval.
 	if errs := h.validateProfile("CommunityProfile", dataBytes); len(errs) > 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"error":            "CommunityProfile validation failed",
@@ -774,34 +739,13 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	// Assemble and validate the SharedProfile BEFORE the CommunityProfile write.
 	// Both payloads must pass validation before anything is committed — a 400
 	// returned after the first AddObject would leave state mutated behind an
-	// error response.
+	// error response. The SharedProfile carries the opaque profile map plus the
+	// system-managed fields; the map is what makes a custom required field
+	// enforceable at registration.
 	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
 	var sharedDataBytes []byte
 	if communitySpaceID != "" {
-		now2 := time.Now().UTC().Format(time.RFC3339)
-		sharedProfileData := map[string]interface{}{
-			"aid":                    req.MemberAID,
-			"status":                 req.Status,
-			"displayName":            req.DisplayName,
-			"bio":                    req.Bio,
-			"avatar":                 req.Avatar,
-			"publicEmail":            req.Email,
-			"location":               req.Location,
-			"indigenousCommunity":    req.IndigenousCommunity,
-			"joinReason":             req.JoinReason,
-			"facebookUrl":            req.FacebookURL,
-			"linkedinUrl":            req.LinkedinURL,
-			"twitterUrl":             req.TwitterURL,
-			"instagramUrl":           req.InstagramURL,
-			"githubUrl":              req.GithubURL,
-			"gitlabUrl":              req.GitlabURL,
-			"participationInterests": req.Interests,
-			"customInterests":        req.CustomInterests,
-			"lastActiveAt":           now2,
-			"createdAt":              now2,
-			"updatedAt":              now2,
-			"typeVersion":            1,
-		}
+		sharedProfileData := buildSharedProfileData(merged, req.MemberAID, req.Status, now)
 		sharedDataBytes, err = json.Marshal(sharedProfileData)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -924,18 +868,96 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		result["sharedProfileSpaceId"] = communitySpaceID
 
 		if h.eventBroker != nil {
+			displayName, _ := merged["displayName"].(string)
 			h.eventBroker.Broadcast(SSEEvent{
 				Type: "profile:updated",
 				Data: map[string]interface{}{
 					"profileId":   sharedObjectID,
 					"memberAid":   req.MemberAID,
-					"displayName": req.DisplayName,
+					"displayName": displayName,
 				},
 			})
 		}
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// mergedProfileData assembles the registration profile as an opaque map. The
+// legacy typed request fields form the base (kept for one release so older
+// admin clients that POST the named field list keep working); the opaque
+// profileData map, keyed by SharedProfile schema field names, is overlaid on
+// top and wins on conflict. An org-added custom field can only travel through
+// the opaque map, which is why registration must carry it verbatim rather than
+// copying a fixed set of named fields.
+func (req *InitMemberProfilesRequest) mergedProfileData() (map[string]interface{}, error) {
+	merged := map[string]interface{}{}
+
+	set := func(key, val string) {
+		if val != "" {
+			merged[key] = val
+		}
+	}
+	set("displayName", req.DisplayName)
+	set("publicEmail", req.Email)
+	set("avatar", req.Avatar)
+	set("bio", req.Bio)
+	if len(req.Interests) > 0 {
+		merged["participationInterests"] = req.Interests
+	}
+	set("customInterests", req.CustomInterests)
+	set("location", req.Location)
+	set("indigenousCommunity", req.IndigenousCommunity)
+	set("joinReason", req.JoinReason)
+	set("facebookUrl", req.FacebookURL)
+	set("linkedinUrl", req.LinkedinURL)
+	set("twitterUrl", req.TwitterURL)
+	set("instagramUrl", req.InstagramURL)
+	set("githubUrl", req.GithubURL)
+	set("gitlabUrl", req.GitlabURL)
+
+	if len(req.ProfileData) > 0 {
+		var overlay map[string]interface{}
+		if err := json.Unmarshal(req.ProfileData, &overlay); err != nil {
+			return nil, fmt.Errorf("profileData is not a valid JSON object: %w", err)
+		}
+		for k, v := range overlay {
+			merged[k] = v
+		}
+	}
+	return merged, nil
+}
+
+// buildCommunityProfileData composes the CommunityProfile payload: the
+// admin-managed membership record for the community-readonly space. It carries
+// only the fields the CommunityProfile schema declares — none of the
+// registration display/social answers, which live on the SharedProfile.
+func buildCommunityProfileData(req *InitMemberProfilesRequest, now string) map[string]interface{} {
+	return map[string]interface{}{
+		"userAID":      req.MemberAID,
+		"credential":   req.CredentialSAID,
+		"role":         req.Role,
+		"memberSince":  now,
+		"lastActiveAt": now,
+		"credentials":  []string{req.CredentialSAID},
+	}
+}
+
+// buildSharedProfileData composes the SharedProfile payload from the opaque
+// profile map plus the system-managed fields. The system fields are applied
+// last so a caller can never override aid/status/timestamps through the map.
+func buildSharedProfileData(merged map[string]interface{}, aid, status, now string) map[string]interface{} {
+	shared := make(map[string]interface{}, len(merged)+6)
+	for k, v := range merged {
+		shared[k] = v
+	}
+	shared["aid"] = aid
+	shared["status"] = status
+	shared["lastActiveAt"] = now
+	shared["createdAt"] = now
+	shared["updatedAt"] = now
+	shared["typeVersion"] = 1
+	return shared
 }
 
 // HandleUpdateMemberRole handles PUT /api/v1/members/{aid}/role.
