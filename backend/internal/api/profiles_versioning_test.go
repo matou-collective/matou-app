@@ -1,9 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/types"
 )
 
@@ -66,5 +70,91 @@ func TestRegistryValidateForReadGrandfathers(t *testing.T) {
 	}
 	if len(writeErrs) == 0 {
 		t.Fatalf("next save should be asked for the new required field")
+	}
+}
+
+// TestAuthorizeAndStampProfileWrite_EndorsementAfterSchemaBump is the
+// regression test for stamping order (#302): the write policy must evaluate
+// the data exactly as the client sent it. If the live typeVersion were
+// stamped first, an ordinary member's endorsement append onto a profile
+// written under an older schema version would no longer match the existing
+// object field-for-field and be refused as "not your profile".
+func TestAuthorizeAndStampProfileWrite_EndorsementAfterSchemaBump(t *testing.T) {
+	reg := types.NewRegistry()
+	reg.Bootstrap()
+	def, _ := reg.Get("SharedProfile")
+	def.Version = 2 // admin edited the schema since the profile was written
+	reg.Register(def)
+
+	h := &ProfilesHandler{registry: reg, roleLookup: &mockRoleLookup{}}
+
+	existing, _ := json.Marshal(map[string]interface{}{
+		"aid": "EOwner", "status": "approved", "displayName": "Owner", "typeVersion": 1,
+		"endorsements": []interface{}{},
+	})
+	incoming, _ := json.Marshal(map[string]interface{}{
+		"aid": "EOwner", "status": "approved", "displayName": "Owner", "typeVersion": 1,
+		"endorsements": []interface{}{map[string]interface{}{"by": "EEndorser", "skill": "weaving"}},
+	})
+
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/profiles", nil)
+	ctx := context.WithValue(r.Context(), ctxUserAID, "EEndorser")
+	ctx = context.WithValue(ctx, ctxUserRoles, []contributions.Role{contributions.RoleMember})
+	r = r.WithContext(ctx)
+
+	stamped, reason, err := h.authorizeAndStampProfileWrite(r, "SharedProfile", "SharedProfile-EOwner", incoming, existing)
+	if err != nil {
+		t.Fatalf("authorizeAndStampProfileWrite: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("endorsement append must stay allowed after a schema bump, got denial: %q", reason)
+	}
+	if got := types.SchemaVersion(stamped); got != 2 {
+		t.Fatalf("allowed write should be stamped at live version 2, got %d", got)
+	}
+}
+
+// TestAuthorizeAndStampProfileWrite_DeniedIsNotStamped: a refused write
+// returns the policy reason and no data.
+func TestAuthorizeAndStampProfileWrite_DeniedIsNotStamped(t *testing.T) {
+	reg := types.NewRegistry()
+	reg.Bootstrap()
+	h := &ProfilesHandler{registry: reg, roleLookup: &mockRoleLookup{}}
+
+	existing, _ := json.Marshal(map[string]interface{}{"aid": "EOwner", "status": "approved", "displayName": "Owner"})
+	incoming, _ := json.Marshal(map[string]interface{}{"aid": "EOwner", "status": "approved", "displayName": "Hijacked"})
+
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/profiles", nil)
+	ctx := context.WithValue(r.Context(), ctxUserAID, "EStranger")
+	ctx = context.WithValue(ctx, ctxUserRoles, []contributions.Role{contributions.RoleMember})
+	r = r.WithContext(ctx)
+
+	stamped, reason, err := h.authorizeAndStampProfileWrite(r, "SharedProfile", "SharedProfile-EOwner", incoming, existing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason == "" || stamped != nil {
+		t.Fatalf("stranger's rewrite must be refused with a reason and no data; reason=%q data=%s", reason, stamped)
+	}
+}
+
+// TestInitMemberSeedStampsLiveSharedProfileVersion: a freshly seeded member
+// SharedProfile is stamped at the org's registered schema version, not a
+// hardcoded 1, so it is never born stale (#302).
+func TestInitMemberSeedStampsLiveSharedProfileVersion(t *testing.T) {
+	sharedDef := types.SharedProfileType()
+	sharedDef.Version = 3
+	req := baseRequest()
+	merged, err := req.mergedProfileData()
+	if err != nil {
+		t.Fatalf("mergedProfileData: %v", err)
+	}
+	_, shared, _ := buildMemberProfileData(types.CommunityProfileType(), sharedDef, req, merged, "2026-09-04T00:00:00Z")
+	if shared["typeVersion"] != 3 {
+		t.Fatalf("seeded typeVersion = %v, want live version 3", shared["typeVersion"])
+	}
+	data, _ := json.Marshal(shared)
+	if sharedDef.IsStale(data) {
+		t.Fatalf("freshly seeded profile must not be stale")
 	}
 }

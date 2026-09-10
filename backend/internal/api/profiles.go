@@ -128,19 +128,6 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Migrate-on-write (#302): stamp the live schema version into the data so a
-	// successful write records the version it was written under. A profile that
-	// predated an admin schema edit is thereby migrated and is no longer stale.
-	// No-op for types that do not track a typeVersion.
-	if stamped, err := h.registry.StampVersion(req.Type, req.Data); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": fmt.Sprintf("invalid request: %v", err),
-		})
-		return
-	} else {
-		req.Data = stamped
-	}
-
 	// Determine target space
 	spaceID := req.SpaceID
 	if spaceID == "" && h.spaceManager != nil {
@@ -167,20 +154,26 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Resource-level authorization (RBAC active only). POST /profiles is the
-	// same write path as PUT /members/{aid}/role for role-bearing
-	// CommunityProfiles, so it applies the same rule; see profileWritePolicy.
-	if h.roleLookup != nil {
-		var existingData json.RawMessage
-		if existing != nil {
-			existingData = existing.Data
-		}
-		if reason := profileWritePolicy(GetUserAID(r), GetUserRoles(r), req.Type, objectID, req.Data, existingData); reason != "" {
-			log.Printf("[Profiles] write of %s/%s denied for %s: %s", req.Type, objectID, GetUserAID(r), reason)
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
-			return
-		}
+	// Resource-level authorization (RBAC active only), then migrate-on-write
+	// stamping of the live schema version (#302). See
+	// authorizeAndStampProfileWrite for why the order matters.
+	var existingData json.RawMessage
+	if existing != nil {
+		existingData = existing.Data
 	}
+	stamped, reason, err := h.authorizeAndStampProfileWrite(r, req.Type, objectID, req.Data, existingData)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("invalid request: %v", err),
+		})
+		return
+	}
+	if reason != "" {
+		log.Printf("[Profiles] write of %s/%s denied for %s: %s", req.Type, objectID, GetUserAID(r), reason)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
+		return
+	}
+	req.Data = stamped
 
 	if spaceID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
@@ -1164,6 +1157,29 @@ func (h *ProfilesHandler) validateProfile(typeName string, data json.RawMessage)
 		return []string{err.Error()}
 	}
 	return errs
+}
+
+// authorizeAndStampProfileWrite applies the resource-level write policy (RBAC
+// active only; POST /profiles is the same write path as PUT /members/{aid}/role
+// for role-bearing CommunityProfiles — see profileWritePolicy) and, only if
+// the write is allowed, stamps the live schema version into the data
+// (migrate-on-write, #302). The policy must see the data exactly as the client
+// sent it: stamping first would make an endorsement append onto a profile
+// written under an older schema version differ from the existing object in
+// typeVersion, so isEndorsementAppend would refuse it after any schema bump.
+// Returns the stamped data, or a non-empty denial reason, or an error when the
+// data cannot be stamped (not a JSON object).
+func (h *ProfilesHandler) authorizeAndStampProfileWrite(r *http.Request, typeName, objectID string, data, existingData json.RawMessage) (json.RawMessage, string, error) {
+	if h.roleLookup != nil {
+		if reason := profileWritePolicy(GetUserAID(r), GetUserRoles(r), typeName, objectID, data, existingData); reason != "" {
+			return nil, reason, nil
+		}
+	}
+	stamped, err := h.registry.StampVersion(typeName, data)
+	if err != nil {
+		return nil, "", err
+	}
+	return stamped, "", nil
 }
 
 // resolveSpaceForType returns the space ID for a given type definition.
