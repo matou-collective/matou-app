@@ -221,7 +221,7 @@ func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, space
 		}
 		def := winner.def
 		if builtin, ok := r.Get(def.Name); ok {
-			reassertCoreFields(builtin, def)
+			ReassertCoreFields(builtin, def)
 		}
 		r.Register(def)
 		loaded++
@@ -231,7 +231,7 @@ func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, space
 	return nil
 }
 
-// reassertCoreFields overwrites, in persisted, every field the built-in marks
+// ReassertCoreFields overwrites, in persisted, every field the built-in marks
 // core with the built-in's own field definition, and appends any core field the
 // persisted definition dropped (preserving built-in order for the appended
 // ones). Non-core fields — and the ordering of the fields the persisted
@@ -239,7 +239,13 @@ func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, space
 // the customisable part of its schema. Core fields are the ones backend handlers
 // depend on structurally; they can never be removed or redefined by a stored
 // definition, corrupted or otherwise.
-func reassertCoreFields(builtin, persisted *TypeDefinition) {
+//
+// It is applied both at boot (LoadFromSpace) and by the schema PUT handler
+// before a definition is persisted and registered, so the stored, served and
+// loaded copies of a core field are always the built-in FieldDef verbatim —
+// flags such as core/required/readOnly/validation included, not just name and
+// type. A nil builtin or persisted is a no-op.
+func ReassertCoreFields(builtin, persisted *TypeDefinition) {
 	if builtin == nil || persisted == nil {
 		return
 	}
