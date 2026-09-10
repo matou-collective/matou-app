@@ -1,6 +1,7 @@
 package anysync
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -54,7 +55,9 @@ func TestCredentialPayload_TreeIDField(t *testing.T) {
 
 	data, _ := json.Marshal(cred)
 	var decoded CredentialPayload
-	json.Unmarshal(data, &decoded)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
 
 	if decoded.TreeID != "tree-123" {
 		t.Errorf("TreeID mismatch: got %s, want tree-123", decoded.TreeID)
@@ -72,7 +75,9 @@ func TestCredentialPayload_TreeIDOmitEmpty(t *testing.T) {
 	}
 	// TreeID should be omitted when empty
 	var raw map[string]interface{}
-	json.Unmarshal(data, &raw)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
 	if _, exists := raw["treeId"]; exists {
 		t.Error("treeId should be omitted when empty")
 	}
@@ -188,7 +193,7 @@ func TestCredentialTreeManager_ReadCredentials_EmptySpace(t *testing.T) {
 	utm := NewUnifiedTreeManager()
 	mgr := NewCredentialTreeManager(nil, nil, utm)
 
-	creds, err := mgr.ReadCredentials(nil, "empty-space")
+	creds, err := mgr.ReadCredentials(context.Background(), "empty-space")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

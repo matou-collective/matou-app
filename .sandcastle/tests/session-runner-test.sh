@@ -74,6 +74,32 @@ case "$method $url" in
           mv "$f.tmp" "$f"; else rm -f "$f.tmp"; fi
       done
       echo '{}' ;;
+  "GET "*"/issues/"*"/comments"*)
+      # cross-host claim markers (#125): serve the per-issue comment store (any
+      # pre-seeded peer claim + this host's posted claim), or [] when none yet.
+      n="$(sed -E 's|.*/issues/([0-9]+)/comments.*|\1|' <<<"$url")"
+      cf="${FIXTURES_DIR:?}/comments-$n.json"
+      if [ -f "$cf" ]; then cat "$cf"; else echo '[]'; fi ;;
+  "POST "*"/issues/"*"/comments"*)
+      # append the posted comment with a fresh monotonic id (from a seq file so a
+      # later claim always outnumbers an earlier one) and answer {"id":<id>} like
+      # the real API — claim_post reads .id back to arbitrate.
+      n="$(sed -E 's|.*/issues/([0-9]+)/comments.*|\1|' <<<"$url")"
+      cf="${FIXTURES_DIR:?}/comments-$n.json"; seq_f="$FIXTURES_DIR/.comment-seq"
+      [ -f "$cf" ] || echo '[]' > "$cf"
+      cid="$(( $(cat "$seq_f" 2>/dev/null || echo 1000) + 1 ))"; echo "$cid" > "$seq_f"
+      cbody="$(jq -r '.body // ""' <<<"$body" 2>/dev/null || echo "")"
+      if jq --argjson id "$cid" --arg b "$cbody" '. + [{id:$id, body:$b}]' "$cf" > "$cf.tmp" 2>/dev/null; then
+        mv "$cf.tmp" "$cf"; else rm -f "$cf.tmp"; fi
+      echo "{\"id\":$cid}" ;;
+  "DELETE "*"/issues/comments/"*)
+      dcid="$(sed -E 's|.*/issues/comments/([0-9]+).*|\1|' <<<"$url")"
+      for cf in "${FIXTURES_DIR:?}"/comments-*.json; do
+        [ -f "$cf" ] || continue
+        if jq --argjson id "$dcid" 'map(select(.id != $id))' "$cf" > "$cf.tmp" 2>/dev/null; then
+          mv "$cf.tmp" "$cf"; else rm -f "$cf.tmp"; fi
+      done
+      echo '{}' ;;
   "GET "*"/issues/"*)
       n="$(sed -E 's|.*/issues/([0-9]+).*|\1|' <<<"$url")"
       cat "${FIXTURES_DIR:?}/issue-$n.json" ;;
@@ -214,7 +240,7 @@ except sqlite3.OperationalError:
     pass   # no db yet (an empty tick wrote nothing) — no rows
 PY
 }
-reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; : > "$tmp/git.log"; rm -f "$tmp/claude.env" "$tmp/mm.log" "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/owner-lock" "$tmp/hc-slot1" "$tmp/hc-slot2" "$tmp/hc-slot1.holder" "$tmp/hc-slot2.holder" "$tmp/drive-wanted" "$tmp/hc-drive-defer-count" "$tmp/swarm.db" "$tmp/swarm.db-wal" "$tmp/swarm.db-shm" 2>/dev/null || true; reset_queue; }
+reset_case() { : > "$tmp/curl.log"; : > "$tmp/claude.calls"; : > "$tmp/git.log"; rm -f "$tmp/claude.env" "$tmp/mm.log" "$tmp/state"/* "$tmp/limit-marker" "$tmp/active-marker" "$tmp/off" "$tmp/owner-lock" "$tmp/hc-slot1" "$tmp/hc-slot2" "$tmp/hc-slot1.holder" "$tmp/hc-slot2.holder" "$tmp/drive-wanted" "$tmp/hc-drive-defer-count" "$tmp/swarm.db" "$tmp/swarm.db-wal" "$tmp/swarm.db-shm" "$tmp/fixtures"/comments-*.json "$tmp/fixtures/.comment-seq" 2>/dev/null || true; reset_queue; }
 
 # 1: kill switch — env and file both stop pickup before any API call.
 reset_case
@@ -945,4 +971,87 @@ grep -q '^session-runner: picked #25 — ticket 25$' <<<"$out" \
   || fail "23c: NO_STAMP=1 must emit the bare unstamped picked line (got: $(grep 'picked #25' <<<"$out"))"
 echo "ok 23c SESSION_RUNNER_NO_STAMP=1 disables the stamp layer"
 
-echo "session-runner: 23 groups passed"
+# 24: cross-host claim arbitration (#125) — two hosts draining one
+#     ready-for-session queue can both pick the same ticket in the same window
+#     (agent-working is an ADDITIVE label POST, not a compare-and-swap). Before
+#     the expensive session, the runner posts a `swarm-claim host= run=` marker
+#     and re-reads every claim on the ticket: the LOWEST comment id wins. A loser
+#     releases (marker + label) and stands down BEFORE the claude call — a lost
+#     race is not a failed attempt. Core arbitration lives in claim-lib.sh
+#     (tests/claim-lib-test.sh); these assert the session-runner WIRING.
+
+# 24a: a peer's claim (lower/winning id) is already on the ticket when this host
+#      reaches arbitration → this host LOSES: no claude session, its own
+#      agent-working claim released, no attempt marker, no fail counter, no
+#      escalation, no swarm.db run row.
+reset_case
+mkissue 77
+jq -s '.' "$tmp/fixtures/issue-77.json" > "$tmp/fixtures/queue.json"
+printf '%s\n' '[{"id":50,"body":"swarm-claim host=peerbox run=999\n(automated multi-host claim)"}]' > "$tmp/fixtures/comments-77.json"
+echo 1000 > "$tmp/fixtures/.comment-seq"   # this host's claim gets id 1001 > 50 → it loses
+out="$(run_runner)"
+grep -q "picked #77" <<<"$out" || fail "24a: the runner must pick the free ticket before arbitrating (got: $out)"
+grep -qi "standing down before the session" <<<"$out" || fail "24a: the loser must report standing down (got: $out)"
+[ -s "$tmp/claude.calls" ] && fail "24a: the loser must NOT start a claude session"
+grep -q "DELETE http://fake/api/v1/repos/x/y/issues/77/labels/103" "$tmp/curl.log" \
+  || fail "24a: the loser must release its own agent-working claim"
+[ -f "$tmp/state/attempt-77" ] && fail "24a: a lost race must not stamp an attempt marker"
+[ -f "$tmp/state/fail-77" ] && fail "24a: a lost race must not write a fail counter"
+grep -qi "escalat" <<<"$out" && fail "24a: a lost race must not escalate"
+[ -z "$(dbq "SELECT run_id FROM runs")" ] || fail "24a: a lost race starts no session, so records no run row (got: $(dbq "SELECT run_id FROM runs"))"
+echo "ok 24a a losing host stands down before the session, releases its claim, burns no attempt"
+
+# 24b: no competing claim → this host's own marker is the lowest/live claim → it
+#      WINS and runs exactly one session, unchanged from today.
+reset_case
+mkissue 77
+jq -s '.' "$tmp/fixtures/issue-77.json" > "$tmp/fixtures/queue.json"
+out="$(run_runner)"
+grep -q "picked #77" <<<"$out" || fail "24b: the winner must pick the ticket (got: $out)"
+grep -q "POST http://fake/api/v1/repos/x/y/issues/77/comments" "$tmp/curl.log" \
+  || fail "24b: the winner must post its cross-host claim marker"
+grep -qi "won the cross-host claim" <<<"$out" || fail "24b: the winner must report it won (got: $out)"
+[ "$(wc -l < "$tmp/claude.calls")" = 1 ] || fail "24b: the winner must run exactly one session (got: $(wc -l < "$tmp/claude.calls"))"
+grep -q "outcome: advanced" <<<"$out" || fail "24b: the winner works the ticket to completion (got: $out)"
+echo "ok 24b a host whose claim is lowest wins and runs exactly one session"
+
+# 24c: claim_post fails (a forge blip returns no id) → the runner cannot
+#      arbitrate, so it falls back to today's behaviour and RUNS (the rare
+#      unarbitrated race is the pre-#125 status quo, never a wedge).
+reset_case
+mkissue 77
+jq -s '.' "$tmp/fixtures/issue-77.json" > "$tmp/fixtures/queue.json"
+# a curl that returns no id for the claim POST, real for everything else.
+cat > "$tmp/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+method=GET; url=""; reads_stdin=0
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    -X) method="${args[$((i+1))]}" ;;
+    http*) url="${args[$i]}" ;;
+    @-) reads_stdin=1 ;;
+  esac
+done
+body=""; [ "$reads_stdin" = 1 ] && body="$(cat)"
+echo "$method $url" >> "${CURL_LOG:?}"
+case "$method $url" in
+  "POST "*"/issues/"*"/comments"*) echo '{}' ;;    # no .id — claim_post can't arbitrate
+  "GET "*"/issues/"*"/comments"*)  echo '[]' ;;
+  "GET "*"/labels?"*)              cat "${LABELS_FIXTURE:?}" ;;
+  "GET "*"/issues?"*ready-for-session*) cat "${QUEUE_FIXTURE:?}" ;;
+  "GET "*"/issues/"*"/dependencies"*) echo '[]' ;;
+  "DELETE "*) echo '{}' ;;
+  "GET "*"/issues/"*) n="$(sed -E 's|.*/issues/([0-9]+).*|\1|' <<<"$url")"; cat "${FIXTURES_DIR:?}/issue-$n.json" ;;
+  "POST "*"/labels") echo '{}' ;;
+  *) echo '{}' ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/bin/curl"
+out="$(run_runner)"
+grep -qi "proceeding unarbitrated" <<<"$out" || fail "24c: an unpostable claim must fall back to running (got: $out)"
+[ "$(wc -l < "$tmp/claude.calls")" = 1 ] || fail "24c: the unarbitrated fallback must still run one session (got: $(wc -l < "$tmp/claude.calls"))"
+echo "ok 24c a failed claim post falls back to running (never a wedge)"
+
+echo "session-runner: 24 groups passed"

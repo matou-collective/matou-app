@@ -21,7 +21,7 @@ func sampleInitReq() *InitMemberProfilesRequest {
 		Location:            "Aotearoa",
 		IndigenousCommunity: "Ngāti Example",
 		JoinReason:          "to contribute",
-		FacebookUrl:         "https://fb/x",
+		FacebookURL:         "https://fb/x",
 	}
 }
 

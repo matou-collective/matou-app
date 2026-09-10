@@ -52,6 +52,19 @@ vi.mock('src/lib/api/push', () => ({
   postRelaySession: (c: string, s: string) => postRelaySession(c, s),
 }));
 
+// --- Chat API: newest-message preview source (notification body) -----------
+const getMessages = vi.fn(async () => ({
+  messages: [
+    { id: 'm1', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'kia ora!', sentAt: 't', version: 1 },
+  ],
+  count: 1,
+  nextCursor: '',
+  hasMore: false,
+}));
+vi.mock('src/lib/api/chat', () => ({
+  getMessages: (c: string, o?: unknown) => getMessages(c, o),
+}));
+
 // --- Chat store: lightweight fake ------------------------------------------
 const chatStoreMock: {
   channels: Array<{ id: string; name: string; isArchived?: boolean }>;
@@ -128,6 +141,8 @@ interface FakePlugins {
   push?: FakePush;
   syncChannel?: ReturnType<typeof vi.fn>;
   schedule?: ReturnType<typeof vi.fn>;
+  /** When set, LocalNotifications gains addListener storing listeners here. */
+  localListeners?: Record<string, Listener>;
   badgeSet?: ReturnType<typeof vi.fn>;
 }
 
@@ -138,7 +153,17 @@ function installCapacitor(
   const Plugins: Record<string, unknown> = {};
   if (opts.push) Plugins.PushNotifications = opts.push;
   if (opts.syncChannel) Plugins.MatouBackend = { syncChannel: opts.syncChannel };
-  if (opts.schedule) Plugins.LocalNotifications = { schedule: opts.schedule };
+  if (opts.schedule || opts.localListeners) {
+    const local: Record<string, unknown> = {};
+    if (opts.schedule) local.schedule = opts.schedule;
+    if (opts.localListeners) {
+      const store = opts.localListeners;
+      local.addListener = vi.fn((event: string, fn: Listener) => {
+        store[event] = fn;
+      });
+    }
+    Plugins.LocalNotifications = local;
+  }
   if (opts.badgeSet) Plugins.Badge = { set: opts.badgeSet };
   (globalThis as unknown as { window: unknown }).window = {
     Capacitor: {
@@ -585,7 +610,12 @@ describe('usePush (#249)', () => {
 
       const composed = await push.handlePushReceipt({ t: 'm', c: 'chan-1', k: 'ch', v: '1' });
       expect(syncChannel).toHaveBeenCalledWith({ channelId: 'chan-1' });
-      expect(composed).toEqual({ channelId: 'chan-1', title: 'New message in general', kind: 'ch' });
+      expect(composed).toEqual({
+        channelId: 'chan-1',
+        title: 'New message in general',
+        body: 'Aroha: kia ora!',
+        kind: 'ch',
+      });
     });
 
     it('falls back to a generic notification when sync fails', async () => {
@@ -595,8 +625,45 @@ describe('usePush (#249)', () => {
       installCapacitor({ syncChannel });
       const push = await loadPush();
 
+      getMessages.mockClear();
       const composed = await push.handlePushReceipt({ t: 'm', c: 'chan-1' });
-      expect(composed).toEqual({ channelId: 'chan-1', title: 'New messages', kind: 'ch' });
+      // No preview either — a failed sync means local state has nothing new.
+      expect(composed).toEqual({ channelId: 'chan-1', title: 'New messages', body: '', kind: 'ch' });
+      expect(getMessages).not.toHaveBeenCalled();
+    });
+
+    it('puts the newest message preview in the scheduled notification body', async () => {
+      const syncChannel = vi.fn(async () => undefined);
+      const schedule = vi.fn(async () => undefined);
+      installCapacitor({ syncChannel, schedule });
+      const push = await loadPush();
+
+      await push.handlePushReceipt({ t: 'm', c: 'chan-1', k: 'dm' });
+      expect(getMessages).toHaveBeenCalledWith('chan-1', { limit: 3 });
+      expect(schedule.mock.calls[0]?.[0].notifications[0].body).toBe('Aroha: kia ora!');
+    });
+
+    it('skips deleted messages and keeps the body empty when the preview fails', async () => {
+      const syncChannel = vi.fn(async () => undefined);
+      const schedule = vi.fn(async () => undefined);
+      installCapacitor({ syncChannel, schedule });
+      getMessages.mockResolvedValueOnce({
+        messages: [
+          { id: 'm2', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'gone', sentAt: 't', version: 1, deletedAt: 't2' },
+          { id: 'm1', channelId: 'chan-1', senderAid: 'aid-b', senderName: 'Aroha', content: 'still here', sentAt: 't', version: 1 },
+        ],
+        count: 2,
+        nextCursor: '',
+        hasMore: false,
+      } as never);
+      const push = await loadPush();
+      await push.handlePushReceipt({ t: 'm', c: 'chan-1' });
+      expect(schedule.mock.calls[0]?.[0].notifications[0].body).toBe('Aroha: still here');
+
+      getMessages.mockRejectedValueOnce(new Error('backend gone'));
+      await push.handlePushReceipt({ t: 'm', c: 'chan-2' });
+      const second = schedule.mock.calls[1]?.[0].notifications[0];
+      expect(second.body).toBe('');
     });
 
     it('ignores non-message payloads', async () => {
@@ -714,6 +781,105 @@ describe('usePush (#249)', () => {
 
       push.handlePushTap({ t: 'm' });
       expect(router.push).not.toHaveBeenCalled();
+    });
+
+    it('routes on a LOCAL notification tap — the event our posted notifications fire (#421)', async () => {
+      // Both the JS-scheduled notification and the Android headless wake's
+      // native twin carry the channel id in notification.extra.c, and their
+      // taps arrive as localNotificationActionPerformed (never
+      // pushNotificationActionPerformed, since §4 payloads are data-only).
+      const fake = makePush('granted');
+      const localListeners: Record<string, Listener> = {};
+      installCapacitor({ push: fake, localListeners });
+      const push = await loadPush();
+      const router = makeRouter();
+      push.setPushRouter(router as never);
+      push.ensurePushListeners();
+
+      const listener = localListeners['localNotificationActionPerformed'];
+      expect(listener).toBeDefined();
+      listener!({ actionId: 'tap', notification: { id: 7, extra: { c: 'chan-9' } } });
+      expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-9' } });
+    });
+
+    it('stashes the channel on a cold-start tap (router still on the gate) and the gate replays it (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      // Router still on the splash/onboarding gate — not a /dashboard route.
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-cold' });
+
+      // The gate-exit navigation consumes the stash → chat route for the channel.
+      expect(push.consumePushDeepLinkTarget()).toEqual({
+        name: 'chat',
+        query: { c: 'chan-cold' },
+      });
+      // Consumed exactly once: a later gate exit falls through to the dashboard.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('does not stash when already on a dashboard route (alive/backgrounded tap) (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/dashboard/projects');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-alive' });
+
+      // Immediate deep-link, and nothing left for the gate to replay.
+      expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-alive' } });
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('gate exit with no pending deep-link targets the dashboard (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      // No tap happened this boot → nothing stashed → gate lands on dashboard.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('drops a stashed cold-start target on logout — no stale replay for the next identity (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      // A cold-start tap for the previously signed-in identity stashes a
+      // target before the app finishes restoring their session.
+      push.handlePushTap({ t: 'm', c: 'chan-stale' });
+
+      // The identity is torn down (logout) before the gate ever consumes it —
+      // e.g. session restore failed and a fresh registration starts instead.
+      await push.handleIdentityChange(null, 'EAID-old');
+
+      // The stash must not survive to be replayed for whoever signs in next.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('drops a stashed cold-start target on an identity switch — no stale replay for the new identity (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-stale' });
+
+      // Switching straight to a different identity (no intervening logout)
+      // must invalidate the stash just the same — it was never meant for
+      // whichever identity is now signed in.
+      await push.handleIdentityChange('EAID-new', 'EAID-old');
+
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('survives a shell whose LocalNotifications plugin has no addListener', async () => {
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, schedule: vi.fn() });
+      const push = await loadPush();
+      // Must not throw while wiring listeners against the reduced surface.
+      push.ensurePushListeners();
     });
   });
 });

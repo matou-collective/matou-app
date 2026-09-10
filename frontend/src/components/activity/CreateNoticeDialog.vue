@@ -12,7 +12,7 @@
         <div class="form-group">
           <label class="form-label">Type</label>
           <div class="type-selector">
-            <button type="button" class="type-btn" :class="{ active: form.type === 'event' }" @click="form.type = 'event'">
+            <button v-if="showEventType" type="button" class="type-btn" :class="{ active: form.type === 'event' }" @click="form.type = 'event'">
               <Calendar :size="16" /> Event
             </button>
             <button type="button" class="type-btn" :class="{ active: form.type === 'announcement' }" @click="form.type = 'announcement'">
@@ -118,13 +118,15 @@
 import { ref, reactive, watch, computed } from 'vue';
 import { X, Calendar, Megaphone, FileText } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
+import { eventsEnabled, defaultNoticeType } from 'src/composables/noticeTypes';
 import FileUploadInput from './FileUploadInput.vue';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 const activityStore = useActivityStore();
+const showEventType = eventsEnabled();
 
 const form = reactive({
-  type: 'event' as 'event' | 'update' | 'announcement',
+  type: defaultNoticeType() as 'event' | 'update' | 'announcement',
   title: '',
   summary: '',
   eventStart: '',

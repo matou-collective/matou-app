@@ -27,6 +27,12 @@ export default defineConfig({
   optimizeDeps: {
     include: ['signify-ts', 'libsodium-wrappers-sumo', 'libsodium-sumo'],
   },
+  define: {
+    __KIT_CHAT__: true,
+    __KIT_PROJECTS__: true,
+    __KIT_PROPOSALS__: true,
+    __KIT_NOTICES__: true,
+  },
   test: {
     // Test scripts live outside src/
     include: ['tests/scripts/**/*.ts'],

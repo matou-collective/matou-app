@@ -405,6 +405,27 @@
         </div>
       </section>
 
+      <!-- Community Settings (mobile only) — the sidebar gear is hidden on
+           mobile, so surface the same entry here for holders of
+           open_community_settings, mirroring "Report an issue"'s placement
+           rule (#318). -->
+      <section
+        v-if="isMobile && rolePolicyStore.can('open_community_settings')"
+        class="settings-card"
+      >
+        <div class="card-header">
+          <h3 class="card-title"><Settings :size="18" /> Community</h3>
+        </div>
+        <button
+          type="button"
+          class="report-issue-btn"
+          @click="router.push({ name: 'community-settings' })"
+        >
+          <Settings :size="16" />
+          <span>Community Settings</span>
+        </button>
+      </section>
+
       <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
            button is hidden on mobile, so surface the same dialog here. -->
       <section v-if="isMobile" class="settings-card">
@@ -461,6 +482,7 @@ import { useTypesStore } from 'stores/types';
 import { useIdentityStore } from 'stores/identity';
 import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
+import { useRolePolicyStore } from 'src/stores/rolePolicy';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
 import { getFileUrl, uploadFile } from 'src/lib/api/client';
 import { useIsMobile } from 'src/composables/useIsMobile';
@@ -473,6 +495,7 @@ const typesStore = useTypesStore();
 const identityStore = useIdentityStore();
 const notificationsStore = useNotificationsStore();
 const chatStore = useChatStore();
+const rolePolicyStore = useRolePolicyStore();
 
 const isMobile = useIsMobile();
 
@@ -1345,7 +1368,7 @@ onMounted(async () => {
   width: 16px;
   left: 3px;
   bottom: 3px;
-  background-color: #fff;
+  background-color: var(--matou-switch-thumb, #fff);
   border-radius: 50%;
   transition: transform 0.2s;
 }
@@ -1370,8 +1393,8 @@ onMounted(async () => {
 
 /* Read-only field display */
 .field-box {
-  background: #f0f9fa;
-  border: 1px solid #d1e7ea;
+  background: var(--matou-field-tint-bg, #f0f9fa);
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
@@ -1382,8 +1405,8 @@ onMounted(async () => {
 
 /* Editable field input — looks like field-box but interactive */
 .field-input {
-  background: #f0f9fa;
-  border: 1px solid #d1e7ea;
+  background: var(--matou-field-tint-bg, #f0f9fa);
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
@@ -1396,16 +1419,16 @@ onMounted(async () => {
 }
 
 .field-input:hover {
-  border-color: #a8d4da;
+  border-color: var(--matou-field-tint-hover-border, #a8d4da);
 }
 
 .field-input:focus {
-  border-color: #1a4f5e;
-  box-shadow: 0 0 0 2px rgba(26, 79, 94, 0.1);
+  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
 }
 
 .field-input::placeholder {
-  color: #9ca3af;
+  color: var(--matou-field-tint-placeholder, #9ca3af);
 }
 
 textarea.field-input {
@@ -1488,8 +1511,8 @@ textarea.field-input {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  background: #f0f9fa;
-  border: 1px solid #d1e7ea;
+  background: var(--matou-field-tint-bg, #f0f9fa);
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   font-size: 0.875rem;
 }
@@ -1548,7 +1571,7 @@ textarea.field-input {
   flex: 0 0 160px;
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
-  border: 1px solid #d1e7ea;
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
@@ -1558,12 +1581,12 @@ textarea.field-input {
 }
 
 .social-link-select:hover:not(:disabled) {
-  border-color: #a8d4da;
+  border-color: var(--matou-field-tint-hover-border, #a8d4da);
 }
 
 .social-link-select:focus {
-  border-color: #1a4f5e;
-  box-shadow: 0 0 0 2px rgba(26, 79, 94, 0.1);
+  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
 }
 
 .social-link-select:disabled {
@@ -1575,7 +1598,7 @@ textarea.field-input {
   flex: 1;
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
-  border: 1px solid #d1e7ea;
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
@@ -1584,12 +1607,12 @@ textarea.field-input {
 }
 
 .social-link-input:hover:not(:disabled) {
-  border-color: #a8d4da;
+  border-color: var(--matou-field-tint-hover-border, #a8d4da);
 }
 
 .social-link-input:focus {
-  border-color: #1a4f5e;
-  box-shadow: 0 0 0 2px rgba(26, 79, 94, 0.1);
+  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
 }
 
 .social-link-input:disabled {

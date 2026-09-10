@@ -57,6 +57,8 @@ type StorePolicyProvider struct {
 	fetchedAt time.Time
 }
 
+// NewStorePolicyProvider creates a StorePolicyProvider that reads the role
+// policy from store for spaceID, caching the result for ttl.
 func NewStorePolicyProvider(store ObjectStore, spaceID string, ttl time.Duration) *StorePolicyProvider {
 	return &StorePolicyProvider{store: store, spaceID: spaceID, ttl: ttl}
 }

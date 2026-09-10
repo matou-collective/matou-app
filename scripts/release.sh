@@ -18,6 +18,13 @@ fi
 TAG="v$VERSION"
 BRANCH="main"
 
+# Operate on the checkout this script lives in, from frontend/ (whose
+# package.json carries the app version the tag build verifies) — regardless
+# of the caller's cwd. v0.6.3 was tagged with the ROOT package.json bumped
+# because the script trusted its cwd, and the tag build failed the version
+# guard having shipped nothing.
+cd "$(dirname "$0")/../frontend"
+
 echo "🚀 Releasing version $VERSION"
 
 # Ensure clean working tree
@@ -41,10 +48,24 @@ fi
 
 echo "📝 Updating package.json version → $VERSION"
 
-# Update version using jq
+# frontend/package.json (the cwd here) is the ONLY version source —
+# electron-builder names installers from it (#359). The root package.json
+# must not carry a version field at all: two fields drift, and v0.6.3
+# shipped installers labelled 0.6.2 exactly that way.
 tmpfile=$(mktemp)
 jq ".version = \"$VERSION\"" package.json > "$tmpfile"
 mv "$tmpfile" package.json
+
+# Guards (#359): the bump landed, and the stray root version field stays gone.
+pkg_version=$(jq -r .version package.json)
+if [ "$pkg_version" != "$VERSION" ]; then
+  echo "❌ frontend/package.json version is $pkg_version, expected $VERSION"
+  exit 1
+fi
+if [ "$(jq 'has("version")' ../package.json)" != "false" ]; then
+  echo "❌ root package.json has grown a version field again — remove it (#359)"
+  exit 1
+fi
 
 git add package.json
 git commit -m "chore(release): v$VERSION"
