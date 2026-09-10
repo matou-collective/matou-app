@@ -147,12 +147,26 @@ interface FakePlugins {
 }
 
 function installCapacitor(
-  opts: { platform?: string; native?: boolean } & FakePlugins = {},
+  opts: {
+    platform?: string;
+    native?: boolean;
+    /** MatouBackend.isPushAvailable() result — the Firebase-present signal (#384). */
+    pushAvailable?: boolean;
+    /** Omit isPushAvailable entirely — a shell that predates the check (#384). */
+    omitPushAvailability?: boolean;
+  } & FakePlugins = {},
 ) {
-  const { platform = 'android', native = true } = opts;
+  const { platform = 'android', native = true, pushAvailable = true } = opts;
   const Plugins: Record<string, unknown> = {};
   if (opts.push) Plugins.PushNotifications = opts.push;
-  if (opts.syncChannel) Plugins.MatouBackend = { syncChannel: opts.syncChannel };
+  // The MatouBackend plugin carries both syncChannel and the push-availability
+  // check; ship it whenever either is exercised.
+  const matouBackend: Record<string, unknown> = {};
+  if (opts.syncChannel) matouBackend.syncChannel = opts.syncChannel;
+  if (opts.push && !opts.omitPushAvailability) {
+    matouBackend.isPushAvailable = vi.fn(async () => ({ available: pushAvailable }));
+  }
+  if (Object.keys(matouBackend).length > 0) Plugins.MatouBackend = matouBackend;
   if (opts.schedule || opts.localListeners) {
     const local: Record<string, unknown> = {};
     if (opts.schedule) local.schedule = opts.schedule;
@@ -340,6 +354,62 @@ describe('usePush (#249)', () => {
       await settle();
 
       expect(fake.requestPermissions).toHaveBeenCalledTimes(1);
+      expect(fake.register).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Firebase availability gate (#384)', () => {
+    it('never calls register() on a config-less build (Firebase unavailable)', async () => {
+      // The push plugin is compiled in, but no google-services.json was baked,
+      // so the default FirebaseApp never initialised. Calling native register()
+      // would throw a fatal IllegalStateException and kill the process — the JS
+      // must short-circuit to 'unavailable' before ever reaching it.
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, pushAvailable: false });
+      const push = await loadPush();
+
+      expect(await push.requestPermissionAndRegister()).toBe('unavailable');
+      expect(await push.registerIfPermitted()).toBe('unavailable');
+      expect(fake.requestPermissions).not.toHaveBeenCalled();
+      expect(fake.register).not.toHaveBeenCalled();
+      expect(registerPushToken).not.toHaveBeenCalled();
+    });
+
+    it('fails safe to unavailable when the bridge check is absent', async () => {
+      // A shell built before MatouBackend.isPushAvailable landed must degrade to
+      // unavailable rather than assume push is safe to register.
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, omitPushAvailability: true });
+      const push = await loadPush();
+
+      expect(await push.requestPermissionAndRegister()).toBe('unavailable');
+      expect(await push.registerIfPermitted()).toBe('unavailable');
+      expect(fake.register).not.toHaveBeenCalled();
+    });
+
+    it('the app-start watcher does not register on a config-less build', async () => {
+      // The identity-active watcher (boot session-restore) funnels through
+      // registerIfPermitted; it too must no-op rather than crash (#384).
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, pushAvailable: false });
+      const identity = await identityStore();
+      identity.currentAID = aidInfo('EAID-returning');
+      (await onboardingStore()).navigateTo('main');
+
+      const push = await loadPush();
+      push.ensurePushListeners();
+      await settle();
+
+      expect(fake.register).not.toHaveBeenCalled();
+      expect(registerPushToken).not.toHaveBeenCalled();
+    });
+
+    it('registers as before when Firebase is available', async () => {
+      const fake = makePush('granted');
+      installCapacitor({ push: fake, pushAvailable: true });
+      const push = await loadPush();
+
+      expect(await push.requestPermissionAndRegister()).toBe('granted');
       expect(fake.register).toHaveBeenCalledTimes(1);
     });
   });
@@ -800,6 +870,78 @@ describe('usePush (#249)', () => {
       expect(listener).toBeDefined();
       listener!({ actionId: 'tap', notification: { id: 7, extra: { c: 'chan-9' } } });
       expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-9' } });
+    });
+
+    it('stashes the channel on a cold-start tap (router still on the gate) and the gate replays it (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      // Router still on the splash/onboarding gate — not a /dashboard route.
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-cold' });
+
+      // The gate-exit navigation consumes the stash → chat route for the channel.
+      expect(push.consumePushDeepLinkTarget()).toEqual({
+        name: 'chat',
+        query: { c: 'chan-cold' },
+      });
+      // Consumed exactly once: a later gate exit falls through to the dashboard.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('does not stash when already on a dashboard route (alive/backgrounded tap) (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/dashboard/projects');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-alive' });
+
+      // Immediate deep-link, and nothing left for the gate to replay.
+      expect(router.push).toHaveBeenCalledWith({ name: 'chat', query: { c: 'chan-alive' } });
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('gate exit with no pending deep-link targets the dashboard (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      // No tap happened this boot → nothing stashed → gate lands on dashboard.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('drops a stashed cold-start target on logout — no stale replay for the next identity (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      // A cold-start tap for the previously signed-in identity stashes a
+      // target before the app finishes restoring their session.
+      push.handlePushTap({ t: 'm', c: 'chan-stale' });
+
+      // The identity is torn down (logout) before the gate ever consumes it —
+      // e.g. session restore failed and a fresh registration starts instead.
+      await push.handleIdentityChange(null, 'EAID-old');
+
+      // The stash must not survive to be replayed for whoever signs in next.
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
+    });
+
+    it('drops a stashed cold-start target on an identity switch — no stale replay for the new identity (#445)', async () => {
+      installCapacitor({});
+      const push = await loadPush();
+      const router = makeRouter('/');
+      push.setPushRouter(router as never);
+
+      push.handlePushTap({ t: 'm', c: 'chan-stale' });
+
+      // Switching straight to a different identity (no intervening logout)
+      // must invalidate the stash just the same — it was never meant for
+      // whichever identity is now signed in.
+      await push.handleIdentityChange('EAID-new', 'EAID-old');
+
+      expect(push.consumePushDeepLinkTarget()).toBeNull();
     });
 
     it('survives a shell whose LocalNotifications plugin has no addListener', async () => {

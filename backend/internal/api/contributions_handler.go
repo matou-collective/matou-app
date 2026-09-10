@@ -248,11 +248,11 @@ func (h *ContributionsHandler) withOptionalRBAC(handler http.HandlerFunc) http.H
 // visibleAmounts / visibleAmountsList strip a contribution's budget/actuals from
 // callers who may not see them (see contribution_amounts.go).
 func (h *ContributionsHandler) visibleAmounts(r *http.Request, c *contributions.Contribution) *contributions.Contribution {
-	return visibleContributionAmounts(h.roleLookup, r, c)
+	return visibleContributionAmounts(h.roleLookup, h.service, h.spaceManager, r, c)
 }
 
 func (h *ContributionsHandler) visibleAmountsList(r *http.Request, cs []*contributions.Contribution) []*contributions.Contribution {
-	return visibleContributionAmountsList(h.roleLookup, r, cs)
+	return visibleContributionAmountsList(h.roleLookup, h.service, h.spaceManager, r, cs)
 }
 
 // withProjectRBAC applies project-scoped RBAC for actions whose authorisation

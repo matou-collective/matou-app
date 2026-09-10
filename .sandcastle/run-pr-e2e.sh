@@ -39,6 +39,10 @@ pr="$(api "$FORGEJO_API/pulls/$PR_NUMBER")"
 branch="$(jq -r .head.ref <<<"$pr")"
 pr_url="$(jq -r .html_url <<<"$pr")"
 body="$(jq -r '.body // ""' <<<"$pr")"
+# Stamp every verdict comment with the head sha (#278) so the pr-e2e sweep can
+# tell this PR's current head already has evidence and skip re-dispatching it.
+# post-pr-screenshots.sh -> build_pr_comment reads this from the environment.
+export PR_E2E_HEAD_SHA="$(jq -r '.head.sha // ""' <<<"$pr")"
 
 # Which spec? agent/issue-<N> branches imply issue-<N>.spec.ts; any other
 # branch (session/*, feature/*) opts in by naming its spec in the PR body

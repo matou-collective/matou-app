@@ -191,14 +191,14 @@
             <label
               v-for="interest in interestChoices"
               :key="interest.value"
-              class="flex items-start gap-3 p-3 border border-border rounded-lg cursor-pointer hover:bg-secondary/50 transition-colors"
+              class="flex items-center gap-3 p-3 border border-border rounded-lg cursor-pointer hover:bg-secondary/50 transition-colors"
               :class="{ 'border-primary bg-primary/5': formData.participationInterests.includes(interest.value) }"
             >
               <input
                 type="checkbox"
                 :value="interest.value"
                 v-model="formData.participationInterests"
-                class="col-1 w-4 h-4 rounded border-border text-primary focus:ring-primary/50 shrink-0 mt-5"
+                class="col-1 w-4 h-4 rounded border-border text-primary focus:ring-primary/50 shrink-0"
               />
               <div class="col">
                 <span class="text-sm font-medium">{{ interest.label }}</span>
