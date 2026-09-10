@@ -116,7 +116,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
-import { useTypesStore } from 'stores/types';
+import { useTypesStore, emptyFieldValue } from 'stores/types';
 import { uploadFile, getFileUrl, type FieldDef } from 'src/lib/api/client';
 
 const props = withDefaults(defineProps<{
@@ -262,19 +262,9 @@ function initFormData() {
   // field defaults, so an embedded subset never clobbers a parent's other keys.
   const seed = props.modelValue ?? props.initialData;
   for (const field of visibleFields.value) {
-    if (seed?.[field.name] !== undefined) {
-      formData.value[field.name] = seed[field.name];
-    } else if (field.default !== undefined) {
-      formData.value[field.name] = field.default;
-    } else if (field.type === 'array') {
-      formData.value[field.name] = [];
-    } else if (field.type === 'boolean') {
-      formData.value[field.name] = false;
-    } else if (field.type === 'object') {
-      formData.value[field.name] = {};
-    } else {
-      formData.value[field.name] = '';
-    }
+    formData.value[field.name] = seed?.[field.name] !== undefined
+      ? seed[field.name]
+      : emptyFieldValue(field);
   }
 }
 
@@ -288,6 +278,20 @@ watch(visibleFields, (fields, prev) => {
 watch(formData, (val) => {
   if (props.embedded) emit('update:modelValue', { ...val });
 }, { deep: true });
+
+// Embedded mode: when the parent replaces the bound model (e.g. "discard
+// changes" restoring a snapshot), pull the differing values back into the
+// inputs. Only differing keys are assigned so the echo of our own emission
+// does not loop.
+watch(() => props.modelValue, (mv) => {
+  if (!props.embedded || !mv) return;
+  for (const field of visibleFields.value) {
+    const next = mv[field.name] !== undefined ? mv[field.name] : emptyFieldValue(field);
+    if (JSON.stringify(next) !== JSON.stringify(formData.value[field.name])) {
+      formData.value[field.name] = next;
+    }
+  }
+});
 
 // Expose validate/submit so a parent-owned save can gate on client validation.
 defineExpose({ validate, submit: handleSubmit });

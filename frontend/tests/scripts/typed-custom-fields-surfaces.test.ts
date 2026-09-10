@@ -115,7 +115,7 @@ describe('AccountSettingsPage gates save on custom-field validation', () => {
 
   async function mountPage() {
     const wrapper = mount(AccountSettingsPage, {
-      global: { stubs: { ReportIssueDialog: Passthrough, Transition: false } },
+      global: { stubs: { ReportIssueDialog: Passthrough } },
     });
     await flushPromises();
     await wrapper.vm.$nextTick();
@@ -129,9 +129,8 @@ describe('AccountSettingsPage gates save on custom-field validation', () => {
     const iwi = section.find('#iwi');
     expect(iwi.exists()).toBe(true);
 
-    // Touch the field (dirty) and leave it empty so the unsaved bar appears.
-    await iwi.setValue('x');
-    await iwi.setValue('');
+    // Edit a built-in field so the unsaved bar appears; leave `iwi` empty.
+    await wrapper.find('textarea[placeholder="Tell us about yourself"]').setValue('new bio');
     const save = wrapper.find('.btn-save');
     expect(save.exists()).toBe(true);
     await save.trigger('click');
@@ -140,6 +139,31 @@ describe('AccountSettingsPage gates save on custom-field validation', () => {
     expect(spies.saveProfile).not.toHaveBeenCalled();
     expect(section.find('.field-error').exists()).toBe(true);
     expect(section.find('.field-error').text()).toMatch(/Iwi is required/);
+    wrapper.unmount();
+  });
+
+  it('does not report unsaved changes on load when a custom field has no stored value', async () => {
+    // TypedForm seeds an unset string field to '' and emits it up through
+    // v-model on mount; the page's snapshot must agree so a freshly opened
+    // page is not marked dirty before the user touched anything.
+    const wrapper = await mountPage();
+    expect(wrapper.find('[data-test="custom-fields-section"] #iwi').exists()).toBe(true);
+    expect(wrapper.find('.unsaved-bar').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('discarding changes resets the custom field input to its saved value', async () => {
+    const wrapper = await mountPage();
+    const iwi = wrapper.find('[data-test="custom-fields-section"] #iwi');
+    await iwi.setValue('Ngāti Draft');
+    expect(wrapper.find('.unsaved-bar').exists()).toBe(true);
+
+    await wrapper.find('.btn-discard').trigger('click');
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect((iwi.element as HTMLInputElement).value).toBe('');
+    expect(wrapper.find('.unsaved-bar').exists()).toBe(false);
     wrapper.unmount();
   });
 

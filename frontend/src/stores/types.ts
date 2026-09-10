@@ -1,6 +1,22 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { getTypeDefinitions, getTypeDefinition, type TypeDefinition } from 'src/lib/api/client';
+import { getTypeDefinitions, getTypeDefinition, type TypeDefinition, type FieldDef } from 'src/lib/api/client';
+
+/**
+ * The value an unset field takes in a form: the schema default when declared,
+ * else the empty value for its type. TypedForm seeds unset fields with this and
+ * a parent that snapshots the bound model must seed the same way, or the
+ * form's initial v-model emission looks like an edit.
+ */
+export function emptyFieldValue(field: FieldDef): unknown {
+  if (field.default !== undefined) return field.default;
+  switch (field.type) {
+    case 'array': return [];
+    case 'boolean': return false;
+    case 'object': return {};
+    default: return '';
+  }
+}
 
 export const useTypesStore = defineStore('types', () => {
   const definitions = ref<Map<string, TypeDefinition>>(new Map());

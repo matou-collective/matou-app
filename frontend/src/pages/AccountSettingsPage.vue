@@ -492,7 +492,7 @@ import {
 } from 'lucide-vue-next';
 import { useRouter } from 'vue-router';
 import { useProfilesStore } from 'stores/profiles';
-import { useTypesStore } from 'stores/types';
+import { useTypesStore, emptyFieldValue } from 'stores/types';
 import { useIdentityStore } from 'stores/identity';
 import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
@@ -814,10 +814,14 @@ function initSharedForm() {
   for (const field of arrayFields) {
     sharedForm[field] = asArray(d[field]).join(', ');
   }
-  // Seed schema-driven custom fields straight from the stored data map.
+  // Seed schema-driven custom fields from the stored data map. An unset field
+  // takes the same empty value TypedForm seeds it with, so the form's initial
+  // v-model emission matches the snapshot and the page is not dirty on load.
+  const def = typesStore.getDefinition('SharedProfile');
   const cd: Record<string, unknown> = {};
   for (const name of customFieldNames.value) {
-    cd[name] = d[name];
+    const field = def?.fields.find((f) => f.name === name);
+    cd[name] = d[name] !== undefined ? d[name] : field ? emptyFieldValue(field) : '';
   }
   customFieldData.value = cd;
   initialCustomSnapshot.value = JSON.stringify(cd);
