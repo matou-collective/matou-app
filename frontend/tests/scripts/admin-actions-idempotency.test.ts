@@ -97,6 +97,13 @@ vi.mock('stores/identity', () => ({
   useIdentityStore: () => ({ currentAID: { prefix: 'DADMIN' } }),
 }));
 
+vi.mock('stores/profiles', () => ({
+  useProfilesStore: () => ({
+    loadCommunityProfiles: vi.fn(async () => {}),
+    loadCommunityReadOnlyProfiles: vi.fn(async () => {}),
+  }),
+}));
+
 const notifyCreate = vi.fn();
 vi.mock('quasar', () => ({ Notify: { create: (...a: unknown[]) => notifyCreate(...a) } }));
 

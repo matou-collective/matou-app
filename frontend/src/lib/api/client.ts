@@ -293,6 +293,12 @@ export interface SpaceInfo {
   spaceName: string;
   createdAt: string;
   keysAvailable: boolean;
+  /**
+   * 'ok' | 'pending' — 'pending' means the space was adopted but its read
+   * key is not yet available from ACL (data still syncing). Optional for
+   * backward compatibility with older backend responses.
+   */
+  spaceAccess?: 'ok' | 'pending';
 }
 
 export interface UserSpacesResponse {
@@ -375,6 +381,10 @@ export interface SetBackendIdentityResponse {
   peerId?: string;
   privateSpaceId?: string;
   error?: string;
+  /** True when the failure is transient (e.g. 503 "private space not reachable") and the caller should retry. */
+  retryable?: boolean;
+  /** HTTP status code of the response, when available. */
+  status?: number;
 }
 
 export interface GetBackendIdentityResponse {
@@ -401,9 +411,10 @@ export async function setBackendIdentity(
       method: 'POST',
       headers: authHeaders({ 'X-User-AID': request.aid }),
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(65000),
     });
-    return response.json();
+    const body = (await response.json()) as SetBackendIdentityResponse;
+    return { ...body, status: response.status, retryable: body.retryable ?? false };
   } catch {
     return { success: false, error: 'Network error' };
   }
@@ -458,6 +469,9 @@ export interface FieldDef {
     placeholder?: string;
     label?: string;
     section?: string;
+    // Filterable marks a field that list endpoints accept as a query-param
+    // filter (schema-driven; see backend types.FieldDef.IsFilterable).
+    filterable?: boolean;
   };
 }
 
@@ -525,11 +539,28 @@ export async function createOrUpdateProfile(
 }
 
 /**
- * Get profiles of a specific type
+ * Get profiles of a specific type, optionally filtered.
+ *
+ * `filters` keys must name fields the type marks filterable (uiHints.filterable);
+ * the backend rejects a non-filterable field with 400. Array values match if the
+ * stored array contains the value (case-insensitive). Empty/undefined values are
+ * dropped so callers can pass a partially-filled filter object.
  */
-export async function getProfiles(typeName: string): Promise<ObjectPayload[]> {
+export async function getProfiles(
+  typeName: string,
+  filters?: Record<string, string | undefined>,
+): Promise<ObjectPayload[]> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/v1/profiles/${encodeURIComponent(typeName)}`);
+    let url = `${BACKEND_URL}/api/v1/profiles/${encodeURIComponent(typeName)}`;
+    if (filters) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(filters)) {
+        if (v !== undefined && v !== null && v !== '') params.set(k, v);
+      }
+      const qs = params.toString();
+      if (qs) url += `?${qs}`;
+    }
+    const response = await fetch(url);
     if (!response.ok) return [];
     const data = await response.json();
     return data.profiles ?? [];
@@ -576,11 +607,20 @@ export async function initMemberProfiles(data: {
   credentialSaid: string;
   role?: string;
   status?: string;
-  displayName?: string;
-  email?: string;
+  // Avatar is resolved server-side (base64 -> fileRef), so it stays a typed
+  // field rather than travelling in the opaque profileData map.
   avatar?: string;
   avatarData?: string;
   avatarMimeType?: string;
+  // profileData is the canonical registration payload — an opaque map keyed by
+  // SharedProfile schema field names (displayName, publicEmail, bio, joinReason,
+  // participationInterests, social URLs, plus any org-added custom field). The
+  // backend validates it against the org schema at submit and re-validates at
+  // approval. The individual typed fields below are still accepted for one
+  // release for backward compatibility.
+  profileData?: Record<string, unknown>;
+  displayName?: string;
+  email?: string;
   bio?: string;
   interests?: string[];
   customInterests?: string;
@@ -868,6 +908,9 @@ export interface Notice {
   archivedAt?: string;
   amendsNoticeId?: string;
   treeId?: string;
+  // Schema-defined custom (non-core) fields, round-tripped through the notice's
+  // data map by the backend (see anysync.NoticePayload.Data).
+  data?: Record<string, unknown>;
 }
 
 export interface NoticeRSVP {
@@ -948,6 +991,9 @@ export interface CreateNoticeRequest {
   images?: string[];
   attachments?: { name: string; fileRef: string; mimeType: string; size: number }[];
   links?: { label: string; url: string }[];
+  // Schema-defined custom (non-core) fields. Sent flat at the top level of the
+  // request body, where the backend's schema-driven extractor picks them up.
+  data?: Record<string, unknown>;
 }
 
 export async function getNotices(params?: { view?: string; type?: string }): Promise<Notice[]> {
@@ -977,10 +1023,14 @@ export async function getNotice(id: string): Promise<Notice | null> {
 
 export async function createNotice(req: CreateNoticeRequest): Promise<{ success: boolean; noticeId?: string; error?: string }> {
   try {
+    // Custom fields travel flat alongside the core fields — the backend's
+    // schema extractor reads them from the top level of the request body.
+    const { data, ...core } = req;
+    const body = data ? { ...core, ...data } : core;
     const response = await fetch(`${BACKEND_URL}/api/v1/notices`, {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify(req),
+      body: JSON.stringify(body),
     });
     return response.json();
   } catch {

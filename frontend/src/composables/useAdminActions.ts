@@ -7,6 +7,7 @@ import { Notify } from 'quasar';
 import { useKERIClient } from 'src/lib/keri/client';
 import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
+import { useProfilesStore } from 'stores/profiles';
 import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
@@ -23,6 +24,7 @@ export const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvk
 export function useAdminActions() {
   const keriClient = useKERIClient();
   const identityStore = useIdentityStore();
+  const profilesStore = useProfilesStore();
 
   // State
   const isProcessing = ref(false);
@@ -268,6 +270,35 @@ export function useAdminActions() {
       //    This eliminates the race condition where the member joins before
       //    their profiles are synced.
       let credentialSaid = 'pending'; // Updated after credential issuance
+      // Carry the applicant's registration answers as an opaque map keyed by
+      // SharedProfile schema field names. This is what lets an org-added custom
+      // registration question flow through untouched — the backend validates the
+      // whole map against the org schema rather than copying a fixed field list.
+      // Only include keys the applicant actually supplied so schema defaults and
+      // required-field checks behave predictably.
+      const p = registration.profile;
+      const profileData: Record<string, unknown> = {};
+      const carry = (key: string, value: unknown) => {
+        if (value !== undefined && value !== null && value !== '') profileData[key] = value;
+      };
+      carry('displayName', p?.name);
+      carry('publicEmail', p?.email);
+      carry('bio', p?.bio);
+      carry('participationInterests', p?.interests);
+      carry('customInterests', p?.customInterests);
+      carry('location', p?.location);
+      carry('indigenousCommunity', p?.indigenousCommunity);
+      carry('joinReason', p?.joinReason);
+      carry('facebookUrl', p?.facebookUrl);
+      carry('linkedinUrl', p?.linkedinUrl);
+      carry('twitterUrl', p?.twitterUrl);
+      carry('instagramUrl', p?.instagramUrl);
+      carry('githubUrl', p?.githubUrl);
+      carry('gitlabUrl', p?.gitlabUrl);
+      // NOTE: custom kit questions (registration.profile.customAnswers) are
+      // carried by label; mapping them onto their schema field slugs so they
+      // ride this same opaque map is a follow-up slice (#300/#301). The map
+      // mechanism here already carries any such key through untouched.
       const initResult = await initMemberProfiles({
         memberAid: registration.applicantAid,
         credentialSaid: credentialSaid,
@@ -275,23 +306,12 @@ export function useAdminActions() {
         // Keep the member in the pending list until issuance succeeds (6c
         // flips this to 'approved') so a failed approval can be retried.
         status: 'pending',
-        displayName: registration.profile?.name,
-        email: registration.profile?.email,
+        // Avatar is resolved server-side from the base64 payload, so it stays a
+        // typed field rather than travelling in profileData.
         avatar: registration.profile?.avatarFileRef,
         avatarData: registration.profile?.avatarData,
         avatarMimeType: registration.profile?.avatarMimeType,
-        bio: registration.profile?.bio,
-        interests: registration.profile?.interests,
-        customInterests: registration.profile?.customInterests,
-        location: registration.profile?.location,
-        indigenousCommunity: registration.profile?.indigenousCommunity,
-        joinReason: registration.profile?.joinReason,
-        facebookUrl: registration.profile?.facebookUrl,
-        linkedinUrl: registration.profile?.linkedinUrl,
-        twitterUrl: registration.profile?.twitterUrl,
-        instagramUrl: registration.profile?.instagramUrl,
-        githubUrl: registration.profile?.githubUrl,
-        gitlabUrl: registration.profile?.gitlabUrl,
+        profileData,
       });
       if (!initResult.success) {
         throw new Error(`Failed to initialize member profiles: ${initResult.error || 'unknown error'}`);
@@ -403,11 +423,11 @@ export function useAdminActions() {
       await keriClient.pushKelToAgent(issuerAidName, registration.applicantAid);
 
       // 6b. Update CommunityProfile with real credential SAID.
-      //     Profiles were created in step 4 by initMemberProfiles with
-      //     credentialSaid='pending' AND ~15 display fields (displayName, avatar,
-      //     bio, joinReason, social URLs, etc.). createOrUpdateProfile is
-      //     full-replace, so we must read existing data and merge — otherwise
-      //     those display fields are wiped from the read-only space.
+      //     The CommunityProfile was created in step 4 by initMemberProfiles with
+      //     credentialSaid='pending'. It carries only the admin-managed membership
+      //     fields (#299 moved the display/social fields to the SharedProfile, where
+      //     they belong). createOrUpdateProfile is full-replace, so we still read
+      //     existing data and merge to preserve any admin-added membership fields.
       //     Note: personal endorsement registries are created lazily by each member
       //     via useEndorsements when they first try to endorse someone.
       try {
@@ -474,6 +494,24 @@ export function useAdminActions() {
       processingStep.value = 'Finalising...';
       // (handles both IPEX and custom EXN notifications)
       await markAllApplicantNotificationsRead(registration.applicantAid);
+
+      // 9. Refresh the community-profiles stores so the just-approved member —
+      //    and their role — appears in the UI immediately, without a manual
+      //    page reload and without relying solely on the SSE profile:updated
+      //    broadcast converging (issue #383). The role badge reads from
+      //    CommunityProfile (read-only space), the member list from
+      //    SharedProfile, so both stores are reloaded. Belt-and-suspenders,
+      //    mirroring the decline/remove-member handlers. Non-fatal: the
+      //    credential is already issued, so a refresh failure must not fail the
+      //    approval — the SSE broadcast remains as a fallback.
+      try {
+        await Promise.all([
+          profilesStore.loadCommunityProfiles(),
+          profilesStore.loadCommunityReadOnlyProfiles(),
+        ]);
+      } catch (refreshErr) {
+        console.warn('[AdminActions] Post-approval profile refresh failed:', refreshErr);
+      }
 
       lastAction.value = {
         type: 'approve',
