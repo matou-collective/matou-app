@@ -371,6 +371,29 @@ func (h *ProfilesHandler) HandleCreateProfile(w http.ResponseWriter, r *http.Req
 	// Get tree ID for the response
 	treeID := objMgr.GetTreeIDForObject(objectID)
 
+	// Broadcast a profile-refresh signal so already-authorised clients converge
+	// on the new write without a manual reload. The admin approval flow updates
+	// a member's CommunityProfile (role + real credential SAID) and flips their
+	// SharedProfile to "approved" through this handler; without this event the
+	// only refresh signal was the single debounced one emitted by init-member,
+	// so a missed/late broadcast left the just-approved member's role badge
+	// hidden (issue #383). The local any-sync AddContent path never fires the
+	// tree listener (only peer-delivered changes do), so this is the only local
+	// refresh signal for these writes. Scoped to the two member-profile types
+	// the frontend's profile:updated listener reloads (same filter as
+	// tree_listener.go) so unrelated writes routed through this generic
+	// endpoint don't trigger a reload of both community-profile stores; the
+	// listener debounces, so the exact payload is only informational.
+	if h.eventBroker != nil && (req.Type == "SharedProfile" || req.Type == "CommunityProfile") {
+		h.eventBroker.Broadcast(SSEEvent{
+			Type: "profile:updated",
+			Data: map[string]interface{}{
+				"profileId": objectID,
+				"type":      req.Type,
+			},
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,
 		"objectId": objectID,
