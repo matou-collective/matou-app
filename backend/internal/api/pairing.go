@@ -214,6 +214,7 @@ func (h *PairingHandler) handleApprove(w http.ResponseWriter, id string) {
 		Mnemonic:        h.userIdentity.GetMnemonic(),
 		AID:             h.userIdentity.GetAID(),
 		OrgAID:          h.userIdentity.GetOrgAID(),
+		AdminAID:        h.userIdentity.GetAID(),
 		ConfigServerURL: h.configServerURL,
 	}
 	if err := h.manager.Approve(id, holder); err != nil {
