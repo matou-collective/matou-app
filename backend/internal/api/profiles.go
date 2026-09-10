@@ -104,13 +104,22 @@ func (h *ProfilesHandler) HandleGetType(w http.ResponseWriter, r *http.Request) 
 //
 // The core-field invariant is enforced against the built-in (Bootstrap)
 // definition: every field the built-in marks core:true must stay present and
-// unchanged in name/type; custom fields may be freely added, edited, or
-// removed. Unknown type names are 404; structurally invalid or hostile
-// definitions (core-field violation, bad field name/type, over the field cap,
-// dangling variantField) are 400. A stale definition Version is 409 (optimistic
-// locking, mirroring the role-policy PUT); on success the version is bumped, the
-// definition persisted to the community space, and the in-memory registry
-// updated atomically. RBAC is applied by the route (ActionManageSchema →
+// unchanged in name/type, and its remaining FieldDef (core/required/readOnly/
+// validation/…) is re-asserted from the built-in before persisting; custom
+// fields may be freely added, edited, or removed.
+//
+// PUT is update-only by design: an unknown type name is 404 and no definition
+// is created. The endpoint edits the schema of types the backend already
+// knows how to serve (registered at Bootstrap or loaded from the community
+// space at boot); creating a brand-new type is a separate slice of #396 with
+// its own storage/space/route questions, not something a PUT should do on the
+// side. Structurally invalid or hostile definitions (core-field violation, bad
+// field name/type, over the field cap, dangling variantField or layout entry,
+// a changed space) are 400. A stale definition Version is 409 (optimistic
+// locking, mirroring the role-policy PUT; the check-and-set is serialised by
+// schemaMu); on success the version is bumped, the definition persisted to
+// the community space, and the in-memory registry updated write-through.
+// RBAC is applied by the route (ActionManageSchema →
 // manage_community_settings).
 func (h *ProfilesHandler) HandleUpdateType(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
