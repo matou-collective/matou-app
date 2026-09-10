@@ -12,6 +12,7 @@ import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
 import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
 import { getOrCreateOrgRegistry } from 'src/lib/keri/registry';
+import { isCredentialAlreadyIssued } from 'src/lib/keri/notifications';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -202,6 +203,36 @@ export function useAdminActions() {
       const client = keriClient.getSignifyClient();
       if (!client) {
         throw new Error('Not connected to KERIA');
+      }
+
+      // 0. Cross-device idempotency guard (#480, #466). isProcessing is
+      //    per-JS-instance, so two linked steward devices sharing one KERIA
+      //    agent can both reach Approve for the same applicant (near-
+      //    simultaneous clicks, or a stale pending list on the second device).
+      //    On a shared agent both devices see the same wallet, so if the
+      //    membership credential is already issued to this applicant, another
+      //    device (or an earlier run) already approved them: bail without
+      //    issuing a second ACDC / TEL event / grant. This also covers the
+      //    multisig-steward path, which issues through the same issueCredential.
+      //    Best-effort — a client-side wallet lookup, not a server-side
+      //    compare-and-set, so a truly simultaneous double-issue can still race
+      //    (spec §3.5). The applicant already holds the credential either way,
+      //    so we still mark notifications read and surface the state.
+      if (await isCredentialAlreadyIssued(client, MEMBERSHIP_SCHEMA_SAID, registration.applicantAid)) {
+        console.log(
+          `[AdminActions] Membership credential already issued to ${registration.applicantAid.slice(0, 12)}... — treating as approved on another device`,
+        );
+        await markAllApplicantNotificationsRead(registration.applicantAid);
+        Notify.create({
+          type: 'info',
+          message: 'This applicant was already approved on another device.',
+        });
+        lastAction.value = {
+          type: 'approve',
+          success: true,
+          registrationId: registration.notificationId,
+        };
+        return true;
       }
 
       // 1. Get org config for registry ID
