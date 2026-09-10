@@ -294,6 +294,25 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 				log.Printf("[CreateCommunity] Cached space %s no longer valid: %v — will recreate\n", existingSpace.SpaceID, verifyErr)
 			}
 		}
+		// A space that still resolves on the coordinator is only reusable if the
+		// CURRENT account identity is actually in its ACL. When a fresh admin
+		// identity re-adopts a previous attempt's cached community space (e.g. an
+		// e2e org-setup retry where data-test/ was not wiped, issue #290), the new
+		// admin is absent from that ACL and holds no read key — handing the cached
+		// space back produces unreadable trees and a storm of 500s. Recreate a
+		// fresh space instead. We only demote on a DEFINITIVE "not in ACL" answer:
+		// a lookup error (ACL not yet synced) is left as-is so a legitimate admin
+		// restart never orphans its real space behind a duplicate.
+		if spaceValid && client != nil {
+			if signingKey := client.GetSigningKey(); signingKey != nil {
+				if perms, permErr := h.spaceManager.ACLManager().GetPermissions(
+					r.Context(), existingSpace.SpaceID, signingKey.GetPublic(),
+				); permErr == nil && perms.NoPermissions() {
+					log.Printf("[CreateCommunity] Cached space %s exists but current identity is not in its ACL — recreating fresh\n", existingSpace.SpaceID)
+					spaceValid = false
+				}
+			}
+		}
 		if spaceValid {
 			writeJSON(w, http.StatusOK, CreateCommunityResponse{
 				Success:          true,

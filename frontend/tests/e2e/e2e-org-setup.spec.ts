@@ -129,7 +129,12 @@ test.describe.serial('Organization Setup', () => {
 
       // --- Mnemonic capture ---
       try {
-        await expect(page.getByRole('heading', { name: /identity created/i })).toBeVisible({ timeout: TIMEOUT.short });
+        // The "identity created" screen only renders once the witness-backed AID
+        // creation + community/space seeding finish; on a loaded CI runner that
+        // has been measured at ~27s (issue #290). TIMEOUT.short (10s) turned that
+        // into a flake whose retry re-adopted the previous attempt's community
+        // space, so budget this milestone against the AID-creation scale instead.
+        await expect(page.getByRole('heading', { name: /identity created/i })).toBeVisible({ timeout: TIMEOUT.aidCreation });
       } catch (e) {
         // Diagnostic for the deterministic attempt-1 white screen (#242): name
         // what actually rendered — empty app root vs splash vs overlay — since

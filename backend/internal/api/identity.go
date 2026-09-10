@@ -257,7 +257,17 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 			if s.id == "" {
 				continue
 			}
-			if unreachable := h.recoverSharedSpace(ctx, s.id, req.Mnemonic, s.mnemonicIx, s.label, isLink); unreachable {
+			unreachable, notInACL := h.recoverSharedSpace(ctx, s.id, req.Mnemonic, s.mnemonicIx, s.label, isLink)
+			if notInACL {
+				// The identity is definitively absent from this shared space's ACL,
+				// so it holds no read key and can never derive a working one (#290).
+				// Fail loudly instead of silently persisting a bogus key set.
+				writeJSON(w, http.StatusConflict, SetIdentityResponse{
+					Error: fmt.Sprintf("cannot recover %s space %s: identity is not in its ACL (no read key)", s.label, s.id),
+				})
+				return
+			}
+			if unreachable {
 				log.Printf("[Identity] Link: %s space %s not reachable, adopting nothing", s.label, s.id)
 				writeJSON(w, http.StatusServiceUnavailable, SetIdentityResponse{
 					Error:     fmt.Sprintf("%s space not reachable", s.label),
