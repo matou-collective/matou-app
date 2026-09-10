@@ -431,7 +431,9 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 			"lastActiveAt": time.Now().UTC().Format(time.RFC3339),
 			"createdAt":    time.Now().UTC().Format(time.RFC3339),
 			"updatedAt":    time.Now().UTC().Format(time.RFC3339),
-			"typeVersion":  1,
+			// Stamp the live SharedProfile schema version (#302) rather than a
+			// hardcoded 1, so the seeded admin profile is never born stale.
+			"typeVersion": types.SharedProfileType().Version,
 		}, fmt.Sprintf("SharedProfile-%s", req.AdminAID))
 		if seedErr != nil {
 			log.Printf("Warning: failed to seed community space: %v\n", seedErr)
