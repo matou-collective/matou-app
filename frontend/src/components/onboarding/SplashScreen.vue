@@ -59,6 +59,23 @@
             I have an invite code
           </MBtn>
 
+          <!-- Linked-device sign-in (#473): on mobile, sign in with the
+               computer instead of minting a second identity. Sits above
+               "Join Now" as the cheapest defence against a second registration. -->
+          <template v-if="showLinkDevice">
+            <MBtn
+              class="w-full link-device-btn"
+              size="lg"
+              @click="onLinkDevice"
+            >
+              <Laptop class="w-5 h-5 mr-2" />
+              Sign in with your computer
+            </MBtn>
+            <p class="link-device-hint text-white/60 text-xs text-center -mt-1">
+              Already a member on your computer? Sign in here instead of joining again.
+            </p>
+          </template>
+
           <MBtn
             variant="outline"
             class="w-full register-btn"
@@ -94,7 +111,7 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue';
-import { Key, UserPlus, AlertCircle, RefreshCw } from 'lucide-vue-next';
+import { Key, UserPlus, AlertCircle, RefreshCw, Laptop } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useOnboardingStore } from 'stores/onboarding';
@@ -104,6 +121,7 @@ import { MEMBERSHIP_SCHEMA_SAID } from 'src/composables/useAdminActions';
 import { version as appVersion } from '../../../package.json';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
+import { isCapacitor } from 'src/lib/capacitor';
 
 const { fadeSlideUp, fadeScale, logoWobble } = useAnimationPresets();
 const onboardingStore = useOnboardingStore();
@@ -113,6 +131,10 @@ const keriClient = useKERIClient();
 const isLoading = computed(() => onboardingStore.isLoading);
 const hasError = computed(() => !!onboardingStore.initializationError);
 const errorMessage = computed(() => onboardingStore.initializationError);
+
+// Linked-device sign-in (#473) is only offered inside the Capacitor shell,
+// where the camera + embedded backend make scanning the computer's QR possible.
+const showLinkDevice = isCapacitor();
 
 // When loading finishes and user has identity, check credential and route
 watch(
@@ -170,6 +192,7 @@ const emit = defineEmits<{
   (e: 'register'): void;
   (e: 'recover'): void;
   (e: 'retry'): void;
+  (e: 'link'): void;
 }>();
 
 const onInviteCode = () => {
@@ -182,6 +205,10 @@ const onRegister = () => {
 
 const onRecover = () => {
   emit('recover');
+};
+
+const onLinkDevice = () => {
+  emit('link');
 };
 
 const onRetry = () => {
@@ -208,6 +235,17 @@ const onRetry = () => {
 }
 
 .invite-btn {
+  background-color: #ffffff !important;
+  color: var(--matou-brand) !important;
+  height: 3.5rem !important;
+  border-radius: 10px !important;
+
+  &:hover {
+    background-color: rgba(255, 255, 255, 0.9) !important;
+  }
+}
+
+.link-device-btn {
   background-color: #ffffff !important;
   color: var(--matou-brand) !important;
   height: 3.5rem !important;
