@@ -7,6 +7,9 @@
  * `identityStore.connect` runs, because connect() reads `matou_admin_aid` to
  * pick the current AID (stores/identity.ts) — written afterwards, a steward's
  * fresh phone would pick the wrong AID (spec §3.4).
+ *
+ * (Ported from the S6 API — `recover()` that threw — to the shared
+ * `recoverIdentity()` result-object API with `mode: 'recover' | 'link'`.)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -71,9 +74,9 @@ beforeEach(() => {
 
 describe('useRecoverIdentity', () => {
   it('link path: writes the admin/org AID hints BEFORE connect, the mnemonic after', async () => {
-    const { recover } = useRecoverIdentity();
-    const result = await recover(WORDS, { adminAid: 'EADMIN', orgAid: 'EORG' });
-    expect(result).toEqual({ aid: 'EAID', name: 'me' });
+    const { recoverIdentity } = useRecoverIdentity();
+    const result = await recoverIdentity(WORDS, { mode: 'link', adminAid: 'EADMIN', orgAid: 'EORG' });
+    expect(result).toEqual({ success: true, aid: 'EAID', name: 'me' });
     expect(h.calls).toEqual([
       'set:matou_admin_aid',
       'set:matou_org_aid',
@@ -86,22 +89,30 @@ describe('useRecoverIdentity', () => {
   });
 
   it('recover path: no hint writes, just connect then the mnemonic', async () => {
-    const { recover } = useRecoverIdentity();
-    await recover(WORDS.split(' '));
+    const { recoverIdentity } = useRecoverIdentity();
+    await recoverIdentity(WORDS.split(' '));
+    expect(h.calls).toEqual(['connect', 'set:matou_mnemonic']);
+  });
+
+  it('recover path ignores AID hints even when supplied', async () => {
+    const { recoverIdentity } = useRecoverIdentity();
+    await recoverIdentity(WORDS, { mode: 'recover', adminAid: 'EADMIN', orgAid: 'EORG' });
     expect(h.calls).toEqual(['connect', 'set:matou_mnemonic']);
   });
 
   it('normalises the phrase (case, whitespace, array input) before validating', async () => {
-    const { recover } = useRecoverIdentity();
-    await recover(['  Abandon', 'ABANDON ', ...WORDS.split(' ').slice(2)]);
+    const { recoverIdentity } = useRecoverIdentity();
+    await recoverIdentity(['  Abandon', 'ABANDON ', ...WORDS.split(' ').slice(2)]);
     expect(h.validateMnemonic).toHaveBeenCalledWith(WORDS);
     expect(h.connect).toHaveBeenCalledWith('passcode-from-mnemonic');
   });
 
-  it('invalid phrase: throws before connect and stores nothing', async () => {
+  it('invalid phrase: fails before connect and stores nothing', async () => {
     h.validateMnemonic.mockReturnValue(false);
-    const { recover } = useRecoverIdentity();
-    await expect(recover('not a phrase', { adminAid: 'EADMIN' })).rejects.toThrow(/Invalid recovery phrase/);
+    const { recoverIdentity } = useRecoverIdentity();
+    const result = await recoverIdentity('not a phrase', { mode: 'link', adminAid: 'EADMIN' });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Invalid recovery phrase/);
     expect(h.connect).not.toHaveBeenCalled();
     expect(h.setItem).not.toHaveBeenCalled();
   });
@@ -109,16 +120,20 @@ describe('useRecoverIdentity', () => {
   it('connect failure: surfaces the store error and never stores the mnemonic', async () => {
     h.connect.mockResolvedValueOnce(false);
     h.store.error = 'KERIA unreachable';
-    const { recover } = useRecoverIdentity();
-    await expect(recover(WORDS)).rejects.toThrow('KERIA unreachable');
+    const { recoverIdentity } = useRecoverIdentity();
+    const result = await recoverIdentity(WORDS);
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('KERIA unreachable');
     expect(h.setItem).not.toHaveBeenCalledWith('matou_mnemonic', expect.anything());
   });
 
-  it('no identity behind the phrase: throws and never stores the mnemonic', async () => {
+  it('no identity behind the phrase: fails and never stores the mnemonic', async () => {
     h.store.hasIdentity = false;
     h.store.currentAID = null;
-    const { recover } = useRecoverIdentity();
-    await expect(recover(WORDS)).rejects.toThrow(/No identity found/);
+    const { recoverIdentity } = useRecoverIdentity();
+    const result = await recoverIdentity(WORDS);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No identity found/);
     expect(h.setItem).not.toHaveBeenCalledWith('matou_mnemonic', expect.anything());
   });
 });

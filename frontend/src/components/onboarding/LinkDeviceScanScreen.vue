@@ -184,9 +184,8 @@ import { ref, onUnmounted } from 'vue';
 import { QrCode, Camera, XCircle, CheckCircle2, Info } from 'lucide-vue-next';
 import OnboardingHeader from './OnboardingHeader.vue';
 import MBtn from '../base/MBtn.vue';
-import { usePairing, type PairingState, type SessionStatus } from 'src/composables/usePairing';
+import { usePairing, PairingError, type PairingState, type SessionStatus } from 'src/composables/usePairing';
 import { useRecoverIdentity } from 'src/composables/useRecoverIdentity';
-import { PairingError } from 'src/composables/usePairing';
 import { isScannerAvailable, scanPairingQr, ScanUnavailableError } from 'src/lib/barcode';
 import { getCapacitorPlatform } from 'src/lib/capacitor';
 import { KIT } from 'src/generated/kit';
@@ -203,7 +202,7 @@ type Phase =
   | 'ended';
 
 const pairing = usePairing();
-const { recover } = useRecoverIdentity();
+const { recoverIdentity } = useRecoverIdentity();
 
 const emit = defineEmits<{
   (e: 'continue'): void;
@@ -297,7 +296,7 @@ async function startHandshake(qrPayload: string) {
     if (gen !== generation) {
       // The user backed out while the hello/ack round-trip was in flight; the
       // session it created is not ours any more — tear it down and stay put.
-      void pairing.cancel(result.sessionId);
+      cancelQuietly(result.sessionId);
       return;
     }
     sessionId = result.sessionId;
@@ -357,13 +356,18 @@ async function waitForIdentity() {
   if (!status) return; // terminal / cancelled / left — pollUntil already routed us
   phase.value = 'receiving';
   try {
-    const identity = await pairing.getIdentity(sessionId);
+    const identity = await pairing.fetchIdentity(sessionId);
     if (gen !== generation) return;
-    await recover(identity.mnemonic, {
+    const result = await recoverIdentity(identity.mnemonic, {
+      mode: 'link',
       ...(identity.adminAid ? { adminAid: identity.adminAid } : {}),
       ...(identity.orgAid ? { orgAid: identity.orgAid } : {}),
     });
     if (gen !== generation) return;
+    if (!result.success) {
+      showEnded(result.error || 'Could not finish signing in on this device.');
+      return;
+    }
     // Recovered — hand off to the welcome overlay for backend setup + checks.
     emit('continue');
   } catch (err) {
@@ -449,10 +453,18 @@ function showEnded(message?: string) {
   phase.value = 'ended';
 }
 
-async function onCancel() {
+/** Best-effort backend teardown: a failed cancel is not the user's problem —
+ *  the far side's next long-poll 404s and the session expires anyway. */
+function cancelQuietly(id: string) {
+  pairing.cancel(id).catch(() => {
+    /* best-effort */
+  });
+}
+
+function onCancel() {
   const id = sessionId;
   reset();
-  if (id) await pairing.cancel(id);
+  if (id) cancelQuietly(id);
 }
 
 function reset() {
@@ -468,7 +480,7 @@ function reset() {
 function onBack() {
   const id = sessionId;
   reset();
-  if (id) void pairing.cancel(id);
+  if (id) cancelQuietly(id);
   emit('back');
 }
 
