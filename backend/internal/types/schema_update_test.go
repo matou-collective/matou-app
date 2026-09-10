@@ -245,6 +245,32 @@ func TestValidateSchemaUpdate_BuiltinsSelfValidate(t *testing.T) {
 	}
 }
 
+// TestBuiltinDefinition_CachedAndIsolated: repeated lookups hit one cached
+// bootstrap (same pointer), and the cache is a registry of its own — a
+// Register on some other registry, which is what a schema PUT does, cannot
+// reach the reference the invariant is checked against.
+func TestBuiltinDefinition_CachedAndIsolated(t *testing.T) {
+	first, ok := BuiltinDefinition("SharedProfile")
+	if !ok {
+		t.Fatal("expected SharedProfile built-in")
+	}
+	second, _ := BuiltinDefinition("SharedProfile")
+	if first != second {
+		t.Error("BuiltinDefinition should serve one cached bootstrap, got distinct pointers")
+	}
+
+	other := NewRegistry()
+	other.Bootstrap()
+	edited := SharedProfileType()
+	edited.Version = 99
+	edited.Fields = edited.Fields[:1]
+	other.Register(edited)
+
+	if again, _ := BuiltinDefinition("SharedProfile"); again.Version != 1 || len(again.Fields) != len(SharedProfileType().Fields) {
+		t.Errorf("built-in reference changed after a Register elsewhere: %+v", again)
+	}
+}
+
 // itoa is a tiny int→string helper so the test avoids importing strconv purely
 // for field-name generation.
 func itoa(i int) string {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"sync"
 )
 
 // MaxSchemaFields caps the number of fields an admin-supplied type definition
@@ -29,15 +30,27 @@ var validFieldTypes = map[string]bool{
 	"enum":     true,
 }
 
+// builtinRegistry is the Bootstrap()ed registry BuiltinDefinition serves from,
+// built once on first use. It is never Register()ed into by anything else, so
+// it stays the canonical shape shipped with the backend.
+var (
+	builtinOnce     sync.Once
+	builtinRegistry *Registry
+)
+
 // BuiltinDefinition returns the built-in (Bootstrap) definition for a type name,
-// if one exists. It bootstraps a fresh registry each call so the returned
-// definition is the canonical shape shipped with the backend — the reference
-// the core-field invariant is checked against — never a copy an org may have
-// already edited. The second result is false for names with no built-in.
+// if one exists — the canonical shape shipped with the backend, the reference
+// the core-field invariant is checked against, never a copy an org may have
+// edited. The bootstrap happens once per process (a Registry bootstrap per PUT
+// is needless work). The returned pointer is shared: callers must treat it as
+// read-only. The second result is false for names with no built-in.
 func BuiltinDefinition(name string) (*TypeDefinition, bool) {
-	r := NewRegistry()
-	r.Bootstrap()
-	return r.Get(name)
+	builtinOnce.Do(func() {
+		r := NewRegistry()
+		r.Bootstrap()
+		builtinRegistry = r
+	})
+	return builtinRegistry.Get(name)
 }
 
 // ValidateSchemaUpdate checks an admin-supplied replacement definition for a
