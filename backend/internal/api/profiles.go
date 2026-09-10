@@ -172,6 +172,20 @@ func (h *ProfilesHandler) HandleUpdateType(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// The space a type lives in is not editable: resolveSpaceForType reads
+	// def.Space to decide where objects of the type are written and listed, so
+	// moving SharedProfile to "private" would re-route community profiles. An
+	// empty space inherits the current one.
+	if incoming.Space == "" {
+		incoming.Space = current.Space
+	}
+	if incoming.Space != current.Space {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("type space may not change (current %q, got %q)", current.Space, incoming.Space),
+		})
+		return
+	}
+
 	// Core-field invariant + structural validation against the built-in shape.
 	builtin, _ := types.BuiltinDefinition(name)
 	if msg := types.ValidateSchemaUpdate(builtin, &incoming); msg != "" {

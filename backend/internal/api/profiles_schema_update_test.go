@@ -327,3 +327,38 @@ func TestUpdateType_CoreFieldFlagsReasserted(t *testing.T) {
 	}
 	check("persisted", fw.written[0])
 }
+
+// TestUpdateType_SpaceIsPinned: a PUT may not move a type to another space —
+// resolveSpaceForType reads def.Space to decide where objects of the type are
+// written and listed, so flipping SharedProfile to "private" would re-route
+// community profiles. An empty space inherits the current one.
+func TestUpdateType_SpaceIsPinned(t *testing.T) {
+	h, fw := newSchemaTestHandler()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/types/", h.handleTypeByName)
+
+	moved := sharedProfileWithCustom()
+	moved.Space = "private"
+	rec := putType(t, mux, "SharedProfile", "", moved)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("space change PUT = %d, want 400; body %s", rec.Code, rec.Body.String())
+	}
+	if len(fw.written) != 0 {
+		t.Errorf("nothing should be persisted on a rejected space change, got %+v", fw.written)
+	}
+
+	inherit := sharedProfileWithCustom()
+	inherit.Space = ""
+	rec = putType(t, mux, "SharedProfile", "", inherit)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty-space PUT = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	var got types.TypeDefinition
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Space != "community" {
+		t.Errorf("empty space should inherit %q, got %q", "community", got.Space)
+	}
+	if reg, _ := h.registry.Get("SharedProfile"); reg.Space != "community" {
+		t.Errorf("registry space = %q, want community", reg.Space)
+	}
+}
