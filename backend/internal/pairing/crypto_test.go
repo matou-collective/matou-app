@@ -2,7 +2,11 @@ package pairing
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -218,5 +222,110 @@ func TestMailboxClientExpired404(t *testing.T) {
 	}
 	if err := mb.put(ctx, "id1", slotB, []byte("y")); err != errMailboxExpired {
 		t.Fatalf("expected errMailboxExpired on put, got %v", err)
+	}
+}
+
+// TestSealHidesPlaintextAndUsesFreshNonce: the ciphertext must not carry the
+// plaintext, and two seals of the same message under the same K must differ in
+// both nonce and ciphertext (a repeated GCM nonce would be catastrophic).
+func TestSealHidesPlaintextAndUsesFreshNonce(t *testing.T) {
+	k, _ := randomBytes(keySize)
+	msg := []byte(`{"mnemonic":"zztest1 zztest2 zztest3"}`)
+	a, err := seal(k, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := seal(k, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(a), "zztest1") || strings.Contains(string(b), "zztest1") {
+		t.Fatal("ciphertext contains the plaintext")
+	}
+	if string(a[:nonceSize]) == string(b[:nonceSize]) {
+		t.Fatal("two seals reused a nonce")
+	}
+	if string(a[nonceSize:]) == string(b[nonceSize:]) {
+		t.Fatal("two seals produced identical ciphertext")
+	}
+	// A flipped ciphertext bit fails authentication.
+	a[len(a)-1] ^= 1
+	if _, err := open(k, a); err == nil {
+		t.Fatal("tampered blob opened")
+	}
+}
+
+// TestMailboxRetriesTransientAnswers: 429 (Retry-After), 503 and a client
+// timeout are waited out rather than failing the session, for both the
+// long-poll and the put.
+func TestMailboxRetriesTransientAnswers(t *testing.T) {
+	var mu sync.Mutex
+	getCalls, putCalls := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			getCalls++
+			switch getCalls {
+			case 1:
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusTooManyRequests)
+			case 2:
+				w.WriteHeader(http.StatusServiceUnavailable)
+			case 3:
+				time.Sleep(300 * time.Millisecond) // past the client timeout below
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("blob"))
+			}
+		case http.MethodPut:
+			putCalls++
+			if putCalls == 1 {
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer srv.Close()
+
+	m := NewManager(srv.URL, WithHTTPClient(&http.Client{Timeout: 150 * time.Millisecond}), WithTTL(10*time.Second))
+	s := m.newSession(kindDisplayer, "idretry", newMailbox(srv.URL, m.httpClient), LocalIdentity{}, slotA, slotB)
+	defer s.markCancelled()
+
+	start := time.Now()
+	blob, err := s.pollSlot(context.Background(), slotA)
+	if err != nil || string(blob) != "blob" {
+		t.Fatalf("pollSlot = %q, %v", blob, err)
+	}
+	if time.Since(start) < time.Second {
+		t.Fatal("pollSlot did not honour Retry-After")
+	}
+	if err := s.putSlot(context.Background(), slotB, []byte("x")); err != nil {
+		t.Fatalf("putSlot = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if getCalls != 4 || putCalls != 2 {
+		t.Fatalf("calls: get=%d put=%d", getCalls, putCalls)
+	}
+}
+
+// TestRetryStopsAtSessionExpiry: a permanent 429 ends as expired, not as an
+// endless loop.
+func TestRetryStopsAtSessionExpiry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	m := NewManager(srv.URL, WithHTTPClient(srv.Client()), WithTTL(200*time.Millisecond))
+	s := m.newSession(kindDisplayer, "idretry2", newMailbox(srv.URL, m.httpClient), LocalIdentity{}, slotA, slotB)
+	defer s.markCancelled()
+	if _, err := s.pollSlot(context.Background(), slotA); !errors.Is(err, errMailboxExpired) {
+		t.Fatalf("pollSlot under permanent 429 = %v, want errMailboxExpired", err)
 	}
 }

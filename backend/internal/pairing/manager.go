@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -108,7 +110,29 @@ var (
 	// ErrIdentityUnavailable — no identity to hand out (not received yet or
 	// already read once) (404).
 	ErrIdentityUnavailable = errors.New("pairing: identity not available")
+	// ErrConfigServerMismatch — the QR's cs field names a different config
+	// server than this backend uses (400). The cs field exists to stop a
+	// cross-environment scan (spec §2): a test-build phone must not pair
+	// through a production mailbox and pull a production identity into a test
+	// data dir, and a QR from a stranger must not steer this backend's mailbox
+	// traffic to an arbitrary host.
+	ErrConfigServerMismatch = errors.New("pairing: QR code is for a different config server")
 )
+
+// sameConfigServer compares two config-server base URLs, ignoring case in the
+// scheme and host and a trailing slash on the path (tenant prefix included).
+func sameConfigServer(a, b string) bool {
+	norm := func(raw string) (string, bool) {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return "", false
+		}
+		return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.Path, "/"), true
+	}
+	na, oka := norm(a)
+	nb, okb := norm(b)
+	return oka && okb && na == nb
+}
 
 // IdentityPresentError (409) is returned by TakeIdentity when this backend
 // already holds an identity: linking never overwrites (spec §3.3).
@@ -135,8 +159,7 @@ func (m *Manager) replace(sn *session) {
 	m.sess = sn
 	m.mu.Unlock()
 	if old != nil {
-		stop(old.timer)
-		old.markCancelled()
+		old.markCancelled() // stops the expiry timer and wipes secrets
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -169,7 +192,12 @@ func (m *Manager) newSession(kind sessionKind, id string, mb *mailbox, local Loc
 		inSlot:          inSlot,
 		outSlot:         outSlot,
 	}
+	// The timer callback (markExpired → teardown) reads s.timer under s.mu, so
+	// the assignment is made under the same lock: with a tiny TTL the callback
+	// can run before this function returns.
+	s.mu.Lock()
 	s.timer = time.AfterFunc(m.ttl, s.markExpired)
+	s.mu.Unlock()
 	return s
 }
 
@@ -217,6 +245,9 @@ func (m *Manager) Scan(ctx context.Context, qrText, deviceName string, local Loc
 	qr, err := parseQRPayload(qrText)
 	if err != nil {
 		return SessionView{}, err
+	}
+	if !sameConfigServer(qr.configServerURL, m.configServerURL) {
+		return SessionView{}, ErrConfigServerMismatch
 	}
 	eph, err := generateEphemeralKey()
 	if err != nil {
@@ -266,14 +297,14 @@ func (m *Manager) Approve(id string, holder HolderIdentity) error {
 	if s.state == StateExpired {
 		return ErrExpired
 	}
+	if s.approved {
+		return nil // idempotent
+	}
 	if !s.localHolds || !s.outcome.proceeds() {
 		return ErrWrongState
 	}
 	if s.state != StateAcked && s.state != StateHelloReceived {
 		return ErrWrongState
-	}
-	if s.approved {
-		return nil // idempotent
 	}
 	s.approved = true
 	s.toSend = &identityMsg{
@@ -294,7 +325,6 @@ func (m *Manager) Cancel(ctx context.Context, id string) error {
 	if s == nil {
 		return ErrNoSession
 	}
-	stop(s.timer)
 	s.markCancelled()
 	_ = s.mailbox.del(ctx, s.id)
 	return nil

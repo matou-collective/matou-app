@@ -297,3 +297,231 @@ func TestSessionRedaction(t *testing.T) {
 		t.Fatalf("identityMsg leaked its mnemonic")
 	}
 }
+
+// TestGarbageHelloFailsClosed: a mailbox observer (or a stray client) writes an
+// unauthenticated blob into slot a before the real scanner does. The displayer
+// must not sit in a live-looking state with its driver gone: the session lands
+// in the terminal failed state with an error, its secrets are wiped, and
+// Approve / TakeIdentity are refused.
+func TestGarbageHelloFailsClosed(t *testing.T) {
+	dispMgr, _, done := twoManagers(t, 0)
+	defer done()
+
+	view, qr, err := dispMgr.CreateDisplayerSession(LocalIdentity{Configured: true, AID: "AIDdesk", DeviceName: "Desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := view.SessionID
+	parsed, _ := parseQRPayload(qr)
+	raw := newMailbox(parsed.configServerURL, dispMgr.httpClient)
+	garbage := make([]byte, 32+nonceSize+16)
+	if err := raw.put(context.Background(), id, slotA, garbage); err != nil {
+		t.Fatal(err)
+	}
+
+	v := waitState(t, dispMgr, id, StateFailed)
+	if v.Error == "" {
+		t.Fatal("failed session carries no error message")
+	}
+	if !dispMgr.sess.wiped() {
+		t.Fatal("failed session still holds secrets")
+	}
+	if err := dispMgr.Approve(id, HolderIdentity{Mnemonic: testMnemonic, AID: "AIDdesk"}); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("Approve on a failed session = %v, want ErrWrongState", err)
+	}
+	if _, err := dispMgr.TakeIdentity(id, false, ""); !errors.Is(err, ErrIdentityUnavailable) {
+		t.Fatalf("TakeIdentity on a failed session = %v, want ErrIdentityUnavailable", err)
+	}
+	// Failed is terminal: a late expiry timer must not relabel it.
+	dispMgr.sess.markExpired()
+	if v, _ := dispMgr.View(id); v.State != StateFailed {
+		t.Fatalf("state left failed: %s", v.State)
+	}
+}
+
+// TestReplayedHelloOnReceiverDisplayerFailsClosed: in the phone-to-desktop
+// direction the displayer keeps reading slot a for the identity. A replayed
+// hello (or any blob under the wrong key) fails the AEAD tag and ends the
+// session as failed — it never becomes an identity.
+func TestReplayedHelloOnReceiverDisplayerFailsClosed(t *testing.T) {
+	dispMgr, scanMgr, done := twoManagers(t, 0)
+	defer done()
+
+	view, qr, err := dispMgr.CreateDisplayerSession(LocalIdentity{Configured: false, DeviceName: "Desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := view.SessionID
+	if _, err := scanMgr.Scan(context.Background(), qr, "Phone", LocalIdentity{Configured: true, AID: "AIDphone"}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, dispMgr, id, StateAcked)
+
+	// Rebuild the scanner's hello blob (same key, fresh nonce) and replay it.
+	scanMgr.sess.mu.Lock()
+	k := append([]byte{}, scanMgr.sess.k...)
+	pub := scanMgr.sess.eph.PublicKey().Bytes()
+	scanMgr.sess.mu.Unlock()
+	sealed, _ := seal(k, []byte(`{"role":"holder","aid":"AIDphone","deviceName":"Phone"}`))
+	replay := append(append([]byte{}, pub...), sealed...)
+	parsed, _ := parseQRPayload(qr)
+	raw := newMailbox(parsed.configServerURL, dispMgr.httpClient)
+	if err := raw.put(context.Background(), id, slotA, replay); err != nil {
+		t.Fatal(err)
+	}
+
+	waitState(t, dispMgr, id, StateFailed)
+	if _, err := dispMgr.TakeIdentity(id, false, ""); !errors.Is(err, ErrIdentityUnavailable) {
+		t.Fatalf("replayed hello produced an identity: %v", err)
+	}
+}
+
+// TestCancelWipesSecrets: cancel (and replacement by a newer session) must drop
+// K, the pairing secret, the ephemeral key and any pending identity payload.
+func TestCancelWipesSecrets(t *testing.T) {
+	dispMgr, scanMgr, done := twoManagers(t, 0)
+	defer done()
+
+	view, qr, err := dispMgr.CreateDisplayerSession(LocalIdentity{Configured: true, AID: "AIDdesk", DeviceName: "Desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := view.SessionID
+	if _, err := scanMgr.Scan(context.Background(), qr, "Phone", LocalIdentity{Configured: false}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, dispMgr, id, StateAcked)
+	if dispMgr.sess.wiped() || scanMgr.sess.wiped() {
+		t.Fatal("live sessions should still hold their keys")
+	}
+
+	// Holder cancels after approving but before the identity was sent: the
+	// mnemonic parked in toSend must go too.
+	first := dispMgr.sess
+	if err := dispMgr.Cancel(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := dispMgr.View(id); v.State != StateCancelled {
+		t.Fatalf("state after cancel = %s", v.State)
+	}
+	if !first.wiped() {
+		t.Fatal("cancelled displayer session still holds secrets")
+	}
+
+	// Replacement wipes the scanner session the same way.
+	old := scanMgr.sess
+	if _, _, err := scanMgr.CreateDisplayerSession(LocalIdentity{Configured: false}); err != nil {
+		t.Fatal(err)
+	}
+	if !old.wiped() {
+		t.Fatal("replaced scanner session still holds secrets")
+	}
+}
+
+// TestHolderDropsMnemonicAfterSend: once the identity blob is in the mailbox the
+// holder has no reason to keep the mnemonic in session memory.
+func TestHolderDropsMnemonicAfterSend(t *testing.T) {
+	dispMgr, scanMgr, done := twoManagers(t, 0)
+	defer done()
+
+	view, qr, err := dispMgr.CreateDisplayerSession(LocalIdentity{Configured: true, AID: "AIDdesk", DeviceName: "Desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := view.SessionID
+	if _, err := scanMgr.Scan(context.Background(), qr, "Phone", LocalIdentity{Configured: false}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, dispMgr, id, StateAcked)
+	if err := dispMgr.Approve(id, HolderIdentity{Mnemonic: testMnemonic, AID: "AIDdesk"}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, dispMgr, id, StateDone)
+	dispMgr.sess.mu.Lock()
+	toSend := dispMgr.sess.toSend
+	dispMgr.sess.mu.Unlock()
+	if toSend != nil {
+		t.Fatal("holder still holds the identity payload after sending it")
+	}
+	// The receiver still has it for the one-shot read.
+	if p, err := scanMgr.TakeIdentity(id, false, ""); err != nil || p.Mnemonic != testMnemonic {
+		t.Fatalf("receiver TakeIdentity = %+v, %v", p, err)
+	}
+}
+
+// TestApproveRejectedOutsideHolderProceedingState: the fresh side, a
+// non-proceeding outcome, and a session that has not seen a hello all refuse
+// Approve with ErrWrongState (409).
+func TestApproveRejectedOutsideHolderProceedingState(t *testing.T) {
+	dispMgr, scanMgr, done := twoManagers(t, 0)
+	defer done()
+
+	// Before any hello: nothing to approve.
+	view, qr, err := dispMgr.CreateDisplayerSession(LocalIdentity{Configured: true, AID: "AIDdesk", DeviceName: "Desktop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := view.SessionID
+	if err := dispMgr.Approve(id, HolderIdentity{Mnemonic: testMnemonic}); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("Approve before hello = %v, want ErrWrongState", err)
+	}
+
+	// Fresh scanner: may never approve.
+	if _, err := scanMgr.Scan(context.Background(), qr, "Phone", LocalIdentity{Configured: false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scanMgr.Approve(id, HolderIdentity{Mnemonic: testMnemonic}); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("Approve on the fresh side = %v, want ErrWrongState", err)
+	}
+
+	// Conflict outcome: neither side may approve.
+	d2, s2, done2 := twoManagers(t, 0)
+	defer done2()
+	v2, qr2, _ := d2.CreateDisplayerSession(LocalIdentity{Configured: true, AID: "AIDX"})
+	if _, err := s2.Scan(context.Background(), qr2, "Phone", LocalIdentity{Configured: true, AID: "AIDY"}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, d2, v2.SessionID, StateAcked)
+	if err := d2.Approve(v2.SessionID, HolderIdentity{Mnemonic: testMnemonic}); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("Approve on conflict (displayer) = %v, want ErrWrongState", err)
+	}
+	if err := s2.Approve(v2.SessionID, HolderIdentity{Mnemonic: testMnemonic}); !errors.Is(err, ErrWrongState) {
+		t.Fatalf("Approve on conflict (scanner) = %v, want ErrWrongState", err)
+	}
+}
+
+// TestScanRejectsForeignConfigServer: the QR's cs must match this backend's
+// config server (cross-environment guard, spec §2); trailing slash and case
+// differences are tolerated.
+func TestScanRejectsForeignConfigServer(t *testing.T) {
+	dispMgr, _, done := twoManagers(t, 0)
+	defer done()
+	_, qr, err := dispMgr.CreateDisplayerSession(LocalIdentity{Configured: true, AID: "AIDdesk"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foreign := NewManager("http://elsewhere.example:3904", WithHTTPClient(dispMgr.httpClient))
+	if _, err := foreign.Scan(context.Background(), qr, "Phone", LocalIdentity{}); !errors.Is(err, ErrConfigServerMismatch) {
+		t.Fatalf("foreign scan = %v, want ErrConfigServerMismatch", err)
+	}
+	if foreign.sess != nil {
+		t.Fatal("a refused scan must not install a session")
+	}
+
+	for _, c := range []struct {
+		a, b string
+		same bool
+	}{
+		{"http://localhost:3904", "http://localhost:3904/", true},
+		{"HTTP://Localhost:3904", "http://localhost:3904", true},
+		{"http://awa.matou.nz:3904/tenant", "http://awa.matou.nz:3904/tenant/", true},
+		{"http://awa.matou.nz:3904/tenant", "http://awa.matou.nz:3904/other", false},
+		{"http://localhost:3904", "http://localhost:4904", false},
+		{"", "http://localhost:3904", false},
+	} {
+		if got := sameConfigServer(c.a, c.b); got != c.same {
+			t.Errorf("sameConfigServer(%q,%q) = %v, want %v", c.a, c.b, got, c.same)
+		}
+	}
+}

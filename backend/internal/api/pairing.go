@@ -12,21 +12,29 @@ import (
 
 // PairingHandler exposes the linked-device pairing protocol
 // (internal/pairing) over the loopback API. Every mutating route already sits
-// behind the global TokenGuard + LocalhostGuard.
+// behind the global TokenGuard + LocalhostGuard. GET …/identity hands out the
+// mnemonic, and the global TokenGuard lets GETs through, so that one route
+// additionally demands the bearer token (or a live session) via authorize —
+// otherwise any local process that learned the session id (it travels on the
+// unauthenticated SSE stream) could race the frontend for the identity.
 type PairingHandler struct {
 	manager         *pairing.Manager
 	userIdentity    *identity.UserIdentity
 	configServerURL string
+	authorize       func(r *http.Request) bool
 }
 
 // NewPairingHandler builds a pairing handler. manager carries the session state
 // machine and mailbox client; configServerURL is this backend's own config
-// server, sent to the receiver in the identity message.
-func NewPairingHandler(manager *pairing.Manager, userIdentity *identity.UserIdentity, configServerURL string) *PairingHandler {
+// server, sent to the receiver in the identity message; authorize is the
+// bearer check applied to GET …/identity (see BearerAuthorizer). A nil
+// authorize fails closed: the identity route then always answers 401.
+func NewPairingHandler(manager *pairing.Manager, userIdentity *identity.UserIdentity, configServerURL string, authorize func(r *http.Request) bool) *PairingHandler {
 	return &PairingHandler{
 		manager:         manager,
 		userIdentity:    userIdentity,
 		configServerURL: configServerURL,
+		authorize:       authorize,
 	}
 }
 
@@ -175,7 +183,7 @@ func (h *PairingHandler) handleSessionByID(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		h.handleGetIdentity(w, id)
+		h.handleGetIdentity(w, r, id)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -225,7 +233,11 @@ func (h *PairingHandler) handleCancel(w http.ResponseWriter, r *http.Request, id
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
-func (h *PairingHandler) handleGetIdentity(w http.ResponseWriter, id string) {
+func (h *PairingHandler) handleGetIdentity(w http.ResponseWriter, r *http.Request, id string) {
+	if h.authorize == nil || !h.authorize(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing API token"})
+		return
+	}
 	payload, err := h.manager.TakeIdentity(id, h.userIdentity.IsConfigured(), h.userIdentity.GetAID())
 	if err != nil {
 		status, body := pairingErrorBody(err)
@@ -255,6 +267,8 @@ func pairingErrorBody(err error) (int, map[string]string) {
 		return http.StatusConflict, map[string]string{"error": "operation not valid in current state"}
 	case errors.Is(err, pairing.ErrIdentityUnavailable):
 		return http.StatusNotFound, map[string]string{"error": "identity not available"}
+	case errors.Is(err, pairing.ErrConfigServerMismatch):
+		return http.StatusBadRequest, map[string]string{"error": "config-server-mismatch", "message": err.Error()}
 	default:
 		return http.StatusInternalServerError, map[string]string{"error": err.Error()}
 	}

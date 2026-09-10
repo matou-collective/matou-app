@@ -3,6 +3,7 @@ package pairing
 import (
 	"context"
 	"crypto/ecdh"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -11,7 +12,12 @@ import (
 // State is a pairing session's lifecycle state (issue #471 / spec §2):
 //
 //	created → hello-received → acked → (approved | rejected)
-//	        → identity-sent | identity-received → done | cancelled | expired
+//	        → identity-sent | identity-received → done | cancelled | expired | failed
+//
+// failed is the terminal state a driver error lands in (mailbox unreachable,
+// a blob that did not authenticate, a filled slot): the session's goroutine has
+// exited, its secrets are wiped, and Approve/TakeIdentity are refused; the UI
+// shows the error and offers a new QR.
 type State string
 
 // Session lifecycle states.
@@ -26,10 +32,11 @@ const (
 	StateDone             State = "done"
 	StateCancelled        State = "cancelled"
 	StateExpired          State = "expired"
+	StateFailed           State = "failed"
 )
 
 func isTerminal(s State) bool {
-	return s == StateDone || s == StateCancelled || s == StateExpired
+	return s == StateDone || s == StateCancelled || s == StateExpired || s == StateFailed
 }
 
 // stopper is the subset of *time.Timer the session needs; nil-safe via stop().
@@ -176,41 +183,73 @@ func (s *session) setState(st State) {
 	s.update(func() { s.state = st })
 }
 
-// markCancelled tears the session down as cancelled.
-func (s *session) markCancelled() {
+// wipeLocked drops every secret the session holds: the session key, the
+// pairing secret, the ephemeral private key and any identity payload (the
+// mnemonic) waiting to be sent or read. Byte slices are zeroed before being
+// dropped. Caller holds mu. Called on every teardown (cancel, expiry, failure,
+// replacement) so a finished or abandoned session keeps nothing in memory.
+func (s *session) wipeLocked() {
+	for i := range s.k {
+		s.k[i] = 0
+	}
+	s.k = nil
+	for i := range s.pairSecret {
+		s.pairSecret[i] = 0
+	}
+	s.pairSecret = nil
+	s.eph = nil
+	s.toSend = nil
+	s.received = nil
+}
+
+// wiped reports whether every secret has been dropped (tests).
+func (s *session) wiped() bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.k == nil && s.pairSecret == nil && s.eph == nil && s.toSend == nil && s.received == nil
+}
+
+// teardown moves a non-terminal session into the terminal state st (recording
+// errMsg if given), wipes its secrets, stops the expiry timer and cancels the
+// driver context. A session already in a terminal state keeps its state but is
+// still wiped when force is set (explicit cancel / replacement).
+func (s *session) teardown(st State, errMsg string, force bool) {
+	s.mu.Lock()
+	changed := false
 	if !isTerminal(s.state) {
-		s.state = StateCancelled
+		s.state = st
+		if errMsg != "" && s.errMsg == "" {
+			s.errMsg = errMsg
+		}
+		changed = true
+	}
+	if changed || force {
+		s.wipeLocked()
 	}
 	view := s.viewLocked()
 	emit := s.emit
+	timer := s.timer
 	s.mu.Unlock()
+	stop(timer)
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if emit != nil {
+	if changed && emit != nil {
 		emit(view)
 	}
 }
 
-// markExpired transitions to expired unless already terminal.
-func (s *session) markExpired() {
-	s.mu.Lock()
-	if isTerminal(s.state) {
-		s.mu.Unlock()
-		return
-	}
-	s.state = StateExpired
-	view := s.viewLocked()
-	emit := s.emit
-	s.mu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
-	}
-	if emit != nil {
-		emit(view)
-	}
-}
+// markCancelled tears the session down as cancelled and wipes its secrets
+// (even if it had already finished: an explicit cancel or replacement means
+// nothing about it should linger).
+func (s *session) markCancelled() { s.teardown(StateCancelled, "", true) }
+
+// markExpired transitions to expired (wiping secrets) unless already terminal.
+func (s *session) markExpired() { s.teardown(StateExpired, "", false) }
+
+// markFailed records a driver error as the terminal failed state and wipes
+// secrets, unless already terminal.
+func (s *session) markFailed(err error) { s.teardown(StateFailed, err.Error(), false) }
 
 // expired reports whether the session has passed its TTL.
 func (s *session) expired() bool {
@@ -229,10 +268,51 @@ func (s *session) pollSlot(ctx context.Context, slot string) ([]byte, error) {
 		}
 		blob, err := s.mailbox.get(ctx, s.id, slot, pollWaitSeconds)
 		if err != nil {
+			var rerr *retryError
+			if errors.As(err, &rerr) {
+				if werr := s.sleepRetry(ctx, rerr.after); werr != nil {
+					return nil, werr
+				}
+				continue
+			}
 			return nil, err
 		}
 		if blob != nil {
 			return blob, nil
 		}
+	}
+}
+
+// putSlot writes a blob to the mailbox, waiting out transient answers
+// (429 rate limit, 503 capacity, gateway errors) until the context is
+// cancelled or the session TTL passes.
+func (s *session) putSlot(ctx context.Context, slot string, blob []byte) error {
+	for {
+		err := s.mailbox.put(ctx, s.id, slot, blob)
+		var rerr *retryError
+		if !errors.As(err, &rerr) {
+			return err
+		}
+		if werr := s.sleepRetry(ctx, rerr.after); werr != nil {
+			return werr
+		}
+	}
+}
+
+// sleepRetry waits d (or until ctx is done / the session expires).
+func (s *session) sleepRetry(ctx context.Context, d time.Duration) error {
+	if s.expired() {
+		return errMailboxExpired
+	}
+	if remaining := s.expiresAt.Sub(s.now()); d > remaining {
+		d = remaining
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }

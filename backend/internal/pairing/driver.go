@@ -52,13 +52,19 @@ func (s *session) driveDisplayer(ctx context.Context) {
 		s.state = StateHelloReceived
 	})
 
-	// Send ack on slot b.
+	// Send ack on slot b. The holder may already have approved while the put
+	// was in flight (Approve is legal from hello-received), so only advance to
+	// acked from hello-received — never regress approved.
 	ack := ackMsg{Role: s.localRole(), AID: s.localAID, DeviceName: s.deviceName}
 	if err := s.sealPut(ctx, s.outSlot, ack); err != nil {
 		s.finishOnError(err)
 		return
 	}
-	s.setState(StateAcked)
+	s.update(func() {
+		if s.state == StateHelloReceived {
+			s.state = StateAcked
+		}
+	})
 
 	s.transfer(ctx)
 }
@@ -97,7 +103,7 @@ func (s *session) sendHelloWaitAck(ctx context.Context, displayerPub []byte) err
 	}
 	// scannerEphPub travels in the clear so the displayer can derive K.
 	blob := append(append([]byte{}, s.eph.PublicKey().Bytes()...), sealed...)
-	if err := s.mailbox.put(ctx, s.id, s.outSlot, blob); err != nil {
+	if err := s.putSlot(ctx, s.outSlot, blob); err != nil {
 		return err
 	}
 
@@ -170,11 +176,15 @@ func (s *session) runHolder(ctx context.Context) {
 		s.finishOnError(err)
 		return
 	}
-	if err := s.mailbox.put(ctx, s.id, s.outSlot, sealed); err != nil {
+	if err := s.putSlot(ctx, s.outSlot, sealed); err != nil {
 		s.finishOnError(err)
 		return
 	}
-	s.setState(StateIdentitySent)
+	// The mnemonic has left this device; nothing here needs it any more.
+	s.update(func() {
+		s.toSend = nil
+		s.state = StateIdentitySent
+	})
 
 	doneBlob, err := s.pollSlot(ctx, s.inSlot)
 	if err != nil {
@@ -258,12 +268,17 @@ func (s *session) sealPut(ctx context.Context, slot string, msg any) error {
 	if err != nil {
 		return err
 	}
-	return s.mailbox.put(ctx, s.id, slot, sealed)
+	return s.putSlot(ctx, slot, sealed)
 }
 
-// finishOnError records a non-terminal driver error. Context cancellation and
-// TTL expiry are not errors — they are handled by cancel/expiry paths — so they
-// leave the state as cancelled/expired rather than logging a spurious failure.
+// finishOnError ends the driver on an error. Context cancellation is not an
+// error (the cancel/replace path already set the terminal state); a mailbox
+// 404 means the pairing's TTL passed or the peer deleted it, so the session is
+// expired. Anything else — a blob that did not authenticate, a filled slot, an
+// unreachable mailbox — is a hard failure: the driver goroutine is gone, so the
+// session must land in a terminal state (with its secrets wiped) rather than
+// sit in a live-looking state where Approve would park the mnemonic in memory
+// with nothing left to send it.
 func (s *session) finishOnError(err error) {
 	if err == nil {
 		return
@@ -271,13 +286,9 @@ func (s *session) finishOnError(err error) {
 	if errors.Is(err, context.Canceled) {
 		return
 	}
-	if errors.Is(err, errMailboxExpired) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, errMailboxExpired) {
 		s.markExpired()
 		return
 	}
-	s.update(func() {
-		if s.errMsg == "" {
-			s.errMsg = err.Error()
-		}
-	})
+	s.markFailed(err)
 }

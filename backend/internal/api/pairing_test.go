@@ -84,22 +84,135 @@ func newPairingRig(t *testing.T, mailboxURL string) *pairingTestRig {
 	ui := identity.New(t.TempDir())
 	mgr := pairing.NewManager(mailboxURL,
 		pairing.WithHTTPClient(&http.Client{Timeout: 5 * time.Second}))
-	h := NewPairingHandler(mgr, ui, mailboxURL)
+	h := NewPairingHandler(mgr, ui, mailboxURL, BearerAuthorizer(testPairingToken, nil))
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	return &pairingTestRig{id: ui, mgr: mgr, mux: mux}
 }
 
+// testPairingToken is the per-launch API token the rig's authorizer accepts.
+const testPairingToken = "pairing-test-token"
+
+// do issues a request carrying the API token, as the frontend's fetch wrapper
+// does on every backend call.
 func (r *pairingTestRig) do(method, path string, body any) *httptest.ResponseRecorder {
+	return r.doWithToken(method, path, body, testPairingToken)
+}
+
+// doWithToken issues a request with an explicit bearer token ("" = none).
+func (r *pairingTestRig) doWithToken(method, path string, body any, token string) *httptest.ResponseRecorder {
 	var rdr io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
 		rdr = bytes.NewReader(b)
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	rec := httptest.NewRecorder()
 	r.mux.ServeHTTP(rec, req)
 	return rec
+}
+
+// driveToDone runs a desktop→phone handshake through the API up to the point
+// where the phone holds the identity, and returns the session id.
+func driveToDone(t *testing.T, desktop, phone *pairingTestRig) string {
+	t.Helper()
+	rec := desktop.do(http.MethodPost, "/api/v1/pairing/sessions", map[string]string{"deviceName": "Desktop"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create session: %d %s", rec.Code, rec.Body.String())
+	}
+	created := decode(t, rec)
+	qr, _ := created["qrPayload"].(string)
+	id, _ := created["sessionId"].(string)
+	rec = phone.do(http.MethodPost, "/api/v1/pairing/scan", map[string]string{"qrPayload": qr, "deviceName": "Phone"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scan: %d %s", rec.Code, rec.Body.String())
+	}
+	waitStatus(t, desktop, id, "acked")
+	rec = desktop.do(http.MethodPost, "/api/v1/pairing/sessions/"+id+"/approve", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	}
+	waitStatus(t, phone, id, "done")
+	return id
+}
+
+// TestPairingIdentityRouteRequiresToken: GET …/identity returns the mnemonic,
+// and the global TokenGuard waves GETs through, so the route itself must demand
+// the bearer token. Without it (or with a wrong one) the identity is neither
+// returned nor consumed; the status route stays a plain read.
+func TestPairingIdentityRouteRequiresToken(t *testing.T) {
+	mem := &memPairMailbox{slots: map[string][]byte{}}
+	srv := httptest.NewServer(mem)
+	defer srv.Close()
+
+	desktop := newPairingRig(t, srv.URL)
+	if err := desktop.id.SetIdentity("AIDdesk", "word1 word2 word3"); err != nil {
+		t.Fatal(err)
+	}
+	phone := newPairingRig(t, srv.URL)
+	id := driveToDone(t, desktop, phone)
+
+	for _, token := range []string{"", "wrong-token"} {
+		rec := phone.doWithToken(http.MethodGet, "/api/v1/pairing/sessions/"+id+"/identity", nil, token)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("identity with token %q = %d, want 401 (body %s)", token, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "word1") {
+			t.Fatalf("identity leaked without a token: %s", rec.Body.String())
+		}
+	}
+	// The status read needs no token (it carries no secret).
+	if rec := phone.doWithToken(http.MethodGet, "/api/v1/pairing/sessions/"+id, nil, ""); rec.Code != http.StatusOK {
+		t.Fatalf("status without token = %d, want 200", rec.Code)
+	}
+	// The unauthenticated attempts must not have consumed the single read.
+	rec := phone.do(http.MethodGet, "/api/v1/pairing/sessions/"+id+"/identity", nil)
+	if rec.Code != http.StatusOK || decode(t, rec)["mnemonic"] != "word1 word2 word3" {
+		t.Fatalf("identity with token = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A handler built without an authorizer fails closed.
+	bare := NewPairingHandler(phone.mgr, phone.id, srv.URL, nil)
+	mux := http.NewServeMux()
+	bare.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pairing/sessions/"+id+"/identity", nil)
+	req.Header.Set("Authorization", "Bearer "+testPairingToken)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("nil authorizer = %d, want 401", rr.Code)
+	}
+}
+
+// TestPairingScanRejectsForeignConfigServer: a QR whose cs names another config
+// server (cross-environment scan) is refused with 400 before any mailbox call.
+func TestPairingScanRejectsForeignConfigServer(t *testing.T) {
+	mem := &memPairMailbox{slots: map[string][]byte{}}
+	srv := httptest.NewServer(mem)
+	defer srv.Close()
+
+	desktop := newPairingRig(t, srv.URL)
+	_ = desktop.id.SetIdentity("AIDdesk", "word1 word2 word3")
+	rec := desktop.do(http.MethodPost, "/api/v1/pairing/sessions", nil)
+	created := decode(t, rec)
+	qr := created["qrPayload"].(string)
+	// Stop the displayer's long-poll at the end so srv.Close does not wait it out.
+	defer desktop.do(http.MethodPost, "/api/v1/pairing/sessions/"+created["sessionId"].(string)+"/cancel", nil)
+
+	phone := newPairingRig(t, "http://other-config-server.example:3904")
+	rec = phone.do(http.MethodPost, "/api/v1/pairing/scan", map[string]string{"qrPayload": qr, "deviceName": "Phone"})
+	if rec.Code != http.StatusBadRequest || decode(t, rec)["error"] != "config-server-mismatch" {
+		t.Fatalf("foreign-cs scan = %d %s, want 400 config-server-mismatch", rec.Code, rec.Body.String())
+	}
+	mem.mu.Lock()
+	n := len(mem.slots)
+	mem.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("scanner wrote %d slot(s) to the foreign mailbox", n)
+	}
 }
 
 func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Mailbox errors.
@@ -21,6 +23,61 @@ var (
 
 // maxBlobSize caps a single mailbox blob at 8 KB (spec §2).
 const maxBlobSize = 8 << 10
+
+// Retry pacing for transient mailbox answers. The config server rate-limits
+// per client IP (60 requests / 5 min, 429 + Retry-After), answers 503 when its
+// record store is full, and a reverse proxy may add 502/504. None of those mean
+// the pairing is gone, so the session waits and retries instead of failing.
+const (
+	defaultRetryDelay = 2 * time.Second
+	maxRetryDelay     = 30 * time.Second
+)
+
+// retryError says the mailbox call did not happen (rate limit, capacity,
+// gateway error, client timeout) and may be retried after the given delay.
+type retryError struct {
+	status int
+	after  time.Duration
+}
+
+func (e *retryError) Error() string {
+	if e.status == 0 {
+		return "pairing: mailbox timed out (retry)"
+	}
+	return fmt.Sprintf("pairing: mailbox status %d (retry after %s)", e.status, e.after)
+}
+
+// retryAfter parses the Retry-After header (seconds) into a bounded delay.
+func retryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
+		return defaultRetryDelay
+	}
+	secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After")))
+	if err != nil || secs <= 0 {
+		return defaultRetryDelay
+	}
+	d := time.Duration(secs) * time.Second
+	if d > maxRetryDelay {
+		d = maxRetryDelay
+	}
+	return d
+}
+
+// classifyStatus maps a transient status to a retryError, else nil.
+func classifyStatus(resp *http.Response) error {
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusGatewayTimeout:
+		return &retryError{status: resp.StatusCode, after: retryAfter(resp)}
+	}
+	return nil
+}
+
+// isTimeout reports whether a transport error is a client-side timeout (the
+// long-poll ran past http.Client.Timeout), which is safe to retry for a read.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
 
 // mailbox is a client for the config-server rendezvous mailbox:
 //
@@ -68,6 +125,11 @@ func (m *mailbox) put(ctx context.Context, id, slot string, blob []byte) error {
 	case http.StatusNotFound, http.StatusGone:
 		return errMailboxExpired
 	default:
+		// 429/503/502/504: the server did not store the blob (its rate-limit
+		// and capacity checks run before the store), so a retry is safe.
+		if rerr := classifyStatus(resp); rerr != nil {
+			return rerr
+		}
 		return fmt.Errorf("pairing: mailbox put status %d", resp.StatusCode)
 	}
 }
@@ -84,6 +146,12 @@ func (m *mailbox) get(ctx context.Context, id, slot string, waitSeconds int) ([]
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
+		if ctx.Err() == nil && isTimeout(err) {
+			// The long-poll outlived the client timeout (slow link); the
+			// server hands a consumed blob back when the reader is gone, so
+			// polling again is safe.
+			return nil, &retryError{after: time.Second}
+		}
 		return nil, fmt.Errorf("pairing: mailbox get: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -102,6 +170,9 @@ func (m *mailbox) get(ctx context.Context, id, slot string, waitSeconds int) ([]
 	case http.StatusNotFound, http.StatusGone:
 		return nil, errMailboxExpired
 	default:
+		if rerr := classifyStatus(resp); rerr != nil {
+			return nil, rerr
+		}
 		return nil, fmt.Errorf("pairing: mailbox get status %d", resp.StatusCode)
 	}
 }
