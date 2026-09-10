@@ -85,6 +85,9 @@ const props = withDefaults(defineProps<{
   typeName: string;
   layout?: string;
   data: Record<string, unknown>;
+  // Explicit subset of field names to render (in order). Overrides the layout.
+  // Used to display only the schema's custom fields alongside a bespoke view.
+  fields?: string[];
 }>(), {
   layout: 'card',
 });
@@ -94,6 +97,12 @@ const typesStore = useTypesStore();
 const visibleFields = computed(() => {
   const def = typesStore.getDefinition(props.typeName);
   if (!def) return [];
+
+  if (props.fields) {
+    return props.fields
+      .map(name => def.fields.find(f => f.name === name))
+      .filter((f): f is FieldDef => !!f);
+  }
 
   const layoutFields = def.layouts?.[props.layout]?.fields;
   if (layoutFields) {

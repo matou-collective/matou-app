@@ -102,6 +102,18 @@
           </div>
         </div>
 
+        <!-- Schema-driven custom (admin-added) fields -->
+        <div v-if="customFieldNames.length > 0" class="form-section" data-test="custom-notice-fields">
+          <h3 class="form-section-title">Additional Information</h3>
+          <TypedForm
+            ref="typedFormRef"
+            embedded
+            type-name="Notice"
+            :fields="customFieldNames"
+            v-model="customFieldData"
+          />
+        </div>
+
         <div v-if="submitError" class="form-error">{{ submitError }}</div>
 
         <div class="form-actions">
@@ -115,14 +127,30 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, computed } from 'vue';
+import { ref, reactive, watch, computed, onMounted } from 'vue';
 import { X, Calendar, Megaphone, FileText } from 'lucide-vue-next';
 import { useActivityStore } from 'stores/activity';
+import { useTypesStore } from 'stores/types';
 import { eventsEnabled, defaultNoticeType } from 'src/composables/noticeTypes';
 import FileUploadInput from './FileUploadInput.vue';
+import TypedForm from 'src/components/profiles/TypedForm.vue';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 const activityStore = useActivityStore();
+const typesStore = useTypesStore();
+
+// Notice's built-in fields are all `core`, so the schema's non-core fields are
+// exactly the org-added custom ones.
+const customFieldNames = computed(() => typesStore.customFieldNames('Notice'));
+const customFieldData = ref<Record<string, unknown>>({});
+// Template ref on the embedded TypedForm so submit can run its client-side
+// validation and surface inline errors on the custom fields.
+const typedFormRef = ref<InstanceType<typeof TypedForm>>();
+
+onMounted(() => {
+  if (!typesStore.loaded) void typesStore.loadDefinitions();
+});
+
 const showEventType = eventsEnabled();
 
 const form = reactive({
@@ -185,8 +213,14 @@ function removeLink(idx: number) {
 }
 
 async function handleSubmit() {
-  submitting.value = true;
   submitError.value = '';
+  // Client-side validation of the schema-driven custom fields first: an
+  // invalid one shows its inline error and nothing is sent.
+  if (typedFormRef.value && !typedFormRef.value.validate()) {
+    submitError.value = 'Please fix the highlighted fields in Additional Information';
+    return;
+  }
+  submitting.value = true;
 
   const validLinks = form.links.filter(l => l.label.trim() && l.url.trim());
 
@@ -203,6 +237,7 @@ async function handleSubmit() {
     images: form.images.length > 0 ? form.images : undefined,
     attachments: form.attachments.length > 0 ? form.attachments : undefined,
     links: validLinks.length > 0 ? validLinks : undefined,
+    data: Object.keys(customFieldData.value).length > 0 ? customFieldData.value : undefined,
   });
 
   submitting.value = false;

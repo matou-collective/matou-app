@@ -46,6 +46,16 @@
         <AttachmentList :attachments="notice.attachments" />
       </div>
 
+      <!-- Schema-driven custom (admin-added) fields -->
+      <div v-if="customFieldNames.length" class="card-section card-section-white" data-test="custom-notice-fields">
+        <TypedDisplay
+          type-name="Notice"
+          layout="detail"
+          :fields="customFieldNames"
+          :data="notice.data || {}"
+        />
+      </div>
+
       <!-- Event Details -->
       <div v-if="notice.type === 'event' && (notice.eventStart || notice.locationText)" class="event-details-card">
         <div v-if="notice.eventStart" class="event-detail-row">
@@ -110,11 +120,25 @@ import ImageGallery from './ImageGallery.vue';
 import LinkPreview from './LinkPreview.vue';
 import AttachmentList from './AttachmentList.vue';
 import UserAvatar from 'components/profiles/UserAvatar.vue';
+import TypedDisplay from 'components/profiles/TypedDisplay.vue';
+import { useTypesStore } from 'stores/types';
 
 const props = defineProps<{ notice: Notice; isSteward: boolean }>();
 
 const activityStore = useActivityStore();
 const profilesStore = useProfilesStore();
+const typesStore = useTypesStore();
+
+// Custom (admin-added) Notice fields that carry a value on this notice.
+const customFieldNames = computed(() => {
+  const data = props.notice.data || {};
+  return typesStore.customFieldNames('Notice').filter((name) => {
+    const v = data[name];
+    if (v === undefined || v === null || v === '') return false;
+    if (Array.isArray(v) && v.length === 0) return false;
+    return true;
+  });
+});
 
 const typeIcon = computed(() => {
   switch (props.notice.type) {
