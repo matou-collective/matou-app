@@ -218,8 +218,16 @@ func (h *ProfilesHandler) HandleUpdateType(w http.ResponseWriter, r *http.Reques
 	}
 	h.registry.Register(&updated)
 
-	log.Printf("[Types] updated definition %q to version %d by %s", name, updated.Version, GetUserAID(r))
-	writeJSON(w, http.StatusOK, updated)
+	// Version bumps on every PUT (optimistic lock); schemaChanged tells the
+	// client whether the edit affects what data validates (#302) — an
+	// advisory flag: existing profiles are grandfathered on read and re-stamped
+	// on their next write either way.
+	schemaChanged := types.SchemaChanged(current, &updated)
+	log.Printf("[Types] updated definition %q to version %d (schemaChanged=%v) by %s", name, updated.Version, schemaChanged, GetUserAID(r))
+	writeJSON(w, http.StatusOK, struct {
+		*types.TypeDefinition
+		SchemaChanged bool `json:"schemaChanged"`
+	}{&updated, schemaChanged})
 }
 
 // CreateProfileRequest represents a request to create or update a profile.

@@ -40,7 +40,18 @@ description, permissions — and field **reordering** do **not** bump the versio
 
 `types.SchemaChanged(oldDef, newDef)` reports whether an edit is substantive;
 `types.VersionForEdit(oldDef, newDef)` returns the version the edited definition
-should carry (`old` for a cosmetic edit, `old+1` for a substantive one).
+would carry under that content-based rule (`old` for a cosmetic edit, `old+1`
+for a substantive one).
+
+**In practice the write path bumps `Version` on every successful
+`PUT /api/v1/types/{name}`** (#405): `Version` doubles as the optimistic-lock
+token (a stale client gets 409) and the registry loader picks the highest
+`Version` among duplicate persisted definitions, so a version that stayed put on
+cosmetic edits would break both. The PUT response therefore carries an advisory
+`schemaChanged: bool` (from `SchemaChanged`) so a client can tell a cosmetic
+bump from a substantive one. The consequence for profiles is benign: after a
+cosmetic edit every profile reads as stale and is simply re-stamped on its next
+write.
 
 ## Staleness
 

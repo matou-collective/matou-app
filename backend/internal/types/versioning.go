@@ -75,9 +75,16 @@ func StampVersion(def *TypeDefinition, data json.RawMessage) (json.RawMessage, e
 	return stamped, nil
 }
 
-// VersionForEdit returns the version an edited definition should carry: the old
-// version for a cosmetic edit, old+1 for a substantive schema change. This is
-// the version-bump rule an admin schema edit applies.
+// VersionForEdit returns the version an edited definition would carry under a
+// content-based rule: the old version for a cosmetic edit, old+1 for a
+// substantive schema change.
+//
+// Advisory only — not wired to the write path. PUT /api/v1/types/{name}
+// (HandleUpdateType) bumps Version on EVERY successful edit because Version is
+// also its optimistic-lock token (a stale client gets 409) and the registry
+// loader picks the highest Version among duplicates; a version that stayed put
+// on cosmetic edits would break both. The handler reports SchemaChanged as a
+// schemaChanged flag in its response instead.
 func VersionForEdit(oldDef, newDef *TypeDefinition) int {
 	if SchemaChanged(oldDef, newDef) {
 		return oldDef.Version + 1

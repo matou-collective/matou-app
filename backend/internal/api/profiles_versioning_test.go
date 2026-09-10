@@ -158,3 +158,50 @@ func TestInitMemberSeedStampsLiveSharedProfileVersion(t *testing.T) {
 		t.Fatalf("freshly seeded profile must not be stale")
 	}
 }
+
+// TestUpdateType_ReportsSchemaChanged: the PUT /types/{name} response carries an
+// advisory schemaChanged flag (types.SchemaChanged, #302) alongside the
+// unconditionally bumped Version (#405's optimistic lock). A substantive edit
+// reports true; a cosmetic relabel reports false but still bumps the version.
+func TestUpdateType_ReportsSchemaChanged(t *testing.T) {
+	h, _ := newSchemaTestHandler()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/types/", h.handleTypeByName)
+
+	decode := func(rec *httptest.ResponseRecorder) (int, bool) {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT = %d, want 200; body %s", rec.Code, rec.Body.String())
+		}
+		var got struct {
+			Version       int   `json:"version"`
+			SchemaChanged *bool `json:"schemaChanged"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.SchemaChanged == nil {
+			t.Fatalf("response lacks schemaChanged: %s", rec.Body.String())
+		}
+		return got.Version, *got.SchemaChanged
+	}
+
+	// Substantive: add a field.
+	v, changed := decode(putType(t, mux, "SharedProfile", "", sharedProfileWithCustom()))
+	if v != 2 || !changed {
+		t.Errorf("adding a field: version=%d schemaChanged=%v, want 2/true", v, changed)
+	}
+
+	// Cosmetic: relabel a field on the now-current (v2) definition.
+	cosmetic := sharedProfileWithCustom()
+	cosmetic.Version = 2
+	for i := range cosmetic.Fields {
+		if cosmetic.Fields[i].Name == "bio" {
+			cosmetic.Fields[i].UIHints.Label = "Bio (renamed)"
+		}
+	}
+	v, changed = decode(putType(t, mux, "SharedProfile", "", cosmetic))
+	if v != 3 || changed {
+		t.Errorf("relabel: version=%d schemaChanged=%v, want 3/false (version bumps for the lock, schema did not change)", v, changed)
+	}
+}
