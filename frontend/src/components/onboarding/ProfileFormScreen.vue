@@ -390,7 +390,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ArrowLeft, ArrowRight, User, Upload, X, Fingerprint, AlertCircle } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
@@ -481,10 +481,13 @@ const canSubmit = computed(() => {
   );
 });
 
-// Scroll to top when component mounts
+// Scroll to top when component mounts. Hold the timer id so it can be cleared
+// on unmount — otherwise the deferred callback can fire after the component is
+// torn down and reach `document` off-DOM (leaked timer, #489).
+let scrollTimer: ReturnType<typeof setTimeout> | undefined;
 onMounted(() => {
   // Use setTimeout to ensure DOM is fully rendered
-  setTimeout(() => {
+  scrollTimer = setTimeout(() => {
     // Scroll the component's content area
     if (contentArea.value) {
       contentArea.value.scrollTop = 0;
@@ -502,6 +505,10 @@ onMounted(() => {
     // Scroll window as fallback
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   }, 100);
+});
+
+onUnmounted(() => {
+  if (scrollTimer !== undefined) clearTimeout(scrollTimer);
 });
 
 // Watch for name changes and clear error
