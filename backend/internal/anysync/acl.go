@@ -5,7 +5,6 @@
 package anysync
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -329,6 +328,9 @@ func (m *MatouACLManager) FindAccountPubKeyByAID(ctx context.Context, spaceID st
 // (see AddAccount), so the same {aid, joinedAt} resolves there afterwards. On a
 // genuine miss the error wraps ErrAccountNotFoundForAID.
 func (m *MatouACLManager) FindAccountByAID(ctx context.Context, spaceID string, aid string) (crypto.PubKey, []byte, error) {
+	if aid == "" {
+		return nil, nil, fmt.Errorf("%w %q in space %s", ErrAccountNotFoundForAID, aid, spaceID)
+	}
 	space, err := m.client.GetSpace(ctx, spaceID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("getting space %s: %w", spaceID, err)
@@ -355,7 +357,11 @@ func (m *MatouACLManager) FindAccountByAID(ctx context.Context, spaceID string, 
 				raw = decrypted
 			}
 		}
-		if bytes.Contains(raw, []byte(`"aid":"`+aid+`"`)) {
+		// Anchor the match on the decoded "aid" field: a substring test would
+		// let a caller-supplied AID that is a prefix of another member's real
+		// AID select the wrong account (and, since #462, feed the wrong identity
+		// into the readonly-space self-heal).
+		if extractAIDFromMetadata(raw) == aid {
 			return account.PubKey, raw, nil
 		}
 	}

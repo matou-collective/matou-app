@@ -29,6 +29,28 @@ func isEncrypted(data []byte) bool {
 	return len(data) >= len(encMagic) && bytes.Equal(data[:len(encMagic)], encMagic)
 }
 
+// Seal encrypts plaintext at rest under keyMaterial with AES-256-GCM, in the
+// exact same on-disk format as identity.json. It exists so other packages
+// (e.g. internal/anysync for space read keys and peer keys) can seal their
+// own at-rest secrets through the one crypto path instead of re-implementing
+// it (issue #117). A caller holding an empty key should skip Seal entirely and
+// keep writing plaintext.
+func Seal(plaintext, keyMaterial []byte) ([]byte, error) {
+	return encrypt(plaintext, keyMaterial)
+}
+
+// Open reverses Seal. It returns an error when data is not a sealed blob or
+// when keyMaterial does not match the key the blob was sealed with.
+func Open(data, keyMaterial []byte) ([]byte, error) {
+	return decrypt(data, keyMaterial)
+}
+
+// IsSealed reports whether data was written by Seal (as opposed to legacy
+// plaintext), so callers can tell the two apart and migrate transparently.
+func IsSealed(data []byte) bool {
+	return isEncrypted(data)
+}
+
 // encrypt seals plaintext under keyMaterial as: encMagic || nonce || GCM(ciphertext).
 func encrypt(plaintext, keyMaterial []byte) ([]byte, error) {
 	key := deriveKey(keyMaterial)

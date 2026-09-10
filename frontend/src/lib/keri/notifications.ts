@@ -42,12 +42,58 @@ export interface NotificationClient {
   };
 }
 
-/** The subset of `SignifyClient` the credential idempotency check depends on. */
+/**
+ * One entry of KERIA's credential query (`POST /credentials/query`). `status`
+ * is the credential's TEL state: `et` is the ilk of its latest TEL event
+ * (`iss`/`bis` issued, `rev`/`brv` revoked) and `s` that event's hex sequence
+ * number (`'1'` once revoked).
+ */
+export interface WalletCredential {
+  sad?: { d?: string; s?: string; a?: { i?: string } };
+  d?: string;
+  status?: { et?: string; s?: string };
+}
+
+/**
+ * Query options accepted by signify-ts `credentials().list()`. `filter` is
+ * KERIA's Seeker filter, keyed by CESR path (`-s` schema, `-i` issuer, `-a-i`
+ * issuee, `-d` SAID); `limit` defaults to 25 on the signify-ts side, so an
+ * unfiltered list silently truncates once the wallet holds more credentials.
+ */
+export interface CredentialListOptions {
+  filter?: object;
+  limit?: number;
+  skip?: number;
+}
+
+/** The subset of `SignifyClient` the credential idempotency checks depend on. */
 export interface CredentialListClient {
   credentials(): {
-    list(): Promise<Array<{ sad?: { d?: string }; d?: string }>>;
+    list(kargs?: CredentialListOptions): Promise<WalletCredential[]>;
   };
 }
+
+/** TEL event ilks that mean a credential has been revoked. */
+const REVOKED_TEL_ILKS = new Set(['rev', 'brv']);
+
+/**
+ * `true` when the wallet entry's TEL state says the credential is revoked.
+ * Trusts the event ilk when present; falls back to the sequence number (a
+ * simple registry's only post-issuance event is the revocation at `s = '1'`).
+ */
+export function isCredentialRevoked(cred: WalletCredential | null | undefined): boolean {
+  const et = cred?.status?.et;
+  if (et) return REVOKED_TEL_ILKS.has(et);
+  return cred?.status?.s === '1';
+}
+
+/**
+ * Upper bound on wallet entries fetched per idempotency lookup. Both lookups
+ * are server-filtered to one credential SAID or one (schema, issuee) pair, so
+ * the real result is a handful of rows; the bound only guards against a
+ * runaway wallet.
+ */
+const IDEMPOTENCY_LOOKUP_LIMIT = 100;
 
 /**
  * Claim a notification before acting on it (spec §3.5). Marks it read, re-lists
@@ -111,7 +157,13 @@ export async function isGrantAlreadyAdmitted(
   const said = grantCredentialSaid(grantExn);
   if (!said) return false;
   try {
-    const creds = await client.credentials().list();
+    // Server-filtered on the SAID: an unfiltered list is capped at 25 entries
+    // by signify-ts, which would turn this check into a no-op on any wallet
+    // holding more credentials than that.
+    const creds = await client.credentials().list({
+      filter: { '-d': said },
+      limit: IDEMPOTENCY_LOOKUP_LIMIT,
+    });
     const already = (creds ?? []).some((c) => (c?.sad?.d ?? c?.d) === said);
     if (already) {
       log.debug(`grant credential ${said.slice(0, 12)} already in wallet — skipping admit`);
@@ -119,6 +171,58 @@ export async function isGrantAlreadyAdmitted(
     return already;
   } catch (err) {
     log.debug('credential list failed during admit idempotency check; proceeding', err);
+    return false;
+  }
+}
+
+/**
+ * Approval idempotency for the write-bearing steward path (issue #480, #466):
+ * `true` when a credential of `schemaSaid` has already been issued to
+ * `issueeAid` in this wallet, so a second issuance must be skipped. On a shared
+ * KERIA agent both linked steward devices see the same wallet, so this catches
+ * an applicant already approved on another device (or from a stale pending
+ * list). Unlike {@link isGrantAlreadyAdmitted} — keyed by the credential SAID
+ * we are about to admit — the issuer does not yet know the SAID, so we match on
+ * schema + issuee AID (the org is the only issuer of membership credentials),
+ * ignoring revoked credentials so a removed member can be re-admitted.
+ *
+ * Best-effort: a client-side wallet lookup, not a server-side compare-and-set,
+ * so a truly simultaneous double-issue across two devices can still race (spec
+ * §3.5). Never throws — a failed list resolves to `false` (proceed), leaving
+ * issuance's own handling in charge.
+ */
+export async function isCredentialAlreadyIssued(
+  client: CredentialListClient,
+  schemaSaid: string,
+  issueeAid: string,
+): Promise<boolean> {
+  if (!schemaSaid || !issueeAid) return false;
+  try {
+    // Server-filtered on (issuee, schema) — KERIA keeps a composite Seeker
+    // index for exactly this pair. An unfiltered list is capped at 25 entries
+    // by signify-ts, so once the org's agent holds more credentials than that
+    // (every membership, endorsement and attendance credential it ever issued)
+    // the applicant's entry would fall off the page and the guard would never
+    // fire. The client-side equality check is kept so the result is right even
+    // if a server ignored the filter.
+    const creds = await client.credentials().list({
+      filter: { '-a-i': issueeAid, '-s': schemaSaid },
+      limit: IDEMPOTENCY_LOOKUP_LIMIT,
+    });
+    // A revoked credential (member removed, or an old one superseded by a
+    // role re-issue) must NOT block issuance — otherwise a removed member who
+    // re-applies could never be approved again.
+    const already = (creds ?? []).some(
+      (c) => c?.sad?.s === schemaSaid && c?.sad?.a?.i === issueeAid && !isCredentialRevoked(c),
+    );
+    if (already) {
+      log.debug(
+        `credential ${schemaSaid.slice(0, 12)} already issued to ${issueeAid.slice(0, 12)} — skipping issuance`,
+      );
+    }
+    return already;
+  } catch (err) {
+    log.debug('credential list failed during issuance idempotency check; proceeding', err);
     return false;
   }
 }
