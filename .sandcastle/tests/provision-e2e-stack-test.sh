@@ -311,8 +311,8 @@ grep -q "\[go\] toolchain present (go1.25.5 at $RUNNERBIN/go)" <<<"$out" || fail
 new_host; ready_host; rm -f "$RUNNERBIN/go"; have_go_login   # no ~/go-sdk
 out="$(run 2>&1)" || fail "converge must pass on a host with a login-shell-only go (got: $out)"
 [ -L "$HOME/go-sdk/go" ] || fail "converge must symlink ~/go-sdk/go"
-[ "$(readlink "$HOME/go-sdk/go")" = "$FAKE_GOROOT" ] || fail "~/go-sdk/go must point at the found go's GOROOT (got: $(readlink "$HOME/go-sdk/go"))"
-[ -x "$HOME/go-sdk/go/bin/go" ] || fail "~/go-sdk/go/bin/go must resolve through the link"
+[ "$(readlink "$HOME/go-sdk/go")" = "$FAKE_GOROOT" ] || fail "\$HOME/go-sdk/go must point at the found go's GOROOT (got: $(readlink "$HOME/go-sdk/go"))"
+[ -x "$HOME/go-sdk/go/bin/go" ] || fail "\$HOME/go-sdk/go/bin/go must resolve through the link"
 grep -q "\[go\] linked toolchain" <<<"$out" || fail "converge must report the link (got: $out)"
 # and a --check straight after is green on the go-sdk leg
 out="$(run --check 2>&1)" || fail "--check after the link converge must pass (got: $out)"
