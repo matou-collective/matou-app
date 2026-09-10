@@ -7,7 +7,7 @@ import { test, expect, Page } from './fixtures';
 //     admin narrows it);
 //   • manage_notices gates moderating any member's notice — pin and archive
 //     (default: stewards + founder).
-// The Roles & Permissions page gains a dedicated "Notices" feature table for
+// Community Settings has a dedicated "Notices" feature table for
 // these two capabilities.
 //
 // Enforcement resolves the caller's roles from the X-User-AID header, so the
@@ -44,16 +44,17 @@ async function createNotice(aid: string, title: string): Promise<string> {
   return id as string;
 }
 
-// Navigate to the Roles & Permissions page from wherever login left the app.
+// Navigate to the Community Settings page (home of the permission tables)
+// from wherever login left the app.
 async function openRolesPage(page: Page): Promise<void> {
   const enter = page.getByRole('button', { name: /enter community/i });
   if (await enter.isVisible().catch(() => false)) {
     await enter.click();
   }
-  const rolesNav = page.locator('.nav-item', { hasText: 'Roles' });
-  await expect(rolesNav).toBeVisible({ timeout: 30_000 });
-  await rolesNav.click();
-  await expect(page.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
+  const gear = page.locator('.community-settings-btn');
+  await expect(gear).toBeVisible({ timeout: 30_000 });
+  await gear.click();
+  await expect(page.getByRole('heading', { name: 'Community Settings' })).toBeVisible();
 }
 
 test.describe.serial('Notices RBAC + Notices permission table (#317)', () => {

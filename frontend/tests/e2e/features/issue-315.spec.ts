@@ -1,7 +1,7 @@
 import { test, expect, Page } from './fixtures';
 
 // Feature (#315): Proposals gets its own per-feature permission table on the
-// Roles & Permissions page, with two columns — Create proposals (NEW
+// Community Settings page, with two columns — Create proposals (NEW
 // create_proposals capability, gating proposal create + submit) and Governance
 // (existing manage_governance). Community roles hold both freely; a project
 // role appears in this table only when it grandfather-holds a governance grant
@@ -47,10 +47,10 @@ async function openRolesPage(page: Page): Promise<void> {
   if (await enter.isVisible().catch(() => false)) {
     await enter.click();
   }
-  const rolesNav = page.locator('.nav-item', { hasText: 'Roles' });
-  await expect(rolesNav).toBeVisible({ timeout: 30_000 });
-  await rolesNav.click();
-  await expect(page.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
+  const gear = page.locator('.community-settings-btn');
+  await expect(gear).toBeVisible({ timeout: 30_000 });
+  await gear.click();
+  await expect(page.getByRole('heading', { name: 'Community Settings' })).toBeVisible();
 }
 
 test.describe('Proposals permission table (#315)', () => {

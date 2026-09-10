@@ -76,11 +76,11 @@ func (m *FileManager) RefreshTransport(p pool.Pool, nc nodeconf.Service) {
 //  5. FileMeta is written as an ObjectPayload into the community space's ObjectTree
 //  6. Returns the root CID string as the file reference
 func (m *FileManager) AddFile(ctx context.Context, spaceID string, reader io.Reader, contentType string, size int64, signingKey crypto.PrivKey) (string, error) {
-	fileId := uuid.New().String()
+	fileID := uuid.New().String()
 
-	// Set spaceId and fileId on the blockstore directly — the IPFS DAG builder
+	// Set spaceID and fileID on the blockstore directly — the IPFS DAG builder
 	// internally uses context.TODO(), so context-based values are lost.
-	m.blockStore.SetContext(spaceID, fileId)
+	m.blockStore.SetContext(spaceID, fileID)
 
 	// AddFile chunks the reader into IPFS UnixFS DAG blocks and pushes via blockstore.Add
 	rootNode, err := m.handler.AddFile(ctx, reader)
@@ -90,8 +90,8 @@ func (m *FileManager) AddFile(ctx context.Context, spaceID string, reader io.Rea
 
 	rootCID := rootNode.Cid()
 
-	// Bind all block CIDs to the fileId on the filenode
-	if err := m.bindBlocks(ctx, spaceID, fileId, rootCID); err != nil {
+	// Bind all block CIDs to the fileID on the filenode
+	if err := m.bindBlocks(ctx, spaceID, fileID, rootCID); err != nil {
 		return "", fmt.Errorf("binding blocks: %w", err)
 	}
 
@@ -132,9 +132,9 @@ func (m *FileManager) AddFile(ctx context.Context, spaceID string, reader io.Rea
 }
 
 // bindBlocks calls BlocksBind on the filenode to associate the root CID (and
-// its DAG children) with the fileId. We collect all DAG node CIDs by walking
+// its DAG children) with the fileID. We collect all DAG node CIDs by walking
 // the DAG service.
-func (m *FileManager) bindBlocks(ctx context.Context, spaceID, fileId string, rootCID cid.Cid) error {
+func (m *FileManager) bindBlocks(ctx context.Context, spaceID, fileID string, rootCID cid.Cid) error {
 	filePeers := m.nodeConf.FilePeers()
 	if len(filePeers) == 0 {
 		return fmt.Errorf("no file peers configured")
@@ -149,7 +149,7 @@ func (m *FileManager) bindBlocks(ctx context.Context, spaceID, fileId string, ro
 		client := fileproto.NewDRPCFileClient(conn)
 		_, err := client.BlocksBind(ctx, &fileproto.BlocksBindRequest{
 			SpaceId: spaceID,
-			FileId:  fileId,
+			FileId:  fileID,
 			Cids:    [][]byte{rootCID.Bytes()},
 		})
 		return err

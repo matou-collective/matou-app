@@ -7,8 +7,10 @@ import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
 import { getOrFetchOrgConfig } from 'src/api/config';
 import { useKERINotificationService, type KERINotification } from './useKERINotificationService';
+import { claimNotification, isGrantAlreadyAdmitted } from 'src/lib/keri/notifications';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { isSelfAgentOobi } from 'src/lib/selfAgentOobi';
 
 const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
 const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
@@ -178,6 +180,16 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
         return;
       }
 
+      // On a single-agent org setup the org/admin OOBIs are the agent-role form
+      // (`…/oobi/<AID>/agent/<AGENT_EID>`) hosted by *our own* KERIA agent.
+      // Resolving those is dead weight: KERIA refuses to verify the loc-scheme
+      // reply it authored for its own agent and the resolve polls until the
+      // client's signal times out (~30 s each). We already hold current key
+      // state for anything our agent hosts, so skip them (issue #450). Foreign
+      // OOBIs (schema, or any org/admin hosted by a different agent) still
+      // resolve exactly as before.
+      const ownAgentAid = keriClient.getSignifyClient()?.agent?.pre ?? null;
+
       // Resolve schema OOBI (required for credential verification)
       // The schema SAID is defined in the org setup
       const schemaOOBI = config.schema?.oobi;
@@ -204,7 +216,9 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       // Resolve org OOBI (for receiving credentials)
       // The org OOBI is stored at config.organization.oobi
       const orgOOBI = config.organization?.oobi;
-      if (orgOOBI) {
+      if (orgOOBI && isSelfAgentOobi(orgOOBI, ownAgentAid)) {
+        console.log('[CredentialPolling] Skipping org OOBI resolve — hosted by our own agent:', orgOOBI.slice(0, 50) + '...');
+      } else if (orgOOBI) {
         try {
           await keriClient.resolveOOBI(orgOOBI, undefined, 30000);
           console.log('[CredentialPolling] Resolved org OOBI:', orgOOBI.slice(0, 50) + '...');
@@ -218,7 +232,9 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       // Resolve admin OOBIs (for receiving messages/rejections)
       if (config.admins?.length) {
         for (const admin of config.admins) {
-          if (admin.oobi) {
+          if (admin.oobi && isSelfAgentOobi(admin.oobi, ownAgentAid)) {
+            console.log(`[CredentialPolling] Skipping admin OOBI resolve — hosted by our own agent: ${admin.aid?.slice(0, 12)}...`);
+          } else if (admin.oobi) {
             try {
               await keriClient.resolveOOBI(admin.oobi, undefined, 30000);
               console.log(`[CredentialPolling] Resolved admin OOBI: ${admin.aid?.slice(0, 12)}...`);
@@ -449,9 +465,10 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             reason: (payload.reason as string) || 'Your registration has been declined.',
             declinedAt: (payload.declinedAt as string) || new Date().toISOString(),
           };
-          // Mark as read if not already
+          // Mark as read if not already (issue #470: via the shared claim
+          // helper so a fresh re-list confirms the state on a shared agent).
           if (!rejectionsToProcess[0].r) {
-            await client.notifications().mark(rejectionsToProcess[0].i);
+            await claimNotification(client, rejectionsToProcess[0]);
           }
           // Persist rejection state for future sessions
           await saveRejectionState();
@@ -483,8 +500,8 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
             console.log('[CredentialPolling] New admin message received');
           }
 
-          // Mark as read
-          await client.notifications().mark(msgNotification.i);
+          // Mark as read (issue #470: shared claim helper)
+          await claimNotification(client, msgNotification);
         } catch (msgErr) {
           console.warn('[CredentialPolling] Failed to fetch message:', msgErr);
         }
@@ -504,7 +521,7 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
           spaceId.value = payload.spaceId as string;
           readOnlyInviteKey.value = (payload.readOnlyInviteKey as string) || null;
           readOnlySpaceId.value = (payload.readOnlySpaceId as string) || null;
-          await client.notifications().mark(spaceInvites[0].i);
+          await claimNotification(client, spaceInvites[0]); // issue #470
           console.log('[CredentialPolling] Space invite received');
         } catch (inviteErr) {
           console.warn('[CredentialPolling] Failed to fetch space invite:', inviteErr);
@@ -551,6 +568,16 @@ export function useCredentialPolling(options: CredentialPollingOptions = {}) {
       // Get the grant exchange message to find the sender
       const grantExn = await client.exchanges().get(grant.a.d);
       const grantSender = grantExn.exn.i; // Issuer of the grant message
+
+      // Idempotency (issue #470): two signify clients on one agent both see
+      // this grant. If the credential is already in the wallet the other
+      // client (or a prior cycle) has admitted it — a second admit would be a
+      // redundant IPEX admit on an already-admitted grant. Mark read and stop.
+      if (await isGrantAlreadyAdmitted(client, grantExn)) {
+        await client.notifications().mark(grant.i);
+        console.debug('[CredentialPolling] Grant already admitted — skipping (idempotent)');
+        return;
+      }
 
       // Submit admit with empty embeds. KERIA's sendAdmit() for single-sig
       // AIDs does not process path labels — the Admitter background task

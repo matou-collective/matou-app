@@ -74,7 +74,7 @@ func TestHandleCreateNotice_Validation(t *testing.T) {
 			}
 
 			var resp map[string]interface{}
-			json.Unmarshal(w.Body.Bytes(), &resp)
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
 			if errMsg, ok := resp["error"].(string); ok {
 				if errMsg != tt.wantError {
 					t.Errorf("error = %q, want %q", errMsg, tt.wantError)
@@ -145,7 +145,7 @@ func TestHandleCreateRSVP_Validation(t *testing.T) {
 			}
 
 			var resp map[string]interface{}
-			json.Unmarshal(w.Body.Bytes(), &resp)
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
 			if errMsg, ok := resp["error"].(string); ok {
 				if errMsg != tt.wantError {
 					t.Errorf("error = %q, want %q", errMsg, tt.wantError)
@@ -194,7 +194,7 @@ func TestHandleListNotices_EmptySpace(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	count := resp["count"].(float64)
 	if count != 0 {
 		t.Errorf("count = %v, want 0", count)
@@ -214,7 +214,7 @@ func TestHandleListSaved_NoPrivateSpace(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	count := resp["count"].(float64)
 	if count != 0 {
 		t.Errorf("count = %v, want 0", count)
@@ -336,7 +336,7 @@ func TestHandleCreateComment_Validation(t *testing.T) {
 			}
 
 			var resp map[string]interface{}
-			json.Unmarshal(w.Body.Bytes(), &resp)
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
 			if errMsg, ok := resp["error"].(string); ok {
 				if errMsg != tt.wantError {
 					t.Errorf("error = %q, want %q", errMsg, tt.wantError)
@@ -388,7 +388,7 @@ func TestHandleToggleReaction_Validation(t *testing.T) {
 			}
 
 			var resp map[string]interface{}
-			json.Unmarshal(w.Body.Bytes(), &resp)
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
 			if errMsg, ok := resp["error"].(string); ok {
 				if errMsg != tt.wantError {
 					t.Errorf("error = %q, want %q", errMsg, tt.wantError)

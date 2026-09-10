@@ -117,6 +117,9 @@ dependencies {
     // and RemoteMessage directly and needs it declared here too. Harmless without
     // google-services.json — that file only gates the google-services plugin.
     implementation "com.google.firebase:firebase-messaging:$firebaseMessagingVersion"
+    // Headless push wake (#421): expedited WorkManager work outlives the
+    // ~seconds FCM grants onMessageReceived, and owns the wake locks.
+    implementation "androidx.work:work-runtime:$androidxWorkVersion"
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"

@@ -1413,7 +1413,7 @@ onMounted(async () => {
   width: 16px;
   left: 3px;
   bottom: 3px;
-  background-color: #fff;
+  background-color: var(--matou-switch-thumb, #fff);
   border-radius: 50%;
   transition: transform 0.2s;
 }
@@ -1438,8 +1438,8 @@ onMounted(async () => {
 
 /* Read-only field display */
 .field-box {
-  background: #f0f9fa;
-  border: 1px solid #d1e7ea;
+  background: var(--matou-field-tint-bg, #f0f9fa);
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
@@ -1450,8 +1450,8 @@ onMounted(async () => {
 
 /* Editable field input — looks like field-box but interactive */
 .field-input {
-  background: #f0f9fa;
-  border: 1px solid #d1e7ea;
+  background: var(--matou-field-tint-bg, #f0f9fa);
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
@@ -1464,16 +1464,16 @@ onMounted(async () => {
 }
 
 .field-input:hover {
-  border-color: #a8d4da;
+  border-color: var(--matou-field-tint-hover-border, #a8d4da);
 }
 
 .field-input:focus {
-  border-color: #1a4f5e;
-  box-shadow: 0 0 0 2px rgba(26, 79, 94, 0.1);
+  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
 }
 
 .field-input::placeholder {
-  color: #9ca3af;
+  color: var(--matou-field-tint-placeholder, #9ca3af);
 }
 
 textarea.field-input {
@@ -1556,8 +1556,8 @@ textarea.field-input {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  background: #f0f9fa;
-  border: 1px solid #d1e7ea;
+  background: var(--matou-field-tint-bg, #f0f9fa);
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   font-size: 0.875rem;
 }
@@ -1616,7 +1616,7 @@ textarea.field-input {
   flex: 0 0 160px;
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
-  border: 1px solid #d1e7ea;
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
@@ -1626,12 +1626,12 @@ textarea.field-input {
 }
 
 .social-link-select:hover:not(:disabled) {
-  border-color: #a8d4da;
+  border-color: var(--matou-field-tint-hover-border, #a8d4da);
 }
 
 .social-link-select:focus {
-  border-color: #1a4f5e;
-  box-shadow: 0 0 0 2px rgba(26, 79, 94, 0.1);
+  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
 }
 
 .social-link-select:disabled {
@@ -1643,7 +1643,7 @@ textarea.field-input {
   flex: 1;
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
-  border: 1px solid #d1e7ea;
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   background: var(--matou-card, white);
   color: var(--matou-foreground, #1f2937);
@@ -1652,12 +1652,12 @@ textarea.field-input {
 }
 
 .social-link-input:hover:not(:disabled) {
-  border-color: #a8d4da;
+  border-color: var(--matou-field-tint-hover-border, #a8d4da);
 }
 
 .social-link-input:focus {
-  border-color: #1a4f5e;
-  box-shadow: 0 0 0 2px rgba(26, 79, 94, 0.1);
+  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
 }
 
 .social-link-input:disabled {

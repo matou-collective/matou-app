@@ -25,6 +25,14 @@ describe('buildOobiCandidates', () => {
     expect(candidates[candidates.length - 1]).toBe(AGENT_OOBI);
   });
 
+  it('keeps a reverse-proxy path prefix when deriving the bare OOBI (coa-shared proxied layout)', () => {
+    const proxied = `https://coa-infra.matou.nz/keria/cesr/oobi/${AID}/agent/EAgentAgentAgentAgentAgentAgentAgentAgentAgu`;
+    const candidates = buildOobiCandidates({ applicantAid: AID, recordedOobi: proxied });
+    expect(candidates[0]).toBe(`https://coa-infra.matou.nz/keria/cesr/oobi/${AID}`);
+    expect(candidates).not.toContain(`https://coa-infra.matou.nz/oobi/${AID}`);
+    expect(candidates[candidates.length - 1]).toBe(proxied);
+  });
+
   it('derives a bare OOBI from the recorded OOBI host when it differs from cesrUrl', () => {
     const foreign = `http://other.example.com:3902/oobi/${AID}/agent/EAgentAgentAgentAgentAgentAgentAgentAgentAgu`;
     const candidates = buildOobiCandidates({
@@ -79,6 +87,12 @@ describe('buildOobiCandidates', () => {
 });
 
 describe('buildSenderOobiFields', () => {
+  it('derives the bare form from a proxied agent OOBI without dropping the prefix', () => {
+    const agentOobi = `https://coa-infra.matou.nz/keria/cesr/oobi/${AID}/agent/EAgentAgentAgentAgentAgentAgentAgentAgentAgu`;
+    const fields = buildSenderOobiFields({ prefix: AID, agentOobi });
+    expect(fields?.senderOOBI).toBe(`https://coa-infra.matou.nz/keria/cesr/oobi/${AID}`);
+  });
+
   it('records the bare OOBI as senderOOBI and demotes the agent form to senderAgentOobi', () => {
     expect(buildSenderOobiFields({ prefix: AID, cesrUrl: CESR, agentOobi: AGENT_OOBI })).toEqual({
       senderOOBI: `${CESR}/oobi/${AID}`,

@@ -248,11 +248,11 @@ func (h *ContributionsHandler) withOptionalRBAC(handler http.HandlerFunc) http.H
 // visibleAmounts / visibleAmountsList strip a contribution's budget/actuals from
 // callers who may not see them (see contribution_amounts.go).
 func (h *ContributionsHandler) visibleAmounts(r *http.Request, c *contributions.Contribution) *contributions.Contribution {
-	return visibleContributionAmounts(h.roleLookup, r, c)
+	return visibleContributionAmounts(h.roleLookup, h.service, h.spaceManager, r, c)
 }
 
 func (h *ContributionsHandler) visibleAmountsList(r *http.Request, cs []*contributions.Contribution) []*contributions.Contribution {
-	return visibleContributionAmountsList(h.roleLookup, r, cs)
+	return visibleContributionAmountsList(h.roleLookup, h.service, h.spaceManager, r, cs)
 }
 
 // withProjectRBAC applies project-scoped RBAC for actions whose authorisation
@@ -409,7 +409,7 @@ func (h *ContributionsHandler) HandleTransition(w http.ResponseWriter, r *http.R
 			}
 		}
 		if notifType != "" && recipientID != "" {
-			h.notifier.Notify(&ContribNotification{
+			_ = h.notifier.Notify(&ContribNotification{
 				Type:        notifType,
 				RecipientID: recipientID,
 				Title:       title,
@@ -611,7 +611,7 @@ func (h *ContributionsHandler) HandleRegister(w http.ResponseWriter, r *http.Req
 
 	// Notify project lead if a notifier is configured
 	if h.notifier != nil && contrib.CreatedBy != "" {
-		h.notifier.Notify(&ContribNotification{
+		_ = h.notifier.Notify(&ContribNotification{
 			Type:        "contribution:registered",
 			RecipientID: contrib.CreatedBy,
 			Title:       "New Registration",
@@ -661,7 +661,7 @@ func (h *ContributionsHandler) HandleAssign(w http.ResponseWriter, r *http.Reque
 
 	// Notify the assigned contributor
 	if h.notifier != nil {
-		h.notifier.Notify(&ContribNotification{
+		_ = h.notifier.Notify(&ContribNotification{
 			Type:        "contribution:assigned",
 			RecipientID: req.UserID,
 			Title:       "Contribution Assigned",
@@ -774,7 +774,7 @@ func (h *ContributionsHandler) HandleOffer(w http.ResponseWriter, r *http.Reques
 		})
 	}
 	if h.notifier != nil {
-		h.notifier.Notify(&ContribNotification{
+		_ = h.notifier.Notify(&ContribNotification{
 			Type:        "contribution:offered",
 			RecipientID: req.OfferedTo,
 			Title:       "Contribution Offered",
@@ -862,7 +862,7 @@ func (h *ContributionsHandler) HandleSubmitEvidence(w http.ResponseWriter, r *ht
 	}
 	log.Printf("[Contributions] evidence submitted for %s", id)
 	if h.notifier != nil && contrib.CreatedBy != "" {
-		h.notifier.Notify(&ContribNotification{
+		_ = h.notifier.Notify(&ContribNotification{
 			Type:        "contribution:needs_review",
 			RecipientID: contrib.CreatedBy,
 			Title:       "Contribution Ready for Review",
@@ -930,7 +930,7 @@ func (h *ContributionsHandler) HandleEditEvidence(w http.ResponseWriter, r *http
 				continue
 			}
 			seen[recipient] = true
-			h.notifier.Notify(&ContribNotification{
+			_ = h.notifier.Notify(&ContribNotification{
 				Type:        "contribution:evidence_edited",
 				RecipientID: recipient,
 				Title:       "Submission Edited",
@@ -996,7 +996,7 @@ func (h *ContributionsHandler) HandleReview(w http.ResponseWriter, r *http.Reque
 			message = "Your contribution needs more work: " + contrib.Title
 		}
 		if notifType != "" {
-			h.notifier.Notify(&ContribNotification{
+			_ = h.notifier.Notify(&ContribNotification{
 				Type:        notifType,
 				RecipientID: contrib.AssignedContributorID,
 				Title:       title,

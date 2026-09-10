@@ -1,4 +1,5 @@
-// backend/internal/logging/logger.go
+// Package logging provides a leveled, structured logger for the backend
+// server.
 package logging
 
 import (

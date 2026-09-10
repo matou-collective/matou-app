@@ -24,7 +24,7 @@ func TestValidateConsistency(t *testing.T) {
 		mutate  func(*Proof)
 		wantErr string
 	}{
-		{"matching proof passes", func(p *Proof) {}, ""},
+		{"matching proof passes", func(_ *Proof) {}, ""},
 		{"wrong version", func(p *Proof) { p.V = "matou-proof/v2" }, "version"},
 		{"wrong action", func(p *Proof) { p.Action = "contribution_reward" }, "action"},
 		{"wrong subject", func(p *Proof) { p.Subject = "ctr_other" }, "subject"},
