@@ -176,6 +176,17 @@ describe('isGrantAlreadyAdmitted (IPEX admit idempotency, issue #470)', () => {
 
     expect(await isGrantAlreadyAdmitted(client, grantOf('ECRED123'))).toBe(false);
   });
+
+  it('still finds the credential when the wallet holds more than signify-ts\'s default page of 25', async () => {
+    // The already-admitted credential sits at position 31: an unfiltered
+    // list() would never return it and the second admit would go ahead.
+    const client = credClient([...filler(30), { sad: { d: 'ECRED123' } }]);
+
+    expect(await isGrantAlreadyAdmitted(client, grantOf('ECRED123'))).toBe(true);
+    expect(client.list).toHaveBeenCalledWith(
+      expect.objectContaining({ filter: expect.objectContaining({ '-d': 'ECRED123' }) }),
+    );
+  });
 });
 
 // --- isCredentialAlreadyIssued ----------------------------------------------

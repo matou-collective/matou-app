@@ -157,7 +157,13 @@ export async function isGrantAlreadyAdmitted(
   const said = grantCredentialSaid(grantExn);
   if (!said) return false;
   try {
-    const creds = await client.credentials().list();
+    // Server-filtered on the SAID: an unfiltered list is capped at 25 entries
+    // by signify-ts, which would turn this check into a no-op on any wallet
+    // holding more credentials than that.
+    const creds = await client.credentials().list({
+      filter: { '-d': said },
+      limit: IDEMPOTENCY_LOOKUP_LIMIT,
+    });
     const already = (creds ?? []).some((c) => (c?.sad?.d ?? c?.d) === said);
     if (already) {
       log.debug(`grant credential ${said.slice(0, 12)} already in wallet — skipping admit`);
