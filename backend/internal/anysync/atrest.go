@@ -15,6 +15,7 @@ package anysync
 
 import (
 	"errors"
+	"path/filepath"
 	"sync"
 
 	"github.com/matou-dao/backend/internal/identity"
@@ -30,7 +31,13 @@ var (
 // key. An empty key clears any prior registration and restores the legacy
 // plaintext behaviour. Called by NewSDKClient from
 // app.Options.IdentityEncryptionKey.
+//
+// The registry is keyed by filepath.Clean(dataDir): callers look the key up
+// both with the data dir as given (PersistSpaceKeySet) and with
+// filepath.Dir(keyPath), which is always cleaned, so an unclean form such as
+// "./data" or a trailing slash must resolve to the same entry.
 func RegisterDataDirKey(dataDir string, key []byte) {
+	dataDir = filepath.Clean(dataDir)
 	encKeysMu.Lock()
 	defer encKeysMu.Unlock()
 	if len(key) == 0 {
@@ -45,6 +52,7 @@ func RegisterDataDirKey(dataDir string, key []byte) {
 // dataDirEncKey returns the at-rest key registered for dataDir, or nil when no
 // key is registered (legacy plaintext).
 func dataDirEncKey(dataDir string) []byte {
+	dataDir = filepath.Clean(dataDir)
 	encKeysMu.RLock()
 	defer encKeysMu.RUnlock()
 	return encKeys[dataDir]

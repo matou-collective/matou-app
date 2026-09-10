@@ -418,3 +418,62 @@ func TestNewPeerKeyManager_UnreadableSealedDeviceKeyRecovers(t *testing.T) {
 		}
 	})
 }
+
+// TestRegisterDataDirKey_UncleanPathStillSeals proves the registry is keyed by
+// the cleaned path: a data dir registered with a trailing slash or as ./data
+// must still seal peer.key (looked up via filepath.Dir, which cleans) and the
+// space key bundles. Before this, an unclean MATOU_DATA_DIR silently wrote
+// peer.key in plaintext next to sealed keys/*.keys.
+func TestRegisterDataDirKey_UncleanPathStillSeals(t *testing.T) {
+	check := func(t *testing.T, registeredAs, dir string) {
+		t.Helper()
+		RegisterDataDirKey(registeredAs, testEncKey)
+		t.Cleanup(func() { RegisterDataDirKey(registeredAs, nil) })
+
+		keyPath := filepath.Join(dir, "peer.key")
+		if _, err := GetOrCreatePeerKey(keyPath); err != nil {
+			t.Fatalf("GetOrCreatePeerKey: %v", err)
+		}
+		raw, err := os.ReadFile(keyPath)
+		if err != nil {
+			t.Fatalf("reading peer.key: %v", err)
+		}
+		if !identity.IsSealed(raw) {
+			t.Errorf("peer.key written plaintext although %q is registered", registeredAs)
+		}
+
+		keys, err := GenerateSpaceKeySet()
+		if err != nil {
+			t.Fatalf("GenerateSpaceKeySet: %v", err)
+		}
+		const spaceID = "space-unclean"
+		// Persist via the unclean form, load via the clean form.
+		if err := PersistSpaceKeySet(registeredAs, spaceID, keys); err != nil {
+			t.Fatalf("PersistSpaceKeySet: %v", err)
+		}
+		if !identity.IsSealed(readSpaceKeyRaw(t, dir, spaceID)) {
+			t.Errorf("space key bundle written plaintext although %q is registered", registeredAs)
+		}
+		loaded, err := LoadSpaceKeySet(dir, spaceID)
+		if err != nil {
+			t.Fatalf("LoadSpaceKeySet via clean path: %v", err)
+		}
+		sameKeySet(t, keys, loaded)
+
+		// Clearing via the clean form clears the unclean registration too.
+		RegisterDataDirKey(dir, nil)
+		if k := dataDirEncKey(registeredAs); k != nil {
+			t.Error("clearing via the clean path must clear the registration")
+		}
+	}
+
+	t.Run("trailing slash", func(t *testing.T) {
+		dir := t.TempDir()
+		check(t, dir+string(filepath.Separator), dir)
+	})
+
+	t.Run("dot-relative", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		check(t, "./data", "data")
+	})
+}
