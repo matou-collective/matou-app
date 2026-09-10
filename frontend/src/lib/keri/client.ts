@@ -2474,6 +2474,102 @@ export class KERIClient {
   }
 
   /**
+   * Re-grant an ALREADY-issued credential to a recipient via IPEX, WITHOUT
+   * minting a new ACDC / TEL event. Used by approveRegistration when the wallet
+   * already holds an active membership credential for the applicant — a prior
+   * run (possibly on another linked steward device) issued it but died before
+   * the grant / profile flip (#488). The IPEX admit is idempotent on the
+   * receiver (#477), so re-granting a credential the applicant already holds is
+   * harmless; if they never received it, this delivers it.
+   *
+   * Mirrors {@link issueCredential}'s grant tail (pre-grant KEL push so the
+   * recipient's agent holds our key state before the grant lands, then
+   * ipex().grant + submitGrant), but sources the ACDC / iss / anc from the
+   * existing credential rather than a fresh issue().
+   *
+   * @param issuerAidName - Name or prefix of the issuing AID
+   * @param credentialSaid - SAID of the existing credential to grant
+   * @param recipientAid - AID of the recipient (issuee)
+   * @param grantMessage - Optional message embedded in the grant (space invite)
+   */
+  async grantCredential(
+    issuerAidName: string,
+    credentialSaid: string,
+    recipientAid: string,
+    grantMessage?: string,
+  ): Promise<{ said: string }> {
+    if (!this.client) throw new Error('Not initialized');
+    await this.ensureConnected();
+
+    console.log(`[KERIClient] Re-granting existing credential ${credentialSaid} to ${recipientAid}...`);
+
+    // Resolve issuer AID (same prefix-or-name fallback as issueCredential).
+    let issuerAid;
+    try {
+      issuerAid = await this.client.identifiers().get(issuerAidName);
+    } catch {
+      const aids = await this.client.identifiers().list();
+      const found = aids.aids.find((a: { name: string; prefix: string }) => a.prefix === issuerAidName || a.name === issuerAidName);
+      if (!found) throw new Error(`Issuer AID "${issuerAidName}" not found`);
+      issuerAid = found;
+    }
+
+    // Fetch the existing ACDC plus its TEL issuance (iss) and anchoring (anc)
+    // events — the IPEX grant carries all three.
+    const cred = await this.client.credentials().get(credentialSaid);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = cred as any;
+    if (!c?.sad || !c?.iss || !c?.anc) {
+      throw new Error(`Credential ${credentialSaid} is missing ACDC/iss/anc data — cannot re-grant`);
+    }
+    const signify = await import('signify-ts');
+    const acdc = new signify.Serder(c.sad);
+    const iss = new signify.Serder(c.iss);
+    const anc = new signify.Serder(c.anc);
+
+    // Make sure the recipient's agent holds our key state BEFORE the grant
+    // arrives, else KERIA's exchanger escrows it and the ACDC never lands (see
+    // issueCredential's pre-grant push for the full rationale). Best-effort.
+    try {
+      const push = await this.pushKelToAgent(issuerAid.prefix, recipientAid);
+      if (push.pushed === 0) {
+        console.warn(`[KERIClient] Pre-grant KEL push to ${recipientAid.slice(0, 12)}... delivered nothing (${push.failed} failed)`);
+      }
+    } catch (pushErr) {
+      console.warn('[KERIClient] Pre-grant KEL push failed:', pushErr instanceof Error ? pushErr.message : pushErr);
+    }
+
+    console.log('[KERIClient] Granting existing credential via IPEX...');
+    const grantResult = await Promise.race([
+      this.client.ipex().grant({
+        senderName: issuerAid.prefix,
+        recipient: recipientAid,
+        message: grantMessage || '',
+        acdc,
+        iss,
+        anc,
+        datetime: new Date().toISOString(),
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('IPEX grant timed out after 30s')), 30000)
+      ),
+    ]);
+    const [grant, gsigs, end] = grantResult;
+
+    console.log('[KERIClient] Submitting IPEX grant...');
+    await Promise.race([
+      this.client.ipex().submitGrant(issuerAid.prefix, grant, gsigs, end, [recipientAid]),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('IPEX submitGrant timed out after 30s')), 30000)
+      ),
+    ]);
+    const grantSaid = (grant as { ked?: { d?: string } })?.ked?.d || 'unknown';
+    console.log(`[KERIClient] IPEX re-grant submitted, SAID: ${grantSaid}`);
+
+    return { said: credentialSaid };
+  }
+
+  /**
    * Revoke a previously issued credential.
    * @param issuerAidName - Name or prefix of the issuing AID
    * @param credentialSaid - SAID of the credential to revoke

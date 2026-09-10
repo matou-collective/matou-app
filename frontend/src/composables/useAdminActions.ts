@@ -12,7 +12,7 @@ import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
 import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
 import { getOrCreateOrgRegistry } from 'src/lib/keri/registry';
-import { isCredentialAlreadyIssued } from 'src/lib/keri/notifications';
+import { findActiveIssuedCredentialSaid } from 'src/lib/keri/notifications';
 import { secureStorage } from 'src/lib/secureStorage';
 
 // Membership credential schema
@@ -205,34 +205,33 @@ export function useAdminActions() {
         throw new Error('Not connected to KERIA');
       }
 
-      // 0. Cross-device idempotency guard (#480, #466). isProcessing is
+      // 0. Cross-device idempotency (#480, #488, #466). isProcessing is
       //    per-JS-instance, so two linked steward devices sharing one KERIA
       //    agent can both reach Approve for the same applicant (near-
       //    simultaneous clicks, or a stale pending list on the second device).
-      //    On a shared agent both devices see the same wallet, so if the
-      //    membership credential is already issued to this applicant, another
-      //    device (or an earlier run) already approved them: bail without
-      //    issuing a second ACDC / TEL event / grant. This also covers the
-      //    multisig-steward path, which issues through the same issueCredential.
+      //    On a shared agent both devices see the same wallet, so an ACTIVE
+      //    membership credential already issued to this applicant means another
+      //    device — or an earlier run that died between issue and grant — has
+      //    already minted the ACDC. We must NOT re-issue a duplicate ACDC / TEL
+      //    event, but we must NOT bail either: re-grant that exact SAID and run
+      //    the profile flip below, otherwise a partial run leaves the applicant
+      //    with an issued-but-never-granted credential and a registration that
+      //    only looks approved (#488). The IPEX admit is idempotent on the
+      //    receiver (#477), so re-granting a credential the applicant already
+      //    holds is harmless. Revoked credentials are ignored, so a removed-
+      //    then-reapplied member still gets a fresh issuance below.
       //    Best-effort — a client-side wallet lookup, not a server-side
       //    compare-and-set, so a truly simultaneous double-issue can still race
-      //    (spec §3.5). The applicant already holds the credential either way,
-      //    so we still mark notifications read and surface the state.
-      if (await isCredentialAlreadyIssued(client, MEMBERSHIP_SCHEMA_SAID, registration.applicantAid)) {
+      //    (spec §3.5).
+      const existingCredentialSaid = await findActiveIssuedCredentialSaid(
+        client,
+        MEMBERSHIP_SCHEMA_SAID,
+        registration.applicantAid,
+      );
+      if (existingCredentialSaid) {
         console.log(
-          `[AdminActions] Membership credential already issued to ${registration.applicantAid.slice(0, 12)}... — treating as approved on another device`,
+          `[AdminActions] Membership credential ${existingCredentialSaid.slice(0, 12)}... already issued to ${registration.applicantAid.slice(0, 12)}... — re-granting instead of re-issuing`,
         );
-        await markAllApplicantNotificationsRead(registration.applicantAid);
-        Notify.create({
-          type: 'info',
-          message: 'This applicant was already approved on another device.',
-        });
-        lastAction.value = {
-          type: 'approve',
-          success: true,
-          registrationId: registration.notificationId,
-        };
-        return true;
       }
 
       // 1. Get org config for registry ID
@@ -348,32 +347,51 @@ export function useAdminActions() {
         readOnlySpaceId: inviteResult.readOnlySpaceId,
       });
 
-      // 6. Issue membership credential
-      processingStep.value = 'Issuing membership credential...';
-      // Note: Schema requires communityName to be 'MATOU' literal value
-      const credentialData = {
-        communityName: 'MATOU',
-        role: 'Member',
-        joinedAt: new Date().toISOString(),
-      };
+      // 6. Issue membership credential — OR, when a prior (possibly partial)
+      //    run on another device already minted one for this applicant,
+      //    re-grant that existing SAID instead of issuing a duplicate (#488).
+      if (existingCredentialSaid) {
+        processingStep.value = 'Re-sending membership credential...';
+        console.log('[AdminActions] Re-granting existing membership credential to:', registration.applicantAid);
+        await keriClient.grantCredential(
+          issuerAidName,
+          existingCredentialSaid,
+          registration.applicantAid,
+          grantMessage,
+        );
+        credentialSaid = existingCredentialSaid;
+        console.log('[AdminActions] Credential re-granted:', credentialSaid);
+        Notify.create({
+          type: 'info',
+          message: 'This applicant was already issued a membership credential on another device — re-sent.',
+        });
+      } else {
+        processingStep.value = 'Issuing membership credential...';
+        // Note: Schema requires communityName to be 'MATOU' literal value
+        const credentialData = {
+          communityName: 'MATOU',
+          role: 'Member',
+          joinedAt: new Date().toISOString(),
+        };
 
-      console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
-      // Resolve the registry on the org group AID for THIS backend. KERIA does
-      // not sync TEL/registry events between group-AID members, so each
-      // steward must use a registry that exists in their local KERIA. The
-      // admin already has one; upgraded stewards create their own here.
-      const orgRegistryId = await getOrCreateOrgRegistry(issuerAidName);
-      const credResult = await keriClient.issueCredential(
-        issuerAidName,
-        orgRegistryId,
-        MEMBERSHIP_SCHEMA_SAID,
-        registration.applicantAid,
-        credentialData,
-        grantMessage
-      );
+        console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
+        // Resolve the registry on the org group AID for THIS backend. KERIA does
+        // not sync TEL/registry events between group-AID members, so each
+        // steward must use a registry that exists in their local KERIA. The
+        // admin already has one; upgraded stewards create their own here.
+        const orgRegistryId = await getOrCreateOrgRegistry(issuerAidName);
+        const credResult = await keriClient.issueCredential(
+          issuerAidName,
+          orgRegistryId,
+          MEMBERSHIP_SCHEMA_SAID,
+          registration.applicantAid,
+          credentialData,
+          grantMessage
+        );
 
-      console.log('[AdminActions] Credential issued:', credResult.said);
-      credentialSaid = credResult.said;
+        console.log('[AdminActions] Credential issued:', credResult.said);
+        credentialSaid = credResult.said;
+      }
 
       // Push the issuer's KEL (org group AID, incl. the ixn anchoring this
       // credential's registry event) into the applicant's agent. Without it
