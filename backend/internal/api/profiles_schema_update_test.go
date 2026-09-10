@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"sync"
 	"testing"
@@ -268,4 +269,61 @@ func TestUpdateType_ConcurrentSameVersion(t *testing.T) {
 	if def, _ := h.registry.Get("SharedProfile"); def.Version != 2 {
 		t.Errorf("registry version = %d, want exactly one bump to 2", def.Version)
 	}
+}
+
+// TestUpdateType_CoreFieldFlagsReasserted: a PUT that keeps a core field's name
+// and type but flips its core/required/readOnly/validation flags is accepted,
+// and the served, registered and persisted definition all carry the built-in
+// core FieldDef verbatim — so a PUT and the next boot (LoadFromSpace, which
+// re-asserts the same way) agree.
+func TestUpdateType_CoreFieldFlagsReasserted(t *testing.T) {
+	h, fw := newSchemaTestHandler()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/types/", h.handleTypeByName)
+
+	builtinAID, _ := types.SharedProfileType().Field("aid")
+	if !builtinAID.Core || !builtinAID.Required || !builtinAID.ReadOnly {
+		t.Fatalf("test premise: built-in aid should be core+required+readOnly, got %+v", builtinAID)
+	}
+
+	def := sharedProfileWithCustom()
+	for i := range def.Fields {
+		if def.Fields[i].Name == "aid" {
+			def.Fields[i].Core = false
+			def.Fields[i].Required = false
+			def.Fields[i].ReadOnly = false
+			def.Fields[i].Validation = &types.Validation{Pattern: "^x$"}
+		}
+	}
+
+	rec := putType(t, mux, "SharedProfile", "", def)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+
+	var served types.TypeDefinition
+	if err := json.Unmarshal(rec.Body.Bytes(), &served); err != nil {
+		t.Fatal(err)
+	}
+	check := func(label string, d *types.TypeDefinition) {
+		t.Helper()
+		got, ok := d.Field("aid")
+		if !ok {
+			t.Fatalf("%s: aid missing", label)
+		}
+		if !reflect.DeepEqual(got, builtinAID) {
+			t.Errorf("%s: aid = %+v, want built-in %+v", label, got, builtinAID)
+		}
+		if _, ok := d.Field("iwi"); !ok {
+			t.Errorf("%s: custom field iwi lost", label)
+		}
+	}
+	check("response", &served)
+	if reg, _ := h.registry.Get("SharedProfile"); reg != nil {
+		check("registry", reg)
+	}
+	if len(fw.written) != 1 {
+		t.Fatalf("expected one persisted definition, got %d", len(fw.written))
+	}
+	check("persisted", fw.written[0])
 }

@@ -176,6 +176,13 @@ func (h *ProfilesHandler) HandleUpdateType(w http.ResponseWriter, r *http.Reques
 	updated := incoming
 	updated.Version = current.Version + 1
 
+	// The validator only pins a core field's name and type; its flags
+	// (core/required/readOnly/validation) are re-asserted from the built-in
+	// here — the same merge LoadFromSpace applies at boot — so what is served
+	// now and what the next boot loads never disagree (notices.go reads f.Core
+	// at runtime to tell custom fields apart).
+	types.ReassertCoreFields(builtin, &updated)
+
 	if h.schemaWriter != nil {
 		if err := h.schemaWriter.WriteTypeDefinition(r.Context(), &updated); err != nil {
 			log.Printf("[Types] failed to persist definition %q (version %d): %v", name, updated.Version, err)
