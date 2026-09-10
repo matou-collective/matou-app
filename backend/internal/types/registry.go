@@ -92,6 +92,28 @@ func (r *Registry) Validate(typeName string, data json.RawMessage) ([]string, er
 	return ValidateData(def, data), nil
 }
 
+// ValidateForRead validates stored data tolerantly (grandfathering
+// newly-required fields) against a named type — the read counterpart to
+// Validate. See ValidateForRead.
+func (r *Registry) ValidateForRead(typeName string, data json.RawMessage) ([]string, error) {
+	def, ok := r.Get(typeName)
+	if !ok {
+		return nil, fmt.Errorf("unknown type: %s", typeName)
+	}
+	return ValidateForRead(def, data), nil
+}
+
+// StampVersion stamps the live schema version of a named type into data — the
+// migrate-on-write step. Returns the data unchanged for a type that does not
+// track a typeVersion. See StampVersion.
+func (r *Registry) StampVersion(typeName string, data json.RawMessage) (json.RawMessage, error) {
+	def, ok := r.Get(typeName)
+	if !ok {
+		return nil, fmt.Errorf("unknown type: %s", typeName)
+	}
+	return StampVersion(def, data)
+}
+
 // IsFilterable reports whether a named type declares the given field as
 // filterable. Unknown types or fields are not filterable.
 func (r *Registry) IsFilterable(typeName, field string) bool {
@@ -199,7 +221,7 @@ func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, space
 		}
 		def := winner.def
 		if builtin, ok := r.Get(def.Name); ok {
-			reassertCoreFields(builtin, def)
+			ReassertCoreFields(builtin, def)
 		}
 		r.Register(def)
 		loaded++
@@ -209,7 +231,7 @@ func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, space
 	return nil
 }
 
-// reassertCoreFields overwrites, in persisted, every field the built-in marks
+// ReassertCoreFields overwrites, in persisted, every field the built-in marks
 // core with the built-in's own field definition, and appends any core field the
 // persisted definition dropped (preserving built-in order for the appended
 // ones). Non-core fields — and the ordering of the fields the persisted
@@ -217,7 +239,13 @@ func (r *Registry) LoadFromSpace(ctx context.Context, reader ObjectReader, space
 // the customisable part of its schema. Core fields are the ones backend handlers
 // depend on structurally; they can never be removed or redefined by a stored
 // definition, corrupted or otherwise.
-func reassertCoreFields(builtin, persisted *TypeDefinition) {
+//
+// It is applied both at boot (LoadFromSpace) and by the schema PUT handler
+// before a definition is persisted and registered, so the stored, served and
+// loaded copies of a core field are always the built-in FieldDef verbatim —
+// flags such as core/required/readOnly/validation included, not just name and
+// type. A nil builtin or persisted is a no-op.
+func ReassertCoreFields(builtin, persisted *TypeDefinition) {
 	if builtin == nil || persisted == nil {
 		return
 	}

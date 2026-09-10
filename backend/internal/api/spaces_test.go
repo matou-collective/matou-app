@@ -260,6 +260,69 @@ func setupTestSpacesHandler(t *testing.T) (*SpacesHandler, *mockAnySyncClient, *
 	return handler, mockClient, mockStore
 }
 
+// grantStewardHandler wires a SpacesHandler over a SpaceManager whose client is
+// the given mock, with both the community and community-readonly spaces
+// configured, so HandleGrantStewardAdmin exercises the AID lookup path.
+func grantStewardHandler(client *mockAnySyncClient) *SpacesHandler {
+	spaceManager := anysync.NewSpaceManager(client, &anysync.SpaceManagerConfig{
+		CommunitySpaceID:         "cs",
+		CommunityReadOnlySpaceID: "ro",
+	})
+	return &SpacesHandler{spaceManager: spaceManager}
+}
+
+func callGrantStewardAdmin(h *SpacesHandler, aid string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(GrantStewardAdminRequest{StewardAID: aid})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/spaces/grant-steward-admin", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleGrantStewardAdmin(w, req)
+	return w
+}
+
+// TestHandleGrantStewardAdmin_TransportFaultIs500 confirms a state/transport
+// fault from the AID lookup surfaces as 500, not a 404 "unknown steward" — the
+// outer lookup no longer collapses every error to a miss (#481).
+func TestHandleGrantStewardAdmin_TransportFaultIs500(t *testing.T) {
+	// space == nil makes GetSpace return a transport-style error, which does not
+	// wrap ErrAccountNotFoundForAID.
+	h := grantStewardHandler(newMockClient())
+
+	w := callGrantStewardAdmin(h, "ESteward")
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("transport fault: expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestHandleGrantStewardAdmin_GenuineMissIs404 confirms a real "AID absent from
+// the ACL" miss still reports 404 (#481).
+func TestHandleGrantStewardAdmin_GenuineMissIs404(t *testing.T) {
+	// Build a real ACL holding only the owner, whose metadata carries no AID, so
+	// any steward lookup is a genuine ErrAccountNotFoundForAID miss.
+	exec := list.NewAclExecutor("cs")
+	if err := exec.Execute("a.init::a"); err != nil {
+		t.Fatalf("building ACL: %v", err)
+	}
+	state := exec.ActualAccounts()["a"].Acl.AclState()
+
+	ctrl := gomock.NewController(t)
+	mockSpace := mock_commonspace.NewMockSpace(ctrl)
+	mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+	mockSpace.EXPECT().Acl().Return(mockACL)
+	mockACL.EXPECT().RLock()
+	mockACL.EXPECT().RUnlock()
+	mockACL.EXPECT().AclState().Return(state)
+
+	client := newMockClient()
+	client.space = mockSpace
+	h := grantStewardHandler(client)
+
+	w := callGrantStewardAdmin(h, "ENoSuchSteward")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("genuine miss: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestHandleCreateCommunity_Success(t *testing.T) {
 	handler, _, _ := setupTestSpacesHandler(t)
 

@@ -70,6 +70,18 @@ if `peer.key` still equals the mnemonic-derived key, it is replaced with a fresh
 random device key; the sign key value the ACL already trusts is preserved (it is
 re-derived from the mnemonic each boot).
 
+**At rest (#117):** when the shell supplies an identity encryption key
+(`app.Options.IdentityEncryptionKey`), `{dataDir}/peer.key`,
+`{dataDir}/users/{aid}/sign.key` (and the legacy `peer.key` fallback) and the
+space key bundles `{dataDir}/keys/*.keys` are sealed with the same AES-256-GCM
+format as `identity.json`; plaintext files are migrated on first keyed open.
+With no key (dev/test) everything stays plaintext. A sealed space key or sign
+key that cannot be opened fails closed. A sealed **device** `peer.key` that
+cannot be opened (shell key lost or rotated, or a launch with no key) is moved
+aside as `peer.key.unreadable-<unixtime>` and a fresh random device key is
+minted, so the node boots unconfigured instead of locking out; `identity/set`
+re-persists the new peer id. `cmd/acl-repair` refuses a sealed `peer.key`.
+
 ## Project Structure
 
 ```

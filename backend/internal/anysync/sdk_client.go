@@ -117,6 +117,13 @@ func NewSDKClient(clientConfigPath string, opts *ClientOptions) (*SDKClient, err
 	}
 	client.utm.SetSpacesDir(spacesDir)
 
+	// Register the at-rest encryption key for this data directory so the
+	// package-level key persistence helpers seal keys/*.keys and peer.key under
+	// it (issue #117). An empty key registers the legacy plaintext behaviour.
+	if opts != nil {
+		RegisterDataDirKey(dataDir, opts.EncryptionKey)
+	}
+
 	// Initialize peer key manager
 	keyPath := filepath.Join(dataDir, "peer.key")
 	if opts != nil && opts.PeerKeyPath != "" {
