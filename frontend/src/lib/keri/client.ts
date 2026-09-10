@@ -2527,6 +2527,26 @@ export class KERIClient {
     const iss = new signify.Serder(c.iss);
     const anc = new signify.Serder(c.anc);
 
+    // Group-AID issuer (org stewards): the prior run may have died before the
+    // anchoring ixn was receipted by every org witness, so gate the re-grant on
+    // the same `group.<ixn SAID>` op issueCredential waits on — otherwise the
+    // recipient never sees the anchor and the credential sits in its escrow
+    // (issue #51). Then re-push the group KEL to the other signing members so
+    // the next member to issue does not fork the KEL at this sn (issue #63);
+    // that push is best-effort and never throws.
+    if ((issuerAid as { group?: unknown }).group) {
+      const ancSaid = (c.anc as { d?: string }).d;
+      if (ancSaid) {
+        await this.awaitGroupAnchorWitnessed(ancSaid, { label: 're-grant' });
+      } else {
+        console.warn('[KERIClient] Group re-grant: existing credential has no anchoring ixn SAID — cannot gate grant on witness receipts');
+      }
+      await this.pushGroupKelToOtherMembers(
+        issuerAid.prefix,
+        (issuerAid as { group?: { mhab?: { prefix?: string } } }).group?.mhab?.prefix,
+      );
+    }
+
     // Make sure the recipient's agent holds our key state BEFORE the grant
     // arrives, else KERIA's exchanger escrows it and the ACDC never lands (see
     // issueCredential's pre-grant push for the full rationale). Best-effort.
