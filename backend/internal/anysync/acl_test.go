@@ -401,6 +401,80 @@ func TestMatouACLManager_FindAccountByAID_NilState(t *testing.T) {
 	}
 }
 
+// TestMatouACLManager_FindAccountByAID_AnchoredMatch builds a real ACL with two
+// members whose AIDs share a prefix and confirms FindAccountByAID resolves the
+// exact account (not a prefix collision) and reports a prefix-only lookup as a
+// genuine ErrAccountNotFoundForAID miss. Guards the anchored-equality match that
+// replaced the old unanchored substring test (#481).
+func TestMatouACLManager_FindAccountByAID_AnchoredMatch(t *testing.T) {
+	const (
+		shortAID = "EAAAA"
+		longAID  = "EAAAABBBB" // shortAID is a strict prefix of longAID
+	)
+
+	exec := list.NewAclExecutor("spaceId")
+	cmds := []string{
+		"a.init::a",
+		fmt.Sprintf(`a.add::short,r,{"aid":"%s"};long,r,{"aid":"%s"}`, shortAID, longAID),
+	}
+	for _, cmd := range cmds {
+		if err := exec.Execute(cmd); err != nil {
+			t.Fatalf("building ACL (%q): %v", cmd, err)
+		}
+	}
+
+	accounts := exec.ActualAccounts()
+	state := accounts["a"].Acl.AclState()
+	shortPub := accounts["short"].Keys.SignKey.GetPublic()
+	longPub := accounts["long"].Keys.SignKey.GetPublic()
+
+	newMgr := func() *MatouACLManager {
+		ctrl := gomock.NewController(t)
+		mockSpace := mock_commonspace.NewMockSpace(ctrl)
+		mockACL := mock_syncacl.NewMockSyncAcl(ctrl)
+		mockSpace.EXPECT().Acl().Return(mockACL)
+		mockACL.EXPECT().RLock()
+		mockACL.EXPECT().RUnlock()
+		mockACL.EXPECT().AclState().Return(state)
+		return NewMatouACLManager(&testACLClient{space: mockSpace}, nil)
+	}
+
+	// Exact lookups resolve to the exact account, not the prefix neighbour.
+	pubKey, meta, err := newMgr().FindAccountByAID(context.Background(), "spaceId", shortAID)
+	if err != nil {
+		t.Fatalf("lookup of %q: %v", shortAID, err)
+	}
+	if !pubKey.Equals(shortPub) {
+		t.Errorf("lookup of %q returned the wrong account", shortAID)
+	}
+	if got := extractAIDFromMetadata(meta); got != shortAID {
+		t.Errorf("returned metadata aid = %q, want %q", got, shortAID)
+	}
+
+	pubKey, _, err = newMgr().FindAccountByAID(context.Background(), "spaceId", longAID)
+	if err != nil {
+		t.Fatalf("lookup of %q: %v", longAID, err)
+	}
+	if !pubKey.Equals(longPub) {
+		t.Errorf("lookup of %q returned the wrong account", longAID)
+	}
+
+	// A prefix-only lookup (shared by both members but claimed by neither) is a
+	// genuine miss, not a match on the longer AID.
+	_, _, err = newMgr().FindAccountByAID(context.Background(), "spaceId", "EAAA")
+	if !errors.Is(err, ErrAccountNotFoundForAID) {
+		t.Errorf("prefix-only lookup error = %v, want ErrAccountNotFoundForAID", err)
+	}
+
+	// An empty AID never matches an account that simply carries no aid field;
+	// it short-circuits to a miss before the space is even fetched.
+	emptyMgr := NewMatouACLManager(&testACLClient{}, nil)
+	_, _, err = emptyMgr.FindAccountByAID(context.Background(), "spaceId", "")
+	if !errors.Is(err, ErrAccountNotFoundForAID) {
+		t.Errorf("empty-AID lookup error = %v, want ErrAccountNotFoundForAID", err)
+	}
+}
+
 func TestMatouACLManager_JoinWithInvite(t *testing.T) {
 	ctrl := gomock.NewController(t)
 

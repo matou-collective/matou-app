@@ -35,6 +35,12 @@ type ClientOptions struct {
 	Mnemonic string
 	// KeyIndex for mnemonic derivation (default 0)
 	KeyIndex uint32
+	// EncryptionKey, when non-empty, seals the space read keys
+	// ({dataDir}/keys/*.keys) and peer keys ({dataDir}/peer.key) at rest with
+	// AES-256-GCM — the same shell-supplied key that protects identity.json
+	// (issue #117). Empty keeps the legacy plaintext format for dev/test and
+	// any not-yet-wired shell.
+	EncryptionKey []byte
 }
 
 // SpaceCreateResult contains the result of space creation
