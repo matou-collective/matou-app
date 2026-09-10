@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anyproto/any-sync/util/crypto"
+
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
@@ -1387,30 +1389,56 @@ func (h *ProfilesHandler) handleTypeByName(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// spaceSchemaWriter persists a type definition into the community space,
-// signed with that space's key set — the same object shape org setup seeds
-// (type "type_definition"; see spaces.go seedSpace). A stable object ID
-// (typedef-<name>) means an edit supersedes the prior definition rather than
-// accumulating duplicates.
-type spaceSchemaWriter struct {
-	spaceManager *anysync.SpaceManager
+// schemaObjectStore is the slice of anysync.ObjectTreeManager the schema
+// writer needs: enumerate the type_definition objects already in a space and
+// create-or-update one by ID. Tests inject an in-memory fake.
+type schemaObjectStore interface {
+	ReadObjectsByType(ctx context.Context, spaceID, typeName string) ([]*anysync.ObjectPayload, error)
+	AddObject(ctx context.Context, spaceID string, payload *anysync.ObjectPayload, signingKey crypto.PrivKey) (string, error)
 }
 
-func (s *spaceSchemaWriter) WriteTypeDefinition(ctx context.Context, def *types.TypeDefinition) error {
+// spaceSchemaWriter persists a type definition into the community space,
+// signed with that space's key set — the same object shape org setup seeds
+// (type "type_definition"; see spaces.go seedSpace).
+//
+// Object identity: AddObject decides create-vs-update by exact object ID, and
+// seedSpace stored the seeded definitions under `typedef-<name>-<unixmilli>`,
+// so the writer cannot assume a fixed ID. It looks the existing object up by
+// the definition's Name among the space's type_definition objects and updates
+// that one; only when none exists does it create `typedef-<name>`. That keeps
+// exactly one stored definition per name — the property
+// Registry.LoadFromSpace's highest-version tie-break only masks.
+type spaceSchemaWriter struct {
+	spaceManager *anysync.SpaceManager
+
+	// Test seams. When store is set the space manager is not consulted and
+	// spaceID / signingKey / ownerKey are used as given.
+	store      schemaObjectStore
+	spaceID    string
+	signingKey crypto.PrivKey
+	ownerKey   string
+}
+
+// target resolves the store, space and signing material for a write — from the
+// test seams when set, otherwise from the space manager's community space.
+func (s *spaceSchemaWriter) target() (schemaObjectStore, string, crypto.PrivKey, string, error) {
+	if s.store != nil {
+		return s.store, s.spaceID, s.signingKey, s.ownerKey, nil
+	}
 	if s.spaceManager == nil {
-		return fmt.Errorf("space manager not available")
+		return nil, "", nil, "", fmt.Errorf("space manager not available")
 	}
 	spaceID := s.spaceManager.GetCommunitySpaceID()
 	if spaceID == "" {
-		return fmt.Errorf("community space not configured")
+		return nil, "", nil, "", fmt.Errorf("community space not configured")
 	}
 	client := s.spaceManager.GetClient()
 	if client == nil {
-		return fmt.Errorf("any-sync client not available")
+		return nil, "", nil, "", fmt.Errorf("any-sync client not available")
 	}
 	keys, err := anysync.LoadOrCreateSpaceKeySet(client.GetDataDir(), spaceID, client.GetSigningKey())
 	if err != nil {
-		return fmt.Errorf("loading space keys: %w", err)
+		return nil, "", nil, "", fmt.Errorf("loading space keys: %w", err)
 	}
 	ownerKey := ""
 	if keys.SigningKey != nil {
@@ -1418,22 +1446,70 @@ func (s *spaceSchemaWriter) WriteTypeDefinition(ctx context.Context, def *types.
 			ownerKey = fmt.Sprintf("%x", pub)
 		}
 	}
+	return s.spaceManager.ObjectTreeManager(), spaceID, keys.SigningKey, ownerKey, nil
+}
+
+func (s *spaceSchemaWriter) WriteTypeDefinition(ctx context.Context, def *types.TypeDefinition) error {
+	store, spaceID, signingKey, ownerKey, err := s.target()
+	if err != nil {
+		return err
+	}
 	data, err := json.Marshal(def)
 	if err != nil {
 		return fmt.Errorf("marshaling type definition: %w", err)
 	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	objectID, err := existingTypeDefinitionID(writeCtx, store, spaceID, def.Name)
+	if err != nil {
+		return fmt.Errorf("looking up stored definition %q: %w", def.Name, err)
+	}
+	if objectID == "" {
+		objectID = fmt.Sprintf("typedef-%s", def.Name)
+	}
+
 	payload := &anysync.ObjectPayload{
-		ID:        fmt.Sprintf("typedef-%s", def.Name),
+		ID:        objectID,
 		Type:      "type_definition",
 		OwnerKey:  ownerKey,
 		Data:      data,
 		Timestamp: time.Now().Unix(),
 		Version:   def.Version,
 	}
-	writeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	_, err = s.spaceManager.ObjectTreeManager().AddObject(writeCtx, spaceID, payload, keys.SigningKey)
+	_, err = store.AddObject(writeCtx, spaceID, payload, signingKey)
 	return err
+}
+
+// existingTypeDefinitionID returns the object ID of the type_definition stored
+// for name in spaceID, or "" when there is none. Should the space hold several
+// (a pre-fix write path could leave stale copies), the one with the highest
+// data.version wins and ties keep the first enumerated — the same tie-break
+// Registry.LoadFromSpace applies at boot, so the copy updated here is the copy
+// the next boot loads. Entries whose data does not parse are ignored.
+func existingTypeDefinitionID(ctx context.Context, store schemaObjectStore, spaceID, name string) (string, error) {
+	objects, err := store.ReadObjectsByType(ctx, spaceID, "type_definition")
+	if err != nil {
+		return "", err
+	}
+	bestID, bestVersion := "", -1
+	for _, o := range objects {
+		if o == nil {
+			continue
+		}
+		var head struct {
+			Name    string `json:"name"`
+			Version int    `json:"version"`
+		}
+		if err := json.Unmarshal(o.Data, &head); err != nil || head.Name != name {
+			continue
+		}
+		if head.Version > bestVersion {
+			bestID, bestVersion = o.ID, head.Version
+		}
+	}
+	return bestID, nil
 }
 
 // handleProfiles routes /api/v1/profiles requests.
