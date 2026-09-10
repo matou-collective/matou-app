@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -256,7 +257,7 @@ func LoadSpaceKeySet(dataDir, spaceID string) (*SpaceKeySet, error) {
 	// opened with a key registered, mirroring the identity.json migration.
 	if shouldMigrate(dataDir, wasSealed) {
 		if err := PersistSpaceKeySet(dataDir, spaceID, keySet); err != nil {
-			fmt.Printf("Warning: failed to migrate %s.keys to sealed form: %v\n", spaceID, err)
+			log.Printf("[anysync] Warning: failed to migrate %s.keys to sealed form: %v", spaceID, err)
 		}
 	}
 

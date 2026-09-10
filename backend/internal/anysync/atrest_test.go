@@ -2,8 +2,10 @@ package anysync
 
 import (
 	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/anyproto/any-sync/util/crypto"
@@ -476,4 +478,66 @@ func TestRegisterDataDirKey_UncleanPathStillSeals(t *testing.T) {
 		t.Chdir(t.TempDir())
 		check(t, "./data", "data")
 	})
+}
+
+// TestMigrationWarnings_GoToLog proves a failed plaintext→sealed migration is
+// best-effort (the load still succeeds) and that the warning is written via
+// the log package (stderr), which the e2e BackendManager captures — not via
+// fmt.Printf to stdout, which it does not.
+func TestMigrationWarnings_GoToLog(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("read-only file permissions are not enforced for root")
+	}
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "peer.key")
+	priv, err := GetOrCreatePeerKey(keyPath) // plaintext, no key registered
+	if err != nil {
+		t.Fatalf("GetOrCreatePeerKey: %v", err)
+	}
+	keys, err := GenerateSpaceKeySet()
+	if err != nil {
+		t.Fatalf("GenerateSpaceKeySet: %v", err)
+	}
+	const spaceID = "space-ro"
+	if err := PersistSpaceKeySet(dir, spaceID, keys); err != nil {
+		t.Fatalf("PersistSpaceKeySet: %v", err)
+	}
+	bundlePath := filepath.Join(dir, "keys", spaceID+".keys")
+
+	// Make both files unwritable so the in-place migration fails.
+	for _, p := range []string{keyPath, bundlePath} {
+		if err := os.Chmod(p, 0400); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(p, 0600) })
+	}
+
+	RegisterDataDirKey(dir, testEncKey)
+	t.Cleanup(func() { RegisterDataDirKey(dir, nil) })
+
+	reloaded, err := GetOrCreatePeerKey(keyPath)
+	if err != nil {
+		t.Fatalf("a failed peer.key migration must not fail the load: %v", err)
+	}
+	if reloaded.GetPublic().PeerId() != priv.GetPublic().PeerId() {
+		t.Error("peer key changed when migration failed")
+	}
+	loaded, err := LoadSpaceKeySet(dir, spaceID)
+	if err != nil {
+		t.Fatalf("a failed bundle migration must not fail the load: %v", err)
+	}
+	sameKeySet(t, keys, loaded)
+
+	out := buf.String()
+	if !strings.Contains(out, "failed to migrate peer.key") {
+		t.Errorf("peer.key migration warning not written via log: %q", out)
+	}
+	if !strings.Contains(out, "failed to migrate "+spaceID+".keys") {
+		t.Errorf("space key migration warning not written via log: %q", out)
+	}
 }

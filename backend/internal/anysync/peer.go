@@ -187,7 +187,7 @@ func loadOrCreateDeviceKey(keyPath string, signKey crypto.PrivKey) (crypto.PrivK
 	if shouldMigrate(dir, wasSealed) {
 		if sealed, serr := sealBytes(dir, data); serr == nil {
 			if werr := os.WriteFile(keyPath, sealed, 0600); werr != nil {
-				fmt.Printf("Warning: failed to migrate peer.key to sealed form: %v\n", werr)
+				log.Printf("[anysync] Warning: failed to migrate peer.key to sealed form: %v", werr)
 			}
 		}
 	}
