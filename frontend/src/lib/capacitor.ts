@@ -154,6 +154,46 @@ export interface SecureStoragePlugin {
   removeItem(options: { key: string }): Promise<void>;
 }
 
+/**
+ * The `@capacitor-mlkit/barcode-scanning` plugin surface the linked-device
+ * sign-in flow (#473) relies on. As with every other plugin here we do NOT
+ * import the package — the native shell injects it as
+ * `window.Capacitor.Plugins.BarcodeScanner`, and the browser/Electron bundles
+ * must not grow a Capacitor dependency. The whole surface is optional so a
+ * shell built before this slice (or any non-native build) still type-checks;
+ * callers feature-detect and fall back to the paste field.
+ */
+export type CameraPermissionState = 'prompt' | 'prompt-with-rationale' | 'granted' | 'denied' | 'limited';
+
+/** One decoded symbol — only `rawValue` (the `matou://pair?…` text) is used. */
+export interface ScannedBarcode {
+  rawValue?: string;
+  displayValue?: string;
+}
+
+export interface BarcodeScannerPlugin {
+  /** True where any scan path is available at all (false on web). */
+  isSupported(): Promise<{ supported: boolean }>;
+  checkPermissions(): Promise<{ camera: CameraPermissionState }>;
+  requestPermissions(): Promise<{ camera: CameraPermissionState }>;
+  /**
+   * Google code-scanner path (Android only): a Play-Services system UI that
+   * needs no CAMERA permission and no bundled model. Rejects on iOS and on
+   * devices without Play Services, where callers fall back to startScan().
+   */
+  scan?(options?: { formats?: string[] }): Promise<{ barcodes: ScannedBarcode[] }>;
+  /** In-app scanner behind a transparent WebView; needs CAMERA permission. */
+  startScan?(options?: { formats?: string[] }): Promise<void>;
+  stopScan?(): Promise<void>;
+  /** Whether the on-demand Google scanner module is installed (Android). */
+  isGoogleBarcodeScannerModuleAvailable?(): Promise<{ available: boolean }>;
+  installGoogleBarcodeScannerModule?(): Promise<void>;
+  addListener?(
+    event: 'barcodeScanned',
+    fn: (result: { barcode: ScannedBarcode }) => void,
+  ): Promise<{ remove: () => Promise<void> }> | { remove: () => Promise<void> };
+}
+
 /** The subset of Capacitor's injected global this module relies on. */
 interface CapacitorGlobal {
   isNativePlatform?: () => boolean;
@@ -164,6 +204,7 @@ interface CapacitorGlobal {
     PushNotifications?: PushNotificationsPlugin;
     LocalNotifications?: LocalNotificationsPlugin;
     Badge?: BadgePlugin;
+    BarcodeScanner?: BarcodeScannerPlugin;
   };
 }
 
@@ -254,4 +295,14 @@ export function getLocalNotificationsPlugin(): LocalNotificationsPlugin | undefi
 /** The launcher-badge plugin, or undefined when unavailable. */
 export function getBadgePlugin(): BadgePlugin | undefined {
   return capacitorGlobal()?.Plugins?.Badge;
+}
+
+/**
+ * The barcode-scanning plugin (#473), or undefined when the shell didn't
+ * register it (any non-native build, or a shell built before this slice). The
+ * linked-device scan screen feature-detects on this and falls back to the paste
+ * field when it is absent.
+ */
+export function getBarcodeScannerPlugin(): BarcodeScannerPlugin | undefined {
+  return capacitorGlobal()?.Plugins?.BarcodeScanner;
 }

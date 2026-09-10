@@ -13,6 +13,9 @@ class MatouViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(MatouBackendPlugin())
         bridge?.registerPluginInstance(SecureStoragePlugin())
+        // @capacitor-mlkit/barcode-scanning (#473, linked-device sign-in) is an
+        // npm package, so it self-registers via `packageClassList`; no manual
+        // registerPluginInstance() needed here.
     }
 
     override open func router() -> Router {

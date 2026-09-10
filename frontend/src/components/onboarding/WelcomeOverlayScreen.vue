@@ -228,9 +228,10 @@ interface StatusCheck {
 const isRecoveryFlow = computed(() => onboardingStore.onboardingPath === 'recover');
 const isReturningFlow = computed(() => onboardingStore.onboardingPath === 'returning');
 const isRegisterFlow = computed(() => onboardingStore.onboardingPath === 'register');
-// Linked-device sign-in (#466): same checks as recovery, but the backend
-// identity setup goes out with mode "link" so the private space is awaited
-// rather than created (spec §3.2).
+// Linked-device sign-in (#466: desktop #472, mobile #473): the receiving
+// device runs the same recovery-style checks as `recover`, but its backend
+// identity/set uses mode:"link" so it adopts the existing private space
+// instead of forking it (spec §3.2). Everything else treats it like recovery.
 const isLinkFlow = computed(() => onboardingStore.onboardingPath === 'link');
 
 const subtitle = computed(() => {
@@ -388,6 +389,8 @@ async function runRecoveryChecks() {
       communitySpaceId: appStore.orgConfig?.communitySpaceId ?? undefined,
       readOnlySpaceId: appStore.orgConfig?.readOnlySpaceId ?? undefined,
       adminSpaceId: appStore.orgConfig?.adminSpaceId ?? undefined,
+      // Linked-device receiver adopts the existing private space, never forks
+      // a new one (spec §3.2).
       ...(isLinkFlow.value ? { mode: 'link' } : {}),
     });
     if (result.success) {

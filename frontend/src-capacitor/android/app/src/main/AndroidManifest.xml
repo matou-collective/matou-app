@@ -79,6 +79,12 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Linked-device sign-in (#473): the in-app barcode scanner fallback
+         (@capacitor-mlkit/barcode-scanning startScan()) needs the camera on
+         devices without Google Play Services. The preferred Google Code Scanner
+         path (scan()) needs NO camera permission, so this is only requested at
+         tap time when we fall back. -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <!-- Android 13+ runtime notification permission (requested after onboarding, §7). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Headless push wake (#421): pre-Android-12 expedited WorkManager work is

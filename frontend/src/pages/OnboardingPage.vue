@@ -44,7 +44,9 @@ import PendingApprovalScreen from 'components/onboarding/PendingApprovalScreen.v
 import { KIT } from 'src/generated/kit';
 import { nextRegisterScreen, prevRegisterScreen } from 'src/kit/onboarding-flow';
 import RecoveryScreen from 'components/onboarding/RecoveryScreen.vue';
+import { isElectron } from 'src/lib/platform';
 import LinkDeviceQrScreen from 'components/onboarding/LinkDeviceQrScreen.vue';
+import LinkDeviceScanScreen from 'components/onboarding/LinkDeviceScanScreen.vue';
 import ClaimWelcomeScreen from 'components/onboarding/ClaimWelcomeScreen.vue';
 import ClaimProcessingScreen from 'components/onboarding/ClaimProcessingScreen.vue';
 import WelcomeOverlayScreen from 'components/onboarding/WelcomeOverlayScreen.vue';
@@ -68,6 +70,7 @@ const screenComponents = {
   'pending-approval': PendingApprovalScreen,
   'recovery': RecoveryScreen,
   'link-qr': LinkDeviceQrScreen,
+  'link-scan': LinkDeviceScanScreen,
   'claim-welcome': ClaimWelcomeScreen,
   'claim-processing': ClaimProcessingScreen,
   'welcome-overlay': WelcomeOverlayScreen,
@@ -143,9 +146,10 @@ const startRecoverFlow = () => {
 };
 
 const startLinkFlow = () => {
-  // Desktop-only "Sign in with your phone" (linked-device sign-in, #466).
+  // Linked-device sign-in (#466): the desktop shows the QR (#472, Electron),
+  // the phone scans it (#473, Capacitor). Both splash buttons emit `link`.
   store.setPath('link');
-  store.navigateTo('link-qr');
+  store.navigateTo(isElectron() ? 'link-qr' : 'link-scan');
 };
 
 const handleContinue = async (data?: unknown) => {
@@ -191,9 +195,10 @@ const handleContinue = async (data?: unknown) => {
       store.navigateTo('welcome-overlay');
     }
   } else if (path === 'link') {
-    // Linked-device sign-in: once the identity is received the QR screen runs
-    // recovery in link mode, then the welcome overlay finishes backend setup.
-    if (current === 'link-qr') {
+    // Linked-device sign-in: once the identity is received the link screen runs
+    // recovery in link mode, then the welcome overlay drives the (link-mode)
+    // backend setup and membership checks, exactly like recovery.
+    if (current === 'link-qr' || current === 'link-scan') {
       store.navigateTo('welcome-overlay');
     }
   } else if (path === 'setup') {
@@ -253,6 +258,7 @@ const handleBack = () => {
 
   const backMapLink: Record<string, string | null> = {
     'link-qr': 'splash',
+    'link-scan': 'splash',
   };
 
   const backMapSetup: Record<string, string | null> = {

@@ -18,6 +18,7 @@ export type OnboardingScreen =
   | 'pending-approval'
   | 'recovery'
   | 'link-qr'
+  | 'link-scan'
   | 'claim-welcome'
   | 'claim-processing'
   | 'welcome-overlay'

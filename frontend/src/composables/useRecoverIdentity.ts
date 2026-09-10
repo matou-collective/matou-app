@@ -1,16 +1,18 @@
 /**
  * useRecoverIdentity — the identity-recovery sequence lifted out of
- * RecoveryScreen.vue so both the "Recover identity" flow and the linked-device
- * sign-in flow (#466) run exactly the same steps: validate the 12-word phrase →
- * derive the KERI passcode → connect to the (existing) KERIA agent → confirm an
- * identity was found → persist `matou_mnemonic` for the backend identity setup
- * that the welcome overlay performs later.
+ * RecoveryScreen.vue so the "Recover identity" flow and both linked-device
+ * sign-in screens (#466: desktop QR #472, mobile scan #473) run exactly the
+ * same steps: validate the 12-word phrase → derive the KERI passcode → connect
+ * to the (existing) KERIA agent → confirm an identity was found → persist
+ * `matou_mnemonic` for the backend identity setup that the welcome overlay
+ * performs later.
  *
  * `mode: 'link'` adds the split-identity safeguards from the spec (§3.4): the
  * `identity` message a holder sends carries the AID hints, and this composable
- * stores `matou_admin_aid` / `matou_org_aid` **before** connect so the fresh
- * device picks the right AID (a steward's agent also holds the group AID, so the
- * "first non-org AID" fallback in stores/identity would be wrong). The later
+ * stores `matou_admin_aid` / `matou_org_aid` **before** connect, because
+ * `identityStore.connect` reads `matou_admin_aid` to pick the current AID — on
+ * a fresh device without the hint the pick falls back to "first non-org AID",
+ * which is wrong for a steward whose agent also holds the group AID. The later
  * `POST /api/v1/identity/set` then goes out with `mode: "link"` (driven off the
  * onboarding path in WelcomeOverlayScreen), which makes the backend wait for the
  * private space to sync instead of creating a fork (§3.2).
@@ -41,16 +43,18 @@ export interface RecoverIdentityResult {
   error?: string;
 }
 
-/** Normalise a phrase to lower-case, single-spaced words. */
-function normalizeMnemonic(input: string): string {
-  return input.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+/** Normalise a phrase (or the recovery form's word array) to lower-case,
+ * single-spaced words. */
+function normalizeMnemonic(input: string | string[]): string {
+  const text = Array.isArray(input) ? input.join(' ') : input;
+  return text.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
 }
 
 export function useRecoverIdentity() {
   const identityStore = useIdentityStore();
 
   async function recoverIdentity(
-    mnemonicInput: string,
+    mnemonicInput: string | string[],
     options: RecoverIdentityOptions = {},
   ): Promise<RecoverIdentityResult> {
     const mode = options.mode ?? 'recover';

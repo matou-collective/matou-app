@@ -200,18 +200,17 @@ async function handleRecover() {
   isRecovering.value = true;
 
   try {
-    // Step 1: Validate mnemonic
+    // Validate → derive passcode → connect → persist hints, shared with the
+    // linked-device screens via useRecoverIdentity.
     loadingMessage.value = 'Validating recovery phrase...';
     loadingSubtext.value = 'Checking phrase format';
     await sleep(300);
-
-    const mnemonic = words.value.map(w => w.trim().toLowerCase()).join(' ');
 
     // Step 2: Derive keys + connect to KERIA (shared recovery sequence).
     loadingMessage.value = 'Connecting to identity network...';
     loadingSubtext.value = 'Looking for your identity';
 
-    const result = await recoverIdentity(mnemonic, { mode: 'recover' });
+    const result = await recoverIdentity(words.value, { mode: 'recover' });
 
     if (!result.success) {
       throw new Error(result.error || 'Recovery failed. Please try again.');

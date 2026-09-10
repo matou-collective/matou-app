@@ -1,9 +1,11 @@
 /**
  * usePairing — a thin client over the backend's linked-device pairing routes
- * (`/api/v1/pairing/*`, spec §2, backend slice #471). The Go backend owns the
- * protocol on both platforms; the frontend only creates a session, polls its
- * state, approves or cancels, and — on the fresh side — fetches the identity
- * once it has arrived.
+ * (`/api/v1/pairing/*`, spec §2, backend slice #471 / #484). The Go backend
+ * owns the protocol on both platforms; the frontend only creates or scans a
+ * session, polls its state, approves or cancels, and — on the fresh side —
+ * fetches the identity once it has arrived. Shared by the desktop QR screen
+ * (LinkDeviceQrScreen, #472) and the mobile scan screen (LinkDeviceScanScreen,
+ * #473).
  *
  * All requests go through the app's authenticated fetch wrapper
  * (installBackendAuth) via BACKEND_URL + authHeaders(); the GET …/identity route
@@ -26,7 +28,13 @@ export type PairingState =
   | 'expired'
   | 'failed';
 
-/** Direction (or refusal) decided after the scanner's hello (spec §1 table). */
+/** States after which the backend session will never change again. A peer
+ * cancel surfaces on the other side as `expired`; `failed` is any driver /
+ * mailbox error. */
+export const TERMINAL_STATES: readonly PairingState[] = ['cancelled', 'expired', 'failed', 'done'];
+
+/** Direction (or refusal) decided after the scanner's hello (spec §1 table).
+ * Empty until the handshake has decided. */
 export type PairingOutcome =
   | 'phone-to-desktop'
   | 'desktop-to-phone'
@@ -52,6 +60,11 @@ export interface SessionStatus {
   error: string;
 }
 
+/** What the scanner gets back once the displayer has acked its hello. */
+export interface ScanResult extends SessionStatus {
+  sessionId: string;
+}
+
 export interface PairingIdentity {
   mnemonic: string;
   aid: string;
@@ -60,7 +73,9 @@ export interface PairingIdentity {
   configServerUrl?: string;
 }
 
-/** Raised when a pairing request fails; carries the HTTP status and body. */
+/** Raised when a pairing request fails; carries the HTTP status and the
+ * backend's `error` slug (e.g. `config-server-mismatch`, `identity-present`)
+ * so screens can render tailored copy. */
 export class PairingError extends Error {
   constructor(
     message: string,
@@ -82,6 +97,17 @@ async function pairingError(response: Response): Promise<PairingError> {
   return new PairingError(message, response.status, code, body?.aid);
 }
 
+/** Fill in the optional fields the backend omits (`omitempty`). */
+function normalizeStatus(body: Partial<SessionStatus>): SessionStatus {
+  return {
+    state: (body.state ?? 'created') as PairingState,
+    outcome: (body.outcome ?? '') as PairingOutcome,
+    code: body.code ?? '',
+    peerDeviceName: body.peerDeviceName ?? '',
+    error: body.error ?? '',
+  };
+}
+
 export function usePairing() {
   /** POST /api/v1/pairing/sessions — displayer creates a session + QR. */
   async function createSession(deviceName?: string): Promise<CreateSessionResult> {
@@ -101,14 +127,7 @@ export function usePairing() {
       { headers: authHeaders() },
     );
     if (!response.ok) throw await pairingError(response);
-    const body = (await response.json()) as Partial<SessionStatus>;
-    return {
-      state: (body.state ?? 'created') as PairingState,
-      outcome: (body.outcome ?? '') as PairingOutcome,
-      code: body.code ?? '',
-      peerDeviceName: body.peerDeviceName ?? '',
-      error: body.error ?? '',
-    };
+    return normalizeStatus((await response.json()) as Partial<SessionStatus>);
   }
 
   /** POST /api/v1/pairing/sessions/{id}/approve — holder sends the identity. */
@@ -120,7 +139,8 @@ export function usePairing() {
     if (!response.ok) throw await pairingError(response);
   }
 
-  /** POST /api/v1/pairing/sessions/{id}/cancel — either side tears down. */
+  /** POST /api/v1/pairing/sessions/{id}/cancel — either side tears down.
+   * Throws on failure; screens treat cancel as best-effort and catch. */
   async function cancel(sessionId: string): Promise<void> {
     const response = await fetch(
       `${BACKEND_URL}/api/v1/pairing/sessions/${encodeURIComponent(sessionId)}/cancel`,
@@ -130,30 +150,22 @@ export function usePairing() {
   }
 
   /**
-   * POST /api/v1/pairing/scan — scanner joins a session (used by the mobile
-   * scanner and the e2e paste fallback). Included here so both link screens
-   * share one client; the desktop QR screen does not call it.
+   * POST /api/v1/pairing/scan — scanner joins a session: the backend sends
+   * hello, waits for the displayer's ack, and returns the outcome + code (used
+   * by the mobile scanner and the paste fallback; the desktop QR screen does
+   * not call it).
    */
-  async function scan(qrPayload: string, deviceName?: string): Promise<SessionStatus & { sessionId: string }> {
+  async function scan(qrPayload: string, deviceName?: string): Promise<ScanResult> {
     const response = await fetch(`${BACKEND_URL}/api/v1/pairing/scan`, {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({ qrPayload, ...(deviceName ? { deviceName } : {}) }),
     });
     if (!response.ok) throw await pairingError(response);
-    const body = (await response.json()) as {
-      sessionId: string;
-      outcome?: PairingOutcome;
-      code?: string;
-      peerDeviceName?: string;
-    };
+    const body = (await response.json()) as Partial<SessionStatus> & { sessionId: string };
     return {
       sessionId: body.sessionId,
-      state: 'acked',
-      outcome: (body.outcome ?? '') as PairingOutcome,
-      code: body.code ?? '',
-      peerDeviceName: body.peerDeviceName ?? '',
-      error: '',
+      ...normalizeStatus({ ...body, state: 'acked' }),
     };
   }
 
