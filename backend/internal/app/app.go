@@ -28,6 +28,7 @@ import (
 	"github.com/matou-dao/backend/internal/identity"
 	"github.com/matou-dao/backend/internal/keri"
 	"github.com/matou-dao/backend/internal/notifications"
+	"github.com/matou-dao/backend/internal/pairing"
 	"github.com/matou-dao/backend/internal/pushrelayclient"
 	bgSync "github.com/matou-dao/backend/internal/sync"
 	matouTypes "github.com/matou-dao/backend/internal/types"
@@ -479,6 +480,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	notificationsHandler := api.NewNotificationsHandler(emailSender)
 	identityHandler := api.NewIdentityHandler(userIdentity, sdkClient, spaceManager, spaceStore)
 	eventsHandler := api.NewEventsHandler(eventBroker)
+
 	profilesHandler := api.NewProfilesHandler(spaceManager, userIdentity, typeRegistry, spaceManager.FileManager(), eventBroker)
 	multisigHandler := api.NewMultisigHandler(spaceManager)
 	noticesHandler := api.NewNoticesHandler(spaceManager, userIdentity, typeRegistry, eventBroker)
@@ -640,6 +642,22 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}
 	authVerifier := auth.NewVerifier(keyStateResolver, nil, auth.NewSessionStore(opts.SessionTTL))
 	authHandler := api.NewAuthHandler(authVerifier)
+
+	// Linked-device pairing (#466 S4): the Go backend owns the X25519/HKDF/
+	// AES-GCM pairing protocol on both platforms; the mailbox lives on the
+	// config server. Session state is in memory only — never persisted, never
+	// logged. The emit callback surfaces state changes on the existing SSE
+	// broker as pairing:state events. GET …/identity returns the mnemonic, so
+	// it demands the same bearer proof TokenGuard applies to mutations.
+	pairingManager := pairing.NewManager(
+		opts.ConfigServerURL,
+		pairing.WithHTTPClient(&http.Client{Timeout: 30 * time.Second}),
+		pairing.WithEmit(func(view pairing.SessionView) {
+			eventBroker.Broadcast(api.SSEEvent{Type: "pairing:state", Data: view})
+		}),
+	)
+	pairingHandler := api.NewPairingHandler(pairingManager, userIdentity, opts.ConfigServerURL,
+		api.BearerAuthorizer(opts.APIToken, authHandler.Sessions()))
 
 	// Revoke sessions when an AID's key state rotates: a session-verified KEL
 	// sync for the caller's own AID triggers a re-resolve from the authoritative
@@ -869,6 +887,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	bookingHandler.RegisterRoutes(mux)
 	identityHandler.RegisterRoutes(mux, roleLookup)
 	eventsHandler.RegisterRoutes(mux)
+	pairingHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux, roleLookup)
 	multisigHandler.RegisterRoutes(mux)
 	noticesHandler.RegisterRoutes(mux, roleLookup)
