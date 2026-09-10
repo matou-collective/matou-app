@@ -2,6 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/matou-dao/backend/internal/types"
@@ -83,6 +87,22 @@ func TestBuildMemberProfileDataDefaultSplit(t *testing.T) {
 	}
 }
 
+// TestBuildMemberProfileDataDefaultSplitValidates: under the default schema
+// both records pass their own schema — the split never produces an
+// unwritable profile from a well-formed registration.
+func TestBuildMemberProfileDataDefaultSplitValidates(t *testing.T) {
+	reg := types.NewRegistry()
+	reg.Bootstrap()
+	h := &ProfilesHandler{registry: reg}
+	community, shared, _ := split(t, types.CommunityProfileType(), types.SharedProfileType(), sampleInitReq())
+	for name, m := range map[string]map[string]interface{}{"CommunityProfile": community, "SharedProfile": shared} {
+		data, _ := json.Marshal(m)
+		if errs := h.validateProfile(name, data); len(errs) > 0 {
+			t.Errorf("%s rejected: %v", name, errs)
+		}
+	}
+}
+
 // TestBuildMemberProfileDataMoveFieldChangesSpace models an admin moving a
 // non-core field between the two profile schemas: a new member's value follows
 // the schema to the other space (issue #300 acceptance criterion). Covered for
@@ -111,6 +131,57 @@ func TestBuildMemberProfileDataMoveFieldChangesSpace(t *testing.T) {
 		if len(dropped) != 0 {
 			t.Errorf("%s: nothing should be dropped, got %v", name, dropped)
 		}
+	}
+}
+
+// TestBuildMemberProfileDataCustomFieldRoutesToDeclaringSchema: an org-added
+// field supplied through the opaque map lands on whichever profile declares
+// it — including the read-only CommunityProfile.
+func TestBuildMemberProfileDataCustomFieldRoutesToDeclaringSchema(t *testing.T) {
+	sharedDef := types.SharedProfileType()
+	sharedDef.Fields = append(sharedDef.Fields, types.FieldDef{Name: "iwi", Type: "string", Required: true})
+	communityDef := types.CommunityProfileType()
+	communityDef.Fields = append(communityDef.Fields, types.FieldDef{Name: "hapu", Type: "string"})
+
+	req := sampleInitReq()
+	req.ProfileData = json.RawMessage(`{"iwi":"Ngāti Example","hapu":"Ngāti Whānau"}`)
+	community, shared, dropped := split(t, communityDef, sharedDef, req)
+
+	if shared["iwi"] != "Ngāti Example" {
+		t.Errorf("iwi should route to SharedProfile, got %v", shared["iwi"])
+	}
+	if _, ok := community["iwi"]; ok {
+		t.Errorf("iwi must not land on CommunityProfile")
+	}
+	if community["hapu"] != "Ngāti Whānau" {
+		t.Errorf("hapu should route to CommunityProfile, got %v", community["hapu"])
+	}
+	if _, ok := shared["hapu"]; ok {
+		t.Errorf("hapu must not land on SharedProfile")
+	}
+	if len(dropped) != 0 {
+		t.Errorf("nothing should be dropped, got %v", dropped)
+	}
+}
+
+// TestBuildMemberProfileDataUndeclaredFieldDropped: a key no profile schema
+// declares is not persisted on either record and is reported by name so the
+// handler can log it and the response can surface it.
+func TestBuildMemberProfileDataUndeclaredFieldDropped(t *testing.T) {
+	req := sampleInitReq()
+	req.ProfileData = json.RawMessage(`{"zeta":"z","alpha":"a"}`)
+	community, shared, dropped := split(t, types.CommunityProfileType(), types.SharedProfileType(), req)
+
+	for _, k := range []string{"alpha", "zeta"} {
+		if _, ok := shared[k]; ok {
+			t.Errorf("undeclared %q must not be stored on SharedProfile", k)
+		}
+		if _, ok := community[k]; ok {
+			t.Errorf("undeclared %q must not be stored on CommunityProfile", k)
+		}
+	}
+	if !reflect.DeepEqual(dropped, []string{"alpha", "zeta"}) {
+		t.Errorf("dropped = %v, want [alpha zeta] (sorted)", dropped)
 	}
 }
 
@@ -149,3 +220,48 @@ func TestBuildMemberProfileDataCoreFieldsPinned(t *testing.T) {
 	}
 }
 
+// TestBuildMemberProfileDataReservedKeysNotSettableViaProfileData: the opaque
+// map cannot set the membership/identity fields the handler manages, even when
+// the schema declares them (role, credential, userAID are declared on
+// CommunityProfile by default).
+func TestBuildMemberProfileDataReservedKeysNotSettableViaProfileData(t *testing.T) {
+	req := sampleInitReq()
+	req.ProfileData = json.RawMessage(`{"role":"Community Steward","credential":"Eforged","userAID":"Eother","credentials":["Eforged"],"memberSince":"1999-01-01T00:00:00Z","aid":"Eother","status":"pending","typeVersion":42}`)
+	community, shared, dropped := split(t, types.CommunityProfileType(), types.SharedProfileType(), req)
+
+	if community["role"] != "Member" || community["credential"] != "Ecred" || community["userAID"] != "EmemberAID" || community["memberSince"] != "2026-09-04T00:00:00Z" {
+		t.Errorf("reserved membership fields overridden via profileData: %v", community)
+	}
+	if creds, _ := community["credentials"].([]string); len(creds) != 1 || creds[0] != "Ecred" {
+		t.Errorf("credentials overridden via profileData: %v", community["credentials"])
+	}
+	if shared["aid"] != "EmemberAID" || shared["status"] != "approved" || shared["typeVersion"] != 1 {
+		t.Errorf("reserved identity fields overridden via profileData: %v", shared)
+	}
+	if len(dropped) != 0 {
+		t.Errorf("reserved keys are managed, not dropped; dropped = %v", dropped)
+	}
+}
+
+// TestHandleInitMemberProfiles_RoutesByOrgSchema drives the real handler with
+// an org-customised registry: a custom field declared on CommunityProfile is
+// validated there (required → 400 when missing), proving the handler routes
+// by the registered definition, not the built-in.
+func TestHandleInitMemberProfiles_RoutesByOrgSchema(t *testing.T) {
+	reg := types.NewRegistry()
+	reg.Bootstrap()
+	def := types.CommunityProfileType()
+	def.Fields = append(def.Fields, types.FieldDef{Name: "hapu", Type: "string", Required: true})
+	reg.Register(def)
+	h := newInitMemberTestHandler(reg)
+
+	body := `{"memberAid":"EMember123","credentialSaid":"ECred456","profileData":{"displayName":"Ada Lovelace"}}`
+	rr := httptest.NewRecorder()
+	h.HandleInitMemberProfiles(rr, httptest.NewRequest(http.MethodPost, "/api/v1/profiles/init-member", strings.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "CommunityProfile validation failed") || !strings.Contains(rr.Body.String(), `\"hapu\"`) {
+		t.Errorf("expected CommunityProfile validation error naming hapu, got %s", rr.Body.String())
+	}
+}
