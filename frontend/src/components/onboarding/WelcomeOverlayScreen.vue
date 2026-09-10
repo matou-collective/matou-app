@@ -228,6 +228,10 @@ interface StatusCheck {
 const isRecoveryFlow = computed(() => onboardingStore.onboardingPath === 'recover');
 const isReturningFlow = computed(() => onboardingStore.onboardingPath === 'returning');
 const isRegisterFlow = computed(() => onboardingStore.onboardingPath === 'register');
+// Linked-device sign-in (#466): same checks as recovery, but the backend
+// identity setup goes out with mode "link" so the private space is awaited
+// rather than created (spec §3.2).
+const isLinkFlow = computed(() => onboardingStore.onboardingPath === 'link');
 
 const subtitle = computed(() => {
   if (waitingForSync.value) {
@@ -238,7 +242,7 @@ const subtitle = computed(() => {
       ? 'Your community spaces are ready!'
       : 'Setting up your community spaces...';
   }
-  if (!isRecoveryFlow.value && !isReturningFlow.value) {
+  if (!isRecoveryFlow.value && !isReturningFlow.value && !isLinkFlow.value) {
     return 'Your identity has been claimed, your community spaces are ready, and your profiles have been created.';
   }
   if (allChecksPassed.value) {
@@ -384,6 +388,7 @@ async function runRecoveryChecks() {
       communitySpaceId: appStore.orgConfig?.communitySpaceId ?? undefined,
       readOnlySpaceId: appStore.orgConfig?.readOnlySpaceId ?? undefined,
       adminSpaceId: appStore.orgConfig?.adminSpaceId ?? undefined,
+      ...(isLinkFlow.value ? { mode: 'link' } : {}),
     });
     if (result.success) {
       backendCheck.status = 'passed';
@@ -592,7 +597,7 @@ function resetChecks() {
  */
 async function retrySync() {
   resetChecks();
-  if (isRecoveryFlow.value) {
+  if (isRecoveryFlow.value || isLinkFlow.value) {
     await runRecoveryChecks();
   } else if (isReturningFlow.value) {
     await runReturningChecks();
@@ -619,7 +624,7 @@ onMounted(() => {
   if (isRegisterFlow.value) {
     // Register flow: poll sync status until community + readOnly spaces are ready
     startSyncPolling();
-  } else if (isRecoveryFlow.value) {
+  } else if (isRecoveryFlow.value || isLinkFlow.value) {
     runRecoveryChecks();
   } else if (isReturningFlow.value) {
     // Returning flow: Splash already verified credential exists, skip checks

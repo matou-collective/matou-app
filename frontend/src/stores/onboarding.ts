@@ -17,6 +17,7 @@ export type OnboardingScreen =
   | 'credential-issuance'
   | 'pending-approval'
   | 'recovery'
+  | 'link-qr'
   | 'claim-welcome'
   | 'claim-processing'
   | 'welcome-overlay'
@@ -34,7 +35,7 @@ export type ParticipationInterest = string;
 /**
  * Onboarding flow path
  */
-export type OnboardingPath = 'register' | 'recover' | 'setup' | 'claim' | 'returning' | 'invite' | null;
+export type OnboardingPath = 'register' | 'recover' | 'link' | 'setup' | 'claim' | 'returning' | 'invite' | null;
 
 /**
  * User profile data

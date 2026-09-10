@@ -153,12 +153,11 @@ import {
   CheckCircle2,
 } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
-import { useIdentityStore } from 'stores/identity';
 import { useOnboardingStore } from 'stores/onboarding';
-import { KERIClient } from 'src/lib/keri/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { useRecoverIdentity } from 'src/composables/useRecoverIdentity';
 
-const identityStore = useIdentityStore();
+const { recoverIdentity } = useRecoverIdentity();
 
 const words = ref<string[]>(Array(12).fill(''));
 const isRecovering = ref(false);
@@ -208,36 +207,21 @@ async function handleRecover() {
 
     const mnemonic = words.value.map(w => w.trim().toLowerCase()).join(' ');
 
-    if (!KERIClient.validateMnemonic(mnemonic)) {
-      throw new Error('Invalid recovery phrase. Please check your words and try again.');
-    }
-
-    // Step 2: Derive passcode from mnemonic
-    loadingMessage.value = 'Deriving keys...';
-    loadingSubtext.value = 'Generating cryptographic keys from your phrase';
-    await sleep(300);
-
-    const passcode = KERIClient.passcodeFromMnemonic(mnemonic);
-
-    // Step 3: Connect to KERIA
+    // Step 2: Derive keys + connect to KERIA (shared recovery sequence).
     loadingMessage.value = 'Connecting to identity network...';
     loadingSubtext.value = 'Looking for your identity';
 
-    const connected = await identityStore.connect(passcode);
+    const result = await recoverIdentity(mnemonic, { mode: 'recover' });
 
-    if (!connected) {
-      throw new Error(identityStore.error || 'Failed to connect. This phrase may not have an identity yet.');
+    if (!result.success) {
+      throw new Error(result.error || 'Recovery failed. Please try again.');
     }
 
-    // Step 4: Check if we found an identity
-    if (identityStore.hasIdentity && identityStore.currentAID) {
-      recoveredAID.value = identityStore.currentAID.prefix;
-      recoveredName.value = identityStore.currentAID.name;
-      loadingMessage.value = 'Identity recovered!';
-      loadingSubtext.value = '';
-    } else {
-      throw new Error('No identity found for this recovery phrase. It may be a new phrase.');
-    }
+    // Step 3: Found an identity
+    recoveredAID.value = result.aid ?? null;
+    recoveredName.value = result.name ?? null;
+    loadingMessage.value = 'Identity recovered!';
+    loadingSubtext.value = '';
 
   } catch (err) {
     console.error('[Recovery] Failed:', err);
