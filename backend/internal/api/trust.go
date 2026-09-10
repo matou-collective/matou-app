@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/trust"
 )
 
@@ -32,8 +32,8 @@ func NewTrustHandler(store *anystore.LocalStore, orgAID string, spaceManager *an
 
 // GraphResponse represents the trust graph API response
 type GraphResponse struct {
-	Graph   *trust.Graph         `json:"graph"`
-	Summary *trust.ScoreSummary  `json:"summary,omitempty"`
+	Graph   *trust.Graph        `json:"graph"`
+	Summary *trust.ScoreSummary `json:"summary,omitempty"`
 }
 
 // ScoreResponse represents a single trust score response
@@ -69,7 +69,7 @@ func (h *TrustHandler) getCommunityCredentials(ctx context.Context) []*anystore.
 	for _, cred := range creds {
 		var data interface{}
 		if cred.Data != nil {
-			json.Unmarshal(cred.Data, &data)
+			_ = json.Unmarshal(cred.Data, &data)
 		}
 		result = append(result, &anystore.CachedCredential{
 			ID:         cred.SAID,

@@ -49,6 +49,27 @@ Organization AID                    Admin/User AIDs
 - **Admin/User AIDs**: Created in frontend via signify-ts, keys stored on device
 - **Credentials**: Org issues steward credentials to admins, admins can then issue memberships
 
+#### any-sync account keys (peer key vs. sign key)
+
+The any-sync account uses **two independent Ed25519 keys** (`accountdata.New(peerKey, signKey)`):
+
+- **Sign key (ACL identity)** — mnemonic-derived (`m/44'/2046'/0'/0'`, the same as
+  today). It is the identity the ACL records trust and is **stable across every
+  device** the user owns. It signs ObjectTree changes. The per-user copy used by
+  join/verify flows is persisted at `{dataDir}/users/{aid}/sign.key` (with a
+  read-fallback to the legacy `peer.key` filename for existing installs).
+- **Device / peer key (transport)** — a **random, per-install** key persisted at
+  `{dataDir}/peer.key`. It determines the network peer id. It must be unique per
+  install: two devices presenting the same peer id evict each other's connection
+  (`net/pool` `AddPeer`) and sync queue (`util/syncqueues`). `Reinitialize` only
+  re-derives the sign key and never regenerates or overwrites `peer.key`.
+
+**Migration (pre-#468 installs):** older installs stored the mnemonic-derived key
+in `{dataDir}/peer.key` and used it for both roles. On first boot after upgrade,
+if `peer.key` still equals the mnemonic-derived key, it is replaced with a fresh
+random device key; the sign key value the ACL already trusts is preserved (it is
+re-derived from the mnemonic each boot).
+
 ## Project Structure
 
 ```

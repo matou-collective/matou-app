@@ -121,10 +121,3 @@ func (h *MilestonesHandler) HandleUpdateMilestone(w http.ResponseWriter, r *http
 	log.Printf("[Milestones] milestone updated: %s", id)
 	writeJSON(w, http.StatusOK, ms)
 }
-
-// setupTestMilestonesHandler creates a handler with mock store for testing.
-func setupTestMilestonesHandler() *MilestonesHandler {
-	store := contributions.NewMockStore()
-	svc := contributions.NewService(store)
-	return NewMilestonesHandler(svc, nil)
-}

@@ -51,7 +51,7 @@ func TestDecisionPlansHandler_Transition(t *testing.T) {
 	handler.HandleCreate(w, req)
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	transBody, _ := json.Marshal(map[string]string{"status": "submitted"})

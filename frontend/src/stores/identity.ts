@@ -2,7 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { Notify } from 'quasar';
 import { KERIClient, useKERIClient, type AIDInfo, type CredentialInfo } from 'src/lib/keri/client';
-import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinCommunity as apiJoinCommunity, getAuthChallenge, postAuthLogin, setSessionToken } from 'src/lib/api/client';
+import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinCommunity as apiJoinCommunity, getAuthChallenge, postAuthLogin, setSessionToken, type UserSpacesResponse } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { fetchOrgConfig } from 'src/api/config';
 import { useAppStore } from 'stores/app';
@@ -38,6 +38,9 @@ export const useIdentityStore = defineStore('identity', () => {
   const spacesLoaded = ref(false);
   const communityAccessVerified = ref(false);
   const communityAccessChecking = ref(false);
+  // Raw response from the last fetchUserSpaces() call, kept so callers can
+  // inspect per-space fields (e.g. spaceAccess) that don't have a dedicated ref.
+  const lastFetchedSpaces = ref<UserSpacesResponse | null>(null);
 
   // Admin state (checked once, shared across all pages)
   const isAdmin = ref(false);
@@ -59,6 +62,17 @@ export const useIdentityStore = defineStore('identity', () => {
   const hasIdentity = computed(() => currentAID.value !== null);
   const aidPrefix = computed(() => currentAID.value?.prefix ?? null);
   const isReady = computed(() => !isInitializing.value);
+  // True when the most recent fetchUserSpaces() found an adopted space whose
+  // read key isn't available from ACL yet (data still syncing). Callers
+  // (e.g. WelcomeOverlayScreen) should show a waiting/retry state rather than
+  // routing into a dashboard that can't read its own data.
+  const hasPendingSpaceAccess = computed(() => {
+    const spaces = lastFetchedSpaces.value;
+    if (!spaces) return false;
+    return [spaces.privateSpace, spaces.communitySpace, spaces.communityReadOnlySpace, spaces.adminSpace].some(
+      (space) => space?.spaceAccess === 'pending',
+    );
+  });
 
   // Actions
   async function connect(bran: string): Promise<boolean> {
@@ -451,6 +465,7 @@ export const useIdentityStore = defineStore('identity', () => {
     if (!currentAID.value?.prefix) return;
     try {
       const spaces = await getUserSpaces(currentAID.value.prefix);
+      lastFetchedSpaces.value = spaces;
       privateSpaceId.value = spaces.privateSpace?.spaceId ?? null;
       communitySpaceId.value = spaces.communitySpace?.spaceId ?? null;
       communityReadOnlySpaceId.value = spaces.communityReadOnlySpace?.spaceId ?? null;
@@ -540,6 +555,8 @@ export const useIdentityStore = defineStore('identity', () => {
     spacesLoaded,
     communityAccessVerified,
     communityAccessChecking,
+    lastFetchedSpaces,
+    hasPendingSpaceAccess,
 
     // Admin state
     isAdmin,

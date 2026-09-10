@@ -37,7 +37,7 @@ func TestContributionsHandler_Create(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["id"] == nil || resp["id"] == "" {
 		t.Error("expected non-empty id in response")
 	}
@@ -79,7 +79,7 @@ func TestContributionsHandler_Get(t *testing.T) {
 	handler.HandleCreate(w, req)
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/contributions/"+id, nil)
@@ -105,7 +105,7 @@ func TestContributionsHandler_Transition(t *testing.T) {
 	handler.HandleCreate(w, req)
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	transBody, _ := json.Marshal(map[string]string{"status": "confirmed"})
@@ -254,7 +254,7 @@ func TestContributionsHandler_UpdateAssignedContributorID(t *testing.T) {
 	}
 
 	var created map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &created)
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	id := created["id"].(string)
 
 	// Update with a new assigned_contributor_id
@@ -271,7 +271,7 @@ func TestContributionsHandler_UpdateAssignedContributorID(t *testing.T) {
 	}
 
 	var updated map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &updated)
+	_ = json.Unmarshal(w.Body.Bytes(), &updated)
 	// The model serialises AssignedContributorID as "assigned_contributor"
 	if updated["assigned_contributor"] != "new-assignee-aid" {
 		t.Errorf("expected assigned_contributor = new-assignee-aid, got %v", updated["assigned_contributor"])
@@ -311,8 +311,8 @@ func setupSubmittedForEdit(t *testing.T) (*ContributionsHandler, *recordingNotif
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	svc.TransitionContribution(ctx, "community", c.ID, contributions.ContribConfirmed)
-	svc.AssignContributor(ctx, "community", c.ID, "contributor-1")
+	_, _ = svc.TransitionContribution(ctx, "community", c.ID, contributions.ContribConfirmed)
+	_, _ = svc.AssignContributor(ctx, "community", c.ID, "contributor-1")
 	if _, err := svc.SubmitEvidence(ctx, "community", c.ID, "contributor-1", contributions.SubmitEvidenceRequest{CompletionNotes: "done"}); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestContributionsHandler_EditEvidence_OwnerNotifiesAndBroadcasts(t *testing
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp contributions.Contribution
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Status != contributions.ContribNeedsReview {
 		t.Errorf("status = %s, want needs_review", resp.Status)
 	}

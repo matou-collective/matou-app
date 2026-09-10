@@ -1,0 +1,46 @@
+name: pr-e2e-sweep
+# #278: feature-e2e evidence self-heal. A contended pr-e2e camps 1800 s on host
+# capacity then gives up (a swarm worker can hold the host-global lock for
+# 180 min), and nothing re-fires the event-driven pull_request run — so a PR
+# head silently carries no feature-e2e verdict. This scheduled sweep finds open
+# PRs whose current head has no verdict comment and no pr-e2e run in flight, and
+# workflow_dispatches pr-e2e for them (oldest first, capped per tick). See
+# .sandcastle/pr-e2e-sweep.sh for the policy.
+on:
+  schedule:
+    # Off-cycle from swarm's :15/:45 (swarm.yml), so the sweep's own check does
+    # not land in lockstep with the workers most likely to be holding the lock.
+    - cron: "0,30 * * * *"
+  workflow_dispatch: {}
+
+# One tick at a time — a slow actions-API tick must not overlap the next.
+concurrency:
+  group: pr-e2e-sweep-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    # Same runner as pr-e2e so the dispatched runs land on the host that serves
+    # them; the sweep itself only makes API calls (no e2e), so it needs no host
+    # lock and returns in seconds.
+    runs-on: matou-workstation
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (raw clone — actions/checkout depends on data.forgejo.org action fetch, which fast-fails intermittently, d18d869)
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          host="${SERVER_URL#https://}"
+          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+          git init -q .
+          git remote add origin "$url" 2>/dev/null || git remote set-url origin "$url"
+          git fetch -q --depth=1 origin main
+          git checkout -q -f FETCH_HEAD
+      - name: Dispatch pr-e2e for PRs missing feature-e2e evidence
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+        run: bash .sandcastle/pr-e2e-sweep.sh

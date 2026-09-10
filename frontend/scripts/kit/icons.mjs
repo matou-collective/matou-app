@@ -7,6 +7,8 @@ import { dirname, join } from 'node:path';
 const ELECTRON_SIZES = [16, 32, 48, 64, 128, 256, 512];
 const LEGACY = { mdpi: 48, hdpi: 72, xhdpi: 96, xxhdpi: 144, xxxhdpi: 192 };
 const FOREGROUND = { mdpi: 108, hdpi: 162, xhdpi: 216, xxhdpi: 324, xxxhdpi: 432 };
+// Status-bar (notification small icon) sizes: 24dp per density bucket.
+const STATUS = { mdpi: 24, hdpi: 36, xhdpi: 48, xxhdpi: 72, xxxhdpi: 96 };
 const SPLASH = [
   ['drawable', 480, 320], ['drawable-port-mdpi', 320, 480], ['drawable-port-hdpi', 480, 800], ['drawable-port-xhdpi', 720, 1280],
   ['drawable-port-xxhdpi', 960, 1600], ['drawable-port-xxxhdpi', 1280, 1920], ['drawable-land-mdpi', 480, 320], ['drawable-land-hdpi', 800, 480],
@@ -36,6 +38,18 @@ async function transparentWithMark(logo, size, logoScale) {
   return sharp({ create: { width: size, height: size, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).composite([{ input: mark, gravity: 'centre' }]).png().toBuffer();
 }
 
+async function statusIcon(logo, size) {
+  // Android renders the notification small icon as an alpha silhouette, so
+  // build a pure-white copy of the logo mark on transparent, with the ~2dp
+  // content padding the platform guidelines ask for at 24dp.
+  const inner = Math.round(size * 0.84);
+  const fitted = await sharp(logo, { density: 384 }).resize(inner, inner, { fit: 'inside', withoutEnlargement: false }).png().toBuffer();
+  const { data, info } = await sharp(fitted).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  for (let i = 0; i < data.length; i += 4) { data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; }
+  const white = await sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
+  return sharp({ create: { width: size, height: size, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).composite([{ input: white, gravity: 'centre' }]).png().toBuffer();
+}
+
 async function splash(logo, primary, w, h) {
   const min = Math.min(w, h); const t = await tile(logo, primary, Math.round(min * 0.42));
   return sharp({ create: { width: w, height: h, channels: 3, background: '#ffffff' } }).composite([{ input: t, gravity: 'centre' }]).png().toBuffer();
@@ -55,6 +69,7 @@ export async function renderIcons({ logo, primary, root }) {
     await out(`${res}/mipmap-${d}/ic_launcher_round.png`, await tile(logo, primary, s, { shape: 'circle' }));
     await out(`${res}/mipmap-${d}/ic_launcher_foreground.png`, await transparentWithMark(logo, FOREGROUND[d], 0.44));
   }
+  for (const [d, sz] of Object.entries(STATUS)) await out(`${res}/drawable-${d}/ic_stat_matou.png`, await statusIcon(logo, sz));
   await out(`${res}/values/ic_launcher_background.xml`, `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">${primary}</color>\n</resources>\n`);
   for (const [d, w, h] of SPLASH) await out(`${res}/${d}/splash.png`, await splash(logo, primary, w, h));
 

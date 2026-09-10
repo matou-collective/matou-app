@@ -26,12 +26,12 @@
                 <span v-else class="text-white text-xl font-semibold">{{ initials }}</span>
               </div>
               <div class="flex-1 min-w-0">
-                <h4 class="text-lg font-medium text-black">{{ profileName }}</h4>
-                <p class="text-sm text-black/70 mb-2">
+                <h4 class="text-lg font-medium text-[color:var(--matou-text)]">{{ profileName }}</h4>
+                <p class="text-sm text-[color:var(--matou-text-secondary)] mb-2">
                   {{ formattedDate }}
                 </p>
                 <div v-if="profileAid" class="flex items-center gap-2">
-                  <code class="text-xs bg-secondary px-2 py-1 rounded font-mono truncate flex-1 text-black">
+                  <code class="text-xs bg-secondary px-2 py-1 rounded font-mono truncate flex-1 text-[color:var(--matou-text)]">
                     {{ profileAid }}
                   </code>
                   <button
@@ -40,14 +40,14 @@
                     :title="copied ? 'Copied!' : 'Copy AID'"
                   >
                     <Check v-if="copied" class="w-4 h-4 text-green-600" />
-                    <Copy v-else class="w-4 h-4 text-black/60" />
+                    <Copy v-else class="w-4 h-4 text-[color:var(--matou-text-secondary)]" />
                   </button>
                 </div>
                 <!-- Role (clickable for stewards) -->
                 <div v-if="memberRole" class="mt-2 flex items-center gap-2">
                   <span
                     class="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full"
-                    :class="canChangeRole ? 'bg-primary/15 text-primary cursor-pointer hover:bg-primary/25 transition-colors' : 'bg-secondary text-black/70'"
+                    :class="canChangeRole ? 'bg-primary/15 text-primary cursor-pointer hover:bg-primary/25 transition-colors' : 'bg-secondary text-[color:var(--matou-text-secondary)]'"
                     @click="canChangeRole && (showChangeRole = true)"
                   >
                     {{ memberRole }}
@@ -207,7 +207,7 @@
                   </p>
                 </div>
               </div>
-              <p v-else-if="profileStatus === 'pending'" class="text-sm text-black/50">
+              <p v-else-if="profileStatus === 'pending'" class="text-sm text-[color:var(--matou-text-secondary)]">
                 No endorsements yet
               </p>
             </div>
@@ -779,8 +779,8 @@ function handleRemove() {
 }
 
 .field-input {
-  background: #f0f9fa;
-  border: 1px solid #d1e7ea;
+  background: var(--matou-field-tint-bg, #f0f9fa);
+  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
@@ -793,16 +793,16 @@ function handleRemove() {
 }
 
 .field-input:hover {
-  border-color: #a8d4da;
+  border-color: var(--matou-field-tint-hover-border, #a8d4da);
 }
 
 .field-input:focus {
-  border-color: #1a4f5e;
-  box-shadow: 0 0 0 2px rgba(26, 79, 94, 0.1);
+  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
 }
 
 .field-input::placeholder {
-  color: #9ca3af;
+  color: var(--matou-field-tint-placeholder, #9ca3af);
 }
 
 textarea.field-input {
@@ -812,7 +812,7 @@ textarea.field-input {
 
 .field-value {
   font-size: 0.875rem;
-  color: black;
+  color: var(--matou-text, #1f2937);
   white-space: pre-wrap;
 }
 

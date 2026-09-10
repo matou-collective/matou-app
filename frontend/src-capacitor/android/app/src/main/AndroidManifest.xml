@@ -65,6 +65,15 @@
         <service
             android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"
             tools:node="remove" />
+
+        <!-- Headless push wake (#421, §5): below Android 12 WorkManager runs
+             expedited work as a short foreground service; targetSdk 34+ requires
+             its type declared. dataSync matches what the wake does — sync one
+             chat channel over the embedded backend. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
     </application>
 
     <!-- Permissions -->
@@ -72,4 +81,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 13+ runtime notification permission (requested after onboarding, §7). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Headless push wake (#421): pre-Android-12 expedited WorkManager work is
+         a foreground service; API 34+ additionally requires the typed permission
+         matching the dataSync type declared on SystemForegroundService above. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 </manifest>

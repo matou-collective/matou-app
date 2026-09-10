@@ -117,6 +117,26 @@ export interface LocalNotificationsPlugin {
       extra?: Record<string, string>;
     }>;
   }): Promise<unknown>;
+  /**
+   * Tap on a locally posted notification (JS-scheduled or the Android headless
+   * wake's native twin, #421) — this is the event local-notification taps fire,
+   * NOT pushNotificationActionPerformed (which only fires for FCM-rendered
+   * notifications that a data-only §4 payload never produces). Optional so a
+   * shell injecting a reduced plugin surface still type-checks.
+   */
+  addListener?(
+    event: 'localNotificationActionPerformed',
+    fn: (action: LocalNotificationActionPerformed) => void,
+  ): Promise<unknown> | unknown;
+}
+
+/** A local-notification tap — mirrors LocalNotifications' ActionPerformed. */
+export interface LocalNotificationActionPerformed {
+  actionId?: string;
+  notification?: {
+    id?: number;
+    extra?: Record<string, string>;
+  } | null;
 }
 
 /** Launcher unread-badge plugin. `set` with 0 clears the badge. */

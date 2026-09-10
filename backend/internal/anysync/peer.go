@@ -15,50 +15,69 @@ import (
 	"github.com/anyproto/any-sync/util/crypto"
 )
 
-// PeerKeyManager handles peer key generation, storage, and AID mapping
+// PeerKeyManager holds the two distinct account keys and the AID mapping.
+//
+// The any-sync account model uses two independent keys (see accountdata.New):
+//   - peerKey: the transport/device key. It must be unique per install so two
+//     devices sharing one mnemonic present different peer ids; otherwise each
+//     evicts the other's connection (net/pool AddPeer) and sync queue
+//     (util/syncqueues). It is a random key persisted at {dataDir}/peer.key.
+//   - signKey: the ACL identity key. It is mnemonic-derived and therefore the
+//     same on every device the user owns, which is what the ACL records trust.
 type PeerKeyManager struct {
 	keyPath     string
-	privKey     crypto.PrivKey
-	peerID      string
+	peerKey     crypto.PrivKey    // per-install transport/device key
+	signKey     crypto.PrivKey    // mnemonic-derived ACL identity key
+	peerID      string            // peer id of the device (peer) key
 	aidMappings map[string]string // AID -> PeerID
 }
 
 // PeerKeyConfig holds configuration for peer key management
 type PeerKeyConfig struct {
-	// KeyPath is the file path for storing the peer key (if not using mnemonic)
+	// KeyPath is the file path for storing the per-install device (peer) key.
 	KeyPath string
-	// Mnemonic is the BIP39 mnemonic for deterministic key derivation
+	// Mnemonic is the BIP39 mnemonic for deterministic sign-key derivation.
 	Mnemonic string
 	// KeyIndex is the derivation index (default 0)
 	KeyIndex uint32
 }
 
-// NewPeerKeyManager creates a new peer key manager
+// NewPeerKeyManager creates a new peer key manager.
+//
+// The sign key is derived from the mnemonic when one is supplied (the ACL
+// identity, stable across devices). The device/peer key is always a random
+// per-install key persisted at KeyPath. When no mnemonic is supplied (dev/test
+// without an identity) the device key doubles as the sign key.
 func NewPeerKeyManager(cfg *PeerKeyConfig) (*PeerKeyManager, error) {
 	mgr := &PeerKeyManager{
 		keyPath:     cfg.KeyPath,
 		aidMappings: make(map[string]string),
 	}
 
-	// Try mnemonic-based derivation first
+	// Sign key: mnemonic-derived when available (the ACL identity).
+	var signKey crypto.PrivKey
 	if cfg.Mnemonic != "" {
-		privKey, err := DeriveKeyFromMnemonic(cfg.Mnemonic, cfg.KeyIndex)
+		derived, err := DeriveKeyFromMnemonic(cfg.Mnemonic, cfg.KeyIndex)
 		if err != nil {
-			return nil, fmt.Errorf("deriving key from mnemonic: %w", err)
+			return nil, fmt.Errorf("deriving sign key from mnemonic: %w", err)
 		}
-		mgr.privKey = privKey
-	} else {
-		// Fall back to file-based key
-		privKey, err := GetOrCreatePeerKey(cfg.KeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("getting/creating peer key: %w", err)
-		}
-		mgr.privKey = privKey
+		signKey = derived
 	}
 
-	// Derive peer ID from public key
-	peerID := mgr.privKey.GetPublic().PeerId()
-	mgr.peerID = peerID
+	// Device/peer key: a random per-install key. Migrates a legacy peer.key
+	// that still holds the mnemonic-derived key (pre-#468 layout, where the
+	// transport and ACL keys were the same) to a fresh random device key.
+	peerKey, err := loadOrCreateDeviceKey(cfg.KeyPath, signKey)
+	if err != nil {
+		return nil, fmt.Errorf("getting/creating device peer key: %w", err)
+	}
+	mgr.peerKey = peerKey
+
+	if signKey == nil {
+		signKey = peerKey
+	}
+	mgr.signKey = signKey
+	mgr.peerID = peerKey.GetPublic().PeerId()
 
 	return mgr, nil
 }
@@ -81,12 +100,6 @@ func DeriveKeyFromMnemonic(mnemonic string, index uint32) (crypto.PrivKey, error
 // GetOrCreatePeerKey loads an existing peer key from file or generates a new one.
 // The key is stored in a file for persistence across restarts.
 func GetOrCreatePeerKey(keyPath string) (crypto.PrivKey, error) {
-	// Ensure directory exists
-	dir := filepath.Dir(keyPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("creating key directory: %w", err)
-	}
-
 	// Try to load existing key
 	if data, err := os.ReadFile(keyPath); err == nil {
 		privKey, err := crypto.UnmarshalEd25519PrivateKeyProto(data)
@@ -96,13 +109,22 @@ func GetOrCreatePeerKey(keyPath string) (crypto.PrivKey, error) {
 		return privKey, nil
 	}
 
-	// Generate new key
+	return generateAndSaveKey(keyPath)
+}
+
+// generateAndSaveKey generates a fresh random Ed25519 key and writes it to
+// keyPath (0600), creating the parent directory as needed.
+func generateAndSaveKey(keyPath string) (crypto.PrivKey, error) {
+	dir := filepath.Dir(keyPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("creating key directory: %w", err)
+	}
+
 	privKey, _, err := crypto.GenerateRandomEd25519KeyPair()
 	if err != nil {
 		return nil, fmt.Errorf("generating key: %w", err)
 	}
 
-	// Save to file
 	data, err := privKey.Marshall()
 	if err != nil {
 		return nil, fmt.Errorf("marshaling key: %w", err)
@@ -115,12 +137,58 @@ func GetOrCreatePeerKey(keyPath string) (crypto.PrivKey, error) {
 	return privKey, nil
 }
 
-// GetPrivKey returns the private key
-func (m *PeerKeyManager) GetPrivKey() crypto.PrivKey {
-	return m.privKey
+// loadOrCreateDeviceKey returns the per-install device (peer) key at keyPath.
+//
+// It generates a fresh random key when none exists. When a key exists it is
+// reused, except in the pre-#468 legacy case where {dataDir}/peer.key still
+// holds the mnemonic-derived sign key: that key is the ACL identity and must
+// never be reused as the transport key (two devices would collide), so a fresh
+// random device key is minted and written over it. The sign key value the ACL
+// already trusts is preserved separately as signKey by the caller.
+func loadOrCreateDeviceKey(keyPath string, signKey crypto.PrivKey) (crypto.PrivKey, error) {
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		// No device key yet — mint a fresh random one.
+		return generateAndSaveKey(keyPath)
+	}
+
+	existing, err := crypto.UnmarshalEd25519PrivateKeyProto(data)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshaling existing device key: %w", err)
+	}
+
+	if signKey != nil && privKeysEqual(existing, signKey) {
+		// Legacy layout: peer.key == the mnemonic-derived ACL key. Migrate.
+		return generateAndSaveKey(keyPath)
+	}
+
+	return existing, nil
 }
 
-// GetPeerID returns the peer ID string
+// privKeysEqual reports whether two private keys marshal to identical bytes.
+func privKeysEqual(a, b crypto.PrivKey) bool {
+	aBytes, err := a.Marshall()
+	if err != nil {
+		return false
+	}
+	bBytes, err := b.Marshall()
+	if err != nil {
+		return false
+	}
+	return string(aBytes) == string(bBytes)
+}
+
+// GetPeerKey returns the per-install device (transport) key.
+func (m *PeerKeyManager) GetPeerKey() crypto.PrivKey {
+	return m.peerKey
+}
+
+// GetSigningKey returns the mnemonic-derived ACL identity (sign) key.
+func (m *PeerKeyManager) GetSigningKey() crypto.PrivKey {
+	return m.signKey
+}
+
+// GetPeerID returns the peer ID string of the device (peer) key.
 func (m *PeerKeyManager) GetPeerID() string {
 	return m.peerID
 }
@@ -184,9 +252,9 @@ func ComputeReplicationKey(signingKey crypto.PrivKey) (uint64, error) {
 
 // AIDMapping represents a stored AID-to-PeerID mapping
 type AIDMapping struct {
-	AID      string `json:"aid"`
-	PeerID   string `json:"peerId"`
-	SpaceID  string `json:"spaceId,omitempty"`
+	AID       string `json:"aid"`
+	PeerID    string `json:"peerId"`
+	SpaceID   string `json:"spaceId,omitempty"`
 	CreatedAt string `json:"createdAt"`
 }
 
@@ -216,33 +284,45 @@ func ValidateMnemonic(mnemonic string) error {
 	return nil
 }
 
-// PersistUserPeerKey saves a user's peer private key for later use (e.g. JoinWithInvite).
-// The key is stored at {dataDir}/users/{userAID}/peer.key.
-func PersistUserPeerKey(dataDir, userAID string, key crypto.PrivKey) error {
+// PersistUserSignKey saves a user's mnemonic-derived sign key (the ACL identity)
+// for later use (e.g. JoinWithInvite and access verification).
+// The key is stored at {dataDir}/users/{userAID}/sign.key.
+//
+// NOTE: this is the ACL identity (sign) key, NOT the per-install device key.
+// handleVerifyAccess loads it and passes its public key to GetPermissions, so it
+// must stay the mnemonic-derived value the ACL was built against.
+func PersistUserSignKey(dataDir, userAID string, key crypto.PrivKey) error {
 	userDir := filepath.Join(dataDir, "users", userAID)
 	if err := os.MkdirAll(userDir, 0700); err != nil {
 		return fmt.Errorf("creating user directory: %w", err)
 	}
 	data, err := key.Marshall()
 	if err != nil {
-		return fmt.Errorf("marshaling peer key: %w", err)
+		return fmt.Errorf("marshaling sign key: %w", err)
 	}
-	return os.WriteFile(filepath.Join(userDir, "peer.key"), data, 0600)
+	return os.WriteFile(filepath.Join(userDir, "sign.key"), data, 0600)
 }
 
-// LoadUserPeerKey loads a previously stored user peer key.
-func LoadUserPeerKey(dataDir, userAID string) (crypto.PrivKey, error) {
-	keyPath := filepath.Join(dataDir, "users", userAID, "peer.key")
-	data, err := os.ReadFile(keyPath)
+// LoadUserSignKey loads a previously stored user sign key (the ACL identity).
+// It reads {dataDir}/users/{userAID}/sign.key, falling back to the pre-#468
+// filename peer.key so existing installs keep resolving access.
+func LoadUserSignKey(dataDir, userAID string) (crypto.PrivKey, error) {
+	userDir := filepath.Join(dataDir, "users", userAID)
+	data, err := os.ReadFile(filepath.Join(userDir, "sign.key"))
 	if err != nil {
-		return nil, fmt.Errorf("reading user peer key: %w", err)
+		// Fall back to the legacy filename (pre-#468).
+		legacy, legacyErr := os.ReadFile(filepath.Join(userDir, "peer.key"))
+		if legacyErr != nil {
+			return nil, fmt.Errorf("reading user sign key: %w", err)
+		}
+		data = legacy
 	}
 	return crypto.UnmarshalEd25519PrivateKeyProto(data)
 }
 
-// ExportPeerKey exports the peer key in a portable format
+// ExportPeerKey exports the device (peer) key in a portable format
 func (m *PeerKeyManager) ExportPeerKey() ([]byte, error) {
-	return m.privKey.Marshall()
+	return m.peerKey.Marshall()
 }
 
 // PeerInfo contains information about a peer for display/debugging
@@ -255,7 +335,7 @@ type PeerInfo struct {
 
 // GetPeerInfo returns information about the peer identity
 func (m *PeerKeyManager) GetPeerInfo() (*PeerInfo, error) {
-	pubKey := m.privKey.GetPublic()
+	pubKey := m.peerKey.GetPublic()
 	raw, err := pubKey.Raw()
 	if err != nil {
 		return nil, err
