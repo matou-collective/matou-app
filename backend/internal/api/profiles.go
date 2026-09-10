@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anyproto/any-sync/util/crypto"
@@ -27,6 +28,13 @@ type ProfilesHandler struct {
 	eventBroker  *EventBroker
 	roleLookup   RoleLookup
 	schemaWriter SchemaWriter
+
+	// schemaMu serialises schema PUTs from the registry read that backs the
+	// optimistic-locking check through persist and Register. Without it two
+	// PUTs claiming the same Version both pass the check and the last Register
+	// wins silently, voiding the 409 guarantee. Persisting inside the lock is
+	// fine for this admin-only path.
+	schemaMu sync.Mutex
 }
 
 // SchemaWriter persists an updated type definition to the community space.
@@ -116,12 +124,6 @@ func (h *ProfilesHandler) HandleUpdateType(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	current, ok := h.registry.Get(name)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("type %q not found", name)})
-		return
-	}
-
 	var incoming types.TypeDefinition
 	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request: %v", err)})
@@ -137,6 +139,18 @@ func (h *ProfilesHandler) HandleUpdateType(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": fmt.Sprintf("type name %q in body does not match %q in path", incoming.Name, name),
 		})
+		return
+	}
+
+	// Everything from the registry read that backs the version check through
+	// persist and Register is one critical section (the body is decoded above,
+	// outside it, so a slow client cannot hold the lock).
+	h.schemaMu.Lock()
+	defer h.schemaMu.Unlock()
+
+	current, ok := h.registry.Get(name)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("type %q not found", name)})
 		return
 	}
 

@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/matou-dao/backend/internal/types"
 )
@@ -207,5 +210,62 @@ func TestUpdateType_PersistFailureIsServerError(t *testing.T) {
 	}
 	if regDef, _ := h.registry.Get("SharedProfile"); regDef.Version != 1 {
 		t.Errorf("registry advanced despite persist failure: version %d", regDef.Version)
+	}
+}
+
+// blockingSchemaWriter parks its first write until released, so a second PUT
+// can be issued while the first is mid-flight inside the handler.
+type blockingSchemaWriter struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingSchemaWriter) WriteTypeDefinition(_ context.Context, _ *types.TypeDefinition) error {
+	b.mu.Lock()
+	b.calls++
+	first := b.calls == 1
+	b.mu.Unlock()
+	if first {
+		close(b.entered)
+		<-b.release
+	}
+	return nil
+}
+
+// TestUpdateType_ConcurrentSameVersion: two PUTs claiming the same Version must
+// resolve to exactly one 200 and one 409. The handler serialises Get → validate
+// → persist → Register under schemaMu, so the second PUT cannot read the
+// pre-bump version while the first is still in flight.
+func TestUpdateType_ConcurrentSameVersion(t *testing.T) {
+	reg := types.NewRegistry()
+	reg.Bootstrap()
+	bw := &blockingSchemaWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	h := &ProfilesHandler{registry: reg, schemaWriter: bw}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/types/", h.handleTypeByName)
+
+	codes := make(chan int, 2)
+	go func() { codes <- putType(t, mux, "SharedProfile", "", sharedProfileWithCustom()).Code }()
+	<-bw.entered // first PUT is inside the critical section, parked in persist
+
+	go func() { codes <- putType(t, mux, "SharedProfile", "", sharedProfileWithCustom()).Code }()
+	// Without the lock the second PUT reads Version 1, passes the check, writes
+	// and returns while the first is still parked; with it, it waits.
+	select {
+	case c := <-codes:
+		t.Fatalf("second PUT completed (%d) while the first was still in flight", c)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(bw.release)
+	got := []int{<-codes, <-codes}
+	sort.Ints(got)
+	if got[0] != http.StatusOK || got[1] != http.StatusConflict {
+		t.Fatalf("concurrent same-version PUTs = %v, want [200 409]", got)
+	}
+	if def, _ := h.registry.Get("SharedProfile"); def.Version != 2 {
+		t.Errorf("registry version = %d, want exactly one bump to 2", def.Version)
 	}
 }
