@@ -181,6 +181,20 @@
                 </div>
                 <p v-else class="field-value">Not provided</p>
               </div>
+
+              <!-- Schema-driven custom (admin-added) fields -->
+              <div
+                v-if="customProfileFields.length > 0"
+                class="profile-field"
+                data-test="custom-profile-fields"
+              >
+                <TypedDisplay
+                  type-name="SharedProfile"
+                  layout="detail"
+                  :fields="customProfileFields"
+                  :data="sharedProfile || {}"
+                />
+              </div>
             </div>
 
             <!-- Endorsements Section -->
@@ -414,6 +428,16 @@ import type { CustomAnswer } from 'src/kit/profile';
 import { KIT } from 'src/generated/kit';
 import { needsSession, requiredEndorsements } from 'src/kit/approval';
 import ChangeRoleModal from 'src/components/dashboard/ChangeRoleModal.vue';
+import TypedDisplay from 'src/components/profiles/TypedDisplay.vue';
+import { useTypesStore } from 'stores/types';
+
+// SharedProfile fields this modal already renders itself; the rest of the
+// schema's non-core fields are surfaced generically via TypedDisplay.
+const BUILTIN_SHARED_FIELDS = [
+  'displayName', 'publicEmail', 'bio', 'location', 'indigenousCommunity', 'joinReason',
+  'participationInterests', 'customInterests', 'skills', 'languages', 'publicLinks',
+  'facebookUrl', 'linkedinUrl', 'twitterUrl', 'instagramUrl', 'githubUrl', 'gitlabUrl', 'avatar',
+];
 
 // Map interest value to human-readable label
 const interestLabelMap: Map<string, string> = new Map(
@@ -484,6 +508,22 @@ const emit = defineEmits<{
 
 const memberRole = computed(() => (props.communityProfile?.role as string) || '');
 const showChangeRole = ref(false);
+
+const typesStore = useTypesStore();
+
+// Custom (admin-added) SharedProfile fields that carry a value on this profile.
+// Only for materialised profiles (not the registration payload, which uses the
+// separate kit customAnswers shape rendered above).
+const customProfileFields = computed(() => {
+  if (props.registration) return [];
+  const data = props.sharedProfile || {};
+  return typesStore.customFieldNames('SharedProfile', BUILTIN_SHARED_FIELDS).filter((name) => {
+    const v = data[name];
+    if (v === undefined || v === null || v === '') return false;
+    if (Array.isArray(v) && v.length === 0) return false;
+    return true;
+  });
+});
 
 function handleRoleUpdated(newRole: string) {
   emit('role-updated', newRole);

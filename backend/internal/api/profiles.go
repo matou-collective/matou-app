@@ -778,7 +778,11 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	// where a new member's value is stored. The core membership/identity fields
 	// each handler depends on are pinned by the assembler and cannot be moved
 	// out by a schema edit. A key no schema declares is dropped (logged and
-	// reported in the response) rather than persisted unvalidated.
+	// reported as droppedFields in the response) rather than persisted
+	// unvalidated. This is deliberately not a 400: the answers were collected
+	// under the kit as it stood at submit time, and refusing the write would
+	// leave the registration un-approvable whenever the admin removed a
+	// question between submit and approval.
 	now := time.Now().UTC().Format(time.RFC3339)
 	communityDef := h.profileTypeOrBuiltin("CommunityProfile", types.CommunityProfileType)
 	sharedDef := h.profileTypeOrBuiltin("SharedProfile", types.SharedProfileType)

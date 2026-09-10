@@ -11,6 +11,7 @@ require (
 	github.com/ipfs/go-cid v0.6.0
 	github.com/multiformats/go-multihash v0.2.3
 	go.uber.org/mock v0.6.0
+	golang.org/x/crypto v0.54.0
 	gopkg.in/yaml.v3 v3.0.1
 	storj.io/drpc v0.0.34
 )
@@ -101,7 +102,6 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/image v0.44.0 // indirect
 	golang.org/x/mobile v0.0.0-20260812174124-2f419b2fb945 // indirect

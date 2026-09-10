@@ -1293,7 +1293,14 @@ func (h *SpacesHandler) HandleGrantStewardAdmin(w http.ResponseWriter, r *http.R
 				// AccountsAdd already granted Admin on the readonly space.
 				continue
 			}
-			writeJSON(w, http.StatusNotFound, GrantStewardAdminResponse{
+			// Distinguish a genuine "unknown AID" miss (404) from a
+			// state/transport fault (500): only a wrapped
+			// ErrAccountNotFoundForAID means the steward is absent from the ACL.
+			status := http.StatusNotFound
+			if !errors.Is(err, anysync.ErrAccountNotFoundForAID) {
+				status = http.StatusInternalServerError
+			}
+			writeJSON(w, status, GrantStewardAdminResponse{
 				Success: false,
 				Error:   fmt.Sprintf("steward not found in space %s ACL: %v", spaceID, err),
 			})
