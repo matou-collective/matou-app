@@ -77,6 +77,24 @@ describe('types store custom-field helpers', () => {
     expect(store.customFieldNames('SharedProfile', [])).toContain('iwi');
   });
 
+  it('customFieldNames appends fields missing from the form layout in declaration order', async () => {
+    const store = await loadedStore();
+    // An admin appended `hapu` and `rohe` to the schema but not to the form
+    // layout (#405 validates layouts but does not auto-append). They must still
+    // render — after the layout-ordered ones, in declaration order.
+    store.definitions.set('Partial', {
+      ...DEF,
+      name: 'Partial',
+      fields: [
+        ...DEF.fields,
+        { name: 'rohe', type: 'string' },
+        { name: 'hapu', type: 'string' },
+      ],
+      layouts: { form: { fields: ['marae', 'iwi'] } },
+    });
+    expect(store.customFieldNames('Partial', BUILTIN)).toEqual(['marae', 'iwi', 'rohe', 'hapu']);
+  });
+
   it('filterableFieldNames returns fields flagged filterable', async () => {
     const store = await loadedStore();
     expect(store.filterableFieldNames('SharedProfile')).toEqual(['iwi']);

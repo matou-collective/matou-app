@@ -40,19 +40,26 @@ export const useTypesStore = defineStore('types', () => {
    * Custom (admin-added) field names for a type: schema fields that are neither
    * `core` (structural fields the backend depends on) nor already rendered by a
    * surface's built-in UI (passed as `builtin`). Ordered by the type's `form`
-   * layout when present, else by field declaration order. This is how bespoke
-   * profile/notice/proposal forms surface org-added custom fields without
-   * double-rendering their own built-in ones.
+   * layout when present; fields the schema declares but the form layout does
+   * not name follow in declaration order, so an admin-added field is never
+   * silently hidden just because the layout was not updated with it. This is
+   * how bespoke profile/notice/proposal forms surface org-added custom fields
+   * without double-rendering their own built-in ones.
+   *
+   * Schema editing note: the backend's PUT /api/v1/types/{name} (#405) rejects
+   * a layout that names a field the definition no longer declares, so any
+   * admin UI that removes a field must also prune it from every layout before
+   * writing the definition back.
    */
   function customFieldNames(name: string, builtin: Iterable<string> = []): string[] {
     const def = definitions.value.get(name);
     if (!def) return [];
     const handled = new Set(builtin);
-    const order = def.layouts?.form?.fields;
-    const names = order && order.length > 0
-      ? order.filter((n) => def.fields.some((f) => f.name === n))
-      : def.fields.map((f) => f.name);
-    // Preserve layout order but drop dupes, core fields, and built-in names.
+    const declared = def.fields.map((f) => f.name);
+    const order = def.layouts?.form?.fields ?? [];
+    // Layout order first, then declared fields the layout does not mention.
+    const names = [...order.filter((n) => declared.includes(n)), ...declared];
+    // Preserve that order but drop dupes, core fields, and built-in names.
     const seen = new Set<string>();
     return names.filter((n) => {
       if (seen.has(n) || handled.has(n)) return false;
