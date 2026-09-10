@@ -106,6 +106,7 @@
         <div v-if="customFieldNames.length > 0" class="form-section" data-test="custom-notice-fields">
           <h3 class="form-section-title">Additional Information</h3>
           <TypedForm
+            ref="typedFormRef"
             embedded
             type-name="Notice"
             :fields="customFieldNames"
@@ -142,6 +143,9 @@ const typesStore = useTypesStore();
 // exactly the org-added custom ones.
 const customFieldNames = computed(() => typesStore.customFieldNames('Notice'));
 const customFieldData = ref<Record<string, unknown>>({});
+// Template ref on the embedded TypedForm so submit can run its client-side
+// validation and surface inline errors on the custom fields.
+const typedFormRef = ref<InstanceType<typeof TypedForm>>();
 
 onMounted(() => {
   if (!typesStore.loaded) void typesStore.loadDefinitions();
@@ -209,8 +213,14 @@ function removeLink(idx: number) {
 }
 
 async function handleSubmit() {
-  submitting.value = true;
   submitError.value = '';
+  // Client-side validation of the schema-driven custom fields first: an
+  // invalid one shows its inline error and nothing is sent.
+  if (typedFormRef.value && !typedFormRef.value.validate()) {
+    submitError.value = 'Please fix the highlighted fields in Additional Information';
+    return;
+  }
+  submitting.value = true;
 
   const validLinks = form.links.filter(l => l.label.trim() && l.url.trim());
 

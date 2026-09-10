@@ -292,6 +292,7 @@
           <h3 class="card-title"><FileText :size="18" /> Additional Information</h3>
         </div>
         <TypedForm
+          ref="typedFormRef"
           embedded
           type-name="SharedProfile"
           :fields="customFieldNames"
@@ -681,6 +682,9 @@ const customFieldNames = computed(() =>
 );
 const customFieldData = ref<Record<string, unknown>>({});
 const initialCustomSnapshot = ref<string>('');
+// Template ref on the embedded TypedForm so the save can run its client-side
+// validation (required / min / max length) and surface inline errors.
+const typedFormRef = ref<InstanceType<typeof TypedForm>>();
 
 const initialSharedSnapshot = ref<Record<string, string>>({});
 const initialPrivateSnapshot = ref<Record<string, string>>({});
@@ -877,6 +881,12 @@ function buildPrivateData(): Record<string, unknown> {
 
 async function saveSharedProfile() {
   saveError.value = '';
+  // Client-side validation of the schema-driven custom fields: an invalid one
+  // shows its inline error and the save is not attempted.
+  if (typedFormRef.value && !typedFormRef.value.validate()) {
+    saveError.value = 'Please fix the highlighted fields in Additional Information';
+    return;
+  }
   const data = buildSharedData();
   const existing = profilesStore.getMyProfile('SharedProfile');
   const result = await profilesStore.saveProfile('SharedProfile', data, {
