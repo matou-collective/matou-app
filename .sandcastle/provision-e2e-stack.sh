@@ -27,9 +27,10 @@
 #      without it (matou-app#437).
 #   4. the ~/swarm-e2e/<slug> checkout the drives run from
 #   5. chromium for Playwright
-#   6. a Go toolchain to build the backend — on PATH or at ~/go-sdk/go, the
-#      deterministic fallback run-pr-e2e.sh uses when the runner unit's
-#      non-login PATH omits a nix-profile go the login shell sees (matou-app#437)
+#   6. a Go toolchain to build the backend — on the RUNNER UNIT's PATH (not the
+#      invoking shell's: a nix-profile go the login shell sees is invisible to
+#      a runner job) or at ~/go-sdk/go, the deterministic fallback
+#      run-pr-e2e.sh uses (matou-app#437)
 #   7. proof the compose actually stands a witness up here (OOBI reachable)
 #
 # CONTRACT (matou-app#57):
@@ -74,6 +75,10 @@
 #   PROVISION_E2E_KEEP_STACK=1  leave a stack this script started up (default:
 #                            tear down what we started, so the host is left as
 #                            found and a re-run stays a no-op).
+#   PROVISION_RUNNER_PATH    the PATH a runner JOB gets, used to probe the
+#                            toolchains (go). Default: the forgejo-runner unit's
+#                            Environment=PATH (systemctl show), else systemd's
+#                            service default — never the invoking shell's PATH.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -100,6 +105,11 @@ GO_SDK="$HOME/go-sdk/go"
 # Go version to auto-install ONLY if none is found on the box to link. Matches
 # backend/go.mod's `go` directive floor; override with PROVISION_GO_VERSION.
 GO_VERSION="${PROVISION_GO_VERSION:-1.25.5}"
+# What a systemd service gets when its unit sets no PATH (systemd's compiled-in
+# DefaultPath): no nix profile, no ~/.local/bin, no ~/go/bin. The last-resort
+# probe PATH when neither PROVISION_RUNNER_PATH nor a forgejo-runner unit says
+# otherwise — deliberately stricter than the invoking shell's.
+RUNNER_PATH_DEFAULT="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 CHECK_ONLY=0
 case "${1:-}" in
@@ -137,6 +147,39 @@ note() { echo "provision-e2e-stack:   · $*"; }
 # (leave the ephemeral stack alone — the contract's "a re-run is a no-op").
 CONVERGED=0
 converged() { CONVERGED=1; }
+
+# _resolve_runner_path — the PATH a runner JOB actually gets, which is what every
+# toolchain probe must use (matou-app#437: a login-shell `command -v go` was
+# green on elitebook-03 through the swarm user's nix profile while the runner
+# unit — Environment=PATH=/home/swarm/.local/bin:/usr/local/bin:/usr/bin:
+# /usr/sbin:/bin — could not see go, so the drive died on `make build`).
+# Precedence: PROVISION_RUNNER_PATH (explicit) > the forgejo-runner unit's
+# Environment=PATH (system unit, then a user unit) > RUNNER_PATH_DEFAULT.
+# Resolved once (a plain call, not inside $(...), so the memo sticks) and the
+# source is reported, so a preflight log shows exactly what was probed.
+RUNNER_PATH=""; RUNNER_PATH_SRC=""
+_unit_path() {  # [systemctl args...] — the PATH= pair of the unit's Environment=
+  # Environment= holds space-separated KEY=VALUE pairs; take the PATH one wherever
+  # it sits (\(.* \)\{0,1\} anchors on a preceding space so GOPATH= can't match).
+  systemctl "$@" show -p Environment 'forgejo-runner*' 2>/dev/null \
+    | sed -n 's/^Environment=\(.* \)\{0,1\}PATH=\([^ ]*\).*/\2/p' | head -1
+}
+_resolve_runner_path() {
+  [ -n "$RUNNER_PATH" ] && return 0
+  local p
+  if [ -n "${PROVISION_RUNNER_PATH:-}" ]; then
+    RUNNER_PATH="$PROVISION_RUNNER_PATH"; RUNNER_PATH_SRC="PROVISION_RUNNER_PATH"
+  elif p="$(_unit_path)" && [ -n "$p" ]; then
+    RUNNER_PATH="$p"; RUNNER_PATH_SRC="forgejo-runner unit"
+  elif p="$(_unit_path --user)" && [ -n "$p" ]; then
+    RUNNER_PATH="$p"; RUNNER_PATH_SRC="forgejo-runner user unit"
+  else
+    RUNNER_PATH="$RUNNER_PATH_DEFAULT"; RUNNER_PATH_SRC="systemd service default; no forgejo-runner unit found"
+  fi
+  note "toolchain probes use the runner job's PATH ($RUNNER_PATH_SRC): $RUNNER_PATH"
+}
+# _on_runner_path <cmd> — `command -v` under the runner's PATH, not this shell's.
+_on_runner_path() { _resolve_runner_path; PATH="$RUNNER_PATH" command -v "$1" 2>/dev/null; }
 
 # _witness_oobi_url — the probe URL: the explicit WITNESS_OOBI_URL override, or
 # the port the infra checkout's test compose will actually bind (WITNESS_PORT_0
@@ -313,20 +356,26 @@ ensure_playwright() {
 # run-pr-e2e.sh builds the backend with:
 #     command -v go >/dev/null 2>&1 || export PATH="$HOME/go-sdk/go/bin:$PATH"
 # so the drive needs go on the runner's PATH OR a toolchain at ~/go-sdk/go/bin.
-# Probe EXACTLY that pair — the runner unit's non-login PATH can omit a
-# nix-profile go the login shell resolves, so a login-shell probe would pass a
-# host the drive then fails on. Converge prefers LINKING an existing go (a
-# nix/system install the runner PATH just doesn't export) into ~/go-sdk/go, and
-# only downloads a pinned toolchain there when the box has none.
+# Probe EXACTLY that pair, and probe the first leg with the RUNNER JOB's PATH
+# (_resolve_runner_path), never this shell's: `--check` over ssh runs in a login shell
+# whose nix profile resolves go while the runner unit's stripped PATH does not
+# — the false green that let elitebook-03 report ready (matou-app#437).
+# Converge prefers LINKING an existing go (a nix/system install the runner PATH
+# just doesn't export) into ~/go-sdk/go, and only downloads a pinned toolchain
+# there when the box has none.
 _go_binary() {
-  command -v go 2>/dev/null && return 0
+  local p
+  p="$(_on_runner_path go)" && [ -n "$p" ] && { echo "$p"; return 0; }
   [ -x "$GO_SDK/bin/go" ] && { echo "$GO_SDK/bin/go"; return 0; }
   return 1
 }
 _find_any_go() {
-  # A go on the box the runner's PATH may not export. Common install roots +
-  # the login shell's own resolution (nix profile, ben's exact case on -03).
+  # A go on the box the runner's PATH may not export: whatever THIS (login)
+  # shell resolves first — ben's exact case on -03, a nix-profile go seen over
+  # ssh — then common install roots, then a fresh login shell's resolution.
   local c
+  c="$(command -v go 2>/dev/null)"
+  [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
   for c in "$HOME/.nix-profile/bin/go" /nix/var/nix/profiles/default/bin/go \
            /usr/local/go/bin/go /usr/lib/go/bin/go /usr/bin/go /snap/bin/go; do
     [ -x "$c" ] && { echo "$c"; return 0; }
@@ -362,6 +411,7 @@ _install_go() {
 }
 ensure_go() {
   local gobin
+  _resolve_runner_path   # in THIS shell (not a $(...)), so the memo + note happen once
   if gobin="$(_go_binary)"; then
     ok go "toolchain present ($("$gobin" version 2>/dev/null | awk '{print $3}') at $gobin)"
     # Belt-and-suspenders: also populate the deterministic fallback run-pr-e2e
@@ -373,7 +423,7 @@ ensure_go() {
     return 0
   fi
   if [ "$CHECK_ONLY" = 1 ]; then
-    fail go "no Go on the runner's PATH and none at $GO_SDK/bin — run-pr-e2e.sh cannot build the backend. Run without --check to link or install one."
+    fail go "no Go on the runner job's PATH ($RUNNER_PATH) and none at $GO_SDK/bin — run-pr-e2e.sh cannot build the backend (a go this login shell resolves does not count: the runner unit cannot see it). Run without --check to link or install one at $GO_SDK."
   fi
   local found
   if found="$(_find_any_go)" && _link_go "$found"; then

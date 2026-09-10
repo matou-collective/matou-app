@@ -19,6 +19,11 @@ new_host() {
   # A fake GOROOT (bin/go answers `version` and `env GOROOT`) the have_go_*
   # builders copy/link from — the script must never touch a real toolchain.
   export FAKE_GOROOT="$root/fakego"; mkdir -p "$FAKE_GOROOT/bin"
+  # The PATH a runner JOB gets (the forgejo-runner unit's Environment=PATH — no
+  # nix profile, no ~/go/bin) is distinct from the invoking/login PATH ($SHIMBIN
+  # + the real one). The script must probe toolchains with THIS one (#437).
+  export RUNNERBIN="$root/runner-bin"; mkdir -p "$RUNNERBIN"
+  export PROVISION_RUNNER_PATH="$RUNNERBIN"
   export REPO_SLUG="Matou/matou-app"
   export MATOU_INFRA_DIR="$HOME/matou/matou-infrastructure"
   export WITNESS_OOBI_URL="http://localhost:7642/oobi"
@@ -102,6 +107,11 @@ case "$*" in
 esac
 exit 0
 SH
+  # No forgejo-runner unit on the sandbox host unless a check writes one.
+  cat >"$SHIMBIN/systemctl" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
   chmod +x "$SHIMBIN"/* "$FAKE_GOROOT/bin/go"
 }
 
@@ -113,9 +123,10 @@ have_anysync()  { mkdir -p "$MATOU_INFRA_DIR/any-sync"; : >"$MATOU_INFRA_DIR/any
 have_workdir()  { mkdir -p "$HOME/swarm-e2e/$REPO_SLUG/.git" "$HOME/swarm-e2e/$REPO_SLUG/frontend/node_modules"; }
 have_chromium() { mkdir -p "$HOME/.cache/ms-playwright/chromium-1234"; }
 have_images()   { export SHIM_IMAGES="weboftrust/keri-witness-demo:1.1.0 matou-keria-patched:latest"; }
-have_go_login() { cp "$FAKE_GOROOT/bin/go" "$SHIMBIN/go"; }   # go on the invoking (login) PATH
-have_go_sdk()   { mkdir -p "$HOME/go-sdk"; ln -s "$FAKE_GOROOT" "$HOME/go-sdk/go"; }   # run-pr-e2e's fallback
-have_go()       { have_go_login; }
+have_go_login()  { cp "$FAKE_GOROOT/bin/go" "$SHIMBIN/go"; }    # go on the invoking (login) PATH only
+have_go_runner() { cp "$FAKE_GOROOT/bin/go" "$RUNNERBIN/go"; }  # go on the runner unit's PATH
+have_go_sdk()    { mkdir -p "$HOME/go-sdk"; ln -s "$FAKE_GOROOT" "$HOME/go-sdk/go"; }   # run-pr-e2e's fallback
+have_go()        { have_go_runner; }
 # Everything a drive needs; individual checks knock one clause out of this.
 ready_host()    { have_infra; have_anysync; have_workdir; have_chromium; have_images; have_go; }
 
@@ -248,4 +259,58 @@ new_host; ready_host; rm -f "$MATOU_INFRA_DIR/any-sync/.env.test"
 err="$(SHIM_MAKE_FAIL=1 run 2>&1)" && fail "a failing generate-config-test must fail the run"
 grep -q "FAILED clause \[anysync\]" <<<"$err" || fail "a failing generate-config-test must name [anysync] (got: $err)"
 
-echo "provision-e2e-stack: 16 checks passed"
+# ── 17. THE #437 FALSE GREEN: go on the login shell's PATH, none on the runner
+#       unit's PATH, no ~/go-sdk → --check must FAIL [go] (ben, PR #438 review:
+#       a login-shell `command -v go` passed -03 while the runner job could not
+#       see go) ────────────────────────────────────────────────────────────────
+new_host; ready_host; rm -f "$RUNNERBIN/go"; have_go_login
+err="$(run --check 2>&1)" && fail "--check must fail when go is only on the login PATH (the runner job cannot see it)"
+grep -q "FAILED clause \[go\]" <<<"$err" || fail "login-only go must name [go] (got: $err)"
+grep -q "go-sdk/go/bin" <<<"$err" || fail "the [go] failure must name the ~/go-sdk fallback path (got: $err)"
+grep -q "$RUNNERBIN" <<<"$err" || fail "the [go] failure must show the runner PATH it probed (got: $err)"
+
+# ── 18. --check passes on go at ~/go-sdk/go/bin alone (run-pr-e2e's fallback) ─
+new_host; ready_host; rm -f "$RUNNERBIN/go"; have_go_sdk
+out="$(run --check 2>&1)" || fail "--check must pass with go only at ~/go-sdk/go/bin (got: $out)"
+grep -q "\[go\] toolchain present (go1.25.5 at $HOME/go-sdk/go/bin/go)" <<<"$out" || fail "[go] must report the go-sdk toolchain (got: $out)"
+
+# ── 19. --check passes on go on the runner's PATH, and reports THAT binary ──
+new_host; ready_host   # have_go = runner PATH
+out="$(run --check 2>&1)" || fail "--check must pass with go on the runner PATH (got: $out)"
+grep -q "\[go\] toolchain present (go1.25.5 at $RUNNERBIN/go)" <<<"$out" || fail "[go] must report the runner-PATH go (got: $out)"
+
+# ── 20. converge with a login-shell-only go links its GOROOT into ~/go-sdk/go
+#       (the drive's fallback) — never a download when the box has a toolchain ─
+new_host; ready_host; rm -f "$RUNNERBIN/go"; have_go_login   # no ~/go-sdk
+out="$(run 2>&1)" || fail "converge must pass on a host with a login-shell-only go (got: $out)"
+[ -L "$HOME/go-sdk/go" ] || fail "converge must symlink ~/go-sdk/go"
+[ "$(readlink "$HOME/go-sdk/go")" = "$FAKE_GOROOT" ] || fail "~/go-sdk/go must point at the found go's GOROOT (got: $(readlink "$HOME/go-sdk/go"))"
+[ -x "$HOME/go-sdk/go/bin/go" ] || fail "~/go-sdk/go/bin/go must resolve through the link"
+grep -q "\[go\] linked toolchain" <<<"$out" || fail "converge must report the link (got: $out)"
+# and a --check straight after is green on the go-sdk leg
+out="$(run --check 2>&1)" || fail "--check after the link converge must pass (got: $out)"
+grep -q "\[go\] toolchain present (go1.25.5 at $HOME/go-sdk/go/bin/go)" <<<"$out" || fail "post-converge --check must see the go-sdk toolchain (got: $out)"
+
+# ── 21. no PROVISION_RUNNER_PATH: the probe PATH is read from the forgejo-runner
+#       unit's Environment= (PATH not the first pair; the -03 shape) ──────────
+new_host; ready_host; rm -f "$RUNNERBIN/go"; unset PROVISION_RUNNER_PATH
+unitbin="$root/unit-bin"; mkdir -p "$unitbin"; cp "$FAKE_GOROOT/bin/go" "$unitbin/go"
+cat >"$SHIMBIN/systemctl" <<SH
+#!/usr/bin/env bash
+case "\$*" in *forgejo-runner*) echo "Environment=HOME=/home/swarm PATH=$unitbin:/usr/local/bin:/usr/bin:/bin GOFLAGS=-mod=mod" ;; esac
+exit 0
+SH
+chmod +x "$SHIMBIN/systemctl"
+out="$(run --check 2>&1)" || fail "--check must pass with go on the unit's PATH (got: $out)"
+grep -q "\[go\] toolchain present (go1.25.5 at $unitbin/go)" <<<"$out" || fail "[go] must probe with the runner unit's PATH (got: $out)"
+grep -q "forgejo-runner unit" <<<"$out" || fail "the probe must say the PATH came from the unit (got: $out)"
+
+# ── 22. no PROVISION_RUNNER_PATH and no runner unit: the probe falls back to a
+#       STRIPPED PATH (systemd's service default) — never the invoking shell's,
+#       so a go that only the login shell resolves is never reported ─────────
+new_host; ready_host; rm -f "$RUNNERBIN/go"; have_go_login; unset PROVISION_RUNNER_PATH   # systemctl shim: no unit
+out="$(run --check 2>&1)" || true
+grep -q "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" <<<"$out" || fail "without a unit the probe must use the stripped default PATH (got: $out)"
+grep -q "$SHIMBIN/go" <<<"$out" && fail "the stripped probe must never resolve the login-shell go (got: $out)"
+
+echo "provision-e2e-stack: 22 checks passed"
