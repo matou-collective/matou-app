@@ -4,8 +4,11 @@ import {
   grantCredentialSaid,
   isGrantAlreadyAdmitted,
   isCredentialAlreadyIssued,
+  isCredentialRevoked,
   isAlreadyGroupSigner,
   type ClaimableNote,
+  type CredentialListOptions,
+  type WalletCredential,
 } from 'src/lib/keri/notifications';
 
 // --- Mock SignifyClient builders -------------------------------------------
@@ -26,12 +29,46 @@ function notifClient(opts: {
   };
 }
 
-function credClient(creds: Array<{ sad?: { d?: string }; d?: string }>, opts: { throws?: boolean } = {}) {
-  const list = vi.fn(async () => {
+/**
+ * Emulates KERIA's `POST /credentials/query` the way signify-ts drives it:
+ * Seeker equality filters keyed by CESR path (`-d` SAID, `-s` schema, `-a-i`
+ * issuee) and — the part that bit #480 — signify-ts's default `limit` of 25
+ * when the caller passes none. A mock that returned the whole wallet would let
+ * an unfiltered lookup pass here while silently truncating in production.
+ */
+function keriaQuery(creds: WalletCredential[], kargs?: CredentialListOptions): WalletCredential[] {
+  const filter = (kargs?.filter ?? {}) as Record<string, unknown>;
+  const path = (c: WalletCredential, key: string): unknown => {
+    switch (key) {
+      case '-d':
+        return c.sad?.d ?? c.d;
+      case '-s':
+        return c.sad?.s;
+      case '-a-i':
+        return c.sad?.a?.i;
+      default:
+        throw new Error(`unexpected filter key ${key}`);
+    }
+  };
+  const matched = creds.filter((c) => Object.entries(filter).every(([k, v]) => path(c, k) === v));
+  const limit = kargs?.limit ?? 25;
+  return matched.slice(kargs?.skip ?? 0, (kargs?.skip ?? 0) + limit);
+}
+
+function credClient(creds: WalletCredential[], opts: { throws?: boolean } = {}) {
+  const list = vi.fn(async (kargs?: CredentialListOptions) => {
     if (opts.throws) throw new Error('KERIA unreachable');
-    return creds;
+    return keriaQuery(creds, kargs);
   });
   return { list, credentials: () => ({ list }) };
+}
+
+/** `n` unrelated credentials, enough to overflow signify-ts's default page. */
+function filler(n: number): WalletCredential[] {
+  return Array.from({ length: n }, (_, i) => ({
+    sad: { d: `EFILL${i}`, s: `ESCHEMA_filler`, a: { i: `DMEMBER${i}` } },
+    status: { et: 'iss', s: '0' },
+  }));
 }
 
 const grantOf = (said: string) => ({ exn: { e: { acdc: { d: said } } } });
@@ -146,16 +183,15 @@ describe('isGrantAlreadyAdmitted (IPEX admit idempotency, issue #470)', () => {
 const SCHEMA = 'ESCHEMA_membership';
 const ISSUEE = 'DAPPLICANT';
 
-function issuedCredClient(
-  creds: Array<{ sad?: { d?: string; s?: string; a?: { i?: string } } }>,
-  opts: { throws?: boolean } = {},
-) {
-  const list = vi.fn(async () => {
-    if (opts.throws) throw new Error('KERIA unreachable');
-    return creds;
-  });
-  return { list, credentials: () => ({ list }) };
-}
+const issuedCredClient = credClient;
+const issued = (d: string, s: string, i: string): WalletCredential => ({
+  sad: { d, s, a: { i } },
+  status: { et: 'iss', s: '0' },
+});
+const revoked = (d: string, s: string, i: string): WalletCredential => ({
+  sad: { d, s, a: { i } },
+  status: { et: 'rev', s: '1' },
+});
 
 describe('isCredentialAlreadyIssued (approval idempotency, issue #480)', () => {
   it('is true when a credential of the schema is already issued to the applicant → skip issuance', async () => {
@@ -194,6 +230,51 @@ describe('isCredentialAlreadyIssued (approval idempotency, issue #480)', () => {
     const client = issuedCredClient([], { throws: true });
 
     expect(await isCredentialAlreadyIssued(client, SCHEMA, ISSUEE)).toBe(false);
+  });
+
+  it('queries KERIA filtered on issuee + schema, so a wallet past the default page of 25 still hits', async () => {
+    // The org agent's wallet holds every credential it ever issued. With the
+    // applicant's membership credential at position 31 an unfiltered list()
+    // returns only the first 25 and the guard silently never fires.
+    const client = issuedCredClient([...filler(30), issued('EY', SCHEMA, ISSUEE)]);
+
+    expect(await isCredentialAlreadyIssued(client, SCHEMA, ISSUEE)).toBe(true);
+    expect(client.list).toHaveBeenCalledWith(
+      expect.objectContaining({ filter: expect.objectContaining({ '-a-i': ISSUEE, '-s': SCHEMA }) }),
+    );
+  });
+
+  it('is false when the only matching credential is revoked → a removed member can be re-approved', async () => {
+    const client = issuedCredClient([revoked('EOLD', SCHEMA, ISSUEE)]);
+
+    expect(await isCredentialAlreadyIssued(client, SCHEMA, ISSUEE)).toBe(false);
+  });
+
+  it('is true when a revoked credential was superseded by an active re-issue (role change)', async () => {
+    const client = issuedCredClient([revoked('EOLD', SCHEMA, ISSUEE), issued('ENEW', SCHEMA, ISSUEE)]);
+
+    expect(await isCredentialAlreadyIssued(client, SCHEMA, ISSUEE)).toBe(true);
+  });
+});
+
+// --- isCredentialRevoked ----------------------------------------------------
+
+describe('isCredentialRevoked', () => {
+  it('reads the TEL event ilk when present', () => {
+    expect(isCredentialRevoked({ status: { et: 'rev', s: '1' } })).toBe(true);
+    expect(isCredentialRevoked({ status: { et: 'brv', s: '1' } })).toBe(true);
+    expect(isCredentialRevoked({ status: { et: 'iss', s: '0' } })).toBe(false);
+    expect(isCredentialRevoked({ status: { et: 'bis', s: '0' } })).toBe(false);
+  });
+
+  it('falls back to the TEL sequence number when the ilk is absent', () => {
+    expect(isCredentialRevoked({ status: { s: '1' } })).toBe(true);
+    expect(isCredentialRevoked({ status: { s: '0' } })).toBe(false);
+  });
+
+  it('treats a missing status as not revoked', () => {
+    expect(isCredentialRevoked({})).toBe(false);
+    expect(isCredentialRevoked(undefined)).toBe(false);
   });
 });
 

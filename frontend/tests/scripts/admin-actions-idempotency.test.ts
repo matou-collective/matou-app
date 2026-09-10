@@ -15,18 +15,35 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // --- Shared mocked KERIA wallet (both "devices" list the same agent) ---------
-const wallet: Array<{ sad: { d: string; s: string; a: { i: string } } }> = [];
+type WalletEntry = { sad: { d: string; s: string; a: { i: string } }; status: { et: string; s: string } };
+const wallet: WalletEntry[] = [];
 
 const issueCredential = vi.fn(
   async (_issuer: string, _registry: string, schema: string, issuee: string) => {
     const said = `ECRED_${wallet.length}`;
-    wallet.push({ sad: { d: said, s: schema, a: { i: issuee } } });
+    wallet.push({ sad: { d: said, s: schema, a: { i: issuee } }, status: { et: 'iss', s: '0' } });
     return { said };
   },
 );
 
+/**
+ * Emulates KERIA's credential query as signify-ts drives it: Seeker equality
+ * filters on `-s` / `-a-i` and signify-ts's default `limit` of 25 when none is
+ * given. The guard is only as good as the query it issues — a mock returning
+ * the whole wallet would hide an unfiltered lookup that truncates in prod.
+ */
+const listCredentials = vi.fn(
+  async (kargs?: { filter?: Record<string, unknown>; limit?: number; skip?: number }) => {
+    const filter = kargs?.filter ?? {};
+    const field = (c: WalletEntry, key: string) =>
+      key === '-s' ? c.sad.s : key === '-a-i' ? c.sad.a.i : key === '-d' ? c.sad.d : undefined;
+    const matched = wallet.filter((c) => Object.entries(filter).every(([k, v]) => field(c, k) === v));
+    return matched.slice(0, kargs?.limit ?? 25);
+  },
+);
+
 const signifyClient = {
-  credentials: () => ({ list: async () => wallet }),
+  credentials: () => ({ list: listCredentials }),
   identifiers: () => ({
     list: async () => ({ aids: [{ name: 'org', prefix: 'ORGAID' }] }),
   }),
@@ -85,7 +102,7 @@ vi.stubGlobal(
 );
 
 // Imported AFTER the mocks are registered.
-import { useAdminActions } from 'composables/useAdminActions';
+import { useAdminActions, MEMBERSHIP_SCHEMA_SAID } from 'composables/useAdminActions';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const registration: any = {
@@ -100,6 +117,7 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
   beforeEach(() => {
     wallet.length = 0;
     issueCredential.mockClear();
+    listCredentials.mockClear();
     notifyCreate.mockClear();
   });
 
@@ -127,12 +145,56 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
   });
 
   it('still issues when a DIFFERENT applicant already holds a credential', async () => {
-    wallet.push({ sad: { d: 'EOTHER', s: 'ESCHEMA_membership_other', a: { i: 'DSOMEONEELSE' } } });
+    wallet.push({
+      sad: { d: 'EOTHER', s: 'ESCHEMA_membership_other', a: { i: 'DSOMEONEELSE' } },
+      status: { et: 'iss', s: '0' },
+    });
 
     const admin = useAdminActions();
     const ok = await admin.approveRegistration(registration);
 
     expect(ok).toBe(true);
     expect(issueCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it('still catches the duplicate when the org wallet already holds more than 25 credentials', async () => {
+    // A real org agent's wallet holds every membership credential it ever
+    // issued. Seed 30 other members so the applicant's credential lands past
+    // signify-ts's default page — an unfiltered lookup would miss it and
+    // device B would issue a second credential.
+    for (let i = 0; i < 30; i++) {
+      wallet.push({
+        sad: { d: `EMEMBER_${i}`, s: MEMBERSHIP_SCHEMA_SAID, a: { i: `DMEMBER_${i}` } },
+        status: { et: 'iss', s: '0' },
+      });
+    }
+
+    const deviceA = useAdminActions();
+    const deviceB = useAdminActions();
+
+    expect(await deviceA.approveRegistration(registration)).toBe(true);
+    expect(await deviceB.approveRegistration(registration)).toBe(true);
+    expect(issueCredential).toHaveBeenCalledTimes(1);
+    expect(listCredentials).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: expect.objectContaining({ '-a-i': 'DAPPLICANT', '-s': MEMBERSHIP_SCHEMA_SAID }),
+      }),
+    );
+  });
+
+  it('re-issues for an applicant whose earlier membership credential was REVOKED (removed member re-applies)', async () => {
+    wallet.push({
+      sad: { d: 'EREVOKED', s: MEMBERSHIP_SCHEMA_SAID, a: { i: 'DAPPLICANT' } },
+      status: { et: 'rev', s: '1' },
+    });
+
+    const admin = useAdminActions();
+    const ok = await admin.approveRegistration(registration);
+
+    expect(ok).toBe(true);
+    expect(issueCredential).toHaveBeenCalledTimes(1);
+    expect(notifyCreate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('already approved') }),
+    );
   });
 });
