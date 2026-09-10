@@ -118,7 +118,9 @@ RUNNER_PATH_DEFAULT="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 CHECK_ONLY=0
 case "${1:-}" in
   --check) CHECK_ONLY=1 ;;
-  -h|--help) sed -n '2,70p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  # The whole leading comment block (shebang skipped, stop at the first
+  # non-comment line) — a fixed line range silently truncates as the header grows.
+  -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
   "") ;;
   *) echo "provision-e2e-stack: unknown arg '$1' (use --check or --help)" >&2; exit 2 ;;
 esac

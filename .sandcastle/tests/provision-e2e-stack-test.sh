@@ -153,6 +153,11 @@ ready_host()    { have_infra; have_anysync; have_workdir; have_chromium; have_im
 # ── 1. --help exits 0 and prints usage ─────────────────────────────────────
 new_host
 out="$(run --help)"; grep -q "E2E-STACK PROVISION HOOK" <<<"$out" || fail "help must print the header"
+# the WHOLE header, to its last env line — not a fixed line range that silently
+# truncates as the header grows (it stopped at line 70 while the env docs ran on)
+grep -q "PROVISION_E2E_KEEP_STACK" <<<"$out" || fail "help must reach the KEEP_STACK env doc"
+grep -q "PROVISION_RUNNER_PATH" <<<"$out" || fail "help must reach the RUNNER_PATH env doc (last header line)"
+grep -q "^set -uo pipefail" <<<"$out" && fail "help must stop at the end of the header comment"
 
 # ── 2. unknown arg → exit 2 ────────────────────────────────────────────────
 new_host
