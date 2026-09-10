@@ -44,11 +44,13 @@ import nz.matou.backend.mobile.Mobile;
  *       no-op-stop. No restart, no token mismatch.</li>
  * </ul>
  *
- * At-rest identity encryption (#117 / #389): every boot — whichever entry
- * point triggers it — hands {@code Mobile.startWithEncryptionKey} a
- * per-install 32-byte key, generated once and held in the Android
- * Keystore-backed EncryptedSharedPreferences (the same {@code matou_secure}
- * trust root {@link SecureStoragePlugin} uses), so
+ * At-rest identity encryption (#117 / #389 / #443): every boot — whichever
+ * entry point triggers it — hands {@code Mobile.startWithEncryptionKey} a
+ * per-install 32-byte key, generated once and held in an Android
+ * Keystore-backed EncryptedSharedPreferences file of its own
+ * ({@code matou_backend_secure}, opened only here — NOT the
+ * {@code matou_secure} file {@link SecureStoragePlugin} exposes to the WebView,
+ * so JS can neither read the key nor delete it), so
  * {@code {dataDir}/matou/identity.json} is AES-256-GCM ciphertext rather than
  * a plaintext mnemonic. Passing the key here rather than in the plugin is what
  * makes a headless push wake boot the SAME identity: if only the WebView path
@@ -62,10 +64,17 @@ final class MatouBackendRunner {
     private static final String TAG = "MatouBackendRunner";
     private static final MatouBackendRunner INSTANCE = new MatouBackendRunner();
 
-    // The EncryptedSharedPreferences file and key name for the identity
-    // encryption key. SECURE_PREFS_FILE must match SecureStoragePlugin.PREFS_FILE
-    // so both share one Keystore-backed trust root (matou_secure.xml).
-    private static final String SECURE_PREFS_FILE = "matou_secure";
+    // The EncryptedSharedPreferences file holding the identity encryption key.
+    // Dedicated to the backend (#443): the WebView's SecureStorage plugin never
+    // opens it, so `SecureStorage.getItem/removeItem('backend_identity_key')`
+    // cannot reach the crown-jewel key. Same Keystore master key as
+    // SecureStoragePlugin, so it shares the trust root — only the namespace is
+    // isolated.
+    private static final String BACKEND_PREFS_FILE = "matou_backend_secure";
+    // The JS-reachable SecureStorage file (SecureStoragePlugin.PREFS_FILE) where
+    // installs from before #443 stored the key. Read once, for migration, then
+    // vacated.
+    private static final String LEGACY_PREFS_FILE = "matou_secure";
     static final String IDENTITY_KEY_NAME = "backend_identity_key";
 
     /** Immutable connection info for one running backend. */
@@ -182,44 +191,32 @@ final class MatouBackendRunner {
     /**
      * The per-install identity encryption key handed to StartWithEncryptionKey.
      * Reads (or, on first boot, generates and persists) the key from the
-     * Keystore-backed secure prefs. On any secure-storage failure it logs a
-     * single warning (never the key) and returns "" so the backend takes the
-     * legacy plaintext path rather than refusing to boot.
+     * backend's own Keystore-backed prefs, migrating it out of the JS-reachable
+     * SecureStorage file for installs that predate #443. On any secure-storage
+     * failure it logs a single warning (never the key) and returns "" so the
+     * backend takes the legacy plaintext path rather than refusing to boot —
+     * and never mints a fresh key on a fault, which would orphan an
+     * already-encrypted identity.json.
      */
     private static String identityEncryptionKey(Context context) {
         try {
-            SharedPreferences securePrefs = openSecurePrefs(context);
-            KeyBacking backing = new KeyBacking() {
-                @Override
-                public String get(String name) {
-                    return securePrefs.getString(name, null);
-                }
-
-                @Override
-                public void put(String name, String value) {
-                    if (!securePrefs.edit().putString(name, value).commit()) {
-                        // Refuse to encrypt with a key we could not persist — a
-                        // key lost across boots would make identity.json
-                        // unreadable. The caller falls back to the empty key.
-                        throw new IllegalStateException("failed to persist identity encryption key");
-                    }
-                }
-            };
-            return loadOrCreateIdentityKey(backing);
+            return loadOrCreateIdentityKey(
+                new PrefsBacking(context, BACKEND_PREFS_FILE),
+                new PrefsBacking(context, LEGACY_PREFS_FILE));
         } catch (Exception e) {
             Log.w(TAG, "secure storage unavailable; identity will use the legacy plaintext path: " + e.getMessage());
             return "";
         }
     }
 
-    /** Opens the shared Keystore-backed EncryptedSharedPreferences (matou_secure). */
-    private static SharedPreferences openSecurePrefs(Context context) throws Exception {
+    /** Opens a Keystore-backed EncryptedSharedPreferences file (same master key as SecureStoragePlugin). */
+    private static SharedPreferences openSecurePrefs(Context context, String file) throws Exception {
         MasterKey masterKey = new MasterKey.Builder(context)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build();
         return EncryptedSharedPreferences.create(
                 context,
-                SECURE_PREFS_FILE,
+                file,
                 masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);
@@ -227,9 +224,10 @@ final class MatouBackendRunner {
 
     /**
      * A minimal string-keyed persistence seam. Its only production implementation
-     * is over EncryptedSharedPreferences, but factoring it out lets the
-     * generate-once / read-back logic be unit-tested on the JVM without the
-     * Android Keystore (MatouBackendRunnerTest).
+     * is {@link PrefsBacking} over EncryptedSharedPreferences, but factoring it
+     * out lets the generate-once / read-back / migrate logic be unit-tested on
+     * the JVM without the Android Keystore (MatouBackendRunnerTest). Every method
+     * throws an unchecked exception on a secure-storage fault.
      */
     interface KeyBacking {
         /** The stored value for name, or null when absent. */
@@ -237,23 +235,107 @@ final class MatouBackendRunner {
 
         /** Persist value under name; throws if it cannot be persisted. */
         void put(String name, String value);
+
+        /** Delete name; a missing entry is success. */
+        void remove(String name);
     }
 
     /**
-     * Returns the persisted per-install identity encryption key, generating and
-     * storing 32 random bytes (hex-encoded) on first call so subsequent boots
-     * read back the identical key. StartWithEncryptionKey / deriveKey hashes the
-     * material, so the hex encoding is only a stable, storage-safe representation
-     * (minSdk 23 rules out java.util.Base64; hex mirrors the token encoding).
-     * A put failure propagates: a key that was not persisted must never be used.
+     * KeyBacking over one EncryptedSharedPreferences file, opened lazily on first
+     * use so the legacy file is only touched on the boot that migrates it.
      */
-    static String loadOrCreateIdentityKey(KeyBacking backing) {
-        String existing = backing.get(IDENTITY_KEY_NAME);
+    private static final class PrefsBacking implements KeyBacking {
+        private final Context context;
+        private final String file;
+        private SharedPreferences prefs;
+
+        PrefsBacking(Context context, String file) {
+            this.context = context;
+            this.file = file;
+        }
+
+        private SharedPreferences prefs() {
+            if (prefs == null) {
+                try {
+                    prefs = openSecurePrefs(context, file);
+                } catch (Exception e) {
+                    Log.w(TAG, "identity key: cannot open secure prefs " + file + ": " + e.getMessage());
+                    throw new IllegalStateException("opening " + file + ": " + e.getMessage(), e);
+                }
+            }
+            return prefs;
+        }
+
+        @Override
+        public String get(String name) {
+            return prefs().getString(name, null);
+        }
+
+        @Override
+        public void put(String name, String value) {
+            if (!prefs().edit().putString(name, value).commit()) {
+                // Refuse to encrypt with a key we could not persist — a key
+                // lost across boots would make identity.json unreadable.
+                Log.w(TAG, "identity key: failed to persist " + name + " in " + file);
+                throw new IllegalStateException("failed to persist identity encryption key in " + file);
+            }
+        }
+
+        @Override
+        public void remove(String name) {
+            if (!prefs().edit().remove(name).commit()) {
+                Log.w(TAG, "identity key: failed to remove " + name + " from " + file + " (legacy copy retained)");
+                throw new IllegalStateException("failed to remove " + name + " from " + file);
+            }
+            Log.i(TAG, "identity key: removed " + name + " from " + file + " (migrated to isolated backend store, #443)");
+        }
+    }
+
+    /**
+     * Returns the persisted per-install identity encryption key from the
+     * backend's isolated store, generating and storing 32 random bytes
+     * (hex-encoded) on first call so subsequent boots read back the identical
+     * key. StartWithEncryptionKey / deriveKey hashes the material, so the hex
+     * encoding is only a stable, storage-safe representation (minSdk 23 rules
+     * out java.util.Base64; hex mirrors the token encoding).
+     *
+     * Migration (#443): when the isolated store is empty, the JS-reachable
+     * legacy store is consulted BEFORE minting — an install from before #443
+     * has an identity.json encrypted under the key that lives there. A found
+     * legacy key is copied into the isolated store and the legacy copy deleted;
+     * the returned value is the legacy key regardless, so identity.json still
+     * decrypts this boot even if the write half-fails (retried next boot, since
+     * the legacy copy is then kept). A fault reading either store propagates:
+     * it is inconclusive, and minting a fresh key would orphan identity.json.
+     * A put failure on a genuinely fresh key also propagates: a key that was
+     * not persisted must never be used.
+     */
+    static String loadOrCreateIdentityKey(KeyBacking backend, KeyBacking legacy) {
+        String existing = backend.get(IDENTITY_KEY_NAME);
         if (existing != null && !existing.isEmpty()) {
             return existing;
         }
+
+        String legacyKey = legacy.get(IDENTITY_KEY_NAME);
+        if (legacyKey != null && !legacyKey.isEmpty()) {
+            // No android.util.Log here: this seam runs on a plain JVM in
+            // MatouBackendRunnerTest; PrefsBacking logs at its fault sites.
+            try {
+                backend.put(IDENTITY_KEY_NAME, legacyKey);
+            } catch (RuntimeException e) {
+                // Migration write failed: retain the legacy copy, retry next boot.
+                return legacyKey;
+            }
+            try {
+                legacy.remove(IDENTITY_KEY_NAME);
+            } catch (RuntimeException e) {
+                // Both copies exist; the isolated one wins on every later boot.
+            }
+            return legacyKey;
+        }
+
         String fresh = randomHex(32);
-        backing.put(IDENTITY_KEY_NAME, fresh);
+        backend.put(IDENTITY_KEY_NAME, fresh);
         return fresh;
     }
 
