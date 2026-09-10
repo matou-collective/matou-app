@@ -76,9 +76,9 @@ export const KIT: Kit = {
     "maramataka": true,
     "order": [
       "chat",
-      "projects",
-      "proposals",
       "notices",
+      "proposals",
+      "projects",
       "events"
     ]
   },
@@ -100,7 +100,7 @@ export const KIT_BUILD: KitBuild = {
       "provider": "github",
       "owner": "matou-collective",
       "repo": "matou-app",
-      "releaseType": "draft"
+      "releaseType": "release"
     }
   ],
   "updates": true,

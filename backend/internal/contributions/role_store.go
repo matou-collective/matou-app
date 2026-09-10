@@ -1,4 +1,3 @@
-// backend/internal/contributions/role_store.go
 package contributions
 
 import (
@@ -19,6 +18,8 @@ type ProfileRoleLookup struct {
 	adminAIDs map[string]bool // AIDs that always get community_admin role
 }
 
+// NewProfileRoleLookup creates a ProfileRoleLookup that reads profiles from
+// store in the community read-only space readOnlySpaceID.
 func NewProfileRoleLookup(store ObjectStore, readOnlySpaceID string) *ProfileRoleLookup {
 	return &ProfileRoleLookup{store: store, space: readOnlySpaceID, adminAIDs: make(map[string]bool)}
 }

@@ -9,6 +9,7 @@ type MockObjectStore struct {
 	types   map[string]map[string]string // spaceID -> objectID -> objectType
 }
 
+// NewMockStore creates an empty in-memory MockObjectStore.
 func NewMockStore() *MockObjectStore {
 	return &MockObjectStore{
 		objects: make(map[string]map[string][]byte),
@@ -16,6 +17,7 @@ func NewMockStore() *MockObjectStore {
 	}
 }
 
+// Save stores data under spaceID/objectID, recording objectType for List.
 func (m *MockObjectStore) Save(spaceID, objectID, objectType string, data interface{}) error {
 	if m.objects[spaceID] == nil {
 		m.objects[spaceID] = make(map[string][]byte)
@@ -30,6 +32,7 @@ func (m *MockObjectStore) Save(spaceID, objectID, objectType string, data interf
 	return nil
 }
 
+// Get unmarshals the stored object at spaceID/objectID into dest.
 func (m *MockObjectStore) Get(spaceID, objectID string, dest interface{}) error {
 	if m.objects[spaceID] == nil {
 		return ErrNotFound
@@ -41,6 +44,7 @@ func (m *MockObjectStore) Get(spaceID, objectID string, dest interface{}) error 
 	return json.Unmarshal(b, dest)
 }
 
+// List returns all objects of objectType stored under spaceID.
 func (m *MockObjectStore) List(spaceID, objectType string) ([]json.RawMessage, error) {
 	var results []json.RawMessage
 	if m.objects[spaceID] == nil {
@@ -54,6 +58,7 @@ func (m *MockObjectStore) List(spaceID, objectType string) ([]json.RawMessage, e
 	return results, nil
 }
 
+// Delete removes the object at spaceID/objectID.
 func (m *MockObjectStore) Delete(spaceID, objectID string) error {
 	if m.objects[spaceID] != nil {
 		delete(m.objects[spaceID], objectID)

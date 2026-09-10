@@ -31,15 +31,15 @@ type NotificationResponse struct {
 
 // RegistrationSubmittedRequest represents a request to notify about a new registration
 type RegistrationSubmittedRequest struct {
-	ApplicantName    string   `json:"applicantName"`
-	ApplicantEmail   string   `json:"applicantEmail"`
-	ApplicantAid     string   `json:"applicantAid"`
-	Bio              string   `json:"bio"`
-	Location         string   `json:"location"`
-	JoinReason       string   `json:"joinReason"`
-	Interests        []string `json:"interests"`
-	CustomInterests  string   `json:"customInterests"`
-	SubmittedAt      string   `json:"submittedAt"`
+	ApplicantName   string   `json:"applicantName"`
+	ApplicantEmail  string   `json:"applicantEmail"`
+	ApplicantAid    string   `json:"applicantAid"`
+	Bio             string   `json:"bio"`
+	Location        string   `json:"location"`
+	JoinReason      string   `json:"joinReason"`
+	Interests       []string `json:"interests"`
+	CustomInterests string   `json:"customInterests"`
+	SubmittedAt     string   `json:"submittedAt"`
 }
 
 // RegistrationApprovedRequest represents a request to notify about an approved registration

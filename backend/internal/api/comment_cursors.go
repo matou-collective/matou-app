@@ -32,6 +32,7 @@ type CommentCursorsHandler struct {
 	userIdentity *identity.UserIdentity
 }
 
+// NewCommentCursorsHandler constructs a CommentCursorsHandler.
 func NewCommentCursorsHandler(spaceManager *anysync.SpaceManager, userIdentity *identity.UserIdentity) *CommentCursorsHandler {
 	return &CommentCursorsHandler{
 		spaceManager: spaceManager,
@@ -39,6 +40,7 @@ func NewCommentCursorsHandler(spaceManager *anysync.SpaceManager, userIdentity *
 	}
 }
 
+// Routes registers the comment-cursors HTTP route on mux.
 func (h *CommentCursorsHandler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/comment-cursors", CORSHandler(h.route))
 }
@@ -63,7 +65,7 @@ func (h *CommentCursorsHandler) handleGet(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := r.Context()
-	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, privateSpaceID)
+	_ = h.spaceManager.TreeManager().BuildSpaceIndex(ctx, privateSpaceID)
 
 	objMgr := h.spaceManager.ObjectTreeManager()
 	objectID := "comment-cursors-" + userAID

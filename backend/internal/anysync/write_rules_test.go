@@ -750,3 +750,98 @@ func TestValidateChange_RevokedCredentialRejected(t *testing.T) {
 		t.Error("a credential revoked after the change timestamp must still be valid as of the change")
 	}
 }
+
+// --- Project-scoped write rules (issue #166) ---
+
+// fakeResolverWithAID augments fakeResolver with the AuthorAIDResolver seam so
+// the role-only project-scoped path can compare the author against a project's
+// assigned lead/steward. Account and AID are the same string in these tests.
+type fakeResolverWithAID struct{ fakeResolver }
+
+func (f fakeResolverWithAID) AIDForAuthor(account string) (string, bool) {
+	_, ok := f.fakeResolver[account]
+	return account, ok
+}
+
+// fakeProjectAssignments maps projectID → aid → project roles. A project absent
+// from the map resolves known=false (replication lag → fall back to role gate).
+type fakeProjectAssignments map[string]map[string][]contributions.Role
+
+func (f fakeProjectAssignments) ProjectRolesForAID(projectID, aid string) ([]contributions.Role, bool) {
+	proj, known := f[projectID]
+	if !known {
+		return nil, false
+	}
+	return proj[aid], true
+}
+
+func TestValidateChange_ProjectCompletionProjectScoped(t *testing.T) {
+	resolver := fakeResolverWithAID{fakeResolver{
+		"acct-steward-A": {contributions.RoleProjectSteward},
+		"acct-steward-B": {contributions.RoleProjectSteward},
+		"acct-lead-A":    {contributions.RoleProjectLead},
+		"acct-member":    {contributions.RoleMember},
+		"acct-ops":       contributions.MapKERIRole("Operations Steward"),
+	}}
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
+
+	currentA := map[string]json.RawMessage{
+		"project_steward_id": json.RawMessage(`"acct-steward-A"`),
+		"project_lead_id":    json.RawMessage(`"acct-lead-A"`),
+		"status":             json.RawMessage(`"pending_completion"`),
+	}
+	completed := []ChangeOp{setOp("status", string(contributions.ProjectCompleted))}
+
+	if !v.ValidateChange("", TypeProject, "A", "chg", "acct-steward-A", 0, completed, currentA) {
+		t.Error("the assigned steward of A must approve A's completion")
+	}
+	if v.ValidateChange("", TypeProject, "A", "chg", "acct-steward-B", 0, completed, currentA) {
+		t.Error("a steward of another project must not approve A's completion")
+	}
+	if !v.ValidateChange("", TypeProject, "A", "chg", "acct-ops", 0, completed, currentA) {
+		t.Error("an operations steward must approve any project's completion")
+	}
+
+	// submit-completion (role-only) is gated on the assigned lead. The project is
+	// currently active (a genuine transition, not a no-op re-assertion).
+	currentActive := map[string]json.RawMessage{
+		"project_steward_id": json.RawMessage(`"acct-steward-A"`),
+		"project_lead_id":    json.RawMessage(`"acct-lead-A"`),
+		"status":             json.RawMessage(`"active"`),
+	}
+	pending := []ChangeOp{setOp("status", string(contributions.ProjectPendingCompletion))}
+	if !v.ValidateChange("", TypeProject, "A", "chg", "acct-lead-A", 0, pending, currentActive) {
+		t.Error("the assigned lead of A must submit A's completion")
+	}
+	if v.ValidateChange("", TypeProject, "A", "chg", "acct-member", 0, pending, currentActive) {
+		t.Error("an unassigned member must not submit A's completion")
+	}
+}
+
+func TestValidateChange_ContributionSignOffProjectScoped(t *testing.T) {
+	resolver := fakeResolverWithAID{fakeResolver{
+		"acct-steward-A": {contributions.RoleProjectSteward},
+		"acct-steward-B": {contributions.RoleProjectSteward},
+	}}
+	projects := fakeProjectAssignments{
+		"proj-A": {"acct-steward-A": {contributions.RoleProjectSteward}},
+	}
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false).WithProjectAssignments(projects)
+
+	current := map[string]json.RawMessage{"project_id": json.RawMessage(`"proj-A"`)}
+	signOff := []ChangeOp{setOp("status", string(contributions.ContribSignedOff))}
+
+	if !v.ValidateChange("", TypeContribution, "c1", "chg", "acct-steward-A", 0, signOff, current) {
+		t.Error("the assigned steward of proj-A must sign off its contribution")
+	}
+	if v.ValidateChange("", TypeContribution, "c1", "chg", "acct-steward-B", 0, signOff, current) {
+		t.Error("a steward of another project must not sign off proj-A's contribution")
+	}
+
+	// A contribution whose project is not yet in the snapshot falls back to the
+	// community-role gate — no false rejection during replication lag.
+	unknown := map[string]json.RawMessage{"project_id": json.RawMessage(`"proj-unknown"`)}
+	if !v.ValidateChange("", TypeContribution, "c2", "chg", "acct-steward-B", 0, signOff, unknown) {
+		t.Error("an unknown project must fall back to the community-role gate")
+	}
+}

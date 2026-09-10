@@ -128,7 +128,7 @@ export function useOrgSetup() {
       } catch {
         // Fallback to constructing OOBI URL manually
         const clientCfg = await fetchClientConfig();
-        orgOobi = `${clientCfg.keri.cesr_url}/oobi/${orgAid.prefix}`;
+        orgOobi = `${clientCfg.keri.cesr_public_url ?? clientCfg.keri.cesr_url}/oobi/${orgAid.prefix}`;
         console.log('[OrgSetup] Using fallback OOBI URL:', orgOobi);
       }
 
@@ -140,7 +140,7 @@ export function useOrgSetup() {
       } catch {
         // Fallback to constructing OOBI URL manually
         const clientCfg = await fetchClientConfig();
-        adminOobi = `${clientCfg.keri.cesr_url}/oobi/${adminAid.prefix}`;
+        adminOobi = `${clientCfg.keri.cesr_public_url ?? clientCfg.keri.cesr_url}/oobi/${adminAid.prefix}`;
         console.log('[OrgSetup] Using fallback admin OOBI URL:', adminOobi);
       }
 

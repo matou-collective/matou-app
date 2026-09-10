@@ -293,6 +293,12 @@ export interface SpaceInfo {
   spaceName: string;
   createdAt: string;
   keysAvailable: boolean;
+  /**
+   * 'ok' | 'pending' — 'pending' means the space was adopted but its read
+   * key is not yet available from ACL (data still syncing). Optional for
+   * backward compatibility with older backend responses.
+   */
+  spaceAccess?: 'ok' | 'pending';
 }
 
 export interface UserSpacesResponse {
@@ -375,6 +381,10 @@ export interface SetBackendIdentityResponse {
   peerId?: string;
   privateSpaceId?: string;
   error?: string;
+  /** True when the failure is transient (e.g. 503 "private space not reachable") and the caller should retry. */
+  retryable?: boolean;
+  /** HTTP status code of the response, when available. */
+  status?: number;
 }
 
 export interface GetBackendIdentityResponse {
@@ -401,9 +411,10 @@ export async function setBackendIdentity(
       method: 'POST',
       headers: authHeaders({ 'X-User-AID': request.aid }),
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(65000),
     });
-    return response.json();
+    const body = (await response.json()) as SetBackendIdentityResponse;
+    return { ...body, status: response.status, retryable: body.retryable ?? false };
   } catch {
     return { success: false, error: 'Network error' };
   }
@@ -439,6 +450,10 @@ export interface FieldDef {
   type: string;
   required?: boolean;
   readOnly?: boolean;
+  // Core marks a structural field the backend depends on (id, status,
+  // timestamps, …). Custom fields are org-added and omit this. Backend uses
+  // `json:"core,omitempty"`, so absent means false.
+  core?: boolean;
   default?: unknown;
   validation?: {
     minLength?: number;
@@ -984,7 +999,7 @@ export async function createNotice(req: CreateNoticeRequest): Promise<{ success:
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/notices`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify(req),
     });
     return response.json();
@@ -997,6 +1012,7 @@ export async function publishNotice(id: string): Promise<{ success: boolean; err
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(id)}/publish`, {
       method: 'POST',
+      headers: authHeaders(),
     });
     return response.json();
   } catch {
@@ -1008,6 +1024,7 @@ export async function archiveNotice(id: string): Promise<{ success: boolean; err
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(id)}/archive`, {
       method: 'POST',
+      headers: authHeaders(),
     });
     return response.json();
   } catch {
@@ -1131,6 +1148,7 @@ export async function toggleNoticePin(noticeId: string): Promise<{ success: bool
   try {
     const response = await fetch(`${BACKEND_URL}/api/v1/notices/${encodeURIComponent(noticeId)}/pin`, {
       method: 'POST',
+      headers: authHeaders(),
     });
     return response.json();
   } catch {

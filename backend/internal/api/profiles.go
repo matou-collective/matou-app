@@ -453,12 +453,12 @@ type InitMemberProfilesRequest struct {
 	Location            string          `json:"location,omitempty"`
 	IndigenousCommunity string          `json:"indigenousCommunity,omitempty"`
 	JoinReason          string          `json:"joinReason,omitempty"`
-	FacebookUrl         string          `json:"facebookUrl,omitempty"`
-	LinkedinUrl         string          `json:"linkedinUrl,omitempty"`
-	TwitterUrl          string          `json:"twitterUrl,omitempty"`
-	InstagramUrl        string          `json:"instagramUrl,omitempty"`
-	GithubUrl           string          `json:"githubUrl,omitempty"`
-	GitlabUrl           string          `json:"gitlabUrl,omitempty"`
+	FacebookURL         string          `json:"facebookUrl,omitempty"`
+	LinkedinURL         string          `json:"linkedinUrl,omitempty"`
+	TwitterURL          string          `json:"twitterUrl,omitempty"`
+	InstagramURL        string          `json:"instagramUrl,omitempty"`
+	GithubURL           string          `json:"githubUrl,omitempty"`
+	GitlabURL           string          `json:"gitlabUrl,omitempty"`
 	ProfileData         json.RawMessage `json:"profileData,omitempty"` // Opaque registration payload (canonical); typed fields above kept for one-release compat, merged under it — see mergedProfileData
 }
 
@@ -751,12 +751,12 @@ func (req *InitMemberProfilesRequest) mergedProfileData() (map[string]interface{
 	set("location", req.Location)
 	set("indigenousCommunity", req.IndigenousCommunity)
 	set("joinReason", req.JoinReason)
-	set("facebookUrl", req.FacebookUrl)
-	set("linkedinUrl", req.LinkedinUrl)
-	set("twitterUrl", req.TwitterUrl)
-	set("instagramUrl", req.InstagramUrl)
-	set("githubUrl", req.GithubUrl)
-	set("gitlabUrl", req.GitlabUrl)
+	set("facebookUrl", req.FacebookURL)
+	set("linkedinUrl", req.LinkedinURL)
+	set("twitterUrl", req.TwitterURL)
+	set("instagramUrl", req.InstagramURL)
+	set("githubUrl", req.GithubURL)
+	set("gitlabUrl", req.GitlabURL)
 
 	if len(req.ProfileData) > 0 {
 		var overlay map[string]interface{}
@@ -1209,7 +1209,7 @@ func isProfileOwner(caller, typeName, objectID string, newFields, existingFields
 // isEndorsementAppend reports whether newFields equals existingFields except
 // for an "endorsements" array that only gained entries.
 func isEndorsementAppend(existingFields, newFields map[string]interface{}) bool {
-	if len(newFields) != len(existingFields) && !(len(newFields) == len(existingFields)+1 && existingFields["endorsements"] == nil) {
+	if len(newFields) != len(existingFields) && (len(newFields) != len(existingFields)+1 || existingFields["endorsements"] != nil) {
 		return false
 	}
 	for k, v := range newFields {

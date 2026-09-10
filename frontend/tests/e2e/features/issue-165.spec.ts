@@ -1,6 +1,6 @@
 import { test, expect, Page } from './fixtures';
 
-// Feature (#165): the Roles & Permissions page is split into two tables —
+// Feature (#165): the role tables (now on Community Settings) are split in two —
 // Community roles (who you are; full capability set) and Project roles (what
 // you hold on one project; project-scoped capabilities only). The project
 // table carries the `contributor` row (per the triage ruling it lives here
@@ -29,16 +29,17 @@ async function apiJson(aid: string, method: string, route: string, body?: unknow
 }
 
 // Log in leaves the app on the "Enter Community" welcome screen or already on
-// the dashboard; get to the Roles & Permissions page either way.
+// the dashboard; get to the Community Settings page (home of the permission
+// tables) either way.
 async function openRolesPage(page: Page): Promise<void> {
   const enter = page.getByRole('button', { name: /enter community/i });
   if (await enter.isVisible().catch(() => false)) {
     await enter.click();
   }
-  const rolesNav = page.locator('.nav-item', { hasText: 'Roles' });
-  await expect(rolesNav).toBeVisible({ timeout: 30_000 });
-  await rolesNav.click();
-  await expect(page.getByRole('heading', { name: 'Roles & Permissions' })).toBeVisible();
+  const gear = page.locator('.community-settings-btn');
+  await expect(gear).toBeVisible({ timeout: 30_000 });
+  await gear.click();
+  await expect(page.getByRole('heading', { name: 'Community Settings' })).toBeVisible();
 }
 
 test.describe('Roles & Permissions split: community vs project tables (#165)', () => {
@@ -67,14 +68,17 @@ test.describe('Roles & Permissions split: community vs project tables (#165)', (
     await expect(project.locator('tbody tr', { hasText: 'Project Steward' })).toBeVisible();
     await snap(adminPage, 'project-table-with-contributor-row');
 
-    // A community-only capability (Manage roles) is a disabled toggle on a
-    // project role.
-    const headers = await project.locator('thead th').allTextContents();
-    const manageRolesCol = headers.findIndex((h) => h.trim().startsWith('Manage roles'));
-    expect(manageRolesCol).toBeGreaterThan(0);
-    const contributorRow = project.locator('tbody tr', { hasText: 'Contributor' });
+    // A community-only capability (Reward) is a disabled toggle on a project
+    // role that doesn't hold it. The generic project table carries only the
+    // Role column now (every capability lives in a feature table), so the
+    // check runs against the Projects & Contributions table.
+    const projects = adminPage.locator('.roles-matrix.projects-roles');
+    const headers = await projects.locator('thead th').allTextContents();
+    const rewardCol = headers.findIndex((h) => h.trim().startsWith('Reward'));
+    expect(rewardCol).toBeGreaterThan(0);
+    const contributorRow = projects.locator('tbody tr', { hasText: 'Contributor' });
     await expect(
-      contributorRow.locator('td').nth(manageRolesCol).locator('.q-toggle'),
+      contributorRow.locator('td').nth(rewardCol).locator('.q-toggle'),
     ).toHaveAttribute('aria-disabled', 'true');
     await snap(adminPage, 'community-only-toggle-disabled-on-project-role');
 

@@ -9,11 +9,13 @@
 # the Go stages, so its push is no slower than before (the sandbox already runs
 # `pnpm lint` in-loop).
 #
-# The Go stages run through the repo's pinned dev shell (ADR 0040: one toolchain
-# for CI, Sandcastle and humans) via `nix develop .#go-ci` — the lean shell that
-# carries the exact `go`/`golangci-lint` the seam runs, flake.lock-pinned, no
-# ad-hoc download. Tests override that command with GATE_GO_CMD so the logic is
-# driven offline without a Go toolchain present.
+# By default the Go stages run through the repo's pinned dev shell (ADR 0040: one
+# toolchain for CI, Sandcastle and humans) via `nix develop .#go-ci` — the lean
+# shell that carries the exact `go`/`golangci-lint` the seam runs, flake.lock-
+# pinned, no ad-hoc download. A consumer whose layout/toolchain differs from that
+# default supplies a supported per-repo override — GATE_GO_CMD (env, set in the
+# sandbox Dockerfile) or an executable `.sandcastle/go-gate.sh` — which also
+# drives the logic offline in tests without a Go toolchain present (issue #126).
 #
 # .sandcastle/gate.sh wires these to git's pre-push stdin;
 # .sandcastle/tests/gate-lib-test.sh drives them offline.
@@ -44,7 +46,8 @@ gate_langs_for_files() {
 # the pinned lean dev shell. Mirrors scripts/seam-smoke.sh's Go section (gofmt,
 # build, vet, test, lint — main module + broker + the `dev`-tag build ADR 0100 excludes
 # from the production build) so a Go slice cannot ship un-linted. Kept a separate
-# function so gate_go_stage can substitute GATE_GO_CMD in tests.
+# function so gate_go_stage can substitute a per-repo override (GATE_GO_CMD or an
+# executable .sandcastle/go-gate.sh) — which is also the offline test seam.
 gate_go_default_cmd() {
   local root="$1"
   nix develop "$root#go-ci" --command bash -euo pipefail -c '
@@ -79,20 +82,36 @@ gate_scrub_git_env() {
         GIT_OBJECT_DIRECTORY GIT_QUARANTINE_PATH GIT_INTERNAL_GITDIR 2>/dev/null || true
 }
 
-# gate_go_stage <root> — run the Go gate for a Go-touching change. Uses
-# GATE_GO_CMD when set (tests), else the pinned dev-shell stages. If neither a
-# GATE_GO_CMD nor `nix` is available, FAIL CLOSED: a Go change that cannot be
-# linted must block the push, never slip through un-linted (the whole point of
-# #198 — a blocked push beats a red main). Returns the stage's exit code.
+# gate_go_stage <root> — run the Go gate for a Go-touching change. Resolves the
+# Go command by a first-match-wins precedence so a consumer whose layout/toolchain
+# differs from the nix default can satisfy the gate without editing the vendored
+# file (issue #126):
+#   1. GATE_GO_CMD — a supported per-repo override (set it in the sandbox
+#      Dockerfile's ENV); it also serves as the offline test seam;
+#   2. an executable per-repo `.sandcastle/go-gate.sh` — auto-detected, run
+#      through the same git-env-scrubbed `cd "$root"` subshell as GATE_GO_CMD.
+#      Not in FACTORY_MANIFEST, so it stays a per-repo layer file (drift-safe);
+#   3. the pinned nix dev-shell default (gate_go_default_cmd).
+# FAIL CLOSED only when NONE of the three resolve — no GATE_GO_CMD, no executable
+# `.sandcastle/go-gate.sh`, no `nix`: a Go change that cannot be linted must block
+# the push, never slip through un-linted (the whole point of #198 — a blocked
+# push beats a red main). Returns the stage's exit code.
 gate_go_stage() {
   local root="$1"
   if [ -n "${GATE_GO_CMD:-}" ]; then
     ( cd "$root" && gate_scrub_git_env && eval "$GATE_GO_CMD" )
     return $?
   fi
+  if [ -x "$root/.sandcastle/go-gate.sh" ]; then
+    ( cd "$root" && gate_scrub_git_env && ./.sandcastle/go-gate.sh )
+    return $?
+  fi
   if ! command -v nix >/dev/null 2>&1; then
-    echo "gate: Go change detected but no Go toolchain (nix) in this sandbox." >&2
-    echo "gate: refusing to push un-linted Go (issue #198) — rebuild the sandbox image." >&2
+    echo "gate: Go change detected but no supported Go gate resolved in this sandbox." >&2
+    echo "gate: refusing to push un-linted Go (issue #198). Cause is either a missing" >&2
+    echo "gate: Go toolchain (no \`nix\`) OR a layout that differs from the nix default." >&2
+    echo "gate: set a supported per-repo override — GATE_GO_CMD in the sandbox Dockerfile," >&2
+    echo "gate: or an executable .sandcastle/go-gate.sh — to run this repo's Go gate." >&2
     return 3
   fi
   ( cd "$root" && gate_scrub_git_env && gate_go_default_cmd "$root" )

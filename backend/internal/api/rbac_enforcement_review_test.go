@@ -235,11 +235,20 @@ func TestOrgConfig_RequiresAdminScopeOnceConfigured(t *testing.T) {
 	if w := do(mux, http.MethodPost, "/api/v1/org/config", "ECS", orgConfigBody); w.Code != http.StatusForbidden {
 		t.Errorf("configured: expected 403 for a community steward, got %d", w.Code)
 	}
-	if w := do(mux, http.MethodPost, "/api/v1/org/config", "EOps", orgConfigBody); w.Code != http.StatusOK {
-		t.Errorf("configured: expected 200 for an operations steward, got %d: %s", w.Code, w.Body.String())
+	// #318: save_org_config now requires manage_community_settings (founder-only
+	// by default), not manage_members. An operations steward still holds
+	// manage_members but is refused here.
+	if w := do(mux, http.MethodPost, "/api/v1/org/config", "EOps", orgConfigBody); w.Code != http.StatusForbidden {
+		t.Errorf("configured: expected 403 for an operations steward (holds manage_members, not manage_community_settings), got %d", w.Code)
+	}
+	if w := do(mux, http.MethodPost, "/api/v1/org/config", "EFM", orgConfigBody); w.Code != http.StatusOK {
+		t.Errorf("configured: expected 200 for a founding member, got %d: %s", w.Code, w.Body.String())
 	}
 	if w := do(mux, http.MethodDelete, "/api/v1/org/config", "EMember", ""); w.Code != http.StatusForbidden {
 		t.Errorf("configured: expected 403 for a member deleting config, got %d", w.Code)
+	}
+	if w := do(mux, http.MethodDelete, "/api/v1/org/config", "EOps", ""); w.Code != http.StatusForbidden {
+		t.Errorf("configured: expected 403 for an operations steward deleting config, got %d", w.Code)
 	}
 	if w := do(mux, http.MethodDelete, "/api/v1/org/config", "EFM", ""); w.Code != http.StatusOK {
 		t.Errorf("configured: expected 200 for FM deleting config, got %d: %s", w.Code, w.Body.String())
@@ -259,7 +268,7 @@ func identityGuardMux(t *testing.T, ui *identity.UserIdentity) *http.ServeMux {
 	h := &IdentityHandler{userIdentity: ui, roleLookup: reviewLookup()}
 	mux := http.NewServeMux()
 	// Exercise the guard around a stub so the test does not need an SDK client.
-	ok := func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }
+	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
 	mux.HandleFunc("/api/v1/identity/set", h.withBootstrapRBAC(ok))
 	mux.HandleFunc("/api/v1/identity", h.withBootstrapRBAC(ok))
 	return mux

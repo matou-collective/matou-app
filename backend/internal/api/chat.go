@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/anystore"
+	"github.com/matou-dao/backend/internal/anysync"
+	"github.com/matou-dao/backend/internal/contributions"
 	"github.com/matou-dao/backend/internal/identity"
 )
 
@@ -21,6 +23,9 @@ type ChatHandler struct {
 	eventBroker  *EventBroker
 	store        *anystore.LocalStore
 	chatListener *anysync.TreeUpdateListener
+	// roleLookup resolves the local user's roles for RBAC checks (#316). Set in
+	// RegisterRoutes; nil only in unit tests that skip auth wiring.
+	roleLookup RoleLookup
 }
 
 // NewChatHandler creates a new chat handler.
@@ -188,7 +193,7 @@ func (h *ChatHandler) HandleListChannels(w http.ResponseWriter, r *http.Request)
 
 	// Always use tree scan — see HandleListMessages for rationale.
 	// Rebuild index to discover P2P-received trees not yet indexed.
-	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
+	_ = h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
 
 	objMgr := h.spaceManager.ObjectTreeManager()
 	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatChannel")
@@ -333,6 +338,12 @@ func (h *ChatHandler) HandleCreateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// manage_channels gates channel creation (#316). Setting AllowedRoles is
+	// part of the same capability, so no separate check is needed here.
+	if !h.requireChatAction(w, contributions.ActionCreateChannel) {
+		return
+	}
+
 	var req CreateChannelRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
@@ -465,6 +476,16 @@ func (h *ChatHandler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// manage_channels gates editing a channel (#316). Setting AllowedRoles is
+	// wired as its own action (set_channel_roles) under the same capability, so
+	// a caller who may edit a channel may also set its AllowedRoles.
+	if !h.requireChatAction(w, contributions.ActionEditChannel) {
+		return
+	}
+	if req.AllowedRoles != nil && !h.requireChatAction(w, contributions.ActionSetChannelRoles) {
+		return
+	}
+
 	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
 	if communitySpaceID == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -584,6 +605,11 @@ func (h *ChatHandler) HandleArchiveChannel(w http.ResponseWriter, r *http.Reques
 	channelID := strings.TrimPrefix(r.URL.Path, "/api/v1/chat/channels/")
 	if channelID == "" || strings.Contains(channelID, "/") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "channel ID is required"})
+		return
+	}
+
+	// manage_channels gates archiving a channel (#316).
+	if !h.requireChatAction(w, contributions.ActionArchiveChannel) {
 		return
 	}
 
@@ -738,6 +764,12 @@ func (h *ChatHandler) HandleSendMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	channelID := parts[0]
+
+	// send_messages gates posting a message (#316). Default policy grants it to
+	// every member role, so this is behaviour-neutral until an admin narrows it.
+	if !h.requireChatAction(w, contributions.ActionSendMessage) {
+		return
+	}
 
 	var req SendMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -907,17 +939,17 @@ func (h *ChatHandler) HandleEditMessage(w http.ResponseWriter, r *http.Request) 
 			channelID = msg.ChannelID
 			existingVersion = msg.Version
 			data = ChatMessageData{
-				ChannelID:   msg.ChannelID,
-				SenderAID:   msg.SenderAID,
-				SenderName:  msg.SenderName,
-				Content:     msg.Content,
-				ReplyTo:     msg.ReplyTo,
-				SentAt:      msg.SentAt,
-				EditedAt:    msg.EditedAt,
-				DeletedAt:   msg.DeletedAt,
+				ChannelID:  msg.ChannelID,
+				SenderAID:  msg.SenderAID,
+				SenderName: msg.SenderName,
+				Content:    msg.Content,
+				ReplyTo:    msg.ReplyTo,
+				SentAt:     msg.SentAt,
+				EditedAt:   msg.EditedAt,
+				DeletedAt:  msg.DeletedAt,
 			}
 			if len(msg.Attachments) > 0 {
-				json.Unmarshal(msg.Attachments, &data.Attachments)
+				_ = json.Unmarshal(msg.Attachments, &data.Attachments)
 			}
 		}
 		// If err != nil, senderAID stays empty → falls through to tree scan
@@ -1060,17 +1092,17 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 			found = true
 			existingVersion = msg.Version
 			data = ChatMessageData{
-				ChannelID:   msg.ChannelID,
-				SenderAID:   msg.SenderAID,
-				SenderName:  msg.SenderName,
-				Content:     msg.Content,
-				ReplyTo:     msg.ReplyTo,
-				SentAt:      msg.SentAt,
-				EditedAt:    msg.EditedAt,
-				DeletedAt:   msg.DeletedAt,
+				ChannelID:  msg.ChannelID,
+				SenderAID:  msg.SenderAID,
+				SenderName: msg.SenderName,
+				Content:    msg.Content,
+				ReplyTo:    msg.ReplyTo,
+				SentAt:     msg.SentAt,
+				EditedAt:   msg.EditedAt,
+				DeletedAt:  msg.DeletedAt,
 			}
 			if len(msg.Attachments) > 0 {
-				json.Unmarshal(msg.Attachments, &data.Attachments)
+				_ = json.Unmarshal(msg.Attachments, &data.Attachments)
 			}
 		}
 	}
@@ -1094,12 +1126,14 @@ func (h *ChatHandler) HandleDeleteMessage(w http.ResponseWriter, r *http.Request
 		existingVersion = existing.Version
 	}
 
-	// Check ownership
+	// Ownership / moderation check (#316): a member may delete their own
+	// message; deleting another member's message requires moderate_messages.
 	currentAID := ""
 	if h.userIdentity != nil {
 		currentAID = h.userIdentity.GetAID()
 	}
-	if data.SenderAID != currentAID {
+	if data.SenderAID != currentAID &&
+		!contributions.CanPerformAction(h.currentUserRoles(), contributions.ActionModerateMessage) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "can only delete own messages"})
 		return
 	}
@@ -1220,7 +1254,7 @@ func (h *ChatHandler) HandleGetThread(w http.ResponseWriter, r *http.Request) {
 
 				var attachments []AttachmentRef
 				if len(m.Attachments) > 0 {
-					json.Unmarshal(m.Attachments, &attachments)
+					_ = json.Unmarshal(m.Attachments, &attachments)
 				}
 
 				result = append(result, MessageResponse{
@@ -1612,7 +1646,7 @@ func (h *ChatHandler) HandleGetReadCursors(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 
 	// Build space index to discover trees
-	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, privateSpaceID)
+	_ = h.spaceManager.TreeManager().BuildSpaceIndex(ctx, privateSpaceID)
 
 	objMgr := h.spaceManager.ObjectTreeManager()
 	objectID := "read-cursors-" + userAID
@@ -1779,6 +1813,39 @@ func (h *ChatHandler) getUserRole() string {
 	return ""
 }
 
+// currentUserRoles resolves the local user's contribution roles for the chat
+// RBAC checks (#316). Chat acts on behalf of the backend's own identity — the
+// same AID the ownership checks use — so roles are resolved for
+// userIdentity.GetAID(). Returns nil (no roles → all guarded actions denied)
+// when the lookup is unavailable.
+func (h *ChatHandler) currentUserRoles() []contributions.Role {
+	if h.roleLookup == nil || h.userIdentity == nil {
+		return nil
+	}
+	aid := h.userIdentity.GetAID()
+	if aid == "" {
+		return nil
+	}
+	roles, err := h.roleLookup.GetUserRoles(aid)
+	if err != nil {
+		log.Printf("[chat] role lookup failed for %s: %v", aid, err)
+		return nil
+	}
+	return roles
+}
+
+// requireChatAction returns true when the local user may perform action; on
+// denial it writes a 403 and returns false. Callers return early on false.
+func (h *ChatHandler) requireChatAction(w http.ResponseWriter, action contributions.Action) bool {
+	roles := h.currentUserRoles()
+	if !contributions.CanPerformAction(roles, action) {
+		log.Printf("[chat] access denied: action=%s roles=%v", action, roles)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions"})
+		return false
+	}
+	return true
+}
+
 func (h *ChatHandler) getSenderName(aid string) string {
 	// Look up the user's SharedProfile in the community space
 	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
@@ -1919,7 +1986,7 @@ func (h *ChatHandler) handleListMessagesFallback(w http.ResponseWriter, r *http.
 	objMgr := h.spaceManager.ObjectTreeManager()
 
 	// Rebuild index to discover P2P-received trees not yet indexed
-	h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
+	_ = h.spaceManager.TreeManager().BuildSpaceIndex(ctx, communitySpaceID)
 
 	objects, err := objMgr.ReadObjectsByType(ctx, communitySpaceID, "ChatMessage")
 	if err != nil {
@@ -2092,8 +2159,14 @@ func (h *ChatHandler) handleGetThreadFallback(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// RegisterRoutes registers chat routes on the mux.
-func (h *ChatHandler) RegisterRoutes(mux *http.ServeMux) {
+// RegisterRoutes registers chat routes on the mux. roleLookup resolves the
+// local user's roles for the chat RBAC checks (#316); chat acts on behalf of
+// the backend's own identity (the same AID the ownership checks use), so roles
+// are resolved for userIdentity.GetAID() rather than a request header.
+func (h *ChatHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLookup) {
+	requireRoleLookup("ChatHandler", roleLookup)
+	h.roleLookup = roleLookup
+
 	// Channel routes
 	mux.HandleFunc("/api/v1/chat/channels", CORSHandler(h.handleChannels))
 	mux.HandleFunc("/api/v1/chat/channels/", CORSHandler(h.handleChannelByID))
