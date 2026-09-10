@@ -100,6 +100,28 @@ export async function clearTestConfig(request: APIRequestContext) {
   } catch {
     console.log('[TestConfig] No backend org config to clear');
   }
+
+  // Reset the backend's any-sync identity + shared spaces (#502). Clearing only
+  // the org config above leaves attempt 1's admin identity and community space
+  // alive in the backend, so a retried org-setup inherits them: the new admin's
+  // identity write is denied ("not the identity owner"), no new community space
+  // is created, and every SharedProfile write fails "missing current read key",
+  // turning any org-setup flake into a deterministic registration-member red.
+  // POST /api/v1/test/reset (registered only when MATOU_ENV=test) clears the
+  // identity and forgets the shared-space IDs so the next setup starts clean.
+  try {
+    const resp = await request.post(`${BACKEND_URL}/api/v1/test/reset`);
+    if (resp.ok()) {
+      console.log('[TestConfig] Reset backend identity + shared spaces');
+    } else if (resp.status() === 404) {
+      // Route absent — backend not in test mode (should not happen in e2e).
+      console.warn('[TestConfig] Backend reset route not found (backend not in test mode?)');
+    } else {
+      console.warn(`[TestConfig] Backend reset failed: ${resp.status()}`);
+    }
+  } catch {
+    console.log('[TestConfig] Backend reset request errored (backend unreachable?)');
+  }
 }
 
 /**

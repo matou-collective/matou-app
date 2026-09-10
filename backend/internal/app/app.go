@@ -887,6 +887,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	invitesHandler.RegisterRoutes(mux)
 	bookingHandler.RegisterRoutes(mux)
 	identityHandler.RegisterRoutes(mux, roleLookup)
+	// Test-only backend reset (#502): lets a retried e2e org-setup start from a
+	// clean backend (cleared identity + forgotten community/admin spaces) so it
+	// never inherits the previous attempt's community space. Registered ONLY in
+	// test mode — the route does not exist in dev/bundled/production.
+	if opts.IsTest() {
+		identityHandler.RegisterTestResetRoute(mux)
+		log.Println("[App] TEST mode: registered POST /api/v1/test/reset")
+	}
 	eventsHandler.RegisterRoutes(mux)
 	pairingHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux, roleLookup)

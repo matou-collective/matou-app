@@ -386,6 +386,51 @@ func (h *IdentityHandler) HandleDeleteIdentity(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// HandleTestReset handles POST /api/v1/test/reset — a TEST-ONLY endpoint that
+// wipes the backend identity and forgets the community / read-only / admin
+// space IDs, so an e2e `org-setup` RETRY starts from a genuinely clean backend
+// instead of inheriting the previous attempt's community space (issue #502).
+//
+// Without this, a retried org-setup creates a fresh admin AID but the backend
+// keeps attempt 1's identity — the new admin's DELETE/POST /api/v1/identity is
+// denied ("not the identity owner"), so no new community space is ever created
+// and every SharedProfile write into the inherited space fails with "missing
+// current read key", poisoning the whole run's registration-member project.
+//
+// It bypasses the identity-owner/RBAC gate on the normal identity routes BY
+// DESIGN: the point is that the retry's new admin is not the previous owner.
+// That is safe only because this route is registered ONLY when MATOU_ENV=test
+// (see RegisterTestResetRoute / app.go); it does not exist in dev, bundled or
+// production, so there is no way to reach it there.
+func (h *IdentityHandler) HandleTestReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	if err := h.userIdentity.Clear(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to clear identity: %v", err),
+		})
+		return
+	}
+
+	// Forget the shared-space IDs the previous attempt's admin seeded so the
+	// next org-setup creates brand-new ones. UserIdentity.Clear() already reset
+	// the persisted copies; this resets the in-memory SpaceManager runtime
+	// config that survives independently. The orphaned space data left in the
+	// any-sync store is harmless — no identity references it any more.
+	if h.spaceManager != nil {
+		h.spaceManager.SetCommunitySpaceID("")
+		h.spaceManager.SetCommunityReadOnlySpaceID("")
+		h.spaceManager.SetAdminSpaceID("")
+		h.spaceManager.SetOrgAID("")
+	}
+
+	log.Println("[Identity] TEST reset: cleared identity and forgot community/read-only/admin spaces")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
+}
+
 // handleIdentity routes identity requests by method.
 func (h *IdentityHandler) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -414,6 +459,14 @@ func (h *IdentityHandler) RegisterRoutes(mux *http.ServeMux, roleLookup RoleLook
 		}
 		h.handleIdentity(w, r)
 	})
+}
+
+// RegisterTestResetRoute registers the TEST-ONLY POST /api/v1/test/reset route.
+// The caller MUST guard this with a test-mode check (opts.IsTest()); it is never
+// registered in dev, bundled or production, so the un-authenticated reset is
+// unreachable outside e2e. See HandleTestReset for why it bypasses RBAC.
+func (h *IdentityHandler) RegisterTestResetRoute(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/test/reset", h.HandleTestReset)
 }
 
 // withBootstrapRBAC applies the bootstrap rule for identity writes:
