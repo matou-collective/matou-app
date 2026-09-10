@@ -8,8 +8,12 @@
  *
  * `identityStore.connect` already persists `matou_passcode`; this composable
  * additionally stores `matou_mnemonic` (needed by WelcomeOverlayScreen's
- * backend `identity/set`) and, on the link path, the `matou_admin_aid` hint
- * that travels with the identity (§3.4). The caller then routes to
+ * backend `identity/set`) and, on the link path, the `matou_admin_aid` /
+ * `matou_org_aid` hints that travel with the identity (§3.4). The hints are
+ * written BEFORE connect because `identityStore.connect` reads
+ * `matou_admin_aid` to pick the current AID — on a fresh device without the
+ * hint the pick falls back to "first non-org AID", which is wrong for a
+ * steward whose agent also holds the group AID. The caller then routes to
  * `welcome-overlay`, which drives the backend setup and membership checks.
  */
 import { useIdentityStore } from 'stores/identity';
@@ -24,6 +28,8 @@ export interface RecoverResult {
 export interface RecoverOptions {
   /** The steward's admin AID from the pairing `identity` message (§3.4). */
   adminAid?: string;
+  /** The org (group) AID from the pairing `identity` message (§3.4). */
+  orgAid?: string;
 }
 
 export function useRecoverIdentity() {
@@ -50,6 +56,15 @@ export function useRecoverIdentity() {
 
     const passcode = KERIClient.passcodeFromMnemonic(phrase);
 
+    // Link path: the AID hints must be in place before connect() picks the
+    // current AID (spec §3.4).
+    if (options.adminAid) {
+      await secureStorage.setItem('matou_admin_aid', options.adminAid);
+    }
+    if (options.orgAid) {
+      await secureStorage.setItem('matou_org_aid', options.orgAid);
+    }
+
     const connected = await identityStore.connect(passcode);
     if (!connected) {
       throw new Error(
@@ -61,12 +76,9 @@ export function useRecoverIdentity() {
       throw new Error('No identity found for this recovery phrase. It may be a new phrase.');
     }
 
-    // Persist the hints the downstream backend setup / AID pick need. connect()
+    // Persist the mnemonic the downstream backend setup needs. connect()
     // already wrote matou_passcode.
     await secureStorage.setItem('matou_mnemonic', phrase);
-    if (options.adminAid) {
-      await secureStorage.setItem('matou_admin_aid', options.adminAid);
-    }
 
     return {
       aid: identityStore.currentAID.prefix,

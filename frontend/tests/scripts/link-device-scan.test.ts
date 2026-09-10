@@ -92,8 +92,11 @@ function mountScreen() {
   });
 }
 
+/** A well-formed pairing payload (spec §2): id, pk and s are all present. */
+const PAYLOAD = 'matou://pair?v=1&id=abc&pk=pk&s=s&cs=http://localhost:4904';
+
 /** Mount and drive the paste fallback with `payload`, awaiting the scan call. */
-async function pasteAndContinue(payload = 'matou://pair?v=1&id=x') {
+async function pasteAndContinue(payload = PAYLOAD) {
   const wrapper = mountScreen();
   const input = wrapper.find('#paste-code');
   await input.setValue(payload);
@@ -216,5 +219,101 @@ describe('LinkDeviceScanScreen outcomes', () => {
     const labels = wrapper.findAll('button').map((b) => b.text().trim());
     expect(labels).not.toContain('Scan the code');
     expect(wrapper.find('#paste-code').exists()).toBe(true);
+  });
+});
+
+describe('LinkDeviceScanScreen lifecycle (review fixes)', () => {
+  it('refuses a pasted payload that is not a matou://pair code without calling the backend', async () => {
+    const wrapper = await pasteAndContinue('hello world');
+    expect(h.scan).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("doesn't look like a sign-in code");
+    expect(wrapper.find('#paste-code').exists()).toBe(true);
+  });
+
+  it('refuses a matou://pair payload missing the secret without calling the backend', async () => {
+    const wrapper = await pasteAndContinue('matou://pair?v=1&id=abc&pk=pk');
+    expect(h.scan).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("doesn't look like a sign-in code");
+  });
+
+  it('stops polling on unmount (no leaked timer keeps hitting the backend)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      h.scan.mockResolvedValue({ sessionId: 's5', outcome: 'desktop-to-phone', code: '333333' });
+      h.getStatus.mockResolvedValue({ state: 'acked' });
+      const wrapper = await pasteAndContinue();
+      await vi.advanceTimersByTimeAsync(1500 * 3);
+      await flushPromises();
+      const before = h.getStatus.mock.calls.length;
+      expect(before).toBeGreaterThan(1); // it was polling
+      wrapper.unmount();
+      await vi.advanceTimersByTimeAsync(1500 * 5);
+      await flushPromises();
+      expect(h.getStatus.mock.calls.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancel while a poll is in flight never fetches the identity or recovers', async () => {
+    let resolveStatus!: (s: unknown) => void;
+    h.getStatus.mockReturnValue(new Promise((r) => (resolveStatus = r)));
+    h.scan.mockResolvedValue({ sessionId: 's6', outcome: 'desktop-to-phone', code: '444444' });
+    h.cancel.mockResolvedValue(undefined);
+    const wrapper = await pasteAndContinue();
+    expect(wrapper.text()).toContain('Waiting for approval');
+
+    const cancelBtn = wrapper.findAll('button').find((b) => b.text().trim() === 'Cancel');
+    await cancelBtn!.trigger('click');
+    await flushPromises();
+    expect(h.cancel).toHaveBeenCalledWith('s6');
+    expect(wrapper.find('#paste-code').exists()).toBe(true);
+
+    // The poll that was already in flight now lands with the identity ready.
+    resolveStatus({ state: 'identity-received' });
+    await flushPromises();
+    expect(h.getIdentity).not.toHaveBeenCalled();
+    expect(h.recover).not.toHaveBeenCalled();
+    expect(wrapper.emitted('continue')).toBeFalsy();
+    // …and the screen is still on the input step, not flipped to "ended".
+    expect(wrapper.find('#paste-code').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("Sign-in didn't finish");
+  });
+
+  it('unmount while a poll is in flight never fetches the identity or recovers', async () => {
+    let resolveStatus!: (s: unknown) => void;
+    h.getStatus.mockReturnValue(new Promise((r) => (resolveStatus = r)));
+    h.scan.mockResolvedValue({ sessionId: 's7', outcome: 'desktop-to-phone', code: '555555' });
+    const wrapper = await pasteAndContinue();
+    wrapper.unmount();
+    resolveStatus({ state: 'identity-received' });
+    await flushPromises();
+    expect(h.getIdentity).not.toHaveBeenCalled();
+    expect(h.recover).not.toHaveBeenCalled();
+  });
+
+  it('holder: leaving during the approve poll does not flip to Linked', async () => {
+    let resolveStatus!: (s: unknown) => void;
+    h.getStatus.mockReturnValue(new Promise((r) => (resolveStatus = r)));
+    h.scan.mockResolvedValue({ sessionId: 's8', outcome: 'phone-to-desktop', code: '666666', peerDeviceName: 'PC' });
+    h.approve.mockResolvedValue(undefined);
+    const wrapper = await pasteAndContinue();
+    await wrapper.findAll('button').find((b) => b.text().trim() === 'Approve')!.trigger('click');
+    await flushPromises();
+    expect(h.approve).toHaveBeenCalledWith('s8');
+    wrapper.unmount();
+    resolveStatus({ state: 'done' });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('Linked');
+  });
+
+  it('passes the orgAid hint from the identity message to recover()', async () => {
+    h.scan.mockResolvedValue({ sessionId: 's9', outcome: 'desktop-to-phone', code: '777777' });
+    h.getStatus.mockResolvedValue({ state: 'identity-received' });
+    h.getIdentity.mockResolvedValue({ mnemonic: 'w '.repeat(11) + 'w', aid: 'EAID', orgAid: 'EORG' });
+    h.recover.mockResolvedValue({ aid: 'EAID', name: 'Me' });
+    await pasteAndContinue();
+    await flushPromises();
+    expect(h.recover).toHaveBeenCalledWith(expect.any(String), { orgAid: 'EORG' });
   });
 });

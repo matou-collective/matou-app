@@ -1,6 +1,9 @@
 require_relative '../../node_modules/@capacitor/ios/scripts/pods_helpers'
 
-platform :ios, '15.0'
+# 15.5: @capacitor-mlkit/barcode-scanning (#473) pulls GoogleMLKit/BarcodeScanning
+# 7.0.0, whose pods (MLKitBarcodeScanning 6.0.0, MLKitCommon 12.0.0) declare
+# ios.deployment_target 15.5 — `pod install` refuses a 15.0 platform.
+platform :ios, '15.5'
 use_frameworks!
 
 # workaround to avoid Xcode caching of Pods that requires

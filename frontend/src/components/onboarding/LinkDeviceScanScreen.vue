@@ -221,7 +221,13 @@ const blockedMessage = ref('');
 const scannerAvailable = isScannerAvailable();
 
 let sessionId = '';
-let polling = false;
+/**
+ * Generation of the current handshake. Every cancel / reset / back / unmount
+ * bumps it, and every step that resumes after an `await` checks it, so a poll
+ * response (or the identity fetch + recovery that follows it) that lands after
+ * the user has left the flow can never act on stale state.
+ */
+let generation = 0;
 
 function defaultDeviceName(): string {
   const platform = getCapacitorPlatform();
@@ -236,11 +242,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Cheap client-side shape check before anything is POSTed: the backend parses
+ * and verifies the payload (`internal/pairing/qr.go`), but a random string
+ * pasted into the field should get a plain "that's not a sign-in code" here
+ * rather than a round-trip and a protocol error message.
+ */
+function isPairingPayload(text: string): boolean {
+  if (!text.startsWith('matou://pair?')) return false;
+  const params = new URLSearchParams(text.slice('matou://pair?'.length));
+  return !!(params.get('id') && params.get('pk') && params.get('s'));
+}
+
+const NOT_A_CODE = "That doesn't look like a sign-in code. Copy the whole “matou://pair?…” text from your computer.";
+
 async function onScan() {
   errorMessage.value = '';
   try {
     const payload = await scanPairingQr();
     if (!payload) return; // user dismissed the scanner
+    if (!isPairingPayload(payload)) {
+      errorMessage.value = NOT_A_CODE;
+      return;
+    }
     await startHandshake(payload);
   } catch (err) {
     if (err instanceof ScanUnavailableError) {
@@ -257,14 +281,25 @@ async function onScan() {
 async function onPaste() {
   const payload = pastedPayload.value.trim();
   if (!payload) return;
+  if (!isPairingPayload(payload)) {
+    errorMessage.value = NOT_A_CODE;
+    return;
+  }
   await startHandshake(payload);
 }
 
 async function startHandshake(qrPayload: string) {
   errorMessage.value = '';
   phase.value = 'connecting';
+  const gen = ++generation;
   try {
     const result = await pairing.scan(qrPayload, deviceName.value.trim() || defaultDeviceName());
+    if (gen !== generation) {
+      // The user backed out while the hello/ack round-trip was in flight; the
+      // session it created is not ours any more — tear it down and stay put.
+      void pairing.cancel(result.sessionId);
+      return;
+    }
     sessionId = result.sessionId;
     code.value = result.code ?? '';
     peerDeviceName.value = result.peerDeviceName ?? '';
@@ -293,6 +328,7 @@ async function startHandshake(qrPayload: string) {
         showEnded();
     }
   } catch (err) {
+    if (gen !== generation) return;
     handleScanError(err);
   }
 }
@@ -316,15 +352,22 @@ function handleScanError(err: unknown) {
 
 /** Fresh phone: poll until the identity has arrived, then recover it locally. */
 async function waitForIdentity() {
-  const status = await pollUntil((s) => s.state === 'identity-received' || s.state === 'done');
-  if (!status) return; // terminal / cancelled — pollUntil already routed us
+  const gen = generation;
+  const status = await pollUntil(gen, (s) => s.state === 'identity-received' || s.state === 'done');
+  if (!status) return; // terminal / cancelled / left — pollUntil already routed us
   phase.value = 'receiving';
   try {
     const identity = await pairing.getIdentity(sessionId);
-    await recover(identity.mnemonic, identity.adminAid ? { adminAid: identity.adminAid } : {});
+    if (gen !== generation) return;
+    await recover(identity.mnemonic, {
+      ...(identity.adminAid ? { adminAid: identity.adminAid } : {}),
+      ...(identity.orgAid ? { orgAid: identity.orgAid } : {}),
+    });
+    if (gen !== generation) return;
     // Recovered — hand off to the welcome overlay for backend setup + checks.
     emit('continue');
   } catch (err) {
+    if (gen !== generation) return;
     errorMessage.value =
       err instanceof PairingError && err.code === 'identity-present'
         ? 'This device already has an identity. Sign out first to use a different one.'
@@ -338,13 +381,16 @@ async function waitForIdentity() {
 /** Holder phone: approve, then wait for the receiver to confirm. */
 async function onApprove() {
   phase.value = 'sending';
+  const gen = generation;
   try {
     await pairing.approve(sessionId);
   } catch (err) {
+    if (gen !== generation) return;
     showEnded(err instanceof Error ? err.message : undefined);
     return;
   }
-  const status = await pollUntil((s) => s.state === 'done');
+  if (gen !== generation) return;
+  const status = await pollUntil(gen, (s) => s.state === 'done');
   if (!status) return;
   if (status.error) {
     showEnded(status.error);
@@ -355,16 +401,22 @@ async function onApprove() {
 
 /**
  * Poll session status until `predicate` holds (returns the status), or a
- * terminal state routes the screen to "ended" (returns null). Stops when the
- * component is torn down.
+ * terminal state routes the screen to "ended" (returns null). Returns null
+ * without touching the screen as soon as `gen` is no longer the current
+ * generation (cancel / reset / back / unmount) — including when the response
+ * that was already in flight at that moment finally lands.
  */
-async function pollUntil(predicate: (s: SessionStatus) => boolean): Promise<SessionStatus | null> {
-  polling = true;
-  while (polling) {
+async function pollUntil(
+  gen: number,
+  predicate: (s: SessionStatus) => boolean,
+): Promise<SessionStatus | null> {
+  const id = sessionId;
+  while (gen === generation) {
     let status: SessionStatus;
     try {
-      status = await pairing.getStatus(sessionId);
+      status = await pairing.getStatus(id);
     } catch (err) {
+      if (gen !== generation) return null;
       // A 404/410 (unknown or expired) means the pairing is gone.
       if (err instanceof PairingError && (err.status === 404 || err.status === 410)) {
         showEnded();
@@ -373,6 +425,7 @@ async function pollUntil(predicate: (s: SessionStatus) => boolean): Promise<Sess
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
+    if (gen !== generation) return null;
     if (predicate(status)) {
       return status;
     }
@@ -397,13 +450,13 @@ function showEnded(message?: string) {
 }
 
 async function onCancel() {
-  polling = false;
-  if (sessionId) await pairing.cancel(sessionId);
+  const id = sessionId;
   reset();
+  if (id) await pairing.cancel(id);
 }
 
 function reset() {
-  polling = false;
+  generation++;
   sessionId = '';
   code.value = '';
   peerDeviceName.value = '';
@@ -413,13 +466,21 @@ function reset() {
 }
 
 function onBack() {
-  polling = false;
-  if (sessionId) void pairing.cancel(sessionId);
+  const id = sessionId;
+  reset();
+  if (id) void pairing.cancel(id);
   emit('back');
 }
 
 onUnmounted(() => {
-  polling = false;
+  // Stop any poll loop and make every in-flight continuation a no-op. The
+  // session itself is left to the backend's TTL: after a successful receipt
+  // the backend still has to send `done`, so an unconditional cancel here
+  // would race it.
+  generation++;
+  sessionId = '';
+  code.value = '';
+  peerDeviceName.value = '';
 });
 </script>
 
