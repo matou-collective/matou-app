@@ -145,6 +145,32 @@ func resolvePrivateSpace(ctx context.Context, client spaceResolver, aid string, 
 	}
 }
 
+// sharedSpace is one shared any-sync space identity/set adopts after the
+// private space: the community space, the community read-only space and the
+// admin space. mnemonicIx is the mnemonic derivation index of its key set.
+//
+// required marks the space whose ACL membership identity/set cannot do
+// without: a definitive "not in the ACL" answer there is a 409 (#290). The
+// read-only and admin spaces are optional — an ordinary member is never in the
+// admin ACL, so a miss there only skips adoption.
+type sharedSpace struct {
+	id         string
+	mnemonicIx uint32
+	label      string
+	required   bool
+}
+
+// sharedSpacesToAdopt lists the shared spaces identity/set adopts in recovery
+// and link mode, in adoption order. Empty IDs are kept (callers skip them) so
+// the mnemonic indices stay fixed per space type.
+func sharedSpacesToAdopt(communityID, readOnlyID, adminID string) []sharedSpace {
+	return []sharedSpace{
+		{id: communityID, mnemonicIx: 1, label: "community", required: true},
+		{id: readOnlyID, mnemonicIx: 2, label: "read-only", required: false},
+		{id: adminID, mnemonicIx: 3, label: "admin", required: false},
+	}
+}
+
 // recoverSharedSpace re-derives (when missing) and persists the mnemonic-derived
 // key set for a known shared space (community / read-only / admin), then adopts
 // it. It never creates.

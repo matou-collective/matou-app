@@ -243,17 +243,7 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	// persists nothing, never creating; in recovery mode it re-derives keys and
 	// tolerates a sync miss (unchanged behaviour).
 	if !isClaim {
-		type sharedSpace struct {
-			id         string
-			mnemonicIx uint32
-			label      string
-		}
-		shared := []sharedSpace{
-			{req.CommunitySpaceID, 1, "community"},
-			{req.ReadOnlySpaceID, 2, "read-only"},
-			{h.spaceManager.GetAdminSpaceID(), 3, "admin"},
-		}
-		for _, s := range shared {
+		for _, s := range sharedSpacesToAdopt(req.CommunitySpaceID, req.ReadOnlySpaceID, h.spaceManager.GetAdminSpaceID()) {
 			if s.id == "" {
 				continue
 			}
@@ -261,7 +251,15 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 			if notInACL {
 				// The identity is definitively absent from this shared space's ACL,
 				// so it holds no read key and can never derive a working one (#290).
-				// Fail loudly instead of silently persisting a bogus key set.
+				// No key set was persisted. For the community space that is fatal:
+				// fail loudly rather than hand back an identity that 500s on every
+				// profile read. For the read-only and admin spaces it is the normal
+				// state of a member (only stewards/admins are in the admin ACL), so
+				// just skip adoption and carry on.
+				if !s.required {
+					log.Printf("[Identity] %s space %s: identity is not in its ACL, skipping adoption\n", s.label, s.id)
+					continue
+				}
 				writeJSON(w, http.StatusConflict, SetIdentityResponse{
 					Error: fmt.Sprintf("cannot recover %s space %s: identity is not in its ACL (no read key)", s.label, s.id),
 				})

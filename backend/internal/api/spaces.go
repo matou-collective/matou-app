@@ -302,8 +302,11 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 		// space back produces unreadable trees and a storm of 500s. Recreate a
 		// fresh space instead. We only demote on a DEFINITIVE "not in ACL" answer:
 		// a lookup error (ACL not yet synced) is left as-is so a legitimate admin
-		// restart never orphans its real space behind a duplicate.
-		if spaceValid && client != nil {
+		// restart never orphans its real space behind a duplicate. The check
+		// only runs when a mnemonic is configured: without one GetSigningKey is
+		// the random device key (never in any ACL) and recreation below would
+		// 409 anyway, so demoting would only wipe the runtime space IDs.
+		if spaceValid && client != nil && h.userIdentity != nil && h.userIdentity.GetMnemonic() != "" {
 			if signingKey := client.GetSigningKey(); signingKey != nil {
 				if perms, permErr := h.spaceManager.ACLManager().GetPermissions(
 					r.Context(), existingSpace.SpaceID, signingKey.GetPublic(),

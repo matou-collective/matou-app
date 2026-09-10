@@ -182,3 +182,28 @@ func TestGetSpaceWithBackoff_RespectsContextCancel(t *testing.T) {
 		t.Fatal("expected error on cancelled context")
 	}
 }
+
+// TestSharedSpacesToAdopt_OnlyCommunityIsRequired pins the #290 policy: a
+// definitive "not in the ACL" answer is fatal (409) only for the community
+// space. An ordinary member is never in the admin ACL, so treating a miss there
+// as fatal would block every member's mnemonic recovery.
+func TestSharedSpacesToAdopt_OnlyCommunityIsRequired(t *testing.T) {
+	got := sharedSpacesToAdopt("cs", "ro", "adm")
+	want := []sharedSpace{
+		{id: "cs", mnemonicIx: 1, label: "community", required: true},
+		{id: "ro", mnemonicIx: 2, label: "read-only", required: false},
+		{id: "adm", mnemonicIx: 3, label: "admin", required: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d spaces, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("space %d: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	// Empty IDs keep their slot so mnemonic indices never shift per space type.
+	if s := sharedSpacesToAdopt("cs", "", ""); len(s) != 3 || s[2].mnemonicIx != 3 {
+		t.Errorf("empty IDs must keep their slots, got %+v", s)
+	}
+}
