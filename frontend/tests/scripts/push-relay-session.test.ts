@@ -108,9 +108,17 @@ function makePush(initial: string): FakePush {
     },
   };
 }
-function installCapacitor(push?: FakePush, platform = 'android') {
+function installCapacitor(push?: FakePush, platform = 'android', pushAvailable = true) {
   const Plugins: Record<string, unknown> = {};
-  if (push) Plugins.PushNotifications = push;
+  if (push) {
+    Plugins.PushNotifications = push;
+    // usePush consults MatouBackend.isPushAvailable() before every register()
+    // and fails safe to 'unavailable' without it (#384); a Firebase-present
+    // shell is the precondition for every relay-session case below.
+    Plugins.MatouBackend = {
+      isPushAvailable: vi.fn(async () => ({ available: pushAvailable })),
+    };
+  }
   (globalThis as unknown as { window: unknown }).window = {
     Capacitor: { isNativePlatform: () => true, getPlatform: () => platform, Plugins },
   };
@@ -188,6 +196,24 @@ describe('relay-session minting (#277)', () => {
     expect(postRelaySession.mock.invocationCallOrder[0]).toBeLessThan(
       registerPushToken.mock.invocationCallOrder[0],
     );
+  });
+
+  it('neither mints a session nor registers on a config-less build (#384)', async () => {
+    // Push plugin present but no Firebase baked in: the gate must stop the
+    // whole chain before the permission prompt, so no challenge is fetched, no
+    // session minted and no native register() (which would kill the process).
+    const fake = makePush('granted');
+    installCapacitor(fake, 'android', false);
+    const push = await loadPush();
+    const identity = await identityStore();
+    identity.currentAID = aidInfo('aid-a');
+
+    expect(await push.requestPermissionAndRegister()).toBe('unavailable');
+    expect(fake.requestPermissions).not.toHaveBeenCalled();
+    expect(fake.register).not.toHaveBeenCalled();
+    expect(getRelayChallenge).not.toHaveBeenCalled();
+    expect(postRelaySession).not.toHaveBeenCalled();
+    expect(registerPushToken).not.toHaveBeenCalled();
   });
 
   it('never handles the relay bearer token frontend-side (only the expiry)', async () => {
