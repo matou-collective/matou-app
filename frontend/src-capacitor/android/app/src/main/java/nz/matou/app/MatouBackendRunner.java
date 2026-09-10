@@ -1,7 +1,11 @@
 package nz.matou.app;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.util.Log;
+
+import androidx.security.crypto.EncryptedSharedPreferences;
+import androidx.security.crypto.MasterKey;
 
 import org.json.JSONObject;
 
@@ -39,11 +43,30 @@ import nz.matou.backend.mobile.Mobile;
  *       same port, same token — and the wake worker's release becomes a
  *       no-op-stop. No restart, no token mismatch.</li>
  * </ul>
+ *
+ * At-rest identity encryption (#117 / #389): every boot — whichever entry
+ * point triggers it — hands {@code Mobile.startWithEncryptionKey} a
+ * per-install 32-byte key, generated once and held in the Android
+ * Keystore-backed EncryptedSharedPreferences (the same {@code matou_secure}
+ * trust root {@link SecureStoragePlugin} uses), so
+ * {@code {dataDir}/matou/identity.json} is AES-256-GCM ciphertext rather than
+ * a plaintext mnemonic. Passing the key here rather than in the plugin is what
+ * makes a headless push wake boot the SAME identity: if only the WebView path
+ * supplied it, a wake would start the backend with an empty key (encrypted
+ * identity.json unreadable) and the app would then adopt that unconfigured
+ * instance for the rest of the process. The key is re-read on every start
+ * because the headless path stops and re-starts the backend.
  */
 final class MatouBackendRunner {
 
     private static final String TAG = "MatouBackendRunner";
     private static final MatouBackendRunner INSTANCE = new MatouBackendRunner();
+
+    // The EncryptedSharedPreferences file and key name for the identity
+    // encryption key. SECURE_PREFS_FILE must match SecureStoragePlugin.PREFS_FILE
+    // so both share one Keystore-backed trust root (matou_secure.xml).
+    private static final String SECURE_PREFS_FILE = "matou_secure";
+    static final String IDENTITY_KEY_NAME = "backend_identity_key";
 
     /** Immutable connection info for one running backend. */
     static final class Info {
@@ -80,9 +103,15 @@ final class MatouBackendRunner {
      */
     synchronized Info start(Context context, String configServerUrl, boolean fromApp) throws Exception {
         if (!started) {
-            String freshToken = randomToken();
-            File dataDir = new File(context.getApplicationContext().getFilesDir(), "matou");
-            long boundPort = Mobile.start(dataDir.getAbsolutePath(), configServerUrl, freshToken);
+            String freshToken = randomHex(32);
+            Context app = context.getApplicationContext();
+            File dataDir = new File(app.getFilesDir(), "matou");
+            // Re-read per boot: the headless path stops/re-starts the backend,
+            // and a key cached from an earlier boot could be stale after a
+            // secure-storage failure recovered in between.
+            String encryptionKey = identityEncryptionKey(app);
+            long boundPort = Mobile.startWithEncryptionKey(
+                dataDir.getAbsolutePath(), configServerUrl, freshToken, encryptionKey);
             port = boundPort;
             token = freshToken;
             started = true;
@@ -150,9 +179,91 @@ final class MatouBackendRunner {
         }
     }
 
-    /** 32 random bytes, hex-encoded — the per-launch API token TokenGuard checks. */
-    private static String randomToken() {
-        byte[] raw = new byte[32];
+    /**
+     * The per-install identity encryption key handed to StartWithEncryptionKey.
+     * Reads (or, on first boot, generates and persists) the key from the
+     * Keystore-backed secure prefs. On any secure-storage failure it logs a
+     * single warning (never the key) and returns "" so the backend takes the
+     * legacy plaintext path rather than refusing to boot.
+     */
+    private static String identityEncryptionKey(Context context) {
+        try {
+            SharedPreferences securePrefs = openSecurePrefs(context);
+            KeyBacking backing = new KeyBacking() {
+                @Override
+                public String get(String name) {
+                    return securePrefs.getString(name, null);
+                }
+
+                @Override
+                public void put(String name, String value) {
+                    if (!securePrefs.edit().putString(name, value).commit()) {
+                        // Refuse to encrypt with a key we could not persist — a
+                        // key lost across boots would make identity.json
+                        // unreadable. The caller falls back to the empty key.
+                        throw new IllegalStateException("failed to persist identity encryption key");
+                    }
+                }
+            };
+            return loadOrCreateIdentityKey(backing);
+        } catch (Exception e) {
+            Log.w(TAG, "secure storage unavailable; identity will use the legacy plaintext path: " + e.getMessage());
+            return "";
+        }
+    }
+
+    /** Opens the shared Keystore-backed EncryptedSharedPreferences (matou_secure). */
+    private static SharedPreferences openSecurePrefs(Context context) throws Exception {
+        MasterKey masterKey = new MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build();
+        return EncryptedSharedPreferences.create(
+                context,
+                SECURE_PREFS_FILE,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);
+    }
+
+    /**
+     * A minimal string-keyed persistence seam. Its only production implementation
+     * is over EncryptedSharedPreferences, but factoring it out lets the
+     * generate-once / read-back logic be unit-tested on the JVM without the
+     * Android Keystore (MatouBackendRunnerTest).
+     */
+    interface KeyBacking {
+        /** The stored value for name, or null when absent. */
+        String get(String name);
+
+        /** Persist value under name; throws if it cannot be persisted. */
+        void put(String name, String value);
+    }
+
+    /**
+     * Returns the persisted per-install identity encryption key, generating and
+     * storing 32 random bytes (hex-encoded) on first call so subsequent boots
+     * read back the identical key. StartWithEncryptionKey / deriveKey hashes the
+     * material, so the hex encoding is only a stable, storage-safe representation
+     * (minSdk 23 rules out java.util.Base64; hex mirrors the token encoding).
+     * A put failure propagates: a key that was not persisted must never be used.
+     */
+    static String loadOrCreateIdentityKey(KeyBacking backing) {
+        String existing = backing.get(IDENTITY_KEY_NAME);
+        if (existing != null && !existing.isEmpty()) {
+            return existing;
+        }
+        String fresh = randomHex(32);
+        backing.put(IDENTITY_KEY_NAME, fresh);
+        return fresh;
+    }
+
+    /**
+     * nBytes of secure randomness, hex-encoded. Used for the per-boot API token
+     * TokenGuard checks (32 bytes, as the Electron launcher mints) and for the
+     * identity encryption key.
+     */
+    static String randomHex(int nBytes) {
+        byte[] raw = new byte[nBytes];
         new SecureRandom().nextBytes(raw);
         StringBuilder hex = new StringBuilder(raw.length * 2);
         for (byte b : raw) hex.append(String.format("%02x", b));
