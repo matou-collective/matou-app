@@ -129,8 +129,17 @@ async function adminDisplayName(aid: string): Promise<string> {
 // so click through the gate if it is showing, then use the hash route.
 async function passWelcomeGate(page: Page): Promise<void> {
   const enter = page.getByRole('button', { name: /enter community/i });
+  // Right after a reload the app is still booting: the gate is not rendered
+  // yet, an instant isVisible() says false, and the following goto() gets
+  // bounced back to the gate once boot completes (pr-e2e capture on #403).
+  // Wait for either the gate or the dashboard shell before deciding.
+  await Promise.race([
+    enter.waitFor({ state: 'visible', timeout: 20_000 }),
+    page.locator('.sidebar-header').waitFor({ state: 'visible', timeout: 20_000 }),
+  ]).catch(() => {});
   if (await enter.isVisible().catch(() => false)) {
     await enter.click();
+    await expect(enter).toBeHidden({ timeout: 30_000 });
   }
 }
 
