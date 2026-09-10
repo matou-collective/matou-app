@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -1269,6 +1271,28 @@ func (h *SpacesHandler) HandleGrantStewardAdmin(w http.ResponseWriter, r *http.R
 	for _, spaceID := range []string{communitySpaceID, roSpaceID} {
 		pubKey, err := aclMgr.FindAccountPubKeyByAID(ctx, spaceID, req.StewardAID)
 		if err != nil {
+			// Self-heal the readonly space: the readonly join inside
+			// community/join is best-effort, so a member whose original invite
+			// carried no readOnlyInviteKey never joined the readonly space and
+			// misses here. If the same AID resolves on the community space, add
+			// it to the readonly ACL as Admin (the AccountsAdd record carries the
+			// grant) instead of 404ing, mirroring the acl-repair tool. A miss on
+			// both spaces, or any non-miss error, is surfaced unchanged.
+			if spaceID == roSpaceID && errors.Is(err, anysync.ErrAccountNotFoundForAID) {
+				if healErr := h.addStewardToReadOnlySpace(ctx, aclMgr, communitySpaceID, roSpaceID, req.StewardAID); healErr != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(healErr, anysync.ErrAccountNotFoundForAID) {
+						status = http.StatusNotFound
+					}
+					writeJSON(w, status, GrantStewardAdminResponse{
+						Success: false,
+						Error:   fmt.Sprintf("steward not in community-readonly space and could not be added: %v", healErr),
+					})
+					return
+				}
+				// AccountsAdd already granted Admin on the readonly space.
+				continue
+			}
 			writeJSON(w, http.StatusNotFound, GrantStewardAdminResponse{
 				Success: false,
 				Error:   fmt.Sprintf("steward not found in space %s ACL: %v", spaceID, err),
@@ -1287,6 +1311,35 @@ func (h *SpacesHandler) HandleGrantStewardAdmin(w http.ResponseWriter, r *http.R
 	}
 
 	writeJSON(w, http.StatusOK, GrantStewardAdminResponse{Success: true})
+}
+
+// addStewardToReadOnlySpace copies a steward that is present in the community
+// ACL but absent from the community-readonly ACL into the readonly ACL as Admin.
+// The identity and join metadata are read from the community ACL by AID and the
+// same `{aid, joinedAt}` metadata is reused so FindAccountByAID resolves the
+// account in the readonly space afterwards. If the AID is absent from the
+// community ACL too, the wrapped ErrAccountNotFoundForAID is returned so the
+// caller can 404 (genuinely unknown steward). This is the acl-repair tool's
+// AccountsAdd step, moved into the request path.
+func (h *SpacesHandler) addStewardToReadOnlySpace(ctx context.Context, aclMgr *anysync.MatouACLManager, communitySpaceID, roSpaceID, stewardAID string) error {
+	identity, metadata, err := aclMgr.FindAccountByAID(ctx, communitySpaceID, stewardAID)
+	if err != nil {
+		return err
+	}
+	// Reuse the community metadata verbatim when it still carries the AID; fall
+	// back to a fresh {aid, joinedAt} record otherwise so the AID always resolves.
+	if !bytes.Contains(metadata, []byte(`"aid":"`+stewardAID+`"`)) {
+		metadata, _ = json.Marshal(map[string]string{
+			"aid":      stewardAID,
+			"joinedAt": time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+	if err := aclMgr.AddAccount(ctx, roSpaceID, identity, list.AclPermissionsAdmin, metadata); err != nil {
+		return err
+	}
+	log.Printf("[GrantStewardAdmin] added %s to community-readonly space %s as Admin (self-heal)",
+		stewardAID, roSpaceID)
+	return nil
 }
 
 // SyncStatusResponse reports sync readiness for the user's spaces.
