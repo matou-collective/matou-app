@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -632,6 +633,81 @@ type UpdateMemberRoleRequest struct {
 	Role string `json:"role"`
 }
 
+// profileTypeOrBuiltin returns the org's registered definition for a type,
+// falling back to the built-in definition when the registry is absent or the
+// type has not been loaded. The split-on-save follows whichever definition is
+// effective, so org schema customisations drive field→space routing.
+func (h *ProfilesHandler) profileTypeOrBuiltin(name string, builtin func() *types.TypeDefinition) *types.TypeDefinition {
+	if h.registry != nil {
+		if def, ok := h.registry.Get(name); ok && def != nil {
+			return def
+		}
+	}
+	return builtin()
+}
+
+// memberProfileReservedKeys are the fields HandleInitMemberProfiles manages
+// itself (identity, membership, timestamps, schema version). They are stripped
+// from the opaque registration map before routing so a client can never set
+// them through profileData; the assembler pins them from the request instead.
+var memberProfileReservedKeys = map[string]bool{
+	"aid": true, "status": true, "lastActiveAt": true, "createdAt": true, "updatedAt": true, "typeVersion": true,
+	"userAID": true, "credential": true, "role": true, "memberSince": true, "credentials": true,
+}
+
+// memberProfilePinnedDisplayKeys are SharedProfile core fields the frontend
+// and handlers read structurally (member lists, avatars, SSE). They are always
+// stored on the SharedProfile — and never on the CommunityProfile — whatever
+// the org's schema says.
+var memberProfilePinnedDisplayKeys = []string{"displayName", "avatar"}
+
+// buildMemberProfileData assembles the CommunityProfile and SharedProfile data
+// maps for a new member from the merged opaque registration map (see
+// mergedProfileData). Non-reserved fields are routed to whichever destination
+// type's schema declares them (types.RouteFieldsBySchema), so which fields land
+// in the community-readonly vs the community-writable profile follows the org's
+// type definitions rather than a hardcoded list (issue #300). The core
+// identity/membership fields each profile's handlers structurally depend on are
+// pinned after routing and therefore cannot be moved to another space by a
+// schema edit. Keys declared by neither schema are not stored; their names are
+// returned in dropped (sorted) so the caller can log and report them.
+func buildMemberProfileData(communityDef, sharedDef *types.TypeDefinition, req *InitMemberProfilesRequest, merged map[string]interface{}, now string) (community, shared map[string]interface{}, dropped []string) {
+	inputs := make(map[string]interface{}, len(merged))
+	for k, v := range merged {
+		if !memberProfileReservedKeys[k] {
+			inputs[k] = v
+		}
+	}
+	routed := types.RouteFieldsBySchema(inputs, communityDef, sharedDef)
+
+	// CommunityProfile: routed fields, then the pinned membership record.
+	community = buildCommunityProfileData(req, now)
+	for k, v := range routed[communityDef.Name] {
+		if _, pinned := community[k]; !pinned {
+			community[k] = v
+		}
+	}
+
+	// SharedProfile: routed fields, then the pinned identity/system fields.
+	shared = buildSharedProfileData(routed[sharedDef.Name], req.MemberAID, req.Status, now)
+	for _, k := range memberProfilePinnedDisplayKeys {
+		if v, ok := merged[k]; ok {
+			shared[k] = v
+		}
+		delete(community, k)
+	}
+
+	for k := range inputs {
+		_, inCommunity := routed[communityDef.Name][k]
+		_, inShared := routed[sharedDef.Name][k]
+		if !inCommunity && !inShared {
+			dropped = append(dropped, k)
+		}
+	}
+	sort.Strings(dropped)
+	return community, shared, dropped
+}
+
 // HandleInitMemberProfiles handles POST /api/v1/profiles/init-member.
 // Called by admin after credential issuance + space invite to create the
 // member's CommunityProfile in the read-only space.
@@ -694,25 +770,35 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// Assemble the opaque registration profile. The canonical payload is the
-	// profileData map (keyed by SharedProfile schema field names); the legacy
-	// typed request fields are still accepted for one release for backward
-	// compatibility and form the base that profileData overlays. Building from
-	// the map — instead of copying ~18 named fields — lets an org-added custom
-	// field flow through registration untouched.
+	// Assemble the opaque registration profile (#299). The canonical payload is
+	// the profileData map (keyed by schema field names); the legacy typed
+	// request fields are still accepted for one release for backward
+	// compatibility and form the base that profileData overlays.
 	merged, err := req.mergedProfileData()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
-	// Build CommunityProfile data. This is the admin-managed membership record:
-	// it carries only the fields the CommunityProfile schema declares. The
-	// display/social fields live on the SharedProfile — writing them here was
-	// vacuous (they aren't in the schema, so validation silently skipped them
-	// and only credential/role were ever really checked).
+	// Split the merged map into the CommunityProfile (community-readonly) and
+	// SharedProfile (community) records. Which field lands where is read from
+	// the org's type definitions (#300): a field routes to whichever schema
+	// declares it, so an admin moving a field between the two schemas moves
+	// where a new member's value is stored. The core membership/identity fields
+	// each handler depends on are pinned by the assembler and cannot be moved
+	// out by a schema edit. A key no schema declares is dropped (logged and
+	// reported as droppedFields in the response) rather than persisted
+	// unvalidated. This is deliberately not a 400: the answers were collected
+	// under the kit as it stood at submit time, and refusing the write would
+	// leave the registration un-approvable whenever the admin removed a
+	// question between submit and approval.
 	now := time.Now().UTC().Format(time.RFC3339)
-	communityProfileData := buildCommunityProfileData(&req, now)
+	communityDef := h.profileTypeOrBuiltin("CommunityProfile", types.CommunityProfileType)
+	sharedDef := h.profileTypeOrBuiltin("SharedProfile", types.SharedProfileType)
+	communityProfileData, sharedProfileData, droppedFields := buildMemberProfileData(communityDef, sharedDef, &req, merged, now)
+	if len(droppedFields) > 0 {
+		log.Printf("[InitMemberProfiles] %s: dropped registration fields declared by neither profile schema: %v", req.MemberAID, droppedFields)
+	}
 
 	dataBytes, err := json.Marshal(communityProfileData)
 	if err != nil {
@@ -745,7 +831,6 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 	communitySpaceID := h.spaceManager.GetCommunitySpaceID()
 	var sharedDataBytes []byte
 	if communitySpaceID != "" {
-		sharedProfileData := buildSharedProfileData(merged, req.MemberAID, req.Status, now)
 		sharedDataBytes, err = json.Marshal(sharedProfileData)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -818,6 +903,9 @@ func (h *ProfilesHandler) HandleInitMemberProfiles(w http.ResponseWriter, r *htt
 		"headId":   headID,
 		"treeId":   objMgr.GetTreeIDForObject(objectID),
 		"spaceId":  roSpaceID,
+	}
+	if len(droppedFields) > 0 {
+		result["droppedFields"] = droppedFields
 	}
 
 	// Also create SharedProfile in community writable space.
