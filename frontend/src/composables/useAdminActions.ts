@@ -190,6 +190,29 @@ export function useAdminActions() {
    * @param registration - The registration to approve
    * @returns Success status
    */
+  /**
+   * `true` when a completed approval is already on record for `applicantAid`
+   * with `credentialSaid`: the SharedProfile status is 'approved' (step 6c) AND
+   * the CommunityProfile carries that SAID (step 6b) — read exactly the way
+   * those steps read-merge before writing. Any missing/placeholder value means
+   * a prior run stopped short, so the caller must finish it (#488). Best-effort:
+   * a failed read counts as "not recorded" so the repair path runs.
+   */
+  async function isApprovalRecorded(applicantAid: string, credentialSaid: string): Promise<boolean> {
+    try {
+      const [shared, community] = await Promise.all([
+        getProfileById('SharedProfile', `SharedProfile-${applicantAid}`),
+        getProfileById('CommunityProfile', `CommunityProfile-${applicantAid}`),
+      ]);
+      const sharedData = (shared?.data || {}) as Record<string, unknown>;
+      const communityData = (community?.data || {}) as Record<string, unknown>;
+      return sharedData.status === 'approved' && communityData.credential === credentialSaid;
+    } catch (err) {
+      console.warn('[AdminActions] Could not read approval state; assuming unfinished:', err);
+      return false;
+    }
+  }
+
   async function approveRegistration(registration: PendingRegistration): Promise<boolean> {
     if (isProcessing.value) {
       console.warn('[AdminActions] Already processing an action');
@@ -231,8 +254,32 @@ export function useAdminActions() {
         registration.applicantAid,
       );
       if (existingCredentialSaid) {
+        // Distinguish "another device FINISHED this approval" (stale pending
+        // list) from "a prior run died between issue and grant" (#488). The
+        // profiles are the record: step 6b writes the SAID onto the
+        // CommunityProfile and 6c flips the SharedProfile to approved, so when
+        // both already say so there is nothing left to repair — re-running the
+        // flow would only rewrite the member's profiles and mint a second
+        // invite. Keep the #483 no-op for that case; otherwise fall through
+        // and re-grant + finish the flip below.
+        if (await isApprovalRecorded(registration.applicantAid, existingCredentialSaid)) {
+          console.log(
+            `[AdminActions] Membership credential ${existingCredentialSaid.slice(0, 12)}... already issued to ${registration.applicantAid.slice(0, 12)}... and profiles approved — treating as approved on another device`,
+          );
+          await markAllApplicantNotificationsRead(registration.applicantAid);
+          Notify.create({
+            type: 'info',
+            message: 'This applicant was already approved on another device.',
+          });
+          lastAction.value = {
+            type: 'approve',
+            success: true,
+            registrationId: registration.notificationId,
+          };
+          return true;
+        }
         console.log(
-          `[AdminActions] Membership credential ${existingCredentialSaid.slice(0, 12)}... already issued to ${registration.applicantAid.slice(0, 12)}... — re-granting instead of re-issuing`,
+          `[AdminActions] Membership credential ${existingCredentialSaid.slice(0, 12)}... already issued to ${registration.applicantAid.slice(0, 12)}... but approval unfinished — re-granting instead of re-issuing`,
         );
       }
 

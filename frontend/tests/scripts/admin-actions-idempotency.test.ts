@@ -118,9 +118,11 @@ vi.stubGlobal(
 
 // Imported AFTER the mocks are registered.
 import { useAdminActions, MEMBERSHIP_SCHEMA_SAID } from 'composables/useAdminActions';
-import { createOrUpdateProfile } from 'src/lib/api/client';
+import { createOrUpdateProfile, getProfileById, initMemberProfiles } from 'src/lib/api/client';
 
 const createOrUpdateProfileMock = vi.mocked(createOrUpdateProfile);
+const getProfileByIdMock = vi.mocked(getProfileById);
+const initMemberProfilesMock = vi.mocked(initMemberProfiles);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const registration: any = {
@@ -139,6 +141,9 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
     listCredentials.mockClear();
     notifyCreate.mockClear();
     createOrUpdateProfileMock.mockClear();
+    getProfileByIdMock.mockReset().mockResolvedValue(null);
+    initMemberProfilesMock.mockClear();
+    vi.mocked(fetch).mockClear();
   });
 
   it('issues exactly once across two devices, and device B re-grants the existing SAID', async () => {
@@ -230,6 +235,68 @@ describe('approveRegistration cross-device idempotency (issue #480)', () => {
     expect(grantCredential).not.toHaveBeenCalled();
     expect(notifyCreate).not.toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining('already issued') }),
+    );
+  });
+
+  it('FULLY-approved member on a stale pending list: keeps the #483 no-op (no re-grant, no init-member, no profile rewrite)', async () => {
+    // Device B still shows the applicant as pending, but device A finished the
+    // whole approval: the wallet holds the credential AND the profiles already
+    // record it (SharedProfile status approved, CommunityProfile credential =
+    // that SAID). Re-running the flow would rewrite the member's profiles and
+    // mint a second invite for nothing — so this must stay a no-op.
+    wallet.push({
+      sad: { d: 'EPRIOR', s: MEMBERSHIP_SCHEMA_SAID, a: { i: 'DAPPLICANT' } },
+      status: { et: 'iss', s: '0' },
+    });
+    getProfileByIdMock.mockImplementation(async (typeName: string): Promise<any> => {
+      if (typeName === 'SharedProfile') return { id: 'SharedProfile-DAPPLICANT', data: { aid: 'DAPPLICANT', status: 'approved' } };
+      if (typeName === 'CommunityProfile') return { id: 'CommunityProfile-DAPPLICANT', data: { userAID: 'DAPPLICANT', credential: 'EPRIOR' } };
+      return null;
+    });
+
+    const deviceB = useAdminActions();
+    const ok = await deviceB.approveRegistration(registration);
+
+    expect(ok).toBe(true);
+    expect(issueCredential).not.toHaveBeenCalled();
+    expect(grantCredential).not.toHaveBeenCalled();
+    expect(initMemberProfilesMock).not.toHaveBeenCalled();
+    expect(createOrUpdateProfileMock).not.toHaveBeenCalled();
+    // No space invite minted either.
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+      expect.stringContaining('/spaces/community/invite'),
+      expect.anything(),
+    );
+    expect(notifyCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('already approved on another device') }),
+    );
+    expect(notifyCreate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('re-sent') }),
+    );
+  });
+
+  it('approved status but a placeholder credential on the CommunityProfile still takes the re-grant path (#488 partial run)', async () => {
+    // A prior run died between the grant and step 6b: SharedProfile may read
+    // approved only if 6c ran, but the CommunityProfile still carries the
+    // 'pending' placeholder — not fully approved, so re-grant + repair it.
+    wallet.push({
+      sad: { d: 'EPRIOR', s: MEMBERSHIP_SCHEMA_SAID, a: { i: 'DAPPLICANT' } },
+      status: { et: 'iss', s: '0' },
+    });
+    getProfileByIdMock.mockImplementation(async (typeName: string): Promise<any> => {
+      if (typeName === 'SharedProfile') return { id: 'SharedProfile-DAPPLICANT', data: { aid: 'DAPPLICANT', status: 'approved' } };
+      if (typeName === 'CommunityProfile') return { id: 'CommunityProfile-DAPPLICANT', data: { userAID: 'DAPPLICANT', credential: 'pending' } };
+      return null;
+    });
+
+    const admin = useAdminActions();
+    expect(await admin.approveRegistration(registration)).toBe(true);
+    expect(issueCredential).not.toHaveBeenCalled();
+    expect(grantCredential).toHaveBeenCalledTimes(1);
+    expect(createOrUpdateProfileMock).toHaveBeenCalledWith(
+      'CommunityProfile',
+      expect.objectContaining({ credential: 'EPRIOR' }),
+      expect.objectContaining({ id: 'CommunityProfile-DAPPLICANT' }),
     );
   });
 
