@@ -18,7 +18,9 @@ func TestValidateSchemaUpdate_CustomFieldsFree(t *testing.T) {
 	builtin := SharedProfileType()
 	incoming := sharedProfileEdit()
 
-	// Drop a removable field (bio) and add a fresh custom one (iwi).
+	// Drop a removable field (bio) — from the layouts too, since a layout may
+	// not name a field the definition no longer has — and add a fresh custom
+	// one (iwi).
 	kept := incoming.Fields[:0]
 	for _, f := range incoming.Fields {
 		if f.Name == "bio" {
@@ -27,9 +29,39 @@ func TestValidateSchemaUpdate_CustomFieldsFree(t *testing.T) {
 		kept = append(kept, f)
 	}
 	incoming.Fields = append(kept, FieldDef{Name: "iwi", Type: "string"})
+	for key, layout := range incoming.Layouts {
+		names := layout.Fields[:0]
+		for _, n := range layout.Fields {
+			if n != "bio" {
+				names = append(names, n)
+			}
+		}
+		incoming.Layouts[key] = Layout{Fields: names}
+	}
 
 	if msg := ValidateSchemaUpdate(builtin, incoming); msg != "" {
 		t.Fatalf("valid custom-field edit rejected: %s", msg)
+	}
+}
+
+// TestValidateSchemaUpdate_RemovedFieldStillInLayout: dropping a field without
+// dropping it from the layouts is rejected — the layout would otherwise point
+// at nothing.
+func TestValidateSchemaUpdate_RemovedFieldStillInLayout(t *testing.T) {
+	builtin := SharedProfileType()
+	incoming := sharedProfileEdit()
+	kept := incoming.Fields[:0]
+	for _, f := range incoming.Fields {
+		if f.Name == "bio" {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	incoming.Fields = kept
+
+	msg := ValidateSchemaUpdate(builtin, incoming)
+	if msg == "" || !strings.Contains(msg, "bio") {
+		t.Fatalf("removed field left in a layout should be rejected naming it, got %q", msg)
 	}
 }
 
@@ -164,6 +196,52 @@ func TestBuiltinDefinition(t *testing.T) {
 	}
 	if _, ok := BuiltinDefinition("NoSuchType"); ok {
 		t.Fatal("expected no built-in for unknown type")
+	}
+}
+
+// TestValidateSchemaUpdate_DanglingLayoutField rejects a layout that names a
+// field the definition does not declare — #403 renders only fields present in
+// the form layout, so a dangling entry would otherwise hide a field silently.
+func TestValidateSchemaUpdate_DanglingLayoutField(t *testing.T) {
+	builtin := SharedProfileType()
+	incoming := sharedProfileEdit()
+	incoming.Layouts["form"] = Layout{Fields: []string{"displayName", "noSuchField"}}
+
+	msg := ValidateSchemaUpdate(builtin, incoming)
+	if msg == "" || !strings.Contains(msg, "noSuchField") || !strings.Contains(msg, "form") {
+		t.Fatalf("dangling layout field should be rejected naming the layout and field, got %q", msg)
+	}
+}
+
+// TestValidateSchemaUpdate_LayoutMayNameVariantFields accepts layout entries
+// that resolve to a variant's fields (the Notice form layout lists event and
+// RSVP fields that only exist on variants).
+func TestValidateSchemaUpdate_LayoutMayNameVariantFields(t *testing.T) {
+	builtin := SharedProfileType()
+	incoming := sharedProfileEdit()
+	incoming.Fields = append(incoming.Fields, FieldDef{Name: "kind", Type: "string"})
+	incoming.VariantField = "kind"
+	incoming.Variants = map[string]Variant{
+		"event": {Fields: []FieldDef{{Name: "eventStart", Type: "datetime"}}},
+	}
+	incoming.Layouts["form"] = Layout{Fields: []string{"displayName", "kind", "eventStart"}}
+
+	if msg := ValidateSchemaUpdate(builtin, incoming); msg != "" {
+		t.Fatalf("layout naming a variant field should be accepted, got %q", msg)
+	}
+}
+
+// TestValidateSchemaUpdate_BuiltinsSelfValidate: every shipped definition must
+// pass validation against itself, so an admin can round-trip a built-in
+// through GET → PUT unchanged. Guards the validator against rejecting shapes
+// the built-ins actually use (variant fields in layouts, field types, …).
+func TestValidateSchemaUpdate_BuiltinsSelfValidate(t *testing.T) {
+	r := NewRegistry()
+	r.Bootstrap()
+	for _, def := range r.All() {
+		if msg := ValidateSchemaUpdate(def, def); msg != "" {
+			t.Errorf("built-in %q does not validate against itself: %s", def.Name, msg)
+		}
 	}
 }
 

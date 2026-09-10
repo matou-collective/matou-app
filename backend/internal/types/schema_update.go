@@ -3,6 +3,7 @@ package types
 import (
 	"fmt"
 	"regexp"
+	"sort"
 )
 
 // MaxSchemaFields caps the number of fields an admin-supplied type definition
@@ -53,7 +54,10 @@ func BuiltinDefinition(name string) (*TypeDefinition, bool) {
 //     field name, no duplicate names, a known field type, and coherent
 //     Validation bounds (min ≤ max);
 //   - variant integrity: VariantField, when set, must name a base field, and
-//     every variant field must itself pass the structural checks.
+//     every variant field must itself pass the structural checks;
+//   - layout integrity: every name a layout lists must be a base field or a
+//     field of some variant (#403 renders only the fields a layout names, so a
+//     dangling entry would hide a field silently).
 func ValidateSchemaUpdate(builtin, incoming *TypeDefinition) string {
 	if incoming == nil {
 		return "definition is required"
@@ -112,6 +116,30 @@ func ValidateSchemaUpdate(builtin, incoming *TypeDefinition) string {
 				return fmt.Sprintf("variant %q: duplicate field %q", key, f.Name)
 			}
 			vseen[f.Name] = true
+		}
+	}
+
+	// Layout integrity: names must resolve to a base or variant field. Layouts
+	// are visited in key order so the first reported problem is deterministic.
+	known := make(map[string]bool, len(seen))
+	for name := range seen {
+		known[name] = true
+	}
+	for _, variant := range incoming.Variants {
+		for _, f := range variant.Fields {
+			known[f.Name] = true
+		}
+	}
+	layoutKeys := make([]string, 0, len(incoming.Layouts))
+	for key := range incoming.Layouts {
+		layoutKeys = append(layoutKeys, key)
+	}
+	sort.Strings(layoutKeys)
+	for _, key := range layoutKeys {
+		for _, name := range incoming.Layouts[key].Fields {
+			if !known[name] {
+				return fmt.Sprintf("layout %q names unknown field %q", key, name)
+			}
 		}
 	}
 
