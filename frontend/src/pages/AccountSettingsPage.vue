@@ -448,7 +448,7 @@
           <h3 class="card-title"><MonitorSmartphone :size="18" /> Devices</h3>
         </div>
         <p class="device-copy">
-          Use your Matou identity on more than one device. The device that
+          Use your {{ KIT.brand.name }} identity on more than one device. The device that
           already has your identity shows a code (on your computer) or scans one
           (on your phone); once you approve, both devices share the same
           identity, spaces and profile.
@@ -529,6 +529,17 @@
             only. You can sign back in with your recovery phrase, or by linking
             from another device that still has it.
           </p>
+          <!-- There is no "show my recovery phrase" screen, and signing out
+               wipes this device's copy. If this is the user's only device and
+               they never wrote the phrase down, the identity is gone. -->
+          <p class="signout-warn">
+            Make sure you have your recovery phrase written down first. If this
+            is your only device and you do not have the phrase, you will not be
+            able to get this identity back.
+          </p>
+          <p v-if="signOutError" class="signout-error" data-test="signout-error">
+            {{ signOutError }}
+          </p>
         </q-card-section>
         <q-card-actions align="right">
           <q-btn flat no-caps label="Cancel" :disable="signingOut" v-close-popup />
@@ -576,7 +587,7 @@ import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
 import { useRolePolicyStore } from 'src/stores/rolePolicy';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
-import { getFileUrl, uploadFile } from 'src/lib/api/client';
+import { getFileUrl, uploadFile, clearBackendIdentity } from 'src/lib/api/client';
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { applyPushEnabled } from 'src/composables/usePush';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
@@ -584,6 +595,9 @@ import TypedForm from 'src/components/profiles/TypedForm.vue';
 import LinkDeviceQrScreen from 'src/components/onboarding/LinkDeviceQrScreen.vue';
 import LinkDeviceScanScreen from 'src/components/onboarding/LinkDeviceScanScreen.vue';
 import { isCapacitor } from 'src/lib/platform';
+// Kit builds must not hard-code this community's brand name (#452) — the
+// Devices copy names the app, so it reads it from the kit.
+import { KIT } from 'src/generated/kit';
 
 const router = useRouter();
 const profilesStore = useProfilesStore();
@@ -617,6 +631,7 @@ const showReportDialog = ref(false);
 const showLinkDialog = ref(false);
 const showSignOutDialog = ref(false);
 const signingOut = ref(false);
+const signOutError = ref('');
 
 // A phone (Capacitor) scans the code shown on the holding device; everywhere
 // else (desktop Electron, and the browser/e2e) the holding device shows the QR
@@ -627,15 +642,33 @@ const linkScreenComponent = computed(() =>
 
 async function confirmSignOut() {
   signingOut.value = true;
+  signOutError.value = '';
+  const aid = identityStore.aidPrefix;
   try {
+    // Backend half first, while the session and X-User-AID are still valid.
+    // identityStore.disconnect() only clears *frontend* state; the backend
+    // keeps the identity (recovery phrase included) in identity.json and will
+    // go on refusing every different identity — pairing with 409
+    // identity-present / outcome `conflict`, identity/set with 403 — so a
+    // frontend-only sign-out makes this dialog's own promise ("to use a
+    // different identity on this device, sign out first") impossible to keep.
+    if (aid) {
+      const cleared = await clearBackendIdentity(aid);
+      if (!cleared.success) {
+        // Stop rather than leave the device half signed out: nothing has been
+        // wiped yet, so the user can simply try again.
+        signOutError.value = `Could not sign out: ${cleared.error ?? 'the backend did not respond'}. Your identity is unchanged — please try again.`;
+        return;
+      }
+    }
     await identityStore.disconnect();
-  } finally {
-    signingOut.value = false;
     showSignOutDialog.value = false;
     // Return to a clean onboarding state. A full reload drops all in-memory
     // store state; boot finds no saved passcode and lands on the splash.
     window.location.hash = '#/';
     window.location.reload();
+  } finally {
+    signingOut.value = false;
   }
 }
 
@@ -1987,6 +2020,14 @@ textarea.field-input {
 
 .signout-body p:last-child {
   margin-bottom: 0;
+}
+
+.signout-body .signout-warn {
+  font-weight: 600;
+}
+
+.signout-body .signout-error {
+  color: #ef4444;
 }
 
 /* Save feedback */

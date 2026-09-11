@@ -2,11 +2,14 @@
   <div
     class="header-gradient pt-safe-area bg-gradient-to-br from-primary via-primary/95 to-accent p-6 md:p-8 pb-8 rounded-b-3xl"
   >
+    <!-- Icon-only, so it needs an explicit name: without one it is an unnamed
+         button to a screen reader (and to getByRole('button', { name: /back/i })). -->
     <MBtn
       v-if="showBackButton"
       variant="ghost"
       size="icon"
       class="back-btn text-white mb-6"
+      aria-label="Back"
       @click="handleBack"
     >
       <ArrowLeft class="w-5 h-5 text-white" />

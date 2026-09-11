@@ -32,6 +32,9 @@ describe('kit builds do not leak Mātou copy into onboarding', () => {
     'pages/OnboardingPage.vue',
     'pages/CommunityGuidelinesPage.vue',
     'layouts/OnboardingLayout.vue',
+    // The Devices card (#474) names the app in its copy — it must come from
+    // KIT.brand.name, like every other branded string.
+    'pages/AccountSettingsPage.vue',
   ].filter((f) => f.endsWith('.vue'));
 
   for (const rel of files) {

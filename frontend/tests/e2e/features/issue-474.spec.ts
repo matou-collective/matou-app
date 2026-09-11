@@ -88,6 +88,19 @@ test.describe('Account Settings "Link another device" + refuse-to-overwrite (#47
       });
     });
 
+    // Refuse-to-overwrite is only meaningful if the screen never tries to
+    // *take* the other device's identity: record every identity/set the page
+    // makes from here on and assert it stayed empty. Without this the spec
+    // would pass against a screen that overwrote the identity and merely
+    // printed the refusal copy afterwards.
+    // Pass the request through rather than aborting it: the point is to
+    // observe, not to change what the app would otherwise do.
+    const identitySets: string[] = [];
+    await page.route('**/api/v1/identity/set', async (route) => {
+      identitySets.push(route.request().method());
+      await route.continue();
+    });
+
     // First: keep the session "created" so the QR image is shown.
     let forceConflict = false;
     await page.route('**/api/v1/pairing/sessions/sess-474', async (route) => {
@@ -120,9 +133,17 @@ test.describe('Account Settings "Link another device" + refuse-to-overwrite (#47
     await expect(page.getByText(/sign out first/i)).toBeVisible();
     await snap(page, 'refuse-to-overwrite-conflict');
 
-    // Close the link dialog (onboarding header back button).
-    await page.getByRole('button', { name: /back/i }).first().click().catch(() => {});
-    await page.keyboard.press('Escape').catch(() => {});
+    // The refusal must be a refusal: nothing was written to this backend.
+    expect(identitySets, 'the conflicting link must never call identity/set').toEqual([]);
+
+    // Close the link dialog via the onboarding header's back button. Scope it
+    // to the dialog: the settings header has its own (unnamed) back button
+    // behind the overlay, and an unscoped, un-awaited click on a selector that
+    // matches nothing hangs until the whole test times out — there is no
+    // per-action timeout in playwright.config.ts.
+    const linkDialog = page.locator('.link-device-host');
+    await linkDialog.getByRole('button', { name: /back/i }).click();
+    await expect(linkDialog).toBeHidden({ timeout: 10_000 });
 
     // Sign-out confirmation carries the spec §3.3 copy. Do NOT confirm — that
     // would wipe the shared fixture session.
@@ -133,6 +154,9 @@ test.describe('Account Settings "Link another device" + refuse-to-overwrite (#47
         /to use a different identity on this device, sign out first\. your identity stays on your other devices\./i,
       ),
     ).toBeVisible({ timeout: 10_000 });
+    // Signing out wipes this device's only copy of the phrase and there is no
+    // "show my recovery phrase" screen, so the confirmation has to say so.
+    await expect(page.getByText(/recovery phrase written down first/i)).toBeVisible();
     await snap(page, 'sign-out-confirmation');
   });
 });
