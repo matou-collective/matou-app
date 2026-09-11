@@ -887,6 +887,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	invitesHandler.RegisterRoutes(mux)
 	bookingHandler.RegisterRoutes(mux)
 	identityHandler.RegisterRoutes(mux, roleLookup)
+	registerTestOnlyRoutes(mux, opts, identityHandler)
 	eventsHandler.RegisterRoutes(mux)
 	pairingHandler.RegisterRoutes(mux)
 	profilesHandler.RegisterRoutes(mux, roleLookup)
@@ -1070,6 +1071,23 @@ func fetchAndSaveAnySyncConfig(configServerURL, targetPath string) ([]byte, erro
 	}
 
 	return body, nil
+}
+
+// registerTestOnlyRoutes mounts the routes that must exist ONLY when
+// MATOU_ENV=test. Today that is the backend reset (#502): it lets a retried e2e
+// org-setup start from a clean backend (cleared identity + forgotten
+// community/admin spaces) so it never inherits the previous attempt's community
+// space. The reset bypasses the identity-owner gate by design, so it must never
+// be reachable in dev, bundled or production — the gate is exactly opts.IsTest()
+// (the raw MATOU_ENV value equal to "test"; cmd/mobile hardcodes "production" and
+// the packaged Electron shell sets "production"). Pinned by
+// TestRegisterTestOnlyRoutes_OnlyInTestMode.
+func registerTestOnlyRoutes(mux *http.ServeMux, opts Options, identityHandler *api.IdentityHandler) {
+	if !opts.IsTest() {
+		return
+	}
+	identityHandler.RegisterTestResetRoute(mux)
+	log.Println("[App] TEST mode: registered POST /api/v1/test/reset")
 }
 
 // pushRelayURLFromConfig extracts the top-level "push_relay_url" string from the
