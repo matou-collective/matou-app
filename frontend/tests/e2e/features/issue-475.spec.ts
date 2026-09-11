@@ -21,7 +21,8 @@
  *   3. both fresh                         — the "neither" message, no identity set
  *   4. both hold, different AIDs          — conflict, identity.json unchanged
  *   5. profile converges                  — display-name edit converges; one SharedProfile
- *   6. code-mismatch defence              — tampered `s=` → scan fails, displayer keeps waiting
+ *   6. code-mismatch defence              — tampered `s=` → the displayer's hello
+ *                                          fails to authenticate; session ends failed
  *
  * This spec needs the live test network (KERI + any-sync + the config-server
  * mailbox); it cannot run in the authoring sandbox. Scenarios 1/2/5 recover a
@@ -38,7 +39,12 @@ import { test, expect } from './fixtures';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
 import { BackendManager, BackendInstance } from '../utils/backend-manager';
 import { setupTestConfig } from '../utils/mock-config';
-import { setupBackendRouting, loginWithMnemonic, loadAccounts } from '../utils/test-helpers';
+import {
+  setupBackendRouting,
+  loginWithMnemonic,
+  loadAccounts,
+  CONFIG_SERVER_URL,
+} from '../utils/test-helpers';
 
 // Well-known BIP39 test mnemonic (passes validation) used to give a backend a
 // *cheap* identity.json for the conflict/tamper scenarios, which only need
@@ -71,8 +77,14 @@ test.afterAll(async () => {
 
 // --- platform stubs (verbatim from issue-472 / issue-473) ---------------------
 
-/** Stub a minimal Electron shell so isElectron() is true and IPC calls resolve. */
-async function stubElectron(page: Page): Promise<void> {
+/** Stub a minimal Electron shell so isElectron() is true and IPC calls resolve.
+ *
+ *  `backendPort` MUST be this device's own BackendManager port, not 9080:
+ *  src/lib/platform.ts:getBackendUrl() builds `http://127.0.0.1:<port>` from
+ *  it, and setupBackendRouting only intercepts `http://localhost:9080/**`, so a
+ *  127.0.0.1 URL is never rewritten. Reporting 9080 here silently pointed every
+ *  context in this spec at the shared admin backend instead of its own. */
+async function stubElectron(page: Page, backendPort: number): Promise<void> {
   await page.addInitScript((backendPort: number) => {
     const store: Record<string, string> = {};
     const noop = () => undefined;
@@ -98,20 +110,20 @@ async function stubElectron(page: Page): Promise<void> {
       notify: async () => undefined,
       onNotificationClicked: noop,
     };
-  }, 9080);
+  }, backendPort);
 }
 
 // isCapacitor() true; BarcodeScanner is deliberately absent so the screen offers
-// the paste fallback (no camera in CI). MatouBackend points at 9080, which
-// setupBackendRouting rewrites to the phone backend's port.
-const CAPACITOR_SHIM = `
+// the paste fallback (no camera in CI). MatouBackend reports this device's own
+// BackendManager port for the same reason as stubElectron above.
+const capacitorShim = (backendPort: number): string => `
   (function () {
     const store = {};
     window.Capacitor = {
       isNativePlatform: () => true,
       getPlatform: () => 'android',
       Plugins: {
-        MatouBackend: { getInfo: async () => ({ port: 9080, token: 'matou-dev' }) },
+        MatouBackend: { getInfo: async () => ({ port: ${backendPort}, token: 'matou-dev' }) },
         SecureStorage: {
           getItem: async ({ key }) => ({ value: key in store ? store[key] : null }),
           setItem: async ({ key, value }) => { store[key] = value; },
@@ -124,6 +136,36 @@ const CAPACITOR_SHIM = `
 
 type Platform = 'electron' | 'capacitor';
 
+/**
+ * Serve the TEST client config on a Capacitor context.
+ *
+ * src/lib/clientConfig.ts:resolveConfigFetchUrl() sources client config from
+ * `<backend>/api/v1/client-config` when isCapacitor() is true (#99/#368), but a
+ * BackendManager backend never populates that endpoint: app.go only fetches (and
+ * SetRaw's) when `backend/config/client-test.yml` is missing, and the admin
+ * backend has already written it by the time these spawn — so it answers 503,
+ * doFetchConfig() falls back to getDefaultConfig(), and the page ends up on the
+ * DEV KERI ports (3901-3903) which no test network serves. That is the
+ * "Failed to fetch" on the recovery screen in this PR's pr-e2e captures.
+ *
+ * Fulfilling the request from the test config server gives the Capacitor
+ * contexts exactly the KERI URLs every other e2e spec uses. The on-device
+ * loopback-proxy path this bypasses is #368's, not this slice's, and is covered
+ * by device acceptance (#476).
+ */
+async function serveTestClientConfig(ctx: BrowserContext): Promise<void> {
+  await ctx.route('**/api/v1/client-config', async (route) => {
+    const upstream = await fetch(`${CONFIG_SERVER_URL}/api/client-config`, {
+      headers: { 'X-Test-Config': 'true' },
+    });
+    await route.fulfill({
+      status: upstream.status,
+      contentType: 'application/json',
+      body: await upstream.text(),
+    });
+  });
+}
+
 /** A fresh browser context routed to `backend`, with the platform stub installed
  *  before the app boots. localStorage starts empty → the splash renders. */
 async function newDevice(
@@ -134,10 +176,17 @@ async function newDevice(
   const ctx = await browser.newContext();
   contexts.push(ctx);
   await setupTestConfig(ctx);
+  // Belt and braces: the platform stubs point the app straight at
+  // backend.port over 127.0.0.1, but getBackendUrlSync() (Electron, before
+  // getBackendUrl() has resolved) still returns VITE_BACKEND_URL —
+  // http://localhost:9080 — so keep the rewrite for those callers.
   await setupBackendRouting(ctx, backend.port);
   const page = await ctx.newPage();
-  if (platform === 'electron') await stubElectron(page);
-  else await page.addInitScript(CAPACITOR_SHIM);
+  if (platform === 'electron') await stubElectron(page, backend.port);
+  else {
+    await serveTestClientConfig(ctx);
+    await page.addInitScript(capacitorShim(backend.port));
+  }
   return { ctx, page };
 }
 
@@ -166,6 +215,15 @@ async function getIdentity(backend: BackendInstance): Promise<{
   return (await res.json()) as { configured: boolean; aid?: string; privateSpaceId?: string };
 }
 
+/** Read one pairing session's status straight off a backend. */
+async function getSessionStatus(
+  backend: BackendInstance,
+  sessionId: string,
+): Promise<{ state: string; outcome?: string; code?: string; error?: string }> {
+  const res = await fetch(`${backend.url}/api/v1/pairing/sessions/${sessionId}`);
+  return (await res.json()) as { state: string; outcome?: string; code?: string; error?: string };
+}
+
 /** Give a backend a cheap identity.json with a specific AID (no live KERIA). */
 async function setFakeIdentity(backend: BackendInstance, aid: string): Promise<void> {
   const res = await fetch(`${backend.url}/api/v1/identity/set`, {
@@ -186,6 +244,21 @@ function captureStderr(backend: BackendInstance): () => string {
     buf += d.toString();
   });
   return () => buf;
+}
+
+/**
+ * Backend name scoped to the current attempt.
+ *
+ * `backends` is module-level and BackendManager.start() returns the cached
+ * instance for a name it already holds, while test.afterAll runs once per
+ * worker — so on a describe.serial retry the whole group would otherwise
+ * re-run against the PREVIOUS attempt's half-written data dirs (the #502
+ * failure mode: a stale identity turns a flake into a deterministic red).
+ * Suffixing by retry index gives every attempt clean backends.
+ */
+function backendName(base: string): string {
+  const { retry } = test.info();
+  return retry > 0 ? `${base}-r${retry}` : base;
 }
 
 // --- UI drivers ---------------------------------------------------------------
@@ -257,8 +330,8 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     const accounts = loadAccounts();
     expect(accounts.member?.mnemonic, 'registration-member bootstrap persists a member').toBeTruthy();
 
-    const phone = await backends.start('i475-s1-phone');
-    const desktop = await backends.start('i475-s1-desktop');
+    const phone = await backends.start(backendName('i475-s1-phone'));
+    const desktop = await backends.start(backendName('i475-s1-desktop'));
     const desktopStderr = captureStderr(desktop);
 
     // Phone holds a real member identity (recovery UI → dashboard).
@@ -304,7 +377,11 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     expect(deskId.privateSpaceId).toBe(phoneId.privateSpaceId);
 
     // Link mode adopted the private space; it never created one.
-    expect(desktopStderr()).not.toMatch(PRIVATE_SPACE_CREATED);
+    // Positive control first: an absence assertion over a silent (detached,
+    // renamed, or never-attached) stderr buffer would pass against anything.
+    const deskLog = desktopStderr();
+    expect(deskLog.length, 'desktop backend stderr was captured').toBeGreaterThan(0);
+    expect(deskLog).not.toMatch(PRIVATE_SPACE_CREATED);
 
     // Hand the linked pair to scenario 5.
     s1.phone = phone;
@@ -323,8 +400,8 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     const accounts = loadAccounts();
     expect(accounts.admin?.mnemonic, 'org-setup persists the admin').toBeTruthy();
 
-    const desktop = await backends.start('i475-s2-desktop');
-    const phone = await backends.start('i475-s2-phone');
+    const desktop = await backends.start(backendName('i475-s2-desktop'));
+    const phone = await backends.start(backendName('i475-s2-phone'));
     const phoneStderr = captureStderr(phone);
 
     // Desktop holds a real admin identity (recovery UI → dashboard).
@@ -362,7 +439,13 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     expect(phoneId.aid).toBe(deskId.aid);
     expect(phoneId.privateSpaceId).toBeTruthy();
     expect(phoneId.privateSpaceId).toBe(deskId.privateSpaceId);
-    expect(phoneStderr()).not.toMatch(PRIVATE_SPACE_CREATED);
+    const phoneLog = phoneStderr();
+    expect(phoneLog.length, 'phone backend stderr was captured').toBeGreaterThan(0);
+    expect(phoneLog).not.toMatch(PRIVATE_SPACE_CREATED);
+    // The desktop holder only reports Linked once the phone's done{ok} lands.
+    await expect(deskLink.page.getByRole('heading', { name: /^linked$/i })).toBeVisible({
+      timeout: 60_000,
+    });
   });
 
   // 3. both fresh -------------------------------------------------------------
@@ -371,8 +454,8 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     snap,
   }) => {
     test.setTimeout(180_000);
-    const desktop = await backends.start('i475-s3-desktop');
-    const phone = await backends.start('i475-s3-phone');
+    const desktop = await backends.start(backendName('i475-s3-desktop'));
+    const phone = await backends.start(backendName('i475-s3-phone'));
 
     const desk = await newDevice(browser, desktop, 'electron');
     await desk.page.goto('/');
@@ -382,10 +465,16 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     await phoneDev.page.goto('/');
     await pasteOnPhone(phoneDev.page, qrPayload);
 
-    // Both sides show "Neither device has an identity yet".
-    await expect(phoneDev.page.getByText(/neither device has an identity/i)).toBeVisible({
-      timeout: 60_000,
-    });
+    // Both sides show the "neither" refusal. The phone's blocked card puts the
+    // title in an <h4> and repeats the phrase in the body copy, so match the
+    // heading by role — getByText(/…/) would match two nodes and blow up on
+    // Playwright's strict mode before it ever reached the product behaviour.
+    await expect(
+      phoneDev.page.getByRole('heading', { name: 'Nothing to sign in with' }),
+    ).toBeVisible({ timeout: 60_000 });
+    await expect(
+      phoneDev.page.getByText('Neither device has an identity yet. Create or recover one first.'),
+    ).toBeVisible();
     await expect(
       desk.page.getByRole('heading', { name: /neither device has an identity/i }),
     ).toBeVisible({ timeout: 60_000 });
@@ -394,6 +483,11 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
 
     expect((await getIdentity(desktop)).configured).toBeFalsy();
     expect((await getIdentity(phone)).configured).toBeFalsy();
+
+    // Nothing later in the serial run needs these two; free the ports and the
+    // any-sync clients rather than holding them until afterAll.
+    await backends.stop(desktop.name);
+    await backends.stop(phone.name);
   });
 
   // 4. both hold, different AIDs ---------------------------------------------
@@ -402,8 +496,8 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     snap,
   }) => {
     test.setTimeout(180_000);
-    const desktop = await backends.start('i475-s4-desktop');
-    const phone = await backends.start('i475-s4-phone');
+    const desktop = await backends.start(backendName('i475-s4-desktop'));
+    const phone = await backends.start(backendName('i475-s4-phone'));
 
     // Both hold — with DIFFERENT AIDs (cheap identity.json, no live KERIA).
     await setFakeIdentity(desktop, 'EDesktopHolder475s4000000000000000000000000');
@@ -424,8 +518,13 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     await phoneDev.page.goto('/');
     await pasteOnPhone(phoneDev.page, qrPayload);
 
-    // Both sides refuse with the "different identities" copy.
-    await expect(phoneDev.page.getByText(/different identities/i)).toBeVisible({ timeout: 60_000 });
+    // Both sides refuse with the "different identities" copy. Match the phone's
+    // heading by role: its <h4> title ("Different identities") and its body copy
+    // ("These devices hold different identities. …") both match a loose
+    // getByText(/different identities/i), which is a strict-mode violation.
+    await expect(
+      phoneDev.page.getByRole('heading', { name: 'Different identities' }),
+    ).toBeVisible({ timeout: 60_000 });
     await expect(
       desk.page.getByRole('heading', { name: /different identities/i }),
     ).toBeVisible({ timeout: 60_000 });
@@ -435,6 +534,9 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     // Linking never overwrites: both identities are unchanged.
     expect((await getIdentity(desktop)).aid).toBe(before.desktop);
     expect((await getIdentity(phone)).aid).toBe(before.phone);
+
+    await backends.stop(desktop.name);
+    await backends.stop(phone.name);
   });
 
   // 5. profile converges ------------------------------------------------------
@@ -491,19 +593,19 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
   });
 
   // 6. code-mismatch defence --------------------------------------------------
-  test('6) tampered s= param: scan fails to decrypt, displayer keeps waiting', async ({
+  test('6) tampered s= param: the displayer cannot authenticate the hello and the session fails', async ({
     browser,
     snap,
   }) => {
     test.setTimeout(180_000);
-    const desktop = await backends.start('i475-s6-desktop');
-    const phone = await backends.start('i475-s6-phone');
+    const desktop = await backends.start(backendName('i475-s6-desktop'));
+    const phone = await backends.start(backendName('i475-s6-phone'));
     // Phone holds so the untampered outcome would have been phone-to-desktop.
     await setFakeIdentity(phone, 'EPhoneHolder475s6000000000000000000000000000');
 
     const desk = await newDevice(browser, desktop, 'electron');
     await desk.page.goto('/');
-    const { qrPayload } = await openDesktopQr(desk.page);
+    const { sessionId, qrPayload } = await openDesktopQr(desk.page);
 
     const tampered = tamperSecret(qrPayload);
     expect(tampered).not.toBe(qrPayload);
@@ -512,20 +614,43 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     await phoneDev.page.goto('/');
     await pasteOnPhone(phoneDev.page, tampered);
 
-    // The tampered pairSecret gives the phone a different K; the displayer can
-    // never authenticate the hello, so it never leaves "waiting for scan" and
-    // never shows a code, and the scanner never reaches the approve/waiting
-    // state (its scan fails on the ack it cannot decrypt).
-    await desk.page.waitForTimeout(8_000);
-    await expect(
-      desk.page.getByRole('heading', { name: /scan this with the matou app on your phone/i }),
-    ).toBeVisible();
+    // POSITIVE signal first, so this test cannot pass by nothing happening: the
+    // tampered `s=` gives the scanner a different K, the displayer's
+    // open(K, hello) fails its AEAD tag, and driveDisplayer
+    // (backend/internal/pairing/driver.go) marks the session FAILED with
+    // "hello did not authenticate". Waiting for that state proves the tampered
+    // hello really was delivered and really was rejected — a fixed sleep plus
+    // "the screen didn't change" would look identical if the paste had simply
+    // never been submitted.
+    await expect
+      .poll(async () => (await getSessionStatus(desktop, sessionId)).state, {
+        timeout: 90_000,
+        intervals: [1_000],
+      })
+      .toBe('failed');
+    const failed = await getSessionStatus(desktop, sessionId);
+    expect(failed.error).toMatch(/did not authenticate/i);
+    // No SAS code was ever derived on either side (K never agreed).
+    expect(failed.code ?? '').toBe('');
+
+    // NOTE: the issue text says "the displayer never leaves waiting for scan",
+    // but the implementation is stricter — LinkDeviceQrScreen.handleTerminal()
+    // routes state 'failed' to the "Pairing failed" message. Assert what the
+    // code does; failing loudly is the better behaviour here.
+    await expect(desk.page.getByRole('heading', { name: 'Pairing failed' })).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(desk.page.getByTestId('pairing-code')).toHaveCount(0);
+    // The scanner never reached approve/waiting: its own session is still
+    // blocked on an ack that can never come, so no code is on screen.
     await expect(phoneDev.page.getByTestId('sas-code')).toHaveCount(0);
-    await snap(desk.page, 's6-desktop-still-waiting');
+    await snap(desk.page, 's6-desktop-pairing-failed');
     await snap(phoneDev.page, 's6-phone-scan-rejected');
 
-    // The desktop backend session never advanced past its own creation.
+    // No identity moved.
     expect((await getIdentity(desktop)).configured).toBeFalsy();
+
+    await backends.stop(desktop.name);
+    await backends.stop(phone.name);
   });
 });
