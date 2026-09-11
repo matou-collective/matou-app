@@ -283,6 +283,11 @@ func TestPairingHandlerFullDesktopToPhone(t *testing.T) {
 	if idResp["mnemonic"] != "word1 word2 word3" || idResp["aid"] != "AIDdesk" || idResp["orgAid"] != "ORGaid" {
 		t.Fatalf("unexpected identity: %v", idResp)
 	}
+	// adminAid carries the holder's personal AID hint so the linking device
+	// prefers it over the org group AID (#498).
+	if idResp["adminAid"] != "AIDdesk" {
+		t.Fatalf("adminAid = %v, want AIDdesk", idResp["adminAid"])
+	}
 	// Second read → 404.
 	rec = phone.do(http.MethodGet, "/api/v1/pairing/sessions/"+id+"/identity", nil)
 	if rec.Code != http.StatusNotFound {

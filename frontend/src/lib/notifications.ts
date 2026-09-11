@@ -48,6 +48,11 @@ export function initNotifications(): void {
 }
 
 export function maybeNotify(opts: NotifyOptions): void {
+  // maybeNotify fires from an event-stream callback (useBackendEvents), so it
+  // can run after the DOM environment that scheduled it is gone (e.g. a leaked
+  // async task surfacing in a node-env unit test). Guard `document` so an
+  // off-DOM firing is a no-op rather than an unhandled ReferenceError (#489).
+  if (typeof document === 'undefined') return;
   const visible = document.visibilityState === 'visible' && document.hasFocus();
   if (visible && !opts.whenFocused) return;
 
