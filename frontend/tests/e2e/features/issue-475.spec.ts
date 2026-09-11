@@ -294,18 +294,53 @@ async function pasteOnPhone(page: Page, qrPayload: string): Promise<void> {
   await page.locator('.paste-box').getByRole('button', { name: 'Continue' }).click();
 }
 
-/** Walk the welcome-overlay → dashboard hand-off the receiving side runs after a
- *  link-mode recovery (identical to the recovery flow). */
-async function enterCommunityToDashboard(page: Page): Promise<void> {
+/**
+ * Walk the welcome-overlay → dashboard hand-off the receiving side runs after a
+ * link-mode recovery.
+ *
+ * Unlike the recovery flow, link mode can legitimately park on the overlay's
+ * "Waiting for your data to sync…" card: identity/set in link mode NEVER forks
+ * a space, so an unreachable one comes back 503 `retryable`
+ * (backend/internal/api/identity.go:199, :268) and
+ * WelcomeOverlayScreen.vue:402/:427 sets `waitingForSync`. That card has NO
+ * auto-retry — `retrySync` is bound only to the Retry button
+ * (WelcomeOverlayScreen.vue:599) — so a test that merely waits will always time
+ * out even when the data is one retry away. Drive Retry the way a user would,
+ * bounded, and if it still never converges fail with the receiving backend's own
+ * log tail so the next run says WHICH gate held (`[Identity] Link: private space
+ * not reachable` vs `… community space not reachable`).
+ */
+async function enterCommunityToDashboard(
+  page: Page,
+  backendLog?: () => string,
+): Promise<void> {
   const enter = page.getByRole('button', { name: /enter community/i });
-  try {
-    await enter.waitFor({ state: 'visible', timeout: 180_000 });
-    await expect(enter).toBeEnabled({ timeout: 120_000 });
-    await enter.click();
-  } catch {
-    // Already routed straight to the dashboard.
+  const retry = page.getByRole('button', { name: /^retry$/i });
+
+  // One link-mode identity/set attempt cannot exceed the client's 65s abort
+  // (src/lib/api/client.ts:414), so this budget allows several real retries.
+  const deadline = Date.now() + 360_000;
+  let retries = 0;
+
+  while (Date.now() < deadline) {
+    if (/#\/dashboard/.test(page.url())) return;
+    if (await enter.isVisible().catch(() => false)) {
+      await expect(enter).toBeEnabled({ timeout: 120_000 });
+      await enter.click();
+      await expect(page).toHaveURL(/#\/dashboard/, { timeout: 60_000 });
+      return;
+    }
+    if (await retry.isVisible().catch(() => false)) {
+      retries++;
+      await retry.click();
+    }
+    await page.waitForTimeout(3_000);
   }
-  await expect(page).toHaveURL(/#\/dashboard/, { timeout: 60_000 });
+
+  throw new Error(
+    `linked device never reached the dashboard (${retries} Retry click(s) in 6 min).\n` +
+      `Receiving backend log tail:\n${(backendLog?.() ?? '(stderr not captured)').slice(-4000)}`,
+  );
 }
 
 function tamperSecret(qrPayload: string): string {
@@ -362,7 +397,7 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
 
     // Approve on the phone → identity travels → desktop recovers in link mode.
     await phoneScan.page.getByRole('button', { name: 'Approve' }).click();
-    await enterCommunityToDashboard(desk.page);
+    await enterCommunityToDashboard(desk.page, desktopStderr);
     await snap(desk.page, 's1-desktop-dashboard');
     await expect(phoneScan.page.getByRole('heading', { name: /^linked$/i })).toBeVisible({
       timeout: 60_000,
@@ -430,7 +465,7 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
 
     // Approve on the desktop → identity travels → phone recovers in link mode.
     await deskLink.page.getByRole('button', { name: /^approve$/i }).click();
-    await enterCommunityToDashboard(phoneDev.page);
+    await enterCommunityToDashboard(phoneDev.page, phoneStderr);
     await snap(phoneDev.page, 's2-phone-dashboard');
 
     const deskId = await getIdentity(desktop);
