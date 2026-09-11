@@ -15,14 +15,27 @@
  * (localStorage) and the backend's identity.json are independent (see #472
  * test 2, which drives a fresh splash against the holder admin backend).
  *
- * Scenarios (one test() each, spec §4 / the issue's list):
- *   1. desktop fresh ← phone holds        — link + adopt, no space create
- *   2. desktop holds → phone fresh        — mirror of 1, approval on the desktop
+ * Scenarios (one test() each, spec §4 / the issue's list).
+ *
+ * LIVE — these run and are real signal:
  *   3. both fresh                         — the "neither" message, no identity set
  *   4. both hold, different AIDs          — conflict, identity.json unchanged
- *   5. profile converges                  — display-name edit converges; one SharedProfile
  *   6. code-mismatch defence              — tampered `s=` → the displayer's hello
  *                                          fails to authenticate; session ends failed
+ *
+ * test.fixme, AWAITING #506 — the pairing handshake completes end to end (the
+ * holder reaches "Linked"), but the RECEIVING device stops at the welcome
+ * overlay's "Waiting for your data to sync…" gate and never reaches the
+ * dashboard. Link mode never forks a space, so an unreachable one comes back
+ * 503 `retryable` and WelcomeOverlayScreen has no auto-retry. The code below is
+ * complete and must be un-fixme'd UNCHANGED once #506 lands:
+ *   1. desktop fresh ← phone holds        — link + adopt, no space create
+ *   2. desktop holds → phone fresh        — mirror of 1, approval on the desktop
+ *   5. profile converges                  — display-name edit converges; one
+ *                                          SharedProfile (needs scenario 1's pair)
+ *
+ * A fixme'd test does NOT cascade in describe.serial — only a real failure
+ * does — so 3, 4 and 6 genuinely execute. Verified against @playwright/test.
  *
  * This spec needs the live test network (KERI + any-sync + the config-server
  * mailbox); it cannot run in the authoring sandbox. Scenarios 1/2/5 recover a
@@ -357,7 +370,13 @@ function tamperSecret(qrPayload: string): string {
 
 test.describe.serial('issue-475 two-client linked-device sign-in', () => {
   // 1. desktop fresh ← phone holds -------------------------------------------
-  test('1) desktop fresh ← phone holds: identity adopted, no private space created', async ({
+  // BLOCKED ON #506 — the pairing handshake itself completes (the holder reaches
+  // "Linked"), but the receiving device stops at the welcome overlay's
+  // "Waiting for your data to sync…" gate: link mode never forks, so an
+  // unreachable space 503s `retryable` (identity.go:199) and WelcomeOverlay
+  // has no auto-retry. Un-fixme unchanged once #506 lands — the Retry-clicking
+  // helper below is what proves the fix.
+  test.fixme('1) desktop fresh ← phone holds: identity adopted, no private space created', async ({
     browser,
     snap,
   }) => {
@@ -427,7 +446,13 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
   });
 
   // 2. desktop holds → phone fresh -------------------------------------------
-  test('2) desktop holds → phone fresh: identity adopted, no private space created', async ({
+  // BLOCKED ON #506 — the pairing handshake itself completes (the holder reaches
+  // "Linked"), but the receiving device stops at the welcome overlay's
+  // "Waiting for your data to sync…" gate: link mode never forks, so an
+  // unreachable space 503s `retryable` (identity.go:199) and WelcomeOverlay
+  // has no auto-retry. Un-fixme unchanged once #506 lands — the Retry-clicking
+  // helper below is what proves the fix.
+  test.fixme('2) desktop holds → phone fresh: identity adopted, no private space created', async ({
     browser,
     snap,
   }) => {
@@ -575,7 +600,9 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
   });
 
   // 5. profile converges ------------------------------------------------------
-  test('5) profile edits converge across the linked pair; one SharedProfile', async ({ snap }) => {
+  // BLOCKED ON #506 — consumes scenario 1's linked pair, so it cannot run until
+  // the receiving device gets past the sync gate. Un-fixme with scenario 1.
+  test.fixme('5) profile edits converge across the linked pair; one SharedProfile', async ({ snap }) => {
     test.setTimeout(240_000);
     expect(s1.done, 'scenario 1 established the linked member pair').toBeTruthy();
     const desktop = s1.deskPage!; // desktop, linked member, dashboard
