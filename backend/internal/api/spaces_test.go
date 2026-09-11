@@ -33,6 +33,8 @@ type mockAnySyncClient struct {
 	coordinatorURL string
 	peerID         string
 	space          commonspace.Space // optional: returned by GetSpace when set
+	signingKey     crypto.PrivKey    // optional: returned by GetSigningKey when set
+	dataDir        string            // optional: returned by GetDataDir when set
 }
 
 func newMockClient() *mockAnySyncClient {
@@ -81,8 +83,8 @@ func (m *mockAnySyncClient) SyncDocument(_ context.Context, _ string, _ string, 
 func (m *mockAnySyncClient) GetNetworkID() string          { return m.networkID }
 func (m *mockAnySyncClient) GetCoordinatorURL() string     { return m.coordinatorURL }
 func (m *mockAnySyncClient) GetPeerID() string             { return m.peerID }
-func (m *mockAnySyncClient) GetDataDir() string            { return "" }
-func (m *mockAnySyncClient) GetSigningKey() crypto.PrivKey { return nil }
+func (m *mockAnySyncClient) GetDataDir() string            { return m.dataDir }
+func (m *mockAnySyncClient) GetSigningKey() crypto.PrivKey { return m.signingKey }
 func (m *mockAnySyncClient) GetPool() pool.Pool            { return nil }
 func (m *mockAnySyncClient) GetNodeConf() nodeconf.Service { return nil }
 func (m *mockAnySyncClient) SetAccountFileLimits(_ context.Context, _ string, _ uint64) error {

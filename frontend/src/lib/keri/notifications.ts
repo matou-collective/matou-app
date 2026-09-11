@@ -176,27 +176,29 @@ export async function isGrantAlreadyAdmitted(
 }
 
 /**
- * Approval idempotency for the write-bearing steward path (issue #480, #466):
- * `true` when a credential of `schemaSaid` has already been issued to
- * `issueeAid` in this wallet, so a second issuance must be skipped. On a shared
- * KERIA agent both linked steward devices see the same wallet, so this catches
- * an applicant already approved on another device (or from a stale pending
- * list). Unlike {@link isGrantAlreadyAdmitted} — keyed by the credential SAID
- * we are about to admit — the issuer does not yet know the SAID, so we match on
- * schema + issuee AID (the org is the only issuer of membership credentials),
- * ignoring revoked credentials so a removed member can be re-admitted.
+ * Approval idempotency for the write-bearing steward path (issue #480, #488,
+ * #466): the SAID of an ACTIVE credential of `schemaSaid` already issued to
+ * `issueeAid` in this wallet (or `null` if none), so the caller can re-grant
+ * that exact SAID instead of minting a duplicate. On a shared KERIA agent both
+ * linked steward devices see the same wallet, so this catches an applicant
+ * already issued on another device (or from a stale pending list, or from a
+ * prior run that died between issue and grant). Unlike {@link
+ * isGrantAlreadyAdmitted} — keyed by the credential SAID we are about to admit
+ * — the issuer does not yet know the SAID, so we match on schema + issuee AID
+ * (the org is the only issuer of membership credentials), ignoring revoked
+ * credentials so a removed member can be re-admitted.
  *
  * Best-effort: a client-side wallet lookup, not a server-side compare-and-set,
  * so a truly simultaneous double-issue across two devices can still race (spec
- * §3.5). Never throws — a failed list resolves to `false` (proceed), leaving
+ * §3.5). Never throws — a failed list resolves to `null` (proceed), leaving
  * issuance's own handling in charge.
  */
-export async function isCredentialAlreadyIssued(
+export async function findActiveIssuedCredentialSaid(
   client: CredentialListClient,
   schemaSaid: string,
   issueeAid: string,
-): Promise<boolean> {
-  if (!schemaSaid || !issueeAid) return false;
+): Promise<string | null> {
+  if (!schemaSaid || !issueeAid) return null;
   try {
     // Server-filtered on (issuee, schema) — KERIA keeps a composite Seeker
     // index for exactly this pair. An unfiltered list is capped at 25 entries
@@ -212,19 +214,33 @@ export async function isCredentialAlreadyIssued(
     // A revoked credential (member removed, or an old one superseded by a
     // role re-issue) must NOT block issuance — otherwise a removed member who
     // re-applies could never be approved again.
-    const already = (creds ?? []).some(
+    const active = (creds ?? []).find(
       (c) => c?.sad?.s === schemaSaid && c?.sad?.a?.i === issueeAid && !isCredentialRevoked(c),
     );
-    if (already) {
+    const said = active?.sad?.d ?? null;
+    if (said) {
       log.debug(
-        `credential ${schemaSaid.slice(0, 12)} already issued to ${issueeAid.slice(0, 12)} — skipping issuance`,
+        `credential ${schemaSaid.slice(0, 12)} already issued to ${issueeAid.slice(0, 12)} (SAID ${said.slice(0, 12)}) — re-grant instead of re-issue`,
       );
     }
-    return already;
+    return said;
   } catch (err) {
     log.debug('credential list failed during issuance idempotency check; proceeding', err);
-    return false;
+    return null;
   }
+}
+
+/**
+ * Boolean form of {@link findActiveIssuedCredentialSaid}: `true` when an active
+ * credential of `schemaSaid` has already been issued to `issueeAid`. Retained
+ * for callers that only need the yes/no answer.
+ */
+export async function isCredentialAlreadyIssued(
+  client: CredentialListClient,
+  schemaSaid: string,
+  issueeAid: string,
+): Promise<boolean> {
+  return (await findActiveIssuedCredentialSaid(client, schemaSaid, issueeAid)) !== null;
 }
 
 /**

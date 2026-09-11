@@ -145,6 +145,32 @@ func resolvePrivateSpace(ctx context.Context, client spaceResolver, aid string, 
 	}
 }
 
+// sharedSpace is one shared any-sync space identity/set adopts after the
+// private space: the community space, the community read-only space and the
+// admin space. mnemonicIx is the mnemonic derivation index of its key set.
+//
+// required marks the space whose ACL membership identity/set cannot do
+// without: a definitive "not in the ACL" answer there is a 409 (#290). The
+// read-only and admin spaces are optional — an ordinary member is never in the
+// admin ACL, so a miss there only skips adoption.
+type sharedSpace struct {
+	id         string
+	mnemonicIx uint32
+	label      string
+	required   bool
+}
+
+// sharedSpacesToAdopt lists the shared spaces identity/set adopts in recovery
+// and link mode, in adoption order. Empty IDs are kept (callers skip them) so
+// the mnemonic indices stay fixed per space type.
+func sharedSpacesToAdopt(communityID, readOnlyID, adminID string) []sharedSpace {
+	return []sharedSpace{
+		{id: communityID, mnemonicIx: 1, label: "community", required: true},
+		{id: readOnlyID, mnemonicIx: 2, label: "read-only", required: false},
+		{id: adminID, mnemonicIx: 3, label: "admin", required: false},
+	}
+}
+
 // recoverSharedSpace re-derives (when missing) and persists the mnemonic-derived
 // key set for a known shared space (community / read-only / admin), then adopts
 // it. It never creates.
@@ -154,7 +180,7 @@ func resolvePrivateSpace(ctx context.Context, client spaceResolver, aid string, 
 // recovery mode it persists keys first and then does a single bounded GetSpace,
 // tolerating a miss — the original behaviour. A successful link run therefore
 // writes exactly the same key files as a recovery run.
-func (h *IdentityHandler) recoverSharedSpace(ctx context.Context, spaceID, mnemonic string, mnemonicIndex uint32, label string, isLink bool) (unreachable bool) {
+func (h *IdentityHandler) recoverSharedSpace(ctx context.Context, spaceID, mnemonic string, mnemonicIndex uint32, label string, isLink bool) (unreachable bool, notInACL bool) {
 	client := h.sdkClient
 	dataDir := client.GetDataDir()
 
@@ -177,11 +203,32 @@ func (h *IdentityHandler) recoverSharedSpace(ctx context.Context, spaceID, mnemo
 
 	if isLink {
 		if err := getSpaceWithBackoff(ctx, client, spaceID); err != nil {
-			return true
+			return true, false
 		}
 		persistKeys()
 		log.Printf("[Identity] Link: adopted %s space: %s\n", label, spaceID)
-		return false
+		return false, false
+	}
+
+	// Recovery mode. When no key set is on disk yet we are about to derive keys
+	// from the current mnemonic. Before doing so, confirm this identity is
+	// actually in the space's ACL. A fresh admin re-adopting a previous attempt's
+	// shared space (issue #290) is NOT in that ACL, so the derived read key is
+	// simply wrong and any-sync can never recover the real one — readKeysFromAclState
+	// skips identities absent from the ACL. Persisting it silently yields
+	// unreadable SharedProfile trees and a storm of 500s, so fail loudly instead.
+	// We only refuse on a DEFINITIVE "not in ACL" answer: a lookup error (ACL not
+	// yet synced) falls through to the existing best-effort recovery.
+	if _, keyErr := anysync.LoadSpaceKeySet(dataDir, spaceID); keyErr != nil {
+		if aclMgr, signingKey := h.spaceManager.ACLManager(), client.GetSigningKey(); aclMgr != nil && signingKey != nil {
+			pctx, cancel := context.WithTimeout(ctx, recoverGetSpaceTimeout)
+			perms, permErr := aclMgr.GetPermissions(pctx, spaceID, signingKey.GetPublic())
+			cancel()
+			if permErr == nil && perms.NoPermissions() {
+				log.Printf("[Identity] Cannot recover %s space %s: identity is not in its ACL (no read key)\n", label, spaceID)
+				return false, true
+			}
+		}
 	}
 
 	persistKeys()
@@ -195,5 +242,5 @@ func (h *IdentityHandler) recoverSharedSpace(ctx context.Context, spaceID, mnemo
 			log.Printf("[Identity] Recovered %s space: %s\n", label, spaceID)
 		}
 	}
-	return false
+	return false, false
 }
