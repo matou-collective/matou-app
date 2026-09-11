@@ -8,6 +8,7 @@
         @invite-code="startInviteFlow"
         @register="startRegisterFlow"
         @recover="startRecoverFlow"
+        @link="startLinkFlow"
         @continue="handleContinue"
         @back="handleBack"
         @complete="handleComplete"
@@ -43,6 +44,7 @@ import PendingApprovalScreen from 'components/onboarding/PendingApprovalScreen.v
 import { KIT } from 'src/generated/kit';
 import { nextRegisterScreen, prevRegisterScreen } from 'src/kit/onboarding-flow';
 import RecoveryScreen from 'components/onboarding/RecoveryScreen.vue';
+import LinkDeviceScanScreen from 'components/onboarding/LinkDeviceScanScreen.vue';
 import ClaimWelcomeScreen from 'components/onboarding/ClaimWelcomeScreen.vue';
 import ClaimProcessingScreen from 'components/onboarding/ClaimProcessingScreen.vue';
 import WelcomeOverlayScreen from 'components/onboarding/WelcomeOverlayScreen.vue';
@@ -65,6 +67,7 @@ const screenComponents = {
   'credential-issuance': CredentialIssuanceScreen,
   'pending-approval': PendingApprovalScreen,
   'recovery': RecoveryScreen,
+  'link-scan': LinkDeviceScanScreen,
   'claim-welcome': ClaimWelcomeScreen,
   'claim-processing': ClaimProcessingScreen,
   'welcome-overlay': WelcomeOverlayScreen,
@@ -139,6 +142,13 @@ const startRecoverFlow = () => {
   store.navigateTo('recovery');
 };
 
+const startLinkFlow = () => {
+  // Mobile linked-device sign-in (#473): scan the QR on the member's computer
+  // instead of registering a second identity.
+  store.setPath('link');
+  store.navigateTo('link-scan');
+};
+
 const handleContinue = async (data?: unknown) => {
   const current = currentScreen.value;
   const path = store.onboardingPath;
@@ -179,6 +189,13 @@ const handleContinue = async (data?: unknown) => {
   } else if (path === 'recover') {
     // Recovery flow goes through welcome overlay for membership checks
     if (current === 'recovery') {
+      store.navigateTo('welcome-overlay');
+    }
+  } else if (path === 'link') {
+    // Linked-device sign-in (#473): after the identity is received and
+    // recovered, the welcome overlay drives the (link-mode) backend setup and
+    // membership checks, exactly like recovery.
+    if (current === 'link-scan') {
       store.navigateTo('welcome-overlay');
     }
   } else if (path === 'setup') {
@@ -236,6 +253,10 @@ const handleBack = () => {
     'recovery': 'splash',
   };
 
+  const backMapLink: Record<string, string | null> = {
+    'link-scan': 'splash',
+  };
+
   const backMapSetup: Record<string, string | null> = {
     'mnemonic-verification': 'profile-confirmation',
     // No back from profile-confirmation in setup flow (can't go back to setup form)
@@ -251,11 +272,13 @@ const handleBack = () => {
 
   const backMap = path === 'recover'
     ? backMapRecover
-    : path === 'setup'
-      ? backMapSetup
-      : path === 'claim'
-        ? backMapClaim
-        : backMapRegister;
+    : path === 'link'
+      ? backMapLink
+      : path === 'setup'
+        ? backMapSetup
+        : path === 'claim'
+          ? backMapClaim
+          : backMapRegister;
   const prev = backMap[current];
 
   if (prev === 'splash') {
