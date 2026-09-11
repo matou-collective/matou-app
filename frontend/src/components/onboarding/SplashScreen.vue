@@ -85,6 +85,19 @@
             <UserPlus class="w-5 h-5 mr-2" />
             Join Now
           </MBtn>
+
+          <!-- Desktop-only: link this computer to an identity already on a phone
+               (linked-device sign-in, #466). Hidden in plain-browser builds. -->
+          <MBtn
+            v-if="showLinkButton"
+            variant="outline"
+            class="w-full link-btn"
+            size="lg"
+            @click="onLink"
+          >
+            <Smartphone class="w-5 h-5 mr-2" />
+            Sign in with your phone
+          </MBtn>
         </div>
 
         <!-- Info Text -->
@@ -111,8 +124,9 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue';
-import { Key, UserPlus, AlertCircle, RefreshCw, Laptop } from 'lucide-vue-next';
+import { Key, UserPlus, AlertCircle, RefreshCw, Smartphone, Laptop } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
+import { isElectron } from 'src/lib/platform';
 import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
@@ -127,6 +141,10 @@ const { fadeSlideUp, fadeScale, logoWobble } = useAnimationPresets();
 const onboardingStore = useOnboardingStore();
 const identityStore = useIdentityStore();
 const keriClient = useKERIClient();
+
+// Desktops show the QR "Sign in with your phone" entry; phones show the
+// scanner (S6) and plain-browser builds show neither (out of scope).
+const showLinkButton = computed(() => isElectron());
 
 const isLoading = computed(() => onboardingStore.isLoading);
 const hasError = computed(() => !!onboardingStore.initializationError);
@@ -191,8 +209,8 @@ const emit = defineEmits<{
   (e: 'invite-code'): void;
   (e: 'register'): void;
   (e: 'recover'): void;
-  (e: 'retry'): void;
   (e: 'link'): void;
+  (e: 'retry'): void;
 }>();
 
 const onInviteCode = () => {
@@ -207,6 +225,12 @@ const onRecover = () => {
   emit('recover');
 };
 
+// Desktop (Electron) "Sign in with your phone" → QR screen (#472).
+const onLink = () => {
+  emit('link');
+};
+
+// Mobile (Capacitor) "Sign in with your computer" → scan screen (#473).
 const onLinkDevice = () => {
   emit('link');
 };
@@ -257,6 +281,18 @@ const onRetry = () => {
 }
 
 .register-btn {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  height: 3.5rem !important;
+  border-radius: 10px !important;
+
+  &:hover {
+    background-color: rgba(255, 255, 255, 0.2) !important;
+  }
+}
+
+.link-btn {
   background-color: rgba(255, 255, 255, 0.1) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.3) !important;

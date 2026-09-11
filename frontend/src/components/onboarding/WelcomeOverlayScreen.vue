@@ -228,10 +228,10 @@ interface StatusCheck {
 const isRecoveryFlow = computed(() => onboardingStore.onboardingPath === 'recover');
 const isReturningFlow = computed(() => onboardingStore.onboardingPath === 'returning');
 const isRegisterFlow = computed(() => onboardingStore.onboardingPath === 'register');
-// Linked-device sign-in (#473): the receiving device runs the same
-// recovery-style checks as `recover`, but its backend identity/set uses
-// mode:"link" so it adopts the existing private space instead of forking it
-// (spec §3.2). Everything else in this screen treats it exactly like recovery.
+// Linked-device sign-in (#466: desktop #472, mobile #473): the receiving
+// device runs the same recovery-style checks as `recover`, but its backend
+// identity/set uses mode:"link" so it adopts the existing private space
+// instead of forking it (spec §3.2). Everything else treats it like recovery.
 const isLinkFlow = computed(() => onboardingStore.onboardingPath === 'link');
 
 const subtitle = computed(() => {

@@ -16,11 +16,12 @@ import { defineComponent } from 'vue';
 
 // --- mocks (hoisted so the vi.mock factories can see them) ------------------
 const h = vi.hoisted(() => {
+  // Mirrors src/composables/usePairing PairingError(message, status, code?, aid?).
   class PairingError extends Error {
     constructor(
       message: string,
-      public code: string,
       public status: number,
+      public code?: string,
       public aid?: string,
     ) {
       super(message);
@@ -32,8 +33,8 @@ const h = vi.hoisted(() => {
     getStatus: vi.fn(),
     approve: vi.fn(),
     cancel: vi.fn(),
-    getIdentity: vi.fn(),
-    recover: vi.fn(),
+    fetchIdentity: vi.fn(),
+    recoverIdentity: vi.fn(),
     scanPairingQr: vi.fn(),
     isScannerAvailable: vi.fn(() => true),
     getCapacitorPlatform: vi.fn(() => 'android'),
@@ -47,13 +48,13 @@ vi.mock('src/composables/usePairing', () => ({
     getStatus: h.getStatus,
     approve: h.approve,
     cancel: h.cancel,
-    getIdentity: h.getIdentity,
+    fetchIdentity: h.fetchIdentity,
   }),
   PairingError: h.PairingError,
 }));
 
 vi.mock('src/composables/useRecoverIdentity', () => ({
-  useRecoverIdentity: () => ({ recover: h.recover }),
+  useRecoverIdentity: () => ({ recoverIdentity: h.recoverIdentity }),
 }));
 
 vi.mock('src/lib/barcode', () => ({
@@ -194,7 +195,7 @@ describe('LinkDeviceScanScreen outcomes', () => {
   });
 
   it('config-server-mismatch: shows a wrong-environment message, stays on input', async () => {
-    h.scan.mockRejectedValue(new h.PairingError('mismatch', 'config-server-mismatch', 400));
+    h.scan.mockRejectedValue(new h.PairingError('mismatch', 400, 'config-server-mismatch'));
     const wrapper = await pasteAndContinue();
     expect(wrapper.text()).toContain("can't be used here");
     expect(wrapper.find('#paste-code').exists()).toBe(true);
@@ -203,12 +204,12 @@ describe('LinkDeviceScanScreen outcomes', () => {
   it('desktop-to-phone: retrieves the identity and recovers once approval lands', async () => {
     h.scan.mockResolvedValue({ sessionId: 's4', outcome: 'desktop-to-phone', code: '222222' });
     h.getStatus.mockResolvedValue({ state: 'identity-received' });
-    h.getIdentity.mockResolvedValue({ mnemonic: 'w '.repeat(11) + 'w', aid: 'EAID', adminAid: 'EADM' });
-    h.recover.mockResolvedValue({ aid: 'EAID', name: 'Me' });
+    h.fetchIdentity.mockResolvedValue({ mnemonic: 'w '.repeat(11) + 'w', aid: 'EAID', adminAid: 'EADM' });
+    h.recoverIdentity.mockResolvedValue({ success: true, aid: 'EAID', name: 'Me' });
     const wrapper = await pasteAndContinue();
     await flushPromises();
-    expect(h.getIdentity).toHaveBeenCalledWith('s4');
-    expect(h.recover).toHaveBeenCalledWith(expect.any(String), { adminAid: 'EADM' });
+    expect(h.fetchIdentity).toHaveBeenCalledWith('s4');
+    expect(h.recoverIdentity).toHaveBeenCalledWith(expect.any(String), { mode: 'link', adminAid: 'EADM' });
     // The screen hands off to the welcome overlay via a `continue` emit.
     expect(wrapper.emitted('continue')).toBeTruthy();
   });
@@ -272,8 +273,8 @@ describe('LinkDeviceScanScreen lifecycle (review fixes)', () => {
     // The poll that was already in flight now lands with the identity ready.
     resolveStatus({ state: 'identity-received' });
     await flushPromises();
-    expect(h.getIdentity).not.toHaveBeenCalled();
-    expect(h.recover).not.toHaveBeenCalled();
+    expect(h.fetchIdentity).not.toHaveBeenCalled();
+    expect(h.recoverIdentity).not.toHaveBeenCalled();
     expect(wrapper.emitted('continue')).toBeFalsy();
     // …and the screen is still on the input step, not flipped to "ended".
     expect(wrapper.find('#paste-code').exists()).toBe(true);
@@ -288,8 +289,8 @@ describe('LinkDeviceScanScreen lifecycle (review fixes)', () => {
     wrapper.unmount();
     resolveStatus({ state: 'identity-received' });
     await flushPromises();
-    expect(h.getIdentity).not.toHaveBeenCalled();
-    expect(h.recover).not.toHaveBeenCalled();
+    expect(h.fetchIdentity).not.toHaveBeenCalled();
+    expect(h.recoverIdentity).not.toHaveBeenCalled();
   });
 
   it('holder: leaving during the approve poll does not flip to Linked', async () => {
@@ -310,10 +311,33 @@ describe('LinkDeviceScanScreen lifecycle (review fixes)', () => {
   it('passes the orgAid hint from the identity message to recover()', async () => {
     h.scan.mockResolvedValue({ sessionId: 's9', outcome: 'desktop-to-phone', code: '777777' });
     h.getStatus.mockResolvedValue({ state: 'identity-received' });
-    h.getIdentity.mockResolvedValue({ mnemonic: 'w '.repeat(11) + 'w', aid: 'EAID', orgAid: 'EORG' });
-    h.recover.mockResolvedValue({ aid: 'EAID', name: 'Me' });
+    h.fetchIdentity.mockResolvedValue({ mnemonic: 'w '.repeat(11) + 'w', aid: 'EAID', orgAid: 'EORG' });
+    h.recoverIdentity.mockResolvedValue({ success: true, aid: 'EAID', name: 'Me' });
     await pasteAndContinue();
     await flushPromises();
-    expect(h.recover).toHaveBeenCalledWith(expect.any(String), { orgAid: 'EORG' });
+    expect(h.recoverIdentity).toHaveBeenCalledWith(expect.any(String), { mode: 'link', orgAid: 'EORG' });
+  });
+
+  it('a failed link-mode recovery ends the flow with its reason instead of continuing', async () => {
+    h.scan.mockResolvedValue({ sessionId: 's10', outcome: 'desktop-to-phone', code: '888888' });
+    h.getStatus.mockResolvedValue({ state: 'identity-received' });
+    h.fetchIdentity.mockResolvedValue({ mnemonic: 'w '.repeat(11) + 'w', aid: 'EAID' });
+    h.recoverIdentity.mockResolvedValue({ success: false, error: 'No identity found for this recovery phrase.' });
+    const wrapper = await pasteAndContinue();
+    await flushPromises();
+    expect(wrapper.emitted('continue')).toBeFalsy();
+    expect(wrapper.text()).toContain("Sign-in didn't finish");
+    expect(wrapper.text()).toContain('No identity found for this recovery phrase.');
+  });
+
+  it('a failed backend cancel is swallowed (no unhandled rejection) and the screen resets', async () => {
+    h.scan.mockResolvedValue({ sessionId: 's11', outcome: 'desktop-to-phone', code: '999999' });
+    h.cancel.mockRejectedValue(new h.PairingError('session not found', 404, 'session not found'));
+    const wrapper = await pasteAndContinue();
+    const cancelBtn = wrapper.findAll('button').find((b) => b.text().trim() === 'Cancel');
+    await cancelBtn!.trigger('click');
+    await flushPromises();
+    expect(h.cancel).toHaveBeenCalledWith('s11');
+    expect(wrapper.find('#paste-code').exists()).toBe(true);
   });
 });

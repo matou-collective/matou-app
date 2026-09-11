@@ -1,90 +1,108 @@
 /**
  * useRecoverIdentity — the identity-recovery sequence lifted out of
- * `RecoveryScreen.vue` (validate mnemonic → derive passcode → connect to the
- * existing KERIA agent → persist the local hints) so it can be shared by
- * RecoveryScreen and the linked-device screens (spec
- * `docs/superpowers/specs/2026-09-08-linked-device-sign-in-design.md` §1
- * "After receipt").
+ * RecoveryScreen.vue so the "Recover identity" flow and both linked-device
+ * sign-in screens (#466: desktop QR #472, mobile scan #473) run exactly the
+ * same steps: validate the 12-word phrase → derive the KERI passcode → connect
+ * to the (existing) KERIA agent → confirm an identity was found → persist
+ * `matou_mnemonic` for the backend identity setup that the welcome overlay
+ * performs later.
  *
- * `identityStore.connect` already persists `matou_passcode`; this composable
- * additionally stores `matou_mnemonic` (needed by WelcomeOverlayScreen's
- * backend `identity/set`) and, on the link path, the `matou_admin_aid` /
- * `matou_org_aid` hints that travel with the identity (§3.4). The hints are
- * written BEFORE connect because `identityStore.connect` reads
- * `matou_admin_aid` to pick the current AID — on a fresh device without the
- * hint the pick falls back to "first non-org AID", which is wrong for a
- * steward whose agent also holds the group AID. The caller then routes to
- * `welcome-overlay`, which drives the backend setup and membership checks.
+ * `mode: 'link'` adds the split-identity safeguards from the spec (§3.4): the
+ * `identity` message a holder sends carries the AID hints, and this composable
+ * stores `matou_admin_aid` / `matou_org_aid` **before** connect, because
+ * `identityStore.connect` reads `matou_admin_aid` to pick the current AID — on
+ * a fresh device without the hint the pick falls back to "first non-org AID",
+ * which is wrong for a steward whose agent also holds the group AID. The later
+ * `POST /api/v1/identity/set` then goes out with `mode: "link"` (driven off the
+ * onboarding path in WelcomeOverlayScreen), which makes the backend wait for the
+ * private space to sync instead of creating a fork (§3.2).
  */
+
 import { useIdentityStore } from 'stores/identity';
 import { KERIClient } from 'src/lib/keri/client';
 import { secureStorage } from 'src/lib/secureStorage';
 
-export interface RecoverResult {
-  aid: string;
-  name: string;
+export type RecoverMode = 'recover' | 'link';
+
+export interface RecoverIdentityOptions {
+  /** 'recover' (default) or 'link' — link stores the AID hints before connect. */
+  mode?: RecoverMode;
+  /** Admin/steward AID hint from the holder's `identity` message (link mode). */
+  adminAid?: string;
+  /** Org (group) AID hint from the holder's `identity` message (link mode). */
+  orgAid?: string;
 }
 
-export interface RecoverOptions {
-  /** The steward's admin AID from the pairing `identity` message (§3.4). */
-  adminAid?: string;
-  /** The org (group) AID from the pairing `identity` message (§3.4). */
-  orgAid?: string;
+export interface RecoverIdentityResult {
+  success: boolean;
+  /** Recovered AID prefix, on success. */
+  aid?: string;
+  /** Recovered AID display name, on success. */
+  name?: string;
+  /** Human-readable failure reason, on failure. */
+  error?: string;
+}
+
+/** Normalise a phrase (or the recovery form's word array) to lower-case,
+ * single-spaced words. */
+function normalizeMnemonic(input: string | string[]): string {
+  const text = Array.isArray(input) ? input.join(' ') : input;
+  return text.trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
 }
 
 export function useRecoverIdentity() {
   const identityStore = useIdentityStore();
 
-  /**
-   * Recover the identity for `mnemonic` (a 12-word string, or the array of
-   * words from the recovery form). Resolves with the recovered AID + name, or
-   * throws with a user-facing message on any failure.
-   */
-  async function recover(
-    mnemonic: string | string[],
-    options: RecoverOptions = {},
-  ): Promise<RecoverResult> {
-    const phrase = (Array.isArray(mnemonic) ? mnemonic.join(' ') : mnemonic)
-      .trim()
-      .toLowerCase()
-      .split(/\s+/)
-      .join(' ');
+  async function recoverIdentity(
+    mnemonicInput: string | string[],
+    options: RecoverIdentityOptions = {},
+  ): Promise<RecoverIdentityResult> {
+    const mode = options.mode ?? 'recover';
+    const mnemonic = normalizeMnemonic(mnemonicInput);
 
-    if (!KERIClient.validateMnemonic(phrase)) {
-      throw new Error('Invalid recovery phrase. Please check your words and try again.');
+    // Step 1: Validate mnemonic
+    if (!KERIClient.validateMnemonic(mnemonic)) {
+      return {
+        success: false,
+        error: 'Invalid recovery phrase. Please check your words and try again.',
+      };
     }
 
-    const passcode = KERIClient.passcodeFromMnemonic(phrase);
-
-    // Link path: the AID hints must be in place before connect() picks the
-    // current AID (spec §3.4).
-    if (options.adminAid) {
-      await secureStorage.setItem('matou_admin_aid', options.adminAid);
-    }
-    if (options.orgAid) {
-      await secureStorage.setItem('matou_org_aid', options.orgAid);
+    // Link mode: persist the AID hints before connect (spec §3.4).
+    if (mode === 'link') {
+      if (options.adminAid) await secureStorage.setItem('matou_admin_aid', options.adminAid);
+      if (options.orgAid) await secureStorage.setItem('matou_org_aid', options.orgAid);
     }
 
+    // Step 2: Derive passcode from mnemonic
+    const passcode = KERIClient.passcodeFromMnemonic(mnemonic);
+
+    // Step 3: Connect to the (existing) KERIA agent
     const connected = await identityStore.connect(passcode);
     if (!connected) {
-      throw new Error(
-        identityStore.error || 'Failed to connect. This phrase may not have an identity yet.',
-      );
+      return {
+        success: false,
+        error:
+          identityStore.error ||
+          'Failed to connect. This phrase may not have an identity yet.',
+      };
     }
 
-    if (!identityStore.hasIdentity || !identityStore.currentAID) {
-      throw new Error('No identity found for this recovery phrase. It may be a new phrase.');
+    // Step 4: Confirm an identity was found
+    if (identityStore.hasIdentity && identityStore.currentAID) {
+      await secureStorage.setItem('matou_mnemonic', mnemonic);
+      return {
+        success: true,
+        aid: identityStore.currentAID.prefix,
+        name: identityStore.currentAID.name,
+      };
     }
-
-    // Persist the mnemonic the downstream backend setup needs. connect()
-    // already wrote matou_passcode.
-    await secureStorage.setItem('matou_mnemonic', phrase);
 
     return {
-      aid: identityStore.currentAID.prefix,
-      name: identityStore.currentAID.name,
+      success: false,
+      error: 'No identity found for this recovery phrase. It may be a new phrase.',
     };
   }
 
-  return { recover };
+  return { recoverIdentity };
 }

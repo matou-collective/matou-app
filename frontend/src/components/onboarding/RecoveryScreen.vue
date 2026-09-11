@@ -157,7 +157,7 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { secureStorage } from 'src/lib/secureStorage';
 import { useRecoverIdentity } from 'src/composables/useRecoverIdentity';
 
-const { recover } = useRecoverIdentity();
+const { recoverIdentity } = useRecoverIdentity();
 
 const words = ref<string[]>(Array(12).fill(''));
 const isRecovering = ref(false);
@@ -206,13 +206,19 @@ async function handleRecover() {
     loadingSubtext.value = 'Checking phrase format';
     await sleep(300);
 
+    // Step 2: Derive keys + connect to KERIA (shared recovery sequence).
     loadingMessage.value = 'Connecting to identity network...';
     loadingSubtext.value = 'Looking for your identity';
 
-    const result = await recover(words.value);
+    const result = await recoverIdentity(words.value, { mode: 'recover' });
 
-    recoveredAID.value = result.aid;
-    recoveredName.value = result.name;
+    if (!result.success) {
+      throw new Error(result.error || 'Recovery failed. Please try again.');
+    }
+
+    // Step 3: Found an identity
+    recoveredAID.value = result.aid ?? null;
+    recoveredName.value = result.name ?? null;
     loadingMessage.value = 'Identity recovered!';
     loadingSubtext.value = '';
 
