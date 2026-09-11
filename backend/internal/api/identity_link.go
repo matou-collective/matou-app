@@ -21,12 +21,30 @@ const (
 // up. Package var so tests can shrink it.
 var recoverGetSpaceTimeout = 10 * time.Second
 
+// clientSetIdentityAbort is the client's AbortSignal.timeout on the
+// POST /api/v1/identity/set request (frontend/src/lib/api/client.ts). The
+// backend's worst-case link budget across all four spaces must stay
+// comfortably under it, or a per-space 503 is unreachable by construction
+// (#506): the client aborts the request and turns the abort into a
+// non-retryable "Network error", so the auto-retry gate never sees the 503.
+// Pinned here so TestLinkBudgetReconcilesWithClientAbort fails loudly if the
+// two drift apart.
+const clientSetIdentityAbort = 65 * time.Second
+
 // Link-mode GetSpace backoff parameters. A linked device must never turn a slow
 // network into a freshly-created (forked) space, so link mode polls GetSpace
 // with exponential backoff up to a total budget and never creates. Package vars
 // so tests can shrink them.
+//
+// linkGetSpaceBudget is per space and identity/set applies it across up to four
+// spaces (private + community + read-only + admin), so 4 × budget is the
+// worst-case wall time inside one request. It is kept well under
+// clientSetIdentityAbort so every space's retryable 503 can actually reach the
+// client and drive the sync-wait auto-retry (#506); do NOT raise the client
+// abort to accommodate a larger budget — a multi-minute hanging POST is the
+// wrong shape, cheap retries are what the "waiting for your data" screen is for.
 var (
-	linkGetSpaceBudget  = 60 * time.Second
+	linkGetSpaceBudget  = 10 * time.Second
 	linkGetSpaceInitial = 1 * time.Second
 	linkGetSpaceMax     = 8 * time.Second
 )

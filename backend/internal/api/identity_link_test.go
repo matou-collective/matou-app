@@ -68,6 +68,28 @@ func shrinkLinkBackoff(t *testing.T) {
 	})
 }
 
+// TestLinkBudgetReconcilesWithClientAbort pins #506 defect B: the backend's
+// worst-case link budget across all four spaces (private + community +
+// read-only + admin) must stay comfortably under the client's identity/set
+// abort, or a per-space 503 can never reach the client. With the abort at 65s
+// this proves that even the last space's 503 (community/read-only/admin) is
+// reachable — not just the private one.
+func TestLinkBudgetReconcilesWithClientAbort(t *testing.T) {
+	const spaces = 4 // private + community + read-only + admin
+	worstCase := time.Duration(spaces) * linkGetSpaceBudget
+	// Leave generous headroom for the non-backoff work in identity/set
+	// (SDK reinit, key derivation, persistence, seeding) before the abort.
+	const headroom = 20 * time.Second
+	if worstCase+headroom >= clientSetIdentityAbort {
+		t.Fatalf("worst-case link budget %s (4×%s) + %s headroom must stay under client abort %s; "+
+			"lower linkGetSpaceBudget so every space's 503 is reachable (#506)",
+			worstCase, linkGetSpaceBudget, headroom, clientSetIdentityAbort)
+	}
+	if linkGetSpaceMax > linkGetSpaceBudget {
+		t.Errorf("per-attempt timeout %s must not exceed the per-space budget %s", linkGetSpaceMax, linkGetSpaceBudget)
+	}
+}
+
 func TestResolvePrivateSpace_Claim_CreatesDirectly(t *testing.T) {
 	f := &fakeSpaceResolver{derivedID: "Sderived", createID: "Screated"}
 	out, err := resolvePrivateSpace(context.Background(), f, "Eaid", &anysync.SpaceKeySet{}, modeClaim)

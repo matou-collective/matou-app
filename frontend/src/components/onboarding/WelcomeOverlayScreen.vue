@@ -57,7 +57,7 @@
           <MBtn
             class="w-full retry-btn"
             size="lg"
-            @click="retrySync"
+            @click="onManualRetry"
           >
             <RefreshCw class="w-5 h-5 mr-2" />
             Retry
@@ -270,6 +270,45 @@ const checks = reactive<StatusCheck[]>([
 // still syncing on the backend. We show a Retry button instead of failing the
 // check or letting the user through to a dashboard that can't read its data.
 const waitingForSync = ref(false);
+
+// Auto-retry for the sync-wait gate (#506). A linked device that is merely
+// waiting for a slow-but-eventual cold space pull must reach the dashboard
+// without a human clicking Retry, so while waitingForSync is set we re-run the
+// checks on a bounded exponential backoff. The manual Retry button remains and
+// resets the backoff.
+const AUTO_RETRY_MAX_ATTEMPTS = 12;
+const AUTO_RETRY_INITIAL_MS = 2000;
+const AUTO_RETRY_MAX_MS = 15000;
+let autoRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let autoRetryAttempt = 0;
+
+function clearAutoRetry() {
+  if (autoRetryTimer) {
+    clearTimeout(autoRetryTimer);
+    autoRetryTimer = null;
+  }
+}
+
+// Schedule the next auto-retry with exponential backoff, up to a ceiling of
+// AUTO_RETRY_MAX_ATTEMPTS. Once the ceiling is reached we stop the timer but
+// leave waitingForSync set so the manual Retry button is still offered.
+function scheduleAutoRetry() {
+  clearAutoRetry();
+  if (autoRetryAttempt >= AUTO_RETRY_MAX_ATTEMPTS) return;
+  const delay = Math.min(
+    AUTO_RETRY_INITIAL_MS * 2 ** autoRetryAttempt,
+    AUTO_RETRY_MAX_MS,
+  );
+  autoRetryAttempt++;
+  autoRetryTimer = setTimeout(() => {
+    autoRetryTimer = null;
+    // Only retry if we are still waiting — a manual Retry or success may have
+    // moved us on in the meantime.
+    if (waitingForSync.value) {
+      void retrySync();
+    }
+  }, delay);
+}
 
 // Sync state (for register path — polls sync/status after community join)
 const communityReady = ref(false);
@@ -607,6 +646,13 @@ async function retrySync() {
   }
 }
 
+// Manual Retry button: reset the backoff so the user's explicit click restarts
+// auto-retry from a short delay, then re-run the checks.
+function onManualRetry() {
+  autoRetryAttempt = 0;
+  void retrySync();
+}
+
 function handleContinue() {
   stopSyncPolling();
   emit('continue');
@@ -620,6 +666,17 @@ function sleep(ms: number): Promise<void> {
 watch(allChecksPassed, (passed) => {
   if (passed) {
     startWelcomeRotation();
+  }
+});
+
+// Drive the bounded auto-retry off the sync-wait gate (#506): schedule a retry
+// whenever we enter the waiting state, and cancel any pending retry once we
+// leave it (success, failure, or manual retry that moved on).
+watch(waitingForSync, (waiting) => {
+  if (waiting) {
+    scheduleAutoRetry();
+  } else {
+    clearAutoRetry();
   }
 });
 
@@ -643,6 +700,7 @@ onMounted(() => {
 onUnmounted(() => {
   stopWelcomeRotation();
   stopSyncPolling();
+  clearAutoRetry();
 });
 </script>
 
