@@ -440,6 +440,37 @@
         </button>
       </section>
 
+      <!-- Section: Devices — linked-device sign-in (#466 S7 / #474). Shown on
+           every platform: the desktop (Electron) shows a QR and approves, the
+           phone (Capacitor) scans and approves. -->
+      <section class="settings-card" data-test="devices-section">
+        <div class="card-header">
+          <h3 class="card-title"><MonitorSmartphone :size="18" /> Devices</h3>
+        </div>
+        <p class="device-copy">
+          Use your {{ KIT.brand.name }} identity on more than one device. The device that
+          already has your identity shows a code (on your computer) or scans one
+          (on your phone); once you approve, both devices share the same
+          identity, spaces and profile.
+        </p>
+        <button type="button" class="device-action-btn" @click="showLinkDialog = true" data-test="link-device-btn">
+          <Smartphone :size="16" />
+          <span>Link another device</span>
+        </button>
+
+        <!-- Accepted limitation (spec §"Accepted limitation"): unlinking is a
+             local sign-out, never a revocation. -->
+        <p class="device-note">
+          Signing out only removes your identity from this device — it does not
+          revoke it. Any device that still has your recovery phrase keeps the
+          identity, so sign out only on devices you no longer use.
+        </p>
+        <button type="button" class="device-signout-btn" @click="showSignOutDialog = true" data-test="signout-btn">
+          <LogOut :size="16" />
+          <span>Sign out of this device</span>
+        </button>
+      </section>
+
       <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
            button is hidden on mobile, so surface the same dialog here. -->
       <section v-if="isMobile" class="settings-card">
@@ -469,6 +500,61 @@
     </div>
 
     <ReportIssueDialog v-model="showReportDialog" :reporter-name="sharedForm.displayName || 'Member'" />
+
+    <!-- Link another device: the same onboarding screen, shown as a maximized
+         dialog. Desktop (and the browser/e2e) shows the QR and approves; a
+         phone (Capacitor) scans and approves. Mounted only while open, so the
+         pairing session is created on open and torn down on close. -->
+    <q-dialog v-model="showLinkDialog" maximized>
+      <div v-if="showLinkDialog" class="link-device-host">
+        <component :is="linkScreenComponent" @back="showLinkDialog = false" @continue="showLinkDialog = false" />
+      </div>
+    </q-dialog>
+
+    <!-- Sign out of this device. Signing out (identityStore.disconnect) is the
+         only way to change the identity on a device (spec §3.3). -->
+    <q-dialog v-model="showSignOutDialog">
+      <q-card class="signout-dialog">
+        <q-card-section class="row items-center q-pb-none">
+          <LogOut :size="24" />
+          <div class="text-h6 q-ml-sm">Sign out of this device?</div>
+        </q-card-section>
+        <q-card-section class="signout-body">
+          <p>
+            To use a different identity on this device, sign out first. Your
+            identity stays on your other devices.
+          </p>
+          <p>
+            Signing out removes your identity and cached data from this device
+            only. You can sign back in with your recovery phrase, or by linking
+            from another device that still has it.
+          </p>
+          <!-- There is no "show my recovery phrase" screen, and signing out
+               wipes this device's copy. If this is the user's only device and
+               they never wrote the phrase down, the identity is gone. -->
+          <p class="signout-warn">
+            Make sure you have your recovery phrase written down first. If this
+            is your only device and you do not have the phrase, you will not be
+            able to get this identity back.
+          </p>
+          <p v-if="signOutError" class="signout-error" data-test="signout-error">
+            {{ signOutError }}
+          </p>
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat no-caps label="Cancel" :disable="signingOut" v-close-popup />
+          <q-btn
+            unelevated
+            no-caps
+            color="negative"
+            label="Sign out"
+            :loading="signingOut"
+            data-test="signout-confirm"
+            @click="confirmSignOut"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
@@ -489,6 +575,9 @@ import {
   Loader2,
   Bug,
   Bell,
+  MonitorSmartphone,
+  Smartphone,
+  LogOut,
 } from 'lucide-vue-next';
 import { useRouter } from 'vue-router';
 import { useProfilesStore } from 'stores/profiles';
@@ -498,11 +587,17 @@ import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
 import { useRolePolicyStore } from 'src/stores/rolePolicy';
 import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
-import { getFileUrl, uploadFile } from 'src/lib/api/client';
+import { getFileUrl, uploadFile, clearBackendIdentity } from 'src/lib/api/client';
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { applyPushEnabled } from 'src/composables/usePush';
 import ReportIssueDialog from 'src/components/common/ReportIssueDialog.vue';
 import TypedForm from 'src/components/profiles/TypedForm.vue';
+import LinkDeviceQrScreen from 'src/components/onboarding/LinkDeviceQrScreen.vue';
+import LinkDeviceScanScreen from 'src/components/onboarding/LinkDeviceScanScreen.vue';
+import { isCapacitor } from 'src/lib/platform';
+// Kit builds must not hard-code this community's brand name (#452) — the
+// Devices copy names the app, so it reads it from the kit.
+import { KIT } from 'src/generated/kit';
 
 const router = useRouter();
 const profilesStore = useProfilesStore();
@@ -531,6 +626,51 @@ function onPushEnabledChange(event: Event) {
   void applyPushEnabled(enabled);
 }
 const showReportDialog = ref(false);
+
+// --- Devices: link another device + sign out (#474) ---
+const showLinkDialog = ref(false);
+const showSignOutDialog = ref(false);
+const signingOut = ref(false);
+const signOutError = ref('');
+
+// A phone (Capacitor) scans the code shown on the holding device; everywhere
+// else (desktop Electron, and the browser/e2e) the holding device shows the QR
+// and approves. Matches spec §1: the QR is always on the desktop.
+const linkScreenComponent = computed(() =>
+  isCapacitor() ? LinkDeviceScanScreen : LinkDeviceQrScreen,
+);
+
+async function confirmSignOut() {
+  signingOut.value = true;
+  signOutError.value = '';
+  const aid = identityStore.aidPrefix;
+  try {
+    // Backend half first, while the session and X-User-AID are still valid.
+    // identityStore.disconnect() only clears *frontend* state; the backend
+    // keeps the identity (recovery phrase included) in identity.json and will
+    // go on refusing every different identity — pairing with 409
+    // identity-present / outcome `conflict`, identity/set with 403 — so a
+    // frontend-only sign-out makes this dialog's own promise ("to use a
+    // different identity on this device, sign out first") impossible to keep.
+    if (aid) {
+      const cleared = await clearBackendIdentity(aid);
+      if (!cleared.success) {
+        // Stop rather than leave the device half signed out: nothing has been
+        // wiped yet, so the user can simply try again.
+        signOutError.value = `Could not sign out: ${cleared.error ?? 'the backend did not respond'}. Your identity is unchanged — please try again.`;
+        return;
+      }
+    }
+    await identityStore.disconnect();
+    showSignOutDialog.value = false;
+    // Return to a clean onboarding state. A full reload drops all in-memory
+    // store state; boot finds no saved passcode and lands on the splash.
+    window.location.hash = '#/';
+    window.location.reload();
+  } finally {
+    signingOut.value = false;
+  }
+}
 
 const loading = ref(true);
 const saveError = ref('');
@@ -1802,6 +1942,92 @@ textarea.field-input {
 .report-issue-btn:hover {
   background: #f0f9fa;
   border-color: #a8d4da;
+}
+
+/* Devices card (#474) */
+.device-copy {
+  font-size: 0.875rem;
+  color: var(--matou-muted-foreground, #6b7280);
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.device-note {
+  font-size: 0.8125rem;
+  color: var(--matou-muted-foreground, #6b7280);
+  margin: 1.25rem 0 0.75rem;
+  line-height: 1.5;
+}
+
+.device-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: 0.5rem;
+  border: 1px solid var(--matou-border, #d1e7ea);
+  background: var(--matou-card, white);
+  color: var(--matou-foreground, #1f2937);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.device-action-btn:hover {
+  background: #f0f9fa;
+  border-color: #a8d4da;
+}
+
+.device-signout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: transparent;
+  color: #ef4444;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.device-signout-btn:hover {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: #ef4444;
+}
+
+/* Maximized dialog host for the link-device onboarding screen. */
+.link-device-host {
+  height: 100%;
+  background: var(--matou-background, white);
+}
+
+.signout-dialog {
+  width: 100%;
+  max-width: 420px;
+  background: var(--matou-card, white);
+}
+
+.signout-body p {
+  font-size: 0.875rem;
+  color: var(--matou-foreground, #1f2937);
+  line-height: 1.5;
+  margin: 0 0 0.75rem;
+}
+
+.signout-body p:last-child {
+  margin-bottom: 0;
+}
+
+.signout-body .signout-warn {
+  font-weight: 600;
+}
+
+.signout-body .signout-error {
+  color: #ef4444;
 }
 
 /* Save feedback */

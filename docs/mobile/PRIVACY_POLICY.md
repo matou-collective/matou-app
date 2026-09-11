@@ -113,6 +113,13 @@ deleted, but contain no personal details.
 If you uninstall the App or clear its data, your recovery phrase is gone
 with it; without a backup you cannot recover that identity.
 
+You can use the same identity on more than one device — by entering your
+recovery phrase on the new device, or by scanning a code shown on a device
+that already has it. Signing out of a device ("unlinking") only removes the
+identity and cached data from that one device; it is not a revocation. Any
+device that still has your recovery phrase keeps the identity. There is no
+per-device revocation today.
+
 ## Your rights
 
 Depending on where you live you may have rights to access, correct, delete

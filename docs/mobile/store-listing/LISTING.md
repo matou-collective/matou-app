@@ -55,7 +55,7 @@ YOUR IDENTITY AND YOUR DATA
 • Community data is encrypted and synchronised peer to peer between members' devices and the community's own nodes.
 • No advertising, no analytics or tracking SDKs, and nothing sold or shared with third parties.
 
-Keep your recovery phrase safe. It is the only way to bring your identity to a new phone.
+Keep your recovery phrase safe. To bring your identity to a new device, scan the code on your computer, or use your recovery phrase. Signing out of a device only removes the identity from that device — any device that still has your recovery phrase keeps it.
 
 Privacy policy: https://matou.nz/privacy
 Terms of use: https://matou.nz/terms

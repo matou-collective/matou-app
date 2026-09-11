@@ -421,6 +421,45 @@ export async function setBackendIdentity(
 }
 
 /**
+ * Clear the backend identity (DELETE /api/v1/identity) — the backend half of
+ * signing out of a device (#474).
+ *
+ * The backend keeps the identity, *including the recovery phrase*, in
+ * `{dataDir}/identity.json`, and refuses to take a **different** identity while
+ * one is configured: pairing answers 409 `identity-present` / outcome
+ * `conflict`, and `identity/set` is denied to anyone who is not the stored
+ * owner. A frontend-only sign-out therefore leaves the phrase on disk and the
+ * device permanently unable to honour the sign-out copy ("to use a different
+ * identity on this device, sign out first").
+ *
+ * `UserIdentity.Clear()` removes `identity.json` and nothing else — the KERI
+ * keystore and the any-sync store are untouched — so this really is a local
+ * sign-out, never a revocation.
+ *
+ * Must be called while the user is still signed in: RBAC allows only the
+ * identity owner (or an admin), and `identityStore.disconnect()` drops both
+ * the AID and the session token.
+ */
+export async function clearBackendIdentity(
+  aid: string,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/v1/identity`, {
+      method: 'DELETE',
+      headers: authHeaders({ 'X-User-AID': aid }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      return { success: false, error: body.error || `backend returned ${response.status}` };
+    }
+    return { success: true };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+/**
  * Get the current backend identity status
  */
 export async function getBackendIdentity(): Promise<GetBackendIdentityResponse> {
