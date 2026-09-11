@@ -324,6 +324,9 @@ watch(
     } else {
       // Reset scroll position when switching screens
       nextTick(() => {
+        // Deferred callback — no-op off-DOM so it can never throw a stray
+        // ReferenceError when the environment that scheduled it is gone (#489).
+        if (typeof document === 'undefined') return;
         // Scroll the page container
         const pageContainer = document.querySelector('.q-page-container');
         if (pageContainer) {
