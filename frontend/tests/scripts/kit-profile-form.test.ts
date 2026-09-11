@@ -135,4 +135,21 @@ describe('kit profile form', () => {
     expect(opts).toContain('B');
     wrapper.unmount();
   });
+
+  it('clears its mount-time scroll timer on unmount (#489)', () => {
+    // The scroll-to-top timer is a *Node* timer (vitest's happy-dom setup does
+    // not proxy setTimeout), so happy-dom teardown cannot cancel it. Left
+    // pending after unmount it fires once `document` has been deleted from the
+    // global and surfaces as the unhandled `ReferenceError: document is not
+    // defined` that failed the whole suite in #489, attributed to this file.
+    vi.useFakeTimers();
+    try {
+      const wrapper = mountForm();
+      expect(vi.getTimerCount()).toBe(1);
+      wrapper.unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
