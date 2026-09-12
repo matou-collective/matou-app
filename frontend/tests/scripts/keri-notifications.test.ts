@@ -6,6 +6,7 @@ import {
   isCredentialAlreadyIssued,
   isCredentialRevoked,
   isAlreadyGroupSigner,
+  hasLocalGroupIdentifier,
   type ClaimableNote,
   type CredentialListOptions,
   type WalletCredential,
@@ -290,6 +291,31 @@ describe('isCredentialRevoked', () => {
 });
 
 // --- isAlreadyGroupSigner ---------------------------------------------------
+
+describe('hasLocalGroupIdentifier (join must not be skipped on key commitment alone)', () => {
+  const GROUP = 'EGROUP';
+
+  it('is true when the agent already holds the group identifier', () => {
+    expect(hasLocalGroupIdentifier([{ prefix: 'DME' }, { prefix: GROUP }], GROUP)).toBe(true);
+  });
+
+  it('is false when the agent holds only its own AID — the joining member', () => {
+    // The state right before a join: round 2's rotation already commits our
+    // key (isAlreadyGroupSigner is true), but we have no local group yet, so
+    // the join must still run or nothing downstream sees us as a steward.
+    expect(hasLocalGroupIdentifier([{ prefix: 'DME' }], GROUP)).toBe(false);
+    expect(isAlreadyGroupSigner([ 'DADMIN', 'DME' ], ['DME'])).toBe(true);
+  });
+
+  it('is false for an empty or missing identifier list', () => {
+    expect(hasLocalGroupIdentifier([], GROUP)).toBe(false);
+    expect(hasLocalGroupIdentifier(undefined, GROUP)).toBe(false);
+  });
+
+  it('is false when the group prefix is empty', () => {
+    expect(hasLocalGroupIdentifier([{ prefix: GROUP }], '')).toBe(false);
+  });
+});
 
 describe('isAlreadyGroupSigner (multisig idempotency, issue #470)', () => {
   it('is true when our current key is already a group signing key → no join', () => {

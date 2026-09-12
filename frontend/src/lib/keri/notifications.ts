@@ -249,6 +249,26 @@ export async function isCredentialAlreadyIssued(
  * (`groupKeys`) — i.e. we have already joined/co-signed this group and must not
  * sign again. Pure; the caller fetches the two key states.
  */
+/**
+ * True when this client's agent already holds the group identifier itself.
+ *
+ * This is the only reliable "we have already joined" signal. Committing our key
+ * is NOT one: a round-2 group rotation commits every member's key by
+ * construction, so from the moment that rotation lands (which the admin now
+ * waits for before sending the round-2 EXN) `isAlreadyGroupSigner` is true for
+ * the joining member too — and skipping the join on that basis leaves the
+ * member without a local group identifier, so nothing downstream recognises it
+ * as a steward. Pair the two checks: the key must be committed AND the group
+ * must already exist locally (which is what issue #470's second client sees).
+ */
+export function hasLocalGroupIdentifier(
+  aids: Array<{ prefix?: string }> | undefined,
+  groupPrefix: string,
+): boolean {
+  if (!groupPrefix) return false;
+  return (aids ?? []).some((a) => a.prefix === groupPrefix);
+}
+
 export function isAlreadyGroupSigner(
   groupKeys: string[] | undefined,
   memberKeys: string[] | undefined,

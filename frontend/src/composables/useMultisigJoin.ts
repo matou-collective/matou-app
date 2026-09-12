@@ -9,7 +9,7 @@ import { getOrFetchOrgConfig } from 'src/api/config';
 import { secureStorage } from 'src/lib/secureStorage';
 import { useKERINotificationService } from './useKERINotificationService';
 import { toKeriAlias } from 'src/lib/keri/alias';
-import { isAlreadyGroupSigner } from 'src/lib/keri/notifications';
+import { isAlreadyGroupSigner, hasLocalGroupIdentifier } from 'src/lib/keri/notifications';
 
 const MULTISIG_ROT_ROUTE = '/multisig/rot';
 // When admin pre-rotates between rounds and immediately sends a /multisig/rot,
@@ -132,11 +132,20 @@ export function useMultisigJoin() {
                 const one = (Array.isArray(st) ? st[0] : st) as { k?: string[] } | undefined;
                 return one?.k ?? [];
               };
-              const [groupKeys, myKeys] = await Promise.all([
+              const [groupKeys, myKeys, localAids] = await Promise.all([
                 readKeys(gidFromExn).catch(() => [] as string[]),
                 readKeys(me).catch(() => [] as string[]),
+                client.identifiers().list()
+                  .then((r: { aids?: Array<{ prefix?: string }> }) => r?.aids ?? [])
+                  .catch(() => [] as Array<{ prefix?: string }>),
               ]);
-              if (isAlreadyGroupSigner(groupKeys, myKeys)) {
+              // Both conditions, deliberately: the group committing our key is
+              // true for the joining member as soon as round 2's rotation
+              // lands, so on its own it would skip the join we are here to do.
+              if (
+                isAlreadyGroupSigner(groupKeys, myKeys) &&
+                hasLocalGroupIdentifier(localAids, gidFromExn)
+              ) {
                 console.debug(`[MultisigJoin] already a signer of ${gidFromExn.slice(0, 12)} — skipping join (idempotent)`);
                 await secureStorage.setItem('matou_org_aid', gidFromExn);
                 keriClient.setOrgAID(gidFromExn);
