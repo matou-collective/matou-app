@@ -156,3 +156,76 @@ func TestOnRotationRevokesSessions(t *testing.T) {
 	// An unknown AID (resolver error) is a no-op, never a panic.
 	v.OnRotation(context.Background(), "Enobody")
 }
+
+// cachingResolver mimics KERIAResolver's cache: it keeps serving the keys it
+// first returned until Invalidate is called, then serves the current keys.
+type cachingResolver struct {
+	live    *StaticKeyStateResolver
+	cached  map[string][]string
+	fetches int
+}
+
+func newCachingResolver() *cachingResolver {
+	return &cachingResolver{live: NewStaticKeyStateResolver(), cached: map[string][]string{}}
+}
+
+func (r *cachingResolver) CurrentKeys(ctx context.Context, aid string) ([]string, error) {
+	if keys, ok := r.cached[aid]; ok {
+		return keys, nil
+	}
+	r.fetches++
+	keys, err := r.live.CurrentKeys(ctx, aid)
+	if err != nil {
+		return nil, err
+	}
+	r.cached[aid] = keys
+	return keys, nil
+}
+
+func (r *cachingResolver) Invalidate(aid string) { delete(r.cached, aid) }
+
+// After the AID rotates, a login signed with the NEW key must succeed even
+// though the resolver's cache still holds the pre-rotation key: the verifier
+// has to drop the cached state and re-resolve before rejecting the signature.
+// This is the multisig steward-join path — the member rotates its personal AID
+// between round 1 and round 2, reloads, and would otherwise be locked out for
+// the whole cache TTL (issue seen in e2e "register and approve a second member").
+func TestLoginAfterRotationRefreshesStaleKeyState(t *testing.T) {
+	aid := "Ealice"
+	res := newCachingResolver()
+	oldPub, oldPriv, _ := ed25519.GenerateKey(nil)
+	res.live.Set(aid, []string{encodeVerferD(oldPub)})
+	v := NewVerifier(res, NewChallengeStore(time.Minute), NewSessionStore(time.Hour))
+
+	// First login warms the cache with the old key.
+	nonce, _, _ := v.Challenge(aid)
+	if _, _, err := v.Login(context.Background(), aid, nonce, signLogin(oldPriv, aid, nonce)); err != nil {
+		t.Fatalf("pre-rotation login: %v", err)
+	}
+
+	// Rotate: the authoritative key state changes, the cache does not.
+	newPub, newPriv, _ := ed25519.GenerateKey(nil)
+	res.live.Set(aid, []string{encodeVerferD(newPub)})
+
+	nonce, _, _ = v.Challenge(aid)
+	token, _, err := v.Login(context.Background(), aid, nonce, signLogin(newPriv, aid, nonce))
+	if err != nil {
+		t.Fatalf("post-rotation login must refresh stale key state, got %v", err)
+	}
+	if _, ok := v.Sessions.Validate(token); !ok {
+		t.Fatal("expected a valid session after post-rotation login")
+	}
+	if res.fetches != 2 {
+		t.Fatalf("expected exactly one re-fetch after the stale miss, fetches=%d", res.fetches)
+	}
+
+	// A genuinely bad signature still fails — and only costs one re-fetch.
+	_, wrongPriv, _ := ed25519.GenerateKey(nil)
+	nonce, _, _ = v.Challenge(aid)
+	if _, _, err := v.Login(context.Background(), aid, nonce, signLogin(wrongPriv, aid, nonce)); !errors.Is(err, ErrSignature) {
+		t.Fatalf("bad signature must still fail with ErrSignature, got %v", err)
+	}
+	if res.fetches != 3 {
+		t.Fatalf("bad signature should trigger exactly one re-fetch, fetches=%d", res.fetches)
+	}
+}

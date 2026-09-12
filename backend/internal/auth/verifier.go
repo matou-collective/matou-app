@@ -90,9 +90,47 @@ func (v *Verifier) Login(ctx context.Context, aid, challenge, signature string) 
 	}
 	ok, verr := VerifySignature(keys[0], SignedMessage(aid, challenge), signature)
 	if verr != nil || !ok {
-		return "", time.Time{}, ErrSignature
+		// The resolver may be serving a cached, pre-rotation key: a member that
+		// rotated its personal AID (e.g. between multisig rounds 1 and 2) signs
+		// with a key the cache has not seen yet, and nothing else invalidates
+		// the cache until that AID syncs its own KEL over an authenticated
+		// session — which it cannot get while login keeps failing. Drop the
+		// cached state, re-resolve once from the authoritative source and
+		// re-verify before rejecting. A genuinely bad signature still fails; it
+		// just costs one extra key-state fetch, bounded by the login rate limit.
+		keys, err = v.refreshedKeys(ctx, aid, keys)
+		if err != nil {
+			return "", time.Time{}, ErrSignature
+		}
+		ok, verr = VerifySignature(keys[0], SignedMessage(aid, challenge), signature)
+		if verr != nil || !ok {
+			return "", time.Time{}, ErrSignature
+		}
 	}
 	return v.Sessions.Mint(aid, KeysHash(keys))
+}
+
+// refreshedKeys invalidates any cached key state for aid and re-resolves it.
+// It returns the freshly resolved single key, or an error when the resolver
+// cannot invalidate, cannot re-resolve, the state is not single-key, or the
+// key is unchanged (so the caller does not verify the same key twice).
+func (v *Verifier) refreshedKeys(ctx context.Context, aid string, stale []string) ([]string, error) {
+	inv, ok := v.Resolver.(interface{ Invalidate(string) })
+	if !ok {
+		return nil, errors.New("resolver does not cache")
+	}
+	inv.Invalidate(aid)
+	keys, err := v.Resolver.CurrentKeys(ctx, aid)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) != 1 {
+		return nil, ErrUnsupportedKeyState
+	}
+	if len(stale) == 1 && stale[0] == keys[0] {
+		return nil, errors.New("key state unchanged")
+	}
+	return keys, nil
 }
 
 // OnRotation is a rotation signal for aid: it drops any cached key state,
