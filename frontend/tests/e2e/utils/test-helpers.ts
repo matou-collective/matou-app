@@ -9,7 +9,7 @@
  * - Admin login via mnemonic recovery
  * - Test account persistence
  */
-import { expect, Page, BrowserContext, APIRequestContext } from '@playwright/test';
+import { expect, Page, BrowserContext, APIRequestContext, TestInfo } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { keriEndpoints } from './keri-testnet';
@@ -103,19 +103,49 @@ export function uniqueSuffix(): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Attach filtered console + network logging to a page.
- * Filters for KERI, registration, credential, and error messages.
+ * Handle to the buffered log of a page wired by {@link setupPageLogging}.
+ * Every console/pageerror/requestfailed line is retained in `lines` (a
+ * superset of what is echoed to stdout), and `attach` writes them as a
+ * durable Playwright attachment so a blank-page failure records *why* it
+ * was blank instead of only a screenshot (#510).
  */
-export function setupPageLogging(page: Page, prefix: string): void {
+export interface PageLog {
+  /** All captured lines, in order (unfiltered — the complete browser log). */
+  readonly lines: string[];
+  /**
+   * Attach the buffered lines to the test as a text artifact. No-op when the
+   * buffer is empty. Call from an afterEach guarded on failure so green runs
+   * add no artifact bloat.
+   */
+  attach(testInfo: TestInfo, name?: string): Promise<void>;
+}
+
+/**
+ * Attach filtered console + network logging to a page, and return a handle
+ * that can persist the *complete* buffered log as a durable artifact.
+ *
+ * stdout still receives only the filtered subset (readable run logs), but the
+ * returned {@link PageLog} retains every line so a failing attempt's console
+ * and pageerror output can be attached to the test report (#510) — the tail of
+ * the interleaved run log is otherwise the only trace, and the pr-e2e verdict
+ * drops it.
+ */
+export function setupPageLogging(page: Page, prefix: string): PageLog {
+  const lines: string[] = [];
+  const record = (line: string, echo: boolean) => {
+    lines.push(line);
+    if (echo) console.log(line);
+  };
+
   // Uncaught page exceptions (e.g. a Vue render error white-screening the
   // SPA) never reach the console listener — without this they are invisible
   // in CI logs and a blank screenshot is the only evidence.
   page.on('pageerror', (err) => {
-    console.log(`[${prefix}] [PAGEERROR] ${err.message}\n${(err.stack || '').split('\n').slice(0, 8).join('\n')}`);
+    record(`[${prefix}] [PAGEERROR] ${err.message}\n${(err.stack || '').split('\n').slice(0, 8).join('\n')}`, true);
   });
   page.on('console', (msg) => {
     const text = msg.text();
-    if (
+    const echo =
       text.includes('Registration') || text.includes('Admin') ||
       text.includes('Credential') || text.includes('IPEX') ||
       text.includes('KERIClient') || text.includes('Polling') ||
@@ -124,15 +154,23 @@ export function setupPageLogging(page: Page, prefix: string): void {
       text.includes('IdentityStore') || text.includes('MnemonicVerification') ||
       text.includes('Endorsement') || text.includes('EventAttendance') ||
       text.includes('MultisigJoin') || text.includes('listNotifications') ||
-      text.includes('Error') || msg.type() === 'error'
-    ) {
-      console.log(`[${prefix}] ${text}`);
-    }
+      text.includes('Error') || msg.type() === 'error';
+    // Buffer every console line (so the artifact is a complete record) but only
+    // echo the filtered subset to stdout to keep the run log readable.
+    record(`[${prefix}] [${msg.type()}] ${text}`, echo);
   });
 
   page.on('requestfailed', (request) => {
-    console.log(`[${prefix} FAILED] ${request.method()} ${request.url()}`);
+    record(`[${prefix} FAILED] ${request.method()} ${request.url()}`, true);
   });
+
+  return {
+    lines,
+    async attach(testInfo: TestInfo, name = `${prefix}-console.log`): Promise<void> {
+      if (lines.length === 0) return;
+      await testInfo.attach(name, { body: lines.join('\n'), contentType: 'text/plain' });
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

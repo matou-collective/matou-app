@@ -13,6 +13,7 @@ import {
   loadAccounts,
   loginWithMnemonic,
   TestAccounts,
+  PageLog,
 } from './utils/test-helpers';
 
 /**
@@ -25,12 +26,29 @@ import {
  */
 
 test.describe.serial('Organization Setup', () => {
+  // Page logs wired during the current test. On failure their buffered
+  // console/pageerror lines are attached as a durable artifact so the
+  // blank-page org-setup failure (#510) records *why* the page was blank
+  // instead of leaving only a screenshot. Reset per test in beforeEach.
+  let pageLogs: PageLog[] = [];
+
   test.beforeAll(() => {
     requireKERINetwork();
   });
 
   test.beforeEach(async ({ page }) => {
-    setupPageLogging(page, 'OrgSetup');
+    pageLogs = [];
+    pageLogs.push(setupPageLogging(page, 'OrgSetup'));
+  });
+
+  // Persist the failing attempt's browser console for review (#510). Only on
+  // failure, so all-green runs add no artifact bloat. This runs per attempt,
+  // so the failing attempt-0 is captured even when a later retry passes —
+  // unlike trace/video, which retain-on-failure covers via playwright.config.
+  test.afterEach(async ({}, testInfo) => {
+    if (testInfo.status !== testInfo.expectedStatus) {
+      for (const log of pageLogs) await log.attach(testInfo);
+    }
   });
 
   // ------------------------------------------------------------------
@@ -104,7 +122,7 @@ test.describe.serial('Organization Setup', () => {
     const context = await browser.newContext();
     await setupTestConfig(context);
     const page = await context.newPage();
-    setupPageLogging(page, 'Admin');
+    pageLogs.push(setupPageLogging(page, 'Admin'));
 
     try {
       // Clear localStorage
