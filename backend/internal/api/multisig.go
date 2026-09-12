@@ -41,6 +41,13 @@ type RotationSignalRequest struct {
 	TargetMemberAid string `json:"targetMemberAid"`
 	Round           string `json:"round"`
 	GroupAid        string `json:"groupAid"`
+	// Action is what the targeted member must do before acking:
+	//   "query"  (default) — pull admin's KEL up to AdminSn into local kevers.
+	//   "rotate" — that, then rotate their own personal AID. Asked of the
+	//              group's EXISTING co-signers, who must install a fresh key
+	//              each round or KERI cannot keep them in the rotated group
+	//              (see keri/client.ts rotateCoSigners).
+	Action string `json:"action"`
 }
 
 // HandleRotationSignal writes a MultisigRotationSignal object to the
@@ -69,6 +76,15 @@ func (h *MultisigHandler) HandleRotationSignal(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
+	if req.Action == "" {
+		req.Action = "query"
+	}
+	if req.Action != "query" && req.Action != "rotate" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "action must be 'query' or 'rotate'",
+		})
+		return
+	}
 
 	// Each rotation event is uniquely identified by (admin AID, sn). We add
 	// timestamp+nano so retries within the same sn produce a fresh object.
@@ -80,6 +96,7 @@ func (h *MultisigHandler) HandleRotationSignal(w http.ResponseWriter, r *http.Re
 		"targetMemberAid": req.TargetMemberAid,
 		"round":           req.Round,
 		"groupAid":        req.GroupAid,
+		"action":          req.Action,
 		"timestamp":       time.Now().UTC().Format(time.RFC3339Nano),
 	})
 
@@ -89,8 +106,8 @@ func (h *MultisigHandler) HandleRotationSignal(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	log.Printf("[Multisig] rotation signal: admin=%s sn=%s target=%s round=%s",
-		req.AdminAid[:12], req.AdminSn, req.TargetMemberAid[:12], req.Round)
+	log.Printf("[Multisig] rotation signal: admin=%s sn=%s target=%s round=%s action=%s",
+		req.AdminAid[:12], req.AdminSn, req.TargetMemberAid[:12], req.Round, req.Action)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,

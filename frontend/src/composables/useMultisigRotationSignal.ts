@@ -26,6 +26,13 @@ interface RotationSignalEvent {
   targetMemberAid: string;
   round: 'round-1' | 'round-2';
   groupAid: string;
+  // 'rotate' additionally asks us to rotate our own personal AID before
+  // acking. The admin sends it to the group's EXISTING co-signers: KERI only
+  // lets a rotation install keys the previous group event pre-committed, so a
+  // co-signer that does not install its next key each round cannot stay in the
+  // rotated group at all. Absent/'query' keeps the original behaviour (the
+  // joining member's own rotation is driven by the round-1 EXN instead).
+  action?: 'query' | 'rotate';
 }
 
 const ROTATION_SIGNAL_TIMEOUT_MS = 30_000;
@@ -84,6 +91,23 @@ export function useMultisigRotationSignal() {
       // Fall through and ack anyway — failing to ack stalls admin's flow,
       // and the EXN can still recover via the existing escrow → pending
       // notification path.
+    }
+
+    if (sig.action === 'rotate') {
+      try {
+        const aids = await client.identifiers().list();
+        const mine = aids?.aids?.find((a: { prefix: string }) => a.prefix === myAid) ?? aids?.aids?.[0];
+        const name = mine?.name as string | undefined;
+        if (!name) throw new Error('no local alias for this AID');
+        const newSn = await keriClient.rotatePersonalAid(name);
+        console.log(`[RotationSignal] rotated own AID for ${sig.round} -> sn=${newSn}`);
+      } catch (err) {
+        // Do NOT ack: the admin waits for our KEL to advance and fails the
+        // promotion with a message naming us, which is far better than acking
+        // and having the admin build a rotation that drops us from the group.
+        console.error('[RotationSignal] own rotation failed — not acking:', err);
+        return;
+      }
     }
 
     try {

@@ -1591,6 +1591,12 @@ export class KERIClient {
     targetMemberAid: string;
     round: 'round-1' | 'round-2';
     groupAid: string;
+    /**
+     * What the target must do before acking: 'query' (default) pulls our new
+     * KEL into their kevers; 'rotate' also rotates their own personal AID.
+     * See rotateCoSigners for why existing co-signers must rotate.
+     */
+    action?: 'query' | 'rotate';
     timeoutMs?: number;
   }): Promise<boolean> {
     const timeoutMs = opts.timeoutMs ?? 30_000;
@@ -1620,6 +1626,7 @@ export class KERIClient {
           targetMemberAid: opts.targetMemberAid,
           round: opts.round,
           groupAid: opts.groupAid,
+          action: opts.action ?? 'query',
         }),
       });
       if (!resp.ok) {
@@ -1680,6 +1687,208 @@ export class KERIClient {
     );
   }
 
+  /** Query an AID's key state, optionally blocking until it reaches `sn`. */
+  private async keyStateOf(aidPrefix: string, sn?: string): Promise<Record<string, unknown>> {
+    if (!this.client) throw new Error('Not initialized');
+    const op = await this.client.keyStates().query(aidPrefix, sn, undefined);
+    const res = await this.client.operations().wait(op, { signal: AbortSignal.timeout(30000) });
+    return res.response as Record<string, unknown>;
+  }
+
+  /**
+   * The member AIDs that currently sign for a group AID, in the group's own
+   * key order, each with its current key state.
+   *
+   * Callers use this to REBUILD a group rotation, and a rotation installs
+   * exactly the keys it is given — so a signer missing from the result would
+   * be silently rotated OUT of the group. That is precisely what used to
+   * happen to the first steward when a second one was promoted (both rounds
+   * hardcoded `[admin, newMember]`), so this throws rather than return a
+   * partial list: the group's own key state says how many keys sign, and
+   * every one of them has to be attributable to a member AID.
+   */
+  private async currentGroupSigners(
+    groupName: string,
+    seedCandidates: string[] = [],
+  ): Promise<{ aid: string; state: Record<string, unknown> }[]> {
+    if (!this.client) throw new Error('Not initialized');
+    const group = await this.client.identifiers().get(groupName);
+    const groupKeys = ((group.state ?? {}) as { k?: string[] }).k ?? [];
+    if (groupKeys.length === 0) {
+      throw new Error(`Group "${groupName}" has no signing keys in its key state — refusing to rotate it`);
+    }
+
+    // Seeded with AIDs the caller already knows sign for the group (its own,
+    // at least), so a group whose members endpoint comes back thin still
+    // resolves instead of tripping the attribution check below.
+    const candidates = new Set<string>(seedCandidates.filter(Boolean));
+    try {
+      const members = await this.client.identifiers().members(groupName) as {
+        signing?: Array<{ aid?: string; i?: string } | string>;
+      };
+      for (const entry of members?.signing ?? []) {
+        const aid = typeof entry === 'string' ? entry : (entry?.aid ?? entry?.i ?? '');
+        if (aid) candidates.add(aid);
+      }
+    } catch (err) {
+      console.warn('[KERIClient] currentGroupSigners: members() lookup failed:', err);
+    }
+
+    const found: { aid: string; state: Record<string, unknown>; idx: number }[] = [];
+    for (const aid of candidates) {
+      try {
+        const state = await this.keyStateOf(aid);
+        const key = ((state.k as string[]) ?? [])[0];
+        const idx = key ? groupKeys.indexOf(key) : -1;
+        if (idx >= 0) found.push({ aid, state, idx });
+      } catch (err) {
+        console.warn(`[KERIClient] currentGroupSigners: key state for ${aid.slice(0, 12)} failed:`, err);
+      }
+    }
+
+    if (found.length !== groupKeys.length) {
+      throw new Error(
+        `Group "${groupName}" signs with ${groupKeys.length} key(s) but only ${found.length} could be ` +
+        'attributed to a member AID. Refusing to rotate: any signer we cannot identify would be ' +
+        'dropped from the group.',
+      );
+    }
+
+    // Preserve the group's existing key order so positional signing indices
+    // (and each member's committed next key) keep lining up across rotations.
+    found.sort((a, b) => a.idx - b.idx);
+    return found.map(({ aid, state }) => ({ aid, state }));
+  }
+
+  /**
+   * Bring every EXISTING co-signer through the personal-AID rotation this
+   * round needs, and return their refreshed key states in the same order.
+   *
+   * A KERI rotation may only install keys the previous establishment event
+   * pre-committed as next keys, so each co-signer has to advance its own KEL
+   * by one event per group rotation — otherwise the only way to produce a
+   * valid group event is to leave them out of it. They are asked over the
+   * same signal/ack channel the joining member uses, then we WAIT for their
+   * KEL to actually reach the expected sn and read the state at that exact sn
+   * (never "latest": a state read a moment too early commits the
+   * pre-rotation key and every later group-signing op fails with
+   * "Invalid signing index = -1").
+   */
+  private async rotateCoSigners(
+    coSigners: { aid: string; state: Record<string, unknown> }[],
+    opts: {
+      adminAid: string;
+      adminSn: string;
+      groupAid: string;
+      round: 'round-1' | 'round-2';
+    },
+  ): Promise<Record<string, unknown>[]> {
+    const states: Record<string, unknown>[] = [];
+    for (const signer of coSigners) {
+      const sn0 = parseInt((signer.state.s as string) ?? '0', 16);
+      const expected = (sn0 + 1).toString(16);
+      console.log(
+        `[KERIClient] ${opts.round}: asking co-signer ${signer.aid.slice(0, 12)} to rotate (sn=${sn0.toString(16)} -> ${expected})`,
+      );
+      await this.publishRotationSignalAndWait({
+        adminAid: opts.adminAid,
+        adminSn: opts.adminSn,
+        targetMemberAid: signer.aid,
+        round: opts.round,
+        groupAid: opts.groupAid,
+        action: 'rotate',
+      });
+      try {
+        await this.waitForMemberRotation(signer.aid, expected, { timeoutMs: 5 * 60_000 });
+      } catch (err) {
+        throw new Error(
+          `Steward ${signer.aid.slice(0, 12)}... did not rotate for ${opts.round} (needs sn=${expected}): ` +
+          `${err instanceof Error ? err.message : String(err)}. Every current steward must be signed in ` +
+          'while another steward is promoted — otherwise they would be rotated out of the org group.',
+        );
+      }
+      states.push(await this.keyStateOf(signer.aid, expected));
+    }
+    return states;
+  }
+
+  /**
+   * Wait for a group rotation operation to finish, and fail loudly if it does
+   * not. KERIA completes a `group.<said>` op only once every witness has
+   * receipted the event, so "not done" means the rotation is NOT in the
+   * group's KEL — proceeding regardless used to let the caller report success
+   * while the group silently stayed on its old key state.
+   */
+  private async awaitGroupRotationOp(
+    op: { name: string; done?: boolean; error?: unknown },
+    label: string,
+  ): Promise<void> {
+    if (!this.client) throw new Error('Not initialized');
+    const check = (o: { done?: boolean; error?: unknown }): boolean => {
+      if (!o?.done) return false;
+      if (o.error) throw new Error(`${label}: group rotation failed: ${JSON.stringify(o.error)}`);
+      return true;
+    };
+    if (check(op)) return;
+
+    const deadline = Date.now() + 2 * 60_000;
+    let lastErr: unknown;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        const cur = await this.client.operations().get(op.name) as { done?: boolean; error?: unknown };
+        if (check(cur)) return;
+      } catch (err) {
+        lastErr = err; // transient agent hiccup: keep polling until the deadline
+      }
+    }
+    throw new Error(
+      `${label}: group rotation did not complete within 2 minutes (op ${op.name} still pending` +
+      `${lastErr ? `, last poll error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` : ''}) — ` +
+      'the group KEL has NOT advanced, so the promotion cannot continue.',
+    );
+  }
+
+  /**
+   * Confirm a group rotation actually reached the group's key state before
+   * anything is built on top of it.
+   *
+   * A completed operation is NOT proof of that: a `group.<said>` op has been
+   * observed completing while the rotation still sat in KERIA's
+   * partially-witnessed escrow with zero receipts ("Failure satisfying toad=N
+   * on witness sigs=[]"), so the validated KEL never advanced. The next round
+   * then rotates on top of a parent the witnesses never saw, and the first
+   * thing that needs a witnessed group state — a credential issue or revoke
+   * anchored in the group KEL — hangs with no error of its own. That is how a
+   * promotion could report success while the group had not rotated at all.
+   *
+   * Reuses the key-state poller: KERIA only satisfies a query at `sn` once its
+   * kevers hold that event, so failing here means the group KEL is genuinely
+   * still behind.
+   */
+  private async awaitGroupKeyState(
+    groupPrefix: string,
+    expectedSn: string,
+    label: string,
+  ): Promise<void> {
+    try {
+      await this.waitForMemberRotation(groupPrefix, expectedSn, { timeoutMs: 3 * 60_000 });
+    } catch (err) {
+      throw new Error(
+        `${label}: the group rotation to sn=${expectedSn} has not reached ` +
+        `${groupPrefix.slice(0, 12)}...'s key state (${err instanceof Error ? err.message : String(err)}). ` +
+        'It is most likely still waiting on witness receipts — check the KERIA log for ' +
+        '"Failure satisfying toad". Continuing would build the next event on a rotation ' +
+        'the witnesses never receipted.',
+      );
+    }
+  }
+
+  /** The sn a rotation result will occupy in its AID's KEL. */
+  private rotationSn(rot: { serder: unknown }): string {
+    return ((rot.serder as { sad?: { s?: string } })?.sad?.s) ?? '';
+  }
+
   /**
    * Round 1 of the member-to-admin upgrade.
    *
@@ -1712,13 +1921,36 @@ export class KERIClient {
       );
     }
 
-    // (a) Pre-rotate master so next-key becomes current.
+    // (a) Identify everyone who signs for the group TODAY, before anybody
+    //     rotates. This must happen first: once the admin pre-rotates, its own
+    //     current key is no longer the one in the group's key state and cannot
+    //     be attributed to it. Every one of these signers has to be carried
+    //     into the rebuilt rotation or they are dropped from the group.
+    const masterBefore = await this.client.identifiers().get(masterAidName);
+    const signersBefore = await this.currentGroupSigners(groupName, [masterBefore.prefix]);
+    if (signersBefore[0]?.aid !== masterBefore.prefix) {
+      throw new Error(
+        `Admin AID ${masterBefore.prefix.slice(0, 12)}... is not the first signer of "${groupName}" ` +
+        `(found ${signersBefore[0]?.aid.slice(0, 12)}...). smids order carries the signing indices and ` +
+        'smids[0] is the admin by convention, so rotating from here is not safe.',
+      );
+    }
+    if (signersBefore.some(sig => sig.aid === newMemberAidPrefix)) {
+      throw new Error(`${newMemberAidPrefix.slice(0, 12)}... already signs for "${groupName}"`);
+    }
+    const coSigners = signersBefore.slice(1);
+    console.log(
+      `[KERIClient] addMemberRound1: ${signersBefore.length} current signer(s), ` +
+      `${coSigners.length} co-signer(s) to carry forward`,
+    );
+
+    // (b) Pre-rotate master so next-key becomes current.
     await this.rotatePersonalAid(masterAidName);
 
-    // (a.5) Signal the member to query us at the new sn. Recreates the POC's
-    // memberQueryAdminAt step (see MULTISIG-POC-FINDINGS.md item #4) over
-    // any-sync SSE. Falls through on timeout — the EXN escrow path is the
-    // backstop.
+    // (c) Signal the joining member to query us at the new sn. Recreates the
+    // POC's memberQueryAdminAt step (see MULTISIG-POC-FINDINGS.md item #4)
+    // over any-sync SSE. Falls through on timeout — the EXN escrow path is
+    // the backstop.
     const masterAid = await this.client.identifiers().get(masterAidName);
     await this.publishRotationSignalAndWait({
       adminAid: masterAid.prefix,
@@ -1728,32 +1960,36 @@ export class KERIClient {
       groupAid: groupBefore.prefix,
     });
 
-    // (b) Query refreshed states for both parties.
-    const masterQ = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
-    const masterRes = await this.client.operations().wait(masterQ, { signal: AbortSignal.timeout(30000) });
-    const masterState = masterRes.response as Record<string, unknown>;
-
-    const memberQ = await this.client.keyStates().query(newMemberAidPrefix, undefined, undefined);
-    const memberRes = await this.client.operations().wait(memberQ, { signal: AbortSignal.timeout(30000) });
-    const memberState = memberRes.response as Record<string, unknown>;
-
-    // (c) Group rotation R1: admin signs alone; member joins rstates only.
-    const rot1 = await this.client.identifiers().rotate(groupName, {
-      states: [masterState],
-      rstates: [masterState, memberState],
+    // (d) Existing co-signers install their next key too — a rotation can only
+    //     carry keys the previous event pre-committed, so without this the
+    //     only valid event is one that leaves them out (see rotateCoSigners).
+    const coSignerStates = await this.rotateCoSigners(coSigners, {
+      adminAid: masterAid.prefix,
+      adminSn: masterAid.state.s as string,
+      groupAid: groupBefore.prefix,
+      round: 'round-1',
     });
-    const rot1Op = await rot1.op();
-    if (!rot1Op?.done) {
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 3000));
-        const s = await this.client.operations().get(rot1Op.name);
-        if (s?.done) break;
-      }
-    }
 
-    // (d) Send /multisig/rot EXN with FRESH master hab.
-    const smids = [masterState.i as string];
-    const rmids = [masterState.i as string, memberState.i as string];
+    // (e) Query refreshed states for the admin and the joining member.
+    const masterState = await this.keyStateOf(masterAid.prefix);
+    const memberState = await this.keyStateOf(newMemberAidPrefix);
+
+    // (f) Group rotation R1: all current signers keep signing; the new member
+    //     joins rstates (next-key holders) only. Order follows the group's own
+    //     key order so signing indices and committed next keys stay aligned.
+    const rot1 = await this.client.identifiers().rotate(groupName, {
+      states: [masterState, ...coSignerStates],
+      rstates: [masterState, ...coSignerStates, memberState],
+    });
+    await this.awaitGroupRotationOp(await rot1.op(), 'addMemberRound1');
+    const rot1Sn = this.rotationSn(rot1);
+    if (rot1Sn) await this.awaitGroupKeyState(groupBefore.prefix, rot1Sn, 'addMemberRound1');
+
+    // (g) Send /multisig/rot EXN with FRESH master hab. Existing co-signers are
+    //     recipients too: their agents need this event to keep a current view
+    //     of the group (and they co-sign it, which is harmless at isith=1).
+    const smids = [masterState.i as string, ...coSigners.map(sig => sig.aid)];
+    const rmids = [...smids, memberState.i as string];
     await this.sendMultisigRotExn(
       masterAidName,
       groupName,
@@ -1761,7 +1997,7 @@ export class KERIClient {
       { serder: rot1.serder, sigs: rot1.sigs },
       smids,
       rmids,
-      [newMemberAidPrefix],
+      [...coSigners.map(sig => sig.aid), newMemberAidPrefix],
     );
     console.log('[KERIClient] addMemberRound1 complete');
   }
@@ -1786,7 +2022,42 @@ export class KERIClient {
     const preRotate = opts.preRotate ?? true;
     console.log(`[KERIClient] addMemberRound2: ${newMemberAidPrefix.slice(0, 12)} -> ${groupName} (expectedMemberSn=${expectedMemberSn ?? 'latest'}, preRotate=${preRotate})`);
 
-    // (a) Pre-rotate master again — unless the caller is re-aligning after an
+    // (a) Identify the current signers before anybody rotates, exactly as in
+    //     round 1 — they all have to be carried into the new rotation.
+    //
+    //     The re-align path (preRotate=false) is the exception: it runs
+    //     precisely because the admin has rotated PAST the key the group
+    //     committed, so the group's key state can no longer attribute the
+    //     admin and currentGroupSigners would rightly refuse. That recovery is
+    //     only defined for a two-party group; with more stewards it needs a
+    //     rotation every one of them can still sign, which this does not build.
+    let coSigners: { aid: string; state: Record<string, unknown> }[] = [];
+    if (preRotate) {
+      const masterBefore = await this.client.identifiers().get(masterAidName);
+      const signersBefore = await this.currentGroupSigners(groupName, [masterBefore.prefix]);
+      if (signersBefore[0]?.aid !== masterBefore.prefix) {
+        throw new Error(
+          `Admin AID ${masterBefore.prefix.slice(0, 12)}... is not the first signer of "${groupName}" ` +
+          '— smids order carries the signing indices, so rotating from here is not safe.',
+        );
+      }
+      coSigners = signersBefore.slice(1).filter(sig => sig.aid !== newMemberAidPrefix);
+      console.log(
+        `[KERIClient] addMemberRound2: ${signersBefore.length} current signer(s), ` +
+        `${coSigners.length} co-signer(s) to carry forward`,
+      );
+    } else {
+      const groupNow = await this.client.identifiers().get(groupName);
+      const keyCount = (((groupNow.state ?? {}) as { k?: string[] }).k ?? []).length;
+      if (keyCount > 2) {
+        throw new Error(
+          `Cannot re-align "${groupName}": it has ${keyCount} signers and the re-align path only handles a ` +
+          'two-party group (admin + one steward). Manual KERI recovery needed.',
+        );
+      }
+    }
+
+    // (b) Pre-rotate master again — unless the caller is re-aligning after an
     //     interrupted run in which master ALREADY rotated to the key the group
     //     committed as next (see useAdminActions.upgradeMemberToSteward).
     //     Rotating once more there would move past the committed next key and
@@ -1795,7 +2066,7 @@ export class KERIClient {
       await this.rotatePersonalAid(masterAidName);
     }
 
-    // (a.5) Signal the member to query us at the new sn before we send the
+    // (c) Signal the member to query us at the new sn before we send the
     // EXN. Replaces the prior 8s fixed sleep — see MULTISIG-POC-FINDINGS.md
     // item #4 for why the cross-client coordination is required and
     // useMultisigRotationSignal.ts for the member-side handler.
@@ -1809,10 +2080,16 @@ export class KERIClient {
       groupAid: groupAidPre.prefix,
     });
 
-    // (b) Query both refreshed states.
-    const masterQ = await this.client.keyStates().query(masterAid.prefix, undefined, undefined);
-    const masterRes = await this.client.operations().wait(masterQ, { signal: AbortSignal.timeout(30000) });
-    const masterState = masterRes.response as Record<string, unknown>;
+    // (d) Existing co-signers rotate in lockstep for this round too.
+    const coSignerStates = await this.rotateCoSigners(coSigners, {
+      adminAid: masterAid.prefix,
+      adminSn: masterAid.state.s as string,
+      groupAid: groupAidPre.prefix,
+      round: 'round-2',
+    });
+
+    // (e) Query the refreshed states.
+    const masterState = await this.keyStateOf(masterAid.prefix);
 
     // Query the member at their EXPECTED post-round-1 sn, not "latest". The
     // member rotates their personal AID exactly once in round-1; round-2 must
@@ -1821,29 +2098,23 @@ export class KERIClient {
     // (which would make the member's key absent from the group's k[] and every
     // later group-signing op fail with "Invalid signing index = -1"). Mirrors
     // the POC's queryMemberStateAt(member, '1') (test-multisig.ts:482).
-    const memberQ = await this.client.keyStates().query(newMemberAidPrefix, expectedMemberSn, undefined);
-    const memberRes = await this.client.operations().wait(memberQ, { signal: AbortSignal.timeout(30000) });
-    const memberState = memberRes.response as Record<string, unknown>;
+    const memberState = await this.keyStateOf(newMemberAidPrefix, expectedMemberSn);
     console.log(`[KERIClient] addMemberRound2: committing member key state s=${memberState.s as string} (expected ${expectedMemberSn ?? 'latest'})`);
 
-    // (c) Group rotation R2: both parties in states + rstates.
+    // (f) Group rotation R2: every existing signer plus the new member, in the
+    //     order round 1 committed their next keys in.
     const rot2 = await this.client.identifiers().rotate(groupName, {
-      states: [masterState, memberState],
-      rstates: [masterState, memberState],
+      states: [masterState, ...coSignerStates, memberState],
+      rstates: [masterState, ...coSignerStates, memberState],
     });
-    const rot2Op = await rot2.op();
-    if (!rot2Op?.done) {
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 3000));
-        const s = await this.client.operations().get(rot2Op.name);
-        if (s?.done) break;
-      }
-    }
+    await this.awaitGroupRotationOp(await rot2.op(), 'addMemberRound2');
+    const rot2Sn = this.rotationSn(rot2);
+    if (rot2Sn) await this.awaitGroupKeyState(groupAidPre.prefix, rot2Sn, 'addMemberRound2');
 
-    // (d) Send /multisig/rot EXN with FRESH master hab.
+    // (g) Send /multisig/rot EXN with FRESH master hab.
     const groupAid = await this.client.identifiers().get(groupName);
-    const smids = [masterState.i as string, memberState.i as string];
-    const rmids = [masterState.i as string, memberState.i as string];
+    const smids = [masterState.i as string, ...coSigners.map(sig => sig.aid), memberState.i as string];
+    const rmids = [...smids];
     await this.sendMultisigRotExn(
       masterAidName,
       groupName,
@@ -1851,10 +2122,10 @@ export class KERIClient {
       { serder: rot2.serder, sigs: rot2.sigs },
       smids,
       rmids,
-      [newMemberAidPrefix],
+      [...coSigners.map(sig => sig.aid), newMemberAidPrefix],
     );
 
-    // (e) Refresh agent end role (group prefix can roll forward).
+    // (h) Refresh agent end role (group prefix can roll forward).
     const agentId = this.client.agent?.pre;
     if (agentId) {
       try {
@@ -1975,6 +2246,20 @@ export class KERIClient {
       throw new Error('coSignGroupRotation: notification is not a /multisig/rot with an embedded rotation');
     }
     console.log(`[KERIClient] coSignGroupRotation: gid=${gid.slice(0, 12)} rot=${embedded.d?.slice(0, 12)} sn=${embedded.s}`);
+
+    // Reconstructing the proposal needs a key state for every participant,
+    // including ones this agent has never met — round 1 of an add already
+    // names the incoming member in rmids. Resolve them first (best effort):
+    // without this the key-state query throws and the notification is left
+    // unread to be retried forever.
+    const cesrUrl = this.getCesrUrl();
+    for (const pre of new Set([...smids, ...rmids])) {
+      try {
+        await this.resolveOOBI(`${cesrUrl}/oobi/${pre}`, undefined, 30000);
+      } catch (err) {
+        console.warn(`[KERIClient] coSignGroupRotation: OOBI for ${pre.slice(0, 12)} failed:`, err);
+      }
+    }
 
     const keyState = async (pre: string): Promise<Record<string, unknown>> => {
       const op = await this.client!.keyStates().query(pre, undefined, undefined);

@@ -101,9 +101,21 @@ export function useMultisigJoin() {
           }
           if (existingGroup?.prefix && existingGroup.prefix === gidFromExn) {
             console.log(`[MultisigJoin] already a member of ${gidFromExn.slice(0, 12)} — co-signing the proposed rotation`);
-            await keriClient.coSignGroupRotation(orgName, notification.a.d);
+            try {
+              await keriClient.coSignGroupRotation(orgName, notification.a.d);
+              console.log('[MultisigJoin] co-signed group rotation');
+            } catch (coSignErr) {
+              // A proposal we can no longer reproduce is permanently
+              // un-cosignable: some participant's key state has moved on (e.g.
+              // the incoming member rotated between the admin building round 1
+              // and us reading it). Leaving it unread would block every later
+              // round, because we always take the oldest unread notification —
+              // and the rotation does not need us anyway at isith=1.
+              const msg = coSignErr instanceof Error ? coSignErr.message : String(coSignErr);
+              if (!msg.includes('no longer match the proposed rotation')) throw coSignErr;
+              console.warn(`[MultisigJoin] dropping un-cosignable rotation proposal: ${msg}`);
+            }
             await keriClient.markNotificationRead(notification.i);
-            console.log('[MultisigJoin] co-signed group rotation');
             return false; // keep watcher running
           }
 

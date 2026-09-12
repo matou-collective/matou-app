@@ -534,8 +534,13 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			TargetMemberAid string `json:"targetMemberAid"`
 			Round           string `json:"round"`
 			GroupAid        string `json:"groupAid"`
+			Action          string `json:"action"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
+		if data.Action == "" {
+			// Signals written before the field existed only ever meant "query".
+			data.Action = "query"
+		}
 		l.broker.Broadcast(SSEEvent{
 			Type: "multisig:rotation-signal",
 			Data: map[string]interface{}{
@@ -545,6 +550,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 				"targetMemberAid": data.TargetMemberAid,
 				"round":           data.Round,
 				"groupAid":        data.GroupAid,
+				"action":          data.Action,
 			},
 		})
 
