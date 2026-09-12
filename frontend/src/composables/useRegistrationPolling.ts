@@ -31,6 +31,10 @@ import { isOpen } from 'src/kit/approval';
 import { KIT } from 'src/generated/kit';
 import { useAdminActions } from './useAdminActions';
 
+// SharedProfile statuses that mean a registration has already been acted on.
+// `removed` is deliberately absent — see the filter in pollForRegistrations.
+const RESOLVED_REGISTRATION_STATUSES = new Set(['approved', 'declined']);
+
 export interface PendingRegistration {
   notificationId: string;
   exnSaid: string;
@@ -209,6 +213,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
     try {
       const allNotes = notificationService.notifications.value;
       const registrations: PendingRegistration[] = [];
+      // Ids of real KERIA notifications, so a registration sourced from the
+      // backend fallback (whose id is a profile id) is never mistaken for one.
+      const keriNoteIds = new Set(allNotes.map(n => n.i));
 
       // === 1. Check for PENDING notifications (from KERIA patch) ===
       const pendingNotifications = allNotes.filter(
@@ -407,13 +414,24 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
         }
       }
 
-      // === 5. Fallback: load pending registrations from backend SharedProfiles ===
-      // A steward who joined the org group AFTER a registration was submitted won't have
-      // the KERIA notification (it was delivered before they joined). Load pending
-      // SharedProfiles from the backend API to fill the gap.
-      if (registrations.length === 0) {
-        try {
-          const sharedProfiles = await getProfiles('SharedProfile') as Array<{ id: string; data: Record<string, unknown> }>;
+      // === 5. Backend SharedProfiles: the authority on who is still pending ===
+      // Two separate needs are served by the same read:
+      //  - Fallback: a steward who joined the org group AFTER a registration was
+      //    submitted won't have the KERIA notification (it was delivered before
+      //    they joined), so the backend is their only source.
+      //  - Resolution: an approval performed by ANOTHER steward never touches
+      //    this agent's KERIA notification, so the status is the only way to
+      //    learn that a registration is already closed (see the filter below).
+      const sharedStatusByAid = new Map<string, string>();
+      try {
+        const sharedProfiles = await getProfiles('SharedProfile') as Array<{ id: string; data: Record<string, unknown> }>;
+        for (const sp of sharedProfiles) {
+          const aid = (sp.data?.aid as string) || '';
+          const status = (sp.data?.status as string) || '';
+          if (aid && status) sharedStatusByAid.set(aid, status);
+        }
+
+        if (registrations.length === 0) {
           const pendingProfiles = sharedProfiles.filter(
             p => (p.data?.status as string) === 'pending'
           );
@@ -444,9 +462,9 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
           if (pendingProfiles.length > 0) {
             console.log(`[RegistrationPolling] Loaded ${pendingProfiles.length} pending registrations from backend API`);
           }
-        } catch (apiErr) {
-          console.warn('[RegistrationPolling] Failed to load pending profiles from backend:', apiErr);
         }
+      } catch (apiErr) {
+        console.warn('[RegistrationPolling] Failed to load SharedProfiles from backend:', apiErr);
       }
 
       // === 6. Deduplicate by applicantAid (prefer verified over pending, newest first) ===
@@ -481,7 +499,42 @@ export function useRegistrationPolling(options: RegistrationPollingOptions = {})
       );
 
       // Filter out already-processed registrations (approved/declined)
-      const filtered = deduped.filter(r => !processedApplicantAids.has(r.applicantAid));
+      const resolvedElsewhere: PendingRegistration[] = [];
+      const filtered = deduped.filter(r => {
+        if (processedApplicantAids.has(r.applicantAid)) return false;
+        // processedApplicantAids only records approvals THIS agent performed.
+        // When another steward approves, approveRegistration marks the KERIA
+        // notification read on the approving agent only — so every other
+        // steward, the admin included, would keep listing an approved member as
+        // a pending applicant forever (their ProfileModal opening as
+        // "Registration Details" instead of a member profile). The backend
+        // SharedProfile status is the shared record of that approval.
+        //
+        // Only approved/declined count as resolved. `removed` must NOT: a
+        // removed member's profile keeps that status (HandleRemoveMember
+        // upserts it rather than deleting the profile), and if they re-apply
+        // their new registration is genuinely open — swallowing it would leave
+        // them unable to ever rejoin.
+        if (RESOLVED_REGISTRATION_STATUSES.has(sharedStatusByAid.get(r.applicantAid) ?? '')) {
+          resolvedElsewhere.push(r);
+          return false;
+        }
+        return true;
+      });
+
+      // Remember them so a later poll can't re-add them, and clear this agent's
+      // now-stale KERIA notification so it stops arriving.
+      for (const reg of resolvedElsewhere) {
+        processedApplicantAids.add(reg.applicantAid);
+        if (keriNoteIds.has(reg.notificationId)) {
+          void keriClient.markNotificationRead(reg.notificationId).catch((err: unknown) =>
+            console.warn('[RegistrationPolling] Failed to mark resolved registration read:', err)
+          );
+        }
+      }
+      if (resolvedElsewhere.length > 0) {
+        console.log(`[RegistrationPolling] Dropped ${resolvedElsewhere.length} registration(s) already resolved by another steward`);
+      }
 
       // === 6b. Dead-lettered (expired) registrations from the KERIA patch ===
       // The escrowed exn passed the dead-letter bound and was removed — it can
