@@ -204,6 +204,25 @@ func allowAction(a contributions.Action) rolePredicate {
 	}
 }
 
+// writeRuleDefaultPolicy is the BUILT-IN role policy, resolved once at startup.
+// The write rules must not read the live policy provider: that provider reads
+// the RolePolicy object out of the community-readonly space, and a rule for an
+// object in that same space is evaluated while the object's tree lock is held —
+// the read re-enters the space's trees and deadlocks (every CommunityProfile
+// read hangs forever). Pinning the built-in policy also keeps verdicts
+// deterministic across peers whose synced policy version differs, which the
+// rules require (see the package comment on determinism).
+var writeRuleDefaultPolicy = contributions.DefaultRolePolicy()
+
+// allowDefaultAction permits a transition when the author's roles satisfy a
+// contributions policy action under the built-in policy. Prefer it over
+// allowAction for any object that lives in the community-readonly space.
+func allowDefaultAction(a contributions.Action) rolePredicate {
+	return func(roles []contributions.Role) bool {
+		return contributions.CanPerformActionWithPolicy(writeRuleDefaultPolicy, roles, a)
+	}
+}
+
 // allowRoles permits a transition when the author holds one of the listed roles.
 // Used for high-stakes transitions that have no dedicated policy action yet.
 func allowRoles(allowed ...contributions.Role) rolePredicate {
@@ -277,16 +296,44 @@ type objectRule struct {
 	// anyValue, when non-nil, treats any change of the field as high-stakes
 	// (e.g. CommunityProfile.role).
 	anyValue *guardedValue
+	// onCreate, when non-nil, authorises the FIRST assignment of the guarded
+	// field — i.e. the change that creates the record, with no prior value in
+	// state — under a different permission than a later change of it. Creating
+	// a record and altering one are not the same privileged act: a new member's
+	// CommunityProfile has to be written with the baseline role by whoever
+	// approves their registration, which is a weaker permission than promoting
+	// an existing member. Only values appliesOnCreate accepts take this path;
+	// everything else falls through to the stricter gate below.
+	onCreate *guardedValue
+	// appliesOnCreate bounds which values onCreate may cover, so a record
+	// created straight into a privileged value stays gated as a change.
+	appliesOnCreate func(value string) bool
 }
 
 // permitFor returns the guarded transition for a proposed value and whether
-// that value is high-stakes at all.
-func (r objectRule) permitFor(value string) (guardedValue, bool) {
+// that value is high-stakes at all. `current` is the object's field state
+// immediately before the change, so a rule can authorise the field's first
+// assignment differently from a later change of it.
+func (r objectRule) permitFor(value string, current map[string]json.RawMessage) (guardedValue, bool) {
+	if r.onCreate != nil && r.appliesOnCreate != nil && r.appliesOnCreate(value) {
+		if _, present := current[r.field]; !present {
+			return *r.onCreate, true
+		}
+	}
 	if r.anyValue != nil {
 		return *r.anyValue, true
 	}
 	gv, ok := r.byValue[value]
 	return gv, ok
+}
+
+// isBaselineRole reports whether a CommunityProfile role value grants nothing
+// beyond plain membership, so assigning it to a profile that has no role yet is
+// not an escalation. Unknown role strings also map to plain membership, so a
+// made-up role cannot smuggle privilege through the creation path.
+func isBaselineRole(value string) bool {
+	roles := contributions.MapKERIRole(value)
+	return len(roles) == 1 && roles[0] == contributions.RoleMember
 }
 
 // communityWriteRules is the per-object-type write policy for high-stakes
@@ -388,6 +435,15 @@ var communityWriteRules = map[string]objectRule{
 	"CommunityProfile": {
 		field:    "role",
 		anyValue: &guardedValue{permit: allowRoles(contributions.RoleOperationsSteward, contributions.RoleFoundingMember)},
+		// Approving a registration writes the new member's profile with the
+		// baseline role (api.HandleInitMemberProfiles), and every steward may
+		// approve (ActionInitMemberProfile). Without this carve-out that first
+		// write reads as a role *change* and is dropped on every peer that can
+		// resolve the author, so a member approved by a steward outside the
+		// admin tier loses their whole CommunityProfile — including the role the
+		// dashboard needs to show them as a member at all.
+		onCreate:        &guardedValue{permit: allowDefaultAction(contributions.ActionInitMemberProfile)},
+		appliesOnCreate: isBaselineRole,
 	},
 }
 
@@ -468,7 +524,7 @@ func (v *WriteRuleValidator) ValidateChange(spaceID, objectType, objectID, chang
 			continue
 		}
 		value := jsonStringValue(op.Value)
-		gv, highStakes := rule.permitFor(value)
+		gv, highStakes := rule.permitFor(value, current)
 		if !highStakes {
 			continue
 		}

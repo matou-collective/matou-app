@@ -845,3 +845,89 @@ func TestValidateChange_ContributionSignOffProjectScoped(t *testing.T) {
 		t.Error("an unknown project must fall back to the community-role gate")
 	}
 }
+
+// A steward approving a registration writes the new member's CommunityProfile
+// with the baseline role (api.HandleInitMemberProfiles). That first write is a
+// creation, not a promotion, so it is gated on ActionInitMemberProfile — every
+// steward may do it. Treating it as a role change dropped the whole change on
+// every peer that could resolve the author, so a member approved by a community
+// steward lost their entire profile (no role => no badge => the admin could
+// never open ChangeRoleModal for them).
+func TestValidateChange_BaselineRoleOnProfileCreationAllowed(t *testing.T) {
+	resolver := fakeResolver{
+		"acct-community-steward": contributions.MapKERIRole("Community Steward"),
+		"acct-member":            contributions.MapKERIRole("Member"),
+	}
+	rec := &recordingRecorder{}
+	v := NewWriteRuleValidator(resolver, nil, rec, false)
+
+	// Creation (no role in prior state) with the baseline role: allowed for a
+	// steward, since approving a registration is what writes it.
+	if !v.ValidateChange("", "CommunityProfile", "cp-new", "chg1", "acct-community-steward", 0,
+		[]ChangeOp{setOp("userAID", "EMember"), setOp("role", "Member"), setOp("credential", "Ecred")}, nil) {
+		t.Error("a steward must be able to create a member profile with the baseline role")
+	}
+	if len(rec.rejections) != 0 {
+		t.Errorf("profile creation must not be recorded as a rejection, got %+v", rec.rejections)
+	}
+
+	// Still a creation, but straight into a privileged role: that IS a role
+	// grant and stays reserved to the admin tier.
+	if v.ValidateChange("", "CommunityProfile", "cp-new2", "chg2", "acct-community-steward", 0,
+		[]ChangeOp{setOp("role", "Operations Steward")}, nil) {
+		t.Error("creating a profile straight into a privileged role must stay gated")
+	}
+
+	// A plain member may not create member profiles either (they cannot approve).
+	if v.ValidateChange("", "CommunityProfile", "cp-new3", "chg3", "acct-member", 0,
+		[]ChangeOp{setOp("role", "Member")}, nil) {
+		t.Error("a plain member must not create a member profile")
+	}
+
+	// Promotion of an EXISTING profile is unchanged: a community steward cannot
+	// promote, only the admin tier can.
+	current := map[string]json.RawMessage{"role": json.RawMessage(`"Member"`)}
+	if v.ValidateChange("", "CommunityProfile", "cp", "chg4", "acct-community-steward", 0,
+		[]ChangeOp{setOp("role", "Community Steward")}, current) {
+		t.Error("a community steward must not promote an existing member")
+	}
+}
+
+// countingPolicyProvider records how often the live policy provider is asked.
+type countingPolicyProvider struct{ calls int }
+
+func (c *countingPolicyProvider) Policy() *contributions.RolePolicy {
+	c.calls++
+	return nil
+}
+
+// The CommunityProfile rule is evaluated while the profile's own tree lock is
+// held, and the live policy provider reads the RolePolicy object out of the
+// same community-readonly space — so asking it re-enters that space's trees
+// and deadlocks: every CommunityProfile read then hangs forever (observed
+// end-to-end before this was pinned). The rule must decide from the built-in
+// policy alone, which is also what keeps verdicts deterministic across peers
+// whose synced policy version differs.
+func TestCommunityProfileRuleNeverReadsPolicyProvider(t *testing.T) {
+	counter := &countingPolicyProvider{}
+	contributions.SetPolicyProvider(counter)
+	t.Cleanup(func() { contributions.SetPolicyProvider(nil) })
+
+	resolver := fakeResolver{
+		"acct-community-steward": contributions.MapKERIRole("Community Steward"),
+		"acct-founder":           contributions.MapKERIRole("Founding Member"),
+	}
+	v := NewWriteRuleValidator(resolver, nil, &recordingRecorder{}, false)
+
+	// Creation with the baseline role (the init-member path) …
+	v.ValidateChange("", "CommunityProfile", "cp-new", "chg1", "acct-community-steward", 0,
+		[]ChangeOp{setOp("role", "Member")}, nil)
+	// … and a promotion of an existing profile.
+	v.ValidateChange("", "CommunityProfile", "cp", "chg2", "acct-founder", 0,
+		[]ChangeOp{setOp("role", "Operations Steward")},
+		map[string]json.RawMessage{"role": json.RawMessage(`"Member"`)})
+
+	if counter.calls != 0 {
+		t.Fatalf("CommunityProfile write rules must not consult the policy provider (deadlocks under the tree lock), got %d call(s)", counter.calls)
+	}
+}

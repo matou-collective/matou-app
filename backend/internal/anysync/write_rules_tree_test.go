@@ -215,3 +215,67 @@ func TestRoleHistoryFromRealProfileTree(t *testing.T) {
 		}
 	}
 }
+
+// Real-tree regression for the steward-approval path. When a steward outside
+// the admin tier approves a registration, their backend writes the new
+// member's CommunityProfile with the baseline role (init-member) and then a
+// second change carrying the real credential SAID. The role guard used to
+// treat that FIRST change as a role change and drop it whole on every peer
+// that could resolve the author — so the member lost userAID, displayName and
+// role, the role badge never rendered, and the admin could never open
+// ChangeRoleModal to promote them. State reconstruction is the level the loss
+// happened at, so it is pinned here on a real tree.
+func TestCommunityProfileCreatedByStewardSurvivesStateBuild(t *testing.T) {
+	acl, owner, member := twoWriterACL(t)
+	stewardAccount := member.Keys.SignKey.GetPublic().Account()
+	resolver := fakeResolver{stewardAccount: contributions.MapKERIRole("Community Steward")}
+	recorder := NewLoggingRejectionRecorder(10)
+	validator := NewWriteRuleValidator(resolver, nil, recorder, false)
+
+	const spaceID = "space-test"
+	const objectID = "CommunityProfile-E-newbie"
+	tree := newEncryptedTree(t, acl, owner, objectID, "CommunityProfile")
+
+	// init-member, authored by the approving steward.
+	addOps(t, tree, member.Keys.SignKey, 2000, true,
+		setOp("userAID", "E-newbie"), setOp("displayName", "Newbie"),
+		setOp("role", "Member"), setOp("credential", "pending"))
+	// The approval's second write: the issued credential SAID.
+	addOps(t, tree, member.Keys.SignKey, 3000, false, setOp("credential", "Ecred"))
+
+	build := func() *ObjectState {
+		tree.Lock()
+		defer tree.Unlock()
+		st, err := BuildStateValidated(tree, spaceID, objectID, "CommunityProfile", validator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+
+	state := build()
+	for field, want := range map[string]string{
+		"userAID":     "E-newbie",
+		"displayName": "Newbie",
+		"role":        "Member",
+		"credential":  "Ecred",
+	} {
+		if got := jsonStringValue(state.Fields[field]); got != want {
+			t.Errorf("%s = %q, want %q (the whole init-member change is dropped when its role op is treated as a role change)", field, got, want)
+		}
+	}
+	if rej := recorder.Recent(); len(rej) != 0 {
+		t.Errorf("creating a member profile must not be rejected, got %+v", rej)
+	}
+
+	// The guard itself still holds: the same steward cannot promote the member
+	// they approved — only the admin tier can.
+	promotion := addOps(t, tree, member.Keys.SignKey, 4000, false, setOp("role", "Operations Steward"))
+	after := build()
+	if got := jsonStringValue(after.Fields["role"]); got != "Member" {
+		t.Fatalf("a community steward must not be able to promote: role=%q", got)
+	}
+	if rej := recorder.Recent(); len(rej) != 1 || rej[0].ChangeID != promotion {
+		t.Fatalf("the promotion must be the only rejection, got %+v", rej)
+	}
+}
