@@ -80,7 +80,10 @@ func TestKERIAResolverCurrentKeys(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r, err := NewKERIAResolver(srv.URL+"/oobi/{aid}", time.Minute)
+	// Retry disabled here: this case exercises caching and the 404/multi-key
+	// paths, not the receipting-window backoff (covered separately), and the
+	// default budget would slow the unknown-AID assertion below.
+	r, err := NewKERIAResolver(srv.URL+"/oobi/{aid}", time.Minute, WithNotFoundRetry(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +117,104 @@ func TestKERIAResolverCurrentKeys(t *testing.T) {
 	// Unknown AID → error (404).
 	if _, err := r.CurrentKeys(context.Background(), "EBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"); err == nil {
 		t.Fatal("expected error for unknown AID")
+	}
+}
+
+// TestKERIAResolverRetriesTransientNotFound covers Manifestation 2 (#513): an
+// AID's OOBI 404s in the window between a rotation and its witness receipts
+// landing. The resolver must ride out that window with bounded retry rather than
+// failing on the first 404 (which drops the login to unauthenticated).
+func TestKERIAResolverRetriesTransientNotFound(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits < 3 { // 404 the first two passes, then serve the KEL.
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(makeEventFor(t, testAID, "icp", "0", "1", []string{"DuserKey"}))
+	}))
+	defer srv.Close()
+
+	r, err := NewKERIAResolver(srv.URL+"/oobi/{aid}", 0, WithNotFoundRetry(5, time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := r.CurrentKeys(context.Background(), testAID)
+	if err != nil {
+		t.Fatalf("CurrentKeys should have ridden out the 404 window: %v", err)
+	}
+	if len(keys) != 1 || keys[0] != "DuserKey" {
+		t.Fatalf("expected DuserKey, got %v", keys)
+	}
+	if hits != 3 {
+		t.Fatalf("expected 3 requests (two 404s then 200), got %d", hits)
+	}
+
+	// A persistent 404 still fails, and does so within the retry budget rather
+	// than spinning forever.
+	always404 := httptest.NewServer(http.HandlerFunc(http.NotFound))
+	defer always404.Close()
+	r2, err := NewKERIAResolver(always404.URL+"/oobi/{aid}", 0, WithNotFoundRetry(2, time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r2.CurrentKeys(context.Background(), testAID); err == nil {
+		t.Fatal("a persistently unavailable AID must still error")
+	}
+
+	// A cancelled context aborts the backoff promptly instead of sleeping out
+	// the whole budget.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := r2.CurrentKeys(ctx, testAID); err == nil {
+		t.Fatal("cancelled context must abort the retry")
+	}
+}
+
+// TestKERIAResolverFallsBackAcrossSources covers Manifestation 1 (#513): a
+// group AID's bare KERIA OOBI is answered by a co-signer's agent that never
+// collected the group's receipts, so it 404s a fully-receipted AID. A witness
+// (which holds the receipted KEL) is configured as an additional, comma-
+// separated source and must be consulted when the primary 404s.
+func TestKERIAResolverFallsBackAcrossSources(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(http.NotFound)) // co-signer's agent
+	defer primary.Close()
+	var witnessHits int
+	witness := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		witnessHits++
+		_, _ = w.Write(makeEventFor(t, testAID, "icp", "0", "1", []string{"DwitnessServedKey"}))
+	}))
+	defer witness.Close()
+
+	tmpl := primary.URL + "/oobi/{aid}," + witness.URL + "/oobi/{aid}"
+	r, err := NewKERIAResolver(tmpl, 0, WithNotFoundRetry(0, time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := r.CurrentKeys(context.Background(), testAID)
+	if err != nil {
+		t.Fatalf("CurrentKeys should have fallen back to the witness: %v", err)
+	}
+	if len(keys) != 1 || keys[0] != "DwitnessServedKey" {
+		t.Fatalf("expected the witness-served key, got %v", keys)
+	}
+	if witnessHits == 0 {
+		t.Fatal("witness source was never consulted")
+	}
+}
+
+// TestKERIAResolverMultiSourceTrustBoundary: every source in a comma-separated
+// list is held to the same loopback/TLS trust boundary — one insecure remote
+// entry rejects the whole resolver.
+func TestKERIAResolverMultiSourceTrustBoundary(t *testing.T) {
+	if _, err := NewKERIAResolver("http://localhost:3902/oobi/{aid},http://keria.example.org/oobi/{aid}", 0); err == nil {
+		t.Fatal("a plain-http non-loopback source anywhere in the list must be refused")
+	}
+	if _, err := NewKERIAResolver("http://localhost:3902/oobi/{aid},http://127.0.0.1:6643/oobi/{aid}", 0); err != nil {
+		t.Fatalf("two loopback sources should be accepted: %v", err)
+	}
+	if _, err := NewKERIAResolver("http://localhost:3902/oobi/{aid},http://localhost:6643/no-placeholder", 0); err == nil {
+		t.Fatal("a source without the {aid} placeholder must be refused")
 	}
 }
