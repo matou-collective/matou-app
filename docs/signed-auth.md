@@ -122,10 +122,35 @@ OOBI responses routinely carry witness/agent KELs alongside the controller's,
 and those must never be mistaken for the user's key state. The URL is
 configurable:
 
-- `MATOU_KERIA_KEYSTATE_URL` — a template containing `{aid}` (e.g.
-  `http://localhost:4902/oobi/{aid}`). The AID is validated and path-escaped
-  before interpolation.
-- Default: derived from `KERIConfig.CESRURL` as `{cesrUrl}/oobi/{aid}`.
+- `MATOU_KERIA_KEYSTATE_URL` — one or more **comma-separated** templates, each
+  containing `{aid}` (e.g. `http://localhost:4902/oobi/{aid}`). The AID is
+  validated and path-escaped before interpolation, and every template is held to
+  the same loopback/TLS trust boundary (below). Sources are tried **in order**
+  until one serves the requested AID's KEL.
+- Default: derived from `KERIConfig.CESRURL` as `{cesrUrl}/oobi/{aid}` (a single
+  KERIA OOBI, unchanged).
+
+**Multiple sources and bounded retry (#513).** KERIA's bare OOBI is not a
+reliable key-state source. It 404s a **fully-receipted multisig group AID** whose
+OOBI happens to be answered by a co-signer's agent (that agent never collected
+the group's witness receipts, so KERIA's `fullyWitnessed()` gate rejects it —
+"Manifestation 1"), and it 404s an AID's **own** OOBI in the window between a
+rotation and its witness receipts landing ("Manifestation 2"). Either 404 would
+otherwise drop a signed request to unauthenticated on the first attempt. So the
+resolver:
+
+- **Falls back across sources.** List a **witness** `/oobi/{aid}` after the KERIA
+  OOBI (e.g. `…/oobi/{aid},http://witness:5642/oobi/{aid}`) — a witness holds the
+  receipted KEL by protocol design, so it survives Manifestation 1 for a group
+  AID a co-signer's agent 404s. Recommended for any **multi-tenant / multisig**
+  deployment (several controllers sharing one KERIA); a single-tenant deployment
+  can keep the lone KERIA OOBI.
+- **Rides out the receipting window.** When *every* source answers a transient
+  `404`/`503`, the resolver retries with bounded backoff (4 passes, 200ms
+  doubling, capped at 1s → worst-case ~2.4s added latency, context-cancellable)
+  before degrading to unauthenticated — surviving Manifestation 2. A hard failure
+  (invalid AID, `500`, network error) still fails fast; retry is not a mask for a
+  misconfigured source.
 
 **Trust boundary.** The resolver trusts the KEL that endpoint serves
 wholesale — it does not verify event signatures, digests or witness receipts.
@@ -143,8 +168,15 @@ unauthenticated (fine while the flag is off). Serving/verifying such KELs by
 another route is a follow-up.
 
 The exact unauthenticated route that serves an AID's KEL is deployment-specific
-(KERIA OOBI endpoint vs a witness); it cannot be verified from the CI sandbox and
-is validated by the e2e run. Adjust the template if the OOBI route differs.
+(KERIA OOBI endpoint vs a witness); adjust the template(s) if the OOBI route
+differs. The source-fallback and bounded-retry mechanics are unit-covered
+(`keystate_test.go`: `404`→`200` rides out the window within budget, a second
+source serves when the primary 404s, and the loopback/TLS boundary rejects an
+insecure or placeholder-less source anywhere in the list). What still needs a
+**live** multi-witness run is the end-to-end multisig case — a group AID whose
+KERIA OOBI is answered by a co-signer's agent (Manifestation 1) and a steward
+signing in during its promotion rotation (Manifestation 2) — driven by
+registration e2e test 5 on a clean 6-witness stack. See #513.
 
 ## Machine clients (matou-mcp, scripts)
 
