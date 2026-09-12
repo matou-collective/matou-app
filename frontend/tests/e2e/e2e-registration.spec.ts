@@ -150,12 +150,16 @@ test.describe.serial('Registration Approval Flow', () => {
     // Navigate to splash and let the app decide
     await adminPage.goto(FRONTEND_URL);
 
-    // Race: either redirected to /setup (no org config) or splash shows ready state
+    // Race: either redirected to /setup (no org config) or splash shows ready
+    // state. Budgeted like a KERI-backed step, not a UI nudge: the splash holds
+    // "Checking your identity..." until its identity probe and org-config fetch
+    // answer, so on a cold backend BOTH branches can miss a 20s deadline — and
+    // then the race rejects and takes the whole suite's beforeAll with it.
     const needsSetup = await Promise.race([
-      adminPage.waitForURL(/.*#\/setup/, { timeout: TIMEOUT.medium })
+      adminPage.waitForURL(/.*#\/setup/, { timeout: TIMEOUT.registrationSubmit })
         .then(() => true),
       adminPage.locator('button', { hasText: /join now/i })
-        .waitFor({ state: 'visible', timeout: TIMEOUT.medium })
+        .waitFor({ state: 'visible', timeout: TIMEOUT.registrationSubmit })
         .then(() => false),
     ]);
 
@@ -1303,5 +1307,265 @@ test.describe.serial('Registration Approval Flow', () => {
     }
   });
 
+  // ------------------------------------------------------------------
+  // Test 5: A SECOND steward — the admin promotes the member that the FIRST
+  // steward approved.
+  //
+  // member2 was registered and approved entirely by member1 (the steward the
+  // admin promoted in test 2), so the admin never saw that approval happen.
+  // That is the case no other test covers, and two things have to hold on the
+  // admin's replica before a second promotion is even reachable:
+  //
+  //   1. member2 must appear as a MEMBER, not as a pending applicant. The
+  //      admin's KERIA notification for member2's application is still unread
+  //      (approveRegistration marks it read only on the approving agent), so
+  //      useRegistrationPolling has to consult the SharedProfile status —
+  //      otherwise the admin's ProfileModal opens as "Registration Details"
+  //      forever and offers Approve/Decline instead of a role badge.
+  //
+  //   2. member2's CommunityProfile must carry `role`. The peer-side write rule
+  //      guarded EVERY CommunityProfile.role write as a role change, so the
+  //      approving steward's init-member change (which sets role="Member" on a
+  //      brand-new profile) was dropped on every peer that could resolve its
+  //      author — taking the whole profile with it. No role means no role badge,
+  //      and the badge is the only entry point to ChangeRoleModal.
+  //
+  // Then the promotion itself. Beyond the happy path this pins the group's key
+  // state: addMemberRound1/2 build each rotation from [master, newMember] only,
+  // so a second promotion silently rotating the FIRST steward out of the group
+  // is the failure mode this test exists to catch.
+  // ------------------------------------------------------------------
+  test('admin sees the steward-approved member as a member and promotes them to Community Steward', async ({ browser }) => {
+    test.setTimeout(600_000); // 10 min: login + two multisig rounds
 
+    accounts = loadAccounts();
+    if (!accounts.member?.mnemonic || !accounts.member2?.mnemonic) {
+      test.skip(true, 'Tests 1 and 2 must run first to create member and member2 accounts');
+      return;
+    }
+
+    // --- Key-state helpers: read a KEL straight from KERIA's bare OOBI ---
+    // (no signing needed) and return the latest establishment event's keys.
+    type KelEvent = { i?: string; t?: string; s?: string; kt?: string; k?: string[] };
+    const parseKel = (buf: Buffer): KelEvent[] => {
+      const out: KelEvent[] = [];
+      let i = 0;
+      const marker = Buffer.from('{"v":"KERI10JSON');
+      for (;;) {
+        i = buf.indexOf(marker, i);
+        if (i < 0) break;
+        const size = parseInt(buf.subarray(i + 16, i + 22).toString('ascii'), 16);
+        try {
+          out.push(JSON.parse(buf.subarray(i, i + size).toString('utf8')) as KelEvent);
+        } catch { /* skip non-event JSON */ }
+        i += size;
+      }
+      return out;
+    };
+    // A GROUP AID's key state must be read from a WITNESS, never from KERIA's
+    // bare OOBI. Every test user shares one KERIA, and `Agency.lookup()`
+    // resolves an AID through a single-value map that `Agency.incept()` PINS
+    // (keria/app/agenting.py — last writer wins). As soon as a co-signer's
+    // agent processes a group rotation, that agent owns the mapping, and a
+    // co-signer's agent never collects the group's witness receipts — so
+    // keria/end/ending.py's `fullyWitnessed()` guard answers 404 "not
+    // available" for a group that is in fact fully receipted. The witnesses
+    // hold the receipted KEL and are authoritative. Personal AIDs are only
+    // ever owned by their own agent, so KERIA is fine for those (with the
+    // witnesses as a fallback while receipts for a fresh rotation land).
+    const TEST_WITNESS_PORTS = [6642, 6643, 6644, 6645, 6646, 6647];
+    const kelSources = (aid: string, source: 'keria' | 'witness'): string[] => {
+      const wits = TEST_WITNESS_PORTS.map(p => `http://localhost:${p}/oobi/${aid}`);
+      return source === 'witness' ? wits : [`http://localhost:4902/oobi/${aid}`, ...wits];
+    };
+    const currentKeyState = async (
+      aid: string,
+      source: 'keria' | 'witness' = 'keria',
+    ): Promise<{ sn: number; kt: string; k: string[] }> => {
+      let est: KelEvent[] = [];
+      const tried: string[] = [];
+      for (const url of kelSources(aid, source)) {
+        const resp = await adminPage.request.get(url);
+        tried.push(`${url.replace(/\/oobi\/.*/, '')}=${resp.status()}`);
+        if (resp.status() !== 200) continue;
+        est = parseKel(await resp.body()).filter(
+          e => e.i === aid && ['icp', 'rot', 'dip', 'drt'].includes(e.t ?? ''),
+        );
+        if (est.length > 0) break;
+      }
+      expect(
+        est.length,
+        `no establishment events in KEL of ${aid.slice(0, 12)} from any ${source} source (${tried.join(' ')})`,
+      ).toBeGreaterThan(0);
+      const latest = est.reduce((a, b) => (parseInt(b.s ?? '0', 16) > parseInt(a.s ?? '0', 16) ? b : a));
+      return { sn: parseInt(latest.s ?? '0', 16), kt: latest.kt ?? '', k: latest.k ?? [] };
+    };
+    const profileData = async (type: string, aid: string): Promise<Record<string, unknown>> => {
+      const resp = await adminPage.request.get(
+        `http://localhost:9080/api/v1/profiles/${type}/${type}-${aid}`,
+      );
+      expect(resp.status(), `${type} for ${aid.slice(0, 12)} should exist on the admin backend`).toBe(200);
+      return ((await resp.json()).data ?? {}) as Record<string, unknown>;
+    };
+
+    const orgConfigResp = await adminPage.request.get('http://localhost:9080/api/v1/org/config');
+    const orgAid: string = (await orgConfigResp.json()).organization.aid;
+    const member1Aid = accounts.member!.aid;
+    const member2Aid = accounts.member2!.aid;
+    const member2Name = accounts.member2!.name;
+
+    // Sanity: after test 2 the group signs with admin + member1.
+    const groupBefore = await currentKeyState(orgAid, 'witness');
+    const member1Before = await currentKeyState(member1Aid);
+    console.log(`[Test] Group before: sn=${groupBefore.sn} kt=${groupBefore.kt} signers=${groupBefore.k.length}`);
+    expect(groupBefore.k, 'member1 (steward from test 2) should sign for the group').toContain(member1Before.k[0]);
+
+    // Everyone the group rotation touches has to be online.
+    //  - member2 is being added: round 1 invites them, their client accepts and
+    //    rotates its personal AID, then the admin runs round 2.
+    //  - member1 ALREADY signs for the group, and a KERI rotation can only
+    //    install keys the previous event pre-committed — so member1 must
+    //    install its next key for each round too, or the only valid rotation is
+    //    one that drops it from the group. Its client does that in response to
+    //    the admin's rotation signal (useMultisigRotationSignal), which means
+    //    it has to be signed in and on the dashboard for the whole promotion.
+    const member1Backend = await backends.start('member1-steward');
+    const member1Context = await browser.newContext();
+    await setupTestConfig(member1Context);
+    await setupBackendRouting(member1Context, member1Backend.port);
+    const member1Page = await member1Context.newPage();
+    setupPageLogging(member1Page, 'Member1');
+
+    const member2Backend = await backends.start('member2-steward');
+    const member2Context = await browser.newContext();
+    await setupTestConfig(member2Context);
+    await setupBackendRouting(member2Context, member2Backend.port);
+    const member2Page = await member2Context.newPage();
+    setupPageLogging(member2Page, 'Member2');
+
+    try {
+      console.log('[Test] Logging in member1 (the existing steward) with saved mnemonic...');
+      await loginWithMnemonic(member1Page, accounts.member!.mnemonic);
+      console.log('[Test] member1 on dashboard');
+
+      console.log('[Test] Logging in member2 with saved mnemonic...');
+      await loginWithMnemonic(member2Page, accounts.member2!.mnemonic);
+      console.log('[Test] member2 on dashboard');
+
+      // ================================================================
+      // A. The admin's record of member2: an approved member, with a role
+      // ================================================================
+      const cpBefore = await profileData('CommunityProfile', member2Aid);
+      console.log(`[Test] member2 CommunityProfile fields: ${Object.keys(cpBefore).sort().join(', ')}`);
+      expect(
+        cpBefore.role,
+        'CommunityProfile.role must survive an approval performed by a steward outside the admin tier ' +
+          '— it renders the role badge, the only entry point to ChangeRoleModal ' +
+          '(peer-side write rule, anysync/write_rules.go)',
+      ).toBe('Member');
+
+      const spBefore = await profileData('SharedProfile', member2Aid);
+      expect(
+        spBefore.status,
+        'member2 SharedProfile should read approved on the admin backend after member1 approved them',
+      ).toBe('approved');
+
+      // ================================================================
+      // B. The admin's dashboard must show member2 as a member, not pending
+      // ================================================================
+      await adminPage.reload();
+      const adminMembersCard = adminPage.locator('.members-card');
+      const enterCommunityBtn = adminPage.getByRole('button', { name: /enter community/i });
+      await Promise.race([
+        adminMembersCard.waitFor({ state: 'visible', timeout: TIMEOUT.long }),
+        enterCommunityBtn.waitFor({ state: 'visible', timeout: TIMEOUT.long })
+          .then(() => enterCommunityBtn.click()),
+      ]);
+      await expect(adminMembersCard).toBeVisible({ timeout: TIMEOUT.long });
+
+      const member2CardOnAdmin = adminMembersCard.locator('.profile-card').filter({ hasText: member2Name });
+      await expect(member2CardOnAdmin).toBeVisible({ timeout: TIMEOUT.medium });
+      await member2CardOnAdmin.click();
+
+      const memberModal = adminPage.locator('.modal-content');
+      await expect(memberModal).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(memberModal.locator('h4').first()).toContainText(member2Name, { timeout: TIMEOUT.short });
+
+      // ProfileModal.headerTitle: 'Registration Details' when a pending
+      // registration is still attached, 'Pending Member' when the SharedProfile
+      // says pending, 'Member Profile' once neither is true. Generous timeout:
+      // registration polling runs on the notification-fetch cycle, and the
+      // header re-renders reactively when the stale registration is dropped.
+      await expect(
+        memberModal.locator('h3').first(),
+        'the admin must stop treating member2 as a pending registration once another steward approved them',
+      ).toHaveText(/Member Profile/, { timeout: TIMEOUT.long });
+      await expect(
+        memberModal.getByRole('button', { name: /^Approve$/i }),
+        'an already-approved member must not still offer Approve on the admin dashboard',
+      ).toHaveCount(0);
+      console.log('[Test] Admin shows member2 as a member profile (no longer a pending registration)');
+
+      // ================================================================
+      // C. Admin promotes member2 to Community Steward (multisig upgrade)
+      //
+      // This is what a SECOND promotion exercises that the first cannot:
+      // addMemberRound1/2 used to hardcode the rotation as [admin, newMember],
+      // which dropped member1 from the group (observed: `smids=2` where three
+      // signers were expected) and left the rotation unlanded. They now rebuild
+      // it from every current signer (currentGroupSigners) and walk each one
+      // through its own rotation (rotateCoSigners), so the assertions in D are
+      // the real check on that.
+      // ================================================================
+      const roleBadge = memberModal.locator('span.cursor-pointer').first();
+      await expect(roleBadge).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(roleBadge).toContainText('Member', { timeout: TIMEOUT.short });
+      await roleBadge.click();
+
+      const changeRoleModal = adminPage.locator('.modal-content', {
+        has: adminPage.locator('h3', { hasText: 'Change Role' }),
+      });
+      await expect(changeRoleModal.getByText('Change Role')).toBeVisible({ timeout: TIMEOUT.medium });
+      await changeRoleModal.locator('label').filter({ hasText: 'Community Steward' }).click();
+      await changeRoleModal.getByRole('button', { name: /^Confirm$/i }).click();
+      console.log('[Test] Clicked Confirm — second-steward multisig upgrade starting');
+
+      await expect(adminPage.locator('text=Inviting steward (round 1)')).toBeVisible({ timeout: TIMEOUT.aidCreation });
+      console.log('[Test] Step: Inviting steward (round 1) visible');
+      await expect(adminPage.locator('text=Waiting for steward to accept')).toBeVisible({ timeout: TIMEOUT.aidCreation });
+      console.log('[Test] Step: Waiting for steward to accept visible');
+      await expect(adminPage.locator('text=Promoting steward to signer (round 2)')).toBeVisible({ timeout: 5 * 60_000 });
+      console.log('[Test] Step: Promoting steward to signer (round 2) visible');
+      await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 2 * 60_000 });
+      console.log('[Test] member2 upgrade to Community Steward complete');
+      await changeRoleModal.getByRole('button', { name: /^Done$/i }).click();
+      await expect(changeRoleModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      // ================================================================
+      // D. The role change stuck, and the group kept BOTH stewards
+      // ================================================================
+      const cpAfter = await profileData('CommunityProfile', member2Aid);
+      expect(cpAfter.role, 'member2 CommunityProfile should record the new role').toBe('Community Steward');
+      await expect(roleBadge, 'the role badge should show the new role').toContainText('Community Steward', { timeout: TIMEOUT.medium });
+      await memberModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
+      await expect(memberModal).not.toBeVisible({ timeout: TIMEOUT.short });
+
+      const groupAfter = await currentKeyState(orgAid, 'witness');
+      const member1After = await currentKeyState(member1Aid);
+      const member2After = await currentKeyState(member2Aid);
+      console.log(`[Test] Group after: sn=${groupAfter.sn} kt=${groupAfter.kt} signers=${groupAfter.k.length}`);
+      console.log(`[Test] member1 sn=${member1After.sn} key=${member1After.k[0]?.slice(0, 12)} | member2 sn=${member2After.sn} key=${member2After.k[0]?.slice(0, 12)}`);
+      expect(groupAfter.sn, 'the group should have rotated for the second promotion').toBeGreaterThan(groupBefore.sn);
+      expect(groupAfter.k, 'member2 must now sign for the group').toContain(member2After.k[0]);
+      expect(groupAfter.k, 'member1 (first steward) must REMAIN a group signer after a second promotion').toContain(member1After.k[0]);
+      expect(groupAfter.k.length, 'group should have admin + member1 + member2 signers').toBe(3);
+
+      console.log('[Test] PASS - member2 recognised as a member and promoted to Community Steward');
+    } finally {
+      await member1Context?.close();
+      await member2Context?.close();
+      await backends.stop('member1-steward');
+      await backends.stop('member2-steward');
+    }
+  });
 });

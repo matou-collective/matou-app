@@ -268,9 +268,15 @@ export async function fillProfileForm(
  * "I agree, continue to registration".
  */
 export async function navigateToProfileForm(page: Page): Promise<void> {
+  // The splash holds a "Checking your identity..." state until its identity
+  // probe and org-config fetch answer, and for an e2e registrant both go to a
+  // per-user backend that has only just booted (config falls back to the config
+  // server when the backend has no org yet). That settles a little past 10s
+  // often enough to fail the whole suite on the first registrant, so budget
+  // like a KERI-backed step rather than a "quick UI operation".
   await expect(
     page.getByRole('button', { name: /join now/i }),
-  ).toBeVisible({ timeout: TIMEOUT.short });
+  ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
   await page.getByRole('button', { name: /join now/i }).click();
 
   // Kit welcome screen (heading = kit welcome heading, "Join Mātou").
@@ -351,9 +357,12 @@ export async function loginWithMnemonic(
   mnemonic: string[],
 ): Promise<void> {
   await page.goto(FRONTEND_URL);
+  // Same cold-splash budget as navigateToProfileForm: the entry buttons only
+  // render once the identity probe and org-config fetch have answered, and a
+  // just-booted per-user backend can take longer than a "quick UI operation".
   await expect(
     page.getByRole('button', { name: /join now/i }),
-  ).toBeVisible({ timeout: TIMEOUT.short });
+  ).toBeVisible({ timeout: TIMEOUT.registrationSubmit });
 
   await page.getByText(/recover identity/i).click();
   await expect(
@@ -599,7 +608,7 @@ export async function performOrgSetup(
   await page.locator('input').first().fill(adminName);
 
   // --- Submit and wait for KERI operations ---
-  await page.getByRole('button', { name: /create organization/i }).click();
+  await page.getByRole('button', { name: /launch app|create organization/i }).click();
   console.log('[OrgSetup] Creating admin identity...');
 
   await expect(page).toHaveURL(/#\/$/, { timeout: TIMEOUT.orgSetup });
