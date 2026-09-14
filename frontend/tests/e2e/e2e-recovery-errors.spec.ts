@@ -60,7 +60,7 @@ test.describe('Recovery & Error Handling', () => {
     await test.step('Clear session', async () => {
       await page.evaluate(() => localStorage.removeItem('matou_passcode'));
       await page.goto(FRONTEND_URL);
-      await expect(page.getByRole('img', { name: 'Mātou', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
+      await expect(page.getByRole('img', { name: 'Mātou Logo', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
     });
 
     // Recover via mnemonic
@@ -124,9 +124,12 @@ test.describe('Recovery & Error Handling', () => {
       await page.getByRole('button', { name: /continue to verification/i }).click();
       await completeMnemonicVerification(page, mnemonic, /verify and continue/i);
 
+      // "Verify and continue" submits the registration to the org (org OOBI
+      // resolve + IPEX) before the pending-approval screen renders — KERI
+      // work, so budget it like the other KERI waits, not as a UI hop.
       await expect(
         page.getByText(/application received|application.*review|pending/i).first(),
-      ).toBeVisible({ timeout: TIMEOUT.short });
+      ).toBeVisible({ timeout: TIMEOUT.long });
       console.log('Reached pending-approval screen');
     });
 
@@ -159,7 +162,7 @@ test.describe('Recovery & Error Handling', () => {
 
     // Reload
     await page.goto(FRONTEND_URL);
-    await expect(page.getByRole('img', { name: 'Mātou', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
+    await expect(page.getByRole('img', { name: 'Mātou Logo', exact: true })).toBeVisible({ timeout: TIMEOUT.short });
 
     // Buttons should be visible immediately
     await expect(
