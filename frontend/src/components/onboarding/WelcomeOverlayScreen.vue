@@ -50,14 +50,23 @@
 
         <!-- Waiting for sync state (retryable backend 503 / pending space access) -->
         <div v-if="waitingForSync" class="w-full space-y-3">
-          <div class="status-item flex items-center gap-3 bg-white/10 rounded-xl px-4 py-3">
+          <div
+            v-if="autoRetryExhausted"
+            class="status-item sync-exhausted flex items-center gap-3 bg-white/10 rounded-xl px-4 py-3"
+          >
+            <XCircle class="w-5 h-5 text-red-300 shrink-0" />
+            <span class="text-white/90 text-sm">
+              We couldn't reach your data after several attempts. Check your connection, then tap Retry.
+            </span>
+          </div>
+          <div v-else class="status-item flex items-center gap-3 bg-white/10 rounded-xl px-4 py-3">
             <Loader2 class="w-5 h-5 text-white/70 shrink-0 animate-spin" />
             <span class="text-white/90 text-sm">Waiting for your data to sync&hellip;</span>
           </div>
           <MBtn
             class="w-full retry-btn"
             size="lg"
-            @click="retrySync"
+            @click="onManualRetry"
           >
             <RefreshCw class="w-5 h-5 mr-2" />
             Retry
@@ -236,7 +245,9 @@ const isLinkFlow = computed(() => onboardingStore.onboardingPath === 'link');
 
 const subtitle = computed(() => {
   if (waitingForSync.value) {
-    return 'Waiting for your data to sync…';
+    return autoRetryExhausted.value
+      ? 'Your data is not reachable yet.'
+      : 'Waiting for your data to sync…';
   }
   if (isRegisterFlow.value) {
     return syncReady.value
@@ -270,6 +281,61 @@ const checks = reactive<StatusCheck[]>([
 // still syncing on the backend. We show a Retry button instead of failing the
 // check or letting the user through to a dashboard that can't read its data.
 const waitingForSync = ref(false);
+
+// Auto-retry for the sync-wait gate (#506). A linked device that is merely
+// waiting for a slow-but-eventual cold space pull must reach the dashboard
+// without a human clicking Retry, so while waitingForSync is set we re-run the
+// checks on a bounded exponential backoff. The manual Retry button remains and
+// resets the backoff.
+//
+// Link flow ONLY. The retry re-POSTs identity/set, and only link mode is safe
+// to repeat unattended: it adopts or 503s and never creates. In the recovery
+// flow identity/set falls back to CreateSpaceWithKeys whenever the derived
+// private space is not found (always, today — see #506 defect C), so an
+// unattended loop would fork a fresh private space and restart the any-sync
+// SDK on every tick. Recovery keeps the manual Retry button only.
+const AUTO_RETRY_MAX_ATTEMPTS = 12;
+const AUTO_RETRY_INITIAL_MS = 2000;
+const AUTO_RETRY_MAX_MS = 15000;
+let autoRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let autoRetryAttempt = 0;
+// True once the auto-retry ceiling has been reached without success: the
+// waiting row stops claiming "syncing" and says the data was not reachable,
+// while the manual Retry button stays. Cleared whenever we leave the waiting
+// state (a manual Retry resets the backoff and re-enters it).
+const autoRetryExhausted = ref(false);
+
+function clearAutoRetry() {
+  if (autoRetryTimer) {
+    clearTimeout(autoRetryTimer);
+    autoRetryTimer = null;
+  }
+}
+
+// Schedule the next auto-retry with exponential backoff, up to a ceiling of
+// AUTO_RETRY_MAX_ATTEMPTS. Once the ceiling is reached we stop the timer, flag
+// the exhausted state, and leave waitingForSync set so the manual Retry button
+// is still offered.
+function scheduleAutoRetry() {
+  clearAutoRetry();
+  if (autoRetryAttempt >= AUTO_RETRY_MAX_ATTEMPTS) {
+    autoRetryExhausted.value = true;
+    return;
+  }
+  const delay = Math.min(
+    AUTO_RETRY_INITIAL_MS * 2 ** autoRetryAttempt,
+    AUTO_RETRY_MAX_MS,
+  );
+  autoRetryAttempt++;
+  autoRetryTimer = setTimeout(() => {
+    autoRetryTimer = null;
+    // Only retry if we are still waiting — a manual Retry or success may have
+    // moved us on in the meantime.
+    if (waitingForSync.value) {
+      void retrySync();
+    }
+  }, delay);
+}
 
 // Sync state (for register path — polls sync/status after community join)
 const communityReady = ref(false);
@@ -607,6 +673,13 @@ async function retrySync() {
   }
 }
 
+// Manual Retry button: reset the backoff so the user's explicit click restarts
+// auto-retry from a short delay, then re-run the checks.
+function onManualRetry() {
+  autoRetryAttempt = 0;
+  void retrySync();
+}
+
 function handleContinue() {
   stopSyncPolling();
   emit('continue');
@@ -620,6 +693,18 @@ function sleep(ms: number): Promise<void> {
 watch(allChecksPassed, (passed) => {
   if (passed) {
     startWelcomeRotation();
+  }
+});
+
+// Drive the bounded auto-retry off the sync-wait gate (#506): schedule a retry
+// whenever we enter the waiting state, and cancel any pending retry once we
+// leave it (success, failure, or manual retry that moved on).
+watch(waitingForSync, (waiting) => {
+  if (waiting) {
+    if (isLinkFlow.value) scheduleAutoRetry();
+  } else {
+    clearAutoRetry();
+    autoRetryExhausted.value = false;
   }
 });
 
@@ -643,6 +728,7 @@ onMounted(() => {
 onUnmounted(() => {
   stopWelcomeRotation();
   stopSyncPolling();
+  clearAutoRetry();
 });
 </script>
 
