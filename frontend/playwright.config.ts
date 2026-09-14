@@ -69,7 +69,24 @@ export default defineConfig({
     {
       name: 'org-setup',
       testMatch: /e2e-org-setup\.spec\.ts/,
-      use: browserConfig,
+      use: {
+        ...browserConfig,
+        // #510: the blank-page org-setup failure passes on the first retry, so
+        // the default `on-first-retry` capture only ever traces the *passing*
+        // retry and never the failing attempt — the blank screenshot is then
+        // the only evidence. `retain-on-failure` records every attempt and
+        // keeps the trace only for attempts that fail, so the failing
+        // attempt-0 is captured while all-green runs retain nothing.
+        //
+        // Tracing covers contexts the spec creates itself via
+        // `browser.newContext()` (Playwright hooks every context through its
+        // client instrumentation). `video` does NOT — Playwright only injects
+        // `recordVideo` into contexts made by its own `context`/`page`
+        // fixtures — and the org-setup tests that matter build their own
+        // contexts, so a `video` override here would only ever record the
+        // unused fixture page. Deliberately omitted.
+        trace: 'retain-on-failure',
+      },
     },
     // Registration tests - uses persisted test config from org-setup
     // No dependency — self-sufficient (auto-runs org-setup if needed)
