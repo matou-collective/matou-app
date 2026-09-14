@@ -43,6 +43,30 @@ type KERIConfig struct {
 	CESRURL  string `yaml:"cesrUrl"`
 }
 
+// defaultKERIConfig returns the KERIA admin/boot/CESR URL defaults for the
+// current environment. dev (the default) uses the 3901-3903 ports; MATOU_ENV=test
+// uses the isolated test KERIA ports 4901-4903 documented in the CLAUDE.md
+// environment matrix. This keeps the signed-auth key-state URL derived from
+// cfg.KERI.CESRURL pointed at the *running* KERIA in each environment (issue
+// #517): without it, a test-mode backend defaults the key-state URL to the dev
+// CESR port (3902) and every login 503s ("could not resolve key state"). These
+// are only defaults — a config-file value or an explicit MATOU_KERIA_KEYSTATE_URL
+// still override.
+func defaultKERIConfig() KERIConfig {
+	if os.Getenv("MATOU_ENV") == "test" {
+		return KERIConfig{
+			AdminURL: "http://localhost:4901",
+			BootURL:  "http://localhost:4903",
+			CESRURL:  "http://localhost:4902",
+		}
+	}
+	return KERIConfig{
+		AdminURL: "http://localhost:3901",
+		BootURL:  "http://localhost:3903",
+		CESRURL:  "http://localhost:3902",
+	}
+}
+
 // AnySyncConfig holds any-sync connection configuration
 type AnySyncConfig struct {
 	ClientConfigPath string `yaml:"clientConfigPath"`
@@ -109,11 +133,7 @@ func Load(configPath, bootstrapPath string) (*Config, error) {
 			Host: "localhost",
 			Port: 8080,
 		},
-		KERI: KERIConfig{
-			AdminURL: "http://localhost:3901",
-			BootURL:  "http://localhost:3903",
-			CESRURL:  "http://localhost:3902",
-		},
+		KERI: defaultKERIConfig(),
 		AnySync: AnySyncConfig{
 			ClientConfigPath: "config/client.yml",
 		},

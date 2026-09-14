@@ -181,7 +181,7 @@ func TestKERIAResolverFallsBackAcrossSources(t *testing.T) {
 	primary := httptest.NewServer(http.HandlerFunc(http.NotFound)) // co-signer's agent
 	defer primary.Close()
 	var witnessHits int
-	witness := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	witness := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		witnessHits++
 		_, _ = w.Write(makeEventFor(t, testAID, "icp", "0", "1", []string{"DwitnessServedKey"}))
 	}))
