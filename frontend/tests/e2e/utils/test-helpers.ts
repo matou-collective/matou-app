@@ -154,6 +154,12 @@ export function setupPageLogging(page: Page, prefix: string): PageLog {
       text.includes('IdentityStore') || text.includes('MnemonicVerification') ||
       text.includes('Endorsement') || text.includes('EventAttendance') ||
       text.includes('MultisigJoin') || text.includes('listNotifications') ||
+      // #510: the splash credential check, KERI boot and onboarding router are
+      // the only code paths that route a fresh session to the welcome overlay
+      // instead of the setup flow. The run log is the one thing pr-e2e keeps
+      // (attachments are not uploaded), so these must reach stdout too.
+      text.includes('[Splash]') || text.includes('[KERI Boot]') ||
+      text.includes('[Onboarding]') ||
       text.includes('Error') || msg.type() === 'error';
     // Buffer every console line (so the artifact is a complete record) but only
     // echo the filtered subset to stdout to keep the run log readable.

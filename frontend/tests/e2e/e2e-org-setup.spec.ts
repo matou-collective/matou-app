@@ -290,7 +290,7 @@ test.describe.serial('Organization Setup', () => {
     const context = await browser.newContext();
     await setupTestConfig(context);
     const page = await context.newPage();
-    setupPageLogging(page, 'Dashboard');
+    pageLogs.push(setupPageLogging(page, 'Dashboard'));
 
     try {
       // Restore admin session via mnemonic recovery
