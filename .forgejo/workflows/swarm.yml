@@ -135,32 +135,51 @@ jobs:
             exit 0
           fi
           cd "$workdir"
-          # idss #639: once a prior run has checked out .sandcastle/git-setup.sh,
-          # route through it so a git-setup failure — before run-swarm.sh even
-          # starts and can verdict_begin its own stages — still drops a
-          # stage/exit/error verdict the healer keys a real signature on,
-          # instead of collapsing onto the bare workflow-name signature. A
-          # workdir that hasn't pulled this commit yet (git-setup.sh absent —
-          # a genuinely fresh clone, OR an existing checkout one fetch behind)
-          # falls back to the exact pre-git-setup.sh inline fetch-or-clone
-          # below, no verdict; the NEXT run (now carrying git-setup.sh) uses
-          # the script. The fallback keeps deriving the host from
-          # github.server_url (onboarding/README.md's no-hardcoded-remote
-          # fix) rather than copying git-setup.sh's own hardcoded default.
-          if [ -f .sandcastle/git-setup.sh ]; then
-            WORKFLOW=swarm bash .sandcastle/git-setup.sh
-          else
+          # idss #639/idss #1423: route EVERY workdir through .sandcastle/git-setup.sh
+          # — it does the retry-guarded fetch/checkout/reset, drops a TRANSPORT-aware
+          # stage/exit/error verdict (idss #235/idss #1411) the healer keys a real
+          # signature on, and wires the pre-push drift gate. git-setup.sh has shipped
+          # in every established workdir since well before this commit (idss #639 is
+          # long past), so the old inline pre-git-setup.sh fetch-or-reset FALLBACK is
+          # retired: its bare, un-retried `git fetch` was the last un-retried
+          # git-transport surface idss #1411 left (a transient Forgejo 5xx redded the
+          # tick at stage one with a bare exit 128, no verdict).
+          # git-setup.sh cannot bootstrap ITSELF onto disk, so a workdir that lacks it
+          # — a genuinely fresh/empty clone, or (extinct in practice) a checkout frozen
+          # since before idss #639 — is brought up to date inline FIRST, then handed to
+          # git-setup.sh (which re-fetches idempotently and drops the verdict + hooks).
+          # That cold-bootstrap is the one remaining inline network call, so it carries
+          # the same bounded-retry-with-backoff posture as git-setup.sh (idss #1411): a
+          # momentary blip is ridden out; a sustained outage still reds (the workdir was
+          # never updated) and the NEXT tick, now carrying git-setup.sh, gets the full
+          # TRANSPORT verdict. The cold-bootstrap keeps deriving the host from
+          # github.server_url (onboarding/README.md's no-hardcoded-remote fix) rather
+          # than copying git-setup.sh's own hardcoded default.
+          if [ ! -f .sandcastle/git-setup.sh ]; then
             host="${SERVER_URL#https://}"
             url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
-            if [ -d .git ]; then
-              git remote set-url origin "$url"
-              git fetch origin main
-              git checkout -f main
-              git reset --hard origin/main
-            else
-              git clone "$url" .
-            fi
+            # A real subshell with its OWN `set -e`, so a failing fetch aborts the
+            # sequence instead of letting checkout/reset run against stale refs and
+            # mask it (the pin git-setup.sh carries too).
+            bootstrap() (
+              set -e
+              if [ -d .git ]; then
+                git remote set-url origin "$url"
+                git fetch origin main
+                git checkout -f main
+                git reset --hard origin/main
+              else
+                git clone "$url" .
+              fi
+            )
+            attempt=1; delay=2
+            until bootstrap; do
+              [ "$attempt" -ge 3 ] && { echo "git-setup bootstrap: ${host} unreachable across $attempt attempt(s) — the tick is lost; the cron/backstop re-fires" >&2; exit 128; }
+              echo "git-setup bootstrap: attempt $attempt failed, retrying in ${delay}s" >&2
+              sleep "$delay"; delay=$((delay * 2)); attempt=$((attempt + 1))
+            done
           fi
+          WORKFLOW=swarm bash .sandcastle/git-setup.sh
           exec 8>&-
           bash .sandcastle/run-swarm.sh
       - name: Investigate failure (healer)
