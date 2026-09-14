@@ -39,13 +39,21 @@ vi.mock('src/lib/secureStorage', () => ({
   secureStorage: { getItem: vi.fn(async () => 'test mnemonic phrase') },
 }));
 
+// Per-test knobs read at store-construction time (the factories below are
+// re-run on every vi.resetModules(), but the component reads these through the
+// returned functions so a test can flip them before mounting).
+let onboardingPath: 'link' | 'recover' = 'link';
+let hasPendingSpaceAccess = false;
+
 const fetchUserSpaces = vi.fn(async () => {});
 const verifyCommunityAccess = vi.fn(async () => true);
 vi.mock('stores/identity', () => ({
   useIdentityStore: () => ({
     hasIdentity: true,
     currentAID: { prefix: 'EAID-linked-device', name: 'Kaia' },
-    hasPendingSpaceAccess: false,
+    get hasPendingSpaceAccess() {
+      return hasPendingSpaceAccess;
+    },
     fetchUserSpaces,
     verifyCommunityAccess,
   }),
@@ -53,7 +61,9 @@ vi.mock('stores/identity', () => ({
 
 vi.mock('stores/onboarding', () => ({
   useOnboardingStore: () => ({
-    onboardingPath: 'link',
+    get onboardingPath() {
+      return onboardingPath;
+    },
     profile: { name: 'Kaia' },
   }),
 }));
@@ -84,6 +94,8 @@ describe('WelcomeOverlayScreen auto-retry (#506)', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.useFakeTimers();
+    onboardingPath = 'link';
+    hasPendingSpaceAccess = false;
     setBackendIdentity.mockReset();
     fetchUserSpaces.mockClear();
     verifyCommunityAccess.mockClear();
@@ -148,11 +160,68 @@ describe('WelcomeOverlayScreen auto-retry (#506)', () => {
     // The manual Retry button is still offered so the user is never stuck.
     expect(wrapper.find('.retry-btn').exists()).toBe(true);
 
-    // A manual click resets the backoff and drives at least one more attempt.
+    // Once the ceiling is reached the screen must stop claiming the data is
+    // "syncing" and say plainly that it was not reachable (review of #507):
+    // an exhausted backoff is an outcome, not a quiet halt behind a spinner.
+    expect(wrapper.find('.sync-exhausted').exists()).toBe(true);
+    expect(wrapper.text()).toContain("We couldn't reach your data after several attempts");
+    expect(wrapper.text()).not.toContain('Waiting for your data to sync');
+
+    // A manual click resets the backoff, clears the exhausted copy while the
+    // checks re-run, and drives at least one more attempt.
     await wrapper.find('.retry-btn').trigger('click');
     await vi.advanceTimersByTimeAsync(3000);
     expect(setBackendIdentity.mock.calls.length).toBeGreaterThan(calls);
+    expect(wrapper.find('.sync-exhausted').exists()).toBe(false);
+    expect(wrapper.text()).toContain('Waiting for your data to sync');
 
     wrapper.unmount();
+  });
+
+  it('does not auto-retry in the recovery flow, where identity/set would fork a private space each time', async () => {
+    // A recovering (not linking) device: identity/set succeeds (recovery mode
+    // never 503s — it creates on a miss) but an adopted space is still
+    // spaceAccess:'pending', so the screen enters the waiting state. Re-POSTing
+    // identity/set unattended here would call CreateSpaceWithKeys on every tick
+    // (#506 defect C), so only the manual Retry button may drive a retry.
+    onboardingPath = 'recover';
+    hasPendingSpaceAccess = true;
+    setBackendIdentity.mockResolvedValue(OK);
+
+    const Component = await importComponent();
+    const wrapper = mount(Component);
+
+    await vi.advanceTimersByTimeAsync(400);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain('Waiting for your data to sync');
+    expect(wrapper.find('.retry-btn').exists()).toBe(true);
+
+    // No timer-driven retries, however long we wait.
+    await vi.advanceTimersByTimeAsync(400_000);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('.sync-exhausted').exists()).toBe(false);
+
+    // The manual button still re-runs the checks.
+    await wrapper.find('.retry-btn').trigger('click');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(2);
+
+    wrapper.unmount();
+  });
+
+  it('tears the auto-retry timer down on unmount', async () => {
+    setBackendIdentity.mockResolvedValue(RETRYABLE);
+
+    const Component = await importComponent();
+    const wrapper = mount(Component);
+
+    await vi.advanceTimersByTimeAsync(400);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    wrapper.unmount();
+    await vi.advanceTimersByTimeAsync(400_000);
+    // Nothing fired after unmount: no leaked backoff timer re-POSTing identity/set.
+    expect(setBackendIdentity).toHaveBeenCalledTimes(1);
   });
 });
