@@ -80,12 +80,21 @@ teardown() {
 echo "run-pr-e2e: PR #$PR_NUMBER issue #$n spec $spec"
 verdict_stage "clean test data (scripts/clean-test.sh)"
 bash scripts/clean-test.sh
-verdict_stage "keri infra (make clean-test start-and-wait-test)"
-make -C "$INFRA/keri" clean-test start-and-wait-test
+# Both infra stages tee to a log and hand it to verdict_stage. Without one the
+# verdict carries an EMPTY `--- error lines ---` block, so the healer keys its
+# signature on the bare stage name and has to reproduce the bootstrap by hand to
+# learn WHY it died — exactly what happened in #527 (a delisted registry image;
+# docker compose printed the reason, nothing kept it). Same shape as
+# backend_build_log below. `set -o pipefail` is on, so the tee does not mask make.
+infra_log=/tmp/pr-e2e-infra.log
+rm -f "$infra_log"
+verdict_stage "keri infra (make clean-test start-and-wait-test)" "$infra_log"
+make -C "$INFRA/keri" clean-test start-and-wait-test 2>&1 | tee "$infra_log"
 # any-sync clean-test wipes the generated network config (etc-test/), which
 # bare start can't recreate — setup-test regenerates it before starting.
-verdict_stage "any-sync infra (make clean-test setup-test)"
-make -C "$INFRA/any-sync" clean-test setup-test
+rm -f "$infra_log"
+verdict_stage "any-sync infra (make clean-test setup-test)" "$infra_log"
+make -C "$INFRA/any-sync" clean-test setup-test 2>&1 | tee "$infra_log"
 
 # Runner shells are non-login: pick up a user-local Go toolchain if go isn't
 # already on PATH (the workstation installs one at ~/go-sdk/go).
