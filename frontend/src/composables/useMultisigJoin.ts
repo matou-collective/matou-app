@@ -69,12 +69,52 @@ export function useMultisigJoin() {
       if (!me) throw new Error('No personal AID');
       const round = classifyMultisigRot(exn, me);
       const adminPrefix = adminPrefixFromExn(exn);
+      const gidFromExn = (exn as { a?: { gid?: string } }).a?.gid;
+      const cesrUrl = keriClient.getCesrUrl();
       console.log(`[MultisigJoin] notification ${notification.a.d.slice(0, 12)} classified as ${round}, admin=${adminPrefix?.slice(0, 12)}`);
 
       try {
+        // Am I ALREADY a signer of this exact group? Then this /multisig/rot —
+        // round 1 or round 2 — is a rotation I must CO-SIGN, not a personal
+        // rotation and not a join. This is decided by IDENTITY, not by the
+        // round (issue #520): an existing co-signer is listed in BOTH rounds'
+        // smids, so routing on the round alone would push them into the
+        // joining-member's round-1 personal-rotation path. Their own per-round
+        // personal rotation is driven separately by the rotation signal (see
+        // useMultisigRotationSignal). KERIA's /multisig/join also 400s for an
+        // existing alias ("already used alias or prefix"), which used to leave
+        // the notification unread and retried every cycle.
+        let existingGroup: { prefix?: string } | null = null;
+        try {
+          existingGroup = await client.identifiers().get(orgName) as { prefix?: string };
+        } catch {
+          existingGroup = null;
+        }
+        if (existingGroup?.prefix && existingGroup.prefix === gidFromExn) {
+          if (!adminPrefix) throw new Error('/multisig/rot EXN missing admin prefix');
+          await keriClient.resolveOOBI(`${cesrUrl}/oobi/${adminPrefix}`, undefined, 30000);
+          console.log(`[MultisigJoin] already a member of ${gidFromExn.slice(0, 12)} — co-signing the proposed ${round} rotation`);
+          try {
+            await keriClient.coSignGroupRotation(orgName, notification.a.d);
+            console.log('[MultisigJoin] co-signed group rotation');
+          } catch (coSignErr) {
+            // A proposal we can no longer reproduce is permanently
+            // un-cosignable: some participant's key state has moved on (e.g.
+            // the incoming member rotated between the admin building round 1
+            // and us reading it). Leaving it unread would block every later
+            // round, because we always take the oldest unread notification —
+            // and the rotation does not need us anyway at isith=1.
+            const msg = coSignErr instanceof Error ? coSignErr.message : String(coSignErr);
+            if (!msg.includes('no longer match the proposed rotation')) throw coSignErr;
+            console.warn(`[MultisigJoin] dropping un-cosignable rotation proposal: ${msg}`);
+          }
+          await keriClient.markNotificationRead(notification.i);
+          return false; // keep watcher running
+        }
+
+        // Below here I am the JOINING member (not yet a signer of this group).
         if (round === 'round-1') {
           if (!adminPrefix) throw new Error('round-1 EXN missing admin prefix');
-          const cesrUrl = keriClient.getCesrUrl();
           await keriClient.resolveOOBI(`${cesrUrl}/oobi/${adminPrefix}`, undefined, 30000);
           const personalName = aids.aids[0]?.name as string;
           await keriClient.rotatePersonalAid(personalName);
@@ -85,39 +125,7 @@ export function useMultisigJoin() {
 
         if (round === 'round-2') {
           if (!adminPrefix) throw new Error('round-2 EXN missing admin prefix');
-          const cesrUrl = keriClient.getCesrUrl();
           await keriClient.resolveOOBI(`${cesrUrl}/oobi/${adminPrefix}`, undefined, 30000);
-
-          // Already a member of this group? Then this is a subsequent group
-          // rotation we must CO-SIGN, not a join: KERIA's /multisig/join 400s
-          // for an existing alias ("already used alias or prefix"), which
-          // used to leave the notification unread and retried every cycle.
-          const gidFromExn = (exn as { a?: { gid?: string } }).a?.gid;
-          let existingGroup: { prefix?: string } | null = null;
-          try {
-            existingGroup = await client.identifiers().get(orgName) as { prefix?: string };
-          } catch {
-            existingGroup = null;
-          }
-          if (existingGroup?.prefix && existingGroup.prefix === gidFromExn) {
-            console.log(`[MultisigJoin] already a member of ${gidFromExn.slice(0, 12)} — co-signing the proposed rotation`);
-            try {
-              await keriClient.coSignGroupRotation(orgName, notification.a.d);
-              console.log('[MultisigJoin] co-signed group rotation');
-            } catch (coSignErr) {
-              // A proposal we can no longer reproduce is permanently
-              // un-cosignable: some participant's key state has moved on (e.g.
-              // the incoming member rotated between the admin building round 1
-              // and us reading it). Leaving it unread would block every later
-              // round, because we always take the oldest unread notification —
-              // and the rotation does not need us anyway at isith=1.
-              const msg = coSignErr instanceof Error ? coSignErr.message : String(coSignErr);
-              if (!msg.includes('no longer match the proposed rotation')) throw coSignErr;
-              console.warn(`[MultisigJoin] dropping un-cosignable rotation proposal: ${msg}`);
-            }
-            await keriClient.markNotificationRead(notification.i);
-            return false; // keep watcher running
-          }
 
           // Idempotency (issue #470): two signify clients on one agent both see
           // this round-2 /multisig/rot. If the group already commits our current

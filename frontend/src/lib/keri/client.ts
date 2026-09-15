@@ -1659,6 +1659,7 @@ export class KERIClient {
     smids: string[],
     rmids: string[],
     recipients: string[],
+    round?: 'round-1' | 'round-2',
   ): Promise<void> {
     if (!this.client) throw new Error('Not initialized');
     await this.ensureConnected();
@@ -1672,8 +1673,16 @@ export class KERIClient {
     const ims = signify.d(signify.messagize(serder as never, sigers));
     const atc = ims.substring(serder.size);
 
+    // Stamp the rotation round explicitly so recipients don't have to infer it
+    // from smids membership: an existing co-signer is present in BOTH rounds'
+    // smids, so the inference misclassifies a round-1 event as round-2 (issue
+    // #520). See classifyMultisigRot. Omit the field only when the round is
+    // genuinely unknown (an older EXN re-broadcast by coSignGroupRotation).
+    const payload: Record<string, unknown> = { gid: groupPrefix, smids, rmids };
+    if (round) payload.round = round;
+
     console.log(
-      `[KERIClient] sendMultisigRotExn: gid=${groupPrefix.slice(0, 12)}, smids=${smids.length}, rmids=${rmids.length}, recipients=${recipients.length}`,
+      `[KERIClient] sendMultisigRotExn: gid=${groupPrefix.slice(0, 12)}, round=${round ?? 'n/a'}, smids=${smids.length}, rmids=${rmids.length}, recipients=${recipients.length}`,
     );
 
     await this.client.exchanges().send(
@@ -1681,7 +1690,7 @@ export class KERIClient {
       groupName,
       masterFresh,
       '/multisig/rot',
-      { gid: groupPrefix, smids, rmids },
+      payload,
       { rot: [serder, atc] },
       recipients,
     );
@@ -1998,6 +2007,7 @@ export class KERIClient {
       smids,
       rmids,
       [...coSigners.map(sig => sig.aid), newMemberAidPrefix],
+      'round-1',
     );
     console.log('[KERIClient] addMemberRound1 complete');
   }
@@ -2123,6 +2133,7 @@ export class KERIClient {
       smids,
       rmids,
       [...coSigners.map(sig => sig.aid), newMemberAidPrefix],
+      'round-2',
     );
 
     // (h) Refresh agent end role (group prefix can roll forward).
@@ -2237,11 +2248,14 @@ export class KERIClient {
 
     const exchResp = await this.client.exchanges().get(notificationSaid);
     const exn = (exchResp?.exn ?? {}) as Record<string, unknown>;
-    const attrs = (exn.a ?? {}) as { gid?: string; smids?: string[]; rmids?: string[] };
+    const attrs = (exn.a ?? {}) as { gid?: string; smids?: string[]; rmids?: string[]; round?: string };
     const embedded = ((exn.e ?? {}) as { rot?: { d?: string; k?: string[]; n?: string[]; s?: string } }).rot;
     const gid = attrs.gid;
     const smids = attrs.smids ?? [];
     const rmids = attrs.rmids ?? [];
+    // Propagate the round we received so our re-broadcast to the other members
+    // stays legible; omit it if the incoming EXN predates the explicit field.
+    const round = attrs.round === 'round-1' || attrs.round === 'round-2' ? attrs.round : undefined;
     if (!gid || !embedded || smids.length === 0) {
       throw new Error('coSignGroupRotation: notification is not a /multisig/rot with an embedded rotation');
     }
@@ -2306,6 +2320,7 @@ export class KERIClient {
           smids,
           rmids,
           others,
+          round,
         );
       } catch (err) {
         console.warn('[KERIClient] coSignGroupRotation: failed to send our signature to the other members:', err);
