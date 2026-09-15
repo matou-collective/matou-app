@@ -613,13 +613,18 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
 
     async function expectNameConverges(page: Page, name: string): Promise<void> {
       // Reload to pull the latest SharedProfile the backend synced from any-sync.
+      // A hash-only goto to the route the page is already on is a duplicate
+      // navigation for Vue Router: nothing remounts, so the settings page's
+      // onMounted fetch never re-runs and the poll would read the same stale
+      // input for its whole budget. page.reload() forces a fresh mount + fetch.
       await expect
         .poll(
           async () => {
             await page.goto('/#/dashboard/settings');
-            return settingsInput(page)
-              .inputValue()
-              .catch(() => '');
+            await page.reload();
+            const input = settingsInput(page);
+            await input.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+            return input.inputValue().catch(() => '');
           },
           { timeout: 150_000, intervals: [5_000] },
         )
