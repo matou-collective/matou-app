@@ -612,18 +612,22 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     }
 
     async function expectNameConverges(page: Page, name: string): Promise<void> {
-      // Reload to pull the latest SharedProfile the backend synced from any-sync.
-      // A hash-only goto to the route the page is already on is a duplicate
-      // navigation for Vue Router: nothing remounts, so the settings page's
-      // onMounted fetch never re-runs and the poll would read the same stale
-      // input for its whole budget. page.reload() forces a fresh mount + fetch.
+      // Remount the settings page on every tick so its onMounted profile fetch
+      // re-runs and picks up the SharedProfile the backend synced from
+      // any-sync. A hash-only goto to the route the page is already on is a
+      // duplicate navigation for Vue Router (nothing remounts, the input stays
+      // stale for the whole budget), and page.reload() is not an option here:
+      // the platform stubs keep secure storage in memory inside an init
+      // script, so a reload boots the app with no session and the dashboard
+      // guard bounces it to the splash. Bouncing through /dashboard is a real
+      // route change, so the settings page mounts fresh each time.
       await expect
         .poll(
           async () => {
+            await page.goto('/#/dashboard');
             await page.goto('/#/dashboard/settings');
-            await page.reload();
             const input = settingsInput(page);
-            await input.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+            await expect(input).not.toHaveValue('', { timeout: 20_000 }).catch(() => {});
             return input.inputValue().catch(() => '');
           },
           { timeout: 150_000, intervals: [5_000] },
