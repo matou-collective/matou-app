@@ -10,7 +10,22 @@ on:
 
 jobs:
   feature-e2e:
-    runs-on: swarm
+    # TEMPORARY PIN (healer, 2026-09-15) — revert to `swarm` once #527 lands.
+    # #297 flipped this to the pooled `swarm` label so any enrolled host could
+    # take the drive. That is correct in principle, but right now only ONE of
+    # the two `swarm` runners can actually bootstrap the stack: #527 (the minio
+    # org went anonymous-denied on Docker Hub) hard-downs `make setup-test` on
+    # any host that does not already have minio/mc + minio/minio cached, and
+    # matou-workstation does not. elitebook-03 does (its test stack is up and
+    # `make start` never re-pulls a cached image), and provision-e2e-stack.sh
+    # --check reports the full stack ready there.
+    # Evidence: every pr-e2e task since 04:21Z landed on matou-workstation and
+    # died — 19299 at the any-sync infra stage (#527), then 7 runs in a row that
+    # died in ~40 s before writing a verdict — while the last green pr-e2e
+    # (task 86673) ran on elitebook-03. Pinning restores PR e2e evidence; it
+    # does NOT fix #527, and it makes elitebook-03 a single point of failure
+    # for this workflow until the pin comes off.
+    runs-on: elitebook-03
     # Up to 30 min camped on host capacity (#268) + the drive itself.
     timeout-minutes: 75
     # Every PR: run-pr-e2e.sh resolves the spec from the branch name
