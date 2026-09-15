@@ -290,10 +290,10 @@ const waitingForSync = ref(false);
 //
 // Link flow ONLY. The retry re-POSTs identity/set, and only link mode is safe
 // to repeat unattended: it adopts or 503s and never creates. In the recovery
-// flow identity/set falls back to CreateSpaceWithKeys whenever the derived
-// private space is not found (always, today — see #506 defect C), so an
-// unattended loop would fork a fresh private space and restart the any-sync
-// SDK on every tick. Recovery keeps the manual Retry button only.
+// flow identity/set creates the private space (at its derived id) whenever the
+// probe misses, and every identity/set restarts the any-sync SDK, so an
+// unattended loop there would churn on every tick. Recovery keeps the manual
+// Retry button only.
 const AUTO_RETRY_MAX_ATTEMPTS = 12;
 const AUTO_RETRY_INITIAL_MS = 2000;
 const AUTO_RETRY_MAX_MS = 15000;

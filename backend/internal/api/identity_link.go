@@ -52,10 +52,16 @@ var (
 // spaceResolver is the subset of *anysync.SDKClient needed to resolve (adopt or
 // create) a space during identity/set. Declared as an interface so the
 // mode-decision logic is unit-testable without a live any-sync network.
+//
+// It deliberately does NOT expose CreateSpaceWithKeys. A CreateSpace-shaped id
+// hashes a timestamp, so a private space created that way lives at an id no
+// other device can recompute: link mode's pull of the derived id could never
+// succeed (#506 defect C) and every recovery forked an empty space (#508).
+// The private space is only ever created at its derived id.
 type spaceResolver interface {
 	DeriveSpaceIDWithKeys(ctx context.Context, ownerAID, spaceType string, keys *anysync.SpaceKeySet) (string, error)
 	GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error)
-	CreateSpaceWithKeys(ctx context.Context, ownerAID, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error)
+	DeriveSpaceWithKeys(ctx context.Context, ownerAID, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error)
 }
 
 // getSpaceWithBackoff polls GetSpace with exponential backoff until the space
@@ -123,11 +129,15 @@ type privateSpaceOutcome struct {
 }
 
 // resolvePrivateSpace applies the mode-specific policy for the user's private
-// space:
+// space. In every mode the space lives at the id derived from the
+// mnemonic-derived keys + AID, so claim, recovery and link agree on where it is:
 //
-//	claim:    create the space directly.
+//	claim:    create the space at the derived id.
 //	link:     GetSpace with bounded backoff; never create. Unreachable => 503.
-//	recovery: one short GetSpace probe, then fall back to creating (unchanged).
+//	recovery: one short GetSpace probe, then fall back to creating at the
+//	          derived id. A derived space is byte-identical across devices, so
+//	          a probe that merely missed a slow network converges with the
+//	          peer's copy instead of forking.
 func resolvePrivateSpace(ctx context.Context, client spaceResolver, aid string, keys *anysync.SpaceKeySet, mode string) (privateSpaceOutcome, error) {
 	derivedID, err := client.DeriveSpaceIDWithKeys(ctx, aid, anysync.SpaceTypePrivate, keys)
 	if err != nil {
@@ -136,7 +146,7 @@ func resolvePrivateSpace(ctx context.Context, client spaceResolver, aid string, 
 
 	switch mode {
 	case modeClaim:
-		res, err := client.CreateSpaceWithKeys(ctx, aid, anysync.SpaceTypePrivate, keys)
+		res, err := client.DeriveSpaceWithKeys(ctx, aid, anysync.SpaceTypePrivate, keys)
 		if err != nil {
 			return privateSpaceOutcome{}, err
 		}
@@ -153,7 +163,7 @@ func resolvePrivateSpace(ctx context.Context, client spaceResolver, aid string, 
 		_, gErr := client.GetSpace(rctx, derivedID)
 		cancel()
 		if gErr != nil {
-			res, cErr := client.CreateSpaceWithKeys(ctx, aid, anysync.SpaceTypePrivate, keys)
+			res, cErr := client.DeriveSpaceWithKeys(ctx, aid, anysync.SpaceTypePrivate, keys)
 			if cErr != nil {
 				return privateSpaceOutcome{}, cErr
 			}

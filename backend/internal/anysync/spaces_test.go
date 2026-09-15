@@ -95,6 +95,10 @@ func (m *mockAnySyncClient) CreateSpaceWithKeys(ctx context.Context, ownerAID st
 	return m.CreateSpace(ctx, ownerAID, spaceType, nil)
 }
 
+func (m *mockAnySyncClient) DeriveSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, _ *SpaceKeySet) (*SpaceCreateResult, error) {
+	return m.CreateSpace(ctx, ownerAID, spaceType, nil)
+}
+
 func (m *mockAnySyncClient) GetSpace(_ context.Context, _ string) (commonspace.Space, error) {
 	return nil, fmt.Errorf("mock: GetSpace not supported")
 }

@@ -38,6 +38,12 @@ type AnySyncClient interface {
 	// DeriveSpaceID returns the deterministic space ID without creating
 	DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error)
 
+	// DeriveSpaceWithKeys creates a space at the deterministic ID that
+	// DeriveSpaceIDWithKeys computes for the same key set. The user's private
+	// space must be created this way so every device holding the mnemonic
+	// finds it (#506 / #508); CreateSpaceWithKeys ids embed a timestamp.
+	DeriveSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *SpaceKeySet) (*SpaceCreateResult, error)
+
 	// Deprecated: AddToACL builds raw JSON as a proto record which is rejected
 	// by the consensus node. Use MatouACLManager.CreateOpenInvite/JoinWithInvite instead.
 	AddToACL(ctx context.Context, spaceID string, peerID string, permissions []string) error

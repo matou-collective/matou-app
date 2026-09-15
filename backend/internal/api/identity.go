@@ -210,8 +210,9 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 			})
 			return
 		}
-		// actualID is the coordinator-assigned ID for claim/recovery-create, or
-		// the deterministic ID for an adopted (recovered/linked) space.
+		// actualID is the deterministic (keys + AID derived) private space id in
+		// every mode: created there by claim / recovery-miss, adopted there by
+		// recovery / link (#506 defect C, #508).
 		actualID := outcome.spaceID
 		// Persist keys and space record using the actual space ID. A successful
 		// link run writes exactly the same files here as a recovery run.
