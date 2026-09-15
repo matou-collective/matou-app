@@ -326,6 +326,19 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		adminSpaceID = userIdentity.GetAdminSpaceID()
 	}
 
+	// resolveCommunitySpaceID resolves the community space ID live — from the
+	// current identity, falling back to org config — rather than freezing the
+	// boot-time value. The backend can start before an identity (and its spaces)
+	// exists and receive it later via POST /api/v1/identity/set, so any consumer
+	// that runs post-boot must resolve live or it stays wired to the empty
+	// boot-time ID forever (#522; the same fix #174 applied via SetSpaceIDResolver).
+	resolveCommunitySpaceID := func() string {
+		if id := userIdentity.GetCommunitySpaceID(); id != "" {
+			return id
+		}
+		return orgConfigHandler.GetCommunitySpaceID()
+	}
+
 	// Initialize space manager
 	_, _ = fmt.Fprintln(out, "Initializing space manager...")
 	spaceManager := anysync.NewSpaceManager(anysyncClient, &anysync.SpaceManagerConfig{
@@ -546,7 +559,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 			aclMembers := notifications.ChannelMembersFunc(func(_ string) ([]string, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				aidMap, err := spaceManager.ACLManager().AccountAIDMap(ctx, communitySpaceID)
+				aidMap, err := spaceManager.ACLManager().AccountAIDMap(ctx, resolveCommunitySpaceID())
 				if err != nil {
 					return nil, err
 				}
@@ -566,7 +579,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 						return ch.AllowedRoles, nil
 					}
 				}
-				obj, err := spaceManager.ObjectTreeManager().ReadLatestByID(ctx, communitySpaceID, channelID)
+				obj, err := spaceManager.ObjectTreeManager().ReadLatestByID(ctx, resolveCommunitySpaceID(), channelID)
 				if err != nil {
 					return nil, fmt.Errorf("reading channel %s: %w", channelID, err)
 				}
@@ -687,104 +700,37 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// state — ACL join records of the community space and one listing pass
 	// over the CommunityProfile trees of the read-only space — every 30s, off
 	// the tree-processing hot path. Stopped via the app's closers on Shutdown.
-	refreshWriteRuleRoles := func(ctx context.Context) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.Printf("[write-rules] role refresh panicked: %v", rec)
-			}
-		}()
-		if communitySpaceID == "" || communityReadOnlySpaceID == "" {
-			return
-		}
-		accountAID, err := spaceManager.ACLManager().AccountAIDMap(ctx, communitySpaceID)
-		if err != nil {
-			log.Printf("[write-rules] account→AID refresh failed: %v", err)
-			return
-		}
-		history, err := spaceManager.ObjectTreeManager().CollectRoleHistories(ctx, communityReadOnlySpaceID)
-		if err != nil {
-			log.Printf("[write-rules] role history refresh failed: %v", err)
-			return
-		}
-		adminAIDs := make(map[string]bool)
-		if orgConfigHandler.IsConfigured() {
-			for _, a := range orgConfigHandler.GetConfig().Admins {
-				if a.AID != "" {
-					adminAIDs[a.AID] = true
-				}
-			}
-		}
-		writeRuleResolver.Replace(anysync.RoleSnapshot{AccountAID: accountAID, History: history, AdminAIDs: adminAIDs})
-
-		// Project-scoped write rules (issue #166): refresh the per-project
-		// assignment snapshot from the community space's Project + Contribution
-		// objects. Best-effort — a failed pass leaves the previous snapshot in
-		// place and the rules fall back to the community-role gate.
-		if assignments, err := spaceManager.ObjectTreeManager().CollectProjectAssignments(ctx, communitySpaceID); err != nil {
-			log.Printf("[write-rules] project-assignment refresh failed: %v", err)
-		} else {
-			writeRuleProjects.Replace(assignments)
-		}
-
-		// GH#19 part 2: when proof enforcement is on, refresh the signing-key
-		// snapshot the proof verifier reads. Resolve each known member/admin
-		// AID's current KEL signing key off the hot path (a network fetch, so
-		// never done under a tree lock). Best-effort: an AID that fails to
-		// resolve is simply absent from the snapshot, and a proof from it then
-		// fails closed. NEEDS LIVE VERIFICATION: requires a reachable KERIA
-		// key-state endpoint (see the signed-auth wiring below); the e2e run is
-		// the verification per the ticket's acceptance criteria.
-		if enforceProofs {
-			aids := make(map[string]bool, len(accountAID)+len(adminAIDs))
-			for _, aid := range accountAID {
-				if aid != "" {
-					aids[aid] = true
-				}
-			}
-			for aid := range adminAIDs {
-				aids[aid] = true
-			}
-			keySnap := make(map[string][]string, len(aids))
-			for aid := range aids {
-				keys, err := keyStateResolver.CurrentKeys(ctx, aid)
-				if err != nil {
-					log.Printf("[write-rules] key-state refresh failed for %s: %v", aid, err)
-					continue
-				}
-				keySnap[aid] = keys
-			}
-			writeRuleKeys.Replace(keySnap)
-
-			// GH#19 part 3 (#112): when the resolver can serve full KEL history,
-			// snapshot each AID's establishment key states so the proof verifier
-			// can validate a proof against the signing key as of its KEL sn —
-			// surviving a later legitimate rotation (AnchoredKeyProvider). Absent
-			// history, SigningKeysAt falls back to current keys (fail-closed on
-			// rotation), so this is a best-effort enrichment. NEEDS LIVE
-			// VERIFICATION: exercised only against a reachable KERIA endpoint.
-			if hr, ok := keyStateResolver.(auth.KeyHistoryResolver); ok {
-				histSnap := make(map[string][]auth.EstablishmentKeyState, len(aids))
-				for aid := range aids {
-					hist, err := hr.KeyHistory(ctx, aid)
-					if err != nil {
-						log.Printf("[write-rules] key-history refresh failed for %s: %v", aid, err)
-						continue
+	//
+	// The community and read-only space IDs are resolved live on every run
+	// rather than frozen at boot: the backend can be started before an identity
+	// (and its spaces) exists and receive it later via POST /api/v1/identity/set,
+	// so a refresher capturing the boot-time empty IDs would return silently
+	// forever and every other member's proof-gated sign-off would fail closed
+	// with "signer key state unavailable" (#522, same live-resolver shape as
+	// #174's SetSpaceIDResolver on profileRoleLookup / the role-policy providers).
+	refresher := &writeRuleRefresher{
+		communitySpaceID: resolveCommunitySpaceID,
+		readOnlySpaceID:  userIdentity.GetCommunityReadOnlySpaceID,
+		adminAIDs: func() map[string]bool {
+			adminAIDs := make(map[string]bool)
+			if orgConfigHandler.IsConfigured() {
+				for _, a := range orgConfigHandler.GetConfig().Admins {
+					if a.AID != "" {
+						adminAIDs[a.AID] = true
 					}
-					histSnap[aid] = hist
 				}
-				writeRuleKeys.ReplaceHistory(histSnap)
 			}
-			// Credential/TEL binding (#112) is available as a seam
-			// (WriteRuleValidator.WithCredentialVerifier + SnapshotCredentialVerifier)
-			// and exercised by fixture tests, but is not wired here: there is no
-			// synced representation of credential TEL/revocation status in-repo
-			// yet (revocation happens client-side via KERIA), so a live snapshot
-			// cannot yet distinguish revoked from active credentials. Attaching an
-			// empty/incomplete verifier would fail-closed on legitimate
-			// transitions, so the check stays opt-in until the TEL snapshot source
-			// lands (tracked in docs/RBAC.md).
-		}
+			return adminAIDs
+		},
+		acl:              spaceManager.ACLManager(),
+		trees:            spaceManager.ObjectTreeManager(),
+		roles:            writeRuleResolver,
+		projects:         writeRuleProjects,
+		keys:             writeRuleKeys,
+		keyStateResolver: keyStateResolver,
+		enforceProofs:    enforceProofs,
 	}
+	refreshWriteRuleRoles := refresher.run
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	refreshDone := make(chan struct{})
 	go func() {
