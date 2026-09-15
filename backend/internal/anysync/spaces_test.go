@@ -60,14 +60,6 @@ func (m *mockAnySyncClient) CreateSpace(_ context.Context, ownerAID string, spac
 	return result, nil
 }
 
-func (m *mockAnySyncClient) DeriveSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*SpaceCreateResult, error) {
-	return m.CreateSpace(ctx, ownerAID, spaceType, signingKey)
-}
-
-func (m *mockAnySyncClient) DeriveSpaceID(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (string, error) {
-	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
-}
-
 func (m *mockAnySyncClient) AddToACL(_ context.Context, _ string, _ string, _ []string) error {
 	return m.addToACLErr
 }

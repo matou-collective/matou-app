@@ -193,6 +193,16 @@ func (h *IdentityHandler) HandleSetIdentity(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		log.Printf("[Identity] Failed to derive private space keys: %v", err)
 	} else {
+		// Bind the space signing key to the SDK client's account (peer) signing
+		// key, mirroring the community / read-only / admin sites. any-sync only
+		// derives the owner read key for a derived ACL root when
+		// AclState.pubKey.Equals(root.Identity); the derived-id scheme depends on
+		// keys.SigningKey being exactly the account key. Today the two are equal
+		// by index arithmetic — this makes the invariant explicit so it survives a
+		// refactor (see the DeriveSpaceKeySet signing-key unit test).
+		if sk := client.GetSigningKey(); sk != nil {
+			keys.SigningKey = sk
+		}
 		outcome, resolveErr := resolvePrivateSpace(ctx, client, req.AID, keys, req.Mode)
 		if resolveErr != nil {
 			writeJSON(w, http.StatusInternalServerError, SetIdentityResponse{

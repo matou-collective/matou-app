@@ -64,14 +64,6 @@ func (m *mockAnySyncClient) CreateSpace(_ context.Context, ownerAID string, spac
 	return result, nil
 }
 
-func (m *mockAnySyncClient) DeriveSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
-	return m.CreateSpace(ctx, ownerAID, spaceType, signingKey)
-}
-
-func (m *mockAnySyncClient) DeriveSpaceID(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (string, error) {
-	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
-}
-
 func (m *mockAnySyncClient) AddToACL(_ context.Context, _ string, _ string, _ []string) error {
 	return m.addToACLErr
 }
@@ -479,10 +471,13 @@ func TestHandleGetCommunity_NotConfigured(t *testing.T) {
 }
 
 func TestHandleCreatePrivate_Success(t *testing.T) {
-	handler, _, _ := setupTestSpacesHandler(t)
+	handler, mockClient, _ := setupTestSpacesHandler(t)
+	// The mnemonic path persists the user sign key under the client data dir.
+	mockClient.dataDir = t.TempDir()
 
 	reqBody := CreatePrivateRequest{
-		UserAID: "EUSER123456789",
+		UserAID:  "EUSER123456789",
+		Mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -511,6 +506,45 @@ func TestHandleCreatePrivate_Success(t *testing.T) {
 
 	if !resp.Created {
 		t.Error("expected created=true for new space")
+	}
+}
+
+// TestHandleCreatePrivate_NoMnemonicRejected asserts the endpoint refuses to
+// mint a random-key, unrecoverable private space when no mnemonic is supplied
+// (#528 item 2). Previously it fell back to SpaceManager.CreatePrivateSpace,
+// producing a timestamped id no other device could ever recompute or decrypt.
+func TestHandleCreatePrivate_NoMnemonicRejected(t *testing.T) {
+	handler, _, mockStore := setupTestSpacesHandler(t)
+
+	reqBody := CreatePrivateRequest{
+		UserAID: "EUSER123456789",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/spaces/private", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.HandleCreatePrivate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", w.Code)
+	}
+
+	var resp CreatePrivateResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected success=false for a no-mnemonic request")
+	}
+	if resp.SpaceID != "" {
+		t.Errorf("expected no space id, got %s", resp.SpaceID)
+	}
+
+	// No space record must have been written.
+	if got, err := mockStore.GetUserSpace(context.Background(), "EUSER123456789"); err == nil && got != nil {
+		t.Errorf("expected no private space to be created, got %s", got.SpaceID)
 	}
 }
 

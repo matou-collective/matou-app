@@ -716,6 +716,16 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
+		// Bind the space signing key to the SDK client's account (peer) signing
+		// key, mirroring the community / read-only / admin sites. any-sync derives
+		// the owner read key for a derived ACL root only when
+		// AclState.pubKey.Equals(root.Identity); the derived id must be computed
+		// from the account key. Today the two are equal by index arithmetic — this
+		// makes the invariant explicit so it survives a refactor.
+		if sk := client.GetSigningKey(); sk != nil {
+			keys.SigningKey = sk
+		}
+
 		// Derive and persist user's sign key (ACL identity) for future operations (e.g. JoinWithInvite)
 		signKey, signErr := anysync.DeriveKeyFromMnemonic(req.Mnemonic, 0)
 		if signErr != nil {
@@ -759,25 +769,14 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Fallback: create with random keys via SpaceManager
-	space, err := h.spaceManager.CreatePrivateSpace(ctx, req.UserAID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, CreatePrivateResponse{
-			Success: false,
-			Error:   fmt.Sprintf("failed to create private space: %v", err),
-		})
-		return
-	}
-
-	// Save space record
-	if err := h.spaceStore.SaveSpace(ctx, space); err != nil {
-		log.Printf("Warning: failed to save private space record: %v\n", err)
-	}
-
-	writeJSON(w, http.StatusOK, CreatePrivateResponse{
-		Success: true,
-		SpaceID: space.SpaceID,
-		Created: true,
+	// No mnemonic: refuse rather than mint a random-key private space. A
+	// SpaceManager.CreatePrivateSpace space lands at a timestamped id with a
+	// random read key, so no other device (recovery / link) can ever recompute
+	// or decrypt it — it is unrecoverable by construction (#506 defect C, #508,
+	// #528). The private space must be created from the mnemonic-derived keys.
+	writeJSON(w, http.StatusBadRequest, CreatePrivateResponse{
+		Success: false,
+		Error:   "mnemonic is required to create a recoverable private space",
 	})
 }
 

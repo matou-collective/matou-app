@@ -41,8 +41,6 @@ type MockAnySyncClient struct {
 	CreateSpaceWithKeysError error
 	DeriveSpaceWithKeysError error
 	GetSpaceError            error
-	DeriveSpaceError         error
-	DeriveSpaceIDError       error
 	AddToACLError            error
 	SyncDocumentError        error
 	CloseError               error
@@ -51,7 +49,6 @@ type MockAnySyncClient struct {
 	CreateSpaceCalls         []CreateSpaceCall
 	CreateSpaceWithKeysCalls []CreateSpaceWithKeysCall
 	DeriveSpaceWithKeysCalls []CreateSpaceWithKeysCall
-	DeriveSpaceCalls         []DeriveSpaceCall
 	AddToACLCalls            []AddToACLCall
 	SyncDocumentCalls        []SyncDocumentCall
 }
@@ -68,13 +65,6 @@ type CreateSpaceWithKeysCall struct {
 	OwnerAID  string
 	SpaceType string
 	Keys      *anysync.SpaceKeySet
-}
-
-// DeriveSpaceCall records a call to DeriveSpace
-type DeriveSpaceCall struct {
-	OwnerAID   string
-	SpaceType  string
-	SigningKey crypto.PrivKey
 }
 
 // AddToACLCall records a call to AddToACL
@@ -147,25 +137,6 @@ func (m *MockAnySyncClient) CreateSpace(_ context.Context, ownerAID string, spac
 	return result, nil
 }
 
-// DeriveSpace implements AnySyncClient.DeriveSpace
-func (m *MockAnySyncClient) DeriveSpace(_ context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*anysync.SpaceCreateResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.DeriveSpaceCalls = append(m.DeriveSpaceCalls, DeriveSpaceCall{
-		OwnerAID:   ownerAID,
-		SpaceType:  spaceType,
-		SigningKey: signingKey,
-	})
-
-	if m.DeriveSpaceError != nil {
-		return nil, m.DeriveSpaceError
-	}
-
-	// Same as CreateSpace for mock purposes
-	return m.createSpaceInternal(ownerAID, spaceType)
-}
-
 // createSpaceInternal is a helper for creating spaces without locking
 func (m *MockAnySyncClient) createSpaceInternal(ownerAID string, spaceType string) (*anysync.SpaceCreateResult, error) {
 	spaceID := fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8])
@@ -183,18 +154,6 @@ func (m *MockAnySyncClient) createSpaceInternal(ownerAID string, spaceType strin
 
 	m.Spaces[spaceID] = result
 	return result, nil
-}
-
-// DeriveSpaceID implements AnySyncClient.DeriveSpaceID
-func (m *MockAnySyncClient) DeriveSpaceID(_ context.Context, ownerAID string, spaceType string, _ crypto.PrivKey) (string, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.DeriveSpaceIDError != nil {
-		return "", m.DeriveSpaceIDError
-	}
-
-	return fmt.Sprintf("space_%s_%s", spaceType, ownerAID[:8]), nil
 }
 
 // AddToACL implements AnySyncClient.AddToACL
@@ -388,14 +347,12 @@ func (m *MockAnySyncClient) Reset() {
 	m.CreateSpaceCalls = nil
 	m.CreateSpaceWithKeysCalls = nil
 	m.DeriveSpaceWithKeysCalls = nil
-	m.DeriveSpaceCalls = nil
 	m.AddToACLCalls = nil
 	m.SyncDocumentCalls = nil
 	m.CreateSpaceError = nil
 	m.CreateSpaceWithKeysError = nil
 	m.DeriveSpaceWithKeysError = nil
 	m.GetSpaceError = nil
-	m.DeriveSpaceError = nil
 	m.AddToACLError = nil
 	m.SyncDocumentError = nil
 	m.CloseError = nil

@@ -623,14 +623,8 @@ func (c *testACLClient) CreateSpace(_ context.Context, _ string, _ string, _ cry
 func (c *testACLClient) CreateSpaceWithKeys(_ context.Context, _ string, _ string, _ *SpaceKeySet) (*SpaceCreateResult, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (c *testACLClient) DeriveSpace(_ context.Context, _ string, _ string, _ crypto.PrivKey) (*SpaceCreateResult, error) {
-	return nil, fmt.Errorf("not implemented")
-}
 func (c *testACLClient) DeriveSpaceWithKeys(_ context.Context, _ string, _ string, _ *SpaceKeySet) (*SpaceCreateResult, error) {
 	return nil, fmt.Errorf("not implemented")
-}
-func (c *testACLClient) DeriveSpaceID(_ context.Context, _ string, _ string, _ crypto.PrivKey) (string, error) {
-	return "", fmt.Errorf("not implemented")
 }
 func (c *testACLClient) AddToACL(_ context.Context, _ string, _ string, _ []string) error {
 	return fmt.Errorf("not implemented")
