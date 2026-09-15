@@ -276,6 +276,24 @@ link pull missed by construction (and every recovery forked an empty space,
 `DeriveSpaceIDWithKeys` computes, in every mode. Accounts created before that
 fix still hold their data at the old id; migrating them is #508.
 
+**Security-relevant design property (not an implementation accident):** a
+linked device reads the *content* of the derived private space — not just finds
+its id — because any-sync derives the space's real owner read key from the
+account **sign key**, not from the read key we persist. When it applies the
+derived ACL root it runs `AclState.saveKeysFromRoot →
+DeriveSymmetricKey(accountKey, AnysyncSpacePath)`, keyed only for the owner
+whose `AclState.pubKey.Equals(root.Identity)`. Both devices sign in with the
+same mnemonic, so both derive the same account key and therefore the same read
+key with nothing transmitted — the second device decrypts the first device's
+writes with no invite/join. The `SpaceKeySet.ReadKey` we persist for a derived
+space is inert (re-randomised on every re-claim) and must never carry tree
+content. This holds only while the space signing key **is** the account key
+(`DeriveSpaceKeySet(m, 0).SigningKey == DeriveKeyFromMnemonic(m, 0)`); the
+private-space call sites set `SigningKey` to the client's signing key
+explicitly and a unit test pins the equality, so a future non-zero peer
+`KeyIndex` or multi-account change fails loudly rather than silently breaking
+decryption (#528).
+
 ### 3.3 Refuse to overwrite
 
 `GET …/pairing/sessions/{id}/identity` and the `scan` route return `409
