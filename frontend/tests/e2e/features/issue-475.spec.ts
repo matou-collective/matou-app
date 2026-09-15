@@ -23,19 +23,16 @@
  *   6. code-mismatch defence              — tampered `s=` → the displayer's hello
  *                                          fails to authenticate; session ends failed
  *
- * test.fixme, AWAITING #506 — the pairing handshake completes end to end (the
- * holder reaches "Linked"), but the RECEIVING device stops at the welcome
- * overlay's "Waiting for your data to sync…" gate and never reaches the
- * dashboard. Link mode never forks a space, so an unreachable one comes back
- * 503 `retryable` and WelcomeOverlayScreen has no auto-retry. The code below is
- * complete and must be un-fixme'd UNCHANGED once #506 lands:
+ * LIVE since #506 landed — these were fixme'd while the RECEIVING device
+ * stopped at the welcome overlay's "Waiting for your data to sync…" gate. The
+ * real cause was #506 defect C: the private space was created by CreateSpace
+ * at a timestamped id, so link mode's pull of the derived id could never
+ * succeed. The private space is now created AT its derived id, so the pull
+ * finds it and the receiving device reaches the dashboard:
  *   1. desktop fresh ← phone holds        — link + adopt, no space create
  *   2. desktop holds → phone fresh        — mirror of 1, approval on the desktop
  *   5. profile converges                  — display-name edit converges; one
  *                                          SharedProfile (needs scenario 1's pair)
- *
- * A fixme'd test does NOT cascade in describe.serial — only a real failure
- * does — so 3, 4 and 6 genuinely execute. Verified against @playwright/test.
  *
  * This spec needs the live test network (KERI + any-sync + the config-server
  * mailbox); it cannot run in the authoring sandbox. Scenarios 1/2/5 recover a
@@ -370,13 +367,11 @@ function tamperSecret(qrPayload: string): string {
 
 test.describe.serial('issue-475 two-client linked-device sign-in', () => {
   // 1. desktop fresh ← phone holds -------------------------------------------
-  // BLOCKED ON #506 — the pairing handshake itself completes (the holder reaches
-  // "Linked"), but the receiving device stops at the welcome overlay's
-  // "Waiting for your data to sync…" gate: link mode never forks, so an
-  // unreachable space 503s `retryable` (identity.go:199) and WelcomeOverlay
-  // has no auto-retry. Un-fixme unchanged once #506 lands — the Retry-clicking
-  // helper below is what proves the fix.
-  test.fixme('1) desktop fresh ← phone holds: identity adopted, no private space created', async ({
+  // Was blocked on #506: the receiving device stopped at the welcome overlay's
+  // "Waiting for your data to sync…" gate because the private space lived at
+  // a CreateSpace (timestamped) id that link mode's derived-id pull could never
+  // find. Fixed by creating the private space AT its derived id.
+  test('1) desktop fresh ← phone holds: identity adopted, no private space created', async ({
     browser,
     snap,
   }) => {
@@ -446,13 +441,11 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
   });
 
   // 2. desktop holds → phone fresh -------------------------------------------
-  // BLOCKED ON #506 — the pairing handshake itself completes (the holder reaches
-  // "Linked"), but the receiving device stops at the welcome overlay's
-  // "Waiting for your data to sync…" gate: link mode never forks, so an
-  // unreachable space 503s `retryable` (identity.go:199) and WelcomeOverlay
-  // has no auto-retry. Un-fixme unchanged once #506 lands — the Retry-clicking
-  // helper below is what proves the fix.
-  test.fixme('2) desktop holds → phone fresh: identity adopted, no private space created', async ({
+  // Was blocked on #506: the receiving device stopped at the welcome overlay's
+  // "Waiting for your data to sync…" gate because the private space lived at
+  // a CreateSpace (timestamped) id that link mode's derived-id pull could never
+  // find. Fixed by creating the private space AT its derived id.
+  test('2) desktop holds → phone fresh: identity adopted, no private space created', async ({
     browser,
     snap,
   }) => {
@@ -600,9 +593,8 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
   });
 
   // 5. profile converges ------------------------------------------------------
-  // BLOCKED ON #506 — consumes scenario 1's linked pair, so it cannot run until
-  // the receiving device gets past the sync gate. Un-fixme with scenario 1.
-  test.fixme('5) profile edits converge across the linked pair; one SharedProfile', async ({ snap }) => {
+  // Consumes scenario 1's linked pair (was blocked on #506 with it).
+  test('5) profile edits converge across the linked pair; one SharedProfile', async ({ snap }) => {
     test.setTimeout(240_000);
     expect(s1.done, 'scenario 1 established the linked member pair').toBeTruthy();
     const desktop = s1.deskPage!; // desktop, linked member, dashboard
@@ -620,14 +612,23 @@ test.describe.serial('issue-475 two-client linked-device sign-in', () => {
     }
 
     async function expectNameConverges(page: Page, name: string): Promise<void> {
-      // Reload to pull the latest SharedProfile the backend synced from any-sync.
+      // Remount the settings page on every tick so its onMounted profile fetch
+      // re-runs and picks up the SharedProfile the backend synced from
+      // any-sync. A hash-only goto to the route the page is already on is a
+      // duplicate navigation for Vue Router (nothing remounts, the input stays
+      // stale for the whole budget), and page.reload() is not an option here:
+      // the platform stubs keep secure storage in memory inside an init
+      // script, so a reload boots the app with no session and the dashboard
+      // guard bounces it to the splash. Bouncing through /dashboard is a real
+      // route change, so the settings page mounts fresh each time.
       await expect
         .poll(
           async () => {
+            await page.goto('/#/dashboard');
             await page.goto('/#/dashboard/settings');
-            return settingsInput(page)
-              .inputValue()
-              .catch(() => '');
+            const input = settingsInput(page);
+            await expect(input).not.toHaveValue('', { timeout: 20_000 }).catch(() => {});
+            return input.inputValue().catch(() => '');
           },
           { timeout: 150_000, intervals: [5_000] },
         )

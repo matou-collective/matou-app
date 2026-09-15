@@ -12,7 +12,12 @@ import (
 
 // fakeSpaceResolver is a test double for the space operations used by
 // resolvePrivateSpace / getSpaceWithBackoff. It records calls so tests can
-// assert that link mode never creates.
+// assert that link mode never creates and that no mode ever creates the
+// private space anywhere but its derived id (#506 defect C / #508).
+//
+// It deliberately has no CreateSpaceWithKeys: the spaceResolver interface no
+// longer exposes it, so a regression that reintroduces a timestamped
+// CreateSpace for the private space fails to compile here.
 type fakeSpaceResolver struct {
 	derivedID string
 
@@ -22,9 +27,8 @@ type fakeSpaceResolver struct {
 	getSpaceIdx  int
 
 	getSpaceCalls int
-	createCalls   int
-	createID      string
-	createErr     error
+	deriveCalls   int
+	deriveErr     error
 }
 
 func (f *fakeSpaceResolver) DeriveSpaceIDWithKeys(_ context.Context, _, _ string, _ *anysync.SpaceKeySet) (string, error) {
@@ -44,12 +48,14 @@ func (f *fakeSpaceResolver) GetSpace(_ context.Context, _ string) (commonspace.S
 	return nil, f.getSpaceErrs[i]
 }
 
-func (f *fakeSpaceResolver) CreateSpaceWithKeys(_ context.Context, _, _ string, _ *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
-	f.createCalls++
-	if f.createErr != nil {
-		return nil, f.createErr
+// DeriveSpaceWithKeys mirrors the real client: the space it creates lives at
+// exactly the id DeriveSpaceIDWithKeys computes for the same keys.
+func (f *fakeSpaceResolver) DeriveSpaceWithKeys(_ context.Context, _, _ string, _ *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
+	f.deriveCalls++
+	if f.deriveErr != nil {
+		return nil, f.deriveErr
 	}
-	return &anysync.SpaceCreateResult{SpaceID: f.createID}, nil
+	return &anysync.SpaceCreateResult{SpaceID: f.derivedID}, nil
 }
 
 // shrinkLinkBackoff makes the link-mode backoff finish in milliseconds so an
@@ -90,8 +96,12 @@ func TestLinkBudgetReconcilesWithClientAbort(t *testing.T) {
 	}
 }
 
-func TestResolvePrivateSpace_Claim_CreatesDirectly(t *testing.T) {
-	f := &fakeSpaceResolver{derivedID: "Sderived", createID: "Screated"}
+// TestResolvePrivateSpace_Claim_DerivesAtDeterministicID pins #506 defect C:
+// the private space a claim creates must live at the id link mode (and
+// recovery) will later look for. A CreateSpace-shaped id hashes a timestamp
+// and can never be found again by any other device (#508).
+func TestResolvePrivateSpace_Claim_DerivesAtDeterministicID(t *testing.T) {
+	f := &fakeSpaceResolver{derivedID: "Sderived"}
 	out, err := resolvePrivateSpace(context.Background(), f, "Eaid", &anysync.SpaceKeySet{}, modeClaim)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -99,14 +109,21 @@ func TestResolvePrivateSpace_Claim_CreatesDirectly(t *testing.T) {
 	if out.unreachable {
 		t.Fatal("claim must never be unreachable")
 	}
-	if out.spaceID != "Screated" {
-		t.Errorf("claim should use created ID, got %q", out.spaceID)
+	if out.spaceID != "Sderived" {
+		t.Errorf("claim must create the private space AT the derived id, got %q", out.spaceID)
 	}
-	if f.createCalls != 1 {
-		t.Errorf("claim should create exactly once, got %d", f.createCalls)
+	if f.deriveCalls != 1 {
+		t.Errorf("claim should derive-create exactly once, got %d", f.deriveCalls)
 	}
 	if f.getSpaceCalls != 0 {
 		t.Errorf("claim must not probe GetSpace, got %d calls", f.getSpaceCalls)
+	}
+}
+
+func TestResolvePrivateSpace_Claim_DeriveErrorPropagates(t *testing.T) {
+	f := &fakeSpaceResolver{derivedID: "Sderived", deriveErr: errors.New("storage")}
+	if _, err := resolvePrivateSpace(context.Background(), f, "Eaid", &anysync.SpaceKeySet{}, modeClaim); err == nil {
+		t.Fatal("claim must surface a derive-create failure")
 	}
 }
 
@@ -123,8 +140,8 @@ func TestResolvePrivateSpace_LinkReachable_AdoptsNeverCreates(t *testing.T) {
 	if out.spaceID != "Sderived" {
 		t.Errorf("link should adopt the deterministic ID, got %q", out.spaceID)
 	}
-	if f.createCalls != 0 {
-		t.Errorf("link must NEVER create, got %d create calls", f.createCalls)
+	if f.deriveCalls != 0 {
+		t.Errorf("link must NEVER create, got %d derive-create calls", f.deriveCalls)
 	}
 }
 
@@ -141,8 +158,8 @@ func TestResolvePrivateSpace_LinkUnreachable_NeverCreates(t *testing.T) {
 	if out.spaceID != "" {
 		t.Errorf("unreachable link must not resolve a space ID, got %q", out.spaceID)
 	}
-	if f.createCalls != 0 {
-		t.Errorf("link must NEVER create, got %d create calls", f.createCalls)
+	if f.deriveCalls != 0 {
+		t.Errorf("link must NEVER create, got %d derive-create calls", f.deriveCalls)
 	}
 	if f.getSpaceCalls < 2 {
 		t.Errorf("link should retry GetSpace, got only %d calls", f.getSpaceCalls)
@@ -159,23 +176,27 @@ func TestResolvePrivateSpace_RecoveryReachable_AdoptsNeverCreates(t *testing.T) 
 	if out.spaceID != "Sderived" {
 		t.Errorf("recovery should adopt the deterministic ID, got %q", out.spaceID)
 	}
-	if f.createCalls != 0 {
-		t.Errorf("reachable recovery must not create, got %d", f.createCalls)
+	if f.deriveCalls != 0 {
+		t.Errorf("reachable recovery must not create, got %d", f.deriveCalls)
 	}
 }
 
-func TestResolvePrivateSpace_RecoveryUnreachable_FallsBackToCreate(t *testing.T) {
+// TestResolvePrivateSpace_RecoveryUnreachable_DerivesAtDeterministicID pins the
+// #508 half of the fix: when the probe misses, recovery still creates — but at
+// the derived id, so a later link (or a second recovery) converges on the same
+// space instead of forking a third one.
+func TestResolvePrivateSpace_RecoveryUnreachable_DerivesAtDeterministicID(t *testing.T) {
 	shrinkLinkBackoff(t)
-	f := &fakeSpaceResolver{derivedID: "Sderived", createID: "Screated", getSpaceErrs: []error{errors.New("miss")}}
+	f := &fakeSpaceResolver{derivedID: "Sderived", getSpaceErrs: []error{errors.New("miss")}}
 	out, err := resolvePrivateSpace(context.Background(), f, "Eaid", &anysync.SpaceKeySet{}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.spaceID != "Screated" {
-		t.Errorf("recovery miss should create, got %q", out.spaceID)
+	if out.spaceID != "Sderived" {
+		t.Errorf("recovery miss must create AT the derived id, got %q", out.spaceID)
 	}
-	if f.createCalls != 1 {
-		t.Errorf("recovery miss should create once, got %d", f.createCalls)
+	if f.deriveCalls != 1 {
+		t.Errorf("recovery miss should derive-create once, got %d", f.deriveCalls)
 	}
 	if f.getSpaceCalls != 1 {
 		t.Errorf("recovery should probe GetSpace exactly once, got %d", f.getSpaceCalls)

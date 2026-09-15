@@ -726,7 +726,10 @@ func (h *SpacesHandler) HandleCreatePrivate(w http.ResponseWriter, r *http.Reque
 			}
 		}
 
-		result, err := client.CreateSpaceWithKeys(ctx, req.UserAID, anysync.SpaceTypePrivate, keys)
+		// Create AT the derived id so identity/set (recovery / link) on another
+		// device can find this space again — a CreateSpaceWithKeys id embeds a
+		// timestamp and is unrecoverable (#506 defect C, #508).
+		result, err := client.DeriveSpaceWithKeys(ctx, req.UserAID, anysync.SpaceTypePrivate, keys)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, CreatePrivateResponse{
 				Success: false,

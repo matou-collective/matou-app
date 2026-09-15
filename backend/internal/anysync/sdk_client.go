@@ -422,6 +422,24 @@ func (c *SDKClient) DeriveSpaceID(ctx context.Context, ownerAID string, _ string
 	return spaceID, nil
 }
 
+// spaceDerivePayload is the single source of truth for what a keyed derived
+// space hashes to. DeriveSpaceIDWithKeys (the id every device recomputes) and
+// DeriveSpaceWithKeys (the creation that must land at that id) both build
+// their payload here so they cannot drift apart (#506 defect C / #508).
+//
+// Only the mnemonic-derived signing + master keys and the owner AID take part.
+// The key set's read key is random per DeriveSpaceKeySet call and must not
+// influence the id; any-sync derives the owner's read key for a derived ACL
+// from the account key itself (AclState.saveKeysFromRoot).
+func spaceDerivePayload(ownerAID string, keys *SpaceKeySet) spacepayloads.SpaceDerivePayload {
+	return spacepayloads.SpaceDerivePayload{
+		SigningKey:   keys.SigningKey,
+		MasterKey:    keys.MasterKey,
+		SpaceType:    "", // coordinator rejects custom types; keep app-level type in our store
+		SpacePayload: []byte(ownerAID),
+	}
+}
+
 // DeriveSpaceIDWithKeys computes the deterministic space ID for an owner+type
 // using the provided key set. Unlike DeriveSpaceID, this uses the KeySet's
 // master key instead of generating a random one, making it fully deterministic.
@@ -433,19 +451,58 @@ func (c *SDKClient) DeriveSpaceIDWithKeys(ctx context.Context, ownerAID string, 
 		return "", fmt.Errorf("client not initialized")
 	}
 
-	payload := spacepayloads.SpaceDerivePayload{
-		SigningKey:   keys.SigningKey,
-		MasterKey:    keys.MasterKey,
-		SpaceType:    "",
-		SpacePayload: []byte(ownerAID),
-	}
-
-	spaceID, err := c.spaceService.DeriveId(ctx, payload)
+	spaceID, err := c.spaceService.DeriveId(ctx, spaceDerivePayload(ownerAID, keys))
 	if err != nil {
 		return "", fmt.Errorf("deriving space ID with keys: %w", err)
 	}
 
 	return spaceID, nil
+}
+
+// DeriveSpaceWithKeys creates a space AT the deterministic id that
+// DeriveSpaceIDWithKeys computes for the same key set, opens it, persists the
+// keys and caches it — the keyed counterpart of CreateSpaceWithKeys.
+//
+// This is how the user's private space must be created. CreateSpaceWithKeys
+// hashes a timestamp into the space header, so its id is fresh every time and
+// no other device can ever recompute it: a linked device's pull misses forever
+// (#506 defect C) and a recovery forks an empty space (#508). A derived space
+// is idempotent — deriving an id that already exists in local storage returns
+// it — and byte-identical across devices, so a device that derives locally
+// converges with a peer that already holds the space instead of forking.
+func (c *SDKClient) DeriveSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *SpaceKeySet) (*SpaceCreateResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.initialized {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	spaceID, err := c.spaceService.DeriveSpace(ctx, spaceDerivePayload(ownerAID, keys))
+	if err != nil {
+		return nil, fmt.Errorf("deriving space: %w", err)
+	}
+
+	// Open and initialize the space via the shared resolver so all components
+	// use the same Space instance (and HeadSync pushes it to its tree node).
+	resolver := c.app.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
+	if _, err = resolver.GetSpace(ctx, spaceID); err != nil {
+		return nil, fmt.Errorf("opening derived space: %w", err)
+	}
+
+	if err := PersistSpaceKeySet(c.dataDir, spaceID, keys); err != nil {
+		return nil, fmt.Errorf("persisting space keys: %w", err)
+	}
+
+	log.Printf("[any-sync SDK] Derived space with keys: %s (type: %s)", spaceID[:min(20, len(spaceID))]+"...", spaceType)
+
+	return &SpaceCreateResult{
+		SpaceID:   spaceID,
+		CreatedAt: time.Now().UTC(),
+		OwnerAID:  ownerAID,
+		SpaceType: spaceType,
+		Keys:      keys,
+	}, nil
 }
 
 // AddToACL is deprecated: it builds raw JSON as a proto record which is rejected by the

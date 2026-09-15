@@ -268,6 +268,14 @@ instead of creating. The same rule applies to the community / read-only /
 admin space adoption further down the handler. The UI shows *"Waiting for
 your data to sync"* with a retry, never an empty app.
 
+**Precondition, found by #506 defect C:** this only works if the private space
+actually lives at the derived id. Until #506 it did not — claim and recovery
+created it with `CreateSpaceWithKeys`, whose id hashes a timestamp, so the
+link pull missed by construction (and every recovery forked an empty space,
+#508). The private space is now created with `DeriveSpaceWithKeys`, at the id
+`DeriveSpaceIDWithKeys` computes, in every mode. Accounts created before that
+fix still hold their data at the old id; migrating them is #508.
+
 ### 3.3 Refuse to overwrite
 
 `GET …/pairing/sessions/{id}/identity` and the `scan` route return `409

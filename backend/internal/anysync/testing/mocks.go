@@ -39,6 +39,7 @@ type MockAnySyncClient struct {
 	// Error injection
 	CreateSpaceError         error
 	CreateSpaceWithKeysError error
+	DeriveSpaceWithKeysError error
 	GetSpaceError            error
 	DeriveSpaceError         error
 	DeriveSpaceIDError       error
@@ -49,6 +50,7 @@ type MockAnySyncClient struct {
 	// Call tracking
 	CreateSpaceCalls         []CreateSpaceCall
 	CreateSpaceWithKeysCalls []CreateSpaceWithKeysCall
+	DeriveSpaceWithKeysCalls []CreateSpaceWithKeysCall
 	DeriveSpaceCalls         []DeriveSpaceCall
 	AddToACLCalls            []AddToACLCall
 	SyncDocumentCalls        []SyncDocumentCall
@@ -282,6 +284,25 @@ func (m *MockAnySyncClient) Close() error {
 	return nil
 }
 
+// DeriveSpaceWithKeys implements AnySyncClient.DeriveSpaceWithKeys. The mock
+// id is a pure function of owner+type, matching DeriveSpaceID.
+func (m *MockAnySyncClient) DeriveSpaceWithKeys(_ context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.DeriveSpaceWithKeysCalls = append(m.DeriveSpaceWithKeysCalls, CreateSpaceWithKeysCall{
+		OwnerAID:  ownerAID,
+		SpaceType: spaceType,
+		Keys:      keys,
+	})
+
+	if m.DeriveSpaceWithKeysError != nil {
+		return nil, m.DeriveSpaceWithKeysError
+	}
+
+	return m.createSpaceInternal(ownerAID, spaceType)
+}
+
 // CreateSpaceWithKeys implements AnySyncClient.CreateSpaceWithKeys
 func (m *MockAnySyncClient) CreateSpaceWithKeys(_ context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error) {
 	m.mu.Lock()
@@ -366,11 +387,13 @@ func (m *MockAnySyncClient) Reset() {
 	m.Documents = make(map[string]map[string][]byte)
 	m.CreateSpaceCalls = nil
 	m.CreateSpaceWithKeysCalls = nil
+	m.DeriveSpaceWithKeysCalls = nil
 	m.DeriveSpaceCalls = nil
 	m.AddToACLCalls = nil
 	m.SyncDocumentCalls = nil
 	m.CreateSpaceError = nil
 	m.CreateSpaceWithKeysError = nil
+	m.DeriveSpaceWithKeysError = nil
 	m.GetSpaceError = nil
 	m.DeriveSpaceError = nil
 	m.AddToACLError = nil
