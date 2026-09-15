@@ -68,7 +68,12 @@ test.describe('mobile bottom tab bar (#74)', () => {
     // issue" now lives on mobile.
     await moreTab.click();
     await adminPage.waitForTimeout(300);
-    await moreSheet.locator('.more-sheet-item').last().click();
+    // The profile item (the one carrying the avatar) opens Account settings.
+    // "Report an issue" is now the last more-sheet item (47bd2cd), so `.last()`
+    // no longer lands on the profile row.
+    await moreSheet
+      .locator('.more-sheet-item', { has: adminPage.locator('.more-sheet-avatar') })
+      .click();
     await adminPage.waitForTimeout(500);
     const reportBtn = adminPage.getByRole('button', { name: /report an issue/i });
     await expect(reportBtn).toBeVisible();

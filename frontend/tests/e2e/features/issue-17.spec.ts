@@ -109,13 +109,11 @@ test.describe('backend RBAC enforcement on mutating routes (#17)', () => {
     ).not.toBe(403);
 
     // --- The admin's UI is unchanged: the dashboard still loads ---
+    // loginWithMnemonic already leaves adminPage on the dashboard; only dismiss
+    // the Welcome overlay if it happens to be showing. (The primary nav item is
+    // "Home", not "Dashboard" — the old /dashboard/i click hung with no timeout.)
     const enterBtn = adminPage.getByRole('button', { name: /enter community/i });
     await enterBtn.click({ timeout: 15_000 }).catch(() => {});
-    await adminPage
-      .getByRole('button', { name: /dashboard/i })
-      .first()
-      .click()
-      .catch(() => {});
     await snap(adminPage, 'admin-dashboard-still-works');
   });
 });

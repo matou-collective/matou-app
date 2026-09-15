@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures';
 import { loginAs, jsonSessionHeaders } from '../utils/signed-auth';
+import { BackendManager } from '../utils/backend-manager';
 
 // Feature (#18): KERI-signed request authentication makes X-User-AID
 // trustworthy. The frontend signs a backend-issued challenge with the user's
@@ -94,61 +95,75 @@ test('signed-challenge login mints sessions that authorise RBAC-gated requests',
 });
 
 test('backend issues challenges and rejects unsigned RBAC requests', async ({ adminPage }) => {
+  test.setTimeout(120_000);
   const admin = await loginAs(adminPage);
 
-  // The challenge endpoint is reachable without a session (it is how a client
-  // obtains one) and returns a fresh nonce for a well-formed AID...
-  const challengeRes = await fetch(`${API}/auth/challenge`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ aid: admin.aid }),
-  });
-  expect(challengeRes.status).toBe(200);
-  const challenge = (await challengeRes.json()) as { challenge: string };
-  expect(typeof challenge.challenge).toBe('string');
-  expect(challenge.challenge.length).toBeGreaterThan(0);
+  // The reject-checks below need signed-auth ENFORCEMENT: without it a bare
+  // X-User-AID is still trusted and the unsigned mutation succeeds. The shared
+  // admin backend on :9080 supports sessions but does not require them, so run
+  // these against a dedicated BackendManager backend, which sets
+  // MATOU_REQUIRE_SIGNED_AUTH=1 (see backend-manager.ts). admin.aid is a
+  // real, well-formed AID we reuse for the challenge shape checks.
+  const backends = new BackendManager();
+  const backend = await backends.start('issue-18-signed-auth');
+  const api = `${backend.url}/api/v1`;
+  try {
+    // The challenge endpoint is reachable without a session (it is how a client
+    // obtains one) and returns a fresh nonce for a well-formed AID...
+    const challengeRes = await fetch(`${api}/auth/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aid: admin.aid }),
+    });
+    expect(challengeRes.status).toBe(200);
+    const challenge = (await challengeRes.json()) as { challenge: string };
+    expect(typeof challenge.challenge).toBe('string');
+    expect(challenge.challenge.length).toBeGreaterThan(0);
 
-  // ...but a malformed AID is refused outright.
-  const badAid = await fetch(`${API}/auth/challenge`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ aid: 'not-an-aid' }),
-  });
-  expect(badAid.status).toBe(400);
+    // ...but a malformed AID is refused outright.
+    const badAid = await fetch(`${api}/auth/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aid: 'not-an-aid' }),
+    });
+    expect(badAid.status).toBe(400);
 
-  // A login with a garbage signature for a real challenge is a 401 (the
-  // challenge is consumed by the attempt — replay protection).
-  const badLogin = await fetch(`${API}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ aid: admin.aid, challenge: challenge.challenge, signature: '0B' + 'A'.repeat(86) }),
-  });
-  expect(badLogin.status).toBe(401);
+    // A login with a garbage signature for a real challenge is a 401 (the
+    // challenge is consumed by the attempt — replay protection).
+    const badLogin = await fetch(`${api}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aid: admin.aid, challenge: challenge.challenge, signature: '0B' + 'A'.repeat(86) }),
+    });
+    expect(badLogin.status).toBe(401);
 
-  // A protected mutating endpoint with NO signed session (no token; the header
-  // alone is not trusted under enforcement) must be rejected — roles are never
-  // resolved for an unverified AID. The explicit dev API token satisfies
-  // TokenGuard but is not a session, so X-User-AID is stripped → 401 from RBAC.
-  const unsigned = await fetch(`${API}/projects`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-AID': admin.aid,
-      Authorization: 'Bearer matou-dev',
-    },
-    body: JSON.stringify({ title: 'should not be created', created_by: admin.aid }),
-  });
-  expect(unsigned.status).toBe(401);
+    // A protected mutating endpoint with NO signed session (no token; the header
+    // alone is not trusted under enforcement) must be rejected — roles are never
+    // resolved for an unverified AID. The explicit dev API token satisfies
+    // TokenGuard but is not a session, so X-User-AID is stripped → 401 from RBAC.
+    const unsigned = await fetch(`${api}/projects`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-User-AID': admin.aid,
+        Authorization: 'Bearer matou-dev',
+      },
+      body: JSON.stringify({ title: 'should not be created', created_by: admin.aid }),
+    });
+    expect(unsigned.status).toBe(401);
 
-  // A bogus Bearer token is likewise refused.
-  const bogus = await fetch(`${API}/projects`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-AID': admin.aid,
-      Authorization: 'Bearer not-a-real-token',
-    },
-    body: JSON.stringify({ title: 'should not be created', created_by: admin.aid }),
-  });
-  expect(bogus.status).toBe(401);
+    // A bogus Bearer token is likewise refused.
+    const bogus = await fetch(`${api}/projects`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-User-AID': admin.aid,
+        Authorization: 'Bearer not-a-real-token',
+      },
+      body: JSON.stringify({ title: 'should not be created', created_by: admin.aid }),
+    });
+    expect(bogus.status).toBe(401);
+  } finally {
+    await backends.stopAll();
+  }
 });

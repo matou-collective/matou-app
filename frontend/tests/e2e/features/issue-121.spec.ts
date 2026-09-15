@@ -41,7 +41,7 @@ async function showPendingApproval(page: Page) {
     return true;
   }, { timeout: 30_000 });
 
-  await expect(page.getByText(/your application is under review/i)).toBeVisible({
+  await expect(page.getByText(/application received/i)).toBeVisible({
     timeout: 30_000,
   });
   await expect(page.locator('.requirement-card')).toHaveCount(3);
@@ -58,10 +58,15 @@ async function overflowPx(page: Page): Promise<number> {
 
 test.describe('pending-approval requirement cards fit phone width (#121)', () => {
   test('cards wrap at 412px with no horizontal overflow, three-across on desktop', async ({
-    memberPage,
+    freshPage,
     snap,
   }) => {
     test.setTimeout(120_000);
+    // Drive the pending-approval screen on an unauthenticated page: a
+    // logged-in (returning) session boots straight to the Welcome overlay,
+    // which overrides the forced onboarding screen. freshPage has no identity,
+    // so the screen we navigate the store to is the screen that renders.
+    const memberPage = freshPage;
 
     // --- Phone width: no overflow, all three cards visible -------------------
     await memberPage.setViewportSize(PHONE);

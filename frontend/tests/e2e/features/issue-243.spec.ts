@@ -21,9 +21,14 @@ test.describe('issue-243 kit-driven profile form fields + interests', () => {
     await expect(page.getByRole('heading', { name: /join mātou/i })).toBeVisible({
       timeout: 10_000,
     });
+    // Wait for each info-page heading before clicking Continue (like the passing
+    // issue-242): a back-to-back click can land mid-transition and stall the walk.
     await page.getByRole('button', { name: /^continue$/i }).click();
+    await expect(page.getByRole('heading', { name: /about mātou/i })).toBeVisible({ timeout: 10_000 });
     await page.getByRole('button', { name: /^continue$/i }).click(); // About Matou
+    await expect(page.getByRole('heading', { name: /community goals/i })).toBeVisible({ timeout: 10_000 });
     await page.getByRole('button', { name: /^continue$/i }).click(); // Community Goals
+    await expect(page.getByRole('heading', { name: /member expectations/i })).toBeVisible({ timeout: 10_000 });
     await page.getByRole('button', { name: /continue to registration/i }).click(); // Member Expectations
 
     // Profile form

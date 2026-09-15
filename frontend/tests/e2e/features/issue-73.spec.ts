@@ -65,8 +65,8 @@ test.describe('no horizontal overflow at phone width (#73)', () => {
     const enterBtn = adminPage.getByRole('button', { name: /enter community/i });
     await enterBtn.click({ timeout: 15_000 }).catch(() => {});
 
-    // Dashboard.
-    await adminPage.getByRole('button', { name: 'Dashboard' }).click();
+    // Dashboard (the sidebar nav label is "Home").
+    await adminPage.getByRole('button', { name: 'Home' }).click();
     await adminPage.waitForTimeout(500);
     await adminPage.setViewportSize(PHONE);
     await expectNoHorizontalOverflow(adminPage, 'dashboard');

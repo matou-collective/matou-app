@@ -21,7 +21,13 @@ test.describe('moon-phase header fails quietly (#122)', () => {
   }) => {
     test.setTimeout(120_000);
 
+    // adminPage already sits on the dashboard with the moon phase loaded from
+    // login, and a same-URL goto won't remount DashboardPage. Arm the block,
+    // then bounce through another dashboard route so DashboardPage remounts and
+    // re-runs its (now blocked) moon fetch.
     await blockMaramataka(adminPage);
+    await adminPage.goto('/#/dashboard/wallet');
+    await expect(adminPage.locator('.greeting')).toHaveCount(0, { timeout: 20_000 });
     await adminPage.goto(DASHBOARD_URL);
 
     // The greeting still renders normally.

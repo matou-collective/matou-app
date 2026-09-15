@@ -25,7 +25,10 @@ test.describe('member expectations bullet inline (#120)', () => {
     const page = adminPage;
 
     await page.setViewportSize(PHONE);
-    await page.goto('/community-guidelines');
+    // Hash-mode router: a path without `#` is a full reload that boots a
+    // restored session onto the Welcome overlay. Navigate to the in-app hash
+    // route so this stays a client-side navigation to the guidelines page.
+    await page.goto('/#/community-guidelines');
 
     const row = await firstExpectationRow(page);
     await expect(row).toBeVisible();

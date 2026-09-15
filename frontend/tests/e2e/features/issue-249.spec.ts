@@ -73,13 +73,22 @@ test.describe('push notification preferences + deep link (#249)', () => {
       .filter({ hasText: channelName });
     await expect(channelRow).toBeVisible({ timeout: 15_000 });
 
-    // Mute the seeded channel.
+    // Mute the seeded channel. The real <input> is visually hidden
+    // (opacity/width 0) behind the styled switch, so Playwright can't click it
+    // ("not visible"); click the visible `.switch-slider`, which toggles the
+    // associated checkbox via its wrapping <label>.
     await channelRow.scrollIntoViewIfNeeded();
-    await channelRow.locator('input[type="checkbox"]').click();
+    await channelRow.locator('.switch-slider').click();
     await snap(adminPage, 'settings-channel-muted');
 
-    // Turn the global toggle off → the per-channel mute list is hidden.
-    await adminPage.locator('[data-test="push-enabled-toggle"]').click();
+    // Turn the global toggle off (same hidden-input pattern) → the per-channel
+    // mute list is hidden.
+    await adminPage
+      .locator('label.switch', {
+        has: adminPage.locator('[data-test="push-enabled-toggle"]'),
+      })
+      .locator('.switch-slider')
+      .click();
     await expect(
       adminPage.locator('[data-test="push-settings"]').getByText(`#${channelName}`),
     ).toHaveCount(0);
