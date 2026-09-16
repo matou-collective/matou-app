@@ -116,6 +116,26 @@ export function useMultisigJoin() {
         if (round === 'round-1') {
           if (!adminPrefix) throw new Error('round-1 EXN missing admin prefix');
           await keriClient.resolveOOBI(`${cesrUrl}/oobi/${adminPrefix}`, undefined, 30000);
+
+          // Pull the group's WITNESS-RECEIPTED round-1 rotation straight from
+          // ITS witnesses before we react (issue #520, step 1). The EXN carries
+          // the rotation with only the admin's signature and no witness
+          // receipts; if our agent ingests that copy first, keripy parks it in
+          // the partially-witnessed escrow ("Failure satisfying toad ...
+          // sigs=[]") until an incidental KEL push arrives. Resolving the
+          // group's OOBI then querying its key state to the embedded sn fetches
+          // the receipted event instead. Best-effort: a failure leaves the
+          // admin's push (addMemberRound1) as the backstop.
+          const embeddedSn = (exn as { e?: { rot?: { s?: string } } }).e?.rot?.s;
+          if (gidFromExn && embeddedSn) {
+            try {
+              await keriClient.resolveOOBI(`${cesrUrl}/oobi/${gidFromExn}`, undefined, 30000);
+              await keriClient.queryKeyStateToSn(gidFromExn, embeddedSn);
+            } catch (pullErr) {
+              console.warn('[MultisigJoin] round-1 group key-state pull failed; relying on KEL push backstop', pullErr);
+            }
+          }
+
           const personalName = aids.aids[0]?.name as string;
           await keriClient.rotatePersonalAid(personalName);
           await keriClient.markNotificationRead(notification.i);

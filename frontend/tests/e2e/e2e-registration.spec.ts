@@ -1,7 +1,7 @@
 import path from 'path';
 import { ChildProcess, spawn, execSync } from 'child_process';
 import * as fs from 'fs';
-import { test, expect, Page, BrowserContext, request } from '@playwright/test';
+import { test, expect, Page, BrowserContext, request, APIRequestContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
 import { BackendManager, ensureBinaryFresh } from './utils/backend-manager';
@@ -22,6 +22,111 @@ import {
   performOrgSetup,
   TestAccounts,
 } from './utils/test-helpers';
+
+// --- KEL / witness helpers (shared by the steward-promotion tests) ----------
+// A GROUP AID's key state must be read from a WITNESS, never from KERIA's bare
+// OOBI: every test user shares one KERIA and `Agency.lookup()` pins the AID to
+// whichever agent last processed a group rotation, so KERIA's `fullyWitnessed`
+// guard 404s for a group that is in fact fully receipted. The witnesses hold
+// the receipted KEL and are authoritative. (Lifted to module scope for #520 so
+// both promotion tests — registration test 2 and test 5 — can assert on it.)
+type KelEvent = { i?: string; t?: string; s?: string; kt?: string; k?: string[] };
+const TEST_WITNESS_PORTS = [6642, 6643, 6644, 6645, 6646, 6647];
+
+function parseKel(buf: Buffer): KelEvent[] {
+  const out: KelEvent[] = [];
+  let i = 0;
+  const marker = Buffer.from('{"v":"KERI10JSON');
+  for (;;) {
+    i = buf.indexOf(marker, i);
+    if (i < 0) break;
+    const size = parseInt(buf.subarray(i + 16, i + 22).toString('ascii'), 16);
+    try {
+      out.push(JSON.parse(buf.subarray(i, i + size).toString('utf8')) as KelEvent);
+    } catch { /* skip non-event JSON */ }
+    i += size;
+  }
+  return out;
+}
+
+function kelSources(aid: string, source: 'keria' | 'witness'): string[] {
+  const wits = TEST_WITNESS_PORTS.map(p => `http://localhost:${p}/oobi/${aid}`);
+  return source === 'witness' ? wits : [`http://localhost:4902/oobi/${aid}`, ...wits];
+}
+
+async function currentKeyState(
+  req: APIRequestContext,
+  aid: string,
+  source: 'keria' | 'witness' = 'keria',
+): Promise<{ sn: number; kt: string; k: string[] }> {
+  let est: KelEvent[] = [];
+  const tried: string[] = [];
+  for (const url of kelSources(aid, source)) {
+    const resp = await req.get(url);
+    tried.push(`${url.replace(/\/oobi\/.*/, '')}=${resp.status()}`);
+    if (resp.status() !== 200) continue;
+    est = parseKel(await resp.body()).filter(
+      e => e.i === aid && ['icp', 'rot', 'dip', 'drt'].includes(e.t ?? ''),
+    );
+    if (est.length > 0) break;
+  }
+  expect(
+    est.length,
+    `no establishment events in KEL of ${aid.slice(0, 12)} from any ${source} source (${tried.join(' ')})`,
+  ).toBeGreaterThan(0);
+  const latest = est.reduce((a, b) => (parseInt(b.s ?? '0', 16) > parseInt(a.s ?? '0', 16) ? b : a));
+  return { sn: parseInt(latest.s ?? '0', 16), kt: latest.kt ?? '', k: latest.k ?? [] };
+}
+
+// The org group's partially-witnessed-escrow failures (issue #520) are logged
+// by the shared test KERIA container as "Failure satisfying toad=N ... sigs=[]"
+// for an event whose `'i'` is the org AID. After the #520 fix (recipients pull
+// the receipted rotation from the witnesses and the admin pushes the receipted
+// group KEL), a healthy stack should log ZERO such lines for the org group.
+// Best-effort: returns null if docker or the container is unavailable, so the
+// assertion below degrades to a logged skip rather than a false failure.
+function keriaTestContainer(): string | null {
+  const candidates = [
+    'matou-keri-test-keria-1',
+    'keri-test-keria-1',
+    'matou-keria-test',
+    'keria-test',
+  ];
+  for (const name of candidates) {
+    try {
+      execSync(`docker inspect ${name}`, { stdio: 'ignore' });
+      return name;
+    } catch { /* try the next candidate */ }
+  }
+  return null;
+}
+
+function assertNoOrgGroupToadLines(orgAid: string, sinceISO: string): void {
+  const container = keriaTestContainer();
+  if (!container) {
+    console.warn('[Test] #520 toad-line check skipped — docker/KERIA test container not reachable');
+    return;
+  }
+  let logs = '';
+  try {
+    logs = execSync(`docker logs --since ${sinceISO} ${container} 2>&1`, {
+      encoding: 'utf-8',
+      maxBuffer: 128 * 1024 * 1024,
+    });
+  } catch (err) {
+    console.warn('[Test] #520 toad-line check skipped — docker logs failed:', err instanceof Error ? err.message : err);
+    return;
+  }
+  const toadLines = logs
+    .split('\n')
+    .filter(l => l.includes('Failure satisfying toad') && l.includes(orgAid));
+  expect(
+    toadLines,
+    `KERIA logged ${toadLines.length} partially-witnessed toad failure(s) for the org group ` +
+      `${orgAid.slice(0, 12)}... during the promotion (issue #520 — the recipient parked the ` +
+      `EXN's receipt-less rotation in escrow):\n${toadLines.join('\n')}`,
+  ).toHaveLength(0);
+}
 
 /**
  * Restart the admin backend on port 9080.
@@ -983,6 +1088,16 @@ test.describe.serial('Registration Approval Flow', () => {
       await expect(changeRoleModal.getByText('Change Role')).toBeVisible({ timeout: TIMEOUT.medium });
       await changeRoleModal.locator('label').filter({ hasText: 'Community Steward' }).click();
 
+      // #520: read the org group's witnessed key state before the promotion,
+      // and mark the moment so the KERIA toad-line check reads only this
+      // promotion's log lines (group sn 4).
+      const orgConfigT2 = await adminPage.request.get('http://localhost:9080/api/v1/org/config');
+      const orgAidT2: string = (await orgConfigT2.json()).organization.aid;
+      const promotedMemberAid = accounts.member!.aid;
+      const groupBeforeT2 = await currentKeyState(adminPage.request, orgAidT2, 'witness');
+      console.log(`[Test] Org group before promotion: sn=${groupBeforeT2.sn} signers=${groupBeforeT2.k.length}`);
+      const promotionStartedAtT2 = new Date().toISOString();
+
       // Confirm the upgrade
       await changeRoleModal.getByRole('button', { name: /^Confirm$/i }).click();
       console.log('[Test] Clicked Confirm — multisig upgrade starting');
@@ -1004,6 +1119,17 @@ test.describe.serial('Registration Approval Flow', () => {
       // Final: Done button appears when upgrade is complete
       await expect(changeRoleModal.getByRole('button', { name: /^Done$/i })).toBeVisible({ timeout: 2 * 60_000 });
       console.log('[Test] User1 upgrade to Community Steward complete');
+
+      // #520: the promotion rotated the org group twice (round 1 + round 2),
+      // the promoted member now signs for it, and — with the recipient-side
+      // witness pull and admin-side receipted KEL push — neither rotation was
+      // left in KERIA's partially-witnessed escrow.
+      const groupAfterT2 = await currentKeyState(adminPage.request, orgAidT2, 'witness');
+      const promotedAfterT2 = await currentKeyState(adminPage.request, promotedMemberAid);
+      console.log(`[Test] Org group after promotion: sn=${groupAfterT2.sn} signers=${groupAfterT2.k.length}`);
+      expect(groupAfterT2.sn - groupBeforeT2.sn, 'the promotion rotates the org group twice (round 1 + round 2)').toBe(2);
+      expect(groupAfterT2.k, 'the promoted member must now sign for the org group').toContain(promotedAfterT2.k[0]);
+      assertNoOrgGroupToadLines(orgAidT2, promotionStartedAtT2);
 
       // Dismiss ChangeRoleModal (Done closes ChangeRoleModal, ProfileModal stays open)
       await changeRoleModal.getByRole('button', { name: /^Done$/i }).click();
@@ -1344,62 +1470,8 @@ test.describe.serial('Registration Approval Flow', () => {
       return;
     }
 
-    // --- Key-state helpers: read a KEL straight from KERIA's bare OOBI ---
-    // (no signing needed) and return the latest establishment event's keys.
-    type KelEvent = { i?: string; t?: string; s?: string; kt?: string; k?: string[] };
-    const parseKel = (buf: Buffer): KelEvent[] => {
-      const out: KelEvent[] = [];
-      let i = 0;
-      const marker = Buffer.from('{"v":"KERI10JSON');
-      for (;;) {
-        i = buf.indexOf(marker, i);
-        if (i < 0) break;
-        const size = parseInt(buf.subarray(i + 16, i + 22).toString('ascii'), 16);
-        try {
-          out.push(JSON.parse(buf.subarray(i, i + size).toString('utf8')) as KelEvent);
-        } catch { /* skip non-event JSON */ }
-        i += size;
-      }
-      return out;
-    };
-    // A GROUP AID's key state must be read from a WITNESS, never from KERIA's
-    // bare OOBI. Every test user shares one KERIA, and `Agency.lookup()`
-    // resolves an AID through a single-value map that `Agency.incept()` PINS
-    // (keria/app/agenting.py — last writer wins). As soon as a co-signer's
-    // agent processes a group rotation, that agent owns the mapping, and a
-    // co-signer's agent never collects the group's witness receipts — so
-    // keria/end/ending.py's `fullyWitnessed()` guard answers 404 "not
-    // available" for a group that is in fact fully receipted. The witnesses
-    // hold the receipted KEL and are authoritative. Personal AIDs are only
-    // ever owned by their own agent, so KERIA is fine for those (with the
-    // witnesses as a fallback while receipts for a fresh rotation land).
-    const TEST_WITNESS_PORTS = [6642, 6643, 6644, 6645, 6646, 6647];
-    const kelSources = (aid: string, source: 'keria' | 'witness'): string[] => {
-      const wits = TEST_WITNESS_PORTS.map(p => `http://localhost:${p}/oobi/${aid}`);
-      return source === 'witness' ? wits : [`http://localhost:4902/oobi/${aid}`, ...wits];
-    };
-    const currentKeyState = async (
-      aid: string,
-      source: 'keria' | 'witness' = 'keria',
-    ): Promise<{ sn: number; kt: string; k: string[] }> => {
-      let est: KelEvent[] = [];
-      const tried: string[] = [];
-      for (const url of kelSources(aid, source)) {
-        const resp = await adminPage.request.get(url);
-        tried.push(`${url.replace(/\/oobi\/.*/, '')}=${resp.status()}`);
-        if (resp.status() !== 200) continue;
-        est = parseKel(await resp.body()).filter(
-          e => e.i === aid && ['icp', 'rot', 'dip', 'drt'].includes(e.t ?? ''),
-        );
-        if (est.length > 0) break;
-      }
-      expect(
-        est.length,
-        `no establishment events in KEL of ${aid.slice(0, 12)} from any ${source} source (${tried.join(' ')})`,
-      ).toBeGreaterThan(0);
-      const latest = est.reduce((a, b) => (parseInt(b.s ?? '0', 16) > parseInt(a.s ?? '0', 16) ? b : a));
-      return { sn: parseInt(latest.s ?? '0', 16), kt: latest.kt ?? '', k: latest.k ?? [] };
-    };
+    // Key-state helpers (parseKel / currentKeyState) and the #520 toad-line
+    // assertion are module-scope now, shared with registration test 2.
     const profileData = async (type: string, aid: string): Promise<Record<string, unknown>> => {
       const resp = await adminPage.request.get(
         `http://localhost:9080/api/v1/profiles/${type}/${type}-${aid}`,
@@ -1415,10 +1487,14 @@ test.describe.serial('Registration Approval Flow', () => {
     const member2Name = accounts.member2!.name;
 
     // Sanity: after test 2 the group signs with admin + member1.
-    const groupBefore = await currentKeyState(orgAid, 'witness');
-    const member1Before = await currentKeyState(member1Aid);
+    const groupBefore = await currentKeyState(adminPage.request, orgAid, 'witness');
+    const member1Before = await currentKeyState(adminPage.request, member1Aid);
     console.log(`[Test] Group before: sn=${groupBefore.sn} kt=${groupBefore.kt} signers=${groupBefore.k.length}`);
     expect(groupBefore.k, 'member1 (steward from test 2) should sign for the group').toContain(member1Before.k[0]);
+
+    // Record the promotion start so the #520 toad-line assertion only reads
+    // KERIA log lines produced by this second promotion (group sn a/10).
+    const promotionStartedAt = new Date().toISOString();
 
     // Everyone the group rotation touches has to be online.
     //  - member2 is being added: round 1 invites them, their client accepts and
@@ -1550,15 +1626,21 @@ test.describe.serial('Registration Approval Flow', () => {
       await memberModal.locator('button').filter({ has: adminPage.locator('svg') }).first().click();
       await expect(memberModal).not.toBeVisible({ timeout: TIMEOUT.short });
 
-      const groupAfter = await currentKeyState(orgAid, 'witness');
-      const member1After = await currentKeyState(member1Aid);
-      const member2After = await currentKeyState(member2Aid);
+      const groupAfter = await currentKeyState(adminPage.request, orgAid, 'witness');
+      const member1After = await currentKeyState(adminPage.request, member1Aid);
+      const member2After = await currentKeyState(adminPage.request, member2Aid);
       console.log(`[Test] Group after: sn=${groupAfter.sn} kt=${groupAfter.kt} signers=${groupAfter.k.length}`);
       console.log(`[Test] member1 sn=${member1After.sn} key=${member1After.k[0]?.slice(0, 12)} | member2 sn=${member2After.sn} key=${member2After.k[0]?.slice(0, 12)}`);
       expect(groupAfter.sn, 'the group should have rotated for the second promotion').toBeGreaterThan(groupBefore.sn);
+      expect(groupAfter.sn - groupBefore.sn, 'the second promotion rotates the group twice (round 1 + round 2)').toBe(2);
       expect(groupAfter.k, 'member2 must now sign for the group').toContain(member2After.k[0]);
       expect(groupAfter.k, 'member1 (first steward) must REMAIN a group signer after a second promotion').toContain(member1After.k[0]);
       expect(groupAfter.k.length, 'group should have admin + member1 + member2 signers').toBe(3);
+
+      // #520: with the recipient-side witness pull and the admin-side receipted
+      // KEL push in place, neither round of the second promotion should leave
+      // the group rotation parked in KERIA's partially-witnessed escrow.
+      assertNoOrgGroupToadLines(orgAid, promotionStartedAt);
 
       console.log('[Test] PASS - member2 recognised as a member and promoted to Community Steward');
     } finally {

@@ -808,6 +808,42 @@ export class KERIClient {
   }
 
   /**
+   * Best-effort push of a group AID's freshly-advanced KEL to an EXPLICIT set
+   * of recipient member AIDs (issue #520, step 2).
+   *
+   * Unlike pushGroupKelToOtherMembers — which derives its targets from the org
+   * config's `admins` — this pushes to exactly the AIDs given. The steward
+   * promotion rounds need that: a round-1 recipient is the JOINING member, who
+   * is not yet in the org config, and every co-signer recipient must get the
+   * receipted rotation too. Pushing the witness-receipted group KEL here means
+   * the recipient's agent already holds the rotation with its receipts, so the
+   * `/multisig/rot` EXN's receipt-less embedded copy is a duplicate rather than
+   * a fresh event parked in KERIA's partially-witnessed escrow (the "Failure
+   * satisfying toad ... sigs=[]" line diagnosed on the recipient agent). Never
+   * throws.
+   */
+  private async pushGroupKelToRecipients(
+    groupAidPrefix: string,
+    recipients: string[],
+  ): Promise<void> {
+    for (const memberAid of new Set(recipients.filter(Boolean))) {
+      try {
+        const push = await this.pushKelToAgent(groupAidPrefix, memberAid);
+        if (push.pushed === 0) {
+          console.warn(
+            `[KERIClient] Group KEL push to recipient ${memberAid.slice(0, 12)}... delivered nothing (${push.failed} failed)`,
+          );
+        }
+      } catch (pushErr) {
+        console.warn(
+          `[KERIClient] Group KEL push to recipient ${memberAid.slice(0, 12)}... failed:`,
+          pushErr instanceof Error ? pushErr.message : pushErr,
+        );
+      }
+    }
+  }
+
+  /**
    * Get an existing AID by name
    * @param name - The AID name to retrieve
    * @returns AID info or null if not found
@@ -1994,6 +2030,24 @@ export class KERIClient {
     const rot1Sn = this.rotationSn(rot1);
     if (rot1Sn) await this.awaitGroupKeyState(groupBefore.prefix, rot1Sn, 'addMemberRound1');
 
+    const round1Recipients = [...coSigners.map(sig => sig.aid), newMemberAidPrefix];
+
+    // (f2) Confirm the org witnesses actually serve this rotation before the
+    //      EXN carries its receipt-less copy to the recipients (issue #520,
+    //      step 3). The live diagnosis (issue comment, 2026-09-15) showed the
+    //      org group is receipted within ~1.5s on a healthy stack, so this
+    //      normally resolves immediately; it is a warm-up for the loaded-host
+    //      case, and best-effort — it never fails the promotion.
+    await this.resolveViaWitnesses(groupBefore.prefix);
+
+    // (f3) Push the witness-receipted group KEL to every recipient so their
+    //      agent holds the receipted round-1 rotation and never parks the
+    //      EXN's receipt-less embedded copy in KERIA's partially-witnessed
+    //      escrow (issue #520, step 2 — the escrow behind the "Failure
+    //      satisfying toad" lines). Belt-and-braces with the recipient-side
+    //      witness pull in useMultisigJoin (round-1 branch).
+    await this.pushGroupKelToRecipients(groupBefore.prefix, round1Recipients);
+
     // (g) Send /multisig/rot EXN with FRESH master hab. Existing co-signers are
     //     recipients too: their agents need this event to keep a current view
     //     of the group (and they co-sign it, which is harmless at isith=1).
@@ -2006,7 +2060,7 @@ export class KERIClient {
       { serder: rot1.serder, sigs: rot1.sigs },
       smids,
       rmids,
-      [...coSigners.map(sig => sig.aid), newMemberAidPrefix],
+      round1Recipients,
       'round-1',
     );
     console.log('[KERIClient] addMemberRound1 complete');
@@ -2121,6 +2175,16 @@ export class KERIClient {
     const rot2Sn = this.rotationSn(rot2);
     if (rot2Sn) await this.awaitGroupKeyState(groupAidPre.prefix, rot2Sn, 'addMemberRound2');
 
+    const round2Recipients = [...coSigners.map(sig => sig.aid), newMemberAidPrefix];
+
+    // (f2) Same witness warm-up + KEL push as round 1 (issue #520, steps 2/3):
+    //      confirm the org witnesses serve the round-2 rotation, then push the
+    //      receipted group KEL to every recipient so the EXN's receipt-less
+    //      embedded copy never sticks in a recipient's partially-witnessed
+    //      escrow. Best-effort; neither call fails the promotion.
+    await this.resolveViaWitnesses(groupAidPre.prefix);
+    await this.pushGroupKelToRecipients(groupAidPre.prefix, round2Recipients);
+
     // (g) Send /multisig/rot EXN with FRESH master hab.
     const groupAid = await this.client.identifiers().get(groupName);
     const smids = [masterState.i as string, ...coSigners.map(sig => sig.aid), memberState.i as string];
@@ -2132,7 +2196,7 @@ export class KERIClient {
       { serder: rot2.serder, sigs: rot2.sigs },
       smids,
       rmids,
-      [...coSigners.map(sig => sig.aid), newMemberAidPrefix],
+      round2Recipients,
       'round-2',
     );
 
@@ -2267,12 +2331,26 @@ export class KERIClient {
     // without this the key-state query throws and the notification is left
     // unread to be retried forever.
     const cesrUrl = this.getCesrUrl();
-    for (const pre of new Set([...smids, ...rmids])) {
+    // Resolve the group's own OOBI alongside the members' (issue #520): the
+    // members' OOBIs were resolved but not the group's, so our agent only
+    // learned the proposed rotation from the EXN's receipt-less embedded copy.
+    for (const pre of new Set([gid, ...smids, ...rmids])) {
       try {
         await this.resolveOOBI(`${cesrUrl}/oobi/${pre}`, undefined, 30000);
       } catch (err) {
         console.warn(`[KERIClient] coSignGroupRotation: OOBI for ${pre.slice(0, 12)} failed:`, err);
       }
+    }
+
+    // Pull the group's WITNESS-RECEIPTED KEL up to the proposed rotation's sn
+    // before we rebuild it (issue #520, step 1). Without this our agent holds
+    // only the EXN's receipt-less embedded copy, which keripy parks in the
+    // partially-witnessed escrow ("Failure satisfying toad ... sigs=[]") until
+    // an incidental KEL push happens to arrive. queryKeyStateToSn makes our
+    // agent fetch the receipted event from the group's witnesses instead.
+    // Best-effort: a null return leaves the prior escrow-then-push behaviour.
+    if (embedded.s) {
+      await this.queryKeyStateToSn(gid, embedded.s);
     }
 
     const keyState = async (pre: string): Promise<Record<string, unknown>> => {
