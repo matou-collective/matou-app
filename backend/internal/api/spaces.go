@@ -13,6 +13,7 @@ import (
 
 	"github.com/anyproto/any-sync/commonspace/object/acl/list"
 	"github.com/anyproto/any-sync/util/crypto"
+	"github.com/matou-collective/matou-app/backend/communityspace"
 	"github.com/matou-dao/backend/internal/anystore"
 	"github.com/matou-dao/backend/internal/anysync"
 	"github.com/matou-dao/backend/internal/contributions"
@@ -359,43 +360,37 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	keys, err := anysync.DeriveSpaceKeySet(mnemonic, 1)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, CreateCommunityResponse{
-			Success: false,
-			Error:   fmt.Sprintf("failed to derive community space keys: %v", err),
-		})
-		return
-	}
-
-	// Use the client's sign key (ACL identity) as the space signing key so the
-	// SDK client's account identity matches the ACL owner. This ensures ACL
-	// operations like BuildInviteAnyone succeed when the admin creates invites
-	// later. The sign key is mnemonic-derived and distinct from the device key.
-	keys.SigningKey = client.GetSigningKey()
-
-	result, err := client.CreateSpaceWithKeys(ctx, req.OrgAID, anysync.SpaceTypeCommunity, keys)
-	if err != nil {
+	// Create the community's three any-sync spaces via the shared convention
+	// package (issue #530): keys derived at indexes 1/2/3, the ACL owner pinned
+	// to the client's account identity, each space made shareable. The backend's
+	// SDKClient satisfies the package's SpaceCreator port, so this is the same
+	// code IDSS founding runs — the convention can never drift. Store persistence
+	// and profile seeding stay here (app concerns the package does not carry).
+	communitySpaces, err := communityspace.CreateCommunitySpaces(ctx, client, mnemonic, req.OrgAID)
+	if err != nil && communitySpaces.CommunitySpaceID == "" {
+		// The community space itself failed — fatal, as before.
 		writeJSON(w, http.StatusInternalServerError, CreateCommunityResponse{
 			Success: false,
 			Error:   fmt.Sprintf("failed to create community space: %v", err),
 		})
 		return
 	}
-
-	// Make space shareable on coordinator (required before CreateOpenInvite)
-	if err := client.MakeSpaceShareable(ctx, result.SpaceID); err != nil {
-		log.Printf("Warning: failed to make space shareable: %v\n", err)
+	if err != nil {
+		// The community space was created but a later space failed; the read-only
+		// and admin spaces were best-effort before too, so log and continue.
+		log.Printf("Warning: community sub-space creation incomplete: %v\n", err)
 	}
+
+	now := time.Now().UTC()
 
 	// Save space record to local store
 	space := &anysync.Space{
-		SpaceID:   result.SpaceID,
+		SpaceID:   communitySpaces.CommunitySpaceID,
 		OwnerAID:  req.OrgAID,
 		SpaceType: anysync.SpaceTypeCommunity,
 		SpaceName: req.OrgName + " Community",
-		CreatedAt: result.CreatedAt,
-		LastSync:  result.CreatedAt,
+		CreatedAt: now,
+		LastSync:  now,
 	}
 
 	if err := h.spaceStore.SaveSpace(ctx, space); err != nil {
@@ -404,7 +399,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	}
 
 	// Update space manager with the new community space ID
-	h.spaceManager.SetCommunitySpaceID(result.SpaceID)
+	h.spaceManager.SetCommunitySpaceID(communitySpaces.CommunitySpaceID)
 
 	// If no pre-uploaded avatar fileRef but base64 data is available, upload now.
 	// Use a separate context so the avatar retry loop doesn't consume the
@@ -412,7 +407,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	if req.AdminAvatar == "" && req.AdminAvatarData != "" {
 		avatarCtx, avatarCancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer avatarCancel()
-		if fileRef, uploadErr := uploadBase64Avatar(avatarCtx, h.fileManager, result.SpaceID, client.GetSigningKey(), req.AdminAvatarData, req.AdminAvatarMimeType); uploadErr != nil {
+		if fileRef, uploadErr := uploadBase64Avatar(avatarCtx, h.fileManager, communitySpaces.CommunitySpaceID, client.GetSigningKey(), req.AdminAvatarData, req.AdminAvatarMimeType); uploadErr != nil {
 			log.Printf("Warning: failed to upload base64 admin avatar: %v\n", uploadErr)
 		} else {
 			req.AdminAvatar = fileRef
@@ -425,7 +420,7 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 
 	// Seed community space with type definition + admin SharedProfile
 	if req.AdminAID != "" {
-		communityObjects, seedErr := h.seedSpace(ctx, result.SpaceID, types.SharedProfileType(), map[string]interface{}{
+		communityObjects, seedErr := h.seedSpace(ctx, communitySpaces.CommunitySpaceID, types.SharedProfileType(), map[string]interface{}{
 			"aid":          req.AdminAID,
 			"displayName":  req.AdminName,
 			"bio":          "",
@@ -445,111 +440,87 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Create community read-only space (key derivation index 2)
-	roKeys, err := anysync.DeriveSpaceKeySet(mnemonic, 2)
-	if err != nil {
-		log.Printf("Warning: failed to derive community-readonly space keys: %v\n", err)
-	} else {
-		roKeys.SigningKey = client.GetSigningKey()
-		roResult, err := client.CreateSpaceWithKeys(ctx, req.OrgAID, anysync.SpaceTypeCommunityReadOnly, roKeys)
-		if err != nil {
-			log.Printf("Warning: failed to create community-readonly space: %v\n", err)
-		} else {
-			if err := client.MakeSpaceShareable(ctx, roResult.SpaceID); err != nil {
-				log.Printf("Warning: failed to make community-readonly space shareable: %v\n", err)
+	// Persist and seed the community read-only space (created above at index 2).
+	if roSpaceID := communitySpaces.CommunityReadOnlySpaceID; roSpaceID != "" {
+		roSpace := &anysync.Space{
+			SpaceID:   roSpaceID,
+			OwnerAID:  req.OrgAID,
+			SpaceType: anysync.SpaceTypeCommunityReadOnly,
+			SpaceName: req.OrgName + " Community (Read-Only)",
+			CreatedAt: now,
+			LastSync:  now,
+		}
+		if err := h.spaceStore.SaveSpace(ctx, roSpace); err != nil {
+			log.Printf("Warning: failed to save community-readonly space record: %v\n", err)
+		}
+		h.spaceManager.SetCommunityReadOnlySpaceID(roSpaceID)
+		if h.userIdentity != nil {
+			if err := h.userIdentity.SetCommunityReadOnlySpaceID(roSpaceID); err != nil {
+				log.Printf("Warning: failed to persist community-readonly space ID: %v\n", err)
 			}
-			roSpace := &anysync.Space{
-				SpaceID:   roResult.SpaceID,
-				OwnerAID:  req.OrgAID,
-				SpaceType: anysync.SpaceTypeCommunityReadOnly,
-				SpaceName: req.OrgName + " Community (Read-Only)",
-				CreatedAt: roResult.CreatedAt,
-				LastSync:  roResult.CreatedAt,
-			}
-			if err := h.spaceStore.SaveSpace(ctx, roSpace); err != nil {
-				log.Printf("Warning: failed to save community-readonly space record: %v\n", err)
-			}
-			h.spaceManager.SetCommunityReadOnlySpaceID(roResult.SpaceID)
-			if h.userIdentity != nil {
-				if err := h.userIdentity.SetCommunityReadOnlySpaceID(roResult.SpaceID); err != nil {
-					log.Printf("Warning: failed to persist community-readonly space ID: %v\n", err)
-				}
+		}
+
+		// Seed readonly space with CommunityProfile type def + admin's CommunityProfile
+		if req.AdminAID != "" {
+			nowStr := now.Format(time.RFC3339)
+			roObjects, seedErr := h.seedSpace(ctx, roSpaceID, types.CommunityProfileType(), map[string]interface{}{
+				"userAID":      req.AdminAID,
+				"credential":   req.CredentialSAID,
+				"role":         "Founding Member",
+				"memberSince":  nowStr,
+				"lastActiveAt": nowStr,
+				"credentials":  []string{req.CredentialSAID},
+				"permissions":  []string{"participate", "vote", "propose"},
+			}, fmt.Sprintf("CommunityProfile-%s", req.AdminAID))
+			if seedErr != nil {
+				log.Printf("Warning: failed to seed community-readonly space: %v\n", seedErr)
+			} else {
+				allObjects = append(allObjects, roObjects...)
 			}
 
-			// Seed readonly space with CommunityProfile type def + admin's CommunityProfile
-			if req.AdminAID != "" {
-				now := time.Now().UTC().Format(time.RFC3339)
-				roObjects, seedErr := h.seedSpace(ctx, roResult.SpaceID, types.CommunityProfileType(), map[string]interface{}{
-					"userAID":      req.AdminAID,
-					"credential":   req.CredentialSAID,
-					"role":         "Founding Member",
-					"memberSince":  now,
-					"lastActiveAt": now,
-					"credentials":  []string{req.CredentialSAID},
-					"permissions":  []string{"participate", "vote", "propose"},
-				}, fmt.Sprintf("CommunityProfile-%s", req.AdminAID))
-				if seedErr != nil {
-					log.Printf("Warning: failed to seed community-readonly space: %v\n", seedErr)
-				} else {
-					allObjects = append(allObjects, roObjects...)
-				}
-
-				// Seed readonly space with OrgProfile type def + Matou OrgProfile
-				orgProfileObjects, orgSeedErr := h.seedSpace(ctx, roResult.SpaceID, types.OrgProfileType(), map[string]interface{}{
-					"communityName": req.OrgName,
-					"contactEmail":  req.AdminEmail,
-					"logo":          req.AdminAvatar,
-					"createdAt":     now,
-				}, fmt.Sprintf("OrgProfile-%s", req.OrgAID))
-				if orgSeedErr != nil {
-					log.Printf("Warning: failed to seed OrgProfile: %v\n", orgSeedErr)
-				} else {
-					allObjects = append(allObjects, orgProfileObjects...)
-				}
+			// Seed readonly space with OrgProfile type def + Matou OrgProfile
+			orgProfileObjects, orgSeedErr := h.seedSpace(ctx, roSpaceID, types.OrgProfileType(), map[string]interface{}{
+				"communityName": req.OrgName,
+				"contactEmail":  req.AdminEmail,
+				"logo":          req.AdminAvatar,
+				"createdAt":     nowStr,
+			}, fmt.Sprintf("OrgProfile-%s", req.OrgAID))
+			if orgSeedErr != nil {
+				log.Printf("Warning: failed to seed OrgProfile: %v\n", orgSeedErr)
+			} else {
+				allObjects = append(allObjects, orgProfileObjects...)
 			}
 		}
 	}
 
-	// Create admin space (key derivation index 3)
-	adminKeys, err := anysync.DeriveSpaceKeySet(mnemonic, 3)
-	if err != nil {
-		log.Printf("Warning: failed to derive admin space keys: %v\n", err)
-	} else {
-		adminKeys.SigningKey = client.GetSigningKey()
-		adminResult, err := client.CreateSpaceWithKeys(ctx, req.OrgAID, anysync.SpaceTypeAdmin, adminKeys)
-		if err != nil {
-			log.Printf("Warning: failed to create admin space: %v\n", err)
-		} else {
-			if err := client.MakeSpaceShareable(ctx, adminResult.SpaceID); err != nil {
-				log.Printf("Warning: failed to make admin space shareable: %v\n", err)
-			}
-			adminSpace := &anysync.Space{
-				SpaceID:   adminResult.SpaceID,
-				OwnerAID:  req.OrgAID,
-				SpaceType: anysync.SpaceTypeAdmin,
-				SpaceName: req.OrgName + " Admin",
-				CreatedAt: adminResult.CreatedAt,
-				LastSync:  adminResult.CreatedAt,
-			}
-			if err := h.spaceStore.SaveSpace(ctx, adminSpace); err != nil {
-				log.Printf("Warning: failed to save admin space record: %v\n", err)
-			}
-			h.spaceManager.SetAdminSpaceID(adminResult.SpaceID)
-			if h.userIdentity != nil {
-				if err := h.userIdentity.SetAdminSpaceID(adminResult.SpaceID); err != nil {
-					log.Printf("Warning: failed to persist admin space ID: %v\n", err)
-				}
+	// Persist the admin space (created above at index 3).
+	if adminSpaceID := communitySpaces.AdminSpaceID; adminSpaceID != "" {
+		adminSpace := &anysync.Space{
+			SpaceID:   adminSpaceID,
+			OwnerAID:  req.OrgAID,
+			SpaceType: anysync.SpaceTypeAdmin,
+			SpaceName: req.OrgName + " Admin",
+			CreatedAt: now,
+			LastSync:  now,
+		}
+		if err := h.spaceStore.SaveSpace(ctx, adminSpace); err != nil {
+			log.Printf("Warning: failed to save admin space record: %v\n", err)
+		}
+		h.spaceManager.SetAdminSpaceID(adminSpaceID)
+		if h.userIdentity != nil {
+			if err := h.userIdentity.SetAdminSpaceID(adminSpaceID); err != nil {
+				log.Printf("Warning: failed to persist admin space ID: %v\n", err)
 			}
 		}
 	}
 
 	writeJSON(w, http.StatusOK, CreateCommunityResponse{
 		Success:          true,
-		CommunitySpaceID: result.SpaceID,
+		CommunitySpaceID: communitySpaces.CommunitySpaceID,
 		ReadOnlySpaceID:  h.spaceManager.GetCommunityReadOnlySpaceID(),
 		AdminSpaceID:     h.spaceManager.GetAdminSpaceID(),
 		Objects:          allObjects,
-		SpaceID:          result.SpaceID, // backward compat
+		SpaceID:          communitySpaces.CommunitySpaceID, // backward compat
 	})
 }
 

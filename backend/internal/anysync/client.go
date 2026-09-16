@@ -5,7 +5,6 @@ package anysync
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/anyproto/any-sync/nodeconf"
 	"gopkg.in/yaml.v3"
@@ -43,14 +42,8 @@ type ClientOptions struct {
 	EncryptionKey []byte
 }
 
-// SpaceCreateResult contains the result of space creation
-type SpaceCreateResult struct {
-	SpaceID   string       `json:"spaceId"`
-	CreatedAt time.Time    `json:"createdAt"`
-	OwnerAID  string       `json:"ownerAid"`
-	SpaceType string       `json:"spaceType"`
-	Keys      *SpaceKeySet `json:"-"` // In-memory only, not serialized
-}
+// SpaceCreateResult now lives in the public communityspace module and is
+// re-exported here (see convention.go).
 
 // loadClientConfig loads the any-sync client.yml file
 func loadClientConfig(path string) (*ClientConfig, error) {
