@@ -1030,13 +1030,18 @@ test.describe.serial('Projects & Contributions — Full UI Lifecycle', () => {
       await openContributionDialog(memberPage, CONTRIBUTION_1_TITLE);
       submitEvidenceBtn = memberPage.locator('.q-dialog').getByRole('button', { name: /Submit Evidence & Complete/i });
     }
-    const evidenceBtnVisible = await submitEvidenceBtn.isVisible({ timeout: TIMEOUT.medium }).catch(() => false);
-    if (!evidenceBtnVisible) {
-      console.log('[Phase 7] Submit Evidence button not visible — sub-contribution sign-off may not have synced. Skipping.');
-      await memberPage.keyboard.press('Escape');
-      await memberPage.waitForTimeout(500);
-      return;
-    }
+    // Hard-fail rather than skip if the button never appears (#522). The
+    // "Submit Evidence & Complete" button only renders once every
+    // sub-contribution sign-off has synced and verified on the member's
+    // replica. A backend whose identity was set after boot used to reject the
+    // admin's signed sign-off with "signer key state unavailable" (the
+    // write-rule refresher never ran), so the button stayed hidden. Skipping
+    // here let that regression pass silently and cascade into Phase 8; assert
+    // instead so it can never hide again.
+    await expect(
+      submitEvidenceBtn,
+      'Submit Evidence & Complete button never appeared — sub-contribution sign-off did not sync/verify (regression of #522: write-rule refresher not running on a backend whose identity was set after boot)',
+    ).toBeVisible({ timeout: TIMEOUT.medium });
     await submitEvidenceBtn.click();
     await memberPage.waitForTimeout(500);
 
