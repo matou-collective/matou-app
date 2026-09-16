@@ -2124,8 +2124,15 @@ test.describe.serial('Projects & Contributions — API Validation', () => {
   });
 
   test('rejects contribution creation with missing required fields', async ({ request }) => {
+    // Must carry a signed session (like the neighbouring empty-title test):
+    // RBAC answers 401 before validation runs, so an identity-less POST never
+    // reaches the 400 path it means to exercise.
+    const health = await request.get(`${BACKEND_URL}/health`);
+    const { admin: resolvedAdminAID } = await health.json();
+    expect(resolvedAdminAID).toBeTruthy();
+
     const response = await request.post(`${BACKEND_URL}/api/v1/contributions`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: jsonSessionHeaders(resolvedAdminAID),
       data: { title: 'Missing fields' },
     });
     expect(response.status()).toBe(400);

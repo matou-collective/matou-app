@@ -25,7 +25,10 @@ test.describe('mobile bottom tab bar hides with the keyboard (#126)', () => {
   }) => {
     const page = adminPage;
     await page.setViewportSize(PHONE);
-    await page.goto('/');
+    // Hash-mode router: `goto('/')` is a full reload that lands a restored
+    // session on the Welcome overlay (no `.bottom-nav`). Use the in-app hash
+    // route so we stay on the authenticated dashboard.
+    await page.goto('/#/dashboard');
 
     const bottomNav = page.locator('.bottom-nav');
     // At phone width the bottom tab bar is the only navigation — visible at rest.

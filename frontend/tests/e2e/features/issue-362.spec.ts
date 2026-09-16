@@ -8,7 +8,18 @@ test.describe('issue-362 setup submit button reads "Launch App"', () => {
   test('setup screen submit button says Launch App', async ({ freshPage, snap }) => {
     const page = freshPage;
 
-    // The setup route renders OrgSetupScreen directly (no redirect guard).
+    // The features project runs after org-setup, so the org IS configured and
+    // the guard redirects /setup → splash (`isConfigured && to.path==='/setup'`,
+    // boot/keri.ts). Make the app see an unconfigured org by 404-ing both config
+    // sources (backend then config server, src/api/config.ts) so `needsSetup`
+    // is true and the /setup route renders OrgSetupScreen.
+    await page.route('**/api/v1/org/config', (route) =>
+      route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }),
+    );
+    await page.route('**/api/config', (route) =>
+      route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }),
+    );
+
     await page.goto('/#/setup');
 
     await expect(page.getByRole('heading', { name: /set up mātou/i })).toBeVisible({

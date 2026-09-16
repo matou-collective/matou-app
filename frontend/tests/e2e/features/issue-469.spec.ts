@@ -76,6 +76,9 @@ test.describe('issue-469 linked-device sign-in waiting-for-sync contract', () =>
       });
     });
 
+    // freshPage doesn't navigate on its own — load the app so the splash renders.
+    await page.goto('/');
+
     // Splash → "Already have an account? Recover identity"
     await expect(page.getByRole('button', { name: /join now/i })).toBeVisible({
       timeout: 30_000,

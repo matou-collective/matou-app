@@ -40,7 +40,9 @@ test.describe('mobile channel-list labels (#124)', () => {
     await adminPage.locator('.create-btn').click();
     await adminPage.locator('#name').fill(name);
     await adminPage.locator('#description').fill(description);
-    await adminPage.getByRole('button', { name: /create channel/i }).click();
+    // Scope to the modal: /create channel/i also matches the sidebar's
+    // `title="Create channel"` icon button, so target the modal's submit.
+    await adminPage.locator('.modal-content').getByRole('button', { name: /create channel/i }).click();
 
     const row = adminPage.locator('.channel-item').filter({ hasText: name });
     await expect(row).toBeVisible({ timeout: 15_000 });

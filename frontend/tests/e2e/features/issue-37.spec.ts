@@ -72,6 +72,17 @@ test.describe('in-chat @-mentions: project type (#37)', () => {
       description: 'Seeded by the issue-37 feature spec.',
     });
 
+    // PRODUCT GAP (flagged for human review, see PR): the @-mention candidate
+    // list is sourced from the projects store, which is preloaded at login. A
+    // project created *after* the dashboard loaded (as this spec seeds it via
+    // API) is not offered as a mention candidate until the store is refreshed —
+    // the composer only refetches when its candidate list is empty. Reload so
+    // the dashboard re-fetches the projects store (picking up the seeded
+    // project) before we open the channel, demonstrating the feature works once
+    // the store is current. Whether a live in-session create should appear
+    // without a reload is the open product question.
+    await adminPage.reload();
+
     await openChannel(adminPage, channelName);
 
     // Type '@' plus two words of the title — the second word crosses a space,

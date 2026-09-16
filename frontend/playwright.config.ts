@@ -124,10 +124,16 @@ export default defineConfig({
       use: browserConfig,
     },
     // Wallet page - credential views, governance, tokens
+    // Depends on registration-member so the admin has issued a membership
+    // credential to a member: the revoke tests (7, 8) need an "Issued" card
+    // (isIssuedByMe = issueeAid !== myAid). Without a seeded member the admin
+    // holds only its own org-group-issued credential, which renders as
+    // "Received", and there is no issued card to revoke (#521).
     {
       name: 'wallet',
       testMatch: /e2e-wallet\.spec\.ts/,
       use: browserConfig,
+      dependencies: ['org-setup', 'registration-member'],
     },
     // Activity page - notice board, events, updates, interactions
     {
@@ -155,11 +161,15 @@ export default defineConfig({
       dependencies: ['org-setup'],
     },
     // Chat feature - full integration with real backend and any-sync P2P
-    // No dependency — requires test-accounts.json from registration
+    // Declares its bootstrap (#521): its beforeAll needs the admin from
+    // org-setup and then registers its own member, so depend on org-setup
+    // rather than relying on sibling run order (Playwright does not order
+    // sibling projects, #282).
     {
       name: 'chat',
       testMatch: /e2e-chat\.spec\.ts/,
       use: browserConfig,
+      dependencies: ['org-setup'],
     },
     // Credential chain verification — tests KERIA reger.saved isolation bug
     // Self-sufficient: auto-runs org-setup if needed
@@ -169,32 +179,38 @@ export default defineConfig({
       use: browserConfig,
     },
     // Member removal — approve then remove a member
-    // Requires test-accounts.json from registration tests
+    // Declares its bootstrap (#521): reads a member from test-accounts.json.
     {
       name: 'member-removal',
       testMatch: /e2e-member-removal\.spec\.ts/,
       use: browserConfig,
+      dependencies: ['org-setup', 'registration-member'],
     },
     // Proposals — proposal lifecycle (API + UI)
-    // Requires test-accounts.json from org-setup
+    // Declares its bootstrap (#521): reads a member from test-accounts.json.
     {
       name: 'proposals',
       testMatch: /e2e-proposals\.spec\.ts/,
       use: browserConfig,
+      dependencies: ['org-setup', 'registration-member'],
     },
     // Projects & Contributions — full lifecycle (API + UI)
-    // Requires test-accounts.json from org-setup
+    // Declares its bootstrap (#521): reads a member from test-accounts.json.
     {
       name: 'projects-contributions',
       testMatch: /e2e-projects-contributions\.spec\.ts/,
       use: browserConfig,
+      dependencies: ['org-setup', 'registration-member'],
     },
     // Proposal link cards in chat — rich preview cards + detail modal
-    // Requires test-accounts.json from org-setup
+    // Declares its bootstrap (#521): its beforeAll needs only the admin from
+    // org-setup (it seeds proposals + a channel via the admin API), so depend
+    // on org-setup rather than relying on sibling run order (#282).
     {
       name: 'proposal-link-cards',
       testMatch: /e2e-proposal-link-cards\.spec\.ts/,
       use: browserConfig,
+      dependencies: ['org-setup'],
     },
     // Roles & Permissions — admin-managed RBAC (role policy matrix, custom
     // roles, Change Role integration, member denial). Bootstraps its own org

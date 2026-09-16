@@ -15,8 +15,10 @@ import {
  * E2E: Wallet Page
  *
  * Tests wallet navigation, credential card/graph views, governance and token
- * tabs. Uses the admin user who already has a self-issued membership credential
- * from org setup — avoids the ~4 min registration overhead.
+ * tabs. Uses the admin user, who holds its own membership credential (issued
+ * by the org group, so it renders as "Received") plus the credential it issued
+ * to the registered member (renders as "Issued"). The revoke tests act on the
+ * issued-to-member card, so this project depends on registration-member.
  *
  * Admin uses the default backend on port 9080 (no routing needed), matching
  * the admin pattern in registration and invitation tests.
@@ -203,7 +205,10 @@ test.describe.serial('Wallet Page', () => {
   // Test 7: Revoke button in detail dialog for self-issued credential
   // ---------------------------------------------------------------
   test('revoke button visible for self-issued credential', async () => {
-    // Admin has self-issued membership cred — find the "Issued" card
+    // The admin issued a membership credential to the registered member; it
+    // renders as an "Issued" card (isIssuedByMe = issueeAid !== myAid). The
+    // admin's own credential is issued by the org group, so it is "Received",
+    // not issued — find the card the admin actually issued.
     const issuedCard = page.locator('.credential-card.card-issued').first();
     await expect(issuedCard).toBeVisible({ timeout: TIMEOUT.medium });
     await issuedCard.click();

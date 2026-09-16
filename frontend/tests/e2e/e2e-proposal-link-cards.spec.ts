@@ -72,13 +72,18 @@ async function createProposalAPI(
 
 async function transitionProposalAPI(
   request: APIRequestContext,
+  aid: string,
   proposalId: string,
   status: string,
 ) {
+  // draft → submitted has required X-User-AID since #315; without a signed
+  // session header the transition 401s, the proposal stays Draft, and the
+  // detail modal's `.endorsement-card` (v-if status === 'submitted') never
+  // renders. Send the admin's session headers so the transition sticks.
   const response = await request.post(
     `${BACKEND_URL}/api/v1/proposals/${proposalId}/transition`,
     {
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(aid),
       data: { status },
     },
   );
@@ -187,7 +192,8 @@ test.describe.serial('Proposal Link Cards in Chat', () => {
     console.log('[Setup] Proposal 1 created: %s', proposalId);
 
     // Submit for endorsement so endorsement progress shows
-    await transitionProposalAPI(request, proposalId, 'submitted');
+    const { response: t1 } = await transitionProposalAPI(request, aid, proposalId, 'submitted');
+    expect(t1.ok()).toBeTruthy();
 
     // Create second proposal for multi-link test
     const { response: r2, body: b2 } = await createProposalAPI(request, aid, {
@@ -195,7 +201,8 @@ test.describe.serial('Proposal Link Cards in Chat', () => {
     });
     expect(r2.ok()).toBeTruthy();
     proposalId2 = b2.id;
-    await transitionProposalAPI(request, proposalId2, 'submitted');
+    const { response: t2 } = await transitionProposalAPI(request, aid, proposalId2, 'submitted');
+    expect(t2.ok()).toBeTruthy();
     console.log('[Setup] Proposal 2 created: %s', proposalId2);
 
     // Create or find a chat channel
