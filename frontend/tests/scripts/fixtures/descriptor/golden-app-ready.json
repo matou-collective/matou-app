@@ -1,0 +1,65 @@
+{
+  "version": "1.1",
+  "backend_kind": "idss",
+  "community": {
+    "name": "Whakatōhea",
+    "slug": "whakatohea",
+    "aid": "ECommunityGroupAID000000000000000000000000000",
+    "oobi": "https://witness.whakatohea.idss.nz/oobi/ECommunityGroupAID000000000000000000000000000/witness",
+    "registry": "ERegistrySAID0000000000000000000000000000000"
+  },
+  "admins": [
+    {
+      "aid": "EOperatorBenAID00000000000000000000000000000",
+      "name": "Ben Tairea",
+      "oobi": "https://witness.whakatohea.idss.nz/oobi/EOperatorBenAID00000000000000000000000000000/agent"
+    }
+  ],
+  "api_url": "https://whakatohea.idss.nz/api/v1/idip",
+  "schemas": {
+    "committee": {
+      "said": "ECommitteeSchemaSAID000000000000000000000000",
+      "oobi": "https://schema.whakatohea.idss.nz/oobi/ECommitteeSchemaSAID000000000000000000000000"
+    },
+    "membership": {
+      "said": "EMembershipSchemaSAID00000000000000000000000",
+      "oobi": "https://schema.whakatohea.idss.nz/oobi/EMembershipSchemaSAID00000000000000000000000"
+    }
+  },
+  "boot": {
+    "gated": false,
+    "join_url": "https://whakatohea.idss.nz/join"
+  },
+  "signin": {
+    "url": "https://whakatohea.idss.nz/authz/signin"
+  },
+  "stack": {
+    "keria": "0.4.0",
+    "keripy": "1.2.6",
+    "signify": "0.2.0-rc1"
+  },
+  "app": {
+    "name": "Whakatōhea",
+    "downloads_url": "https://coa.matou.nz/c/whakatohea/downloads",
+    "platforms": [
+      "macOS",
+      "Windows",
+      "Linux",
+      "Android"
+    ]
+  },
+  "anysync": {
+    "network_id": "N7whakatoheaAnysyncNetwork00000000000000000",
+    "nodes": [
+      {
+        "addresses": [
+          "quic://anysync.whakatohea.idss.nz:1443"
+        ],
+        "peer_id": "12D3KooWWhakatoheaCoordinator0000000000000000",
+        "types": [
+          "coordinator"
+        ]
+      }
+    ]
+  }
+}

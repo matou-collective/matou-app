@@ -56,14 +56,16 @@ function getKeriaUrls() {
   // `url + path`), so a trailing slash — likelier now that bases can carry a
   // reverse-proxy prefix like https://host/keria/admin/ — is stripped once here.
   const base = (u: string | undefined, fallback: string) => (u || fallback).replace(/\/+$/, '');
-  const cesrFetchUrl = base(clientConfig?.keri.cesr_url, 'http://localhost:3902');
+  // A 1.1 IDSS descriptor carries no `keri` block (ADR 0226), so guard it and
+  // fall back to the localhost defaults rather than dereferencing undefined.
+  const cesrFetchUrl = base(clientConfig?.keri?.cesr_url, 'http://localhost:3902');
   return {
-    adminUrl: base(clientConfig?.keri.admin_url, 'http://localhost:3901'),
-    bootUrl: base(clientConfig?.keri.boot_url, 'http://localhost:3903'),
+    adminUrl: base(clientConfig?.keri?.admin_url, 'http://localhost:3901'),
+    bootUrl: base(clientConfig?.keri?.boot_url, 'http://localhost:3903'),
     // OOBI base: URLs built from this are resolved by KERIA server-side, so
     // when the backend loopback-proxies the KERI endpoints for the WebView
     // (#368) this must stay the public base, not the phone-local proxy.
-    cesrUrl: base(clientConfig?.keri.cesr_public_url, cesrFetchUrl),
+    cesrUrl: base(clientConfig?.keri?.cesr_public_url, cesrFetchUrl),
     // Direct-fetch base (KEL-push streams): the proxied URL on Capacitor.
     cesrFetchUrl,
   };
