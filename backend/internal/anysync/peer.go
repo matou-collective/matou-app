@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"log"
 	"os"
 	"path/filepath"
@@ -82,21 +81,6 @@ func NewPeerKeyManager(cfg *PeerKeyConfig) (*PeerKeyManager, error) {
 	mgr.peerID = peerKey.GetPublic().PeerId()
 
 	return mgr, nil
-}
-
-// DeriveKeyFromMnemonic derives an Ed25519 private key from a BIP39 mnemonic.
-// This uses the any-sync derivation path (m/44'/2046'/index'/0') which is
-// compatible with Anytype's identity derivation.
-func DeriveKeyFromMnemonic(mnemonic string, index uint32) (crypto.PrivKey, error) {
-	m := crypto.Mnemonic(mnemonic)
-
-	result, err := m.DeriveKeys(index)
-	if err != nil {
-		return nil, fmt.Errorf("deriving keys: %w", err)
-	}
-
-	// Use the Identity key (m/44'/2046'/index'/0')
-	return result.Identity, nil
 }
 
 // GetOrCreatePeerKey loads an existing peer key from file or generates a new one.
@@ -268,18 +252,6 @@ func DeriveKeyForAID(mnemonic string, aid string) (crypto.PrivKey, error) {
 	return privKey, nil
 }
 
-// ComputeReplicationKey computes a replication key from a signing key using
-// FNV-64 hash, matching the any-sync SDK's algorithm for space-to-node assignment.
-func ComputeReplicationKey(signingKey crypto.PrivKey) (uint64, error) {
-	raw, err := signingKey.GetPublic().Raw()
-	if err != nil {
-		return 0, fmt.Errorf("getting public key bytes: %w", err)
-	}
-	h := fnv.New64()
-	h.Write(raw)
-	return h.Sum64(), nil
-}
-
 // AIDMapping represents a stored AID-to-PeerID mapping
 type AIDMapping struct {
 	AID       string `json:"aid"`
@@ -302,16 +274,6 @@ func GeneratePeerIDFromAID(aid string) string {
 	// Create deterministic identifier
 	hash := sha256.Sum256([]byte("matou-peer:" + aid))
 	return "matou-" + hex.EncodeToString(hash[:8])
-}
-
-// ValidateMnemonic checks if a mnemonic is valid for key derivation
-func ValidateMnemonic(mnemonic string) error {
-	m := crypto.Mnemonic(mnemonic)
-	_, err := m.Seed()
-	if err != nil {
-		return fmt.Errorf("invalid mnemonic: %w", err)
-	}
-	return nil
 }
 
 // PersistUserSignKey saves a user's mnemonic-derived sign key (the ACL identity)

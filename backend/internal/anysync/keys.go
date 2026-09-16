@@ -20,90 +20,11 @@ func parseJSONFile(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
 }
 
-// SpaceKeySet holds the four keys required by any-sync for space creation.
-type SpaceKeySet struct {
-	// SigningKey signs the space header and ACL root (Ed25519)
-	SigningKey crypto.PrivKey
-	// MasterKey signs identity attestation (Ed25519)
-	MasterKey crypto.PrivKey
-	// ReadKey encrypts all tree content (AES-256-GCM symmetric)
-	ReadKey crypto.SymKey
-	// MetadataKey encrypts account metadata (Ed25519)
-	MetadataKey crypto.PrivKey
-}
-
-// GenerateSpaceKeySet creates a new random SpaceKeySet with all four keys.
-func GenerateSpaceKeySet() (*SpaceKeySet, error) {
-	signingKey, _, err := crypto.GenerateRandomEd25519KeyPair()
-	if err != nil {
-		return nil, fmt.Errorf("generating signing key: %w", err)
-	}
-
-	masterKey, _, err := crypto.GenerateRandomEd25519KeyPair()
-	if err != nil {
-		return nil, fmt.Errorf("generating master key: %w", err)
-	}
-
-	readKey, err := crypto.NewRandomAES()
-	if err != nil {
-		return nil, fmt.Errorf("generating read key: %w", err)
-	}
-
-	metadataKey, _, err := crypto.GenerateRandomEd25519KeyPair()
-	if err != nil {
-		return nil, fmt.Errorf("generating metadata key: %w", err)
-	}
-
-	return &SpaceKeySet{
-		SigningKey:  signingKey,
-		MasterKey:   masterKey,
-		ReadKey:     readKey,
-		MetadataKey: metadataKey,
-	}, nil
-}
-
-// DeriveSpaceKeySet derives a deterministic SpaceKeySet from a BIP39 mnemonic
-// and a space index. Different key types use different derivation indices to
-// ensure independence:
-//   - signing key:  base + 0
-//   - master key:   base + 1
-//   - metadata key: base + 2
-//   - read key:     random (symmetric keys can't be derived from Ed25519 path)
-func DeriveSpaceKeySet(mnemonic string, spaceIndex uint32) (*SpaceKeySet, error) {
-	m := crypto.Mnemonic(mnemonic)
-
-	// Each space uses a base index = spaceIndex * 4
-	base := spaceIndex * 4
-
-	sigResult, err := m.DeriveKeys(base)
-	if err != nil {
-		return nil, fmt.Errorf("deriving signing key at index %d: %w", base, err)
-	}
-
-	masterResult, err := m.DeriveKeys(base + 1)
-	if err != nil {
-		return nil, fmt.Errorf("deriving master key at index %d: %w", base+1, err)
-	}
-
-	metaResult, err := m.DeriveKeys(base + 2)
-	if err != nil {
-		return nil, fmt.Errorf("deriving metadata key at index %d: %w", base+2, err)
-	}
-
-	// AES-256 symmetric keys cannot be derived via Ed25519 BIP paths.
-	// Generate a random read key — it will be persisted alongside the space.
-	readKey, err := crypto.NewRandomAES()
-	if err != nil {
-		return nil, fmt.Errorf("generating read key: %w", err)
-	}
-
-	return &SpaceKeySet{
-		SigningKey:  sigResult.Identity,
-		MasterKey:   masterResult.Identity,
-		ReadKey:     readKey,
-		MetadataKey: metaResult.Identity,
-	}, nil
-}
+// SpaceKeySet, GenerateSpaceKeySet and DeriveSpaceKeySet now live in the public
+// communityspace module and are re-exported here (see convention.go), so the
+// derivation convention has a single implementation shared with IDSS founding
+// (#530). The key persistence helpers below stay in this package because they
+// touch the local store and the at-rest sealing, which are server concerns.
 
 // spaceKeyBundle is the on-disk format for a persisted SpaceKeySet.
 type spaceKeyBundle struct {

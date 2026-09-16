@@ -9,12 +9,19 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/ipfs/go-block-format v0.2.3
 	github.com/ipfs/go-cid v0.6.0
+	github.com/matou-collective/matou-app/backend/communityspace v0.0.0-00010101000000-000000000000
 	github.com/multiformats/go-multihash v0.2.3
 	go.uber.org/mock v0.6.0
 	golang.org/x/crypto v0.54.0
 	gopkg.in/yaml.v3 v3.0.1
 	storj.io/drpc v0.0.34
 )
+
+// The community-space creation convention is a nested public module of this
+// repo. Locally it resolves through this replace; a tagged version is fetched
+// from the GitHub mirror by external consumers (IDSS). See
+// backend/communityspace/README.md.
+replace github.com/matou-collective/matou-app/backend/communityspace => ./communityspace
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
