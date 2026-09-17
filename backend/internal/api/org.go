@@ -396,6 +396,20 @@ func (h *OrgConfigHandler) GetCommunitySpaceID() string {
 	return h.cache.CommunitySpaceID
 }
 
+// GetReadOnlySpaceID returns the community read-only space ID, or empty string
+// if not configured. It is the org-config fallback for the read-only space ID,
+// mirroring GetCommunitySpaceID: a client whose persisted identity read-only ID
+// is stale or empty can still resolve the working ID from shared org config
+// rather than being permanently stranded behind a dead space (issue #539).
+func (h *OrgConfigHandler) GetReadOnlySpaceID() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.cache == nil {
+		return ""
+	}
+	return h.cache.ReadOnlySpaceID
+}
+
 // MirrorToConfigServer POSTs orgData to the legacy config server's
 // /api/config endpoint, authenticated with its admin bearer token. This
 // exists for backward compatibility with clients that still read the config

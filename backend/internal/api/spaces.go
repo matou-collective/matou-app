@@ -318,19 +318,56 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 			}
 		}
 		if spaceValid {
-			writeJSON(w, http.StatusOK, CreateCommunityResponse{
-				Success:          true,
-				CommunitySpaceID: existingSpace.SpaceID,
-				ReadOnlySpaceID:  h.spaceManager.GetCommunityReadOnlySpaceID(),
-				AdminSpaceID:     h.spaceManager.GetAdminSpaceID(),
-				SpaceID:          existingSpace.SpaceID, // backward compat
-			})
-			return
+			// The community space is reusable — but the read-only and admin spaces
+			// must be verified independently before we hand their IDs back. Handing
+			// back an unverified read-only ID is exactly the #539 defect: a phantom,
+			// never-propagated read-only space strands contributions/role lookups.
+			roID := h.spaceManager.GetCommunityReadOnlySpaceID()
+			adminID := h.spaceManager.GetAdminSpaceID()
+			roValid := roID != "" && client != nil && client.SpaceExists(r.Context(), roID)
+			adminValid := adminID != "" && client != nil && client.SpaceExists(r.Context(), adminID)
+
+			// Recreating a dead sub-space needs the mnemonic (to re-derive its keys).
+			// Without one we cannot recreate, so short-circuit and hand back only the
+			// IDs that verified reachable — never a phantom (criterion: no blind RO).
+			canRecreate := h.userIdentity != nil && h.userIdentity.GetMnemonic() != ""
+
+			if (roValid && adminValid) || !canRecreate {
+				verifiedRO := ""
+				if roValid {
+					verifiedRO = roID
+				}
+				verifiedAdmin := ""
+				if adminValid {
+					verifiedAdmin = adminID
+				}
+				writeJSON(w, http.StatusOK, CreateCommunityResponse{
+					Success:          true,
+					CommunitySpaceID: existingSpace.SpaceID,
+					ReadOnlySpaceID:  verifiedRO,
+					AdminSpaceID:     verifiedAdmin,
+					SpaceID:          existingSpace.SpaceID, // backward compat
+				})
+				return
+			}
+
+			// A sub-space is missing/unreachable and we can recreate it: clear only
+			// the dead sub-space IDs and fall through so the convention recreates
+			// them while the still-valid community space is reused untouched.
+			if !roValid {
+				log.Printf("[CreateCommunity] Read-only space %q missing/unreachable — will recreate while keeping community space %s\n", roID, existingSpace.SpaceID)
+				h.spaceManager.SetCommunityReadOnlySpaceID("")
+			}
+			if !adminValid {
+				h.spaceManager.SetAdminSpaceID("")
+			}
+			// Keep the still-valid community space ID so it is reused, not reminted.
+		} else {
+			// Clear stale cached IDs so we fall through to full recreation
+			h.spaceManager.SetCommunitySpaceID("")
+			h.spaceManager.SetCommunityReadOnlySpaceID("")
+			h.spaceManager.SetAdminSpaceID("")
 		}
-		// Clear stale cached IDs so we fall through to recreation
-		h.spaceManager.SetCommunitySpaceID("")
-		h.spaceManager.SetCommunityReadOnlySpaceID("")
-		h.spaceManager.SetAdminSpaceID("")
 	}
 
 	// Create new community space via any-sync client using mnemonic-derived keys.
@@ -366,7 +403,23 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	// SDKClient satisfies the package's SpaceCreator port, so this is the same
 	// code IDSS founding runs — the convention can never drift. Store persistence
 	// and profile seeding stay here (app concerns the package does not carry).
-	communitySpaces, err := communityspace.CreateCommunitySpaces(ctx, client, mnemonic, req.OrgAID)
+	// Thread the currently-known space IDs through so the convention reuses any
+	// that still resolve on the network instead of minting fresh CIDs and
+	// overwriting working IDs (issue #539). Anything cleared above (a dead
+	// sub-space, or all three when the community space was re-adopted) comes
+	// through empty and is recreated.
+	existingSpaces := &communityspace.CommunitySpaces{
+		CommunitySpaceID:         h.spaceManager.GetCommunitySpaceID(),
+		CommunityReadOnlySpaceID: h.spaceManager.GetCommunityReadOnlySpaceID(),
+		AdminSpaceID:             h.spaceManager.GetAdminSpaceID(),
+	}
+	communitySpaces, err := communityspace.CreateCommunitySpaces(ctx, client, mnemonic, req.OrgAID, existingSpaces)
+	// A space is "reused" when the convention handed back the same ID we passed
+	// in — meaning it still resolved and was not recreated. Reused spaces already
+	// hold their seeded objects, so re-seeding them would duplicate type defs and
+	// profiles; only freshly-created spaces are seeded below.
+	communityReused := existingSpaces.CommunitySpaceID != "" && communitySpaces.CommunitySpaceID == existingSpaces.CommunitySpaceID
+	readOnlyReused := existingSpaces.CommunityReadOnlySpaceID != "" && communitySpaces.CommunityReadOnlySpaceID == existingSpaces.CommunityReadOnlySpaceID
 	if err != nil && communitySpaces.CommunitySpaceID == "" {
 		// The community space itself failed — fatal, as before.
 		writeJSON(w, http.StatusInternalServerError, CreateCommunityResponse{
@@ -418,8 +471,10 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	// Collect seeded objects across all spaces
 	var allObjects []CreatedObject
 
-	// Seed community space with type definition + admin SharedProfile
-	if req.AdminAID != "" {
+	// Seed community space with type definition + admin SharedProfile. Skip when
+	// the community space was reused — it already carries its seeded objects, and
+	// re-seeding would duplicate the type def and admin profile (issue #539).
+	if req.AdminAID != "" && !communityReused {
 		communityObjects, seedErr := h.seedSpace(ctx, communitySpaces.CommunitySpaceID, types.SharedProfileType(), map[string]interface{}{
 			"aid":          req.AdminAID,
 			"displayName":  req.AdminName,
@@ -460,8 +515,10 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 			}
 		}
 
-		// Seed readonly space with CommunityProfile type def + admin's CommunityProfile
-		if req.AdminAID != "" {
+		// Seed readonly space with CommunityProfile type def + admin's CommunityProfile.
+		// Skip when the read-only space was reused (it already holds these objects);
+		// a freshly recreated read-only space is seeded so role lookups resolve.
+		if req.AdminAID != "" && !readOnlyReused {
 			nowStr := now.Format(time.RFC3339)
 			roObjects, seedErr := h.seedSpace(ctx, roSpaceID, types.CommunityProfileType(), map[string]interface{}{
 				"userAID":      req.AdminAID,

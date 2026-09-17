@@ -21,6 +21,10 @@ type MockAnySyncClient struct {
 	// Storage for created spaces
 	Spaces map[string]*anysync.SpaceCreateResult
 
+	// ExistingSpaces controls SpaceExists: when nil, every non-empty space ID is
+	// reported reachable; when set, only IDs present (mapped true) are reachable.
+	ExistingSpaces map[string]bool
+
 	// ACL entries per space
 	ACLEntries map[string][]ACLEntry
 
@@ -265,6 +269,19 @@ func (m *MockAnySyncClient) GetPeerID() string {
 // MakeSpaceShareable implements AnySyncClient.MakeSpaceShareable
 func (m *MockAnySyncClient) MakeSpaceShareable(_ context.Context, _ string) error {
 	return nil
+}
+
+// SpaceExists implements AnySyncClient.SpaceExists. Space IDs present in
+// ExistingSpaces are reported reachable; by default (nil map) all non-empty IDs
+// are treated as reachable so tests that do not care keep their behaviour.
+func (m *MockAnySyncClient) SpaceExists(_ context.Context, spaceID string) bool {
+	if spaceID == "" {
+		return false
+	}
+	if m.ExistingSpaces == nil {
+		return true
+	}
+	return m.ExistingSpaces[spaceID]
 }
 
 // Ping implements AnySyncClient.Ping

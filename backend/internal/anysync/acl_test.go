@@ -639,6 +639,7 @@ func (c *testACLClient) SyncDocument(_ context.Context, _ string, _ string, _ []
 	return fmt.Errorf("not implemented")
 }
 func (c *testACLClient) MakeSpaceShareable(_ context.Context, _ string) error { return nil }
+func (c *testACLClient) SpaceExists(_ context.Context, spaceID string) bool   { return spaceID != "" }
 func (c *testACLClient) GetNetworkID() string                                 { return "" }
 func (c *testACLClient) GetCoordinatorURL() string                            { return "" }
 func (c *testACLClient) GetPeerID() string                                    { return "" }

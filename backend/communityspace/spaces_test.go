@@ -16,7 +16,8 @@ type fakeCreator struct {
 	signingKey crypto.PrivKey
 	created    []createCall
 	shareable  []string
-	failType   string // spaceType that CreateSpaceWithKeys should fail on
+	failType   string          // spaceType that CreateSpaceWithKeys should fail on
+	existing   map[string]bool // space IDs the network still holds (for SpaceExists)
 }
 
 type createCall struct {
@@ -31,7 +32,7 @@ func newFakeCreator(t *testing.T) *fakeCreator {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fakeCreator{signingKey: sk}
+	return &fakeCreator{signingKey: sk, existing: map[string]bool{}}
 }
 
 func (f *fakeCreator) GetSigningKey() crypto.PrivKey { return f.signingKey }
@@ -41,8 +42,10 @@ func (f *fakeCreator) CreateSpaceWithKeys(_ context.Context, ownerAID, spaceType
 		return nil, errors.New("boom")
 	}
 	f.created = append(f.created, createCall{ownerAID: ownerAID, spaceType: spaceType, keys: keys})
+	id := spaceType + "-id"
+	f.existing[id] = true // a created space is reachable on the network thereafter
 	return &SpaceCreateResult{
-		SpaceID:   spaceType + "-id",
+		SpaceID:   id,
 		OwnerAID:  ownerAID,
 		SpaceType: spaceType,
 		CreatedAt: time.Now(),
@@ -53,6 +56,12 @@ func (f *fakeCreator) CreateSpaceWithKeys(_ context.Context, ownerAID, spaceType
 func (f *fakeCreator) MakeSpaceShareable(_ context.Context, spaceID string) error {
 	f.shareable = append(f.shareable, spaceID)
 	return nil
+}
+
+// SpaceExists implements the optional spaceVerifier capability: a space that was
+// created (and not since removed from f.existing) is still reachable.
+func (f *fakeCreator) SpaceExists(_ context.Context, spaceID string) bool {
+	return spaceID != "" && f.existing[spaceID]
 }
 
 func TestCreateCommunitySpaces_CreatesThreeAtRightIndexes(t *testing.T) {
@@ -101,6 +110,90 @@ func TestCreateCommunitySpaces_CreatesThreeAtRightIndexes(t *testing.T) {
 		if c.keys.MasterKey.GetPublic().PeerId() != want.MasterKey.GetPublic().PeerId() {
 			t.Errorf("space %s derived from wrong index", c.spaceType)
 		}
+	}
+}
+
+// TestCreateCommunitySpaces_ReusesExistingSpaces is the issue #539 guard: a
+// second run with the previously-known IDs must reuse every still-reachable
+// space rather than minting fresh CIDs and overwriting the working IDs.
+func TestCreateCommunitySpaces_ReusesExistingSpaces(t *testing.T) {
+	f := newFakeCreator(t)
+
+	first, err := CreateCommunitySpaces(context.Background(), f, fixedMnemonic, "EORG")
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if len(f.created) != 3 {
+		t.Fatalf("first run: expected 3 spaces created, got %d", len(f.created))
+	}
+
+	second, err := CreateCommunitySpaces(context.Background(), f, fixedMnemonic, "EORG", first)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+
+	// Same read-only space ID both times — the core acceptance criterion.
+	if second.CommunityReadOnlySpaceID != first.CommunityReadOnlySpaceID {
+		t.Errorf("read-only ID changed on re-run: %q -> %q",
+			first.CommunityReadOnlySpaceID, second.CommunityReadOnlySpaceID)
+	}
+	if second.CommunitySpaceID != first.CommunitySpaceID || second.AdminSpaceID != first.AdminSpaceID {
+		t.Errorf("space IDs changed on re-run: %+v -> %+v", first, second)
+	}
+	// Nothing was recreated: no additional CreateSpaceWithKeys calls.
+	if len(f.created) != 3 {
+		t.Errorf("re-run recreated spaces: expected 3 total creates, got %d", len(f.created))
+	}
+}
+
+// TestCreateCommunitySpaces_RecreatesUnreachableSpace covers the mixed case
+// (issue #539): the community space still resolves but the read-only space is
+// gone. The community space is reused; only the read-only space is recreated.
+func TestCreateCommunitySpaces_RecreatesUnreachableSpace(t *testing.T) {
+	f := newFakeCreator(t)
+
+	first, err := CreateCommunitySpaces(context.Background(), f, fixedMnemonic, "EORG")
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	// The read-only space vanishes from the network (phantom / never propagated).
+	delete(f.existing, first.CommunityReadOnlySpaceID)
+
+	second, err := CreateCommunitySpaces(context.Background(), f, fixedMnemonic, "EORG", first)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	// Community + admin reused, read-only recreated → exactly one extra create.
+	if len(f.created) != 4 {
+		t.Errorf("expected 4 total creates (RO recreated), got %d", len(f.created))
+	}
+	if second.CommunitySpaceID != first.CommunitySpaceID {
+		t.Errorf("community space should be reused, got %q -> %q", first.CommunitySpaceID, second.CommunitySpaceID)
+	}
+	if second.CommunityReadOnlySpaceID == "" {
+		t.Error("read-only space should have been recreated")
+	}
+}
+
+// TestCreateCommunitySpaces_UnknownExistingIDsAreRecreated: passing IDs that no
+// longer resolve on the network recreates all spaces (no blind reuse).
+func TestCreateCommunitySpaces_UnknownExistingIDsAreRecreated(t *testing.T) {
+	f := newFakeCreator(t)
+	stale := &CommunitySpaces{
+		CommunitySpaceID:         "stale-community",
+		CommunityReadOnlySpaceID: "stale-readonly",
+		AdminSpaceID:             "stale-admin",
+	}
+	spaces, err := CreateCommunitySpaces(context.Background(), f, fixedMnemonic, "EORG", stale)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(f.created) != 3 {
+		t.Errorf("expected all 3 spaces recreated, got %d creates", len(f.created))
+	}
+	if spaces.CommunityReadOnlySpaceID != "community-readonly-id" {
+		t.Errorf("expected fresh read-only ID, got %q", spaces.CommunityReadOnlySpaceID)
 	}
 }
 

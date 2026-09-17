@@ -57,6 +57,26 @@ type SpaceCreator interface {
 	GetSigningKey() crypto.PrivKey
 }
 
+// spaceVerifier is an optional capability a SpaceCreator may implement so the
+// convention can reuse an already-created space instead of minting a fresh one.
+//
+// CreateSpaceWithKeys is NOT idempotent: any-sync hashes a random header seed
+// (and, in this backend, a wall-clock timestamp) into a "created" space, so a
+// second call with the identical key set lands at a brand-new CID. When org
+// setup re-runs on an already-configured account, unconditionally recreating a
+// space overwrites the working, propagated ID with a phantom that never fully
+// syncs (issue #539). A creator that can answer "does this space still exist on
+// the network?" lets CreateCommunitySpaces keep the working ID.
+//
+// It is discovered by type assertion rather than folded into SpaceCreator so
+// existing implementers (e.g. the IDSS founding tail) keep compiling; a creator
+// that does not implement it falls back to the previous always-create behaviour.
+type spaceVerifier interface {
+	// SpaceExists reports whether a space with the given ID already exists and is
+	// reachable on the network. An empty spaceID must return false.
+	SpaceExists(ctx context.Context, spaceID string) bool
+}
+
 // CommunitySpaces holds the IDs of a community's three any-sync spaces.
 type CommunitySpaces struct {
 	CommunitySpaceID         string
@@ -80,7 +100,15 @@ type CommunitySpaces struct {
 // read-only and admin spaces are created after; a failure there returns the
 // partially-filled CommunitySpaces alongside the error, so a caller that treats
 // them as best-effort can inspect which IDs it got.
-func CreateCommunitySpaces(ctx context.Context, creator SpaceCreator, mnemonic, ownerAID string) (*CommunitySpaces, error) {
+//
+// Re-running setup is safe: pass the previously-known IDs as the optional
+// existing argument and any space whose ID still resolves on the network (via
+// the creator's optional SpaceExists capability) is kept as-is instead of
+// recreated. Only a missing or unreachable space is minted fresh. This makes
+// the read-only and admin spaces as resilient to accidental re-creation as the
+// community space already was at the handler level, so a re-set never overwrites
+// a working ID with a phantom one (issue #539).
+func CreateCommunitySpaces(ctx context.Context, creator SpaceCreator, mnemonic, ownerAID string, existing ...*CommunitySpaces) (*CommunitySpaces, error) {
 	spaces := &CommunitySpaces{}
 
 	if creator == nil {
@@ -93,25 +121,63 @@ func CreateCommunitySpaces(ctx context.Context, creator SpaceCreator, mnemonic, 
 		return spaces, err
 	}
 
-	communityID, err := createSpaceAtIndex(ctx, creator, mnemonic, ownerAID, CommunitySpaceIndex, SpaceTypeCommunity)
+	var prior *CommunitySpaces
+	if len(existing) > 0 {
+		prior = existing[0]
+	}
+
+	communityID, err := createOrReuseSpace(ctx, creator, mnemonic, ownerAID, priorID(prior, SpaceTypeCommunity), CommunitySpaceIndex, SpaceTypeCommunity)
 	if err != nil {
 		return spaces, fmt.Errorf("creating community space: %w", err)
 	}
 	spaces.CommunitySpaceID = communityID
 
-	readOnlyID, err := createSpaceAtIndex(ctx, creator, mnemonic, ownerAID, CommunityReadOnlySpaceIndex, SpaceTypeCommunityReadOnly)
+	readOnlyID, err := createOrReuseSpace(ctx, creator, mnemonic, ownerAID, priorID(prior, SpaceTypeCommunityReadOnly), CommunityReadOnlySpaceIndex, SpaceTypeCommunityReadOnly)
 	if err != nil {
 		return spaces, fmt.Errorf("creating community-readonly space: %w", err)
 	}
 	spaces.CommunityReadOnlySpaceID = readOnlyID
 
-	adminID, err := createSpaceAtIndex(ctx, creator, mnemonic, ownerAID, AdminSpaceIndex, SpaceTypeAdmin)
+	adminID, err := createOrReuseSpace(ctx, creator, mnemonic, ownerAID, priorID(prior, SpaceTypeAdmin), AdminSpaceIndex, SpaceTypeAdmin)
 	if err != nil {
 		return spaces, fmt.Errorf("creating admin space: %w", err)
 	}
 	spaces.AdminSpaceID = adminID
 
 	return spaces, nil
+}
+
+// priorID returns the previously-known ID for a space type, or "" if none.
+func priorID(prior *CommunitySpaces, spaceType string) string {
+	if prior == nil {
+		return ""
+	}
+	switch spaceType {
+	case SpaceTypeCommunity:
+		return prior.CommunitySpaceID
+	case SpaceTypeCommunityReadOnly:
+		return prior.CommunityReadOnlySpaceID
+	case SpaceTypeAdmin:
+		return prior.AdminSpaceID
+	default:
+		return ""
+	}
+}
+
+// createOrReuseSpace reuses existingID when it still resolves on the network,
+// otherwise creates the space at spaceIndex. Reuse keeps a working, propagated
+// space ID stable across re-runs of setup (issue #539); recreation is the
+// previous behaviour for a missing or unreachable space.
+func createOrReuseSpace(ctx context.Context, creator SpaceCreator, mnemonic, ownerAID, existingID string, spaceIndex uint32, spaceType string) (string, error) {
+	if existingID != "" {
+		if verifier, ok := creator.(spaceVerifier); ok && verifier.SpaceExists(ctx, existingID) {
+			// Keep the space shareable (idempotent, best-effort) so a reused space
+			// is as invite-ready as a freshly created one.
+			_ = creator.MakeSpaceShareable(ctx, existingID)
+			return existingID, nil
+		}
+	}
+	return createSpaceAtIndex(ctx, creator, mnemonic, ownerAID, spaceIndex, spaceType)
 }
 
 // createSpaceAtIndex derives the key set for spaceIndex, pins the ACL owner to

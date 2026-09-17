@@ -339,6 +339,19 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		return orgConfigHandler.GetCommunitySpaceID()
 	}
 
+	// resolveCommunityReadOnlySpaceID resolves the read-only space ID live, with
+	// the same identity-then-org-config fallback shape as the community space ID.
+	// The read-only ID previously had no fallback: a stale or empty persisted
+	// value left every role/contribution lookup pointed at a dead space with no
+	// self-heal (issue #539). Falling back to shared org config lets a client
+	// recover the working ID.
+	resolveCommunityReadOnlySpaceID := func() string {
+		if id := userIdentity.GetCommunityReadOnlySpaceID(); id != "" {
+			return id
+		}
+		return orgConfigHandler.GetReadOnlySpaceID()
+	}
+
 	// Initialize space manager
 	_, _ = fmt.Fprintln(out, "Initializing space manager...")
 	spaceManager := anysync.NewSpaceManager(anysyncClient, &anysync.SpaceManagerConfig{
@@ -519,7 +532,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// captured communityReadOnlySpaceID is empty until a restart. Consult the live
 	// identity so the admin's Founding Member role resolves as soon as the read-only
 	// space is created — e.g. during org-setup's re-set of its own identity (#174).
-	profileRoleLookup.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
+	profileRoleLookup.SetSpaceIDResolver(resolveCommunityReadOnlySpaceID)
 
 	// Push notifications (docs/architecture/08-push-notifications.md §8): a third
 	// notifications sink beside SSE and email that wakes backgrounded Android
@@ -617,7 +630,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// The read-only space ID is empty until an identity exists (first run /
 	// org setup happens after boot), so resolve it live rather than freezing
 	// the boot-time value.
-	rolePolicyProvider.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
+	rolePolicyProvider.SetSpaceIDResolver(resolveCommunityReadOnlySpaceID)
 	contributions.SetPolicyProvider(rolePolicyProvider)
 	rolePolicyHandler := api.NewRolePolicyHandler(
 		rolePolicyProvider,
@@ -626,7 +639,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		communityReadOnlySpaceID,
 		profileRoleLookup.IsAdminAID,
 	)
-	rolePolicyHandler.SetSpaceIDResolver(userIdentity.GetCommunityReadOnlySpaceID)
+	rolePolicyHandler.SetSpaceIDResolver(resolveCommunityReadOnlySpaceID)
 	orgConfigRoleLookup := api.NewOrgConfigAdminLookup(orgConfigHandler)
 	credentialRoleLookup := api.NewCredentialRoleLookup(store)
 	identityRoleLookup := api.NewIdentityRoleLookup(userIdentity)
@@ -710,7 +723,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// #174's SetSpaceIDResolver on profileRoleLookup / the role-policy providers).
 	refresher := &writeRuleRefresher{
 		communitySpaceID: resolveCommunitySpaceID,
-		readOnlySpaceID:  userIdentity.GetCommunityReadOnlySpaceID,
+		readOnlySpaceID:  resolveCommunityReadOnlySpaceID,
 		adminAIDs: func() map[string]bool {
 			adminAIDs := make(map[string]bool)
 			if orgConfigHandler.IsConfigured() {
