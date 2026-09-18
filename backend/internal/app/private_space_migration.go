@@ -45,6 +45,7 @@ type migrationSpaces interface {
 	DeriveSpaceIDWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (string, error)
 	DeriveSpaceWithKeys(ctx context.Context, ownerAID string, spaceType string, keys *anysync.SpaceKeySet) (*anysync.SpaceCreateResult, error)
 	BuildSpaceIndex(ctx context.Context, spaceID string) error
+	StoredTreeIDs(ctx context.Context, spaceID string) ([]string, error)
 	ForgetSpace(spaceID string)
 	RetireSpace(spaceID string)
 	ReviveSpace(spaceID string)
@@ -67,6 +68,7 @@ type migrationCredentials interface {
 
 type migrationSpaceStore interface {
 	SaveSpace(ctx context.Context, space *anysync.Space) error
+	ListAllSpaces(ctx context.Context) ([]*anysync.Space, error)
 }
 
 // privateSpaceMigrator moves a pre-#526 account's private space to the id every
@@ -86,10 +88,13 @@ type migrationSpaceStore interface {
 // tree's root is bound to its space, so trees cannot be moved between spaces.
 // Private-space content is single-author state, so nothing but history is lost.
 //
-// The legacy space is only ever read. identity.json is repointed last, after
-// every copy succeeded, so a failed or interrupted run leaves the account on the
-// legacy space and the next run starts over; re-running is safe (objects and
-// saves upsert by id, credentials are skipped when already present).
+// The legacy space is only ever read. The snapshot must account for every tree
+// the legacy space holds in storage, or the run aborts: the Read* helpers skip a
+// tree they cannot build, and repointing after a partial read would strand it.
+// identity.json is repointed last, after every copy succeeded and the local
+// space records were put right, so a failed or interrupted run leaves the
+// account on the legacy space and the next run starts over; re-running is safe
+// (objects upsert by id, saves and credentials are skipped when already present).
 type privateSpaceMigrator struct {
 	identity    migrationIdentity
 	spaces      migrationSpaces
@@ -124,6 +129,11 @@ func (m *privateSpaceMigrator) run(ctx context.Context) (migrated bool, err erro
 		return false, fmt.Errorf("deriving private space id: %w", err)
 	}
 	if derivedID == legacyID {
+		// Nothing to migrate — but a run that died right after the repoint can
+		// have left a second record typed private behind.
+		if err := m.retireOtherPrivateRecords(ctx, aid, derivedID); err != nil {
+			log.Printf("[private-space-migration] warning: %v", err)
+		}
 		return false, nil
 	}
 
@@ -144,6 +154,30 @@ func (m *privateSpaceMigrator) run(ctx context.Context) (migrated bool, err erro
 	creds, err := m.credentials.ReadCredentials(ctx, legacyID)
 	if err != nil {
 		return false, fmt.Errorf("reading legacy credentials: %w", err)
+	}
+
+	stored, err := m.spaces.StoredTreeIDs(ctx, legacyID)
+	if err != nil {
+		return false, fmt.Errorf("listing legacy trees: %w", err)
+	}
+	read := make(map[string]bool, len(objects)+len(saves)+len(creds))
+	for _, o := range objects {
+		read[o.TreeID] = true
+	}
+	for _, sv := range saves {
+		read[sv.TreeID] = true
+	}
+	for _, c := range creds {
+		read[c.TreeID] = true
+	}
+	var unread []string
+	for _, id := range stored {
+		if !read[id] {
+			unread = append(unread, id)
+		}
+	}
+	if len(unread) > 0 {
+		return false, fmt.Errorf("legacy private space holds %d tree(s) the snapshot could not read, refusing to migrate without them: %v", len(unread), unread)
 	}
 
 	// 2. Create (or reopen — deriving an existing id is idempotent) the space at
@@ -218,8 +252,12 @@ func (m *privateSpaceMigrator) run(ctx context.Context) (migrated bool, err erro
 		}
 	}
 
-	// 5. Commit: record the derived space, repoint identity.json, and only then
-	// retire the legacy record.
+	// 5. Commit. GetUserSpace resolves a user's private space by owner + type
+	// and takes the first match — credential routing relies on it and never
+	// consults identity.json — so the records are put right first, as hard
+	// errors, and identity.json is repointed last. If the repoint then fails the
+	// account stays on the legacy space while routed credentials land in the
+	// derived one; the retry copies everything again, so nothing is lost.
 	if err := m.store.SaveSpace(ctx, &anysync.Space{
 		SpaceID:   derivedID,
 		OwnerAID:  aid,
@@ -227,22 +265,38 @@ func (m *privateSpaceMigrator) run(ctx context.Context) (migrated bool, err erro
 	}); err != nil {
 		return false, fmt.Errorf("saving derived space record: %w", err)
 	}
+	if err := m.retireOtherPrivateRecords(ctx, aid, derivedID); err != nil {
+		return false, err
+	}
 	if err := m.identity.SetPrivateSpaceID(derivedID); err != nil {
 		return false, fmt.Errorf("repointing identity at derived private space: %w", err)
-	}
-	if err := m.store.SaveSpace(ctx, &anysync.Space{
-		SpaceID:   legacyID,
-		OwnerAID:  aid,
-		SpaceType: spaceTypePrivateLegacy,
-	}); err != nil {
-		// The identity already points at the derived space; a stale legacy
-		// record only affects GetUserSpace's pick, so log rather than fail.
-		log.Printf("[private-space-migration] warning: failed to retype legacy space record %s: %v", legacyID, err)
 	}
 
 	log.Printf("[private-space-migration] migrated private space %s -> %s (%d objects, %d notice saves, %d credentials); legacy space kept",
 		legacyID, derivedID, len(objects), len(saves), len(creds))
 	return true, nil
+}
+
+// retireOtherPrivateRecords retypes every local space record that claims to be
+// this user's private space but is not the derived one, keeping its other
+// fields. The record stays as the only pointer to the (never deleted) legacy
+// space; the store has no delete, and needs none.
+func (m *privateSpaceMigrator) retireOtherPrivateRecords(ctx context.Context, aid, derivedID string) error {
+	records, err := m.store.ListAllSpaces(ctx)
+	if err != nil {
+		return fmt.Errorf("listing space records: %w", err)
+	}
+	for _, rec := range records {
+		if rec == nil || rec.OwnerAID != aid || rec.SpaceType != anysync.SpaceTypePrivate || rec.SpaceID == derivedID {
+			continue
+		}
+		retired := *rec
+		retired.SpaceType = spaceTypePrivateLegacy
+		if err := m.store.SaveSpace(ctx, &retired); err != nil {
+			return fmt.Errorf("retiring legacy space record %s: %w", rec.SpaceID, err)
+		}
+	}
+	return nil
 }
 
 // runAtBoot makes one bounded attempt before the API starts serving, so in the
@@ -297,6 +351,10 @@ type migrationSpacesAdapter struct {
 
 func (a migrationSpacesAdapter) BuildSpaceIndex(ctx context.Context, spaceID string) error {
 	return a.utm.BuildSpaceIndex(ctx, spaceID)
+}
+
+func (a migrationSpacesAdapter) StoredTreeIDs(ctx context.Context, spaceID string) ([]string, error) {
+	return a.utm.StoredTreeIDs(ctx, spaceID)
 }
 
 func (a migrationSpacesAdapter) ForgetSpace(spaceID string) { a.utm.ForgetSpace(spaceID) }

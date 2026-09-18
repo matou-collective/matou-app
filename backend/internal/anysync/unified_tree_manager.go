@@ -59,6 +59,10 @@ type UnifiedTreeManager struct {
 	spaceIndex    sync.Map // spaceID → *sync.Map[treeID → ObjectIndexEntry]
 	objectMap     sync.Map // objectId → treeID (fast lookup by object ID)
 	retiredSpaces sync.Map // spaceID → struct{}: spaces whose trees must stay out of the index (see RetireSpace)
+	// indexMu makes addToIndex's retired-check-then-store atomic with
+	// RetireSpace / ForgetSpace, so an indexing goroutine that is mid-loop when a
+	// space is retired cannot re-add its entries afterwards.
+	indexMu       sync.Mutex
 	syncStatus    sync.Map // spaceID → *MatouSyncStatus (per-space sync metrics)
 	a             *app.App
 	listener      updatelistener.UpdateListener
@@ -667,6 +671,8 @@ func (u *UnifiedTreeManager) RecoverCorruptTree(ctx context.Context, spaceID, tr
 
 // addToIndex registers a tree in the space index and object map.
 func (u *UnifiedTreeManager) addToIndex(spaceID, treeID string, entry ObjectIndexEntry) {
+	u.indexMu.Lock()
+	defer u.indexMu.Unlock()
 	if u.isRetired(spaceID) {
 		return
 	}
@@ -693,6 +699,12 @@ func (u *UnifiedTreeManager) removeFromIndex(spaceID, treeID string) {
 // ForgetSpace drops every index entry (and cached tree) of a space. The next
 // BuildSpaceIndex for it starts from storage again.
 func (u *UnifiedTreeManager) ForgetSpace(spaceID string) {
+	u.indexMu.Lock()
+	defer u.indexMu.Unlock()
+	u.forgetSpaceLocked(spaceID)
+}
+
+func (u *UnifiedTreeManager) forgetSpaceLocked(spaceID string) {
 	idx, ok := u.spaceIndex.Load(spaceID)
 	if !ok {
 		return
@@ -718,8 +730,25 @@ func (u *UnifiedTreeManager) ForgetSpace(spaceID string) {
 // resolver's asynchronous post-open BuildSpaceIndex can point those object ids
 // back at the legacy trees while the copies are being written.
 func (u *UnifiedTreeManager) RetireSpace(spaceID string) {
+	u.indexMu.Lock()
+	defer u.indexMu.Unlock()
 	u.retiredSpaces.Store(spaceID, struct{}{})
-	u.ForgetSpace(spaceID)
+	u.forgetSpaceLocked(spaceID)
+}
+
+// StoredTreeIDs returns the id of every tree the space holds in storage (all
+// trees except the ACL, settings and key-value trees), whether or not it could
+// be built and indexed. BuildSpaceIndex and the Read* helpers skip a tree they
+// cannot build, so a caller that must not lose data compares against this.
+func (u *UnifiedTreeManager) StoredTreeIDs(ctx context.Context, spaceID string) ([]string, error) {
+	if u.a == nil {
+		return nil, nil // test mode — trees are injected directly
+	}
+	sp, err := u.getSpace(ctx, spaceID)
+	if err != nil {
+		return nil, fmt.Errorf("getting space %s: %w", spaceID, err)
+	}
+	return sp.StoredIds(), nil
 }
 
 // ReviveSpace lifts RetireSpace. The space is re-indexed on its next

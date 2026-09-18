@@ -367,3 +367,25 @@ func TestUnifiedTreeManager_ForgetSpaceLeavesOtherSpaces(t *testing.T) {
 		t.Error("forgotten (not retired) space should re-index")
 	}
 }
+
+// A space that holds a pre-Feb-2026 tree (rooted at ObjectChangeType) next to a
+// newer one must list both: the old either/or fallback dropped the legacy tree
+// as soon as any newer tree existed, which would have made the private-space
+// migration (#508) leave the account's PrivateProfile behind.
+func TestObjectTreeEntries_LegacyRootedTreesAreNotHiddenByNewerOnes(t *testing.T) {
+	utm := NewUnifiedTreeManager()
+	utm.addToIndex("space-1", "tree-legacy", ObjectIndexEntry{TreeID: "tree-legacy", ObjectID: "PrivateProfile-EAID", ObjectType: "PrivateProfile", ChangeType: ObjectChangeType})
+	utm.addToIndex("space-1", "tree-new", ObjectIndexEntry{TreeID: "tree-new", ObjectID: "comment-cursors-EAID", ObjectType: "CommentCursors", ChangeType: ProfileTreeType})
+	utm.addToIndex("space-1", "tree-cred", ObjectIndexEntry{TreeID: "tree-cred", ObjectID: "Credential-ESaid", ObjectType: "Credential", ChangeType: CredentialTreeType})
+
+	got := map[string]bool{}
+	for _, e := range objectTreeEntries(utm, "space-1") {
+		got[e.TreeID] = true
+	}
+	if !got["tree-legacy"] || !got["tree-new"] {
+		t.Errorf("expected both the legacy-rooted and the newer object tree, got %v", got)
+	}
+	if got["tree-cred"] {
+		t.Error("credential trees are not object trees")
+	}
+}

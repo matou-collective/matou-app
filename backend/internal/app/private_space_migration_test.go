@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/anyproto/any-sync/util/crypto"
@@ -44,6 +45,27 @@ type fakeMigrationSpaces struct {
 	indexErr   map[string]error
 	calls      *[]string
 	derivedFor []string
+	// stored overrides the tree ids the legacy space reports as held in storage;
+	// nil means "exactly the trees the content fake returns".
+	stored  []string
+	content *fakeMigrationContent
+}
+
+func (f *fakeMigrationSpaces) StoredTreeIDs(_ context.Context, spaceID string) ([]string, error) {
+	if f.stored != nil {
+		return f.stored, nil
+	}
+	var ids []string
+	for _, o := range f.content.objects[spaceID] {
+		ids = append(ids, o.TreeID)
+	}
+	for _, sv := range f.content.saves[spaceID] {
+		ids = append(ids, sv.TreeID)
+	}
+	for _, c := range f.content.creds[spaceID] {
+		ids = append(ids, c.TreeID)
+	}
+	return ids, nil
 }
 
 func (f *fakeMigrationSpaces) DeriveSpaceIDWithKeys(_ context.Context, _ string, _ string, _ *anysync.SpaceKeySet) (string, error) {
@@ -136,12 +158,34 @@ func (f *fakeMigrationContent) AddCredential(_ context.Context, spaceID string, 
 
 // fakeMigrationStore stands in for the local space-record store.
 type fakeMigrationStore struct {
-	saved []*anysync.Space
+	records []*anysync.Space // what ListAllSpaces returns before any save
+	saved   []*anysync.Space
+	saveErr map[string]error // by space id
 }
 
 func (f *fakeMigrationStore) SaveSpace(_ context.Context, s *anysync.Space) error {
+	if err := f.saveErr[s.SpaceID]; err != nil {
+		return err
+	}
 	f.saved = append(f.saved, s)
 	return nil
+}
+
+func (f *fakeMigrationStore) ListAllSpaces(_ context.Context) ([]*anysync.Space, error) {
+	// Later saves win, as the real store upserts by space id.
+	byID := map[string]*anysync.Space{}
+	var order []string
+	for _, r := range append(append([]*anysync.Space{}, f.records...), f.saved...) {
+		if _, ok := byID[r.SpaceID]; !ok {
+			order = append(order, r.SpaceID)
+		}
+		byID[r.SpaceID] = r
+	}
+	out := make([]*anysync.Space, 0, len(order))
+	for _, id := range order {
+		out = append(out, byID[id])
+	}
+	return out, nil
 }
 
 type migrationHarness struct {
@@ -159,9 +203,16 @@ func newMigrationHarness() *migrationHarness {
 		identity: &fakeMigrationIdentity{aid: migAID, mnemonic: "twelve words", privateSpaceID: migLegacyID},
 		spaces:   &fakeMigrationSpaces{derivedID: migDerivedID, calls: calls, indexErr: map[string]error{}},
 		content:  newFakeMigrationContent(calls),
-		store:    &fakeMigrationStore{},
-		calls:    calls,
+		store: &fakeMigrationStore{
+			saveErr: map[string]error{},
+			records: []*anysync.Space{
+				{SpaceID: migLegacyID, OwnerAID: migAID, SpaceType: anysync.SpaceTypePrivate, SpaceName: "Private Space"},
+				{SpaceID: "bafyCOMMUNITY", OwnerAID: "EOrg", SpaceType: "community"},
+			},
+		},
+		calls: calls,
 	}
+	h.spaces.content = h.content
 	h.m = &privateSpaceMigrator{
 		identity:    h.identity,
 		spaces:      h.spaces,
@@ -202,12 +253,12 @@ func indexOf(calls []string, want string) int {
 func TestPrivateSpaceMigrationCopiesLegacyContentAndRepoints(t *testing.T) {
 	h := newMigrationHarness()
 	h.content.objects[migLegacyID] = []*anysync.ObjectPayload{
-		{ID: "PrivateProfile-" + migAID, Type: "PrivateProfile", Data: []byte(`{"membershipCredentialSAID":"ESaid"}`)},
-		{ID: "typedef-PrivateProfile-1", Type: "type_definition", Data: []byte(`{}`)},
-		{ID: "ChatCursor-x", Type: "ChatReadCursor", Data: []byte(`{"at":1}`)},
+		{ID: "PrivateProfile-" + migAID, Type: "PrivateProfile", Data: []byte(`{"membershipCredentialSAID":"ESaid"}`), TreeID: "t-profile"},
+		{ID: "typedef-PrivateProfile-1", Type: "type_definition", Data: []byte(`{}`), TreeID: "t-typedef"},
+		{ID: "ChatCursor-x", Type: "ChatReadCursor", Data: []byte(`{"at":1}`), TreeID: "t-cursor"},
 	}
-	h.content.saves[migLegacyID] = []*anysync.NoticeSavePayload{{NoticeID: "n1", UserID: migAID, Pinned: true}}
-	h.content.creds[migLegacyID] = []*anysync.CredentialPayload{{SAID: "ESaid", Recipient: migAID}}
+	h.content.saves[migLegacyID] = []*anysync.NoticeSavePayload{{NoticeID: "n1", UserID: migAID, Pinned: true, TreeID: "t-save"}}
+	h.content.creds[migLegacyID] = []*anysync.CredentialPayload{{SAID: "ESaid", Recipient: migAID, TreeID: "t-cred"}}
 
 	migrated, err := h.m.run(context.Background())
 	if err != nil {
@@ -276,6 +327,97 @@ func TestPrivateSpaceMigrationRetypesLegacySpaceRecord(t *testing.T) {
 	}
 	if byID[migLegacyID] != spaceTypePrivateLegacy {
 		t.Errorf("legacy record type = %q, want %q", byID[migLegacyID], spaceTypePrivateLegacy)
+	}
+	if _, touched := byID["bafyCOMMUNITY"]; touched {
+		t.Error("another owner's space record must not be rewritten")
+	}
+	for _, s := range h.store.saved {
+		if s.SpaceID == migLegacyID && s.SpaceName != "Private Space" {
+			t.Errorf("retyping must keep the record's other fields, got %+v", s)
+		}
+	}
+}
+
+// The Read* helpers skip a tree they cannot build. Repointing after a partial
+// read would strand whatever was skipped, so the snapshot must account for
+// every tree the legacy space holds in storage.
+func TestPrivateSpaceMigrationAbortsOnIncompleteRead(t *testing.T) {
+	h := newMigrationHarness()
+	h.content.objects[migLegacyID] = []*anysync.ObjectPayload{{ID: "o1", Type: "PrivateProfile", Data: []byte(`{}`), TreeID: "t-1"}}
+	h.spaces.stored = []string{"t-1", "t-unreadable"}
+
+	migrated, err := h.m.run(context.Background())
+	if err == nil || migrated {
+		t.Fatalf("run = (%v, %v), want an error", migrated, err)
+	}
+	if !strings.Contains(err.Error(), "t-unreadable") {
+		t.Errorf("error should name the unread tree, got: %v", err)
+	}
+	if h.identity.privateSpaceID != migLegacyID {
+		t.Errorf("identity must stay on the legacy space, got %q", h.identity.privateSpaceID)
+	}
+	if indexOf(*h.calls, "derive") >= 0 {
+		t.Errorf("nothing should be created or written after an incomplete read, calls=%v", *h.calls)
+	}
+}
+
+// GetUserSpace resolves a user's private space by owner + type and takes the
+// first match; credential routing uses it and never consults identity.json. So
+// the legacy record must be retired before the repoint, and failing to retire it
+// fails the run (to be retried) rather than leaving two records typed private.
+func TestPrivateSpaceMigrationRecordRetypeFailureIsNotSwallowed(t *testing.T) {
+	h := newMigrationHarness()
+	h.store.saveErr[migLegacyID] = errors.New("disk full")
+
+	migrated, err := h.m.run(context.Background())
+	if err == nil || migrated {
+		t.Fatalf("run = (%v, %v), want an error", migrated, err)
+	}
+	if h.identity.privateSpaceID != migLegacyID {
+		t.Errorf("identity must not be repointed when the legacy record could not be retired, got %q", h.identity.privateSpaceID)
+	}
+}
+
+func TestPrivateSpaceMigrationRepointFailureIsRetried(t *testing.T) {
+	h := newMigrationHarness()
+	h.identity.setErr = errors.New("identity.json not writable")
+
+	if migrated, err := h.m.run(context.Background()); err == nil || migrated {
+		t.Fatalf("run = (%v, %v), want an error", migrated, err)
+	}
+
+	// Next pass, identity.json writable again: completes from the top.
+	h.identity.setErr = nil
+	migrated, err := h.m.run(context.Background())
+	if err != nil || !migrated {
+		t.Fatalf("retry run = (%v, %v), want (true, nil)", migrated, err)
+	}
+	if h.identity.privateSpaceID != migDerivedID {
+		t.Errorf("identity private space = %q, want %q", h.identity.privateSpaceID, migDerivedID)
+	}
+}
+
+// A stale private-typed record left by an earlier run that died after the
+// repoint is healed on the next boot even though there is nothing to migrate.
+func TestPrivateSpaceMigrationHealsStaleRecordWhenAlreadyDerived(t *testing.T) {
+	h := newMigrationHarness()
+	h.identity.privateSpaceID = migDerivedID
+	h.store.records = append(h.store.records, &anysync.Space{SpaceID: migDerivedID, OwnerAID: migAID, SpaceType: anysync.SpaceTypePrivate})
+
+	if migrated, err := h.m.run(context.Background()); err != nil || migrated {
+		t.Fatalf("run = (%v, %v), want (false, nil)", migrated, err)
+	}
+	var retyped bool
+	for _, s := range h.store.saved {
+		if s.SpaceID == migDerivedID {
+			t.Errorf("the derived record must be left alone, saved %+v", s)
+		}
+		if s.SpaceID == migLegacyID && s.SpaceType == spaceTypePrivateLegacy {
+			retyped = true
+		}
+	}
+	if !retyped {
+		t.Error("stale legacy record should have been retyped")
 	}
 }
 

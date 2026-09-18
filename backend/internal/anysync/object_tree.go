@@ -435,15 +435,24 @@ func (m *ObjectTreeManager) ReadObjectsByType(ctx context.Context, spaceID, type
 	return objects, nil
 }
 
+// objectTreeEntries lists every indexed object tree of a space.
+//
+// Trees created before per-type root change types (Feb 2026) are rooted at
+// ObjectChangeType, and a root's change type never changes. They coexist with
+// newer trees in the same space, so this is a union, not a fallback: an
+// either/or here hides a pre-Feb-2026 account's PrivateProfile as soon as the
+// space gains one newer tree (#508).
+func objectTreeEntries(utm *UnifiedTreeManager, spaceID string) []ObjectIndexEntry {
+	entries := utm.GetTreesByChangeType(spaceID, ProfileTreeType)
+	entries = append(entries, utm.GetTreesByChangeType(spaceID, ChatTreeType)...)
+	entries = append(entries, utm.GetTreesByChangeType(spaceID, ObjectChangeType)...)
+	return entries
+}
+
 // ReadObjects reads all profile objects from a space (all types).
 // This is used by sync-status and other callers that need all objects.
 func (m *ObjectTreeManager) ReadObjects(ctx context.Context, spaceID string) ([]*ObjectPayload, error) {
-	entries := m.treeManager.GetTreesByChangeType(spaceID, ProfileTreeType)
-	entries = append(entries, m.treeManager.GetTreesByChangeType(spaceID, ChatTreeType)...)
-	if len(entries) == 0 {
-		// Also check for legacy ObjectChangeType trees
-		entries = m.treeManager.GetTreesByChangeType(spaceID, ObjectChangeType)
-	}
+	entries := objectTreeEntries(m.treeManager, spaceID)
 
 	var objects []*ObjectPayload
 	for _, entry := range entries {
