@@ -222,6 +222,16 @@ export default defineConfig({
       use: browserConfig,
       dependencies: ['org-setup'],
     },
+    // Linked-device sign-in against a REAL Android build: installs the test APK
+    // on an emulator/USB device and links it to the admin's desktop session.
+    // Opt-in (needs an Android toolchain + a TEST-mode APK — see
+    // tests/e2e/utils/android-device.ts); never part of `npm test`.
+    {
+      name: 'linked-device-android',
+      testMatch: /e2e-linked-device-android\.spec\.ts/,
+      use: browserConfig,
+      dependencies: ['org-setup', 'registration-member'],
+    },
     // Feature specs authored by swarm agents (one per issue). Bootstrap via
     // the self-sufficient org-setup + registration projects, which create the
     // org and a member and persist tests/e2e/test-accounts.json.
@@ -253,6 +263,7 @@ export default defineConfig({
         /e2e-projects-contributions\.spec\.ts/,
         /e2e-proposal-link-cards\.spec\.ts/,
         /e2e-roles-permissions\.spec\.ts/,
+        /e2e-linked-device-android\.spec\.ts/,
         /features\/issue-\d+\.spec\.ts/,
       ],
     },

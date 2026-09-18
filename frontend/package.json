@@ -10,6 +10,7 @@
     "format": "prettier --write \"./src/**/*.{js,ts,vue,scss,html,json}\" --ignore-path .gitignore",
     "test": "playwright test --project=org-setup --project=registration --project=invitation --project=multi-backend --project=account-recovery --project=recovery-errors",
     "test:all": "playwright test",
+    "test:android-link": "playwright test --project=linked-device-android",
     "test:ui": "playwright test --ui",
     "test:debug": "playwright test --debug",
     "test:headed": "playwright test --headed",
