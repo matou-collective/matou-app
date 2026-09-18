@@ -149,6 +149,40 @@ func (d *Document) HasContentLayer() bool {
 	return len(d.Anysync) > 0
 }
 
+// RecordedSpaces holds the community's three any-sync space IDs as they rest
+// in the descriptor's `anysync` block under matou-app's own camelCase keys
+// (the 2026-09-15 ADR 0226 spaces amendment). idss merges the three keys in
+// together or not at all — they appear only once the record is whole.
+type RecordedSpaces struct {
+	CommunitySpaceID string
+	ReadOnlySpaceID  string
+	AdminSpaceID     string
+}
+
+// RecordedSpaces reads the community's three recorded space IDs from the
+// `anysync` block, returning them only when all three are present and
+// non-empty, and nil otherwise. nil with HasContentLayer() true is the signal
+// the first-steward fallback turns on: the content layer exists but its spaces
+// have not been created yet (issue #534). All three present is the join case.
+func (d *Document) RecordedSpaces() *RecordedSpaces {
+	if len(d.Anysync) == 0 {
+		return nil
+	}
+	str := func(key string) string {
+		if v, ok := d.Anysync[key].(string); ok {
+			return v
+		}
+		return ""
+	}
+	community := str("communitySpaceId")
+	readOnly := str("readOnlySpaceId")
+	admin := str("adminSpaceId")
+	if community == "" || readOnly == "" || admin == "" {
+		return nil
+	}
+	return &RecordedSpaces{CommunitySpaceID: community, ReadOnlySpaceID: readOnly, AdminSpaceID: admin}
+}
+
 // SchemaOOBIs returns the schema OOBIs the wallet resolves, taken from the
 // document's `schemas` block rather than a built-in list (ADR 0226 decision 5).
 // The result is sorted for a stable order.
