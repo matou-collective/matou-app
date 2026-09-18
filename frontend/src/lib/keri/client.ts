@@ -16,7 +16,7 @@ import {
   parseAgentRebootMarker,
   type AgentRebootRecord,
 } from 'src/lib/agentLifecycle';
-import { extractWitnessAids } from 'src/lib/keri/witnessAssignment';
+import { extractWitnessAids, witnessOobiBases } from 'src/lib/keri/witnessAssignment';
 import { parseCesrStream, filterKelMessages, mergeKelMessages } from 'src/lib/keri/cesr';
 import { selectGroupKelPushTargets } from 'src/lib/keri/groupKelPush';
 
@@ -497,12 +497,33 @@ export class KERIClient {
       // resolving them fails with a connection error every time.
       const keriaConfig = await this.client.config().get();
       const iurls: string[] = Array.isArray(keriaConfig.iurls) ? keriaConfig.iurls : [];
-      const bases = [...new Set(iurls.map((u) => u.split('/oobi/')[0]).filter(Boolean))];
+      // Only the AID's own witnesses serve its KEL; the rest 404 and each
+      // burns the full timeout. Use its backers when we already know its key
+      // state (e.g. our own org group), else try every witness.
+      let backers: string[] = [];
+      try {
+        const known = await this.client.keyStates().get(aidPrefix);
+        const ks = Array.isArray(known) ? known[0] : known;
+        backers = (ks as { b?: string[] } | undefined)?.b ?? [];
+      } catch {
+        // unknown AID — fall back to every witness
+      }
+      let bases = witnessOobiBases(iurls, backers);
       // Parallel: a serial pass at 15s/witness can take 90s — longer than
       // every caller's polling window. One witness serving the KEL is enough.
-      const results = await Promise.all(
-        bases.map((base) => this.resolveOOBIWithReason(`${base}/oobi/${aidPrefix}`, undefined, timeoutMs)),
+      const resolveAll = (list: string[]) => Promise.all(
+        list.map((base) => this.resolveOOBIWithReason(`${base}/oobi/${aidPrefix}`, undefined, timeoutMs)),
       );
+      let results = await resolveAll(bases);
+      // If none of the known backers served it, our key state may predate a
+      // witness rotation — try the remaining witnesses before giving up.
+      if (!results.some((r) => r.ok)) {
+        const rest = witnessOobiBases(iurls).filter((base) => !bases.includes(base));
+        if (rest.length > 0) {
+          results = [...results, ...(await resolveAll(rest))];
+          bases = [...bases, ...rest];
+        }
+      }
       resolved = results.filter((r) => r.ok).length;
       // Report which base failed and why, plus the sn our local KEL reached
       // after the pull. Per-witness sn is not obtainable here: every witness
