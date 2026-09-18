@@ -56,10 +56,12 @@ cd frontend && npm run test:android-link
 ```
 
 The harness refuses an APK that does not bake `http://localhost:4904` as its
-config server (it would join production). With no device attached it boots the
-`matou` AVD headless and kills it afterwards; an already-attached device is
-adopted and left running. See the header of `utils/android-device.ts` for the
-`MATOU_ANDROID_*` knobs.
+config server (it would join production). With no emulator running it boots the
+`matou` AVD headless and kills it afterwards; an already-running emulator is
+adopted and left running. A physical phone is never picked up on its own — the
+harness uninstalls the app (and its data) before installing, so name the device
+with `MATOU_ANDROID_SERIAL` to opt in. See the header of
+`utils/android-device.ts` for the other `MATOU_ANDROID_*` knobs.
 
 Two things differ from a user's phone, both forced by the environment:
 

@@ -2,7 +2,7 @@ import { test, expect, Page, BrowserContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { requireAllTestServices } from './utils/keri-testnet';
 import { BackendManager } from './utils/backend-manager';
-import { startAndroidApp, type AndroidApp } from './utils/android-device';
+import { startAndroidApp, cleanupAndroidApp, type AndroidApp } from './utils/android-device';
 import {
   BACKEND_URL,
   setupPageLogging,
@@ -208,10 +208,16 @@ test.describe.serial('Linked-device sign-in on Android', () => {
   });
 
   test.afterAll(async () => {
-    await memberContext?.close().catch(() => undefined);
-    await adminContext?.close().catch(() => undefined);
-    await backends.stopAll();
-    await phone?.close();
+    // The phone goes last but must always go: this is what removes the mirrored
+    // org and kills an emulator the harness booted — also when beforeAll timed
+    // out inside startAndroidApp and `phone` was never assigned.
+    try {
+      await memberContext?.close().catch(() => undefined);
+      await adminContext?.close().catch(() => undefined);
+      await backends.stopAll();
+    } finally {
+      await cleanupAndroidApp();
+    }
   });
 
   // --- 1 ---------------------------------------------------------------------

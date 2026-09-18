@@ -15,7 +15,8 @@
  * Env knobs:
  *   MATOU_ANDROID_APK     APK path (default: the build-apk.sh debug output)
  *   MATOU_ANDROID_AVD     AVD to boot when no device is attached (default: matou)
- *   MATOU_ANDROID_SERIAL  pin one device when several are attached
+ *   MATOU_ANDROID_SERIAL  use this device. The ONLY way to target a physical
+ *                         phone — the app on it is UNINSTALLED first, data and all
  *   MATOU_ANDROID_HEADED  =1 to show the emulator window
  *   ANDROID_SDK_ROOT / ANDROID_HOME (default: ~/.matou-android/sdk)
  */
@@ -80,6 +81,16 @@ function attachedSerials(): string[] {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Several Playwright Android calls take no timeout and can hang for good when
+ *  the WebView restarts under them; turn a hang into an error a retry can see. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not return in ${ms / 1000}s`)), ms);
+  });
+  return Promise.race([p, limit]).finally(() => clearTimeout(timer));
+}
 
 /** The APK must point at the local test config server, or the phone would
  *  silently join the PRODUCTION network. Checked before anything is installed. */
@@ -166,6 +177,11 @@ async function bootEmulator(): Promise<{ serial: string; proc: ChildProcess }> {
     }
     await sleep(3_000);
   }
+  try {
+    process.kill(-proc.pid!, 'SIGTERM'); // detached → its own process group
+  } catch {
+    /* already gone */
+  }
   throw new Error(`emulator ${avd} did not finish booting in 4 min`);
 }
 
@@ -175,27 +191,38 @@ async function bootEmulator(): Promise<{ serial: string; proc: ChildProcess }> {
  * page Playwright grabbed a moment earlier gets closed under it. Playwright
  * caches a device's WebViews, so re-asking the same AndroidDevice only hands
  * the dead page back — each retry therefore opens a FRESH device connection.
+ * The same restart can also leave a call hanging instead of failing, so every
+ * step is bounded (worst case ≈ 8 min, inside the spec's beforeAll budget).
  */
+const ATTACH_ATTEMPTS = 4;
+
 async function attachStablePage(serial: string): Promise<{ device: AndroidDevice; page: Page }> {
   let lastError: unknown;
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    const device = (await android.devices()).find((d) => d.serial() === serial);
+  for (let attempt = 1; attempt <= ATTACH_ATTEMPTS; attempt++) {
+    const devices = await withTimeout(android.devices(), 30_000, 'android.devices()');
+    const device = devices.find((d) => d.serial() === serial);
     if (!device) throw new Error(`Playwright cannot see android device ${serial}`);
     device.setDefaultTimeout(60_000);
     try {
-      const webView = await device.webView({ pkg: APP_ID }, { timeout: 120_000 });
-      const page = await webView.page();
+      const webView = await withTimeout(
+        device.webView({ pkg: APP_ID }, { timeout: 60_000 }),
+        70_000,
+        'device.webView()',
+      );
+      const page = await withTimeout(webView.page(), 30_000, 'webView.page()');
       await sleep(8_000);
       if (!page.isClosed()) {
-        await page.evaluate(() => document.readyState);
+        await withTimeout(page.evaluate(() => document.readyState), 15_000, 'page.evaluate()');
         return { device, page };
       }
       lastError = new Error('WebView page closed right after attach');
     } catch (e) {
       lastError = e;
     }
-    console.log(`[android] WebView attach ${attempt}/5 did not hold (${lastError}); retrying`);
-    await device.close().catch(() => undefined);
+    console.log(
+      `[android] WebView attach ${attempt}/${ATTACH_ATTEMPTS} did not hold (${lastError}); retrying`,
+    );
+    await withTimeout(device.close(), 15_000, 'device.close()').catch(() => undefined);
     // `pidof` exits 1 (→ throws) when the app is not running.
     let running = false;
     try {
@@ -212,6 +239,19 @@ function launchApp(serial: string): void {
   adb(serial, ['shell', 'monkey', '-p', APP_ID, '-c', 'android.intent.category.LAUNCHER', '1']);
 }
 
+// What the current run has to undo. Module-level because a beforeAll that hits
+// its timeout inside startAndroidApp is not a throw: the spec never gets an
+// AndroidApp to close, but its afterAll can still call cleanupAndroidApp().
+let cleanup: (() => Promise<void>) | undefined;
+
+/** Idempotent: drop the Playwright connection, remove the mirrored org, and
+ *  kill the emulator if this run booted it. */
+export async function cleanupAndroidApp(): Promise<void> {
+  const run = cleanup;
+  cleanup = undefined;
+  await run?.();
+}
+
 /**
  * Bring up a device with a FRESH install of the test APK and return a Page on
  * its WebView, sitting wherever the app's cold boot lands (the splash once an
@@ -223,7 +263,11 @@ export async function startAndroidApp(): Promise<AndroidApp> {
 
   adb(null, ['start-server']);
   let emulatorProc: ChildProcess | undefined;
-  let serial = process.env.MATOU_ANDROID_SERIAL ?? attachedSerials()[0];
+  // Only an EMULATOR is adopted on sight. The install below starts with an
+  // uninstall, which on someone's plugged-in phone would wipe the real app and
+  // its identity — a physical device has to be named with MATOU_ANDROID_SERIAL.
+  let serial =
+    process.env.MATOU_ANDROID_SERIAL ?? attachedSerials().find((s) => s.startsWith('emulator-'));
   if (!serial) {
     const booted = await bootEmulator();
     serial = booted.serial;
@@ -238,8 +282,13 @@ export async function startAndroidApp(): Promise<AndroidApp> {
     }
   };
 
-  let device: AndroidDevice;
+  let device: AndroidDevice | undefined;
   let page: Page;
+  cleanup = async () => {
+    if (device) await withTimeout(device.close(), 15_000, 'device.close()').catch(() => undefined);
+    await unmirrorTestOrg();
+    killEmulatorIfOurs();
+  };
   try {
     console.log(`[android] using device ${serial}`);
 
@@ -263,8 +312,7 @@ export async function startAndroidApp(): Promise<AndroidApp> {
     ({ device, page } = await attachStablePage(serial));
   } catch (e) {
     // Never leak an emulator we booted: the caller has no handle to close yet.
-    await unmirrorTestOrg();
-    killEmulatorIfOurs();
+    await cleanupAndroidApp();
     throw e;
   }
 
@@ -279,10 +327,6 @@ export async function startAndroidApp(): Promise<AndroidApp> {
         return `(logcat failed: ${e})`;
       }
     },
-    close: async () => {
-      await device.close().catch(() => undefined);
-      await unmirrorTestOrg();
-      killEmulatorIfOurs();
-    },
+    close: cleanupAndroidApp,
   };
 }
