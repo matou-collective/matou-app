@@ -32,12 +32,6 @@ type AnySyncClient interface {
 	// previously created via CreateSpace or CreateSpaceWithKeys.
 	GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error)
 
-	// DeriveSpace creates a deterministic space
-	DeriveSpace(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (*SpaceCreateResult, error)
-
-	// DeriveSpaceID returns the deterministic space ID without creating
-	DeriveSpaceID(ctx context.Context, ownerAID string, spaceType string, signingKey crypto.PrivKey) (string, error)
-
 	// DeriveSpaceWithKeys creates a space at the deterministic ID that
 	// DeriveSpaceIDWithKeys computes for the same key set. The user's private
 	// space must be created this way so every device holding the mnemonic

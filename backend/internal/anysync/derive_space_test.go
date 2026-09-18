@@ -97,3 +97,29 @@ func TestSpaceDerivePayload_MatchesCreateReplicationKey(t *testing.T) {
 		t.Errorf("derived id %s must carry replication-key suffix %s", store.SpaceHeaderWithId.Id, want)
 	}
 }
+
+// TestDeriveSpaceKeySet_SigningKeyIsAccountKey pins the invariant that a
+// derived private space at index 0 signs with exactly the mnemonic-derived
+// account key (DeriveKeyFromMnemonic(m, 0)). any-sync only derives the owner
+// read key for a derived ACL root when AclState.pubKey.Equals(root.Identity)
+// (aclstate applyRoot → saveKeysFromRoot → DeriveSymmetricKey(accountKey, ...)),
+// so if this equality ever breaks — a non-zero peer KeyIndex, multi-account,
+// or a change to DeriveSpaceKeySet's index arithmetic — every device would
+// stop decrypting the private space with no other compiler or test signal.
+// The private-space call sites (identity.go, spaces.go) override SigningKey to
+// the client's signing key precisely because this must hold; this test fails
+// loudly if the coincidence they rely on ever stops being true.
+func TestDeriveSpaceKeySet_SigningKeyIsAccountKey(t *testing.T) {
+	keys, err := DeriveSpaceKeySet(testMnemonic, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountKey, err := DeriveKeyFromMnemonic(testMnemonic, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keys.SigningKey.GetPublic().Equals(accountKey.GetPublic()) {
+		t.Fatal("DeriveSpaceKeySet(m, 0).SigningKey must equal DeriveKeyFromMnemonic(m, 0): " +
+			"the derived private-space read key any-sync computes depends on this equality")
+	}
+}

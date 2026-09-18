@@ -175,48 +175,6 @@ func TestIntegration_CreateSpace(t *testing.T) {
 	})
 }
 
-func TestIntegration_DeriveSpace(t *testing.T) {
-	testNetwork.RequireNetwork()
-
-	client := newTestSDKClient(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	t.Run("derive space is deterministic", func(t *testing.T) {
-		ownerAID := "ETestDeriveOwner" + time.Now().Format("20060102150405")
-
-		// DeriveSpaceID should return same ID for same inputs
-		id1, err := client.DeriveSpaceID(ctx, ownerAID, SpaceTypePrivate, nil)
-		if err != nil {
-			t.Fatalf("failed to derive space ID (first call): %v", err)
-		}
-
-		id2, err := client.DeriveSpaceID(ctx, ownerAID, SpaceTypePrivate, nil)
-		if err != nil {
-			t.Fatalf("failed to derive space ID (second call): %v", err)
-		}
-
-		if id1 != id2 {
-			t.Errorf("DeriveSpaceID should be deterministic: got %s vs %s", id1, id2)
-		}
-		t.Logf("Derived space ID: %s", id1)
-	})
-
-	t.Run("derive and create match", func(t *testing.T) {
-		ownerAID := "ETestDerive2" + time.Now().Format("20060102150405")
-
-		deriveResult, err := client.DeriveSpace(ctx, ownerAID, SpaceTypePrivate, nil)
-		if err != nil {
-			t.Fatalf("failed to derive space: %v", err)
-		}
-		if deriveResult.SpaceID == "" {
-			t.Fatal("expected non-empty derived space ID")
-		}
-		t.Logf("Derived space: %s", deriveResult.SpaceID)
-	})
-}
-
 func TestIntegration_SyncDocument(t *testing.T) {
 	testNetwork.RequireNetwork()
 

@@ -28,7 +28,13 @@ type SpaceKeySet struct {
 	SigningKey crypto.PrivKey
 	// MasterKey signs identity attestation (Ed25519)
 	MasterKey crypto.PrivKey
-	// ReadKey encrypts all tree content (AES-256-GCM symmetric)
+	// ReadKey is the AES-256-GCM symmetric read key persisted alongside the
+	// space. For a CreateSpaceWithKeys space it encrypts the tree content. For a
+	// *derived* private space (DeriveSpaceWithKeys) this field is inert: any-sync
+	// derives the real owner read key from the sign key
+	// (AclState.saveKeysFromRoot → DeriveSymmetricKey(accountKey, ...)), and
+	// DeriveSpaceKeySet re-randomises this value on every (re-)claim. Do not
+	// route tree writes through keys.ReadKey for a derived space.
 	ReadKey crypto.SymKey
 	// MetadataKey encrypts account metadata (Ed25519)
 	MetadataKey crypto.PrivKey
