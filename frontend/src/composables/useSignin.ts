@@ -27,8 +27,12 @@ import { getSigner } from 'src/lib/signin/signer';
 import { presentToDoor, type PresentBody, type PresentVerdict } from 'src/lib/signin/present';
 import { refusalCopy, type RefusalCopy } from 'src/lib/signin/refusal';
 
-/** The card's four faces (WS-A2/A2p/A2d/A2r). */
-export type SigninPhase = 'card' | 'proving' | 'done' | 'refused';
+/**
+ * The card's faces. `first-contact` (WS-A1) comes *before* the card when the ask
+ * names a sign-in site the wallet has never met (#535); the rest are the approve
+ * card and its follow-ons (WS-A2/A2p/A2d/A2r).
+ */
+export type SigninPhase = 'first-contact' | 'card' | 'proving' | 'done' | 'refused';
 
 /** Injectable side-effects; production defaults resolve the real client/stores. */
 export interface SigninDeps {
@@ -111,6 +115,23 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     const kinds = await deps.schemaKinds();
     const toShow = cred ? describeCredential(cred, kinds) : null;
     view.value = buildCardView(parsed, toShow, aid, knownDoors.isHome(parsed.door));
+
+    // A sign-in site the wallet has never met stops at the first-contact prompt
+    // before any card (#535, story 11); the home site and any already-trusted
+    // site skip straight to the approve card (story 12).
+    phase.value = knownDoors.isKnown(parsed.door) ? 'card' : 'first-contact';
+  }
+
+  /**
+   * Trust this sign-in site (WS-A1 "Trust this sign-in site", story 11): add it
+   * to known doors under the name the code claimed and continue to the approve
+   * card for the same sign-in.
+   */
+  async function trust(): Promise<void> {
+    const a = ask.value;
+    if (!a) return;
+    await knownDoors.trust(a.door, a.community);
+    phase.value = 'card';
   }
 
   /** Approve: sign, export, post, read the verdict (story 14/16/28). */
@@ -167,5 +188,5 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     refusal.value = null;
   }
 
-  return { ask, view, phase, refusal, chosen, prepareFromLink, prepare, approve, notNow, tryAgain };
+  return { ask, view, phase, refusal, chosen, prepareFromLink, prepare, trust, approve, notNow, tryAgain };
 }

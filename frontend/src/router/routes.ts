@@ -26,6 +26,13 @@ const routes: RouteRecordRaw[] = [
         name: 'account-settings',
         component: () => import('pages/AccountSettingsPage.vue'),
       },
+      {
+        // "Sign-in sites you trust" — the known-doors management screen
+        // (idss #1492 story 19, #535, WS-A3).
+        path: 'signin-sites',
+        name: 'signin-sites',
+        component: () => import('pages/SigninSitesPage.vue'),
+      },
       ...(__KIT_CHAT__
         ? [
             {
