@@ -547,6 +547,39 @@ func (c *SDKClient) AddToACL(ctx context.Context, spaceID string, peerID string,
 	return nil
 }
 
+// SpaceExists reports whether a space is still registered and reachable on the
+// coordinator. It is the existence probe the communityspace convention uses to
+// decide whether a re-run of org setup may reuse a previously-created space
+// rather than minting a fresh CID that overwrites the working one (issue #539).
+//
+// A StatusCheck failure, or a status of deleted / pending-deletion / not-exists,
+// counts as "gone". Any other status (created) counts as reachable.
+func (c *SDKClient) SpaceExists(ctx context.Context, spaceID string) bool {
+	if spaceID == "" {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if !c.initialized || c.coordinator == nil {
+		return false
+	}
+
+	status, err := c.coordinator.StatusCheck(ctx, spaceID)
+	if err != nil || status == nil {
+		return false
+	}
+	switch status.GetStatus() {
+	case coordinatorproto.SpaceStatus_SpaceStatusNotExists,
+		coordinatorproto.SpaceStatus_SpaceStatusDeleted,
+		coordinatorproto.SpaceStatus_SpaceStatusPendingDeletion,
+		coordinatorproto.SpaceStatus_SpaceStatusDeletionStarted:
+		return false
+	default:
+		return true
+	}
+}
+
 // MakeSpaceShareable marks a space as shareable on the coordinator,
 // enabling ACL invite operations (CreateOpenInvite / JoinWithInvite).
 // Must be called after space creation and propagation to tree nodes.

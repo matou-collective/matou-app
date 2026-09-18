@@ -70,6 +70,11 @@ type AnySyncClient interface {
 	// enabling ACL invite operations. Must be called before CreateOpenInvite.
 	MakeSpaceShareable(ctx context.Context, spaceID string) error
 
+	// SpaceExists reports whether a space is still registered and reachable on
+	// the coordinator, used to decide whether org setup may reuse a previously
+	// created space instead of minting a fresh one (issue #539).
+	SpaceExists(ctx context.Context, spaceID string) bool
+
 	// GetPool returns the connection pool for dRPC peer communication.
 	GetPool() pool.Pool
 

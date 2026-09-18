@@ -35,6 +35,9 @@ type mockAnySyncClient struct {
 	space          commonspace.Space // optional: returned by GetSpace when set
 	signingKey     crypto.PrivKey    // optional: returned by GetSigningKey when set
 	dataDir        string            // optional: returned by GetDataDir when set
+	// existingSpaces controls SpaceExists: nil → every non-empty ID is reachable;
+	// set → only IDs mapped true are reachable (issue #539 reuse-guard tests).
+	existingSpaces map[string]bool
 }
 
 func newMockClient() *mockAnySyncClient {
@@ -110,6 +113,16 @@ func (m *mockAnySyncClient) GetSpace(_ context.Context, _ string) (commonspace.S
 
 func (m *mockAnySyncClient) MakeSpaceShareable(_ context.Context, _ string) error {
 	return nil
+}
+
+func (m *mockAnySyncClient) SpaceExists(_ context.Context, spaceID string) bool {
+	if spaceID == "" {
+		return false
+	}
+	if m.existingSpaces == nil {
+		return true
+	}
+	return m.existingSpaces[spaceID]
 }
 
 // testACLRecordBuilder implements list.AclRecordBuilder for testing invite flow
@@ -417,6 +430,96 @@ func TestHandleCreateCommunity_Idempotent(t *testing.T) {
 	// Since community space was already configured in setup, returns existing
 	if w1.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", w1.Code)
+	}
+}
+
+// spacesHandlerWithSubSpaces wires a handler whose community, read-only and
+// admin spaces are all pre-configured, over the given mock client. No mnemonic
+// is configured, so HandleCreateCommunity takes the reuse-existing short-circuit
+// (issue #539 read-only verification path).
+func spacesHandlerWithSubSpaces(client *mockAnySyncClient) (*SpacesHandler, *mockSpaceStore) {
+	store := newMockSpaceStore()
+	// A record for the community space so GetCommunitySpace resolves it.
+	_ = store.SaveSpace(context.Background(), &anysync.Space{
+		SpaceID:   "test-community-space",
+		SpaceType: anysync.SpaceTypeCommunity,
+	})
+	spaceManager := anysync.NewSpaceManager(client, &anysync.SpaceManagerConfig{
+		CommunitySpaceID:         "test-community-space",
+		CommunityReadOnlySpaceID: "test-readonly-space",
+		AdminSpaceID:             "test-admin-space",
+		OrgAID:                   "EORG123456789",
+	})
+	return &SpacesHandler{spaceManager: spaceManager, spaceStore: store}, store
+}
+
+func createCommunityReq(t *testing.T) *http.Request {
+	t.Helper()
+	body, _ := json.Marshal(CreateCommunityRequest{OrgAID: "EORG123456789", OrgName: "Test Org"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/spaces/community", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+// TestHandleCreateCommunity_ReusesReachableReadOnly verifies that re-running
+// setup on a healthy account hands back the SAME read-only + admin space IDs,
+// verified reachable — it must not mint fresh CIDs (issue #539).
+func TestHandleCreateCommunity_ReusesReachableReadOnly(t *testing.T) {
+	client := newMockClient() // existingSpaces nil → every space reachable
+	handler, _ := spacesHandlerWithSubSpaces(client)
+
+	w := httptest.NewRecorder()
+	handler.HandleCreateCommunity(w, createCommunityReq(t))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp CreateCommunityResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ReadOnlySpaceID != "test-readonly-space" {
+		t.Errorf("read-only ID = %q, want the existing test-readonly-space (reused, not reminted)", resp.ReadOnlySpaceID)
+	}
+	if resp.AdminSpaceID != "test-admin-space" {
+		t.Errorf("admin ID = %q, want the existing test-admin-space", resp.AdminSpaceID)
+	}
+}
+
+// TestHandleCreateCommunity_DoesNotReturnPhantomReadOnly is the #539 regression
+// guard: when the persisted read-only space no longer resolves on the network
+// and no mnemonic is available to recreate it, the handler must NOT hand back
+// the phantom ID (which would strand contributions/role lookups). It returns an
+// empty read-only ID instead of the dead one.
+func TestHandleCreateCommunity_DoesNotReturnPhantomReadOnly(t *testing.T) {
+	client := newMockClient()
+	// Community + admin reachable; the read-only space is a phantom (gone).
+	client.existingSpaces = map[string]bool{
+		"test-community-space": true,
+		"test-admin-space":     true,
+		// "test-readonly-space" intentionally absent
+	}
+	handler, _ := spacesHandlerWithSubSpaces(client)
+
+	w := httptest.NewRecorder()
+	handler.HandleCreateCommunity(w, createCommunityReq(t))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp CreateCommunityResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ReadOnlySpaceID == "test-readonly-space" {
+		t.Error("handler handed back the phantom read-only ID — the #539 defect")
+	}
+	if resp.ReadOnlySpaceID != "" {
+		t.Errorf("expected empty read-only ID for an unreachable phantom, got %q", resp.ReadOnlySpaceID)
+	}
+	// The community space (still reachable) is returned unchanged.
+	if resp.CommunitySpaceID != "test-community-space" {
+		t.Errorf("community ID = %q, want test-community-space", resp.CommunitySpaceID)
 	}
 }
 

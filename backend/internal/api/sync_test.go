@@ -95,6 +95,10 @@ func (m *mockSyncAnySyncClient) MakeSpaceShareable(_ context.Context, _ string) 
 	return nil
 }
 
+func (m *mockSyncAnySyncClient) SpaceExists(_ context.Context, spaceID string) bool {
+	return spaceID != ""
+}
+
 func setupSyncTestHandler(t *testing.T) (*SyncHandler, *anystore.LocalStore, func()) {
 	// Create temp directory for test database
 	tmpDir, err := os.MkdirTemp("", "sync_test")

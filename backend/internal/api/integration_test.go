@@ -96,6 +96,10 @@ func (m *mockAnySyncClientForIntegration) MakeSpaceShareable(_ context.Context, 
 	return nil
 }
 
+func (m *mockAnySyncClientForIntegration) SpaceExists(_ context.Context, spaceID string) bool {
+	return spaceID != ""
+}
+
 // IntegrationTestEnv provides a complete test environment for integration testing
 type IntegrationTestEnv struct {
 	store         *anystore.LocalStore
