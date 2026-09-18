@@ -133,6 +133,14 @@ const routes: RouteRecordRaw[] = [
       },
     ],
   },
+  {
+    // The wallet's approve card (idss #1492, #531). Reached when the scanner
+    // reads a `matou://signin` code or the OS opens one; the link's params ride
+    // the query string. Standalone (no dashboard chrome) so it works as a door.
+    path: '/signin',
+    name: 'signin-approve',
+    component: () => import('pages/SigninApprovePage.vue'),
+  },
   // Always leave this as last one
   {
     path: '/:catchAll(.*)*',
