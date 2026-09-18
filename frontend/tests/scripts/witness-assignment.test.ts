@@ -44,9 +44,19 @@ describe('assignWitnesses', () => {
     expect(out.toad).toBe(1);
   });
 
-  it('throws on a pool of < 2 witnesses', async () => {
+  it('accepts a single-witness community backend (ADR 0226 floor of one)', async () => {
     mockConfig({ a: 'BAAA' });
-    await expect(assignWitnesses()).rejects.toThrow(/at least 2/i);
+    const out = await assignWitnesses();
+    // Disjoint sets are impossible with one witness, so personal and org share
+    // it; toad is 1.
+    expect(out.personal).toEqual(['BAAA']);
+    expect(out.org).toEqual(['BAAA']);
+    expect(out.toad).toBe(1);
+  });
+
+  it('throws only on an empty witness pool', async () => {
+    mockConfig({});
+    await expect(assignWitnesses()).rejects.toThrow(/at least one/i);
   });
 
   it('is deterministic regardless of map iteration order', async () => {

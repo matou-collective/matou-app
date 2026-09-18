@@ -14,6 +14,20 @@
 
 import { secureStorage } from './secureStorage';
 import { isCapacitor, getBackendUrl } from './platform';
+import {
+  parseDescriptor,
+  UnsupportedDescriptorVersionError,
+  schemaOobis as descriptorSchemaOobis,
+  signinUrl as descriptorSigninUrl,
+  type CommunityDescriptor,
+  type DescriptorCommunity,
+  type DescriptorSteward,
+  type DescriptorSchema,
+  type DescriptorBoot,
+  type DescriptorSignin,
+  type DescriptorStack,
+  type DescriptorApp,
+} from './descriptor';
 
 // Environment-based config URL selection
 const ENV = (import.meta.env.VITE_ENV as string) || 'dev';
@@ -47,8 +61,12 @@ export interface AnySyncConfig {
 
 export interface ClientConfig {
   version: string;
-  mode: string;
-  keri: {
+  // 1.0 fields. On an IDSS gateway serving the 1.1 community backend
+  // descriptor (ADR 0226) these base blocks are absent — the document carries
+  // the additive 1.1 blocks below instead — so every one is optional and every
+  // consumer guards it.
+  mode?: string;
+  keri?: {
     admin_url: string;
     boot_url: string;
     cesr_url: string;
@@ -58,10 +76,27 @@ export interface ClientConfig {
     // proxy (for direct fetches) and this keeps the network-reachable base.
     cesr_public_url?: string;
   };
-  schema_server_url: string;
-  config_server_url: string;
-  witnesses: WitnessConfig;
-  anysync: AnySyncConfig;
+  schema_server_url?: string;
+  config_server_url?: string;
+  witnesses?: WitnessConfig;
+  // anysync is served ONLY when any-sync is installed on the gateway (ADR 0226
+  // decision 8); a Coa-built wallet against a content-less IDSS backend simply
+  // has no content layer, so it is optional and its absence is inert.
+  anysync?: AnySyncConfig;
+
+  // 1.1 community backend descriptor blocks (ADR 0226, amended 0235/0236).
+  // Read by the descriptor loader (see ./descriptor). All optional: a 1.0
+  // config server omits them, and on a 1.1 document `app` and `doorkeeper` may
+  // still be absent.
+  backend_kind?: string;
+  community?: DescriptorCommunity;
+  admins?: DescriptorSteward[];
+  api_url?: string;
+  schemas?: Record<string, DescriptorSchema>;
+  boot?: DescriptorBoot;
+  signin?: DescriptorSignin;
+  stack?: DescriptorStack;
+  app?: DescriptorApp;
 }
 
 interface CachedConfig {
@@ -143,6 +178,14 @@ async function doFetchConfig(): Promise<ClientConfig> {
 
     const config = await response.json() as ClientConfig;
 
+    // Validate the community backend descriptor. This refuses ONLY an unknown
+    // `version` major (ADR 0226 decision 5) — every absent optional block
+    // (anysync, app, the retired doorkeeper) is tolerated. The refusal must
+    // propagate so the wallet does not silently fall back to a cached/default
+    // config for a document it cannot understand; a `stack` mismatch is a
+    // diagnostics warning, never a refusal, so it never reaches here.
+    parseDescriptor(config);
+
     // Cache in memory
     cachedConfig = { config, timestamp: Date.now() };
 
@@ -152,6 +195,12 @@ async function doFetchConfig(): Promise<ClientConfig> {
     console.log(`[ClientConfig] Fetched config for ${config.mode} environment`);
     return config;
   } catch (err) {
+    // An unknown descriptor major is a hard refusal (ADR 0226 decision 5): the
+    // wallet cannot understand the document, and falling back to a cached or
+    // default config would silently pretend it can. Propagate it.
+    if (err instanceof UnsupportedDescriptorVersionError) {
+      throw err;
+    }
     console.warn('[ClientConfig] Failed to fetch, trying cache:', err);
 
     // Try secure storage cache
@@ -217,7 +266,7 @@ export async function clearClientConfigCache(): Promise<void> {
  */
 export async function getKeriaAdminUrl(): Promise<string> {
   const config = await fetchClientConfig();
-  return config.keri.admin_url;
+  return config.keri?.admin_url ?? '';
 }
 
 /**
@@ -225,7 +274,7 @@ export async function getKeriaAdminUrl(): Promise<string> {
  */
 export async function getKeriaBootUrl(): Promise<string> {
   const config = await fetchClientConfig();
-  return config.keri.boot_url;
+  return config.keri?.boot_url ?? '';
 }
 
 /**
@@ -233,7 +282,7 @@ export async function getKeriaBootUrl(): Promise<string> {
  */
 export async function getKeriaCesrUrl(): Promise<string> {
   const config = await fetchClientConfig();
-  return config.keri.cesr_url;
+  return config.keri?.cesr_url ?? '';
 }
 
 /**
@@ -241,7 +290,7 @@ export async function getKeriaCesrUrl(): Promise<string> {
  */
 export async function getSchemaServerUrl(): Promise<string> {
   const config = await fetchClientConfig();
-  return config.schema_server_url;
+  return config.schema_server_url ?? '';
 }
 
 /**
@@ -249,13 +298,60 @@ export async function getSchemaServerUrl(): Promise<string> {
  */
 export async function getWitnessOobis(): Promise<string[]> {
   const config = await fetchClientConfig();
-  return config.witnesses.oobis;
+  return config.witnesses?.oobis ?? [];
 }
 
 /**
- * Get anysync network configuration
+ * Get anysync network configuration.
+ *
+ * On an IDSS gateway without any-sync installed the descriptor carries no
+ * `anysync` block (ADR 0226 decision 8); the content layer is simply absent
+ * and this returns an empty config rather than throwing.
  */
 export async function getAnySyncConfig(): Promise<AnySyncConfig> {
   const config = await fetchClientConfig();
-  return config.anysync;
+  return config.anysync ?? { id: '', networkId: '', nodes: [] };
+}
+
+/** True once any-sync is installed on the gateway (the content layer exists). */
+export async function hasContentLayer(): Promise<boolean> {
+  const config = await fetchClientConfig();
+  return !!config.anysync && config.anysync.nodes.length > 0;
+}
+
+/**
+ * The parsed community backend descriptor (ADR 0226). Refuses only an unknown
+ * `version` major; tolerates every absent optional block.
+ */
+export async function getCommunityDescriptor(): Promise<CommunityDescriptor> {
+  const config = await fetchClientConfig();
+  return parseDescriptor(config);
+}
+
+/**
+ * The schema OOBIs the wallet resolves, taken from the descriptor's `schemas`
+ * block rather than a built-in list (ADR 0226 decision 5). Empty on a 1.0
+ * config server that serves no `schemas` block.
+ */
+export async function getSchemaOobis(): Promise<string[]> {
+  const config = await fetchClientConfig();
+  return descriptorSchemaOobis(parseDescriptor(config));
+}
+
+/**
+ * The OOBI for one credential kind (e.g. `membership`, `committee`) from the
+ * descriptor's `schemas` block, or undefined when the document names none.
+ */
+export async function getSchemaOobi(kind: string): Promise<string | undefined> {
+  const config = await fetchClientConfig();
+  return config.schemas?.[kind]?.oobi;
+}
+
+/**
+ * The home community's sign-in door, pre-trusted from the baked descriptor
+ * (ADR 0236). Consumed by the wallet's known-doors list (#1492).
+ */
+export async function getSigninUrl(): Promise<string | undefined> {
+  const config = await fetchClientConfig();
+  return descriptorSigninUrl(parseDescriptor(config));
 }
