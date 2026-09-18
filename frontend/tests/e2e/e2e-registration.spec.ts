@@ -58,7 +58,7 @@ async function currentKeyState(
   req: APIRequestContext,
   aid: string,
   source: 'keria' | 'witness' = 'keria',
-): Promise<{ sn: number; kt: string; k: string[] }> {
+): Promise<{ sn: number; kt: string; k: string[]; rotations: number }> {
   let est: KelEvent[] = [];
   const tried: string[] = [];
   for (const url of kelSources(aid, source)) {
@@ -75,7 +75,11 @@ async function currentKeyState(
     `no establishment events in KEL of ${aid.slice(0, 12)} from any ${source} source (${tried.join(' ')})`,
   ).toBeGreaterThan(0);
   const latest = est.reduce((a, b) => (parseInt(b.s ?? '0', 16) > parseInt(a.s ?? '0', 16) ? b : a));
-  return { sn: parseInt(latest.s ?? '0', 16), kt: latest.kt ?? '', k: latest.k ?? [] };
+  // `sn` is the latest ESTABLISHMENT event's sn, not the KEL head: interaction
+  // events (registry/credential anchors) sit between rotations, so a
+  // difference of two `sn`s is not a rotation count. Use `rotations` for that.
+  const rotations = est.filter(e => e.t === 'rot' || e.t === 'drt').length;
+  return { sn: parseInt(latest.s ?? '0', 16), kt: latest.kt ?? '', k: latest.k ?? [], rotations };
 }
 
 // The org group's partially-witnessed-escrow failures (issue #520) are logged
@@ -1126,8 +1130,8 @@ test.describe.serial('Registration Approval Flow', () => {
       // left in KERIA's partially-witnessed escrow.
       const groupAfterT2 = await currentKeyState(adminPage.request, orgAidT2, 'witness');
       const promotedAfterT2 = await currentKeyState(adminPage.request, promotedMemberAid);
-      console.log(`[Test] Org group after promotion: sn=${groupAfterT2.sn} signers=${groupAfterT2.k.length}`);
-      expect(groupAfterT2.sn - groupBeforeT2.sn, 'the promotion rotates the org group twice (round 1 + round 2)').toBe(2);
+      console.log(`[Test] Org group after promotion: sn=${groupAfterT2.sn} rotations=${groupAfterT2.rotations} signers=${groupAfterT2.k.length}`);
+      expect(groupAfterT2.rotations - groupBeforeT2.rotations, 'the promotion rotates the org group twice (round 1 + round 2)').toBe(2);
       expect(groupAfterT2.k, 'the promoted member must now sign for the org group').toContain(promotedAfterT2.k[0]);
       assertNoOrgGroupToadLines(orgAidT2, promotionStartedAtT2);
 
@@ -1632,7 +1636,7 @@ test.describe.serial('Registration Approval Flow', () => {
       console.log(`[Test] Group after: sn=${groupAfter.sn} kt=${groupAfter.kt} signers=${groupAfter.k.length}`);
       console.log(`[Test] member1 sn=${member1After.sn} key=${member1After.k[0]?.slice(0, 12)} | member2 sn=${member2After.sn} key=${member2After.k[0]?.slice(0, 12)}`);
       expect(groupAfter.sn, 'the group should have rotated for the second promotion').toBeGreaterThan(groupBefore.sn);
-      expect(groupAfter.sn - groupBefore.sn, 'the second promotion rotates the group twice (round 1 + round 2)').toBe(2);
+      expect(groupAfter.rotations - groupBefore.rotations, 'the second promotion rotates the group twice (round 1 + round 2)').toBe(2);
       expect(groupAfter.k, 'member2 must now sign for the group').toContain(member2After.k[0]);
       expect(groupAfter.k, 'member1 (first steward) must REMAIN a group signer after a second promotion').toContain(member1After.k[0]);
       expect(groupAfter.k.length, 'group should have admin + member1 + member2 signers').toBe(3);
