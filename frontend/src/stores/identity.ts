@@ -7,6 +7,7 @@ import { secureStorage } from 'src/lib/secureStorage';
 import { fetchOrgConfig } from 'src/api/config';
 import { useAppStore } from 'stores/app';
 import { toKeriAlias } from 'src/lib/keri/alias';
+import { clearSigners } from 'src/lib/signin/signer';
 
 export interface AdminCredentialInfo extends CredentialInfo {
   role?: string;
@@ -448,6 +449,9 @@ export const useIdentityStore = defineStore('identity', () => {
 
   async function disconnect() {
     await releasePushToken();
+    // Drop the in-memory sign-in signer cache — nothing survives a lock/exit
+    // (idss #1492 story 18, ADR 0236).
+    clearSigners();
     currentAID.value = null;
     passcode.value = null;
     isConnected.value = false;
