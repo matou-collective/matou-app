@@ -2,8 +2,22 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Google Auto Backup is disabled (#545). The embedded backend's data dir
+         (getFilesDir()/matou, see MatouBackendRunner) holds the any-sync space
+         stores, peer.key, the per-space key bundles and identity.json, plus the
+         Keystore-backed secure-prefs files (matou_backend_secure, matou_secure).
+         With allowBackup="true" and no backup rules that plaintext key material
+         was eligible to upload to the user's Google account, and a restore lands
+         an undecryptable, half-configured identity (the Keystore master key does
+         not survive uninstall). This is device-bound state, so nothing here
+         should ride platform backup; mirrors the iOS shell's isExcludedFromBackup
+         on the same dir. allowBackup="false" stops Auto Backup / cloud restore on
+         all API levels; dataExtractionRules additionally excludes every domain
+         from the Android 12+ device-to-device transfer that allowBackup alone
+         does not cover. -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
