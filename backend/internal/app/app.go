@@ -372,6 +372,31 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		_, _ = fmt.Fprintln(out, "     Memberships will only be stored in private spaces")
 	}
 
+	// Move a pre-#526 account's private space to its mnemonic-derived id, the
+	// only id a linking or recovering device can compute (#508). One bounded
+	// attempt before the API serves, so requests normally never see the legacy
+	// id; a failed attempt is retried in the background.
+	privateSpaceMigration := &privateSpaceMigrator{
+		identity:    userIdentity,
+		spaces:      migrationSpacesAdapter{SDKClient: sdkClient, utm: sdkClient.GetTreeManager()},
+		objects:     spaceManager.ObjectTreeManager(),
+		saves:       spaceManager.NoticeTreeManager(),
+		credentials: spaceManager.CredentialTreeManager(),
+		store:       spaceStore,
+		deriveKeys: func(mnemonic string) (*anysync.SpaceKeySet, error) {
+			return anysync.DeriveSpaceKeySet(mnemonic, 0)
+		},
+	}
+	if privateSpaceMigration.runAtBoot(ctx) {
+		migrationCtx, stopMigration := context.WithCancel(ctx)
+		migrationDone := make(chan struct{})
+		go func() {
+			defer close(migrationDone)
+			privateSpaceMigration.retryUntilDone(migrationCtx)
+		}()
+		closers = append(closers, func() error { stopMigration(); <-migrationDone; return nil })
+	}
+
 	// Initialize KERI client (config-only, no KERIA connection needed)
 	_, _ = fmt.Fprintln(out, "Initializing KERI client...")
 	keriClient, err := keri.NewClient(&keri.Config{

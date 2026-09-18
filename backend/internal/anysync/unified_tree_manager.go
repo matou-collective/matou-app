@@ -58,6 +58,7 @@ type UnifiedTreeManager struct {
 	trees         sync.Map // treeID → objecttree.ObjectTree (THE single cache)
 	spaceIndex    sync.Map // spaceID → *sync.Map[treeID → ObjectIndexEntry]
 	objectMap     sync.Map // objectId → treeID (fast lookup by object ID)
+	retiredSpaces sync.Map // spaceID → struct{}: spaces whose trees must stay out of the index (see RetireSpace)
 	syncStatus    sync.Map // spaceID → *MatouSyncStatus (per-space sync metrics)
 	a             *app.App
 	listener      updatelistener.UpdateListener
@@ -440,6 +441,9 @@ func (u *UnifiedTreeManager) BuildSpaceIndex(ctx context.Context, spaceID string
 	if u.a == nil {
 		return nil // test mode — trees are injected directly
 	}
+	if u.isRetired(spaceID) {
+		return nil
+	}
 	sp, err := u.getSpace(ctx, spaceID)
 	if err != nil {
 		return fmt.Errorf("getting space %s: %w", spaceID, err)
@@ -663,6 +667,9 @@ func (u *UnifiedTreeManager) RecoverCorruptTree(ctx context.Context, spaceID, tr
 
 // addToIndex registers a tree in the space index and object map.
 func (u *UnifiedTreeManager) addToIndex(spaceID, treeID string, entry ObjectIndexEntry) {
+	if u.isRetired(spaceID) {
+		return
+	}
 	idx, _ := u.spaceIndex.LoadOrStore(spaceID, &sync.Map{})
 	idx.(*sync.Map).Store(treeID, entry)
 
@@ -681,6 +688,49 @@ func (u *UnifiedTreeManager) removeFromIndex(spaceID, treeID string) {
 			}
 		}
 	}
+}
+
+// ForgetSpace drops every index entry (and cached tree) of a space. The next
+// BuildSpaceIndex for it starts from storage again.
+func (u *UnifiedTreeManager) ForgetSpace(spaceID string) {
+	idx, ok := u.spaceIndex.Load(spaceID)
+	if !ok {
+		return
+	}
+	var treeIDs []string
+	idx.(*sync.Map).Range(func(key, _ any) bool {
+		treeIDs = append(treeIDs, key.(string))
+		return true
+	})
+	for _, treeID := range treeIDs {
+		u.removeFromIndex(spaceID, treeID)
+		u.trees.Delete(treeID)
+	}
+	u.spaceIndex.Delete(spaceID)
+}
+
+// RetireSpace forgets a space and keeps it out of the index until ReviveSpace.
+//
+// The object map is keyed by object id alone, not by space, so two spaces that
+// hold the same object id fight over one slot. The private-space migration
+// (#508) copies objects between two such spaces: once it has read the legacy
+// space it retires it, so that neither an explicit re-index nor the space
+// resolver's asynchronous post-open BuildSpaceIndex can point those object ids
+// back at the legacy trees while the copies are being written.
+func (u *UnifiedTreeManager) RetireSpace(spaceID string) {
+	u.retiredSpaces.Store(spaceID, struct{}{})
+	u.ForgetSpace(spaceID)
+}
+
+// ReviveSpace lifts RetireSpace. The space is re-indexed on its next
+// BuildSpaceIndex.
+func (u *UnifiedTreeManager) ReviveSpace(spaceID string) {
+	u.retiredSpaces.Delete(spaceID)
+}
+
+func (u *UnifiedTreeManager) isRetired(spaceID string) bool {
+	_, ok := u.retiredSpaces.Load(spaceID)
+	return ok
 }
 
 // IndexTree extracts index information from a tree and adds it to the space index.

@@ -313,3 +313,57 @@ func TestConstants(t *testing.T) {
 		t.Errorf("CredentialTreeType = %s, want matou.credential.v1", CredentialTreeType)
 	}
 }
+
+// The object map is keyed by object id alone, so the private-space migration
+// (#508) — which writes the same object ids into a second space — depends on a
+// retired space staying out of the index even when something re-indexes it.
+func TestUnifiedTreeManager_RetiredSpaceStaysOutOfIndex(t *testing.T) {
+	utm := NewUnifiedTreeManager()
+	legacy := ObjectIndexEntry{TreeID: "legacy-tree", ObjectID: "PrivateProfile-EAID", ObjectType: "PrivateProfile", ChangeType: ProfileTreeType}
+	utm.addToIndex("legacy-space", "legacy-tree", legacy)
+
+	utm.RetireSpace("legacy-space")
+
+	if got := utm.GetTreeIDForObject("PrivateProfile-EAID"); got != "" {
+		t.Errorf("object map still resolves to %q after RetireSpace", got)
+	}
+	if utm.HasTrees("legacy-space") {
+		t.Error("retired space still has indexed trees")
+	}
+
+	// The copy lands in the derived space under the same object id...
+	utm.addToIndex("derived-space", "derived-tree", ObjectIndexEntry{TreeID: "derived-tree", ObjectID: "PrivateProfile-EAID", ObjectType: "PrivateProfile", ChangeType: ProfileTreeType})
+	// ...and a late re-index of the legacy space (the space resolver's
+	// asynchronous post-open BuildSpaceIndex) must not steal the slot back.
+	utm.addToIndex("legacy-space", "legacy-tree", legacy)
+
+	if got := utm.GetTreeIDForObject("PrivateProfile-EAID"); got != "derived-tree" {
+		t.Errorf("object resolves to %q, want derived-tree", got)
+	}
+
+	utm.ReviveSpace("legacy-space")
+	utm.addToIndex("legacy-space", "legacy-tree", legacy)
+	if !utm.HasTrees("legacy-space") {
+		t.Error("revived space should index again")
+	}
+}
+
+func TestUnifiedTreeManager_ForgetSpaceLeavesOtherSpaces(t *testing.T) {
+	utm := NewUnifiedTreeManager()
+	utm.addToIndex("space-a", "tree-a", ObjectIndexEntry{TreeID: "tree-a", ObjectID: "obj-a", ChangeType: ProfileTreeType})
+	utm.addToIndex("space-b", "tree-b", ObjectIndexEntry{TreeID: "tree-b", ObjectID: "obj-b", ChangeType: ProfileTreeType})
+
+	utm.ForgetSpace("space-a")
+
+	if utm.HasTrees("space-a") || utm.GetTreeIDForObject("obj-a") != "" {
+		t.Error("space-a should be forgotten")
+	}
+	if !utm.HasTrees("space-b") || utm.GetTreeIDForObject("obj-b") != "tree-b" {
+		t.Error("space-b must be untouched")
+	}
+	// Not retired: it can be indexed again straight away.
+	utm.addToIndex("space-a", "tree-a", ObjectIndexEntry{TreeID: "tree-a", ObjectID: "obj-a", ChangeType: ProfileTreeType})
+	if utm.GetTreeIDForObject("obj-a") != "tree-a" {
+		t.Error("forgotten (not retired) space should re-index")
+	}
+}
