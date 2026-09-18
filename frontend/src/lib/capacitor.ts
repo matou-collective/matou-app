@@ -194,6 +194,27 @@ export interface BarcodeScannerPlugin {
   ): Promise<{ remove: () => Promise<void> }> | { remove: () => Promise<void> };
 }
 
+/**
+ * The `@capacitor/app` plugin surface used for OS deep links (#532). As with
+ * every other plugin we do NOT import the package — the native shell injects it
+ * as `window.Capacitor.Plugins.App`. Only the two members the sign-in link
+ * scheme needs are declared: the cold-start launch URL and the warm
+ * `appUrlOpen` event.
+ */
+export interface AppUrlOpenEvent {
+  /** The full `matou://…` URL the OS opened the app with. */
+  url: string;
+}
+
+export interface AppPlugin {
+  /** The URL the app was cold-started with, or a null-ish result otherwise. */
+  getLaunchUrl(): Promise<{ url: string } | null | undefined>;
+  addListener(
+    event: 'appUrlOpen',
+    fn: (event: AppUrlOpenEvent) => void,
+  ): Promise<{ remove: () => Promise<void> }> | { remove: () => Promise<void> };
+}
+
 /** The subset of Capacitor's injected global this module relies on. */
 interface CapacitorGlobal {
   isNativePlatform?: () => boolean;
@@ -205,6 +226,7 @@ interface CapacitorGlobal {
     LocalNotifications?: LocalNotificationsPlugin;
     Badge?: BadgePlugin;
     BarcodeScanner?: BarcodeScannerPlugin;
+    App?: AppPlugin;
   };
 }
 
@@ -305,4 +327,13 @@ export function getBadgePlugin(): BadgePlugin | undefined {
  */
 export function getBarcodeScannerPlugin(): BarcodeScannerPlugin | undefined {
   return capacitorGlobal()?.Plugins?.BarcodeScanner;
+}
+
+/**
+ * The `@capacitor/app` plugin (#532), or undefined when the shell didn't
+ * register it (any non-native build, or a shell built before the deep-link
+ * slice). The deep-link boot file feature-detects on this.
+ */
+export function getAppPlugin(): AppPlugin | undefined {
+  return capacitorGlobal()?.Plugins?.App;
 }

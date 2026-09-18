@@ -52,6 +52,77 @@ if (process.platform === 'win32') {
   app.setAppUserModelId(KIT_BUILD.appId);
 }
 
+// --- Sign-in link scheme (#532, idss #1492 story 34) ---
+// Claim `matou://` so a community sign-in link (and the pairing link) opens the
+// desktop app; the renderer's deep-link handler routes it to the approve card
+// or the link-device screen. The scheme is the same across every branded kit
+// (the links are minted as `matou://…`), so it is not derived from KIT_BUILD.
+const DEEP_LINK_SCHEME = 'matou';
+
+// Register as the OS protocol client. In a packaged app the executable is the
+// handler; in dev (`process.defaultApp`) Electron runs a script, so the exec +
+// script path must be spelled out or the OS would relaunch electron with no app.
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME, process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+}
+
+// A deep link that arrived before the window/renderer was ready to receive it
+// (cold start on any OS, or an open-url that beat createWindow). Flushed on the
+// window's did-finish-load.
+let pendingDeepLink: string | null = null;
+
+/** The first `matou://…` argument in an argv, or null. */
+function deepLinkFromArgv(argv: string[]): string | null {
+  return argv.find((arg) => arg.startsWith(`${DEEP_LINK_SCHEME}://`)) ?? null;
+}
+
+/**
+ * Hand a deep-link URL to the renderer, or stash it until the window is loaded.
+ * Focuses the window so an already-running app comes forward on the link.
+ */
+function deliverDeepLink(url: string): void {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+  if (mainWindow && !mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.send('deep-link', url);
+  } else {
+    pendingDeepLink = url;
+  }
+}
+
+// macOS delivers the link through open-url (both cold start and already-running).
+// Registered before whenReady so a cold-start link is not missed.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  deliverDeepLink(url);
+});
+
+// A single instance owns the scheme: on Windows/Linux the OS launches a second
+// process for the link, whose argv carries the URL — forward it to the running
+// instance and quit the duplicate. Without the lock "already running" would spawn
+// a second app (and a second backend) instead of coming forward.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = deepLinkFromArgv(argv);
+    if (url) deliverDeepLink(url);
+    else if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 // Auto-Updater setup. Only kits with a publish target (KIT_BUILD.updates) ship
 // an app-update.yml, so gate the updater on it — a community kit has none.
 const enableAutoUpdate = app.isPackaged && KIT_BUILD.updates;
@@ -342,6 +413,15 @@ function createWindow() {
     else log.info(text);
   });
 
+  // Flush a deep link that arrived before the renderer was ready (#532):
+  // cold-start argv/open-url, or an open-url that beat createWindow.
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (pendingDeepLink) {
+      mainWindow?.webContents.send('deep-link', pendingDeepLink);
+      pendingDeepLink = null;
+    }
+  });
+
   if (process.env.DEV) {
     mainWindow.loadURL(process.env.APP_URL!);
     mainWindow.webContents.openDevTools();
@@ -499,17 +579,24 @@ function setupAutoUpdater(): void {
   autoUpdater.checkForUpdates();
 }
 
-app.whenReady().then(async () => {
-  installDesktopIntegration();
-  setupAutoUpdater();
-  try {
-    await startBackend();
-    createWindow();
-  } catch (err) {
-    console.error('[Electron] Failed to start backend:', err);
-    app.quit();
-  }
-});
+// Only the primary instance starts the backend and window; a duplicate launched
+// for a deep link has already forwarded its URL and quit (single-instance lock).
+if (gotSingleInstanceLock) {
+  app.whenReady().then(async () => {
+    installDesktopIntegration();
+    setupAutoUpdater();
+    // Windows/Linux carry a cold-start deep link in the launch argv.
+    const initialDeepLink = deepLinkFromArgv(process.argv);
+    if (initialDeepLink) pendingDeepLink = initialDeepLink;
+    try {
+      await startBackend();
+      createWindow();
+    } catch (err) {
+      console.error('[Electron] Failed to start backend:', err);
+      app.quit();
+    }
+  });
+}
 
 app.on('window-all-closed', async () => {
   await stopBackend();

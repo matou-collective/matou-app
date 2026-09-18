@@ -33,6 +33,23 @@
 	     member's computer to sign in without re-registering. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Mātou uses the camera to scan the sign-in code shown on your computer.</string>
+	<!-- Wallet sign-in link scheme (#532, idss #1492 story 34): claim matou://
+	     so a community sign-in link (matou://signin) and the linked-device
+	     pairing link (matou://pair) open the app. iOS delivers the URL through
+	     AppDelegate.application(_:open:options:) → ApplicationDelegateProxy,
+	     which the @capacitor/app plugin surfaces as appUrlOpen for the WebView's
+	     deep-link handler to route. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>nz.matou.app.signin</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>matou</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

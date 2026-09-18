@@ -26,4 +26,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onNotificationClicked: (callback: (data: Record<string, string>) => void) => {
     ipcRenderer.on('notification-clicked', (_event, data: Record<string, string>) => callback(data));
   },
+  // Sign-in link scheme (#532): the main process forwards a matou:// URL the OS
+  // opened the app with (cold start), or handed the already-running instance
+  // (macOS open-url / Windows+Linux second-instance).
+  onDeepLink: (callback: (url: string) => void) => {
+    ipcRenderer.on('deep-link', (_event, url: string) => callback(url));
+  },
 });
