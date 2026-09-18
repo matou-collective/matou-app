@@ -70,6 +70,13 @@ public class MatouBackendPlugin: CAPPlugin, CAPBridgedPlugin {
                     // .default, not .info: info-level messages are not persisted to the
                     // log store, so `log show` (and the CI smoke check) never sees them.
                     os_log("backend up on 127.0.0.1:%d", log: Self.log, type: .default, boundPort)
+                    // Also emit the same line to stdout so it reaches the
+                    // --console-pty stream the CI smoke test captures. On some
+                    // simulator runtimes (macos-26 / iOS 26.2) the unified log
+                    // store stays empty in CI, so `log show` finds nothing even
+                    // though the backend is up (issue #549); the smoke test falls
+                    // back to grepping this console line for the port.
+                    print("backend up on 127.0.0.1:\(boundPort)")
                 }
                 call.resolve(["port": self.port, "token": self.token ?? ""])
             } catch {
