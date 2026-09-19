@@ -2,6 +2,7 @@ import { test, expect, Page, BrowserContext } from '@playwright/test';
 import { setupTestConfig } from './utils/mock-config';
 import { BackendManager } from './utils/backend-manager';
 import {
+  BACKEND_URL,
   FRONTEND_URL,
   TIMEOUT,
   setupPageLogging,
@@ -22,6 +23,9 @@ import {
  * 1. KERIA agent identity (AID recovered from KERIA)
  * 2. AnySync peer key (derived from mnemonic, backend re-initialized)
  * 3. Private space (deterministic keys from mnemonic index 0)
+ *    3a. Private-space *content* written before recovery survives (#508/#560):
+ *        a value seeded into the original device's private space reads back on
+ *        the recovered device, and the privateSpaceId is unchanged.
  * 4. Community space (read + write access via signing key / ACL)
  * 5. Community read-only space (keys available)
  * 6. Admin space (keys available)
@@ -42,6 +46,14 @@ test.describe.serial('Admin Account Recovery', () => {
   let recoveryPage: Page;
   const backends = new BackendManager();
   let backendPort: number;
+
+  // Private-space content seeded on the original device *before* recovery, then
+  // asserted to survive recovery on a fresh data dir (#508 regression / #560).
+  // A green recovery run and total private-data loss are otherwise
+  // indistinguishable — this is the round-trip that would have caught #508.
+  let originalPrivateSpaceId = '';
+  const probeCursorKey = `notice:recovery-probe-${uniqueSuffix()}`;
+  const probeCursorCount = 42;
 
   test.beforeAll(async ({ browser }) => {
     // Load admin account from persisted test-accounts.json
@@ -70,6 +82,54 @@ test.describe.serial('Admin Account Recovery', () => {
   test.afterAll(async () => {
     await recoveryContext?.close();
     await backends.stopAll();
+  });
+
+  // ------------------------------------------------------------------
+  // Test 0: Seed private-space content on the original device BEFORE recovery
+  //
+  // Writes a known value into the original admin device's private space (port
+  // 9080) and captures its privateSpaceId. The later "retains pre-recovery
+  // content" test asserts both survive recovery onto a fresh data dir — the
+  // round-trip the recovery suite lacked when #508 (private-data loss) slipped
+  // through green.
+  // ------------------------------------------------------------------
+  test('seeds private-space content on original device before recovery', async () => {
+    // Original device = the admin backend started before the suite (port 9080).
+    const identityResp = await fetch(`${BACKEND_URL}/api/v1/identity`);
+    expect(identityResp.ok, 'GET /api/v1/identity (original device) should succeed').toBe(true);
+    const identity = await identityResp.json();
+    expect(identity.configured, 'Original admin backend should be configured').toBe(true);
+    expect(
+      identity.privateSpaceId,
+      'Original device should expose a privateSpaceId',
+    ).toBeTruthy();
+    originalPrivateSpaceId = identity.privateSpaceId;
+
+    // Write a known value into the original device's private space. The
+    // comment-cursor object is persisted into the private space under object id
+    // "comment-cursors-<userAID>".
+    const putResp = await fetch(`${BACKEND_URL}/api/v1/comment-cursors`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: probeCursorKey, count: probeCursorCount }),
+    });
+    expect(putResp.ok, 'PUT /api/v1/comment-cursors (original device) should succeed').toBe(true);
+    const putBody = await putResp.json();
+    expect(putBody.success, 'Comment-cursor write should succeed').toBe(true);
+    expect(putBody.cursors?.[probeCursorKey]).toBe(probeCursorCount);
+
+    // Confirm it reads back on the original device before recovery runs.
+    const getResp = await fetch(`${BACKEND_URL}/api/v1/comment-cursors`);
+    const getBody = await getResp.json();
+    expect(
+      getBody.cursors?.[probeCursorKey],
+      'Probe cursor should read back on the original device',
+    ).toBe(probeCursorCount);
+
+    console.log(
+      `[Test] PASS - Seeded private-space content on original device ` +
+      `(privateSpaceId=${originalPrivateSpaceId}, ${probeCursorKey}=${probeCursorCount})`,
+    );
   });
 
   // ------------------------------------------------------------------
@@ -145,6 +205,60 @@ test.describe.serial('Admin Account Recovery', () => {
     expect(spaces.privateSpace.keysAvailable, 'Private space keys should be available on disk').toBe(true);
 
     console.log(`[Test] PASS - Private space recovered: ${spaces.privateSpace.spaceId}`);
+  });
+
+  // ------------------------------------------------------------------
+  // Test 3a: Verify private-space CONTENT survives recovery (#508 / #560)
+  //
+  // The prior test proves the private space and its keys exist after recovery,
+  // but not that the content written into it before recovery is still readable.
+  // #508 was exactly that failure — space present, content gone — and it went
+  // unnoticed because nothing here read pre-recovery content back. This asserts:
+  //   1. the recovered privateSpaceId equals the original device's, and
+  //   2. the value seeded in Test 0 reads back with the same value.
+  // ------------------------------------------------------------------
+  test('retains pre-recovery private-space content after recovery', async () => {
+    test.setTimeout(TIMEOUT.orgSetup);
+    const backendUrl = `http://localhost:${backendPort}`;
+
+    expect(
+      originalPrivateSpaceId,
+      'Test 0 should have captured the original privateSpaceId',
+    ).toBeTruthy();
+
+    // 1. Recovered device exposes the same privateSpaceId (deterministic from
+    //    the mnemonic — a different id would mean the private space was rebuilt,
+    //    not recovered).
+    const identityResp = await fetch(`${backendUrl}/api/v1/identity`);
+    expect(identityResp.ok, 'GET /api/v1/identity (recovered device) should succeed').toBe(true);
+    const identity = await identityResp.json();
+    expect(
+      identity.privateSpaceId,
+      'Recovered device should expose a privateSpaceId',
+    ).toBeTruthy();
+    expect(
+      identity.privateSpaceId,
+      'Recovered privateSpaceId must match the original device',
+    ).toBe(originalPrivateSpaceId);
+
+    // 2. The pre-recovery content reads back. Content sync from any-sync can lag
+    //    the space-keys recovery, so poll until it arrives (or the assertion
+    //    fails hard once the budget is spent — which is the #508 regression).
+    let lastCursors: Record<string, number> = {};
+    await expect(async () => {
+      const resp = await fetch(`${backendUrl}/api/v1/comment-cursors`);
+      expect(resp.ok, 'GET /api/v1/comment-cursors (recovered device) should succeed').toBe(true);
+      lastCursors = ((await resp.json()).cursors ?? {}) as Record<string, number>;
+      expect(
+        lastCursors[probeCursorKey],
+        'Private-space content written before recovery must survive recovery',
+      ).toBe(probeCursorCount);
+    }).toPass({ timeout: TIMEOUT.long, intervals: [1_000, 2_000, 3_000, 5_000] });
+
+    console.log(
+      `[Test] PASS - Pre-recovery private content survived recovery: ` +
+      `privateSpaceId=${identity.privateSpaceId}, ${probeCursorKey}=${lastCursors[probeCursorKey]}`,
+    );
   });
 
   // ------------------------------------------------------------------
