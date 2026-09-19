@@ -634,19 +634,22 @@
       </section>
       </div>
 
-      <!-- Data section (#398): placeholder home for the schema editor (slice 4,
-           #396). Until it lands, list the type definitions read-only from the
-           types store — name, field count, and the core/custom split — so the
-           tab is useful immediately. -->
+      <!-- Data section (#398/#401): the schema editor. A summary table leads,
+           then a per-type editor. Editing gates on manage_community_settings —
+           the same capability the PUT /api/v1/types/{name} route enforces. -->
       <div v-show="section === 'data'" class="cs-data">
+        <q-banner v-if="!canManageOrg" class="bg-warning text-dark q-mb-md">
+          You don't have permission to edit data types. This section is
+          read-only for you.
+        </q-banner>
+
         <section class="cs-section data-types-section">
           <div class="section-header">
             <div>
               <h3 class="section-title">Data types</h3>
               <p class="section-subtitle">
-                The object types defined for this community. Editing schemas
-                arrives in a later release — this is a read-only overview for
-                now.
+                The object types defined for this community, with their core and
+                custom field counts. Edit each type's custom fields below.
               </p>
             </div>
           </div>
@@ -689,8 +692,222 @@
             </tbody>
           </q-markup-table>
         </section>
+
+        <!-- Per-type schema editor (#401). One section per type: core fields
+             render locked (name/type immutable, no delete) with a tooltip
+             explaining why — mirroring the locked manage_roles cells on the
+             Roles tables — and custom fields can be added, edited, or removed.
+             Saving is scoped per type via PUT /api/v1/types/{name} (#399). -->
+        <section
+          v-for="def in editedTypeList"
+          :key="def.name"
+          class="cs-section schema-type-section"
+          :data-type="def.name"
+        >
+          <div class="section-header">
+            <div>
+              <h3 class="section-title">{{ def.name }}</h3>
+              <p v-if="def.description" class="section-subtitle">
+                {{ def.description }}
+              </p>
+            </div>
+            <div class="cs-actions">
+              <button
+                class="cs-btn secondary add-field-btn"
+                :disabled="!canManageOrg"
+                @click="openAddField(def.name)"
+              >
+                Add field
+              </button>
+              <button
+                class="cs-btn primary save-type-btn"
+                :disabled="
+                  !isTypeDirty(def.name) ||
+                  !canManageOrg ||
+                  savingType === def.name
+                "
+                @click="saveType(def.name)"
+              >
+                {{ savingType === def.name ? "Saving…" : "Save" }}
+              </button>
+            </div>
+          </div>
+
+          <q-markup-table flat bordered dense class="roles-matrix schema-fields-table">
+            <thead>
+              <tr>
+                <th class="text-left">Field</th>
+                <th class="text-left">Type</th>
+                <th class="text-center">Required</th>
+                <th class="text-left">Details</th>
+                <th class="text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="f in def.fields"
+                :key="f.name"
+                :data-field="f.name"
+                :class="{ 'core-field-row': f.core }"
+              >
+                <td class="text-left">
+                  {{ fieldLabel(f) }}
+                  <span v-if="f.core" class="core-badge">core</span>
+                </td>
+                <td class="text-left">{{ f.type }}</td>
+                <td class="text-center">{{ f.required ? "Yes" : "No" }}</td>
+                <td class="text-left field-details">
+                  {{ fieldDetails(f) || "—" }}
+                </td>
+                <td class="text-center">
+                  <template v-if="f.core">
+                    <q-icon name="lock" size="18px" class="locked-icon">
+                      <q-tooltip>
+                        Core field — required by the app's data model. Its name
+                        and type can't change and it can't be removed.
+                      </q-tooltip>
+                    </q-icon>
+                  </template>
+                  <template v-else>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      icon="edit"
+                      size="sm"
+                      :disable="!canManageOrg"
+                      class="edit-field-btn"
+                      @click="openEditField(def.name, f.name)"
+                    >
+                      <q-tooltip>Edit field</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      icon="delete"
+                      size="sm"
+                      :disable="!canManageOrg"
+                      class="remove-field-btn"
+                      @click="removeCustomField(def.name, f.name)"
+                    >
+                      <q-tooltip>Remove field</q-tooltip>
+                    </q-btn>
+                  </template>
+                </td>
+              </tr>
+            </tbody>
+          </q-markup-table>
+        </section>
       </div>
     </template>
+
+    <!-- Add / edit a custom field (#401). Name is set only when adding; on edit
+         it is fixed (a rename is a remove + add). Type, required, Validation and
+         UIHints are the editable FieldDef properties. -->
+    <q-dialog v-model="fieldDialog">
+      <q-card style="min-width: 420px; max-width: 90vw">
+        <q-card-section class="text-h6">
+          {{ fieldDialogMode === "add" ? "Add field" : "Edit field" }}
+          <span class="text-caption block">on {{ fieldDialogType }}</span>
+        </q-card-section>
+        <q-card-section class="q-gutter-sm">
+          <q-input
+            v-model="fieldDraft.name"
+            label="Field name"
+            hint="Letters, numbers and underscores; must start with a letter"
+            :readonly="fieldDialogMode === 'edit'"
+            :error="fieldDraft.name.length > 0 && !fieldNameValid"
+            error-message="Invalid or already-used field name"
+            dense
+            outlined
+          />
+          <q-select
+            v-model="fieldDraft.type"
+            :options="FIELD_TYPE_OPTIONS"
+            label="Type"
+            dense
+            outlined
+            emit-value
+            map-options
+          />
+          <q-toggle v-model="fieldDraft.required" label="Required" />
+
+          <div class="text-subtitle2 q-mt-sm">Validation</div>
+          <div class="row q-col-gutter-sm">
+            <q-input
+              v-model.number="fieldDraft.minLength"
+              type="number"
+              label="Min length"
+              dense
+              outlined
+              class="col"
+            />
+            <q-input
+              v-model.number="fieldDraft.maxLength"
+              type="number"
+              label="Max length"
+              dense
+              outlined
+              class="col"
+            />
+          </div>
+          <q-input
+            v-model="fieldDraft.pattern"
+            label="Pattern (regex)"
+            dense
+            outlined
+          />
+          <q-input
+            v-model="fieldDraft.enumText"
+            label="Allowed values (enum)"
+            hint="One per line or comma-separated"
+            type="textarea"
+            autogrow
+            dense
+            outlined
+          />
+
+          <div class="text-subtitle2 q-mt-sm">Display (UI hints)</div>
+          <q-input v-model="fieldDraft.label" label="Label" dense outlined />
+          <q-select
+            v-model="fieldDraft.inputType"
+            :options="INPUT_TYPE_OPTIONS"
+            label="Input type"
+            dense
+            outlined
+            emit-value
+            map-options
+            clearable
+          />
+          <q-input v-model="fieldDraft.section" label="Section" dense outlined />
+          <q-select
+            v-model="fieldDraft.displayFormat"
+            :options="DISPLAY_FORMAT_OPTIONS"
+            label="Display format"
+            dense
+            outlined
+            emit-value
+            map-options
+            clearable
+          />
+          <q-toggle
+            v-model="fieldDraft.filterable"
+            label="Filterable in lists"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="Cancel" v-close-popup />
+          <q-btn
+            color="primary"
+            :label="fieldDialogMode === 'add' ? 'Add field' : 'Save field'"
+            :disable="!fieldNameValid"
+            class="apply-field-btn"
+            @click="applyFieldDialog"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <q-dialog v-model="newRoleDialog">
       <q-card style="min-width: 360px">
@@ -737,6 +954,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useRolePolicyStore } from "src/stores/rolePolicy";
 import { useTypesStore } from "src/stores/types";
 import type { RoleDef, RoleScope } from "src/lib/api/rolePolicy";
+import type { TypeDefinition, FieldDef } from "src/lib/api/client";
 import { checkCommunitySettingsAccess } from "src/lib/api/communitySettings";
 import { fetchOrgConfig, saveOrgConfig, type OrgConfig } from "src/api/config";
 
@@ -1073,6 +1291,256 @@ const dataTypes = computed(() =>
     .sort((a, b) => a.name.localeCompare(b.name)),
 );
 
+// --- Schema editor (#401) --------------------------------------------------
+// Per-type editable working copies (deep clones of the store definitions), so
+// edits accumulate locally until the admin saves that type. Comparing a copy
+// to its store definition gives per-type dirty tracking; a Save button scoped
+// to each type persists via PUT /api/v1/types/{name}.
+const editedDefs = ref<Record<string, TypeDefinition>>({});
+const savingType = ref<string | null>(null);
+
+function cloneDef(def: TypeDefinition): TypeDefinition {
+  return JSON.parse(JSON.stringify(def)) as TypeDefinition;
+}
+
+// Seed one type's working copy from the store (after load or a successful save).
+function seedType(name: string) {
+  const def = typesStore.getDefinition(name);
+  if (def) editedDefs.value = { ...editedDefs.value, [name]: cloneDef(def) };
+}
+
+// Seed every type — on first load and after a 409 refetch drops local edits.
+function seedEditedDefs() {
+  const next: Record<string, TypeDefinition> = {};
+  for (const def of typesStore.definitions.values()) next[def.name] = cloneDef(def);
+  editedDefs.value = next;
+}
+
+// Types in a stable display order, from the working copies.
+const editedTypeList = computed(() =>
+  Object.values(editedDefs.value).sort((a, b) => a.name.localeCompare(b.name)),
+);
+
+function isTypeDirty(name: string): boolean {
+  const edited = editedDefs.value[name];
+  const stored = typesStore.getDefinition(name);
+  if (!edited || !stored) return false;
+  return JSON.stringify(edited) !== JSON.stringify(stored);
+}
+
+function fieldLabel(f: FieldDef): string {
+  return f.uiHints?.label?.trim() || f.name;
+}
+
+// A short human summary of a field's validation/hints for the table's Details
+// column — enough to see at a glance without opening the editor.
+function fieldDetails(f: FieldDef): string {
+  const parts: string[] = [];
+  const v = f.validation;
+  if (v?.minLength != null || v?.maxLength != null) {
+    parts.push(`length ${v?.minLength ?? 0}–${v?.maxLength ?? "∞"}`);
+  }
+  if (v?.pattern) parts.push(`pattern ${v.pattern}`);
+  if (v?.enum?.length) parts.push(`one of ${v.enum.join(", ")}`);
+  if (f.uiHints?.section) parts.push(`section ${f.uiHints.section}`);
+  if (f.uiHints?.filterable) parts.push("filterable");
+  return parts.join("; ");
+}
+
+function removeCustomField(typeName: string, fieldName: string) {
+  const def = editedDefs.value[typeName];
+  if (!def) return;
+  def.fields = def.fields.filter((f) => f.name !== fieldName);
+  // The backend rejects a layout that names a field the definition no longer
+  // declares, so prune the removed field from every layout (see stores/types).
+  for (const key of Object.keys(def.layouts ?? {})) {
+    const layout = def.layouts[key];
+    if (layout) layout.fields = layout.fields.filter((n) => n !== fieldName);
+  }
+}
+
+// --- Field add/edit dialog --------------------------------------------------
+interface FieldDraft {
+  name: string;
+  type: string;
+  required: boolean;
+  minLength: number | null;
+  maxLength: number | null;
+  pattern: string;
+  enumText: string;
+  label: string;
+  inputType: string | null;
+  section: string;
+  displayFormat: string | null;
+  filterable: boolean;
+}
+
+const FIELD_TYPE_OPTIONS = [
+  { label: "Text", value: "string" },
+  { label: "Number", value: "number" },
+  { label: "Yes/No", value: "boolean" },
+  { label: "Date/time", value: "datetime" },
+  { label: "List", value: "array" },
+  { label: "Object", value: "object" },
+  { label: "Choice (enum)", value: "enum" },
+];
+const INPUT_TYPE_OPTIONS = [
+  { label: "Text", value: "text" },
+  { label: "Multi-line", value: "textarea" },
+  { label: "Select", value: "select" },
+  { label: "Toggle", value: "toggle" },
+  { label: "Tags", value: "tags" },
+  { label: "Image upload", value: "image-upload" },
+];
+const DISPLAY_FORMAT_OPTIONS = [
+  { label: "Avatar", value: "avatar" },
+  { label: "Badge", value: "badge" },
+  { label: "Chip list", value: "chip-list" },
+  { label: "Relative date", value: "relative-date" },
+  { label: "Link", value: "link" },
+];
+
+const FIELD_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
+
+const fieldDialog = ref(false);
+const fieldDialogMode = ref<"add" | "edit">("add");
+const fieldDialogType = ref("");
+const fieldDraft = ref<FieldDraft>(emptyFieldDraft());
+
+function emptyFieldDraft(): FieldDraft {
+  return {
+    name: "",
+    type: "string",
+    required: false,
+    minLength: null,
+    maxLength: null,
+    pattern: "",
+    enumText: "",
+    label: "",
+    inputType: null,
+    section: "",
+    displayFormat: null,
+    filterable: false,
+  };
+}
+
+// A valid field name: matches the identifier pattern and, when adding, is not
+// already used by another field on the type (mirrors the backend's check).
+const fieldNameValid = computed(() => {
+  const name = fieldDraft.value.name.trim();
+  if (!FIELD_NAME_RE.test(name)) return false;
+  if (fieldDialogMode.value === "edit") return true;
+  const def = editedDefs.value[fieldDialogType.value];
+  return !def?.fields.some((f) => f.name === name);
+});
+
+function openAddField(typeName: string) {
+  fieldDialogType.value = typeName;
+  fieldDialogMode.value = "add";
+  fieldDraft.value = emptyFieldDraft();
+  fieldDialog.value = true;
+}
+
+function openEditField(typeName: string, fieldName: string) {
+  const def = editedDefs.value[typeName];
+  const f = def?.fields.find((fd) => fd.name === fieldName);
+  if (!f) return;
+  fieldDialogType.value = typeName;
+  fieldDialogMode.value = "edit";
+  fieldDraft.value = {
+    name: f.name,
+    type: f.type,
+    required: !!f.required,
+    minLength: f.validation?.minLength ?? null,
+    maxLength: f.validation?.maxLength ?? null,
+    pattern: f.validation?.pattern ?? "",
+    enumText: (f.validation?.enum ?? []).join("\n"),
+    label: f.uiHints?.label ?? "",
+    inputType: f.uiHints?.inputType ?? null,
+    section: f.uiHints?.section ?? "",
+    displayFormat: f.uiHints?.displayFormat ?? null,
+    filterable: !!f.uiHints?.filterable,
+  };
+  fieldDialog.value = true;
+}
+
+function fieldDraftToDef(d: FieldDraft): FieldDef {
+  const f: FieldDef = { name: d.name.trim(), type: d.type };
+  if (d.required) f.required = true;
+
+  const validation: NonNullable<FieldDef["validation"]> = {};
+  if (typeof d.minLength === "number" && !Number.isNaN(d.minLength))
+    validation.minLength = d.minLength;
+  if (typeof d.maxLength === "number" && !Number.isNaN(d.maxLength))
+    validation.maxLength = d.maxLength;
+  if (d.pattern.trim()) validation.pattern = d.pattern.trim();
+  const enumVals = d.enumText
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (enumVals.length) validation.enum = enumVals;
+  if (Object.keys(validation).length) f.validation = validation;
+
+  const hints: NonNullable<FieldDef["uiHints"]> = {};
+  if (d.label.trim()) hints.label = d.label.trim();
+  if (d.inputType) hints.inputType = d.inputType;
+  if (d.section.trim()) hints.section = d.section.trim();
+  if (d.displayFormat) hints.displayFormat = d.displayFormat;
+  if (d.filterable) hints.filterable = true;
+  if (Object.keys(hints).length) f.uiHints = hints;
+
+  return f;
+}
+
+function applyFieldDialog() {
+  if (!fieldNameValid.value) return;
+  const def = editedDefs.value[fieldDialogType.value];
+  if (!def) return;
+  const built = fieldDraftToDef(fieldDraft.value);
+
+  if (fieldDialogMode.value === "add") {
+    def.fields.push(built);
+    // Surface the new field in the form layout so it renders in profile/notice
+    // forms (customFieldNames orders by the form layout). The backend accepts
+    // the layout entry because the field now exists in the definition.
+    if (!def.layouts) def.layouts = {};
+    if (!def.layouts.form) def.layouts.form = { fields: [] };
+    if (!def.layouts.form.fields.includes(built.name))
+      def.layouts.form.fields.push(built.name);
+  } else {
+    const idx = def.fields.findIndex((f) => f.name === built.name);
+    if (idx >= 0) {
+      // Preserve properties the editor does not expose (e.g. default).
+      const prev = def.fields[idx]!;
+      if (prev.default !== undefined) built.default = prev.default;
+      if (prev.readOnly) built.readOnly = prev.readOnly;
+      def.fields[idx] = built;
+    }
+  }
+  fieldDialog.value = false;
+}
+
+async function saveType(name: string) {
+  const def = editedDefs.value[name];
+  if (!def) return;
+  savingType.value = name;
+  const res = await typesStore.saveDefinition(cloneDef(def));
+  savingType.value = null;
+  if (res.ok) {
+    seedType(name);
+    $q.notify({ type: "positive", message: `Saved “${name}” schema` });
+  } else {
+    $q.notify({
+      type: "negative",
+      message: res.error ?? "Failed to save type definition",
+    });
+    // A 409 refetched the latest definitions — resync every working copy so
+    // the editor shows the current schema (local edits are dropped, as the
+    // admin must re-apply against the newer version).
+    if (res.conflict) seedEditedDefs();
+  }
+}
+
 // --- Org settings state ----------------------------------------------------
 const orgConfig = ref<OrgConfig | null>(null);
 const orgName = ref("");
@@ -1127,8 +1595,9 @@ onMounted(async () => {
   await store.load();
   resetFromStore();
   await loadOrg();
-  // Feed the Data tab's read-only type overview (idempotent load).
-  if (!typesStore.loaded) void typesStore.loadDefinitions();
+  // Feed the Data tab's overview + schema editor (idempotent load).
+  if (!typesStore.loaded) await typesStore.loadDefinitions();
+  seedEditedDefs();
 });
 watch(() => store.policy?.version, resetFromStore);
 </script>
@@ -1214,7 +1683,8 @@ watch(() => store.policy?.version, resetFromStore);
   color: white;
 }
 
-.cs-btn.create {
+.cs-btn.create,
+.cs-btn.secondary {
   background: transparent;
   color: var(--matou-teal, #0d9488);
 }
@@ -1222,6 +1692,32 @@ watch(() => store.policy?.version, resetFromStore);
 .cs-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Schema editor (#401): core fields read as locked, custom fields as editable. */
+.schema-fields-table .core-field-row td {
+  background: var(--matou-muted, rgba(0, 0, 0, 0.03));
+}
+
+.core-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--matou-muted-foreground);
+  border: 1px solid var(--matou-border, rgba(0, 0, 0, 0.12));
+}
+
+.locked-icon {
+  color: var(--matou-muted-foreground);
+}
+
+.field-details {
+  color: var(--matou-muted-foreground);
+  font-size: 0.85rem;
 }
 
 .roles-matrix th {

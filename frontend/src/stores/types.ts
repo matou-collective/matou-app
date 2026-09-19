@@ -1,6 +1,13 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { getTypeDefinitions, getTypeDefinition, type TypeDefinition, type FieldDef } from 'src/lib/api/client';
+import {
+  getTypeDefinitions,
+  getTypeDefinition,
+  updateTypeDefinition,
+  TypeConflictError,
+  type TypeDefinition,
+  type FieldDef,
+} from 'src/lib/api/client';
 
 /**
  * The value an unset field takes in a form: the schema default when declared,
@@ -39,6 +46,38 @@ export const useTypesStore = defineStore('types', () => {
       console.warn('[TypesStore] Failed to load type definitions:', err);
     } finally {
       loading.value = false;
+    }
+  }
+
+  /**
+   * Persist an admin-edited type definition via PUT /api/v1/types/{name} (the
+   * schema editor, #401). On success the returned (version-bumped) definition
+   * replaces the local copy. Mirrors the role-policy save contract:
+   *   - `{ ok: true }` on success.
+   *   - `{ ok: false, conflict: true }` on a 409 stale-version — the latest
+   *     definitions are refetched first so the caller can resync and re-apply.
+   *   - `{ ok: false, error }` on a 400 core-invariant/structural rejection.
+   */
+  async function saveDefinition(
+    def: TypeDefinition,
+  ): Promise<{ ok: boolean; conflict?: boolean; error?: string }> {
+    try {
+      const updated = await updateTypeDefinition(def);
+      const map = new Map(definitions.value);
+      map.set(updated.name, updated);
+      definitions.value = map;
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof TypeConflictError) {
+        // Someone else changed it — pull the latest so the editor can reseed.
+        await loadDefinitions();
+        return {
+          ok: false,
+          conflict: true,
+          error: 'Someone else changed this type — reloaded the latest; re-apply your edits.',
+        };
+      }
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -97,6 +136,7 @@ export const useTypesStore = defineStore('types', () => {
     loaded,
     loading,
     loadDefinitions,
+    saveDefinition,
     getDefinition,
     getFieldsForLayout,
     customFieldNames,
