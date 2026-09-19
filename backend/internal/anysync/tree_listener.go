@@ -7,6 +7,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/anyproto/any-sync/commonspace/object/tree/objecttree"
 	"github.com/anyproto/any-sync/commonspace/object/tree/treechangeproto"
@@ -277,6 +278,26 @@ func (l *TreeUpdateListener) extractRootHeader(tree objecttree.ObjectTree) (obje
 	return header.ObjectID, header.ObjectType
 }
 
+// chatMessageLiveWindow is how old a chat message may be, by its own sentAt,
+// and still be announced as having just arrived. It only has to cover sync
+// latency plus clock skew between devices.
+const chatMessageLiveWindow = 5 * time.Minute
+
+// isHistoricalChatMessage reports whether a message that is new to THIS device
+// was in fact sent a while ago. A device pulling a space from scratch — a fresh
+// link, a recovery, a quarantined store re-syncing — receives every message
+// ever sent as a tree it has not seen before; so does a device coming back
+// online. The frontend still needs the event (chat store, unread counts) but
+// must not toast or push each one as if it had just been sent (#556). An
+// unparseable sentAt is treated as live: unknown age keeps the old behaviour.
+func isHistoricalChatMessage(sentAt string, now time.Time) bool {
+	t, err := time.Parse(time.RFC3339, sentAt)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) > chatMessageLiveWindow
+}
+
 // emitSSE broadcasts an SSE event for a changed object.
 func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 	log.Printf("[TreeUpdateListener] emitSSE type=%s id=%s existed=%v", p.Type, p.ID, existed)
@@ -314,6 +335,7 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 					"content":    data.Content,
 					"sentAt":     data.SentAt,
 					"source":     "p2p",
+					"historical": isHistoricalChatMessage(data.SentAt, time.Now()),
 				},
 			})
 		} else if existed && data.DeletedAt != "" {

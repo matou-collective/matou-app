@@ -24,6 +24,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +57,22 @@ const (
 	// with a storage I/O-type error in a single run before the dead-man's latch
 	// forces quarantine of that space's store on the next boot.
 	treeBuildFailureThreshold = 5
+
+	// requarantineCooldown is how long after a quarantine the dead-man's latch is
+	// ignored for that space. A quarantine throws the whole store away and
+	// re-syncs it; if the same I/O failures come back on the brand-new store, the
+	// cause is not a damaged file and wiping it again cannot help. On Android a
+	// tree with several changes fails AddAll with "disk I/O error"
+	// deterministically (#556), which re-armed the latch seconds into every
+	// boot: each launch re-downloaded the community space and announced every
+	// historical chat message as new. A store that fails the write probe is
+	// still quarantined regardless.
+	requarantineCooldown = 7 * 24 * time.Hour
+
+	// maxQuarantineCopies is how many quarantined copies of one space are kept
+	// for forensics; older ones are deleted at boot. Each is a full copy of the
+	// space, and the #556 loop left one per launch on the device.
+	maxQuarantineCopies = 2
 
 	// probeTimeout bounds each per-space health probe so a wedged store can't
 	// hang startup indefinitely.
@@ -94,6 +112,13 @@ func RecoverDamagedSpaceStores(ctx context.Context, spacesDir string) (quarantin
 		if probeErr == nil && !forced {
 			continue // healthy, nothing to do
 		}
+		if probeErr == nil && recentlyQuarantined(spacesDir, spaceID, time.Now()) {
+			// Forced by the latch only, on a store that was already rebuilt from
+			// scratch recently: the failures are not a damaged file (#556).
+			log.Printf("[anysync] WARNING: space store %s was flagged by the dead-man's latch again within %s of its last quarantine and passes the write probe — leaving it in place (re-syncing again cannot help)", spaceID, requarantineCooldown)
+			clearRecoveryMarker(spacesDir, spaceID)
+			continue
+		}
 
 		reason := probeErr
 		if reason == nil {
@@ -110,6 +135,8 @@ func RecoverDamagedSpaceStores(ctx context.Context, spacesDir string) (quarantin
 		log.Printf("[anysync] quarantined damaged space store: %s -> %s", spaceID, dst)
 		quarantined = append(quarantined, dst)
 	}
+
+	pruneQuarantineCopies(spacesDir)
 
 	return quarantined, nil
 }
@@ -186,6 +213,65 @@ func quarantineSpaceDir(spacesDir, spaceID string) (string, error) {
 		return "", err
 	}
 	return dst, nil
+}
+
+// quarantineCopies lists the quarantined copies under spacesDir by space ID,
+// each newest first. The timestamp is the one quarantineSpaceDir put in the
+// directory name, not the file system's.
+func quarantineCopies(spacesDir string) map[string][]quarantineCopy {
+	entries, err := os.ReadDir(spacesDir)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string][]quarantineCopy)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		idx := strings.LastIndex(entry.Name(), quarantineInfix)
+		if idx < 0 {
+			continue
+		}
+		ts, err := strconv.ParseInt(entry.Name()[idx+len(quarantineInfix):], 10, 64)
+		if err != nil {
+			continue
+		}
+		spaceID := entry.Name()[:idx]
+		out[spaceID] = append(out[spaceID], quarantineCopy{
+			path: filepath.Join(spacesDir, entry.Name()),
+			at:   time.Unix(ts, 0),
+		})
+	}
+	for _, copies := range out {
+		sort.Slice(copies, func(i, j int) bool { return copies[i].at.After(copies[j].at) })
+	}
+	return out
+}
+
+type quarantineCopy struct {
+	path string
+	at   time.Time
+}
+
+// recentlyQuarantined reports whether spaceID's store was quarantined within
+// requarantineCooldown of now.
+func recentlyQuarantined(spacesDir, spaceID string, now time.Time) bool {
+	copies := quarantineCopies(spacesDir)[spaceID]
+	return len(copies) > 0 && now.Sub(copies[0].at) < requarantineCooldown
+}
+
+// pruneQuarantineCopies deletes all but the newest maxQuarantineCopies
+// quarantined copies of each space. Best-effort.
+func pruneQuarantineCopies(spacesDir string) {
+	for spaceID, copies := range quarantineCopies(spacesDir) {
+		for _, c := range copies[min(maxQuarantineCopies, len(copies)):] {
+			if err := os.RemoveAll(c.path); err != nil {
+				log.Printf("[anysync] WARNING: failed to prune old quarantined copy of space %s: %v", spaceID, err)
+				continue
+			}
+			log.Printf("[anysync] pruned old quarantined copy: %s", c.path)
+		}
+	}
 }
 
 // --- Dead-man's latch: marker file forcing quarantine on next boot ---
