@@ -25,6 +25,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Wallet sign-in link scheme (#532, idss #1492 story 34). Opening a
+                 matou:// link — the sign-in page's "Open my community app" button
+                 and its QR carry matou://signin, and the linked-device pairing
+                 link is matou://pair — launches the app; because MainActivity is
+                 singleTask the URL arrives via onNewIntent, which the
+                 @capacitor/app plugin surfaces as appUrlOpen for the WebView's
+                 deep-link handler to route (approve card / link-device screen). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="matou" />
+            </intent-filter>
+
         </activity>
 
         <provider

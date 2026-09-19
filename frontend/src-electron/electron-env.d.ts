@@ -12,6 +12,7 @@ export interface ElectronAPI {
   secureStorageRemove: (key: string) => Promise<void>;
   notify: (payload: { title: string; body: string; data?: Record<string, string> }) => void;
   onNotificationClicked: (callback: (data: Record<string, string>) => void) => void;
+  onDeepLink: (callback: (url: string) => void) => void;
 }
 
 declare global {

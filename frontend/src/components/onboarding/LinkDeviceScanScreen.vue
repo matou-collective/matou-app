@@ -180,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { QrCode, Camera, XCircle, CheckCircle2, Info } from 'lucide-vue-next';
 import OnboardingHeader from './OnboardingHeader.vue';
 import MBtn from '../base/MBtn.vue';
@@ -188,6 +188,8 @@ import { usePairing, PairingError, type PairingState, type SessionStatus } from 
 import { useRecoverIdentity } from 'src/composables/useRecoverIdentity';
 import { isScannerAvailable, scanPairingQr, ScanUnavailableError } from 'src/lib/barcode';
 import { getCapacitorPlatform } from 'src/lib/capacitor';
+import { isPairingLink } from 'src/lib/pairing/link';
+import { consumePendingPairLink } from 'src/composables/useDeepLink';
 import { KIT } from 'src/generated/kit';
 
 type Phase =
@@ -245,15 +247,24 @@ function sleep(ms: number): Promise<void> {
  * Cheap client-side shape check before anything is POSTed: the backend parses
  * and verifies the payload (`internal/pairing/qr.go`), but a random string
  * pasted into the field should get a plain "that's not a sign-in code" here
- * rather than a round-trip and a protocol error message.
+ * rather than a round-trip and a protocol error message. Shared with the OS
+ * deep-link handler (#532) via `isPairingLink`.
  */
 function isPairingPayload(text: string): boolean {
-  if (!text.startsWith('matou://pair?')) return false;
-  const params = new URLSearchParams(text.slice('matou://pair?'.length));
-  return !!(params.get('id') && params.get('pk') && params.get('s'));
+  return isPairingLink(text);
 }
 
 const NOT_A_CODE = "That doesn't look like a sign-in code. Copy the whole “matou://pair?…” text from your computer.";
+
+// A pairing link opened via the OS scheme (#532) lands here — pre-fill the
+// paste field with the validated payload so a tap on "Continue" starts the
+// handshake. A malformed link never reaches this screen (classifyDeepLink).
+onMounted(() => {
+  const opened = consumePendingPairLink();
+  if (opened && isPairingPayload(opened)) {
+    pastedPayload.value = opened;
+  }
+});
 
 async function onScan() {
   errorMessage.value = '';
