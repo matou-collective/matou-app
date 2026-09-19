@@ -11,6 +11,8 @@ import (
 
 	anystore "github.com/anyproto/any-store"
 	"github.com/anyproto/any-store/anyenc"
+
+	"github.com/matou-dao/backend/internal/anysync"
 )
 
 // LocalStore wraps an any-store database for MATOU local storage needs.
@@ -41,13 +43,13 @@ func NewLocalStore(cfg *Config) (*LocalStore, error) {
 
 	ctx := context.Background()
 
-	// Configure any-store with durability settings
-	storeConfig := &anystore.Config{
-		Durability: anystore.DurabilityConfig{
-			AutoFlush: cfg.AutoFlush,
-			IdleAfter: 20 * time.Second,
-			FlushMode: anystore.FlushModeCheckpointPassive,
-		},
+	// Configure any-store with durability settings, on top of the settings every
+	// store needs (SQLite temp storage in memory — see anysync.StoreConfig, #556).
+	storeConfig := anysync.StoreConfig()
+	storeConfig.Durability = anystore.DurabilityConfig{
+		AutoFlush: cfg.AutoFlush,
+		IdleAfter: 20 * time.Second,
+		FlushMode: anystore.FlushModeCheckpointPassive,
 	}
 
 	db, err := anystore.Open(ctx, cfg.DBPath, storeConfig)

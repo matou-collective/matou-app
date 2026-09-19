@@ -107,6 +107,20 @@ unzip -l frontend/src-capacitor/android/app/libs/matou.aar | grep libgojni.so
    `ccgo_linux_amd64.go` and re-derive the substitution table (the `__DATA__`
    block in `patch-libc.sh`) against the new call sites, then rebuild.
 
+6. **SQLite has no temp directory inside the app sandbox (#556).** `TMPDIR` is
+   unset, `/var/tmp` `/usr/tmp` `/tmp` do not exist and `.` is `/`, so anything
+   SQLite spills to a temp file fails with `SQLITE_IOERR_GETTEMPPATH` — surfaced
+   only as `sqlite: step: disk I/O error` and then `no such savepoint: spN`.
+   any-sync spills a savepoint sub-journal whenever it stores a tree received
+   from a peer that has more than a few changes, so on a phone every object
+   edited ~4+ times silently never arrived (empty members list), on brand-new
+   stores too; it was first mistaken for corruption. Every store is therefore
+   opened with `anysync.StoreConfig()` (`temp_store=MEMORY`); a test fails the
+   build if a store is opened with a nil config. **It cannot be reproduced as the
+   `adb shell` user** — the shell has a usable temp directory and everything
+   passes. Reproduce inside the sandbox of a debuggable build with
+   `backend/cmd/store-replay` under `run-as nz.matou.app` (usage in its header).
+
 ## Push notifications (Firebase / FCM, #177)
 
 The Capacitor shell carries the plumbing for content-free push wake signals
