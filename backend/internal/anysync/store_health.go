@@ -130,7 +130,7 @@ func probeSpaceStoreHealth(ctx context.Context, dbPath string) error {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	store, err := anystore.Open(probeCtx, dbPath, nil)
+	store, err := anystore.Open(probeCtx, dbPath, StoreConfig())
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}

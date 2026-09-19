@@ -1045,7 +1045,7 @@ func (p *sdkStorageProvider) WaitSpaceStorage(ctx context.Context, id string) (s
 		return nil, spacestorage.ErrSpaceStorageMissing
 	}
 
-	store, err := anystore.Open(ctx, dbPath, nil)
+	store, err := anystore.Open(ctx, dbPath, StoreConfig())
 	if err != nil {
 		return nil, fmt.Errorf("reopening space database %s: %w", id, err)
 	}
@@ -1077,7 +1077,7 @@ func (p *sdkStorageProvider) CreateSpaceStorage(ctx context.Context, payload spa
 	}
 
 	dbPath := filepath.Join(spacePath, "data.db")
-	store, err := anystore.Open(ctx, dbPath, nil)
+	store, err := anystore.Open(ctx, dbPath, StoreConfig())
 	if err != nil {
 		return nil, fmt.Errorf("creating anystore database: %w", err)
 	}
