@@ -60,6 +60,51 @@ describe('knownDoors store', () => {
     expect(store.isKnown('https://unknown.nz')).toBe(false);
   });
 
+  it('trust adds an unmet site with firstMet/lastUsed and re-trust keeps firstMet', async () => {
+    const store = useKnownDoorsStore();
+    await store.trust('https://door.example.nz/', 'Files Portal');
+    expect(store.isKnown('https://door.example.nz')).toBe(true);
+    expect(store.isHome('https://door.example.nz')).toBe(false);
+    const first = store.get('https://door.example.nz')!;
+    expect(first.name).toBe('Files Portal');
+    expect(first.firstMet).toBeTruthy();
+
+    await new Promise((r) => setTimeout(r, 5));
+    await store.trust('https://door.example.nz', 'Renamed');
+    const again = store.get('https://door.example.nz')!;
+    expect(again.name).toBe('Renamed');
+    expect(again.firstMet).toBe(first.firstMet);
+  });
+
+  it('forget removes a non-home site so it prompts again, but never the home site', async () => {
+    const store = useKnownDoorsStore();
+    await store.seedHome('https://id.example.nz', 'Home');
+    await store.trust('https://door.example.nz', 'Files Portal');
+
+    // a non-home site is forgotten and becomes unknown again
+    expect(await store.forget('https://door.example.nz')).toBe(true);
+    expect(store.isKnown('https://door.example.nz')).toBe(false);
+
+    // the home site is never forgotten
+    expect(await store.forget('https://id.example.nz')).toBe(false);
+    expect(store.isKnown('https://id.example.nz')).toBe(true);
+
+    // forgetting a site never met is a no-op
+    expect(await store.forget('https://never.nz')).toBe(false);
+  });
+
+  it('rows lists the home site first, then others by name', async () => {
+    const store = useKnownDoorsStore();
+    await store.trust('https://zeta.nz', 'Zeta');
+    await store.trust('https://alpha.nz', 'Alpha');
+    await store.seedHome('https://id.example.nz', 'Home');
+
+    const rows = store.rows;
+    expect(rows.map((r) => r.name)).toEqual(['Home', 'Alpha', 'Zeta']);
+    expect(rows[0].isHome).toBe(true);
+    expect(rows[1].isHome).toBe(false);
+  });
+
   it('persists across store instances', async () => {
     const a = useKnownDoorsStore();
     await a.seedHome('https://id.example.nz', 'Home');

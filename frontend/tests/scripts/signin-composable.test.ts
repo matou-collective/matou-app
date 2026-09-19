@@ -9,9 +9,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const touch = vi.fn(async () => undefined);
+const trust = vi.fn(async () => undefined);
 const knownDoors = {
   load: vi.fn(async () => undefined),
   isHome: vi.fn(() => true),
+  isKnown: vi.fn(() => true),
+  trust,
   touch,
 };
 
@@ -45,6 +48,7 @@ function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
 beforeEach(() => {
   vi.clearAllMocks();
   knownDoors.isHome.mockReturnValue(true);
+  knownDoors.isKnown.mockReturnValue(true);
 });
 
 describe('useSignin', () => {
@@ -96,6 +100,33 @@ describe('useSignin', () => {
     await s.approve();
     expect(s.phase.value).toBe('refused');
     expect(s.refusal.value?.kind).toBe('site-unreachable');
+  });
+
+  it('a known (or home) site skips straight to the card, no first-contact', async () => {
+    knownDoors.isKnown.mockReturnValue(true);
+    const s = useSignin(deps());
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('card');
+  });
+
+  it('an unmet site stops at the first-contact prompt before any card (#535)', async () => {
+    knownDoors.isKnown.mockReturnValue(false);
+    const s = useSignin(deps());
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('first-contact');
+    // The card view is still built so Trust can continue to it, and it carries
+    // the address the prompt shows.
+    expect(s.view.value?.siteAddress).toBe('id.example.nz');
+  });
+
+  it('trust adds the site and continues to the approve card (#535)', async () => {
+    knownDoors.isKnown.mockReturnValue(false);
+    const s = useSignin(deps());
+    await s.prepareFromLink(LINK);
+    expect(s.phase.value).toBe('first-contact');
+    await s.trust();
+    expect(trust).toHaveBeenCalledWith('https://id.example.nz/login', 'Home');
+    expect(s.phase.value).toBe('card');
   });
 
   it('notNow signs and posts nothing', async () => {

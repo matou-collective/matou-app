@@ -471,6 +471,29 @@
         </button>
       </section>
 
+      <!-- Section: Sign-in sites — the known-doors management screen (#535,
+           WS-A3). Every platform: the wallet can sign in to a website on any of
+           them. -->
+      <section class="settings-card" data-test="signin-sites-section">
+        <div class="card-header">
+          <h3 class="card-title"><KeyRound :size="18" /> Sign-in sites</h3>
+        </div>
+        <p class="device-copy">
+          The sign-in sites you trust to prove your membership. Your community's
+          own site is trusted from the start; you meet any other the first time
+          you sign in there.
+        </p>
+        <button
+          type="button"
+          class="device-action-btn"
+          data-test="signin-sites-btn"
+          @click="router.push({ name: 'signin-sites' })"
+        >
+          <KeyRound :size="16" />
+          <span>Sign-in sites you trust</span>
+        </button>
+      </section>
+
       <!-- Section 7: Support (mobile only) — the sidebar's "Report an issue"
            button is hidden on mobile, so surface the same dialog here. -->
       <section v-if="isMobile" class="settings-card">
@@ -577,6 +600,7 @@ import {
   Bell,
   MonitorSmartphone,
   Smartphone,
+  KeyRound,
   LogOut,
 } from 'lucide-vue-next';
 import { useRouter } from 'vue-router';

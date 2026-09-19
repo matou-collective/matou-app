@@ -1,7 +1,16 @@
 <template>
   <div class="signin-approve-page h-full flex flex-col bg-background">
     <div class="flex-1 overflow-y-auto py-8">
+      <!-- WS-A1: an unmet sign-in site stops here before any card (#535). -->
+      <FirstContact
+        v-if="signin.phase.value === 'first-contact' && signin.view.value"
+        :address="signin.view.value.siteAddress"
+        :claimed-name="signin.ask.value?.community ?? ''"
+        @trust="signin.trust"
+        @dont="onDont"
+      />
       <ApproveCard
+        v-else
         :view="signin.view.value"
         :phase="signin.phase.value"
         :refusal="signin.refusal.value"
@@ -22,6 +31,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import ApproveCard from 'src/components/signin/ApproveCard.vue';
+import FirstContact from 'src/components/signin/FirstContact.vue';
 import { useSignin } from 'src/composables/useSignin';
 import { useKnownDoorsStore } from 'src/stores/knownDoors';
 import { getCommunityDescriptor } from 'src/lib/clientConfig';
@@ -89,6 +99,14 @@ function str(v: unknown): string {
 
 function onNotNow(): void {
   signin.notNow();
+  onClose();
+}
+
+/**
+ * Don't (WS-A1): the wallet remembers nothing and closes; the browser page keeps
+ * waiting until its code expires (#535, story 11).
+ */
+function onDont(): void {
   onClose();
 }
 
