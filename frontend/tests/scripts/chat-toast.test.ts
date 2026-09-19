@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { shouldAnnounceChatMessage } from 'src/lib/chatToast';
+import { shouldAnnounce, shouldAnnounceChatMessage } from 'src/lib/chatToast';
+
+describe('shouldAnnounce (#559)', () => {
+  it('announces live events', () => {
+    expect(shouldAnnounce({ historical: false })).toBe(true);
+    expect(shouldAnnounce({})).toBe(true);
+  });
+
+  it('never announces a historical (cold-sync backfill) event', () => {
+    expect(shouldAnnounce({ historical: true })).toBe(false);
+  });
+
+  it('treats a missing or malformed flag as live (older backends send none)', () => {
+    expect(shouldAnnounce({ historical: 'true' })).toBe(true);
+    expect(shouldAnnounce({ historical: undefined })).toBe(true);
+  });
+});
 
 describe('shouldAnnounceChatMessage (#556)', () => {
   it('announces a live message in a channel that is not open', () => {

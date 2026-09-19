@@ -52,7 +52,6 @@ type TreeUpdateListener struct {
 	freshTreeReader FreshTreeReader
 	spaceResolver   SpaceResolver
 	validator       atomic.Pointer[validatorHolder]
-	seeded          bool
 	known           map[string]int // objectID → version
 }
 
@@ -136,14 +135,12 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	wasSeeded := l.seeded
 	ctx := context.Background()
 
 	// Extract objectID and objectType from tree root header
 	objectID, objectType := l.extractRootHeader(tree)
 	if objectID == "" {
 		// Not a MATOU object tree, skip
-		l.seeded = true
 		return nil
 	}
 
@@ -173,7 +170,6 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 		// See MULTISIG-POC-FINDINGS.md item #4. Treated like profile types:
 		// SSE-only, no persister, no FreshTreeReader fallback.
 	default:
-		l.seeded = true
 		return nil
 	}
 
@@ -186,7 +182,6 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 			// Best-effort for profile + coord types: just skip and let a later
 			// listener fire once the ACL has propagated and the read key is
 			// available.
-			l.seeded = true
 			return nil
 		}
 
@@ -201,7 +196,6 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 			freshTree, freshErr := l.freshTreeReader(tree.Id())
 			if freshErr != nil {
 				log.Printf("[TreeUpdateListener] FreshTreeReader failed for %s: %v", tree.Id(), freshErr)
-				l.seeded = true
 				return nil
 			}
 			freshTree.Lock()
@@ -209,12 +203,10 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 			freshTree.Unlock()
 			if err != nil {
 				log.Printf("[TreeUpdateListener] BuildState on fresh tree also failed for %s: %v", objectID, err)
-				l.seeded = true
 				return nil
 			}
 			log.Printf("[TreeUpdateListener] Fresh tree succeeded for %s (version=%d)", objectID, state.Version)
 		} else {
-			l.seeded = true
 			return nil
 		}
 	}
@@ -222,7 +214,6 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	// Check if this is new/changed
 	knownVer, exists := l.known[objectID]
 	if exists && state.Version <= knownVer {
-		l.seeded = true
 		return nil // already processed this version
 	}
 
@@ -240,12 +231,17 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 		}
 	}
 
-	// Emit SSE only after initial seed and only for genuinely new/changed objects
-	if wasSeeded && l.broker != nil {
+	// Emit SSE for new/changed objects. Every event is stamped `historical` when
+	// it reflects a pre-existing change pulled during cold sync rather than a
+	// live one (see emitSSE); the frontend's shared shouldAnnounce() suppresses
+	// toasts/notifications for those. There is deliberately no listener-wide
+	// "seeded" gate: it only ever suppressed whichever tree happened to be
+	// processed first after boot, so every other tree in a cold-sync backlog was
+	// broadcast as live (#559).
+	if l.broker != nil {
 		l.emitSSE(p, exists)
 	}
 
-	l.seeded = true
 	return nil
 }
 
@@ -278,10 +274,10 @@ func (l *TreeUpdateListener) extractRootHeader(tree objecttree.ObjectTree) (obje
 	return header.ObjectID, header.ObjectType
 }
 
-// chatMessageLiveWindow is how old a chat message may be, by its own sentAt,
-// and still be announced as having just arrived. It only has to cover sync
-// latency plus clock skew between devices.
-const chatMessageLiveWindow = 5 * time.Minute
+// historicalWindow is how old a change may be, by its own timestamp, and still
+// be announced as having just happened. It only has to cover sync latency plus
+// clock skew between devices.
+const historicalWindow = 5 * time.Minute
 
 // isHistoricalChatMessage reports whether a message that is new to THIS device
 // was in fact sent a while ago. A device pulling a space from scratch — a fresh
@@ -295,22 +291,48 @@ func isHistoricalChatMessage(sentAt string, now time.Time) bool {
 	if err != nil {
 		return false
 	}
-	return now.Sub(t) > chatMessageLiveWindow
+	return now.Sub(t) > historicalWindow
 }
 
-// emitSSE broadcasts an SSE event for a changed object.
+// isHistoricalPayload reports whether a change that is new to THIS device is in
+// fact old — the generic counterpart of isHistoricalChatMessage for every other
+// object type. ObjectPayload.Timestamp is the latest change timestamp in the
+// tree (unix seconds); when it predates the live window the change is backfill
+// (a cold pull of pre-existing trees), not a live event. A missing/zero
+// timestamp is treated as live: unknown age keeps the old behaviour (#559).
+func isHistoricalPayload(p *ObjectPayload, now time.Time) bool {
+	if p.Timestamp <= 0 {
+		return false
+	}
+	return now.Sub(time.Unix(p.Timestamp, 0)) > historicalWindow
+}
+
+// emitSSE broadcasts an SSE event for a changed object. Every event is stamped
+// with a `historical` marker so the frontend's shared shouldAnnounce() can
+// suppress toasts/notifications for cold-sync backfill without depending on
+// which event types happen to raise a toast (#559). A case that already sets
+// `historical` itself (ChatMessage, from its own sentAt) is left untouched.
 func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 	log.Printf("[TreeUpdateListener] emitSSE type=%s id=%s existed=%v", p.Type, p.ID, existed)
+
+	historical := isHistoricalPayload(p, time.Now())
+	broadcast := func(eventType string, data map[string]interface{}) {
+		if data == nil {
+			data = map[string]interface{}{}
+		}
+		if _, ok := data["historical"]; !ok {
+			data["historical"] = historical
+		}
+		l.broker.Broadcast(SSEEvent{Type: eventType, Data: data})
+	}
+
 	switch p.Type {
 	case "ChatChannel":
 		eventType := "chat:channel:new"
 		if existed {
 			eventType = "chat:channel:update"
 		}
-		l.broker.Broadcast(SSEEvent{
-			Type: eventType,
-			Data: map[string]interface{}{"channelId": p.ID, "source": "p2p"},
-		})
+		broadcast(eventType, map[string]interface{}{"channelId": p.ID, "source": "p2p"})
 
 	case "ChatMessage":
 		var data struct {
@@ -325,39 +347,30 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		_ = json.Unmarshal(p.Data, &data)
 
 		if !existed && data.DeletedAt == "" {
-			l.broker.Broadcast(SSEEvent{
-				Type: "chat:message:new",
-				Data: map[string]interface{}{
-					"messageId":  p.ID,
-					"channelId":  data.ChannelID,
-					"senderAid":  data.SenderAID,
-					"senderName": data.SenderName,
-					"content":    data.Content,
-					"sentAt":     data.SentAt,
-					"source":     "p2p",
-					"historical": isHistoricalChatMessage(data.SentAt, time.Now()),
-				},
+			broadcast("chat:message:new", map[string]interface{}{
+				"messageId":  p.ID,
+				"channelId":  data.ChannelID,
+				"senderAid":  data.SenderAID,
+				"senderName": data.SenderName,
+				"content":    data.Content,
+				"sentAt":     data.SentAt,
+				"source":     "p2p",
+				"historical": isHistoricalChatMessage(data.SentAt, time.Now()),
 			})
 		} else if existed && data.DeletedAt != "" {
-			l.broker.Broadcast(SSEEvent{
-				Type: "chat:message:delete",
-				Data: map[string]interface{}{
-					"messageId": p.ID,
-					"channelId": data.ChannelID,
-					"deletedAt": data.DeletedAt,
-					"source":    "p2p",
-				},
+			broadcast("chat:message:delete", map[string]interface{}{
+				"messageId": p.ID,
+				"channelId": data.ChannelID,
+				"deletedAt": data.DeletedAt,
+				"source":    "p2p",
 			})
 		} else if existed && data.EditedAt != "" {
-			l.broker.Broadcast(SSEEvent{
-				Type: "chat:message:edit",
-				Data: map[string]interface{}{
-					"messageId": p.ID,
-					"channelId": data.ChannelID,
-					"content":   data.Content,
-					"editedAt":  data.EditedAt,
-					"source":    "p2p",
-				},
+			broadcast("chat:message:edit", map[string]interface{}{
+				"messageId": p.ID,
+				"channelId": data.ChannelID,
+				"content":   data.Content,
+				"editedAt":  data.EditedAt,
+				"source":    "p2p",
 			})
 		}
 
@@ -369,14 +382,11 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		}
 		_ = json.Unmarshal(p.Data, &data)
 
-		l.broker.Broadcast(SSEEvent{
-			Type: "chat:reaction:update",
-			Data: map[string]interface{}{
-				"messageId": data.MessageID,
-				"emoji":     data.Emoji,
-				"count":     len(data.ReactorAIDs),
-				"source":    "p2p",
-			},
+		broadcast("chat:reaction:update", map[string]interface{}{
+			"messageId": data.MessageID,
+			"emoji":     data.Emoji,
+			"count":     len(data.ReactorAIDs),
+			"source":    "p2p",
 		})
 
 	case TypeProject:
@@ -393,16 +403,13 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			name = data.Title
 		}
 
-		l.broker.Broadcast(SSEEvent{
-			Type: "project_updated",
-			Data: map[string]interface{}{
-				"treeId":     p.TreeID,
-				"project_id": p.ID,
-				"name":       name,
-				"status":     data.Status,
-				"change":     changeLabel(existed),
-				"source":     "p2p",
-			},
+		broadcast("project_updated", map[string]interface{}{
+			"treeId":     p.TreeID,
+			"project_id": p.ID,
+			"name":       name,
+			"status":     data.Status,
+			"change":     changeLabel(existed),
+			"source":     "p2p",
 		})
 
 	case TypeImplementationPlan:
@@ -412,16 +419,13 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		}
 		_ = json.Unmarshal(p.Data, &data)
 
-		l.broker.Broadcast(SSEEvent{
-			Type: "plan_updated",
-			Data: map[string]interface{}{
-				"treeId":     p.TreeID,
-				"plan_id":    p.ID,
-				"project_id": data.ProjectID,
-				"status":     data.Status,
-				"change":     changeLabel(existed),
-				"source":     "p2p",
-			},
+		broadcast("plan_updated", map[string]interface{}{
+			"treeId":     p.TreeID,
+			"plan_id":    p.ID,
+			"project_id": data.ProjectID,
+			"status":     data.Status,
+			"change":     changeLabel(existed),
+			"source":     "p2p",
 		})
 
 	case TypeContribution:
@@ -432,17 +436,14 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		}
 		_ = json.Unmarshal(p.Data, &data)
 
-		l.broker.Broadcast(SSEEvent{
-			Type: "contribution_updated",
-			Data: map[string]interface{}{
-				"treeId":          p.TreeID,
-				"contribution_id": p.ID,
-				"project_id":      data.ProjectID,
-				"title":           data.Title,
-				"status":          data.Status,
-				"change":          changeLabel(existed),
-				"source":          "p2p",
-			},
+		broadcast("contribution_updated", map[string]interface{}{
+			"treeId":          p.TreeID,
+			"contribution_id": p.ID,
+			"project_id":      data.ProjectID,
+			"title":           data.Title,
+			"status":          data.Status,
+			"change":          changeLabel(existed),
+			"source":          "p2p",
 		})
 
 	case TypeMilestone:
@@ -454,18 +455,15 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 		}
 		_ = json.Unmarshal(p.Data, &data)
 
-		l.broker.Broadcast(SSEEvent{
-			Type: "milestone_updated",
-			Data: map[string]interface{}{
-				"treeId":       p.TreeID,
-				"milestone_id": p.ID,
-				"project_id":   data.ProjectID,
-				"plan_id":      data.ImplementationPlanID,
-				"title":        data.Title,
-				"status":       data.Status,
-				"change":       changeLabel(existed),
-				"source":       "p2p",
-			},
+		broadcast("milestone_updated", map[string]interface{}{
+			"treeId":       p.TreeID,
+			"milestone_id": p.ID,
+			"project_id":   data.ProjectID,
+			"plan_id":      data.ImplementationPlanID,
+			"title":        data.Title,
+			"status":       data.Status,
+			"change":       changeLabel(existed),
+			"source":       "p2p",
 		})
 
 	case TypeProposal:
@@ -474,16 +472,13 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Status string `json:"status"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
-		l.broker.Broadcast(SSEEvent{
-			Type: "proposal_updated",
-			Data: map[string]interface{}{
-				"treeId":      p.TreeID,
-				"proposal_id": p.ID,
-				"title":       data.Title,
-				"status":      data.Status,
-				"change":      changeLabel(existed),
-				"source":      "p2p",
-			},
+		broadcast("proposal_updated", map[string]interface{}{
+			"treeId":      p.TreeID,
+			"proposal_id": p.ID,
+			"title":       data.Title,
+			"status":      data.Status,
+			"change":      changeLabel(existed),
+			"source":      "p2p",
 		})
 
 	case TypeDecisionPlan:
@@ -492,27 +487,21 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Status     string `json:"status"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
-		l.broker.Broadcast(SSEEvent{
-			Type: "decision_plan_updated",
-			Data: map[string]interface{}{
-				"treeId":      p.TreeID,
-				"plan_id":     p.ID,
-				"proposal_id": data.ProposalID,
-				"status":      data.Status,
-				"change":      changeLabel(existed),
-				"source":      "p2p",
-			},
+		broadcast("decision_plan_updated", map[string]interface{}{
+			"treeId":      p.TreeID,
+			"plan_id":     p.ID,
+			"proposal_id": data.ProposalID,
+			"status":      data.Status,
+			"change":      changeLabel(existed),
+			"source":      "p2p",
 		})
 
 	case TypeGovernanceAction:
-		l.broker.Broadcast(SSEEvent{
-			Type: "governance_action_updated",
-			Data: map[string]interface{}{
-				"treeId":    p.TreeID,
-				"action_id": p.ID,
-				"change":    changeLabel(existed),
-				"source":    "p2p",
-			},
+		broadcast("governance_action_updated", map[string]interface{}{
+			"treeId":    p.TreeID,
+			"action_id": p.ID,
+			"change":    changeLabel(existed),
+			"source":    "p2p",
 		})
 
 	case TypeEndorsement:
@@ -520,14 +509,11 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			ProposalID string `json:"proposal_id"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
-		l.broker.Broadcast(SSEEvent{
-			Type: "proposal:endorsed",
-			Data: map[string]interface{}{
-				"treeId":      p.TreeID,
-				"proposal_id": data.ProposalID,
-				"change":      changeLabel(existed),
-				"source":      "p2p",
-			},
+		broadcast("proposal:endorsed", map[string]interface{}{
+			"treeId":      p.TreeID,
+			"proposal_id": data.ProposalID,
+			"change":      changeLabel(existed),
+			"source":      "p2p",
 		})
 
 	case "SharedProfile", "CommunityProfile":
@@ -537,16 +523,13 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			Status      string `json:"status"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
-		l.broker.Broadcast(SSEEvent{
-			Type: "profile:updated",
-			Data: map[string]interface{}{
-				"profileId":   p.ID,
-				"profileType": p.Type,
-				"memberAid":   data.AID,
-				"displayName": data.DisplayName,
-				"status":      data.Status,
-				"source":      "p2p",
-			},
+		broadcast("profile:updated", map[string]interface{}{
+			"profileId":   p.ID,
+			"profileType": p.Type,
+			"memberAid":   data.AID,
+			"displayName": data.DisplayName,
+			"status":      data.Status,
+			"source":      "p2p",
 		})
 
 	case "MultisigRotationSignal":
@@ -563,17 +546,14 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			// Signals written before the field existed only ever meant "query".
 			data.Action = "query"
 		}
-		l.broker.Broadcast(SSEEvent{
-			Type: "multisig:rotation-signal",
-			Data: map[string]interface{}{
-				"signalId":        p.ID,
-				"adminAid":        data.AdminAid,
-				"adminSn":         data.AdminSn,
-				"targetMemberAid": data.TargetMemberAid,
-				"round":           data.Round,
-				"groupAid":        data.GroupAid,
-				"action":          data.Action,
-			},
+		broadcast("multisig:rotation-signal", map[string]interface{}{
+			"signalId":        p.ID,
+			"adminAid":        data.AdminAid,
+			"adminSn":         data.AdminSn,
+			"targetMemberAid": data.TargetMemberAid,
+			"round":           data.Round,
+			"groupAid":        data.GroupAid,
+			"action":          data.Action,
 		})
 
 	case "MultisigRotationAck":
@@ -584,15 +564,12 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			AckBy    string `json:"ackBy"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
-		l.broker.Broadcast(SSEEvent{
-			Type: "multisig:rotation-ack",
-			Data: map[string]interface{}{
-				"objectId": p.ID,
-				"signalId": data.SignalID,
-				"adminAid": data.AdminAid,
-				"adminSn":  data.AdminSn,
-				"ackBy":    data.AckBy,
-			},
+		broadcast("multisig:rotation-ack", map[string]interface{}{
+			"objectId": p.ID,
+			"signalId": data.SignalID,
+			"adminAid": data.AdminAid,
+			"adminSn":  data.AdminSn,
+			"ackBy":    data.AckBy,
 		})
 
 	case "proposal_comment":
@@ -600,15 +577,12 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			ProposalID string `json:"proposal_id"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
-		l.broker.Broadcast(SSEEvent{
-			Type: "proposal:comment_added",
-			Data: map[string]interface{}{
-				"treeId":      p.TreeID,
-				"proposal_id": data.ProposalID,
-				"comment_id":  p.ID,
-				"change":      changeLabel(existed),
-				"source":      "p2p",
-			},
+		broadcast("proposal:comment_added", map[string]interface{}{
+			"treeId":      p.TreeID,
+			"proposal_id": data.ProposalID,
+			"comment_id":  p.ID,
+			"change":      changeLabel(existed),
+			"source":      "p2p",
 		})
 
 	case "contribution_comment":
@@ -616,15 +590,12 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			ContributionID string `json:"contribution_id"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
-		l.broker.Broadcast(SSEEvent{
-			Type: "contribution:comment_added",
-			Data: map[string]interface{}{
-				"treeId":          p.TreeID,
-				"contribution_id": data.ContributionID,
-				"comment_id":      p.ID,
-				"change":          changeLabel(existed),
-				"source":          "p2p",
-			},
+		broadcast("contribution:comment_added", map[string]interface{}{
+			"treeId":          p.TreeID,
+			"contribution_id": data.ContributionID,
+			"comment_id":      p.ID,
+			"change":          changeLabel(existed),
+			"source":          "p2p",
 		})
 
 	case "project_comment":
@@ -632,15 +603,12 @@ func (l *TreeUpdateListener) emitSSE(p *ObjectPayload, existed bool) {
 			ProjectID string `json:"project_id"`
 		}
 		_ = json.Unmarshal(p.Data, &data)
-		l.broker.Broadcast(SSEEvent{
-			Type: "project:comment_added",
-			Data: map[string]interface{}{
-				"treeId":     p.TreeID,
-				"project_id": data.ProjectID,
-				"comment_id": p.ID,
-				"change":     changeLabel(existed),
-				"source":     "p2p",
-			},
+		broadcast("project:comment_added", map[string]interface{}{
+			"treeId":     p.TreeID,
+			"project_id": data.ProjectID,
+			"comment_id": p.ID,
+			"change":     changeLabel(existed),
+			"source":     "p2p",
 		})
 	}
 }

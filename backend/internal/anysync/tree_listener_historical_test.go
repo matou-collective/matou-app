@@ -36,7 +36,7 @@ func TestEmitSSE_ChatMessageNew_FlagsHistoricalMessages(t *testing.T) {
 		{"just sent", time.Now().UTC().Add(-3 * time.Second).Format(time.RFC3339), false},
 		{"sender clock slightly ahead", time.Now().UTC().Add(30 * time.Second).Format(time.RFC3339), false},
 		{"sent last week", time.Now().UTC().Add(-7 * 24 * time.Hour).Format(time.RFC3339), true},
-		{"sent while this device was offline", time.Now().UTC().Add(-2 * chatMessageLiveWindow).Format(time.RFC3339), true},
+		{"sent while this device was offline", time.Now().UTC().Add(-2 * historicalWindow).Format(time.RFC3339), true},
 		// Unknown age: keep the old behaviour rather than silently hiding a toast.
 		{"unparseable sentAt", "yesterday-ish", false},
 		{"missing sentAt", "", false},

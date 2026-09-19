@@ -11,7 +11,7 @@ import { Notify } from 'quasar';
 import { useRouter } from 'vue-router';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { maybeNotify } from 'src/lib/notifications';
-import { shouldAnnounceChatMessage } from 'src/lib/chatToast';
+import { shouldAnnounce, shouldAnnounceChatMessage } from 'src/lib/chatToast';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { useChatStore } from 'stores/chat';
@@ -315,7 +315,11 @@ function connect() {
     if (!data) return;
     lastEvent.value = { type: 'proposal:endorsed', data };
     console.log('[BackendEvents] proposal:endorsed:', data);
-    if (data.threshold_met === 'true') {
+    // Never announce a historical endorsement replayed during a cold sync
+    // (#559). The P2P path does not currently set threshold_met, so this only
+    // fires for locally-computed endorsements today, but the guard keeps the
+    // cold-sync flood from reappearing if that ever changes.
+    if (data.threshold_met === 'true' && shouldAnnounce(data)) {
       Notify.create({
         message: 'Endorsement threshold met! Proposal moved to In Review.',
         color: 'positive',
