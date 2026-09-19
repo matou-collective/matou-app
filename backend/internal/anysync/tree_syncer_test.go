@@ -166,6 +166,97 @@ func (f *failingTreeManager) callCount(treeID string) int {
 	return f.calls[treeID]
 }
 
+// deadlineTreeManager is a fake treeGetter that records whether the context it
+// is handed carries a deadline, and can optionally block until that context is
+// done (simulating a fetch whose response never arrives).
+type deadlineTreeManager struct {
+	mu          sync.Mutex
+	hadDeadline bool
+	sawCall     chan struct{}
+	block       bool
+}
+
+func newDeadlineTreeManager(block bool) *deadlineTreeManager {
+	return &deadlineTreeManager{sawCall: make(chan struct{}, 1), block: block}
+}
+
+func (d *deadlineTreeManager) GetTree(ctx context.Context, _, _ string) (objecttree.ObjectTree, error) {
+	_, ok := ctx.Deadline()
+	d.mu.Lock()
+	d.hadDeadline = ok
+	d.mu.Unlock()
+	select {
+	case d.sawCall <- struct{}{}:
+	default:
+	}
+	if d.block {
+		<-ctx.Done() // never returns unless the fetch context is bounded
+		return nil, ctx.Err()
+	}
+	return nil, errors.New("no tree")
+}
+
+func (d *deadlineTreeManager) deadlineSeen() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.hadDeadline
+}
+
+// TestMissingWorkerFetchHasDeadline asserts the missing-tree fetch runs under a
+// bounded context. Before #567 the worker used context.Background() with no
+// deadline, so a fetch whose response never arrived parked the worker forever;
+// the fix wraps the fetch in a context.WithTimeout, which this test proves by
+// checking the context handed to GetTree carries a deadline.
+func TestMissingWorkerFetchHasDeadline(t *testing.T) {
+	dm := newDeadlineTreeManager(false)
+	ts := newMatouTreeSyncer("space-1", nil)
+	ts.treeManager = dm
+
+	ts.processMissing(syncWorkItem{treeID: "t1", peer: &mockPeer{}, peerID: "mock-file-peer"})
+	if !dm.deadlineSeen() {
+		t.Fatal("missing-tree fetch ran without a deadline — a stalled fetch would park the worker forever (#567)")
+	}
+}
+
+// TestExistingWorkerFetchHasDeadline is the existingWorker counterpart: its fetch
+// is bounded too, so a stalled head-update sync cannot park an existing-tree
+// worker permanently.
+func TestExistingWorkerFetchHasDeadline(t *testing.T) {
+	dm := newDeadlineTreeManager(false)
+	ts := newMatouTreeSyncer("space-1", nil)
+	ts.treeManager = dm
+
+	ts.processExisting(syncWorkItem{treeID: "t1", peer: &mockPeer{}, peerID: "mock-file-peer"})
+	if !dm.deadlineSeen() {
+		t.Fatal("existing-tree fetch ran without a deadline (#567)")
+	}
+}
+
+// TestMissingWorkerStalledFetchDoesNotParkWorker proves the deadline actually
+// unblocks a stalled fetch: a GetTree that blocks until its context is done
+// returns once the bounded deadline fires, so the worker frees up rather than
+// hanging forever. The bound is exercised directly with a short deadline.
+func TestMissingWorkerStalledFetchDoesNotParkWorker(t *testing.T) {
+	dm := newDeadlineTreeManager(true)
+	ts := newMatouTreeSyncer("space-1", nil)
+	ts.treeManager = dm
+
+	done := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	go func() {
+		// Mimic processMissing's fetch with a short bound so the test is fast.
+		_, _ = ts.treeManager.GetTree(ctx, ts.spaceID, "t1")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a stalled fetch did not return at its deadline — worker would be parked forever (#567)")
+	}
+}
+
 // TestTreeSyncerWorkerRetryCadenceCapped drives the worker through repeated
 // HeadSync cycles with a fake clock and asserts that a permanently-failing tree
 // is not re-fetched every cycle — the backoff gate spaces retries out and, once

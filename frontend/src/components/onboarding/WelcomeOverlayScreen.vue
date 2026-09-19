@@ -133,9 +133,23 @@
         </div>
       </template>
 
+      <!-- Hard-failure Retry (#567): a failed check — most often the backend
+           identity step timing out at ~65s — is otherwise a dead end with no way
+           forward, even though the backend may in fact have accepted the
+           identity. Offer a Retry that re-runs the checks from the top. -->
+      <MBtn
+        v-if="hasFailedCheck"
+        class="w-full retry-btn"
+        size="lg"
+        @click="onManualRetry"
+      >
+        <RefreshCw class="w-5 h-5 mr-2" />
+        Retry
+      </MBtn>
+
       <!-- Continue Button -->
       <MBtn
-        v-if="!waitingForSync"
+        v-if="!waitingForSync && !hasFailedCheck"
         class="w-full continue-btn"
         size="lg"
         :disabled="!allChecksPassed"
@@ -370,6 +384,16 @@ const allChecksPassed = computed(() => {
   }
   return checks.every(c => c.status === 'passed');
 });
+
+// A check hard-failed (not the retryable sync-wait gate, and not the register
+// flow which uses syncChecks). Recovery/link/returning flows drive `checks`, and
+// retrySync re-runs them from the top — so a hard failure such as the backend
+// identity step timing out is no longer a dead end (#567).
+const hasFailedCheck = computed(() =>
+  !waitingForSync.value
+  && !isRegisterFlow.value
+  && checks.some(c => c.status === 'failed'),
+);
 
 function findCheck(id: string): StatusCheck {
   return checks.find(c => c.id === id)!;

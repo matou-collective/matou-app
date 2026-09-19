@@ -700,8 +700,12 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 
 	log.Println("[any-sync SDK] Reinitializing sign key from mnemonic (device peer key preserved)...")
 
-	// 1. Shut down the current app
+	// 1. Shut down the current app. Close the spaces the resolver opened first
+	// (while the app is still alive), so the pre-reinit spaces stop their HeadSync
+	// loop and tree-syncer workers instead of being orphaned by the fresh resolver
+	// initFullSDK registers below (#567).
 	if c.app != nil {
+		c.closeCachedSpaces()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.app.Close(ctx); err != nil {
@@ -752,6 +756,7 @@ func (c *SDKClient) Close() error {
 	defer c.mu.Unlock()
 
 	if c.app != nil {
+		c.closeCachedSpaces()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.app.Close(ctx); err != nil {
@@ -761,6 +766,24 @@ func (c *SDKClient) Close() error {
 
 	c.initialized = false
 	return nil
+}
+
+// closeCachedSpaces closes and clears every space the shared resolver opened, so
+// a Reinitialize/Close does not orphan the pre-teardown spaces (#567). It must
+// run while c.app is still alive — the resolver is one of its components — and
+// before app.Close tears down the shared tree manager and storage handles the
+// spaces depend on.
+func (c *SDKClient) closeCachedSpaces() {
+	if c.app == nil {
+		return
+	}
+	resolver, ok := c.app.Component(spaceResolverCName).(*sdkSpaceResolver)
+	if !ok || resolver == nil {
+		return
+	}
+	if err := resolver.CloseAll(); err != nil {
+		log.Printf("[any-sync SDK] Warning: closing cached spaces during teardown: %v", err)
+	}
 }
 
 // =============================================================================
@@ -892,6 +915,28 @@ func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceID string) (common
 
 func (r *sdkSpaceResolver) StoreSpace(spaceID string, space commonspace.Space) {
 	r.cache.Store(spaceID, space)
+}
+
+// CloseAll closes every cached space and clears the cache. Space.Close stops the
+// space's HeadSync loop and tree-syncer workers; without it a Reinitialize/Close
+// that builds a fresh resolver simply drops this cache, orphaning the pre-teardown
+// spaces (they keep a second HeadSync cadence and 10+4 syncer workers running
+// against the shared tree manager, which collapses tree throughput — #567).
+// Call this before the owning app.App is closed so the spaces shut down cleanly.
+func (r *sdkSpaceResolver) CloseAll() error {
+	var errs []error
+	r.cache.Range(func(key, value any) bool {
+		r.cache.Delete(key)
+		sp, ok := value.(commonspace.Space)
+		if !ok {
+			return true
+		}
+		if err := sp.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing space %v: %w", key, err))
+		}
+		return true
+	})
+	return errors.Join(errs...)
 }
 
 // sdkNodeConf implements nodeconf.Service with full configuration

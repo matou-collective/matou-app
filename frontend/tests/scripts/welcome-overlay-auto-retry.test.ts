@@ -85,6 +85,7 @@ vi.mock('src/lib/keri/client', () => ({
 
 const RETRYABLE = { success: false, retryable: true, error: 'private space not reachable' };
 const OK = { success: true, peerId: 'peer', privateSpaceId: 'sp' };
+const HARD_FAIL = { success: false, retryable: false, error: 'Backend identity setup failed' };
 
 async function importComponent() {
   return (await import('src/components/onboarding/WelcomeOverlayScreen.vue')).default;
@@ -205,6 +206,65 @@ describe('WelcomeOverlayScreen auto-retry (#506)', () => {
     await wrapper.find('.retry-btn').trigger('click');
     await vi.advanceTimersByTimeAsync(400);
     expect(setBackendIdentity).toHaveBeenCalledTimes(2);
+
+    wrapper.unmount();
+  });
+
+  it('offers a Retry on a hard backend failure instead of dead-ending, and re-runs the checks on click (#567)', async () => {
+    // The backend identity step hard-fails (non-retryable) — e.g. the client's
+    // 65s abort surfaces as a failed check. Before #567 this was a dead end: no
+    // Retry, and the "Backend identity configured" step just went red even though
+    // the backend may already have accepted the identity. Now a Retry is offered.
+    setBackendIdentity
+      .mockResolvedValueOnce(HARD_FAIL)
+      .mockResolvedValue(OK);
+
+    const Component = await importComponent();
+    const wrapper = mount(Component);
+
+    // onMounted -> runRecoveryChecks -> identity sleep(300) -> backend check fails.
+    await vi.advanceTimersByTimeAsync(400);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(1);
+    // Not the retryable sync-wait gate — a genuine failed check.
+    expect(wrapper.text()).not.toContain('Waiting for your data to sync');
+    expect(wrapper.vm.allChecksPassed).toBe(false);
+    // The Retry affordance is present rather than a dead end.
+    expect(wrapper.find('.retry-btn').exists()).toBe(true);
+
+    // No auto-retry fires for a hard failure (only the sync-wait gate auto-retries).
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(1);
+
+    // A manual click re-runs the checks from the top; this time identity/set
+    // succeeds and the remaining checks pass.
+    await wrapper.find('.retry-btn').trigger('click');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(2);
+    expect(wrapper.find('.retry-btn').exists()).toBe(false);
+    expect(wrapper.vm.allChecksPassed).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it('offers a Retry when setBackendIdentity throws a network error (#567)', async () => {
+    // The frontend's setBackendIdentity aborts at ~65s → the catch branch marks
+    // the backend check failed. This too must offer a Retry, not a dead end.
+    setBackendIdentity
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockResolvedValue(OK);
+
+    const Component = await importComponent();
+    const wrapper = mount(Component);
+
+    await vi.advanceTimersByTimeAsync(400);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('.retry-btn').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain('Waiting for your data to sync');
+
+    await wrapper.find('.retry-btn').trigger('click');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(setBackendIdentity).toHaveBeenCalledTimes(2);
+    expect(wrapper.vm.allChecksPassed).toBe(true);
 
     wrapper.unmount();
   });
