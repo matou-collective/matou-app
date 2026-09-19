@@ -423,7 +423,7 @@ import { ref, computed, watch } from 'vue';
 import { X, Check, Copy, Loader2, ThumbsUp, CalendarCheck, Pencil } from 'lucide-vue-next';
 import type { PendingRegistration } from 'src/composables/useRegistrationPolling';
 import { getFileUrl } from 'src/lib/api/client';
-import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
+import { useParticipationInterests, humanizeInterest } from 'src/composables/useParticipationInterests';
 import type { CustomAnswer } from 'src/kit/profile';
 import { KIT } from 'src/generated/kit';
 import { needsSession, requiredEndorsements } from 'src/kit/approval';
@@ -439,13 +439,13 @@ const BUILTIN_SHARED_FIELDS = [
   'facebookUrl', 'linkedinUrl', 'twitterUrl', 'instagramUrl', 'githubUrl', 'gitlabUrl', 'avatar',
 ];
 
-// Map interest value to human-readable label
-const interestLabelMap: Map<string, string> = new Map(
-  PARTICIPATION_INTERESTS.map(i => [i.value, i.label])
-);
+// Map interest value to a human-readable label, sourced from the org's
+// SharedProfile schema enum (issue #301, decorated with kit labels) with a
+// humanized fallback for values not in the current vocabulary.
+const { labels: interestLabels } = useParticipationInterests();
 
 function getInterestLabel(value: string): string {
-  return interestLabelMap.get(value) || value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return interestLabels.value[value] || humanizeInterest(value);
 }
 
 // Custom question answers render as a plain string; multiselect arrays join with ", ".

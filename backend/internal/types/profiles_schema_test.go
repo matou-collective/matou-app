@@ -136,6 +136,75 @@ func TestArrayEnumValidation(t *testing.T) {
 	}
 }
 
+// TestSeedParticipationInterestsEnum verifies the org-setup seeding path (#301):
+// SetParticipationInterestsEnum constrains the SharedProfile participationInterests
+// field to the org's kit vocabulary, so writes are validated against exactly the
+// seeded options and an org that later edits the enum offers/rejects accordingly.
+func TestSeedParticipationInterestsEnum(t *testing.T) {
+	// The built-in ships the field enum-less (free-form) so an org without a
+	// seeded schema keeps today's behaviour.
+	builtin := SharedProfileType()
+	if f, ok := builtin.Field("participationInterests"); !ok {
+		t.Fatal("participationInterests field missing from SharedProfile")
+	} else if f.Validation != nil && len(f.Validation.Enum) > 0 {
+		t.Fatalf("built-in participationInterests must be enum-less, got %v", f.Validation.Enum)
+	}
+
+	// Seed the kit's already-slugified interest values (mirrors what the frontend
+	// sends to POST /api/v1/spaces/community).
+	kit := []string{
+		"research_and_knowledge",
+		"coordination_and_operations",
+		"art_and_designs",
+		"cultural_oversight",
+	}
+	def := SharedProfileType()
+	SetParticipationInterestsEnum(def, kit)
+
+	field, ok := def.Field("participationInterests")
+	if !ok || field.Validation == nil {
+		t.Fatal("seeded participationInterests should declare a Validation.Enum")
+	}
+	if got := field.Validation.Enum; len(got) != len(kit) {
+		t.Fatalf("seeded enum = %v, want %v", got, kit)
+	}
+	for i, v := range kit {
+		if field.Validation.Enum[i] != v {
+			t.Errorf("enum[%d] = %q, want %q", i, field.Validation.Enum[i], v)
+		}
+	}
+
+	// A seeded value validates; a value outside the kit vocabulary does not.
+	okData := mustJSON(t, map[string]interface{}{
+		"aid": "E", "status": "approved", "displayName": "Ada",
+		"participationInterests": []string{"research_and_knowledge", "cultural_oversight"},
+	})
+	if errs := ValidateData(def, okData); len(errs) != 0 {
+		t.Fatalf("seeded enum values should validate, got %v", errs)
+	}
+	badData := mustJSON(t, map[string]interface{}{
+		"aid": "E", "status": "approved", "displayName": "Ada",
+		"participationInterests": []string{"cooking"},
+	})
+	if errs := ValidateData(def, badData); !hasErrorMentioning(errs, "participationInterests") {
+		t.Fatalf("value outside the seeded enum should be rejected, got %v", errs)
+	}
+
+	// An empty vocabulary leaves the field free-form (no enum seeded).
+	freeform := SharedProfileType()
+	SetParticipationInterestsEnum(freeform, nil)
+	if f, _ := freeform.Field("participationInterests"); f.Validation != nil && len(f.Validation.Enum) > 0 {
+		t.Fatalf("empty vocabulary should leave the field free-form, got %v", f.Validation.Enum)
+	}
+	anything := mustJSON(t, map[string]interface{}{
+		"aid": "E", "status": "approved", "displayName": "Ada",
+		"participationInterests": []string{"whatever_the_member_types"},
+	})
+	if errs := ValidateData(freeform, anything); len(errs) != 0 {
+		t.Fatalf("free-form field should accept any value, got %v", errs)
+	}
+}
+
 // TestEnumChangeValidated verifies that changing an enum in the schema changes
 // what validates — a value valid under the old enum fails under the new one.
 func TestEnumChangeValidated(t *testing.T) {

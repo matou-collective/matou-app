@@ -1,5 +1,34 @@
 package types
 
+// SetParticipationInterestsEnum constrains the SharedProfile
+// participationInterests field to the given vocabulary by setting its
+// Validation.Enum, mutating def in place. Passing an empty slice is a no-op, so
+// the field stays free-form.
+//
+// The built-in SharedProfileType() ships this field enum-less (free-form): an
+// org's kit interest vocabulary is seeded onto its *persisted* schema at org
+// setup (#301), so the schema — not frontend code — becomes the runtime source
+// of truth for the offered options, while an org without a seeded schema keeps
+// today's free-form behaviour. The values are the frontend's already-slugified
+// kit interest option values (frontend/src/kit/profile.ts slugifyInterest), so
+// the enum matches exactly what the profile form writes.
+func SetParticipationInterestsEnum(def *TypeDefinition, values []string) {
+	if def == nil || len(values) == 0 {
+		return
+	}
+	for i := range def.Fields {
+		if def.Fields[i].Name == "participationInterests" {
+			v := def.Fields[i].Validation
+			if v == nil {
+				v = &Validation{}
+			}
+			v.Enum = values
+			def.Fields[i].Validation = v
+			return
+		}
+	}
+}
+
 // ProfileTypeDefinitions returns the built-in profile type definitions.
 func ProfileTypeDefinitions() []*TypeDefinition {
 	return []*TypeDefinition{

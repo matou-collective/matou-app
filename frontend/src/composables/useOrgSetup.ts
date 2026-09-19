@@ -7,7 +7,7 @@ import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { KERIClient, useKERIClient } from 'src/lib/keri/client';
 import { saveOrgConfig, type OrgConfig } from 'src/api/config';
-import { useOnboardingStore } from 'stores/onboarding';
+import { useOnboardingStore, PARTICIPATION_INTERESTS } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import { BACKEND_URL, setBackendIdentity } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
@@ -199,6 +199,10 @@ export function useOrgSetup() {
             adminAvatarData: config.adminAvatarData,
             adminAvatarMimeType: config.adminAvatarMimeType,
             credentialSaid: credential.said,
+            // Seed the SharedProfile schema's participationInterests enum from
+            // the kit's (already-slugified) interest vocabulary (#301), so the
+            // persisted schema is the runtime source of truth for the options.
+            participationInterests: PARTICIPATION_INTERESTS.map((o) => o.value),
           }),
           signal: AbortSignal.timeout(30000),
         });

@@ -53,6 +53,13 @@ type CreateCommunityRequest struct {
 	AdminAvatarData     string `json:"adminAvatarData,omitempty"`     // Base64-encoded avatar fallback
 	AdminAvatarMimeType string `json:"adminAvatarMimeType,omitempty"` // MIME type for base64 avatar
 	CredentialSAID      string `json:"credentialSaid,omitempty"`
+	// ParticipationInterests is the org's kit participation-interest vocabulary,
+	// as already-slugified option values (frontend/src/kit/profile.ts
+	// interestOptions). When present it is seeded onto the persisted SharedProfile
+	// schema's participationInterests Validation.Enum (#301), so the schema is the
+	// runtime source of truth for the offered options. Empty → the field stays
+	// free-form, preserving today's behaviour.
+	ParticipationInterests []string `json:"participationInterests,omitempty"`
 }
 
 // CreateCommunityResponse represents the response for community space creation
@@ -475,7 +482,12 @@ func (h *SpacesHandler) HandleCreateCommunity(w http.ResponseWriter, r *http.Req
 	// the community space was reused — it already carries its seeded objects, and
 	// re-seeding would duplicate the type def and admin profile (issue #539).
 	if req.AdminAID != "" && !communityReused {
-		communityObjects, seedErr := h.seedSpace(ctx, communitySpaces.CommunitySpaceID, types.SharedProfileType(), map[string]interface{}{
+		// Seed the community SharedProfile schema, constraining
+		// participationInterests to the org's kit vocabulary when supplied (#301)
+		// so writes are validated and the frontend offers exactly these options.
+		sharedDef := types.SharedProfileType()
+		types.SetParticipationInterestsEnum(sharedDef, req.ParticipationInterests)
+		communityObjects, seedErr := h.seedSpace(ctx, communitySpaces.CommunitySpaceID, sharedDef, map[string]interface{}{
 			"aid":          req.AdminAID,
 			"displayName":  req.AdminName,
 			"bio":          "",

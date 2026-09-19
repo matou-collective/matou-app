@@ -156,7 +156,7 @@
           <label class="field-label">Participation Interests</label>
           <div class="interests-chips">
             <button
-              v-for="opt in PARTICIPATION_INTERESTS"
+              v-for="opt in participationInterestOptions"
               :key="opt.value"
               type="button"
               class="interest-chip"
@@ -610,7 +610,7 @@ import { useIdentityStore } from 'stores/identity';
 import { useNotificationsStore } from 'stores/notifications';
 import { useChatStore } from 'stores/chat';
 import { useRolePolicyStore } from 'src/stores/rolePolicy';
-import { PARTICIPATION_INTERESTS } from 'stores/onboarding';
+import { useParticipationInterests } from 'src/composables/useParticipationInterests';
 import { getFileUrl, uploadFile, clearBackendIdentity } from 'src/lib/api/client';
 import { useIsMobile } from 'src/composables/useIsMobile';
 import { applyPushEnabled } from 'src/composables/usePush';
@@ -632,6 +632,10 @@ const chatStore = useChatStore();
 const rolePolicyStore = useRolePolicyStore();
 
 const isMobile = useIsMobile();
+
+// Participation-interest options come from the org's SharedProfile schema enum
+// (issue #301), falling back to the kit vocabulary when unconstrained.
+const { options: participationInterestOptions } = useParticipationInterests();
 
 // --- Push notification preferences (§7) ---
 const pushEnabled = computed(() => notificationsStore.pushEnabled);
