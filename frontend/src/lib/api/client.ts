@@ -551,6 +551,47 @@ export async function getTypeDefinition(name: string): Promise<TypeDefinition | 
 }
 
 /**
+ * Thrown when PUT /api/v1/types/{name} rejects a stale version (409). Carries
+ * the current server version so the caller can refetch and ask the admin to
+ * re-apply — the same optimistic-lock contract as the role-policy save.
+ */
+export class TypeConflictError extends Error {
+  currentVersion: number;
+  constructor(currentVersion: number) {
+    super('Type definition was modified by someone else');
+    this.name = 'TypeConflictError';
+    this.currentVersion = currentVersion;
+  }
+}
+
+/**
+ * Replace a type's definition with an admin-edited one (schema editor, #401 of
+ * #396). PUTs the full definition to /api/v1/types/{name}; the backend enforces
+ * the core-field invariant and optimistic locking:
+ *   - 400 → a core-invariant or structural violation; the server message is
+ *     thrown as an Error.
+ *   - 409 → the version is stale; throws TypeConflictError(currentVersion).
+ * Returns the persisted definition (version bumped) on success. Sends
+ * authHeaders so the route's manage_community_settings RBAC applies.
+ */
+export async function updateTypeDefinition(def: TypeDefinition): Promise<TypeDefinition> {
+  const response = await fetch(`${BACKEND_URL}/api/v1/types/${encodeURIComponent(def.name)}`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(def),
+  });
+  if (response.status === 409) {
+    const body = (await response.json().catch(() => ({}))) as { currentVersion?: number };
+    throw new TypeConflictError(body.currentVersion ?? -1);
+  }
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `Failed to save type definition: ${response.status}`);
+  }
+  return (await response.json()) as TypeDefinition;
+}
+
+/**
  * Create or update a profile object
  */
 export async function createOrUpdateProfile(
