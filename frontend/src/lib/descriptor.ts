@@ -232,6 +232,39 @@ export function hasContentLayer(d: CommunityDescriptor): boolean {
 }
 
 /**
+ * The community's three any-sync space IDs, as recorded in the descriptor once
+ * idss has a whole set (the 2026-09-15 ADR 0226 spaces amendment). They ride
+ * INSIDE the `anysync` block under matou-app's own camelCase keys — beside the
+ * network config, NOT in a separate block.
+ */
+export interface RecordedSpaces {
+  communitySpaceId: string;
+  readOnlySpaceId: string;
+  adminSpaceId: string;
+}
+
+/**
+ * Read the community's three recorded space IDs from the descriptor's `anysync`
+ * block. idss merges the three keys in **together or not at all** (they appear
+ * only once the record is whole), so this returns them only when all three are
+ * present and non-empty, and `null` otherwise.
+ *
+ * `null` with {@link hasContentLayer} true is the signal this ticket's fallback
+ * turns on: the content layer exists but its spaces have not been created yet
+ * (issue #534). The three keys present is the join case (AC4) — nothing to
+ * create.
+ */
+export function recordedSpaces(d: CommunityDescriptor): RecordedSpaces | null {
+  const a = d.anysync;
+  if (!isRecord(a)) return null;
+  const communitySpaceId = typeof a.communitySpaceId === 'string' ? a.communitySpaceId : '';
+  const readOnlySpaceId = typeof a.readOnlySpaceId === 'string' ? a.readOnlySpaceId : '';
+  const adminSpaceId = typeof a.adminSpaceId === 'string' ? a.adminSpaceId : '';
+  if (!communitySpaceId || !readOnlySpaceId || !adminSpaceId) return null;
+  return { communitySpaceId, readOnlySpaceId, adminSpaceId };
+}
+
+/**
  * The schema OOBIs the wallet resolves, taken from the descriptor's `schemas`
  * block rather than a built-in list (ADR 0226 decision 5).
  */

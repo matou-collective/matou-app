@@ -51,6 +51,20 @@ async function ensureBackendIdentity(
   }
 }
 
+/**
+ * The first steward's space-creation fallback (issue #534). Lazily imported so
+ * its any-sync/present-as-holder dependencies never weigh on the boot import
+ * graph, and awaited by the caller only inside a `.catch` — a fallback failure
+ * must never break session restore.
+ */
+async function runFirstStewardFallback(): Promise<void> {
+  const { useSpaceFallback } = await import('src/composables/useSpaceFallback');
+  const action = await useSpaceFallback().run();
+  if (action.action === 'fallback') {
+    console.log('[KERI Boot] Space-creation fallback:', action.result.outcome);
+  }
+}
+
 async function restoreIdentity(
   identityStore: ReturnType<typeof useIdentityStore>,
   onboardingStore: ReturnType<typeof useOnboardingStore>
@@ -74,6 +88,16 @@ async function restoreIdentity(
         if (!identityStore.communityAccessVerified) {
           identityStore.verifyCommunityAccess();
         }
+      });
+
+      // The first steward's space-creation fallback (issue #534). On a gateway
+      // whose descriptor carries any-sync but names no space IDs, a wallet that
+      // holds a steward credential creates the three spaces and records them at
+      // the community's steward API; every other posture (no content layer, IDs
+      // already recorded, or no steward credential) is a no-op. Best-effort and
+      // non-blocking — it never throws into boot.
+      runFirstStewardFallback().catch((err) => {
+        console.warn('[KERI Boot] Space-creation fallback deferred:', err);
       });
     } else if (result.success) {
       console.log('[KERI Boot] Session restored but no AID found');

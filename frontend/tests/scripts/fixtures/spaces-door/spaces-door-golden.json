@@ -1,0 +1,70 @@
+{
+  "note": "Golden wire contract for the community space-ID door's presented-credential path (ADR 0226 fallback ruling 2026-09-18; idss #1608). matou-app #534 copies THIS file so neither side guesses the wire shapes. challenge_id / expires_at / response / presentation values are illustrative placeholders; the fields, codes, statuses and messages are the contract. Snake_case on the wire (idss API convention); matou-app reads the recorded IDs BACK from the descriptor's anysync block under its own camelCase keys.",
+  "challenge_route": {
+    "method": "GET",
+    "path": "/api/v1/idip/spaces/challenge",
+    "status": 200,
+    "response": {
+      "challenge_id": "spaces-nonce-EXAMPLE",
+      "expires_at": "2026-09-18T00:02:00Z",
+      "door": "https://whakatohea.idss.nz/api/v1/idip/spaces"
+    }
+  },
+  "post_route": {
+    "method": "POST",
+    "path": "/api/v1/idip/spaces",
+    "request_with_proof": {
+      "community_space_id": "bafyCommunity.1",
+      "read_only_space_id": "bafyReadOnly.2",
+      "admin_space_id": "bafyAdmin.3",
+      "proof": {
+        "aid": "Etama",
+        "challenge_id": "spaces-nonce-EXAMPLE",
+        "response": "0BExampleSignifyResponseSignature",
+        "presentation": "-EXAMPLE-bare-ACDC+iss-CESR-stream"
+      }
+    },
+    "recorded": {
+      "status": 204,
+      "body": null
+    },
+    "conflict": {
+      "status": 409,
+      "body": {
+        "code": "spaces_already_recorded",
+        "message": "this community's spaces are already recorded — re-read the descriptor and join them",
+        "spaces": {
+          "community_space_id": "bafyCommunity.1",
+          "read_only_space_id": "bafyReadOnly.2",
+          "admin_space_id": "bafyAdmin.3"
+        }
+      }
+    },
+    "refusals": {
+      "not_operator": {
+        "when": "the credential verifies but carries role: member, or the roster no longer holds the verified AID as a live operator",
+        "status": 403,
+        "body": {
+          "code": "not_operator",
+          "message": "only a steward can do this — ask one of your community's stewards"
+        }
+      },
+      "credential_rejected": {
+        "when": "the challenge is stale/spent/signed over another door, or the credential is revoked, tampered, from an untrusted issuer, or somebody else's — the message is the verifier's own member-facing sentence (this example: a stale/wrong-address challenge)",
+        "status": 403,
+        "body": {
+          "code": "credential_rejected",
+          "message": "that sign-in request has expired or the signature did not match your identity"
+        }
+      },
+      "records_unreachable": {
+        "when": "the community's witnessed ledger cannot be read — fail closed, nothing recorded, no verdict cached (ADR 0236 §4)",
+        "status": 503,
+        "body": {
+          "code": "records_unreachable",
+          "message": "the community's records can't be reached right now — try again shortly"
+        }
+      }
+    }
+  }
+}

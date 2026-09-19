@@ -163,3 +163,51 @@ func TestRefusesUnknownMajor(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordedSpaces(t *testing.T) {
+	// The fallback case: any-sync installed, no space IDs recorded yet → nil.
+	noIDs, err := Parse(readGolden(t, "golden-anysync.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !noIDs.HasContentLayer() {
+		t.Fatal("golden-anysync should have a content layer")
+	}
+	if got := noIDs.RecordedSpaces(); got != nil {
+		t.Errorf("RecordedSpaces() = %+v, want nil (no IDs recorded)", got)
+	}
+
+	// The join case: the whole set is recorded in the anysync block (AC4).
+	withIDs, err := Parse(readGolden(t, "golden-anysync-spaces.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	spaces := withIDs.RecordedSpaces()
+	if spaces == nil {
+		t.Fatal("RecordedSpaces() = nil, want the three recorded IDs")
+	}
+	if spaces.CommunitySpaceID != "bafyreicommunityspace000000000000000000000000000000000000.1" {
+		t.Errorf("CommunitySpaceID = %q", spaces.CommunitySpaceID)
+	}
+	if spaces.ReadOnlySpaceID != "bafyreireadonlyspace0000000000000000000000000000000000000.2" {
+		t.Errorf("ReadOnlySpaceID = %q", spaces.ReadOnlySpaceID)
+	}
+	if spaces.AdminSpaceID != "bafyreiadminspace000000000000000000000000000000000000000.3" {
+		t.Errorf("AdminSpaceID = %q", spaces.AdminSpaceID)
+	}
+
+	// A partial set never half-records → nil.
+	withIDs.Anysync["readOnlySpaceId"] = ""
+	if got := withIDs.RecordedSpaces(); got != nil {
+		t.Errorf("RecordedSpaces() with a partial set = %+v, want nil", got)
+	}
+
+	// No content layer at all → nil.
+	none, err := Parse(readGolden(t, "golden-no-anysync.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := none.RecordedSpaces(); got != nil {
+		t.Errorf("RecordedSpaces() with no anysync = %+v, want nil", got)
+	}
+}
