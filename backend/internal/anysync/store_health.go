@@ -67,7 +67,12 @@ const (
 	// boot: each launch re-downloaded the community space and announced every
 	// historical chat message as new. A store that fails the write probe is
 	// still quarantined regardless.
-	requarantineCooldown = 7 * 24 * time.Hour
+	//
+	// A day, not longer: the loop this breaks re-armed within seconds of every
+	// boot, so any bound well above a boot cycle stops it, while a store whose
+	// damage the write probe misses (faults confined to a few pages) goes
+	// un-repaired for the whole window.
+	requarantineCooldown = 24 * time.Hour
 
 	// maxQuarantineCopies is how many quarantined copies of one space are kept
 	// for forensics; older ones are deleted at boot. Each is a full copy of the
@@ -257,7 +262,14 @@ type quarantineCopy struct {
 // requarantineCooldown of now.
 func recentlyQuarantined(spacesDir, spaceID string, now time.Time) bool {
 	copies := quarantineCopies(spacesDir)[spaceID]
-	return len(copies) > 0 && now.Sub(copies[0].at) < requarantineCooldown
+	if len(copies) == 0 {
+		return false
+	}
+	// A stamp in the future (device clock was ahead when it was written) has a
+	// negative age, which is below any cooldown: without the lower bound it
+	// would disable the latch until real time caught up with it.
+	age := now.Sub(copies[0].at)
+	return age >= 0 && age < requarantineCooldown
 }
 
 // pruneQuarantineCopies deletes all but the newest maxQuarantineCopies

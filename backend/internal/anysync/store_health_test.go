@@ -461,3 +461,17 @@ func TestUnifiedTreeManager_RecordBuildFailure_NoMarkerDuringCooldown(t *testing
 		t.Fatal("no recovery marker should be written for a store rebuilt within the cooldown")
 	}
 }
+
+// A quarantine stamped in the future (device clock ahead at that moment — it
+// happens right after boot, before time sync) must not count as "recent": a
+// negative age is below any cooldown, which would switch the latch off until
+// real time caught up with the bogus stamp, possibly months.
+func TestRecentlyQuarantined_FutureTimestampIsNotRecent(t *testing.T) {
+	spacesDir := t.TempDir()
+	spaceID := "space-future"
+	makeQuarantineDir(t, spacesDir, spaceID, -30*24*time.Hour) // 30 days in the FUTURE
+
+	if recentlyQuarantined(spacesDir, spaceID, time.Now()) {
+		t.Fatal("a quarantine timestamped in the future must not start a cooldown")
+	}
+}
