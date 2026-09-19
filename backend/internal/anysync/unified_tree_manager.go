@@ -150,6 +150,14 @@ func (u *UnifiedTreeManager) recordBuildFailure(spaceID, treeID string, buildErr
 	})
 
 	if count == treeBuildFailureThreshold {
+		if recentlyQuarantined(u.spacesDir, spaceID, time.Now()) {
+			// The store was rebuilt from scratch recently and the same failures
+			// are back, so they are not a damaged file; boot would ignore the
+			// marker anyway (see requarantineCooldown, #556).
+			log.Printf("[UTM] %d distinct trees in space %s failed with storage I/O errors on a store "+
+				"rebuilt within %s — not requesting another quarantine", count, spaceID, requarantineCooldown)
+			return
+		}
 		log.Printf("[UTM] %d distinct trees in space %s failed with storage I/O errors — "+
 			"writing recovery marker to force store quarantine on next boot", count, spaceID)
 		WriteRecoveryMarker(u.spacesDir, spaceID, fmt.Sprintf("%d distinct tree build failures: %v", count, buildErr))

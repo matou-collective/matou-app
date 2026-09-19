@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	anystore "github.com/anyproto/any-store"
 )
@@ -323,5 +324,154 @@ func TestUnifiedTreeManager_RecordBuildFailure_NoopWithoutSpacesDir(_ *testing.T
 	for i := 0; i < treeBuildFailureThreshold+1; i++ {
 		// Must not panic even though spacesDir is empty.
 		utm.recordBuildFailure("space-none", fmt.Sprintf("tree-%d", i), ioErr)
+	}
+}
+
+// makeQuarantineDir plants a "<spaceID>.corrupt-<unix>" directory as left by an
+// earlier quarantine, aged by the given duration.
+func makeQuarantineDir(t *testing.T, spacesDir, spaceID string, age time.Duration) string {
+	t.Helper()
+	dir := filepath.Join(spacesDir, fmt.Sprintf("%s%s%d", spaceID, quarantineInfix, time.Now().Add(-age).Unix()))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// Regression for #556. On Android a tree with several changes fails AddAll with
+// "disk I/O error" deterministically — on a brand-new store too. The dead-man's
+// latch therefore re-armed seconds into every boot, and every launch threw the
+// freshly re-synced community store away again: a full re-download and a flood
+// of "new" chat notifications per launch, for no gain. A store that was rebuilt
+// recently and still passes the write probe must be left alone.
+func TestRecoverDamagedSpaceStores_MarkerDoesNotRequarantineRecentlyRebuiltStore(t *testing.T) {
+	spacesDir := filepath.Join(t.TempDir(), "spaces")
+	spaceID := "space-loop"
+	spaceDir := filepath.Join(spacesDir, spaceID)
+	if err := os.MkdirAll(spaceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	createHealthySpaceStore(t, filepath.Join(spaceDir, spaceDBFileName))
+	makeQuarantineDir(t, spacesDir, spaceID, time.Hour) // rebuilt an hour ago
+	WriteRecoveryMarker(spacesDir, spaceID, "5 distinct tree build failures")
+
+	quarantined, err := RecoverDamagedSpaceStores(context.Background(), spacesDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(quarantined) != 0 {
+		t.Fatalf("a recently rebuilt, probe-healthy store must not be quarantined again, got %v", quarantined)
+	}
+	if _, err := os.Stat(filepath.Join(spaceDir, spaceDBFileName)); err != nil {
+		t.Errorf("store must be left in place: %v", err)
+	}
+	if recoveryMarkerExists(spacesDir, spaceID) {
+		t.Error("the ignored marker should be cleared so it is not re-evaluated every boot")
+	}
+}
+
+// Outside the cooldown the latch works as before: an old quarantine says
+// nothing about today's failures.
+func TestRecoverDamagedSpaceStores_MarkerQuarantinesAgainAfterCooldown(t *testing.T) {
+	spacesDir := filepath.Join(t.TempDir(), "spaces")
+	spaceID := "space-old"
+	spaceDir := filepath.Join(spacesDir, spaceID)
+	if err := os.MkdirAll(spaceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	createHealthySpaceStore(t, filepath.Join(spaceDir, spaceDBFileName))
+	makeQuarantineDir(t, spacesDir, spaceID, requarantineCooldown+time.Hour)
+	WriteRecoveryMarker(spacesDir, spaceID, "5 distinct tree build failures")
+
+	quarantined, err := RecoverDamagedSpaceStores(context.Background(), spacesDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(quarantined) != 1 {
+		t.Fatalf("expected quarantine once the cooldown has passed, got %v", quarantined)
+	}
+}
+
+// The cooldown is about the marker only. A store that cannot service a write at
+// all is genuinely damaged and is quarantined however recently it was rebuilt.
+func TestRecoverDamagedSpaceStores_ProbeFailureIgnoresCooldown(t *testing.T) {
+	spacesDir := filepath.Join(t.TempDir(), "spaces")
+	spaceID := "space-broken"
+	spaceDir := filepath.Join(spacesDir, spaceID)
+	if err := os.MkdirAll(spaceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spaceDir, spaceDBFileName), []byte("not a sqlite database at all"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	makeQuarantineDir(t, spacesDir, spaceID, time.Hour)
+
+	quarantined, err := RecoverDamagedSpaceStores(context.Background(), spacesDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(quarantined) != 1 {
+		t.Fatalf("a store that fails the write probe must be quarantined regardless of cooldown, got %v", quarantined)
+	}
+}
+
+// Each quarantine keeps a full copy of the space; the #556 loop left one per
+// launch on the device. Only the newest few are worth keeping.
+func TestRecoverDamagedSpaceStores_PrunesOldQuarantineCopies(t *testing.T) {
+	spacesDir := filepath.Join(t.TempDir(), "spaces")
+	spaceID := "space-pile"
+	var dirs []string
+	for i := 1; i <= maxQuarantineCopies+3; i++ {
+		dirs = append(dirs, makeQuarantineDir(t, spacesDir, spaceID, time.Duration(i)*time.Hour)) // dirs[0] newest
+	}
+	other := makeQuarantineDir(t, spacesDir, "space-other", 90*24*time.Hour)
+
+	if _, err := RecoverDamagedSpaceStores(context.Background(), spacesDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for i, d := range dirs {
+		_, err := os.Stat(d)
+		if i < maxQuarantineCopies && err != nil {
+			t.Errorf("newest copy #%d should be kept: %v", i, err)
+		}
+		if i >= maxQuarantineCopies && !os.IsNotExist(err) {
+			t.Errorf("old copy #%d should have been pruned", i)
+		}
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("another space's only copy must be kept: %v", err)
+	}
+}
+
+// Writing the marker is pointless while the cooldown would ignore it, and the
+// log line it produces on every boot is noise.
+func TestUnifiedTreeManager_RecordBuildFailure_NoMarkerDuringCooldown(t *testing.T) {
+	spacesDir := t.TempDir()
+	utm := NewUnifiedTreeManager()
+	utm.SetSpacesDir(spacesDir)
+	spaceID := "space-latch-cooldown"
+	makeQuarantineDir(t, spacesDir, spaceID, time.Hour)
+
+	ioErr := errors.New("building tree X: add all: sqlite: step: disk I/O error")
+	for i := 0; i < treeBuildFailureThreshold+2; i++ {
+		utm.recordBuildFailure(spaceID, fmt.Sprintf("tree-%d", i), ioErr)
+	}
+	if recoveryMarkerExists(spacesDir, spaceID) {
+		t.Fatal("no recovery marker should be written for a store rebuilt within the cooldown")
+	}
+}
+
+// A quarantine stamped in the future (device clock ahead at that moment — it
+// happens right after boot, before time sync) must not count as "recent": a
+// negative age is below any cooldown, which would switch the latch off until
+// real time caught up with the bogus stamp, possibly months.
+func TestRecentlyQuarantined_FutureTimestampIsNotRecent(t *testing.T) {
+	spacesDir := t.TempDir()
+	spaceID := "space-future"
+	makeQuarantineDir(t, spacesDir, spaceID, -30*24*time.Hour) // 30 days in the FUTURE
+
+	if recentlyQuarantined(spacesDir, spaceID, time.Now()) {
+		t.Fatal("a quarantine timestamped in the future must not start a cooldown")
 	}
 }

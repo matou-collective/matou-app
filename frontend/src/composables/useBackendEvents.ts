@@ -11,6 +11,7 @@ import { Notify } from 'quasar';
 import { useRouter } from 'vue-router';
 import { BACKEND_URL } from 'src/lib/api/client';
 import { maybeNotify } from 'src/lib/notifications';
+import { shouldAnnounceChatMessage } from 'src/lib/chatToast';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { useChatStore } from 'stores/chat';
@@ -221,8 +222,10 @@ function connect() {
     lastEvent.value = { type: 'chat:message:new', data };
     chatStore.handleNewMessage(data);
 
-    // Toast notification for messages in non-active channels
-    if (data.channelId !== chatStore.currentChannelId) {
+    // Toast + OS notification for live messages in non-active channels. The
+    // store update above always happens; historical messages (a cold pull of
+    // the space) are not announced one by one (#556).
+    if (shouldAnnounceChatMessage(data, chatStore.currentChannelId)) {
       const channel = chatStore.channels.find((c: { id: string }) => c.id === data.channelId);
       const channelName = channel?.name ?? 'Unknown';
       const content = data.content as string | undefined;
