@@ -702,6 +702,7 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 
 	// 1. Shut down the current app
 	if c.app != nil {
+		c.closeSpaces()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.app.Close(ctx); err != nil {
@@ -739,6 +740,17 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 	return nil
 }
 
+// spaceCloseTimeout bounds closing the open spaces before the app goes down.
+const spaceCloseTimeout = 5 * time.Second
+
+// closeSpaces closes the spaces the current app opened. app.Close does not: the
+// resolver only caches them. Caller holds c.mu.
+func (c *SDKClient) closeSpaces() {
+	if resolver, ok := c.app.Component(spaceResolverCName).(*sdkSpaceResolver); ok {
+		resolver.closeSpaces(spaceCloseTimeout)
+	}
+}
+
 // GetPeerKeyManager returns the peer key manager (used by identity handler).
 func (c *SDKClient) GetPeerKeyManager() *PeerKeyManager {
 	c.mu.RLock()
@@ -752,6 +764,7 @@ func (c *SDKClient) Close() error {
 	defer c.mu.Unlock()
 
 	if c.app != nil {
+		c.closeSpaces()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.app.Close(ctx); err != nil {
@@ -888,6 +901,43 @@ func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceID string) (common
 		}
 	}()
 	return sp, nil
+}
+
+// closeSpaces closes every cached space, in parallel, and forgets them. A
+// space dropped without Close keeps its HeadSync loop and worker pool running
+// for the life of the process. It waits at most timeout in total: a space that
+// will not close must not hold up whoever is shutting the SDK down.
+func (r *sdkSpaceResolver) closeSpaces(timeout time.Duration) {
+	var wg sync.WaitGroup
+	r.cache.Range(func(key, val any) bool {
+		r.cache.Delete(key)
+		wg.Add(1)
+		go func(spaceID string, sp commonspace.Space) {
+			defer wg.Done()
+			if err := sp.Close(); err != nil {
+				log.Printf("[SpaceResolver] Warning: closing space %s: %v", spaceID, err)
+			}
+		}(key.(string), val.(commonspace.Space))
+		return true
+	})
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		log.Printf("[SpaceResolver] Warning: spaces still closing after %s — moving on", timeout)
+	}
+}
+
+// spaceIDs returns the ids of the spaces currently open.
+func (r *sdkSpaceResolver) spaceIDs() []string {
+	var ids []string
+	r.cache.Range(func(key, _ any) bool {
+		ids = append(ids, key.(string))
+		return true
+	})
+	return ids
 }
 
 func (r *sdkSpaceResolver) StoreSpace(spaceID string, space commonspace.Space) {

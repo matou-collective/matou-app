@@ -626,21 +626,39 @@ const freshTreeTimeout = 10 * time.Second
 // so it must never build a tree with the listener attached: that re-enters the
 // listener, and a re-index doing so for every unindexed tree is what stopped
 // sync in #567. A tree the index does not know yet (the listener fires before
-// GetTree indexes it) is located by asking each known space's LOCAL storage.
+// GetTree indexes it) is located by asking each open space's LOCAL storage.
 func (u *UnifiedTreeManager) FreshTreeForListener(treeID string) (objecttree.ObjectTree, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), freshTreeTimeout)
 	defer cancel()
 
-	if spaceID := u.SpaceForTree(treeID); spaceID != "" {
-		return u.BuildFreshTree(ctx, spaceID, treeID)
+	// Open spaces, not just indexed ones: a space that has only just been
+	// opened has nothing in the index yet. They are all in the resolver's
+	// cache, so getSpace never opens one from in here.
+	var open []string
+	if u.a != nil {
+		open = u.a.MustComponent(spaceResolverCName).(*sdkSpaceResolver).spaceIDs()
 	}
-	spaceIDs := u.KnownSpaceIDs()
-	for _, spaceID := range spaceIDs {
-		if u.storesTree(ctx, spaceID, treeID) {
-			return u.BuildFreshTree(ctx, spaceID, treeID)
+	spaceID := spaceHoldingTree(u.SpaceForTree(treeID), open, func(spaceID string) bool {
+		return u.storesTree(ctx, spaceID, treeID)
+	})
+	if spaceID == "" {
+		return nil, fmt.Errorf("no open space holds tree %s (probed %d)", treeID, len(open))
+	}
+	return u.BuildFreshTree(ctx, spaceID, treeID)
+}
+
+// spaceHoldingTree picks the space to build a fresh tree from: the one the
+// index names, else the first candidate whose local storage has the tree.
+func spaceHoldingTree(indexedSpaceID string, candidates []string, stores func(spaceID string) bool) string {
+	if indexedSpaceID != "" {
+		return indexedSpaceID
+	}
+	for _, spaceID := range candidates {
+		if stores(spaceID) {
+			return spaceID
 		}
 	}
-	return nil, fmt.Errorf("no space holds tree %s (probed %d spaces)", treeID, len(spaceIDs))
+	return ""
 }
 
 // storesTree reports whether the space's local storage has the tree. Unlike
