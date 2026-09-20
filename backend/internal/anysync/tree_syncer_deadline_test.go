@@ -88,3 +88,20 @@ func TestTreeSyncerClose_DoesNotCountCancelledFetchesAsFailures(t *testing.T) {
 		}
 	}
 }
+
+// Recovery runs right after a fetch failed, handed that fetch's context — which
+// may be the very deadline that just expired. any-store interrupts SQLite on a
+// done context, so recovery needs a live one of its own.
+func TestRecoveryCtx_OutlivesAnExpiredFetchContext(t *testing.T) {
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ctx, done := recoveryCtx(expired)
+	defer done()
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("recovery context is already done: %v", err)
+	}
+	if _, bounded := ctx.Deadline(); !bounded {
+		t.Fatal("recovery context has no deadline")
+	}
+}

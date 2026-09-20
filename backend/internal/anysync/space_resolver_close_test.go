@@ -1,6 +1,7 @@
 package anysync
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,5 +60,34 @@ func TestSpaceResolverCloseSpaces_DoesNotWaitForeverOnOneSpace(t *testing.T) {
 	}
 	if !fine.closed.Load() {
 		t.Fatal("the healthy space was not closed")
+	}
+}
+
+// Once its spaces are closed the resolver belongs to an app that is going
+// away. Anything still running against it (a listener callback of a space that
+// is mid-close) must not get a second instance of a space opened over the same
+// store.
+func TestSpaceResolver_RefusesToOpenSpacesOnceClosed(t *testing.T) {
+	r := newSDKSpaceResolver()
+	r.StoreSpace("space-a", &closableSpace{})
+	r.closeSpaces(time.Second)
+
+	// r.a is nil: reaching the space service would panic, so an error here
+	// proves GetSpace stopped before trying to open anything.
+	if _, err := r.GetSpace(context.Background(), "space-a"); err == nil {
+		t.Fatal("GetSpace opened a space on a closed resolver")
+	}
+}
+
+func TestSpaceResolverOpenSpace_NeverOpensOne(t *testing.T) {
+	r := newSDKSpaceResolver()
+	open := &closableSpace{}
+	r.StoreSpace("space-open", open)
+
+	if sp, ok := r.openSpace("space-open"); !ok || sp != commonspace.Space(open) {
+		t.Fatalf("openSpace(space-open) = %v, %v; want the cached space", sp, ok)
+	}
+	if _, ok := r.openSpace("space-unknown"); ok { // would panic on r.a if it tried to open it
+		t.Fatal("openSpace reported a space that is not open")
 	}
 }

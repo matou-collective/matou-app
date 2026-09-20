@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	anystore "github.com/anyproto/any-store"
@@ -861,8 +862,9 @@ func (c *sdkConfig) GetSecureService() secureservice.Config {
 const spaceResolverCName = "matou.space.resolver"
 
 type sdkSpaceResolver struct {
-	a     *app.App
-	cache sync.Map // spaceId → commonspace.Space
+	a      *app.App
+	cache  sync.Map    // spaceId → commonspace.Space
+	closed atomic.Bool // closeSpaces ran: this resolver's app is going away
 }
 
 func newSDKSpaceResolver() *sdkSpaceResolver { return &sdkSpaceResolver{} }
@@ -881,6 +883,11 @@ func (r *sdkSpaceResolver) spaceService() commonspace.SpaceService {
 func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceID string) (commonspace.Space, error) {
 	if val, ok := r.cache.Load(spaceID); ok {
 		return val.(commonspace.Space), nil
+	}
+	if r.closed.Load() {
+		// Opening it now would put a second instance over the store of a space
+		// that may still be closing. The next app has its own resolver.
+		return nil, fmt.Errorf("space %s: the SDK is shutting down", spaceID)
 	}
 	// Resolve the UnifiedTreeManager from the parent app for space deps
 	utm := r.a.MustComponent("common.object.treemanager").(*UnifiedTreeManager)
@@ -908,6 +915,7 @@ func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceID string) (common
 // for the life of the process. It waits at most timeout in total: a space that
 // will not close must not hold up whoever is shutting the SDK down.
 func (r *sdkSpaceResolver) closeSpaces(timeout time.Duration) {
+	r.closed.Store(true)
 	var wg sync.WaitGroup
 	r.cache.Range(func(key, val any) bool {
 		r.cache.Delete(key)
@@ -938,6 +946,15 @@ func (r *sdkSpaceResolver) spaceIDs() []string {
 		return true
 	})
 	return ids
+}
+
+// openSpace returns a space only if it is already open.
+func (r *sdkSpaceResolver) openSpace(spaceID string) (commonspace.Space, bool) {
+	val, ok := r.cache.Load(spaceID)
+	if !ok {
+		return nil, false
+	}
+	return val.(commonspace.Space), true
 }
 
 func (r *sdkSpaceResolver) StoreSpace(spaceID string, space commonspace.Space) {
