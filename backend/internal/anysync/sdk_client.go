@@ -700,8 +700,11 @@ func (c *SDKClient) Reinitialize(mnemonic string) error {
 
 	log.Println("[any-sync SDK] Reinitializing sign key from mnemonic (device peer key preserved)...")
 
-	// 1. Shut down the current app
+	// 1. Shut down the current app. Close the cached Space instances first so
+	// their per-space sync services/goroutines stop instead of orphan-looping
+	// after the parent app is dropped (#570).
 	if c.app != nil {
+		c.closeCachedSpaces()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.app.Close(ctx); err != nil {
@@ -752,6 +755,7 @@ func (c *SDKClient) Close() error {
 	defer c.mu.Unlock()
 
 	if c.app != nil {
+		c.closeCachedSpaces()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.app.Close(ctx); err != nil {
@@ -761,6 +765,24 @@ func (c *SDKClient) Close() error {
 
 	c.initialized = false
 	return nil
+}
+
+// closeCachedSpaces closes every Space the shared resolver has handed out, so
+// their sync services/goroutines stop before the parent app is torn down. Must
+// be called with c.mu held (both callers hold it) and before c.app.Close. Any
+// per-space close error is logged, not returned — a best-effort teardown must
+// still let the app close and, in Reinitialize, the SDK restart.
+func (c *SDKClient) closeCachedSpaces() {
+	if c.app == nil {
+		return
+	}
+	resolver, ok := c.app.Component(spaceResolverCName).(*sdkSpaceResolver)
+	if !ok || resolver == nil {
+		return
+	}
+	if err := resolver.CloseAll(); err != nil {
+		log.Printf("[any-sync SDK] Warning: error closing cached spaces: %v", err)
+	}
 }
 
 // =============================================================================
@@ -892,6 +914,45 @@ func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceID string) (common
 
 func (r *sdkSpaceResolver) StoreSpace(spaceID string, space commonspace.Space) {
 	r.cache.Store(spaceID, space)
+}
+
+// OpenSpaceIDs returns the ids of every space currently open in the resolver
+// cache — including a freshly-joined space that has been opened but whose trees
+// are not yet in the UTM index. The fresh-tree listener fallback probes these
+// (not just the indexed spaces) so a tree in an open-but-unindexed space is
+// still located (#570 item 5).
+func (r *sdkSpaceResolver) OpenSpaceIDs() []string {
+	out := make([]string, 0)
+	r.cache.Range(func(key, _ any) bool {
+		if k, ok := key.(string); ok {
+			out = append(out, k)
+		}
+		return true
+	})
+	return out
+}
+
+// CloseAll closes every cached Space and clears the cache. The SDK's space
+// service keeps no registry of the spaces it hands out, so closing the parent
+// app.App does not stop the per-space sync services/goroutines each Space runs
+// (HeadSync cadence, tree syncer worker pools). Without this, every
+// Reinitialize/Close leaks the old spaces — observed on-device as a second
+// HeadSync cadence per space with peerIds:[], an orphan loop that never stops
+// (#570). Call it before app.Close so each Space tears down its own goroutines.
+func (r *sdkSpaceResolver) CloseAll() error {
+	var errs []error
+	r.cache.Range(func(key, value any) bool {
+		r.cache.Delete(key)
+		sp, ok := value.(commonspace.Space)
+		if !ok {
+			return true
+		}
+		if err := sp.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing space %v: %w", key, err))
+		}
+		return true
+	})
+	return errors.Join(errs...)
 }
 
 // sdkNodeConf implements nodeconf.Service with full configuration
