@@ -166,6 +166,86 @@ func (f *failingTreeManager) callCount(treeID string) int {
 	return f.calls[treeID]
 }
 
+// blockingTreeManager is a fake treeGetter whose GetTree blocks until the
+// caller's context is canceled, then returns ctx.Err(). It simulates a peer
+// fetch that never responds (#570 item 2).
+type blockingTreeManager struct {
+	started chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func newBlockingTreeManager() *blockingTreeManager {
+	return &blockingTreeManager{started: make(chan struct{}, 8)}
+}
+
+func (b *blockingTreeManager) GetTree(ctx context.Context, _, _ string) (objecttree.ObjectTree, error) {
+	b.mu.Lock()
+	b.calls++
+	b.mu.Unlock()
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done() // hang until the per-fetch deadline (or cancel) fires
+	return nil, ctx.Err()
+}
+
+func (b *blockingTreeManager) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+// TestMissingWorkerFetchDeadlineFreesWorker asserts that a fetch which never
+// returns is bounded by the per-fetch deadline: the worker is freed (the tree
+// leaves the in-flight set) and a failure is recorded so the tree enters normal
+// backoff, instead of the worker being parked for the life of the process (#570
+// item 2).
+func TestMissingWorkerFetchDeadlineFreesWorker(t *testing.T) {
+	bm := newBlockingTreeManager()
+
+	ts := newMatouTreeSyncer("space-1", nil)
+	ts.treeManager = bm
+	ts.fetchTimeout = 50 * time.Millisecond // shrink the 60s default for the test
+	ts.startWorkers()
+	defer func() { _ = ts.Close(context.Background()) }()
+
+	const id = "tree-hang"
+	p := &mockPeer{}
+	if err := ts.SyncAll(context.Background(), p, nil, []string{id}); err != nil {
+		t.Fatalf("SyncAll: %v", err)
+	}
+
+	// The fetch must actually start (worker picked up the item) and block.
+	select {
+	case <-bm.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fetch never started")
+	}
+
+	// After the deadline fires the worker must record a failure and free itself.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !ts.backoff.anyInFlight() {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if ts.backoff.anyInFlight() {
+		t.Fatal("worker still parked after the fetch deadline — not freed")
+	}
+
+	// A failure was recorded → the tree is now inside its backoff window, so a
+	// fresh claim must be refused (proving it will be retried later, not lost).
+	if ts.backoff.claim(id) {
+		t.Fatal("expected tree to be inside its backoff window after a timed-out fetch")
+	}
+	if bm.callCount() != 1 {
+		t.Fatalf("expected exactly 1 fetch attempt, got %d", bm.callCount())
+	}
+}
+
 // TestTreeSyncerWorkerRetryCadenceCapped drives the worker through repeated
 // HeadSync cycles with a fake clock and asserts that a permanently-failing tree
 // is not re-fetched every cycle — the backoff gate spaces retries out and, once
