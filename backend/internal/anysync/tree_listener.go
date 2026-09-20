@@ -132,97 +132,26 @@ func (l *TreeUpdateListener) RegisterObject(payload *ObjectPayload) {
 
 // processChanges reconstructs the object state from the tree using BuildState
 // and emits SSE events for new/changed objects.
+//
+// The state is read BEFORE the listener's mutex is taken. Reading can fall back
+// to the fresh-tree reader, which builds trees, and any-sync calls Rebuild on
+// every tree it builds with this listener attached; holding the mutex across
+// that locked it twice on one goroutine and stopped all sync (#567).
 func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
+	objectID, objectType, state := l.readState(tree)
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	wasSeeded := l.seeded
-	ctx := context.Background()
-
-	// Extract objectID and objectType from tree root header
-	objectID, objectType := l.extractRootHeader(tree)
-	if objectID == "" {
-		// Not a MATOU object tree, skip
-		l.seeded = true
+	l.seeded = true
+	if state == nil {
 		return nil
-	}
-
-	// Profile and multisig-coordination types are processed but DO NOT use the
-	// FreshTreeReader fallback — they fire frequently during initial sync
-	// (before the receiver's ACL has caught up and the read key is available),
-	// and the fallback's extra tree lock would contend with the JoinCommunity
-	// → WaitForSync path. Best-effort state-build only; if it fails, skip
-	// silently and let the next listener fire after the keyring catches up.
-	isProfileType := objectType == "SharedProfile" || objectType == "CommunityProfile"
-	isMultisigCoordType := objectType == "MultisigRotationSignal" || objectType == "MultisigRotationAck"
-
-	// Only process chat, contribution, profile, and multisig-coord types
-	// — credentials are handled elsewhere
-	switch objectType {
-	case "ChatChannel", "ChatMessage", "MessageReaction":
-		// proceed with full handling (incl. FreshTreeReader fallback)
-	case TypeProject, TypeImplementationPlan, TypeContribution, TypeMilestone,
-		TypeProposal, TypeDecisionPlan, TypeGovernanceAction, TypeEndorsement,
-		"proposal_comment", "contribution_comment", "project_comment":
-		// proceed with full handling
-	case "SharedProfile", "CommunityProfile":
-		// proceed — peers need SSE for new registrations + role changes so the
-		// UI live-updates without depending on a periodic poll. Best-effort only.
-	case "MultisigRotationSignal", "MultisigRotationAck":
-		// proceed — cross-client coordination for member-to-admin upgrade flow.
-		// See MULTISIG-POC-FINDINGS.md item #4. Treated like profile types:
-		// SSE-only, no persister, no FreshTreeReader fallback.
-	default:
-		l.seeded = true
-		return nil
-	}
-
-	// Build the full state from the tree (tree lock is held by caller). The
-	// validator excludes forged high-stakes changes from other peers.
-	spaceID := l.resolveSpace(tree.Id())
-	state, err := BuildStateValidated(tree, spaceID, objectID, objectType, l.changeValidator())
-	if err != nil {
-		if isProfileType || isMultisigCoordType {
-			// Best-effort for profile + coord types: just skip and let a later
-			// listener fire once the ACL has propagated and the read key is
-			// available.
-			l.seeded = true
-			return nil
-		}
-
-		log.Printf("[TreeUpdateListener] BuildState failed for %s: %v (treeId=%s, len=%d), trying fresh tree",
-			objectID, err, tree.Id(), tree.Len())
-
-		// The cached tree may have been built before the ACL fully synced,
-		// leaving ot.keys empty (readKeysFromAclState Guard 2 failed because
-		// HadReadPermissions was false). Build a fresh tree from storage which
-		// re-runs readKeysFromAclState with the current ACL state.
-		if l.freshTreeReader != nil {
-			freshTree, freshErr := l.freshTreeReader(tree.Id())
-			if freshErr != nil {
-				log.Printf("[TreeUpdateListener] FreshTreeReader failed for %s: %v", tree.Id(), freshErr)
-				l.seeded = true
-				return nil
-			}
-			freshTree.Lock()
-			state, err = BuildStateValidated(freshTree, spaceID, objectID, objectType, l.changeValidator())
-			freshTree.Unlock()
-			if err != nil {
-				log.Printf("[TreeUpdateListener] BuildState on fresh tree also failed for %s: %v", objectID, err)
-				l.seeded = true
-				return nil
-			}
-			log.Printf("[TreeUpdateListener] Fresh tree succeeded for %s (version=%d)", objectID, state.Version)
-		} else {
-			l.seeded = true
-			return nil
-		}
 	}
 
 	// Check if this is new/changed
 	knownVer, exists := l.known[objectID]
 	if exists && state.Version <= knownVer {
-		l.seeded = true
 		return nil // already processed this version
 	}
 
@@ -234,8 +163,8 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 
 	// Persist to store — skip for profile types and multisig-coord types
 	// (persister is ChatPersister; these types are SSE-only).
-	if l.persister != nil && !isProfileType && !isMultisigCoordType {
-		if err := l.persister.PersistChatObject(ctx, p); err != nil {
+	if l.persister != nil && !isSSEOnlyType(objectType) {
+		if err := l.persister.PersistChatObject(context.Background(), p); err != nil {
 			fmt.Printf("[TreeUpdateListener] persist failed for %s: %v\n", p.ID, err)
 		}
 	}
@@ -244,9 +173,85 @@ func (l *TreeUpdateListener) processChanges(tree objecttree.ObjectTree) error {
 	if wasSeeded && l.broker != nil {
 		l.emitSSE(p, exists)
 	}
-
-	l.seeded = true
 	return nil
+}
+
+// isSSEOnlyType reports the profile and multisig-coordination types. They are
+// processed best-effort: no persister, and no FreshTreeReader fallback — they
+// fire frequently during initial sync (before the receiver's ACL has caught up
+// and the read key is available), and the fallback's extra tree lock would
+// contend with the JoinCommunity → WaitForSync path.
+func isSSEOnlyType(objectType string) bool {
+	switch objectType {
+	case "SharedProfile", "CommunityProfile", "MultisigRotationSignal", "MultisigRotationAck":
+		return true
+	}
+	return false
+}
+
+// readState builds the object state of a tree the listener handles. A nil state
+// means there is nothing to process: not a MATOU object tree, a type handled
+// elsewhere, or content that cannot be read yet. The tree lock is held by the
+// caller; the listener's mutex must NOT be (see processChanges).
+func (l *TreeUpdateListener) readState(tree objecttree.ObjectTree) (objectID, objectType string, state *ObjectState) {
+	objectID, objectType = l.extractRootHeader(tree)
+	if objectID == "" {
+		return "", "", nil // not a MATOU object tree
+	}
+
+	// Only process chat, contribution, profile, and multisig-coord types
+	// — credentials are handled elsewhere
+	switch objectType {
+	case "ChatChannel", "ChatMessage", "MessageReaction":
+		// full handling (incl. FreshTreeReader fallback)
+	case TypeProject, TypeImplementationPlan, TypeContribution, TypeMilestone,
+		TypeProposal, TypeDecisionPlan, TypeGovernanceAction, TypeEndorsement,
+		"proposal_comment", "contribution_comment", "project_comment":
+		// full handling
+	case "SharedProfile", "CommunityProfile":
+		// peers need SSE for new registrations + role changes so the UI
+		// live-updates without depending on a periodic poll. Best-effort only.
+	case "MultisigRotationSignal", "MultisigRotationAck":
+		// cross-client coordination for member-to-admin upgrade flow.
+		// See MULTISIG-POC-FINDINGS.md item #4.
+	default:
+		return objectID, objectType, nil
+	}
+
+	// Build the full state from the tree (tree lock is held by caller). The
+	// validator excludes forged high-stakes changes from other peers.
+	spaceID := l.resolveSpace(tree.Id())
+	state, err := BuildStateValidated(tree, spaceID, objectID, objectType, l.changeValidator())
+	if err == nil {
+		return objectID, objectType, state
+	}
+	if isSSEOnlyType(objectType) || l.freshTreeReader == nil {
+		// Skip and let a later listener fire once the ACL has propagated and
+		// the read key is available.
+		return objectID, objectType, nil
+	}
+
+	log.Printf("[TreeUpdateListener] BuildState failed for %s: %v (treeId=%s, len=%d), trying fresh tree",
+		objectID, err, tree.Id(), tree.Len())
+
+	// The cached tree may have been built before the ACL fully synced,
+	// leaving ot.keys empty (readKeysFromAclState Guard 2 failed because
+	// HadReadPermissions was false). Build a fresh tree from storage which
+	// re-runs readKeysFromAclState with the current ACL state.
+	freshTree, freshErr := l.freshTreeReader(tree.Id())
+	if freshErr != nil {
+		log.Printf("[TreeUpdateListener] FreshTreeReader failed for %s: %v", tree.Id(), freshErr)
+		return objectID, objectType, nil
+	}
+	freshTree.Lock()
+	state, err = BuildStateValidated(freshTree, spaceID, objectID, objectType, l.changeValidator())
+	freshTree.Unlock()
+	if err != nil {
+		log.Printf("[TreeUpdateListener] BuildState on fresh tree also failed for %s: %v", objectID, err)
+		return objectID, objectType, nil
+	}
+	log.Printf("[TreeUpdateListener] Fresh tree succeeded for %s (version=%d)", objectID, state.Version)
+	return objectID, objectType, state
 }
 
 // extractRootHeader parses the tree's root change to get the objectID and objectType.

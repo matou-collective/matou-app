@@ -615,6 +615,48 @@ func (u *UnifiedTreeManager) BuildFreshTree(ctx context.Context, spaceID, treeID
 	return tree, nil
 }
 
+// freshTreeTimeout bounds FreshTreeForListener. It runs inside a tree build, so
+// a build that cannot finish must not hold that build up indefinitely.
+const freshTreeTimeout = 10 * time.Second
+
+// FreshTreeForListener is the TreeUpdateListener's FreshTreeReader: it finds
+// the space that holds treeID and builds a fresh, listener-less tree from it.
+//
+// It runs inside the listener, which any-sync calls from inside a tree build,
+// so it must never build a tree with the listener attached: that re-enters the
+// listener, and a re-index doing so for every unindexed tree is what stopped
+// sync in #567. A tree the index does not know yet (the listener fires before
+// GetTree indexes it) is located by asking each known space's LOCAL storage.
+func (u *UnifiedTreeManager) FreshTreeForListener(treeID string) (objecttree.ObjectTree, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), freshTreeTimeout)
+	defer cancel()
+
+	if spaceID := u.SpaceForTree(treeID); spaceID != "" {
+		return u.BuildFreshTree(ctx, spaceID, treeID)
+	}
+	spaceIDs := u.KnownSpaceIDs()
+	for _, spaceID := range spaceIDs {
+		if u.storesTree(ctx, spaceID, treeID) {
+			return u.BuildFreshTree(ctx, spaceID, treeID)
+		}
+	}
+	return nil, fmt.Errorf("no space holds tree %s (probed %d spaces)", treeID, len(spaceIDs))
+}
+
+// storesTree reports whether the space's local storage has the tree. Unlike
+// BuildTree it never asks a peer for it.
+func (u *UnifiedTreeManager) storesTree(ctx context.Context, spaceID, treeID string) bool {
+	if u.a == nil {
+		return false // test mode
+	}
+	sp, err := u.getSpace(ctx, spaceID)
+	if err != nil {
+		return false
+	}
+	_, err = sp.Storage().HeadStorage().GetEntry(ctx, treeID)
+	return err == nil
+}
+
 // shouldAttemptRecovery reports whether treeId may be recovered right now,
 // recording the attempt time. It returns false when the tree was already
 // recovered within recoveryBackoffWindow, bounding recovery to once per tree
