@@ -484,7 +484,21 @@ func (m *NoticeTreeManager) CreateSave(ctx context.Context, spaceID string, save
 }
 
 // ReadSaves reads all saves for a user from their personal space.
+//
+// Right after a restart the private space's index may not be built yet —
+// BuildSpaceIndex runs asynchronously the first time the space is opened, so a
+// read in that window would spuriously return zero saves even though they are on
+// disk (#570 item 4). When the space has no indexed trees at all, build the
+// index once before reading, mirroring GetTreeForObject's on-miss rebuild. Once
+// the space has any indexed tree, an empty save list is a genuine "no saves" and
+// no rebuild happens, so a user with zero saves does not pay for a scan on every
+// call.
 func (m *NoticeTreeManager) ReadSaves(ctx context.Context, spaceID string) ([]*NoticeSavePayload, error) {
+	if !m.treeManager.HasTrees(spaceID) {
+		if err := m.treeManager.BuildSpaceIndex(ctx, spaceID); err != nil {
+			log.Printf("[NoticeTree] ReadSaves: BuildSpaceIndex for %s failed: %v", spaceID, err)
+		}
+	}
 	entries := m.treeManager.GetTreesByChangeType(spaceID, InteractionTreeType)
 
 	var saves []*NoticeSavePayload
