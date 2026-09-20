@@ -495,29 +495,9 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	// Wire up FreshTreeReader so the listener can rebuild trees with updated ACL keys
 	// when the cached tree was built before the joiner's InviteJoin was applied.
 	chatListener.SetFreshTreeReader(func(treeId string) (objecttree.ObjectTree, error) {
-		utm := spaceManager.TreeManager()
-		ctx := context.Background()
-
-		// Fast path: tree is already indexed.
-		if spaceID := utm.SpaceForTree(treeId); spaceID != "" {
-			return utm.BuildFreshTree(ctx, spaceID, treeId)
-		}
-
-		// Slow path: tree arrived via P2P sync between BuildSpaceIndex runs, so
-		// the index doesn't know about it. Re-index every known space, then
-		// look up again. If still missing, try each known space directly.
-		for _, sid := range utm.KnownSpaceIDs() {
-			_ = utm.BuildSpaceIndex(ctx, sid)
-		}
-		if spaceID := utm.SpaceForTree(treeId); spaceID != "" {
-			return utm.BuildFreshTree(ctx, spaceID, treeId)
-		}
-		for _, sid := range utm.KnownSpaceIDs() {
-			if tree, err := utm.BuildFreshTree(ctx, sid, treeId); err == nil {
-				return tree, nil
-			}
-		}
-		return nil, fmt.Errorf("no space found for tree %s (probed %d spaces)", treeId, len(utm.KnownSpaceIDs()))
+		// The fallback probes indexed spaces ∪ the resolver's open spaces, so a
+		// tree in an open-but-unindexed space is still located (#570 item 5).
+		return spaceManager.TreeManager().FreshTreeForReading(context.Background(), treeId)
 	})
 
 	// Create API handlers

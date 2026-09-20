@@ -84,6 +84,15 @@ type UnifiedTreeManager struct {
 	// so a tree no peer can serve does not thrash the missing-tree workers.
 	recoverMu       sync.Mutex
 	recoverAttempts map[string]time.Time
+
+	// Test seams for the fresh-tree fallback (#570 items 5/6). When set they
+	// replace the resolver/space-building calls so FreshTreeForReading's
+	// space-selection and probe logic can be unit-tested without a live space.
+	// All nil in production, where the real resolver + BuildSpaceIndex +
+	// BuildFreshTree are used.
+	openSpacesFn func() []string
+	buildIndexFn func(ctx context.Context, spaceID string) error
+	buildFreshFn func(ctx context.Context, spaceID, treeID string) (objecttree.ObjectTree, error)
 }
 
 // recoveryBackoffWindow bounds how often a single tree may be recovered from a
@@ -613,6 +622,101 @@ func (u *UnifiedTreeManager) BuildFreshTree(ctx context.Context, spaceID, treeID
 		return nil, fmt.Errorf("BuildFreshTree BuildTree: %w", err)
 	}
 	return tree, nil
+}
+
+// OpenSpaceIDs returns the ids of spaces currently open in the shared resolver
+// cache, whether or not any of their trees are indexed yet. Unlike
+// KnownSpaceIDs (which only lists spaces with at least one indexed tree), this
+// includes a freshly-joined/empty space that is open but not yet indexed. Empty
+// in test mode unless a test seam is installed.
+func (u *UnifiedTreeManager) OpenSpaceIDs() []string {
+	if u.openSpacesFn != nil {
+		return u.openSpacesFn()
+	}
+	if u.a == nil {
+		return nil
+	}
+	resolver, ok := u.a.Component(spaceResolverCName).(*sdkSpaceResolver)
+	if !ok || resolver == nil {
+		return nil
+	}
+	return resolver.OpenSpaceIDs()
+}
+
+// freshTreeCandidateSpaces returns the deduplicated set of spaces the fresh-tree
+// fallback should probe: the indexed spaces (KnownSpaceIDs) plus the resolver's
+// currently-open spaces (OpenSpaceIDs). Probing the open set too lets the
+// fallback find a tree in a space that is open but has no indexed trees yet — a
+// freshly-joined or still-empty space the old KnownSpaceIDs-only probe missed
+// (#570 item 5).
+func (u *UnifiedTreeManager) freshTreeCandidateSpaces() []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, sid := range u.KnownSpaceIDs() {
+		if _, ok := seen[sid]; ok {
+			continue
+		}
+		seen[sid] = struct{}{}
+		out = append(out, sid)
+	}
+	for _, sid := range u.OpenSpaceIDs() {
+		if _, ok := seen[sid]; ok {
+			continue
+		}
+		seen[sid] = struct{}{}
+		out = append(out, sid)
+	}
+	return out
+}
+
+func (u *UnifiedTreeManager) buildSpaceIndex(ctx context.Context, spaceID string) error {
+	if u.buildIndexFn != nil {
+		return u.buildIndexFn(ctx, spaceID)
+	}
+	return u.BuildSpaceIndex(ctx, spaceID)
+}
+
+func (u *UnifiedTreeManager) buildFreshTree(ctx context.Context, spaceID, treeID string) (objecttree.ObjectTree, error) {
+	if u.buildFreshFn != nil {
+		return u.buildFreshFn(ctx, spaceID, treeID)
+	}
+	return u.BuildFreshTree(ctx, spaceID, treeID)
+}
+
+// FreshTreeForReading builds a fresh (uncached) tree for the given tree id,
+// locating its space itself. It is the fallback the P2P listener uses when the
+// cached tree instance can't decrypt content because it was built before the
+// ACL synced (stale keys). The lookup order is:
+//
+//  1. Fast path — the tree is already indexed: build straight from its space.
+//  2. Slow path — the tree arrived via P2P between index builds: re-index every
+//     candidate space (indexed + open), then retry the fast path.
+//  3. Last resort — probe each candidate space's storage directly.
+//
+// The candidate set is indexed spaces ∪ open spaces so a tree in an open space
+// that has no indexed trees yet is still found (#570 item 5).
+func (u *UnifiedTreeManager) FreshTreeForReading(ctx context.Context, treeID string) (objecttree.ObjectTree, error) {
+	// Fast path: tree is already indexed.
+	if spaceID := u.SpaceForTree(treeID); spaceID != "" {
+		return u.buildFreshTree(ctx, spaceID, treeID)
+	}
+
+	// Slow path: re-index every candidate space, then look up again.
+	candidates := u.freshTreeCandidateSpaces()
+	for _, sid := range candidates {
+		_ = u.buildSpaceIndex(ctx, sid)
+	}
+	if spaceID := u.SpaceForTree(treeID); spaceID != "" {
+		return u.buildFreshTree(ctx, spaceID, treeID)
+	}
+
+	// Last resort: probe each candidate space's storage directly.
+	for _, sid := range candidates {
+		if tree, err := u.buildFreshTree(ctx, sid, treeID); err == nil {
+			return tree, nil
+		}
+	}
+	return nil, fmt.Errorf("no space found for tree %s (probed %d spaces)", treeID, len(candidates))
 }
 
 // shouldAttemptRecovery reports whether treeId may be recovered right now,
