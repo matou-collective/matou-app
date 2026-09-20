@@ -10,6 +10,9 @@ export FORGEJO_TOKEN="ftok"
 export FORGEJO_API="http://fj.test/api/v1/repos/Matou/idss"
 . "$here/../claim-lib.sh"
 
+# #1279: never actually sleep between the bounded retries under test.
+CLAIM_ALIVE_RETRY_SLEEP=0
+
 pass=0 fail=0
 check() { if eval "$2"; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: $1"; fi; }
 
@@ -18,6 +21,14 @@ setup() {
   jq -n '[{"id":36,"name":"ready-for-agent"},{"id":50,"name":"agent-working"}]' >"$FAKE_DIR/labels.json"
   jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":512}]}' >"$FAKE_DIR/tasks.json"
   echo 1000 >"$FAKE_DIR/comment-counter"
+  # #1279 hermetic seams: keep the verdict-log and absence-state reads inside the
+  # per-test sandbox (the module defaults point at $HOME/swarm on a real host).
+  # Plain globals — the claim-lib functions read them at call time.
+  CLAIM_VERDICT_LOG="$FAKE_DIR/verdicts.log"
+  CLAIM_ABSENCE_STATE_DIR="$FAKE_DIR/absence"
+  # Legacy sweep tests below assert single-poll re-arm; the new default is 2 (a
+  # dedicated test asserts that). Individual tests raise it to exercise N>1.
+  CLAIM_ABSENCE_THRESHOLD=1
 }
 
 # T1: label id resolution
@@ -167,6 +178,57 @@ check "malformed claim is skipped, not fatal" '[ "$(wc -l <<<"$lines")" = "2" ]'
 check "claims after the malformed one survive" 'grep -q "^902 513$" <<<"$lines"'
 check "well-formed lower claim still first" '[ "$(head -1 <<<"$lines")" = "901 512" ]'
 
+# T-#1412: claim_fresh_runs — a claim comment older than the TTL is a TOMBSTONE
+# (a peer that died/was killed/timed out between claiming and finishing), not a
+# live contender. No sweep reaps it once its ticket is back to ready-for-session
+# (janitor_sweep and the session-runner #63 sweep both only visit agent-working),
+# so the session-runner's arbitration must expire it by AGE — else one dead
+# peer's lower-id claim wedges the ticket forever (#1373 sat ready-for-session an
+# hour). `now` is injected so the test is hermetic (TTL=7500, now=2026-09-12T01Z).
+setup
+NOW=1789174800
+jq -n '[
+  {id:50, created_at:"2026-01-01T00:00:00Z", body:"swarm-claim host=deadpeer run=999\n(auto)"},
+  {id:60, created_at:"2026-09-12T00:00:00Z", body:"swarm-claim host=live run=512\n(auto)"},
+  {id:61, body:"swarm-claim host=nodt run=777\n(auto)"},
+  {id:62, body:"just a normal comment, not a claim"},
+  {id:63, created_at:"2026-01-01T00:00:00Z", body:"swarm-claim host=bad run=abc\njunk"}
+]' >"$FAKE_DIR/comments-431.json"
+fresh="$(claim_fresh_runs 431 7500 "$NOW")"
+check "a tombstone (stale created_at) drops out of the fresh set" '! jq -e "index(999)" <<<"$fresh" >/dev/null'
+check "a fresh claim stays in the fresh set"                      'jq -e "index(512)" <<<"$fresh" >/dev/null'
+check "an un-ageable claim (no created_at) is kept fail-closed"   'jq -e "index(777)" <<<"$fresh" >/dev/null'
+check "malformed + non-claim bodies are skipped, never fatal"     '[ "$(jq -c "sort" <<<"$fresh")" = "[512,777]" ]'
+
+# T-#1412b: the wedge itself. `allruns` mirrors the OLD session-runner alive-set
+# builder (every present claim counted live); `fresh` is the TTL-filtered one.
+# Fed the unfiltered set, claim_won lets the stale LOWER-id tombstone (id 50) win
+# and the live claim (id 60) lose — the exact wedge. TTL-filtered, the live claim
+# wins because the tombstone's run is gone from the alive set. (arg2 is the
+# CANDIDATE's own id; claim_won's own-id short-circuit is why we probe id 60, a
+# real competing claimant, not id 50 which would look "alive by definition".)
+allruns="$(_claim_comments 431 | awk 'NF>1{print $2}' | jq -Rn '[inputs|tonumber]')"
+check "unfiltered: the stale lower-id tombstone wrongly wins (the #1412 wedge)" '! claim_won 431 60 "$allruns"'
+check "TTL-filtered: the live claim wins, the tombstone is skipped"             'claim_won 431 60 "$fresh"'
+
+# T-#1412c: TTL never steals a REAL race — a live LOWER-id claim still wins.
+setup
+NOW=1789174800
+jq -n '[
+  {id:50, created_at:"2026-09-12T00:30:00Z", body:"swarm-claim host=peer run=200\n(auto)"},
+  {id:60, created_at:"2026-09-12T00:45:00Z", body:"swarm-claim host=me run=201\n(auto)"}
+]' >"$FAKE_DIR/comments-431.json"
+fresh="$(claim_fresh_runs 431 7500 "$NOW")"
+check "a live lower-id claim still wins the race"    'claim_won 431 50 "$fresh"'
+check "the live higher-id claim correctly loses"     '! claim_won 431 60 "$fresh"'
+
+# T-#1412d: an API failure returns rc 1, never a degraded '[]' (finding 1) — a
+# caller must not treat "could not read the claims" as "no live claim".
+setup
+touch "$FAKE_DIR/api-timeout"
+check "a timed-out comments read fails rc 1, not a degraded []" '! claim_fresh_runs 431 7500 1789174800'
+
+
 # T13 (#28): every claim API call carries a timeout. The tasks listing is the
 # hottest reader in the harness (limit=100, once per claim and once per janitor
 # sweep) and it is exactly the endpoint that went unanswerable on the big repos
@@ -209,6 +271,122 @@ check "CLAIM_API_MAX_TIME overrides the default" 'grep -q -- "--max-time 5 " "$F
 setup
 alive="$(claim_alive_runs)"
 check "default timeout matches the harness-wide 30s" 'grep -q -- "--max-time 30 " "$FAKE_DIR/argv.log"'
+
+# ── #1279: stale-claim sweeper, liveness ≠ tracker-slow, budgets to p95 ──────
+
+# T14: claim_run_terminal reads the host-side verdict log. A run with a recorded
+# TERMINAL verdict is dead; the pre-merge `pr-opened` breadcrumb (written while
+# the run is STILL alive) is NOT; an absent run / run 0 / a prefix collision are
+# not; and a run that has both a breadcrumb AND a later terminal line is dead.
+setup
+printf '%s\n' \
+  '2026-09-07T00:00:00Z repo=Matou/idss ready=[431] reason=completed exit=0 duration=100s run=700' \
+  '2026-09-07T00:05:00Z repo=Matou/idss ready=[432] reason=pr-opened exit=- duration=5s run=701' \
+  >"$CLAIM_VERDICT_LOG"
+check "a recorded terminal verdict marks the run dead" 'claim_run_terminal 700'
+check "a pre-merge pr-opened breadcrumb is NOT terminal" '! claim_run_terminal 701'
+check "a run absent from the log is not terminal" '! claim_run_terminal 999'
+check "run 0 and empty run are never terminal" '! claim_run_terminal 0 && ! claim_run_terminal ""'
+check "a prefix run id does not false-match (700 vs 7000)" '! claim_run_terminal 7000'
+printf '%s\n' '2026-09-07T00:06:00Z repo=Matou/idss ready=[432] reason=completed exit=0 duration=200s run=701' >>"$CLAIM_VERDICT_LOG"
+check "a breadcrumb followed by a terminal verdict is terminal" 'claim_run_terminal 701'
+setup
+check "no verdict log on disk => not terminal (no crash)" '! claim_run_terminal 700'
+
+# T15: liveness ≠ tracker-slow — a timed-out/5xx poll BACKS OFF and RETRIES
+# (bounded) instead of concluding "run dead". Fail twice, then serve: the read
+# recovers within the retry budget rather than surfacing a failure the caller
+# would fail-closed on and churn a whole cron cycle over (#1246/#1247).
+setup
+echo 2 >"$FAKE_DIR/tasks-fail-count"
+alive="$(CLAIM_ALIVE_RETRIES=2 claim_alive_runs)"
+check "claim_alive_runs recovers from a transient slow tracker" '[ "$(jq -c . <<<"$alive")" = "[512]" ]'
+check "it retried past the two transient failures (3 reads)" '[ "$(grep -c "actions/tasks" "$FAKE_DIR/calls.log")" = 3 ]'
+
+# T16: the retry is BOUNDED — once exhausted it still fails LOUD (rc nonzero),
+# never a degraded `[]` (review finding 1 holds through the retry path too).
+setup
+echo 9 >"$FAKE_DIR/tasks-fail-count"
+check "retries exhausted is rc nonzero, not a laundered []" '! ( CLAIM_ALIVE_RETRIES=2 claim_alive_runs >/dev/null 2>&1 )'
+check "it made exactly retries+1 attempts (1 + 2)" '[ "$(grep -c "actions/tasks" "$FAKE_DIR/calls.log")" = 3 ]'
+
+# T17: CLAIM_ALIVE_RETRIES=0 (the in-sandbox prefetch's setting) is a single
+# attempt — the 30s prompt-expansion budget must not be spent retrying.
+setup
+touch "$FAKE_DIR/tasks-fail"
+( CLAIM_ALIVE_RETRIES=0 claim_alive_runs >/dev/null 2>&1 ) || true
+check "CLAIM_ALIVE_RETRIES=0 makes exactly one attempt" '[ "$(grep -c "actions/tasks" "$FAKE_DIR/calls.log")" = 1 ]'
+
+# T18: the optional latency log records one sample per read (with its rc), so the
+# p95 the budgets are sized to can be measured off disk, not guessed (ask 3).
+setup
+( CLAIM_LATENCY_LOG="$FAKE_DIR/lat.log" claim_alive_runs >/dev/null )
+check "a successful read logs one latency sample tagged rc=0" \
+  '[ "$(wc -l <"$FAKE_DIR/lat.log")" = 1 ] && grep -q "dur=[0-9]*s rc=0" "$FAKE_DIR/lat.log"'
+setup
+echo 9 >"$FAKE_DIR/tasks-fail-count"
+( CLAIM_LATENCY_LOG="$FAKE_DIR/lat.log" CLAIM_ALIVE_RETRIES=2 claim_alive_runs >/dev/null 2>&1 ) || true
+check "every retry attempt logs a sample (3 rows)" '[ "$(wc -l <"$FAKE_DIR/lat.log")" = 3 ]'
+check "a failed sample records the nonzero rc" 'grep -q "rc=22" "$FAKE_DIR/lat.log"'
+check "latency log is OFF by default (unset => no file written)" \
+  'setup; claim_alive_runs >/dev/null; [ ! -e "$FAKE_DIR/lat.log" ]'
+
+# T19 (the #1247 core fix): the janitor sweeps a stale claim whose run has a
+# recorded TERMINAL verdict EVEN WHEN THE TRACKER IS DOWN. On #1247 twelve stale
+# claims had to be hand-deleted precisely because every alive poll timed out and
+# the old janitor fail-closed to sweeping nothing — the verdict log is the
+# tracker-independent proof of death that breaks that deadlock.
+setup
+jq -n '[{number:79, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+c1="$(claim_post 79 ws 800)"
+printf '%s\n' '2026-09-07T01:00:00Z repo=Matou/idss ready=[79] reason=completed exit=0 duration=300s run=800' >"$CLAIM_VERDICT_LOG"
+touch "$FAKE_DIR/tasks-fail"           # tracker unreachable
+rearmed="$(CLAIM_ALIVE_RETRIES=1 janitor_sweep 2>/dev/null)"
+check "janitor sweeps a terminal-verdict claim with the tracker down" '[ "$rearmed" = "79" ]'
+check "the stale claim comment was deleted" '! grep -q swarm-claim "$FAKE_DIR/comments-79.json"'
+check "agent-working was removed" 'grep -q "DELETE .*issues/79/labels/50" "$FAKE_DIR/calls.log"'
+
+# T20: but a LIVE run with NO verdict is NOT swept when the tracker is down — no
+# proof of death means keep the claim (fail-closed, distinct from T10's mass
+# case, scoped to the verdict-less path).
+setup
+jq -n '[{number:82, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+c1="$(claim_post 82 ws 512)"
+touch "$FAKE_DIR/tasks-fail"
+rearmed="$(CLAIM_ALIVE_RETRIES=1 janitor_sweep 2>/dev/null)"
+check "no verdict + tracker down => claim kept, not swept" '[ -z "$rearmed" ] && grep -q swarm-claim "$FAKE_DIR/comments-82.json"'
+
+# T21: absence ≠ death on one poll. A run absent from a SUCCESSFUL poll is swept
+# only after CLAIM_ABSENCE_THRESHOLD consecutive absent polls — one slow/partial
+# 200 cannot false-sweep a live run. State is file-backed, so it survives the
+# command-substitution subshell each janitor_sweep runs in.
+setup
+jq -n '[{number:80, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+c1="$(claim_post 80 ws 404)"           # run 404 not in alive [512]
+CLAIM_ABSENCE_THRESHOLD=2
+r1="$(janitor_sweep)"
+check "one absent successful poll does not sweep (threshold 2)" '[ -z "$r1" ] && grep -q swarm-claim "$FAKE_DIR/comments-80.json"'
+r2="$(janitor_sweep)"
+check "the second consecutive absent poll reaches threshold and sweeps" '[ "$r2" = "80" ]'
+check "the stale claim was deleted on the threshold poll" '! grep -q swarm-claim "$FAKE_DIR/comments-80.json"'
+
+# T22: the absence streak is CONSECUTIVE — a run reappearing alive resets it.
+setup
+jq -n '[{number:81, labels:[{id:50,name:"agent-working"}]}]' >"$FAKE_DIR/issues-agent-working.json"
+c1="$(claim_post 81 ws 404)"
+CLAIM_ABSENCE_THRESHOLD=2
+janitor_sweep >/dev/null               # 404 absent -> streak 1
+jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":404}]}' >"$FAKE_DIR/tasks.json"
+janitor_sweep >/dev/null               # 404 alive -> streak cleared
+check "a run reappearing alive is not swept" 'grep -q swarm-claim "$FAKE_DIR/comments-81.json"'
+check "the absence streak was cleared on the live poll" '[ ! -f "$FAKE_DIR/absence/404" ]'
+
+# T23: the new defaults are the ones the ticket sized (env-tunable, measured
+# defaults) — assert them from a fresh source with the env unset.
+d="$(env -u CLAIM_ABSENCE_THRESHOLD bash -c ". \"$here/../claim-lib.sh\"; printf %s \"\$CLAIM_ABSENCE_THRESHOLD\"")"
+check "default absence threshold is 2 consecutive polls" '[ "$d" = 2 ]'
+dr="$(env -u CLAIM_ALIVE_RETRIES bash -c ". \"$here/../claim-lib.sh\"; printf %s \"\$CLAIM_ALIVE_RETRIES\"")"
+check "default alive-poll retries is 2" '[ "$dr" = 2 ]'
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

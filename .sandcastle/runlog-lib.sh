@@ -17,14 +17,26 @@
 # tested by tests/runlog-lib-test.sh); runlog_append is the one filesystem
 # touch; worker_wedge is a pure predicate. No network. Never fails its caller.
 
-# runlog_line <started_epoch> <now_epoch> <repo> <ready_nums> <reason> <exit_code>
+# runlog_line <started_epoch> <now_epoch> <repo> <ready_nums> <reason> <exit_code> [<run_id>]
 # One host-log line. Deterministic given fixed epochs (the timestamp is derived
 # from <now_epoch>), so the format pins under test.
+#
+# <run_id> is the Actions run number (SWARM_RUN_ID) — the SAME id a swarm-claim
+# comment carries. When present it is appended as a trailing `run=<id>` field so
+# the claim janitor (claim-lib.sh claim_run_terminal) can sweep a stale claim
+# whose run has a recorded TERMINAL verdict here, tracker-independently (#1279).
+# Appended ONLY when non-empty, so lines from callers that omit it (and every
+# pre-#1279 line already on disk) keep their exact byte-for-byte format.
 runlog_line() {
-  local started="$1" now="$2" repo="$3" ready="$4" reason="$5" ec="$6" ts
+  local started="$1" now="$2" repo="$3" ready="$4" reason="$5" ec="$6" run="${7:-}" ts
   ts="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf '%s repo=%s ready=[%s] reason=%s exit=%s duration=%ss\n' \
-    "$ts" "$repo" "$ready" "$reason" "$ec" "$(( now - started ))"
+  if [ -n "$run" ]; then
+    printf '%s repo=%s ready=[%s] reason=%s exit=%s duration=%ss run=%s\n' \
+      "$ts" "$repo" "$ready" "$reason" "$ec" "$(( now - started ))" "$run"
+  else
+    printf '%s repo=%s ready=[%s] reason=%s exit=%s duration=%ss\n' \
+      "$ts" "$repo" "$ready" "$reason" "$ec" "$(( now - started ))"
+  fi
 }
 
 # runlog_append <logfile> <line...> — append one line, creating the log dir if

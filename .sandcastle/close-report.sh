@@ -65,11 +65,20 @@ export FORGEJO_TOKEN="$token"
 # means the work never landed as a PR: force a refusal with a clear violation.
 landing="${SWARM_POLICY_LANDING:-push}"
 gate_head="${CR_MAIN_HEAD:-origin/main}"
-pr_number="" pr_no_pr="" pr_merged=""
+pr_number="" pr_no_pr="" pr_merged="" pr_superseded=""
 if [ "$landing" = pr ]; then
   if pr_number="$(landing_merged_pr_for "$issue")"; then
     pr_merged=1
     git -C "$root" fetch --quiet origin main 2>/dev/null || true   # so main carries the merge
+  elif pr_superseded="$(landing_superseded_by_pr_for "$issue")" && [ -n "$pr_superseded" ]; then
+    # #151: a multi-host race let ANOTHER host win this ticket — its PR merged and
+    # `closes #$issue` closed the issue on a branch other than agent/issue-$issue,
+    # so this run's work is redundant. Detect it BEFORE the open-PR gate and the
+    # no-PR refusal so a loser with a still-open agent PR, or with no PR at all,
+    # self-closes as SUPERSEDED (below) rather than gating un-merged commits or
+    # dead-ending in `agent-blocked`. (My OWN agent PR being merged is the #108
+    # path above, which keeps its distinct verified-close handling.)
+    :
   elif pr_number="$(landing_open_pr_for "$issue")"; then
     pr_head_sha="$(forgejo_pr_head_sha "$pr_number" || true)"
     if [ -n "$pr_head_sha" ]; then
@@ -84,8 +93,14 @@ if [ "$landing" = pr ]; then
   fi
 fi
 
-# Deterministic verdict. cr_violations echoes one line per failed gate.
-violations="$(cr_violations "$json" "$root" "$gate_head")" && gate_rc=0 || gate_rc=$?
+# Deterministic verdict. cr_violations echoes one line per failed gate. The
+# superseded path (#151) skips it: the winner's PR carries the work, and this
+# run's un-merged commits are NOT on main, so gating them would only manufacture
+# a spurious refusal for work that already landed.
+violations="" gate_rc=0
+if [ -z "$pr_superseded" ]; then
+  violations="$(cr_violations "$json" "$root" "$gate_head")" && gate_rc=0 || gate_rc=$?
+fi
 if [ -n "$pr_no_pr" ]; then
   violations="${violations:+$violations$'\n'}no open agent PR (agent/issue-$issue) for this issue — pr-mode commits land on a PR before they can close it (#13)"
   gate_rc=1
@@ -106,6 +121,7 @@ pretty="$(jq . <<<"$json")"
 # capture left (#574 item 1).
 outcome="$status"
 [ "$gate_rc" -ne 0 ] && outcome="refused"
+[ -n "$pr_superseded" ] && outcome="superseded"   # #151: another host won the race
 commits_csv="$(jq -r '(.commits // []) | join(",")' <<<"$json")"
 echo "SANDCASTLE_ATTEMPT issue=$issue outcome=$outcome commits=$commits_csv"
 
@@ -152,6 +168,24 @@ cr_release_claim_labels() { # cr_release_claim_labels <issue>
     esac
   done
 }
+
+# #151: superseded — a multi-host race let another host WIN this ticket. Its PR
+# merged and `closes #$issue` closed the issue on main via a branch other than
+# agent/issue-$issue, so this run's work is redundant. Recognise the landed work
+# instead of dead-ending in `agent-blocked`: release the claim labels the merge
+# path would (so the ticket is left CLOSED with neither agent-working nor
+# ready-for-agent, never the confusing dual state), post a superseded verdict,
+# and exit 0. Reached only when the issue reads `closed` AND the winning merged
+# PR was found (landing_superseded_by_pr_for), so this never self-closes work
+# that never landed.
+if [ -n "$pr_superseded" ]; then
+  super_url="$(forgejo_get "/pulls/$pr_superseded" 2>/dev/null | jq -r '.html_url // empty' 2>/dev/null || true)"
+  super_link="PR #$pr_superseded${super_url:+ ($super_url)}"
+  post_comment ":white_check_mark: **close-report: superseded** — this issue was already closed by the merge of $super_link (a multi-host race, #151); its \`closes #$issue\` landed the work on main from a branch other than \`agent/issue-$issue\`. This run's work is redundant, so its un-merged commits are NOT gated; releasing the claim labels and closing out (never \`agent-blocked\`)."
+  echo "close-report: #$issue superseded by merged $super_link — releasing claim labels, exit 0 (multi-host race, #151)."
+  cr_release_claim_labels "$issue"   # #151/#22: the winner's merge closed it — release the claim labels
+  exit 0
+fi
 
 if [ "$gate_rc" -ne 0 ]; then
   bullets="$(printf '%s\n' "$violations" | sed 's/^/- /')"

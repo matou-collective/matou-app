@@ -116,6 +116,34 @@ heal_rails "$co" "$pre" || fail "selector-drift heal was refused (rule too broad
 [ "$(git -C "$co" rev-parse HEAD)" != "$pre" ] || fail "selector-drift heal reset"
 pass=$((pass+1))
 
+# R1e: a MOVED assertion (#1501) — the SAME expect(...) line removed at one place
+#      and re-added byte-for-byte (modulo indentation) elsewhere in the one diff
+#      PASSES. Nothing the check proves changed; only WHERE it runs did (fire 1
+#      of #1491: the read-back pulled below the Continue that persists it).
+co="$tmp/coR1e"; git init -q "$co"
+( cd "$co"; git config user.email t@t; git config user.name t
+  printf 'expect(count).toBe(1)\nsave()\n' > journey.spec.ts; git add -A; git commit -qm base )
+pre="$(git -C "$co" rev-parse HEAD)"
+( cd "$co" && printf 'save()\n  expect(count).toBe(1)\n' > journey.spec.ts \
+  && git commit -aqm "rehearsal healer: move the read-back below the save (sigR1e)" )
+heal_rails "$co" "$pre" || fail "a MOVED assertion (verbatim, re-indented) was refused as a weakened check (#1501)"
+[ "$(git -C "$co" rev-parse HEAD)" != "$pre" ] || fail "moved-assertion heal was reset"
+pass=$((pass+1))
+
+# R1f: a diff that moves ONE assertion verbatim but CHANGES another's value (no
+#      verbatim twin) STILL refuses — the #1501 exemption must not become a mask
+#      for smuggling a weakened check in alongside a genuine move.
+co="$tmp/coR1f"; git init -q "$co"
+( cd "$co"; git config user.email t@t; git config user.name t
+  printf 'expect(a).toBe(1)\nexpect(b).toBe(2)\n' > journey.spec.ts; git add -A; git commit -qm base )
+pre="$(git -C "$co" rev-parse HEAD)"
+( cd "$co" && printf 'gap()\nexpect(a).toBe(1)\nexpect(b).toBe(3)\n' > journey.spec.ts \
+  && git commit -aqm "rehearsal healer: move one, weaken another (sigR1f)" )
+heal_rails "$co" "$pre" && fail "a diff that moves one assertion but WEAKENS another passed (#1501 mask too broad)"
+[ "$HEAL_RAIL_REASON" = "assertion rule" ] || fail "reason not assertion rule (mixed move+weaken): $HEAL_RAIL_REASON"
+[ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after mixed move+weaken breach"
+pass=$((pass+1))
+
 # --- #1144 refusal rule 3: never change a product-behaviour surface ----------
 
 # Run the product-surface checks from a cwd that HAS real internal/ and app/src
@@ -156,6 +184,51 @@ co="$tmp/coR3d"; pre="$(mkco "$co")"
 ( cd "$co" && mkdir -p internal && echo 'behaviour' > internal/foo.go && git add -A && git commit -qm "rehearsal healer: surface no globs" )
 heal_rails "$co" "$pre" || fail "internal/ refused with no surface globs declared (rule not a no-op)"
 pass=$((pass+1))
+
+# --- #1270 fast lane: rule 3 (product surface) is LIFTED, every other rail binds
+# The fast lane is the healer's confident two-way product build; it keeps the
+# cap and the never-weaken-a-check rule but MAY touch a product surface.
+export HEAL_PRODUCT_SURFACE_GLOBS='internal/* app/src/*'
+# FL1: a product-surface change that heal_rails REFUSES (proved in R3a) passes
+# fast_lane_rails and is NOT reset (the commit stands, ready to push+close).
+co="$tmp/coFL1"; pre="$(mkco "$co")"
+( cd "$co" && mkdir -p internal && echo 'orderedOneshot()' > internal/archive.go && git add -A && git commit -qm "rehearsal healer: gate the archive oneshot" )
+fast_lane_rails "$co" "$pre" || fail "fast_lane_rails must ALLOW a product-surface fix (#1270)"
+[ "$(git -C "$co" rev-parse HEAD)" != "$pre" ] || fail "fast lane reset a clean product-surface commit"
+pass=$((pass+1))
+
+# FL2: the cap STILL binds on the fast lane (over-cap → refuse, swarmable)
+co="$tmp/coFL2"; pre="$(mkco "$co")"
+( cd "$co" && mkdir -p internal && { for i in $(seq 1 "$((HEAL_LINE_CAP + 10))"); do echo "line $i"; done; } > internal/big.go && git add -A && git commit -qm "rehearsal healer: over-cap product fix" )
+fast_lane_rails "$co" "$pre" && fail "fast lane must keep the line cap (#1270)"
+[ "$HEAL_RAIL_SWARMABLE" = "true" ] || fail "an over-cap fast-lane fix is swarm work: $HEAL_RAIL_SWARMABLE"
+[ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after fast-lane cap breach"
+pass=$((pass+1))
+
+# FL3: rule 1 (weaken a check) STILL binds on the fast lane — the masking-
+# pressure guard the ruling insisted on is NOT relaxed
+co="$tmp/coFL3"; pre="$(mkco "$co")"
+( cd "$co" && printf 'expect(count).toBe(1)\n' > journey.spec.ts && git add -A && git commit -qm base2 )
+pre="$(git -C "$co" rev-parse HEAD)"
+( cd "$co" && sed -i 's/toBe(1)/toBe(2)/' journey.spec.ts && git commit -aqm "rehearsal healer: relax the assertion via the fast lane" )
+fast_lane_rails "$co" "$pre" && fail "fast lane must STILL refuse a weakened assertion (#1270 rule 1 stays)"
+[ "$HEAL_RAIL_REASON" = "assertion rule" ] || fail "fast-lane assertion refusal reason wrong: $HEAL_RAIL_REASON"
+[ "$(git -C "$co" rev-parse HEAD)" = "$pre" ] || fail "no reset after fast-lane assertion breach"
+pass=$((pass+1))
+
+# FL4: the 3-file cap STILL binds on the fast lane
+co="$tmp/coFL4"; pre="$(mkco "$co")"
+( cd "$co" && mkdir -p internal && for i in 1 2 3 4; do echo x > "internal/f$i.go"; done && git add -A && git commit -qm "rehearsal healer: four product files" )
+fast_lane_rails "$co" "$pre" && fail "fast lane must keep the 3-file cap"
+[ "$HEAL_RAIL_REASON" = "3-file cap" ] || fail "fast-lane file-cap reason wrong: $HEAL_RAIL_REASON"
+pass=$((pass+1))
+
+# FL5: self-modification STILL refused on the fast lane
+co="$tmp/coFL5"; pre="$(mkco "$co")"
+( cd "$co" && echo hacked >> .sandcastle/rehearsal-report.sh && git commit -aqm "rehearsal healer: sly via fast lane" )
+fast_lane_rails "$co" "$pre" && fail "fast lane must STILL refuse self-modification"
+pass=$((pass+1))
+unset HEAL_PRODUCT_SURFACE_GLOBS
 
 cd "$tmp"
 # 4: touching .sandcastle/rehearsal-* → breach + reset (self-mod guard)

@@ -65,17 +65,26 @@ jq -n '{"workflow_runs":[{"name":"swarm","status":"running","run_number":512},{"
 jq -n '[{id:900, body:"swarm-claim host=ws run=512\nx"}]' >"$FAKE_DIR/comments-431.json"
 check "all contested emits []" '[ "$(bash "$script")" = "[]" ]'
 
-# T5: fail-closed — the alive-runs fetch itself fails (actions/tasks API blip,
-# the tasks-fail seam). Blind arbitration is worse than skipping the round:
-# claim_won's own-id short-circuit would make this host look like the sole
-# live claimant of a ticket another host may already legitimately hold. The
-# wrapper must emit [] AND post no claim comment at all this round (Ben's
-# fail-closed ruling, 2026-08-11, review of commit 68fb911).
+# T5 (idss#1425): fail-closed AND LOUD — the alive-runs fetch itself fails
+# (actions/tasks API blip, the tasks-fail seam). Blind arbitration is worse than
+# skipping the round: claim_won's own-id short-circuit would make this host look
+# like the sole live claimant of a ticket another host may already legitimately
+# hold — so the wrapper still posts NO claim comment this round (Ben's fail-closed
+# ruling, 2026-08-11, review of commit 68fb911). But it must NOT launder that
+# transport fault into a graceful [] on stdout: the prompt shell-expansion renders
+# [] as an EMPTY ready-tasks queue, which a worker's "Done" check reads as a
+# completion candidate — fail-closed at the script, fail-OPEN at the surface
+# (idss#1425). A required read that faulted fails LOUD (non-zero exit, no []),
+# exactly like the failing-lister path below (T-idss#1195e / #52 / GOTCHAS 7), so
+# run-swarm re-keys it and the backstop re-fires instead of the lane stopping.
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
 touch "$FAKE_DIR/tasks-fail"
-check "alive-runs API failure emits []" '[ "$(bash "$script")" = "[]" ]'
-check "no claim comment posted on API failure" '! grep -q swarm-claim "$FAKE_DIR/comments-431.json" 2>/dev/null'
+aout="$(bash "$script" 2>"$FAKE_DIR/aerr")"; arc=$?
+check "alive-runs API failure fails LOUD, non-zero (idss#1425)" '[ "$arc" -ne 0 ]'
+check "alive-runs API failure does NOT emit a laundered []" '[ "$aout" != "[]" ]'
+check "no claim comment posted on API failure (fail-closed preserved)" '! grep -q swarm-claim "$FAKE_DIR/comments-431.json" 2>/dev/null'
 check "no comment POST issued on API failure" '! grep -q "POST .*issues/431/comments" "$FAKE_DIR/calls.log"'
+check "alive-runs API failure says why on stderr" 'grep -q "alive-runs" "$FAKE_DIR/aerr"'
 
 # T-#468: SWARM_RUN_ID unset/0 refuses to claim — a run-0 claim looks
 # protective but every other host arbitrates over it and the janitor sweeps

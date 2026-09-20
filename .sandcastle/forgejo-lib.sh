@@ -152,6 +152,26 @@ forgejo_merged_pr_for() { # forgejo_merged_pr_for <head-branch> -> newest MERGED
   jq -r --arg b "$branch" '[.[]? | select(.head.ref==$b and .merged==true)] | sort_by(.number) | reverse | .[0].number // empty' <<<"$resp" 2>/dev/null
 }
 
+forgejo_closing_merged_pr() { # forgejo_closing_merged_pr <N> [exclude-branch] -> newest MERGED PR number whose body has a `closes #N` closing-ref (from a branch != exclude-branch) on stdout (empty if none); rc = curl's on the GET
+  # #151: a multi-host race lets two hosts each complete the same ticket. The
+  # WINNER merges — often on a `sandcastle/worker/*` branch, which
+  # forgejo_merged_pr_for (agent/issue-<N> ONLY, by #108 design) never sees — and
+  # its `closes #N` closes the issue on main. The LOSER's close-report must be
+  # able to recognise that the work already landed via ANY branch's PR, so it can
+  # self-close as superseded rather than dead-end `agent-blocked`. Match Forgejo's
+  # own closing keywords (close/fix/resolve + s/d/es/ed) on `#N` with a trailing
+  # word boundary (so `#28` never matches `#280`); exclude the caller's own agent
+  # branch so the #108 reconcile path keeps its distinct handling.
+  local n="$1" exclude="${2:-}" resp
+  resp="$(forgejo_get "/pulls?state=closed&limit=50")" || return 1
+  jq -r --arg n "$n" --arg ex "$exclude" '
+    [ .[]?
+      | select(.merged==true)
+      | select((.head.ref // "") != $ex)
+      | select((.body // "") | test("(?i)(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))\\s+#" + $n + "\\b"))
+    ] | sort_by(.number) | reverse | .[0].number // empty' <<<"$resp" 2>/dev/null
+}
+
 forgejo_create_pr() { # forgejo_create_pr <title> <head> <base> <body> -> response JSON on stdout | rc = curl's
   forgejo_post "/pulls" \
     "$(jq -n --arg t "$1" --arg h "$2" --arg base "$3" --arg b "$4" '{title:$t, head:$h, base:$base, body:$b}')"
@@ -217,6 +237,17 @@ forgejo_repo_default_merge_style() { # forgejo_repo_default_merge_style -> the r
   esac
 }
 
+# Transient-5xx posture for the #20 probe, matching list-ready-tasks.sh's api()
+# (#52): the probe is preflight's ONE live network call and preflight fails
+# CLOSED, so a brief Forgejo blip used to red the whole tick — 7 seconds in,
+# with the run reported as `preflight-red` as if the bot had lost its write
+# access (run 20865, 2026-09-09T21:46Z, GOTCHAS #217). Retry with exponential
+# backoff, each attempt bounded by _forgejo_get's `--max-time`. A sustained
+# outage still exhausts the attempts and reds, but names TRANSPORT, never a
+# permission verdict it never actually read.
+FORGEJO_PROBE_RETRIES="${FORGEJO_PROBE_RETRIES:-3}"
+FORGEJO_PROBE_BACKOFF="${FORGEJO_PROBE_BACKOFF:-2}"
+
 forgejo_issue_write_probe() { # forgejo_issue_write_probe -> rc 0 if the bot has repo write; LOUD + rc 1 otherwise (#20)
   # Zero-token preflight probe: GET the repo root with the bot token and assert
   # the caller's `permissions` block grants write. #19 looked like four
@@ -228,10 +259,17 @@ forgejo_issue_write_probe() { # forgejo_issue_write_probe -> rc 0 if the bot has
   # deeper — close-report.sh closes-then-verifies and claim_mark_working pages
   # on a 403 label write — so the three layers together never again read a
   # permission gap as a clean close.
-  local resp push
-  resp="$(forgejo_get "")" || {
-    echo "forgejo: repo probe GET failed — cannot confirm the bot can write issues on $(forgejo_repo_slug)"
-    return 1; }
+  local resp push attempt=1 delay="$FORGEJO_PROBE_BACKOFF"
+  while :; do
+    resp="$(forgejo_get "")" && break
+    if [ "$attempt" -ge "$FORGEJO_PROBE_RETRIES" ]; then
+      echo "forgejo: repo probe GET failed after $attempt attempt(s) — $(forgejo_repo_slug) is unreachable or 5xx-ing; this is TRANSPORT, not a permission verdict (the bot's write access was never read)"
+      return 1
+    fi
+    sleep "$delay"
+    delay=$((delay * 2))
+    attempt=$((attempt + 1))
+  done
   push="$(jq -r '.permissions.push // false' <<<"$resp" 2>/dev/null)"
   [ "$push" = "true" ] && return 0
   echo "forgejo: the bot has no write access (permissions.push=$push) on $(forgejo_repo_slug) — issue label/state writes will 403 (the machines team needs repo.issues + repo.pulls write, not just repo.code)"

@@ -1015,6 +1015,25 @@ grep -qi "won the cross-host claim" <<<"$out" || fail "24b: the winner must repo
 grep -q "outcome: advanced" <<<"$out" || fail "24b: the winner works the ticket to completion (got: $out)"
 echo "ok 24b a host whose claim is lowest wins and runs exactly one session"
 
+# 24d (#1412): a TOMBSTONE claim — a peer's `swarm-claim` comment with a LOWER
+# comment id but a created_at older than the claim TTL — must NOT outrank this
+# host. Once a ticket is back to ready-for-session no sweep reaps a dead peer's
+# claim (janitor_sweep and the #63 stale-claim sweep both only visit
+# agent-working), so counting it as live wedged the ticket for every host forever
+# (#1373 sat ready-for-session for an hour). TTL-expired, it is ignored: this
+# host WINS and works the ticket. (created_at 2020 is stale under any TTL; this
+# host's own posted claim carries no created_at and is kept fresh + wins by id.)
+reset_case
+mkissue 77
+jq -s '.' "$tmp/fixtures/issue-77.json" > "$tmp/fixtures/queue.json"
+printf '%s\n' '[{"id":50,"created_at":"2020-01-01T00:00:00Z","body":"swarm-claim host=deadpeer run=999\n(automated multi-host claim)"}]' > "$tmp/fixtures/comments-77.json"
+echo 1000 > "$tmp/fixtures/.comment-seq"   # this host's claim gets id 1001 > 50, yet the id-50 tombstone is TTL-expired
+out="$(run_runner)"
+grep -qi "won the cross-host claim" <<<"$out" || fail "24d: a TTL-expired lower-id tombstone must not block the win (got: $out)"
+[ "$(wc -l < "$tmp/claude.calls")" = 1 ] || fail "24d: the winner past a tombstone must run exactly one session (got: $(wc -l < "$tmp/claude.calls"))"
+grep -q "outcome: advanced" <<<"$out" || fail "24d: the winner works the tombstoned ticket to completion (got: $out)"
+echo "ok 24d a TTL-expired peer tombstone is ignored — this host wins and works the ticket"
+
 # 24c: claim_post fails (a forge blip returns no id) → the runner cannot
 #      arbitrate, so it falls back to today's behaviour and RUNS (the rare
 #      unarbitrated race is the pre-#125 status quo, never a wedge).

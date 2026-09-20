@@ -62,11 +62,23 @@ CLAIM_CANDIDATE_CALLS="${CLAIM_CANDIDATE_CALLS:-5}"
 # Below this the derived cap is too tight to be worth a round trip (healthy claim
 # calls on this forge measure 1.0-1.5 s) — stop the walk and emit [] instead.
 CLAIM_CALL_FLOOR="${CLAIM_CALL_FLOOR:-2}"
-# The prefetch leg's cap, sized OVER the measured actions/tasks tail (12.2 s max
-# of 5 samples) rather than under it — see (b). Fail-closed is still the outcome
-# when it genuinely stalls; it is no longer the outcome when the forge is merely
-# slow.
-CLAIM_ALIVE_MAX_TIME="${CLAIM_ALIVE_MAX_TIME:-14}"
+# The prefetch leg's cap, sized OVER the tracker's observed p95 rather than under
+# it — see (b). #1279: on the #1235 archive drive (2026-09-05/06) the p95 ran
+# well above the old 14 s (which was itself only just over the 12.2 s max of the
+# 5 samples on 09-03), so a healthy-but-slow forge kept tripping the fail-closed
+# arm and #1246/#1247 churned 80 min / ~3 h on claim latency alone. 20 s clears
+# that p95 with headroom and still sits safely under CLAIM_NEXT_DEADLINE (26 s)
+# — a 20 s prefetch leaves 6 s, which fails closed gracefully rather than REDs.
+# There is no dedicated claim-latency log to derive an exact p95 from yet; set
+# CLAIM_LATENCY_LOG (claim-lib.sh) to start recording one and retune from disk.
+CLAIM_ALIVE_MAX_TIME="${CLAIM_ALIVE_MAX_TIME:-20}"
+# The retry-on-slow-poll behaviour (claim-lib.sh, #1279) belongs to the HOST-mode
+# janitor, which runs under no wall-clock ceiling. This in-sandbox prefetch is
+# bound by the 30 s prompt-expansion budget and is DESIGNED to fail closed fast
+# (idss#1195) — retrying here would blow that budget — so it takes a single
+# attempt. An explicit operator override still wins (`:=`, not `=`).
+: "${CLAIM_ALIVE_RETRIES:=0}"
+export CLAIM_ALIVE_RETRIES
 # Wall-clock bound on the lister leg. list-ready-tasks.sh retries each read with
 # backoff at LIST_READY_MAX_TIME (30 s) apiece — a posture tuned for #52's
 # transient 5xx, but one whose worst case (~96 s) is unbounded relative to a 30 s
@@ -163,15 +175,25 @@ fi
 n="$(jq length <<<"$ready")"
 [ "$n" -eq 0 ] && { echo '[]'; exit 0; }
 
-# Fail CLOSED, not open, on an alive-runs fetch failure: falling back to '[]'
-# here would make claim_won's own-id short-circuit the ONLY signal it ever
-# sees, so this host would look like the sole live claimant and could win a
-# ticket another host already holds — a double-claim the janitor can't catch
-# either, since both runs really are alive. Skip the round instead; the cost
-# is one cron/self-rearm cycle, not a correctness hole. No claim comment gets
-# posted, so nothing needs cleaning up. (Ben's fail-closed ruling, 2026-08-11,
-# review of commit 68fb911.)
-[ "$alive_rc" -eq 0 ] || { echo '[]'; exit 0; }
+# Fail CLOSED — AND LOUD — on an alive-runs fetch failure. Falling back to a
+# graceful '[]' here would make claim_won's own-id short-circuit the ONLY signal
+# it ever sees, so this host would look like the sole live claimant and could win
+# a ticket another host already holds — a double-claim the janitor can't catch
+# either, since both runs really are alive. So we still claim nothing and post no
+# comment this round. But we must NOT emit '[]': that laundered empty array is
+# inserted by the prompt shell-expansion as an EMPTY ready-tasks queue, which a
+# worker's "Done" check treats as a completion candidate — fail-closed at the
+# script, fail-OPEN at the surface that matters (idss#1425). A transport fault on
+# a REQUIRED read fails LOUD, exactly like the lister-fault path above (#52 /
+# GOTCHAS 7): the non-zero exit surfaces as a PromptError the backstop re-fires,
+# never a silent "nothing to do" that quietly stops the lane. Exiting here (before
+# the walk) posts no claim, so the fail-CLOSED anti-double-claim property is
+# untouched — only the LOUDNESS changes. (Ben's fail-closed ruling, 2026-08-11,
+# review of commit 68fb911; loudness added idss#1425.)
+if [ "$alive_rc" -ne 0 ]; then
+  echo "claim-next-task: the alive-runs fetch (the actions-API tasks list) faulted (rc=$alive_rc) — failing LOUD rather than laundering it into a [] that renders as an empty ready queue and reads as 'nothing to do' (idss#1425). No claim posted; run-swarm re-keys this to the claim stage and the cron/backstop re-fires." >&2
+  exit "$alive_rc"
+fi
 alive="$(cat "$alive_file")"
 for i in $(seq 0 $((n - 1))); do
   # #77: stop the walk once our wall-clock budget is spent. $SECONDS already

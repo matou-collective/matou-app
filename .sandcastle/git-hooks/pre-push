@@ -20,10 +20,22 @@
 # drift, so a network blip can never stall the reconcile rail and any bug here
 # degrades to today's behaviour (seam still catches real drift on main).
 #
-# Gate 2 — Go language gate (#198). Sandbox only (FACTORY_SANDBOX=1), UNCHANGED.
-# A human's or the swarm harness's own host push is never gated by it; they run
-# the full seam through `nix develop`, and reconcile push must not stall on a Go
-# build.
+# Gate 2 — TypeScript lint gate (#1252). Runs in EVERY workdir, like Gate 1: a
+# TS lint break reaches `main` through the HOST reconcile push, not only the
+# sandbox — the sandbox's in-loop `pnpm lint` did not stop b5cb2c30
+# (prefer-const) or the three commits that rode on it (#1251), and every real
+# host push (session/swarm/human) was un-gated for TS. eslint runs ONLY when the
+# pushed range touches TypeScript, so an ordinary push pays only a local diff.
+#
+# Gate 3 — Go language gate (#198). The FULL Go seam (build/vet/test/lint) stays
+# sandbox only (FACTORY_SANDBOX=1): reconcile push must not stall on a Go build
+# (heavier than eslint). But this gate's original "no host-side Go hole to close"
+# premise was FALSE — gofmt debt reaches main through the HOST push, not the
+# sandbox: f291b547 (#1429) landed un-gofmt'd via a session-runner host push and
+# red'd #344 on main, the Go twin of #1252's TS hole. So Gate 3b (#1458) adds a
+# HOST-side gofmt-ONLY sub-gate: `gofmt -l` is a pure parse+print (no nix, no
+# compile, sub-second), so unlike the full seam it costs nothing on every host
+# push. It fires only when the pushed range touches Go, matching Gate 2's shape.
 #
 # Wired via `git config core.hooksPath .sandcastle/git-hooks` — in the sandbox
 # from .sandcastle/main.mts's onSandboxReady, and in real workdirs from
@@ -93,9 +105,17 @@ if [ "$(_drift_gate 2>/dev/null | tail -1)" = "DRIFT_BLOCK" ]; then
   exit 1
 fi
 
-# ── Gate 2: Go language gate (sandbox only; unchanged, #198) ──────────────────
+# ── Gates 2 & 3: language gates ──────────────────────────────────────────────
+# The sandbox runs the FULL gate (Go seam stages AND the TS lint gate) via
+# `--prepush`. Every OTHER workdir — the session/swarm host reconcile push and a
+# human's push — runs the HOST profile (`--prepush-host`): the full TS lint gate
+# (#1252, the push through which a TS lint break lands on main) PLUS the cheap
+# gofmt-only Go gate (Gate 3b, #1458, the push through which gofmt debt landed on
+# main — f291b547/#1429). The heavy Go seam stays sandbox-only (#198). Each stage
+# is cheap unless the pushed range actually touches the gated language.
 if [ "${FACTORY_SANDBOX:-}" = "1" ]; then
   printf '%s\n' "$_prepush_stdin" | bash "$root/.sandcastle/gate.sh" --prepush
   exit $?
 fi
-exit 0
+printf '%s\n' "$_prepush_stdin" | bash "$root/.sandcastle/gate.sh" --prepush-host
+exit $?

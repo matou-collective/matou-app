@@ -46,6 +46,38 @@
 # schedule-backstop.sh, heal.sh and forgejo-lib.sh already use.
 CLAIM_API_MAX_TIME="${CLAIM_API_MAX_TIME:-30}"
 
+# ── #1279: liveness ≠ tracker-slow ──────────────────────────────────────────
+# On the #1235 archive drive (2026-09-05/06) the tracker cost more wall-clock
+# than the model did — #1246 waited 80 min and #1247 nearly 3 h on claim churn
+# alone — because a slow `actions/tasks` read was being read as "run dead". Two
+# knobs make a slow tracker a RETRY, never a death sentence:
+#   - CLAIM_ALIVE_RETRIES: a timed-out / 5xx alive poll BACKS OFF and re-reads
+#     (bounded) before the caller may conclude anything. The library default is
+#     2 for the HOST-mode janitor (no wall-clock ceiling); claim-next-task.sh
+#     sets 0 for its in-sandbox prefetch, which is bound by the 30 s
+#     prompt-expansion budget and fails closed fast by design (idss#1195).
+#   - CLAIM_ALIVE_RETRY_SLEEP: backoff seconds between those re-reads. Tests set
+#     0 so the suite does not actually sleep.
+CLAIM_ALIVE_RETRIES="${CLAIM_ALIVE_RETRIES:-2}"
+CLAIM_ALIVE_RETRY_SLEEP="${CLAIM_ALIVE_RETRY_SLEEP:-2}"
+# The host-side completion log the stale-claim sweeper keys on (#1279 ask 1): a
+# claim whose run has a recorded TERMINAL verdict here is swept without waiting
+# on the tracker at all. Same default path run-swarm.sh / landing-lib.sh write.
+CLAIM_VERDICT_LOG="${CLAIM_VERDICT_LOG:-${SWARM_RUNLOG:-$HOME/swarm/logs/run-swarm-verdicts.log}}"
+# Absence-based sweeping (#1279 ask 1, second arm): a claim whose run is absent
+# from a SUCCESSFUL alive poll is not swept on the strength of one poll — a
+# slow/partial-but-200 tracker response would false-sweep a live run. A run must
+# be absent across this many consecutive SUCCESSFUL polls (state kept per run id
+# under CLAIM_ABSENCE_STATE_DIR) before an absence-only sweep. A failed poll
+# never counts (fail-closed). The verdict-log signal above is exempt — a recorded
+# terminal verdict is proof, not a guess, and sweeps on the first pass.
+CLAIM_ABSENCE_THRESHOLD="${CLAIM_ABSENCE_THRESHOLD:-2}"
+CLAIM_ABSENCE_STATE_DIR="${CLAIM_ABSENCE_STATE_DIR:-$HOME/swarm/state/claim-absence}"
+# Optional per-read latency sink so the p95 the budgets are sized to (#1279 ask
+# 3) can be MEASURED off disk rather than guessed. Default unset = no-op; when
+# set, claim_alive_runs appends `<epoch> dur=<n>s rc=<n>` per read.
+CLAIM_LATENCY_LOG="${CLAIM_LATENCY_LOG:-}"
+
 _claim_api() { curl -sf --max-time "$CLAIM_API_MAX_TIME" -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
 claim_label_id() { # claim_label_id <name> -> id | rc 1 (LOUD on miss)
@@ -75,9 +107,62 @@ claim_alive_runs() { # -> JSON array of in-progress swarm run numbers | rc 1 on 
   # silently always returned [], so claim_won's arbitration only ever saw a
   # caller's OWN claim as alive and every racing host "won" — two hosts fully
   # implemented #536 before either noticed the other.
-  local raw
-  raw="$(_claim_api "$FORGEJO_API/actions/tasks?limit=100&page=1")" || return 1
-  jq -c '[.workflow_runs[]? | select((.name == "swarm" or (.name | test("^swarm \\("))) and (.status == "running" or .status == "waiting")) | .run_number]' <<<"$raw"
+  # #1279: a timed-out / 5xx read is the tracker being SLOW, not the run being
+  # dead. Retry (bounded, with backoff) before surfacing the failure, so a
+  # transient blip does not force the caller's fail-closed arm — the janitor
+  # then drops a live claim, claim-next-task then churns a whole cron cycle. The
+  # jq filter and the rc-nonzero-on-final-failure contract are unchanged; only
+  # WHETHER we re-read on failure is new (retries default 0 in the sandbox).
+  local raw rc attempt=0 t0 dur
+  while :; do
+    t0="$(date +%s)"
+    # `|| rc=$?` (not a bare `raw=$(...)`) so a curl failure is CAPTURED, not an
+    # exit under a sourcing caller's `set -e` (claim-next-task.sh) — the same
+    # guard the original single-shot `... || return 1` relied on.
+    rc=0; raw="$(_claim_api "$FORGEJO_API/actions/tasks?limit=100&page=1")" || rc=$?
+    if [ -n "$CLAIM_LATENCY_LOG" ]; then
+      dur=$(( $(date +%s) - t0 ))
+      printf '%s dur=%ss rc=%s\n' "$t0" "$dur" "$rc" >>"$CLAIM_LATENCY_LOG" 2>/dev/null || true
+    fi
+    if [ "$rc" -eq 0 ]; then
+      jq -c '[.workflow_runs[]? | select((.name == "swarm" or (.name | test("^swarm \\("))) and (.status == "running" or .status == "waiting")) | .run_number]' <<<"$raw"
+      return 0
+    fi
+    [ "$attempt" -ge "$CLAIM_ALIVE_RETRIES" ] && return "$rc"
+    attempt=$((attempt + 1))
+    if [ "${CLAIM_ALIVE_RETRY_SLEEP:-0}" -gt 0 ] 2>/dev/null; then sleep "$CLAIM_ALIVE_RETRY_SLEEP"; fi
+  done
+}
+
+claim_run_terminal() { # claim_run_terminal <run> [<logfile>] -> rc 0 if run N has a recorded TERMINAL verdict
+  # #1279 ask 1: the host-side run-swarm-verdicts.log records one line per run
+  # EXIT (reason=completed / died-in:* / no-worker-spawned / …), stamped with
+  # `run=<id>` — the same Actions run number a swarm-claim carries. A claim whose
+  # run appears there has demonstrably finished, so its lingering comment/label
+  # can be swept without consulting the (possibly unreachable) tracker at all —
+  # exactly the #1247 deadlock, where the janitor could not sweep because every
+  # alive poll timed out. The pre-merge `pr-opened` breadcrumb is written while
+  # the run is STILL alive (landing-lib.sh), so it is explicitly NOT terminal.
+  local run="$1" log="${2:-$CLAIM_VERDICT_LOG}"
+  [ -n "$run" ] && [ "$run" != 0 ] || return 1
+  [ -f "$log" ] || return 1
+  grep -E "(^|[[:space:]])run=${run}\$" "$log" 2>/dev/null | grep -qv 'reason=pr-opened'
+}
+
+_claim_absence_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+
+_claim_absence_bump() { # _claim_absence_bump <run> -> echoes the new consecutive-absence count (rc 1 if state unwritable)
+  local run="$1" f n
+  mkdir -p "$CLAIM_ABSENCE_STATE_DIR" 2>/dev/null || return 1
+  f="$CLAIM_ABSENCE_STATE_DIR/$(_claim_absence_key "$run")"
+  n="$(cat "$f" 2>/dev/null || echo 0)"; case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1))
+  printf '%s' "$n" >"$f" 2>/dev/null || return 1
+  printf '%s\n' "$n"
+}
+
+_claim_absence_reset() { # _claim_absence_reset <run> — clears a run's absence streak (it was seen alive, or swept)
+  rm -f "$CLAIM_ABSENCE_STATE_DIR/$(_claim_absence_key "$1")" 2>/dev/null || true
 }
 
 claim_post() { # claim_post <issue> <host> <run> -> comment id | rc 1 on API failure
@@ -99,6 +184,37 @@ _claim_comments() { # _claim_comments <issue> -> "id run" lines, ascending id | 
   # not a claim; skip it.
   jq -r '.[] | select(.body | test("^swarm-claim host=\\S+ run=[0-9]+")) |
     "\(.id) \(.body | capture("run=(?<r>[0-9]+)").r)"' <<<"$raw" | sort -n
+}
+
+claim_fresh_runs() { # claim_fresh_runs <issue> <max_age_seconds> [<now_epoch>] -> JSON array of runs whose claim comment is YOUNGER than max_age | rc 1 on API failure
+  # #1412: a claim comment is a leader-election marker, but nothing expires it.
+  # A session/run that dies, is killed, times out, or loses its host between
+  # claiming and finishing leaves its `swarm-claim` comment behind forever. On an
+  # agent-working ticket the janitor (janitor_sweep) / the session-runner's
+  # stale-claim sweep eventually reap it — but once the ticket returns to
+  # ready-for-session those sweeps NEVER visit it again (both filter on
+  # agent-working), so the comment becomes a TOMBSTONE. The session-runner's
+  # arbitration treated every present claim as a live contender, so one tombstone
+  # with a lower comment id outranked every future live claim and wedged the
+  # ticket forever (#1373 sat ready-for-session for an hour).
+  # This filters the alive-set by AGE, the way HOST_CAPACITY_DRIVE_WANTED_TTL
+  # expires a stale drive reservation: a session-runner session is bounded by
+  # SESSION_RUNNER_TIMEOUT and a swarm run by its own job timeout, so a claim that
+  # has outlived max_age cannot be live — drop its run and claim_won skips it. now
+  # is injectable for hermetic tests; production reads the wall clock. A comment
+  # with a missing/unparseable created_at is kept (fail-closed: an un-ageable
+  # claim is treated as live, never stolen). Same raw-capture-then-filter
+  # discipline as the readers above (finding 1): a curl failure returns rc 1, not
+  # a degraded '[]'.
+  local raw now="${3:-}"
+  [ -n "$now" ] || now="$(date -u +%s)"
+  raw="$(_claim_api "$FORGEJO_API/issues/$1/comments")" || return 1
+  jq -c --argjson max "$2" --argjson now "$now" '
+    [ .[]
+      | select(.body | test("^swarm-claim host=\\S+ run=[0-9]+"))
+      | (.body | capture("run=(?<r>[0-9]+)").r | tonumber) as $run
+      | (try (.created_at | fromdateiso8601) catch null) as $t
+      | if ($t == null) or (($now - $t) <= $max) then $run else empty end ]' <<<"$raw"
 }
 
 claim_won() { # claim_won <issue> <my_comment_id> <alive_runs_json> -> rc 0 if mine is lowest live claim
@@ -149,11 +265,17 @@ claim_release() { # claim_release <issue> <comment_id>
 }
 
 janitor_sweep() { # re-arm agent-working tickets whose claiming run died
-  local alive lid page batch count comments num cid run any_alive
-  # Both guards now fire for real: claim_alive_runs and the per-page issues
-  # fetch each surface curl's own rc (finding 1), so an API blip here means
-  # "do nothing this sweep", never "assume nothing is alive".
-  alive="$(claim_alive_runs)" || return 0
+  local alive alive_rc lid page batch count comments num cid run any_live claim_count cnt
+  # #1279: liveness ≠ tracker-slow. claim_alive_runs already RETRIES a timed-out
+  # / 5xx poll before it fails (see above), so a mere blip no longer surfaces as
+  # a failure here at all. When it STILL fails, the sweep does NOT abort — the
+  # verdict-log signal (claim_run_terminal) is tracker-independent and can sweep
+  # a demonstrably-finished run's stale claim even with the tracker unreachable
+  # (the #1247 deadlock, where every alive poll timed out and the janitor could
+  # therefore sweep nothing). What a failed poll forfeits is ABSENCE-based
+  # sweeping, which needs the alive list: with no verdict and no alive data a
+  # claim is treated as live (fail-closed, finding-1 preserved — T10).
+  alive="$(claim_alive_runs)"; alive_rc=$?
   lid="$(claim_label_id agent-working)" || return 0
   page=1
   while :; do
@@ -165,17 +287,42 @@ janitor_sweep() { # re-arm agent-working tickets whose claiming run died
       # ticket's claims" — skip it rather than treat silence as "no live
       # claim" (the same finding-1 trap, scoped to a single issue).
       comments="$(_claim_comments "$num")" || continue
-      any_alive=""
+      any_live=""       # a claim on this issue we could NOT prove dead
+      claim_count=0
       while read -r cid run; do
         [ -n "$cid" ] || continue
+        claim_count=$((claim_count + 1))
+        # 1. A recorded terminal verdict is proof of death — no tracker needed.
+        if claim_run_terminal "$run"; then
+          continue
+        fi
+        # 2. No verdict AND no alive data (poll failed) → cannot prove dead.
+        if [ "$alive_rc" -ne 0 ]; then
+          any_live=1
+          continue
+        fi
+        # 3. Present in a SUCCESSFUL alive snapshot → live; streak resets.
         if jq -e --argjson r "$run" 'index($r) != null' <<<"$alive" >/dev/null; then
-          any_alive=1
+          _claim_absence_reset "$run"; any_live=1
+          continue
+        fi
+        # 4. Absent from a SUCCESSFUL poll — sweep only after the run has been
+        #    absent across CLAIM_ABSENCE_THRESHOLD consecutive successful polls,
+        #    so one slow/partial-but-200 response cannot false-sweep a live run.
+        cnt="$(_claim_absence_bump "$run" || echo 0)"
+        if [ "${cnt:-0}" -lt "$CLAIM_ABSENCE_THRESHOLD" ]; then
+          any_live=1
         fi
       done <<<"$comments"
-      if [ -z "$any_alive" ]; then
+      # Sweep when every claim is provably dead. A label with NO claim comment is
+      # an orphan — reclaim it only on a SUCCESSFUL poll (evidence the tracker is
+      # reachable), never on a failed one (fail-closed).
+      if { [ "$claim_count" -gt 0 ] && [ -z "$any_live" ]; } ||
+         { [ "$claim_count" -eq 0 ] && [ "$alive_rc" -eq 0 ]; }; then
         while read -r cid run; do
           [ -n "$cid" ] || continue
           _claim_api -X DELETE "$FORGEJO_API/issues/comments/$cid" >/dev/null || true
+          _claim_absence_reset "$run"
         done <<<"$comments"
         _claim_api -X DELETE "$FORGEJO_API/issues/$num/labels/$lid" >/dev/null || true
         printf '%s\n' "$num"

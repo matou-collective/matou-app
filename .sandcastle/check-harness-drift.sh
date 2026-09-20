@@ -23,7 +23,9 @@
 # No FACTORY_REF -> this repo has never vendored the factory core; nothing to
 # enforce, green (mirrors the old marker's absence-is-fine rule).
 #
-# Exit 0 in sync (or not applicable); 1 on drift.
+# Exit 0 in sync (or not applicable); 1 on drift; 3 when the factory could
+# not be reached (a TRANSPORT fault — drift was never read; see the fetch
+# retry posture below).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"       # .sandcastle
@@ -66,16 +68,48 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/factory-drift.XXXXXX")"
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
-if ! (
-  git init -q "$work" &&
-  git -C "$work" remote add origin "$FACTORY_REPO" &&
-  git -C "$work" fetch -q --depth 1 origin "$factory_ref" &&
-  git -C "$work" checkout -q FETCH_HEAD
-) 2>/dev/null; then
+# Transport posture (#1394 / GOTCHAS #217 — the git-transport half of #1359's
+# rule that "a probe that cannot reach the server has not obtained a verdict").
+# This fetch is the drift check's ONE live network call. A transient Forgejo
+# 5xx on it used to red the whole seam at stage one with a bare `exit 128` that
+# read as a harness/drift fault and burned a healer investigation on a fault
+# that was never in this repo (ci run 21982, 2026-09-11). Retry with
+# exponential backoff (each attempt bounded by git's own transport), matching
+# forgejo-lib.sh's #20 probe (#52/#1359): a momentary blip is ridden out. A
+# SUSTAINED outage still exhausts the attempts and reds — the factory was
+# unreachable, so drift was NEVER read, and a guard that could not reach the
+# code it guards must never be mistaken for a clean result (GOTCHAS #30) — but
+# it exits DISTINCTLY (code 3), NAMING TRANSPORT, never a bare exit 128 and
+# never a false "DRIFT".
+FACTORY_FETCH_RETRIES="${FACTORY_FETCH_RETRIES:-3}"
+FACTORY_FETCH_BACKOFF="${FACTORY_FETCH_BACKOFF:-2}"
+EX_TRANSPORT=3
+
+fetch_factory() { # fill a fresh "$work" from FACTORY_REPO@factory_ref; rc 0 on success
   rm -rf "$work"; work="$(mktemp -d "${TMPDIR:-/tmp}/factory-drift.XXXXXX")"
-  git clone -q "$FACTORY_REPO" "$work"
-  git -C "$work" checkout -q "$factory_ref"
-fi
+  if (
+    git init -q "$work" &&
+    git -C "$work" remote add origin "$FACTORY_REPO" &&
+    git -C "$work" fetch -q --depth 1 origin "$factory_ref" &&
+    git -C "$work" checkout -q FETCH_HEAD
+  ) 2>/dev/null; then
+    return 0
+  fi
+  # Some servers refuse by-SHA fetch; a full clone is the fallback.
+  rm -rf "$work"; work="$(mktemp -d "${TMPDIR:-/tmp}/factory-drift.XXXXXX")"
+  ( git clone -q "$FACTORY_REPO" "$work" && git -C "$work" checkout -q "$factory_ref" ) 2>/dev/null
+}
+
+attempt=1; delay="$FACTORY_FETCH_BACKOFF"
+until fetch_factory; do
+  if [ "$attempt" -ge "$FACTORY_FETCH_RETRIES" ]; then
+    echo "check-harness-drift: TRANSPORT — could not reach $FACTORY_REPO after $attempt attempt(s) to fetch $factory_ref; the factory was unreachable, so drift was NOT read here (a transport fault: not a hand-edited vendored file, and not a harness fault)." >&2
+    exit "$EX_TRANSPORT"
+  fi
+  sleep "$delay"
+  delay=$((delay * 2))
+  attempt=$((attempt + 1))
+done
 
 drift=0
 while IFS= read -r name; do

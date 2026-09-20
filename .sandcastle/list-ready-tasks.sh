@@ -78,6 +78,12 @@ fi
 # drive's number. No product number is defaulted here — an empty/unset value
 # excludes NOTHING by number (CLAUDE.md: never default a per-repo value to any
 # product), leaving the label as the sole automatic exclusion.
+# THIRD means (#1468, body-marker, per-ticket-safe): a rehearsal-CONFIRM ticket
+# on the executor rail (REHEARSAL_DRIVE_QUEUE) is a host-mode drive too but wears
+# neither the standing-drive label nor this host's REHEARSAL_DRIVE_ISSUE number —
+# it is excluded below by the `<!-- rehearsal-target: <value> -->` body marker it
+# carries, a fact that travels WITH the ticket so ALL swarm hosts skip it
+# regardless of their own drive-issue env (see the select on `unblocked`).
 : "${REHEARSAL_DRIVE_ISSUE:=}"
 export FORGEJO_TOKEN FORGEJO_API
 
@@ -104,18 +110,35 @@ export LIST_READY_MAX_TIME LIST_READY_RETRIES LIST_READY_BACKOFF
 . "$here/policy-lib.sh"
 policy_load "${SWARM_POLICY_FILE:-}"
 
+# #142: a bare `curl -sf` threw the HTTP status away and returned 22 for ANY
+# failure, so schedule-lib's verdict guessed "transient Forgejo 5xx" for every
+# rc — an expired token (401) or a lost repo (404) then read, forever, as a
+# self-healing outage while the swarm was permanently stalled. Capture the
+# status the failure is IN HAND at (`-o body -w %{http_code}`, dropping bare
+# `-f`), and on exhaustion write ONE stderr line naming the endpoint and the
+# last status. schedule_list_ready_or_verdict words the verdict from that line —
+# a 4xx is a rejection the swarm cannot self-heal, a 5xx/000 is transient.
 api() {
-  local attempt=1 delay="$LIST_READY_BACKOFF" out
+  local url="${*: -1}" attempt=1 delay="$LIST_READY_BACKOFF" http crc body ep
+  body="$(mktemp)"
   while :; do
-    if out="$(curl -sf --max-time "$LIST_READY_MAX_TIME" -H "Authorization: token $FORGEJO_TOKEN" "$@")"; then
-      printf '%s' "$out"
-      return 0
+    http="$(curl -s -o "$body" -w '%{http_code}' --max-time "$LIST_READY_MAX_TIME" \
+      -H "Authorization: token $FORGEJO_TOKEN" "$@")" && crc=0 || crc=$?
+    if [ "$crc" -eq 0 ] && [ "${http:-0}" -ge 200 ] && [ "${http:-0}" -lt 300 ]; then
+      cat "$body"; rm -f "$body"; return 0
     fi
-    [ "$attempt" -ge "$LIST_READY_RETRIES" ] && return 22
+    [ "$attempt" -ge "$LIST_READY_RETRIES" ] && break
     sleep "$delay"
     delay=$((delay * 2))
     attempt=$((attempt + 1))
   done
+  # Exhausted: name WHAT failed and the last status, so the verdict is worded
+  # from an observation and not a guess. `000` is curl's transport failure
+  # (timeout/DNS/connection), not an HTTP reply.
+  ep="${url#"$FORGEJO_API"}"; ep="${ep%%\?*}"
+  echo "list-ready-tasks: GET $ep failed after $LIST_READY_RETRIES attempts (last http=${http:-000})" >&2
+  rm -f "$body"
+  return 22
 }
 
 # #128 (matou-app#286): the /pulls listing (LANDING=pr) and the standing-drive
@@ -168,10 +191,24 @@ while :; do
   # NOTHING — without it xargs fires the check once with an empty $0, curling
   # /issues//dependencies and aborting the whole script on the non-numeric
   # reply. An empty queue is a legitimate "nothing for the swarm" result.
+  # #1468: a rehearsal-CONFIRM ticket on the executor rail (REHEARSAL_DRIVE_QUEUE)
+  # is a host-mode live drive too, but carries NEITHER the standing-drive label
+  # (it is a one-off confirm, not a re-mintable tracker) NOR this host's
+  # REHEARSAL_DRIVE_ISSUE number (that points at the host's OWN rehearsal, 657,
+  # not 1447) — so a generic swarm host passed it every filter above and
+  # hot-loop mis-claimed it (bens-mac-04 run 23886), a claim it structurally
+  # cannot honour (#377: no /dev/kvm, no drive creds) and cannot blocked-path
+  # (removing ready-for-agent sabotages the executor's gate). Exclude it by the
+  # `<!-- rehearsal-target: <value> -->` BODY MARKER that every queued drive
+  # ticket carries (scripts/lib/rehearsal-queue-lib.sh:rehearsal_issue_marker) —
+  # a per-ticket fact that travels WITH the ticket, so ALL swarm hosts skip it
+  # regardless of their own drive-issue env. The regex mirrors the lib's parser,
+  # requiring a real value after the key so a prose mention doesn't match.
   unblocked="$(jq -r --arg drive "$REHEARSAL_DRIVE_ISSUE" \
       '.[]
        | select((((.labels // []) | map(.name) | index("standing-drive")) == null)
-                and ((.number | tostring) != $drive))
+                and ((.number | tostring) != $drive)
+                and (((.body // "") | test("<!--[[:space:]]*rehearsal-target:[[:space:]]*[^[:space:]]+[[:space:]]*-->")) | not))
        | .number' <<<"$batch" | xargs -r -P 10 -n 1 bash -c '
     set -euo pipefail
     # Same transient-5xx posture as api() above (#52): the dependency GET is a
@@ -179,14 +216,23 @@ while :; do
     # xargs failure propagation. Retry with backoff, each attempt --max-time
     # bounded; raw-capture then jq (never curl|jq, which merges curl'"'"'s failure
     # into jq'"'"'s exit — claim-lib finding-1). A persistent failure still exits 1
-    # so a blocker that could not be verified closed is never emitted.
-    attempt=1; delay="${LIST_READY_BACKOFF:-2}"; raw=""
+    # (which xargs propagates as 123) so a blocker that could not be verified
+    # closed is never emitted. #142: capture the status (-o body -w code, not
+    # bare -f) and, on exhaustion, name the endpoint and last status on stderr —
+    # otherwise the failure reaches the verdict as a bare 123 with no cause.
+    attempt=1; delay="${LIST_READY_BACKOFF:-2}"; raw=""; http=""
+    bodyf="$(mktemp)"
     while :; do
-      if raw="$(curl -sf --max-time "${LIST_READY_MAX_TIME:-30}" -H "Authorization: token $FORGEJO_TOKEN" \
-          "$FORGEJO_API/issues/$0/dependencies?limit=50")"; then
-        break
+      http="$(curl -s -o "$bodyf" -w "%{http_code}" --max-time "${LIST_READY_MAX_TIME:-30}" \
+          -H "Authorization: token $FORGEJO_TOKEN" \
+          "$FORGEJO_API/issues/$0/dependencies?limit=50")" && crc=0 || crc=$?
+      if [ "$crc" -eq 0 ] && [ "${http:-0}" -ge 200 ] && [ "${http:-0}" -lt 300 ]; then
+        raw="$(cat "$bodyf")"; rm -f "$bodyf"; break
       fi
-      [ "$attempt" -ge "${LIST_READY_RETRIES:-3}" ] && exit 1
+      if [ "$attempt" -ge "${LIST_READY_RETRIES:-3}" ]; then
+        echo "list-ready-tasks: GET /issues/$0/dependencies failed after ${LIST_READY_RETRIES:-3} attempts (last http=${http:-000})" >&2
+        rm -f "$bodyf"; exit 1
+      fi
       sleep "$delay"; delay=$((delay * 2)); attempt=$((attempt + 1))
     done
     open="$(jq "[.[] | select(.state == \"open\")] | length" <<<"$raw")"

@@ -129,6 +129,7 @@ echo "git $*" >> "${GIT_LOG:?}"
 case "$*" in
   "push origin HEAD:main") exit 1 ;;      # main moved under us, and stays moved
   "rebase origin/main")    exit 1 ;;      # ...with a conflict claude can't fix
+  "merge-base --is-ancestor HEAD origin/main") exit 1 ;;  # HEAD carries commits
 esac
 exit 0
 SH
@@ -149,6 +150,59 @@ PATH="$tmp/bin:/usr/bin:/bin" SWARM_POLICY_LANDING=push \
 grep -q 'push origin HEAD:refs/heads/sandcastle/rescue-' "$GIT_LOG" \
   || fail "the commits must be parked on a rescue branch: $(cat "$GIT_LOG")"
 grep -q 'commits parked on' "$NOTIFY_LOG" || fail "the park must alarm so a human cherry-picks: $(cat "$NOTIFY_LOG")"
+grep -q 'will NOT retry' "$NOTIFY_LOG" || fail "the alarm must say the issues will not retry"
+pass=$((pass+1))
+
+# --- 7. a failed push with NOTHING to land (HEAD already on origin/main) is a
+#        transport fault, not a park: no rescue branch, no cherry-pick alarm.
+#        (Run 22240, 2026-09-12: Forgejo flapped 503 and the ladder cried that
+#        work was stranded when the run had produced no commits at all.) ------
+cat > "$tmp/bin/git" <<'SH'
+#!/usr/bin/env bash
+echo "git $*" >> "${GIT_LOG:?}"
+case "$*" in
+  "push origin HEAD:main") exit 1 ;;      # the forge is 5xx, not moved
+  "fetch origin main")     exit 1 ;;
+  "rebase origin/main")    exit 1 ;;
+  "merge-base --is-ancestor HEAD origin/main") exit 0 ;;  # nothing of ours
+esac
+exit 0
+SH
+chmod +x "$tmp/bin/git"
+: > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
+RC=0
+PATH="$tmp/bin:/usr/bin:/bin" SWARM_POLICY_LANDING=push \
+  landing_stage Matou/matou-app '[{"number":7}]' start || RC=$?
+[ "$RC" = 1 ] || fail "an unreachable forge must still fail the run, got $RC"
+[ "$SWARM_EXIT_REASON" = "push-failed-nothing-to-land" ] || fail "the reason must say there was nothing to land, got '$SWARM_EXIT_REASON'"
+! grep -q 'refs/heads/sandcastle/rescue-' "$GIT_LOG" || fail "an empty park must NOT create a rescue branch: $(cat "$GIT_LOG")"
+! grep -qi 'cherry-pick' "$NOTIFY_LOG" || fail "no commits are at risk — the alarm must not send a human cherry-picking: $(cat "$NOTIFY_LOG")"
+grep -q 'no commits are at risk' "$NOTIFY_LOG" || fail "the notice must say nothing is at risk: $(cat "$NOTIFY_LOG")"
+pass=$((pass+1))
+
+# --- 8. the rescue push ITSELF fails (forge down): the alarm must say the
+#        branch does not exist and name where the commits really are, or a
+#        human hunts a branch that was never created ----------------------
+cat > "$tmp/bin/git" <<'SH'
+#!/usr/bin/env bash
+echo "git $*" >> "${GIT_LOG:?}"
+case "$*" in
+  push*)                   exit 1 ;;      # nothing reaches the forge, park included
+  "rebase origin/main")    exit 1 ;;
+  "merge-base --is-ancestor HEAD origin/main") exit 1 ;;  # HEAD carries commits
+  "rev-parse --short HEAD") echo deadbee0 ;;
+esac
+exit 0
+SH
+chmod +x "$tmp/bin/git"
+: > "$GIT_LOG"; : > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
+RC=0
+PATH="$tmp/bin:/usr/bin:/bin" SWARM_POLICY_LANDING=push \
+  landing_stage Matou/matou-app '[{"number":7}]' start || RC=$?
+[ "$RC" = 1 ] || fail "an unparkable push must fail the run, got $RC"
+[ "$SWARM_EXIT_REASON" = "push-rescue-unreachable" ] || fail "the reason must say the park could not reach the forge, got '$SWARM_EXIT_REASON'"
+grep -q 'does NOT exist' "$NOTIFY_LOG" || fail "the alarm must say the rescue branch does not exist: $(cat "$NOTIFY_LOG")"
+grep -q 'deadbee0' "$NOTIFY_LOG" || fail "the alarm must name the SHA the commits sit at: $(cat "$NOTIFY_LOG")"
 grep -q 'will NOT retry' "$NOTIFY_LOG" || fail "the alarm must say the issues will not retry"
 pass=$((pass+1))
 

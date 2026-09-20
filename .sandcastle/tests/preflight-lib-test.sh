@@ -80,6 +80,24 @@ grep -q 'PREFLIGHT RED' <<<"$out" || fail "the failing guard must reach the job 
 grep -q 'Swarm preflight RED' "$NOTIFY_LOG" || fail "a red preflight must alarm: $(cat "$NOTIFY_LOG")"
 grep -q 'healer signature rails' "$NOTIFY_LOG" || fail "the alarm must name the failing guard, not just say 'red'"
 grep -q 'NO worker was spawned' "$NOTIFY_LOG" || fail "the alarm must say nothing was started"
+# #9 / GOTCHAS #217: the guard FATALs to stderr, so the verdict's error block is
+# empty unless the gate records the line — run 20865 handed the healer a bare
+# `stage=preflight self-tests (#446) exit=1` with NOTHING under it.
+grep -q 'healer signature rails' <<<"${VERDICT_ERROR:-}" \
+  || fail "the gate must record the failing guard as the verdict's error line, got '${VERDICT_ERROR:-}'"
+pass=$((pass+1))
+
+# A red with NO `PREFLIGHT RED` line still must not leave an empty error block.
+: > "$NOTIFY_LOG"; SWARM_EXIT_REASON=""
+cat > "$tmp/preflight-mute" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$tmp/preflight-mute"
+RC=0
+PREFLIGHT_SCRIPT="$tmp/preflight-mute" preflight_gate Acme/widget >"$tmp/pf.out" 2>&1 || RC=$?
+[ "$RC" = 1 ] || fail "a mute red preflight must still abort, got $RC"
+[ -n "${VERDICT_ERROR:-}" ] || fail "a mute red must still leave the healer a non-empty error line"
 pass=$((pass+1))
 
 # ── 2. the policy gate (#12, ADR 0002) ────────────────────────────────────

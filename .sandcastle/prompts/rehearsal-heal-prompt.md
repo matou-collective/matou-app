@@ -32,17 +32,60 @@ not attempt it) and file instead.
    a check drives through (`page.getByRole(...)`, a locator, a click) is fine —
    changing the value it PROVES is not. If the honest fix is to change what a
    check asserts, the red is telling you the product changed: file it.
+   **MOVING a check is allowed** — if the fix is to run the SAME assertion
+   somewhere else (e.g. pull a read-back below the step that persists what it
+   reads) and the assertion line reappears byte-for-byte (indentation aside),
+   nothing it proves is weakened; heal it in-lane, do not pre-emptively file. The
+   rails know the difference: a removed assertion re-added verbatim is a move and
+   passes; a removed assertion whose value changed, or with no twin, is refused.
 
 2. **Exceed the line cap.** At most **3 files** and **400 changed non-test
    lines**, exactly ONE commit. Test files (`*_test.*`, `*.test.*`, `*.spec.*`)
    don't count toward the line cap. A correct fix that is genuinely bigger than
    that is swarm work — file it (confident: true; it is mechanical, just large).
 
-3. **Change a product-behaviour surface.** Anything that alters what a
-   community sees or what a deploy does is off limits — that is a design
-   decision, not a heal. Harness, fixtures, `scripts/`, wiring and test
-   plumbing are fair game. When a fix reaches into product behaviour, file it
-   for a ruling.
+3. **Change a product-behaviour surface AS A DESIGN DECISION.** Anything that
+   alters what a community *sees* or what a deploy *does* — a new default, a
+   changed message at a trust moment, a route shape, a secrets shape, a
+   security posture — is off limits IN-LANE: that is a design/one-way-door
+   decision, not a heal (the front-door, the co-host-route, the
+   secrets class). File it `confident:false` for a ruling.
+
+   But a **mechanical repair that happens to live in product code** — a race,
+   a wrong ordering, a missing await/readiness gate, a wrong constant — does
+   NOT change what the product *means* to do; it makes the code do what it
+   already meant. That is not a design decision, and if it is CONFIDENT and a
+   TWO-WAY door (revertible by a later commit, provable by a test you can write
+   here, no security/trust/design content) it is a **fast-lane** fix — see
+   "The fast lane" below. Pure harness, fixtures, `scripts/`, wiring and test
+   plumbing remain fair game for an ordinary in-lane heal.
+
+## The fast lane (Ben ruled 2026-09-06)
+
+When your fix would trip ONLY rule 3's product-surface path (it edits
+`internal/` or `app/src/`) but is **confident and a two-way door** — a
+mechanical repair, not a design decision — do NOT file-and-wait for the swarm.
+Build it here and close it yourself, hot-context, on this workstation:
+
+- **Build it** (the same red-first discipline as an in-lane heal): write or fix
+  the failing test FIRST, watch it fail, make it pass, then run the package's
+  own tests (`go test ./<package>` / `pnpm --filter <pkg> exec vitest run`).
+  ONE commit, the same `rehearsal healer: ` prefix, `advances #N` never `closes`.
+- **Rules 1 and 2 STILL bind.** The harness's fast-lane rails enforce them as
+  law: never weaken a check (rule 1 — no touching `expect/assert/require/t.Fatal`
+  values, no deleting a test/leg, no adding a skip), at most 3 files and
+  `HEAL_LINE_CAP` non-test lines. A correct fix bigger than the cap is swarm
+  work — file it `confident:true`. Only rule 3's *product-surface* refusal is
+  lifted, and only for a confident two-way fix.
+- **Do NOT push.** The harness pushes after re-checking your commit against the
+  fast-lane rails, then FILES the ticket carrying your diagnosis and proposed
+  ruling and CLOSES it through the same close-report gate a swarm worker passes
+  (every claim re-derived from git). You supply the pieces; the harness runs the
+  gate.
+
+If you are NOT confident, or the door is one-way, or you cannot write a test
+here that proves the fix — do not take the fast lane. File (`confident:false`
+for a ruling; `confident:true` for straightforward-but-large swarm work).
 
 Also never self-fix: dependency or schema changes, anything touching infra
 state outside this checkout (DNS, the box a drive stands up, secrets),
@@ -55,30 +98,38 @@ history (below) shows this same signature already resisted a heal, file.
    red. Cite files and lines. This diagnosis is used whether you heal or file,
    so make it real either way.
 
-2. **Decide.** Would the fix trip any refusal rule above? If yes → file. If no,
-   and you can name the exact defective line(s) and run a targeted check on
-   this machine (one of this repo's targeted checks named above, scoped to what
-   you touched) → heal.
+2. **Decide.** Would the fix trip refusal rule 1 (weaken a check) or rule 2
+   (over the cap)? If yes → file. Does it trip ONLY rule 3's product-surface
+   path, as a **confident, two-way mechanical repair** you can test here? →
+   **fast lane** (build + close it yourself). Is it a genuine design/one-way
+   decision? → file `confident:false`. Otherwise, if you can name the exact
+   defective line(s) and run a targeted check here → ordinary in-lane heal.
 
-3. **If healing:** edit, run the targeted check, and commit with a message
-   starting `rehearsal healer: ` that names the defect AND the signature in the
-   form `rehearsal healer: <what broke> (sig <signature>)`. NEVER use the words
+3. **If healing OR fast-laning:** edit, run the targeted check (for the fast
+   lane, also the package's own tests), and commit with a message starting
+   `rehearsal healer: ` that names the defect AND the signature in the form
+   `rehearsal healer: <what broke> (sig <signature>)`. NEVER use the words
    closes/fixes/resolves next to an issue number (Forgejo auto-closes on them —
    say "advances #N"). Do NOT push — the harness pushes after verifying your
-   commit against its rails (the same three refusal rules, enforced as law: if
-   your commit trips one, the harness reverts it and files with the rule named,
-   so a fix you should have refused costs a paid re-drive — refuse it yourself).
-   Do NOT touch `.sandcastle/rehearsal-*` or `.forgejo/workflows/`.
+   commit against its rails (for a heal, the three refusal rules; for the fast
+   lane, the same rails minus rule 3's product-surface refusal — rules 1 and 2
+   still enforced as law: if your commit trips one, the harness reverts it and
+   files with the rule named, so a fix you should have refused costs a paid
+   re-drive — refuse it yourself). Do NOT touch `.sandcastle/rehearsal-*` or
+   `.forgejo/workflows/`.
 
 4. **Answer.** Your FINAL message must be exactly one JSON object, nothing
    else around it:
    - healed: `{"action":"healed","commit":"<the sha you committed>","summary":"<one line: what was broken, what you changed>","checks":"<the check command you ran and its result>"}`
+   - fast lane: `{"action":"fast-lane","commit":"<the sha you committed>","title":"<issue title, house style, starts with the failing leg>","body":"<markdown diagnosis: the failure, the evidence with file:line cites, the suspected layer>","ruling":"<why this is a two-way door: revertible how, proven by which test, and why it is a mechanical repair not a design decision>","summary":"<one line: what was broken, what you changed>","checks":"<the targeted + package test commands and their results>"}`
    - filing: `{"action":"file","title":"<issue title, house style, starts with the failing leg>","body":"<markdown diagnosis: the failure, the evidence with file:line cites, the suspected layer, and — if you refused — WHICH refusal rule fired and why>","confident":true|false}`
    `confident` means: a swarm worker can act on your body without a human
    ruling. A too-big-but-mechanical refusal (rule 2) is confident:true; a
-   would-weaken-a-check (rule 1) or product-surface (rule 3) refusal needs a
-   ruling — confident:false. If you edited anything but are NOT returning
-   "healed", revert your edits first (`git checkout -- .`).
+   would-weaken-a-check (rule 1) or genuine design/one-way (rule 3) refusal
+   needs a ruling — confident:false. Use **fast-lane** (not file) when a rule-3
+   product-surface fix is confident and two-way. If you edited anything but are
+   NOT returning "healed" or "fast-lane", revert your edits first
+   (`git checkout -- .`).
 
 5. **Healed but a distinct fault remains?** If your fix repaired only how the
    fault PRESENTED (a hidden progress bar, a swallowed error, a wrong budget)
