@@ -19,7 +19,8 @@ import {
 } from 'src/composables/useDeepLink';
 import { useOnboardingStore } from 'src/stores/onboarding';
 
-const SIGNIN = 'matou://signin?door=https://id.example.nz/login&c=c_3f9&s=EMe&name=Home&service=Files';
+const SIGNIN =
+  'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_3f9&s=EMe&name=Home&service=Files';
 const PAIR = 'matou://pair?id=s1&pk=EPubKey&s=0ABsig';
 
 describe('classifyDeepLink', () => {
@@ -65,7 +66,14 @@ describe('handleDeepLink', () => {
     await handleDeepLink(SIGNIN);
     expect(push).toHaveBeenCalledWith({
       name: 'signin-approve',
-      query: { door: 'https://id.example.nz/login', c: 'c_3f9', s: 'EMe', name: 'Home', service: 'Files' },
+      query: {
+        door: 'https://id.example.nz/login',
+        present: 'https://id.example.nz/login/app/present',
+        c: 'c_3f9',
+        s: 'EMe',
+        name: 'Home',
+        service: 'Files',
+      },
     });
     expect(consumePendingPairLink()).toBeNull();
   });

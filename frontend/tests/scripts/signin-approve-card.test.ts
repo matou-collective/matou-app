@@ -14,6 +14,7 @@ import type { SigninAsk } from 'src/lib/signin/link';
 
 const ask: SigninAsk = {
   door: 'https://id.example.nz/login',
+  present: 'https://id.example.nz/login/app/present',
   challenge: 'c_3f9',
   schemas: ['EMe'],
   community: 'Te Rūnanga o Example',

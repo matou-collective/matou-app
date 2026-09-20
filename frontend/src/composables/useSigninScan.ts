@@ -28,6 +28,7 @@ export function signinLinkToLocation(text: string): RouteLocationRaw | null {
     name: 'signin-approve',
     query: {
       door: ask.door,
+      present: ask.present,
       c: ask.challenge,
       ...(ask.schemas.length ? { s: ask.schemas.join(',') } : {}),
       ...(ask.community ? { name: ask.community } : {}),

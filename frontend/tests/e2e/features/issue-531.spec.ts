@@ -13,12 +13,20 @@ import type { Page } from '@playwright/test';
  * line can each be shown without a live bridge.
  */
 
-// A fake sign-in site; the present POST is `<door>/signin/present`.
+// A fake sign-in site; the present POST goes to the ask's present URL verbatim
+// (never derived from the door), per the app-door golden wire (#574).
 const DOOR = 'https://door.test';
+const PRESENT = `${DOOR}/login/app/present`;
 
 /** Navigate the member to the approve card for a fresh challenge. */
 async function openCard(page: Page, challenge: string): Promise<void> {
-  const q = new URLSearchParams({ door: DOOR, c: challenge, name: 'Te Rūnanga o Example', service: 'Files' });
+  const q = new URLSearchParams({
+    door: DOOR,
+    present: PRESENT,
+    c: challenge,
+    name: 'Te Rūnanga o Example',
+    service: 'Files',
+  });
   await page.goto(`/signin?${q.toString()}`);
   await expect(page.locator('[data-field="ask"]')).toBeVisible();
 }
@@ -45,9 +53,10 @@ test.describe('#531 wallet sign-in approve card', () => {
 
   test('Approve proves then reads Signed in (WS-A2p → WS-A2d)', async ({ memberPage, snap }) => {
     // Hold the verdict briefly so the Proving face is observable, then verify.
-    await memberPage.route(`${DOOR}/signin/present`, async (route) => {
+    // The bridge answers VERIFIED with `body.status`, not a bare 2xx (#574).
+    await memberPage.route(PRESENT, async (route) => {
       await new Promise((r) => setTimeout(r, 1200));
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'verified' }) });
     });
 
     await openCard(memberPage, 'c_ok');
@@ -64,11 +73,12 @@ test.describe('#531 wallet sign-in approve card', () => {
   });
 
   test('a refusal shows the shared sentence and tail (WS-A2r)', async ({ memberPage, snap }) => {
-    await memberPage.route(`${DOOR}/signin/present`, async (route) => {
+    // A refusal is HTTP 200 with `status: refused` (+ kind), never a non-2xx (#574).
+    await memberPage.route(PRESENT, async (route) => {
       await route.fulfill({
-        status: 403,
+        status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ok: false, refusal: 'revoked' }),
+        body: JSON.stringify({ status: 'refused', refusal: 'revoked' }),
       });
     });
 
@@ -88,7 +98,7 @@ test.describe('#531 wallet sign-in approve card', () => {
     memberPage,
     snap,
   }) => {
-    await memberPage.route(`${DOOR}/signin/present`, (route) => route.abort());
+    await memberPage.route(PRESENT, (route) => route.abort());
 
     await openCard(memberPage, 'c_dead');
     await memberPage.locator('[data-action="approve"]').click();
