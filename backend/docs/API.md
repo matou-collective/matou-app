@@ -643,6 +643,52 @@ and withdrawal are role-gated.
 
 ---
 
+## Milestone Endpoints
+
+Milestones are a phase of an implementation plan grouping related
+contributions. Like proposals, they are validated and stored against the org's
+`Milestone` type definition (a built-in schema registered at org setup) rather
+than only a fixed Go struct. The schema splits fields into two groups:
+
+- **Core fields** (`core: true`) — `milestone_id`, `implementation_plan_id`,
+  `project_id`, `status`, `start_date`, `end_date`, `contribution_ids`,
+  `budget_allocation` and `actual_cost`. Handlers, sign-off validation and cost
+  recomputation depend on these; admin schema edits may not remove them.
+- **Schema-driven body** — `title`, `description`, `duration`,
+  `success_criteria`, `dependencies`, plus any org-added custom fields. An org
+  can tighten their validation (lengths, enums), toggle `required`, or add new
+  fields without a backend change.
+
+Custom fields not modelled as typed struct fields are carried in a `data`
+object on add/update and round-trip unchanged in read responses. Fields the
+current schema no longer defines are tolerated on milestones written earlier.
+
+**Storage:** the standalone `milestone` record is the single source of truth for
+a milestone's fields. A plan's embedded `milestones` array is a read-time
+projection of those records, so a milestone edit is never stale when the plan is
+re-read (`GET /api/v1/implementation-plans/{id}`).
+
+### POST /api/v1/implementation-plans/{id}/milestones
+
+Add a milestone to the implementation plan `{id}`. The request body (core fields
+at the top level plus any custom fields under `data`) is validated against the
+`Milestone` schema; a missing custom `required` field or an out-of-enum `status`
+returns `400`. Returns the updated plan with milestones hydrated.
+
+### PUT /api/v1/milestones/{id}
+
+Update a milestone (role-gated: `ActionEditMilestone`). The merged object is
+re-validated against the `Milestone` schema. Supplying `data` replaces the
+custom-field map; omitting it leaves the existing custom fields untouched. The
+edit is written through to the standalone milestone record.
+
+### POST /api/v1/milestones/{id}/archive
+
+Archive a milestone (role-gated: `ActionArchiveMilestone`), cascading to its
+contributions. The archived status is written through to the standalone record.
+
+---
+
 ## File Endpoints
 
 ### POST /api/v1/files/upload

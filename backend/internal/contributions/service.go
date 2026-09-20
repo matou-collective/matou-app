@@ -1384,6 +1384,7 @@ func (s *Service) GetImplementationPlan(_ context.Context, spaceID, ipID string)
 	if err := s.store.Get(spaceID, ipID, &ip); err != nil {
 		return nil, err
 	}
+	s.projectMilestones(spaceID, &ip)
 	return &ip, nil
 }
 
@@ -1397,10 +1398,36 @@ func (s *Service) ListImplementationPlans(_ context.Context, spaceID string) ([]
 	for _, r := range raw {
 		var ip ImplementationPlan
 		if err := json.Unmarshal(r, &ip); err == nil {
+			s.projectMilestones(spaceID, &ip)
 			plans = append(plans, &ip)
 		}
 	}
 	return plans, nil
+}
+
+// projectMilestones refreshes each embedded milestone in plan.Milestones from
+// its standalone "milestone" record — the single source of truth for milestone
+// fields (see the ADR-0174 ruling on issue #186). Every mutation path writes
+// through to the standalone record, so re-projecting it at read time means the
+// embedded copy can never show stale data after an edit. The plan's embedded
+// array still establishes milestone membership and order; only the field values
+// are re-projected. A milestone with no standalone record (e.g. a plan built
+// directly in a test) keeps its embedded copy unchanged.
+func (s *Service) projectMilestones(spaceID string, plan *ImplementationPlan) {
+	for i := range plan.Milestones {
+		id := plan.Milestones[i].MilestoneID
+		if id == "" {
+			continue
+		}
+		var ms Milestone
+		if err := s.store.Get(spaceID, id, &ms); err != nil {
+			continue // no standalone record — leave the embedded copy in place
+		}
+		// Preserve any read-time contribution hydration already attached to the
+		// embedded copy; projection only refreshes stored fields.
+		ms.Contributions = plan.Milestones[i].Contributions
+		plan.Milestones[i] = ms
+	}
 }
 
 // --- Milestones ---
@@ -1412,6 +1439,8 @@ type CreateMilestoneRequest struct {
 	Duration             string   `json:"duration"`
 	BudgetAllocation     float64  `json:"budget_allocation,omitempty"`
 	ContributionIDs      []string `json:"contribution_ids,omitempty"`
+	// Data carries org-defined custom fields declared in the Milestone schema.
+	Data map[string]interface{} `json:"data,omitempty"`
 }
 
 // AddMilestone creates a milestone and appends a "milestone_added" entry to
@@ -1425,6 +1454,13 @@ func (s *Service) AddMilestone(ctx context.Context, spaceID, actorID string, req
 		Duration:             req.Duration,
 		BudgetAllocation:     req.BudgetAllocation,
 		ContributionIDs:      req.ContributionIDs,
+		Data:                 req.Data,
+	}
+	// When a schema registry is configured, validate the full milestone (core
+	// fields + custom data) against the org's Milestone schema, enforcing custom
+	// required fields, enum edits and other schema changes.
+	if errs := s.validateAgainstSchema("Milestone", ms.SchemaMap()); len(errs) > 0 {
+		return nil, fmt.Errorf("schema validation failed: %v", errs)
 	}
 	if err := s.store.Save(spaceID, ms.MilestoneID, "milestone", ms); err != nil {
 		return nil, err
@@ -2398,6 +2434,13 @@ func (s *Service) ArchiveProject(ctx context.Context, spaceID, projectID string)
 		plan.Status = PlanArchived
 		for i := range plan.Milestones {
 			plan.Milestones[i].Status = MilestoneArchived
+			// Write through to the standalone milestone record (single source of
+			// truth); the plan's embedded copy is a read-time projection of it.
+			standalone := plan.Milestones[i]
+			standalone.Contributions = nil
+			if err := s.store.Save(spaceID, standalone.MilestoneID, "milestone", &standalone); err != nil {
+				captureErr(fmt.Errorf("save milestone %s: %w", standalone.MilestoneID, err))
+			}
 		}
 		plan.UpdatedAt = time.Now()
 		if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
@@ -2830,6 +2873,10 @@ type UpdateMilestoneRequest struct {
 	BudgetAllocation *float64 `json:"budget_allocation,omitempty"`
 	SuccessCriteria  []string `json:"success_criteria,omitempty"`
 	Status           *string  `json:"status,omitempty"`
+	// Data replaces the milestone's custom-field map when present. A nil map
+	// leaves existing custom fields untouched (consistent with the pointer/slice
+	// fields above, which are only applied when supplied).
+	Data map[string]interface{} `json:"data,omitempty"`
 }
 
 // UpdateMilestone applies patch-style updates to a milestone and saves its
@@ -2873,12 +2920,20 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID, act
 		if req.Status != nil {
 			m.Status = MilestoneStatus(*req.Status)
 		}
+		if req.Data != nil {
+			m.Data = req.Data
+		}
 		changes = diffMilestoneUpdate(before, req)
 		updated = m
 		break
 	}
 	if updated == nil {
 		return nil, fmt.Errorf("milestone %s not found", milestoneID)
+	}
+	// Re-validate the merged milestone against the org's Milestone schema so an
+	// edit cannot leave the object violating a custom required field or enum.
+	if errs := s.validateAgainstSchema("Milestone", updated.SchemaMap()); len(errs) > 0 {
+		return nil, fmt.Errorf("schema validation failed: %v", errs)
 	}
 	// Editing a milestone invalidates the plan signoff — re-signoff is required.
 	// Keep SignedOffBy/SignedOffAt as historical record of last signoff.
@@ -2897,6 +2952,14 @@ func (s *Service) UpdateMilestone(ctx context.Context, spaceID, milestoneID, act
 	}
 	plan.UpdatedAt = time.Now()
 	if err := s.SaveImplementationPlan(ctx, spaceID, plan); err != nil {
+		return nil, err
+	}
+	// Write through to the standalone milestone record, the single source of
+	// truth for milestone fields. The plan's embedded copy is a read-time
+	// projection of it (see GetImplementationPlan), so both can never diverge.
+	standalone := *updated
+	standalone.Contributions = nil // never persist read-time hydration
+	if err := s.store.Save(spaceID, standalone.MilestoneID, "milestone", &standalone); err != nil {
 		return nil, err
 	}
 	return updated, nil

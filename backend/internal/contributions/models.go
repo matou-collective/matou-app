@@ -489,8 +489,37 @@ type Milestone struct {
 	BudgetAllocation float64         `json:"budget_allocation,omitempty"`
 	ActualCost       float64         `json:"actual_cost,omitempty"`
 
+	// Data holds org-defined custom fields declared in the Milestone schema but
+	// not modelled as typed struct fields above. It lets an org extend the
+	// milestone without a backend change; unknown-but-schema-defined fields
+	// round-trip through add/update/read unchanged.
+	Data map[string]interface{} `json:"data,omitempty"`
+
 	// Hydrated contributions — populated at read time, not stored
 	Contributions []*Contribution `json:"contributions,omitempty"`
+}
+
+// SchemaMap flattens a milestone into the field→value map used for schema
+// validation and filtering. Typed core/body fields appear under their JSON
+// names and custom fields from Data are merged in at the top level, so a single
+// map can be validated against, or matched by, the Milestone TypeDefinition.
+// The read-time-only "contributions" hydration is dropped so it never leaks
+// into validation.
+func (m *Milestone) SchemaMap() map[string]interface{} {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	delete(out, "data")
+	delete(out, "contributions")
+	for k, v := range m.Data {
+		out[k] = v
+	}
+	return out
 }
 
 // --- Contribution ---
