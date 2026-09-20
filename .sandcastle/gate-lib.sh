@@ -69,6 +69,23 @@ gate_go_default_cmd() {
   '
 }
 
+# gate_ts_default_cmd <root> — the real TypeScript lint gate: the seam's TS lint
+# stage (`pnpm run lint`, i.e. eslint), run inside the pinned default dev shell
+# (ADR 0040: one toolchain for CI, Sandcastle and humans). Mirrors
+# scripts/seam-smoke.sh's "lint (eslint)" step so a TS slice cannot ship
+# un-linted (#1252). `pnpm install --frozen-lockfile --prefer-offline` runs
+# first so a freshly-vendored checkout has node_modules; it is a fast no-op when
+# they are already present. Kept a separate function so gate_ts_stage can
+# substitute a per-repo override (GATE_TS_CMD or an executable
+# .sandcastle/ts-gate.sh) — which is also the offline test seam.
+gate_ts_default_cmd() {
+  local root="$1"
+  nix develop "$root#default" --command bash -euo pipefail -c '
+    pnpm install --frozen-lockfile --prefer-offline
+    pnpm run lint
+  '
+}
+
 # gate_scrub_git_env — unset the environment variables git injects when it runs
 # a hook (GIT_DIR, GIT_INDEX_FILE, …). The pre-push hook runs inside git's own
 # environment, and those vars otherwise LEAK into the seam's `go test`: nix reads
@@ -117,22 +134,123 @@ gate_go_stage() {
   ( cd "$root" && gate_scrub_git_env && gate_go_default_cmd "$root" )
 }
 
-# gate_run <root> — read the changed-file list on stdin, decide which language
-# gates to run, run them. Go changes run the Go stage; a TypeScript-only or
-# untyped change is a skip (the sandbox lints TS in-loop, so a TS-only push is no
-# slower). Returns non-zero if any stage failed.
+# gate_ts_stage <root> — run the TypeScript lint gate for a TS-touching change.
+# Same first-match-wins precedence as gate_go_stage so a consumer whose
+# layout/toolchain differs from the nix default can satisfy the gate without
+# editing this vendored file:
+#   1. GATE_TS_CMD — a supported per-repo override (env; also the offline test
+#      seam);
+#   2. an executable per-repo `.sandcastle/ts-gate.sh` — auto-detected, run
+#      through the same git-env-scrubbed `cd "$root"` subshell as GATE_TS_CMD.
+#      Not in FACTORY_MANIFEST, so it stays a per-repo layer file (drift-safe);
+#   3. the pinned nix dev-shell default (gate_ts_default_cmd).
+# FAIL CLOSED only when NONE of the three resolve — no GATE_TS_CMD, no executable
+# `.sandcastle/ts-gate.sh`, no `nix`: a TS change that cannot be linted must
+# block the push, never slip through un-linted (#1252 — a TS lint break reaches
+# main and is caught only post-push by ci; a blocked push beats a red main).
+# Returns the stage's exit code.
+gate_ts_stage() {
+  local root="$1"
+  if [ -n "${GATE_TS_CMD:-}" ]; then
+    ( cd "$root" && gate_scrub_git_env && eval "$GATE_TS_CMD" )
+    return $?
+  fi
+  if [ -x "$root/.sandcastle/ts-gate.sh" ]; then
+    ( cd "$root" && gate_scrub_git_env && ./.sandcastle/ts-gate.sh )
+    return $?
+  fi
+  if ! command -v nix >/dev/null 2>&1; then
+    echo "gate: TypeScript change detected but no supported TS gate resolved in this workdir." >&2
+    echo "gate: refusing to push un-linted TypeScript (#1252). Cause is either a missing" >&2
+    echo "gate: toolchain (no \`nix\`) OR a layout that differs from the nix default." >&2
+    echo "gate: set a supported per-repo override — GATE_TS_CMD in the sandbox Dockerfile," >&2
+    echo "gate: or an executable .sandcastle/ts-gate.sh — to run this repo's TS lint gate." >&2
+    return 3
+  fi
+  ( cd "$root" && gate_scrub_git_env && gate_ts_default_cmd "$root" )
+}
+
+# gate_gofmt_default_cmd <root> — the cheap gofmt-only check: `gofmt -l` over the
+# tree (mirrors the gofmt step of gate_go_default_cmd / seam-smoke.sh's #344
+# stage), with NO nix shell and NO compile — a pure parse+print, sub-second on a
+# large tree. That is the whole reason a gofmt gate can run on the HOST push path
+# where the full Go seam (build/vet/test/lint) cannot (#198): it costs nothing.
+# Assumes cwd is <root> (its caller cd's there inside the git-env-scrub subshell).
+gate_gofmt_default_cmd() {
+  local unformatted
+  unformatted="$(gofmt -l . | grep -v '^node_modules/' || true)"
+  if [ -n "$unformatted" ]; then
+    echo "gofmt debt — run gofmt -w on:" >&2
+    printf '%s\n' "$unformatted" >&2
+    return 1
+  fi
+}
+
+# gate_gofmt_stage <root> — run the gofmt-only gate for a Go-touching change on
+# the HOST push path (Gate 3b, #1458). The Go twin of the TS host gate (#1252):
+# gofmt debt reaches `main` through the HOST reconcile/session push, not only the
+# sandbox — f291b547 (#1429) landed un-gofmt'd because Gate 3 (the full Go seam)
+# is sandbox-only and the host path ran no Go check at all, red'ing #344 on main.
+# UNLIKE gate_go_stage this never enters a nix shell; it resolves gofmt by a
+# first-match-wins precedence and runs only the pure formatting check:
+#   1. GATE_GOFMT_CMD — a supported override (env); also the offline test seam;
+#   2. a `gofmt` on PATH — the ordinary host case (the pinned dev shell every
+#      reconcile host already sources puts gofmt there), run bare.
+# FAIL CLOSED when neither resolves — no GATE_GOFMT_CMD and no `gofmt`: a Go
+# change whose formatting cannot be checked blocks the push, exactly as the TS
+# gate fails closed (#1252 — a blocked push beats a red main). Returns the
+# stage's exit code.
+gate_gofmt_stage() {
+  local root="$1"
+  if [ -n "${GATE_GOFMT_CMD:-}" ]; then
+    ( cd "$root" && gate_scrub_git_env && eval "$GATE_GOFMT_CMD" )
+    return $?
+  fi
+  if command -v gofmt >/dev/null 2>&1; then
+    ( cd "$root" && gate_scrub_git_env && gate_gofmt_default_cmd "$root" )
+    return $?
+  fi
+  echo "gate: Go change detected but no gofmt resolved on the host push path." >&2
+  echo "gate: refusing to push un-gofmt'd Go (#1458). Put \`gofmt\` on PATH (it ships" >&2
+  echo "gate: in the repo's pinned dev shell) or set GATE_GOFMT_CMD to this repo's" >&2
+  echo "gate: gofmt check. The full Go seam stays sandbox-only (#198); only the cheap" >&2
+  echo "gate: gofmt check runs on the host push path." >&2
+  return 3
+}
+
+# gate_run <root> [only] [go_tier] — read the changed-file list on stdin, decide
+# which language gates to run, run them. A Go change runs the Go gate; a
+# TypeScript change runs the eslint lint gate (#1252 — TS lint breaks reached
+# main un-gated). The optional <only> ("go"|"ts") restricts execution to a single
+# language. The optional <go_tier> selects HOW DEEP the Go gate runs when a Go
+# change is present: "full" (default) runs the pinned Go seam stages (sandbox);
+# "gofmt" runs only the cheap gofmt-only host gate (Gate 3b, #1458). The pre-push
+# hook uses go_tier=gofmt on the HOST push path so a formatting break is caught
+# there (where f291b547/#1429 slipped past) while the heavy Go seam stays
+# sandbox-only (#198). Returns non-zero if any stage that ran failed.
 gate_run() {
-  local root="$1" langs rc=0
+  local root="$1" only="${2:-}" go_tier="${3:-full}" langs rc=0
   langs="$(gate_langs_for_files)"
   if [ -z "$langs" ]; then
     echo "gate: no gated language touched — nothing to check" >&2
     return 0
   fi
-  if grep -qx go <<<"$langs"; then
-    echo "gate: Go change detected — running the pinned Go seam stages" >&2
-    gate_go_stage "$root" || rc=$?
-  elif grep -qx ts <<<"$langs"; then
-    echo "gate: TypeScript-only change — Go stages skipped (pnpm lint runs in-loop)" >&2
+  if [ -z "$only" ] || [ "$only" = go ]; then
+    if grep -qx go <<<"$langs"; then
+      if [ "$go_tier" = gofmt ]; then
+        echo "gate: Go change detected — running the cheap gofmt-only host gate (#1458)" >&2
+        gate_gofmt_stage "$root" || rc=$?
+      else
+        echo "gate: Go change detected — running the pinned Go seam stages" >&2
+        gate_go_stage "$root" || rc=$?
+      fi
+    fi
+  fi
+  if [ -z "$only" ] || [ "$only" = ts ]; then
+    if grep -qx ts <<<"$langs"; then
+      echo "gate: TypeScript change detected — running the pinned eslint lint gate" >&2
+      gate_ts_stage "$root" || rc=$?
+    fi
   fi
   return $rc
 }

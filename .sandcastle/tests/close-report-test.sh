@@ -257,6 +257,69 @@ run_close_pr_merged 444 "$pr_env"; rc=$?
 [ "$rc" -eq 0 ] || fail "merged-but-open close must exit 0, got $rc (#108)"; ok
 close_stuck 444 || fail "merged-but-open must PATCH the issue closed and verify it (#108)"; ok
 removed_label 444 40 || fail "merged-but-open close must sweep agent-working (#108)"; ok
+
+# ==========================================================================
+# #151 — the multi-host race: two hosts each complete the same ticket. The
+# WINNER merges on a branch OTHER than agent/issue-<N> (a sandcastle/worker/*
+# branch) and its `closes #N` closes the issue on main. The LOSER's close-report
+# must SEE the landed work and self-close as SUPERSEDED — exit 0, release the
+# claim labels, never dead-end `agent-blocked` — whether or not it still has an
+# open agent PR. The genuine no-landing refusal (#13) must still fire.
+# ==========================================================================
+posted_superseded() { grep -q 'superseded' "$FAKE_DIR/forgejo.log" 2>/dev/null; }
+run_close_pr_superseded() { # <issue> <envelope> <winner-branch> <open-agent-pr:yes|no> <issue-closed:yes|no>
+  FAKE_DIR="$(mktemp -d)"; export FAKE_DIR
+  printf 'LANDING=pr\nMERGE_AUTHORITY=human\n' > "$FAKE_DIR/swarm-policy.sh"
+  export SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh"
+  if [ "$4" = yes ]; then
+    printf '[{"number":88,"head":{"ref":"agent/issue-%s"}}]\n' "$1" > "$FAKE_DIR/open-pulls.json"
+    printf '{"number":88,"head":{"ref":"agent/issue-%s","sha":""},"html_url":"u/pr/88"}\n' "$1" > "$FAKE_DIR/pr-88.json"
+  else
+    printf '[]\n' > "$FAKE_DIR/open-pulls.json"
+  fi
+  # the winner: a MERGED PR from a non-agent branch whose body closes the issue
+  printf '[{"number":70,"head":{"ref":"%s"},"merged":true,"body":"closes #%s\\n"}]\n' "$3" "$1" > "$FAKE_DIR/closed-pulls.json"
+  printf '{"number":70,"head":{"ref":"%s"},"html_url":"u/pr/70"}\n' "$3" > "$FAKE_DIR/pr-70.json"
+  printf '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"agent-working"}]\n' > "$FAKE_DIR/labels.json"
+  [ "$5" = yes ] && touch "$FAKE_DIR/closed-$1"
+  local ef="$FAKE_DIR/envelope.json"; printf '%s' "$2" > "$ef"
+  ( cd "$repo" && bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
+}
+
+# PR-7 (#151a) — winner merged via sandcastle/worker/*, loser has NO open PR,
+# issue already closed: superseded self-close, claim labels released, exit 0.
+run_close_pr_superseded 444 "$pr_env" "sandcastle/worker/xyz" no yes; rc=$?
+[ "$rc" -eq 0 ] || fail "a superseded loser (no open PR) must exit 0, got $rc (#151)"; ok
+posted_superseded || fail "a superseded close must post the superseded verdict (#151)"; ok
+! grep -q 'no open agent PR' "$FAKE_DIR/forgejo.log" \
+  || fail "a superseded loser must NOT dead-end as 'no open agent PR' (#151)"; ok
+! grep -q 'REFUSED' "$FAKE_DIR/forgejo.log" || fail "a superseded loser must NOT be refused (#151)"; ok
+removed_label 444 40 || fail "a superseded close must release agent-working (#151/#22)"; ok
+removed_label 444 36 || fail "a superseded close must release ready-for-agent (#151/#22)"; ok
+! merged_pr || fail "a superseded close must NOT merge anything (the winner already landed) (#151)"; ok
+! closed_issue || fail "a superseded close must NOT re-PATCH the issue closed (already closed) (#151)"; ok
+grep -qE '^SANDCASTLE_ATTEMPT issue=444 outcome=superseded ' "$FAKE_DIR/stdout.log" \
+  || fail "a superseded close must emit outcome=superseded (#151/#574)"; ok
+
+# PR-8 (#151b) — winner merged via sandcastle/worker/*, loser STILL has an open
+# agent PR, issue already closed: superseded wins over the open-PR gate — exit 0,
+# labels released, the loser's own PR is not gated/merged.
+run_close_pr_superseded 444 "$pr_env" "sandcastle/worker/xyz" yes yes; rc=$?
+[ "$rc" -eq 0 ] || fail "a superseded loser WITH an open agent PR must exit 0, got $rc (#151)"; ok
+posted_superseded || fail "a superseded loser with an open PR must post the superseded verdict (#151)"; ok
+removed_label 444 40 || fail "a superseded (open-PR) close must release agent-working (#151)"; ok
+removed_label 444 36 || fail "a superseded (open-PR) close must release ready-for-agent (#151)"; ok
+! merged_pr || fail "a superseded close must NOT merge the loser's own PR (#151)"; ok
+
+# PR-9 (#151c) — genuinely unlanded: a merged non-agent PR mentions the issue in
+# body, but the issue is still OPEN — superseded must NOT fire, the #13 no-PR
+# refusal is unchanged (a body-scan alone can never self-close live work).
+run_close_pr_superseded 444 "$pr_env" "sandcastle/worker/xyz" no no; rc=$?
+[ "$rc" -eq 1 ] || fail "an OPEN issue must NOT be treated as superseded — refusal unchanged, got $rc (#151)"; ok
+! posted_superseded || fail "an open issue must NOT get a superseded verdict (#151)"; ok
+grep -q 'no open agent PR' "$FAKE_DIR/forgejo.log" \
+  || fail "the genuine no-landing refusal must still fire for an open issue (#13/#151)"; ok
+
 unset SWARM_POLICY_FILE
 
 echo "close-report: $pass checks passed"

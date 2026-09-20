@@ -18,8 +18,20 @@ export REHEARSAL_DRIVE_ISSUE=378
 export CLAUDE_LIMIT_MARKER="$tmp/claude-limit"
 export CURL_LOG="$tmp/curl.log" ISSUE_FIXTURE="$tmp/issues.json" LIST_COUNT="$tmp/list-count"
 export CLAUDE_CALLS="$tmp/claude-calls"
-export REHEARSAL_HEAL_PROMPT_FILE="$here/../.sandcastle/rehearsal-heal-prompt.md"
-export REHEARSAL_REPORT_PROMPT_FILE="$here/../.sandcastle/rehearsal-report-prompt.md"
+# The rendered rehearsal prompts live at the harness root. Factory-side the suite
+# runs from <factory>/tests and the rendered copies are the self-pin under
+# .sandcastle/; consumer-side the suite is vendored into <repo>/.sandcastle/tests/
+# and the rendered copies are its DIRECT parent (the harness dir already IS
+# .sandcastle) — resolve whichever exists so the suite is green from either layout
+# (#139), and fail LOUDLY (never a silent empty/default prompt) if neither is present.
+rehearsal_heal_prompt_file="$here/../.sandcastle/rehearsal-heal-prompt.md"
+[ -f "$rehearsal_heal_prompt_file" ] || rehearsal_heal_prompt_file="$here/../rehearsal-heal-prompt.md"
+[ -f "$rehearsal_heal_prompt_file" ] || fail "no rendered rehearsal-heal-prompt.md at $here/../.sandcastle/ or $here/../ — cannot run the suite"
+rehearsal_report_prompt_file="$here/../.sandcastle/rehearsal-report-prompt.md"
+[ -f "$rehearsal_report_prompt_file" ] || rehearsal_report_prompt_file="$here/../rehearsal-report-prompt.md"
+[ -f "$rehearsal_report_prompt_file" ] || fail "no rendered rehearsal-report-prompt.md at $here/../.sandcastle/ or $here/../ — cannot run the suite"
+export REHEARSAL_HEAL_PROMPT_FILE="$rehearsal_heal_prompt_file"
+export REHEARSAL_REPORT_PROMPT_FILE="$rehearsal_report_prompt_file"
 
 # --- real checkout + bare origin ---------------------------------------------
 mkrepo() { # (re)build $tmp/origin.git + $tmp/co, export REHEARSAL_CHECKOUT
@@ -41,19 +53,37 @@ mkrepo() { # (re)build $tmp/origin.git + $tmp/co, export REHEARSAL_CHECKOUT
 cat > "$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 echo "$@" >> "${CURL_LOG:?}"
-want_code=false; is_dep=false; is_lab=false; prev=""; body=""
+# Real curl drains stdin for `-d @-` (close-report.sh's post_comment feeds the
+# body that way). A shim that leaves it unread makes the upstream `jq` in the
+# pipe die on SIGPIPE — under close-report's `set -o pipefail`+`set -e` that
+# aborts the close intermittently (a race on the pipe buffer). Drain it.
+case " $* " in *" @- "*) cat >/dev/null 2>&1 || true ;; esac
+want_code=false; is_dep=false; is_lab=false; prev=""; body=""; url=""
 for a in "$@"; do
   [ "$prev" = "-d" ] && body="$a"
+  case "$a" in http://*|https://*) url="$a";; esac
   case "$a" in -w) want_code=true;; */dependencies) is_dep=true;; */issues/*/labels) is_lab=true;; esac
   prev="$a"
 done
 if $is_dep; then $want_code && echo "${DEP_CODE:-201}"; exit 0; fi
 if $is_lab; then $want_code && echo "${LABEL_CODE:-204}"; exit 0; fi
+# close-report.sh (fast lane, #1270): it PATCHes {"state":"closed"} (reads the
+# HTTP code via -w), then GETs the issue back and reads `.state`. Answer both so
+# the gate sees a verified close; the envelope's claims are re-derived from the
+# real throwaway git repo, so gates 1/2 are exercised for real.
+case "$body" in *'"state":"closed"'*) $want_code && echo "200"; echo '{"number":991,"state":"closed"}'; exit 0;; esac
 for a in "$@"; do case "$a" in
   *labels=rehearsal-183*) cat "${ISSUE_FIXTURE:?}"; exit 0;;
   *labels\?limit=100*) echo '[{"id":36,"name":"ready-for-agent"},{"id":37,"name":"ready-for-human"},{"id":40,"name":"bug"},{"id":97,"name":"rehearsal-183"},{"id":99,"name":"priority"}]'; exit 0;;
+  *labels\?limit=50*) echo '[{"id":36,"name":"ready-for-agent"},{"id":40,"name":"bug"}]'; exit 0;;
   */issues/378/comments\?limit=50) echo '[]'; exit 0;;
 esac; done
+# A bare issue GET (no /comments, /labels, /dependencies) is close-report's
+# post-close state read — answer `closed`.
+case "$url" in
+  */issues/*/comments*|*labels*|*/dependencies*) : ;;
+  */issues/[0-9]*) echo '{"number":991,"state":"closed"}'; exit 0 ;;
+esac
 echo '{"number": 991}'
 SH
 chmod +x "$tmp/bin/curl"
@@ -131,11 +161,33 @@ case "${HEAL_MODE:-legacy}" in
     sed -i 's/toBe(1)/toBe(2)/' journey.spec.ts
     git commit -aqm "rehearsal healer: relax assertion (sigA)"
     echo "{\"action\":\"healed\",\"commit\":\"$(git rev-parse HEAD)\",\"summary\":\"loosened the count assertion\",\"checks\":\"vitest: pass\"}" ;;
+  healed-moved-assertion)
+    cd "${REHEARSAL_CHECKOUT:?}"
+    # The SAME expect(count).toBe(1) line, pulled below the steps that persist
+    # what it reads — value byte-for-byte unchanged, only WHERE it runs moved.
+    # Rule 1 must NOT refuse this (a MOVED check, #1501); the heal lands.
+    printf '// arrange the seam\n// save the placement\n// then read it back\nexpect(count).toBe(1)\n' > journey.spec.ts
+    git commit -aqm "rehearsal healer: move the read-back below the save (sigM)"
+    echo "{\"action\":\"healed\",\"commit\":\"$(git rev-parse HEAD)\",\"summary\":\"moved the read-back below the save; assertion value unchanged\",\"checks\":\"vitest: pass\"}" ;;
   healed-productsurface)
     cd "${REHEARSAL_CHECKOUT:?}"
     mkdir -p internal; echo 'newBehaviour()' > internal/service.go
     git add -A; git commit -qm "rehearsal healer: change internal behaviour"
     echo "{\"action\":\"healed\",\"commit\":\"$(git rev-parse HEAD)\",\"summary\":\"changed internal service behaviour\",\"checks\":\"go test: pass\"}" ;;
+  fast-lane-good)
+    cd "${REHEARSAL_CHECKOUT:?}"
+    # A confident, two-way, PRODUCT-surface fix: rule 3 would refuse it in-lane,
+    # the fast lane lands it and closes its own ticket (#1270).
+    mkdir -p internal; echo 'orderedOneshot()' > internal/archive.go
+    git add -A; git commit -qm "rehearsal healer: gate the archive oneshot"
+    echo "{\"action\":\"fast-lane\",\"commit\":\"$(git rev-parse HEAD)\",\"title\":\"archive — gate the oneshot on HTTP readiness\",\"body\":\"the archive-brand oneshot raced Nginx\",\"ruling\":\"two-way: revertible by a later commit, proven by the readiness test in this commit; no design/security/behaviour decision\",\"summary\":\"gated the archive oneshot on HTTP readiness\",\"checks\":\"go test ./internal/archive: pass\"}" ;;
+  fast-lane-assertion)
+    cd "${REHEARSAL_CHECKOUT:?}"
+    # Fast lane is NOT a licence to weaken a check: rule 1 still bites and the
+    # fast lane falls back to filing.
+    sed -i 's/toBe(1)/toBe(2)/' journey.spec.ts
+    git commit -aqm "rehearsal healer: loosen the assertion via the fast lane"
+    echo "{\"action\":\"fast-lane\",\"commit\":\"$(git rev-parse HEAD)\",\"title\":\"weaken\",\"body\":\"b\",\"summary\":\"loosened a count assertion\",\"checks\":\"vitest: pass\"}" ;;
   legacy)
     echo '{"title":"legacy diagnosis","body":"b","confident":true}' ;;
 esac
@@ -419,6 +471,57 @@ bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-ze
 [ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "origin moved despite the loop-guard"
 grep -q 'loop-guard' "$CURL_LOG" || fail "loop-guard did not file its diagnosis"
 [ "$(wc -l < "$CLAUDE_CALLS")" = "0" ] || fail "loop-guard spent a claude call"
+unset HEAL_MODE
+pass=$((pass+1))
+
+# 17: FAST LANE (#1270) — a confident, two-way, PRODUCT-surface fix. The healer
+#     builds it (rule 3 would refuse it in-lane), lands it on origin, FILES a
+#     ticket carrying a proposed ruling, and CLOSES that ticket through the
+#     close-report gate — all in the one healer session (one claude call). The
+#     drive stays armed (the ticket is closed, never wired as a blocker).
+reset_case; export HEAL_MODE=fast-lane-good HEAL_PRODUCT_SURFACE_GLOBS='internal/* app/src/*'
+red_run "archive oneshot raced Nginx"
+out="$(bash "$here/../rehearsal-report.sh" "$tmp/run" 1)" || fail "reporter exited non-zero (fast lane)"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "2" ] || fail "fast-lane fix did not reach origin"
+grep -q 'internal/archive.go' <<<"$(git -C "$tmp/origin.git" show --stat main)" || fail "the product-surface change did not land on the fast lane"
+grep -q 'gate the oneshot on HTTP readiness' "$CURL_LOG" || fail "fast lane did not file its ticket"
+grep -q 'Proposed ruling' "$CURL_LOG" || fail "fast-lane ticket carried no proposed ruling (#1270 rule 1)"
+grep -q '"state":"closed"' "$CURL_LOG" || fail "fast lane did not close its ticket through the gate"
+grep -q 'dependencies' "$CURL_LOG" && fail "a fast-lane (closed) ticket must not be wired as a drive blocker"
+grep -q 'ready-for-human' "$CURL_LOG" && fail "fast lane flipped the drive to a human"
+grep -q 'fast-lane self-fixed' "$CURL_LOG" || fail "no fast-lane self-fixed comment on the drive issue"
+[ "$(wc -l < "$CLAUDE_CALLS")" = "1" ] || fail "fast lane made more than one claude call, got $(wc -l < "$CLAUDE_CALLS")"
+. "$here/../heal-lib.sh"; fl_fault="$(compute_signature "rehearsal-183" "found :: archive oneshot raced Nginx")"
+[ "$(cat "$tmp/state/heal-healed-$fl_fault" 2>/dev/null)" = "1" ] || fail "fast-lane heal did not mark the fault for the loop-guard"
+unset HEAL_MODE HEAL_PRODUCT_SURFACE_GLOBS
+pass=$((pass+1))
+
+# 18: FAST LANE IS NOT A LICENCE TO WEAKEN A CHECK (#1270 rule 1 stays) — a
+#     fast-lane verdict whose fix rewrites an expect(...) line is refused by the
+#     rails, NOTHING lands on origin, and it falls back to today's file path
+#     naming the assertion rule. No ticket is closed.
+reset_case; export HEAL_MODE=fast-lane-assertion
+red_run "count assertion inconvenient on the fast lane"
+bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (fast-lane assertion)"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "1" ] || fail "a fast-lane assertion-weakening reached origin"
+grep -q 'assertion rule' "$CURL_LOG" || fail "fast-lane assertion breach not filed naming the rule"
+grep -q '"state":"closed"' "$CURL_LOG" && fail "a refused fast-lane fix closed a ticket"
+grep -q 'dependencies' "$CURL_LOG" || fail "the fallback filing was not wired as a blocker"
+unset HEAL_MODE
+pass=$((pass+1))
+
+# 19: MOVED ASSERTION LANDS (#1501) — the healer moves an expect(...) line
+#     verbatim below the step that persists what it reads; the value is
+#     unchanged, so rule 1 does NOT fire and the heal reaches origin (mirror of
+#     case 1). Its refused twin is case 13 (healed-assertion, toBe(1)->toBe(2)):
+#     a MOVED check lands, a CHANGED one is still refused — the #1501 pair.
+reset_case; export HEAL_MODE=healed-moved-assertion
+red_run "read-back ran before the save"
+bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (moved assertion)"
+[ "$(git -C "$tmp/origin.git" rev-list --count main)" = "2" ] || fail "moved-assertion heal did not reach origin (#1501)"
+grep -q '378/comments' "$CURL_LOG" || fail "no #378 healer comment on the moved-assertion heal"
+grep -q 'healer refused (assertion rule)' "$CURL_LOG" && fail "a MOVED check was refused as a weakened check (#1501)"
+grep -q '"title"' "$CURL_LOG" && fail "moved-assertion heal filed an issue instead of landing"
 unset HEAL_MODE
 pass=$((pass+1))
 

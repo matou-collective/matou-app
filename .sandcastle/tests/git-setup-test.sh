@@ -90,4 +90,68 @@ fi
 [ "$(git -C "$workdir" config --get core.bare)" = false ] || fail "git-setup must clear the stray core.bare flag"
 [ -f "$verdict" ] && fail "a recovered git-setup run must leave no verdict"
 
-echo "git-setup: 5 scenarios passed"
+# --- transport posture (#1411): a fake flaky git 5xxes the fetch/clone --------
+# Real git handles everything EXCEPT the network op (fetch/clone), which 503s
+# while $FLAKY > 0 then defers to real git — so the retry/TRANSPORT paths run
+# for real against the same local fixture (no network). GIT_SETUP_BACKOFF=0
+# keeps the tests instant. $workdir already carries a healthy .git (fixture 5
+# recovered it), so this exercises the fetch path — exactly run 22229's path.
+fakebin="$work/fakebin"; mkdir -p "$fakebin"
+real_git="$(command -v git)"
+cat >"$fakebin/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    fetch|clone)
+      n=0; [ -f "\$FLAKY" ] && n="\$(cat "\$FLAKY")"
+      if [ "\$n" -gt 0 ]; then
+        echo "\$((n-1))" >"\$FLAKY"
+        echo "fatal: unable to access '$origin/': The requested URL returned error: 503" >&2
+        exit 128
+      fi
+      break ;;
+  esac
+done
+exec "$real_git" "\$@"
+EOF
+chmod +x "$fakebin/git"
+run_flaky() { # run_flaky <retries> — $FLAKY/$work/flaky drives the 503 count
+  ( cd "$workdir" && REPO_SLUG="x/y" FORGEJO_TOKEN=dummy WORKFLOW=swarm \
+      GIT_SETUP_VERDICT_PATH="$verdict" GIT_SETUP_REMOTE_URL="$origin" \
+      GIT_SETUP_RETRIES="$1" GIT_SETUP_BACKOFF=0 FLAKY="$work/flaky" \
+      PATH="$fakebin:$PATH" bash .sandcastle/git-setup.sh )
+}
+
+# --- 6) a TRANSIENT 5xx is ridden out — one blip never reds the tick ----------
+rm -f "$verdict"
+printf '1\n' >"$work/flaky"   # 503 the first fetch, then succeed
+if ! run_flaky 3 >/dev/null 2>&1; then fail "a transient 5xx must be ridden out (exit 0)"; fi
+[ -f "$verdict" ] && fail "a run that recovered after a transient 5xx must leave no verdict"
+[ "$(cat "$work/flaky")" = 0 ] || fail "the transient 5xx should have been consumed by the retry: $(cat "$work/flaky")"
+
+# --- 7) a SUSTAINED outage is NAMED TRANSPORT, distinct from other faults -----
+# Every attempt 503s: the workdir was never updated, so it must NOT green, must
+# exit DISTINCTLY (3) naming TRANSPORT, and must NOT be reported as a checkout /
+# auth / missing-branch fault — the four faults this one stage used to collapse.
+rm -f "$verdict"
+printf '999\n' >"$work/flaky"
+rc=0
+run_flaky 2 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 3 ] || fail "a sustained transport outage must exit 3 (TRANSPORT), got rc=$rc"
+[ -f "$verdict" ] || fail "a sustained transport outage must write a verdict"
+grep -q "^stage=git-setup" "$verdict" || fail "the TRANSPORT verdict must still name the git-setup stage"
+grep -q "^exit=3" "$verdict" || fail "the TRANSPORT verdict must carry exit=3, got: $(cat "$verdict")"
+grep -q "TRANSPORT" "$verdict" || fail "a sustained outage must be NAMED TRANSPORT, got: $(cat "$verdict")"
+# The healer keys on seam_verdict_signal = "stage :: first-error-line": that
+# line must be the TRANSPORT one, re-keyed OFF the raw git errlog — not the
+# generic `returned error: 503` (nor a work-tree/auth string), which would
+# collapse a transport outage onto whatever git happened to print.
+first_err="$(seam_verdict_signal "$verdict")"
+case "$first_err" in *TRANSPORT*) : ;; *) fail "the healer's signal line must name TRANSPORT, got: $first_err" ;; esac
+grep -qiE "returned error: 5[0-9][0-9]|must be run in a work tree|authentication failed" "$verdict" \
+  && fail "a transport outage must be re-keyed off the raw git error, not carry it: $(cat "$verdict")"
+sig_transport="$(compute_signature swarm "$(seam_verdict_signal "$verdict")")"
+[ "$sig_transport" != "$sig_missing" ] || fail "a transport outage must not share the repo-not-found signature (#1411)"
+[ "$sig_transport" != "$sig_nobranch" ] || fail "a transport outage must not share the branch-not-found signature (#1411)"
+
+echo "git-setup: 7 scenarios passed"

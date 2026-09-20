@@ -222,4 +222,60 @@ grep -q "the standby-token wiring check had nothing to read" "$tmp/out" \
   || fail "an unreadable workflow set must be announced, not silently green: $(cat "$tmp/out")"
 pass=$((pass+1))
 
+# --- Transport posture (#1394 / #1359 git-transport half): a fake flaky git ---
+# Real git handles everything EXCEPT the first N network ops (fetch/clone),
+# which 503 while $FLAKY_COUNTER > 0, so the retry/TRANSPORT paths run for real
+# against the same local factory remote (no live network). FACTORY_FETCH_BACKOFF=0
+# keeps the tests instant.
+fakebin="$tmp/fakebin"; mkdir -p "$fakebin"
+real_git="$(command -v git)"
+cat >"$fakebin/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    fetch|clone)
+      n=0; [ -f "\$FLAKY_COUNTER" ] && n="\$(cat "\$FLAKY_COUNTER")"
+      if [ "\$n" -gt 0 ]; then
+        echo "\$((n-1))" >"\$FLAKY_COUNTER"
+        echo "fatal: unable to access '$FACTORY_REPO/': The requested URL returned error: 503" >&2
+        exit 128
+      fi
+      break ;;
+  esac
+done
+exec "$real_git" "\$@"
+EOF
+chmod +x "$fakebin/git"
+
+# T9: a TRANSIENT 5xx is ridden out. Attempt 1's fetch AND its clone fallback
+# both 503; the retry's fetch succeeds, so the drift check still completes
+# green — one blip must never red the seam at stage one (the ci run 21982 bug).
+printf '2\n' >"$tmp/flaky-counter"   # fail attempt 1 (fetch + clone), then succeed
+rc=0
+( cd "$sc" && PATH="$fakebin:$PATH" FLAKY_COUNTER="$tmp/flaky-counter" \
+    FACTORY_FETCH_RETRIES=3 FACTORY_FETCH_BACKOFF=0 bash ./check-harness-drift.sh ) \
+    >"$tmp/out" 2>"$tmp/err" || rc=$?
+[ "$rc" -eq 0 ] || fail "T9: a transient 5xx must be ridden out (rc=$rc): $(cat "$tmp/err")"
+grep -q "^check-harness-drift: OK" "$tmp/out" \
+  || fail "T9: should complete drift-clean after riding out the blip: $(cat "$tmp/out")$(cat "$tmp/err")"
+[ "$(cat "$tmp/flaky-counter")" = 0 ] \
+  || fail "T9: attempt 1's two network ops should be consumed: counter=$(cat "$tmp/flaky-counter")"
+pass=$((pass+1))
+
+# T10: a SUSTAINED outage — every attempt 503s. The gate never read drift, so it
+# must NOT green (GOTCHAS #30) and must NOT claim DRIFT; it exits DISTINCTLY
+# (code 3) NAMING TRANSPORT, never a bare exit 128 that reads as a harness fault.
+printf '999\n' >"$tmp/flaky-counter"
+rc=0
+( cd "$sc" && PATH="$fakebin:$PATH" FLAKY_COUNTER="$tmp/flaky-counter" \
+    FACTORY_FETCH_RETRIES=2 FACTORY_FETCH_BACKOFF=0 bash ./check-harness-drift.sh ) \
+    >"$tmp/out" 2>"$tmp/err" || rc=$?
+[ "$rc" -eq 3 ] || fail "T10: a sustained outage must exit 3 (TRANSPORT), got rc=$rc: $(cat "$tmp/err")"
+grep -q "TRANSPORT" "$tmp/err" || fail "T10: should name TRANSPORT: $(cat "$tmp/err")"
+grep -q "^check-harness-drift: OK" "$tmp/out" \
+  && fail "T10: must NOT green when the factory was unreachable: $(cat "$tmp/out")"
+grep -q "DRIFT:" "$tmp/err" "$tmp/out" \
+  && fail "T10: must NOT claim drift when it never read the factory: $(cat "$tmp/err")"
+pass=$((pass+1))
+
 echo "check-harness-drift: $pass passed"

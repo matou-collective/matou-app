@@ -258,4 +258,58 @@ out="$(watchdog_detect "$wd_fixture")"
 rm -f "$wd_fixture"
 pass=$((pass+1))
 
+# --- probe_api records curl's real outcome, not a blanket `timeout` (#1462) ---
+# A stub curl on PATH lets us drive the four shapes the old `curl -sf || echo
+# timeout` collapsed into one. The stub ignores its args and emits a fixed
+# `%{http_code} %{time_total}` line + exit code, exactly as curl's -w does.
+probe_tmp="$(mktemp -d)"; probe_bin="$probe_tmp/bin"; mkdir -p "$probe_bin"
+stub_curl() { # <http_code> <time_total> <exit>
+  cat > "$probe_bin/curl" <<STUB
+#!/usr/bin/env bash
+printf '%s %s' "$1" "$2"
+exit $3
+STUB
+  chmod +x "$probe_bin/curl"
+}
+run_probe() { PATH="$probe_bin:$PATH" probe_api "http://x/api" tok "$probe_tmp/out.txt"; }
+val() { sed -n "s/^$1=//p" "$probe_tmp/out.txt"; }
+
+# AC1 — a healthy instance: api_http=200, a real elapsed, curl exit 0.
+stub_curl 200 1.234 0; run_probe
+[ "$(val api_http)"      = "200"   ] || fail "AC1: api_http should be 200, got $(val api_http)"
+[ "$(val api_seconds)"   = "1.234" ] || fail "AC1: api_seconds should be the elapsed, got $(val api_seconds)"
+[ "$(val api_curl_exit)" = "0"     ] || fail "AC1: api_curl_exit should be 0, got $(val api_curl_exit)"
+pass=$((pass+1))
+
+# AC2 — a fast 401 is recorded as auth (http=401, exit=0), NOT as timeout.
+stub_curl 401 0.05 0; run_probe
+[ "$(val api_http)"      = "401" ] || fail "AC2: api_http should be 401, got $(val api_http)"
+[ "$(val api_curl_exit)" = "0"   ] || fail "AC2: a 401 is exit 0, got $(val api_curl_exit)"
+[ "$(val api_seconds)"  != "timeout" ] || fail "AC2: a 401 must NOT read as timeout"
+pass=$((pass+1))
+
+# AC3 — a genuine stall past --max-time: curl exit 28, api_seconds=timeout
+# (today's line preserved for existing parsers).
+stub_curl 000 35.0 28; run_probe
+[ "$(val api_curl_exit)" = "28"      ] || fail "AC3: a stall is curl exit 28, got $(val api_curl_exit)"
+[ "$(val api_seconds)"   = "timeout" ] || fail "AC3: a stall must preserve api_seconds=timeout"
+[ "$(val api_http)"      = "000"     ] || fail "AC3: a stall has no HTTP status (000), got $(val api_http)"
+pass=$((pass+1))
+
+# a DNS/connect failure (exit 7) is its own shape — http=000, exit=7, and NOT
+# labelled timeout (the ambiguity #1462 fixes: it is remote-unreachable, not a
+# stall the healer should read as latency).
+stub_curl 000 0.001 7; run_probe
+[ "$(val api_curl_exit)" = "7" ] || fail "connect failure should record curl exit 7, got $(val api_curl_exit)"
+[ "$(val api_seconds)"  != "timeout" ] || fail "a connect failure must NOT read as timeout"
+pass=$((pass+1))
+
+# AC4 — the watchdog's `sed -n 's/^api_seconds=//p'` read yields a usable value
+# on all three shapes: a number when healthy, a number for auth, the literal
+# `timeout` for a stall (the shape [ "$api_s" = "timeout" ] still keys on).
+stub_curl 200 2.5 0;  run_probe; [ -n "$(val api_seconds)" ] && [ "$(val api_seconds)" != "timeout" ] || fail "AC4: healthy api_seconds must parse to a number"
+stub_curl 000 35.0 28; run_probe; [ "$(val api_seconds)" = "timeout" ] || fail "AC4: a stall must still parse as the literal timeout"
+rm -rf "$probe_tmp"
+pass=$((pass+1))
+
 echo "heal-lib: $pass groups passed"

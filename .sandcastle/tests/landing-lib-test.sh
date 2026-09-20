@@ -48,7 +48,7 @@ case "$url" in
   */pulls)             echo "PR_CREATED" >> "$CALLS_LOG"; echo '{"number":101,"head":{"ref":"agent/issue-7"}}' ;;
   */issues/*/labels)   echo "LABELED" >> "$CALLS_LOG"; echo 201 ;;
   */issues/*/comments) echo 201 ;;
-  */issues/[0-9]*)     echo "{\"labels\":${ISSUE_LABELS:-[]}}" ;;
+  */issues/[0-9]*)     echo "{\"labels\":${ISSUE_LABELS:-[]},\"state\":\"${ISSUE_STATE:-open}\"}" ;;
   */labels*)           echo '[{"id":48,"name":"agent-blocked"}]' ;;
   */api/v1/repos/*)    echo '{"default_merge_style":"merge"}' ;;   # bare repo root — merge-style probe
   *) echo "fake curl: unhandled $url" >&2; exit 22 ;;
@@ -144,6 +144,30 @@ check "landing_merged_pr_for ignores a closed-but-unmerged PR" \
   '! CLOSED_PULLS=$tmp/closed-unmerged.json landing_merged_pr_for 7 >/dev/null'
 check "landing_merged_pr_for exits 1 when nothing is merged" \
   '! CLOSED_PULLS=$tmp/no-pulls.json landing_merged_pr_for 7 >/dev/null'
+
+# landing_superseded_by_pr_for (#151) — a multi-host race winner merged the work
+# on a branch OTHER than agent/issue-<N>, and its `closes #N` closed the issue.
+# The loser reads it to self-close as superseded. It fires ONLY when the issue is
+# closed AND a merged non-agent PR with a `closes #N` ref exists.
+printf '%s\n' '[{"number":70,"head":{"ref":"sandcastle/worker/x"},"merged":true,"body":"closes #7\nfix"},{"number":71,"head":{"ref":"agent/issue-7"},"merged":true,"body":"closes #7"},{"number":72,"head":{"ref":"other"},"merged":false,"body":"closes #7"}]' > "$tmp/race.json"
+check "landing_superseded_by_pr_for returns the winner's non-agent PR when the issue is closed" \
+  '[ "$(ISSUE_STATE=closed CLOSED_PULLS=$tmp/race.json landing_superseded_by_pr_for 7)" = "70" ]'
+check "landing_superseded_by_pr_for exits 1 while the issue is still OPEN (no self-close of live work)" \
+  '! ISSUE_STATE=open CLOSED_PULLS=$tmp/race.json landing_superseded_by_pr_for 7 >/dev/null'
+check "landing_superseded_by_pr_for exits 1 when only the OWN agent PR merged (that is the #108 path)" \
+  '! ISSUE_STATE=closed CLOSED_PULLS=$tmp/closed.json landing_superseded_by_pr_for 7 >/dev/null'
+# a PR that merely MENTIONS a longer number must not match (#28 vs #280) and a
+# non-closing mention must not match either
+printf '%s\n' '[{"number":73,"head":{"ref":"z"},"merged":true,"body":"see #70 for context"},{"number":74,"head":{"ref":"y"},"merged":true,"body":"mentions #700 only"}]' > "$tmp/race-nomatch.json"
+check "landing_superseded_by_pr_for ignores a non-closing mention / a longer number" \
+  '! ISSUE_STATE=closed CLOSED_PULLS=$tmp/race-nomatch.json landing_superseded_by_pr_for 70 >/dev/null'
+
+# forgejo_closing_merged_pr (#151) — the raw lookup: newest merged PR whose body
+# carries a `closes #N` ref, excluding the caller's agent branch.
+check "forgejo_closing_merged_pr finds the merged non-agent closing PR" \
+  '[ "$(CLOSED_PULLS=$tmp/race.json forgejo_closing_merged_pr 7 agent/issue-7)" = "70" ]'
+check "forgejo_closing_merged_pr excludes the named agent branch" \
+  '[ "$(CLOSED_PULLS=$tmp/race.json forgejo_closing_merged_pr 7 sandcastle/worker/x)" = "71" ]'
 
 # --- landing_reconcile — one "<N> <pr>" line per opened PR (run-swarm fan-out)
 reset

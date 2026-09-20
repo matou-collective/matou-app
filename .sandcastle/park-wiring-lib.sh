@@ -64,9 +64,35 @@ park_wiring_file_violations() {
   local file="$1"
   [ -f "$file" ] || return 0
   awk -v re="$PARK_WIRING_ENTRYPOINT_RE" -v tok="$PARK_WIRING_TOKEN" '
-    function flush(   label) {
+    # Drop a YAML end-of-line comment: a bare `#` (outside quotes) starts a
+    # comment only when it opens the line or follows whitespace, and runs to
+    # end of line. `foo#bar` and a `#` inside a "…"/'…' string are NOT
+    # comments. Applied per line so an entry point can only be seen where it is
+    # actually invoked — in `run:` script text, never in an explanatory comment
+    # (matou-app#419: a comment naming heal.sh red the run of a step that
+    # spawns no agent, and the printed remedy would have wired a secret into a
+    # step that cannot park).
+    function strip_comment(s,   out, i, c, q, prev) {
+      out = ""; q = ""; prev = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { out = out c; if (c == q) q = ""; prev = c; continue }
+        if (c == "\"" || c == "\047") { q = c; out = out c; prev = c; continue }
+        if (c == "#" && (prev == "" || prev == " " || prev == "\t")) break
+        out = out c; prev = c
+      }
+      return out
+    }
+    function flush(   label, code, n, arr, i) {
       if (block == "") return
-      if (block ~ re) {
+      # The INVOCATION test runs against the comment-stripped block; the
+      # SATISFACTION test (below) keeps using the whole block on purpose —
+      # counting a token even where it appears is a safe over-approximation
+      # that never reds a correctly-wired repo.
+      code = ""
+      n = split(block, arr, "\n")
+      for (i = 1; i <= n; i++) code = code strip_comment(arr[i]) "\n"
+      if (code ~ re) {
         label = blockname
         if (label == "") label = "(unnamed step at line " blockline ")"
         parkable[++np] = label

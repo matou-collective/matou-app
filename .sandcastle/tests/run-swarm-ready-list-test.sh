@@ -39,42 +39,67 @@ export LIST_READY_BACKOFF=0 LIST_READY_RETRIES=3
 export FAKE_CURL_DIR="$tmp"
 
 # A shimmed curl on PATH, driving the REAL list-ready-tasks.sh. Two countdown
-# files simulate a degraded forge: while >0 the matching endpoint answers the way
-# `curl -sf` answers an HTTP ≥400 (rc 22, no body) and decrements; at 0 it serves
-# canned JSON. `curl-fails` covers the ready-for-agent + standing-drive listings;
-# `deps-fails` covers the 10-wide dependency GET specifically.
+# files simulate a degraded forge: while >0 the matching endpoint answers a 503
+# (empty body, http=503) and decrements; at 0 it serves canned JSON with http=200.
+# `curl-fails` covers the ready-for-agent + standing-drive listings; `deps-fails`
+# covers the 10-wide dependency GET specifically. #142: the lister now reads the
+# status via `-o body -w %{http_code}` (no bare -f), so the shim is -o/-w aware —
+# body to the -o file, the status to stdout — and a "failure" is an http≥400, not
+# a non-zero curl exit.
 bin="$tmp/bin"; mkdir -p "$bin"
 cat > "$bin/curl" <<'SH'
 #!/usr/bin/env bash
-url=""
+url=""; ofile=""; want_code=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --max-time|-H|-o|-w|-d|-X) shift 2 ;;
+    -o) ofile="$2"; shift 2 ;;
+    -w) want_code=1; shift 2 ;;
+    --max-time|-H|-d|-X) shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
 done
 maybe_fail() {  # <countdown-file> -> rc 1 (and decrement) while the count is >0
-  local f="$FAKE_CURL_DIR/$1" n
+  local f="$FAKE_CURL_DIR/$1" lk="$FAKE_CURL_DIR/$1.lock" n
   [ -f "$f" ] || return 0
-  n="$(cat "$f")"
-  [ "$n" -gt 0 ] || return 0
-  echo $((n - 1)) >"$f"
-  return 1
+  # #144: the lister fires its ready-for-agent + standing-drive legs
+  # concurrently (the #48 OVERLAP posture), so two shim processes race the
+  # read-modify-write of ONE countdown file. Serialize with an atomic
+  # mkdir-lock (portable — the flake surfaced on a macOS host with no flock)
+  # so no lost update can drop the effective failure count. Fail CLOSED on a
+  # missing/empty/non-integer count (still-failing, 503) rather than the old
+  # `|| return 0` that laundered a truncated file into a spurious 200.
+  until mkdir "$lk" 2>/dev/null; do :; done
+  n="$(cat "$f" 2>/dev/null)"
+  case "$n" in
+    ''|*[!0-9]*) rmdir "$lk"; return 1 ;;
+  esac
+  if [ "$n" -gt 0 ]; then
+    echo $((n - 1)) >"$f"
+    rmdir "$lk"
+    return 1
+  fi
+  rmdir "$lk"
+  return 0
+}
+emit() {  # $1=body $2=http-code — body to -o (else stdout), status to stdout when -w
+  if [ -n "$ofile" ]; then printf '%s' "$1" > "$ofile"; else printf '%s' "$1"; fi
+  [ -n "$want_code" ] && printf '%s' "$2"
+  return 0
 }
 printf '%s\n' "$url" >>"$FAKE_CURL_DIR/urls.log"
 case "$url" in
   */dependencies*)
-    maybe_fail deps-fails || exit 22
-    printf '%s' '[]' ;;
+    maybe_fail deps-fails || { emit '' 503; exit 0; }
+    emit '[]' 200 ;;
   *labels=ready-for-agent*)
-    maybe_fail curl-fails || exit 22
-    printf '%s' '[{"number":7,"title":"seven","labels":[{"name":"ready-for-agent"}],"html_url":"u/7","body":"b"}]' ;;
+    maybe_fail curl-fails || { emit '' 503; exit 0; }
+    emit '[{"number":7,"title":"seven","labels":[{"name":"ready-for-agent"}],"html_url":"u/7","body":"b"}]' 200 ;;
   *labels=standing-drive*)
-    maybe_fail curl-fails || exit 22
-    printf '%s' '[]' ;;
+    maybe_fail curl-fails || { emit '' 503; exit 0; }
+    emit '[]' 200 ;;
   *)
-    printf '%s' '[]' ;;
+    emit '[]' 200 ;;
 esac
 SH
 chmod +x "$bin/curl"

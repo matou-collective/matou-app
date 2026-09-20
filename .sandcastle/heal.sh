@@ -165,7 +165,6 @@ trap heal_on_exit EXIT
 api() { curl -sf --max-time 30 -H "Authorization: token $FORGEJO_TOKEN" "$@"; }
 
 gather_evidence() {
-  local t0=$SECONDS
   # Probe the endpoint the automation actually depends on, paged: Forgejo
   # ignores limit without page and dumps the whole task table (~30s+ at
   # 1100 tasks). This is the endpoint on purpose — its sibling
@@ -173,11 +172,10 @@ gather_evidence() {
   # answering inside 60 s on the big repos (GOTCHAS 16; the pointer this
   # comment used to carry named a research doc that did not come across in
   # the ADR 0180 extraction).
-  curl -sf --max-time 35 -o /dev/null \
-    -H "Authorization: token $FORGEJO_TOKEN" \
-    "$FORGEJO_API/actions/tasks?limit=1&page=1" \
-    && echo "api_seconds=$((SECONDS - t0))" > "$EVIDENCE/api-timing.txt" \
-    || echo "api_seconds=timeout" > "$EVIDENCE/api-timing.txt"
+  # probe_api records curl's own outcome (http/elapsed/exit) so auth, a genuine
+  # timeout, and remote degradation are distinguishable in the evidence, instead
+  # of one ambiguous `api_seconds=timeout` on any curl failure (#1462).
+  probe_api "$FORGEJO_API/actions/tasks?limit=1&page=1" "$FORGEJO_TOKEN" "$EVIDENCE/api-timing.txt"
   api "$FORGEJO_API/actions/tasks?limit=50&page=1" > "$EVIDENCE/runs.json" 2>/dev/null \
     || echo '{"workflow_runs":[]}' > "$EVIDENCE/runs.json"
   # Scope worker logs to the triggering run (#235 AC2): only logs written within
@@ -210,8 +208,31 @@ gather_evidence() {
   # The triggering workflow's own verdict artifact (ci/swarm/triage), if the run
   # left a fresh one — so the diagnosis agent sees the same stage/fault the
   # signature keyed on. Copied only when fresh; a stale file is not this run's.
-  local vf; vf="$(verdict_path "$WORKFLOW")"
-  [ -n "$vf" ] && verdict_is_fresh "$vf" && cp "$vf" "$EVIDENCE/run-verdict.txt" 2>/dev/null || true
+  local vf have_local_verdict=""; vf="$(verdict_path "$WORKFLOW")"
+  if [ -n "$vf" ] && verdict_is_fresh "$vf"; then
+    cp "$vf" "$EVIDENCE/run-verdict.txt" 2>/dev/null && have_local_verdict=1 || true
+  fi
+  # Stamp the healer's OWN host into the bundle (#135), always — so the human (and
+  # the diagnosis agent) reading a bundle knows which box gathered it. SWARM_HOST
+  # else `hostname`, exactly like HEAL_EVIDENCE_HOST already resolved up top.
+  echo "healer-host: $HEAL_EVIDENCE_HOST" > "$EVIDENCE/healer-host.txt"
+  # Pool-locality honesty (#135): `swarm` is a multi-host runner pool, so a
+  # failing leg often ran on the OTHER host, where NONE of the host-local
+  # artefacts above exist — every evidence file comes back empty and the healer
+  # files an undiagnosable ticket. When there is no fresh worker log AND no fresh
+  # verdict for this run's window locally, say so explicitly IN the artefacts the
+  # diagnosis agent reads, instead of handing it empty worker-logs.txt /
+  # run-verdict.txt that read like a fault that vanished. A run that DID execute
+  # on this host keeps its real artefacts untouched.
+  if [ "$nfresh" -eq 0 ] && [ -z "$have_local_verdict" ]; then
+    local runid="${RUN_URL:-}"; runid="${runid##*/}"
+    { [ -n "$runid" ] && [ "$runid" != "${RUN_URL:-}" ]; } || runid="${SWARM_RUN_ID:-watchdog}"
+    local msg="no local evidence for run ${runid} in the last ${RUN_WINDOW}: the failing leg ran on another swarm pool host (healer-host: ${HEAL_EVIDENCE_HOST})"
+    printf '%s\n' "$msg" > "$EVIDENCE/worker-logs.txt"
+    printf '%s\n' "$msg" > "$EVIDENCE/run-verdict.txt"
+    printf '%s\n' "$msg" > "$EVIDENCE/no-local-evidence.txt"
+    echo "heal: $msg"
+  fi
   # GLOBAL by design (#238): the swarm lock serializes one heavy worker per
   # host across both repos, so the healer probes the same shared lock.
   if flock -n /tmp/matou-swarm.lock -c true 2>/dev/null; then
@@ -494,10 +515,22 @@ if [ "$MODE" = "hook" ]; then
   handle_incident "$WORKFLOW" "$(error_line "$WORKFLOW")"
 else
   found=0
-  # (c) API latency incident
+  # (c) API reachability / latency incident (#1462). The probe now records
+  # curl's own outcome, so read all three facts and trip on any UNHEALTHY probe
+  # — a transport failure (curl exit != 0, incl. a genuine timeout=28), a
+  # non-2xx status (a fast 401/403 auth fault or a 5xx remote degradation), or a
+  # slow-but-successful call >=30s. This is the SAME trip-set the old blanket
+  # `timeout` fired on (curl -sf failed on all of them), but the errline and the
+  # api-timing.txt evidence now say WHICH, so the diagnosis no longer has to
+  # re-probe live to tell auth from a real stall.
   api_s="$(sed -n 's/^api_seconds=//p' "$EVIDENCE/api-timing.txt")"
-  if [ "$api_s" = "timeout" ] || { [ "$api_s" -ge 30 ] 2>/dev/null; }; then
-    handle_incident "forgejo-api" "API version probe ${api_s}s (threshold 30s)"
+  api_http="$(sed -n 's/^api_http=//p' "$EVIDENCE/api-timing.txt")"
+  api_rc="$(sed -n 's/^api_curl_exit=//p' "$EVIDENCE/api-timing.txt")"
+  api_slow=""; { [ "${api_s%%.*}" -ge 30 ] 2>/dev/null; } && api_slow=1
+  if [ "$api_rc" = 0 ] && [ "${api_http:0:1}" = 2 ] && [ -z "$api_slow" ]; then
+    : # a fast 2xx — the API is healthy
+  else
+    handle_incident "forgejo-api" "API probe: http=${api_http:-?} elapsed=${api_s}s curl_exit=${api_rc:-?} (unhealthy; threshold 30s)"
     found=1
   fi
   # (a)+(b) failure streaks / always-red — skip workflows whose ledger was

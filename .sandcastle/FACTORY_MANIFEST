@@ -73,6 +73,7 @@ tests/claim-next-task-test.sh
 tests/claude-call-guards-test.sh
 tests/close-report-lib-test.sh
 tests/close-report-test.sh
+tests/collector-test.sh
 tests/debounce-test.sh
 tests/env-allowlist-lib-test.sh
 tests/evidence-lib-test.sh
@@ -90,6 +91,7 @@ tests/fixtures/secret-nonempty.txt
 tests/fixtures/stub-agent.sh
 tests/fixtures/swarm-verdict-fail.txt
 tests/fleet-tui-test.sh
+tests/floor-server-test.sh
 tests/forgejo-lib-test.sh
 tests/gate-lib-test.sh
 tests/git-setup-test.sh
@@ -126,6 +128,7 @@ tests/run-swarm-drive-yield-test.sh
 tests/run-swarm-env-guard-test.sh
 tests/run-swarm-landing-test.sh
 tests/run-swarm-limit-park-gate-test.sh
+tests/run-swarm-notify-guard-test.sh
 tests/run-swarm-ready-list-test.sh
 tests/run-swarm-reconcile-summary-test.sh
 tests/run-swarm-stages-test.sh

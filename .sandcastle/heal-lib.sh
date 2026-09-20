@@ -63,6 +63,36 @@ seam_verdict_signal() {
   printf '%s :: %s' "$stage" "$err"
 }
 
+# probe_api <url> <token> <outfile> — the Forgejo reachability/latency probe.
+# Records curl's OWN outcome so the healer can tell the four failures a blanket
+# `api_seconds=timeout` used to conflate (#1462): a fast 401/403 (auth — the
+# bot's token is broken, harness-infra, repairable), a genuine stall past
+# --max-time (curl exit 28 — a real timeout), a 5xx (remote degradation), and a
+# DNS/connect failure (exit 6/7). Writes three key=value lines to <outfile>:
+#   api_http=<code>       HTTP status; 000 when no response was received
+#   api_seconds=<t|timeout>  curl's time_total, EXCEPT the literal `timeout` on
+#                         a --max-time hit (exit 28) so today's parsers — the
+#                         watchdog's `sed -n 's/^api_seconds=//p'` read below and
+#                         the diagnosis prompt — keep working unchanged (AC3/AC4)
+#   api_curl_exit=<rc>    curl's exit code (0 ok, 28 timeout, 7 connect, 6 DNS…)
+# NOT `curl -sf`: -f collapses every non-2xx to one exit, and $? after
+# `read <<<"$(curl)"` is READ's status, not curl's — so capture the exit off the
+# assignment itself (guarded so it never trips the caller's set -e).
+probe_api() {
+  local url="$1" token="$2" out="$3" resp code t secs rc=0
+  resp="$(curl -s -o /dev/null --max-time 35 \
+    -w '%{http_code} %{time_total}' \
+    -H "Authorization: token $token" "$url")" || rc=$?
+  read -r code t <<<"$resp"
+  secs="${t:-timeout}"
+  [ "$rc" -eq 28 ] && secs="timeout"   # a genuine --max-time stall (AC3)
+  {
+    echo "api_http=${code:-000}"
+    echo "api_seconds=$secs"
+    echo "api_curl_exit=$rc"
+  } > "$out"
+}
+
 # The ledger: one file per signature, key=value lines. Keys: workflow,
 # first_seen, last_seen, attempts, repaired, thread_id.
 ledger_path() { echo "$HEALER_STATE/$1"; }

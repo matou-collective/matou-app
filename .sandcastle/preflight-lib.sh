@@ -34,16 +34,24 @@ _preflight_notify() { bash "$PREFLIGHT_NOTIFY" "$1" || true; }
 # when a guard did not fire on its fixture; the captured output is printed either
 # way so a green preflight is still visible in the job log.
 preflight_gate() {
-  local repo_slug="$1" out
+  local repo_slug="$1" out red
   verdict_stage "preflight self-tests (#446)"
   if out="$(bash "$PREFLIGHT_SCRIPT" 2>&1)"; then
     printf '%s\n' "$out"
     return 0
   fi
   printf '%s\n' "$out"
+  red="$(printf '%s\n' "$out" | grep 'PREFLIGHT RED' | head -20 || true)"
+  # #9: the guard FATALs to stderr, never to an errlog file, so without this the
+  # verdict's `--- error lines ---` block is EMPTY and the healer keys its
+  # signature on the bare stage name — which is exactly what run 20865 handed it
+  # (a whole investigation off `stage=preflight self-tests (#446) exit=1` with
+  # nothing under it, GOTCHAS #217). Record the failing guard line(s) so the
+  # verdict, the runlog and the healer all name the cause.
+  verdict_error "$(printf '%s' "${red:-preflight-swarm.sh exited non-zero without a PREFLIGHT RED line}" | tr '\n' ' ')"
   _preflight_notify ":rotating_light: **Swarm preflight RED** in \`$repo_slug\` — a silent-failure guard did not fire on its fixture; NO worker was spawned. Fix before the swarm can run:
 \`\`\`
-$(printf '%s\n' "$out" | grep 'PREFLIGHT RED' | head -20)
+$red
 \`\`\`"
   SWARM_EXIT_REASON="preflight-red"
   return 1
