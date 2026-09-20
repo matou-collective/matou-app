@@ -130,12 +130,27 @@
               </p>
             </div>
           </div>
+
+          <!-- Retry after a hard (non-retryable) check failure, e.g. the
+               "Backend identity configured" step. Without this the only escape
+               from a failed check was force-closing the app (#570 item 3). -->
+          <MBtn
+            v-if="canRetryChecks"
+            class="w-full retry-failed-btn"
+            size="lg"
+            @click="onManualRetry"
+          >
+            <RefreshCw class="w-5 h-5 mr-2" />
+            Retry
+          </MBtn>
         </div>
       </template>
 
-      <!-- Continue Button -->
+      <!-- Continue Button. Hidden while a Retry is offered for a hard-failed
+           check (canRetryChecks) so the user isn't shown a dead "Verifying…"
+           button next to the Retry affordance (#570 item 3). -->
       <MBtn
-        v-if="!waitingForSync"
+        v-if="!waitingForSync && !canRetryChecks"
         class="w-full continue-btn"
         size="lg"
         :disabled="!allChecksPassed"
@@ -370,6 +385,23 @@ const allChecksPassed = computed(() => {
   }
   return checks.every(c => c.status === 'passed');
 });
+
+// A check that hard-failed (non-retryable), e.g. the backend identity step
+// returning a non-retryable error. Distinct from the retryable waitingForSync
+// gate, which is handled separately above.
+const hasHardFailedCheck = computed(() => checks.some(c => c.status === 'failed'));
+
+// Whether to offer a Retry from a hard-failed check. Only the flows that run
+// the check sequence (recovery, returning, linked-device) can retry it;
+// register polls sync/status instead and has no backend check to re-run. The
+// retryable waitingForSync state has its own Retry, so this is mutually
+// exclusive with it (#570 item 3).
+const canRetryChecks = computed(
+  () =>
+    !waitingForSync.value &&
+    hasHardFailedCheck.value &&
+    (isRecoveryFlow.value || isReturningFlow.value || isLinkFlow.value),
+);
 
 function findCheck(id: string): StatusCheck {
   return checks.find(c => c.id === id)!;
