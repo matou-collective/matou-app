@@ -1,0 +1,46 @@
+name: ci-sweep
+# #548: ci self-heal, the seam twin of pr-e2e-sweep (#278). A contended ci camps
+# host-slot-wait.sh and gives up when an exclusive drive holds every pooled slot
+# on the host it landed on (an idss rehearsal drive took 43 min on 2026-09-21).
+# ci.yml now records that as a PENDING `ci / capacity-deferred` commit status
+# instead of reddening main, and this scheduled sweep re-dispatches ci for any
+# recent main commit still carrying that marker — oldest first, one per tick,
+# never while a ci run is in flight. See .sandcastle/ci-sweep.sh for the policy.
+on:
+  schedule:
+    # Off-cycle from swarm's :15/:45 AND from pr-e2e-sweep's :00/:30, so the
+    # three never land in lockstep on the same contended host.
+    - cron: "10,40 * * * *"
+  workflow_dispatch: {}
+
+# One tick at a time — a slow actions-API tick must not overlap the next.
+concurrency:
+  group: ci-sweep-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    # API calls only (no checks, no docker): it needs no host-capacity slot and
+    # returns in seconds, so it can run on any swarm host — including one whose
+    # pool is fully held by the very drive that caused the deferral.
+    runs-on: swarm
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (raw clone — actions/checkout depends on data.forgejo.org action fetch, which fast-fails intermittently, d18d869)
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          host="${SERVER_URL#https://}"
+          url="https://swarm:${FORGEJO_TOKEN}@${host}/${REPO_SLUG}.git"
+          git init -q .
+          git remote add origin "$url" 2>/dev/null || git remote set-url origin "$url"
+          git fetch -q --depth=1 origin main
+          git checkout -q -f FETCH_HEAD
+      - name: Re-dispatch ci for shas that never got to run
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+        run: bash .sandcastle/ci-sweep.sh
