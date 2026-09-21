@@ -32,10 +32,18 @@ concurrency:
 
 jobs:
   build-apk:
-    # Pinned to the one pool host that carries the persistent toolchain. `swarm`
-    # is a pool: jobs that land on the other host die in ~20s doing a first
-    # install with no go/JDK (tasks 27461/27490/27493/27510 on 2026-08-27).
-    runs-on: matou-workstation
+    # Runs on the `swarm` pool so either capable host can serve it and the pool
+    # balances by itself (#583). Both current pool hosts carry the persistent
+    # toolchain under $HOME/.matou-android and provide Go/Node/python3 directly,
+    # so a job no longer dies on a host with no toolchain (the failure mode that
+    # kept this pinned to matou-workstation — tasks 27461/27490/27493/27510 on
+    # 2026-08-27). setup-toolchain.sh is idempotent, so a cold host self-installs
+    # (slow first run, ~2.9 GB); this frees the 7 GB workstation from carrying
+    # the heaviest job in the repo (#548). The caches live in $HOME owned by the
+    # host's own runner user, so the cross-host uid gap that run-ci-checks.sh
+    # threads AGENT_UID/GID for does not apply here — this job runs directly on
+    # the host, not in a bind-mounted container.
+    runs-on: swarm
     # First run per host downloads the whole toolchain and binds the backend
     # twice (arm64 + amd64); give it room. Cached runs finish well under this.
     # Each heavy step may also camp up to 30 min on a host-capacity slot (#268).
@@ -167,7 +175,8 @@ jobs:
   #   PROD_CONFIG_URL           already used by build-apk
   build-aab:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
-    runs-on: matou-workstation
+    # See build-apk: the `swarm` pool, not a single pinned host (#583).
+    runs-on: swarm
     # See build-apk: room for the toolchain plus host-capacity waits (#268).
     timeout-minutes: 120
     steps:
