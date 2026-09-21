@@ -606,6 +606,10 @@ func (u *UnifiedTreeManager) BuildFreshTree(ctx context.Context, spaceID, treeID
 	if err != nil {
 		return nil, fmt.Errorf("BuildFreshTree getSpace: %w", err)
 	}
+	return buildFreshTreeIn(ctx, sp, treeID)
+}
+
+func buildFreshTreeIn(ctx context.Context, sp commonspace.Space, treeID string) (objecttree.ObjectTree, error) {
 	tree, err := sp.TreeBuilder().BuildTree(ctx, treeID, objecttreebuilder.BuildTreeOpts{
 		// No listener — this tree is for reading only, not for sync.
 	})
@@ -626,35 +630,47 @@ const freshTreeTimeout = 10 * time.Second
 // so it must never build a tree with the listener attached: that re-enters the
 // listener, and a re-index doing so for every unindexed tree is what stopped
 // sync in #567. A tree the index does not know yet (the listener fires before
-// GetTree indexes it) is located by asking each known space's LOCAL storage.
+// GetTree indexes it) is located by asking each open space's LOCAL storage.
 func (u *UnifiedTreeManager) FreshTreeForListener(treeID string) (objecttree.ObjectTree, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), freshTreeTimeout)
 	defer cancel()
 
-	if spaceID := u.SpaceForTree(treeID); spaceID != "" {
-		return u.BuildFreshTree(ctx, spaceID, treeID)
+	// Open spaces, not just indexed ones: a space that has only just been
+	// opened has nothing in the index yet. Only ever PEEK at them — opening a
+	// space from in here would start a listener-attached index build, and
+	// during a shutdown would put a second instance over a closing space.
+	if u.a == nil {
+		return nil, fmt.Errorf("FreshTreeForListener: no app (test mode)")
 	}
-	spaceIDs := u.KnownSpaceIDs()
-	for _, spaceID := range spaceIDs {
-		if u.storesTree(ctx, spaceID, treeID) {
-			return u.BuildFreshTree(ctx, spaceID, treeID)
+	resolver := u.a.MustComponent(spaceResolverCName).(*sdkSpaceResolver)
+	open := resolver.spaceIDs()
+	spaceID := spaceHoldingTree(u.SpaceForTree(treeID), open, func(spaceID string) bool {
+		sp, ok := resolver.openSpace(spaceID)
+		if !ok {
+			return false
 		}
+		_, err := sp.Storage().HeadStorage().GetEntry(ctx, treeID)
+		return err == nil
+	})
+	sp, ok := resolver.openSpace(spaceID)
+	if !ok {
+		return nil, fmt.Errorf("no open space holds tree %s (probed %d)", treeID, len(open))
 	}
-	return nil, fmt.Errorf("no space holds tree %s (probed %d spaces)", treeID, len(spaceIDs))
+	return buildFreshTreeIn(ctx, sp, treeID)
 }
 
-// storesTree reports whether the space's local storage has the tree. Unlike
-// BuildTree it never asks a peer for it.
-func (u *UnifiedTreeManager) storesTree(ctx context.Context, spaceID, treeID string) bool {
-	if u.a == nil {
-		return false // test mode
+// spaceHoldingTree picks the space to build a fresh tree from: the one the
+// index names, else the first candidate whose local storage has the tree.
+func spaceHoldingTree(indexedSpaceID string, candidates []string, stores func(spaceID string) bool) string {
+	if indexedSpaceID != "" {
+		return indexedSpaceID
 	}
-	sp, err := u.getSpace(ctx, spaceID)
-	if err != nil {
-		return false
+	for _, spaceID := range candidates {
+		if stores(spaceID) {
+			return spaceID
+		}
 	}
-	_, err = sp.Storage().HeadStorage().GetEntry(ctx, treeID)
-	return err == nil
+	return ""
 }
 
 // shouldAttemptRecovery reports whether treeId may be recovered right now,
@@ -673,6 +689,18 @@ func (u *UnifiedTreeManager) shouldAttemptRecovery(treeID string) bool {
 	}
 	u.recoverAttempts[treeID] = now
 	return true
+}
+
+// recoveryTimeout bounds one RecoverCorruptTree.
+const recoveryTimeout = 30 * time.Second
+
+// recoveryCtx is the context RecoverCorruptTree works under: the caller's
+// values, but not its cancellation. Recovery follows a failed fetch and is
+// handed that fetch's context, which may be the deadline that just expired;
+// any-store interrupts SQLite on a done context, so the clean-up would be cut
+// short before it dropped the orphan rows.
+func recoveryCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), recoveryTimeout)
 }
 
 // RecoverCorruptTree handles a tree whose first persist failed, leaving orphan
@@ -701,6 +729,8 @@ func (u *UnifiedTreeManager) RecoverCorruptTree(ctx context.Context, spaceID, tr
 	if !u.shouldAttemptRecovery(treeID) {
 		return false
 	}
+	ctx, cancel := recoveryCtx(ctx)
+	defer cancel()
 	sp, err := u.getSpace(ctx, spaceID)
 	if err != nil {
 		log.Printf("[UTM] RecoverCorruptTree tree=%s space=%s getSpace failed: %v", treeID, spaceID, err)
