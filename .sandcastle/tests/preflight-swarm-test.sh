@@ -50,9 +50,11 @@ $(cat "$tmp/o1")"
 # Restore for the next scenario.
 cp "$SC/limit-lib.sh" "$tmp/sc/limit-lib.sh"
 
-# ── 2b. Mangle the auth grep (#632's incident) → RED, named. Point
-#      CLAUDE_AUTH_RE at a string the real auth refusal cannot contain.
-sed -i 's#^CLAUDE_AUTH_RE=.*#CLAUDE_AUTH_RE="ZZ_NEVER_MATCHES_ZZ"#' "$tmp/sc/limit-lib.sh"
+# ── 2b. Mangle the auth grep (#632's incident) → RED, named. Point the
+#      CLASSIFIER pattern (CLAUDE_AUTH_LINE_RE, #1682 — the anchored form
+#      claude_auth_failed reads; CLAUDE_AUTH_RE is now only the extraction
+#      phrase list) at a string the real auth refusal cannot contain.
+sed -i 's#^CLAUDE_AUTH_LINE_RE=.*#CLAUDE_AUTH_LINE_RE="ZZ_NEVER_MATCHES_ZZ"#' "$tmp/sc/limit-lib.sh"
 if bash "$tmp/sc/preflight-swarm.sh" >"$tmp/o1b" 2>&1; then
   fail "a mangled auth grep must turn preflight RED; it passed:
 $(cat "$tmp/o1b")"

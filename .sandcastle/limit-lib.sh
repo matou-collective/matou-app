@@ -156,7 +156,7 @@ claude_limit_sweep() {
   rm -f "$CLAUDE_LIMIT_MARKER"
 }
 
-# ── Claude auth-refusal detection (#632) ──────────────────────────────────────
+# ── Claude auth-refusal detection (#632, #1682) ───────────────────────────────
 #
 # A DEAD TOKEN ("Not logged in · Please run /login", "Failed to authenticate:
 # OAuth session expired and could not be refreshed", …) is a different shape
@@ -167,10 +167,29 @@ claude_limit_sweep() {
 # name alone (2f0d3a6's "near-unparseable" ruling). ONE definition, shared by
 # rehearsal-report.sh's healer/reporter calls and run-swarm.sh's worker guard,
 # for the same reason CLAUDE_LIMIT_RE above is shared: two copies drift.
+#
+# CLAUDE_AUTH_RE is the phrase LIST — the wording a caller lifts to NAME the
+# refusal in its notice (claude_auth_failed's callers grep it for the line).
 CLAUDE_AUTH_RE="failed to authenticate|oauth session expired|not logged in|invalid api key|authentication_error"
 
-# claude_auth_failed <file>... — 0 iff any file carries the CLI's auth refusal.
-claude_auth_failed() { local f; for f in "$@"; do [ -s "$f" ] && grep -qiE "$CLAUDE_AUTH_RE" "$f" && return 0; done; return 1; }
+# The CLASSIFIER anchors those phrases to the START of a line (the CLI prints
+# its refusal as its own line / the whole output), NEVER embedded mid-line —
+# because the model's own diagnosis PROSE quotes the same words when it explains
+# a sign-in failure, and sign-in is most of what the drives prove. #1682 fire 1
+# (20260921T023204Z): a FINISHED heal returned `{"action":"healed",…}` whose
+# narrative quoted a Nextcloud 401 body — `{"message":"Current user is not
+# logged in"}` — the old whole-file grep matched `not logged in`, so the heal
+# was reset away, the active account flipped for nothing, and Ben was paged a
+# false "CLAUDE AUTH FAILED" (both tokens were fine, the reporter used them
+# minutes later). authentication_error stays matchable inside the CLI's own
+# `API Error: <code> …authentication_error` framing (an API-internal token no
+# product 401 body carries), never free-floating in prose.
+CLAUDE_AUTH_LINE_RE="^[[:space:]]*(failed to authenticate|oauth session expired|not logged in|invalid api key|authentication_error)|^[[:space:]]*api error:.*authentication_error"
+
+# claude_auth_failed <file>... — 0 iff any file carries the CLI's auth refusal
+# (an anchored CLAUDE_AUTH_LINE_RE match, so a diagnosis that merely QUOTES the
+# wording mid-line — inside a JSON body, a markdown bullet — does not classify).
+claude_auth_failed() { local f; for f in "$@"; do [ -s "$f" ] && grep -qiE "$CLAUDE_AUTH_LINE_RE" "$f" && return 0; done; return 1; }
 
 # ── Two-account failover (#510): ride over an exhausted weekly window ─────────
 #

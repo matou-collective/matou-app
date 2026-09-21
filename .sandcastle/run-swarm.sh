@@ -191,6 +191,17 @@ on_exit() {
   fi
   local reason="${SWARM_EXIT_REASON:-}"
   [ -n "$reason" ] || reason="died-in:${VERDICT_STAGE:-unknown}"
+  # #157: carry the failing stage into the TASK LOG on stderr. The verdict, the
+  # runlog row and the swarm.db rows all land on the HOST — the actions_log an
+  # operator reads off a red tick does NOT. A silent death printed NOTHING
+  # between the policy line and `RUN exit status 1`, so the healer keyed the
+  # empty log to one signature and silenced it, taking any genuine red that
+  # later collapsed onto the same blank-log signature with it. One line names
+  # the stage + reason (+ the captured error) so the cause is legible off the
+  # log alone.
+  if [ "$ec" -ne 0 ]; then
+    echo "run-swarm: RUN FAILED — exit $ec in stage '${VERDICT_STAGE:-unknown}' (reason=$reason)${VERDICT_ERROR:+ — ${VERDICT_ERROR}}" >&2
+  fi
   # #135: the host runlog row carries the executing host + runner too, appended
   # after runlog_line's pinned format (so runlog-lib's unit test is unaffected).
   runlog_append "${SWARM_RUNLOG:-$HOME/swarm/logs/run-swarm-verdicts.log}" \
@@ -260,7 +271,20 @@ schedule_janitor_rearm
 # failing read as the verdict's error line; it needs the run's own shell's
 # VERDICT_* (the EXIT trap reads them), so it takes an out-file, not `$(...)`.
 ready_file="$(mktemp)"
-if ! schedule_list_ready_or_verdict "$ready_file"; then rm -f "$ready_file"; exit 1; fi
+if ! schedule_list_ready_or_verdict "$ready_file"; then
+  # #157: a ready-list read that fails even after list-ready-tasks.sh's own
+  # retry/backoff is a transient forge blip, not work this host can do — the
+  # cron backstops it. Reddening here was worse than useless: the cause landed
+  # only in the on-disk verdict, the task log went blank, and the healer
+  # silenced the whole blank-log signature. Say what happened on stderr (the
+  # captured cause rides the verdict_error schedule_list_ready_or_verdict has
+  # already set) and stand down clean instead. A persistent outage then idles
+  # every tick, loudly, until the forge recovers — never a silent red.
+  echo "run-swarm: ready-list read failed after retries (${VERDICT_ERROR:-transient forge error}) — nothing to do this tick; standing down clean (the cron retries)" >&2
+  rm -f "$ready_file"
+  SWARM_EXIT_REASON="list-ready-transient"
+  exit 0
+fi
 ready="$(cat "$ready_file")"
 rm -f "$ready_file"
 ready_nums="$(schedule_ready_nums "$ready")"

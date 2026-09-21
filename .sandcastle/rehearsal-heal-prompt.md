@@ -64,8 +64,7 @@ not attempt it) and file instead.
    alters what a community *sees* or what a deploy *does* — a new default, a
    changed message at a trust moment, a route shape, a secrets shape, a
    security posture — is off limits IN-LANE: that is a design/one-way-door
-   decision, not a heal (the front-door, the co-host-route, the
-   secrets class). File it `confident:false` for a ruling.
+   decision, not a heal. File it `confident:false` for a ruling.
 
    But a **mechanical repair that happens to live in product code** — a race,
    a wrong ordering, a missing await/readiness gate, a wrong constant — does
@@ -85,7 +84,7 @@ Build it here and close it yourself, hot-context, on this workstation:
 
 - **Build it** (the same red-first discipline as an in-lane heal): write or fix
   the failing test FIRST, watch it fail, make it pass, then run the package's
-  own tests (`go test ./<package>` / `pnpm --filter <pkg> exec vitest run`).
+  own tests using this repo's targeted checks named above.
   ONE commit, the same `rehearsal healer: ` prefix, `advances #N` never `closes`.
 - **Rules 1 and 2 STILL bind.** The harness's fast-lane rails enforce them as
   law: never weaken a check (rule 1 — no touching `expect/assert/require/t.Fatal`

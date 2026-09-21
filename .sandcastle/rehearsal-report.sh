@@ -197,7 +197,13 @@ claude_auth_announce() { # <who> <run_dir>
   local who="$1" run_dir="$2" acct tok
   acct="$(claude_active_account 2>/dev/null || echo A)"
   tok="${CLAUDE_CODE_OAUTH_TOKEN:-}"
-  local msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token ${tok:+${tok:0:14}…}${tok:-EMPTY}) — $(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is ${HOST_ENV_FILE:-the host's env file (per the host registry's env directive)} (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
+  # The 14-char PREFIX or the word EMPTY — never the token. Until 2026-09-21 this read
+  # `${tok:+${tok:0:14}…}${tok:-EMPTY}`, and `${tok:-EMPTY}` expands to the WHOLE token
+  # whenever one is set: the alert posted account B's full OAuth token to the drive
+  # ticket, Mattermost and the executor log (#1672's fire-1 alert).
+  local shown=EMPTY
+  [ -n "$tok" ] && shown="${tok:0:14}…"
+  local msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token $shown) — $(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is ${HOST_ENV_FILE:-the host's env file (per the host registry's env directive)} (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
   echo "$who: $msg" >&2
   drive_issue_set && forgejo_comment "$REHEARSAL_DRIVE_ISSUE" ":rotating_light: @ben $msg" >/dev/null 2>&1
   bash "$here/notify-mattermost.sh" "@ben $msg" >/dev/null 2>&1 || true
