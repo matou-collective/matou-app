@@ -11,6 +11,7 @@ import {
   REFUSAL_OPENER,
   RECORDS_UNREACHABLE_TEXT,
   SITE_UNREACHABLE_TEXT,
+  STALE_CODE_TEXT,
 } from 'src/lib/signin/refusal';
 
 describe('refusalCopy — verification refusals', () => {
@@ -60,11 +61,33 @@ describe('refusalCopy — the outage and network lines', () => {
   });
 });
 
+describe('refusalCopy — the stale-code lines (#574)', () => {
+  it.each(['unknown', 'spent', 'expired'] as const)(
+    '%s wears its own stale-code line — no opener, no operator line',
+    (kind) => {
+      const c = refusalCopy(kind);
+      expect(c.kind).toBe(kind);
+      expect(c.text).toBe(STALE_CODE_TEXT[kind]);
+      // The credential is fine; a fresh code fixes it, so no verification opener
+      // and no "contact your operator" line.
+      expect(c.text.startsWith(REFUSAL_OPENER)).toBe(false);
+      expect(c.showTryAgain).toBe(true);
+      expect(c.showContact).toBe(false);
+    },
+  );
+});
+
 describe('normalizeRefusal', () => {
   it('passes known slugs and folds the rest to signature', () => {
     expect(normalizeRefusal('revoked')).toBe('revoked');
     expect(normalizeRefusal('REVOKED')).toBe('revoked');
     expect(normalizeRefusal(undefined)).toBe('signature');
     expect(normalizeRefusal('garbled')).toBe('signature');
+  });
+
+  it('passes the challenge-lifecycle slugs (#574)', () => {
+    expect(normalizeRefusal('unknown')).toBe('unknown');
+    expect(normalizeRefusal('spent')).toBe('spent');
+    expect(normalizeRefusal('expired')).toBe('expired');
   });
 });

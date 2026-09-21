@@ -7,10 +7,16 @@ import { describe, it, expect, vi } from 'vitest';
 import { runApprove } from 'src/lib/signin/approve';
 import type { PresentBody, PresentVerdict } from 'src/lib/signin/present';
 
-const input = { door: 'https://id.example.nz/login', challenge: 'c_3f9', aid: 'EHa', credentialSaid: 'ECred' };
+const input = {
+  door: 'https://id.example.nz/login',
+  present: 'https://id.example.nz/login/app/present',
+  challenge: 'c_3f9',
+  aid: 'EHa',
+  credentialSaid: 'ECred',
+};
 
 function fakeDeps(verdict: PresentVerdict) {
-  const present = vi.fn(async (_door: string, _body: PresentBody) => verdict);
+  const present = vi.fn(async (_presentUrl: string, _body: PresentBody) => verdict);
   return {
     sign: vi.fn(async (m: string) => `sig(${m})`),
     exportCredential: vi.fn(async (said: string) => `EXPORT:${said}`),
@@ -26,9 +32,10 @@ describe('runApprove', () => {
     expect(verdict).toEqual({ outcome: 'verified' });
     expect(deps.exportCredential).toHaveBeenCalledWith('ECred');
     expect(deps.sign).toHaveBeenCalledWith('idss-idp:https://id.example.nz/login:EHa:c_3f9');
-    expect(deps.present).toHaveBeenCalledWith('https://id.example.nz/login', {
+    // Signed over the DOOR, but POSTed to the ask's present URL (never derived).
+    expect(deps.present).toHaveBeenCalledWith('https://id.example.nz/login/app/present', {
       aid: 'EHa',
-      challengeID: 'c_3f9',
+      challenge_id: 'c_3f9',
       response: 'sig(idss-idp:https://id.example.nz/login:EHa:c_3f9)',
       // the fake export yields no ACDC/iss, so trimPresentation returns it whole
       presentation: 'EXPORT:ECred',

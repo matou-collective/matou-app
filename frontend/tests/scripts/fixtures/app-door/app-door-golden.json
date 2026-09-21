@@ -1,0 +1,46 @@
+{
+  "note": "Golden wire contract for the sign-in bridge's APP DOOR (DDR 0246, ADR 0236; Ben's rulings on idss #1666 and #1669). matou-app copies THIS file so neither side guesses the wire. Values are illustrative; the fields, paths, statuses and refusal kinds are the contract. Snake_case on the wire.",
+  "_copied_from": "idss internal/idp/testdata/app-door-golden.json @ fc3baca3 (copied for matou-app #574)",
+  "sign_in_site": {
+    "rule": "ONE string is the sign-in site: the descriptor's signin.url == the ask's door == the address the verifier binds. It is the bridge's own sign-in address.",
+    "value": "https://id.whakatohea.idss.nz/login"
+  },
+  "signed_message": "idss-idp:<door>:<aid>:<challenge_id>",
+  "ask": {
+    "method": "GET",
+    "path": "/login/app/challenge?authRequestID=<id>",
+    "status": 200,
+    "response": {
+      "challenge_id": "nonce-EXAMPLE",
+      "expires_at": "2026-09-20T00:02:00Z",
+      "door": "https://id.whakatohea.idss.nz/login",
+      "schemas": ["EMembershipSchemaSAID-EXAMPLE"],
+      "service": "Files",
+      "community": "Whakatōhea",
+      "present_url": "https://id.whakatohea.idss.nz/login/app/present",
+      "deep_link": "matou://signin?c=nonce-EXAMPLE&door=…&name=…&present=…&s=…&svc=…"
+    }
+  },
+  "deep_link_params": ["c", "door", "name", "present", "s", "svc"],
+  "present": {
+    "method": "POST",
+    "url": "the ask's present_url, verbatim — never derived from door",
+    "request": {
+      "aid": "Etama",
+      "challenge_id": "nonce-EXAMPLE",
+      "response": "0BExampleSignifySignature",
+      "presentation": "-EXAMPLE-bare-ACDC+iss-CESR-stream"
+    },
+    "verified": { "status": 200, "body": { "status": "verified" } },
+    "refused": { "status": 200, "body": { "status": "refused", "refusal": "signature" } },
+    "unknown_challenge": { "status": 404, "body": { "status": "refused", "refusal": "unknown" } },
+    "spent_challenge": { "status": 409, "body": { "status": "refused", "refusal": "spent" } },
+    "expired_challenge": { "status": 410, "body": { "status": "expired" } }
+  },
+  "status_poll": {
+    "method": "GET",
+    "path": "/login/app/status?c=<challenge_id>",
+    "states": ["waiting", "verified", "refused", "expired"],
+    "verified": { "status": "verified", "redirect": "https://…/callback?…" }
+  }
+}
