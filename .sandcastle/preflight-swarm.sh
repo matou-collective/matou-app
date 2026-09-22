@@ -94,6 +94,15 @@ guard_auth_detection() {
   if claude_auth_failed "$TMP/normal-auth.log"; then
     echo "auth-detection: CLAUDE_AUTH_RE matched a NON-auth log — a false halt would stop the swarm needlessly"
     return 1; fi
+  # Negative (#1682): the model's own DIAGNOSIS PROSE quotes these phrases when
+  # it explains a sign-in failure — a 401 body, a markdown mention — and must
+  # NOT classify (fire 1 discarded a finished heal + paged a false auth failure
+  # off a quoted `{"message":"Current user is not logged in"}`). The classifier
+  # anchors the phrases to the start of a line, so a mid-line quote is inert.
+  printf '%s\n' '`/settings/admin` -> HTTP 401 {"message":"Current user is not logged in"}' > "$TMP/prose-auth.log"
+  if claude_auth_failed "$TMP/prose-auth.log"; then
+    echo "auth-detection: a diagnosis QUOTING an auth phrase mid-line matched — a healer/reporter prose false-positive would discard a heal + page a false auth failure (#1682)"
+    return 1; fi
   return 0
 }
 

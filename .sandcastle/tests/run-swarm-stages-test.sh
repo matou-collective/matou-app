@@ -158,6 +158,37 @@ $(cat "$verdict")"
 grep -q 'host=box1' "$runlog" || fail "a red run's runlog row must carry the host (#135): $(cat "$runlog")"
 pass=$((pass+1))
 
+# #157a: a red run names its failing stage on the TASK LOG (stderr), not only in
+# the on-disk verdict. The operator reads the actions_log off a red tick; before
+# this it was blank between the policy line and `RUN exit status 1`, so the
+# healer keyed the empty log to one signature and silenced it.
+grep -qE "run-swarm: RUN FAILED — exit 1 in stage 'preflight self-tests[^']*' \\(reason=preflight-red\\)" <<<"$out" \
+  || fail "a red run must name its stage + reason on stderr (#157):
+$out"
+pass=$((pass+1))
+
+# #157b: a ready-list read that fails after its OWN retries is a transient forge
+# blip, not work this host can do — stand down CLEAN and say so, rather than a
+# silent exit 1 that reds a tick with nothing to do (matou-app#442, ~2% of ticks).
+cat > "$tmp/list-ready-fails" <<'SH'
+#!/usr/bin/env bash
+echo "list-ready-tasks: GET /issues failed after 3 attempts (last http=503)" >&2
+exit 22
+SH
+chmod +x "$tmp/list-ready-fails"
+rm -f "$verdict" "$runlog" "$tmp/stamp"; : > "$curl_log"
+run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-fails"
+[ "$RC" = 0 ] || fail "a transient ready-list failure must stand down clean, got $RC:
+$out"
+grep -q 'standing down clean' <<<"$out" || fail "the stand-down must say so on stderr (#157):
+$out"
+grep -q 'reason=list-ready-transient' "$runlog" \
+  || fail "the runlog must name the stand-down reason, not a derived died-in: $(cat "$runlog")"
+grep -q 'exit=0' "$runlog" || fail "the stand-down must record exit=0: $(cat "$runlog")"
+grep -q 'RUN FAILED' <<<"$out" && fail "a clean stand-down must NOT print the red-run line (#157)"
+grep -q 'no ready tasks' <<<"$out" && fail "a failed read must not be reported as an empty ready set"
+pass=$((pass+1))
+
 # ── half 2: the orchestrator is still a SEQUENCE, in order ────────────────
 # One entry point per seam, each in its own library. If a stage's logic is ever
 # pasted back inline, its call disappears and this reds.

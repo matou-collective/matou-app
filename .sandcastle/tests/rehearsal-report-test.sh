@@ -656,7 +656,15 @@ echo "Failed to authenticate: OAuth session expired and could not be refreshed"
 SH
 chmod +x "$tmp/bin/claude"
 red_run "pairing timeout after 900000ms"
-REHEARSAL_HEALER=0 bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (auth refusal)"
+fake_tok="sk-ant-oat01-FAKEtokenBODYthatMUSTneverBEprinted0123456789"
+REHEARSAL_HEALER=0 CLAUDE_CODE_OAUTH_TOKEN="$fake_tok" bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (auth refusal)"
+# The alert names the token by its 14-char prefix ONLY. It once printed the prefix and
+# then the whole token (`${tok:-EMPTY}` is the token when one is set) — to the drive
+# ticket and Mattermost (#1672 fire 1).
+grep -q 'FAKEtokenBODY' "$CURL_LOG" \
+  && fail "the auth alert leaked the token body — it may carry the 14-char prefix, never the token"
+grep -q 'sk-ant-oat01-F…' "$CURL_LOG" \
+  || fail "the auth alert must still name the token by its 14-char prefix"
 grep -q 'CLAUDE AUTH FAILED' "$CURL_LOG" \
   || fail "no auth-refusal alert posted to the drive issue -- an auth-dead token must never be silent"
 grep -q 'NO DIAGNOSIS' "$CURL_LOG" \
