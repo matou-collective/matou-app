@@ -16,21 +16,26 @@ on:
     - cron: "15,45 * * * *"
   workflow_dispatch: {}
 
-# One workflow-level concurrency group per repo (#26). A triage mass-label or a
-# burst of `closed` events otherwise fires this workflow once per event, and the
-# 2-wide matrix doubles each — 71 dev-factory + 73 idss no-op runs in one hour
-# were observed, each spinning a sandbox to conclude no-ready-tasks in ~6 s.
-# Forgejo Actions honours workflow-level concurrency, but NOT GitHub's "at most
-# one pending" collapse: with cancel-in-progress false it QUEUES every superseded
-# run and executes them strictly in sequence. A burst of three qualifying events
-# yields one running + TWO queued (N-1 for N events), not one queued — nothing is
-# cancelled, nothing is dropped. The success signal is therefore zero cross-run
-# overlap (serial execution), never a queue depth of 1 (verified live on
-# Forgejo v15.0.5, #38).
+# Per-RUN concurrency group (#590, Matou/idss#1732). The old per-repo group
+# `swarm-${{ github.repository }}` (#26) serialised the whole repo: with
+# cancel-in-progress false Forgejo QUEUES every superseded run and executes them
+# strictly in sequence (it honours workflow-level concurrency but NOT GitHub's
+# "at most one pending" collapse — verified live on Forgejo v15.0.5, #38), so a
+# worker inside a long ticket (180 min ceiling) held the group and every later
+# run — the :15/:45 cron and the D5 self-rearm dispatch — queued behind it and
+# drained one at a time. A newly readied ticket could wait hours while idle
+# swarm hosts got no job (head-of-line block). Keying per-run removes the block.
+# Storm protection no longer needs the per-repo group: the `closed`-only trigger
+# (above), the host-capacity slot flocks (a slot-less run yields in seconds), and
+# the ready-set-hash debounce (run-swarm.sh) are all load-bearing and present.
+# The original storm — a triage mass-label / burst of `closed` events firing this
+# workflow once per event, doubled by the 2-wide matrix (71 dev-factory + 73 idss
+# no-op runs in one hour) — is caught by those instead. Worst-case degradation
+# (empty run_number) is re-serialisation, the status quo, never a storm.
 # cancel-in-progress MUST stay false — a live worker's run is never cancelled by
 # a later event (the matrix comment's fail-fast reasoning applies here too).
 concurrency:
-  group: swarm-${{ github.repository }}
+  group: swarm-${{ github.repository }}-${{ github.run_number }}
   cancel-in-progress: false
 
 jobs:
