@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	anystore "github.com/anyproto/any-store"
 	"github.com/anyproto/any-sync/commonspace/spacepayloads"
+	"github.com/anyproto/any-sync/commonspace/spacestorage"
 )
 
 // createTestSpace derives a fresh space and creates its storage through the
@@ -109,6 +111,60 @@ func TestStorageProviderCloseAllowsImmediateReopen(t *testing.T) {
 	}
 	if err := p2.Close(ctx); err != nil {
 		t.Fatalf("second Close returned error: %v", err)
+	}
+}
+
+// TestStorageProviderConcurrentReopenReturnsOneHandle verifies that many
+// concurrent WaitSpaceStorage calls for the same on-disk space return the one
+// shared storage handle and cache exactly one entry — never a second
+// anystore.DB over the same data.db. Before the per-space open lock (#592),
+// each racing caller opened its own handle; the loser was never cached, so
+// Close leaked it and its HeadSync loop kept querying the file, logging
+// "no such table: _changes_docs" every ~5s once its handle diverged.
+func TestStorageProviderConcurrentReopenReturnsOneHandle(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+
+	// Create the space and close the provider so the db exists on disk with no
+	// open handle — the state Reinitialize's fresh provider reopens from.
+	p := newSDKStorageProvider(root)
+	id, _ := createTestSpace(ctx, t, p)
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	p2 := newSDKStorageProvider(root)
+	defer func() { _ = p2.Close(ctx) }()
+
+	const n = 8
+	var wg sync.WaitGroup
+	results := make([]spacestorage.SpaceStorage, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = p2.WaitSpaceStorage(ctx, id)
+		}(i)
+	}
+	close(start) // release all goroutines at once to maximize the race
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("WaitSpaceStorage call %d: %v", i, errs[i])
+		}
+		if results[i] != results[0] {
+			t.Errorf("WaitSpaceStorage call %d returned a different storage handle than call 0 — a second anystore.DB was opened over the same data.db", i)
+		}
+	}
+
+	var cached int
+	p2.spaces.Range(func(_, _ any) bool { cached++; return true })
+	if cached != 1 {
+		t.Errorf("provider cached %d handles for one space, want 1", cached)
 	}
 }
 

@@ -865,6 +865,13 @@ type sdkSpaceResolver struct {
 	a      *app.App
 	cache  sync.Map    // spaceId → commonspace.Space
 	closed atomic.Bool // closeSpaces ran: this resolver's app is going away
+	// opening serializes opening one space id. Without it, two concurrent
+	// GetSpace calls for the same not-yet-cached space each build a second
+	// commonspace.Space over the same store — a duplicate instance that
+	// closeSpaces never sees (only one is cached) and whose HeadSync loop runs
+	// for the life of the process, one space × one peer erroring every ~5s
+	// against a torn-down/duplicate handle. See #592.
+	opening keyedMutex
 }
 
 func newSDKSpaceResolver() *sdkSpaceResolver { return &sdkSpaceResolver{} }
@@ -884,6 +891,16 @@ func (r *sdkSpaceResolver) GetSpace(ctx context.Context, spaceID string) (common
 	if val, ok := r.cache.Load(spaceID); ok {
 		return val.(commonspace.Space), nil
 	}
+
+	// Serialize opens of this space id, then re-check the cache: a concurrent
+	// caller may have opened it while we waited. This guarantees exactly one
+	// Space instance (and one HeadSync loop) per space id (#592).
+	unlock := r.opening.lock(spaceID)
+	defer unlock()
+	if val, ok := r.cache.Load(spaceID); ok {
+		return val.(commonspace.Space), nil
+	}
+
 	if r.closed.Load() {
 		// Opening it now would put a second instance over the store of a space
 		// that may still be closing. The next app has its own resolver.
@@ -1066,6 +1083,12 @@ func (n *sdkNodeConf) CHash() chash.CHash {
 type sdkStorageProvider struct {
 	rootPath string
 	spaces   sync.Map
+	// opening serializes opening/creating one space id. Without it, two
+	// concurrent resolves of the same not-yet-cached space each anystore.Open
+	// the same data.db; the loser's handle is never stored, so Close (which only
+	// closes the cached one) leaks it — a live second store handle whose
+	// HeadSync loop keeps querying the file. See #592.
+	opening keyedMutex
 }
 
 func newSDKStorageProvider(rootPath string) *sdkStorageProvider {
@@ -1106,6 +1129,15 @@ func (p *sdkStorageProvider) WaitSpaceStorage(ctx context.Context, id string) (s
 		return s.(spacestorage.SpaceStorage), nil
 	}
 
+	// Serialize opens of this space id, then re-check the cache: a concurrent
+	// caller may have opened it while we waited. This guarantees exactly one
+	// anystore.DB handle per data.db (#592).
+	unlock := p.opening.lock(id)
+	defer unlock()
+	if s, ok := p.spaces.Load(id); ok {
+		return s.(spacestorage.SpaceStorage), nil
+	}
+
 	// Try to reopen an existing space database from disk.
 	dbPath := filepath.Join(p.rootPath, id, "data.db")
 	if _, err := os.Stat(dbPath); err != nil {
@@ -1134,6 +1166,16 @@ func (p *sdkStorageProvider) SpaceStorage(id string) (spacestorage.SpaceStorage,
 func (p *sdkStorageProvider) CreateSpaceStorage(ctx context.Context, payload spacestorage.SpaceStorageCreatePayload) (spacestorage.SpaceStorage, error) {
 	spaceID := payload.SpaceHeaderWithId.Id
 
+	if _, ok := p.spaces.Load(spaceID); ok {
+		return nil, spacestorage.ErrSpaceStorageExists
+	}
+
+	// Serialize against a concurrent open/create of the same space id, then
+	// re-check under the lock. Two concurrent CreateSpaceStorage (or a create
+	// racing a reopen) would otherwise each anystore.Open the same data.db and
+	// leak the losing handle (#592).
+	unlock := p.opening.lock(spaceID)
+	defer unlock()
 	if _, ok := p.spaces.Load(spaceID); ok {
 		return nil, spacestorage.ErrSpaceStorageExists
 	}
