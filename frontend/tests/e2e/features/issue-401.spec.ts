@@ -10,9 +10,19 @@ import { test, expect, Page } from './fixtures';
 //   - Editing gates on manage_community_settings — the same capability the PUT
 //     route enforces; a member without it never reaches this page (#318 gate).
 
-async function openDataSection(page: Page): Promise<void> {
+async function openDataSection(
+  page: Page,
+  opts: { afterReload?: boolean } = {},
+): Promise<void> {
   const enter = page.getByRole('button', { name: /enter community/i });
-  if (await enter.isVisible().catch(() => false)) {
+  if (opts.afterReload) {
+    // A reload re-boots the app: the Welcome overlay only renders once the
+    // session has been restored, so a one-shot isVisible() races it, skips the
+    // click and leaves the overlay up until the gear wait times out. Wait for
+    // it, as reloadIntoDashboard() does in e2e-roles-permissions.spec.ts.
+    await expect(enter).toBeVisible({ timeout: 60_000 });
+    await enter.click();
+  } else if (await enter.isVisible().catch(() => false)) {
     await enter.click();
   }
   const gear = page.locator('.community-settings-btn');
@@ -76,7 +86,7 @@ test.describe('Schema editor (#401)', () => {
     // (documented in #398), so re-enter the community and re-open Data — the
     // custom field is still there, proving it persisted server-side.
     await adminPage.reload();
-    await openDataSection(adminPage);
+    await openDataSection(adminPage, { afterReload: true });
     await expect(
       adminPage
         .locator('.schema-type-section[data-type="SharedProfile"]')
