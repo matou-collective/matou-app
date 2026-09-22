@@ -266,8 +266,9 @@ async function handleCreateSubmit(form: {
     });
     showCreateDialog.value = false;
     $q.notify({ type: 'positive', message: 'Proposal created!' });
-  } catch {
-    $q.notify({ type: 'negative', message: 'Failed to create proposal' });
+  } catch (err) {
+    const message = err instanceof Error && err.message ? err.message : 'Failed to create proposal';
+    $q.notify({ type: 'negative', message });
   }
 }
 </script>

@@ -31,6 +31,15 @@
           </div>
         </div>
 
+        <q-select
+          v-model="form.priority"
+          :options="priorityOptions"
+          label="Priority *"
+          outlined
+          emit-value
+          map-options
+        />
+
         <q-input v-model="form.description" label="Description *" type="textarea" outlined autogrow />
         <q-input
           v-model="form.problem_statement"
@@ -193,9 +202,12 @@ import { useIdentityStore } from 'stores/identity';
 const $q = useQuasar();
 const identityStore = useIdentityStore();
 
+type ProposalPriority = 'low' | 'medium' | 'high' | 'critical';
+
 interface ProposalFormData {
   title: string;
   type: string[];
+  priority: ProposalPriority;
   description: string;
   problem_statement: string;
   solution: string;
@@ -231,6 +243,16 @@ const typeOptions = [
   { label: 'Community', value: 'community', icon: 'groups' },
   { label: 'Governance', value: 'governance', icon: 'gavel' },
   { label: 'Operations', value: 'operations', icon: 'settings' },
+];
+
+// Values must match the Proposal schema's priority enum (backend
+// internal/types/proposals.go). Keep in sync so the UI can't send a value
+// the server-side schema validation rejects.
+const priorityOptions: { label: string; value: ProposalPriority }[] = [
+  { label: 'Low', value: 'low' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'High', value: 'high' },
+  { label: 'Critical', value: 'critical' },
 ];
 
 const isEdit = ref(false);
@@ -293,6 +315,7 @@ function makeDefaultForm(): ProposalFormData {
   return {
     title: '',
     type: [],
+    priority: 'medium',
     description: '',
     problem_statement: '',
     solution: '',
@@ -316,6 +339,7 @@ watch(
       form.value = {
         title: p.title,
         type: p.type ? [...p.type] : [],
+        priority: (p.priority as ProposalPriority) || 'medium',
         description: p.description,
         problem_statement: p.problem_statement,
         solution: p.solution,
