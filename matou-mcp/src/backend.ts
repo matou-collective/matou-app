@@ -161,16 +161,55 @@ export function discoverPortFromSs(ssOutput: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * Parse `lsof -nP -iTCP -sTCP:LISTEN` output (macOS) for the matou-backend
+ * loopback listener. The column layout differs from `ss`: COMMAND is the first
+ * token and the address lives in the trailing NAME column, so we match line by
+ * line rather than reuse the `ss` regex. lsof truncates COMMAND to ~9 chars by
+ * default ("matou-bac"), so match on that prefix.
+ */
+export function discoverPortFromLsof(lsofOutput: string): number | null {
+  for (const line of lsofOutput.split("\n")) {
+    if (!/^matou-bac/.test(line)) continue;
+    const m = line.match(/\b127\.0\.0\.1:(\d+)\b/);
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
+
+/** The platform-native listener query and its parser. */
+function listenerDiscovery(): { run: () => string; parse: (out: string) => number | null } {
+  if (process.platform === "darwin") {
+    return {
+      run: () => execFileSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "+c", "0"], { encoding: "utf8" }),
+      parse: discoverPortFromLsof,
+    };
+  }
+  return {
+    run: () => execFileSync("ss", ["-tlnp"], { encoding: "utf8" }),
+    parse: discoverPortFromSs,
+  };
+}
+
 export async function resolveBackend(
   fetchFn: FetchFn = fetch as unknown as FetchFn,
-  runSs: () => string = () => execFileSync("ss", ["-tlnp"], { encoding: "utf8" }),
+  runListeners?: () => string,
 ): Promise<{ baseUrl: string; env: MatouEnv }> {
   const override = process.env.MATOU_BACKEND_URL;
   let baseUrl: string;
   if (override) {
     baseUrl = override.replace(/\/$/, "");
   } else {
-    const port = discoverPortFromSs(runSs());
+    const { run, parse } = listenerDiscovery();
+    const runCmd = runListeners ?? run;
+    // A missing command (e.g. no `ss` on macOS) or a failed query must fall
+    // through to the actionable error below, not surface a raw ENOENT.
+    let port: number | null = null;
+    try {
+      port = parse(runCmd());
+    } catch {
+      port = null;
+    }
     if (!port) {
       throw new Error("No running matou-backend found — is the Matou app open? Or set MATOU_BACKEND_URL.");
     }
