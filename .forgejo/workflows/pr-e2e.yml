@@ -10,22 +10,31 @@ on:
 
 jobs:
   feature-e2e:
-    # TEMPORARY PIN (healer, 2026-09-15) — revert to `swarm` once #527 lands.
-    # #297 flipped this to the pooled `swarm` label so any enrolled host could
-    # take the drive. That is correct in principle, but right now only ONE of
-    # the two `swarm` runners can actually bootstrap the stack: #527 (the minio
-    # org went anonymous-denied on Docker Hub) hard-downs `make setup-test` on
-    # any host that does not already have minio/mc + minio/minio cached, and
-    # matou-workstation does not. elitebook-03 does (its test stack is up and
-    # `make start` never re-pulls a cached image), and provision-e2e-stack.sh
-    # --check reports the full stack ready there.
-    # Evidence: every pr-e2e task since 04:21Z landed on matou-workstation and
-    # died — 19299 at the any-sync infra stage (#527), then 7 runs in a row that
-    # died in ~40 s before writing a verdict — while the last green pr-e2e
-    # (task 86673) ran on elitebook-03. Pinning restores PR e2e evidence; it
-    # does NOT fix #527, and it makes elitebook-03 a single point of failure
-    # for this workflow until the pin comes off.
-    runs-on: elitebook-03
+    # The pooled `swarm` label (#297): any enrolled host can take the drive.
+    #
+    # This was pinned to elitebook-03 from 2026-09-15 as a stopgap for #527 —
+    # Docker Hub went anonymous-denied for the minio org, so only a host that
+    # already had the minio images CACHED could run `make setup-test`, and the
+    # pin made elitebook-03 a single point of failure for every PR's e2e.
+    # #527 was closed but never fixed at the source: Docker Hub still refuses
+    # both images (`docker manifest inspect`, 2026-09-22). What changed is that
+    # every pool host now holds them, verified rather than assumed:
+    #
+    #   host                cores  RAM    minio/minio  minio/mc  --check
+    #   matou-workstation     4    7 GB   cached       cached    OK
+    #   bens-mac-04           8   15 GB   cached*      cached    OK
+    #   elitebook-03          8   14 GB   cached       cached    OK
+    #   (* seeded 2026-09-22 by `docker save | docker load` from the workstation;
+    #      image id 5db7e40b… identical on all three)
+    #
+    # provision-e2e-stack.sh --check USED TO report bens-mac-04 ready while it
+    # was missing minio/minio — it never probed minio, and assumed .env.test
+    # implied the any-sync images. It now has a [minio] clause (resolved from
+    # the infra's own compose + .env.test) that fails loudly on exactly that
+    # state and converges via the quay.io mirror. Enrolling a new pool host:
+    # run it first. The durable #527 fix — the infra compose pulling from a
+    # registry that serves minio — belongs in matou-infrastructure.
+    runs-on: swarm
     # Up to 30 min camped on host capacity (#268) + the drive itself.
     timeout-minutes: 75
     # Every PR: run-pr-e2e.sh resolves the spec from the branch name
