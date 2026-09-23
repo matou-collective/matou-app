@@ -137,7 +137,41 @@ done
 curl -sf http://localhost:9080/health >/dev/null || { echo "backend never became healthy" >&2; verdict_error "backend never became healthy on :9080 after 120s"; exit 1; }
 
 verdict_stage "frontend deps (npm ci + playwright install)"
+# Carry Vite's dep-optimizer cache ACROSS the npm ci wipe (#242 recurrence,
+# this run's 504). `npm ci` deletes node_modules wholesale, and the optimizer
+# cache lives inside it (frontend/node_modules/.q-cache), so every drive starts
+# with a COLD cache. Quasar's static scan only pre-bundles 10 of the 15 deps the
+# app actually uses: @vueuse/motion, qrcode, lucide-vue-next, @scure/bip39 and
+# its english wordlist are reached only once the browser EXECUTES the app.
+# Vite discovers them on the first real navigation, re-optimizes, and mints a
+# new browser hash — so the dep chunk already in flight comes back
+# `504 (Outdated Optimize Dep)` and the page takes an "optimized dependencies
+# changed" full reload. Both failure shapes are in this run's log: attempt 0
+# died on the 504 for @vueuse_motion.js?v=7ad52ab1 before the app booted at
+# all, and retry 1 took a mid-flow reload right after "Organization setup
+# complete" which reset the onboarding pinia store, so the mnemonic screen the
+# spec waits for ("identity created") never rendered and it landed on the
+# welcome overlay instead.
+# The restore is self-validating: Vite compares its computed hash against the
+# cache's _metadata.json and silently re-optimizes from scratch on a mismatch.
+# Verified on elitebook-03 that the hash does NOT change when late-discovered
+# deps are added (26e2b4b1 both scan-only and warm), so a cache from a previous
+# drive is accepted whole and the mid-session re-optimize never happens. A PR
+# that touches package-lock.json or quasar.config.ts invalidates it and gets
+# today's cold behaviour — no worse, just not yet better. Best-effort
+# throughout: a copy failure must never fail the drive.
+qcache=frontend/node_modules/.q-cache
+qcache_keep="${PR_E2E_QCACHE_KEEP:-$HOME/.cache/matou-pr-e2e/q-cache}"
+if [ -d "$qcache" ]; then
+  rm -rf "$qcache_keep"
+  mkdir -p "$(dirname "$qcache_keep")"
+  cp -a "$qcache" "$qcache_keep" 2>/dev/null || rm -rf "$qcache_keep"
+fi
 ( cd frontend && npm ci && npx playwright install chromium )
+if [ -d "$qcache_keep" ] && [ ! -d "$qcache" ]; then
+  cp -a "$qcache_keep" "$qcache" 2>/dev/null || rm -rf "$qcache"
+  echo "run-pr-e2e: restored warm Vite dep cache ($(ls "$qcache" >/dev/null 2>&1 && echo ok || echo missing))"
+fi
 
 verdict_stage "feature spec ($spec)" /tmp/pr-e2e-playwright.log
 set +e
