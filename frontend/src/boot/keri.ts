@@ -193,6 +193,20 @@ export async function initializeApp(): Promise<void> {
     return;
   }
 
+  if (appStore.isBackendProvisioning) {
+    // IDSS backend whose org identity is not yet published (roster still being
+    // written, or /api/config momentarily 404'd). An IDSS-backed app never
+    // founds — it can only join (ADR 0226 decision 3) — so surface a "being set
+    // up by its stewards" message and land on welcome/join, never /setup.
+    console.log('[KERI Boot] IDSS backend still provisioning; org identity not yet available');
+    onboardingStore.setInitializationError(
+      'This community is being set up by its stewards — try again shortly.',
+    );
+    onboardingStore.setAppState('ready');
+    identityStore.setInitialized();
+    return;
+  }
+
   if (appStore.needsSetup) {
     // Server reachable but not configured - navigation guard will redirect
     console.log('[KERI Boot] Org not configured, navigation guard will redirect to setup');
@@ -235,6 +249,15 @@ export default boot(async ({ router }) => {
   // Registered once here (not inside initializeApp) so the splash retry can
   // re-run initialization without stacking duplicate guards.
   router.beforeEach(async (to, _from, next) => {
+    // An IDSS-backed app never founds — it can only join (ADR 0226 decision 3).
+    // The first-admin setup flow must never render on an IDSS backend, even if
+    // reached directly; send it home (welcome/join).
+    if (appStore.isIdssBackend && to.path === '/setup') {
+      console.log('[KERI Boot] IDSS backend never founds; refusing /setup');
+      next('/');
+      return;
+    }
+
     // If org needs setup and we're not already on setup page, redirect
     if (appStore.needsSetup && to.path !== '/setup') {
       console.log('[KERI Boot] Redirecting to setup (org not configured)');
