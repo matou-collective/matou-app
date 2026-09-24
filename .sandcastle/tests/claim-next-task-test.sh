@@ -36,10 +36,16 @@ check "emits exactly one ticket" '[ "$(jq length <<<"$out")" = "1" ]'
 check "emits the head" '[ "$(jq -r ".[0].number" <<<"$out")" = "431" ]'
 check "claim comment posted" 'grep -q "swarm-claim host=eb03 run=513" "$FAKE_DIR/comments-431.json"'
 check "agent-working added" 'grep -q "POST .*issues/431/labels" "$FAKE_DIR/calls.log"'
-# #13: the landing instruction line — default (no policy file) is push-to-main,
-# on stderr so the JSON stdout contract stays clean.
+# #13: the landing instruction line — a PUSH policy prints push-to-main, on
+# stderr so the JSON stdout contract stays clean. #186: pin SWARM_POLICY_FILE to
+# a test-controlled push policy here too — leaving the seam unset made this
+# scenario source the HOST repo's real swarm-policy.sh, so a vendored test run
+# from a LANDING=pr consumer read the PR-branch line and RED'd (pass=43 fail=1).
+# An empty file or an explicit LANDING=push both resolve to "landing: push to
+# main"; use the explicit form for legibility.
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
-bash "$script" >"$FAKE_DIR/lstdout" 2>"$FAKE_DIR/lstderr"
+printf '%s\n' 'LANDING=push' > "$FAKE_DIR/swarm-policy.sh"
+SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" bash "$script" >"$FAKE_DIR/lstdout" 2>"$FAKE_DIR/lstderr"
 check "push-mode landing line printed on stderr" 'grep -q "landing: push to main" "$FAKE_DIR/lstderr"'
 check "landing line does NOT pollute the JSON stdout" \
   '[ "$(jq -r ".[0].number" < "$FAKE_DIR/lstdout")" = "431" ]'

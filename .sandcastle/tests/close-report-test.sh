@@ -35,7 +35,12 @@ run_close() { # run_close <issue> <envelope-json> [close-fail-code]; sets rc + f
   # release must warn, never change the exit code.
   [ -n "${4:-}" ] && printf '%s' "$4" > "$FAKE_DIR/label-delete-fail"
   local ef="$FAKE_DIR/envelope.json"; printf '%s' "$2" > "$ef"
-  ( cd "$repo" && bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
+  # #186: pin the push policy per-scenario — an unset SWARM_POLICY_FILE sources the
+  # HOST repo's real swarm-policy.sh, so T1-T6 (which assert push-mode close: gate
+  # against main + a direct PATCH-closed) RED when this vendored test runs from a
+  # LANDING=pr consumer. The pr/landing-pr scenarios below pin their own file.
+  printf 'LANDING=push\n' > "$FAKE_DIR/swarm-policy.sh"
+  ( cd "$repo" && SWARM_POLICY_FILE="$FAKE_DIR/swarm-policy.sh" bash "$here/../close-report.sh" "$1" "$ef" ) >"$FAKE_DIR/stdout.log" 2>&1
 }
 
 posted_comment() { grep -q '"body"' "$FAKE_DIR/forgejo.log" 2>/dev/null; }

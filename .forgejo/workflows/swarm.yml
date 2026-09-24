@@ -16,36 +16,30 @@ on:
     - cron: "15,45 * * * *"
   workflow_dispatch: {}
 
-# Concurrency, keyed per RUN — deliberately unique, so swarm runs NEVER serialise
-# (the head-of-line fix, idss #1732). The original group (#26) keyed on the repo
-# alone (`group: swarm-${{ github.repository }}`): the right fix for the storm — a
-# triage mass-label or a burst of `closed`/`labeled` events fired this workflow
-# once per event and the 2-wide matrix doubled each (71 dev-factory + 73 idss
-# no-op runs in one hour), which a per-repo group collapsed to one running + one
-# pending, executed strictly in sequence (Forgejo honours workflow-level
-# concurrency but not GitHub's "at most one pending" collapse; #38).
+# Concurrency: `cancel-in-progress: false` with NO group. On Forgejo 15 that is
+# the ONE shape that means "never cancel, never queue" (services/actions/
+# workflows.go ConfigureActionRunConcurrency → UnlimitedConcurrency). Every
+# other shape serialises or cancels: a group + `false` is QueueBehind — the
+# scheduler (GetAvailableJobsForRunner) hands a run's jobs to NO runner while an
+# older run in the same group is still running; a group + `true` cancels the
+# live worker; and no block at all falls back to the legacy auto group
+# (ref+workflow+event), which cancels on push events.
 #
-# But a per-repo group SERIALISES every swarm run for the repo, whatever the
-# trigger: a worker inside a long ticket (180 min ceiling) holds the group, and
-# EVERY later run — the :15/:45 cron and the D5 self-rearm dispatch, the two paths
-# that reach an IDLE host with a newly readied ticket — queues behind it and drains
-# one at a time. A ticket readied minutes after a run listed its ready set then
-# waits HOURS while capable hosts get no job (idss #1732: #1729 sat idle ~2 h
-# behind a long ticket while an idle host got zero tasks). Keying on the trigger
-# does not fix it — the blocking run can ITSELF be a cron. Only de-serialising does.
+# The per-RUN key this replaces (`swarm-<repo>-${{ github.run_number }}`, idss
+# #1732) never de-serialised anything: Forgejo evaluates the group BEFORE the
+# run is inserted, so run_number is 0 for every run and all of a repo's swarm
+# runs shared one group — idss run 30959 started 6 s after 30954 ended, and once
+# the per-host legs landed every new run sat `waiting` behind the previous run's
+# workers (GOTCHAS 64). The per-REPO group before it (#26) serialised by design.
 #
-# Storm protection no longer needs this group and moves to guards that are now
-# load-bearing: the `labeled` trigger — the storm's real multiplier (every
-# claim/release re-fired the workflow) — is already GONE (this workflow triggers
-# on `closed` only, above); the host-capacity slot flocks yield a slot-less run in
-# seconds before any checkout or sandbox, so an event burst costs at most a handful
-# of brief runner pickups; and the ready-set-hash debounce (schedule_debounce_decide)
-# + per-ticket claiming collapse duplicate work to at most one ticket's real work.
-# Worst-case degradation (an empty run_number) is re-serialisation — the status quo,
-# never a storm. cancel-in-progress stays false for form (a per-run group has
-# nothing to cancel); a live worker's run must never be cancelled by a later event.
+# Why no queue is right here: the storm a group once collapsed (#26 — a burst of
+# events firing this workflow once per event) is held off by guards that are
+# now load-bearing: the `closed`-only trigger (#103), the host-capacity flocks
+# that yield a slot-less leg in seconds before any checkout, the ready-set-hash
+# debounce (schedule_debounce_decide) and per-ticket claiming. A live worker's
+# run is never cancelled by a later event (#38), and an idle host's leg is never
+# held behind a busy host's ticket.
 concurrency:
-  group: swarm-${{ github.repository }}-${{ github.run_number }}
   cancel-in-progress: false
 
 jobs:

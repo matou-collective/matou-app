@@ -25,6 +25,13 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 . "$here/test-env.sh"; test_env_hermetic "$work"
 mkdir -p "$work/wd/.sandcastle/logs" "$work/state"
 git init -q "$work/wd"
+# #186: pin a test-controlled PUSH policy so heal's default scenarios never
+# source the HOST repo's real swarm-policy.sh — vendored into a LANDING=pr
+# consumer the unset seam flipped heal into the #167 no-land path and the
+# first-run "repaired=1" assertion RED'd. The #167 pr/push scenarios pass their
+# own SWARM_POLICY_FILE via "$@", which env honours over this default.
+printf 'LANDING=push\n' > "$work/policy-push-default.sh"
+export SWARM_POLICY_FILE="$work/policy-push-default.sh"
 echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
 
 run_heal() {

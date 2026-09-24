@@ -27,6 +27,13 @@ git init -q "$tmp/checkout"   # the runner only fetch/resets a REAL clone; stub 
 # test-owned prefix — SESSION_RUNNER_TMP — not real /tmp.
 # shellcheck source=test-env.sh
 . "$here/test-env.sh"; test_env_hermetic "$tmp"
+# #186: a test-controlled PUSH policy run_runner pins by default — an unset
+# SWARM_POLICY_FILE sources the HOST repo's real swarm-policy.sh, so a vendored
+# run from a LANDING=pr consumer flipped the pick loop into the #165 landing-pr
+# skip and RED'd the "picked #25" pick-order assertion. Group 25c passes its own
+# pr policy via "$@", which env applies over this default.
+printf 'LANDING=push\n' > "$tmp/push-policy.sh"
+export SWARM_POLICY_FILE="$tmp/push-policy.sh"
 
 # ── fake curl: routes on the URL, logs every call ────────────────────────────
 cat > "$tmp/bin/curl" <<'EOF'
@@ -224,6 +231,7 @@ run_runner() {
     HOST_CAPACITY_DRIVE_WANTED="$tmp/hc-drive-wanted-absent-by-default" \
     SESSION_RUNNER_DRIVE_DEFER_COUNT="$tmp/hc-drive-defer-count" \
     SWARM_DB="$tmp/swarm.db" \
+    SWARM_POLICY_FILE="$tmp/push-policy.sh" \
     "$@" bash "$here/../session-runner.sh" 2>&1
 }
 # swarm.db assertions (#81): the mirror is a plain SQLite file — read it back
