@@ -30,6 +30,36 @@ describe('kit icons', () => {
     await renderIcons({ logo: svg, primary: '#0A5C6B', root });
     const m = await sharp(join(root, 'src/assets/kit/logo.png')).metadata();
     expect([m.width, m.height]).toEqual([512, 512]);
+    // A transparent logo keeps the brand primary behind the mark.
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/ic_launcher_background.xml'), 'utf8')).toContain('#0A5C6B');
+    const edge = await sharp(join(root, 'src-electron/icons/256x256.png')).extract({ left: 40, top: 128, width: 1, height: 1 }).raw().toBuffer();
+    expect([edge[0], edge[1], edge[2], edge[3]]).toEqual([0x0a, 0x5c, 0x6b, 255]);
+    await rm(root, { recursive: true, force: true });
+  }, 60_000);
+  it('fills the tile with an opaque logo on its own background colour', async () => {
+    // A white-background wordmark (the common case: a PNG export with no alpha)
+    // must not become a small white square on the brand primary — the tile takes
+    // the logo's background colour and the logo fills it.
+    const root = await mkdtemp(join(tmpdir(), 'kit-icons-'));
+    const logo = join(root, 'logo.png');
+    const mark = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#ffffff"/><rect x="24" y="24" width="16" height="16" fill="#102030"/></svg>');
+    await sharp(mark).png().toFile(logo);
+    await renderIcons({ logo, primary: '#0A5C6B', root });
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/ic_launcher_background.xml'), 'utf8')).toContain('#ffffff');
+    const px = async (rel: string, left: number, top: number) => {
+      const b = await sharp(join(root, rel)).extract({ left, top, width: 1, height: 1 }).raw().toBuffer();
+      return [b[0], b[1], b[2], b[3]];
+    };
+    // Legacy/electron tile: logo background reaches the tile edge, corner stays rounded, mark in the centre.
+    expect(await px('src-electron/icons/256x256.png', 40, 128)).toEqual([255, 255, 255, 255]);
+    expect(await px('src-electron/icons/256x256.png', 128, 128)).toEqual([0x10, 0x20, 0x30, 255]);
+    expect((await px('src-electron/icons/256x256.png', 2, 2))[3]).toBe(0);
+    // Adaptive foreground: the logo sits on transparent inside the safe zone (the matching background colour fills the rest).
+    expect((await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 10, 10))[3]).toBe(0);
+    expect(await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 216, 216)).toEqual([0x10, 0x20, 0x30, 255]);
+    expect(await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 90, 216)).toEqual([255, 255, 255, 255]);
     await rm(root, { recursive: true, force: true });
   }, 60_000);
 });
