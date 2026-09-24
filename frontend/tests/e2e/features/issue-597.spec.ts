@@ -91,7 +91,7 @@ async function openWallet(page: Page): Promise<void> {
     .getByRole('button', { name: /enter community/i })
     .click({ timeout: 15_000 })
     .catch(() => {});
-  await page.goto('/#/wallet');
+  await page.goto('/#/dashboard/wallet');
   await expect(page.locator('.credentials-tab')).toBeVisible({ timeout: 30_000 });
   // Let the store's initial refresh settle before we seed over it.
   await expect(page.locator('.loading-state')).toHaveCount(0, { timeout: 30_000 });
