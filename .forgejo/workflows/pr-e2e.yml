@@ -35,7 +35,8 @@ jobs:
     # run it first. The durable #527 fix — the infra compose pulling from a
     # registry that serves minio — belongs in matou-infrastructure.
     runs-on: swarm
-    # Up to 30 min camped on host capacity (#268) + the drive itself.
+    # Camp for host capacity (#268/#572: up to 5 min on a `slot` host, 30 on an
+    # `all` host) + the drive itself.
     timeout-minutes: 75
     # Every PR: run-pr-e2e.sh resolves the spec from the branch name
     # (agent/issue-<N>) or the PR body's '**Feature e2e:**' marker, and posts a
@@ -54,36 +55,71 @@ jobs:
           MATTERMOST_CHANNEL_ID: ${{ secrets.MATTERMOST_CHANNEL_ID }}
         run: |
           set -euo pipefail
-          # Full-host exclusivity (#268): the drive's bootstrap is timing-
-          # sensitive (keri + any-sync + backend + playwright on the 7 GB
-          # workstation) and was starved by heavy co-runners — CI tasks 40576/
-          # 41257/41484 each failed while an unlocked checks/build-apk job ran
-          # beside it. Holding ONLY slot 1 was never enough: swarm/triage ride
-          # slot 2, and checks/android took no slot at all (they now do, via
-          # .sandcastle/host-slot-wait.sh). So: declare the drive-wanted
-          # reservation (slot claimers stand down, idss #663/#664), then take
-          # EVERY pooled slot all-or-nothing. Bounded camp — this job is
-          # event-driven; nothing re-fires it. Inline (not host-slot-wait.sh)
-          # because it runs before the checkout exists, and the checkout is the
-          # PR head, which may predate the helper. Keep the TTL story in step
-          # with HOST_CAPACITY_DRIVE_WANTED_TTL (900 s): the reservation is
-          # re-touched every poll and removed on every exit path below; a
-          # SIGKILL leaves it to age out within 15 min.
+          # Host capacity (#268, #572): the drive's bootstrap is timing-sensitive
+          # (keri + any-sync + backend + playwright) and must not be starved by
+          # heavy co-runners — CI tasks 40576/41257/41484 each failed while an
+          # unlocked checks/build-apk job ran beside it. How much of the host it
+          # claims now depends on the host's declared drive-exclusivity mode
+          # (#572): a `slot` host (elitebook-03, dev-factory ADR 0003) takes ONE
+          # pooled slot and runs beside the rest of the host; an `all`/unset host
+          # (matou-workstation, 7 GB, also the dev server) declares the drive-
+          # wanted reservation and takes EVERY pooled slot all-or-nothing (byte-
+          # for-byte the pre-#572 behaviour). Bounded camp either way — this job
+          # is event-driven; nothing re-fires it beyond the pr-e2e-sweep, which
+          # re-dispatches on the pending comment (#278). Inline (not host-slot-
+          # wait.sh) because it runs before the checkout exists, and the checkout
+          # is the PR head, which may predate the helper — so the mode read below
+          # mirrors host_capacity_drive_mode by hand.
           drive_res=/tmp/matou-drive-wanted
-          deadline=$(( $(date +%s) + 1800 ))
+          drive_exclusive="${DRIVE_EXCLUSIVE:-}"
+          if [ -z "$drive_exclusive" ] && [ -r /home/swarm/swarm/host-registry.conf ]; then
+            drive_exclusive="$(awk -F'[ \t=]+' '$1=="drive-exclusive"{print $2; exit}' /home/swarm/swarm/host-registry.conf 2>/dev/null || true)"
+          fi
           acquired=0
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            touch "$drive_res"
-            exec 9>/tmp/matou-swarm.lock
-            if flock -n 9; then
+          if [ "$drive_exclusive" = slot ]; then
+            # One pooled slot, first-fit (slot 1 else slot 2): on elitebook-03 the
+            # idss rehearsal drive holds slot 1, so first-fit lands on the free
+            # slot 2 within one poll. Do NOT declare the host-wide drive-wanted
+            # reservation and do NOT honour another drive's — a one-slot job must
+            # not make every other repo's tick stand aside (that host-wide
+            # standdown is exactly the #572 starvation). Short camp: with one slot
+            # the wait is bounded by a single in-flight job, and the pending
+            # comment + pr-e2e-sweep own the give-up path (#278).
+            deadline=$(( $(date +%s) + 300 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              exec 9>/tmp/matou-swarm.lock
+              if flock -n 9; then acquired=1; break; fi
+              exec 9>&-
               exec 8>/tmp/matou-host-slot-2.lock
               if flock -n 8; then acquired=1; break; fi
               exec 8>&-
-            fi
-            exec 9>&-
-            sleep 20
-          done
-          rm -f "$drive_res"
+              sleep 20
+            done
+          else
+            # all / unset (matou-workstation): the drive's bootstrap needs the
+            # host to itself, so declare the drive-wanted reservation (slot
+            # claimers stand down, idss #663/#664) and take EVERY pooled slot all-
+            # or-nothing. rm the reservation the moment the acquire succeeds (and
+            # on every give-up path below) so it is up only while genuinely
+            # waiting; a SIGKILL leaves it to age out within the TTL
+            # (HOST_CAPACITY_DRIVE_WANTED_TTL, 900 s).
+            deadline=$(( $(date +%s) + 1800 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              touch "$drive_res"
+              exec 9>/tmp/matou-swarm.lock
+              if flock -n 9; then
+                exec 8>/tmp/matou-host-slot-2.lock
+                if flock -n 8; then acquired=1; rm -f "$drive_res"; break; fi
+                exec 8>&-
+              fi
+              exec 9>&-
+              sleep 20
+            done
+            # Give-up path: the loop may exit still holding a fresh touch — drop
+            # it. (The slot branch never touches drive_res, so it must NOT rm it:
+            # the file may be a CONCURRENT idss drive's reservation, not ours.)
+            rm -f "$drive_res"
+          fi
           if [ "$acquired" != 1 ]; then
             echo "pr-e2e: host capacity busy for 30min — giving up; re-run via workflow_dispatch or push again"
             # Loud (#278): say it ON THE PR, not only in the run log + Mattermost,
