@@ -62,9 +62,8 @@
         @click="selectedCredential = cred"
       >
         <div class="card-top">
-          <div class="card-icon" :class="{ 'matou-icon': isMatouCredential(cred) }">
-            <img v-if="isMatouCredential(cred)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="matou-logo" />
-            <q-icon v-else :name="credentialIconName(cred)" size="20px" />
+          <div class="card-icon">
+            <CredentialMark :credential="cred" :icon-size="20" />
           </div>
           <div class="card-top-right">
             <span v-if="isIssuedByMe(cred)" class="direction-badge direction-issued">Issued</span>
@@ -194,7 +193,9 @@ import { useProfilesStore } from 'stores/profiles';
 import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { getFileUrl } from 'src/lib/api/client';
+import { credentialTitle as resolveCredentialTitle } from 'src/lib/credentialAppearance';
 import CredentialDetailDialog from './CredentialDetailDialog.vue';
+import CredentialMark from './CredentialMark.vue';
 
 const walletStore = useWalletStore();
 const profilesStore = useProfilesStore();
@@ -307,11 +308,14 @@ function credentialIconName(cred: WalletCredential): string {
   return 'groups'; // membership
 }
 
-// Credential-type-specific card text
+// Credential-type-specific card text. A styled (a.display) or committee
+// credential overrides the legacy title via resolveCredentialTitle.
 function credentialTitle(cred: WalletCredential): string {
-  if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) return 'Membership Endorsement';
-  if (cred.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID) return cred.eventName || 'Event Attendance';
-  return cred.schemaTitle || cred.role || 'Credential';
+  let legacy: string;
+  if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) legacy = 'Membership Endorsement';
+  else if (cred.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID) legacy = cred.eventName || 'Event Attendance';
+  else legacy = cred.schemaTitle || cred.role || 'Credential';
+  return resolveCredentialTitle(cred, legacy);
 }
 
 function credentialSubtitle(cred: WalletCredential): string {
@@ -445,10 +449,6 @@ function truncateAid(aid: string): string {
 
 function isOrgIssuer(aid: string): boolean {
   return !!appStore.orgAid && aid === appStore.orgAid;
-}
-
-function isMatouCredential(cred: WalletCredential): boolean {
-  return (cred.schemaTitle || '').toLowerCase().includes('matou');
 }
 
 function isIssuedByMe(cred: WalletCredential): boolean {
@@ -661,16 +661,7 @@ function formatDate(dateStr: string): string {
   align-items: center;
   justify-content: center;
   color: white;
-}
-
-.card-icon.matou-icon {
-  background: white;
-  border: 1px solid var(--matou-border, #e5e7eb);
-}
-
-.matou-logo {
-  width: 22px;
-  height: 22px;
+  overflow: hidden;
 }
 
 .status-badge {
