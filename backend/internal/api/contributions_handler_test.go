@@ -334,6 +334,105 @@ func editEvidenceRequest(id, actor string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), ctxUserAID, actor))
 }
 
+// setupForComment creates a shared contribution and returns the handler, its
+// notifier, the SSE channel, and the contribution id.
+func setupForComment(t *testing.T) (*ContributionsHandler, *recordingNotifier, chan SSEEvent, string) {
+	t.Helper()
+	store := contributions.NewMockStore()
+	svc := contributions.NewService(store)
+	notifier := &recordingNotifier{}
+	handler := NewContributionsHandler(svc, nil, notifier)
+	broker := NewEventBroker()
+	handler.SetBroker(broker)
+	events := broker.Subscribe()
+
+	c, err := svc.CreateContribution(context.Background(), "community", &contributions.CreateContributionRequest{
+		ProjectID: "proj-1", Title: "Weave the net", Description: "Do it",
+		ContributionType: "technical", Priority: "low", CreatedBy: "lead-1",
+		Objectives: []string{"o"}, Deliverables: []string{"d"},
+		AcceptanceCriteria: []string{"a"}, SkillRequirements: []string{"s"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	return handler, notifier, events, c.ID
+}
+
+func addCommentRequest(id string, body map[string]interface{}) *http.Request {
+	b, _ := json.Marshal(body)
+	return httptest.NewRequest(http.MethodPost, "/api/v1/contributions/"+id+"/comments", bytes.NewReader(b))
+}
+
+func TestContributionsHandler_AddComment_NotifiesMentionedPeople(t *testing.T) {
+	handler, notifier, events, id := setupForComment(t)
+
+	w := httptest.NewRecorder()
+	handler.HandleAddComment(w, addCommentRequest(id, map[string]interface{}{
+		"user_id":   "author-1",
+		"user_name": "Author",
+		"text":      "hey @[person:EAlice|Alice] and @[person:EBob|Bob]",
+		// Alice and Bob are mentioned; the author mentions themself and repeats
+		// Alice — neither should produce a (duplicate/self) notification.
+		"mentioned_aids": []string{"EAlice", "EBob", "EAlice", "author-1"},
+	}), id)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The comment persisted its resolved AIDs.
+	var created contributions.ContributionComment
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	if len(created.MentionedAIDs) != 4 {
+		t.Errorf("mentioned_aids not round-tripped: %v", created.MentionedAIDs)
+	}
+
+	// Exactly Alice and Bob are notified, once each, with the mention type and
+	// the contribution title in the message.
+	recipients := map[string]int{}
+	for _, n := range notifier.sent {
+		if n.Type != "contribution:mentioned" {
+			t.Errorf("notification type = %s, want contribution:mentioned", n.Type)
+		}
+		if n.EntityID != id || n.EntityType != "contribution" {
+			t.Errorf("unexpected entity: %s/%s", n.EntityType, n.EntityID)
+		}
+		if !bytes.Contains([]byte(n.Message), []byte("Weave the net")) {
+			t.Errorf("message missing contribution title: %q", n.Message)
+		}
+		recipients[n.RecipientID]++
+	}
+	if recipients["EAlice"] != 1 || recipients["EBob"] != 1 || recipients["author-1"] != 0 || len(recipients) != 2 {
+		t.Errorf("recipients = %v, want {EAlice:1, EBob:1}", recipients)
+	}
+
+	// The generic comment_added SSE still fires.
+	select {
+	case ev := <-events:
+		if ev.Type != "contribution:comment_added" {
+			t.Errorf("event type = %s, want contribution:comment_added", ev.Type)
+		}
+	default:
+		t.Error("expected a comment_added SSE broadcast")
+	}
+}
+
+func TestContributionsHandler_AddComment_NoMentionsNoNotifications(t *testing.T) {
+	handler, notifier, _, id := setupForComment(t)
+
+	w := httptest.NewRecorder()
+	handler.HandleAddComment(w, addCommentRequest(id, map[string]interface{}{
+		"user_id":   "author-1",
+		"user_name": "Author",
+		"text":      "just a plain comment",
+	}), id)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(notifier.sent) != 0 {
+		t.Errorf("no notifications expected without mentions, got %d", len(notifier.sent))
+	}
+}
+
 func TestContributionsHandler_EditEvidence_NonOwnerForbidden(t *testing.T) {
 	handler, notifier, events, id := setupSubmittedForEdit(t)
 

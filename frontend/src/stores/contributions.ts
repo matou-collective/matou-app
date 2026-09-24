@@ -339,8 +339,14 @@ export const useContributionsStore = defineStore('contributions', () => {
     }
   }
 
-  async function addComment(contributionId: string, userId: string, userName: string, text: string) {
-    const comment = await apiAddComment(contributionId, userId, userName, text);
+  async function addComment(
+    contributionId: string,
+    userId: string,
+    userName: string,
+    text: string,
+    mentionedAids: string[] = [],
+  ) {
+    const comment = await apiAddComment(contributionId, userId, userName, text, mentionedAids);
     const existing = commentsByContribution.value[contributionId] ?? [];
     commentsByContribution.value[contributionId] = [...existing, comment];
     bumpCommentCount(contributionId);

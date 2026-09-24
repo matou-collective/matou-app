@@ -767,30 +767,44 @@
                   <span class="comment-author">{{ commentDisplayName(c) }}</span>
                   <span class="comment-time">&middot; {{ new Date(c.created_at).toLocaleString() }}</span>
                 </div>
-                <div class="comment-text" v-html="renderMarkdown(c.text)"></div>
+                <div class="comment-text" v-html="renderMessageContent(c.text)"></div>
               </div>
             </div>
           </div>
-          <div class="comment-input-row">
-            <q-input
-              v-model="newComment"
-              placeholder="Add your comment..."
-              type="textarea"
-              outlined
-              autogrow
-              dense
-              class="col"
-              @keydown.ctrl.enter.prevent="submitComment"
-              @keydown.meta.enter.prevent="submitComment"
-            />
-            <q-btn
-              flat
-              round
-              icon="send"
-              color="primary"
-              :disable="!newComment.trim() || sendingComment"
-              @click="submitComment"
-            />
+          <div class="comment-composer">
+            <!-- @-mention typeahead -->
+            <div v-if="mentionDropdownOpen" class="mention-dropdown-anchor">
+              <MentionDropdown
+                :candidates="mentionCandidates"
+                :active-index="mentionActiveIndex"
+                @select="selectMention"
+                @hover="mentionActiveIndex = $event"
+              />
+            </div>
+            <div class="comment-input-row">
+              <q-input
+                ref="commentInputRef"
+                v-model="newComment"
+                placeholder="Add your comment... (type @ to mention someone)"
+                type="textarea"
+                outlined
+                autogrow
+                dense
+                class="col"
+                @keydown="handleCommentKeydown"
+                @keyup="detectMention"
+                @click="detectMention"
+                @blur="closeMention"
+              />
+              <q-btn
+                flat
+                round
+                icon="send"
+                color="primary"
+                :disable="!newComment.trim() || sendingComment"
+                @click="submitComment"
+              />
+            </div>
           </div>
         </div>
 
@@ -982,7 +996,11 @@ import { buildEvidenceRequest as buildEvidencePayload, round2 } from 'src/lib/ev
 import CreateContributionDialog from 'src/components/projects/CreateContributionDialog.vue';
 import ContributionDetailDialog from 'src/components/projects/ContributionDetailDialog.vue';
 import UserAvatar from 'src/components/profiles/UserAvatar.vue';
+import MentionDropdown from 'src/components/mentions/MentionDropdown.vue';
 import { renderMarkdown } from 'src/lib/markdown';
+import { renderMessageContent, parseMentions } from 'src/lib/mentions';
+import { useMentionTypeahead } from 'src/composables/useMentionTypeahead';
+import type { QInput } from 'quasar';
 
 defineOptions({ name: 'ContributionDetailBody' });
 
@@ -1074,6 +1092,32 @@ const contributionComments = computed(
 const newComment = ref('');
 const sendingComment = ref(false);
 
+// --- @-mention typeahead (shared with the chat composer) ---
+const commentInputRef = ref<QInput | null>(null);
+function commentTextarea(): HTMLTextAreaElement | null {
+  const root = (commentInputRef.value as unknown as { $el?: HTMLElement } | null)?.$el;
+  return (root?.querySelector('textarea') as HTMLTextAreaElement | null) ?? null;
+}
+const {
+  mentionActiveIndex,
+  mentionCandidates,
+  mentionDropdownOpen,
+  closeMention,
+  detectMention,
+  selectMention,
+  handleMentionKeydown,
+} = useMentionTypeahead(newComment, commentTextarea);
+
+function handleCommentKeydown(e: KeyboardEvent) {
+  // Mention typeahead navigation takes priority while the dropdown is open.
+  if (handleMentionKeydown(e)) return;
+  // Ctrl/Cmd+Enter posts the comment (Enter alone inserts a newline).
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    void submitComment();
+  }
+}
+
 function commentDisplayName(c: { user_id: string; user_name: string }): string {
   return profilesStore.profilesByAid[c.user_id]?.displayName
     ?? c.user_name
@@ -1086,13 +1130,20 @@ async function submitComment() {
   if (!props.currentUserId) return;
   sendingComment.value = true;
   try {
+    // Resolve the person mentions to AIDs so the backend can notify them; the
+    // `@[person:AID|Name]` tokens already carry the canonical AID.
+    const mentionedAids = [
+      ...new Set(parseMentions(text).filter((m) => m.type === 'person').map((m) => m.id)),
+    ];
     await store.addComment(
       props.contribution.id,
       props.currentUserId,
       props.currentUserName || props.currentUserId,
       text,
+      mentionedAids,
     );
     newComment.value = '';
+    closeMention();
     const newCount = store.commentsByContribution[props.contribution.id]?.length ?? 0;
     void commentCursorsStore.markRead('contribution', props.contribution.id, newCount);
   } catch (err) {
@@ -1121,6 +1172,10 @@ onMounted(() => {
       const count = store.commentsByContribution[props.contribution.id]?.length ?? 0;
       void commentCursorsStore.markRead('contribution', props.contribution.id, count);
     });
+  }
+  // Warm the community roster so the @-mention typeahead has people to offer.
+  if (profilesStore.communityProfiles.length === 0) {
+    void profilesStore.loadCommunityProfiles().catch(() => {});
   }
 });
 
@@ -2965,6 +3020,29 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
     color: var(--matou-primary);
     text-decoration: underline;
   }
+
+  // @-mention chips rendered by renderMessageContent (mirrors chat).
+  :deep(.mention-chip) {
+    display: inline;
+    padding: 0 0.15rem;
+    border-radius: 4px;
+    font-weight: 600;
+    color: var(--matou-primary);
+    background-color: color-mix(in srgb, var(--matou-primary) 12%, transparent);
+    cursor: pointer;
+  }
+}
+
+.comment-composer {
+  position: relative;
+}
+
+.mention-dropdown-anchor {
+  position: absolute;
+  bottom: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  z-index: 20;
 }
 
 .comment-input-row {

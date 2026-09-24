@@ -368,6 +368,8 @@ export interface ContributionComment {
   user_id: string;
   user_name: string;
   text: string;
+  /** AIDs of people @-mentioned in `text`, resolved client-side from the tokens. */
+  mentioned_aids?: string[];
   created_at: string;
 }
 
@@ -376,11 +378,12 @@ export async function addContributionComment(
   userId: string,
   userName: string,
   text: string,
+  mentionedAids: string[] = [],
 ): Promise<ContributionComment> {
   const response = await fetch(`${BACKEND_URL}/api/v1/contributions/${contributionId}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ user_id: userId, user_name: userName, text }),
+    body: JSON.stringify({ user_id: userId, user_name: userName, text, mentioned_aids: mentionedAids }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));

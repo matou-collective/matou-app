@@ -1215,9 +1215,10 @@ func setupTestContributionsHandler() *ContributionsHandler {
 func (h *ContributionsHandler) HandleAddComment(w http.ResponseWriter, r *http.Request, id string) {
 	spaceID := resolveCommunitySpaceID(r, h.spaceManager)
 	var req struct {
-		UserID   string `json:"user_id"`
-		UserName string `json:"user_name"`
-		Text     string `json:"text"`
+		UserID        string   `json:"user_id"`
+		UserName      string   `json:"user_name"`
+		Text          string   `json:"text"`
+		MentionedAIDs []string `json:"mentioned_aids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1232,6 +1233,7 @@ func (h *ContributionsHandler) HandleAddComment(w http.ResponseWriter, r *http.R
 		UserID:         req.UserID,
 		UserName:       req.UserName,
 		Text:           req.Text,
+		MentionedAIDs:  req.MentionedAIDs,
 	}
 	created, err := h.service.AddContributionComment(r.Context(), spaceID, comment)
 	if err != nil {
@@ -1243,6 +1245,35 @@ func (h *ContributionsHandler) HandleAddComment(w http.ResponseWriter, r *http.R
 			Type: "contribution:comment_added",
 			Data: map[string]string{"contribution_id": id, "comment_id": created.ID},
 		})
+	}
+	// Notify each @-mentioned person through the existing per-recipient rail, so
+	// a mention reaches them even when they are outside the normal comment scope
+	// (not lead / steward / assignee). The author is never notified of their own
+	// mention; duplicate AIDs collapse to one notification.
+	if h.notifier != nil && len(req.MentionedAIDs) > 0 {
+		who := req.UserName
+		if who == "" {
+			who = "Someone"
+		}
+		message := who + " mentioned you in a comment"
+		if contrib, err := h.service.GetContribution(r.Context(), spaceID, id); err == nil && contrib != nil && contrib.Title != "" {
+			message = who + " mentioned you in a comment on " + contrib.Title
+		}
+		seen := map[string]bool{req.UserID: true, "": true}
+		for _, aid := range req.MentionedAIDs {
+			if seen[aid] {
+				continue
+			}
+			seen[aid] = true
+			_ = h.notifier.Notify(&ContribNotification{
+				Type:        "contribution:mentioned",
+				RecipientID: aid,
+				Title:       "You were mentioned",
+				Message:     message,
+				EntityID:    id,
+				EntityType:  "contribution",
+			})
+		}
 	}
 	writeJSON(w, http.StatusCreated, created)
 }
