@@ -12,7 +12,7 @@ import { fetchOrgConfig } from 'src/api/config';
 import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
 import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
-import { getOrCreateOrgRegistry } from 'src/lib/keri/registry';
+import { resolveIssuingRegistry } from 'src/lib/keri/registry';
 import { findActiveIssuedCredentialSaid } from 'src/lib/keri/notifications';
 import { secureStorage } from 'src/lib/secureStorage';
 
@@ -442,11 +442,14 @@ export function useAdminActions() {
         };
 
         console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
-        // Resolve the registry on the org group AID for THIS backend. KERIA does
-        // not sync TEL/registry events between group-AID members, so each
-        // steward must use a registry that exists in their local KERIA. The
-        // admin already has one; upgraded stewards create their own here.
-        const orgRegistryId = await getOrCreateOrgRegistry(issuerAidName);
+        // Resolve the registry that issues this membership for THIS backend.
+        // On an IDSS backend the ONE community registry (`community.registry`
+        // in the descriptor) issues every membership and no per-steward
+        // registry is created (ADR 0235 decision 4). On a legacy backend KERIA
+        // does not sync TEL/registry events between group-AID members, so each
+        // steward uses (or creates) a registry that exists in their local
+        // KERIA: the admin already has one; upgraded stewards create their own.
+        const orgRegistryId = await resolveIssuingRegistry(issuerAidName);
         const credResult = await keriClient.issueCredential(
           issuerAidName,
           orgRegistryId,
@@ -648,7 +651,10 @@ export function useAdminActions() {
     // --- Issue a new membership credential carrying the new role ---
     processingStep.value = 'Issuing new credential...';
     onStep?.('Issuing new credential...');
-    const orgRegistryId = await getOrCreateOrgRegistry(orgName);
+    // Same rule as the approve path: on an IDSS backend the re-issued
+    // membership comes from the one community registry (ADR 0235 decision 4);
+    // on a legacy backend it uses the steward's own group-AID registry.
+    const orgRegistryId = await resolveIssuingRegistry(orgName);
     const credResult = await keriClient.issueCredential(
       orgName,
       orgRegistryId,

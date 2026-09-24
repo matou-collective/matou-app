@@ -71,6 +71,7 @@ const keriClientMock = {
 vi.mock('src/lib/keri/client', () => ({ useKERIClient: () => keriClientMock }));
 vi.mock('src/lib/keri/registry', () => ({
   getOrCreateOrgRegistry: vi.fn(async () => 'REGID'),
+  resolveIssuingRegistry: vi.fn(async () => 'REGID'),
 }));
 vi.mock('src/api/config', () => ({
   fetchOrgConfig: vi.fn(async () => ({
