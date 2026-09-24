@@ -322,28 +322,34 @@ export const useIdentityStore = defineStore('identity', () => {
         console.warn('[AdminAccess] Failed to check org group membership:', groupErr);
       }
 
-      // Method 2: Check config admins list
-      const configResult = await fetchOrgConfig();
-      if (configResult.status === 'configured' || configResult.status === 'server_unreachable') {
-        const config = configResult.status === 'configured'
-          ? configResult.config
-          : configResult.cached;
+      // Method 2: Check config admins list.
+      // On an IDSS backend the steward role is the HELD credential / group-AID
+      // membership (Methods 1 and 1b), never the config `admins` list: ADR 0235
+      // decision 10 hides that list, so a bare descriptor `admins` entry must
+      // NOT confer steward powers in the app. Skip this method on idss.
+      if (!useAppStore().isIdssBackend) {
+        const configResult = await fetchOrgConfig();
+        if (configResult.status === 'configured' || configResult.status === 'server_unreachable') {
+          const config = configResult.status === 'configured'
+            ? configResult.config
+            : configResult.cached;
 
-        if (config?.admins) {
-          const isConfigAdmin = config.admins.some(admin => admin.aid === currentAID.value!.prefix);
-          if (isConfigAdmin) {
-            console.log('[AdminAccess] User AID found in config admins list');
-            isAdmin.value = true;
-            adminCredential.value = {
-              said: '',
-              schema: '',
-              issuer: '',
-              issuee: currentAID.value!.prefix,
-              status: 'config',
-              role: 'Founding Member',
-            };
-            adminChecked.value = true;
-            return true;
+          if (config?.admins) {
+            const isConfigAdmin = config.admins.some(admin => admin.aid === currentAID.value!.prefix);
+            if (isConfigAdmin) {
+              console.log('[AdminAccess] User AID found in config admins list');
+              isAdmin.value = true;
+              adminCredential.value = {
+                said: '',
+                schema: '',
+                issuer: '',
+                issuee: currentAID.value!.prefix,
+                status: 'config',
+                role: 'Founding Member',
+              };
+              adminChecked.value = true;
+              return true;
+            }
           }
         }
       }

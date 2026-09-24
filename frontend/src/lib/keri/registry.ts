@@ -4,6 +4,8 @@
  */
 import { useKERIClient } from './client';
 import { useIdentityStore } from 'stores/identity';
+import { getCommunityDescriptor } from 'src/lib/clientConfig';
+import { BACKEND_KIND_IDSS } from 'src/lib/descriptor';
 
 /**
  * Get or create a personal endorsement registry for the current member.
@@ -64,4 +66,43 @@ export async function getOrCreateOrgRegistry(orgAidName: string): Promise<string
 
   const registryName = `matou-community-by-${myAid.prefix.slice(0, 12)}`;
   return keriClient.createRegistry(orgAidName, registryName);
+}
+
+/**
+ * Resolve the registry that issues a membership credential for THIS backend.
+ *
+ * On an IDSS backend the ONE community registry issues every membership
+ * (ADR 0235 decision 4): the descriptor names it as `community.registry`, and
+ * per-steward registry creation is off. We must NOT fall back to
+ * {@link getOrCreateOrgRegistry} on idss — that would mint a per-steward
+ * registry the gateway never anchored, so the credential would fail to verify
+ * against the community's published ledger. A descriptor that declares
+ * `backend_kind: idss` but names no `community.registry` is a hard error, not a
+ * silent fallback.
+ *
+ * On a legacy (non-IDSS) backend the pre-existing per-steward behaviour holds:
+ * each steward uses (or creates) their own registry on the group AID.
+ */
+export async function resolveIssuingRegistry(orgAidName: string): Promise<string> {
+  let backendKind: string | null = null;
+  let communityRegistry = '';
+  try {
+    const descriptor = await getCommunityDescriptor();
+    backendKind = descriptor.backend_kind || null;
+    communityRegistry = descriptor.community?.registry ?? '';
+  } catch {
+    // Descriptor unavailable — fall through to legacy per-steward handling.
+  }
+
+  if (backendKind === BACKEND_KIND_IDSS) {
+    if (!communityRegistry) {
+      throw new Error(
+        'IDSS backend descriptor names no community.registry — cannot issue ' +
+          'membership credential (ADR 0235 decision 4).',
+      );
+    }
+    return communityRegistry;
+  }
+
+  return getOrCreateOrgRegistry(orgAidName);
 }
