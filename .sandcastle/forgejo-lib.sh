@@ -97,6 +97,25 @@ forgejo_attach_issue_asset() { # forgejo_attach_issue_asset <issue-num> <file-pa
     "$FORGEJO_API/issues/$1/assets"
 }
 
+forgejo_attach_issue_asset_url() { # forgejo_attach_issue_asset_url <issue-or-pr-num> <file-path> [display-name] -> the attachment's browser_download_url on stdout (empty on ANY failure); rc 0 always
+  # forgejo_attach_issue_asset answers with an HTTP code — enough for "did the
+  # evidence land", not for EMBEDDING it where a reviewer reads (idss ADR 0267:
+  # a landing-pr PR shows its screenshots). PRs share the issue number space, so
+  # the issue-level asset endpoint takes a PR number unchanged. Raw-capture then
+  # filter (never curl|jq). The mime type follows the extension; png by default.
+  local file="$2" name="${3:-$(basename "$2")}" mime resp
+  [ -f "$file" ] || return 0
+  case "${name,,}" in
+    *.jpg|*.jpeg) mime=image/jpeg ;;
+    *.webp)       mime=image/webp ;;
+    *.gif)        mime=image/gif ;;
+    *)            mime=image/png ;;
+  esac
+  resp="$(_forgejo_get -X POST -F "attachment=@${file};filename=${name};type=${mime}" \
+    "$FORGEJO_API/issues/$1/assets" 2>/dev/null)" || return 0
+  jq -r '.browser_download_url // empty' <<<"$resp" 2>/dev/null || true
+}
+
 forgejo_add_labels() { # forgejo_add_labels <issue-num> <label-ids-csv> -> HTTP code
   # POST /labels ADDS to the set (only PUT replaces) — the label-PATCH-ignored
   # lesson every caller used to re-learn: a `labels` field in a PATCH on the

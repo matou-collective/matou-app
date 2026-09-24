@@ -211,4 +211,37 @@ schedule_model_note() {
     "${first:+ (from label model-$first on #$(schedule_first_number "$ready"))}"
 }
 
+# ── the per-run landing (idss ADR 0267) ─────────────────────────────────────
+# A ticket may carry ONE additive `landing-<suffix>` label that overrides the
+# repo's LANDING for that ticket (policy-lib.sh). list-ready-tasks.sh surfaces
+# it as `.landing_label` (raw) and `.landing` (resolved). Like the model, the
+# run's landing follows the FIRST ready ticket — but for a harder reason: one
+# run shares one worktree across its iterations, so a push-ticket iteration
+# after a PR-ticket iteration would push the PR ticket's commit to main.
+
+# schedule_bad_landing_labels <ready-json> -> "<N> landing-<suffix>" per ticket
+# whose label is off the allowlist (EVERY ticket, not just the head: a later
+# iteration's lister would otherwise have to guess). Empty when clean.
+schedule_bad_landing_labels() {
+  local allowed
+  allowed="$(printf '%s\n' ${POLICY_TICKET_LANDING_LABELS:-pr} | jq -Rn '[inputs | select(length > 0)]')"
+  jq -r --argjson ok "$allowed" '
+    .[] | select(.landing_label != null)
+    | select(.landing_label as $l | ($ok | index($l)) == null)
+    | "\(.number) landing-\(.landing_label)"' <<<"$1" 2>/dev/null || true
+}
+
+# schedule_run_landing <ready-json> -> this run's landing:
+#   repo-pr   the repo default is already pr — every ticket has its own branch
+#   pr <N>    the head ticket lands by PR: the run works #N and nothing else
+#   push      the run never sees a ticket that lands by PR
+schedule_run_landing() {
+  if [ "${SWARM_POLICY_LANDING:-push}" = pr ]; then echo repo-pr; return 0; fi
+  if [ "$(jq -r '.[0].landing // "push"' <<<"$1" 2>/dev/null)" = pr ]; then
+    printf 'pr %s\n' "$(schedule_first_number "$1")"
+  else
+    echo push
+  fi
+}
+
 fi

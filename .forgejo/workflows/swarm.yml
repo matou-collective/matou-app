@@ -1,48 +1,71 @@
 name: swarm
 on:
-  # `closed` only — never `labeled` (Matou/dev-factory#103, GOTCHAS 32). Forgejo
-  # delivers BOTH a label add and a label remove as one `issues` action,
-  # `label_updated`, with no `label` field in the payload, and its matcher maps
-  # that action onto `labeled`. So a label trigger cannot be narrowed to
-  # "ready-for-agent was added": every claim/release toggle of `agent-working`
-  # re-fired this workflow, and under the concurrency group below (which
-  # queues, never drops) a limit-parked host that claimed-and-released N ready
-  # tickets per run queued >=N successors per run — 2,700 waiting no-op runs
-  # across four repos on 2026-08-26. Newly readied tickets are picked up by the
-  # :15/:45 cron and by the D5 self-rearm dispatch instead.
+  # `closed` only — never `labeled` (#103). Forgejo delivers BOTH a label add
+  # and a label remove as one `issues` action, `label_updated`, with no `label`
+  # field in the payload, and its matcher maps that action onto `labeled`. So
+  # a label trigger cannot be narrowed to "ready-for-agent was added": every
+  # claim/release toggle of `agent-working` re-fired this workflow, and under
+  # the concurrency group below (which queues, never drops) a limit-parked
+  # host that claimed-and-released N ready tickets per run queued ≥N successors
+  # per run — 2,700 waiting no-op runs across four repos on 2026-08-26. Newly
+  # readied tickets are picked up by the :15/:45 cron and by the D5 self-rearm
+  # dispatch (report-lib.sh) instead.
   issues:
     types: [closed]
   schedule:
     - cron: "15,45 * * * *"
   workflow_dispatch: {}
 
-# One workflow-level concurrency group per repo (#26). A triage mass-label or a
-# burst of `closed` events otherwise fires this workflow once per event, and the
-# 2-wide matrix doubles each — 71 dev-factory + 73 idss no-op runs in one hour
-# were observed, each spinning a sandbox to conclude no-ready-tasks in ~6 s.
-# Forgejo Actions honours workflow-level concurrency, but NOT GitHub's "at most
-# one pending" collapse: with cancel-in-progress false it QUEUES every superseded
-# run and executes them strictly in sequence. A burst of three qualifying events
-# yields one running + TWO queued (N-1 for N events), not one queued — nothing is
-# cancelled, nothing is dropped. The success signal is therefore zero cross-run
-# overlap (serial execution), never a queue depth of 1 (verified live on
-# Forgejo v15.0.5, #38).
-# cancel-in-progress MUST stay false — a live worker's run is never cancelled by
-# a later event (the matrix comment's fail-fast reasoning applies here too).
+# Concurrency, keyed per RUN — deliberately unique, so swarm runs NEVER serialise
+# (the head-of-line fix, idss #1732). The original group (#26) keyed on the repo
+# alone (`group: swarm-${{ github.repository }}`): the right fix for the storm — a
+# triage mass-label or a burst of `closed`/`labeled` events fired this workflow
+# once per event and the 2-wide matrix doubled each (71 dev-factory + 73 idss
+# no-op runs in one hour), which a per-repo group collapsed to one running + one
+# pending, executed strictly in sequence (Forgejo honours workflow-level
+# concurrency but not GitHub's "at most one pending" collapse; #38).
+#
+# But a per-repo group SERIALISES every swarm run for the repo, whatever the
+# trigger: a worker inside a long ticket (180 min ceiling) holds the group, and
+# EVERY later run — the :15/:45 cron and the D5 self-rearm dispatch, the two paths
+# that reach an IDLE host with a newly readied ticket — queues behind it and drains
+# one at a time. A ticket readied minutes after a run listed its ready set then
+# waits HOURS while capable hosts get no job (idss #1732: #1729 sat idle ~2 h
+# behind a long ticket while an idle host got zero tasks). Keying on the trigger
+# does not fix it — the blocking run can ITSELF be a cron. Only de-serialising does.
+#
+# Storm protection no longer needs this group and moves to guards that are now
+# load-bearing: the `labeled` trigger — the storm's real multiplier (every
+# claim/release re-fired the workflow) — is already GONE (this workflow triggers
+# on `closed` only, above); the host-capacity slot flocks yield a slot-less run in
+# seconds before any checkout or sandbox, so an event burst costs at most a handful
+# of brief runner pickups; and the ready-set-hash debounce (schedule_debounce_decide)
+# + per-ticket claiming collapse duplicate work to at most one ticket's real work.
+# Worst-case degradation (an empty run_number) is re-serialisation — the status quo,
+# never a storm. cancel-in-progress stays false for form (a per-run group has
+# nothing to cancel); a live worker's run must never be cancelled by a later event.
 concurrency:
-  group: swarm-${{ github.repository }}
+  group: swarm-${{ github.repository }}-${{ github.run_number }}
   cancel-in-progress: false
 
 jobs:
   swarm:
-    runs-on: swarm
+    # ONE leg per pool host, each pinned to that host's own runner label (the
+    # registry `name`, rendered at `onboard.sh workflows`), instead of N legs on
+    # the pool label. Forgejo hands a pool-label job to whichever runner polls
+    # first, and a host already mid-ticket still polls (its second runner slot
+    # is free) — it took the leg, hit the per-repo workdir lock below, and threw
+    # it away in seconds while a genuinely idle host never saw a job (GOTCHAS
+    # 62: the 2-leg pool matrix let one host take BOTH legs of a run). With a
+    # leg per host the busy host's leg still yields cheaply, but it can no
+    # longer steal an idle host's turn. Per-ticket claiming keeps the legs from
+    # duplicating work; fail-fast off: one host's red must not cancel another's
+    # live work. A host leaves or joins this list by re-rendering, never by hand.
+    runs-on: ${{ matrix.host }}
     strategy:
-      # Two jobs per trigger: with per-ticket claiming, two hosts can safely
-      # gang up on one repo's backlog. fail-fast off: one host's red must not
-      # cancel the other's live work. Grow the matrix when the pool grows.
       fail-fast: false
       matrix:
-        worker: [1, 2]
+        host: [matou-workstation, elitebook-03, bens-mac-04]
     timeout-minutes: 180
     steps:
       - name: Swarm under global lock

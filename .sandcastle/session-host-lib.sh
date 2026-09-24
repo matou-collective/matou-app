@@ -34,9 +34,15 @@
 # session_host_marker <issue-body> -> the declared host list, trimmed; empty
 # when the body carries no marker (the default: any host may take it). The
 # FIRST marker wins if a body somehow carries two.
+#
+# Markers are read OUTSIDE fenced blocks only (body-marker-lib.sh): a fence can
+# hold text typed by someone outside the project, and a host pin is an
+# instruction to the factory.
+# shellcheck source=body-marker-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/body-marker-lib.sh"
 session_host_marker() {
   local raw
-  raw="$(sed -n -E 's/.*<!--[[:space:]]*session-host:[[:space:]]*([^>]*)-->.*/\1/p' <<<"${1:-}" | head -1)"
+  raw="$(sed -n -E 's/.*<!--[[:space:]]*session-host:[[:space:]]*([^>]*)-->.*/\1/p' <<<"$(body_outside_fences "${1:-}")" | head -1)"
   raw="${raw#"${raw%%[![:space:]]*}"}"   # ltrim
   raw="${raw%"${raw##*[![:space:]]}"}"   # rtrim
   printf '%s\n' "$raw"

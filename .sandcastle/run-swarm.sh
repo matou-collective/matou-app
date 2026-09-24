@@ -113,6 +113,22 @@ identity_apply worker || exit 2
 # exit 0, not a recorded run: a worker already INSIDE a ticket is a different
 # process (a live sibling run) and finishes untouched.
 if schedule_drive_yield "${SWARM_DRIVE_DEFER_COUNT:-/tmp/matou-swarm-drive-defer-count}"; then
+  # #1733: record ONE always-on runlog line (#435) for this pre-work yield —
+  # reason=yielded-to-drive, the same reason the POST-work yield (#111) records.
+  # This exit path sits ABOVE the EXIT trap / verdict machinery so a yield stays a
+  # clean exit 0 and is never a recorded RUN — but that also meant it left NO
+  # host-side trace at all, exactly what made #1732 impossible to see on
+  # elitebook-03: schedule_drive_yield found the reservation, exit 0, silence. The
+  # runlog is host-side and always-on (unlike the verdict, written only on a red
+  # RUN), so appending here restores the trace WITHOUT writing a verdict — the
+  # healer's verdict path and the drive-yield seam's "no verdict file" invariant
+  # are untouched. The ready set is unknown at this point (nothing listed yet) and
+  # the yield is instantaneous, so ready=[] and duration=0. The runner name is not
+  # resolved this early, so the line carries host= only (the runlog is host-local,
+  # so its very presence names the box) — the pinned runlog_line format is intact.
+  yield_at="$(date +%s)"
+  runlog_append "${SWARM_RUNLOG:-$HOME/swarm/logs/run-swarm-verdicts.log}" \
+    "$(runlog_line "$yield_at" "$yield_at" "$repo_slug" "" yielded-to-drive 0 "${SWARM_RUN_ID:-}") host=${SWARM_HOST:-$(hostname 2>/dev/null || echo unknown)}"
   exit 0
 fi
 
@@ -321,7 +337,15 @@ if [ "${debounce%% *}" = coalesce ]; then
 fi
 stamp_written=1   # from here a quiet death without a worker must clear the stamp (#435)
 
+# The run-scoped host-signals dir main.mts mounts read-only at /run/host-signals
+# (#111). Named HERE, before the gates, so preflight_landing_gate can drop the
+# run's landing into it; main.mts honours SWARM_HOST_SIGNALS_DIR, mkdir -p's it,
+# and removes it on exit.
+SWARM_HOST_SIGNALS_DIR="${SWARM_HOST_SIGNALS_DIR:-${TMPDIR:-/tmp}/matou-host-signals-$run_db_id}"
+export SWARM_HOST_SIGNALS_DIR
+
 preflight_model_gate "$repo_slug" "$ready" || exit 1
+preflight_landing_gate "$repo_slug" "$ready" || exit 1
 
 # Web URL of the repo (FORGEJO_API is <server>/api/v1/repos/<slug>).
 repo_web="${FORGEJO_API%%/api/*}/$repo_slug"

@@ -171,6 +171,52 @@ run_heal >/dev/null
 rsig="$(ls "$work/state" | head -1)"
 grep -q "repaired=1" "$work/state/$rsig" || fail "a genuine repair must still mark repaired=1"
 
+# --- #167: a pr-DEFAULT repo gates the healer off main ------------------------
+# The healer half of #164/#165's known gap. idss ADR 0267 makes every landing on
+# main reviewed. The healer's agent can commit a harness-infra repair and push it
+# straight to main — an unattended bypass of the PR rail. heal.sh cannot intercept
+# a git push inside the agent's own claude session without killing the diagnosis,
+# so its gate is the incident PROMPT: in a pr-default repo the agent is told to
+# diagnose + ESCALATE, never push a repair, and the ledger never marks the fault
+# repaired (nothing landed on main). SWARM_POLICY_FILE is the same test-only seam
+# session-runner uses; LANDING=push (the default) is byte-identical to before.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+prpol="$work/policy-pr.sh";   printf 'LANDING=pr\n'   > "$prpol"
+pushpol="$work/policy-push.sh"; printf 'LANDING=push\n' > "$pushpol"
+prcap="$work/heal-167-prompt"
+cat > "$work/land-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$1" > "${PCAP:?}"
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: rebased and pushed the lockfile fix to main
+ESCALATE: no
+
+**Root cause** — stub.
+D
+echo "stub agent ran"
+EOF
+chmod +x "$work/land-agent.sh"
+# pr-default: the incident prompt carries the no-land directive, and a non-ticket
+# "repair" is NOT recorded as repaired (nothing can land on main here).
+out="$(run_heal SWARM_POLICY_FILE="$prpol" HEAL_AGENT_CMD="bash $work/land-agent.sh" PCAP="$prcap")"
+grep -q "REVIEWS every landing on main" "$prcap" \
+  || fail "#167: a pr-default repo must tell the agent not to push a repair to main (got: $(cat "$prcap" 2>/dev/null))"
+prsig="$(ls "$work/state")"
+grep -q "repaired=1" "$work/state/$prsig" \
+  && fail "#167: a pr-default repo must NOT mark a fault repaired — nothing landed on main"
+# push-default (today's factory/idss): byte-identical — no directive, real repair marked
+rm -rf "$work/state"; mkdir -p "$work/state"
+out="$(run_heal SWARM_POLICY_FILE="$pushpol" HEAL_AGENT_CMD="bash $work/land-agent.sh" PCAP="$prcap")"
+grep -q "REVIEWS every landing on main" "$prcap" \
+  && fail "#167: a push-default repo must carry NO landing directive (byte-identical to before)"
+pushsig="$(ls "$work/state")"
+grep -q "repaired=1" "$work/state/$pushsig" \
+  || fail "#167: a push repo still marks a genuine repair repaired=1"
+
 # --- #197: a moved ci fault re-triggers investigation ------------------------
 # ci has no readable log API; the seam script leaves a verdict at a well-known
 # host path. Two consecutive ci failures with DIFFERENT faults must produce two
@@ -383,6 +429,62 @@ out="$(run_heal_pre2e)"
 [ -f "$work/state/$pre2edeg" ] || fail "with no pr-e2e verdict the signature must degrade to the workflow name (#127)"
 [ ! -f "$work/state/$pre2eprose" ] || fail "the pr-e2e degrade path must NOT grep worker prose (#127)"
 echo "$out" | grep -qi "signature degraded to workflow name" || fail "a degraded pr-e2e signature must be flagged in the post"
+
+# --- #162: verify is a verdict-bearing workflow too --------------------------
+# The reader half of matou-app#228: the consumer's run-verify.sh writes the same
+# stage/exit marker (via verdict-lib.sh) at /tmp/matou-<tag>-verify-verdict.txt.
+# verdict_path used to return empty for `verify`, so a red verify fell through to
+# the (now-removed) prose grep and keyed the signature on an unrelated swarm
+# worker session (matou-app verify run 12813 keyed 02207d14cad0 on a
+# "**Verified in sandbox:** npm run test:script" line from an unrelated older
+# worker log). Pin: the marker (the failing stage) keys the signature; the same
+# fault -> the same signature, a different fault -> a different one; and its
+# absence degrades (never prose), exactly like swarm/smoke-drive/pr-e2e.
+rm -f "$work/state/"*
+verify_verdict="$work/verify-verdict.txt"
+run_heal_verify() {
+  env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
+    HEAL_MODE=hook WORKFLOW=verify RUN_URL=http://x/runs/12 \
+    HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
+    VERIFY_VERDICT_PATH="$verify_verdict" \
+    CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+    CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
+    HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
+    HEAL_PROMPT_FILE="$heal_prompt_file" \
+    FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+    HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+    HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
+    "$@" bash "$here/../heal.sh" 2>&1
+}
+# a fresh verdict naming the failing stage -> the marker-derived signature (AC1).
+# The exact run-12813 fault: the core.bare=true wedge in the shared workdir.
+printf 'stage=git sync (fetch/checkout/reset)\nexit=128\n--- error lines ---\nfatal: this operation must be run in a work tree\n' > "$verify_verdict"
+verifysig="$(compute_signature verify "$(seam_verdict_signal "$verify_verdict")")"
+verifyprose="$(compute_signature verify "$(grep -hE 'error|Error|ERR|failed|Failed|timed out|fatal' "$work/wd/.sandcastle/logs/x-worker.log" | tail -1)")"
+out="$(run_heal_verify)"
+[ -f "$work/state/$verifysig" ] || fail "verify signature must key on the run-verify.sh verdict marker (#162)"
+[ ! -f "$work/state/$verifyprose" ] || fail "verify signature must NOT be minted from worker prose (#162)"
+echo "$out" | grep -qi "signature degraded" && fail "a fresh verify verdict must NOT flag the signature degraded"
+[ "$verifysig" != "$verifyprose" ] || fail "test bug: verify marker and prose signatures must differ to be meaningful"
+# same failing stage on a second red run -> the SAME signature (AC2)
+rm -f "$work/state/"*
+out="$(run_heal_verify)"
+[ -f "$work/state/$verifysig" ] || fail "the same verify fault must key the SAME signature (#162 AC2)"
+# a DIFFERENT failing stage -> a DIFFERENT signature (AC2)
+rm -f "$work/state/"*
+printf 'stage=check-verifications\nexit=1\n--- error lines ---\nverification check failed for #401\n' > "$verify_verdict"
+verifysig2="$(compute_signature verify "$(seam_verdict_signal "$verify_verdict")")"
+[ "$verifysig2" != "$verifysig" ] || fail "test bug: the two verify faults must yield different signatures"
+out="$(run_heal_verify)"
+[ -f "$work/state/$verifysig2" ] || fail "a different verify fault must key a DIFFERENT signature (#162 AC2)"
+[ ! -f "$work/state/$verifysig" ] || fail "a moved verify fault must NOT reuse the prior signature (#162 AC2)"
+# no verify verdict at all -> degrade to the workflow name, never prose
+rm -f "$work/state/"* "$verify_verdict"
+verifydeg="$(compute_signature verify "")"
+out="$(run_heal_verify)"
+[ -f "$work/state/$verifydeg" ] || fail "with no verify verdict the signature must degrade to the workflow name (#162)"
+[ ! -f "$work/state/$verifyprose" ] || fail "the verify degrade path must NOT grep worker prose (#162)"
+echo "$out" | grep -qi "signature degraded to workflow name" || fail "a degraded verify signature must be flagged in the post"
 
 # --- #127: an UNWIRED workflow keys on a stable no-verdict line, never prose --
 # A workflow with no verdict_path entry at all (a watchdog-detected name, or a
@@ -724,4 +826,4 @@ grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
 grep -q "run watchdog" "$capdir/worker-logs.txt" 2>/dev/null \
   || fail "#147: with RUN_URL and SWARM_RUN_ID unset the runid must fall back to 'watchdog' (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
 
-echo "heal.sh: 19 scenarios passed"
+echo "heal.sh: 20 scenarios passed"

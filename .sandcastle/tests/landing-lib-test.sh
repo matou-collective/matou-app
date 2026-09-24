@@ -86,7 +86,11 @@ check "push mode pushes HEAD:refs/heads/main" \
   'grep -q "push origin HEAD:refs/heads/main" "$GIT_PUSHES"'
 check "push mode never pushes an agent branch" \
   '! grep -q "agent/issue-7" "$GIT_PUSHES"'
-check "push mode makes no Forgejo calls" '[ ! -s "$CALLS_LOG" ]'
+# idss ADR 0267: landing is resolved PER TICKET, so a push-default repo reads the
+# ticket's labels once (is it `landing-pr`?) — that ONE GET is the feature. It
+# still opens no PR and writes nothing.
+check "push mode makes exactly one Forgejo call — the ticket's label read — and no write" \
+  '[ "$(wc -l < "$CALLS_LOG")" -eq 1 ] && grep -q "^GET .*/issues/7$" "$CALLS_LOG"'
 
 # --- pr mode, first run: pushes agent/issue-7 and opens ONE PR (closes #7) ---
 reset

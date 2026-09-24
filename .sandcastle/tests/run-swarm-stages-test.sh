@@ -125,16 +125,21 @@ grep -q 'defaults (' <<<"$present_out" \
   && fail "the present-file branch must NOT carry the defaults wrapper: $present_out"
 pass=$((pass+1))
 
-# the drive-reservation gate short-circuits BEFORE any of that — no tracker call,
-# no verdict, no runlog line (proven end-to-end in run-swarm-drive-yield-test.sh;
-# asserted here as the FIRST stage in the sequence)
+# the drive-reservation gate short-circuits BEFORE any of that — no tracker call
+# and no verdict, but it now leaves ONE runlog line so a stood-down host is not
+# invisible on disk (#1733; the elitebook-03 blind spot behind #1732). It is a
+# runlog line, NOT a verdict (a yield stays a clean exit that keys no healer
+# signature) and NOT a tracker touch. Asserted here as the FIRST stage in the
+# sequence; the end-to-end shape is in run-swarm-drive-yield-test.sh.
 rm -f "$verdict" "$runlog" "$tmp/defer"; : > "$curl_log"
 : > "$tmp/drive-wanted"
 run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-empty" HOST_CAPACITY_DRIVE_WANTED="$tmp/drive-wanted"
 [ "$RC" = 0 ] || fail "a drive yield must exit 0, got $RC: $out"
 grep -q 'yielding this run to a ready drive' <<<"$out" || fail "the yield must be reported: $out"
 [ ! -s "$curl_log" ] || fail "the yield must precede EVERY tracker call: $(cat "$curl_log")"
-[ ! -s "$runlog" ] 2>/dev/null || fail "a yield is not a recorded run: $(cat "$runlog")"
+[ ! -s "$verdict" ] 2>/dev/null || fail "a yield keys no healer verdict: $(cat "$verdict")"
+grep -q 'reason=yielded-to-drive' "$runlog" || fail "a yield must record its reason in the runlog (#1733): $(cat "$runlog")"
+grep -q 'exit=0' "$runlog" || fail "a yield is a clean exit — the runlog line must read exit=0: $(cat "$runlog")"
 pass=$((pass+1))
 
 # a red preflight aborts BEFORE the janitor mutates a label or a worker spawns

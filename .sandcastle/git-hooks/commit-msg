@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# commit-msg gate (idss #1717): a swarm worker must not COMMIT for a ticket its
+# run never claimed.
+#
+# Run 29782 (2026-09-22, host elitebook-distributed-server-03): a worker whose
+# iteration-start claim came back EMPTY re-ran the LISTER on the "queue may be
+# stale" path, found a ticket ANOTHER host had already claimed, and worked it
+# with NO claim of its own — ~16 min of duplicate work whose orphan commit
+# fast-forwarded the shared workdir's local `main` and RED the run's
+# merge-to-main sync AFTER all work had landed. Nothing MECHANICAL refused the
+# work: close-report's gates run only at CLOSE, and a lost push race never
+# reaches them. This is that mechanical refusal, at the FIRST revertible moment
+# — the commit — not at close. No orphan is ever committed, so it can never
+# fast-forward local main either (the sync-red's true cause).
+#
+# Scope: ONLY a swarm worker (SWARM_RUN_ID set and non-zero). A session-runner,
+# a human, and the host reconcile push all leave SWARM_RUN_ID unset, so the gate
+# is inert for them — they legitimately commit for tickets no swarm run claimed.
+# A commit whose SUBJECT cites no `#<n>` (housekeeping) is not gated.
+#
+# Fail posture mirrors the pre-push drift gate: the ONLY thing that blocks is a
+# CONFIRMED "this run holds no claim on the cited ticket" (claim_owned_by_run
+# rc 1). An unreachable tracker (rc 3), a missing token, or missing tools all
+# FAIL OPEN — a forge blip must never wedge an honestly-claimed worker.
+#
+# Wired via `git config core.hooksPath .sandcastle/git-hooks`, the same knob the
+# pre-push drift gate rides (main.mts in the sandbox; git-setup.sh / session-
+# runner.sh in real workdirs), so it reaches every swarm worker's commit.
+set -uo pipefail
+
+run="${SWARM_RUN_ID:-0}"
+[ -n "$run" ] && [ "$run" != 0 ] || exit 0   # not a swarm worker — inert
+
+msgfile="${1:-}"
+[ -n "$msgfile" ] && [ -f "$msgfile" ] || exit 0
+
+# The worked ticket is the FIRST `#<n>` on the SUBJECT line — the
+# `sandcastle: #<n> — …` convention landing-lib.sh's own commit scrape keys on.
+# A `#<n>` that appears only in the body (a follow-up reference) is not the
+# worked ticket, so read line 1 alone.
+subject="$(head -n1 "$msgfile" 2>/dev/null || true)"
+issue="$(printf '%s\n' "$subject" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')"
+[ -n "$issue" ] || exit 0   # subject cites no ticket — nothing to verify
+
+root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$root" ] || exit 0
+sc="$root/.sandcastle"
+[ -f "$sc/claim-lib.sh" ] || exit 0   # not a factory checkout — inert
+
+# Token: env, then the sandbox's git-ignored .env, then the mounted secret.
+# No token → cannot verify → FAIL OPEN.
+if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f "$sc/.env" ]; then
+  # shellcheck disable=SC1091
+  . "$sc/.env"
+fi
+if [ -z "${FORGEJO_TOKEN:-}" ] && [ -f /run/secrets/forgejo_token ]; then
+  FORGEJO_TOKEN="$(cat /run/secrets/forgejo_token)"
+fi
+[ -n "${FORGEJO_TOKEN:-}" ] || exit 0
+
+# FORGEJO_API from the consumer's identity layer if not already exported.
+if [ -z "${FORGEJO_API:-}" ] && [ -f "$sc/swarm-identity.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$sc/swarm-identity.sh"
+fi
+[ -n "${FORGEJO_API:-}" ] || exit 0
+export FORGEJO_TOKEN FORGEJO_API
+
+# shellcheck source=../claim-lib.sh
+. "$sc/claim-lib.sh"
+
+# Bound the check so a slow forge FAILS OPEN fast rather than stalling every
+# commit (this hook sits in the worker's inner loop). curl -sf returns rc 22 /
+# 28 on a timeout, which _claim_comments surfaces as claim_owned_by_run rc 3.
+CLAIM_API_MAX_TIME="${COMMIT_MSG_CLAIM_MAX_TIME:-10}"
+export CLAIM_API_MAX_TIME
+
+rc=0
+claim_owned_by_run "$issue" "$run" || rc=$?
+case "$rc" in
+  0) exit 0 ;;   # this run holds a claim on #$issue — allow the commit
+  3)
+    echo "commit-msg (#1717): could not reach the tracker to verify a swarm-claim on #$issue — allowing the commit (fail-open; a forge blip must not wedge an honestly-claimed worker)." >&2
+    exit 0 ;;
+  *)
+    {
+      echo ""
+      echo "commit-msg BLOCKED (#1717): swarm run $run holds NO swarm-claim on #$issue."
+      echo ""
+      echo "This iteration never claimed #$issue, so committing for it would be"
+      echo "duplicate work whose orphan commit poisons the shared workdir's main and"
+      echo "reds the merge-to-main sync (the run 29782 failure this gate closes)."
+      echo ""
+      echo "Work ONLY the one ticket claim-next-task.sh claimed for this iteration"
+      echo "— the single item in the ready-tasks block at the top of your prompt. If"
+      echo "that block was empty there is nothing claimable now: end the iteration."
+      echo "Do NOT run the lister and pick a ticket up by hand."
+    } >&2
+    exit 1 ;;
+esac

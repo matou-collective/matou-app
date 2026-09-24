@@ -149,8 +149,15 @@ check "deadline too tight says so on stderr" 'grep -q "deadline" "$FAKE_DIR/derr
 # the outer 30s again. Assert the arithmetic on the real argv, not the intent.
 setup; mklister '[{"number":431,"title":"a","body":"b","url":"u"}]'
 CLAIM_NEXT_DEADLINE=20 CLAIM_CANDIDATE_CALLS=5 bash "$script" >/dev/null 2>&1
-check "walk cap is deadline-derived (20/5 = 4s), not the old flat 10s" \
-  'grep -q -- "--max-time 4 " "$FAKE_DIR/argv.log" || grep -q -- "--max-time 4$" "$FAKE_DIR/argv.log"'
+# The derived per-call cap is the SMALLEST --max-time on the real argv (the
+# candidate walk; the prefetch leg is larger). Assert the invariant, not the
+# literal: pinning `--max-time 4` flaked ~1-in-8 because the derivation subtracts
+# elapsed SECONDS, so a run that crossed a one-second boundary derives a MORE
+# conservative cap 3 (from 19/5) and reds a green code path (#166). `cap < 10`
+# still catches a regression to the old flat 10s cap.
+cap="$(sed -n "s/.*--max-time \([0-9]*\).*/\1/p" "$FAKE_DIR/argv.log" | sort -n | head -1)"
+check "walk cap is deadline-derived (>= floor, calls x cap fits deadline, < old flat 10s)" \
+  '[ -n "$cap" ] && [ "$cap" -ge 2 ] && [ "$((cap * 5))" -le 20 ] && [ "$cap" -lt 10 ]'
 check "worst-case candidate (calls x cap) fits inside the deadline" \
   '[ "$(sed -n "s/.*issues\/431\/comments.*//;s/.*--max-time \([0-9]*\).*/\1/p" "$FAKE_DIR/argv.log" | sort -n | tail -1)" -le 20 ]'
 # The explicit override stays absolute — an operator/probe retune is eyes-open

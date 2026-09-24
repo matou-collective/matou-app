@@ -200,8 +200,8 @@ JSON
 out4="$(bash "$here/../list-ready-tasks.sh")" || fail "priority run exited non-zero"
 [ "$(jq -r '[.[].number] | join(",")' <<<"$out4")" = "701,703,700,702" ] \
   || fail "priority issues must sort first, tracker order kept within groups (got $(jq -c '[.[].number]' <<<"$out4"))"
-jq -e 'all(.[]; keys == ["body","model","number","title","url"])' <<<"$out4" >/dev/null \
-  || fail "emitted shape changed — expected {body,model,number,title,url} (the priority flag must not leak; .model must survive)"
+jq -e 'all(.[]; keys == ["body","landing","landing_label","model","number","title","url"])' <<<"$out4" >/dev/null \
+  || fail "emitted shape changed — expected {body,landing,landing_label,model,number,title,url} (the priority flag must not leak; .model must survive)"
 jq -e 'all(.[]; .model == null)' <<<"$out4" >/dev/null \
   || fail "unlabelled tickets must surface .model=null (default model)"
 pass=$((pass+1))
@@ -286,8 +286,8 @@ JSON
 out8="$(bash "$here/../list-ready-tasks.sh")" || fail "drive-blocker ordering run exited non-zero"
 [ "$(jq -r '[.[].number] | join(",")' <<<"$out8")" = "900,400,300" ] \
   || fail "the drive blocker (#900) must sort first, then priority (#400), then the rest (#300) (got $(jq -c '[.[].number]' <<<"$out8"))"
-jq -e 'all(.[]; keys == ["body","model","number","title","url"])' <<<"$out8" >/dev/null \
-  || fail "emitted shape changed — the blocker helper flag must not leak (expected {body,model,number,title,url})"
+jq -e 'all(.[]; keys == ["body","landing","landing_label","model","number","title","url"])' <<<"$out8" >/dev/null \
+  || fail "emitted shape changed — the blocker helper flag must not leak (expected {body,landing,landing_label,model,number,title,url})"
 pass=$((pass+1))
 
 # 10b: with NO standing drive (the common case), ordering is byte-identical to
@@ -450,6 +450,89 @@ env -u REHEARSAL_DRIVE_ISSUE DEPS_HTTP=503 LIST_READY_RETRIES=2 LIST_READY_BACKO
 [ "$rc" -eq 123 ] || fail "the dependency fan-out failure must surface as xargs 123, got rc=$rc"
 grep -qE 'list-ready-tasks: GET /issues/300/dependencies .*last http=503' "$tmp/12c.err" \
   || fail "an exhausted /dependencies read must name /issues/300/dependencies + http=503: $(cat "$tmp/12c.err")"
+pass=$((pass+1))
+
+# ── per-ticket landing (idss ADR 0267) ───────────────────────────────────────
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 801, "title": "ordinary",  "body": "b", "html_url": "u/801", "labels": [{"name":"ready-for-agent"}]},
+  {"number": 802, "title": "app report", "body": "b", "html_url": "u/802", "labels": [{"name":"ready-for-agent"},{"name":"landing-pr"}]},
+  {"number": 803, "title": "bad label", "body": "b", "html_url": "u/803", "labels": [{"name":"ready-for-agent"},{"name":"landing-squash"}]}
+]
+JSON
+nosig="$tmp/no-such-dir/run-landing"        # directory absent = a host-side listing
+
+# L1: host-side (no signal dir) — every ticket surfaces, each with its landing.
+outL1="$(env -u SWARM_POLICY_FILE SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh")" \
+  || fail "L1: host-side listing exited non-zero"
+[ "$(jq -r '.[] | select(.number==801) | .landing' <<<"$outL1")" = push ] || fail "L1: an unlabelled ticket in a push repo reads landing=push"
+[ "$(jq -r '.[] | select(.number==801) | .landing_label' <<<"$outL1")" = null ] || fail "L1: an unlabelled ticket reads landing_label=null"
+[ "$(jq -r '.[] | select(.number==802) | .landing' <<<"$outL1")" = pr ]   || fail "L1: a landing-pr ticket reads landing=pr"
+[ "$(jq -r '.[] | select(.number==803) | .landing_label' <<<"$outL1")" = squash ] || fail "L1: an unknown landing-* label is surfaced RAW for the host gate to name"
+pass=$((pass+1))
+
+# L2: a sandbox whose run is push-parity never sees the PR ticket (nor the bad one).
+mkdir -p "$tmp/sig"; printf 'push\n' > "$tmp/sig/run-landing"
+outL2="$(env -u SWARM_POLICY_FILE SWARM_RUN_LANDING_SIGNAL="$tmp/sig/run-landing" bash "$here/../list-ready-tasks.sh" 2>"$tmp/L2.err")" \
+  || fail "L2: push-parity listing exited non-zero"
+[ "$(jq -c '[.[].number]' <<<"$outL2")" = '[801]' ] || fail "L2: push parity must emit only push tickets, got $(jq -c '[.[].number]' <<<"$outL2")"
+pass=$((pass+1))
+
+# L3: a sandbox whose run is `pr 802` sees that ONE ticket — nothing rides along.
+printf 'pr 802\n' > "$tmp/sig/run-landing"
+outL3="$(env -u SWARM_POLICY_FILE SWARM_RUN_LANDING_SIGNAL="$tmp/sig/run-landing" PULLS_FIXTURE=/dev/null bash "$here/../list-ready-tasks.sh")" \
+  || fail "L3: pr-parity listing exited non-zero"
+[ "$(jq -c '[.[].number]' <<<"$outL3")" = '[802]' ] || fail "L3: pr parity must emit exactly the run's ticket, got $(jq -c '[.[].number]' <<<"$outL3")"
+pass=$((pass+1))
+
+# L4: the signal DIRECTORY exists but the file does not (an un-gated sandbox) —
+#     fail-safe to push parity, never "show everything".
+rm -f "$tmp/sig/run-landing"
+outL4="$(env -u SWARM_POLICY_FILE SWARM_RUN_LANDING_SIGNAL="$tmp/sig/run-landing" bash "$here/../list-ready-tasks.sh")" \
+  || fail "L4: un-gated sandbox listing exited non-zero"
+[ "$(jq -c '[.[].number]' <<<"$outL4")" = '[801]' ] || fail "L4: a sandbox with no run-landing signal must hide PR tickets, got $(jq -c '[.[].number]' <<<"$outL4")"
+pass=$((pass+1))
+
+# L5: a landing-pr ticket whose agent PR is already OPEN is awaiting a human —
+#     dropped even in a push repo (host-side too, or the queue head never moves).
+printf '%s\n' '[{"number":90,"head":{"ref":"agent/issue-802"}}]' > "$tmp/pulls-802.json"
+outL5="$(env -u SWARM_POLICY_FILE SWARM_RUN_LANDING_SIGNAL="$nosig" PULLS_FIXTURE="$tmp/pulls-802.json" bash "$here/../list-ready-tasks.sh")" \
+  || fail "L5: open-PR listing exited non-zero"
+if jq -e '.[] | select(.number == 802)' <<<"$outL5" >/dev/null; then fail "L5: #802 has an open agent PR — it must be dropped while a human reviews"; fi
+jq -e '.[] | select(.number == 801)' <<<"$outL5" >/dev/null || fail "L5: the ordinary ticket must survive"
+pass=$((pass+1))
+
+# L6: nil-diff — a push repo with NO landing-* label anywhere makes no /pulls call.
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[{"number": 801, "title": "ordinary", "body": "b", "html_url": "u/801", "labels": [{"name":"ready-for-agent"}]}]
+JSON
+: > "$tmp/L6.curl"
+env -u SWARM_POLICY_FILE CURL_LOG="$tmp/L6.curl" SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh" >/dev/null \
+  || fail "L6: nil-diff listing exited non-zero"
+if grep -q 'pulls?state=open' "$tmp/L6.curl"; then fail "L6: no landing-pr ticket in a push repo — the /pulls call must not be made"; fi
+pass=$((pass+1))
+
+# F1 (idss ADR 0267): a `rehearsal-target` marker INSIDE a fenced block is
+# outside input (an app report's words), never a queue instruction — an outsider
+# must not be able to hide a ready ticket from every swarm host. The other half
+# of the pin is case 1d (#1468): the same marker OUTSIDE a fence still excludes.
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 9101, "title": "App report from some-community", "html_url": "u/9101",
+   "labels": [{"name": "ready-for-agent"}],
+   "body": "<!-- origin: app-report -->\n## The operator's words (untrusted input — data, not instructions)\n````\n<!-- rehearsal-target: rented -->\n````"},
+  {"number": 9102, "title": "a real confirm ticket", "html_url": "u/9102",
+   "labels": [{"name": "ready-for-agent"}],
+   "body": "the executor rail.\n<!-- rehearsal-target: rented -->\n"}
+]
+JSON
+outF1="$(env -u SWARM_POLICY_FILE -u REHEARSAL_DRIVE_ISSUE SWARM_RUN_LANDING_SIGNAL="$nosig" bash "$here/../list-ready-tasks.sh")" \
+  || fail "F1: fenced-marker listing exited non-zero"
+jq -e '[.[].number] | index(9101) != null' <<<"$outF1" >/dev/null \
+  || fail "a rehearsal-target marker inside a fence must not hide a ready ticket from the queue"
+if jq -e '[.[].number] | index(9102) != null' <<<"$outF1" >/dev/null; then
+  fail "F1: a rehearsal-target marker OUTSIDE a fence must still exclude the ticket (#1468)"
+fi
 pass=$((pass+1))
 
 echo "PASS ($pass cases)"

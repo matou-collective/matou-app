@@ -140,6 +140,8 @@ To see a task in full:
    A human reviews and merges; the merge closes the issue and the
    push-mirror carries it to GitLab.
 
+
+
 ## When you are blocked
 
 If you cannot complete a task, do NOT leave it in the ready queue — that
@@ -197,13 +199,20 @@ A human re-arms the issue by resolving the blocker and re-adding
 When all listed tasks are complete (or you are blocked on all remaining ones),
 or the ready-tasks block at the top of this prompt is empty, you are a
 candidate for completion. The list at the top was expanded when your iteration
-**started** and may be stale — a task may have unblocked since. So first
-re-run:
+**started** and may be stale — a task may have unblocked since. To decide
+whether to signal completion, re-run:
 
     bash .sandcastle/list-ready-tasks.sh
 
-Only if it returns an empty array (or only tasks you are blocked on) output
-the completion signal; otherwise end the iteration normally and the next
-iteration will pick the fresh task up.
+This is a COMPLETION TEST, never a work order. It only LISTS — it does not
+claim, and NOTHING it prints is yours to work. The single ticket you may work
+is the one claim-next-task.sh already claimed for you (the ready-tasks block at
+the top of this prompt); no other ticket carries this run's `swarm-claim`, and
+the commit-msg gate will refuse a commit for one that does not.
+
+So: if the re-run returns an empty array (or only tasks you are blocked on),
+output the completion signal. If it returns anything else, a task has unblocked
+— do NOT pick it up here. End the iteration normally; the NEXT iteration claims
+it through claim-next-task.sh.
 
 <promise>COMPLETE</promise>

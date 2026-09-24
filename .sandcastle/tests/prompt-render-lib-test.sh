@@ -169,5 +169,32 @@ check "render_identity names RUNNER_HOST in the refusal" 'grep -q "RUNNER_HOST" 
 err5="$(prompt_render_identity "$tmp/does-not-exist" 2>&1 >/dev/null)"; rc5=$?
 check "render_identity refuses when swarm-identity.sh is missing" '[ "$rc5" -ne 0 ] && grep -q "missing" <<<"$err5"'
 
+# --- {{LANDING_RULES}} (idss ADR 0267): GENERATED from policy-lib's one
+#     declaration, like {{HANDOFF_RULES}} — and only for a push-default repo. ---
+lr_push="$(prompt_render_landing_rules "$tmp/absent-policy.sh")"; rc=$?
+check "landing_rules: a push-default repo renders the per-ticket rule (exit 0)" '[ "$rc" -eq 0 ] && [ -n "$lr_push" ]'
+check "landing_rules: the block IS policy-lib's declaration, byte for byte (declared once)" \
+  '[ "$lr_push" = "$(policy_landing_guidance)" ]'
+printf 'LANDING=pr\n' > "$tmp/pr-policy.sh"
+lr_pr="$(prompt_render_landing_rules "$tmp/pr-policy.sh")"; rc=$?
+check "landing_rules: a LANDING=pr repo renders NOTHING (its own enrichment already says how)" '[ "$rc" -eq 0 ] && [ -z "$lr_pr" ]'
+printf 'LANDING=sideways\n' > "$tmp/bad-policy.sh"
+prompt_render_landing_rules "$tmp/bad-policy.sh" >/dev/null 2>&1; rc=$?
+check "landing_rules: a malformed policy refuses rather than rendering a guess" '[ "$rc" -ne 0 ]'
+
+cat > "$tmp/skel-landing.md" <<'EOF'
+## Workflow
+{{LANDING_RULES}}
+after
+EOF
+out="$(prompt_render_one "$tmp/skel-landing.md" "$tmp/enrich" x x x "$tmp/absent-policy.sh")"; rc=$?
+check "render_one: {{LANDING_RULES}} is replaced and nothing is left unfilled" \
+  '[ "$rc" -eq 0 ] && grep -q "land-pr.sh" <<<"$out" && ! grep -q "{{" <<<"$out" && [ "$(tail -1 <<<"$out")" = after ]'
+out="$(prompt_render_one "$tmp/skel-landing.md" "$tmp/enrich" x x x "$tmp/pr-policy.sh")"; rc=$?
+check "render_one: a LANDING=pr repo renders the slot empty, not as a standing placeholder" \
+  '[ "$rc" -eq 0 ] && ! grep -q "land-pr.sh\|{{" <<<"$out"'
+check "the worker skeleton carries the slot directly after the workflow enrichment" \
+  'awk "/^{{ENRICH:workflow-verify}}\$/{a=NR} /^{{LANDING_RULES}}\$/{b=NR} END{exit !(a && b && b==a+2)}" "$here/../prompts/prompt.md"'
+
 echo "prompt-render-lib: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

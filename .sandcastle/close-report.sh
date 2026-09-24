@@ -54,7 +54,7 @@ root="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 export FORGEJO_TOKEN="$token"
 
 # Landing head (#13): gate 1 checks each commit is reachable from where the
-# ticket LANDS. push mode: main (origin/main / CR_MAIN_HEAD). pr mode: the
+# ticket LANDS. Resolved per ticket: push mode: main (origin/main / CR_MAIN_HEAD). pr mode: the
 # issue's OWN open PR head — resolve it now (the pr flow lands on agent/issue-<N>
 # and a human, or agent-after-green, merges). No open PR in pr mode is NOT yet
 # a refusal (#108): another run's reconcile sweep (landing_merge_reconcile lands
@@ -63,7 +63,13 @@ export FORGEJO_TOKEN="$token"
 # work HAS landed, on main: gate against main exactly as push mode does, and
 # finish like a merge (sweep the claim labels). Only no-open-AND-no-merged PR
 # means the work never landed as a PR: force a refusal with a clear violation.
-landing="${SWARM_POLICY_LANDING:-push}"
+# Per TICKET (idss ADR 0267): the repo knob is the default; a ticket carrying
+# `landing-pr` lands by PR whatever it says. An unreadable or mislabelled ticket
+# is a loud stop — guessing `push` here is how a PR ticket would close on main.
+if ! landing="$(landing_mode_for "$issue")"; then
+  echo "close-report: could not resolve how #$issue lands (tracker unreadable, or a landing-* label off the allowlist) — NOT closing" >&2
+  exit 1
+fi
 gate_head="${CR_MAIN_HEAD:-origin/main}"
 pr_number="" pr_no_pr="" pr_merged="" pr_superseded=""
 if [ "$landing" = pr ]; then
@@ -104,6 +110,25 @@ fi
 if [ -n "$pr_no_pr" ]; then
   violations="${violations:+$violations$'\n'}no open agent PR (agent/issue-$issue) for this issue — pr-mode commits land on a PR before they can close it (#13)"
   gate_rc=1
+fi
+# idss ADR 0267: a `landing-pr` ticket's PR must carry its evidence BEFORE anyone
+# is asked to review it — a screenshot attached to the PR, or the waiver line. A
+# refusal (not a park) so the worker can attach and retry; its blocked path
+# labels agent-blocked if it cannot. Only for an OPEN, un-merged PR: a merged one
+# was already reviewed.
+ticket_landing_label=""
+if [ "$landing" = pr ] && [ -n "$pr_number" ] && [ -z "$pr_merged" ] && [ -z "$pr_superseded" ]; then
+  ticket_landing_label="$(landing_ticket_label "$issue" 2>/dev/null || true)"
+  if [ "$ticket_landing_label" = "$POLICY_LANDING_PR_LABEL" ]; then
+    ev_rc=0; ev_msg="$(landing_evidence_gate "$issue" "$pr_number")" || ev_rc=$?
+    case "$ev_rc" in
+      0) ;;
+      1) violations="${violations:+$violations$'\n'}$ev_msg — attach after-fix screenshots (bash .sandcastle/land-pr.sh $issue … <screenshot.png>) or state the waiver (idss ADR 0267)"
+         gate_rc=1 ;;
+      *) violations="${violations:+$violations$'\n'}could not read PR #$pr_number to verify its screenshots — retry (idss ADR 0267)"
+         gate_rc=1 ;;
+    esac
+  fi
 fi
 
 status="$(jq -r '.status // "?"' <<<"$json")"
@@ -203,7 +228,7 @@ fi
 # issue; otherwise leave it OPEN for a human to merge, with the envelope + PR
 # linked on the thread. Either way the worker's part is done: exit 0.
 if [ "$landing" = pr ]; then
-  merge_authority="${SWARM_POLICY_MERGE_AUTHORITY:-human}"
+  merge_authority="$(landing_merge_authority_for "$issue")"   # per ticket: landing-pr is ALWAYS human (idss ADR 0267)
   pr_url="$(forgejo_get "/pulls/$pr_number" 2>/dev/null | jq -r '.html_url // empty' 2>/dev/null || true)"
   pr_link="PR #$pr_number${pr_url:+ ($pr_url)}"
   if [ -n "$pr_merged" ]; then
@@ -255,6 +280,13 @@ if [ "$landing" = pr ]; then
   else
     post_comment ":white_check_mark: **close-report gates passed** — every claim verified against the PR head. $pr_link is open and green; a human merges it and the merge closes this issue via \`closes #$issue\` (MERGE_AUTHORITY=human)."
     echo "close-report: gates passed — $pr_link open and green, awaiting human merge; issue #$issue intentionally left OPEN."
+    # idss ADR 0267: the evidence gate passed, so this is the first moment the PR
+    # is worth a person's time — say so once. Best-effort, never fails the close.
+    if [ "$ticket_landing_label" = "$POLICY_LANDING_PR_LABEL" ]; then
+      bash "${CLOSE_REPORT_NOTIFY:-$here/notify-mattermost.sh}" \
+        ":package: **PR ready for your review** — $pr_link lands #$issue, a \`landing-pr\` ticket: evidence is attached, every close-report claim verified against the PR head. Your merge closes the issue." \
+        >/dev/null 2>&1 || true
+    fi
   fi
   [ -n "$pr_merged" ] || exit 0   # merged-but-open (#108) falls through to the direct close
 fi
