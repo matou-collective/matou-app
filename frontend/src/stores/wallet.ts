@@ -2,6 +2,10 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { useKERIClient } from 'src/lib/keri/client';
 import { useIdentityStore } from 'stores/identity';
+import {
+  parseCredentialDisplay,
+  type CredentialDisplay,
+} from 'src/lib/credentialAppearance';
 
 // --- Types ---
 
@@ -24,6 +28,10 @@ export interface WalletCredential {
   // Event attendance-specific
   eventName: string;
   eventType: string;
+  // IDSS committee slug (a.committee), if any
+  committee: string;
+  // IDSS "look" (a.display), if the community styled the credential
+  display?: CredentialDisplay;
 }
 
 export interface TokenBalance {
@@ -126,6 +134,8 @@ export const useWalletStore = defineStore('wallet', () => {
       endorsementType: (attrs.endorsementType as string) || '',
       eventName: (attrs.eventName as string) || '',
       eventType: (attrs.eventType as string) || '',
+      committee: (attrs.committee as string) || '',
+      display: parseCredentialDisplay(attrs.display),
     };
   }
 
