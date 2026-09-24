@@ -85,6 +85,15 @@ case "$url" in
     echo '{"number":101,"head":{"ref":"agent/issue-7"}}'
     ;;
   */repos/Matou/idss)   # repo-root GET — #20 write probe + #15 default_merge_style
+    # PROBE_FAILS_N: 5xx the first N calls (the #52 transient posture, GOTCHAS
+    # #217). The counter is a file so it survives the probe's retry subshells.
+    if [ -n "${PROBE_FAIL_COUNTER:-}" ]; then
+      n="$(cat "$PROBE_FAIL_COUNTER" 2>/dev/null || echo 0)"
+      if [ "$n" -lt "${PROBE_FAILS_N:-0}" ]; then
+        echo $((n + 1)) > "$PROBE_FAIL_COUNTER"
+        exit 22
+      fi
+    fi
     echo "{\"permissions\":{\"push\":${PROBE_PUSH:-true}},\"default_merge_style\":\"${MERGE_STYLE:-merge}\"}"
     ;;
   *)
@@ -258,6 +267,27 @@ check "issue-write probe reds when permissions.push is false" \
 probe_out="$( ( export PROBE_PUSH=false; forgejo_issue_write_probe ) 2>&1 || true )"
 check "issue-write probe names the missing write access" \
   'grep -q "no write access" <<<"$probe_out"'
+
+# GOTCHAS #217 (run 20865): preflight's ONE live network call fails CLOSED, so a
+# transient Forgejo 5xx used to red the whole tick as `preflight-red` — reported
+# as if the bot had lost its write access. Retry with backoff (list-ready-tasks'
+# #52 posture); a sustained outage still reds, but names TRANSPORT.
+export PROBE_FAIL_COUNTER="$tmp/probe-fails"
+export FORGEJO_PROBE_BACKOFF=0
+: > "$PROBE_FAIL_COUNTER"
+check "issue-write probe rides out a transient 5xx and still reads the permission" \
+  '( export PROBE_FAILS_N=2 PROBE_PUSH=true; echo 0 > "$PROBE_FAIL_COUNTER"; forgejo_issue_write_probe >/dev/null )'
+: > "$PROBE_FAIL_COUNTER"
+check "issue-write probe reds on a SUSTAINED outage" \
+  '! ( export PROBE_FAILS_N=99; echo 0 > "$PROBE_FAIL_COUNTER"; forgejo_issue_write_probe >/dev/null 2>&1 )'
+outage_out="$( ( export PROBE_FAILS_N=99; echo 0 > "$PROBE_FAIL_COUNTER"; forgejo_issue_write_probe ) 2>&1 || true )"
+check "a sustained outage is named TRANSPORT, never a permission verdict" \
+  'grep -q "TRANSPORT, not a permission verdict" <<<"$outage_out"'
+check "a sustained outage does NOT claim the bot lost write access" \
+  '! grep -q "no write access" <<<"$outage_out"'
+check "the probe actually retried before ruling" \
+  '[ "$(cat "$PROBE_FAIL_COUNTER")" -ge 3 ]'
+unset PROBE_FAIL_COUNTER FORGEJO_PROBE_BACKOFF
 
 # forgejo_label_applied_at (#99): the LATEST label-ADD timestamp from the issue
 # timeline, ignoring removes and earlier adds; empty for a label never added.

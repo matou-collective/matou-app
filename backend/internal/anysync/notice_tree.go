@@ -485,6 +485,14 @@ func (m *NoticeTreeManager) CreateSave(ctx context.Context, spaceID string, save
 
 // ReadSaves reads all saves for a user from their personal space.
 func (m *NoticeTreeManager) ReadSaves(ctx context.Context, spaceID string) ([]*NoticeSavePayload, error) {
+	// The lookup below only sees indexed trees, and nothing opens the private
+	// space after a restart. Without this the saved list read as empty, and
+	// un-saving a notice re-pinned it, until some other private-space endpoint
+	// happened to be hit (#570). Idempotent: indexed trees are skipped.
+	if err := m.treeManager.BuildSpaceIndex(ctx, spaceID); err != nil {
+		log.Printf("[NoticeTreeManager] ReadSaves: indexing space %s: %v", spaceID, err)
+	}
+
 	entries := m.treeManager.GetTreesByChangeType(spaceID, InteractionTreeType)
 
 	var saves []*NoticeSavePayload

@@ -27,23 +27,47 @@ unset REHEARSAL_DRIVE_ISSUE 2>/dev/null || true
 # curl shim: answers the ready-for-agent issue-list query from a fixture, and
 # every dependency query as "no open blockers". A page fixture holds < 50
 # issues so the script's pagination loop breaks after one page.
-cat > "$tmp/bin/curl" <<'SH'
+#
+# #142: the lister now reads the HTTP status (`curl -s -o body -w %{http_code}`,
+# no bare -f), so the shim is -o/-w aware — it writes the body to the -o file
+# (else stdout) and prints the status when -w is present. Per-leg status
+# overrides (READY_HTTP/DEPS_HTTP/PULLS_HTTP/DRIVES_HTTP, default 200) drive the
+# failure cases; a `000` means a transport failure (curl exits non-zero).
+make_curl_shim() {
+  cat > "$1" <<'SH'
 #!/usr/bin/env bash
 [ -n "${CURL_LOG:-}" ] && echo "$*" >> "$CURL_LOG"
-for a in "$@"; do case "$a" in
+ofile=""; want_code=""; url=""
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    -o) ofile="${args[$((i+1))]}" ;;
+    -w) want_code=1 ;;
+    http*://*) url="${args[$i]}" ;;
+  esac
+done
+emit() {  # $1=body $2=http-code — body to -o (else stdout), code to stdout when -w
+  if [ -n "$ofile" ]; then printf '%s' "$1" > "$ofile"; else printf '%s' "$1"; fi
+  [ -n "$want_code" ] && printf '%s' "$2"
+  case "$2" in 000) return 7 ;; esac   # curl's transport-failure exit
+  return 0
+}
+case "$url" in
   */dependencies*)
     # per-issue blockers when a fixture names them (drive-blocker ordering, #24);
     # default "no open blockers" so every candidate is unblocked and surfaces.
-    n="${a#*/issues/}"; n="${n%%/*}"
-    if [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ]; then cat "$DEPS_DIR/$n.json"; else echo '[]'; fi
-    exit 0 ;;
-  *pulls?state=open*) sleep "${LEG_SLEEP:-0}"; cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]'; exit 0 ;;
-  *labels=standing-drive*) sleep "${LEG_SLEEP:-0}"; if [ -n "${DRIVES_FIXTURE:-}" ]; then cat "$DRIVES_FIXTURE"; else echo '[]'; fi; exit 0 ;;
-  *labels=ready-for-agent*) sleep "${LEG_SLEEP:-0}"; cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
-esac; done
-echo '[]'
+    n="${url#*/issues/}"; n="${n%%/*}"
+    body='[]'; [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ] && body="$(cat "$DEPS_DIR/$n.json")"
+    emit "$body" "${DEPS_HTTP:-200}"; exit ;;
+  *pulls?state=open*) sleep "${LEG_SLEEP:-0}"; emit "$(cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]')" "${PULLS_HTTP:-200}"; exit ;;
+  *labels=standing-drive*) sleep "${LEG_SLEEP:-0}"; b='[]'; [ -n "${DRIVES_FIXTURE:-}" ] && b="$(cat "$DRIVES_FIXTURE")"; emit "$b" "${DRIVES_HTTP:-200}"; exit ;;
+  *labels=ready-for-agent*) sleep "${LEG_SLEEP:-0}"; emit "$(cat "${ISSUE_FIXTURE:?}")" "${READY_HTTP:-200}"; exit ;;
+esac
+emit '[]' 200
 SH
-chmod +x "$tmp/bin/curl"
+  chmod +x "$1"
+}
+make_curl_shim "$tmp/bin/curl"
 export ISSUE_FIXTURE="$tmp/issues.json"
 
 # Fixture: an unlabelled issue #492 (idss's retired drive number — the
@@ -58,6 +82,10 @@ cat > "$ISSUE_FIXTURE" <<'JSON'
    "labels": [{"name": "ready-for-agent"}, {"name": "rehearsal-183"}, {"name": "standing-drive"}]},
   {"number": 999, "title": "rehearsal: a hole to plug", "body": "b", "html_url": "u/999",
    "labels": [{"name": "rehearsal-183"}]},
+  {"number": 1447, "title": "founding e2e re-sequence (rehearsal-CONFIRM)", "body": "the executor rail confirm ticket.\n<!-- rehearsal-target: rented -->\n<!-- rehearsal-confirm: 1 -->\n", "html_url": "u/1447",
+   "labels": [{"name": "ready-for-agent"}]},
+  {"number": 1010, "title": "docs: mention rehearsal-target flow", "body": "discusses the rehearsal-target: marker in prose, no HTML comment", "html_url": "u/1010",
+   "labels": [{"name": "ready-for-agent"}]},
   {"number": 500, "title": "some other feature slice", "body": "b", "html_url": "u/500"}
 ]
 JSON
@@ -90,6 +118,36 @@ if jq -e '.[] | select(.number == 492)' <<<"$out1c" >/dev/null; then
 fi
 jq -e '.[] | select(.number == 500)' <<<"$out1c" >/dev/null \
   || fail "the backstop must exclude only its number — #500 must still surface"
+pass=$((pass+1))
+
+# 1d (#1468): a rehearsal-CONFIRM ticket on the executor rail (REHEARSAL_DRIVE_QUEUE)
+# carries the `rehearsal-target:`/`rehearsal-confirm:` BODY markers but NEITHER the
+# standing-drive label NOR the generic host's REHEARSAL_DRIVE_ISSUE number — yet it
+# must STILL be excluded from every swarm host's queue. A swarm sandbox structurally
+# cannot run the founding live drive (no /dev/kvm, no DO/broker creds — #377), and it
+# cannot honour the blocked-path either (removing ready-for-agent sabotages the
+# executor's gate), so a claim is pure hot-loop waste (bens-mac-04 run 23886).
+if jq -e '.[] | select(.number == 1447)' <<<"$out" >/dev/null; then
+  fail "a rehearsal-confirm ticket (#1447: rehearsal-target marker, no standing-drive label) must NOT surface to the swarm (#1468)"
+fi
+pass=$((pass+1))
+
+# 1e (#1468): the marker exclusion is keyed off the actual `<!-- ... -->` marker,
+# not a bare word — a ticket that merely MENTIONS "rehearsal-target:" in prose
+# (#1010) is ordinary work and must still surface. Guards against over-broad
+# matching that would silently swallow legitimate backlog.
+jq -e '.[] | select(.number == 1010)' <<<"$out" >/dev/null \
+  || fail "a ticket that only mentions rehearsal-target in prose (#1010) must still surface (#1468)"
+pass=$((pass+1))
+
+# 1f (#1468): the exclusion is by BODY MARKER, independent of the host's OWN
+# REHEARSAL_DRIVE_ISSUE — a generic host pointed at its own rehearsal (657) still
+# skips #1447 (the exact bens-mac-04 hot-loop the ticket reports).
+out1f="$(REHEARSAL_DRIVE_ISSUE=657 bash "$here/../list-ready-tasks.sh")" \
+  || fail "script exited non-zero (backstop=657)"
+if jq -e '.[] | select(.number == 1447)' <<<"$out1f" >/dev/null; then
+  fail "a generic host (REHEARSAL_DRIVE_ISSUE=657) must still skip the confirm ticket #1447 by marker (#1468)"
+fi
 pass=$((pass+1))
 
 # 2: an ordinary rehearsal-183 hole still comes through (not the whole label)
@@ -314,42 +372,16 @@ elapsed=$(( $(date +%s) - t0 ))
 pass=$((pass+1))
 
 # 11b (#128): the /pulls fetch stays fail-OPEN — a non-zero fetch drops nothing.
-# Simulate a failing /pulls by pointing the shim at a curl that exits 22 on the
-# pulls leg; the ready task must still surface (not be dropped by a phantom PR).
-cat > "$tmp/bin/curl" <<'SH'
-#!/usr/bin/env bash
-[ -n "${CURL_LOG:-}" ] && echo "$*" >> "$CURL_LOG"
-for a in "$@"; do case "$a" in
-  */dependencies*) echo '[]'; exit 0 ;;
-  *pulls?state=open*) exit 22 ;;
-  *labels=standing-drive*) echo '[]'; exit 0 ;;
-  *labels=ready-for-agent*) cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
-esac; done
-echo '[]'
-SH
-chmod +x "$tmp/bin/curl"
-out9b="$(SWARM_POLICY_FILE="$tmp/overlap-policy.sh" LIST_READY_RETRIES=1 bash "$here/../list-ready-tasks.sh")" \
+# Simulate a failing /pulls with PULLS_HTTP=000 (a transport failure on the pulls
+# leg); the ready task must still surface (not be dropped by a phantom PR).
+out9b="$(SWARM_POLICY_FILE="$tmp/overlap-policy.sh" PULLS_HTTP=000 LIST_READY_RETRIES=1 bash "$here/../list-ready-tasks.sh")" \
   || fail "fail-open /pulls run exited non-zero"
 jq -e '.[] | select(.number == 800)' <<<"$out9b" >/dev/null \
   || fail "a failed /pulls fetch must drop NOTHING (fail-open) — #800 must still surface"
 pass=$((pass+1))
 
-# Restore the default shim and a #400-bearing fixture for the yield cases below.
-cat > "$tmp/bin/curl" <<'SH'
-#!/usr/bin/env bash
-[ -n "${CURL_LOG:-}" ] && echo "$*" >> "$CURL_LOG"
-for a in "$@"; do case "$a" in
-  */dependencies*)
-    n="${a#*/issues/}"; n="${n%%/*}"
-    if [ -n "${DEPS_DIR:-}" ] && [ -f "$DEPS_DIR/$n.json" ]; then cat "$DEPS_DIR/$n.json"; else echo '[]'; fi
-    exit 0 ;;
-  *pulls?state=open*) sleep "${LEG_SLEEP:-0}"; cat "${PULLS_FIXTURE:-/dev/null}" 2>/dev/null || echo '[]'; exit 0 ;;
-  *labels=standing-drive*) sleep "${LEG_SLEEP:-0}"; if [ -n "${DRIVES_FIXTURE:-}" ]; then cat "$DRIVES_FIXTURE"; else echo '[]'; fi; exit 0 ;;
-  *labels=ready-for-agent*) sleep "${LEG_SLEEP:-0}"; cat "${ISSUE_FIXTURE:?}"; exit 0 ;;
-esac; done
-echo '[]'
-SH
-chmod +x "$tmp/bin/curl"
+# Restore a #400-bearing fixture for the yield cases below (the shim is the
+# shared default from make_curl_shim — no per-case override needed here).
 cat > "$ISSUE_FIXTURE" <<'JSON'
 [
   {"number": 300, "title": "ordinary lower number", "body": "b", "html_url": "u/300", "labels": [{"name":"ready-for-agent"}]},
@@ -374,6 +406,50 @@ rm -f "$tmp/drive-signal"
 outn="$(env -u REHEARSAL_DRIVE_ISSUE SWARM_DRIVE_YIELD_SIGNAL="$tmp/drive-signal" bash "$here/../list-ready-tasks.sh")" \
   || fail "script exited non-zero (no signal)"
 jq -e '.[] | select(.number == 400)' <<<"$outn" >/dev/null || fail "with no drive signal the ready set must surface as before"
+pass=$((pass+1))
+
+# ── #142: a failed read NAMES its endpoint + last HTTP status on stderr ─────
+# The old `curl -sf` threw the status away and returned a bare 22 for any
+# failure, so schedule-lib guessed "transient Forgejo 5xx" for a 401/404 stall
+# too. The lister must now emit ONE stderr line naming the failing endpoint and
+# the last status, and distinguish a 5xx from a 4xx, so the verdict is worded
+# from an observation. A one-issue fixture keeps the DAG fan-out simple.
+cat > "$ISSUE_FIXTURE" <<'JSON'
+[
+  {"number": 300, "title": "a ready task", "body": "b", "html_url": "u/300", "labels": [{"name":"ready-for-agent"}]}
+]
+JSON
+
+# 12a: api() exhausts on a 5xx issues-page read — the script fails and its
+# stderr names /issues and `last http=503` (transient).
+rc=0
+env -u REHEARSAL_DRIVE_ISSUE READY_HTTP=503 LIST_READY_RETRIES=2 LIST_READY_BACKOFF=0 \
+  bash "$here/../list-ready-tasks.sh" >/dev/null 2>"$tmp/12a.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "a 5xx issues-page read that outlives retries must fail the lister"
+grep -qE 'list-ready-tasks: GET /issues .*last http=503' "$tmp/12a.err" \
+  || fail "an exhausted api() read must name the endpoint and last http=503: $(cat "$tmp/12a.err")"
+pass=$((pass+1))
+
+# 12b: a 401 (expired token / lost permission) exhausts the same way, and the
+# stderr line carries http=401 so the verdict can call it non-transient.
+rc=0
+env -u REHEARSAL_DRIVE_ISSUE READY_HTTP=401 LIST_READY_RETRIES=2 LIST_READY_BACKOFF=0 \
+  bash "$here/../list-ready-tasks.sh" >/dev/null 2>"$tmp/12b.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "a 401 issues-page read must fail the lister (not silently succeed)"
+grep -qE 'list-ready-tasks: GET /issues .*last http=401' "$tmp/12b.err" \
+  || fail "an exhausted 401 read must name http=401, not a generic transient: $(cat "$tmp/12b.err")"
+pass=$((pass+1))
+
+# 12c: the dependency fan-out (whose failure reaches the caller as xargs 123)
+# must ALSO name its endpoint + status on stderr — otherwise the verdict sees a
+# bare 123 with no cause. DEPS_HTTP=503 fails every /dependencies read.
+rc=0
+env -u REHEARSAL_DRIVE_ISSUE DEPS_HTTP=503 LIST_READY_RETRIES=2 LIST_READY_BACKOFF=0 \
+  bash "$here/../list-ready-tasks.sh" >/dev/null 2>"$tmp/12c.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "a failing dependency fan-out must fail the lister (xargs propagates 123)"
+[ "$rc" -eq 123 ] || fail "the dependency fan-out failure must surface as xargs 123, got rc=$rc"
+grep -qE 'list-ready-tasks: GET /issues/300/dependencies .*last http=503' "$tmp/12c.err" \
+  || fail "an exhausted /dependencies read must name /issues/300/dependencies + http=503: $(cat "$tmp/12c.err")"
 pass=$((pass+1))
 
 echo "PASS ($pass cases)"

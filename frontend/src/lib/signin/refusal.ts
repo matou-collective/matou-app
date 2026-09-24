@@ -12,8 +12,12 @@
 
 /**
  * The five verification-refusal kinds the door reports (spec story 25), plus
- * the fail-closed `records-unreachable` (story 27) and the wallet-only
- * `site-unreachable` (story 28, the post itself got no answer).
+ * the fail-closed `records-unreachable` (story 27), the wallet-only
+ * `site-unreachable` (story 28, the post itself got no answer), and the three
+ * challenge-lifecycle kinds the app door reports by HTTP code (app-door-golden,
+ * #574): `unknown` (404), `spent` (409) and `expired` (410 / status expired) —
+ * these are stale-code problems the member fixes with a fresh code, not a
+ * credential fault.
  */
 export type RefusalKind =
   | 'no-membership'
@@ -22,7 +26,10 @@ export type RefusalKind =
   | 'signature'
   | 'wrong-holder'
   | 'records-unreachable'
-  | 'site-unreachable';
+  | 'site-unreachable'
+  | 'unknown'
+  | 'spent'
+  | 'expired';
 
 /** The shared opener every verification refusal wears (stories 25). */
 export const REFUSAL_OPENER = 'Your access could not be verified. It looks like ';
@@ -49,6 +56,15 @@ export const RECORDS_UNREACHABLE_TEXT =
  * waiting, so only the wallet can say the post did not land. */
 export const SITE_UNREACHABLE_TEXT =
   "Couldn't reach the sign-in site. Check your connection and try again.";
+
+/** The stale-code lines (#574): the credential is fine, the sign-in code the
+ * member is answering is no longer good — a fresh code from the page fixes it,
+ * so no "could not be verified" opener and no operator line. */
+export const STALE_CODE_TEXT: Record<'unknown' | 'spent' | 'expired', string> = {
+  unknown: "This sign-in code isn't recognised. Start the sign-in again to get a fresh code.",
+  spent: 'This sign-in code was already used. Start the sign-in again to get a fresh code.',
+  expired: 'This sign-in code has expired. Start the sign-in again to get a fresh code.',
+};
 
 /** The line beneath *Try again* on a verification refusal (story 25). */
 export const CONTACT_LINE = "or contact your community's operator";
@@ -80,6 +96,9 @@ export function refusalCopy(raw: string | null | undefined): RefusalCopy {
   if (kind === 'site-unreachable') {
     return { kind, text: SITE_UNREACHABLE_TEXT, showTryAgain: true, showContact: false };
   }
+  if (kind === 'unknown' || kind === 'spent' || kind === 'expired') {
+    return { kind, text: STALE_CODE_TEXT[kind], showTryAgain: true, showContact: false };
+  }
   return {
     kind,
     text: REFUSAL_OPENER + TAILS[kind],
@@ -103,6 +122,9 @@ export function normalizeRefusal(raw: string | null | undefined): RefusalKind {
     case 'wrong-holder':
     case 'records-unreachable':
     case 'site-unreachable':
+    case 'unknown':
+    case 'spent':
+    case 'expired':
       return slug;
     default:
       return 'signature';

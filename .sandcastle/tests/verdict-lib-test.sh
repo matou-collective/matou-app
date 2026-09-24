@@ -101,4 +101,31 @@ printf 'error: real fault line\n' > "$errlog"
 grep -q 'real fault line' "$vp" || fail "the fault verdict must carry the real error line"
 pass=$((pass+1))
 
+# --- 7. An errlog with NO regex match still writes a verdict, under the real
+#        caller posture: `set -euo pipefail` + verdict_write in an EXIT trap.
+#        grep exits 1 on a no-match; without `|| true` pipefail + errexit kill
+#        the trap mid-write and the verdict is never created, so the healer sees
+#        only a bare workflow name (matou-app#186 / ci run 21727). The fallback
+#        must emit the log's own last lines instead. ---
+vp="$tmp/v7.txt"; errlog="$tmp/e7.log"
+printf 'host capacity still busy after 1800s — giving up\n' > "$errlog"
+(
+  set -euo pipefail
+  . "$sc/verdict-lib.sh"
+  trap 'verdict_write $?' EXIT
+  verdict_begin "$vp"; verdict_stage "host-slot-wait" "$errlog"
+  exit 7
+) || true
+[ -f "$vp" ] || fail "a no-match errlog killed the EXIT trap — no verdict was written"
+grep -q '^exit=7$' "$vp" || fail "the verdict lost its exit code:
+$(cat "$vp")"
+grep -q 'host capacity still busy' "$vp" || fail "the no-match fallback did not emit the log's own lines:
+$(cat "$vp")"
+sig="$(seam_verdict_signal "$vp")"
+case "$sig" in
+  "host-slot-wait :: host capacity still busy"*) ;;
+  *) fail "seam_verdict_signal did not recover stage :: line, got: $sig" ;;
+esac
+pass=$((pass+1))
+
 echo "verdict-lib: $pass scenarios passed"

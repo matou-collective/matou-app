@@ -664,4 +664,53 @@ run_triage HOST_CAPACITY_HELD_SLOT="$slot" HELD_HOLDER="$slot.holder" HOLDER_SEE
 [ ! -e "$slot.holder" ] || fail "triage_on_exit must clear the holder"
 pass=$((pass+1))
 
+# ── #1424: a 5xx from the chat front door does NOT red a triage tick ──────────
+# The "Triage needs you" digest post is best-effort like every other notify call
+# site; a `curl -sf` exit 22 from Mattermost must not throw away a tick that has
+# already triaged. Force a non-empty digest: a needs-design issue that human_gated
+# sees AFTER the /triage run but not before (the stateful curl answers the
+# needs-design listing empty on the first pass, populated on the second), then
+# shim TRIAGE_NOTIFY to a 5xx and assert the run still exits 0, clean.
+db_reset; rm -f "$marker" "$verdict"
+ndcount="$tmp/nd-count"; rm -f "$ndcount"
+notifymark="$tmp/triage-notify-called"; rm -f "$notifymark"
+cat > "$tmp/bin/curl" <<SH
+#!/usr/bin/env bash
+url="\${*: -1}"
+case "\$url" in
+  */repos/x/y)              echo '{"permissions":{"push":true}}' ;;                 # #20 write probe
+  *labels=needs-design*)                                                            # human_gated needs-design listing (stateful)
+    n="\$(( \$(cat "$ndcount" 2>/dev/null || echo 0) + 1 ))"; printf '%s' "\$n" > "$ndcount"
+    if [ "\$n" -ge 2 ]; then
+      echo '[{"number":42,"title":"needs a flow","html_url":"http://x/42","labels":[{"name":"needs-design"}]}]'
+    else
+      echo '[]'
+    fi ;;
+  *labels=ready-for-human*) echo '[]' ;;                                            # human_gated ready-for-human listing
+  */labels*)                echo '[{"name":"needs-design"},{"name":"ready-for-human"}]' ;;  # existing-labels probe
+  */issues/42)              echo '{"number":42,"title":"needs a flow","html_url":"http://x/42"}' ;;
+  *state=open*)             echo '[{"number":999,"title":"untriaged","html_url":"http://x/999","labels":[]}]' ;;
+  *)                        echo '[]' ;;
+esac
+SH
+chmod +x "$tmp/bin/curl"
+cat > "$tmp/bin/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${CLAUDE_OUTPUT:-triaged}"
+exit "${CLAUDE_EXIT:-0}"
+SH
+chmod +x "$tmp/bin/claude"
+notify5xx="$tmp/triage-notify-5xx"
+cat > "$notify5xx" <<SH
+#!/usr/bin/env bash
+: > "$notifymark"
+exit 22
+SH
+chmod +x "$notify5xx"
+run_triage TRIAGE_NOTIFY="$notify5xx" CLAUDE_EXIT=0 CLAUDE_OUTPUT="triaged" >/dev/null 2>&1 \
+  || fail "#1424: a 5xx digest notify must NOT red a triage tick (expected exit 0)"
+[ -f "$notifymark" ] || fail "#1424: the digest notify shim must actually have run (else the guard is untested)"
+[ ! -f "$verdict" ] || fail "#1424: a tick that only lost a best-effort notice must leave no verdict, got: $(cat "$verdict")"
+pass=$((pass+1))
+
 echo "run-triage: $pass scenarios passed"

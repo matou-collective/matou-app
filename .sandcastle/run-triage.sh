@@ -314,7 +314,12 @@ if [ -n "$new" ]; then
 - [#$num $title]($url) → \`$label\`"
   done <<<"$new"
   if [ -n "$digest" ]; then
-    bash "$here/notify-mattermost.sh" ":wave: **Triage needs you** in \`$repo_slug\`:$digest"
+    # Best-effort, like every other notify call site: a 5xx from the chat front
+    # door (`curl -sf` exits 22) must not red a triage tick that has already done
+    # its work. The stage is already keyed "human-gate digest + notify" above, so
+    # only the `|| true` guard is needed here (#1424, GOTCHAS 56). TRIAGE_NOTIFY
+    # is the offline-test seam a test shims to a 5xx post.
+    bash "${TRIAGE_NOTIFY:-$here/notify-mattermost.sh}" ":wave: **Triage needs you** in \`$repo_slug\`:$digest" || true
   fi
 fi
 

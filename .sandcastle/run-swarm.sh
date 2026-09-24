@@ -143,10 +143,28 @@ SWARM_EXIT_REASON=""     # set at each intentional exit; else derived from the s
 # the Actions run number when present; the pid keeps a cron/host run unique too.
 run_db_id="${repo_tag}-${SWARM_RUN_ID:-$run_started}-$$"
 swarm_trigger="${SWARM_TRIGGER:-${GITHUB_EVENT_NAME:-unknown}}"
+# The executing pool host + runner name (#135). `swarm` is a multi-host runner
+# pool, so every trace this run leaves — the on-failure verdict, the host runlog
+# row, the swarm.db rows — must say WHICH box it ran on: without it a healer on
+# the OTHER host gathers only empty local artefacts and files an undiagnosable
+# ticket. SWARM_HOST is the pool-claim name (it survives a container, where
+# `hostname` is a random id); `hostname` is the bare-host fallback. The runner
+# name comes from the Actions-provided RUNNER_NAME (the consumer's swarm.yml
+# forwards `runner.name`), else the runner's own .runner registration file, else
+# unknown.
+swarm_exec_host="${SWARM_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+swarm_exec_runner="${RUNNER_NAME:-}"
+[ -z "$swarm_exec_runner" ] && [ -f "${SWARM_RUNNER_FILE:-$HOME/.runner}" ] \
+  && swarm_exec_runner="$(jq -r '.name // empty' "${SWARM_RUNNER_FILE:-$HOME/.runner}" 2>/dev/null || true)"
+[ -n "$swarm_exec_runner" ] || swarm_exec_runner=unknown
 # One row per run — written NOW so even a run that dies in early startup, or is
 # killed before it lists tasks, leaves a started-but-open trace (finalised by the
 # EXIT trap below). Best-effort; migrates the db idempotently on first touch.
 swarmdb_run_start "$run_db_id" "$repo_slug" "$swarm_trigger" "$run_started"
+# Stamp the executing host onto this run's swarm.db trace (#135) so a fleet
+# reader (or a healer on another box) can attribute the run to a host without
+# cross-referencing the Actions job log. Best-effort like every mirror write.
+swarmdb_event "$run_db_id" "" host "host=$swarm_exec_host runner=$swarm_exec_runner"
 # Label the host-capacity slot the workflow won for this run (slot-aware
 # fleet). The workflow holds the flock inline and exports the path; the issue
 # is not known here (claims happen in the sandbox), so ref=run and the fleet
@@ -159,10 +177,35 @@ on_exit() {
   [ -n "$worker_births" ] && rm -f "$worker_births" 2>/dev/null || true
   rm -rf "${VERIFY_PP_BEFORE:-}" "${VERIFY_PP_AFTER:-}" 2>/dev/null || true   # #445 snapshots
   verdict_write "$ec"
+  # Stamp the executing host onto the on-failure verdict (#135). verdict_write
+  # only wrote a file on a NON-zero exit, so a clean run leaves none and this is
+  # a no-op there. Prepend the host/runner lines (BEFORE stage=) so the healer's
+  # stage/error parser — which keys on `stage=` and the `--- error lines ---`
+  # block — is untouched, while a healer that finds this verdict on another pool
+  # host can name the box the fault ran on instead of reading an empty bundle.
+  if [ -s "${VERDICT_PATH:-/nonexistent}" ]; then
+    { echo "host=$swarm_exec_host"; echo "runner=$swarm_exec_runner"; cat "$VERDICT_PATH"; } \
+      > "$VERDICT_PATH.hoststamp" 2>/dev/null \
+      && mv "$VERDICT_PATH.hoststamp" "$VERDICT_PATH" 2>/dev/null \
+      || rm -f "$VERDICT_PATH.hoststamp" 2>/dev/null || true
+  fi
   local reason="${SWARM_EXIT_REASON:-}"
   [ -n "$reason" ] || reason="died-in:${VERDICT_STAGE:-unknown}"
+  # #157: carry the failing stage into the TASK LOG on stderr. The verdict, the
+  # runlog row and the swarm.db rows all land on the HOST — the actions_log an
+  # operator reads off a red tick does NOT. A silent death printed NOTHING
+  # between the policy line and `RUN exit status 1`, so the healer keyed the
+  # empty log to one signature and silenced it, taking any genuine red that
+  # later collapsed onto the same blank-log signature with it. One line names
+  # the stage + reason (+ the captured error) so the cause is legible off the
+  # log alone.
+  if [ "$ec" -ne 0 ]; then
+    echo "run-swarm: RUN FAILED — exit $ec in stage '${VERDICT_STAGE:-unknown}' (reason=$reason)${VERDICT_ERROR:+ — ${VERDICT_ERROR}}" >&2
+  fi
+  # #135: the host runlog row carries the executing host + runner too, appended
+  # after runlog_line's pinned format (so runlog-lib's unit test is unaffected).
   runlog_append "${SWARM_RUNLOG:-$HOME/swarm/logs/run-swarm-verdicts.log}" \
-    "$(runlog_line "$run_started" "$(date +%s)" "$repo_slug" "$ready_nums" "$reason" "$ec")"
+    "$(runlog_line "$run_started" "$(date +%s)" "$repo_slug" "$ready_nums" "$reason" "$ec" "${SWARM_RUN_ID:-}") host=$swarm_exec_host runner=$swarm_exec_runner"
   # Mirror the finalised verdict into swarm.db, closing the run row and any open
   # attempt (kills-finalise invariant: nothing reads 'running' forever). Runs on
   # EVERY exit path including the SIGTERM/SIGINT route below.
@@ -228,7 +271,20 @@ schedule_janitor_rearm
 # failing read as the verdict's error line; it needs the run's own shell's
 # VERDICT_* (the EXIT trap reads them), so it takes an out-file, not `$(...)`.
 ready_file="$(mktemp)"
-if ! schedule_list_ready_or_verdict "$ready_file"; then rm -f "$ready_file"; exit 1; fi
+if ! schedule_list_ready_or_verdict "$ready_file"; then
+  # #157: a ready-list read that fails even after list-ready-tasks.sh's own
+  # retry/backoff is a transient forge blip, not work this host can do — the
+  # cron backstops it. Reddening here was worse than useless: the cause landed
+  # only in the on-disk verdict, the task log went blank, and the healer
+  # silenced the whole blank-log signature. Say what happened on stderr (the
+  # captured cause rides the verdict_error schedule_list_ready_or_verdict has
+  # already set) and stand down clean instead. A persistent outage then idles
+  # every tick, loudly, until the forge recovers — never a silent red.
+  echo "run-swarm: ready-list read failed after retries (${VERDICT_ERROR:-transient forge error}) — nothing to do this tick; standing down clean (the cron retries)" >&2
+  rm -f "$ready_file"
+  SWARM_EXIT_REASON="list-ready-transient"
+  exit 0
+fi
 ready="$(cat "$ready_file")"
 rm -f "$ready_file"
 ready_nums="$(schedule_ready_nums "$ready")"
@@ -269,8 +325,20 @@ preflight_model_gate "$repo_slug" "$ready" || exit 1
 
 # Web URL of the repo (FORGEJO_API is <server>/api/v1/repos/<slug>).
 repo_web="${FORGEJO_API%%/api/*}/$repo_slug"
-bash "$here/notify-mattermost.sh" ":inbox_tray: **Swarm picking up $n task(s)** in \`$repo_slug\`:
-$(jq -r '.[] | "- [#\(.number) \(.title)](\(.url))"' <<<"$ready")"
+
+# This "picking up N task(s)" post is purely informational, but until here the
+# stage is still schedule-lib's "list ready tasks" (nothing re-keys it between
+# the listing and provision below), so a fault in this window mis-keys the
+# healer onto a stage that PASSED — and the notify itself is a `curl -sf` that
+# exits 22 on a 5xx from the chat front door. Two fixes for one shape (#1424,
+# GOTCHAS 56, the implicit-`set -e` sibling of #52 one hop later): re-key the
+# stage to "notify + provision", and GUARD the notify `|| true` — the settled
+# best-effort idiom of every other notify call site (a chat brownout must never
+# red a run that has claimable work). SWARM_NOTIFY is the offline-test seam
+# (the EXECUTE_NOTIFY/REPORT_NOTIFY pattern) a test shims to a 5xx post.
+verdict_stage "notify + provision"
+bash "${SWARM_NOTIFY:-$here/notify-mattermost.sh}" ":inbox_tray: **Swarm picking up $n task(s)** in \`$repo_slug\`:
+$(jq -r '.[] | "- [#\(.number) \(.title)](\(.url))"' <<<"$ready")" || true
 
 # ── provision ───────────────────────────────────────────────────────────────
 provision_env_materialize "$here" || { SWARM_EXIT_REASON="env-allowlist-violation"; exit 1; }

@@ -24,8 +24,20 @@ export CLAUDE_LIMIT_MARKER="$tmp/claude-limit"
 # at a local path that does not exist (healer inert, no network, no hang).
 export REHEARSAL_CHECKOUT="$tmp/nonexistent"
 export REHEARSAL_HEAL_REPO="$tmp/no-such-origin.git"
-export REHEARSAL_HEAL_PROMPT_FILE="$here/../.sandcastle/rehearsal-heal-prompt.md"
-export REHEARSAL_REPORT_PROMPT_FILE="$here/../.sandcastle/rehearsal-report-prompt.md"
+# The rendered rehearsal prompts live at the harness root. Factory-side the suite
+# runs from <factory>/tests and the rendered copies are the self-pin under
+# .sandcastle/; consumer-side the suite is vendored into <repo>/.sandcastle/tests/
+# and the rendered copies are its DIRECT parent (the harness dir already IS
+# .sandcastle) — resolve whichever exists so the suite is green from either layout
+# (#139), and fail LOUDLY (never a silent empty/default prompt) if neither is present.
+rehearsal_heal_prompt_file="$here/../.sandcastle/rehearsal-heal-prompt.md"
+[ -f "$rehearsal_heal_prompt_file" ] || rehearsal_heal_prompt_file="$here/../rehearsal-heal-prompt.md"
+[ -f "$rehearsal_heal_prompt_file" ] || fail "no rendered rehearsal-heal-prompt.md at $here/../.sandcastle/ or $here/../ — cannot run the suite"
+rehearsal_report_prompt_file="$here/../.sandcastle/rehearsal-report-prompt.md"
+[ -f "$rehearsal_report_prompt_file" ] || rehearsal_report_prompt_file="$here/../rehearsal-report-prompt.md"
+[ -f "$rehearsal_report_prompt_file" ] || fail "no rendered rehearsal-report-prompt.md at $here/../.sandcastle/ or $here/../ — cannot run the suite"
+export REHEARSAL_HEAL_PROMPT_FILE="$rehearsal_heal_prompt_file"
+export REHEARSAL_REPORT_PROMPT_FILE="$rehearsal_report_prompt_file"
 
 # curl shim: records every call; answers the issue-list query from a fixture
 # file; answers POSTs with a minted number. The dependency POST is answered as
@@ -74,6 +86,9 @@ for a in "$@"; do case "$a" in
     # reporter re-fetches immediately before filing. When ISSUE_FIXTURE_AFTER is
     # set, serve it on the 2nd+ list fetch to simulate that concurrent filing.
     n=1; [ -f "$LIST_COUNT" ] && n=$(( $(cat "$LIST_COUNT") + 1 )); echo "$n" > "$LIST_COUNT"
+    # #1245: once a create has STORED an issue behind a 503, the tracker returns
+    # it on the next list fetch — the reporter's re-query path keys on exactly this.
+    if [ -n "${STORED_DB:-}" ] && [ -s "$STORED_DB" ]; then cat "$STORED_DB"; exit 0; fi
     if [ "$n" -ge 2 ] && [ -n "${ISSUE_FIXTURE_AFTER:-}" ]; then cat "$ISSUE_FIXTURE_AFTER"; else cat "${ISSUE_FIXTURE:?}"; fi
     exit 0;;
   *labels\?limit=100*)
@@ -85,6 +100,18 @@ for a in "$@"; do case "$a" in
     fi
     echo '[{"id":36,"name":"ready-for-agent"},{"id":37,"name":"ready-for-human"},{"id":38,"name":"ready-for-session"},{"id":40,"name":"bug"},{"id":97,"name":"rehearsal-183"},{"id":99,"name":"priority"}]'; exit 0;;
 esac; done
+# #1245: model a create POST that Forgejo STORED then answered with a 503
+# (curl -f: no body, rc 22). CREATE_503_MODE=store records the stored issue
+# (carrying THIS run's rehearsal-sig, lifted from the create body) so the
+# reporter's re-query finds it; =nostore stores nothing (the park must fire).
+case "${CREATE_503_MODE:-}" in
+  store)
+    csig="$(grep -o 'rehearsal-sig: [a-f0-9]*' <<<"$body" | head -1)"
+    printf '[{"number": %s, "body": "stored-on-503\\n%s"}]' "${CREATE_STORE_NUM:-777}" "$csig" > "${STORED_DB:?}"
+    exit 22;;
+  nostore)
+    exit 22;;
+esac
 echo '{"number": 991}'
 SH
 chmod +x "$tmp/bin/curl"
@@ -96,6 +123,14 @@ SH
 chmod +x "$tmp/bin/claude"
 export CURL_LOG="$tmp/curl.log" ISSUE_FIXTURE="$tmp/issues.json" LIST_COUNT="$tmp/list-count"
 export LABELS_COUNT="$tmp/labels-count" REPORTER_LABELS_RETRY_DELAY=0
+# #1245: the stored-then-503 re-query back-off — 0 in the test so every case
+# that exercises the retry paths (dependency/comment/create re-query) stays fast.
+export REPORTER_CREATE_REQUERY_DELAY=0
+# #1245: the shim's stored-issue DB. Absent by default (every legacy case sees
+# no stored issue); the create shim writes it in CREATE_503_MODE=store to model
+# a POST that STORED the issue then answered 503, so the reporter's re-query
+# list fetch finds it.
+export STORED_DB="$tmp/stored-db.json"
 
 red_run() { # red_run <error-line> — a minimal red run dir
   cat > "$tmp/run/artifacts/legs.json" <<EOF
@@ -347,6 +382,22 @@ grep -q 'transient fault twice in a row — filing the generic fallback' "$tmp/o
 grep -q '/issues -d' "$CURL_LOG" || fail "a double transient must still file (the drive must block)"
 grep -q 'rehearsal drive red at' "$CURL_LOG" || fail "the generic fallback title was not used"
 grep -Eq '^[[:space:]]*38,?[[:space:]]*$' "$CURL_LOG" || fail "the fallback must be ready-for-session"
+pass=$((pass+1))
+
+# 14a-unit (#140): parse_diagnosis on EMPTY/blank input must return non-zero on
+#     EVERY jq version. Under jq 1.6 `jq -e 'type=="object"'` on NO input value
+#     exits 0, so an empty diagnosis (claude exited non-zero on a 529 brownout,
+#     stdout "") read as a valid object — short-circuiting the transient-retry
+#     branch and filing a generic fallback with an empty body after ONE call.
+#     Extract the real function and pin the guard offline, jq-version-independent.
+pd_fn="$tmp/parse_diagnosis.sh"
+awk '/^parse_diagnosis\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$here/../rehearsal-report.sh" > "$pd_fn"
+grep -q '^parse_diagnosis() {' "$pd_fn" || fail "could not extract parse_diagnosis() from rehearsal-report.sh"
+( . "$pd_fn"; parse_diagnosis "" ) && fail "parse_diagnosis \"\" must return non-zero (empty is never an object; #140 jq 1.6)"
+( . "$pd_fn"; parse_diagnosis "   " ) && fail "parse_diagnosis on blank input must return non-zero (#140)"
+( . "$pd_fn"; parse_diagnosis '```json
+```' ) && fail "parse_diagnosis on a fence-only blob must return non-zero (strips to empty; #140)"
+( . "$pd_fn"; out="$(parse_diagnosis '{"title":"t"}')" ) || fail "parse_diagnosis must still accept a clean JSON object"
 pass=$((pass+1))
 
 # 14b (#531): an explicit unconfident diagnosis (valid JSON, "confident":false)
@@ -605,7 +656,15 @@ echo "Failed to authenticate: OAuth session expired and could not be refreshed"
 SH
 chmod +x "$tmp/bin/claude"
 red_run "pairing timeout after 900000ms"
-REHEARSAL_HEALER=0 bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (auth refusal)"
+fake_tok="sk-ant-oat01-FAKEtokenBODYthatMUSTneverBEprinted0123456789"
+REHEARSAL_HEALER=0 CLAUDE_CODE_OAUTH_TOKEN="$fake_tok" bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (auth refusal)"
+# The alert names the token by its 14-char prefix ONLY. It once printed the prefix and
+# then the whole token (`${tok:-EMPTY}` is the token when one is set) — to the drive
+# ticket and Mattermost (#1672 fire 1).
+grep -q 'FAKEtokenBODY' "$CURL_LOG" \
+  && fail "the auth alert leaked the token body — it may carry the 14-char prefix, never the token"
+grep -q 'sk-ant-oat01-F…' "$CURL_LOG" \
+  || fail "the auth alert must still name the token by its 14-char prefix"
 grep -q 'CLAUDE AUTH FAILED' "$CURL_LOG" \
   || fail "no auth-refusal alert posted to the drive issue -- an auth-dead token must never be silent"
 grep -q 'NO DIAGNOSIS' "$CURL_LOG" \
@@ -792,6 +851,71 @@ red_run "pairing timeout after 900000ms"
 bash "$here/../rehearsal-report.sh" "$tmp/run" || fail "reporter exited non-zero (no-op guard)"
 grep -q '/issues -d' "$CURL_LOG" || fail "with a no-op guard, filing must resume"
 restore_guard
+pass=$((pass+1))
+
+# 39 (#1245): stored-then-503 — Forgejo STORES the issue then answers the create
+#     POST with a 503 (curl -f: rc 22, empty body). The reporter must re-query by
+#     rehearsal-sig, find the stored issue, treat it as filed, and WIRE it onto
+#     the drive — ONE issue (no duplicate), no ready-for-human park.
+export REHEARSAL_DRIVE_ISSUE=500
+rm -f "$STORED_DB" "$tmp/flip/test-results/flip-pages/500.paged"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "stored then 503 fault"
+out39="$(CREATE_503_MODE=store REHEARSAL_HEALER=0 bash "$here/../rehearsal-report.sh" "$tmp/run" 2>&1)" \
+  || fail "reporter exited non-zero (stored-then-503)"
+grep -q 're-query found the STORED issue #777' <<<"$out39" \
+  || fail "re-query did not recover the stored-on-503 issue: $out39"
+[ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -eq 1 ] \
+  || fail "exactly one create POST expected — a stored issue must never be re-filed as a duplicate (#1241 dup'd #1242)"
+grep -q '500/dependencies' "$CURL_LOG" || fail "stored-on-503 issue was not wired onto the drive"
+grep '500/dependencies' "$CURL_LOG" | grep -q '777' \
+  || fail "the dependency wired was not the stored issue #777"
+grep -q '777/labels' "$CURL_LOG" \
+  || fail "the create's labels were not (idempotently) re-applied to the stored issue"
+grep -q '500/comments' "$CURL_LOG" || fail "the 'now blocked by' comment did not land on the drive"
+grep -Eq 'X DELETE.*500/labels/36' "$CURL_LOG" \
+  && fail "a recovered stored issue must NOT park the drive ready-for-human (the whole #1245 hazard)"
+grep -q 'blocked by 777' <<<"$out39" || fail "the drive was not reported blocked by the stored issue"
+rm -f "$STORED_DB"
+pass=$((pass+1))
+
+# 40 (#1245): a create that 503s and stores NOTHING — the re-query also finds
+#     nothing, so the existing "could not file" park still fires: the drive flips
+#     ready-for-human and NO phantom dependency is wired. Proves the re-query
+#     guard did not swallow a genuine filing failure.
+export REHEARSAL_DRIVE_ISSUE=500
+rm -f "$STORED_DB" "$tmp/flip/test-results/flip-pages/500.paged"
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT"
+red_run "503 with nothing stored"
+out40="$(CREATE_503_MODE=nostore REHEARSAL_HEALER=0 bash "$here/../rehearsal-report.sh" "$tmp/run" 2>&1)" \
+  || fail "reporter exited non-zero (503 nostore)"
+grep -q 'could not file' <<<"$out40" \
+  || fail "a 503 with nothing stored must report it could not file: $out40"
+[ "$(grep -c '/issues -d' "$CURL_LOG" || true)" -eq 1 ] || fail "exactly one create attempt expected"
+grep -q '500/dependencies' "$CURL_LOG" && fail "nothing filed — no dependency must be wired"
+grep -q 'X DELETE.*500/labels/36' "$CURL_LOG" \
+  || fail "a 503-with-nothing-stored must still park: ready-for-agent not removed"
+grep -Eq '500/labels -d.*37' "$CURL_LOG" \
+  || fail "a 503-with-nothing-stored must add ready-for-human"
+rm -f "$tmp/flip/test-results/flip-pages/500.paged"
+pass=$((pass+1))
+
+# 41 (idss #1426): a PRE-LEGS red whose ONLY log content is an SSH auth refusal
+#     (`Permission denied (publickey)`) must synthesize THAT cause into the
+#     pre-legs leg -- never the useless `red before legs.json was written`
+#     fallback. The refusal carries none of Error/FAIL/timed out, so the
+#     synthesis grep must fold it in (-i + `Permission denied`). (drive
+#     20260912T053407Z sat on the fallback marker while five box-*.txt held
+#     the real cause verbatim, #1422 defect 2.)
+export REHEARSAL_DRIVE_ISSUE=500
+echo '[]' > "$ISSUE_FIXTURE"; : > "$CURL_LOG"; rm -f "$LIST_COUNT" "$STORED_DB"
+rm -f "$tmp/run/artifacts/legs.json" "$tmp/run/logs"/*.txt
+printf 'ssh: connecting to git.matou.nz ...\ngit@git.matou.nz: Permission denied (publickey).\n' > "$tmp/run/logs/box-1.txt"
+REHEARSAL_HEALER=0 bash "$here/../rehearsal-report.sh" "$tmp/run" 1 || fail "reporter exited non-zero (pre-legs auth refusal)"
+grep -q 'Permission denied (publickey)' "$CURL_LOG" \
+  || fail "pre-legs synthesis dropped the SSH auth refusal: $(cat "$CURL_LOG")"
+grep -q 'red before legs.json was written' "$CURL_LOG" \
+  && fail "pre-legs synthesis fell back to the useless marker instead of the auth refusal"
 pass=$((pass+1))
 
 echo "PASS ($pass cases)"

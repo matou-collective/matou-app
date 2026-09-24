@@ -238,6 +238,29 @@ auth_detects "npm error Missing: prettier@3.9.6 from lock file" \
   && fail "must NOT treat an unrelated failure as a Claude auth refusal"
 pass=$((pass+1))
 
+# --- #1682: the classifier reads the CLI's REFUSAL, not the model's PROSE.
+#     Every phrase above is likely to appear inside a healer/reporter diagnosis
+#     of a SIGN-IN failure (sign-in is most of what the drives prove), so the
+#     classifier anchors them to the START of a line. #1682 fire 1: a finished
+#     heal `{"action":"healed",...}` quoted a Nextcloud 401 body mid-line and
+#     the old whole-file grep discarded the heal, flipped the account and paged
+#     a false auth failure. A phrase quoted mid-line -- in a JSON body, a
+#     markdown bullet, a sentence -- must NOT classify. ---
+auth_detects '`/settings/admin` -> HTTP 401 {"message":"Current user is not logged in"}' \
+  && fail "#1682: a diagnosis QUOTING a 401 body must NOT read as a Claude auth refusal"
+auth_detects '{"action":"healed","commit":"3b227968","summary":"the gate now grants; the 401 said Current user is not logged in before the fix"}' \
+  && fail "#1682: a finished heal verdict quoting the phrase mid-line must NOT read as an auth refusal"
+auth_detects '- the member was `not logged in` when it reached /settings/admin' \
+  && fail "#1682: a markdown-bullet mention must NOT read as an auth refusal"
+auth_detects 'The upstream returned authentication_error deep in its response body.' \
+  && fail "#1682: a mid-sentence authentication_error mention must NOT read as an auth refusal"
+# the CLI's own API-error auth shape (authentication_error inside its `API
+# Error: <code> ...` framing) still classifies -- the tightening drops only
+# free-floating prose, never a real refusal.
+auth_detects 'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}' \
+  || fail "#1682: the CLI's API Error 401 authentication_error line MUST still classify"
+pass=$((pass+1))
+
 # claude_auth_failed checks every file argument (the caller's multi-file
 # err+out grep pattern); an EMPTY file must never match (the [ -s ] guard).
 empty="$(mktemp)"

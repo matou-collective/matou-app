@@ -168,9 +168,10 @@ pass=$((pass+1))
 # healer with an EMPTY error block. schedule_list_ready_or_verdict re-keys the
 # stage and captures the failure as the verdict's error line.
 . "$sc/verdict-lib.sh"
+# #142: the lister now names the failing endpoint + last HTTP status on stderr.
 cat > "$tmp/list-fail" <<'SH'
 #!/usr/bin/env bash
-echo "curl: (22) The requested URL returned error: 503" >&2
+echo "list-ready-tasks: GET /issues failed after 3 attempts (last http=503)" >&2
 exit 22
 SH
 chmod +x "$tmp/list-fail"
@@ -187,10 +188,63 @@ $(cat "$vp")"
 err="$(sed -n '/^--- error lines ---$/,$p' "$vp" | sed '1d' | grep -E '[^[:space:]]' || true)"
 [ -n "$err" ] || fail "the verdict must carry a non-empty error line, got empty:
 $(cat "$vp")"
+# #142: a 5xx is worded transient AND carries the observed status + endpoint.
+grep -q 'transient' "$vp" || fail "a 5xx read must be worded transient:
+$(cat "$vp")"
+grep -q 'http=503' "$vp" || fail "the verdict must carry the observed status (503):
+$(cat "$vp")"
+grep -q '/issues' "$vp" || fail "the verdict must carry the failing endpoint:
+$(cat "$vp")"
 # the runlog reason derivation (verbatim from run-swarm's on_exit): SWARM_EXIT_REASON
 # is unset on this path, so the reason falls back to died-in:<stage>.
 reason="died-in:${VERDICT_STAGE:-unknown}"
 [ "$reason" = "died-in:list ready tasks" ] || fail "runlog reason mis-keyed: $reason"
+pass=$((pass+1))
+
+# ── 6b (#142). a 4xx read is NOT worded transient ──────────────────────────
+# An expired token (401) or a renamed/lost repo (404/403) is a rejection the
+# swarm cannot self-heal — asserting "transient" there had the healer take no
+# action and report self-healing forever while the swarm was permanently
+# wedged. The verdict must say REJECTED, name the status, and never say
+# "transient".
+cat > "$tmp/list-401" <<'SH'
+#!/usr/bin/env bash
+echo "list-ready-tasks: GET /issues failed after 3 attempts (last http=401)" >&2
+exit 22
+SH
+chmod +x "$tmp/list-401"
+verdict_begin "$vp"
+verdict_stage "list ready tasks"
+SCHEDULE_LIST_READY="$tmp/list-401"
+rc=0; schedule_list_ready_or_verdict "$of" || rc=$?
+verdict_write "$rc"
+grep -q 'http=401' "$vp" || fail "a 401 verdict must carry the observed status:
+$(cat "$vp")"
+grep -qi 'REJECTED' "$vp" || fail "a 401 must be worded as a rejection, not a guess:
+$(cat "$vp")"
+if grep -q 'transient' "$vp"; then fail "a 4xx read must NOT be called transient:
+$(cat "$vp")"; fi
+pass=$((pass+1))
+
+# ── 6c (#142). the dependency fan-out's xargs-123 reaches the verdict with the
+# endpoint named. Its child exits 1 and xargs maps that to 123; the endpoint is
+# the ONLY signal that separates it from any other 123, so it must survive.
+cat > "$tmp/list-123" <<'SH'
+#!/usr/bin/env bash
+echo "list-ready-tasks: GET /issues/141/dependencies failed after 3 attempts (last http=503)" >&2
+exit 123
+SH
+chmod +x "$tmp/list-123"
+verdict_begin "$vp"
+verdict_stage "list ready tasks"
+SCHEDULE_LIST_READY="$tmp/list-123"
+rc=0; schedule_list_ready_or_verdict "$of" || rc=$?
+[ "$rc" -eq 123 ] || fail "the xargs-123 must propagate as the verdict rc, got $rc"
+verdict_write "$rc"
+grep -q '/issues/141/dependencies' "$vp" || fail "the xargs-123 verdict must name the failing endpoint:
+$(cat "$vp")"
+grep -q 'rc=123' "$vp" || fail "the verdict must carry the raw rc (123) for the healer:
+$(cat "$vp")"
 pass=$((pass+1))
 
 # a HEALTHY lister leaves no verdict and returns the JSON in the out-file

@@ -7,6 +7,16 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 # Signature helpers, to assert WHICH signature a run keyed on (#235).
 . "$here/../heal-lib.sh"
 
+# The rendered heal prompt lives at the harness root. Factory-side the suite runs
+# from <factory>/tests and the rendered copy is the self-pin under .sandcastle/;
+# consumer-side the suite is vendored into <repo>/.sandcastle/tests/ and the
+# rendered copy is its DIRECT parent (the harness dir already IS .sandcastle) —
+# resolve whichever exists so the suite is green from either layout (#139), and
+# fail LOUDLY (never a silent empty/default heal prompt) if neither is present.
+heal_prompt_file="$here/../.sandcastle/heal-prompt.md"
+[ -f "$heal_prompt_file" ] || heal_prompt_file="$here/../heal-prompt.md"
+[ -f "$heal_prompt_file" ] || fail "no rendered heal-prompt.md at $here/../.sandcastle/ or $here/../ — cannot run the suite"
+
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 # #116: heal.sh mirrors a heal run row + limit-pause park edges into swarm.db;
 # redirect every host-state path into $work and arm the leak tripwire at the seam
@@ -51,7 +61,7 @@ run_heal() {
     HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
     SWARM_VERDICT_PATH="$work/absent-swarm-verdict" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
-    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+    HEAL_PROMPT_FILE="$heal_prompt_file" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
     HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
     HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
@@ -177,7 +187,7 @@ run_heal_ci() {
     CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
     CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
-    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+    HEAL_PROMPT_FILE="$heal_prompt_file" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
     HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
     HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
@@ -224,7 +234,7 @@ run_heal_swarm() {
     CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
     CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
-    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+    HEAL_PROMPT_FILE="$heal_prompt_file" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
     HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
     HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
@@ -300,7 +310,7 @@ run_heal_smoke() {
     CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
     CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
-    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+    HEAL_PROMPT_FILE="$heal_prompt_file" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
     HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
     HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
@@ -339,7 +349,7 @@ run_heal_pre2e() {
     CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
     CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
     HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
-    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+    HEAL_PROMPT_FILE="$heal_prompt_file" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
     HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
     HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
@@ -392,7 +402,7 @@ out="$(env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
   CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
   CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
   HEAL_AGENT_CMD="bash $here/fixtures/stub-agent.sh" \
-  HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+  HEAL_PROMPT_FILE="$heal_prompt_file" \
   FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
   HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
   HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
@@ -423,6 +433,29 @@ echo "$out" | grep -q "incident wf=forgejo-api" || fail "expected the offline ha
 if out2="$(bash -c 'set -euo pipefail; found=0; if [ "$found" -eq 0 ]; then echo "heal: watchdog — all healthy"; fi')"; then ec=0; else ec=$?; fi
 [ "$ec" -eq 0 ] || fail "found=0 watchdog tail pattern must exit 0"
 echo "$out2" | grep -q "watchdog — all healthy" || fail "found=0 watchdog tail pattern must print the healthy message"
+
+# --- #1462: the watchdog tells an auth fault from a timeout ------------------
+# The old probe wrote `api_seconds=timeout` on ANY curl failure, so a fast 401
+# (an expired/mis-synced token — a repairable harness-infra fault) was
+# indistinguishable from a genuine remote stall. A curl stub on PATH drives a
+# fast 401: the incident must still trip, but the evidence now records http=401
+# and curl_exit=0, and NOT `api_seconds=timeout`.
+stub_dir="$(mktemp -d)"
+cat > "$stub_dir/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '401 0.050'   # a fast 401, exactly as curl's -w '%{http_code} %{time_total}' prints
+exit 0
+STUB
+chmod +x "$stub_dir/curl"
+rm -f "$work/state/"*
+out="$(run_heal HEAL_MODE=watchdog PATH="$stub_dir:$PATH")"
+echo "$out" | grep -q "incident wf=forgejo-api" || fail "#1462: a fast 401 must still trip the api incident, got: $out"
+ev="$(echo "$out" | sed -n 's/^heal: evidence at \([^ ]*\).*/\1/p' | head -1)"
+[ -f "$ev/api-timing.txt" ] || fail "#1462: no api-timing.txt in the evidence dir ($ev)"
+grep -qx 'api_http=401'      "$ev/api-timing.txt" || fail "#1462: a 401 must be recorded as api_http=401, got: $(cat "$ev/api-timing.txt")"
+grep -qx 'api_curl_exit=0'   "$ev/api-timing.txt" || fail "#1462: a 401 is curl exit 0, got: $(cat "$ev/api-timing.txt")"
+grep -q  '^api_seconds=timeout' "$ev/api-timing.txt" && fail "#1462: a 401 must NOT be recorded as api_seconds=timeout"
+rm -rf "$stub_dir"
 
 # failover (#510): the agent's FIRST call answers the weekly-limit line; the
 # SECOND — after the flip to the standby account — diagnoses normally. With a
@@ -615,4 +648,80 @@ grep -qE '^- Heal run id: heal-.*-[0-9]+-[0-9]+$' "$pcap" \
 grep -q 'timeout --kill-after=30 900' "$here/../heal.sh" \
   || fail "heal.sh must wrap the agent timeout with --kill-after so a cleanup trap runs before the hard kill (#123)"
 
-echo "heal.sh: 17 scenarios passed"
+# --- #135: a failing leg that ran on the OTHER pool host leaves no local
+# evidence — the healer must say so explicitly, not hand the agent empty files.
+# swarm is a multi-host runner pool; when the fault ran elsewhere gather_evidence
+# finds no fresh worker log and no fresh verdict locally. It must (a) stamp its
+# OWN host into the bundle, and (b) write the explicit "ran on another pool host"
+# line into worker-logs.txt / run-verdict.txt instead of leaving them empty.
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log        # no host-local worker log for this run
+capdir="$work/ev-capture"
+cat > "$work/capture-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+ev="$(printf '%s' "$1" | sed -n 's/^- Evidence directory: \([^ ]*\).*/\1/p' | head -1)"
+mkdir -p "${CAPDIR:?}"
+cp "$ev/worker-logs.txt" "$ev/run-verdict.txt" "$ev/healer-host.txt" "$CAPDIR/" 2>/dev/null || true
+cat > "$ev/diagnosis.md" <<'D'
+CLASS: harness-infra
+CONFIDENCE: high
+ACTION-TAKEN: none
+ESCALATE: no
+
+**Root cause** — stub.
+D
+EOF
+chmod +x "$work/capture-agent.sh"
+rm -rf "$capdir"
+run_heal HEAL_AGENT_CMD="bash $work/capture-agent.sh" CAPDIR="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#135: worker-logs.txt must carry the explicit 'ran on another pool host' line when no local evidence exists (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "ran on another swarm pool host" "$capdir/run-verdict.txt" 2>/dev/null \
+  || fail "#135: run-verdict.txt must carry the explicit line instead of being empty/absent"
+grep -q "^healer-host: box9$" "$capdir/healer-host.txt" 2>/dev/null \
+  || fail "#135: the bundle must record the healer's own host (got: $(cat "$capdir/healer-host.txt" 2>/dev/null))"
+
+# ...and a run WITH host-local worker logs (executed HERE) is UNCHANGED: no
+# spurious remote line, but the healer-host stamp is still present.
+rm -rf "$work/state"; mkdir -p "$work/state"
+echo "boom: unmistakable error line 12345" > "$work/wd/.sandcastle/logs/x-worker.log"
+rm -rf "$capdir"
+run_heal HEAL_AGENT_CMD="bash $work/capture-agent.sh" CAPDIR="$capdir" SWARM_HOST=box9 >/dev/null 2>&1 || true
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  && fail "#135: a run with host-local worker logs must NOT be flagged as running on another host"
+grep -q "^healer-host: box9$" "$capdir/healer-host.txt" 2>/dev/null \
+  || fail "#135: the healer-host stamp must be present even on a local run"
+
+# --- #147: watchdog mode leaves RUN_URL unset — the no-local-evidence block
+# must not die on `RUN_URL: unbound variable` under `set -u`. healer.yml's
+# hourly watchdog job (unlike ci.yml's healer step) never exports RUN_URL, and
+# a healthy sweep with no fresh local worker log is EXACTLY where the
+# no-local-evidence branch fires. Reproduce it: watchdog mode, RUN_URL genuinely
+# unset, no host-local worker log — the run must reach the no-local-evidence
+# artefact write and exit 0, with the runid falling back to SWARM_RUN_ID/watchdog.
+rm -rf "$work/state"; mkdir -p "$work/state"
+rm -f "$work/wd/.sandcastle/logs/"*.log        # no host-local worker log for this run
+capdir="$work/ev-capture-147"; rm -rf "$capdir"
+if out="$(env -u MATTERMOST_URL -u MATTERMOST_BOT_TOKEN -u MATTERMOST_CHANNEL_ID \
+      -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN_B -u RUN_URL -u SWARM_RUN_ID \
+      CLAUDE_LIMIT_MARKER="$work/ambient-limit-marker" \
+      CLAUDE_ACTIVE_MARKER="$work/ambient-active-marker" \
+      HEAL_MODE=watchdog \
+      HEAL_WORKDIR="$work/wd" HEALER_STATE="$work/state" SWARM_DB="$work/swarm.db" \
+      SWARM_VERDICT_PATH="$work/absent-swarm-verdict" \
+      HEAL_AGENT_CMD="bash $work/capture-agent.sh" CAPDIR="$capdir" \
+      HEAL_PROMPT_FILE="$heal_prompt_file" \
+      FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
+      HOST_CAPACITY_DRIVE_WANTED="$work/absent-drive-wanted" \
+      HEALER_DRIVE_DEFER_COUNT="$work/healer-defer-count" \
+      HEALER_LOCK="$work/healer.lock" SWARM_HOST=box9 \
+      bash "$here/../heal.sh" 2>&1)"; then ec=0; else ec=$?; fi
+[ "$ec" -eq 0 ] || fail "#147: watchdog run with RUN_URL unset must exit 0, got $ec (out: $out)"
+echo "$out" | grep -q "RUN_URL: unbound variable" \
+  && fail "#147: the no-local-evidence block must not dereference RUN_URL bare under set -u"
+grep -q "ran on another swarm pool host" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#147: the no-local-evidence artefact must still be written when RUN_URL is unset (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+grep -q "run watchdog" "$capdir/worker-logs.txt" 2>/dev/null \
+  || fail "#147: with RUN_URL and SWARM_RUN_ID unset the runid must fall back to 'watchdog' (got: $(cat "$capdir/worker-logs.txt" 2>/dev/null))"
+
+echo "heal.sh: 19 scenarios passed"

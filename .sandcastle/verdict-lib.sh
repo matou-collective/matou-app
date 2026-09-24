@@ -78,13 +78,13 @@ verdict_write() {
   [ "${ec:-0}" -eq 0 ] 2>/dev/null && return 0
   [ -n "${VERDICT_PATH:-}" ] || return 0
   if [ -n "${VERDICT_ERRLOG:-}" ] && [ -f "$VERDICT_ERRLOG" ]; then
-    # `|| true` is LOad-BEARING, not defensive noise: callers run under
-    # `set -euo pipefail` and wire this into an EXIT trap. When the errlog holds
-    # no regex match (e.g. host-slot-wait's "host capacity still busy after
-    # 1800s — giving up", ci run 21727), grep exits 1, pipefail propagates it,
-    # and errexit KILLS THE TRAP right here — breadcrumb already erased, verdict
-    # never written. Every such failure then reached the healer as a bare
-    # workflow-name signature with "Trigger error line: unknown", and the
+    # The `|| true` on both greps is LOAD-BEARING, not defensive noise. Callers
+    # run under `set -euo pipefail` and wire this into an EXIT trap. When the
+    # errlog holds no regex match (e.g. host-slot-wait's "host capacity still
+    # busy after 1800s — giving up"), grep exits 1, pipefail propagates it, and
+    # errexit kills the trap HERE — the breadcrumb is already erased above, so
+    # no verdict is ever written. Every such failure then reached the healer as
+    # a bare workflow-name signature with "Trigger error line: unknown", and the
     # no-match fallback on the next line — written for exactly this case — was
     # unreachable.
     errs="$(grep -hiE 'error|fail|timed out|fatal|panic|cannot|not found|undefined|:[0-9]+:[0-9]+:|✗|✖' \

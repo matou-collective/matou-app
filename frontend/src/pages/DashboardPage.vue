@@ -246,8 +246,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
 import {
   Moon,
   Sun,
@@ -386,6 +386,7 @@ const profilesStore = useProfilesStore();
 const activityStore = useActivityStore();
 const chatStore = useChatStore();
 const router = useRouter();
+const route = useRoute();
 const membersCardRef = ref<HTMLElement | null>(null);
 const inviteModalRef = ref<InstanceType<typeof InviteMemberModal> | null>(null);
 
@@ -418,6 +419,16 @@ function scrollToMembers() {
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   el.classList.add('bounce');
   el.addEventListener('animationend', () => el.classList.remove('bounce'), { once: true });
+}
+
+// The steward inbox deep-link (`matou://inbox`, #599) lands here with
+// `?focus=pending` so the steward sees their pending approvals, not the home
+// screen. Only a steward has the Pending card, so a non-steward (or a wallet
+// with no community) simply stays on its normal home — no scroll, no error.
+async function focusPendingApprovals() {
+  if (route.query.focus !== 'pending' || !isSteward.value) return;
+  await nextTick();
+  scrollToMembers();
 }
 
 function navigateToNotices(filter: 'event' | 'announcement' | 'update') {
@@ -610,6 +621,16 @@ onMounted(async () => {
   // Load activity and chat data for community stats
   activityStore.loadNotices();
   chatStore.loadChannels();
+
+  // A steward inbox deep-link (`matou://inbox`, #599) lands with `?focus=pending`
+  // — scroll the Pending card into view once admin status is known.
+  await focusPendingApprovals();
+});
+
+// Warm navigation: an inbox deep-link opened while the dashboard is already
+// mounted only changes the query (onMounted won't re-run), so react to it here.
+watch(() => route.query.focus, () => {
+  void focusPendingApprovals();
 });
 
 onUnmounted(() => {

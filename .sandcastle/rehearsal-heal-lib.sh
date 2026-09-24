@@ -37,6 +37,35 @@ HEAL_TEST_FILE_RE='(_test\.[A-Za-z]+|\.test\.[A-Za-z]+|\.spec\.[A-Za-z]+)$'
 HEAL_PRODUCT_SURFACE_GLOBS="${HEAL_PRODUCT_SURFACE_GLOBS:-}"
 HEAL_PRODUCT_SURFACE_EXEMPT_GLOBS="${HEAL_PRODUCT_SURFACE_EXEMPT_GLOBS:-*testdata* *fixtures* *__fixtures__* *.fixture.* *.stories.*}"
 
+# The assertion / expectation shapes refusal rule 1 guards. One variable so the
+# weakening grep and the moved-check exemption test the SAME set of lines.
+HEAL_ASSERT_RE='(\bexpect\(|\.toBe|\.toEqual|\.toContain|\.toMatch|\.toHave|\bassert[.(]|\brequire\.(Equal|NoError|Error|True|False|Nil|NotNil|Len|Contains|ElementsMatch)|\bt\.(Fatal|Fatalf|Error|Errorf)\b|\bshould[.(])'
+
+# _heal_assertions_all_moved <diff> <assert_re> — 0 (all moved) iff the diff has
+# at least one REMOVED assertion line AND every removed assertion line reappears
+# — byte-for-byte after trimming leading whitespace — as an ADDED line in the
+# same diff: a MOVED check (#1501). Moving an assertion (a read-back pulled below
+# the step that persists what it reads) changes only WHERE it runs, not what it
+# proves, so rule 1 must not fire on it. A removed assertion with no verbatim
+# added twin — a changed value, a deletion — returns 1 (a weakening, not a move).
+# ENVIRON, not `awk -v`, so backslashes in the assertion text are not mangled.
+_heal_assertions_all_moved() {
+  local diff="$1" re="$2" removed added
+  removed="$(printf '%s\n' "$diff" | grep -E "^-[^-].*$re" | sed -E 's/^-//; s/^[[:space:]]+//')"
+  [ -n "$removed" ] || return 1
+  added="$(printf '%s\n' "$diff" | grep -E '^\+[^+]' | sed -E 's/^\+//; s/^[[:space:]]+//')"
+  # Multiset cover: each removed (trimmed) assertion line must be matched by a
+  # distinct identical added (trimmed) line — a duplicated assertion removed
+  # twice but re-added once is a partial deletion and must NOT pass as "moved".
+  HEAL_REMOVED_ASSERT="$removed" HEAL_ADDED_LINES="$added" awk '
+    BEGIN {
+      na = split(ENVIRON["HEAL_ADDED_LINES"], a, "\n"); for (i = 1; i <= na; i++) cnt[a[i]]++
+      nr = split(ENVIRON["HEAL_REMOVED_ASSERT"], r, "\n")
+      for (i = 1; i <= nr; i++) { if (r[i] == "") continue; if (cnt[r[i]]-- <= 0) exit 1 }
+      exit 0
+    }'
+}
+
 # _heal_weakens_check <co> <a> <b> — 0 if the diff a..b would WEAKEN what a check
 # proves: it removes or rewrites an assertion/expectation line, removes a
 # test/leg declaration, or adds a skip/pending marker. This is refusal rule 1 —
@@ -44,12 +73,17 @@ HEAL_PRODUCT_SURFACE_EXEMPT_GLOBS="${HEAL_PRODUCT_SURFACE_EXEMPT_GLOBS:-*testdat
 # line) is fine; only removed/changed assertion lines and added skips trip it. A
 # selector-drift heal that edits a `page.getByRole(...)`/locator/action line
 # (NOT an `expect(...)` line) is NOT a weakened check and passes — the healer's
-# bread-and-butter mechanical fix stays in-lane.
+# bread-and-butter mechanical fix stays in-lane. A MOVED assertion (removed at
+# one place and re-added byte-for-byte, modulo indentation, elsewhere in the same
+# diff) is not a weakening either — only WHERE it runs changed (#1501).
 _heal_weakens_check() {
   local co="$1" a="$2" b="$3" diff
   diff="$(git -C "$co" diff --unified=0 "$a..$b" 2>/dev/null)"
-  # Removed/changed assertion or expectation line (old side: `-` not `---`).
-  if printf '%s\n' "$diff" | grep -qE '^-[^-].*(\bexpect\(|\.toBe|\.toEqual|\.toContain|\.toMatch|\.toHave|\bassert[.(]|\brequire\.(Equal|NoError|Error|True|False|Nil|NotNil|Len|Contains|ElementsMatch)|\bt\.(Fatal|Fatalf|Error|Errorf)\b|\bshould[.(])'; then
+  # Removed/changed assertion or expectation line (old side: `-` not `---`),
+  # UNLESS every removed assertion line has a verbatim (whitespace-trimmed) added
+  # twin — a MOVED check, which rule 1 allows (#1501).
+  if printf '%s\n' "$diff" | grep -qE "^-[^-].*$HEAL_ASSERT_RE" \
+     && ! _heal_assertions_all_moved "$diff" "$HEAL_ASSERT_RE"; then
     return 0
   fi
   # Removed a test or leg declaration (deleting what a check covers).
@@ -142,8 +176,16 @@ heal_rails() {
     git -C "$co" reset --hard "$pre" >/dev/null
     return 1
   fi
-  # Refusal rule 3: never change a product-behaviour surface.
-  if _heal_touches_product_surface "$co" "$pre" "$head"; then
+  # Refusal rule 3: never change a product-behaviour surface — UNLESS the fast
+  # lane is armed (#1270, Ben ruled 2026-09-06). The fast lane is the healer's
+  # CONFIDENT, TWO-WAY, product-touching build: rule 3 is exactly the blanket
+  # refusal it lifts (a confident two-way product fix is what the lane exists to
+  # land). Its compensating controls are the healer's own judgment (confident +
+  # two-way, in the verdict) and the close-report gate the fix is closed through
+  # — NOT this path-glob refusal. Every OTHER rail below still binds, and the
+  # masking-pressure guard the ruling insisted on lives in rule 1 (never weaken a
+  # check), one branch up, which the fast lane does NOT relax.
+  if [ "${HEAL_ALLOW_PRODUCT_SURFACE:-}" != 1 ] && _heal_touches_product_surface "$co" "$pre" "$head"; then
     HEAL_RAIL_REASON="product-behaviour surface"; HEAL_RAIL_SWARMABLE=false
     echo "healer: fix touches a product-behaviour surface — reverting and filing"
     git -C "$co" reset --hard "$pre" >/dev/null
@@ -167,6 +209,20 @@ heal_rails() {
   fi
   return 0
 }
+
+# fast_lane_rails <co> <pre_head> — the fast lane's rails (#1270). Identical to
+# heal_rails EXCEPT refusal rule 3 (product-behaviour surface) is lifted: the
+# fast lane exists to land a confident, two-way product fix, so a product-surface
+# change is its bread and butter, not a refusal. Every OTHER rail still binds —
+# exactly one commit, ≤3 files, ≤HEAL_LINE_CAP non-test lines ("the fast lane
+# keeps the healer cap", Ben 2026-09-06), no self-modification, and above all
+# rule 1 (never weaken an assertion / delete a test / add a skip): that is the
+# masking-pressure backstop the ruling turned on the fast lane, so it is NOT
+# relaxed. A breach resets to <pre_head> and fails exactly as heal_rails does,
+# naming the rule in HEAL_RAIL_REASON — the caller then falls back to today's
+# file-and-wait path (an over-cap-but-mechanical fix is swarm work; a weakened
+# check needs a ruling).
+fast_lane_rails() { HEAL_ALLOW_PRODUCT_SURFACE=1 heal_rails "$@"; }
 
 # rehearsal_heal_authed_url <url> — inject the same non-interactive
 # `swarm:$FORGEJO_TOKEN` credential git-setup.sh's worker checkouts already

@@ -73,16 +73,19 @@ onMounted(async () => {
 
 /**
  * Build the ask from the route query. The OS deep-link handler and the scanner
- * both route here with the `matou://signin` params (`door`, `c`, `s`, `name`,
- * `service`) carried as query params.
+ * both route here with the `matou://signin` params (`door`, `present`, `c`,
+ * `s`, `name`, `service`) carried as query params. A missing `present` is a
+ * door this app cannot answer, so the ask is refused (never a guessed path).
  */
 function askFromRoute(): SigninAsk | null {
   const q = route.query;
   const door = str(q.door);
+  const present = str(q.present);
   const challenge = str(q.c);
-  if (!door || !challenge) return null;
+  if (!door || !present || !challenge) return null;
   return {
     door,
+    present,
     challenge,
     schemas: str(q.s)
       .split(',')

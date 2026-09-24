@@ -78,6 +78,17 @@ case "$url" in
     # the JSON fixture below — used to prove claim_alive_runs/janitor_sweep
     # fail loud instead of silently degrading to an empty "nothing alive".
     [ -f "$FAKE_DIR/tasks-fail" ] && exit 22
+    # #1279 retry seam: $FAKE_DIR/tasks-fail-count holds a countdown — the tasks
+    # read fails (rc 22) that many times, decrementing each call, then serves the
+    # fixture normally. Lets a test prove claim_alive_runs RECOVERS on a bounded
+    # retry from a slow/transient tracker rather than concluding "run dead".
+    if [ -f "$FAKE_DIR/tasks-fail-count" ]; then
+      remaining="$(cat "$FAKE_DIR/tasks-fail-count" 2>/dev/null || echo 0)"
+      if [ "$remaining" -gt 0 ] 2>/dev/null; then
+        echo $((remaining - 1)) >"$FAKE_DIR/tasks-fail-count"
+        exit 22
+      fi
+    fi
     cat "$FAKE_DIR/tasks.json" 2>/dev/null || echo '{"workflow_runs":[]}'
     ;;
   */issues\?*labels=agent-working*)

@@ -42,8 +42,8 @@ export interface SigninDeps {
   exportCredential(said: string): Promise<string>;
   /** Sign a bound message with the member's cached signer. */
   sign(aid: string, message: string): Promise<string>;
-  /** POST the presentation and read the verdict. */
-  present(door: string, body: PresentBody): Promise<PresentVerdict>;
+  /** POST the presentation to a URL and read the verdict. */
+  present(presentUrl: string, body: PresentBody): Promise<PresentVerdict>;
   /** schema SAID → descriptor kind key (e.g. "membership"), for the label. */
   schemaKinds(): Promise<Record<string, string>>;
 }
@@ -147,7 +147,7 @@ export function useSignin(deps: SigninDeps = defaultDeps()) {
     let verdict: PresentVerdict;
     try {
       verdict = await runApprove(
-        { door: a.door, challenge: a.challenge, aid, credentialSaid: cred.sad.d },
+        { door: a.door, present: a.present, challenge: a.challenge, aid, credentialSaid: cred.sad.d },
         {
           sign: (message) => deps.sign(aid, message),
           exportCredential: deps.exportCredential,

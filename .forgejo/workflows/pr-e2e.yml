@@ -10,22 +10,31 @@ on:
 
 jobs:
   feature-e2e:
-    # TEMPORARY PIN (healer, 2026-09-15) — revert to `swarm` once #527 lands.
-    # #297 flipped this to the pooled `swarm` label so any enrolled host could
-    # take the drive. That is correct in principle, but right now only ONE of
-    # the two `swarm` runners can actually bootstrap the stack: #527 (the minio
-    # org went anonymous-denied on Docker Hub) hard-downs `make setup-test` on
-    # any host that does not already have minio/mc + minio/minio cached, and
-    # matou-workstation does not. elitebook-03 does (its test stack is up and
-    # `make start` never re-pulls a cached image), and provision-e2e-stack.sh
-    # --check reports the full stack ready there.
-    # Evidence: every pr-e2e task since 04:21Z landed on matou-workstation and
-    # died — 19299 at the any-sync infra stage (#527), then 7 runs in a row that
-    # died in ~40 s before writing a verdict — while the last green pr-e2e
-    # (task 86673) ran on elitebook-03. Pinning restores PR e2e evidence; it
-    # does NOT fix #527, and it makes elitebook-03 a single point of failure
-    # for this workflow until the pin comes off.
-    runs-on: elitebook-03
+    # The pooled `swarm` label (#297): any enrolled host can take the drive.
+    #
+    # This was pinned to elitebook-03 from 2026-09-15 as a stopgap for #527 —
+    # Docker Hub went anonymous-denied for the minio org, so only a host that
+    # already had the minio images CACHED could run `make setup-test`, and the
+    # pin made elitebook-03 a single point of failure for every PR's e2e.
+    # #527 was closed but never fixed at the source: Docker Hub still refuses
+    # both images (`docker manifest inspect`, 2026-09-22). What changed is that
+    # every pool host now holds them, verified rather than assumed:
+    #
+    #   host                cores  RAM    minio/minio  minio/mc  --check
+    #   matou-workstation     4    7 GB   cached       cached    OK
+    #   bens-mac-04           8   15 GB   cached*      cached    OK
+    #   elitebook-03          8   14 GB   cached       cached    OK
+    #   (* seeded 2026-09-22 by `docker save | docker load` from the workstation;
+    #      image id 5db7e40b… identical on all three)
+    #
+    # provision-e2e-stack.sh --check USED TO report bens-mac-04 ready while it
+    # was missing minio/minio — it never probed minio, and assumed .env.test
+    # implied the any-sync images. It now has a [minio] clause (resolved from
+    # the infra's own compose + .env.test) that fails loudly on exactly that
+    # state and converges via the quay.io mirror. Enrolling a new pool host:
+    # run it first. The durable #527 fix — the infra compose pulling from a
+    # registry that serves minio — belongs in matou-infrastructure.
+    runs-on: swarm
     # Camp for host capacity (#268/#572: up to 5 min on a `slot` host, 30 on an
     # `all` host) + the drive itself.
     timeout-minutes: 75
@@ -138,7 +147,30 @@ jobs:
             # Expected contention, not a harness fault: marker tells the healer
             # step below to stand down instead of spending a claude call (d925814).
             touch "/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}" || true
-            exit 1
+            # #566: mark the head PENDING, then exit 0. The run used to `exit 1`,
+            # which suppressed only the in-run healer — the HOURLY WATCHDOG reads
+            # the run list, saw two failed pr-e2e runs in its window and minted an
+            # always-red incident, spending a claude call on the designed give-up
+            # path. A deferral is not a failure, so the run no longer claims to be
+            # one. Pending, never green: the head's COMBINED status stays
+            # unresolved, so "no evidence yet" cannot read as "e2e passed", and
+            # the <!-- pr-e2e --> comment above remains the sweep's source of
+            # truth. run-pr-e2e.sh resolves this context on the real run.
+            if [ -n "$sha" ]; then
+              curl -sf --max-time 30 -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+                -H 'Content-Type: application/json' \
+                -d "$(jq -n --arg url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}" \
+                      '{state:"pending", context:"pr-e2e / capacity-deferred", target_url:$url,
+                        description:"host busy for 30 min — the pr-e2e sweep will re-run this head"}')" \
+                "$FORGEJO_API/statuses/$sha" >/dev/null || true
+            fi
+            if [ -n "${MATTERMOST_BOT_TOKEN:-}" ]; then
+              jq -n --arg channel_id "$MATTERMOST_CHANNEL_ID" \
+                --arg message ":hourglass: pr-e2e deferred for \`${{ github.repository }}\` — the host capacity pool was busy for 30min, so the feature spec never ran. The sweep re-runs it; push again or re-run via workflow_dispatch to force it sooner. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}" \
+                '{channel_id: $channel_id, message: $message, props: {remove_link_preview: "true"}}' |
+                curl -sf -X POST -H "Authorization: Bearer $MATTERMOST_BOT_TOKEN" -H 'Content-Type: application/json' -d @- "$MATTERMOST_URL/api/v4/posts" >/dev/null || true
+            fi
+            exit 0
           fi
           workdir="$HOME/swarm-e2e/$REPO_SLUG"
           mkdir -p "$workdir"
@@ -152,6 +184,32 @@ jobs:
           git fetch origin "refs/pull/${PR_NUMBER}/head"
           git checkout -f FETCH_HEAD
           bash .sandcastle/run-pr-e2e.sh
+      - name: Resolve the capacity-deferred marker when the spec actually ran (#566)
+        # always(): a head that was deferred earlier and whose spec now RUNS —
+        # pass or fail — must stop carrying the pending marker, or its combined
+        # status would sit unresolved forever. The give-up path leaves the
+        # lockbusy marker for this run number; its presence means the spec never
+        # ran, so the pending status stays and the sweep re-dispatches. The e2e
+        # verdict itself lives in the <!-- pr-e2e --> comment, never here.
+        if: always()
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SWARM_FORGEJO_TOKEN }}
+          FORGEJO_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+        run: |
+          set -uo pipefail
+          # Consume the marker here: on the deferral path the job SUCCEEDS, so the
+          # healer step below (if: failure()) never runs and never cleans it up.
+          marker="/tmp/matou-pr-e2e-lockbusy.${{ github.run_number }}"
+          if [ -f "$marker" ]; then rm -f "$marker"; exit 0; fi
+          [ -n "${HEAD_SHA:-}" ] || exit 0
+          curl -sf --max-time 30 -X POST -H "Authorization: token $FORGEJO_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --arg url "$RUN_URL" \
+                  '{state:"success", context:"pr-e2e / capacity-deferred", target_url:$url,
+                    description:"the feature spec ran on this head"}')" \
+            "$FORGEJO_API/statuses/$HEAD_SHA" >/dev/null || true
       - name: Investigate failure (healer)
         if: failure()
         env:

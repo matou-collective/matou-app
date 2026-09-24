@@ -10,6 +10,9 @@
  *                        community app" button and its QR carry this).
  *  - `matou://pair?…`    the existing linked-device pairing link — routed to the
  *                        link-device screen, never the sign-in card.
+ *  - `matou://inbox`     the IDSS steward hand-off link (#599) — routed to the
+ *                        steward's pending approvals. Carries nothing trusted;
+ *                        a trailing `/` and an optional query are tolerated.
  *  - anything else       unknown: the app stays on its normal home rather than
  *                        rendering a half-parsed card off a malformed link.
  *
@@ -19,9 +22,10 @@
 
 import { isSigninLink } from 'src/lib/signin/link';
 import { isPairingLink } from 'src/lib/pairing/link';
+import { isInboxLink } from 'src/lib/inbox/link';
 
 /** What an incoming `matou://…` link resolves to. */
-export type DeepLinkKind = 'signin' | 'pair' | 'unknown';
+export type DeepLinkKind = 'signin' | 'pair' | 'inbox' | 'unknown';
 
 /**
  * Classify a raw deep-link URL. Never throws on member/OS input; whitespace is
@@ -32,5 +36,6 @@ export function classifyDeepLink(raw: string): DeepLinkKind {
   const text = (raw ?? '').trim();
   if (isSigninLink(text)) return 'signin';
   if (isPairingLink(text)) return 'pair';
+  if (isInboxLink(text)) return 'inbox';
   return 'unknown';
 }

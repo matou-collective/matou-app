@@ -127,6 +127,15 @@ match_sig() {
   jq -r --arg m "rehearsal-sig: $2" '.[]? | select(.body // "" | contains($m)) | .number' <<<"$1" 2>/dev/null | head -1
 }
 
+# Back-off before the stored-then-503 re-query (#1245). Forgejo has STORED an
+# issue and STILL answered the create POST with a 503 or a non-JSON body four
+# times in one day (2026-09-05: #1240/#1241/#1243/#1244); the 503s clear within
+# seconds, so a single short-backed-off re-query recovers the stored issue
+# instead of reading the failed POST as "could not file" and parking (or filing
+# a duplicate). The SAME back-off guards the blocked-by / comment POSTs below.
+# A test overrides it to 0 to stay fast.
+: "${REPORTER_CREATE_REQUERY_DELAY:=5}"
+
 # append_evidence <issue-number> <note> — land one drive-evidence comment.
 # #596: also attaches one representative screenshot (newest *.png under
 # $run_dir) to the SAME comment via Forgejo's comment-asset API, best-effort
@@ -151,6 +160,13 @@ append_evidence() {
 parse_diagnosis() {
   local raw="$1" s ob='{' cb='}' span
   s="$(sed '/^[[:space:]]*```[[:alnum:]]*[[:space:]]*$/d' <<<"$raw")"
+  # Empty/blank input is NEVER a usable object, but `jq -e 'type=="object"'` on
+  # NO input value is version-dependent: jq >= 1.7 exits non-zero (correct),
+  # jq 1.6 exits 0 (#140) — which read an empty diagnosis (claude exited
+  # non-zero on a 529 brownout, stdout "") as a valid object, short-circuited
+  # the transient-retry branch, and filed the generic fallback with an empty
+  # body after ONE call. Fail fast here, independent of jq version.
+  [ -n "${s//[[:space:]]/}" ] || return 1
   if jq -e 'type=="object"' >/dev/null 2>&1 <<<"$s"; then printf '%s' "$s"; return 0; fi
   case "$s" in
     *"$ob"*"$cb"*)
@@ -181,10 +197,109 @@ claude_auth_announce() { # <who> <run_dir>
   local who="$1" run_dir="$2" acct tok
   acct="$(claude_active_account 2>/dev/null || echo A)"
   tok="${CLAUDE_CODE_OAUTH_TOKEN:-}"
-  local msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token ${tok:+${tok:0:14}…}${tok:-EMPTY}) — $(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is ${HOST_ENV_FILE:-the host's env file (per the host registry's env directive)} (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
+  # The 14-char PREFIX or the word EMPTY — never the token. Until 2026-09-21 this read
+  # `${tok:+${tok:0:14}…}${tok:-EMPTY}`, and `${tok:-EMPTY}` expands to the WHOLE token
+  # whenever one is set: the alert posted account B's full OAuth token to the drive
+  # ticket, Mattermost and the executor log (#1672's fire-1 alert).
+  local shown=EMPTY
+  [ -n "$tok" ] && shown="${tok:0:14}…"
+  local msg="rehearsal $who: CLAUDE AUTH FAILED on account $acct (token $shown) — $(grep -ihoE "$CLAUDE_AUTH_RE[^\"]*" "$run_dir"/logs/$who-claude.out "$run_dir"/logs/$who-claude.err 2>/dev/null | head -1). Token source is ${HOST_ENV_FILE:-the host's env file (per the host registry's env directive)} (token-sync from the org secret CLAUDE_CODE_OAUTH_TOKEN[_B]); env seen by the call: logs/claude-env.txt in $run_dir"
   echo "$who: $msg" >&2
   drive_issue_set && forgejo_comment "$REHEARSAL_DRIVE_ISSUE" ":rotating_light: @ben $msg" >/dev/null 2>&1
   bash "$here/notify-mattermost.sh" "@ben $msg" >/dev/null 2>&1 || true
+}
+
+# fast_lane_build_envelope <issue-number> <checkout> <summary> <checks> — emit the
+# close-report envelope (#444/#1270) for a fast-lane fix already landed on
+# origin/main. The single fast-lane commit's own diff (HEAD~1..HEAD; after
+# heal_push's rebase HEAD's parent IS origin/main's tip) is the exact file set, so
+# close-report gate 2 verifies it against the real commit. The test result is the
+# healer's own reported check — the SAME self-report a swarm worker's envelope
+# carries (the gate re-derives the commit + file claims, not the exit code).
+fast_lane_build_envelope() {
+  local num="$1" co="$2" summary="$3" checks="$4" head files_json
+  head="$(git -C "$co" rev-parse HEAD)"
+  files_json="$(git -C "$co" diff --name-only "HEAD~1..HEAD" 2>/dev/null | jq -R . | jq -s .)"
+  jq -cn --argjson issue "$num" --arg head "$head" --arg sum "$summary" \
+    --arg chk "$checks" --argjson files "${files_json:-[]}" \
+    '{issue:$issue, status:"success", commits:[$head], changed_files:$files,
+      tests:[{command:$chk, exit_code:0}],
+      criteria:{"the red leg is now green":("healed on the fast lane, commit " + $head)},
+      summary:$sum, blockers:[]}'
+}
+
+# fast_lane_close_ticket <leg> <sig> <verdict-json> — the fast lane's file-and-
+# close (#1270, Ben ruled 2026-09-06). The healer's single commit is ALREADY on
+# origin/main (heal_push ran). File the ticket carrying the diagnosis AND a
+# proposed ruling (the paper trail stays even filed-and-closed in one act), then
+# close it through the SAME close-report gate a swarm worker passes. rc 0 = the
+# ticket exists (closed, or open-but-the-fix-landed); rc 1 = could not file at
+# all, so the caller degrades to today's file-and-wait path (the fix is on main
+# regardless, so the next drive greens either way).
+fast_lane_close_ticket() {
+  local leg="$1" sig="$2" verdict="$3"
+  local co="$REHEARSAL_CHECKOUT" title body ruling summary checks head num resp stamp
+  title="$(jq -r '.title // empty' <<<"$verdict" 2>/dev/null)"
+  [ -n "$title" ] || title="$leg — fast-lane fix"
+  body="$(jq -r '.body // ""' <<<"$verdict" 2>/dev/null)"
+  ruling="$(jq -r '.ruling // ""' <<<"$verdict" 2>/dev/null)"
+  summary="$(jq -r '.summary // "fast-lane fix"' <<<"$verdict" 2>/dev/null)"
+  checks="$(jq -r '.checks // "targeted + package tests: pass"' <<<"$verdict" 2>/dev/null)"
+  head="$(git -C "$co" rev-parse HEAD)"
+  stamp="$(basename "$run_dir")"
+  local full_body="$body
+
+## Proposed ruling (Ruled by the healer under ADR 0174 — veto anytime)
+${ruling:-A confident, two-way fix: revertible by a later commit, proven by the test in this commit, and no product-behaviour/security/design decision (rule 3 refusals never enter the fast lane).} Built on the workstation (never the drive host) and closed through the close-report gate — the same gate a swarm worker passes.
+
+drive \`$stamp\` red at \`$leg\` (sig $sig) — self-fixed on the fast lane, commit \`$head\`; checks: $checks. evidence: \`$run_dir\` on $REHEARSAL_EVIDENCE_HOST.
+
+<!-- rehearsal-sig: $sig -->"
+  # Swarm-actionable label shape, so if the close ever fails to stick the ticket
+  # is a normal ready-for-agent blocker rather than an orphan.
+  local names=("$REHEARSAL_LABEL" bug ready-for-agent) n id ids=() larr=""
+  for n in "${names[@]}"; do id="$(label_id "$n")"; [ -n "$id" ] && ids+=("$id"); done
+  [ "${#ids[@]}" -gt 0 ] && larr="[$(IFS=,; echo "${ids[*]}")]"
+  num=""
+  if resp="$(forgejo_create_issue "$title" "$full_body" "$larr")"; then
+    num="$(jq -r '.number // empty' <<<"$resp" 2>/dev/null)"
+  fi
+  if [ -z "$num" ]; then
+    # The stored-then-503 hazard (#1245): re-query once for the stored issue.
+    sleep "$REPORTER_CREATE_REQUERY_DELAY"
+    local requery
+    requery="$(forgejo_get "/issues?labels=$REHEARSAL_LABEL&state=open&type=issues&limit=50")" || requery='[]'
+    num="$(match_sig "$requery" "$sig")"
+  fi
+  if [ -z "$num" ]; then
+    echo "healer: fast lane could not file the ticket for '$leg' ($sig) — degrading to the file path (the fix is already on main)"
+    return 1
+  fi
+  echo "healer: fast lane filed #$num ($sig) — closing it through the close-report gate"
+  # Make origin/main current so close-report gate 1's ancestry check sees the push.
+  git -C "$co" fetch -q origin main 2>/dev/null || true
+  local envelope; envelope="$(mktemp)"
+  fast_lane_build_envelope "$num" "$co" "$summary" "$checks" > "$envelope"
+  local closed=0
+  if ( cd "$co" && CR_MAIN_HEAD=origin/main FORGEJO_API="${FORGEJO_API:-}" \
+         FORGEJO_TOKEN="${FORGEJO_TOKEN:-}" \
+         bash "$here/close-report.sh" "$num" "$envelope" ); then
+    closed=1
+  fi
+  rm -f "$envelope"
+  if [ "$closed" = 1 ]; then
+    drive_issue_set && forgejo_comment "$REHEARSAL_DRIVE_ISSUE" \
+      "rehearsal healer: drive \`$stamp\` red at \`$leg\` (sig $sig) fast-lane self-fixed — commit \`$head\` filed and closed #$num through the close-report gate; checks: $checks. The drive stays armed; the next tick re-drives." \
+      2>/dev/null || true
+    return 0
+  fi
+  # The fix IS on main; only the ticket-close leg was refused. Leave #$num OPEN
+  # for a human/swarm to verify and close — the fix still greens the next drive.
+  echo "healer: fast lane close-report REFUSED the close of #$num — the fix IS on main; #$num stays open for a human/swarm to verify"
+  drive_issue_set && forgejo_comment "$REHEARSAL_DRIVE_ISSUE" \
+    ":warning: rehearsal healer: fast-lane fix for \`$leg\` landed as commit \`$head\` on main, but the close-report gate REFUSED to close #$num — a human/swarm verifies and closes it. The drive stays armed." \
+    2>/dev/null || true
+  return 0
 }
 
 try_heal() {
@@ -334,6 +449,46 @@ ${history:-none}" 2>"$run_dir/logs/healer-claude.err" || true)"
     return 1
   fi
   action="$(jq -r '.action // empty' <<<"$verdict" 2>/dev/null)"
+  if [ "$action" = "fast-lane" ]; then
+    # The fast lane (#1270, Ben ruled 2026-09-06): the healer diagnosed a
+    # CONFIDENT, TWO-WAY, product-touching fix and BUILT it here (hot-context, on
+    # the workstation — never the drive host). Instead of filing for the swarm
+    # and waiting out the file→claim→worker→close-report tail (~25–35 min plus
+    # the claim-churn tail), the healer files the ticket WITH a proposed ruling,
+    # lands the fix, and closes it through the SAME close-report gate a swarm
+    # worker passes. fast_lane_rails lifts ONLY rule 3 (product surface); rule 1
+    # (never weaken a check), the cap, single-commit and self-mod all still bind —
+    # a breach falls back to today's file path (over-cap-but-mechanical → the
+    # swarm; a weakened check → a ruling), exactly like a heal_rails refusal.
+    if ! fast_lane_rails "$co" "$pre_head"; then
+      heal_fail_mark "$fault"
+      local flsummary flconf
+      flsummary="$(jq -r '.summary // "the healer proposed a fast-lane fix"' <<<"$verdict" 2>/dev/null)"
+      flconf=false; [ "${HEAL_RAIL_SWARMABLE:-false}" = "true" ] && flconf=true
+      HEAL_FILE_VERDICT="$(jq -cn --arg leg "$leg" --arg rule "${HEAL_RAIL_REASON:-a refusal rule}" \
+        --arg sum "$flsummary" --argjson conf "$flconf" \
+        '{action:"file",
+          title:($leg + " — fast-lane fix refused by the rails (" + $rule + ")"),
+          body:("The healer took the fast lane but its built fix tripped a rail (**" + $rule + "**), so **no commit landed** — the rails reverted it. The fast lane keeps the healer cap and the never-weaken-a-check rule (#1270); an over-cap-but-mechanical fix is swarm work, a weakened check needs a ruling.\n\n**What the healer found:** " + $sum + "\n\n_ticket-on-refusal, fast lane (#1270)_"),
+          confident:$conf}')"
+      return 1
+    fi
+    scrub_commit_message "$co"
+    if ! HEAL_ALLOW_PRODUCT_SURFACE=1 heal_push "$co" "$pre_head" "$run_dir"; then
+      heal_fail_mark "$fault"
+      return 1
+    fi
+    heal_fail_clear "$fault"
+    heal_healed_mark "$fault"   # loop-guard: a re-red files, never a second heal
+    if fast_lane_close_ticket "$leg" "$sig" "$verdict"; then
+      HEAL_RESIDUAL_VERDICT="$(jq -c '.residual // empty | select(type=="object")' <<<"$verdict" 2>/dev/null || true)"
+      return 0
+    fi
+    # Could not even file the ticket (tracker down): the fix IS on main, so hand
+    # the verdict to the robust filing flow so the fault is at least tracked.
+    HEAL_FILE_VERDICT="$(jq -c '. + {action:"file", confident:true}' <<<"$verdict" 2>/dev/null)"
+    return 1
+  fi
   if [ "$action" != "healed" ]; then
     # A judgment decline (or a legacy no-action diagnosis): discard any stray
     # edits and hand the verdict to the filing flow. Declines never count
@@ -398,7 +553,7 @@ legs="$run_dir/artifacts/legs.json"
 if [ ! -f "$legs" ]; then
   # A red before the leg registry ran (wizard/broker/install). Synthesize one
   # record from the log tail so the signature machinery still has a leg to key.
-  err="$(tail -40 "$run_dir"/logs/*.txt 2>/dev/null | grep -m1 -E 'Error|error|FAIL|timed out' || echo 'red before legs.json was written')"
+  err="$(tail -40 "$run_dir"/logs/*.txt 2>/dev/null | grep -m1 -iE 'Error|FAIL|timed out|Permission denied' || echo 'red before legs.json was written')"
   if ! printf '[{"leg":"pre-legs","status":"red","ms":0,"error":%s}]' \
         "$(jq -Rn --arg e "$err" '$e')" > "$legs" 2>/dev/null; then
     echo "reporter: no legs.json and cannot synthesize — nothing to report"
@@ -434,7 +589,7 @@ if [ "${#reds[@]}" -eq 0 ]; then
     echo "reporter: no red legs and drive rc=0 — green drive, nothing to file"
     exit 0
   fi
-  err="$(tail -40 "$run_dir"/logs/*.txt 2>/dev/null | grep -m1 -E 'Error|error|FAIL|timed out' || echo 'drive red at wizard — the wizard died before any leg ran')"
+  err="$(tail -40 "$run_dir"/logs/*.txt 2>/dev/null | grep -m1 -iE 'Error|FAIL|timed out|Permission denied' || echo 'drive red at wizard — the wizard died before any leg ran')"
   echo "reporter: red drive (rc=$drive_rc) with zero red legs — filing drive-red-at-wizard"
   reds=("$(jq -cn --arg e "$err" '{leg:"wizard", status:"red", ms:0, error:$e}')")
 fi
@@ -686,28 +841,59 @@ $evidence_note
   for n in "${names[@]}"; do id="$(label_id "$n")"; [ -n "$id" ] && ids+=("$id"); done
   larr=""
   [ "${#ids[@]}" -gt 0 ] && larr="[$(IFS=,; echo "${ids[*]}")]"
+  # The create POST (#1245): Forgejo can STORE the issue and STILL answer the
+  # POST with a 503 or a non-JSON body (four times on 2026-09-05 —
+  # #1240/#1241/#1243/#1244). A create that returns no parsable issue number is
+  # therefore NOT proof the issue was not filed: read the number, and on an empty
+  # one re-query below before believing the filing failed.
+  num=""
   if resp="$(forgejo_create_issue "$title" "$full_body" "$larr")"; then
-    echo "reporter: filed '$title' ($sig)"
-    new_filed=$((new_filed+1))
     num="$(jq -r '.number // empty' <<<"$resp" 2>/dev/null)"
+  fi
+  if [ -z "$num" ]; then
+    # Re-query ONCE, after a short back-off (the 503s clear within seconds), for
+    # an OPEN issue whose body carries THIS run's rehearsal-sig — the same key the
+    # match rail (rail 6) searches. A stored-on-503 issue arrived carrying the
+    # create's labels but NOTHING else: no blocked-by wiring, no "now blocked by"
+    # comment. Found -> treat it as the filed issue (the drive-issue loop below
+    # wires it and comments) and re-apply the create's intended labels
+    # idempotently (POST /labels ADDS — a label already present is a no-op) in
+    # case they did not land. Only a re-query that ALSO finds nothing falls
+    # through to the "could not file" park.
+    echo "reporter: create POST for '$title' ($sig) returned no issue number — re-querying once after ${REPORTER_CREATE_REQUERY_DELAY}s in case Forgejo stored it then answered 503/non-JSON (#1245)"
+    sleep "$REPORTER_CREATE_REQUERY_DELAY"
+    requery_issues="$(forgejo_get "/issues?labels=$REHEARSAL_LABEL&state=open&type=issues&limit=50")" || requery_issues='[]'
+    num="$(match_sig "$requery_issues" "$sig")"
     if [ -n "$num" ]; then
-      touched+=("$num")
-      [ -n "$fault_key" ] && filed_by_fault[$fault_key]="$num"
-      # #596: the body above only NAMES the run dir — attach one
-      # representative screenshot directly to the new issue (no prior
-      # comment to key off, so this is the issue-asset endpoint, not the
-      # comment one) so a tracker-only reader can eyeball it.
-      shot="$(pick_representative_screenshot "$run_dir")"
-      if [ -n "$shot" ]; then
-        code="$(forgejo_attach_issue_asset "$num" "$shot" "$(basename "$shot")")"
+      echo "reporter: re-query found the STORED issue #$num ($sig) — the create was acknowledged with a 503/non-JSON body but the issue exists; treating as filed and wiring it (#1245)"
+      if [ "${#ids[@]}" -gt 0 ]; then
+        code="$(forgejo_add_labels "$num" "$(IFS=,; echo "${ids[*]}")")"
         case "$code" in
-          2??) echo "reporter: attached $(basename "$shot") to #$num" ;;
-          *) echo "reporter: WARN screenshot attach for #$num → HTTP ${code:-000}" ;;
+          2??) ;;
+          *) echo "reporter: WARN label re-apply for stored #$num → HTTP ${code:-000}" ;;
         esac
       fi
     fi
+  fi
+  if [ -n "$num" ]; then
+    echo "reporter: filed '$title' ($sig) as #$num"
+    new_filed=$((new_filed+1))
+    touched+=("$num")
+    [ -n "$fault_key" ] && filed_by_fault[$fault_key]="$num"
+    # #596: the body above only NAMES the run dir — attach one representative
+    # screenshot directly to the new issue (no prior comment to key off, so this
+    # is the issue-asset endpoint, not the comment one) so a tracker-only reader
+    # can eyeball it.
+    shot="$(pick_representative_screenshot "$run_dir")"
+    if [ -n "$shot" ]; then
+      code="$(forgejo_attach_issue_asset "$num" "$shot" "$(basename "$shot")")"
+      case "$code" in
+        2??) echo "reporter: attached $(basename "$shot") to #$num" ;;
+        *) echo "reporter: WARN screenshot attach for #$num → HTTP ${code:-000}" ;;
+      esac
+    fi
   else
-    echo "reporter: WARN could not file '$title' ($sig) — API refused"
+    echo "reporter: WARN could not file '$title' ($sig) — create refused AND the re-query found no stored issue; the blocked-invariant park below flips the drive to a human"
   fi
 done
 
@@ -802,16 +988,33 @@ if [ "${#touched[@]}" -gt 0 ]; then
       code="$(forgejo_add_dependency "$REHEARSAL_DRIVE_ISSUE" "$num" "$dep_owner" "$dep_repo" 2>/dev/null)"
       case "$code" in
         2??|409) ;;
-        *) wired_all=false
-           echo "reporter: WARN dependency POST for #$num → HTTP ${code:-000} — blocker did not land"
-           break;;
+        *)
+          # A 503 here is the same stored-then-503 hazard (#1245): the dependency
+          # may have LANDED behind an error body. Retry ONCE after the back-off
+          # before declaring the run unwired — a real failure survives the retry,
+          # a stored-behind-503 answers 409 (already a blocker) the second time.
+          sleep "$REPORTER_CREATE_REQUERY_DELAY"
+          code="$(forgejo_add_dependency "$REHEARSAL_DRIVE_ISSUE" "$num" "$dep_owner" "$dep_repo" 2>/dev/null)"
+          case "$code" in
+            2??|409) ;;
+            *) wired_all=false
+               echo "reporter: WARN dependency POST for #$num → HTTP ${code:-000} (after one retry) — blocker did not land"
+               break;;
+          esac ;;
       esac
     done
     if [ "$wired_all" = true ]; then
       blockers="$(printf '#%s ' "${touched[@]}")"
-      forgejo_comment "$REHEARSAL_DRIVE_ISSUE" \
-        "drive \`$stamp\` RED — now blocked by: ${blockers}(evidence on each). The drive re-fires when the last blocker closes." \
-        && echo "reporter: drive issue #$REHEARSAL_DRIVE_ISSUE blocked by ${touched[*]}"
+      blocked_comment="drive \`$stamp\` RED — now blocked by: ${blockers}(evidence on each). The drive re-fires when the last blocker closes."
+      # Retry the "now blocked by" comment once on a 503 (#1245): a stored-then-503
+      # can drop this note while the dependency itself landed, leaving a human with
+      # a blocked drive and no explanation of why.
+      if forgejo_comment "$REHEARSAL_DRIVE_ISSUE" "$blocked_comment" \
+         || { sleep "$REPORTER_CREATE_REQUERY_DELAY"; forgejo_comment "$REHEARSAL_DRIVE_ISSUE" "$blocked_comment"; }; then
+        echo "reporter: drive issue #$REHEARSAL_DRIVE_ISSUE blocked by ${touched[*]}"
+      else
+        echo "reporter: WARN 'now blocked by' comment for #$REHEARSAL_DRIVE_ISSUE did not land after one retry — the dependency wiring stands; a human reads the blocker list on the issue"
+      fi
       # Kick the swarm NOW: swarm.yml listens for issue label/close events, but
       # an issue CREATED with labels inline fires neither, so a fresh blocker
       # otherwise sits until the :15/:45 cron (which Forgejo's scheduler has

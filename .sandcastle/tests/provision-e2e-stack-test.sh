@@ -41,7 +41,12 @@ _write_shims() {
 case "$1 $2" in
   "info "*|"info") exit 0 ;;
   "image inspect") for i in $SHIM_IMAGES; do [ "$i" = "$3" ] && exit 0; done; exit 1 ;;
-  "pull "*) echo "$2" >>"$SHIM_STATE/pulled"; SHIM_IMAGES="$SHIM_IMAGES $2"; exit 0 ;;
+  "pull "*)
+    # #527: Docker Hub went anonymous-denied for the minio org. SHIM_PULL_DENY
+    # is a space-list of image PREFIXES whose pull fails like a real denial.
+    for d in ${SHIM_PULL_DENY:-}; do case "$2" in "$d"*) echo "denied: $2" >&2; exit 1 ;; esac; done
+    echo "$2" >>"$SHIM_STATE/pulled"; SHIM_IMAGES="$SHIM_IMAGES $2"; exit 0 ;;
+  "tag "*) echo "$2 -> $3" >>"$SHIM_STATE/tagged"; exit 0 ;;
 esac
 exit 0
 SH
@@ -138,6 +143,16 @@ run() { PATH="$SHIMBIN:$PATH" bash "$script" "$@"; }
 # Convenience state builders
 have_infra()    { mkdir -p "$MATOU_INFRA_DIR/keri" "$MATOU_INFRA_DIR/any-sync"; : >"$MATOU_INFRA_DIR/keri/Makefile"; : >"$MATOU_INFRA_DIR/any-sync/Makefile"; }
 have_anysync()  { mkdir -p "$MATOU_INFRA_DIR/any-sync"; : >"$MATOU_INFRA_DIR/any-sync/.env.test"; }
+# Mirrors matou-infrastructure's any-sync/docker-compose.yml (lines 91/117) and
+# the MINIO_VERSION its .env.test pins — the clause must read these, not
+# hardcode a tag, so an infra bump moves the probe with it.
+MINIO_VER="RELEASE.2024-07-04T14-25-45Z"
+have_minio_compose() {
+  mkdir -p "$MATOU_INFRA_DIR/any-sync"
+  printf 'services:\n  minio:\n    image: minio/minio:${MINIO_VERSION}\n  mc:\n    image: minio/mc:latest\n' \
+    >"$MATOU_INFRA_DIR/any-sync/docker-compose.yml"
+  echo "MINIO_VERSION=$MINIO_VER" >>"$MATOU_INFRA_DIR/any-sync/.env.test"
+}
 have_workdir()  { mkdir -p "$HOME/swarm-e2e/$REPO_SLUG/.git" "$HOME/swarm-e2e/$REPO_SLUG/frontend/node_modules"; }
 have_chromium() { mkdir -p "$HOME/.cache/ms-playwright/chromium-1234"; }
 have_images()   { export SHIM_IMAGES="weboftrust/keri-witness-demo:1.1.0 matou-keria-patched:latest"; }
@@ -387,4 +402,51 @@ new_host; ready_host; rm -f "$RUNNERBIN/gcc"; export SHIM_SUDO_NOPASS=1 SHIM_SUD
 err="$(run 2>&1)" && fail "a failing apt-get install must fail the run"
 grep -q "FAILED clause \[cc\]" <<<"$err" || fail "a failing apt-get must name [cc] (got: $err)"
 
-echo "provision-e2e-stack: 28 checks passed"
+# ── 29. --check, minio images cached → passes, names [minio] ───────────────
+# (matou-app#527: Docker Hub denies the minio org, so a host that has not
+# already CACHED these images cannot bootstrap any-sync — and .env.test's
+# presence does NOT imply them: bens-mac-04 had .env.test and no minio/minio.)
+new_host; ready_host; have_minio_compose
+export SHIM_IMAGES="$SHIM_IMAGES minio/minio:$MINIO_VER minio/mc:latest"
+out="$(run --check)" || fail "--check must pass when both minio images are cached (got: $out)"
+grep -q "✓ \[minio\] minio/minio:$MINIO_VER present" <<<"$out" \
+  || fail "--check must report the minio server image by its RESOLVED tag (got: $out)"
+grep -q "✓ \[minio\] minio/mc:latest present" <<<"$out" || fail "--check must report minio/mc (got: $out)"
+
+# ── 30. --check, minio/minio missing → loud [minio], names #527 + the seed ──
+# The exact bens-mac-04 state on 2026-09-22: .env.test present, minio/mc
+# cached, minio/minio NOT — which --check used to report as OK.
+new_host; ready_host; have_minio_compose
+export SHIM_IMAGES="$SHIM_IMAGES minio/mc:latest"
+err="$(run --check 2>&1)" && fail "--check must FAIL when minio/minio is not cached — this is the false OK that hid #527 on bens-mac-04"
+grep -q "FAILED clause \[minio\]" <<<"$err" || fail "a missing minio image must name [minio] (got: $err)"
+grep -q "minio/minio:$MINIO_VER" <<<"$err" || fail "the failure must name the exact missing tag (got: $err)"
+grep -q "docker save" <<<"$err" || fail "the failure must give the seed-from-a-cached-host recipe (got: $err)"
+[ ! -s "$SHIM_STATE/pulled" ] || fail "--check must never pull (pulled: $(cat "$SHIM_STATE/pulled"))"
+
+# ── 31. converge, Docker Hub denied → falls back to quay.io and retags ──────
+new_host; ready_host; have_minio_compose
+export SHIM_IMAGES="$SHIM_IMAGES minio/mc:latest" SHIM_PULL_DENY="minio/"
+out="$(run 2>&1)" || fail "converge must succeed via the quay.io mirror when Docker Hub denies minio (got: $out)"
+grep -qx "quay.io/minio/minio:$MINIO_VER" "$SHIM_STATE/pulled" \
+  || fail "converge must pull the quay.io mirror of the exact tag (pulled: $(cat "$SHIM_STATE/pulled" 2>/dev/null))"
+grep -qx "quay.io/minio/minio:$MINIO_VER -> minio/minio:$MINIO_VER" "$SHIM_STATE/tagged" \
+  || fail "the mirror must be retagged to the name the compose asks for (tagged: $(cat "$SHIM_STATE/tagged" 2>/dev/null))"
+unset SHIM_PULL_DENY
+
+# ── 32. converge, Docker Hub AND quay denied → loud [minio] with the seed ──
+new_host; ready_host; have_minio_compose
+export SHIM_IMAGES="$SHIM_IMAGES minio/mc:latest" SHIM_PULL_DENY="minio/ quay.io/minio/"
+err="$(run 2>&1)" && fail "converge must fail loudly when no registry serves minio"
+grep -q "FAILED clause \[minio\]" <<<"$err" || fail "an unobtainable minio image must name [minio] (got: $err)"
+grep -q "docker save" <<<"$err" || fail "the last resort must be the save|load seed recipe (got: $err)"
+unset SHIM_PULL_DENY
+
+# ── 33. no minio in the compose → the clause stands down (future infra) ─────
+# ready_host has .env.test but no compose file. If infra ever drops minio or
+# moves off it, the clause must not invent a requirement.
+new_host; ready_host
+out="$(run --check)" || fail "--check must still pass on a host whose compose names no minio image (got: $out)"
+grep -q "\[minio\]" <<<"$out" && fail "no minio in the compose must not produce a [minio] verdict (got: $out)"
+
+echo "provision-e2e-stack: 33 checks passed"

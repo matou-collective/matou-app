@@ -32,7 +32,8 @@ const cred: HeldCredential = {
   sad: { d: 'ECred', s: 'EMe', a: { i: 'EHa', role: 'Member', dt: '2026-08-12T00:00:00Z' } },
 };
 
-const LINK = 'matou://signin?door=https://id.example.nz/login&c=c_3f9&s=EMe&name=Home&service=Files';
+const LINK =
+  'matou://signin?door=https://id.example.nz/login&present=https://id.example.nz/login/app/present&c=c_3f9&s=EMe&name=Home&service=Files';
 
 function deps(overrides: Partial<SigninDeps> = {}): SigninDeps {
   return {

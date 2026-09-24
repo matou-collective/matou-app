@@ -31,6 +31,21 @@ line="$(runlog_line 10 11 Matou/idss '' no-ready-tasks 0)"
 case "$line" in *"ready=[]"*"duration=1s"*) : ;; *) fail "empty ready line wrong: $line" ;; esac
 pass=$((pass+1))
 
+# #1279: a run id, when supplied, is appended as a trailing `run=<id>` field so
+# the claim janitor can key a stale-claim sweep on a recorded terminal verdict.
+line="$(runlog_line 1000 1042 Matou/idss 432 completed 0 17201)"
+[ "$line" = "1970-01-01T00:17:22Z repo=Matou/idss ready=[432] reason=completed exit=0 duration=42s run=17201" ] \
+  || fail "run-id line format wrong: $line"
+pass=$((pass+1))
+
+# ...and when NOT supplied the line is byte-for-byte the pre-#1279 format, so
+# every line already on disk (and callers that omit the id) keep parsing.
+line="$(runlog_line 1000 1042 Matou/idss 432 completed 0)"
+case "$line" in *"run="*) fail "run= must be absent when no id given: $line" ;; *) : ;; esac
+[ "$line" = "1970-01-01T00:17:22Z repo=Matou/idss ready=[432] reason=completed exit=0 duration=42s" ] \
+  || fail "no-id line drifted from the legacy format: $line"
+pass=$((pass+1))
+
 # --- runlog_append: creates the dir, appends one line per call ----------------
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 log="$tmp/nested/dir/run-swarm-verdicts.log"   # dir does not exist yet

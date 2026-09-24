@@ -64,6 +64,26 @@ landing_merged_pr_for() {
   printf '%s\n' "$num"
 }
 
+# landing_superseded_by_pr_for <N> -> echo the number of a MERGED PR (from a
+# branch OTHER than agent/issue-<N>) that closed issue N via `closes #N`, and
+# exit 0, iff the issue is now CLOSED and such a PR exists; exit 1 (no output)
+# otherwise. #151: a multi-host race lets two hosts each complete the same
+# ticket — the winner merges (often on a sandcastle/worker/* branch, which
+# landing_merged_pr_for, agent-branch-only by #108 design, never sees) and its
+# `closes #N` closes the issue on main. The loser's close-report consults this
+# to recognise the work already landed and self-close as SUPERSEDED, rather than
+# dead-end `agent-blocked`. Gated on the issue reading `closed`: a still-open
+# issue is never superseded (the #13 no-open-PR refusal must still fire), so the
+# body-scan alone can never self-close live work.
+landing_superseded_by_pr_for() {
+  local n="${1:?landing_superseded_by_pr_for: issue number required}" state num
+  state="$(forgejo_get "/issues/$n" 2>/dev/null | jq -r '.state // ""' 2>/dev/null)" || return 1
+  [ "$state" = closed ] || return 1
+  num="$(forgejo_closing_merged_pr "$n" "$(landing_branch_for "$n")")" || return 1
+  [ -n "$num" ] || return 1
+  printf '%s\n' "$num"
+}
+
 # landing_push <N> [title] [extra-body] -> land HEAD for issue <N>.
 #   push mode: git push origin HEAD:refs/heads/main (today's behaviour; <N> is
 #              ignored). rc = git's.
@@ -307,7 +327,7 @@ landing_note_pr_opened() {
   now="$(date +%s)"
   [ -n "$started" ] || started="$now"
   runlog_append "${SWARM_RUNLOG:-$HOME/swarm/logs/run-swarm-verdicts.log}" \
-    "$(runlog_line "$started" "$now" "$repo_slug" "$ready_nums" pr-opened -)"
+    "$(runlog_line "$started" "$now" "$repo_slug" "$ready_nums" pr-opened - "${SWARM_RUN_ID:-}")"
 }
 
 # The stage's outputs (a bash function returns one rc, and both are consumed by
@@ -341,7 +361,16 @@ landing_resolve_rebase_with_claude() {
 # If even claude can't land the push, NEVER die with the commits stranded: park
 # HEAD on a rescue branch, alert, and fail — a human cherry-picks from there.
 # (Run 330 lost three closed-issue commits before this ladder existed.)
-# rc 1 + SWARM_EXIT_REASON=push-parked-on-rescue when it parks.
+#
+# The alarm must describe what is TRUE, not what the ladder intended. Two ways
+# the old unconditional park lied — both seen in run 22240 (2026-09-12), when
+# Forgejo flapped 503 for ~25m and every git op in the ladder failed:
+#   - nothing to park (HEAD already on origin/main — only the transport failed),
+#     yet it cried "cherry-pick them or the work is lost";
+#   - the rescue push ALSO failed, so the named branch never existed, yet the
+#     alarm sent a human hunting it while the commits sat in the workdir the
+#     next run resets --hard.
+# rc 1 on every non-landing path; SWARM_EXIT_REASON names which one.
 landing_push_main_with_rescue() {
   local repo_slug="$1" pushed="" rescue
   git push origin HEAD:main && return 0
@@ -353,10 +382,27 @@ landing_push_main_with_rescue() {
   fi
   [ -z "$pushed" ] || return 0
   git rebase --abort 2>/dev/null || true
+  # Nothing of OURS to park: HEAD is contained in (the last known) origin/main,
+  # so the push carried no commits and only the transport failed. Staleness is
+  # safe here — a commit of ours could not already be in origin/main — so this
+  # only ever skips a park that would have been empty. Fail honestly; the ready
+  # issues are untouched and the next run retries.
+  if git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    _landing_notify ":warning: **Swarm push to main failed with nothing to land** in \`$repo_slug\` — HEAD is already on \`origin/main\`, so no commits are at risk (the forge was most likely unreachable). The next run retries."
+    SWARM_EXIT_REASON="push-failed-nothing-to-land"
+    return 1
+  fi
   rescue="sandcastle/rescue-$(date -u +%Y%m%d-%H%M%S)"
-  git push origin "HEAD:refs/heads/$rescue"
-  _landing_notify ":rotating_light: **Swarm push failed after issues were closed** in \`$repo_slug\` — commits parked on \`$rescue\`. Cherry-pick them onto main or the work is lost (the issues will NOT retry)."
-  SWARM_EXIT_REASON="push-parked-on-rescue"
+  if git push origin "HEAD:refs/heads/$rescue"; then
+    _landing_notify ":rotating_light: **Swarm push failed after issues were closed** in \`$repo_slug\` — commits parked on \`$rescue\`. Cherry-pick them onto main or the work is lost (the issues will NOT retry)."
+    SWARM_EXIT_REASON="push-parked-on-rescue"
+  else
+    # The park itself could not reach the forge. NOTHING is on origin — name
+    # where the commits actually are, and that the next run's reset --hard is
+    # what destroys them.
+    _landing_notify ":rotating_light: **Swarm push failed after issues were closed AND the rescue branch could not be pushed** in \`$repo_slug\` — the forge is unreachable, so \`$rescue\` does NOT exist. The commits live ONLY in the runner workdir \`$(pwd)\` at \`$(git rev-parse --short HEAD 2>/dev/null)\` — do NOT let it reset; push or cherry-pick from there once the forge answers (the issues will NOT retry)."
+    SWARM_EXIT_REASON="push-rescue-unreachable"
+  fi
   return 1
 }
 
@@ -369,7 +415,7 @@ landing_push_main_with_rescue() {
 # run's commit subjects (a mid-run close can unblock a child).
 #
 # Sets LANDING_OPENED_PRS / LANDING_MERGED_PRS for the report seam. rc 1 only
-# when push mode parked on a rescue branch.
+# when push mode could not land (parked, or could not even park).
 landing_stage() {
   local repo_slug="$1" ready="$2" start_sha="$3" nums
   LANDING_OPENED_PRS=""; LANDING_MERGED_PRS=""

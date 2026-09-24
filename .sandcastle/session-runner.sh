@@ -285,6 +285,13 @@ session_runner_escalate() {
 # the two-failure escalation still fires on genuine repeat deaths.
 SESSION_RUNNER_STALE_SLACK="${SESSION_RUNNER_STALE_SLACK:-300}"
 stale_after=$(( SESSION_RUNNER_TIMEOUT + SESSION_RUNNER_STALE_SLACK ))
+# Claim TTL for the cross-host arbitration below (#1412): a `swarm-claim` comment
+# older than this is a TOMBSTONE, not a live contender. A session is bounded by
+# SESSION_RUNNER_TIMEOUT, so a claim that has outlived timeout+slack cannot be a
+# running session — the same ceiling this stale agent-working sweep already uses
+# to prove a claim dead, reused so a dead peer's lingering claim on a
+# ready-for-session ticket (which no sweep visits) cannot outrank a live claim.
+SESSION_RUNNER_CLAIM_TTL="${SESSION_RUNNER_CLAIM_TTL:-$stale_after}"
 sweep_queue="$(api "$FORGEJO_API/issues?state=open&type=issues&labels=ready-for-session&limit=50")" || sweep_queue=""
 if [ -n "$sweep_queue" ]; then
   sweep_now="$(date +%s)"
@@ -462,10 +469,18 @@ claimed=1
 # carries the same residual non-atomicity), matching the swarm's bound.
 sr_claim_id="$(claim_post "$pick" "$sr_host" "$$" 2>/dev/null || true)"
 if [ -n "$sr_claim_id" ] && [ "$sr_claim_id" != null ]; then
-  # Alive-set = every run present in the ticket's claim comments, so a peer
-  # session-runner's marker still counts as live and the lowest id wins.
-  sr_alive="$(_claim_comments "$pick" 2>/dev/null | awk 'NF>1{print $2}' \
-    | jq -Rn '[inputs | tonumber]' 2>/dev/null || echo '[]')"
+  # Alive-set = every run whose claim comment is YOUNGER than the claim TTL
+  # (#1412). Counting EVERY present claim as live — as this did — let one dead
+  # peer's lingering `swarm-claim` comment (a TOMBSTONE: no sweep reaps it once
+  # the ticket is back to ready-for-session, since janitor_sweep and the #63
+  # stale-claim sweep both only visit agent-working) outrank every future live
+  # claim by its lower comment id, forever (#1373 sat ready-for-session for an
+  # hour). TTL-expiring the tombstone drops it from the set, so claim_won skips
+  # it and a live claim can win; a genuinely live peer's claim is fresh and still
+  # wins the race. Our own just-posted claim is fresh by construction and, either
+  # way, short-circuits claim_won by id. A forge blip building the set falls back
+  # to '[]' (claim_won then rests on the own-id short-circuit), never a wedge.
+  sr_alive="$(claim_fresh_runs "$pick" "$SESSION_RUNNER_CLAIM_TTL" 2>/dev/null || echo '[]')"
   if ! claim_won "$pick" "$sr_claim_id" "${sr_alive:-[]}"; then
     echo "session-runner: #$pick — a peer host's claim outranks ours (#125); standing down before the session (a lost race is not a failed attempt)"
     release_claim

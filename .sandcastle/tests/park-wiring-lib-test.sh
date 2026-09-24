@@ -118,6 +118,49 @@ out="$(park_wiring_file_violations "$wf/mixed.yml")"
 check "a sibling step's standby does NOT cover a bare step" \
   '[ "$out" = "bare step" ]'
 
+# ── 3b. A park-capable basename named ONLY in a YAML comment is not an
+#       invocation (matou-app#419): the step spawns no agent, so wiring the
+#       standby token into it would be wrong. The same name in `run:` text
+#       still fires — including when a trailing comment follows the command.
+cat > "$wf/comments.yml" <<'YML'
+name: ci
+jobs:
+  checks:
+    runs-on: pool
+    steps:
+      - name: comment-only mention
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          # mirrors what the healer (heal.sh) checks before investigating a red
+          pnpm test
+      - name: real invocation with trailing comment
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: bash .sandcastle/heal.sh   # actually runs the healer
+YML
+out="$(park_wiring_file_violations "$wf/comments.yml")"
+check "a step naming a park-capable basename only in a comment is clean" \
+  '! grep -q "comment-only mention" <<<"$out"'
+check "a real run: invocation still fires even with a trailing comment" \
+  '[ "$out" = "real invocation with trailing comment" ]'
+
+# A `#` INSIDE a quoted string is not a comment boundary: a basename named in
+# quoted `run:` text is still run: text and must be seen.
+cat > "$wf/quoted.yml" <<'YML'
+name: ci
+jobs:
+  j:
+    steps:
+      - name: quoted mention before a real comment
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: echo "#heal.sh"   # trailing comment, no entry point here
+YML
+check "a park-capable name in a quoted run: string still fires (quote-aware strip)" \
+  '[ "$(park_wiring_file_violations "$wf/quoted.yml")" = "quoted mention before a real comment" ]'
+rm -f "$wf/comments.yml" "$wf/quoted.yml"
+
 # ── 4. Scanning a directory names file AND step; rc 1 when violations exist. ─
 scan_out="$(park_wiring_scan "$wf")"; scan_rc=$?
 check "park_wiring_scan returns 1 when a directory holds violations" '[ "$scan_rc" -eq 1 ]'

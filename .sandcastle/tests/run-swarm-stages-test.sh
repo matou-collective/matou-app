@@ -62,6 +62,7 @@ run_swarm() { # run_swarm [extra env assignments...] -> stdout+stderr, sets RC
     HOST_CAPACITY_DRIVE_WANTED="$tmp/no-such-reservation" \
     SWARM_DRIVE_DEFER_COUNT="$tmp/defer" \
     SWARM_VERDICT_PATH="$verdict" SWARM_RUNLOG="$runlog" \
+    SWARM_RUNNER_FILE="$tmp/no-such-runner" \
     SWARM_DEBOUNCE_STAMP="$tmp/stamp" \
     SWARM_DB="$tmp/swarm.db" \
     PREFLIGHT_SCRIPT="$tmp/preflight" \
@@ -93,6 +94,9 @@ pass=$((pass+1))
 grep -q 'repo=Acme/widget' "$runlog" || fail "the run must land a runlog line: $(cat "$runlog")"
 grep -q 'reason=no-ready-tasks' "$runlog" || fail "the exit reason must be named, not derived: $(cat "$runlog")"
 grep -q 'exit=0' "$runlog" || fail "the runlog must carry the exit code: $(cat "$runlog")"
+# #135: the runlog row names the executing pool host + runner
+grep -q 'host=box1' "$runlog" || fail "the runlog must carry the executing host (#135): $(cat "$runlog")"
+grep -q 'runner=unknown' "$runlog" || fail "the runlog must carry the runner name (#135): $(cat "$runlog")"
 pass=$((pass+1))
 
 # the PRESENT-policy-file branch, given explicit coverage (#101). The whole-script
@@ -147,6 +151,42 @@ grep -q 'reason=preflight-red' "$runlog" || fail "the runlog must name the prefl
 grep -q 'no ready tasks' <<<"$out" && fail "a red preflight must abort BEFORE listing / claiming"
 grep -q '^stage=preflight self-tests' "$verdict" || fail "the verdict must key on the preflight stage:
 $(cat "$verdict")"
+# #135: the on-failure verdict is stamped with the executing host (prepended,
+# so the healer's stage/error parser above still matches), and the runlog row too
+grep -q '^host=box1' "$verdict" || fail "the on-failure verdict must be host-stamped (#135):
+$(cat "$verdict")"
+grep -q 'host=box1' "$runlog" || fail "a red run's runlog row must carry the host (#135): $(cat "$runlog")"
+pass=$((pass+1))
+
+# #157a: a red run names its failing stage on the TASK LOG (stderr), not only in
+# the on-disk verdict. The operator reads the actions_log off a red tick; before
+# this it was blank between the policy line and `RUN exit status 1`, so the
+# healer keyed the empty log to one signature and silenced it.
+grep -qE "run-swarm: RUN FAILED — exit 1 in stage 'preflight self-tests[^']*' \\(reason=preflight-red\\)" <<<"$out" \
+  || fail "a red run must name its stage + reason on stderr (#157):
+$out"
+pass=$((pass+1))
+
+# #157b: a ready-list read that fails after its OWN retries is a transient forge
+# blip, not work this host can do — stand down CLEAN and say so, rather than a
+# silent exit 1 that reds a tick with nothing to do (matou-app#442, ~2% of ticks).
+cat > "$tmp/list-ready-fails" <<'SH'
+#!/usr/bin/env bash
+echo "list-ready-tasks: GET /issues failed after 3 attempts (last http=503)" >&2
+exit 22
+SH
+chmod +x "$tmp/list-ready-fails"
+rm -f "$verdict" "$runlog" "$tmp/stamp"; : > "$curl_log"
+run_swarm SCHEDULE_LIST_READY="$tmp/list-ready-fails"
+[ "$RC" = 0 ] || fail "a transient ready-list failure must stand down clean, got $RC:
+$out"
+grep -q 'standing down clean' <<<"$out" || fail "the stand-down must say so on stderr (#157):
+$out"
+grep -q 'reason=list-ready-transient' "$runlog" \
+  || fail "the runlog must name the stand-down reason, not a derived died-in: $(cat "$runlog")"
+grep -q 'exit=0' "$runlog" || fail "the stand-down must record exit=0: $(cat "$runlog")"
+grep -q 'RUN FAILED' <<<"$out" && fail "a clean stand-down must NOT print the red-run line (#157)"
+grep -q 'no ready tasks' <<<"$out" && fail "a failed read must not be reported as an empty ready set"
 pass=$((pass+1))
 
 # ── half 2: the orchestrator is still a SEQUENCE, in order ────────────────

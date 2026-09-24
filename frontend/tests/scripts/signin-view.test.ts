@@ -10,6 +10,7 @@ import type { CredentialToShow } from 'src/lib/signin/credential';
 
 const ask: SigninAsk = {
   door: 'https://id.example.nz/login',
+  present: 'https://id.example.nz/login/app/present',
   challenge: 'c_3f9',
   schemas: ['EMe'],
   community: 'Te Rūnanga o Example',

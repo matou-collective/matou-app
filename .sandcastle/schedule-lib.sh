@@ -104,13 +104,27 @@ schedule_ready_tasks() { bash "$SCHEDULE_LIST_READY"; }
 # command-substitution subshell would lose both. The ready JSON goes to
 # <out-file> for the same reason. Callers must have sourced verdict-lib.sh.
 schedule_list_ready_or_verdict() {
-  local out="$1" err errline rc=0
+  local out="$1" err errline rc=0 http cause
   verdict_stage "list ready tasks"
   err="$(mktemp)"
   schedule_ready_tasks >"$out" 2>"$err" || rc=$?
   if [ "$rc" -ne 0 ]; then
     errline="$(tr '\n' ' ' <"$err" | sed 's/  */ /g; s/^ *//; s/ *$//')"
-    verdict_error "list-ready-tasks.sh failed (rc=$rc — transient Forgejo 5xx/timeout after retries)${errline:+: $errline}"
+    # #142: word the verdict from what the lister OBSERVED, never a hard-coded
+    # guess. The lister names the last HTTP status as `http=NNN` on the failing
+    # read; a 4xx is a REJECTION the swarm cannot self-heal (expired token,
+    # renamed/lost repo) — asserting "transient" there had the healer take no
+    # action and report self-healing forever while the swarm was wedged. A
+    # 5xx/000 (timeout/connection) is genuinely transient. With no status in
+    # hand, say so rather than assert either way.
+    http="$(printf '%s' "$errline" | grep -oE 'http=[0-9]+' | tail -1 | sed 's/http=//')"
+    case "$http" in
+      4??)  cause="forge REJECTED the read (http=$http) — a rejection, not a blip; the swarm will not recover on its own" ;;
+      5??)  cause="transient Forgejo 5xx (http=$http) after retries" ;;
+      000)  cause="transient Forgejo timeout/connection failure (http=000) after retries" ;;
+      *)    cause="Forgejo read failed after retries (no HTTP status observed)" ;;
+    esac
+    verdict_error "list-ready-tasks.sh failed (rc=$rc — $cause)${errline:+: $errline}"
     rm -f "$err"
     return "$rc"
   fi

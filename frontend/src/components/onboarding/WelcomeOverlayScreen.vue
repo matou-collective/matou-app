@@ -133,9 +133,21 @@
         </div>
       </template>
 
+      <!-- A check failed outright: let the member try again instead of leaving
+           them with a disabled button and a force-close (#570) -->
+      <MBtn
+        v-if="canRetryFailed"
+        class="w-full retry-btn retry-failed-btn"
+        size="lg"
+        @click="onManualRetry"
+      >
+        <RefreshCw class="w-5 h-5 mr-2" />
+        Retry
+      </MBtn>
+
       <!-- Continue Button -->
       <MBtn
-        v-if="!waitingForSync"
+        v-else-if="!waitingForSync"
         class="w-full continue-btn"
         size="lg"
         :disabled="!allChecksPassed"
@@ -156,6 +168,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { CheckCircle2, XCircle, Circle, ArrowRight, Loader2, RefreshCw } from 'lucide-vue-next';
 import MBtn from '../base/MBtn.vue';
 import { useOnboardingStore } from 'stores/onboarding';
+import { canRetryFailedChecks } from 'src/lib/welcomeRetry';
 import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { useKERIClient } from 'src/lib/keri/client';
@@ -672,6 +685,11 @@ async function retrySync() {
     await runReturningChecks();
   }
 }
+
+// A hard-failed check on a flow that can re-run its checks gets a Retry button.
+const canRetryFailed = computed(() =>
+  canRetryFailedChecks(onboardingStore.onboardingPath, waitingForSync.value, checks),
+);
 
 // Manual Retry button: reset the backoff so the user's explicit click restarts
 // auto-retry from a short delay, then re-run the checks.

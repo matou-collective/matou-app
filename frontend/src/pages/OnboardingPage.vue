@@ -30,6 +30,7 @@ import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import { initializeApp } from 'src/boot/keri';
 import { consumePushDeepLinkTarget, requestPermissionAndRegister } from 'src/composables/usePush';
+import { consumeInboxDeepLinkTarget } from 'src/composables/useDeepLink';
 
 // Import onboarding screens
 import SplashScreen from 'components/onboarding/SplashScreen.vue';
@@ -162,9 +163,10 @@ const handleContinue = async (data?: unknown) => {
     // Onboarding is complete — request push permission now, never during
     // onboarding (docs/architecture/08-push-notifications.md §7). No-op off Android.
     void requestPermissionAndRegister();
-    // Replay a cold-start notification tap's chat deep-link past the gate
-    // (#445); falls through to the dashboard when nothing is pending.
-    router.push(consumePushDeepLinkTarget() ?? '/dashboard');
+    // Replay a cold-start notification tap's chat deep-link (#445) or a
+    // steward inbox deep-link (#599) past the gate; falls through to the
+    // dashboard when nothing is pending.
+    router.push(consumePushDeepLinkTarget() ?? consumeInboxDeepLinkTarget() ?? '/dashboard');
     return;
   }
 
@@ -322,9 +324,10 @@ watch(
       // Reaching 'main' completes onboarding — request push permission now,
       // never during onboarding (§7). Idempotent + no-op off Android.
       void requestPermissionAndRegister();
-      // Replay a cold-start notification tap's chat deep-link past the gate
-      // (#445); falls through to the dashboard when nothing is pending.
-      router.push(consumePushDeepLinkTarget() ?? '/dashboard');
+      // Replay a cold-start notification tap's chat deep-link (#445) or a
+      // steward inbox deep-link (#599) past the gate; falls through to the
+      // dashboard when nothing is pending.
+      router.push(consumePushDeepLinkTarget() ?? consumeInboxDeepLinkTarget() ?? '/dashboard');
     } else {
       // Reset scroll position when switching screens
       nextTick(() => {

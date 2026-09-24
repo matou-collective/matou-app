@@ -4,9 +4,8 @@
       <!-- Header -->
       <div class="dialog-header">
         <div class="header-left">
-          <div class="cred-icon" :class="{ 'matou-icon': isMatouCredential }">
-            <img v-if="isMatouCredential" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="matou-logo" />
-            <q-icon v-else :name="iconName" size="22px" />
+          <div class="cred-icon">
+            <CredentialMark :credential="credential" :icon-size="22" />
           </div>
           <div>
             <h2 class="cred-title">{{ title }}</h2>
@@ -150,6 +149,8 @@ import {
   ENDORSEMENT_SCHEMA_SAID,
   EVENT_ATTENDANCE_SCHEMA_SAID,
 } from 'src/composables/useAdminActions';
+import { credentialTitle as resolveCredentialTitle } from 'src/lib/credentialAppearance';
+import CredentialMark from './CredentialMark.vue';
 
 const props = defineProps<{
   credential: WalletCredential;
@@ -194,20 +195,12 @@ const isEndorsement = computed(() => props.credential.schemaSaid === ENDORSEMENT
 const isEventAttendance = computed(() => props.credential.schemaSaid === EVENT_ATTENDANCE_SCHEMA_SAID);
 const isMembership = computed(() => !isEndorsement.value && !isEventAttendance.value);
 
-const isMatouCredential = computed(() => {
-  return (props.credential.schemaTitle || '').toLowerCase().includes('matou');
-});
-
-const iconName = computed(() => {
-  if (isEndorsement.value) return 'person_add';
-  if (isEventAttendance.value) return 'event_available';
-  return 'groups';
-});
-
 const title = computed(() => {
-  if (isEndorsement.value) return 'Membership Endorsement';
-  if (isEventAttendance.value) return props.credential.eventName || 'Event Attendance';
-  return props.credential.schemaTitle || props.credential.role || 'Credential';
+  let legacy: string;
+  if (isEndorsement.value) legacy = 'Membership Endorsement';
+  else if (isEventAttendance.value) legacy = props.credential.eventName || 'Event Attendance';
+  else legacy = props.credential.schemaTitle || props.credential.role || 'Credential';
+  return resolveCredentialTitle(props.credential, legacy);
 });
 
 const statusClass = computed(() => {
@@ -300,16 +293,7 @@ async function copy(text: string, field = 'said') {
   justify-content: center;
   color: white;
   flex-shrink: 0;
-}
-
-.cred-icon.matou-icon {
-  background: white;
-  border: 1px solid var(--matou-border, #e5e7eb);
-}
-
-.matou-logo {
-  width: 26px;
-  height: 26px;
+  overflow: hidden;
 }
 
 .cred-title {

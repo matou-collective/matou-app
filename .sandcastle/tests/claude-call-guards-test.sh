@@ -15,6 +15,16 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 pass=0
 
+# The rendered heal prompt lives at the harness root. Factory-side the suite runs
+# from <factory>/tests and the rendered copy is the self-pin under .sandcastle/;
+# consumer-side the suite is vendored into <repo>/.sandcastle/tests/ and the
+# rendered copy is its DIRECT parent (the harness dir already IS .sandcastle) —
+# resolve whichever exists so the suite is green from either layout (#139), and
+# fail LOUDLY (never a silent empty/default heal prompt) if neither is present.
+heal_prompt_file="$here/../.sandcastle/heal-prompt.md"
+[ -f "$heal_prompt_file" ] || heal_prompt_file="$here/../heal-prompt.md"
+[ -f "$heal_prompt_file" ] || fail "no rendered heal-prompt.md at $here/../.sandcastle/ or $here/../ — cannot run the suite"
+
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 # #116: this suite drives the REAL run-triage.sh / heal.sh, both of which mirror
 # a limit-pause park edge + a run row into swarm.db and read the active-account
@@ -115,7 +125,7 @@ run_heal() {
     SWARM_VERDICT_PATH="$tmp/absent-swarm-verdict" \
     CLAUDE_LIMIT_MARKER="$marker" CLAUDE_ACTIVE_MARKER="$active" \
     FORGEJO_TOKEN=dummy FORGEJO_API=http://127.0.0.1:9/api/v1/repos/x/y \
-    HEAL_PROMPT_FILE="$here/../.sandcastle/heal-prompt.md" \
+    HEAL_PROMPT_FILE="$heal_prompt_file" \
     HOST_CAPACITY_DRIVE_WANTED="$tmp/absent-drive-wanted" \
     HEALER_DRIVE_DEFER_COUNT="$tmp/healer-defer-count" \
     "$@" bash "$here/../heal.sh" 2>&1
