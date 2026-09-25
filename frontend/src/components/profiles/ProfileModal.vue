@@ -31,12 +31,12 @@
                   {{ formattedDate }}
                 </p>
                 <div v-if="profileAid" class="flex items-center gap-2">
-                  <code class="text-xs bg-secondary px-2 py-1 rounded font-mono truncate flex-1 text-[color:var(--matou-text)]">
+                  <code class="aid-code text-xs px-2 py-1 rounded font-mono truncate flex-1">
                     {{ profileAid }}
                   </code>
                   <button
                     @click="copyAid"
-                    class="p-1.5 rounded hover:bg-secondary transition-colors shrink-0"
+                    class="copy-btn p-1.5 rounded transition-colors shrink-0"
                     :title="copied ? 'Copied!' : 'Copy AID'"
                   >
                     <Check v-if="copied" class="w-4 h-4 text-green-600" />
@@ -46,8 +46,8 @@
                 <!-- Role (clickable for stewards) -->
                 <div v-if="memberRole" class="mt-2 flex items-center gap-2">
                   <span
-                    class="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full"
-                    :class="canChangeRole ? 'bg-primary/15 text-primary cursor-pointer hover:bg-primary/25 transition-colors' : 'bg-secondary text-[color:var(--matou-text-secondary)]'"
+                    class="role-chip inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full"
+                    :class="{ editable: canChangeRole }"
                     @click="canChangeRole && (showChangeRole = true)"
                   >
                     {{ memberRole }}
@@ -783,6 +783,57 @@ function handleRemove() {
   background-color: var(--matou-card);
 }
 
+// Full screen on mobile (app.scss sizes .modal-content): the body takes the
+// height between the header and the footer instead of a 60vh cap.
+@media (max-width: 767px) {
+  .modal-content {
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-header,
+  .modal-footer {
+    flex-shrink: 0;
+  }
+  .modal-body {
+    flex: 1;
+    max-height: none;
+  }
+}
+
+// Neutral kit washes with foreground ink, so they read in both themes and on
+// any kit. (Quasar's `bg-secondary` / `text-primary` are the solid kit colours,
+// !important, and ignore the dark-mode tokens.)
+.aid-code {
+  background-color: var(--matou-muted);
+  color: var(--matou-foreground);
+}
+
+.copy-btn {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+
+  &:hover {
+    background-color: var(--matou-muted);
+  }
+}
+
+.role-chip {
+  background-color: var(--matou-secondary);
+  color: var(--matou-foreground);
+
+  &.editable {
+    background-color: color-mix(in srgb, var(--matou-primary) 15%, transparent);
+    color: var(--matou-primary);
+    cursor: pointer;
+    transition: background-color 0.15s;
+
+    &:hover {
+      background-color: color-mix(in srgb, var(--matou-primary) 25%, transparent);
+    }
+  }
+}
+
 .avatar {
   &.gradient-1 {
     background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
@@ -866,7 +917,7 @@ textarea.field-input {
   white-space: nowrap;
   border-radius: 9999px;
   background-color: var(--matou-primary);
-  color: white;
+  color: var(--matou-primary-foreground);
   opacity: 0.9;
 }
 
@@ -884,7 +935,7 @@ textarea.field-input {
 
   &:hover {
     background-color: var(--matou-primary);
-    color: white;
+    color: var(--matou-primary-foreground);
   }
 }
 
@@ -901,7 +952,7 @@ textarea.field-input {
   padding: 0.5rem;
   border-radius: 0.5rem;
   background-color: var(--matou-primary);
-  color: white;
+  color: var(--matou-primary-foreground);
 }
 
 // Modal transition

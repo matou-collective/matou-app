@@ -7,7 +7,9 @@
           <h2 class="wallet-sidebar-title">Wallet</h2>
           <p class="wallet-sidebar-subtitle">{{ subtitle }}</p>
         </div>
-        <nav class="wallet-sidebar-nav">
+        <!-- One tab (a Coa build: credentials only) needs no switcher on mobile,
+             where the nav becomes a tab row under the "Wallet" header. -->
+        <nav class="wallet-sidebar-nav" :class="{ 'single-tab': !showCommunityTokens }">
           <button
             class="wallet-nav-item"
             :class="{ active: activeTab === 'credentials' }"
@@ -232,13 +234,28 @@ onMounted(() => {
     padding-top: 0;
     border-right: none;
     border-bottom: 1px solid var(--matou-sidebar-border);
-    flex-direction: row;
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
     overflow-x: auto;
     overflow-y: visible;
   }
 
+  /* The page's header on mobile: "Wallet", not the Credentials tab. */
   .wallet-sidebar-header {
+    padding: 1rem 1rem 0.5rem;
+  }
+
+  .wallet-sidebar-title {
+    font-size: 1.25rem;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  .wallet-sidebar-subtitle {
+    font-size: 0.8rem;
+  }
+
+  .wallet-sidebar-nav.single-tab {
     display: none;
   }
 

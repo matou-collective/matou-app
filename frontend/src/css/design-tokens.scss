@@ -14,6 +14,14 @@
 // free — so charts, borders, rings and washes need no `.dark` override; only the
 // light-vs-dark *surfaces* (background/card/foreground) do. This file keeps only
 // true non-brand neutrals (greys, the destructive red, radii, typography).
+
+// The light default for text on the primary, declared BEFORE the kit's blocks:
+// the kit's `.dark` sets a near-black foreground for its lightened dark primary,
+// and a `:root` rule after it (same specificity) would win and keep it white.
+:root {
+  --matou-primary-foreground: #ffffff;
+}
+
 @import './kit-tokens';
 
 :root {
@@ -26,9 +34,6 @@
   --matou-card-foreground: #1f2937;
   --matou-popover: #ffffff;
   --matou-popover-foreground: #1f2937;
-
-  // Deep ocean blue
-  --matou-primary-foreground: #ffffff;
 
   // River foam/mist
   --matou-muted-foreground: #5a7b8a;

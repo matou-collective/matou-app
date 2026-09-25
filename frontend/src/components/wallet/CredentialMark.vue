@@ -1,25 +1,24 @@
 <template>
   <div
     class="cred-mark"
-    :class="{ 'matou-icon': isLegacyMatou, 'has-bg': hasDisplay && !!background }"
+    :class="{ 'logo-chip': showKitLogo, 'has-bg': hasDisplay && !!background }"
     :style="hasDisplay && background ? { background, color: ink } : undefined"
   >
     <!-- Styled credential (a.display present) -->
     <template v-if="hasDisplay">
       <img v-if="showImage && imageUrl" :src="imageUrl" :alt="markAlt" class="mark-image" />
       <component v-else-if="showIcon" :is="iconComponent" :size="iconSize" />
-      <!-- Membership: the community logo if the image carried it; else the seal. -->
+      <!-- Membership with no image or icon: the community logo (IDSS's default mark). -->
+      <img v-else-if="isMembership" :src="kitLogo" :alt="KIT.brand.name" class="logo-mark" />
       <BadgeCheck v-else :size="iconSize" />
     </template>
 
-    <!-- Legacy credential — unchanged from before -->
+    <!-- No display block -->
     <template v-else>
-      <img
-        v-if="isLegacyMatou"
-        src="../../assets/images/matou-bird-logo-blue.svg"
-        alt="Mātou"
-        class="matou-logo"
-      />
+      <!-- A Membership credential wears the community's logo, as IDSS shows it
+           (its default appearance is {mark: logo}); this build's kit logo is
+           that community's logo, and stock Mātou's kit logo is the Mātou bird. -->
+      <img v-if="isMembership" :src="kitLogo" :alt="KIT.brand.name" class="logo-mark" />
       <q-icon v-else :name="legacyMaterialIcon" :size="iconSize + 'px'" />
     </template>
   </div>
@@ -34,6 +33,8 @@ import {
   EVENT_ATTENDANCE_SCHEMA_SAID,
 } from 'src/composables/useAdminActions';
 import { useCredentialAppearance } from 'src/composables/useCredentialAppearance';
+import { KIT } from 'src/generated/kit';
+import kitLogo from 'src/assets/kit/logo.png';
 
 const props = withDefaults(
   defineProps<{
@@ -56,12 +57,17 @@ const {
 
 const markAlt = computed(() => props.credential.display?.name || 'Credential');
 
-// Legacy (non-display) rendering — identical to the previous hardcoded logic.
-const isLegacyMatou = computed(
-  () =>
-    !hasDisplay.value &&
-    (props.credential.schemaTitle || '').toLowerCase().includes('matou'),
+// "Matou Membership", "IDSS Membership", … — the community membership credential.
+const isMembership = computed(() =>
+  (props.credential.schemaTitle || '').toLowerCase().includes('membership'),
 );
+// The logo is the mark when nothing else is (no display image or icon); it sits
+// on a white chip unless the credential paints its own background.
+const showKitLogo = computed(() => {
+  if (!isMembership.value) return false;
+  if (!hasDisplay.value) return true;
+  return !(showImage.value && imageUrl.value) && !showIcon.value && !background.value;
+});
 
 const legacyMaterialIcon = computed(() => {
   if (props.credential.schemaSaid === ENDORSEMENT_SCHEMA_SAID) return 'person_add';
@@ -84,15 +90,16 @@ const legacyMaterialIcon = computed(() => {
 /* .has-bg marks a styled mark; the background + contrast-picked ink are applied
    inline (see :style) so Lucide glyphs (currentColor) get the right colour. */
 
-/* A Mātou credential keeps its white chip + border, as before. */
-.cred-mark.matou-icon {
+/* The community logo sits on a white chip + border (the old Mātou chip). */
+.cred-mark.logo-chip {
   background: white;
   border: 1px solid var(--matou-border, #e5e7eb);
 }
 
-.matou-logo {
-  width: 60%;
-  height: 60%;
+.logo-mark {
+  width: 70%;
+  height: 70%;
+  object-fit: contain;
 }
 
 .mark-image {

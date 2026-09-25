@@ -91,19 +91,41 @@ select {
   border-radius: 10px;
 }
 
-// ── Mobile dialogs (Android P1) ────────────────────────────────────────────────
+// ── Mobile dialogs: full screen ────────────────────────────────────────────────
 // At the mobile breakpoint (≤767px, the same one used by DashboardLayout.vue and
-// DashboardPage.vue), 24+ dialog `q-card`s carry inline `min-width: 400–620px`
-// that overflow a 390px-wide phone viewport. `!important` beats inline styles and
-// scoped `min-width` rules, so this single override makes every dialog fit within
-// a 12px gutter without touching each component. Desktop (≥768px) is unaffected.
+// DashboardPage.vue) every dialog takes the whole screen, below the desktop title
+// bar when there is one (--titlebar-height, 0 elsewhere). `!important` beats the
+// inline `min-width: 400–620px` many dialog cards carry and their scoped sizes,
+// so this one override covers every q-dialog and the hand-rolled overlay modals
+// (`.modal-overlay` / `.dialog-overlay` / `.credential-overlay`) without
+// touching each component.
+// Desktop (≥768px) is unaffected; a `maximized` q-dialog already fills.
 @media (max-width: 767px) {
-  .q-dialog .q-card {
+  .q-dialog__inner--minimized,
+  .modal-overlay,
+  .dialog-overlay,
+  .credential-overlay {
+    padding: var(--titlebar-height, 0px) 0 0 !important;
+    align-items: stretch !important;
+    justify-content: stretch !important;
+  }
+
+  .q-dialog__inner--minimized > *,
+  .modal-overlay > .modal-content,
+  .dialog-overlay > .dialog-content,
+  .dialog-overlay > .dialog-card,
+  .credential-overlay > .credential-dialog {
     min-width: 0 !important;
-    width: calc(100vw - 24px) !important;
-    max-width: calc(100vw - 24px) !important;
-    max-height: calc(100vh - 24px) !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: calc(100dvh - var(--titlebar-height, 0px)) !important;
+    max-height: calc(100dvh - var(--titlebar-height, 0px)) !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
     overflow-y: auto !important;
+    padding-bottom: env(safe-area-inset-bottom);
   }
 }
 

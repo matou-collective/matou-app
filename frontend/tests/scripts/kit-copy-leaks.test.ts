@@ -24,7 +24,6 @@ const ALLOWED: Record<string, number> = {
   'components/onboarding/MatouInformationContent.vue': Infinity, // Mātou's about/expectations block (claim path, guidelines page)
   'components/onboarding/PendingApprovalScreen.vue': 3, // "Learn more about Mātou" + two docs.matou.nz resource links — rendered only in the stock build (gated on !isCoa, asserted below)
   'pages/CommunityGuidelinesPage.vue': Infinity, // Mātou's guidelines verbatim, pending a kit field
-  'components/wallet/CredentialMark.vue': 1, // alt text on a *legacy Mātou* credential mark (isLegacyMatou) — describes an actual Mātou-issued credential
 };
 
 function strip(src: string): string {
