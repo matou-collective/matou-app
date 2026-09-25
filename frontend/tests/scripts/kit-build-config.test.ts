@@ -16,6 +16,11 @@ describe('electron-builder config from kit.build.json', () => {
     // "matou-frontend", so a running window matches the installed
     // <executableName>.desktop and shows the community icon (#617).
     expect(c.extraMetadata.name).toBe('matou');
+    // desktopName is what Chromium turns into the Wayland xdg app_id at startup
+    // (via CHROME_DESKTOP); without it the app_id falls back to productName and
+    // GNOME can't match the window to matou.desktop (#634).
+    expect(c.extraMetadata.desktopName).toBe('matou.desktop');
+    expect(c.extraMetadata.productName).toBe('Matou');
     expect(c.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]);
   });
   it('maps a community kit to coa values and publish null', () => {
@@ -25,5 +30,9 @@ describe('electron-builder config from kit.build.json', () => {
     // A branded kit's Wayland app_id / X11 WM_CLASS derives from executableName,
     // not "matou-frontend" — this is what lets its dock icon resolve (#617).
     expect(c.extraMetadata.name).toBe('x-y');
+    // The Wayland app_id must resolve to <executableName>.desktop, not the
+    // productName-derived fallback, so the branded dock icon shows (#634).
+    expect(c.extraMetadata.desktopName).toBe('x-y.desktop');
+    expect(c.extraMetadata.productName).toBe('X Y');
   });
 });
