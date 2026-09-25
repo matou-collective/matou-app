@@ -6,7 +6,7 @@ build looks like before building one.
 
 ```bash
 cd frontend
-npm run harness                    # kit "tui", http://localhost:9100
+npm run harness                    # kit "tui", http://127.0.0.1:9100
 npm run harness -- --kit pale      # another harness kit
 npm run harness -- --kit ../coa-kit --port 9200   # any kit directory
 ```
@@ -28,6 +28,25 @@ starts the scenario from its seed). Or open `?scenario=<id>` directly; add
 | `steward` | Aroha | Founding steward with two registrations waiting. |
 
 Adding one = an entry in `SCENARIOS` (`scenarios.ts`).
+
+## Platform
+
+The pill's second dropdown (or `?platform=`) picks the shell the app believes
+it runs in:
+
+- **Desktop** (default): a stand-in for Electron's preload bridge, so you get
+  the brand-coloured title bar and the splash's "Sign in with your phone". That
+  flow is scripted: the QR shows, a phone "scans" it after ~6 s and shows code
+  `042917`, and after ~12 s this computer is signed in as Tama.
+- **Browser**: the plain SPA.
+
+A phone shell needs Capacitor's native plugins and isn't modelled. The harness
+always serves from `127.0.0.1` (a `localhost` URL redirects there), so the
+desktop backend URL (`http://127.0.0.1:<port>`) and the browser one
+(`…/__fake`) share an origin.
+
+Every harness person has a real recovery phrase (hover the pill to see them).
+"Recover identity" with one of them signs in as that person.
 
 ## Kits
 

@@ -4,7 +4,7 @@
 // with the fake backend and fake KERIA switched on. On exit the stock kit
 // (../coa-kit) is re-applied, so the generated files go back to what git has.
 //
-//   npm run harness                      # kit "tui", port 9100
+//   npm run harness                      # kit "tui", http://127.0.0.1:9100
 //   npm run harness -- --kit pale
 //   npm run harness -- --kit ../coa-kit  # any kit directory works
 //   npm run harness -- --port 9200
@@ -74,7 +74,9 @@ const restore = async () => {
   await applyKit(join(FRONTEND, '..', 'coa-kit'));
 };
 
-const fake = `http://localhost:${port}/__fake`;
+// 127.0.0.1, not localhost: the page is moved there too (see backendPlugin.ts),
+// so the browser-platform prefix and the desktop platform root share an origin.
+const fake = `http://127.0.0.1:${port}/__fake`;
 // The quasar binary itself (not npx), so a signal reaches the dev server and
 // nothing is orphaned on the port.
 const dev = spawn(join(FRONTEND, 'node_modules/.bin/quasar'), ['dev', '-p', port], {

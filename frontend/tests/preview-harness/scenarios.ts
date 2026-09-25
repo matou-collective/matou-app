@@ -32,6 +32,8 @@ export interface Person {
   readonly interests: readonly string[];
   /** Initial-coloured avatar tone; the fake backend draws it as an SVG. */
   readonly tone: string;
+  /** A valid BIP39 phrase: Recover identity with it signs in as this person. */
+  readonly mnemonic: string;
 }
 
 /** The people the fake community is made of. `me` is whoever the scenario signs in as. */
@@ -46,6 +48,7 @@ export const PEOPLE = {
     bio: 'Kaitiaki of the community app and the one who says yes to new members.',
     interests: ['Coordination and Operations', 'Discussions and Community Input'],
     tone: '#7d2431',
+    mnemonic: 'alpha movie energy grid tonight pretty laundry exchange letter frequent position flag',
   },
   tama: {
     aid: 'EHarnessTama0000000000000000000000000000000',
@@ -57,6 +60,7 @@ export const PEOPLE = {
     bio: 'Runs the kapa haka practice roster and the Friday kai.',
     interests: ['Art and Designs', 'Follow and Learn'],
     tone: '#1e5f74',
+    mnemonic: 'club ring nation radio dad devote banana viable pizza magic vast phrase',
   },
   mere: {
     aid: 'EHarnessMere0000000000000000000000000000000',
@@ -68,6 +72,7 @@ export const PEOPLE = {
     bio: 'Researcher; keeps the whakapapa records tidy.',
     interests: ['Research and Knowledge'],
     tone: '#3c513b',
+    mnemonic: 'eyebrow tobacco symptom wild matrix soon plug obey skull pyramid depend unknown',
   },
   wiremu: {
     aid: 'EHarnessWiremu00000000000000000000000000000',
@@ -79,6 +84,7 @@ export const PEOPLE = {
     bio: 'Waiting to be let in.',
     interests: ['Coding and Technical Dev'],
     tone: '#e3a72f',
+    mnemonic: 'isolate arrest chalk earn swear giggle derive develop useful south dune cute',
   },
   hine: {
     aid: 'EHarnessHine0000000000000000000000000000000',
@@ -90,10 +96,14 @@ export const PEOPLE = {
     bio: 'Applied last week — wants to help with events.',
     interests: ['Follow and Learn', 'Art and Designs'],
     tone: '#6c2bd9',
+    mnemonic: 'option culture hundred moral column virtual soup scorpion beef welcome minute liar',
   },
 } as const satisfies Record<string, Person>;
 
 export type PersonId = keyof typeof PEOPLE;
+
+/** Who the scripted phone signs this desktop in as ("Sign in with desktop"). */
+export const LINKED_PERSON: PersonId = 'tama';
 
 /** Who is an approved member of the community (the rest are applicants). */
 export const MEMBERS: readonly PersonId[] = ['aroha', 'tama', 'mere'];
@@ -156,6 +166,21 @@ export const DEFAULT_SCENARIO = 'registration';
 export function scenarioById(id: string | null | undefined): Scenario {
   return SCENARIOS.find((s) => s.id === id) ?? SCENARIOS.find((s) => s.id === DEFAULT_SCENARIO)!;
 }
+
+/**
+ * Which shell the app believes it runs in. `desktop` stands in for Electron's
+ * preload bridge (title bar, "Sign in with desktop", the Electron backend
+ * URL); `browser` is the plain SPA. A phone shell needs Capacitor's native
+ * plugins and is not modelled.
+ */
+export const PLATFORMS = [
+  { id: 'desktop', label: 'Desktop' },
+  { id: 'browser', label: 'Browser' },
+] as const;
+export type PlatformId = (typeof PLATFORMS)[number]['id'];
+export const DEFAULT_PLATFORM: PlatformId = 'desktop';
+/** localStorage key the platform choice is remembered under (read before the app loads). */
+export const PLATFORM_KEY = 'matou-harness:platform';
 
 /** The cookie that carries the chosen scenario to the fake backend. */
 export const SCENARIO_COOKIE = 'matou_harness_scenario';

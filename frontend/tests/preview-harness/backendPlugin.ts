@@ -4,6 +4,11 @@
  * every transport the app uses — fetch, the /events EventSource and <img src>
  * file URLs — reaches it same-origin, with the scenario cookie attached.
  *
+ * On the `desktop` platform the app resolves the backend the Electron way,
+ * `http://127.0.0.1:<port>` with no prefix, so the same routes also answer at
+ * the root (`/api/*`, `/health`); `run.mjs` serves the harness on 127.0.0.1 so
+ * both forms are same-origin.
+ *
  * Unmodelled routes answer the way an empty backend would (GET → 404, writes →
  * `{ success: true }`) and are logged once to the dev-server console, so a new
  * screen shows its empty state rather than hanging.
@@ -14,7 +19,17 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import { avatarSvg, buildWorld, nextId, type World } from './backendWorld';
 import { dashboardRoutes } from './backendRoutes';
-import { FAKE_PREFIX, ORG, PEOPLE, SCENARIO_COOKIE, scenarioById, type PersonId } from './scenarios';
+import {
+  DEFAULT_PLATFORM,
+  FAKE_PREFIX,
+  LINKED_PERSON,
+  ORG,
+  PEOPLE,
+  PLATFORM_KEY,
+  SCENARIO_COOKIE,
+  scenarioById,
+  type PersonId,
+} from './scenarios';
 
 export interface Req {
   method: string;
@@ -167,7 +182,78 @@ const coreRoutes: Route[] = [
   // --- registration side-effects
   ['POST', /^\/api\/v1\/notifications\/registration-(submitted|approved)$/, () => json({ success: true, messageId: 'harness' })],
   ['POST', /^\/api\/v1\/(invites|booking)\/send-email$/, () => json({ success: true, messageId: 'harness' })],
+  // --- linked-device sign-in, desktop side (#466): a scripted phone scans the
+  // QR after a few seconds, shows its code, then hands over LINKED_PERSON.
+  ['POST', /^\/api\/v1\/pairing\/sessions$/, ({ world }) => {
+    const sessionId = nextId('pair');
+    pairings(world).set(sessionId, { createdAt: Date.now(), cancelled: false });
+    return json({
+      sessionId,
+      qrPayload: `matou://pair?session=${sessionId}&harness=1`,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    });
+  }],
+  ['GET', /^\/api\/v1\/pairing\/sessions\/([^/]+)$/, ({ world }, m) => {
+    const session = pairings(world).get(m[1]!);
+    if (!session) return json({ error: 'session_not_found' }, 404);
+    const phone = `${PEOPLE[LINKED_PERSON].name.split(' ')[0]}'s phone`;
+    const elapsed = Date.now() - session.createdAt;
+    if (session.cancelled) return json({ state: 'cancelled', outcome: '', code: '', peerDeviceName: '', error: '' });
+    if (elapsed < 6000) return json({ state: 'created', outcome: '', code: '', peerDeviceName: '', error: '' });
+    if (elapsed < 12000) return json({ state: 'acked', outcome: 'phone-to-desktop', code: '042917', peerDeviceName: phone, error: '' });
+    return json({ state: 'identity-received', outcome: 'phone-to-desktop', code: '042917', peerDeviceName: phone, error: '' });
+  }],
+  ['GET', /^\/api\/v1\/pairing\/sessions\/([^/]+)\/identity$/, ({ world }, m) => {
+    if (!pairings(world).has(m[1]!)) return json({ error: 'session_not_found' }, 404);
+    const person = PEOPLE[LINKED_PERSON];
+    return json({ mnemonic: person.mnemonic, aid: person.aid, orgAid: ORG.aid });
+  }],
+  ['POST', /^\/api\/v1\/pairing\/sessions\/([^/]+)\/cancel$/, ({ world }, m) => {
+    const session = pairings(world).get(m[1]!);
+    if (session) session.cancelled = true;
+    return json({ success: true });
+  }],
 ];
+
+function pairings(world: World): Map<string, { createdAt: number; cancelled: boolean }> {
+  return ((world.extra.pairings as Map<string, { createdAt: number; cancelled: boolean }> | undefined) ??=
+    new Map()) as Map<string, { createdAt: number; cancelled: boolean }>;
+}
+
+/**
+ * Runs before any app module: moves `localhost` to `127.0.0.1` (one origin for
+ * both backend URL forms), settles the platform (`?platform=`, else the last
+ * choice, else desktop), and on desktop installs a stand-in for Electron's
+ * preload bridge (src-electron/electron-preload.ts) — secure storage on
+ * localStorage, the dev server's own port as the backend port, window
+ * controls as no-ops.
+ */
+const platformScript = `
+(function () {
+  if (location.hostname === 'localhost') {
+    location.replace(location.href.replace('//localhost:', '//127.0.0.1:'));
+    return;
+  }
+  var asked = new URLSearchParams(location.search).get('platform');
+  var platform = asked || localStorage.getItem('${PLATFORM_KEY}') || '${DEFAULT_PLATFORM}';
+  localStorage.setItem('${PLATFORM_KEY}', platform);
+  if (platform !== 'desktop') return;
+  var done = function (v) { return function () { return Promise.resolve(v); }; };
+  window.electronAPI = {
+    isElectron: true,
+    platform: 'linux',
+    getBackendPort: done(location.port || '80'),
+    getDataDir: done('/harness'),
+    getApiToken: done('harness-api-token'),
+    secureStorageGet: function (k) { return Promise.resolve(localStorage.getItem(k)); },
+    secureStorageSet: function (k, v) { localStorage.setItem(k, v); return Promise.resolve(); },
+    secureStorageRemove: function (k) { localStorage.removeItem(k); return Promise.resolve(); },
+    windowMinimize: done(), windowMaximize: done(), windowClose: done(), windowIsMaximized: done(false),
+    onUpdateDownloaded: function () {}, installUpdate: done(),
+    notify: function (p) { console.info('[harness] desktop notification', p); },
+    onNotificationClicked: function () {}, onDeepLink: function () {},
+  };
+})();`;
 
 let TYPES: Array<{ name: string }> = [];
 
@@ -213,7 +299,7 @@ export function harnessBackend(root: string): Plugin {
   return {
     name: 'matou-preview-harness-backend',
     configureServer(server) {
-      server.middlewares.use(FAKE_PREFIX, async (req: IncomingMessage, res: ServerResponse) => {
+      const handle = async (req: IncomingMessage, res: ServerResponse) => {
         const url = new URL(req.url ?? '/', 'http://harness');
         const method = (req.method ?? 'GET').toUpperCase();
         const scenario = scenarioById(url.searchParams.get('scenario') ?? scenarioFrom(req)).id;
@@ -261,7 +347,15 @@ export function harnessBackend(root: string): Plugin {
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify(reply!.json ?? null));
         }
+      };
+      server.middlewares.use(FAKE_PREFIX, handle);
+      // The desktop platform's backend URL has no prefix (see the header).
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url ?? '').split('?')[0]!;
+        if (path.startsWith('/api/') || path === '/health') void handle(req, res);
+        else next();
       });
     },
+    transformIndexHtml: () => [{ tag: 'script', children: platformScript, injectTo: 'head-prepend' }],
   };
 }

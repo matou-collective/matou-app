@@ -13,7 +13,7 @@
  */
 import { KERIClient, useKERIClient, type AIDInfo } from 'src/lib/keri/client';
 import { KIT } from 'src/generated/kit';
-import { MEMBERSHIP_SCHEMA, ORG, PEOPLE, type Scenario } from './scenarios';
+import { MEMBERS, MEMBERSHIP_SCHEMA, ORG, PEOPLE, type PersonId, type Scenario } from './scenarios';
 
 const WALLET_KEY = 'matou-harness:wallet';
 
@@ -57,14 +57,22 @@ function membershipCredential(holder: AIDInfo, role: string): HeldCredential {
 }
 
 /** The wallet a scenario starts with. */
+/** One person's wallet: their AID, and their Membership credential if they hold one. */
+function personWallet(id: PersonId, member: boolean): Wallet {
+  const person = PEOPLE[id];
+  const aid: AIDInfo = { prefix: person.aid, name: person.alias, state: {} };
+  return { aids: [aid], credentials: member ? [membershipCredential(aid, person.role)] : [] };
+}
+
+/** The wallet a scenario starts with. */
 export function seedWallet(scenario: Scenario): Wallet {
   if (!scenario.signedInAs) return { aids: [], credentials: [] };
-  const person = PEOPLE[scenario.signedInAs];
-  const aid: AIDInfo = { prefix: person.aid, name: person.alias, state: {} };
-  return {
-    aids: [aid],
-    credentials: scenario.member ? [membershipCredential(aid, person.role)] : [],
-  };
+  return personWallet(scenario.signedInAs, scenario.member);
+}
+
+/** The passcode a person's phrase derives — what the app connects with after a recovery or link. */
+export function passcodeOf(id: PersonId): string {
+  return KERIClient.passcodeFromMnemonic(PEOPLE[id].mnemonic);
 }
 
 function loadWallet(): Wallet {
@@ -189,7 +197,14 @@ export function installFakeKeria(): void {
     getOrgOOBI: () => `http://localhost:3902/oobi/${ORG.aid}`,
     setOrgAID: () => undefined,
     // --- async methods the click-through paths depend on
-    initialize: async () => {
+    initialize: async (bran: string) => {
+      // A harness person's passcode (Recover identity with their phrase, or a
+      // desktop link from the scripted phone) opens that person's wallet, as
+      // KERIA would hand back the agent the phrase derives.
+      const who = (Object.keys(PEOPLE) as PersonId[]).find((id) => passcodeOf(id) === bran);
+      if (who && !loadWallet().aids.some((a) => a.prefix === PEOPLE[who].aid)) {
+        saveWallet(personWallet(who, MEMBERS.includes(who)));
+      }
       connected = true;
       client.client = signify;
     },

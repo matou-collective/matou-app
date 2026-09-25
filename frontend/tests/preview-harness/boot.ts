@@ -7,24 +7,35 @@
  * the wallet and storage that scenario starts from, swaps the KERIA client for
  * the fake wallet, and draws the scenario picker. The real `keri` boot then
  * runs unchanged against the fake backend the dev server answers on /__fake.
+ * The platform (desktop/browser) is chosen earlier, by the script the backend
+ * plugin injects into index.html — Electron's bridge must exist before any
+ * app module loads.
  */
 import { boot } from 'quasar/wrappers';
-import { installFakeKeria, saveWallet, seedWallet } from './fakeKeria';
-import { FAKE_PREFIX, PEOPLE, SCENARIO_COOKIE, SCENARIOS, scenarioById, type Scenario } from './scenarios';
+import { installFakeKeria, passcodeOf, saveWallet, seedWallet } from './fakeKeria';
+import {
+  DEFAULT_PLATFORM,
+  FAKE_PREFIX,
+  PEOPLE,
+  PLATFORM_KEY,
+  PLATFORMS,
+  SCENARIO_COOKIE,
+  SCENARIOS,
+  scenarioById,
+  type Scenario,
+} from './scenarios';
 
 const CHOSEN_KEY = 'matou-harness:scenario';
-// A throwaway 12-word phrase; the fake wallet never derives anything from it.
-const DUMMY_MNEMONIC = 'abandon ability able about above absent absorb abstract absurd abuse access accident';
 
 /** Wipe everything a previous scenario (or a real session) left behind. */
 function resetStorage(scenario: Scenario): void {
-  const theme = localStorage.getItem('matou:theme');
+  const keep = ['matou:theme', PLATFORM_KEY].map((k) => [k, localStorage.getItem(k)] as const);
   localStorage.clear();
-  if (theme) localStorage.setItem('matou:theme', theme);
+  for (const [k, v] of keep) if (v) localStorage.setItem(k, v);
   saveWallet(seedWallet(scenario));
   if (scenario.signedInAs) {
-    localStorage.setItem('matou_passcode', `harness-${scenario.signedInAs}`);
-    localStorage.setItem('matou_mnemonic', DUMMY_MNEMONIC);
+    localStorage.setItem('matou_passcode', passcodeOf(scenario.signedInAs));
+    localStorage.setItem('matou_mnemonic', PEOPLE[scenario.signedInAs].mnemonic);
   }
   localStorage.setItem(CHOSEN_KEY, scenario.id);
 }
@@ -49,9 +60,13 @@ async function chooseScenario(): Promise<Scenario> {
   return scenario;
 }
 
-function go(id: string): void {
+function go(id: string, platform = currentPlatform()): void {
   // Land on the app's first screen; the router guard sends a signed-in person on.
-  window.location.href = `${window.location.pathname}?scenario=${id}&reset#/`;
+  window.location.href = `${window.location.pathname}?scenario=${id}&platform=${platform}&reset#/`;
+}
+
+function currentPlatform(): string {
+  return localStorage.getItem(PLATFORM_KEY) ?? DEFAULT_PLATFORM;
 }
 
 function drawPicker(current: Scenario): void {
@@ -59,6 +74,7 @@ function drawPicker(current: Scenario): void {
   host.setAttribute('data-testid', 'harness-picker');
   const root = host.attachShadow({ mode: 'open' });
   const who = current.signedInAs ? PEOPLE[current.signedInAs].name : 'nobody yet';
+  const phrases = (Object.values(PEOPLE)).map((p) => `${p.name}: ${p.mnemonic}`).join('\n');
   root.innerHTML = `
     <style>
       :host { all: initial; }
@@ -79,11 +95,14 @@ function drawPicker(current: Scenario): void {
       select option { color: #111; }
       .who { opacity: .7; }
     </style>
-    <div class="pill" title="${current.blurb}">
+    <div class="pill" title="${current.blurb}\n\nRecover identity with any of these phrases:\n${phrases}">
       <b id="toggle">HARNESS</b>
       <span class="rest">
         <select id="scenario" aria-label="Scenario">
           ${SCENARIOS.map((s) => `<option value="${s.id}" ${s.id === current.id ? 'selected' : ''}>${s.label}</option>`).join('')}
+        </select>
+        <select id="platform" aria-label="Platform">
+          ${PLATFORMS.map((p) => `<option value="${p.id}" ${p.id === currentPlatform() ? 'selected' : ''}>${p.label}</option>`).join('')}
         </select>
         <button id="restart" title="Start this scenario again from its first screen">Restart</button>
         <span class="who">as ${who}</span>
@@ -92,6 +111,7 @@ function drawPicker(current: Scenario): void {
   const pill = root.querySelector('.pill')!;
   root.getElementById('toggle')!.addEventListener('click', () => pill.classList.toggle('min'));
   root.getElementById('scenario')!.addEventListener('change', (e) => go((e.target as HTMLSelectElement).value));
+  root.getElementById('platform')!.addEventListener('change', (e) => go(current.id, (e.target as HTMLSelectElement).value));
   root.getElementById('restart')!.addEventListener('click', () => go(current.id));
   document.body.appendChild(host);
 }
