@@ -1,8 +1,9 @@
 <template>
   <div class="credentials-tab">
     <!-- View toggle & filter -->
-    <div class="view-toolbar">
-      <div class="view-toggle">
+    <div class="view-toolbar" :class="{ 'no-toggle': isCoa }">
+      <!-- Coa builds render credentials as cards only — no Cards/Graph toggle. -->
+      <div v-if="!isCoa" class="view-toggle">
         <button
           class="toggle-btn"
           :class="{ active: viewMode === 'cards' }"
@@ -52,40 +53,25 @@
       <p>Toggle "Show revoked" to view revoked credentials.</p>
     </div>
 
-    <!-- Card list view -->
-    <div v-else-if="viewMode === 'cards'" class="cards-grid">
-      <div
+    <!-- Card list view (the only view in a Coa build) -->
+    <div v-else-if="!showGraph" class="cards-grid">
+      <WalletCredentialCard
         v-for="cred in filteredCredentials"
         :key="cred.said"
-        class="credential-card"
-        :class="{ 'card-issued': isIssuedByMe(cred) }"
-        @click="selectedCredential = cred"
-      >
-        <div class="card-top">
-          <div class="card-icon">
-            <CredentialMark :credential="cred" :icon-size="20" />
-          </div>
-          <div class="card-top-right">
-            <span v-if="isIssuedByMe(cred)" class="direction-badge direction-issued">Issued</span>
-            <span v-else class="direction-badge direction-received">Received</span>
-            <span class="status-badge" :class="statusClass(cred.status)">
-              {{ statusLabel(cred.status) }}
-            </span>
-          </div>
-        </div>
-        <div class="card-body">
-          <h4 class="card-title">{{ credentialTitle(cred) }}</h4>
-          <p class="card-role" v-if="credentialSubtitle(cred)">{{ credentialSubtitle(cred) }}</p>
-          <p class="card-community">{{ credentialDescription(cred) }}</p>
-          <p v-if="isIssuedByMe(cred)" class="card-recipient">To: {{ issuerDisplayName(cred.issueeAid) }}</p>
-        </div>
-        <div class="card-footer">
-          <span class="card-date">{{ formatDate(cred.issuedAt) }}</span>
-        </div>
-      </div>
+        :credential="cred"
+        :name="credentialTitle(cred)"
+        :tag="isIssuedByMe(cred) ? 'Issued' : 'Received'"
+        :status-label="statusLabel(cred.status)"
+        :status-tone="isRevoked(cred.status) ? 'warning' : 'healthy'"
+        :subtitle="credentialSubtitle(cred)"
+        :description="credentialDescription(cred)"
+        :footer="formatDate(cred.issuedAt)"
+        :recipient="isIssuedByMe(cred) ? `To: ${issuerDisplayName(cred.issueeAid)}` : ''"
+        @open="selectedCredential = cred"
+      />
     </div>
 
-    <!-- Relationship graph view -->
+    <!-- Relationship graph view (never rendered in a Coa build) -->
     <div v-else class="graph-view" ref="graphContainer">
       <svg :width="graphWidth" :height="graphHeight" class="graph-svg">
         <defs>
@@ -194,15 +180,19 @@ import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { getFileUrl } from 'src/lib/api/client';
 import { credentialTitle as resolveCredentialTitle } from 'src/lib/credentialAppearance';
+import { isCoaBuild } from 'src/kit/build';
 import CredentialDetailDialog from './CredentialDetailDialog.vue';
-import CredentialMark from './CredentialMark.vue';
+import WalletCredentialCard from './WalletCredentialCard.vue';
 
 const walletStore = useWalletStore();
 const profilesStore = useProfilesStore();
 const identityStore = useIdentityStore();
 const appStore = useAppStore();
 
+// Coa builds hide the credentials graph: no Cards/Graph toggle, cards only.
+const isCoa = isCoaBuild();
 const viewMode = ref<'cards' | 'graph'>('cards');
+const showGraph = computed(() => !isCoa && viewMode.value === 'graph');
 const selectedCredential = ref<WalletCredential | null>(null);
 const showRevoked = ref(false);
 
@@ -461,13 +451,6 @@ function counterpartyAid(cred: WalletCredential): string {
   return isIssuedByMe(cred) ? cred.issueeAid : cred.issuerAid;
 }
 
-function statusClass(status: string): string {
-  const s = status.toLowerCase();
-  if (s === 'issued' || s === 'valid' || s === '0') return 'status-active';
-  if (s === 'revoked' || s === '1') return 'status-revoked';
-  return 'status-pending';
-}
-
 function statusLabel(status: string): string {
   const s = status.toLowerCase();
   if (s === '0' || s === 'issued' || s === 'valid') return 'Active';
@@ -498,6 +481,11 @@ function formatDate(dateStr: string): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* With the toggle hidden (Coa build) the revoked filter stays right-aligned. */
+.view-toolbar.no-toggle {
+  justify-content: flex-end;
 }
 
 .view-toggle {
@@ -593,140 +581,6 @@ function formatDate(dateStr: string): string {
   display: grid;
   grid-template-columns: 1fr;
   gap: 1rem;
-}
-
-.credential-card {
-  background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
-  border-radius: var(--matou-radius, 0.75rem);
-  padding: 1.25rem;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.credential-card:hover {
-  border-color: var(--matou-primary, #1e5f74);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-}
-
-.credential-card.card-issued {
-  border-left: 3px solid #e57e24;
-}
-
-.credential-card.card-issued:hover {
-  border-color: #e57e24;
-  border-left: 3px solid #e57e24;
-}
-
-.card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-top-right {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.direction-badge {
-  font-size: 0.65rem;
-  font-weight: 600;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.direction-received {
-  background: #e8f4f8;
-  color: var(--matou-primary, #1e5f74);
-}
-
-.direction-issued {
-  background: #fef3e6;
-  color: #e57e24;
-}
-
-.card-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 0.5rem;
-  background: linear-gradient(135deg, var(--matou-primary, #1e5f74), var(--matou-accent, #4a9d9c));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  overflow: hidden;
-}
-
-.status-badge {
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 0.2rem 0.625rem;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.status-active {
-  background: #ecfdf5;
-  color: #059669;
-}
-
-.status-revoked {
-  background: #fef2f2;
-  color: #dc2626;
-}
-
-.status-pending {
-  background: #fffbeb;
-  color: #d97706;
-}
-
-.card-body {
-  flex: 1;
-}
-
-.card-title {
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: var(--matou-foreground, #1f2937);
-}
-
-.card-role {
-  margin: 0.125rem 0 0;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--matou-foreground, #374151);
-}
-
-.card-community {
-  margin: 0.25rem 0 0;
-  font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
-}
-
-.card-recipient {
-  margin: 0.25rem 0 0;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #e57e24;
-}
-
-.card-footer {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.card-date {
-  font-size: 0.75rem;
-  color: var(--matou-muted-foreground, #9ca3af);
 }
 
 /* Graph view */

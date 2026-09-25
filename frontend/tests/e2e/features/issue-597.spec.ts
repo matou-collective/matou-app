@@ -122,14 +122,14 @@ test.describe('#597 wallet renders IDSS a.display credentials', () => {
     await openWallet(memberPage);
     await seedCredentials(memberPage, credFixtures());
 
-    const cards = memberPage.locator('.credential-card');
+    const cards = memberPage.locator('.wallet-cred-card');
     await expect(cards).toHaveCount(4);
 
     // Titles come from display.name (or the title-cased committee).
-    await expect(memberPage.locator('.card-title', { hasText: 'Finance komiti' })).toBeVisible();
-    await expect(memberPage.locator('.card-title', { hasText: 'Verified Badge' })).toBeVisible();
-    await expect(memberPage.locator('.card-title', { hasText: 'Tampered Badge' })).toBeVisible();
-    await expect(memberPage.locator('.card-title', { hasText: 'Mātou Membership' })).toBeVisible();
+    await expect(memberPage.locator('.cred-name', { hasText: 'Finance komiti' })).toBeVisible();
+    await expect(memberPage.locator('.cred-name', { hasText: 'Verified Badge' })).toBeVisible();
+    await expect(memberPage.locator('.cred-name', { hasText: 'Tampered Badge' })).toBeVisible();
+    await expect(memberPage.locator('.cred-name', { hasText: 'Mātou Membership' })).toBeVisible();
 
     // The icon card paints its community background on the mark.
     const iconMark = cards.filter({ hasText: 'Finance komiti' }).locator('.cred-mark');
