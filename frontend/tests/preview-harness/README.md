@@ -29,6 +29,10 @@ starts the scenario from its seed). Or open `?scenario=<id>` directly; add
 
 Adding one = an entry in `SCENARIOS` (`scenarios.ts`).
 
+The pill's **☾ Night / ☀ Day** button flips the app's own theme (the same
+`.dark` class and `matou:theme` setting the dashboard's toggle uses), live, and
+it survives reloads and scenario restarts.
+
 ## Platform
 
 The pill's second dropdown (or `?platform=`) picks the shell the app believes

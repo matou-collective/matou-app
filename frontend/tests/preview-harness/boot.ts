@@ -12,6 +12,7 @@
  * app module loads.
  */
 import { boot } from 'quasar/wrappers';
+import { applyTheme, persistTheme } from 'src/boot/theme';
 import { installFakeKeria, passcodeOf, saveWallet, seedWallet } from './fakeKeria';
 import {
   DEFAULT_PLATFORM,
@@ -65,6 +66,8 @@ function go(id: string, platform = currentPlatform()): void {
   window.location.href = `${window.location.pathname}?scenario=${id}&platform=${platform}&reset#/`;
 }
 
+const isDark = () => document.documentElement.classList.contains('dark');
+
 function currentPlatform(): string {
   return localStorage.getItem(PLATFORM_KEY) ?? DEFAULT_PLATFORM;
 }
@@ -104,6 +107,7 @@ function drawPicker(current: Scenario): void {
         <select id="platform" aria-label="Platform">
           ${PLATFORMS.map((p) => `<option value="${p.id}" ${p.id === currentPlatform() ? 'selected' : ''}>${p.label}</option>`).join('')}
         </select>
+        <button id="theme" title="Night mode on/off (the app's own theme switch, remembered like it)">${isDark() ? '☀ Day' : '☾ Night'}</button>
         <button id="restart" title="Start this scenario again from its first screen">Restart</button>
         <span class="who">as ${who}</span>
       </span>
@@ -112,6 +116,13 @@ function drawPicker(current: Scenario): void {
   root.getElementById('toggle')!.addEventListener('click', () => pill.classList.toggle('min'));
   root.getElementById('scenario')!.addEventListener('change', (e) => go((e.target as HTMLSelectElement).value));
   root.getElementById('platform')!.addEventListener('change', (e) => go(current.id, (e.target as HTMLSelectElement).value));
+  const theme = root.getElementById('theme')!;
+  theme.addEventListener('click', () => {
+    const dark = !isDark();
+    applyTheme(dark);
+    persistTheme(dark ? 'dark' : 'light');
+    theme.textContent = dark ? '☀ Day' : '☾ Night';
+  });
   root.getElementById('restart')!.addEventListener('click', () => go(current.id));
   document.body.appendChild(host);
 }
