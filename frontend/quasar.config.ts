@@ -4,6 +4,12 @@ import fs from 'fs';
 import { electronBuilderConfig } from './src-electron/kit-builder-config';
 import type { KitBuild } from './src/kit/types';
 import { featureDefines } from './scripts/kit/feature-flags.mjs';
+import { harnessBackend } from './tests/preview-harness/backendPlugin';
+
+// The preview harness (tests/preview-harness, `npm run harness`): a fake
+// backend on the dev server plus a boot file that swaps KERIA for a fake
+// wallet. Off unless MATOU_HARNESS=1, so no build ever carries it.
+const HARNESS = process.env.MATOU_HARNESS === '1';
 
 // Packaging identity (appId, product name, artifact names, publish target,
 // auto-update gate) is generated from coa-kit/kit.json into kit.build.json by
@@ -37,7 +43,15 @@ const prodEnv = loadProdEnv('.env.production');
 
 export default configure(() => {
   return {
-    boot: ['fonts', 'theme', 'motion', 'keri', 'push', 'deeplink'],
+    boot: [
+      'fonts',
+      'theme',
+      'motion',
+      ...(HARNESS ? [`~${path.join(__dirname, 'tests/preview-harness/boot')}`] : []),
+      'keri',
+      'push',
+      'deeplink',
+    ],
 
     css: ['app.scss', 'tailwind.css'],
 
@@ -66,6 +80,10 @@ export default configure(() => {
           fs.readFileSync(path.join(__dirname, 'src/generated/features.json'), 'utf8'),
         );
         viteConf.define = { ...viteConf.define, ...featureDefines(kitFeatures) };
+
+        if (HARNESS) {
+          viteConf.plugins = [...(viteConf.plugins ?? []), harnessBackend(__dirname)];
+        }
 
         // Handle signify-ts dependencies that need special bundling
         viteConf.optimizeDeps = viteConf.optimizeDeps || {};

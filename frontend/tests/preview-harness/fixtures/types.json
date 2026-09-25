@@ -1,0 +1,2319 @@
+[
+  {
+    "name": "AdminOnlyProfile",
+    "version": 1,
+    "description": "Admin-only profile data for moderation and audit purposes",
+    "space": "admin",
+    "fields": [
+      {
+        "name": "userAID",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "User AID",
+          "section": "identity"
+        }
+      },
+      {
+        "name": "moderationHistory",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Moderation History",
+          "section": "moderation"
+        }
+      },
+      {
+        "name": "riskIndicators",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "displayFormat": "chip-list",
+          "label": "Risk Indicators",
+          "section": "moderation"
+        }
+      },
+      {
+        "name": "auditLog",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Audit Log",
+          "section": "audit"
+        }
+      }
+    ],
+    "layouts": {
+      "detail": {
+        "fields": [
+          "userAID",
+          "moderationHistory",
+          "riskIndicators",
+          "auditLog"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "admin",
+      "write": "admin"
+    }
+  },
+  {
+    "name": "ChatChannel",
+    "version": 1,
+    "description": "Chat channel for community discussions",
+    "space": "community-readonly",
+    "fields": [
+      {
+        "name": "name",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 100
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "general",
+          "label": "Channel Name"
+        }
+      },
+      {
+        "name": "description",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "textarea",
+          "placeholder": "What is this channel about?",
+          "label": "Description"
+        }
+      },
+      {
+        "name": "icon",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 10
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "💬",
+          "label": "Icon (Emoji)"
+        }
+      },
+      {
+        "name": "photo",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 200
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "FileRef from FileManager",
+          "label": "Photo"
+        }
+      },
+      {
+        "name": "createdAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Created"
+        }
+      },
+      {
+        "name": "createdBy",
+        "type": "string",
+        "required": false,
+        "readOnly": true,
+        "uiHints": {
+          "label": "Created By"
+        }
+      },
+      {
+        "name": "isArchived",
+        "type": "boolean",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Archived"
+        }
+      },
+      {
+        "name": "allowedRoles",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "tags",
+          "displayFormat": "chip-list",
+          "placeholder": "Empty = all members",
+          "label": "Allowed Roles"
+        }
+      }
+    ],
+    "layouts": {
+      "card": {
+        "fields": [
+          "icon",
+          "name"
+        ]
+      },
+      "detail": {
+        "fields": [
+          "icon",
+          "name",
+          "description",
+          "createdAt",
+          "createdBy",
+          "isArchived",
+          "allowedRoles"
+        ]
+      },
+      "form": {
+        "fields": [
+          "name",
+          "description",
+          "icon",
+          "photo",
+          "allowedRoles"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "admin"
+    }
+  },
+  {
+    "name": "ChatMessage",
+    "version": 1,
+    "description": "Chat message in a channel",
+    "space": "community",
+    "fields": [
+      {
+        "name": "channelId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Channel ID"
+        }
+      },
+      {
+        "name": "senderAid",
+        "type": "string",
+        "required": true,
+        "readOnly": true,
+        "uiHints": {
+          "label": "Sender AID"
+        }
+      },
+      {
+        "name": "senderName",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 100
+        },
+        "uiHints": {
+          "label": "Sender Name"
+        }
+      },
+      {
+        "name": "content",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 4000
+        },
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Message Content"
+        }
+      },
+      {
+        "name": "attachments",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Attachments"
+        }
+      },
+      {
+        "name": "replyTo",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Reply To Message ID"
+        }
+      },
+      {
+        "name": "sentAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Sent At"
+        }
+      },
+      {
+        "name": "editedAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Edited At"
+        }
+      },
+      {
+        "name": "deletedAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Deleted At"
+        }
+      }
+    ],
+    "layouts": {
+      "detail": {
+        "fields": [
+          "senderName",
+          "content",
+          "attachments",
+          "replyTo",
+          "sentAt",
+          "editedAt"
+        ]
+      },
+      "list": {
+        "fields": [
+          "senderName",
+          "content",
+          "sentAt"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "community"
+    }
+  },
+  {
+    "name": "CommunityProfile",
+    "version": 1,
+    "description": "Admin-managed community membership profile",
+    "space": "community-readonly",
+    "fields": [
+      {
+        "name": "userAID",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "User AID",
+          "section": "identity"
+        }
+      },
+      {
+        "name": "credential",
+        "type": "string",
+        "required": true,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "Membership Credential SAID",
+          "section": "membership"
+        }
+      },
+      {
+        "name": "role",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "enum": [
+            "Member",
+            "Contributor",
+            "Community Steward",
+            "Operations Steward",
+            "Founding Member",
+            "Financial Steward",
+            "Governance Steward",
+            "Treasury Steward",
+            "Technical Steward",
+            "Cultural Steward"
+          ]
+        },
+        "uiHints": {
+          "displayFormat": "badge",
+          "label": "Role",
+          "section": "membership",
+          "filterable": true
+        }
+      },
+      {
+        "name": "memberSince",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Member Since",
+          "section": "membership"
+        }
+      },
+      {
+        "name": "lastActiveAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Last Active"
+        }
+      },
+      {
+        "name": "credentials",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "displayFormat": "chip-list",
+          "label": "Community Credentials",
+          "section": "credentials"
+        }
+      },
+      {
+        "name": "adminNotes",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Admin Notes",
+          "section": "admin"
+        }
+      },
+      {
+        "name": "flags",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "displayFormat": "chip-list",
+          "label": "Flags",
+          "section": "admin"
+        }
+      },
+      {
+        "name": "permissions",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "displayFormat": "chip-list",
+          "label": "Permissions",
+          "section": "admin"
+        }
+      },
+      {
+        "name": "communityCredentials",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "displayFormat": "chip-list",
+          "label": "Community Credentials",
+          "section": "credentials"
+        }
+      }
+    ],
+    "layouts": {
+      "card": {
+        "fields": [
+          "role",
+          "memberSince"
+        ]
+      },
+      "detail": {
+        "fields": [
+          "role",
+          "memberSince",
+          "lastActiveAt",
+          "credentials",
+          "permissions"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "admin"
+    }
+  },
+  {
+    "name": "MessageReaction",
+    "version": 1,
+    "description": "Reaction to a chat message",
+    "space": "community",
+    "fields": [
+      {
+        "name": "messageId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Message ID"
+        }
+      },
+      {
+        "name": "emoji",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 10
+        },
+        "uiHints": {
+          "label": "Emoji"
+        }
+      },
+      {
+        "name": "reactorAids",
+        "type": "array",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Reactor AIDs"
+        }
+      }
+    ],
+    "layouts": {
+      "list": {
+        "fields": [
+          "emoji",
+          "reactorAids"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "community"
+    }
+  },
+  {
+    "name": "Notice",
+    "version": 1,
+    "description": "Community notice board entry (event, update, or announcement)",
+    "space": "community",
+    "fields": [
+      {
+        "name": "type",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "enum": [
+            "event",
+            "update",
+            "announcement"
+          ]
+        },
+        "uiHints": {
+          "label": "Notice Type",
+          "section": "core",
+          "filterable": true
+        }
+      },
+      {
+        "name": "subtype",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Subtype",
+          "section": "core",
+          "filterable": true
+        }
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "maxLength": 200
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "Notice title",
+          "label": "Title",
+          "section": "core"
+        }
+      },
+      {
+        "name": "summary",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "textarea",
+          "placeholder": "Brief summary...",
+          "label": "Summary",
+          "section": "core"
+        }
+      },
+      {
+        "name": "body",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "maxLength": 5000
+        },
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Body",
+          "section": "core"
+        }
+      },
+      {
+        "name": "links",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Links",
+          "section": "core"
+        }
+      },
+      {
+        "name": "images",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Images",
+          "section": "media"
+        }
+      },
+      {
+        "name": "attachments",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Attachments",
+          "section": "media"
+        }
+      },
+      {
+        "name": "issuerType",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "enum": [
+            "person",
+            "role",
+            "org",
+            "system"
+          ]
+        },
+        "uiHints": {
+          "label": "Issuer Type",
+          "section": "issuer"
+        }
+      },
+      {
+        "name": "issuerId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Issuer ID",
+          "section": "issuer"
+        }
+      },
+      {
+        "name": "issuerDisplayName",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "maxLength": 100
+        },
+        "uiHints": {
+          "label": "Issuer Name",
+          "section": "issuer"
+        }
+      },
+      {
+        "name": "audienceMode",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "enum": [
+            "space",
+            "role",
+            "community"
+          ]
+        },
+        "uiHints": {
+          "label": "Audience Mode",
+          "section": "audience"
+        }
+      },
+      {
+        "name": "audienceRoleIds",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Audience Roles",
+          "section": "audience"
+        }
+      },
+      {
+        "name": "publishAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Publish At",
+          "section": "time",
+          "filterable": true
+        }
+      },
+      {
+        "name": "activeFrom",
+        "type": "datetime",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Active From",
+          "section": "time",
+          "filterable": true
+        }
+      },
+      {
+        "name": "activeUntil",
+        "type": "datetime",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Active Until",
+          "section": "time",
+          "filterable": true
+        }
+      },
+      {
+        "name": "eventStart",
+        "type": "datetime",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Event Start",
+          "section": "time",
+          "filterable": true
+        }
+      },
+      {
+        "name": "eventEnd",
+        "type": "datetime",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Event End",
+          "section": "time"
+        }
+      },
+      {
+        "name": "timezone",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Timezone",
+          "section": "time"
+        }
+      },
+      {
+        "name": "locationMode",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "enum": [
+            "physical",
+            "online",
+            "hybrid"
+          ]
+        },
+        "uiHints": {
+          "label": "Location Mode",
+          "section": "location"
+        }
+      },
+      {
+        "name": "locationText",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "Where is this event?",
+          "label": "Location",
+          "section": "location"
+        }
+      },
+      {
+        "name": "locationUrl",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "maxLength": 1000
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "https://...",
+          "label": "Location URL",
+          "section": "location"
+        }
+      },
+      {
+        "name": "rsvpEnabled",
+        "type": "boolean",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "RSVP Enabled",
+          "section": "rsvp"
+        }
+      },
+      {
+        "name": "rsvpRequired",
+        "type": "boolean",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "RSVP Required",
+          "section": "rsvp"
+        }
+      },
+      {
+        "name": "rsvpCapacity",
+        "type": "number",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Capacity",
+          "section": "rsvp"
+        }
+      },
+      {
+        "name": "ackRequired",
+        "type": "boolean",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Acknowledgment Required",
+          "section": "ack"
+        }
+      },
+      {
+        "name": "ackDueAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Ack Due Date",
+          "section": "ack"
+        }
+      },
+      {
+        "name": "pinned",
+        "type": "boolean",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Pinned",
+          "section": "lifecycle",
+          "filterable": true
+        }
+      },
+      {
+        "name": "state",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "enum": [
+            "draft",
+            "published",
+            "archived"
+          ]
+        },
+        "uiHints": {
+          "displayFormat": "badge",
+          "label": "State",
+          "section": "lifecycle",
+          "filterable": true
+        }
+      },
+      {
+        "name": "createdAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Created",
+          "section": "lifecycle",
+          "filterable": true
+        }
+      },
+      {
+        "name": "createdBy",
+        "type": "string",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "Created By",
+          "section": "lifecycle"
+        }
+      },
+      {
+        "name": "publishedAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Published",
+          "section": "lifecycle"
+        }
+      },
+      {
+        "name": "archivedAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Archived",
+          "section": "lifecycle"
+        }
+      },
+      {
+        "name": "amendsNoticeId",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Amends Notice",
+          "section": "amendment"
+        }
+      }
+    ],
+    "layouts": {
+      "card": {
+        "fields": [
+          "title",
+          "summary",
+          "type",
+          "state",
+          "eventStart",
+          "locationText"
+        ]
+      },
+      "detail": {
+        "fields": [
+          "title",
+          "summary",
+          "body",
+          "type",
+          "subtype",
+          "links",
+          "issuerDisplayName",
+          "issuerType",
+          "audienceMode",
+          "publishAt",
+          "activeFrom",
+          "activeUntil",
+          "eventStart",
+          "eventEnd",
+          "timezone",
+          "locationMode",
+          "locationText",
+          "locationUrl",
+          "rsvpEnabled",
+          "rsvpCapacity",
+          "ackRequired",
+          "ackDueAt",
+          "state",
+          "createdAt",
+          "createdBy",
+          "publishedAt",
+          "archivedAt",
+          "amendsNoticeId"
+        ]
+      },
+      "form": {
+        "fields": [
+          "type",
+          "title",
+          "summary",
+          "body",
+          "links",
+          "eventStart",
+          "eventEnd",
+          "timezone",
+          "locationMode",
+          "locationText",
+          "locationUrl",
+          "rsvpEnabled",
+          "rsvpRequired",
+          "rsvpCapacity",
+          "ackRequired",
+          "ackDueAt",
+          "activeFrom",
+          "activeUntil"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "admin"
+    },
+    "variantField": "subtype"
+  },
+  {
+    "name": "NoticeAck",
+    "version": 1,
+    "description": "Acknowledgment of a notice by a community member",
+    "space": "community",
+    "fields": [
+      {
+        "name": "noticeId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Notice ID",
+          "section": "ack"
+        }
+      },
+      {
+        "name": "userId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "User ID",
+          "section": "ack"
+        }
+      },
+      {
+        "name": "ackAt",
+        "type": "datetime",
+        "required": true,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Acknowledged At",
+          "section": "ack"
+        }
+      },
+      {
+        "name": "method",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "enum": [
+            "open",
+            "explicit"
+          ]
+        },
+        "uiHints": {
+          "label": "Method",
+          "section": "ack"
+        }
+      }
+    ],
+    "layouts": null,
+    "permissions": {
+      "read": "community",
+      "write": "community"
+    }
+  },
+  {
+    "name": "NoticeComment",
+    "version": 1,
+    "description": "Comment on a community notice",
+    "space": "community",
+    "fields": [
+      {
+        "name": "noticeId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Notice ID",
+          "section": "comment"
+        }
+      },
+      {
+        "name": "userId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "User ID",
+          "section": "comment"
+        }
+      },
+      {
+        "name": "userDisplayName",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 100
+        },
+        "uiHints": {
+          "label": "User Display Name",
+          "section": "comment"
+        }
+      },
+      {
+        "name": "text",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 2000
+        },
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Text",
+          "section": "comment"
+        }
+      },
+      {
+        "name": "createdAt",
+        "type": "datetime",
+        "required": true,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Created At",
+          "section": "comment"
+        }
+      }
+    ],
+    "layouts": null,
+    "permissions": {
+      "read": "community",
+      "write": "community"
+    }
+  },
+  {
+    "name": "NoticeRSVP",
+    "version": 1,
+    "description": "RSVP response to an event notice",
+    "space": "community",
+    "fields": [
+      {
+        "name": "noticeId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Notice ID",
+          "section": "rsvp"
+        }
+      },
+      {
+        "name": "userId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "User ID",
+          "section": "rsvp"
+        }
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "enum": [
+            "going",
+            "maybe",
+            "not_going"
+          ]
+        },
+        "uiHints": {
+          "displayFormat": "badge",
+          "label": "Status",
+          "section": "rsvp"
+        }
+      },
+      {
+        "name": "updatedAt",
+        "type": "datetime",
+        "required": true,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Updated At",
+          "section": "rsvp"
+        }
+      }
+    ],
+    "layouts": null,
+    "permissions": {
+      "read": "community",
+      "write": "community"
+    }
+  },
+  {
+    "name": "NoticeReaction",
+    "version": 1,
+    "description": "Emoji reaction on a community notice",
+    "space": "community",
+    "fields": [
+      {
+        "name": "noticeId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Notice ID",
+          "section": "reaction"
+        }
+      },
+      {
+        "name": "userId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "User ID",
+          "section": "reaction"
+        }
+      },
+      {
+        "name": "emoji",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "enum": [
+            "👍",
+            "❤️",
+            "✨",
+            "🎉"
+          ]
+        },
+        "uiHints": {
+          "label": "Emoji",
+          "section": "reaction"
+        }
+      },
+      {
+        "name": "active",
+        "type": "boolean",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Active",
+          "section": "reaction"
+        }
+      },
+      {
+        "name": "createdAt",
+        "type": "datetime",
+        "required": true,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Created At",
+          "section": "reaction"
+        }
+      }
+    ],
+    "layouts": null,
+    "permissions": {
+      "read": "community",
+      "write": "community"
+    }
+  },
+  {
+    "name": "NoticeSave",
+    "version": 1,
+    "description": "Saved/pinned notice bookmark in personal space",
+    "space": "private",
+    "fields": [
+      {
+        "name": "noticeId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Notice ID",
+          "section": "save"
+        }
+      },
+      {
+        "name": "userId",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "User ID",
+          "section": "save"
+        }
+      },
+      {
+        "name": "savedAt",
+        "type": "datetime",
+        "required": true,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Saved At",
+          "section": "save"
+        }
+      },
+      {
+        "name": "pinned",
+        "type": "boolean",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Pinned",
+          "section": "save"
+        }
+      }
+    ],
+    "layouts": null,
+    "permissions": {
+      "read": "owner",
+      "write": "owner"
+    }
+  },
+  {
+    "name": "OrgProfile",
+    "version": 1,
+    "description": "Community organization profile, visible to all members",
+    "space": "community-readonly",
+    "fields": [
+      {
+        "name": "communityName",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Community Name",
+          "section": "identity"
+        }
+      },
+      {
+        "name": "description",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Description",
+          "section": "identity"
+        }
+      },
+      {
+        "name": "logo",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "image-upload",
+          "displayFormat": "avatar",
+          "label": "Logo",
+          "section": "identity"
+        }
+      },
+      {
+        "name": "contactEmail",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "text",
+          "label": "Contact Email",
+          "section": "contact"
+        }
+      },
+      {
+        "name": "website",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "text",
+          "label": "Website",
+          "section": "contact"
+        }
+      },
+      {
+        "name": "createdAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Founded"
+        }
+      }
+    ],
+    "layouts": {
+      "card": {
+        "fields": [
+          "logo",
+          "communityName"
+        ]
+      },
+      "detail": {
+        "fields": [
+          "logo",
+          "communityName",
+          "description",
+          "contactEmail",
+          "website",
+          "createdAt"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "admin"
+    }
+  },
+  {
+    "name": "PrivateProfile",
+    "version": 1,
+    "description": "Private user preferences and settings, visible only to the owner",
+    "space": "private",
+    "fields": [
+      {
+        "name": "membershipCredentialSAID",
+        "type": "string",
+        "required": true,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "Membership Credential",
+          "section": "membership"
+        }
+      },
+      {
+        "name": "privacySettings",
+        "type": "object",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Privacy Settings",
+          "section": "privacy"
+        }
+      },
+      {
+        "name": "appPreferences",
+        "type": "object",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "App Preferences",
+          "section": "preferences"
+        }
+      }
+    ],
+    "layouts": {
+      "form": {
+        "fields": [
+          "privacySettings",
+          "appPreferences"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "owner",
+      "write": "owner"
+    }
+  },
+  {
+    "name": "Proposal",
+    "version": 1,
+    "description": "A community proposal moving through endorsement, review and voting",
+    "space": "community",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "ID",
+          "section": "core"
+        }
+      },
+      {
+        "name": "proposer_id",
+        "type": "string",
+        "required": true,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "Proposer",
+          "section": "core"
+        }
+      },
+      {
+        "name": "type",
+        "type": "array",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "inputType": "tags",
+          "displayFormat": "chip-list",
+          "label": "Type",
+          "section": "core",
+          "filterable": true
+        }
+      },
+      {
+        "name": "priority",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "uiHints": {
+          "inputType": "select",
+          "displayFormat": "badge",
+          "label": "Priority",
+          "section": "core",
+          "filterable": true
+        }
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "validation": {
+          "enum": [
+            "draft",
+            "submitted",
+            "endorsing",
+            "in_review",
+            "signed_off",
+            "voting_process",
+            "approved",
+            "rejected",
+            "completed",
+            "withdrawn"
+          ]
+        },
+        "uiHints": {
+          "displayFormat": "badge",
+          "label": "Status",
+          "section": "core",
+          "filterable": true
+        }
+      },
+      {
+        "name": "endorsement_threshold",
+        "type": "number",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Endorsement Threshold",
+          "section": "core"
+        }
+      },
+      {
+        "name": "proposal_lead_id",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Proposal Lead",
+          "section": "roles"
+        }
+      },
+      {
+        "name": "proposal_steward_id",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "label": "Proposal Steward",
+          "section": "roles"
+        }
+      },
+      {
+        "name": "lead_contribution_id",
+        "type": "string",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "Lead Contribution",
+          "section": "roles"
+        }
+      },
+      {
+        "name": "steward_contribution_id",
+        "type": "string",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "Steward Contribution",
+          "section": "roles"
+        }
+      },
+      {
+        "name": "created_at",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Created",
+          "section": "core"
+        }
+      },
+      {
+        "name": "updated_at",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Updated",
+          "section": "core"
+        }
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 200
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "Proposal title",
+          "label": "Title",
+          "section": "body"
+        }
+      },
+      {
+        "name": "description",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Description",
+          "section": "body"
+        }
+      },
+      {
+        "name": "problem_statement",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Problem Statement",
+          "section": "body"
+        }
+      },
+      {
+        "name": "solution",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Solution",
+          "section": "body"
+        }
+      },
+      {
+        "name": "expected_outcomes",
+        "type": "array",
+        "required": true,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Expected Outcomes",
+          "section": "body"
+        }
+      },
+      {
+        "name": "estimated_budget",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 200
+        },
+        "uiHints": {
+          "inputType": "text",
+          "label": "Estimated Budget",
+          "section": "body"
+        }
+      },
+      {
+        "name": "timeline",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 200
+        },
+        "uiHints": {
+          "inputType": "text",
+          "label": "Timeline",
+          "section": "body"
+        }
+      },
+      {
+        "name": "project_plan",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Project Plan",
+          "section": "body"
+        }
+      },
+      {
+        "name": "attachments",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "label": "Attachments",
+          "section": "body"
+        }
+      }
+    ],
+    "layouts": {
+      "card": {
+        "fields": [
+          "title",
+          "type",
+          "priority",
+          "status"
+        ]
+      },
+      "detail": {
+        "fields": [
+          "title",
+          "description",
+          "problem_statement",
+          "solution",
+          "expected_outcomes",
+          "estimated_budget",
+          "timeline",
+          "project_plan",
+          "attachments",
+          "status",
+          "priority"
+        ]
+      },
+      "form": {
+        "fields": [
+          "title",
+          "type",
+          "priority",
+          "description",
+          "problem_statement",
+          "solution",
+          "expected_outcomes",
+          "estimated_budget",
+          "timeline",
+          "project_plan",
+          "attachments"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "owner"
+    }
+  },
+  {
+    "name": "SharedProfile",
+    "version": 1,
+    "description": "Public profile visible to all community members",
+    "space": "community",
+    "fields": [
+      {
+        "name": "aid",
+        "type": "string",
+        "required": true,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "AID",
+          "section": "identity"
+        }
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "enum": [
+            "pending",
+            "approved",
+            "declined"
+          ]
+        },
+        "uiHints": {
+          "displayFormat": "badge",
+          "label": "Status",
+          "section": "membership",
+          "filterable": true
+        }
+      },
+      {
+        "name": "publicPeerSignkey",
+        "type": "string",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "label": "Public Signing Key",
+          "section": "identity"
+        }
+      },
+      {
+        "name": "displayName",
+        "type": "string",
+        "required": true,
+        "readOnly": false,
+        "core": true,
+        "validation": {
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "Your display name",
+          "label": "Display Name",
+          "section": "profile",
+          "filterable": true
+        }
+      },
+      {
+        "name": "bio",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "textarea",
+          "placeholder": "Tell us a bit about yourself...",
+          "label": "About You",
+          "section": "profile"
+        }
+      },
+      {
+        "name": "avatar",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "core": true,
+        "uiHints": {
+          "inputType": "image-upload",
+          "displayFormat": "avatar",
+          "label": "Profile Photo",
+          "section": "profile"
+        }
+      },
+      {
+        "name": "location",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "City, Country",
+          "label": "Location",
+          "section": "profile",
+          "filterable": true
+        }
+      },
+      {
+        "name": "joinReason",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "textarea",
+          "placeholder": "Share what brings you to Matou and what you hope to contribute...",
+          "label": "Why do you want to join?",
+          "section": "profile"
+        }
+      },
+      {
+        "name": "indigenousCommunity",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 200
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "Indigenous community you connect to",
+          "label": "Indigenous Community",
+          "section": "profile",
+          "filterable": true
+        }
+      },
+      {
+        "name": "participationInterests",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "tags",
+          "displayFormat": "chip-list",
+          "label": "Participation Interests",
+          "section": "interests",
+          "filterable": true
+        }
+      },
+      {
+        "name": "customInterests",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 300
+        },
+        "uiHints": {
+          "inputType": "textarea",
+          "label": "Custom Interests",
+          "section": "interests"
+        }
+      },
+      {
+        "name": "skills",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "tags",
+          "displayFormat": "chip-list",
+          "label": "Skills",
+          "section": "interests",
+          "filterable": true
+        }
+      },
+      {
+        "name": "languages",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "tags",
+          "displayFormat": "chip-list",
+          "label": "Languages",
+          "section": "interests",
+          "filterable": true
+        }
+      },
+      {
+        "name": "publicEmail",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "email@example.com",
+          "label": "Public Email",
+          "section": "contact"
+        }
+      },
+      {
+        "name": "publicLinks",
+        "type": "array",
+        "required": false,
+        "readOnly": false,
+        "uiHints": {
+          "inputType": "tags",
+          "displayFormat": "link",
+          "label": "Public Links",
+          "section": "contact"
+        }
+      },
+      {
+        "name": "facebookUrl",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "https://facebook.com/username",
+          "label": "Facebook",
+          "section": "social"
+        }
+      },
+      {
+        "name": "linkedinUrl",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "https://linkedin.com/in/username",
+          "label": "LinkedIn",
+          "section": "social"
+        }
+      },
+      {
+        "name": "twitterUrl",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "https://x.com/username",
+          "label": "X (Twitter)",
+          "section": "social"
+        }
+      },
+      {
+        "name": "instagramUrl",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "https://instagram.com/username",
+          "label": "Instagram",
+          "section": "social"
+        }
+      },
+      {
+        "name": "githubUrl",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "https://github.com/username",
+          "label": "GitHub",
+          "section": "social"
+        }
+      },
+      {
+        "name": "gitlabUrl",
+        "type": "string",
+        "required": false,
+        "readOnly": false,
+        "validation": {
+          "maxLength": 500
+        },
+        "uiHints": {
+          "inputType": "text",
+          "placeholder": "https://gitlab.com/username",
+          "label": "GitLab",
+          "section": "social"
+        }
+      },
+      {
+        "name": "lastActiveAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Last Active"
+        }
+      },
+      {
+        "name": "createdAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Created"
+        }
+      },
+      {
+        "name": "updatedAt",
+        "type": "datetime",
+        "required": false,
+        "readOnly": true,
+        "core": true,
+        "uiHints": {
+          "displayFormat": "relative-date",
+          "label": "Updated"
+        }
+      },
+      {
+        "name": "typeVersion",
+        "type": "number",
+        "required": false,
+        "readOnly": true,
+        "core": true
+      }
+    ],
+    "layouts": {
+      "card": {
+        "fields": [
+          "avatar",
+          "displayName",
+          "status"
+        ]
+      },
+      "detail": {
+        "fields": [
+          "avatar",
+          "displayName",
+          "status",
+          "bio",
+          "location",
+          "indigenousCommunity",
+          "joinReason",
+          "participationInterests",
+          "customInterests",
+          "skills",
+          "languages",
+          "publicEmail",
+          "publicLinks",
+          "facebookUrl",
+          "linkedinUrl",
+          "twitterUrl",
+          "instagramUrl",
+          "githubUrl",
+          "gitlabUrl",
+          "lastActiveAt",
+          "createdAt"
+        ]
+      },
+      "form": {
+        "fields": [
+          "displayName",
+          "bio",
+          "avatar",
+          "location",
+          "indigenousCommunity",
+          "joinReason",
+          "participationInterests",
+          "customInterests",
+          "skills",
+          "languages",
+          "publicEmail",
+          "publicLinks",
+          "facebookUrl",
+          "linkedinUrl",
+          "twitterUrl",
+          "instagramUrl",
+          "githubUrl",
+          "gitlabUrl"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "owner"
+    }
+  },
+  {
+    "name": "type_definition",
+    "version": 1,
+    "description": "Meta-type for storing type definitions as objects",
+    "space": "community",
+    "fields": [
+      {
+        "name": "name",
+        "type": "string",
+        "required": true,
+        "readOnly": false
+      },
+      {
+        "name": "version",
+        "type": "number",
+        "required": true,
+        "readOnly": false
+      },
+      {
+        "name": "description",
+        "type": "string",
+        "required": false,
+        "readOnly": false
+      },
+      {
+        "name": "space",
+        "type": "string",
+        "required": true,
+        "readOnly": false
+      },
+      {
+        "name": "fields",
+        "type": "array",
+        "required": true,
+        "readOnly": false
+      },
+      {
+        "name": "layouts",
+        "type": "object",
+        "required": false,
+        "readOnly": false
+      },
+      {
+        "name": "permissions",
+        "type": "object",
+        "required": true,
+        "readOnly": false
+      }
+    ],
+    "layouts": {
+      "detail": {
+        "fields": [
+          "name",
+          "version",
+          "description",
+          "space",
+          "fields",
+          "permissions"
+        ]
+      }
+    },
+    "permissions": {
+      "read": "community",
+      "write": "admin"
+    }
+  }
+]

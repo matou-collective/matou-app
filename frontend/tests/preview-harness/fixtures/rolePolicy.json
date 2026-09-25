@@ -1,0 +1,447 @@
+{
+  "callerCapabilitiesByRole": {
+    "Founding Member": [
+      "contribute",
+      "manage_projects",
+      "review_work",
+      "sign_off",
+      "reward",
+      "submit_completion",
+      "approve_completion",
+      "archive_work",
+      "view_contribution_amounts",
+      "assign_project_steward",
+      "assign_project_lead",
+      "create_proposals",
+      "manage_governance",
+      "send_messages",
+      "manage_channels",
+      "moderate_messages",
+      "post_notices",
+      "manage_notices",
+      "open_community_settings",
+      "manage_community_settings",
+      "manage_members",
+      "manage_roles"
+    ],
+    "Member": [
+      "contribute",
+      "manage_projects",
+      "review_work",
+      "create_proposals",
+      "send_messages",
+      "post_notices"
+    ]
+  },
+  "capabilities": {
+    "approve_completion": [
+      "approve_project_completion",
+      "reject_project_completion"
+    ],
+    "archive_work": [
+      "archive_project",
+      "archive_milestone",
+      "archive_contribution",
+      "unassign_contribution",
+      "edit_milestone",
+      "link_proposal"
+    ],
+    "assign_project_lead": [
+      "assign_project_lead"
+    ],
+    "assign_project_steward": [
+      "assign_project_role",
+      "assign_project_steward",
+      "init_member_profile"
+    ],
+    "contribute": [
+      "create_contribution",
+      "confirm_contribution",
+      "register_interest",
+      "share_contribution",
+      "offer_contribution",
+      "accept_offer",
+      "submit_evidence",
+      "edit_evidence",
+      "assign_contribution",
+      "transition_contribution",
+      "update_contribution",
+      "store_credential",
+      "write_profile"
+    ],
+    "create_proposals": [
+      "create_proposal",
+      "submit_proposal"
+    ],
+    "manage_channels": [
+      "create_channel",
+      "edit_channel",
+      "archive_channel",
+      "set_channel_roles"
+    ],
+    "manage_community_settings": [
+      "save_org_config",
+      "manage_schema"
+    ],
+    "manage_governance": [
+      "sign_off_proposal",
+      "reject_proposal",
+      "edit_proposal",
+      "withdraw_proposal"
+    ],
+    "manage_members": [
+      "change_member_role",
+      "remove_member",
+      "grant_steward_admin",
+      "set_identity"
+    ],
+    "manage_notices": [
+      "manage_notice"
+    ],
+    "manage_projects": [
+      "create_project",
+      "edit_project",
+      "delete_project"
+    ],
+    "manage_roles": [
+      "manage_role_policy"
+    ],
+    "moderate_messages": [
+      "moderate_message"
+    ],
+    "open_community_settings": [
+      "open_community_settings"
+    ],
+    "post_notices": [
+      "post_notice"
+    ],
+    "review_work": [
+      "review_contribution",
+      "approve_sub_contribution"
+    ],
+    "reward": [
+      "reward_contribution"
+    ],
+    "send_messages": [
+      "send_message"
+    ],
+    "sign_off": [
+      "sign_off_contribution",
+      "sign_off_plan"
+    ],
+    "submit_completion": [
+      "submit_project_completion"
+    ],
+    "view_contribution_amounts": []
+  },
+  "capabilityMeta": [
+    {
+      "id": "contribute",
+      "displayName": "Contribute",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "manage_projects",
+      "displayName": "Manage Projects",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "review_work",
+      "displayName": "Review Work",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "sign_off",
+      "displayName": "Sign Off",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "reward",
+      "displayName": "Reward",
+      "group": "Projects \u0026 Contributions",
+      "scope": "community"
+    },
+    {
+      "id": "submit_completion",
+      "displayName": "Submit Completion",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "approve_completion",
+      "displayName": "Approve Completion",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "archive_work",
+      "displayName": "Archive Work",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "view_contribution_amounts",
+      "displayName": "View Contribution Amounts",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "assign_project_steward",
+      "displayName": "Assign Project Steward",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "assign_project_lead",
+      "displayName": "Assign Project Lead",
+      "group": "Projects \u0026 Contributions",
+      "scope": "project"
+    },
+    {
+      "id": "create_proposals",
+      "displayName": "Create Proposals",
+      "group": "Proposals",
+      "scope": "community"
+    },
+    {
+      "id": "manage_governance",
+      "displayName": "Manage Governance",
+      "group": "Proposals",
+      "scope": "community"
+    },
+    {
+      "id": "send_messages",
+      "displayName": "Send Messages",
+      "group": "Chat",
+      "scope": "community"
+    },
+    {
+      "id": "manage_channels",
+      "displayName": "Manage Channels",
+      "group": "Chat",
+      "scope": "community"
+    },
+    {
+      "id": "moderate_messages",
+      "displayName": "Moderate Messages",
+      "group": "Chat",
+      "scope": "community"
+    },
+    {
+      "id": "post_notices",
+      "displayName": "Post Notices",
+      "group": "Notices",
+      "scope": "community"
+    },
+    {
+      "id": "manage_notices",
+      "displayName": "Manage Notices",
+      "group": "Notices",
+      "scope": "community"
+    },
+    {
+      "id": "open_community_settings",
+      "displayName": "Open Community Settings",
+      "group": "Community",
+      "scope": "community"
+    },
+    {
+      "id": "manage_community_settings",
+      "displayName": "Manage Community Settings",
+      "group": "Community",
+      "scope": "community"
+    },
+    {
+      "id": "manage_members",
+      "displayName": "Manage Members",
+      "group": "Community",
+      "scope": "community"
+    },
+    {
+      "id": "manage_roles",
+      "displayName": "Manage Roles",
+      "group": "Community",
+      "scope": "community"
+    }
+  ],
+  "capabilityOrder": [
+    "contribute",
+    "manage_projects",
+    "review_work",
+    "sign_off",
+    "reward",
+    "submit_completion",
+    "approve_completion",
+    "archive_work",
+    "view_contribution_amounts",
+    "assign_project_steward",
+    "assign_project_lead",
+    "create_proposals",
+    "manage_governance",
+    "send_messages",
+    "manage_channels",
+    "moderate_messages",
+    "post_notices",
+    "manage_notices",
+    "open_community_settings",
+    "manage_community_settings",
+    "manage_members",
+    "manage_roles"
+  ],
+  "policy": {
+    "version": 0,
+    "roles": [
+      {
+        "id": "member",
+        "displayName": "Member",
+        "builtin": true,
+        "scope": "community"
+      },
+      {
+        "id": "contributor",
+        "displayName": "Contributor",
+        "builtin": true,
+        "scope": "project"
+      },
+      {
+        "id": "project_lead",
+        "displayName": "Project Lead",
+        "builtin": true,
+        "scope": "project"
+      },
+      {
+        "id": "project_steward",
+        "displayName": "Project Steward",
+        "builtin": true,
+        "scope": "project"
+      },
+      {
+        "id": "operations_steward",
+        "displayName": "Operations Steward",
+        "builtin": true,
+        "scope": "community"
+      },
+      {
+        "id": "community_steward",
+        "displayName": "Community Steward",
+        "builtin": true,
+        "scope": "community"
+      },
+      {
+        "id": "founding_member",
+        "displayName": "Founding Member",
+        "builtin": true,
+        "scope": "community"
+      }
+    ],
+    "grants": {
+      "community_steward": [
+        "contribute",
+        "manage_projects",
+        "review_work",
+        "create_proposals",
+        "send_messages",
+        "post_notices",
+        "manage_channels",
+        "moderate_messages",
+        "manage_notices",
+        "manage_governance"
+      ],
+      "contributor": [
+        "contribute",
+        "manage_projects",
+        "review_work"
+      ],
+      "founding_member": [
+        "contribute",
+        "manage_projects",
+        "review_work",
+        "create_proposals",
+        "send_messages",
+        "post_notices",
+        "manage_channels",
+        "moderate_messages",
+        "manage_notices",
+        "assign_project_steward",
+        "assign_project_lead",
+        "sign_off",
+        "reward",
+        "submit_completion",
+        "approve_completion",
+        "archive_work",
+        "manage_members",
+        "manage_governance",
+        "manage_roles",
+        "open_community_settings",
+        "manage_community_settings"
+      ],
+      "member": [
+        "contribute",
+        "manage_projects",
+        "review_work",
+        "create_proposals",
+        "send_messages",
+        "post_notices"
+      ],
+      "operations_steward": [
+        "contribute",
+        "manage_projects",
+        "review_work",
+        "create_proposals",
+        "send_messages",
+        "post_notices",
+        "manage_channels",
+        "moderate_messages",
+        "manage_notices",
+        "assign_project_steward",
+        "assign_project_lead",
+        "sign_off",
+        "reward",
+        "submit_completion",
+        "approve_completion",
+        "archive_work",
+        "manage_members",
+        "manage_governance",
+        "manage_roles"
+      ],
+      "project_lead": [
+        "contribute",
+        "manage_projects",
+        "review_work",
+        "submit_completion",
+        "archive_work",
+        "view_contribution_amounts"
+      ],
+      "project_steward": [
+        "contribute",
+        "manage_projects",
+        "review_work",
+        "assign_project_steward",
+        "assign_project_lead",
+        "sign_off",
+        "approve_completion",
+        "archive_work",
+        "manage_governance",
+        "view_contribution_amounts"
+      ]
+    },
+    "capModel": 1
+  },
+  "projectCapabilities": [
+    "contribute",
+    "manage_projects",
+    "review_work",
+    "sign_off",
+    "submit_completion",
+    "approve_completion",
+    "archive_work",
+    "view_contribution_amounts",
+    "assign_project_steward",
+    "assign_project_lead"
+  ],
+  "source": "default"
+}

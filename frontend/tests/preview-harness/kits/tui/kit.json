@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "slug": "tui",
+  "build": 1,
+  "configUrl": "http://localhost:9100/__fake",
+  "logoFile": "logo.png",
+  "brand": {
+    "name": "Te Rūnanga o Tūī",
+    "slug": "tui",
+    "primaryColour": "#3d6b3f",
+    "secondaryColour": "#61a99c",
+    "contactEmail": "kaitiaki@tui.example.nz",
+    "tagline": "Kotahi te manu, kotahi te waiata"
+  },
+  "onboarding": {
+    "welcome": {
+      "heading": "Nau mai, haere mai",
+      "bodyMarkdown": "This is our **online marae** — kōrero, pānui, events and mahi in one place.\n\nHave a look around before you register."
+    },
+    "profile": {
+      "fields": {
+        "photo": true,
+        "email": true,
+        "bio": true,
+        "location": true,
+        "whyJoin": true,
+        "interests": true
+      },
+      "customQuestions": [
+        {
+          "type": "select",
+          "label": "Which marae do you affiliate to?",
+          "options": [
+            "Te Rere",
+            "Waiaua",
+            "Ōmarumutu",
+            "Other"
+          ]
+        },
+        {
+          "type": "text",
+          "label": "Who is your pakeke or contact person?"
+        }
+      ],
+      "interestOptions": [
+        "Kapa haka",
+        "Te reo",
+        "Whakapapa",
+        "Kai",
+        "Taiao"
+      ]
+    },
+    "approval": {
+      "mode": "admin"
+    },
+    "pending": {
+      "heading": "Kia tatari — you're nearly there",
+      "bodyMarkdown": "Your request to join has gone to our kaitiaki for review.",
+      "nextSteps": "Watch your email — we'll let you know as soon as you're approved."
+    },
+    "infoPages": [
+      {
+        "title": "Who we are",
+        "bodyMarkdown": "We are the uri of Tūī, spread from Ōpōtiki to Tāmaki. This app keeps us connected between hui."
+      },
+      {
+        "title": "How we look after each other",
+        "bodyMarkdown": "- Kōrero with aroha\n- Keep whānau business in the whānau\n- Ask a kaitiaki if you're unsure"
+      }
+    ]
+  },
+  "features": {
+    "identity": true,
+    "chat": true,
+    "projects": true,
+    "proposals": true,
+    "notices": true,
+    "events": true,
+    "maramataka": true,
+    "order": [
+      "chat",
+      "projects",
+      "proposals",
+      "notices",
+      "events"
+    ]
+  },
+  "backend": {
+    "kind": "shared",
+    "feeAcknowledged": true
+  }
+}

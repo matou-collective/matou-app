@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "slug": "bright",
+  "build": 1,
+  "configUrl": "http://localhost:9100/__fake",
+  "logoFile": "logo.svg",
+  "brand": {
+    "name": "Bright Collective",
+    "slug": "bright",
+    "primaryColour": "#6C2BD9",
+    "secondaryColour": "#12B5C9",
+    "contactEmail": "kaitiaki@bright.example.nz",
+    "tagline": "Loud on purpose"
+  },
+  "onboarding": {
+    "welcome": {
+      "heading": "Welcome to Bright",
+      "bodyMarkdown": "A loud little collective. Identity and chat, nothing else."
+    },
+    "profile": {
+      "fields": {
+        "photo": true,
+        "email": true,
+        "bio": true,
+        "location": true,
+        "whyJoin": true,
+        "interests": true
+      },
+      "customQuestions": [],
+      "interestOptions": [
+        "Events",
+        "Kaupapa",
+        "Kai"
+      ]
+    },
+    "approval": {
+      "mode": "admin"
+    },
+    "pending": {
+      "heading": "Nearly in",
+      "bodyMarkdown": "A steward will look at your request.",
+      "nextSteps": "Hang tight."
+    },
+    "infoPages": []
+  },
+  "features": {
+    "identity": true,
+    "chat": true,
+    "projects": false,
+    "proposals": false,
+    "notices": false,
+    "events": false,
+    "maramataka": false,
+    "order": [
+      "chat",
+      "projects",
+      "proposals",
+      "notices",
+      "events"
+    ]
+  },
+  "backend": {
+    "kind": "shared",
+    "feeAcknowledged": true
+  }
+}

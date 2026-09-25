@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "slug": "whakatohea-demo",
+  "build": 7,
+  "configUrl": "http://localhost:9100/__fake",
+  "logoFile": "logo.png",
+  "brand": {
+    "name": "WHAKATOHEA DEMO",
+    "slug": "whakatohea-demo",
+    "primaryColour": "#404040",
+    "secondaryColour": "#3c513b",
+    "contactEmail": "ben@matou.nz"
+  },
+  "onboarding": {
+    "welcome": {
+      "heading": "Nau mai",
+      "bodyMarkdown": "Welcome to WHAKATOHEA DEMO."
+    },
+    "profile": {
+      "fields": {
+        "photo": true,
+        "email": true,
+        "bio": true,
+        "location": true,
+        "whyJoin": true,
+        "interests": true
+      },
+      "customQuestions": [],
+      "interestOptions": [
+        "Events",
+        "Kaupapa",
+        "Kai"
+      ]
+    },
+    "approval": {
+      "mode": "admin"
+    },
+    "pending": {
+      "heading": "Kia tatari",
+      "bodyMarkdown": "Your application is being reviewed.",
+      "nextSteps": "Watch your email."
+    },
+    "infoPages": [],
+    "resources": []
+  },
+  "features": {
+    "identity": true,
+    "chat": true,
+    "projects": false,
+    "proposals": false,
+    "notices": true,
+    "events": true,
+    "maramataka": true,
+    "order": [
+      "chat",
+      "projects",
+      "proposals",
+      "notices",
+      "events"
+    ]
+  },
+  "backend": {
+    "kind": "shared",
+    "feeAcknowledged": true
+  }
+}

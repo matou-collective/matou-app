@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "slug": "ngati-example",
+  "build": 2,
+  "configUrl": "http://localhost:9100/__fake",
+  "logoFile": "logo.svg",
+  "brand": {
+    "name": "Ngāti Example",
+    "slug": "ngati-example",
+    "primaryColour": "#7d2431",
+    "secondaryColour": "#e3a72f",
+    "tagline": "Our people, our app",
+    "welcomeText": "Nau mai",
+    "contactEmail": "ben@matou.nz"
+  },
+  "onboarding": {
+    "welcome": {
+      "heading": "Nau mai ki Ngāti Example",
+      "bodyMarkdown": "Kia ora! This app is our online marae — kōrero, notices, events and mahi, all in one place. Have a look around; we're glad you're here."
+    },
+    "profile": {
+      "fields": {
+        "photo": true,
+        "email": true,
+        "bio": true,
+        "location": true,
+        "whyJoin": true,
+        "interests": true
+      },
+      "customQuestions": [],
+      "interestOptions": [
+        "Events",
+        "Kaupapa",
+        "Kai"
+      ]
+    },
+    "approval": {
+      "mode": "admin"
+    },
+    "pending": {
+      "heading": "Kia tatari - you're nearly there",
+      "bodyMarkdown": "Your request to join has been sent to our kaitiaki for review.",
+      "nextSteps": "Watch your email - we'll let you know as soon as you're approved."
+    },
+    "infoPages": []
+  },
+  "features": {
+    "identity": true,
+    "chat": true,
+    "projects": true,
+    "proposals": true,
+    "notices": true,
+    "events": true,
+    "maramataka": true,
+    "order": [
+      "chat",
+      "projects",
+      "proposals",
+      "notices",
+      "events"
+    ]
+  },
+  "backend": {
+    "kind": "shared",
+    "feeAcknowledged": true
+  }
+}
