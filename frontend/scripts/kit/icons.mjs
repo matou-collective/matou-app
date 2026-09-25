@@ -29,9 +29,10 @@ async function logoPng(logo, size, background) {
   return sharp(logo, { density: 384 }).resize(size, size, { ...pad, withoutEnlargement: false }).png().toBuffer();
 }
 
-// The logo's own background colour, or null. An opaque raster whose border is one
-// flat colour (a wordmark exported on white, say) carries its background with it;
-// a logo with any transparency along its edge does not, and takes the brand primary.
+// The logo's own background colour, or null. An opaque raster whose border is
+// dominated by one flat colour (a wordmark exported on white, say) carries its
+// background with it; a logo with any transparency along its edge does not, and
+// takes the brand primary.
 export async function logoBackground(logo) {
   const { data, info } = await sharp(logo, { density: 384 }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const { width: w, height: h, channels: c } = info;
@@ -39,13 +40,21 @@ export async function logoBackground(logo) {
   const ring = [];
   for (let x = 0; x < w; x++) ring.push(px(x, 0), px(x, h - 1));
   for (let y = 1; y < h - 1; y++) ring.push(px(0, y), px(w - 1, y));
-  const [r, g, b] = ring[0];
   const TOL = 8;
+  // Any transparency along the edge means the logo floats: it keeps the primary.
+  for (const p of ring) if (p[3] < 255) return null;
+  // Otherwise take the border's dominant flat colour by a majority vote, so a
+  // wordmark whose glyphs reach the plate edge (or a little anti-aliasing) does
+  // not hide the background the rest of the ring agrees on. A border with no
+  // single colour (a photo, a gradient) has no dominant bucket and returns null.
+  const buckets = [];
   for (const p of ring) {
-    if (p[3] < 255) return null;
-    if (Math.abs(p[0] - r) > TOL || Math.abs(p[1] - g) > TOL || Math.abs(p[2] - b) > TOL) return null;
+    const hit = buckets.find((b) => Math.abs(b.r - p[0]) <= TOL && Math.abs(b.g - p[1]) <= TOL && Math.abs(b.b - p[2]) <= TOL);
+    if (hit) hit.n++; else buckets.push({ r: p[0], g: p[1], b: p[2], n: 1 });
   }
-  return '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+  const top = buckets.reduce((a, b) => (b.n > a.n ? b : a));
+  if (top.n < ring.length * 0.75) return null;
+  return '#' + [top.r, top.g, top.b].map((v) => v.toString(16).padStart(2, '0')).join('');
 }
 
 // Tile shapes. `background` is the logo's own colour when it has one: the logo
