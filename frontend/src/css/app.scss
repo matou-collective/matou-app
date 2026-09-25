@@ -63,6 +63,24 @@ code {
   font-size: 0.875em;
 }
 
+// ── Native form controls (light/dark theme text colour) ─────────────────────────
+// Raw <input>, <textarea> and <select> follow the theme background (via
+// --matou-input-background on .m-textarea and friends) but a native control does
+// not inherit `color`: browsers default it to the system field text (black), which
+// is invisible on the dark input background. Set it explicitly here so every raw
+// control follows the theme. This is an element-level selector, so any component
+// that sets its own colour on a class or scoped selector (e.g. the chat composer)
+// still wins on specificity. See #624.
+input,
+textarea,
+select {
+  color: var(--matou-foreground);
+
+  &::placeholder {
+    color: var(--matou-muted-foreground);
+  }
+}
+
 // Custom component styles that use design tokens
 // These are component-specific and don't conflict with Tailwind utilities
 
