@@ -97,7 +97,8 @@ const cardStyle = computed(() =>
    line pushed to the bottom with OPEN under it. The grid that holds these cards
    (CredentialsTab .cards-grid) lays them out in a row at the panel's width. */
 .wallet-cred-card {
-  --cred-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  /* Kit UI family (Roboto Mono) via the shared --oc-* layer — DDR 0281 / #657. */
+  --cred-mono: var(--oc-font-sans, ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace);
   position: relative;
   min-width: 0;
   box-sizing: border-box;
@@ -155,16 +156,16 @@ const cardStyle = computed(() =>
 }
 
 .cred-chip.healthy {
-  color: #3f6b3a;
+  color: var(--oc-status-success, #3f6b3a);
 }
 
 .cred-chip.warning {
-  color: var(--matou-destructive, #dc2626);
+  color: var(--oc-status-danger, var(--matou-destructive, #dc2626));
 }
 
 .cred-chip.chip-painted {
   border-color: rgba(0, 0, 0, 0.08);
-  color: #3f6b3a;
+  color: var(--oc-status-success, #3f6b3a);
 }
 
 .cred-body {

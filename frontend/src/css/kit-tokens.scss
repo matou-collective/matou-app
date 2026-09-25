@@ -5,19 +5,44 @@ $kit-accent: #628f9e;
 $kit-primary-foreground: #ffffff;
 
 :root {
-  --matou-primary: #1E5F74;
-  --matou-secondary: #E8F4F8;
-  --matou-secondary-strong: #E8F4F8;
-  --matou-secondary-foreground: #1E5F74;
-  --matou-muted: #E8F4F8;
-  --matou-accent: #628f9e;
-  --matou-sidebar-accent: #E8F4F8;
+  // One brand token vocabulary shared with the IDSS kit (packages/ui-kit
+  // baseLayer.css) — IDSS DDR 0281 / #657. Every Coa and IDSS surface styles
+  // from these --oc-* names; the kit fonts (Merriweather voice, Roboto Mono UI)
+  // are part of the same layer. The --matou-* tokens below are kept only as
+  // aliases onto the --oc-* names, so every current consumer still resolves.
+  --oc-accent: #1E5F74;
+  --oc-accent-muted: #628f9e;
+  --oc-secondary: #E8F4F8;
+  --oc-secondary-surface: #E8F4F8;
+  --oc-sidebar-accent: #E8F4F8;
+  --oc-text-on-accent: #ffffff;
+  --oc-background: #f6f9f9;
+  --oc-status-success: #3f6b3a;
+  --oc-status-warning: #b26a00;
+  --oc-status-danger: #c8463a;
+  --oc-status-info: var(--oc-accent);
+  --oc-font-serif: 'Merriweather', Georgia, 'Times New Roman', serif;
+  --oc-font-sans: 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --matou-primary: var(--oc-accent);
+  --matou-secondary: var(--oc-secondary-surface);
+  --matou-secondary-strong: var(--oc-secondary);
+  --matou-secondary-foreground: var(--oc-accent);
+  --matou-muted: var(--oc-secondary-surface);
+  --matou-accent: var(--oc-accent-muted);
+  --matou-sidebar-accent: var(--oc-sidebar-accent);
 }
 
 .dark {
-  --matou-primary: #8fafba;
-  --matou-primary-foreground: #08181d;
-  --matou-secondary: #1e3340;
-  --matou-muted: #1e3340;
-  --matou-sidebar-accent: #1e3340;
+  --oc-accent: #8fafba;
+  --oc-text-on-accent: #08181d;
+  --oc-secondary-surface: #1e3340;
+  --oc-sidebar-accent: #1e3340;
+  --oc-background: #051115;
+
+  --matou-primary: var(--oc-accent);
+  --matou-primary-foreground: var(--oc-text-on-accent);
+  --matou-secondary: var(--oc-secondary-surface);
+  --matou-muted: var(--oc-secondary-surface);
+  --matou-sidebar-accent: var(--oc-sidebar-accent);
 }

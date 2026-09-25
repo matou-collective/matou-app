@@ -32,7 +32,9 @@
     "release": "../scripts/release.sh"
   },
   "dependencies": {
+    "@fontsource/merriweather": "^5.3.0",
     "@fontsource/roboto": "^5.3.0",
+    "@fontsource/roboto-mono": "^5.3.0",
     "@quasar/extras": "^1.16.12",
     "@scure/bip39": "^2.0.1",
     "@types/dompurify": "^3.0.5",

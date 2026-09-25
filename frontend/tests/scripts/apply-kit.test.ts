@@ -38,19 +38,31 @@ describe('apply-kit (core)', () => {
     expect(await readFile(join(root, 'src-capacitor/android/app/build.gradle'), 'utf8')).toContain('applicationId "nz.matou.app"');
     const tokens = await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8');
     expect(tokens).toContain('$kit-primary: #1E5F74;');
-    expect(tokens).toContain('--matou-primary: #1E5F74;');
+    // #657 / DDR 0281 — the canonical brand vocabulary is the shared IDSS kit's
+    // --oc-* names, derived from the same kit.json; --matou-* are kept only as
+    // aliases onto them so every current consumer still resolves.
+    expect(tokens).toContain('--oc-accent: #1E5F74;');
+    expect(tokens).toContain('--matou-primary: var(--oc-accent);');
     // Stock secondary #E8F4F8 is already a pale tint → kept solid (unchanged
     // look), and the selected-nav / dark values match the pre-#337 hardcodes.
-    expect(tokens).toContain('--matou-secondary: #E8F4F8;');
-    expect(tokens).toContain('--matou-muted: #E8F4F8;');
-    expect(tokens).toContain('--matou-secondary-strong: #E8F4F8;');
-    expect(tokens).toContain('--matou-sidebar-accent: #E8F4F8;');
+    expect(tokens).toContain('--oc-secondary: #E8F4F8;');
+    expect(tokens).toContain('--oc-secondary-surface: #E8F4F8;');
+    expect(tokens).toContain('--oc-sidebar-accent: #E8F4F8;');
+    expect(tokens).toContain('--matou-secondary: var(--oc-secondary-surface);');
+    expect(tokens).toContain('--matou-muted: var(--oc-secondary-surface);');
+    expect(tokens).toContain('--matou-secondary-strong: var(--oc-secondary);');
+    expect(tokens).toContain('--matou-sidebar-accent: var(--oc-sidebar-accent);');
+    // The kit type system is part of the emitted --oc-* layer (DDR 0281).
+    expect(tokens).toContain("--oc-font-serif: 'Merriweather'");
+    expect(tokens).toContain("--oc-font-sans: 'Roboto Mono'");
     expect(tokens).not.toContain('color-mix');
-    expect(tokens).toMatch(/\.dark\s*\{[^}]*--matou-secondary: #1e3340;/);
-    // #636 — dark mode primary is a lightened kit primary (+ near-black foreground)
+    expect(tokens).toMatch(/\.dark\s*\{[^}]*--oc-secondary-surface: #1e3340;/);
+    // #636 — dark mode accent is a lightened kit primary (+ near-black text-on-accent)
     // emitted from the kit, so it no longer falls back to Mātou's teal (#7eb3b8).
-    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-primary: #8fafba;/);
-    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-primary-foreground: #08181d;/);
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--oc-accent: #8fafba;/);
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--oc-text-on-accent: #08181d;/);
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-primary: var\(--oc-accent\);/);
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-primary-foreground: var\(--oc-text-on-accent\);/);
     expect(tokens).not.toContain('#7eb3b8');
     const kitTs = await readFile(join(root, 'src/generated/kit.ts'), 'utf8');
     expect(kitTs).toContain("export const KIT");
@@ -73,17 +85,21 @@ describe('apply-kit (core)', () => {
     // URL schemes may not contain '_' (RFC 3986) — the scheme keeps the hyphenated slug
     expect(strings).toContain('<string name="custom_url_scheme">org.matou.coa.ngati-example</string>');
     const tokens = await readFile(join(root, 'src/css/kit-tokens.scss'), 'utf8');
-    // Full-strength secondary stays available…
+    // Full-strength secondary stays available on the shared --oc-secondary token…
     expect(tokens).toContain('$kit-secondary: #F2B134;');
-    expect(tokens).toContain('--matou-secondary-strong: #F2B134;');
-    // …but the saturated gold lands as a pale translucent wash on the
-    // secondary/muted backgrounds and the selected-nav accent, in both themes.
-    expect(tokens).toContain('--matou-secondary: color-mix(in srgb, #F2B134 12%, transparent);');
-    expect(tokens).toContain('--matou-muted: color-mix(in srgb, #F2B134 12%, transparent);');
-    expect(tokens).toContain('--matou-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
-    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-sidebar-accent: color-mix\(in srgb, #F2B134 16%, transparent\);/);
-    // Foreground on the wash stays the primary colour for contrast.
-    expect(tokens).toContain('--matou-secondary-foreground: #0A5C6B;');
+    expect(tokens).toContain('--oc-secondary: #F2B134;');
+    expect(tokens).toContain('--matou-secondary-strong: var(--oc-secondary);');
+    // …but the saturated gold lands as a pale translucent wash on the shared
+    // surface/sidebar tokens, in both themes; --matou-* alias onto them.
+    expect(tokens).toContain('--oc-secondary-surface: color-mix(in srgb, #F2B134 12%, transparent);');
+    expect(tokens).toContain('--oc-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
+    expect(tokens).toContain('--matou-secondary: var(--oc-secondary-surface);');
+    expect(tokens).toContain('--matou-muted: var(--oc-secondary-surface);');
+    expect(tokens).toContain('--matou-sidebar-accent: var(--oc-sidebar-accent);');
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--oc-sidebar-accent: color-mix\(in srgb, #F2B134 16%, transparent\);/);
+    // Accent (the kit primary) drives the secondary-foreground; --matou aliases it.
+    expect(tokens).toContain('--oc-accent: #0A5C6B;');
+    expect(tokens).toContain('--matou-secondary-foreground: var(--oc-accent);');
   });
   it('android application id is a valid package name: hyphens → underscores, digit-leading segment prefixed', async () => {
     await applyKit(await kitDir({ slug: '4winds-trust', brand: { name: '4 Winds', slug: '4winds-trust', primaryColour: '#0A5C6B', secondaryColour: '#F2B134', contactEmail: 'k@x.nz' } }), root, { icons: false });
@@ -115,15 +131,16 @@ describe('kit secondary wash (#337)', () => {
   });
   it('keeps the stock look: a soft tint maps to itself, no wash', () => {
     const scss = tokensScss({ brand: { primaryColour: '#1E5F74', secondaryColour: '#E8F4F8' } });
-    expect(scss).toContain('--matou-secondary: #E8F4F8;');
+    expect(scss).toContain('--oc-secondary-surface: #E8F4F8;');
+    expect(scss).toContain('--matou-secondary: var(--oc-secondary-surface);');
     expect(scss).not.toContain('color-mix');
   });
   it('washes a loud secondary and preserves the full-strength value', () => {
     const scss = tokensScss({ brand: { primaryColour: '#0A5C6B', secondaryColour: '#F2B134' } });
     expect(scss).toContain('$kit-secondary: #F2B134;');
-    expect(scss).toContain('--matou-secondary-strong: #F2B134;');
-    expect(scss).toContain('--matou-secondary: color-mix(in srgb, #F2B134 12%, transparent);');
-    expect(scss).toContain('--matou-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
+    expect(scss).toContain('--oc-secondary: #F2B134;');
+    expect(scss).toContain('--oc-secondary-surface: color-mix(in srgb, #F2B134 12%, transparent);');
+    expect(scss).toContain('--oc-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
   });
 });
 
@@ -132,8 +149,9 @@ describe('kit dark-mode primary (#636)', () => {
     // A clearly non-teal kit (magenta) proves the dark primary tracks the kit.
     const scss = tokensScss({ brand: { primaryColour: '#A21F7A', secondaryColour: '#E8F4F8' } });
     // mixWithWhite('#A21F7A', 0.5) → #d18fbd ; mixWithBlack('#A21F7A', 0.25) → #29081f
-    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--matou-primary: #d18fbd;/);
-    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--matou-primary-foreground: #29081f;/);
+    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--oc-accent: #d18fbd;/);
+    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--oc-text-on-accent: #29081f;/);
+    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--matou-primary: var\(--oc-accent\);/);
     expect(scss).not.toContain('#7eb3b8'); // never Mātou's hardcoded dark teal
   });
 });

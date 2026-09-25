@@ -15,13 +15,34 @@ html {
 body {
   margin: 0;
   padding: 0;
+  // Kit UI family (Roboto Mono) via the shared --oc-* token layer — IDSS
+  // DDR 0281 / #657. Falls back to the same stack --oc-font-sans defines.
+  font-family: var(
+    --oc-font-sans,
+    'Roboto Mono',
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace
+  );
   background-color: var(--matou-background);
   color: var(--matou-foreground);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-// Typography - Custom styles that extend beyond Tailwind defaults
+// Typography - Custom styles that extend beyond Tailwind defaults. Headings wear
+// the kit voice family (Merriweather / --oc-font-serif); DDR 0281 / #657.
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--oc-font-serif, Georgia, 'Times New Roman', serif);
+}
+
 h1 {
   font-size: 1.875rem;
   font-weight: var(--matou-font-weight-medium);
