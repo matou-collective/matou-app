@@ -404,6 +404,18 @@ export interface GetBackendIdentityResponse {
 export async function setBackendIdentity(
   request: SetBackendIdentityRequest,
 ): Promise<SetBackendIdentityResponse> {
+  // On IDSS, carry the descriptor's recorded space IDs whenever the caller has
+  // none (#645): recovery and registration never had them, so a recovered
+  // founder's backend came up with no community space and stalled on approval.
+  if (!request.communitySpaceId || !request.readOnlySpaceId || !request.adminSpaceId) {
+    try {
+      const { getRecordedSpaces } = await import('src/lib/clientConfig');
+      const { withRecordedSpaces } = await import('src/lib/spaces/recordedSpaceFill');
+      request = withRecordedSpaces(request, await getRecordedSpaces());
+    } catch {
+      // No descriptor reachable: send what the caller had, as before.
+    }
+  }
   try {
     // RBAC (#17): once an identity exists, only its owner (or an admin) may
     // re-set it. First-run (no identity) is allowed without the header.

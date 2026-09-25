@@ -9,6 +9,8 @@ import { useAppStore } from 'stores/app';
 import { useKERIClient, initKeriConfig } from 'src/lib/keri/client';
 import { getBackendIdentity, setBackendIdentity, initBackendUrl, initApiToken, installBackendAuth } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
+import { getRecordedSpaces } from 'src/lib/clientConfig';
+import { backendNeedsRecordedSpaces } from 'src/lib/spaces/recordedSpaceFill';
 
 /**
  * Ensure the backend has identity configured. If the backend was restarted,
@@ -21,10 +23,20 @@ async function ensureBackendIdentity(
   if (!aid) return;
 
   const backendIdentity = await getBackendIdentity();
-  if (backendIdentity.configured && backendIdentity.aid === aid.prefix) {
+  // A backend identity saved without the community's spaces (a recovery before
+  // #645) is re-set so it picks up the IDs the IDSS descriptor records.
+  let recorded: Awaited<ReturnType<typeof getRecordedSpaces>> = null;
+  try {
+    recorded = await getRecordedSpaces();
+  } catch {
+    recorded = null;
+  }
+  const missingSpaces = backendNeedsRecordedSpaces(backendIdentity, recorded);
+  if (backendIdentity.configured && backendIdentity.aid === aid.prefix && !missingSpaces) {
     console.log('[KERI Boot] Backend identity already configured');
     return;
   }
+  if (missingSpaces) console.log('[KERI Boot] Backend identity has no community space — re-setting with the recorded spaces');
 
   // Backend identity is missing or stale — re-set it
   const savedMnemonic = await secureStorage.getItem('matou_mnemonic');
