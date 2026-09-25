@@ -16,7 +16,7 @@ export function electronBuilderConfig(kit: KitBuild) {
   return {
     appId: kit.appId,
     productName: kit.productName,
-    // Pin three fields into the packaged app.asar package.json so the running
+    // Pin two fields into the packaged app.asar package.json so the running
     // window resolves to the installed <executableName>.desktop and shows the
     // community icon instead of the generic gear (#617, #634):
     //   • name → executableName. On X11 Chromium derives WM_CLASS from this,
@@ -29,15 +29,17 @@ export function electronBuilderConfig(kit: KitBuild) {
     //     already-created toplevel's app_id. Without it Chromium falls back to
     //     the app name (productName, "Matou" on a Coa build) and the app_id
     //     never equals <executableName>, so GNOME finds no .desktop (#634).
-    //   • productName → the kit's product name. electron-builder's top-level
-    //     productName only lands in bundle metadata, not the asar package.json,
-    //     which otherwise keeps the source "Matou"; align it so the Wayland
-    //     fallback name is the kit's too. userData isolation does NOT depend on
-    //     this — it is forced from KIT_BUILD.productName in kit-paths.ts.
+    // productName must NOT be overridden here: the packaged package.json keeps
+    // the source "Matou", which is the app NAME Electron's safeStorage keys the
+    // Linux keyring secret on ("<app name> Safe Storage", application=<name>).
+    // #641 set it to the kit's product name and v0.7.8 read a different keyring
+    // secret, so every existing install lost its saved passcode, agent, identity
+    // key and any-sync device key on upgrade (#644). The Wayland app_id comes
+    // from desktopName above, so the icon does not need it. userData isolation
+    // is forced separately from KIT_BUILD.productName in kit-paths.ts.
     extraMetadata: {
       name: kit.executableName,
       desktopName: `${kit.executableName}.desktop`,
-      productName: kit.productName,
     },
     artifactName: `${kit.artifactBase}-${v}-${p}.${e}`,
     afterPack: './build/afterPack.cjs',

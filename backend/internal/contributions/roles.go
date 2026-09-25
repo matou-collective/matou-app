@@ -20,7 +20,8 @@ const (
 // A single KERI role may grant multiple contribution roles (e.g. stewards also get project_steward).
 func MapKERIRole(keriRole string) []Role {
 	switch keriRole {
-	case "Member":
+	case "Member", "member":
+		// "member" is the IDSS member's Membership role (keri.IDSSRoleMember).
 		return []Role{RoleMember}
 	case "Contributor":
 		return []Role{RoleMember, RoleContributor}
@@ -28,7 +29,8 @@ func MapKERIRole(keriRole string) []Role {
 		return []Role{RoleMember, RoleContributor, RoleCommunitySteward, RoleProjectSteward}
 	case "Operations Steward":
 		return []Role{RoleMember, RoleContributor, RoleOperationsSteward, RoleProjectSteward, RoleProjectLead}
-	case "Founding Member":
+	case "Founding Member", "operator":
+		// "operator" is the IDSS steward's Membership role (keri.IDSSRoleOperator).
 		return []Role{RoleMember, RoleContributor, RoleFoundingMember, RoleOperationsSteward, RoleProjectSteward, RoleProjectLead}
 	case "Financial Steward":
 		return []Role{RoleMember, RoleContributor}

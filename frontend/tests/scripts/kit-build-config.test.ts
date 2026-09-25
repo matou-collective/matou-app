@@ -20,7 +20,9 @@ describe('electron-builder config from kit.build.json', () => {
     // (via CHROME_DESKTOP); without it the app_id falls back to productName and
     // GNOME can't match the window to matou.desktop (#634).
     expect(c.extraMetadata.desktopName).toBe('matou.desktop');
-    expect(c.extraMetadata.productName).toBe('Matou');
+    // The packaged app name stays the source "Matou": safeStorage keys the Linux
+    // keyring secret on it, so overriding it orphans every install's secrets (#644).
+    expect(c.extraMetadata).not.toHaveProperty('productName');
     expect(c.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]);
   });
   it('maps a community kit to coa values and publish null', () => {
@@ -33,6 +35,6 @@ describe('electron-builder config from kit.build.json', () => {
     // The Wayland app_id must resolve to <executableName>.desktop, not the
     // productName-derived fallback, so the branded dock icon shows (#634).
     expect(c.extraMetadata.desktopName).toBe('x-y.desktop');
-    expect(c.extraMetadata.productName).toBe('X Y');
+    expect(c.extraMetadata).not.toHaveProperty('productName'); // #644: keyring secret is keyed on the app name
   });
 });

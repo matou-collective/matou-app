@@ -21,6 +21,9 @@ import {
   membershipSchemaSaid as descriptorMembershipSchemaSaid,
   membershipSchemaOobi as descriptorMembershipSchemaOobi,
   signinUrl as descriptorSigninUrl,
+  recordedSpaces as descriptorRecordedSpaces,
+  BACKEND_KIND_IDSS,
+  type RecordedSpaces,
   type CommunityDescriptor,
   type DescriptorCommunity,
   type DescriptorSteward,
@@ -359,6 +362,16 @@ export async function getSchemaOobi(kind: string): Promise<string | undefined> {
 export async function getMembershipSchemaSaid(): Promise<string> {
   const config = await fetchClientConfig();
   return descriptorMembershipSchemaSaid(parseDescriptor(config));
+}
+
+/**
+ * The three space IDs an IDSS descriptor records (#645), or null when the
+ * backend is not IDSS or the record is not whole yet (the #1867 ceremony state).
+ */
+export async function getRecordedSpaces(): Promise<RecordedSpaces | null> {
+  const d = parseDescriptor(await fetchClientConfig());
+  if (d.backend_kind !== BACKEND_KIND_IDSS) return null;
+  return descriptorRecordedSpaces(d);
 }
 
 /**
