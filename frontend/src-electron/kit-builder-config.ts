@@ -16,6 +16,17 @@ export function electronBuilderConfig(kit: KitBuild) {
   return {
     appId: kit.appId,
     productName: kit.productName,
+    // Force the packaged app.asar package.json `name` to the kit's
+    // executableName. Chromium/Electron derives the window class from this
+    // `name`: on X11 it is the WM_CLASS, and on native Wayland it is the xdg
+    // `app_id` — the only thing GNOME can match a Wayland window to its
+    // .desktop file by (StartupWMClass is X11-only and never applies). Without
+    // this the packaged `name` stays "matou-frontend", so the app_id never
+    // equals the installed <executableName>.desktop and the launcher falls back
+    // to the generic gear icon instead of the community icon (#617). productName
+    // must NOT be used here — it stays "Matou" for the userData path (see
+    // kit-paths.ts) and is diacritic-folded, not a valid lowercase class.
+    extraMetadata: { name: kit.executableName },
     artifactName: `${kit.artifactBase}-${v}-${p}.${e}`,
     afterPack: './build/afterPack.cjs',
     extraResources: [
