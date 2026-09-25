@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
-import { renderIcons } from '../../scripts/kit/icons.mjs';
+import { renderIcons, logoBackground } from '../../scripts/kit/icons.mjs';
 
 const REPO = join(__dirname, '..', '..', '..');
 
@@ -60,6 +60,34 @@ describe('kit icons', () => {
     expect((await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 10, 10))[3]).toBe(0);
     expect(await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 216, 216)).toEqual([0x10, 0x20, 0x30, 255]);
     expect(await px('src-capacitor/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png', 90, 216)).toEqual([255, 255, 255, 255]);
+    await rm(root, { recursive: true, force: true });
+  }, 60_000);
+  it('adaptive background layer equals the detected logo background even when the wordmark touches the plate edge', async () => {
+    // The whakatohea-demo case (#635): a wordmark on white whose dark glyphs
+    // reach the left/right edges. A strict "every border pixel matches" check
+    // gave up and the icon fell back to the brand primary; the background is the
+    // dominant border colour, so the adaptive icon fills with the logo's own white.
+    const root = await mkdtemp(join(tmpdir(), 'kit-icons-'));
+    const logo = join(root, 'logo.png');
+    const mark = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">' +
+        '<rect width="512" height="512" fill="#ffffff"/>' +
+        // glyph slabs that touch the left and right plate edges
+        '<rect x="0" y="230" width="70" height="52" fill="#203040"/>' +
+        '<rect x="442" y="230" width="70" height="52" fill="#203040"/>' +
+        '<rect x="180" y="230" width="152" height="52" fill="#203040"/></svg>',
+    );
+    await sharp(mark).png().toFile(logo);
+    // Detection sees past the edge-touching glyphs to the white plate.
+    const detected = await logoBackground(logo);
+    expect(detected).toBe('#ffffff');
+    await renderIcons({ logo, primary: '#404040', root });
+    const { readFile } = await import('node:fs/promises');
+    // The adaptive-icon background layer colour equals the detected logo background.
+    const xml = await readFile(join(root, 'src-capacitor/android/app/src/main/res/values/ic_launcher_background.xml'), 'utf8');
+    expect(xml).toContain(`>${detected}<`);
+    // Not the brand primary — the pre-fix fallback.
+    expect(xml).not.toContain('#404040');
     await rm(root, { recursive: true, force: true });
   }, 60_000);
 });
