@@ -40,8 +40,13 @@ app.setPath('userData', kitUserDataPath(app.getPath('appData'), KIT_BUILD));
 process.stdout?.on('error', () => {});
 process.stderr?.on('error', () => {});
 
-// Force WM_CLASS to the kit executable name so Linux DEs can match it to the
-// .desktop file (StartupWMClass, written in installDesktopIntegration).
+// Force the X11 WM_CLASS to the kit executable name so X11 DEs can match the
+// window to the .desktop file (StartupWMClass, written in
+// installDesktopIntegration). On native Wayland this switch does NOT set the
+// xdg app_id — GNOME matches a Wayland window to its .desktop by app_id, which
+// Chromium derives from the packaged package.json `name`. That name is pinned
+// to executableName via electron-builder `extraMetadata` (kit-builder-config.ts)
+// so both the X11 WM_CLASS and the Wayland app_id equal executableName (#617).
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('class', KIT_BUILD.executableName);
   app.setDesktopName(`${KIT_BUILD.executableName}.desktop`);
