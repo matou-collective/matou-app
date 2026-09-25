@@ -107,9 +107,9 @@ describe('applyFeatureNav (coa phase 4, spec §3.4)', () => {
   });
 
   it('disabled entries vanish without shifting fixed entries', () => {
-    const nav = applyFeatureNav(NAV_ITEM_META, { ...ALL_ON, chat: false, projects: false });
+    const nav = applyFeatureNav(NAV_ITEM_META, { ...ALL_ON, chat: false });
     expect(nav.map((i) => i.name)).toEqual([
-      'dashboard', 'activity', 'wallet', 'proposals', 'contributions',
+      'dashboard', 'activity', 'wallet', 'proposals', 'projects', 'contributions',
     ]);
   });
 
@@ -127,5 +127,51 @@ describe('applyFeatureNav (coa phase 4, spec §3.4)', () => {
     });
     expect(nav.find((i) => i.name === 'proposals')?.primary).toBe(false);
     expect(nav.find((i) => i.name === 'chat')?.primary).toBe(true);
+  });
+});
+
+describe('contributions rides on projects (#620)', () => {
+  const split = (nav: NavItemMeta[]) => ({
+    primary: nav.filter((i) => i.primary).map((i) => i.name),
+    overflow: nav.filter((i) => !i.primary).map((i) => i.name),
+  });
+
+  it('drops the contributions entry from the desktop list when projects is off', () => {
+    const nav = applyFeatureNav(NAV_ITEM_META, { ...ALL_ON, projects: false });
+    expect(nav.map((i) => i.name)).not.toContain('contributions');
+    expect(nav.map((i) => i.name)).not.toContain('projects');
+    expect(nav.map((i) => i.name)).toEqual([
+      'dashboard', 'chat', 'wallet', 'activity', 'proposals',
+    ]);
+  });
+
+  it('drops contributions from both the primary bar and the overflow sheet when projects is off', () => {
+    const nav = applyFeatureNav(NAV_ITEM_META, { ...ALL_ON, projects: false });
+    const { primary, overflow } = split(nav);
+    expect(primary).not.toContain('contributions');
+    expect(overflow).not.toContain('contributions');
+    // Remaining entries keep their order and primary membership.
+    expect(primary).toEqual(['dashboard', 'chat', 'activity']);
+    expect(overflow).toEqual(['wallet', 'proposals']);
+  });
+
+  it('keeps contributions in its current slot in the desktop list when projects is on', () => {
+    const nav = applyFeatureNav(NAV_ITEM_META, ALL_ON);
+    expect(nav.map((i) => i.name)).toEqual([
+      'dashboard', 'chat', 'wallet', 'activity', 'proposals', 'projects', 'contributions',
+    ]);
+    // It never joins the order rotation — it holds its fixed final position.
+    const permuted = applyFeatureNav(NAV_ITEM_META, {
+      ...ALL_ON, order: ['proposals', 'chat', 'projects', 'notices', 'events'],
+    });
+    expect(permuted[permuted.length - 1]?.name).toBe('contributions');
+  });
+
+  it('keeps contributions in the primary bar (not overflow) when projects is on', () => {
+    const { primary, overflow } = split(applyFeatureNav(NAV_ITEM_META, ALL_ON));
+    expect(primary).toContain('contributions');
+    expect(overflow).not.toContain('contributions');
+    expect(primary).toEqual(['dashboard', 'chat', 'activity', 'contributions']);
+    expect(overflow).toEqual(['wallet', 'proposals', 'projects']);
   });
 });
