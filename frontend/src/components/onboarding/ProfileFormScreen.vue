@@ -753,6 +753,7 @@ textarea {
 
 .m-textarea {
   background-color: var(--matou-input-background);
+  color: var(--matou-foreground);
 }
 
 input[type="checkbox"] {
