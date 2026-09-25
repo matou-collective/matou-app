@@ -103,7 +103,15 @@ export function useRegistration() {
         senderAgentOobi = await keriClient.getOOBI(currentAID.prefix);
         console.log('[Registration] Got agent-form OOBI:', senderAgentOobi);
       } catch (oobiErr) {
-        console.warn('[Registration] Could not get agent-form OOBI (continuing with bare form):', oobiErr);
+        // Not fatal — registration proceeds on the bare OOBI — but log loudly:
+        // a missing agent-form OOBI means the serving KERIA agent has no
+        // location scheme, which is the only client-side sign that the steward
+        // agent is unreachable (issue #653). A quiet warn buried this.
+        console.error(
+          '[Registration] AGENT OOBI UNAVAILABLE — the serving KERIA agent has no location scheme; ' +
+            'the steward may be unreachable. Falling back to the bare OOBI form:',
+          oobiErr,
+        );
       }
       const senderOobis = buildSenderOobiFields({
         prefix: currentAID.prefix,

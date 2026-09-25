@@ -25,3 +25,21 @@ export function isLikelyCredentialSaid(value: unknown): value is string {
     QB64_CHAR.test(value)
   );
 }
+
+/**
+ * Extract the SAID (`d` field) from a signify-ts serder, as returned by
+ * `exchanges().createExchangeMessage`, `ipex().grant`, `ipex().apply`, etc.
+ *
+ * signify-ts 0.3.0-rc2 exposes the event fields on `serder.sad`; earlier
+ * releases used `serder.ked`. Read `.sad` first and fall back to `.ked` so a
+ * version bump in either direction still logs the real SAID instead of the
+ * `'unknown'` placeholder that reading only `.ked` produced on 0.3.0-rc2
+ * (issue #653).
+ */
+export function serderSaid(serder: unknown): string {
+  const s = serder as
+    | { sad?: { d?: string }; ked?: { d?: string } }
+    | null
+    | undefined;
+  return s?.sad?.d ?? s?.ked?.d ?? 'unknown';
+}

@@ -19,6 +19,7 @@ import {
 import { extractWitnessAids, witnessOobiBases } from 'src/lib/keri/witnessAssignment';
 import { parseCesrStream, filterKelMessages, mergeKelMessages } from 'src/lib/keri/cesr';
 import { selectGroupKelPushTargets } from 'src/lib/keri/groupKelPush';
+import { serderSaid } from 'src/lib/keri/said';
 
 export interface AIDInfo {
   prefix: string; // The AID string (e.g., "EAbcd...")
@@ -1354,7 +1355,7 @@ export class KERIClient {
       );
 
       // Get the SAID from the exchange message
-      const exnSaid = (exn as { ked?: { d?: string } })?.ked?.d || 'unknown';
+      const exnSaid = serderSaid(exn);
       console.log('[KERIClient] Registration sent successfully, SAID:', exnSaid);
 
       return {
@@ -2868,7 +2869,7 @@ export class KERIClient {
         setTimeout(() => reject(new Error('IPEX submitGrant timed out after 30s')), 30000)
       ),
     ]);
-    const grantSaid = (grant as { ked?: { d?: string } })?.ked?.d || 'unknown';
+    const grantSaid = serderSaid(grant);
     console.log(`[KERIClient] IPEX grant submitted, SAID: ${grantSaid}`);
 
     return { said: credentialSaid };
@@ -2984,7 +2985,7 @@ export class KERIClient {
         setTimeout(() => reject(new Error('IPEX submitGrant timed out after 30s')), 30000)
       ),
     ]);
-    const grantSaid = (grant as { ked?: { d?: string } })?.ked?.d || 'unknown';
+    const grantSaid = serderSaid(grant);
     console.log(`[KERIClient] IPEX re-grant submitted, SAID: ${grantSaid}`);
 
     return { said: credentialSaid };
@@ -3077,7 +3078,14 @@ export class KERIClient {
     let oobi = oobiResult.oobis?.[0] || oobiResult.oobi;
 
     if (!oobi) {
-      throw new Error(`No OOBI found for AID "${aidName}"`);
+      // An empty list for the `agent` role usually means the serving KERIA
+      // agent has no location scheme configured, so it cannot hand out an
+      // agent-form OOBI (idss GOTCHAS #347). Say so explicitly — this is the
+      // only client-side signal that the agent is unreachable (issue #653).
+      throw new Error(
+        `No ${role} OOBI found for AID "${aidName}" — the KERIA agent returned an empty OOBI list ` +
+          `(agent likely has no location scheme configured)`
+      );
     }
 
     // Normalize KERIA Docker hostname to localhost for browser access
@@ -3285,7 +3293,7 @@ export class KERIClient {
         sender: senderAid,
         recipient: recipientAidResolved,
         route,
-        exnKed: (exn as any)?.ked,
+        exnSaid: serderSaid(exn),
       }, null, 2));
 
       // CRITICAL FIX: Send the message using AID prefix, not display name
@@ -3299,7 +3307,7 @@ export class KERIClient {
       );
       console.log('[KERIClient] sendFromEvents result:', sendResult);
 
-      const exnSaid = (exn as { ked?: { d?: string } })?.ked?.d || 'unknown';
+      const exnSaid = serderSaid(exn);
       console.log('[KERIClient] EXN sent successfully, SAID:', exnSaid);
 
       return { success: true, said: exnSaid };
@@ -3347,7 +3355,7 @@ export class KERIClient {
             [recipientAidResolved]
           );
 
-          const exnSaid = (exn as { ked?: { d?: string } })?.ked?.d || 'unknown';
+          const exnSaid = serderSaid(exn);
           console.log('[KERIClient] Retry successful, SAID:', exnSaid);
 
           return { success: true, said: exnSaid };
@@ -3539,7 +3547,7 @@ export class KERIClient {
             datetime: new Date().toISOString(),
           });
           await this.client.ipex().submitApply(senderAid, apply, applySigs, [admin.aid]);
-          const applySaid = (apply as { ked?: { d?: string } })?.ked?.d || 'unknown';
+          const applySaid = serderSaid(apply);
           console.log(`[KERIClient] IPEX apply sent, SAID: ${applySaid}`);
         } catch (ipexErr) {
           console.warn(`[KERIClient] IPEX apply failed (continuing with EXN):`, ipexErr);

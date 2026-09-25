@@ -17,7 +17,11 @@ export default defineConfig({
       layouts: path.join(__dirname, 'src/layouts'),
       pages: path.join(__dirname, 'src/pages'),
       // Force CommonJS version to avoid missing libsodium-sumo.mjs ESM issue
-      // (same workaround as quasar.config.ts)
+      // (same workaround as quasar.config.ts). libsodium-wrappers-sumo 0.7.16
+      // ships a broken ESM path, so importing signify-ts from plain Node (no
+      // Vite alias) fails; this alias is what lets Vitest import it. Any
+      // future Node-side harness that imports signify-ts needs the same alias
+      // or a version pin (issue #653).
       'libsodium-wrappers-sumo': path.join(
         __dirname,
         'node_modules/libsodium-wrappers-sumo/dist/modules-sumo/libsodium-wrappers.js'
