@@ -400,9 +400,11 @@ onMounted(() => {
   commentCursorsStore.fetch().catch(() => {});
 
   // Pre-fetch projects, contributions, notices so unread badges render
-  // before the user navigates into those sections.
+  // before the user navigates into those sections. Contributions rides on
+  // projects (#620): with projects off the module has no nav entry or route,
+  // so skip its fetch — nothing would count its unread badge.
   projectsStore.fetchProjects().catch(() => {});
-  contributionsStore.fetchContributions().catch(() => {});
+  if (__KIT_PROJECTS__) contributionsStore.fetchContributions().catch(() => {});
   activityStore.loadNotices().catch(() => {});
   // Role policy drives the admin-only Roles nav entry. callerCapabilities
   // depend on X-User-AID, which is only sent once the identity store has an
