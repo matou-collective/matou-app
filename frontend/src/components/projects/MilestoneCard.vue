@@ -322,8 +322,8 @@ function formatCurrency(n: number): string {
 }
 
 .badge-confirmed {
-  background: rgba(74, 157, 156, 0.12);
-  color: var(--matou-accent, #4a9d9c);
+  background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+  color: var(--matou-accent);
 }
 
 .badge-icon {
@@ -350,7 +350,7 @@ function formatCurrency(n: number): string {
 // Body
 .contributions-body {
   padding: 12px 16px 16px;
-  background: var(--matou-background, #fafbfc);
+  background: var(--matou-background);
   border-top: 1px solid var(--matou-border);
 }
 
@@ -434,8 +434,8 @@ function formatCurrency(n: number): string {
   font-size: 0.75rem;
   padding: 3px 10px;
   border-radius: 12px;
-  background: rgba(74, 157, 156, 0.12);
-  color: var(--matou-accent, #4a9d9c);
+  background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+  color: var(--matou-accent);
   font-weight: 500;
   white-space: nowrap;
 

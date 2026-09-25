@@ -1874,7 +1874,7 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 }
 
 .shared-panel {
-  background: rgba(74, 157, 156, 0.06);
+  background: color-mix(in srgb, var(--matou-accent) 6%, transparent);
   border-color: var(--matou-accent);
 }
 
@@ -2091,8 +2091,8 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 
 // Sub-contributions
 .sub-contributions-section {
-  background: rgba(74, 157, 156, 0.04);
-  border: 1px solid rgba(74, 157, 156, 0.15);
+  background: color-mix(in srgb, var(--matou-accent) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--matou-accent) 15%, transparent);
   border-radius: var(--matou-radius);
   padding: 14px 18px;
 }
@@ -2245,13 +2245,13 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   transition: all 0.12s ease;
 
   &.approved.active {
-    background: rgba(74, 157, 156, 0.12);
+    background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
     color: var(--matou-accent);
     border-color: var(--matou-accent);
   }
 
   &.incomplete.active {
-    background: rgba(30, 95, 116, 0.1);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
     color: var(--matou-primary);
     border-color: var(--matou-primary);
   }
@@ -2313,12 +2313,12 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   text-transform: capitalize;
 
   &.approved {
-    background: rgba(74, 157, 156, 0.12);
+    background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
     color: var(--matou-accent);
   }
 
   &.incomplete {
-    background: rgba(30, 95, 116, 0.1);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
     color: var(--matou-primary);
   }
 
@@ -2338,12 +2338,12 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
 
 .sign-off-panel {
   border-color: var(--matou-accent);
-  background: rgba(74, 157, 156, 0.04);
+  background: color-mix(in srgb, var(--matou-accent) 4%, transparent);
 }
 
 .signed-off-panel {
   border-color: var(--matou-accent);
-  background: rgba(74, 157, 156, 0.08);
+  background: color-mix(in srgb, var(--matou-accent) 8%, transparent);
 }
 
 .sign-off-icon {
@@ -2749,9 +2749,9 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   }
 
   &.declined.active {
-    border-color: var(--matou-destructive, #c8463a);
+    border-color: var(--matou-destructive);
     background: rgba(200, 70, 58, 0.08);
-    color: var(--matou-destructive, #c8463a);
+    color: var(--matou-destructive);
   }
 }
 
@@ -2908,7 +2908,7 @@ async function handleChange(data: { updates: Record<string, unknown>; reason: st
   max-width: 80%;
 
   &--mine {
-    background: var(--matou-primary-light, rgba(37, 99, 235, 0.08));
+    background: var(--matou-primary-light);
     border-color: rgba(37, 99, 235, 0.15);
     border-radius: 12px 12px 4px 12px;
   }

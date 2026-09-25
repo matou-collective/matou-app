@@ -77,10 +77,10 @@
       <svg :width="graphWidth" :height="graphHeight" class="graph-svg">
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
-            <polygon points="0 0, 10 4, 0 8" fill="var(--matou-muted-foreground, #9ca3af)" />
+            <polygon points="0 0, 10 4, 0 8" fill="var(--matou-muted-foreground)" />
           </marker>
           <marker id="arrowhead-issued" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
-            <polygon points="0 0, 10 4, 0 8" fill="#e57e24" />
+            <polygon points="0 0, 10 4, 0 8" fill="var(--matou-accent-warm)" />
           </marker>
         </defs>
         <!-- Connection lines — one per unique counterparty -->
@@ -91,7 +91,7 @@
           :y1="lineStartY(cp.credentials[0], idx)"
           :x2="lineEndX(cp.credentials[0], idx)"
           :y2="lineEndY(cp.credentials[0], idx)"
-          :stroke="isIssuedByMe(cp.credentials[0]) ? '#e57e24' : 'var(--matou-muted-foreground, #9ca3af)'"
+          :stroke="isIssuedByMe(cp.credentials[0]) ? 'var(--matou-accent-warm)' : 'var(--matou-muted-foreground)'"
           stroke-width="1.5"
           stroke-dasharray="6,4"
           :marker-end="isIssuedByMe(cp.credentials[0]) ? 'url(#arrowhead-issued)' : 'url(#arrowhead)'"
@@ -121,7 +121,7 @@
         :style="{ left: outerNodeX(idx) + 'px', top: outerNodeY(idx) + 'px' }"
       >
         <div class="node-circle issuer" :class="isOrgIssuer(cp.aid) ? '' : issuerAvatarColor(cp.aid)">
-          <img v-if="isOrgIssuer(cp.aid)" src="../../assets/images/matou-bird-logo-blue.svg" alt="Mātou" class="node-logo" />
+          <img v-if="isOrgIssuer(cp.aid)" :src="kitLogo" :alt="KIT.brand.name" class="node-logo" />
           <img v-else-if="issuerAvatarUrl(cp.aid)" :src="issuerAvatarUrl(cp.aid)" alt="Counterparty" class="node-avatar" />
           <span v-else class="node-initials">{{ issuerInitials(cp.aid) }}</span>
         </div>
@@ -182,6 +182,8 @@ import { useAppStore } from 'stores/app';
 import { getFileUrl } from 'src/lib/api/client';
 import { credentialTitle as resolveCredentialTitle } from 'src/lib/credentialAppearance';
 import { isCoaBuild } from 'src/kit/build';
+import { KIT } from 'src/generated/kit';
+import kitLogo from 'src/assets/kit/logo.png';
 import CredentialDetailDialog from './CredentialDetailDialog.vue';
 import WalletCredentialCard from './WalletCredentialCard.vue';
 
@@ -342,7 +344,7 @@ function credentialDescription(cred: WalletCredential): string {
     return isIssuedByMe(cred) ? `Issued to ${name}` : `Confirmed by ${name}`;
   }
   if (credentialServiceName(cred) && cred.schemaDescription) return cred.schemaDescription;
-  return cred.communityName || 'Mātou community';
+  return cred.communityName || `${KIT.brand.name} community`;
 }
 
 const outerNodeRadius = 36; // half of outer node size (72px)
@@ -507,13 +509,13 @@ function formatDate(dateStr: string): string {
   align-items: center;
   gap: 0.375rem;
   font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   cursor: pointer;
   user-select: none;
 }
 
 .revoked-toggle input[type="checkbox"] {
-  accent-color: var(--matou-primary, #1e5f74);
+  accent-color: var(--matou-primary);
   cursor: pointer;
 }
 
@@ -523,9 +525,9 @@ function formatDate(dateStr: string): string {
   gap: 0.375rem;
   padding: 0.5rem 1rem;
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 0.75rem);
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
@@ -533,13 +535,13 @@ function formatDate(dateStr: string): string {
 }
 
 .toggle-btn:hover {
-  border-color: var(--matou-primary, #1e5f74);
-  color: var(--matou-foreground, #1f2937);
+  border-color: var(--matou-primary);
+  color: var(--matou-foreground);
 }
 
 .toggle-btn.active {
-  background: var(--matou-primary, #1e5f74);
-  border-color: var(--matou-primary, #1e5f74);
+  background: var(--matou-primary);
+  border-color: var(--matou-primary);
   color: var(--matou-primary-foreground, white);
 }
 
@@ -553,7 +555,7 @@ function formatDate(dateStr: string): string {
   justify-content: center;
   gap: 0.75rem;
   padding: 3rem 1rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   text-align: center;
 }
 
@@ -570,14 +572,14 @@ function formatDate(dateStr: string): string {
 }
 
 .error-state {
-  color: var(--matou-destructive, #c8463a);
+  color: var(--matou-destructive);
 }
 
 .empty-state h3 {
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
 }
 
 .empty-state p {
@@ -605,7 +607,7 @@ function formatDate(dateStr: string): string {
 .graph-view {
   position: relative;
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 0.75rem);
   overflow: hidden;
   min-height: 800px;
@@ -643,15 +645,15 @@ function formatDate(dateStr: string): string {
 }
 
 .node-circle.you {
-  background: linear-gradient(135deg, var(--matou-primary, #1e5f74), var(--matou-accent, #4a9d9c));
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
   width: 84px;
   height: 84px;
   font-size: 1.0625rem;
 }
 
 .node-circle.issuer {
-  background: var(--matou-secondary, #e8f4f8);
-  color: var(--matou-primary, #1e5f74);
+  background: var(--matou-secondary);
+  color: var(--matou-primary);
   cursor: default;
   transition: transform 0.15s ease;
 }
@@ -659,7 +661,7 @@ function formatDate(dateStr: string): string {
 .node-circle.issuer.gradient-1 { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
 .node-circle.issuer.gradient-2 { background: linear-gradient(135deg, #ec4899, #f43f5e); }
 .node-circle.issuer.gradient-3 { background: linear-gradient(135deg, #14b8a6, #06b6d4); }
-.node-circle.issuer.gradient-4 { background: linear-gradient(135deg, rgba(30, 95, 116, 0.8), rgba(74, 157, 156, 0.8)); }
+.node-circle.issuer.gradient-4 { background: linear-gradient(135deg, color-mix(in srgb, var(--matou-primary) 80%, transparent), color-mix(in srgb, var(--matou-accent) 80%, transparent)); }
 
 .node-avatar {
   width: 100%;
@@ -682,7 +684,7 @@ function formatDate(dateStr: string): string {
 .node-label {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   white-space: nowrap;
   max-width: 130px;
   overflow: hidden;
@@ -696,7 +698,7 @@ function formatDate(dateStr: string): string {
   top: 50%;
   left: calc(100% + 0.5rem);
   transform: translateY(-50%);
-  background: var(--matou-foreground, #1f2937);
+  background: var(--matou-foreground);
   color: white;
   padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;
@@ -736,12 +738,12 @@ function formatDate(dateStr: string): string {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: var(--matou-secondary, #e8f4f8);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  background: var(--matou-secondary);
+  border: 1px solid var(--matou-border);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--matou-primary, #1e5f74);
+  color: var(--matou-primary);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
   transition: transform 0.15s ease;
 }
@@ -756,7 +758,7 @@ function formatDate(dateStr: string): string {
   top: 50%;
   left: calc(100% + 0.5rem);
   transform: translateY(-50%);
-  background: var(--matou-foreground, #1f2937);
+  background: var(--matou-foreground);
   color: white;
   padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;

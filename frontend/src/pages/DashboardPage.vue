@@ -1408,11 +1408,11 @@ function handleRoleUpdated(newRole: string) {
   flex-shrink: 0;
 
   &.bg-primary-light {
-    background-color: rgba(30, 95, 116, 0.1);
+    background-color: color-mix(in srgb, var(--matou-primary) 10%, transparent);
   }
 
   &.bg-accent-light {
-    background-color: rgba(74, 157, 156, 0.1);
+    background-color: color-mix(in srgb, var(--matou-accent) 10%, transparent);
   }
 
   .icon {
@@ -1534,7 +1534,11 @@ function handleRoleUpdated(newRole: string) {
   }
 
   &.gradient-4 {
-    background: linear-gradient(135deg, rgba(30, 95, 116, 0.8), rgba(74, 157, 156, 0.8));
+    background: linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--matou-primary) 80%, transparent),
+      color-mix(in srgb, var(--matou-accent) 80%, transparent)
+    );
   }
 }
 

@@ -299,8 +299,8 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
 
 .create-btn {
   background: transparent;
-  color: var(--matou-teal, #0d9488);
-  border: 2px solid var(--matou-teal, #0d9488);
+  color: var(--matou-teal);
+  border: 2px solid var(--matou-teal);
   border-radius: 10px;
   padding: 8px 16px;
   font-weight: 500;
@@ -309,7 +309,7 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
   flex-shrink: 0;
 
   &:hover {
-    background: var(--matou-teal, #0d9488);
+    background: var(--matou-teal);
     color: white;
   }
 }
@@ -329,7 +329,7 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
 
 .filter-pill {
   background: transparent;
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: 20px;
   padding: 5px 12px;
   font-size: 0.82rem;
@@ -344,8 +344,8 @@ async function handleCreateSubmit(form: CreateContributionRequest) {
   }
 
   &.type-pill.active {
-    background: var(--matou-accent, #4a9d9c);
-    border-color: var(--matou-accent, #4a9d9c);
+    background: var(--matou-accent);
+    border-color: var(--matou-accent);
   }
 
   &:hover:not(.active) {

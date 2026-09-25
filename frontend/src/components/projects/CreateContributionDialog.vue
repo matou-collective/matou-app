@@ -715,7 +715,7 @@ function handleSubmit() {
 
   &.active {
     border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
+    background: color-mix(in srgb, var(--matou-primary) 6%, transparent);
   }
 }
 

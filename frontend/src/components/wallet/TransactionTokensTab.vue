@@ -189,7 +189,7 @@ async function copyAid() {
 
 /* Balance card */
 .balance-card {
-  background: linear-gradient(135deg, #2a7f8f, var(--matou-accent, #4a9d9c));
+  background: linear-gradient(135deg, #2a7f8f, var(--matou-accent));
   border-radius: var(--matou-radius, 0.75rem);
   padding: 1.75rem;
   color: white;
@@ -233,9 +233,9 @@ async function copyAid() {
   gap: 0.375rem;
   padding: 1rem;
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 0.75rem);
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
@@ -243,8 +243,8 @@ async function copyAid() {
 }
 
 .action-btn:hover:not(.disabled) {
-  border-color: var(--matou-primary, #1e5f74);
-  color: var(--matou-primary, #1e5f74);
+  border-color: var(--matou-primary);
+  color: var(--matou-primary);
 }
 
 .action-btn.disabled {
@@ -255,7 +255,7 @@ async function copyAid() {
 /* Section cards */
 .section-card {
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius, 0.75rem);
   padding: 1.25rem;
 }
@@ -266,7 +266,7 @@ async function copyAid() {
   gap: 0.5rem;
   font-size: 0.9375rem;
   font-weight: 600;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   margin: 0 0 1rem;
 }
 
@@ -281,7 +281,7 @@ async function copyAid() {
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem 0;
-  border-bottom: 1px solid var(--matou-border, #e5e7eb);
+  border-bottom: 1px solid var(--matou-border);
 }
 
 .tx-item:last-child {
@@ -319,12 +319,12 @@ async function copyAid() {
 .tx-description {
   font-size: 0.875rem;
   font-weight: 500;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
 }
 
 .tx-counterparty {
   font-size: 0.75rem;
-  color: var(--matou-muted-foreground, #9ca3af);
+  color: var(--matou-muted-foreground);
   font-family: monospace;
 }
 
@@ -348,7 +348,7 @@ async function copyAid() {
   align-items: center;
   gap: 0.625rem;
   padding: 1.25rem;
-  color: var(--matou-muted-foreground, #9ca3af);
+  color: var(--matou-muted-foreground);
   font-size: 0.875rem;
 }
 
@@ -367,7 +367,7 @@ async function copyAid() {
 }
 
 .dialog-card {
-  background: var(--matou-card, #fff);
+  background: var(--matou-card);
   border-radius: 0.75rem;
   width: 90%;
   max-width: 420px;
@@ -379,14 +379,14 @@ async function copyAid() {
   justify-content: space-between;
   align-items: center;
   padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--matou-border, #e5e7eb);
+  border-bottom: 1px solid var(--matou-border);
 }
 
 .dialog-header h3 {
   font-size: 1.0625rem;
   font-weight: 600;
   margin: 0;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
 }
 
 .close-btn {
@@ -394,7 +394,7 @@ async function copyAid() {
   border: none;
   font-size: 1.5rem;
   cursor: pointer;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   padding: 0;
   line-height: 1;
 }
@@ -409,7 +409,7 @@ async function copyAid() {
 .receive-info {
   margin: 0;
   font-size: 0.875rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
 }
 
 .field-group {
@@ -421,18 +421,18 @@ async function copyAid() {
 .field-label {
   font-size: 0.75rem;
   font-weight: 500;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   text-transform: uppercase;
   letter-spacing: 0.025em;
 }
 
 .field-input {
-  background: var(--matou-input-background, #f0f7f9);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  background: var(--matou-input-background);
+  border: 1px solid var(--matou-border);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   width: 100%;
   font-family: inherit;
   outline: none;
@@ -441,8 +441,8 @@ async function copyAid() {
 }
 
 .field-input:focus {
-  border-color: var(--matou-primary, #1e5f74);
-  box-shadow: 0 0 0 2px rgba(30, 95, 116, 0.1);
+  border-color: var(--matou-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--matou-primary) 10%, transparent);
 }
 
 .submit-btn {
@@ -451,7 +451,7 @@ async function copyAid() {
   justify-content: center;
   gap: 0.5rem;
   padding: 0.75rem 1.5rem;
-  background: var(--matou-primary, #1e5f74);
+  background: var(--matou-primary);
   color: var(--matou-primary-foreground, white);
   border: none;
   border-radius: var(--matou-radius-xl, 1rem);
@@ -462,7 +462,7 @@ async function copyAid() {
 }
 
 .submit-btn:hover:not(:disabled) {
-  background: rgba(30, 95, 116, 0.9);
+  background: color-mix(in srgb, var(--matou-primary) 90%, transparent);
 }
 
 .submit-btn:disabled {
@@ -475,8 +475,8 @@ async function copyAid() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  background: var(--matou-input-background, #f0f7f9);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  background: var(--matou-input-background);
+  border: 1px solid var(--matou-border);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
 }
@@ -484,7 +484,7 @@ async function copyAid() {
 .aid-text {
   font-family: monospace;
   font-size: 0.8rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -495,7 +495,7 @@ async function copyAid() {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--matou-primary, #1e5f74);
+  color: var(--matou-primary);
   padding: 0.25rem;
   border-radius: 0.25rem;
   display: flex;

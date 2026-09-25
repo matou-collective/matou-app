@@ -260,7 +260,7 @@ async function copy(text: string, field = 'said') {
 }
 
 .credential-dialog {
-  background: var(--matou-card, #fff);
+  background: var(--matou-card);
   border-radius: 0.75rem;
   width: 90%;
   max-width: 520px;
@@ -274,7 +274,7 @@ async function copy(text: string, field = 'said') {
   justify-content: space-between;
   align-items: flex-start;
   padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--matou-border, #e5e7eb);
+  border-bottom: 1px solid var(--matou-border);
 }
 
 .header-left {
@@ -287,7 +287,7 @@ async function copy(text: string, field = 'said') {
   width: 42px;
   height: 42px;
   border-radius: 0.625rem;
-  background: linear-gradient(135deg, var(--matou-primary, #1e5f74), var(--matou-accent, #4a9d9c));
+  background: linear-gradient(135deg, var(--matou-primary), var(--matou-accent));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -300,7 +300,7 @@ async function copy(text: string, field = 'said') {
   font-size: 1.0625rem;
   font-weight: 600;
   margin: 0 0 0.375rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
 }
 
 .close-btn {
@@ -308,7 +308,7 @@ async function copy(text: string, field = 'said') {
   border: none;
   font-size: 1.5rem;
   cursor: pointer;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   padding: 0;
   line-height: 1;
 }
@@ -323,7 +323,7 @@ async function copy(text: string, field = 'said') {
 .schema-description {
   margin: 0;
   font-size: 0.8125rem;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   line-height: 1.5;
 }
 
@@ -338,12 +338,12 @@ async function copy(text: string, field = 'said') {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.025em;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
 }
 
 .attr-value {
   font-size: 0.875rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -412,7 +412,7 @@ async function copy(text: string, field = 'said') {
 .technical-section {
   margin-top: 0.5rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--matou-border, #e5e7eb);
+  border-top: 1px solid var(--matou-border);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -421,7 +421,7 @@ async function copy(text: string, field = 'said') {
 .section-title {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   margin: 0;
 }
 
@@ -436,15 +436,15 @@ async function copy(text: string, field = 'said') {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.025em;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
 }
 
 .tech-value-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  background: var(--matou-input-background, #f0f7f9);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  background: var(--matou-input-background);
+  border: 1px solid var(--matou-border);
   border-radius: 0.5rem;
   padding: 0.5rem 0.75rem;
 }
@@ -452,7 +452,7 @@ async function copy(text: string, field = 'said') {
 .tech-value {
   font-family: monospace;
   font-size: 0.75rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -463,7 +463,7 @@ async function copy(text: string, field = 'said') {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--matou-primary, #1e5f74);
+  color: var(--matou-primary);
   padding: 0.25rem;
   border-radius: 0.25rem;
   display: flex;
@@ -481,7 +481,7 @@ async function copy(text: string, field = 'said') {
 .revoke-section {
   margin-top: 0.5rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--matou-border, #e5e7eb);
+  border-top: 1px solid var(--matou-border);
 }
 
 .revoke-btn {
@@ -517,9 +517,9 @@ async function copy(text: string, field = 'said') {
   flex: 1;
   padding: 0.5rem 1rem;
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
+  border: 1px solid var(--matou-border);
   border-radius: 0.5rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;

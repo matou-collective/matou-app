@@ -51,18 +51,18 @@ const label = computed(
   }
 
   &.discussion_community_input {
-    background: rgba(30, 95, 116, 0.08);
-    color: var(--matou-chart-1, #1e5f74);
+    background: color-mix(in srgb, var(--matou-primary) 8%, transparent);
+    color: var(--matou-chart-1);
   }
 
   &.coding_technical_dev {
-    background: rgba(30, 95, 116, 0.1);
-    color: var(--matou-primary, #1e5f74);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
+    color: var(--matou-primary);
   }
 
   &.cultural_oversight {
-    background: rgba(74, 157, 156, 0.1);
-    color: var(--matou-accent, #4a9d9c);
+    background: color-mix(in srgb, var(--matou-accent) 10%, transparent);
+    color: var(--matou-accent);
   }
 }
 </style>

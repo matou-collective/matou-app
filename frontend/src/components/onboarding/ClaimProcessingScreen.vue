@@ -213,7 +213,7 @@ h1 {
 }
 
 .success-box {
-  background-color: rgba(74, 157, 156, 0.1);
-  border-color: rgba(74, 157, 156, 0.2);
+  background-color: color-mix(in srgb, var(--matou-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--matou-accent) 20%, transparent);
 }
 </style>

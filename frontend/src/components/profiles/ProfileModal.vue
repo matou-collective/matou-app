@@ -794,7 +794,7 @@ function handleRemove() {
     background: linear-gradient(135deg, var(--matou-chart-2), var(--matou-primary));
   }
   &.gradient-4 {
-    background: linear-gradient(135deg, rgba(30, 95, 116, 0.8), rgba(74, 157, 156, 0.8));
+    background: linear-gradient(135deg, color-mix(in srgb, var(--matou-primary) 80%, transparent), color-mix(in srgb, var(--matou-accent) 80%, transparent));
   }
 }
 
@@ -812,19 +812,19 @@ function handleRemove() {
   display: block;
   font-size: 0.75rem;
   font-weight: 500;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-muted-foreground);
   margin-bottom: 0.375rem;
   text-transform: uppercase;
   letter-spacing: 0.025em;
 }
 
 .field-input {
-  background: var(--matou-field-tint-bg, #f0f9fa);
-  border: 1px solid var(--matou-field-tint-border, #d1e7ea);
+  background: var(--matou-field-tint-bg);
+  border: 1px solid var(--matou-field-tint-border);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
-  color: var(--matou-foreground, #1f2937);
+  color: var(--matou-foreground);
   width: 100%;
   font-family: inherit;
   outline: none;
@@ -833,16 +833,16 @@ function handleRemove() {
 }
 
 .field-input:hover {
-  border-color: var(--matou-field-tint-hover-border, #a8d4da);
+  border-color: var(--matou-field-tint-hover-border);
 }
 
 .field-input:focus {
-  border-color: var(--matou-field-tint-focus-border, #1a4f5e);
-  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow, rgba(26, 79, 94, 0.1));
+  border-color: var(--matou-field-tint-focus-border);
+  box-shadow: 0 0 0 2px var(--matou-field-tint-focus-shadow);
 }
 
 .field-input::placeholder {
-  color: var(--matou-field-tint-placeholder, #9ca3af);
+  color: var(--matou-field-tint-placeholder);
 }
 
 textarea.field-input {
@@ -852,7 +852,7 @@ textarea.field-input {
 
 .field-value {
   font-size: 0.875rem;
-  color: var(--matou-text, #1f2937);
+  color: var(--matou-text);
   white-space: pre-wrap;
 }
 
@@ -900,7 +900,7 @@ textarea.field-input {
 .endorsement-item {
   padding: 0.5rem;
   border-radius: 0.5rem;
-  background-color: var(--matou-primary, #6366f1);
+  background-color: var(--matou-primary);
   color: white;
 }
 

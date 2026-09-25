@@ -147,11 +147,11 @@ function handleAssign() {
   height: 18px;
 
   &.icon-lead {
-    color: var(--matou-chart-2, #4a9d9c);
+    color: var(--matou-chart-2);
   }
 
   &.icon-steward {
-    color: var(--matou-accent, #4a9d9c);
+    color: var(--matou-accent);
   }
 }
 
@@ -185,7 +185,7 @@ function handleAssign() {
   }
 
   &.selected {
-    background: rgba(74, 157, 156, 0.08);
+    background: color-mix(in srgb, var(--matou-accent) 8%, transparent);
     border-color: var(--matou-accent);
   }
 }
