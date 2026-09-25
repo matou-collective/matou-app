@@ -9,7 +9,9 @@ import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { fetchOrgConfig } from 'src/api/config';
-import { getMembershipSchemaSaid } from 'src/lib/clientConfig';
+import { getCommunityDescriptor, getMembershipSchemaSaid } from 'src/lib/clientConfig';
+import { BACKEND_KIND_IDSS } from 'src/lib/descriptor';
+import { buildMembershipAttributes, type MembershipBackend } from 'src/lib/membershipAttributes';
 import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
 import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
@@ -37,6 +39,24 @@ async function resolveMembershipSchema(): Promise<string> {
   } catch {
     return MEMBERSHIP_SCHEMA_SAID;
   }
+}
+
+/**
+ * Which Membership schema body this community takes: an IDSS community's own
+ * closed schema (role operator|member, no joinedAt), carrying the descriptor's
+ * community display name as `communityName` — what idss's own issuance uses —
+ * or the legacy Mātou body. A descriptor that cannot be read is legacy.
+ */
+async function resolveMembershipBackend(): Promise<MembershipBackend> {
+  try {
+    const d = await getCommunityDescriptor();
+    if (d.backend_kind === BACKEND_KIND_IDSS) {
+      return { kind: 'idss', communityName: d.community?.name || d.community?.slug || '' };
+    }
+  } catch {
+    // fall through to the legacy body
+  }
+  return { kind: 'legacy' };
 }
 
 export function useAdminActions() {
@@ -456,12 +476,19 @@ export function useAdminActions() {
         });
       } else {
         processingStep.value = 'Issuing membership credential...';
-        // Note: Schema requires communityName to be 'MATOU' literal value
-        const credentialData = {
-          communityName: 'MATOU',
-          role: 'Member',
-          joinedAt: new Date().toISOString(),
-        };
+        // The body follows the community's Membership schema: the Mātou one
+        // (communityName 'MATOU', role 'Member', joinedAt) on a legacy backend,
+        // the IDSS one (communityName, preferred_username, name, role 'member',
+        // optional email) on an IDSS community.
+        const credentialData = buildMembershipAttributes(
+          await resolveMembershipBackend(),
+          {
+            aid: registration.applicantAid,
+            name: registration.profile?.name,
+            email: registration.profile?.email,
+          },
+          'Member',
+        );
 
         console.log('[AdminActions] Issuing membership credential to:', registration.applicantAid);
         // Resolve the registry that issues this membership for THIS backend.
@@ -663,7 +690,7 @@ export function useAdminActions() {
     const oldCred = creds.find(
       (c: { sad: { s: string; a?: { i?: string } } }) =>
         c.sad.s === membershipSchema && c.sad.a?.i === memberAid,
-    );
+    ) as { sad: { d: string; s: string; a?: Record<string, unknown> } } | undefined;
     if (oldCred) {
       await keriClient.revokeCredential(orgAid!.prefix, oldCred.sad.d);
       console.log('[AdminActions] Old credential revoked:', oldCred.sad.d);
@@ -678,16 +705,36 @@ export function useAdminActions() {
     // membership comes from the one community registry (ADR 0235 decision 4);
     // on a legacy backend it uses the steward's own group-AID registry.
     const orgRegistryId = await resolveIssuingRegistry(orgName);
+    // On IDSS the re-issued ACDC keeps the member's handle / name / e-mail from
+    // their prior credential (falling back to their SharedProfile) and maps the
+    // app role onto operator|member; the CommunityProfile below keeps the app's
+    // own role string. On a legacy backend the body is the Mātou one.
+    const backend = await resolveMembershipBackend();
+    const prior = oldCred?.sad.a ?? {};
+    const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
+    let priorName = str(prior.name);
+    let priorEmail = str(prior.email);
+    if (backend.kind === 'idss' && !priorName) {
+      const shared = await getProfileById('SharedProfile', `SharedProfile-${memberAid}`);
+      const sharedData = (shared?.data || {}) as Record<string, unknown>;
+      priorName = str(sharedData.displayName);
+      priorEmail = priorEmail ?? str(sharedData.publicEmail);
+    }
     const credResult = await keriClient.issueCredential(
       orgName,
       orgRegistryId,
       membershipSchema,
       memberAid,
-      {
-        communityName: 'MATOU',
-        role: newRole,
-        joinedAt: new Date().toISOString(),
-      },
+      buildMembershipAttributes(
+        backend,
+        {
+          aid: memberAid,
+          name: priorName,
+          preferredUsername: str(prior.preferred_username),
+          email: priorEmail,
+        },
+        newRole,
+      ),
       `Role updated to ${newRole}`,
     );
     console.log('[AdminActions] New credential issued:', credResult.said);
