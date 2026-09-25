@@ -64,6 +64,7 @@
         :status-label="statusLabel(cred.status)"
         :status-tone="isRevoked(cred.status) ? 'warning' : 'healthy'"
         :subtitle="credentialSubtitle(cred)"
+        :service-name="credentialServiceName(cred)"
         :description="credentialDescription(cred)"
         :footer="formatDate(cred.issuedAt)"
         :recipient="isIssuedByMe(cred) ? `To: ${issuerDisplayName(cred.issueeAid)}` : ''"
@@ -320,6 +321,13 @@ function credentialSubtitle(cred: WalletCredential): string {
   return '';
 }
 
+// An IDSS credential names the slug services gate on — the panel card's
+// "services know it as" line. Legacy (Mātou-schema) credentials have none.
+function credentialServiceName(cred: WalletCredential): string {
+  if (!cred.display && !cred.committee) return '';
+  return cred.committee || cred.role || '';
+}
+
 function credentialDescription(cred: WalletCredential): string {
   if (cred.schemaSaid === ENDORSEMENT_SCHEMA_SAID) {
     const name = isIssuedByMe(cred)
@@ -333,6 +341,7 @@ function credentialDescription(cred: WalletCredential): string {
       : issuerDisplayName(cred.issuerAid);
     return isIssuedByMe(cred) ? `Issued to ${name}` : `Confirmed by ${name}`;
   }
+  if (credentialServiceName(cred) && cred.schemaDescription) return cred.schemaDescription;
   return cred.communityName || 'Mātou community';
 }
 
@@ -576,11 +585,20 @@ function formatDate(dateStr: string): string {
   font-size: 0.875rem;
 }
 
-/* Card grid – single column so each card is full width */
+/* Card grid — a ROW of cards at the IDSS panel card's width (credentialCard.scss
+   .oc-cred-cards: ~220px columns, 12px gap, cards stretch to the row's height),
+   wrapping onto further rows. One column only on a phone. */
 .cards-grid {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 220px));
+  gap: 12px;
+  align-items: stretch;
+}
+
+@media (max-width: 480px) {
+  .cards-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Graph view */
