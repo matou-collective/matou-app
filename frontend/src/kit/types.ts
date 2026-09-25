@@ -4,6 +4,8 @@ export interface KitBrand {
   slug: string;
   primaryColour: string;
   secondaryColour: string;
+  /** The colour behind the round logo, chosen at founding (Coa #156); the icon plate. */
+  logoBackground?: string;
   tagline?: string;
   welcomeText?: string;
   contactEmail: string;

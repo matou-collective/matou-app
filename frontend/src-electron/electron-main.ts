@@ -157,17 +157,12 @@ function installDesktopIntegration(): void {
   const appImagePath = process.env.APPIMAGE;
   if (!appImagePath) return;
 
-  // Skip if already installed, pointing to the same AppImage, AND already
-  // carrying the scheme-handler MimeType line. The MimeType check lets an
-  // install made before the #623 fix repair itself on next launch — the path
-  // is unchanged, so without it the early return would keep the broken entry.
-  if (fs.existsSync(desktopFile)) {
-    const existing = fs.readFileSync(desktopFile, 'utf-8');
-    if (existing.includes(appImagePath) && existing.includes(schemeMimeType)) return;
-  }
-
   // Install icons to ~/.local/share/icons/hicolor/
   const iconsBase = path.join(app.getPath('home'), '.local', 'share', 'icons', 'hicolor');
+  const iconPath = path.join(iconsBase, '256x256', 'apps', `${KIT_BUILD.executableName}.png`);
+
+  // Copy the icons on every launch: an update that changes the plate (#651)
+  // must replace the old pngs even when the .desktop entry is already right.
   const sizes = [16, 32, 48, 64, 128, 256, 512];
   for (const size of sizes) {
     const srcIcon = path.join(process.resourcesPath, 'icons', `${size}x${size}.png`);
@@ -175,6 +170,16 @@ function installDesktopIntegration(): void {
     const destDir = path.join(iconsBase, `${size}x${size}`, 'apps');
     fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(srcIcon, path.join(destDir, `${KIT_BUILD.executableName}.png`));
+  }
+
+  // Skip if already installed, pointing to the same AppImage, AND already
+  // carrying the scheme-handler MimeType line and the absolute icon path. The
+  // extra checks let an install made before the #623 / #651 fixes repair itself
+  // on next launch — the AppImage path is unchanged, so without them the early
+  // return would keep the broken entry.
+  if (fs.existsSync(desktopFile)) {
+    const existing = fs.readFileSync(desktopFile, 'utf-8');
+    if (existing.includes(appImagePath) && existing.includes(schemeMimeType) && existing.includes(`Icon=${iconPath}\n`)) return;
   }
 
   // Write .desktop file. The MimeType=x-scheme-handler/<scheme>; line is what
@@ -187,6 +192,7 @@ function installDesktopIntegration(): void {
     executableName: KIT_BUILD.executableName,
     appImagePath,
     scheme: DEEP_LINK_SCHEME,
+    iconPath,
   });
   fs.writeFileSync(desktopFile, desktopContent, { mode: 0o755 });
   console.log('[Electron] Installed desktop integration:', desktopFile);

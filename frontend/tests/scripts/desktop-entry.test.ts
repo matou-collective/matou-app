@@ -14,6 +14,7 @@ const params = {
   executableName: 'whakatohea-demo',
   appImagePath: '/home/ben/Apps/Whakatohea.AppImage',
   scheme: 'matou',
+  iconPath: '/home/ben/.local/share/icons/hicolor/256x256/apps/whakatohea-demo.png',
 };
 
 describe('buildDesktopEntry (#623)', () => {
@@ -27,7 +28,10 @@ describe('buildDesktopEntry (#623)', () => {
     expect(entry).toContain('[Desktop Entry]');
     expect(entry).toContain('Name=Whakatōhea');
     expect(entry).toContain('Exec="/home/ben/Apps/Whakatohea.AppImage" %U');
-    expect(entry).toContain('Icon=whakatohea-demo');
+    // An ABSOLUTE icon path: GNOME Shell reads only the hicolor dirs that existed
+    // when it started, and a first install creates them later, so a theme name
+    // falls back to the gear until the next login (#651).
+    expect(entry).toContain('Icon=/home/ben/.local/share/icons/hicolor/256x256/apps/whakatohea-demo.png');
     expect(entry).toContain('StartupWMClass=whakatohea-demo');
   });
 
