@@ -16,7 +16,7 @@ export function electronBuilderConfig(kit: KitBuild) {
   return {
     appId: kit.appId,
     productName: kit.productName,
-    // Pin three fields into the packaged app.asar package.json so the running
+    // Pin two fields into the packaged app.asar package.json so the running
     // window resolves to the installed <executableName>.desktop and shows the
     // community icon instead of the generic gear (#617, #634):
     //   • name → executableName. On X11 Chromium derives WM_CLASS from this,
@@ -27,17 +27,25 @@ export function electronBuilderConfig(kit: KitBuild) {
     //     startup from CHROME_DESKTOP, which it derives from this desktopName;
     //     app.setDesktopName() in electron-main runs too late to change the
     //     already-created toplevel's app_id. Without it Chromium falls back to
-    //     the app name (productName, "Matou" on a Coa build) and the app_id
-    //     never equals <executableName>, so GNOME finds no .desktop (#634).
-    //   • productName → the kit's product name. electron-builder's top-level
-    //     productName only lands in bundle metadata, not the asar package.json,
-    //     which otherwise keeps the source "Matou"; align it so the Wayland
-    //     fallback name is the kit's too. userData isolation does NOT depend on
-    //     this — it is forced from KIT_BUILD.productName in kit-paths.ts.
+    //     the app name (productName, "Matou") and the app_id never equals
+    //     <executableName>, so GNOME finds no .desktop (#634).
+    //
+    // Do NOT add `productName` here. The packaged asar package.json keeps the
+    // source "Matou" for EVERY build, base or community kit, and it must stay
+    // that way: on Linux, Electron's safeStorage encrypts with a keyring secret
+    // stored under the app name (`application` attribute = productName). Every
+    // install up to 0.7.7 keyed its secrets on `application=Matou`; overriding
+    // productName to the kit name (v0.7.8, #641) made the app read a different
+    // keyring entry, orphaning every existing install's encrypted state —
+    // passcode, agent AID, identity key, and the any-sync peer key — on upgrade
+    // (#644). Renaming this again re-breaks that; the guard test in
+    // tests/scripts/kit-build-config.test.ts fails if productName reappears.
+    // The Wayland dock icon does NOT need it — desktopName above drives the
+    // app_id (#634) — and userData isolation is forced from KIT_BUILD.productName
+    // in kit-paths.ts, not from this field.
     extraMetadata: {
       name: kit.executableName,
       desktopName: `${kit.executableName}.desktop`,
-      productName: kit.productName,
     },
     artifactName: `${kit.artifactBase}-${v}-${p}.${e}`,
     afterPack: './build/afterPack.cjs',

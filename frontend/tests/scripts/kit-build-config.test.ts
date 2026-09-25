@@ -20,7 +20,13 @@ describe('electron-builder config from kit.build.json', () => {
     // (via CHROME_DESKTOP); without it the app_id falls back to productName and
     // GNOME can't match the window to matou.desktop (#634).
     expect(c.extraMetadata.desktopName).toBe('matou.desktop');
-    expect(c.extraMetadata.productName).toBe('Matou');
+    // Never override productName in the packaged asar package.json. On Linux,
+    // Electron's safeStorage keys the keyring secret on the app name
+    // (productName); renaming it orphans every existing install's encrypted
+    // state — passcode, agent AID, identity key, the any-sync peer key — on
+    // upgrade (#644, the v0.7.8/#641 regression). The asar keeps the source
+    // "Matou" for every build only while this field is absent.
+    expect(c.extraMetadata).not.toHaveProperty('productName');
     expect(c.publish).toEqual([{ provider: 'github', owner: 'matou-collective', repo: 'matou-app', releaseType: 'release' }]);
   });
   it('maps a community kit to coa values and publish null', () => {
@@ -33,6 +39,9 @@ describe('electron-builder config from kit.build.json', () => {
     // The Wayland app_id must resolve to <executableName>.desktop, not the
     // productName-derived fallback, so the branded dock icon shows (#634).
     expect(c.extraMetadata.desktopName).toBe('x-y.desktop');
-    expect(c.extraMetadata.productName).toBe('X Y');
+    // A community kit must NOT override productName either — the keyring secret
+    // stays under `application=Matou` across upgrades, so no install loses its
+    // encrypted state (#644).
+    expect(c.extraMetadata).not.toHaveProperty('productName');
   });
 });
