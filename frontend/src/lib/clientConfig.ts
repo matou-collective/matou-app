@@ -18,6 +18,8 @@ import {
   parseDescriptor,
   UnsupportedDescriptorVersionError,
   schemaOobis as descriptorSchemaOobis,
+  membershipSchemaSaid as descriptorMembershipSchemaSaid,
+  membershipSchemaOobi as descriptorMembershipSchemaOobi,
   signinUrl as descriptorSigninUrl,
   type CommunityDescriptor,
   type DescriptorCommunity,
@@ -345,6 +347,27 @@ export async function getSchemaOobis(): Promise<string[]> {
 export async function getSchemaOobi(kind: string): Promise<string | undefined> {
   const config = await fetchClientConfig();
   return config.schemas?.[kind]?.oobi;
+}
+
+/**
+ * The Membership schema SAID this community issues under (issue #615): the one
+ * the descriptor names in `schemas.membership.said`, falling back to the Mātou
+ * constant only for a descriptor with no `schemas` block (coa-shared). Every
+ * membership check reads this so a correctly issued IDSS credential — of the
+ * community's OWN schema — is recognised as membership.
+ */
+export async function getMembershipSchemaSaid(): Promise<string> {
+  const config = await fetchClientConfig();
+  return descriptorMembershipSchemaSaid(parseDescriptor(config));
+}
+
+/**
+ * The Membership schema OOBI from the descriptor's `schemas` block, or
+ * undefined when the document names none (a coa-shared backend).
+ */
+export async function getMembershipSchemaOobi(): Promise<string | undefined> {
+  const config = await fetchClientConfig();
+  return descriptorMembershipSchemaOobi(parseDescriptor(config));
 }
 
 /**

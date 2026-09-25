@@ -75,10 +75,22 @@ vi.mock('stores/app', () => ({
   }),
 }));
 
+// The wallet holds a valid Membership credential of the community's schema,
+// issued to this device's AID (#615: the check now matches schema + holder,
+// not merely "any credential").
+const MEMBERSHIP_SCHEMA = 'ESchemaMembership0000000000000000000000000000';
+vi.mock('src/lib/clientConfig', () => ({
+  getMembershipSchemaSaid: async () => MEMBERSHIP_SCHEMA,
+}));
+
 vi.mock('src/lib/keri/client', () => ({
   useKERIClient: () => ({
     getSignifyClient: () => ({
-      credentials: () => ({ list: async () => [{ said: 'cred-1' }] }),
+      credentials: () => ({
+        list: async () => [
+          { sad: { d: 'cred-1', s: MEMBERSHIP_SCHEMA, a: { i: 'EAID-linked-device' } } },
+        ],
+      }),
     }),
   }),
 }));

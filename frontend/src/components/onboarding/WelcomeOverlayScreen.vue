@@ -172,6 +172,8 @@ import { canRetryFailedChecks } from 'src/lib/welcomeRetry';
 import { useIdentityStore } from 'stores/identity';
 import { useAppStore } from 'stores/app';
 import { useKERIClient } from 'src/lib/keri/client';
+import { getMembershipSchemaSaid } from 'src/lib/clientConfig';
+import { hasMembershipCredential } from 'src/lib/membership';
 import { setBackendIdentity, getSyncStatus, getProfiles } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { version as appVersion } from '../../../package.json';
@@ -533,12 +535,17 @@ async function runRecoveryChecks() {
       credentialCheck.error = 'KERI client not connected';
       return;
     }
+    // Match the schema the community actually issues under (the descriptor's
+    // schemas.membership.said), not merely "any credential" — an IDSS founder
+    // holds a Membership credential of the community's OWN schema (#615).
+    const membershipSchema = await getMembershipSchemaSaid();
+    const myAid = identityStore.currentAID?.prefix ?? '';
     let found = false;
     for (let attempt = 0; attempt < 6; attempt++) {
       if (attempt > 0) await sleep(2000);
       const credentials = await client.credentials().list();
       console.log(`[WelcomeOverlay] Credential check attempt ${attempt + 1}: ${credentials.length} credentials`);
-      if (credentials.length > 0) {
+      if (hasMembershipCredential(credentials, { membershipSchema, holderAid: myAid })) {
         found = true;
         break;
       }
@@ -620,11 +627,15 @@ async function runReturningChecks() {
     }
     const credentials = await client.credentials().list();
     console.log(`[WelcomeOverlay] Returning user credential check: ${credentials.length} credentials`);
-    if (credentials.length > 0) {
+    // Match the descriptor's Membership schema, not merely "any credential" —
+    // an IDSS founder holds the community's OWN Membership schema (#615).
+    const membershipSchema = await getMembershipSchemaSaid();
+    const myAid = identityStore.currentAID?.prefix ?? '';
+    if (hasMembershipCredential(credentials, { membershipSchema, holderAid: myAid })) {
       credentialCheck.status = 'passed';
     } else {
-      // No credential — redirect to pending approval
-      console.log('[WelcomeOverlay] No credential found, redirecting to pending-approval');
+      // No membership credential — redirect to pending approval
+      console.log('[WelcomeOverlay] No membership credential found, redirecting to pending-approval');
       emit('needs-approval');
       return;
     }

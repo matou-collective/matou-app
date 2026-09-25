@@ -9,6 +9,7 @@ import { isLikelyCredentialSaid } from 'src/lib/keri/said';
 import { useIdentityStore } from 'stores/identity';
 import { useProfilesStore } from 'stores/profiles';
 import { fetchOrgConfig } from 'src/api/config';
+import { getMembershipSchemaSaid } from 'src/lib/clientConfig';
 import type { PendingRegistration } from './useRegistrationPolling';
 import { buildOobiCandidates } from 'src/lib/registrationResolve';
 import { BACKEND_URL, createOrUpdateProfile, getProfileById, grantStewardAdmin, initMemberProfiles, sendRegistrationApprovedNotification, removeMember as removeMemberAPI } from 'src/lib/api/client';
@@ -16,10 +17,27 @@ import { resolveIssuingRegistry } from 'src/lib/keri/registry';
 import { findActiveIssuedCredentialSaid } from 'src/lib/keri/notifications';
 import { secureStorage } from 'src/lib/secureStorage';
 
-// Membership credential schema
+// Membership credential schema — the coa-shared Mātou fallback. An IDSS
+// community names its OWN Membership schema in the descriptor; every issuance
+// and member lookup below resolves it via resolveMembershipSchema (#615).
 export const MEMBERSHIP_SCHEMA_SAID = 'ECg6npd1vQ5mEnoLrsK7DG72gHJXklSa61Ybh559wZOI';
 export const ENDORSEMENT_SCHEMA_SAID = 'EIefouRuIuoi9ZtnW3BOCSVeXQSt8k3uJLvmYHfvNPOE';
 export const EVENT_ATTENDANCE_SCHEMA_SAID = 'ELhtmIAF5uZp40VJ08P7LJ_A4JH53ybWdvkSA3L-Sw2J';
+
+/**
+ * The Membership schema this community issues under (#615): the descriptor's
+ * schemas.membership.said, falling back to the Mātou constant for a coa-shared
+ * backend. Issuance and every member lookup use it so a credential is issued
+ * under, and found by, the same schema — an IDSS membership is of the
+ * community's OWN schema, not the hardcoded Mātou one.
+ */
+async function resolveMembershipSchema(): Promise<string> {
+  try {
+    return await getMembershipSchemaSaid();
+  } catch {
+    return MEMBERSHIP_SCHEMA_SAID;
+  }
+}
 
 export function useAdminActions() {
   const keriClient = useKERIClient();
@@ -230,6 +248,10 @@ export function useAdminActions() {
         throw new Error('Not connected to KERIA');
       }
 
+      // Resolve the community's Membership schema once (#615) — used for both
+      // the idempotency lookup and the issuance below so they always agree.
+      const membershipSchema = await resolveMembershipSchema();
+
       // 0. Cross-device idempotency (#480, #488, #466). isProcessing is
       //    per-JS-instance, so two linked steward devices sharing one KERIA
       //    agent can both reach Approve for the same applicant (near-
@@ -250,7 +272,7 @@ export function useAdminActions() {
       //    (spec §3.5).
       const existingCredentialSaid = await findActiveIssuedCredentialSaid(
         client,
-        MEMBERSHIP_SCHEMA_SAID,
+        membershipSchema,
         registration.applicantAid,
       );
       if (existingCredentialSaid) {
@@ -453,7 +475,7 @@ export function useAdminActions() {
         const credResult = await keriClient.issueCredential(
           issuerAidName,
           orgRegistryId,
-          MEMBERSHIP_SCHEMA_SAID,
+          membershipSchema,
           registration.applicantAid,
           credentialData,
           grantMessage
@@ -636,10 +658,11 @@ export function useAdminActions() {
     const configResult = await fetchOrgConfig();
     if (configResult.status !== 'configured') throw new Error('Org config not available');
     if (!configResult.config.registry?.id) throw new Error('Registry not found in org config');
+    const membershipSchema = await resolveMembershipSchema();
     const creds = await client.credentials().list();
     const oldCred = creds.find(
       (c: { sad: { s: string; a?: { i?: string } } }) =>
-        c.sad.s === MEMBERSHIP_SCHEMA_SAID && c.sad.a?.i === memberAid,
+        c.sad.s === membershipSchema && c.sad.a?.i === memberAid,
     );
     if (oldCred) {
       await keriClient.revokeCredential(orgAid!.prefix, oldCred.sad.d);
@@ -658,7 +681,7 @@ export function useAdminActions() {
     const credResult = await keriClient.issueCredential(
       orgName,
       orgRegistryId,
-      MEMBERSHIP_SCHEMA_SAID,
+      membershipSchema,
       memberAid,
       {
         communityName: 'MATOU',
@@ -1137,10 +1160,11 @@ export function useAdminActions() {
       // value as "unknown" and look the credential up by schema + subject AID.
       if (!isLikelyCredentialSaid(saidToRevoke)) {
         // Search for the member's credential by schema + subject AID
+        const membershipSchema = await resolveMembershipSchema();
         const creds = await client.credentials().list();
         const memberCred = creds.find(
           (c: { sad: { s: string; a?: { i?: string } } }) =>
-            c.sad.s === MEMBERSHIP_SCHEMA_SAID && c.sad.a?.i === memberAid
+            c.sad.s === membershipSchema && c.sad.a?.i === memberAid
         );
         if (memberCred) {
           saidToRevoke = memberCred.sad.d;
