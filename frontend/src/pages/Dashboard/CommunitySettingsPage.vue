@@ -157,7 +157,7 @@
            community-only capability (it appears in this feature area but a project
            role cannot hold it), so it is disabled on the project rows. -->
       <section
-        v-if="editableGrants"
+        v-if="editableGrants && features.projects"
         class="cs-section projects-section"
         data-feature="projects"
       >
@@ -308,8 +308,13 @@
         </q-markup-table>
       </section>
 
-      <!-- Project roles: what you hold on one project. Project-scoped capabilities only. -->
-      <section v-if="editableGrants" class="cs-section project-section">
+      <!-- Project roles: what you hold on one project. Project-scoped capabilities only.
+           Project roles exist only on projects, so this table follows the projects feature. -->
+      <section
+        v-if="editableGrants && features.projects"
+        class="cs-section project-section"
+        data-feature="projects"
+      >
         <div class="section-header">
           <div>
             <h3 class="section-title">Project roles</h3>
@@ -391,7 +396,11 @@
            a project role appears only when it grandfather-holds one (per #201,
            project_steward's manage_governance) — that grant can be switched off
            but not re-added. -->
-      <section v-if="editableGrants" class="cs-section proposals-section">
+      <section
+        v-if="editableGrants && features.proposals"
+        class="cs-section proposals-section"
+        data-feature="proposals"
+      >
         <div class="section-header">
           <div>
             <h3 class="section-title">Proposals</h3>
@@ -470,7 +479,7 @@
            (send messages, manage channels, moderate messages) per community role.
            Chat capabilities are community-only, so project roles are not listed. -->
       <section
-        v-if="editableGrants"
+        v-if="editableGrants && features.chat"
         class="cs-section chat-section"
         data-feature="chat"
       >
@@ -535,7 +544,7 @@
            capabilities (post notices, manage notices) per community role. Notice
            capabilities are community-only, so project roles are not listed. -->
       <section
-        v-if="editableGrants"
+        v-if="editableGrants && features.notices"
         class="cs-section notices-section"
         data-feature="notices"
       >
@@ -739,12 +748,21 @@ import { useTypesStore } from "src/stores/types";
 import type { RoleDef, RoleScope } from "src/lib/api/rolePolicy";
 import { checkCommunitySettingsAccess } from "src/lib/api/communitySettings";
 import { fetchOrgConfig, saveOrgConfig, type OrgConfig } from "src/api/config";
+import { KIT } from "src/generated/kit";
 
 const $q = useQuasar();
 const route = useRoute();
 const router = useRouter();
 const store = useRolePolicyStore();
 const typesStore = useTypesStore();
+
+// A feature's permission table renders only when that feature is on in the
+// build's kit (#621) — the same source the nav reads (KIT.features). The
+// always-on sections (Community, Community roles, Org details) ignore this.
+// Note: hiding a table never touches its stored grants — editableGrants is
+// seeded from the full policy and saved back whole, so a disabled feature's
+// grants survive untouched and reappear if the feature is turned back on.
+const features = KIT.features;
 
 const checkingAccess = ref(true);
 const accessAllowed = ref(false);
