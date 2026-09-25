@@ -17,6 +17,7 @@ import crypto from 'crypto';
 // (produced by `npm run kit:apply` from coa-kit/kit.json). See Matou/coa ADR 0004.
 import { KIT, KIT_BUILD } from 'src/generated/kit';
 import { kitUserDataPath } from './kit-paths';
+import { buildDesktopEntry, schemeHandlerMimeType } from './desktop-entry';
 import { resolveIdentityKey } from './identity-key';
 
 // Using destructuring to access autoUpdater due to the CommonJS module of 'electron-updater'.
@@ -141,15 +142,19 @@ function installDesktopIntegration(): void {
 
   const appsDir = path.join(app.getPath('home'), '.local', 'share', 'applications');
   const desktopFile = path.join(appsDir, `${KIT_BUILD.executableName}.desktop`);
+  const schemeMimeType = schemeHandlerMimeType(DEEP_LINK_SCHEME);
 
   // Find the AppImage path from the environment (set by AppImage runtime)
   const appImagePath = process.env.APPIMAGE;
   if (!appImagePath) return;
 
-  // Skip if already installed and pointing to the same AppImage
+  // Skip if already installed, pointing to the same AppImage, AND already
+  // carrying the scheme-handler MimeType line. The MimeType check lets an
+  // install made before the #623 fix repair itself on next launch — the path
+  // is unchanged, so without it the early return would keep the broken entry.
   if (fs.existsSync(desktopFile)) {
     const existing = fs.readFileSync(desktopFile, 'utf-8');
-    if (existing.includes(appImagePath)) return;
+    if (existing.includes(appImagePath) && existing.includes(schemeMimeType)) return;
   }
 
   // Install icons to ~/.local/share/icons/hicolor/
@@ -163,20 +168,35 @@ function installDesktopIntegration(): void {
     fs.copyFileSync(srcIcon, path.join(destDir, `${KIT_BUILD.executableName}.png`));
   }
 
-  // Write .desktop file
+  // Write .desktop file. The MimeType=x-scheme-handler/<scheme>; line is what
+  // makes the sign-in link's "open the app on this computer" (a matou:// link)
+  // resolve to us — app.setAsDefaultProtocolClient only takes effect on Linux
+  // once a registered .desktop declares the scheme (#623).
   fs.mkdirSync(appsDir, { recursive: true });
-  const desktopContent = `[Desktop Entry]
-Name=${KIT.brand.name}
-Exec="${appImagePath}" %U
-Terminal=false
-Type=Application
-Icon=${KIT_BUILD.executableName}
-StartupWMClass=${KIT_BUILD.executableName}
-Categories=Network;
-Comment=${KIT.brand.name} Community
-`;
+  const desktopContent = buildDesktopEntry({
+    name: KIT.brand.name,
+    executableName: KIT_BUILD.executableName,
+    appImagePath,
+    scheme: DEEP_LINK_SCHEME,
+  });
   fs.writeFileSync(desktopFile, desktopContent, { mode: 0o755 });
   console.log('[Electron] Installed desktop integration:', desktopFile);
+
+  // Refresh the DE's MIME cache and set us as the default handler for the
+  // scheme. Both are best-effort: xdg-utils / desktop-file-utils may be absent
+  // on a minimal system, in which case the MimeType line above still lets the
+  // browser's "Open with" dialog find us. Logged, never fatal.
+  const desktopId = `${KIT_BUILD.executableName}.desktop`;
+  try {
+    execFileSync('update-desktop-database', [appsDir], { stdio: 'ignore' });
+  } catch (err) {
+    log.warn(`[Electron] update-desktop-database unavailable (install desktop-file-utils to auto-register the ${DEEP_LINK_SCHEME}:// handler):`, err);
+  }
+  try {
+    execFileSync('xdg-mime', ['default', desktopId, schemeMimeType], { stdio: 'ignore' });
+  } catch (err) {
+    log.warn(`[Electron] xdg-mime unavailable (install xdg-utils to auto-register the ${DEEP_LINK_SCHEME}:// handler):`, err);
+  }
 }
 
 let mainWindow: BrowserWindow | null = null;
