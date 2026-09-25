@@ -108,6 +108,17 @@ test.describe('credential-card parity with the IDSS control panel (#633)', () =>
     await expect(plain.locator('.cred-tag')).toBeVisible();
     await expect(plain.locator('.cred-open')).toHaveText('OPEN');
 
+    // IDSS credential carries the panel's "services know it as <slug>" line.
+    await expect(painted.locator('.cred-prod')).toContainText('finance-komiti');
+
+    // --- Layout: a ROW of panel-width cards, never full-width stacked. ---
+    const [a, b] = [await painted.boundingBox(), await plain.boundingBox()];
+    expect(a && b).toBeTruthy();
+    expect(a!.width).toBeLessThanOrEqual(221);
+    expect(b!.width).toBeLessThanOrEqual(221);
+    expect(Math.abs(a!.y - b!.y)).toBeLessThan(1); // side by side
+    expect(Math.abs(a!.height - b!.height)).toBeLessThan(1); // stretched to one height
+
     // The pair — for the side-by-side with the panel's Members → Credentials.
     await snap(memberPage, 'credential-card-parity');
 

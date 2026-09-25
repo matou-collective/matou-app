@@ -35,7 +35,10 @@
     <div class="cred-body">
       <h4 class="cred-name">{{ name }}</h4>
       <span class="cred-tag">{{ tag }}</span>
-      <p v-if="subtitle" class="cred-line cred-subtitle">{{ subtitle }}</p>
+      <p v-if="serviceName" class="cred-line cred-prod">
+        services know it as <code>{{ serviceName }}</code>
+      </p>
+      <p v-else-if="subtitle" class="cred-line cred-subtitle">{{ subtitle }}</p>
       <p v-if="description" class="cred-line">{{ description }}</p>
       <p v-if="recipient" class="cred-line cred-recipient">{{ recipient }}</p>
     </div>
@@ -60,6 +63,8 @@ const props = defineProps<{
   statusLabel: string;
   statusTone: 'healthy' | 'warning';
   subtitle?: string;
+  /** The slug services gate on (a.committee / role) — the panel's "services know it as" line. */
+  serviceName?: string;
   description?: string;
   footer: string;
   recipient?: string;
@@ -87,98 +92,91 @@ const cardStyle = computed(() =>
 </script>
 
 <style scoped>
-/* Monospace stack — the panel card's display face. The kit ships no mono face,
-   so this mirrors the app's `code` stack (src/css/app.scss). */
+/* Metrics are the panel card's (credentialCard.scss .oc-cred-card): 12/14px
+   padding, 10px radius, 1.5px border, 32px tile, chip pinned top-right, the foot
+   line pushed to the bottom with OPEN under it. The grid that holds these cards
+   (CredentialsTab .cards-grid) lays them out in a row at the panel's width. */
 .wallet-cred-card {
   --cred-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  position: relative;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 100%;
+  font-family: var(--cred-mono);
   background: var(--matou-card, white);
-  border: 1px solid var(--matou-border, #e5e7eb);
-  border-radius: var(--matou-radius, 0.75rem);
-  padding: 1.25rem;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  border: 1.5px solid var(--matou-border, #e5e7eb);
+  border-radius: 10px;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  gap: 0.875rem;
+  transition: box-shadow 0.15s ease;
 }
 
 .wallet-cred-card:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
 }
 
-/* A painted card keeps its own colour; only lift it on hover. */
 .wallet-cred-card.painted {
-  border-color: transparent;
-}
-
-.wallet-cred-card.painted:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+  border-color: color-mix(in srgb, currentColor 18%, transparent);
 }
 
 .cred-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  margin-bottom: 8px;
 }
 
-/* Mark tile — a small SQUARE tile with a thin border, top-left. */
+/* Mark tile — 32px square, top-left. */
 .cred-tile {
-  width: 44px;
-  height: 44px;
-  border-radius: 0.375rem;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   border: 1px solid var(--matou-border, #e5e7eb);
   overflow: hidden;
   flex-shrink: 0;
 }
 
-/* On a painted card the tile border is drawn from the contrast ink so it reads
-   against the painted background. */
 .painted .cred-tile {
   border-color: color-mix(in srgb, currentColor 24%, transparent);
 }
 
-/* Status chip — a SQUARE white chip, top-right, uppercase monospace. */
+/* Status chip — pinned top-right, white, uppercase monospace. */
 .cred-chip {
-  font-family: var(--cred-mono);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  padding: 0.2rem 0.5rem;
-  border-radius: 0.25rem;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 4px;
   border: 1px solid var(--matou-border, #e5e7eb);
-  background: var(--matou-surface, white);
+  background: #ffffff;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   white-space: nowrap;
 }
 
 .cred-chip.healthy {
-  color: #059669;
+  color: #3f6b3a;
 }
 
 .cred-chip.warning {
   color: var(--matou-destructive, #dc2626);
 }
 
-/* On a painted card the chip stays white (like the panel's) so it stands off the
-   painted background; the tone ink keeps its meaning against white. */
 .cred-chip.chip-painted {
-  background: #ffffff;
   border-color: rgba(0, 0, 0, 0.08);
-  color: #0f172a;
+  color: #3f6b3a;
 }
 
 .cred-body {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
 }
 
-/* Name — bold, monospace display face. */
 .cred-name {
-  margin: 0;
-  font-family: var(--cred-mono);
-  font-size: 0.9375rem;
+  margin: 0 0 2px;
+  font-size: 1rem;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  line-height: 1.35;
   color: var(--matou-foreground, #1f2937);
 }
 
@@ -186,44 +184,58 @@ const cardStyle = computed(() =>
   color: currentColor;
 }
 
-/* Tag — a small OUTLINED uppercase monospace box (RECEIVED / ISSUED). */
+/* Tag — outlined uppercase box (RECEIVED / ISSUED). */
 .cred-tag {
   align-self: flex-start;
-  font-family: var(--cred-mono);
-  font-size: 0.625rem;
-  font-weight: 600;
-  padding: 0.125rem 0.4375rem;
-  border-radius: 0.25rem;
-  border: 1px solid var(--matou-border, #cbd5e1);
-  background: transparent;
+  margin: 2px 0 6px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--matou-muted-foreground, #6b7280);
+  color: var(--matou-foreground, #1f2937);
 }
 
 .painted .cred-tag {
-  border-color: color-mix(in srgb, currentColor 40%, transparent);
   color: currentColor;
 }
 
-/* Body — muted monospace lines. */
 .cred-line {
-  margin: 0;
-  font-family: var(--cred-mono);
-  font-size: 0.75rem;
-  line-height: 1.4;
+  margin: 0 0 6px;
+  font-size: 0.875rem;
+  line-height: 1.35;
+  color: var(--matou-foreground, #1f2937);
+  overflow-wrap: anywhere;
+}
+
+.painted .cred-line {
+  color: currentColor;
+}
+
+/* "services know it as <slug>" — the panel's muted production-name line. */
+.cred-prod {
+  font-size: 0.8125rem;
   color: var(--matou-muted-foreground, #6b7280);
+}
+
+.cred-prod code {
+  font: inherit;
+  font-weight: 700;
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.painted .cred-prod {
+  color: currentColor;
+  opacity: 0.75;
 }
 
 .cred-subtitle {
   font-weight: 600;
-  color: var(--matou-foreground, #374151);
-}
-
-.painted .cred-subtitle,
-.painted .cred-line {
-  color: currentColor;
-  opacity: 0.85;
 }
 
 .cred-recipient {
@@ -232,19 +244,17 @@ const cardStyle = computed(() =>
   text-overflow: ellipsis;
 }
 
-/* Footer — a muted line, then a dark SQUARE OPEN button. */
+/* Foot — the muted line sits at the bottom, OPEN under it, left-aligned. */
 .cred-foot {
+  margin-top: auto;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-top: 0.125rem;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .cred-date {
-  font-family: var(--cred-mono);
-  font-size: 0.6875rem;
-  color: var(--matou-muted-foreground, #9ca3af);
+  font-size: 0.8125rem;
+  color: var(--matou-muted-foreground, #6b7280);
 }
 
 .painted .cred-date {
@@ -253,28 +263,29 @@ const cardStyle = computed(() =>
 }
 
 .cred-open {
+  margin-top: 8px;
   font-family: var(--cred-mono);
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  padding: 0.375rem 0.875rem;
-  border: none;
-  border-radius: 0.25rem;
+  letter-spacing: 0.06em;
+  padding: 6px 13px;
+  border: 1px solid var(--matou-foreground, #1f2937);
+  border-radius: 6px;
   background: var(--matou-foreground, #1f2937);
   color: var(--matou-background, #ffffff);
   cursor: pointer;
   text-transform: uppercase;
-  transition: opacity 0.15s ease;
 }
 
-.cred-open:hover {
-  opacity: 0.85;
+.cred-open:hover,
+.cred-open:focus-visible {
+  filter: brightness(1.2);
+  outline: none;
 }
 
-/* On a painted card the OPEN button uses the contrast ink as its fill and the
-   card's own background colour as its text — a dark square that stays readable. */
 .painted .cred-open {
-  background: currentColor;
-  color: var(--cred-paint-bg, #ffffff);
+  background: #3f3f3f;
+  border-color: #3f3f3f;
+  color: #ffffff;
 }
 </style>
