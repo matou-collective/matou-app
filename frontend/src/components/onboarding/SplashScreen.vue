@@ -131,7 +131,8 @@ import { useAnimationPresets } from 'composables/useAnimationPresets';
 import { useOnboardingStore } from 'stores/onboarding';
 import { useIdentityStore } from 'stores/identity';
 import { useKERIClient } from 'src/lib/keri/client';
-import { MEMBERSHIP_SCHEMA_SAID } from 'src/composables/useAdminActions';
+import { getMembershipSchemaSaid } from 'src/lib/clientConfig';
+import { hasMembershipCredential } from 'src/lib/membership';
 import { version as appVersion } from '../../../package.json';
 import { KIT } from 'src/generated/kit';
 import kitLogo from 'src/assets/kit/logo.png';
@@ -175,10 +176,14 @@ watch(
       console.log(`[Splash] Found ${credentials.length} credentials`);
 
       const myAid = identityStore.currentAID!.prefix;
-      const hasMembership = credentials.some(
-        (c: { sad?: { s?: string; a?: { i?: string } } }) =>
-          c.sad?.s === MEMBERSHIP_SCHEMA_SAID && c.sad?.a?.i === myAid
-      );
+      // Match the schema the community actually issues under (the descriptor's
+      // schemas.membership.said), not a hardcoded built-in — an IDSS founder
+      // holds a Membership credential of the community's OWN schema (#615).
+      const membershipSchema = await getMembershipSchemaSaid();
+      const hasMembership = hasMembershipCredential(credentials, {
+        membershipSchema,
+        holderAid: myAid,
+      });
 
       if (hasMembership) {
         // Has membership credential — verify community space access before routing
