@@ -136,7 +136,9 @@ export default configure(() => {
     },
 
     devServer: {
-      open: true,
+      // The harness restarts the dev server on a kit switch; only its first
+      // start opens a browser tab.
+      open: !HARNESS || process.env.MATOU_HARNESS_OPEN === '1',
     },
 
     framework: {

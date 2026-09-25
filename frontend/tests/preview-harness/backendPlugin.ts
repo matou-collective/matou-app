@@ -257,6 +257,30 @@ const platformScript = `
 
 let TYPES: Array<{ name: string }> = [];
 
+interface KitEntry {
+  id: string;
+  name: string;
+  primary: string;
+  secondary: string;
+}
+
+/** The kits run.mjs can switch between (MATOU_HARNESS_KITS: id -> directory), and the one applied. */
+function kitCatalogue(): { current: string; kits: KitEntry[] } {
+  const dirs = JSON.parse(process.env.MATOU_HARNESS_KITS ?? '{}') as Record<string, string>;
+  const kits: KitEntry[] = [];
+  for (const [id, dir] of Object.entries(dirs)) {
+    try {
+      const kit = JSON.parse(readFileSync(join(dir, 'kit.json'), 'utf8')) as {
+        brand: { name: string; primaryColour: string; secondaryColour: string };
+      };
+      kits.push({ id, name: kit.brand.name, primary: kit.brand.primaryColour, secondary: kit.brand.secondaryColour });
+    } catch {
+      /* an unreadable kit is left out of the picker */
+    }
+  }
+  return { current: process.env.MATOU_HARNESS_KIT ?? '', kits };
+}
+
 function scenarioFrom(req: IncomingMessage): string | null {
   const cookie = req.headers.cookie ?? '';
   const match = cookie.match(new RegExp(`(?:^|;\\s*)${SCENARIO_COOKIE}=([^;]+)`));
@@ -303,6 +327,22 @@ export function harnessBackend(root: string): Plugin {
         const url = new URL(req.url ?? '/', 'http://harness');
         const method = (req.method ?? 'GET').toUpperCase();
         const scenario = scenarioById(url.searchParams.get('scenario') ?? scenarioFrom(req)).id;
+
+        // The picker's kit list and kit switch. A switch is handed to run.mjs
+        // (our parent, over IPC), which restarts this dev server on the new kit.
+        if (url.pathname === '/__kits') {
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify(kitCatalogue()));
+          return;
+        }
+        if (url.pathname === '/__kit' && method === 'POST') {
+          const id = url.searchParams.get('id') ?? '';
+          const known = kitCatalogue().kits.some((k) => k.id === id);
+          res.statusCode = known && process.send ? 202 : 400;
+          res.end();
+          if (known) process.send?.({ type: 'switch-kit', id });
+          return;
+        }
 
         if (url.pathname === '/__reset') {
           worlds.delete(scenario);

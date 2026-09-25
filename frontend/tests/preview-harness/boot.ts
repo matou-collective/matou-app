@@ -72,11 +72,56 @@ function currentPlatform(): string {
   return localStorage.getItem(PLATFORM_KEY) ?? DEFAULT_PLATFORM;
 }
 
-function drawPicker(current: Scenario): void {
+interface KitCatalogue {
+  current: string;
+  kits: Array<{ id: string; name: string; primary: string; secondary: string }>;
+}
+
+async function loadKits(): Promise<KitCatalogue> {
+  try {
+    const res = await fetch(`${FAKE_PREFIX}/__kits`);
+    if (res.ok) return (await res.json()) as KitCatalogue;
+  } catch {
+    /* no kit switching then */
+  }
+  return { current: '', kits: [] };
+}
+
+const escape = (t: string) => t.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/**
+ * Ask run.mjs for another kit, then wait out the dev-server restart: poll
+ * until the server answers with the new kit applied, and reload in place.
+ */
+async function switchKit(id: string, name: string, overlay: HTMLElement): Promise<void> {
+  overlay.querySelector('.msg')!.textContent = `Switching to ${name}…`;
+  overlay.hidden = false;
+  const asked = await fetch(`${FAKE_PREFIX}/__kit?id=${encodeURIComponent(id)}`, { method: 'POST' }).catch(() => null);
+  if (!asked || asked.status !== 202) {
+    overlay.querySelector('.msg')!.textContent = 'Kit switching needs the harness started with npm run harness.';
+    return;
+  }
+  const started = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const kits = await fetch(`${FAKE_PREFIX}/__kits`, { cache: 'no-store' })
+      .then((r) => (r.ok ? (r.json() as Promise<KitCatalogue>) : null))
+      .catch(() => null);
+    if (kits?.current === id) break;
+    if (Date.now() - started > 120_000) {
+      overlay.querySelector('.msg')!.textContent = 'The dev server did not come back — check the harness terminal.';
+      return;
+    }
+  }
+  window.location.reload();
+}
+
+function drawPicker(current: Scenario, kits: KitCatalogue): void {
   const host = document.createElement('div');
   host.setAttribute('data-testid', 'harness-picker');
   const root = host.attachShadow({ mode: 'open' });
   const who = current.signedInAs ? PEOPLE[current.signedInAs].name : 'nobody yet';
+  const active = kits.kits.find((k) => k.id === kits.current);
   const phrases = (Object.values(PEOPLE)).map((p) => `${p.name}: ${p.mnemonic}`).join('\n');
   root.innerHTML = `
     <style>
@@ -97,10 +142,21 @@ function drawPicker(current: Scenario): void {
       }
       select option { color: #111; }
       .who { opacity: .7; }
+      .swatch { display: inline-flex; border-radius: 999px; overflow: hidden; border: 1px solid rgba(255,255,255,.35); }
+      .swatch i { width: 10px; height: 14px; display: block; }
+      .overlay {
+        position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: center; justify-content: center;
+        background: rgba(10, 10, 10, .72); color: #fff; font: 15px/1.4 system-ui, sans-serif;
+      }
+      .overlay[hidden] { display: none; }
     </style>
     <div class="pill" title="${current.blurb}\n\nRecover identity with any of these phrases:\n${phrases}">
       <b id="toggle">HARNESS</b>
       <span class="rest">
+        ${kits.kits.length ? `<span class="swatch" title="${escape(active?.name ?? '')}"><i style="background:${active?.primary ?? '#888'}"></i><i style="background:${active?.secondary ?? '#ccc'}"></i></span>
+        <select id="kit" aria-label="Brand kit">
+          ${kits.kits.map((k) => `<option value="${escape(k.id)}" ${k.id === kits.current ? 'selected' : ''}>${escape(k.name)} (${escape(k.id)})</option>`).join('')}
+        </select>` : ''}
         <select id="scenario" aria-label="Scenario">
           ${SCENARIOS.map((s) => `<option value="${s.id}" ${s.id === current.id ? 'selected' : ''}>${s.label}</option>`).join('')}
         </select>
@@ -111,9 +167,15 @@ function drawPicker(current: Scenario): void {
         <button id="restart" title="Start this scenario again from its first screen">Restart</button>
         <span class="who">as ${who}</span>
       </span>
-    </div>`;
+    </div>
+    <div class="overlay" hidden><span class="msg"></span></div>`;
   const pill = root.querySelector('.pill')!;
   root.getElementById('toggle')!.addEventListener('click', () => pill.classList.toggle('min'));
+  const overlay = root.querySelector<HTMLElement>('.overlay')!;
+  root.getElementById('kit')?.addEventListener('change', (e) => {
+    const id = (e.target as HTMLSelectElement).value;
+    void switchKit(id, kits.kits.find((k) => k.id === id)?.name ?? id, overlay);
+  });
   root.getElementById('scenario')!.addEventListener('change', (e) => go((e.target as HTMLSelectElement).value));
   root.getElementById('platform')!.addEventListener('change', (e) => go(current.id, (e.target as HTMLSelectElement).value));
   const theme = root.getElementById('theme')!;
@@ -130,6 +192,6 @@ function drawPicker(current: Scenario): void {
 export default boot(async () => {
   const scenario = await chooseScenario();
   installFakeKeria();
-  drawPicker(scenario);
+  drawPicker(scenario, await loadKits());
   console.info(`[harness] scenario "${scenario.id}" — ${scenario.blurb}`);
 });

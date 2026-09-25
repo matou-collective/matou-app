@@ -9,6 +9,7 @@ cd frontend
 npm run harness                    # kit "tui", http://127.0.0.1:9100
 npm run harness -- --kit pale      # another harness kit
 npm run harness -- --kit ../coa-kit --port 9200   # any kit directory
+npm run harness -- --kits-dir ~/coa/communities    # add a folder of kits to the picker
 ```
 
 Stop it with Ctrl-C: the stock kit (`../coa-kit`) is re-applied on exit, so the
@@ -64,10 +65,14 @@ Every harness person has a real recovery phrase (hover the pill to see them).
 | `pale` | light blue on near-white — for finding text that disappears | chat, notices, events |
 | `whakatohea-demo` | the demo community's kit | chat, notices, events |
 
+**Switching kit:** the pill's kit dropdown (next to the current kit's two
+colours) lists the harness kits plus every kit folder under each `--kits-dir`.
 Brand and features are baked in at build time (`src/generated/kit.ts`,
-`kit-tokens.scss`, the `__KIT_*__` defines), so switching kit means restarting
-the harness with another `--kit`. Edits to a kit's `kit.json` need a restart
-too; edits to the app's own code hot-reload as usual.
+`kit-tokens.scss`, the `__KIT_*__` defines), so a switch goes back to
+`run.mjs`: it stops the dev server, applies the new kit and starts it again.
+The page shows "Switching to …" and reloads on the same scenario when the
+server is back, about 5 s later. Edits to a kit's `kit.json` need a switch
+away and back (or a restart); edits to the app's own code hot-reload as usual.
 
 ## How it works
 
