@@ -127,11 +127,11 @@ function formatDate(dateStr: string, verb: string): string {
 }
 
 .border-pending {
-  border-color: var(--matou-warning, #f59e0b);
+  border-color: var(--matou-warning);
 }
 
 .border-approved {
-  border-color: var(--matou-accent, #4a9d9c);
+  border-color: var(--matou-accent);
 }
 
 .border-pending:hover {
@@ -139,7 +139,7 @@ function formatDate(dateStr: string, verb: string): string {
 }
 
 .border-approved:hover {
-  background: rgba(74, 157, 156, 0.08);
+  background: color-mix(in srgb, var(--matou-accent) 8%, transparent);
 }
 
 
@@ -159,25 +159,25 @@ function formatDate(dateStr: string, verb: string): string {
 }
 
 .badge-membership {
-  color: var(--matou-accent, #4a9d9c);
+  color: var(--matou-accent);
 }
 
 .badge-endorsement {
-  color: var(--matou-accent, #4a9d9c);
+  color: var(--matou-accent);
 }
 
 .badge-attendance {
-  color: var(--matou-accent, #4a9d9c);
+  color: var(--matou-accent);
 }
 
 .status-pending {
-  color: var(--matou-warning, #f59e0b);
+  color: var(--matou-warning);
 }
 
 .card-name {
   font-size: 0.875rem;
   font-weight: 500;
-  color: var(--matou-text, #1f2937);
+  color: var(--matou-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -185,12 +185,12 @@ function formatDate(dateStr: string, verb: string): string {
 
 .card-role {
   font-size: 0.75rem;
-  color: var(--matou-primary, #6366f1);
+  color: var(--matou-primary);
 }
 
 .card-date {
   font-size: 0.75rem;
-  color: var(--matou-text-secondary, #6b7280);
+  color: var(--matou-text-secondary);
 }
 
 .card-endorsements {
@@ -198,7 +198,7 @@ function formatDate(dateStr: string, verb: string): string {
   align-items: center;
   gap: 0.25rem;
   font-size: 0.7rem;
-  color: var(--matou-accent, #4a9d9c);
+  color: var(--matou-accent);
   font-weight: 500;
 }
 </style>

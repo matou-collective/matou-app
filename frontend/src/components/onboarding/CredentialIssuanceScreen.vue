@@ -253,7 +253,7 @@ const onComplete = () => {
     135deg,
     var(--matou-secondary) 0%,
     var(--matou-background) 50%,
-    rgba(232, 244, 248, 0.5) 100%
+    color-mix(in srgb, var(--matou-secondary) 50%, transparent) 100%
   );
   min-height: calc(100vh - var(--titlebar-height));
 }

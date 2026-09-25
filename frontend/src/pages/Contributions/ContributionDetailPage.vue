@@ -629,8 +629,8 @@ async function handleCreateSubContributionSubmit(req: CreateContributionRequest)
   border-radius: 12px;
   margin-bottom: 8px;
 
-  &.approved { background: rgba(74, 157, 156, 0.12); color: var(--matou-accent); }
-  &.incomplete { background: rgba(30, 95, 116, 0.1); color: var(--matou-primary); }
+  &.approved { background: color-mix(in srgb, var(--matou-accent) 12%, transparent); color: var(--matou-accent); }
+  &.incomplete { background: color-mix(in srgb, var(--matou-primary) 10%, transparent); color: var(--matou-primary); }
   &.declined { background: rgba(200, 70, 58, 0.1); color: var(--matou-destructive); }
 }
 

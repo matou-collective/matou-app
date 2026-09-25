@@ -284,7 +284,7 @@ function formatWeekRange(start: Date): string {
   gap: 6px;
   font-size: 1rem;
   font-weight: 600;
-  color: var(--matou-destructive, #dc2626);
+  color: var(--matou-destructive);
   margin: 0;
 }
 
@@ -407,8 +407,8 @@ function formatWeekRange(start: Date): string {
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(30, 95, 116, 0.12);
-  color: var(--matou-primary, #1e5f74);
+  background: color-mix(in srgb, var(--matou-primary) 12%, transparent);
+  color: var(--matou-primary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -425,12 +425,12 @@ function formatWeekRange(start: Date): string {
   gap: 8px;
   min-height: 120px;
   padding: 8px;
-  background: var(--matou-muted, #f3f4f6);
+  background: var(--matou-muted);
   border-radius: var(--matou-radius-sm);
 
   &--today {
     border: 1px solid var(--matou-primary);
-    background: rgba(30, 95, 116, 0.04);
+    background: color-mix(in srgb, var(--matou-primary) 4%, transparent);
   }
 }
 

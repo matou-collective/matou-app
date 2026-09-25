@@ -2,20 +2,30 @@
 // Ported from matou-design globals.css
 
 // Brand colours (--matou-primary/secondary/secondary-foreground/muted/accent)
-// come from the kit — the generated :root block in kit-tokens.scss. See
+// come from the kit — the generated :root/.dark blocks in kit-tokens.scss. See
 // scripts/kit/apply-kit.mjs and Matou/coa ADR 0004.
+//
+// #642 — the FULL palette is now kit-derived: every brand colour the app draws
+// (charts, avatars, sidebar, dark surfaces, borders, washes, gradients) is a
+// `color-mix()` over the three kit tokens above, never a hard-coded Mātou teal /
+// navy / orange. Because --matou-primary/secondary/accent are themselves
+// overridden in `.dark` (kit-tokens.scss), a token defined once in `:root` as a
+// mix over `var(--matou-primary)` re-resolves per element and adapts to dark for
+// free — so charts, borders, rings and washes need no `.dark` override; only the
+// light-vs-dark *surfaces* (background/card/foreground) do. This file keeps only
+// true non-brand neutrals (greys, the destructive red, radii, typography).
 @import './kit-tokens';
 
 :root {
   --font-size: 16px;
 
-  // Ocean & River inspired palette
+  // Neutral surfaces & text (theme-invariant greys — not brand)
   --matou-background: #fafbfc;
-  --matou-foreground: #1a2b3a;
+  --matou-foreground: #1f2937;
   --matou-card: #ffffff;
-  --matou-card-foreground: #1a2b3a;
+  --matou-card-foreground: #1f2937;
   --matou-popover: #ffffff;
-  --matou-popover-foreground: #1a2b3a;
+  --matou-popover-foreground: #1f2937;
 
   // Deep ocean blue
   --matou-primary-foreground: #ffffff;
@@ -25,13 +35,18 @@
 
   // Teal accent
   --matou-accent-foreground: #ffffff;
+  // Warm "mine / outgoing" accent (credential-graph issued-by-me line). No warm
+  // colour in a 2-colour kit, so it follows the kit primary instead of Mātou's
+  // orange. See #642.
+  --matou-accent-warm: var(--matou-primary);
 
   // Status colors
   --matou-destructive: #c8463a;
   --matou-destructive-foreground: #ffffff;
 
-  // Form elements
-  --matou-border: rgba(30, 95, 116, 0.15);
+  // Form elements — the tinted border follows the kit primary (exact rgba for
+  // stock, kit-tinted for a community build).
+  --matou-border: color-mix(in srgb, var(--matou-primary) 15%, transparent);
   --matou-input: transparent;
   --matou-input-background: #f0f7f9;
   --matou-switch-background: #b0cbd5;
@@ -82,40 +97,43 @@
   --matou-radius-2xl: 1rem;
   --matou-radius-3xl: 1.5rem;
 
-  // Chart colors (Indigenous-inspired)
-  --matou-chart-1: #1e5f74;
-  --matou-chart-2: #4a9d9c;
-  --matou-chart-3: #7eb3b8;
-  --matou-chart-4: #3d8a99;
-  --matou-chart-5: #5a7b8a;
+  // Chart colors — a kit-derived ramp off the primary/accent. Defined once here;
+  // because it mixes over var(--matou-primary)/var(--matou-accent) (which .dark
+  // overrides), it re-resolves and adapts to dark mode automatically.
+  --matou-chart-1: var(--matou-primary);
+  --matou-chart-2: color-mix(in srgb, var(--matou-accent) 85%, white);
+  --matou-chart-3: color-mix(in srgb, var(--matou-primary) 45%, white);
+  --matou-chart-4: color-mix(in srgb, var(--matou-accent) 65%, var(--matou-primary));
+  --matou-chart-5: color-mix(in srgb, var(--matou-primary) 45%, #6b7280);
 
-  // Sidebar
+  // Sidebar — surfaces are neutral greys; the brand accents follow the kit.
   --matou-sidebar: #f0f7f9;
-  --matou-sidebar-foreground: #1a2b3a;
-  --matou-sidebar-primary: #1e5f74;
+  --matou-sidebar-foreground: #1f2937;
+  --matou-sidebar-primary: var(--matou-primary);
   --matou-sidebar-primary-foreground: #ffffff;
   // --matou-sidebar-accent comes from the kit (kit-tokens.scss) so the selected
   // nav tab follows the kit secondary wash. See scripts/kit/apply-kit.mjs / #337.
-  --matou-sidebar-accent-foreground: #1a2b3a;
-  --matou-sidebar-border: rgba(30, 95, 116, 0.15);
-  --matou-sidebar-ring: #4a9d9c;
+  --matou-sidebar-accent-foreground: #1f2937;
+  --matou-sidebar-border: color-mix(in srgb, var(--matou-primary) 15%, transparent);
+  --matou-sidebar-ring: var(--matou-accent);
 }
 
 .dark {
-  // Deep night ocean
-  --matou-background: #0f1a23;
-  --matou-foreground: #e8f4f8;
-  --matou-card: #1a2b3a;
-  --matou-card-foreground: #e8f4f8;
-  --matou-popover: #1a2b3a;
-  --matou-popover-foreground: #e8f4f8;
+  // Deep night ocean — kit-tinted dark surfaces (primary mixed into black), so a
+  // community build's dark mode carries its own brand instead of Mātou navy. #642
+  --matou-background: color-mix(in srgb, var(--matou-primary) 18%, black);
+  --matou-foreground: color-mix(in srgb, var(--matou-primary) 12%, white);
+  --matou-card: color-mix(in srgb, var(--matou-primary) 28%, black);
+  --matou-card-foreground: color-mix(in srgb, var(--matou-primary) 12%, white);
+  --matou-popover: color-mix(in srgb, var(--matou-primary) 28%, black);
+  --matou-popover-foreground: color-mix(in srgb, var(--matou-primary) 12%, white);
 
   // --matou-primary / --matou-primary-foreground now come from the kit's .dark
   // block (kit-tokens.scss) — a lightened kit primary + a near-black foreground —
   // so dark mode no longer falls back to Matou's teal on the onboarding screens.
   // See #636. --matou-secondary / --matou-muted come from the kit's .dark block
   // too (the secondary wash) — see #337.
-  --matou-secondary-foreground: #e8f4f8;
+  --matou-secondary-foreground: color-mix(in srgb, var(--matou-primary) 12%, white);
   --matou-muted-foreground: #8faab5;
 
   // Accent glow follows the kit accent (kit-tokens.scss :root) in dark mode too —
@@ -125,45 +143,41 @@
   --matou-destructive: #e86b5f;
   --matou-destructive-foreground: #ffffff;
 
-  --matou-border: rgba(126, 179, 184, 0.2);
+  // Borders/glows mix over the (lightened) dark primary so they read on the dark
+  // surface — no hardcoded teal rgba. #642
   --matou-input: #1e3340;
   --matou-input-background: #1e3340;
   --matou-switch-background: #3d5a6b;
-  // --matou-ring inherits the kit-accent-based :root value in dark mode.
+  // --matou-border / --matou-primary-light / --matou-ring inherit the :root
+  // color-mix values, which re-resolve against the lightened dark primary.
 
   // --matou-secondary-strong comes from the kit's :root block only
   // (kit-tokens.scss) — override it here so the "strong" secondary wash
   // doesn't stay stuck at the light kit color in dark mode. See #337.
   --matou-secondary-strong: #22384a;
 
-  --matou-surface: #1a2b3a;
+  --matou-surface: color-mix(in srgb, var(--matou-primary) 28%, black);
   --matou-surface-alt: #22384a;
-  --matou-text: #e8f4f8;
+  --matou-text: color-mix(in srgb, var(--matou-primary) 12%, white);
   --matou-text-secondary: #8faab5;
-  --matou-primary-light: rgba(126, 179, 184, 0.18);
 
   --matou-field-tint-bg: #1e3340;
   --matou-field-tint-border: #2c4a5c;
   --matou-field-tint-hover-border: #3d5a6b;
-  --matou-field-tint-focus-border: #7eb3b8;
-  --matou-field-tint-focus-shadow: rgba(126, 179, 184, 0.18);
+  --matou-field-tint-focus-border: var(--matou-primary);
+  --matou-field-tint-focus-shadow: color-mix(in srgb, var(--matou-primary) 18%, transparent);
   --matou-field-tint-placeholder: #6b8a99;
-  --matou-switch-thumb: #e8f4f8;
+  --matou-switch-thumb: color-mix(in srgb, var(--matou-primary) 12%, white);
 
-  --matou-chart-1: #7eb3b8;
-  --matou-chart-2: #4a9d9c;
-  --matou-chart-3: #3d8a99;
-  --matou-chart-4: #5a7b8a;
-  --matou-chart-5: #8faab5;
+  // Charts inherit the :root color-mix ramp (re-resolves against the dark
+  // primary/accent) — no .dark override needed. #642
 
-  --matou-sidebar: #1a2b3a;
-  --matou-sidebar-foreground: #e8f4f8;
-  --matou-sidebar-primary: #7eb3b8;
-  --matou-sidebar-primary-foreground: #0f1a23;
-  // --matou-sidebar-accent comes from the kit's .dark block (kit-tokens.scss). #337
-  --matou-sidebar-accent-foreground: #e8f4f8;
-  --matou-sidebar-border: rgba(126, 179, 184, 0.2);
-  --matou-sidebar-ring: #4a9d9c;
+  --matou-sidebar: color-mix(in srgb, var(--matou-primary) 28%, black);
+  --matou-sidebar-foreground: color-mix(in srgb, var(--matou-primary) 12%, white);
+  --matou-sidebar-primary: var(--matou-primary);
+  --matou-sidebar-primary-foreground: color-mix(in srgb, var(--matou-primary) 18%, black);
+  --matou-sidebar-accent-foreground: color-mix(in srgb, var(--matou-primary) 12%, white);
+  // --matou-sidebar-border / --matou-sidebar-ring inherit the :root color-mix.
 }
 
 // Helper classes for direct use
@@ -227,6 +241,6 @@
     135deg,
     var(--matou-secondary) 0%,
     var(--matou-background) 50%,
-    rgba(232, 244, 248, 0.5) 100%
+    color-mix(in srgb, var(--matou-secondary) 50%, transparent) 100%
   );
 }

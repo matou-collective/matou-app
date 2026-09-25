@@ -1242,13 +1242,13 @@ async function addComment() {
   font-weight: 500;
 
   &.lead {
-    background: rgba(74, 157, 156, 0.12);
-    color: var(--matou-chart-2, #4a9d9c);
+    background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+    color: var(--matou-chart-2);
   }
 
   &.steward {
-    background: rgba(30, 95, 116, 0.1);
-    color: var(--matou-accent, #4a9d9c);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
+    color: var(--matou-accent);
   }
 }
 
@@ -1555,7 +1555,7 @@ async function addComment() {
   max-width: 80%;
 
   &--mine {
-    background: var(--matou-primary-light, rgba(37, 99, 235, 0.08));
+    background: var(--matou-primary-light);
     border-color: rgba(37, 99, 235, 0.15);
     border-radius: 12px 12px 4px 12px;
   }

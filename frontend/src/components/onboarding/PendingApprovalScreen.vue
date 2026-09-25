@@ -990,8 +990,8 @@ const resources = [
 }
 
 .requirement-pending {
-  background-color: var(--matou-secondary, #f1f5f9);
-  color: var(--matou-muted-foreground, #94a3b8);
+  background-color: var(--matou-secondary);
+  color: var(--matou-muted-foreground);
 }
 
 .requirement-met {
@@ -1025,7 +1025,7 @@ const resources = [
 }
 
 .help-box {
-  background-color: rgba(232, 244, 248, 0.5);
+  background-color: color-mix(in srgb, var(--matou-secondary) 50%, transparent);
 }
 
 .error-box {
@@ -1033,7 +1033,7 @@ const resources = [
 }
 
 .processing-steps {
-  background-color: rgba(232, 244, 248, 0.5);
+  background-color: color-mix(in srgb, var(--matou-secondary) 50%, transparent);
 }
 
 .aid-card {
@@ -1059,7 +1059,7 @@ const resources = [
 }
 
 .booking-confirmed {
-  background-color: rgba(74, 157, 156, 0.1);
+  background-color: color-mix(in srgb, var(--matou-accent) 10%, transparent);
 }
 
 .slot-date-group {

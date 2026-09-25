@@ -162,7 +162,7 @@ function contributionTagClass(kind: ContributionChangeItem['kind']): string {
 
   &.is-added {
     border-color: var(--matou-accent);
-    background: rgba(74, 157, 156, 0.06);
+    background: color-mix(in srgb, var(--matou-accent) 6%, transparent);
   }
 
   &.is-archived {
@@ -249,7 +249,7 @@ function contributionTagClass(kind: ContributionChangeItem['kind']): string {
   background: var(--matou-secondary);
 
   &.is-added {
-    background: rgba(74, 157, 156, 0.1);
+    background: color-mix(in srgb, var(--matou-accent) 10%, transparent);
   }
 
   &.is-removed {
@@ -314,7 +314,7 @@ function contributionTagClass(kind: ContributionChangeItem['kind']): string {
 }
 
 .tag-added {
-  background: rgba(74, 157, 156, 0.18);
+  background: color-mix(in srgb, var(--matou-accent) 18%, transparent);
   color: var(--matou-accent);
 }
 

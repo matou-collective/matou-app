@@ -132,7 +132,7 @@ const assignedName = computed(() => {
   }
 
   &:hover {
-    border-color: var(--matou-accent, #4a9d9c);
+    border-color: var(--matou-accent);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   }
 }
@@ -229,7 +229,7 @@ const assignedName = computed(() => {
   height: 20px;
   padding: 0 6px;
   border-radius: 10px;
-  background: var(--matou-destructive, #dc2626);
+  background: var(--matou-destructive);
   color: white;
   font-size: 0.7rem;
   font-weight: 600;

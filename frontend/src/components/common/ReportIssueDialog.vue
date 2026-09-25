@@ -116,6 +116,7 @@ import {
   submitIssue,
   type IssueResult,
 } from 'src/lib/api/issues';
+import { KIT } from 'src/generated/kit';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -161,10 +162,10 @@ function onDialogToggle(value: boolean) {
 }
 
 const ERROR_COPY: Record<string, string> = {
-  unreachable: "Couldn't reach the issue service. Check your connection, or email ben@matou.nz.",
+  unreachable: `Couldn't reach the issue service. Check your connection, or email ${KIT.brand.contactEmail}.`,
   rate_limited: 'Too many reports right now — please try again in a minute.',
   invalid: 'Something was wrong with the report. Please check the fields and try again.',
-  server: "The issue couldn't be created. Please try again later or email ben@matou.nz.",
+  server: `The issue couldn't be created. Please try again later or email ${KIT.brand.contactEmail}.`,
 };
 
 async function onSubmit() {

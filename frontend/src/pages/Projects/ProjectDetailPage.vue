@@ -1587,7 +1587,7 @@ async function submitAssign() {
   color: var(--matou-muted-foreground);
 
   &.created { background: #e0e7ff; color: #4338ca; }
-  &.active { background: rgba(74, 157, 156, 0.12); color: var(--matou-accent); }
+  &.active { background: color-mix(in srgb, var(--matou-accent) 12%, transparent); color: var(--matou-accent); }
   &.pending_completion { background: #ffedd5; color: #c2410c; }
   &.completed { background: #dbeafe; color: #2563eb; }
   &.archived { background: #f3f4f6; color: #6b7280; }
@@ -1654,13 +1654,13 @@ async function submitAssign() {
   font-family: inherit;
 
   &.lead {
-    background: rgba(74, 157, 156, 0.12);
-    color: var(--matou-chart-2, #4a9d9c);
+    background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
+    color: var(--matou-chart-2);
   }
 
   &.steward {
-    background: rgba(30, 95, 116, 0.1);
-    color: var(--matou-accent, #4a9d9c);
+    background: color-mix(in srgb, var(--matou-primary) 10%, transparent);
+    color: var(--matou-accent);
   }
 
   &.clickable {
@@ -1754,7 +1754,7 @@ async function submitAssign() {
   font-size: 0.75rem;
   padding: 2px 10px;
   border-radius: 12px;
-  background: rgba(74, 157, 156, 0.12);
+  background: color-mix(in srgb, var(--matou-accent) 12%, transparent);
   color: var(--matou-accent);
 }
 
@@ -1848,7 +1848,7 @@ async function submitAssign() {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: rgba(30, 95, 116, 0.05);
+  background: color-mix(in srgb, var(--matou-primary) 5%, transparent);
   border: 1px solid var(--matou-border);
   border-radius: var(--matou-radius-sm);
   margin-bottom: 16px;
@@ -1992,7 +1992,7 @@ async function submitAssign() {
 
   &.active {
     border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
+    background: color-mix(in srgb, var(--matou-primary) 6%, transparent);
     color: var(--matou-primary);
   }
 }
@@ -2019,7 +2019,7 @@ async function submitAssign() {
 
   &.selected {
     border-color: var(--matou-primary);
-    background: rgba(30, 95, 116, 0.06);
+    background: color-mix(in srgb, var(--matou-primary) 6%, transparent);
   }
 }
 
@@ -2097,7 +2097,7 @@ async function submitAssign() {
   max-width: 80%;
 
   &--mine {
-    background: var(--matou-primary-light, rgba(37, 99, 235, 0.08));
+    background: var(--matou-primary-light);
     border-color: rgba(37, 99, 235, 0.15);
     border-radius: 12px 12px 4px 12px;
   }
