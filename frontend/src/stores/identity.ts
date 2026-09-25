@@ -5,6 +5,9 @@ import { KERIClient, useKERIClient, type AIDInfo, type CredentialInfo } from 'sr
 import { getUserSpaces, verifyCommunityAccess as apiVerifyCommunityAccess, joinCommunity as apiJoinCommunity, getAuthChallenge, postAuthLogin, setSessionToken, type UserSpacesResponse } from 'src/lib/api/client';
 import { secureStorage } from 'src/lib/secureStorage';
 import { fetchOrgConfig } from 'src/api/config';
+import { getCommunityAid, getMembershipSchemaSaid } from 'src/lib/clientConfig';
+import { findStewardCredential, IDSS_STEWARD_APP_ROLE } from 'src/lib/spaces/steward';
+import type { HeldCredential } from 'src/lib/signin/credential';
 import { useAppStore } from 'stores/app';
 import { toKeriAlias } from 'src/lib/keri/alias';
 import { clearSigners } from 'src/lib/signin/signer';
@@ -260,6 +263,37 @@ export const useIdentityStore = defineStore('identity', () => {
       // Method 1: Check credentials in wallet
       const credentials = await client.credentials().list();
       console.log('[AdminAccess] Checking credentials:', credentials.length);
+
+      // Method 0 (IDSS): the steward is the member whose Membership credential,
+      // issued by the community AID in the descriptor's own schema, carries
+      // `role: operator`, the gateway's steward (credschema.RoleOperator). The
+      // role-name scan below never matches "operator", so without this an IDSS
+      // founder was never an admin and never saw a pending registration.
+      if (useAppStore().isIdssBackend) {
+        const [communityAid, membershipSchema] = await Promise.all([
+          getCommunityAid(),
+          getMembershipSchemaSaid(),
+        ]);
+        const steward = findStewardCredential(credentials as unknown as HeldCredential[], {
+          communityAid,
+          membershipSchema,
+          holderAid: currentAID.value.prefix,
+        });
+        if (steward?.sad) {
+          console.log('[AdminAccess] IDSS steward: Membership credential with role operator');
+          isAdmin.value = true;
+          adminCredential.value = {
+            said: steward.sad.d || '',
+            schema: steward.sad.s || '',
+            issuer: steward.sad.i || '',
+            issuee: steward.sad.a?.i || currentAID.value.prefix,
+            status: 'issued',
+            role: IDSS_STEWARD_APP_ROLE,
+          };
+          adminChecked.value = true;
+          return true;
+        }
+      }
 
       for (const cred of credentials) {
         const credAny = cred as Record<string, unknown>;
