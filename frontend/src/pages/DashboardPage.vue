@@ -970,7 +970,7 @@ function handleRoleUpdated(newRole: string) {
 
 // Welcome Header
 .welcome-header {
-  background: linear-gradient(135deg, var(--matou-brand), rgba(30, 95, 116, 0.9), var(--matou-brand-accent));
+  background: var(--matou-brand-gradient);
   padding: 2rem 1.5rem;
   // Edge-to-edge mobile: .dashboard-page pulls itself up under the status bar
   // (see above); pad the header by the inset so its content clears the bar

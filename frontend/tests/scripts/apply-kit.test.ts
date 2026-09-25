@@ -47,6 +47,11 @@ describe('apply-kit (core)', () => {
     expect(tokens).toContain('--matou-sidebar-accent: #E8F4F8;');
     expect(tokens).not.toContain('color-mix');
     expect(tokens).toMatch(/\.dark\s*\{[^}]*--matou-secondary: #1e3340;/);
+    // #636 — dark mode primary is a lightened kit primary (+ near-black foreground)
+    // emitted from the kit, so it no longer falls back to Mātou's teal (#7eb3b8).
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-primary: #8fafba;/);
+    expect(tokens).toMatch(/\.dark\s*\{[\s\S]*--matou-primary-foreground: #08181d;/);
+    expect(tokens).not.toContain('#7eb3b8');
     const kitTs = await readFile(join(root, 'src/generated/kit.ts'), 'utf8');
     expect(kitTs).toContain("export const KIT");
     // Pin the split so the two can't drift apart again: brand.name (in kit.ts) keeps its
@@ -119,6 +124,17 @@ describe('kit secondary wash (#337)', () => {
     expect(scss).toContain('--matou-secondary-strong: #F2B134;');
     expect(scss).toContain('--matou-secondary: color-mix(in srgb, #F2B134 12%, transparent);');
     expect(scss).toContain('--matou-sidebar-accent: color-mix(in srgb, #F2B134 16%, transparent);');
+  });
+});
+
+describe('kit dark-mode primary (#636)', () => {
+  it('derives the dark primary + foreground from the kit, not Mātou teal', () => {
+    // A clearly non-teal kit (magenta) proves the dark primary tracks the kit.
+    const scss = tokensScss({ brand: { primaryColour: '#A21F7A', secondaryColour: '#E8F4F8' } });
+    // mixWithWhite('#A21F7A', 0.5) → #d18fbd ; mixWithBlack('#A21F7A', 0.25) → #29081f
+    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--matou-primary: #d18fbd;/);
+    expect(scss).toMatch(/\.dark\s*\{[\s\S]*--matou-primary-foreground: #29081f;/);
+    expect(scss).not.toContain('#7eb3b8'); // never Mātou's hardcoded dark teal
   });
 });
 

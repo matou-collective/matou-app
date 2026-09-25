@@ -248,11 +248,7 @@ const onRetry = () => {
 <style lang="scss" scoped>
 .splash-screen {
   position: relative;
-  background: linear-gradient(
-    160deg,
-    var(--matou-brand) 0%,
-    color-mix(in srgb, var(--matou-brand) 80%, black) 100%
-  );
+  background: var(--matou-brand-gradient);
   min-height: calc(100vh - var(--titlebar-height));
 }
 

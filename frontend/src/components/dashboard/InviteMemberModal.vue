@@ -299,7 +299,7 @@ defineExpose({ isSubmitting, progress });
 
 .modal-header {
   padding: 1.25rem 1.5rem;
-  background: linear-gradient(135deg, var(--matou-primary), rgba(30, 95, 116, 0.9), var(--matou-accent));
+  background: var(--matou-brand-gradient);
   color: white;
   border-radius: 12px 12px 0 0;
 }
@@ -314,8 +314,8 @@ defineExpose({ isSubmitting, progress });
 }
 
 .progress-box {
-  background-color: rgba(30, 95, 116, 0.05);
-  border-color: rgba(30, 95, 116, 0.2);
+  background-color: color-mix(in srgb, var(--matou-primary) 5%, transparent);
+  border-color: color-mix(in srgb, var(--matou-primary) 20%, transparent);
 }
 
 .error-box {

@@ -513,8 +513,8 @@ onUnmounted(() => {
 }
 
 .notice-box {
-  background-color: rgba(30, 95, 116, 0.1);
-  border-color: rgba(30, 95, 116, 0.2);
+  background-color: color-mix(in srgb, var(--matou-primary) 10%, transparent);
+  border-color: color-mix(in srgb, var(--matou-primary) 20%, transparent);
 }
 
 .paste-box {

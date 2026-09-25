@@ -40,8 +40,14 @@
   // deliberately identical in dark mode — these surfaces keep the light-mode
   // brand look, so no .dark override exists for them.
   --matou-brand: #{$kit-primary};
+  --matou-brand-secondary: #{$kit-secondary};
   --matou-brand-accent: #{$kit-accent};
-  --matou-ring: #4a9d9c;
+  // One shared header gradient: kit secondary at the bottom right rising to the
+  // kit primary at the top left. Theme-invariant so onboarding/dashboard headers
+  // keep the brand look in dark mode. See #636.
+  --matou-brand-gradient: linear-gradient(to top left, var(--matou-brand-secondary), var(--matou-brand));
+  // Focus ring follows the kit accent instead of a hardcoded Matou teal.
+  --matou-ring: var(--matou-accent);
 
   // Surfaces & text (referenced with light fallbacks across profile
   // components before dark mode existed — defined here so `.dark` below can
@@ -104,17 +110,16 @@
   --matou-popover: #1a2b3a;
   --matou-popover-foreground: #e8f4f8;
 
-  // Moonlit water
-  --matou-primary: #7eb3b8;
-  --matou-primary-foreground: #0f1a23;
-
-  // --matou-secondary / --matou-muted come from the kit's .dark block
-  // (kit-tokens.scss) so the secondary wash applies in dark mode too. See #337.
+  // --matou-primary / --matou-primary-foreground now come from the kit's .dark
+  // block (kit-tokens.scss) — a lightened kit primary + a near-black foreground —
+  // so dark mode no longer falls back to Matou's teal on the onboarding screens.
+  // See #636. --matou-secondary / --matou-muted come from the kit's .dark block
+  // too (the secondary wash) — see #337.
   --matou-secondary-foreground: #e8f4f8;
   --matou-muted-foreground: #8faab5;
 
-  // Teal glow
-  --matou-accent: #4a9d9c;
+  // Accent glow follows the kit accent (kit-tokens.scss :root) in dark mode too —
+  // no .dark override, so it inherits the kit value instead of a Matou teal. #636
   --matou-accent-foreground: #ffffff;
 
   --matou-destructive: #e86b5f;
@@ -124,7 +129,7 @@
   --matou-input: #1e3340;
   --matou-input-background: #1e3340;
   --matou-switch-background: #3d5a6b;
-  --matou-ring: #4a9d9c;
+  // --matou-ring inherits the kit-accent-based :root value in dark mode.
 
   // --matou-secondary-strong comes from the kit's :root block only
   // (kit-tokens.scss) — override it here so the "strong" secondary wash
@@ -214,12 +219,7 @@
 
 // Gradient helpers
 .gradient-primary {
-  background: linear-gradient(
-    135deg,
-    var(--matou-primary) 0%,
-    rgba(30, 95, 116, 0.9) 50%,
-    var(--matou-accent) 100%
-  );
+  background: var(--matou-brand-gradient);
 }
 
 .gradient-secondary {
